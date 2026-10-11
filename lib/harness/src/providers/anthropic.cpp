@@ -451,9 +451,12 @@ static size_t antAppendMessage(JsonObjectConst ev, char* out, size_t cap, size_t
 // said before a tool call) arrives as separate, short messages ahead of the
 // report - and used to be glued onto the saved artifact with no separator. The
 // rule: the artifact is the LONGEST message (a tie goes to the later one) plus
-// every message after it (a closing note after the report is kept); messages
-// before it are narration and dropped. A one-message run is unchanged. Bounded
-// by the envelope; never allocates.
+// every message after it (a closing note after the report is kept). A message
+// BEFORE it is narration - and dropped - only if it is short (under a quarter of
+// the longest and under kAntNarrationMax); a long earlier message is part of the
+// work (a report written over several requests) and is kept, in order. A
+// one-message run is unchanged. Bounded by the envelope; never allocates.
+static const size_t kAntNarrationMax = 600;
 static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
   int at = -1, idx = 0;
   size_t best = 0;
@@ -464,11 +467,14 @@ static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
     }
     ++idx;
   }
+  const size_t narration = best / 4 < kAntNarrationMax ? best / 4 : kAntNarrationMax;
   size_t used = 0;
   out[0] = 0;
   idx = 0;
   for (JsonObjectConst ev : events) {
-    if (idx++ < at || strcmp(ev["type"] | "", "agent.message") != 0) continue;
+    const bool before = idx++ < at;
+    if (strcmp(ev["type"] | "", "agent.message") != 0) continue;
+    if (before && antMessageLen(ev) < narration) continue;   // short working note
     used = antAppendMessage(ev, out, cap, used);
     if (used >= cap - 1) return;
   }
@@ -887,7 +893,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     JsonDocument resp = makeDoc(pd);
     int code = antRequest(pd, "POST", "/v1/messages", serializeBody(req), resp, filter,
                           clampRoundMs(budgetMs, ANT_TIMEOUT_MS));
-    if (code <= 0) { out.ok = false; out.error = "network"; return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
     if (code != 200) {
       std::string e = "messages HTTP " + std::to_string(code);
       const char* em = resp["error"]["message"] | "";
@@ -995,8 +1001,9 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   orch::Transcript tr;
   tr.addUser(inputs);
   // CUM-477: one same-host resend of a request that never left (see openai.cpp).
-  orch::HeadStepFn step =
-      resendUnsentOnce(pd, ht.cfg, antLoopStep(pd, instructions, ht, usage, tr), "orchTurn(ant-loop)");
+  const orch::HeadStepFn inner = antLoopStep(pd, instructions, ht, usage, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(ant-loop)"};
+  orch::HeadStepFn step = resendUnsentOnce(&resend);
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;
@@ -1106,7 +1113,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
-  if (code <= 0)   { err = "network"; return false; }
+  if (code <= 0)   { err = wire::transportError(); return false; }
   if (code != 200) {
     err = "messages HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";

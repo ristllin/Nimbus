@@ -1999,8 +1999,8 @@ large enough for a sub-agent to return a whole document); token usage is filled 
 OpenAI (the Anthropic events poll returns no usage object - honest zeros).
 An Anthropic sub-agent's working notes ("I'll start with...", said before each
 tool call) arrive as their own short messages, so the reply - and the file it is
-saved to - is the run's longest message plus anything after it; the notes before
-it are left out.
+saved to - is the run's longest message plus anything after it; short notes before
+it are left out, while a long earlier message (part of the work) is kept.
 
 **A Mistral sub that outruns the 60 s blocking read is reported as a timeout,
 not as a failed start.** Because the sub runs inside that synchronous

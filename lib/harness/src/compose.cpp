@@ -19,10 +19,17 @@ namespace agent {
 // (a renamed device used to read "You are Nimbus ... You are <old-name>" twelve
 // lines apart), and it no longer claims every conversation is "your owner"
 // (the device is multi-tenant; the identity block names this turn's speaker).
-static std::string orchRole(const std::string& devName) {
+// How people reach the device: Telegram is named only when a bot is configured
+// (CUM-523).
+static const char* reachLine(bool telegram) {
+  return telegram ? "You speak with people over Telegram/voice and can act on the device."
+                  : "You speak with people over the web page/voice and can act on the device.";
+}
+
+static std::string orchRole(const std::string& devName, bool telegram) {
   return "You are " + devName +
-  ", the always-on head orchestrator of a personal-assistant device. "
-  "You speak with people over Telegram/voice and can act on the device. "
+  ", the always-on head orchestrator of a personal-assistant device. " +
+  reachLine(telegram) + " "
   "Fill the orch_turn fields:\n"
   ORCH_FIELD_DOCS
   "When [FRESH RESULTS] appears, those are outputs from sub-agents you spawned that just "
@@ -50,10 +57,10 @@ static std::string orchRole(const std::string& devName) {
 // risk knobs, keys/priority/routing owner-only, mem_write-is-a-prediction,
 // sub-agent fire-and-forget + [SPAWN CAPACITY], scratchpad persistence,
 // fresh-results synthesis, [ACTIVE SESSIONS] authority, multi-step honesty.
-static std::string orchRoleV2(const std::string& devName) {
+static std::string orchRoleV2(const std::string& devName, bool telegram) {
   return "You are " + devName +
-  ", the always-on head orchestrator of a personal-assistant device. "
-  "You speak with people over Telegram/voice and can act on the device.\n"
+  ", the always-on head orchestrator of a personal-assistant device. " +
+  reachLine(telegram) + "\n"
   "Return one orch_turn. Each field's full schema is in the response format you "
   "were given; here are the essentials and the rules a schema cannot enforce:\n"
   "- reply: your message to the owner now (empty string if none). HONESTY: claim "
@@ -151,7 +158,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   bool hasLoopTool = false;
   for (const auto& t : in.tools)
     if (t.name.rfind("loop_", 0) == 0 || t.name.rfind("loop.", 0) == 0) { hasLoopTool = true; break; }
-  ci.immutableRules = in.promptV2 ? orchRoleV2(devName) : orchRole(devName);
+  ci.immutableRules = in.promptV2 ? orchRoleV2(devName, in.hw.telegram) : orchRole(devName, in.hw.telegram);
   // v2 memory-tiers explainer for [HOW YOU RUN]: the four tiers are already
   // covered by the compressed field docs and the role, so this compresses the
   // long v1 paragraph to a pointer, keeping ONLY the load-bearing behavior it
@@ -233,8 +240,9 @@ std::string composeInstructions(const ComposeInputs& in) {
                               "data in their own space and never reveal another "
                               "person's information to them).\n")) +
                 "\n[HOW YOU RUN]\n"
-                "- You exist as TURNS. A turn starts when a person messages you (Telegram "
-                "text or voice), the web console injects one, a SUB-AGENT FINISHES (an "
+                "- You exist as TURNS. A turn starts when a person messages you (" +
+                std::string(in.hw.telegram ? "Telegram text or voice" : "the web page or voice") +
+                "), the web console injects one, a SUB-AGENT FINISHES (an "
                 "automatic synthesis turn with a [FRESH RESULTS] block and no owner message "
                 "- you decide what, if anything, to tell the owner), or a SCHEDULED LOOP "
                 "fires (a [SCHEDULED LOOP] block, no owner message - one of your recurring "

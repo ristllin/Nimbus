@@ -559,6 +559,61 @@ static void test_cum477_unsent_request_reply_blames_memory_not_connection() {
   TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
 }
 
+// prism (peer review): only the custom head's explicit "timeout:" token skips the
+// same-host retry - a provider error that merely mentions a timeout (a router 504
+// text) keeps it.
+static void test_cum544_only_the_timeout_token_skips_the_retry() {
+  Rig r;
+  r.cfg.keyed = {"openai", "anthropic"};
+  r.cfg.orchHost = "openai";
+  r.cfg.priority = "anthropic";
+  r.scripts["openai"] = {{false, "", "resp HTTP 504: upstream request timeout", 0, "", 0, 0}};
+  r.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts[1].host.c_str());   // the same-host retry ran
+  TEST_ASSERT_FALSE(r.anyDelivered("did not answer in time"));
+}
+
+// prism: each failover notice names the reason of the host that just failed - a
+// second switch must not inherit the first host's "did not answer in time".
+static void test_cum544_second_notice_names_its_own_reason() {
+  Rig r;
+  r.cfg.keyed = {"zai", "openai", "mistral"};
+  r.cfg.orchHost = "zai";
+  r.cfg.priority = "openai,mistral";
+  r.scripts["zai"] = {{false, "", "timeout: the provider did not answer in time", 0, "", 0, 0}};
+  r.scripts["openai"] = {{false, "", "network", 0, "", 0, 0}};
+  r.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_TRUE(r.anyDelivered("zai did not answer in time - switching to"));
+  TEST_ASSERT_TRUE(r.anyDelivered("openai is unavailable - switching to"));
+  TEST_ASSERT_FALSE(r.anyDelivered("openai did not answer in time"));
+}
+
+// The class: every Telegram-only tool is named by isTelegramOnlyTool, and nothing
+// else is (a new Telegram delivery tool must be added there, or it is offered on a
+// device with no bot).
+static void test_cum523_telegram_only_tools_are_exactly_these() {
+  TEST_ASSERT_TRUE(agent::isTelegramOnlyTool("reply.telegram"));
+  TEST_ASSERT_TRUE(agent::isTelegramOnlyTool("files.send"));
+  for (const char* other : {"reply.speak", "files.list", "artifact.save", "memory.write",
+                            "device.control", "wakeup.set"})
+    TEST_ASSERT_FALSE_MESSAGE(agent::isTelegramOnlyTool(other), other);
+}
+
+// A scheduled one-shot with no chat on a Telegram-less device gets no delivery
+// line (channelOf("") would name Telegram, which this device does not have).
+static void test_cum523_no_delivery_line_without_a_real_target() {
+  Rig r;
+  r.cfg.telegramOn = false;
+  r.scripts["anthropic"] = {{true, "{\"reply\":\"ok\"}", "", 0}};
+  // firstAllowedChat() is "1001" in the rig; a device with no allowlist has "".
+  // The engine resolves "" -> firstAllowedChat; here the Telegram chat 1001 is
+  // not a device channel and there is no bot, so no line.
+  orch::FireOutcome o = r.eng->injectScheduledTurn("", "check the build", "wakeup", "lp1",
+                                                   /*quietOk=*/false, /*once=*/true);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("Your reply is delivered to") == std::string::npos);
+}
+
 // ---- CUM-544: a timeout fails over at once, and the notice says why ---------
 // Bench (nimbus-light): the Z.ai head timed out, the engine retried the same host
 // on a fresh conversation (another full timeout), then failed over at 268 s with
@@ -1086,6 +1141,7 @@ static void test_cum523_telegramless_wakeup_has_no_telegram_leg() {
   Rig r;
   r.cfg.telegramOn = false;
   r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file on Telegram.", "{}"});
   r.specs.push_back(orch::ToolRegistry::Spec{"reply.speak", "Speak a line.", "{}"});
   r.scripts["anthropic"] = {{true, "{\"reply\":\"Time to ring the crane company.\"}", "", 0}};
   orch::FireOutcome o = r.eng->injectScheduledTurn(
@@ -1096,10 +1152,11 @@ static void test_cum523_telegramless_wakeup_has_no_telegram_leg() {
   const std::string& sys = r.debug[0].instructions;
   const std::string& in = r.attempts[0].inputs;
   TEST_ASSERT_TRUE(sys.find("reply_telegram") == std::string::npos);   // not advertised
+  TEST_ASSERT_TRUE(sys.find("files_send") == std::string::npos);       // nor the Telegram file send
   TEST_ASSERT_TRUE(sys.find("reply_speak") != std::string::npos);      // the rest still are
   TEST_ASSERT_TRUE(in.find("reply.telegram") == std::string::npos);
-  TEST_ASSERT_TRUE(in.find("(Your reply is delivered to the web UI - that IS the reminder. Do "
-                           "not send it to any other channel.)") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("(Your reply is delivered to the web chat. Do not send a second copy "
+                           "over another messaging channel.)") != std::string::npos);
   TEST_ASSERT_EQUAL(0, (int)r.toolResults.size());   // nothing was even attempted on Telegram
   for (const auto& d : r.delivered) TEST_ASSERT_TRUE(d.second.find("Telegram") == std::string::npos);
   TEST_ASSERT_EQUAL_STRING("web", r.delivered.back().first.c_str());
@@ -1837,6 +1894,10 @@ int main(int, char**) {
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
+  RUN_TEST(test_cum544_second_notice_names_its_own_reason);
+  RUN_TEST(test_cum544_only_the_timeout_token_skips_the_retry);
+  RUN_TEST(test_cum523_telegram_only_tools_are_exactly_these);
+  RUN_TEST(test_cum523_no_delivery_line_without_a_real_target);
   RUN_TEST(test_no_retry_after_tool_dispatched);
   RUN_TEST(test_rate_limit_reply_names_the_window);
   RUN_TEST(test_budget_failover_and_exhausted_refusal);

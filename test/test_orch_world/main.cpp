@@ -251,6 +251,14 @@ static void test_cum523_channel_advice_without_telegram() {
   hw.telegram = true;   // with a bot: the advice is unchanged
   out = renderCapabilities(hw, {});
   TEST_ASSERT_TRUE(out.find("Reply in TEXT (Telegram / on-screen) by default") != std::string::npos);
+  // files.send is Telegram delivery: named only with a bot.
+  hw.files = true;
+  TEST_ASSERT_TRUE(renderCapabilities(hw, {}).find("deliver one to the owner with files.send") !=
+                   std::string::npos);
+  hw.telegram = false;
+  out = renderCapabilities(hw, {});
+  TEST_ASSERT_TRUE(out.find("deliver one to the owner with files.send") == std::string::npos);
+  TEST_ASSERT_TRUE(out.find("Files list on the device web page") != std::string::npos);
 }
 
 int main(int, char**) {

@@ -74,8 +74,7 @@ static bool parseBase(const std::string& base, std::string& host, int& port, boo
 static int custRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                        std::string body, bool anthropicAuth,
                        JsonDocument& doc, const JsonDocument& filter,
-                       uint32_t timeoutMs = CUST_TIMEOUT_MS,
-                       std::string* transportErr = nullptr) {
+                       uint32_t timeoutMs = CUST_TIMEOUT_MS) {
   doc.clear();
   std::string host; int port; bool http;
   if (!parseBase(s(pd.customBase), host, port, http)) return 0;
@@ -104,8 +103,7 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
     fullPath = (path.rfind("/v1", 0) == 0) ? prefix + path.substr(3) : prefix + path;
   }
   return exchange(pd, host.c_str(), (uint16_t)port, !http, method, fullPath,
-                  std::move(headers), std::move(body), timeoutMs, doc, filter,
-                  /*rateLimitHeaders=*/nullptr, transportErr);
+                  std::move(headers), std::move(body), timeoutMs, doc, filter);
 }
 
 FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJobId[72]) {
@@ -199,7 +197,8 @@ enum class HeadFormat { Schema, Object, None };
 // Schema asks for the bare JSON object in words (json_object mode also requires
 // the word "JSON" in the messages). False only if the schema will not parse.
 static bool customHeadBody(const ProviderDeps& pd, const std::string& instructions,
-                           const std::string& inputs, HeadFormat fmt, std::string& body) {
+                           const std::string& inputs, HeadFormat fmt, std::string& body,
+                           bool withEffort = true) {
   JsonDocument d;
   d["model"] = s(pd.customModel);
   JsonArray msgs = d["messages"].to<JsonArray>();
@@ -213,7 +212,7 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
   u["role"] = "user"; u["content"] = inputs;
   // CUM-544: a bounded reasoning effort rides EVERY attempt (the 400 retry too:
   // dropping it would put an always-reasoning model back on the slow path).
-  const std::string effort = s(pd.customReasoningEffort);
+  const std::string effort = withEffort ? s(pd.customReasoningEffort) : std::string();
   if (!effort.empty()) d["reasoning_effort"] = effort;
   if (fmt == HeadFormat::Object) d["response_format"]["type"] = "json_object";
   if (fmt == HeadFormat::Schema) {
@@ -230,6 +229,21 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
   body = serializeBody(d);
   return true;
 }
+// CUM-544: why a head request got no HTTP answer. "no response" = the request went
+// out and nothing came back - when that silence used (nearly) the whole budget it
+// is model latency, not a dead link, so say so: the engine then fails over without
+// a same-host retry and the owner hears the real reason. A FAST "no response" (the
+// peer closed straight away) and connect/write failures stay "network", which keeps
+// the retry. (No digits ride the token: the engine's classifier keys on "401",
+// "503"...; Z.ai's ~60 s gateway cut lands past its 50 s budget, so a slow Z.ai
+// turn always times out on the device's clock.)
+static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, uint32_t timeoutMs) {
+  const uint32_t waited = pd.nowMs ? pd.nowMs() - sentAt : timeoutMs;
+  if (wire::lastExchange().noResponse && waited >= timeoutMs - timeoutMs / 10)
+    return "timeout: the provider did not answer in time";
+  return wire::transportError();
+}
+
 // One single-shot structured turn over the OpenAI chat-completions dialect:
 // messages = [system(instructions), user(inputs)], response_format json_schema
 // (strict) carrying the canonical orch schema - or, when pd.customJsonMode() is
@@ -267,34 +281,32 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                                ? HeadFormat::Object : HeadFormat::Schema;
   const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
   int code = 0;
-  std::string terr;
+  uint32_t sentAt = 0;
+  bool withEffort = true;
   for (int attempt = 0; attempt < 2; ++attempt) {
+    sentAt = pd.nowMs ? pd.nowMs() : 0;
     const bool withFormat = (attempt == 0);
     std::string body;
-    if (!customHeadBody(pd, instructions, inputs, withFormat ? first : HeadFormat::None, body)) {
+    if (!customHeadBody(pd, instructions, inputs, withFormat ? first : HeadFormat::None, body,
+                        withEffort)) {
       err = "schema parse";
       return false;
     }
     code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                       /*anthropicAuth=*/false, doc, filter, timeoutMs, &terr);
+                       /*anthropicAuth=*/false, doc, filter, timeoutMs);
     if (code == 400 && withFormat) {
       // Schema-incapable backend: drop response_format and lean on the nudge +
       // the engine's tolerant parser.
       hlog::logf("orchTurn(custom): 400 with response_format - retrying schema-less");
+      // A model that refuses the effort field names it; the retry then goes without
+      // it rather than failing the same way twice (CUM-544).
+      withEffort = std::string(doc["error"]["message"] | "").find("reasoning") == std::string::npos;
       continue;
     }
     break;
   }
   if (code <= 0) {
-    // CUM-544: "no response" = the request went out and nothing came back inside
-    // the budget (or the provider's gateway gave up first). That is model latency,
-    // not a dead link: say so, so the engine fails over without a same-host retry
-    // and the owner hears the real reason. Connect/write failures stay "network".
-    // (No byte counts or other digits ride the token: the engine's error
-    // classifier keys on substrings like "401" and "503".)
-    err = (terr.find("no response") != std::string::npos)
-              ? "timeout: the provider did not answer in time"
-              : "network";
+    err = headTransportError(pd, sentAt, timeoutMs);
     hlog::logf("orchTurn(custom): %s (%u s budget)", err.c_str(), (unsigned)(timeoutMs / 1000));
     return false;
   }

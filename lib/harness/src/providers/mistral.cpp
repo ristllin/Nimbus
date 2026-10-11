@@ -342,7 +342,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     HeaderList quota;
     int code = mistralRequest(pd, "POST", "/v1/chat/completions", serializeBody(req),
                               resp, filter, roundMs, &quota);
-    if (code <= 0) { out.ok = false; out.error = "network"; return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
     if (code != 200) {
       const char* em = resp["message"] | "";
       if (!em[0]) em = resp["detail"][0]["msg"] | "";   // 422 validation shape
@@ -394,8 +394,9 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   orch::Transcript tr;
   tr.addUser(inputs);
   // CUM-477: one same-host resend of a request that never left (see openai.cpp).
-  orch::HeadStepFn step =
-      resendUnsentOnce(pd, ht.cfg, misLoopStep(pd, instructions, ht, usage, tr), "orchTurn(mis-loop)");
+  const orch::HeadStepFn inner = misLoopStep(pd, instructions, ht, usage, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(mistral-loop)"};
+  orch::HeadStepFn step = resendUnsentOnce(&resend);
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;
@@ -620,7 +621,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   HeaderList quota;
   int code = mistralRequest(pd, "POST", path, std::move(body), doc, filter,
                             MISTRAL_TIMEOUT_MS, &quota);
-  if (code <= 0)   { err = "network"; return false; }
+  if (code <= 0)   { err = wire::transportError(); return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
   if (code != 200) {
     err = mistralHttpErr("conversations", code, quota, mistralErrText(doc));

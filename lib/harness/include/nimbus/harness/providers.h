@@ -188,9 +188,15 @@ bool fabricSupports(const std::string& host);
 // owner hears the device ran out of working memory, not "check the connection".
 // The per-host loops (runOaiLoop/runAntLoop/runMisLoop - the Cumulo router head
 // runs these, never the fabric) use it; the fabric keeps its own same-host retry.
-nimbus::orch::HeadStepFn resendUnsentOnce(const ProviderDeps& pd,
-                                          const nimbus::orch::HeadLoopConfig& cfg,
-                                          nimbus::orch::HeadStepFn inner, const char* who);
+// The caller keeps the context (and what it points at) alive for the whole loop;
+// the returned step holds only the pointer.
+struct ResendCtx {
+  const ProviderDeps* pd;
+  const nimbus::orch::HeadLoopConfig* cfg;
+  const nimbus::orch::HeadStepFn* inner;
+  const char* who;
+};
+nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,

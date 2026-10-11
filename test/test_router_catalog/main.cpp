@@ -49,6 +49,12 @@ static void test_choice_list_keeps_default_and_each_upstream() {
   for (const char* up : {"anthropic/", "openai/", "mistral/", "zai/"})
     TEST_ASSERT_TRUE_MESSAGE(sl.csv.find(up) != std::string::npos, up);
   TEST_ASSERT_TRUE(csvHas(sl.csv, "anthropic/claude-opus-4-8"));
+  // prism (peer review): each upstream newest-first - the router sorts oldest
+  // generation first within a size class, and a cut list must keep the newest.
+  for (const char* id : {"anthropic/claude-opus-5", "anthropic/claude-sonnet-5",
+                         "openai/gpt-6-astra", "zai/glm-5.3"})
+    TEST_ASSERT_TRUE_MESSAGE(csvHas(sl.csv, id), id);
+  TEST_ASSERT_FALSE(csvHas(sl.csv, "anthropic/claude-opus-4.1"));
   TEST_ASSERT_TRUE(sl.kept <= rc::kChoicesMax);
   TEST_ASSERT_TRUE(sl.csv.size() <= rc::kChoicesMaxBytes);
   // 23 router ids, 3 dated twins -> 20 distinct models; 12 kept: the cut is said.
@@ -68,6 +74,41 @@ static void test_every_upstream_survives_any_cap() {
       TEST_ASSERT_TRUE_MESSAGE(sl.csv.find(up) != std::string::npos, up);
     TEST_ASSERT_TRUE(csvHas(sl.csv, "openai/gpt-5.6"));
   }
+}
+
+// The class: whatever the cap, each upstream's NEWEST version (by the numbers in
+// its id) is the one kept when only one fits.
+static void test_each_upstream_keeps_its_newest_model() {
+  const rc::Shortlist sl = rc::shortlist(benchRouterList(), "gpt-5.6", 5, rc::kChoicesMaxBytes);
+  TEST_ASSERT_EQUAL_STRING(
+      "openai/gpt-5.6,anthropic/claude-opus-5,mistral/mistral-large,zai/glm-5.3,"
+      "anthropic/claude-sonnet-5",
+      sl.csv.c_str());
+  // A parameter size or a date stamp is not a version.
+  const rc::Shortlist m = rc::shortlist({"mistral/mistral-large", "mistral/pixtral-12b",
+                                         "mistral/codestral-2501"}, "", 1, rc::kChoicesMaxBytes);
+  TEST_ASSERT_EQUAL_STRING("mistral/mistral-large", m.csv.c_str());
+}
+
+// The harvest filter (moved out of provider_verify.cpp so it is tested): a canned
+// /router/models body with HTTP headers, pretty-printed: non-chat families and the
+// openai upstream's dated snapshots are dropped; flagship families come first.
+static void test_harvest_filters_a_router_body() {
+  const char* body =
+      "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+      "{\"object\": \"list\", \"data\": ["
+      "{\"id\": \"anthropic/claude-3-5-haiku\", \"size_class\": \"small\"},"
+      "{\"id\": \"anthropic/claude-opus-5\", \"size_class\": \"large\"},"
+      "{\"id\": \"openai/gpt-4o\"}, {\"id\": \"openai/gpt-5.6\"},"
+      "{\"id\": \"openai/gpt-4.1-2025-04-14\"}, {\"id\": \"openai/text-embedding-3-small\"},"
+      "{\"id\": \"openai/o4-mini-deep-research\"}, {\"id\": \"openai/whisper-1\"},"
+      "{\"id\": \"mistral/mistral-embed\"}, {\"id\": \"zai/glm-4.5\"}, {\"id\": \"zai/glm-5.3\"}]}";
+  const std::vector<std::string> ids = rc::harvestIds(body);
+  const std::vector<std::string> want = {"anthropic/claude-opus-5", "openai/gpt-5.6", "zai/glm-5.3",
+                                         "anthropic/claude-3-5-haiku", "openai/gpt-4o", "zai/glm-4.5"};
+  TEST_ASSERT_EQUAL(want.size(), ids.size());
+  for (size_t i = 0; i < want.size(); ++i) TEST_ASSERT_EQUAL_STRING(want[i].c_str(), ids[i].c_str());
+  TEST_ASSERT_EQUAL(0, (int)rc::harvestIds("not a list").size());
 }
 
 // Dated snapshots duplicating an undated alias are dropped; a dated-only id
@@ -190,6 +231,8 @@ int main(int, char**) {
   RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
   RUN_TEST(test_every_upstream_survives_any_cap);
   RUN_TEST(test_dated_twins_dropped_dated_only_kept);
+  RUN_TEST(test_each_upstream_keeps_its_newest_model);
+  RUN_TEST(test_harvest_filters_a_router_body);
   RUN_TEST(test_short_list_is_whole);
   RUN_TEST(test_catalog_protects_default_and_upstream_heads);
   RUN_TEST(test_default_repicks_in_both_spellings);

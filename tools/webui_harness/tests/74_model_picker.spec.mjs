@@ -179,6 +179,29 @@ test('cumulo picker: a refused model shows the device reason under the row', asy
   await page.locator('#subpane-llm details.setgroup').first().locator('summary').click();
   await page.locator('#orchM_cumulo').selectOption('zai/glm-4.6');
   await expect(page.locator('#pmsg_cumulo')).toHaveText(reason);
+  // prism: the select goes back to the stored model (the default here), never
+  // keeps showing the refused one.
+  await expect(page.locator('#orchM_cumulo')).toHaveValue('');
+});
+
+// prism: before the first harvest the router's cold-start list is bare ids; a
+// stored bare default and the list entry are ONE row, never two.
+test('cumulo picker: cold start shows a stored default once', async ({ page }) => {
+  await seedToken(page);
+  const orch = orchPayload();
+  orch.providers.cumulo.choices = 'gpt-5.6,gpt-5.6-terra';
+  orch.providers.cumulo.orchModel = 'gpt-5.6';
+  await page.route('**/api/orch', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orch) }));
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ generatedAt: 0, providers: {} }) }));
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  await page.locator('#subpane-llm details.setgroup').first().locator('summary').click();
+  const sel = page.locator('#orchM_cumulo');
+  await expect(sel.locator('option', { hasText: /^openai\/gpt-5\.6$|^gpt-5\.6$/ })).toHaveCount(1);
+  await expect(sel).toHaveValue('openai/gpt-5.6');
 });
 
 // CUM-530: a catalog cut to its size bound says so ("<n> more not shown").

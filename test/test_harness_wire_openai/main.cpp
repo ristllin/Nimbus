@@ -675,6 +675,7 @@ struct RouterRig {
     pd.delayMs = [this, recovers](uint32_t ms) {
       ++delays;
       delayed += ms;
+      d.now += ms;   // the wait passes on the device clock too
       if (recovers) recovered = true;
     };
     d.fillTools(rig);
@@ -728,6 +729,59 @@ static void test_cum477_only_unsent_requests_are_resent() {
   TEST_ASSERT_EQUAL(0, healthy.delays);
 }
 
+// prism: the resend runs on what is left of the round's budget (F25), so its
+// socket timeout is shorter than the first attempt's, never a fresh full round.
+static void test_cum477_resend_gets_the_rest_of_the_round_budget() {
+  RouterRig r(/*recovers=*/true);
+  r.rig.ht.cfg.deadlineMs = 40000;   // a round budget under the 120 s cap
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(r.pd, conv, "S", "U", out, err, &r.rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(r.d.http.seen[2].timeoutMs < r.d.http.seen[1].timeoutMs);
+}
+
+// prism: a step that fails before reaching the transport never inherits an older
+// exchange's "unsent" flag (exchange() resets the record on entry).
+static void test_cum477_no_transport_no_resend() {
+  RouterRig r(/*recovers=*/true);
+  r.d.http.script.erase(r.d.http.script.begin() + 1, r.d.http.script.end());
+  std::string conv, out, err;
+  // First a real unsent failure on another turn leaves the record set...
+  RouterRig prev(/*recovers=*/false);
+  prev.d.http.script.pop_back();
+  providers::orchTurnOpenAI(prev.pd, conv, "S", "U", out, err, &prev.rig.ht, nullptr);
+  // ...then a turn whose round 1 fails with no transport call at all.
+  r.pd.http = nullptr;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "S", "U", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(0, r.delays);
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+
+// prism (peer review): a transport failure the transport itself tagged as memory
+// pressure ("... : low memory", the exchange began starved) is reported as low
+// memory by the single-shot head too, so the engine gives the honest memory reply
+// instead of a retry, a failover and "check the connection". Untagged stays network.
+static void test_cum477_tagged_low_memory_reaches_the_single_shot_head() {
+  FakeProviderDeps d;
+  harness_test::Exchange starved;
+  starved.status = 0;
+  starved.err = "connect failed: low memory";
+  d.http.script.push_back(starved);
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_TRUE(err.rfind("low memory", 0) == 0);
+
+  FakeProviderDeps n;
+  harness_test::Exchange down;
+  down.status = 0;
+  down.err = "connect failed";
+  n.http.script.push_back(down);
+  auto npd = n.contract();
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(npd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -756,6 +810,9 @@ int main(int, char**) {
   RUN_TEST(test_cum477_router_loop_resends_after_heap_recovers);
   RUN_TEST(test_cum477_no_recovery_fails_as_low_memory_not_network);
   RUN_TEST(test_cum477_only_unsent_requests_are_resent);
+  RUN_TEST(test_cum477_resend_gets_the_rest_of_the_round_budget);
+  RUN_TEST(test_cum477_no_transport_no_resend);
+  RUN_TEST(test_cum477_tagged_low_memory_reaches_the_single_shot_head);
   UNITY_END();
   return 0;
 }

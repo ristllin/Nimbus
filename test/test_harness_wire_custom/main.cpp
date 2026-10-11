@@ -456,6 +456,23 @@ static void test_cum544_router_zai_head_gets_the_same_policy() {
   TEST_ASSERT_EQUAL_UINT32(120000u, o.http.seen[0].timeoutMs);
 }
 
+// prism (peer review): a model that refuses the effort field (a 400 naming it)
+// gets the retry without it, instead of failing the same way twice. A 400 about
+// anything else keeps the field.
+static void test_cum544_a_400_naming_the_effort_drops_it_on_retry() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"reasoning_effort is not supported by this model\"}}"});
+  d.http.script.push_back({"", "", 200, zaiOkBody()});
+  auto pd = d.contract();
+  providers::applyZaiHeadPolicy(pd);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "reasoning_effort"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "reasoning_effort"));
+}
+
 // A LAN/custom head never sends the field (no policy applied = byte-identical).
 static void test_cum544_custom_head_sends_no_effort() {
   FakeProviderDeps d;
@@ -494,10 +511,23 @@ static void test_cum544_no_answer_is_a_timeout_not_network() {
   d.http.script.push_back(slow);
   auto pd = d.contract();
   providers::applyZaiHeadPolicy(pd);
+  uint32_t clock = 1000;   // the request sits silent for the whole 50 s budget
+  pd.nowMs = [&clock] { const uint32_t t = clock; clock += providers::kZaiHeadTimeoutMs; return t; };
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr));
   TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
   TEST_ASSERT_EQUAL_STRING("timeout: the provider did not answer in time", err.c_str());
+
+  // prism: the same "no response" coming back at once (the peer dropped the
+  // connection) is NOT a timeout - it stays "network" and keeps the engine's
+  // same-host retry. The counter-test in the dimension the new branch reads.
+  FakeProviderDeps q;
+  q.custBase = "https://api.z.ai";
+  q.http.script.push_back(slow);
+  auto qpd = q.contract();   // the fake clock advances 10 ms per read
+  providers::applyZaiHeadPolicy(qpd);
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(qpd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("orchTurn(custom): timeout"));
 
   FakeProviderDeps c;
@@ -539,6 +569,7 @@ int main(int, char**) {
   RUN_TEST(test_cum544_zai_head_sends_low_effort_and_50s_budget);
   RUN_TEST(test_cum544_router_zai_head_gets_the_same_policy);
   RUN_TEST(test_cum544_custom_head_sends_no_effort);
+  RUN_TEST(test_cum544_a_400_naming_the_effort_drops_it_on_retry);
   RUN_TEST(test_cum544_effort_rule_is_zai_only);
   RUN_TEST(test_cum544_no_answer_is_a_timeout_not_network);
   UNITY_END();

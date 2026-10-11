@@ -1356,7 +1356,9 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_cfg = harnessConfigFromStore();
   // CUM-523: a device with no running Telegram bot is never offered a Telegram leg
   // (the same predicate the capability manifest's hw.telegram reads).
-  g_cfg.telegramConfigured = [] { return agent::telegram::enabled(); };
+  g_cfg.telegramConfigured = [] {
+    return agent::telegram::enabled() && store::telegramAllowlist().length() > 0;
+  };
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,

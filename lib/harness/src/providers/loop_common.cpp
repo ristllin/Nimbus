@@ -28,8 +28,13 @@ namespace {
 constexpr uint32_t kHeapRecoverMs = 3000;
 constexpr uint32_t kHeapPollMs = 100;
 
+// The resend waits for a margin ABOVE the round floor: the failed round was
+// admitted at the floor, so resending at exactly the floor would just repeat it.
+constexpr uint32_t kResendHeapMargin = 4096;
+
 bool heapBelowFloor(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
-  if (cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap) return true;
+  if (cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap + kResendHeapMargin)
+    return true;
   return cfg.roundMinLargest && pd.largestBlock && pd.largestBlock() < cfg.roundMinLargest;
 }
 
@@ -45,32 +50,55 @@ bool heapRecovered(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg, bool
   return true;
 }
 
-// The error for a request that still could not be sent: memory when the heap is
-// short (or the transport said so), else the plain network failure it was.
-void markUnsent(orch::HeadStep& sr, const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
-  if (heapBelowFloor(pd, cfg) || wire::lastExchange().lowMem)
-    sr.error = "low memory: the device could not send the request";
+constexpr const char* kUnsentLowMem = "low memory: the device could not send the request";
+
+// Memory - not the network - is the reason a send failed: the transport tagged it
+// (the exchange began starved), or total free heap is below the round floor. The
+// largest block alone does not count: a Freenove board idles near that floor, and
+// CUM-404 v2 forbids turning its genuine outages into fake low-memory failures.
+bool memoryShort(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  if (wire::lastExchange().lowMem) return true;
+  return cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap;
 }
+
+// What is left of a round's budget after `t0` (UINT32_MAX = no deadline).
+uint32_t budgetLeft(const ProviderDeps& pd, uint32_t budgetMs, uint32_t t0) {
+  if (budgetMs == UINT32_MAX || !pd.nowMs) return budgetMs;
+  const uint32_t used = pd.nowMs() - t0;
+  return used >= budgetMs ? 0 : budgetMs - used;
+}
+
+unsigned heapNow(const ProviderDeps& pd) { return pd.freeHeap ? (unsigned)pd.freeHeap() : 0u; }
 }  // namespace
 
-orch::HeadStepFn resendUnsentOnce(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg,
-                                  orch::HeadStepFn inner, const char* who) {
-  return [pd, cfg, inner, who](bool allowTools, const std::vector<orch::HeadToolResult>& prior,
-                               uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
-    orch::HeadStep sr = inner(allowTools, prior, budgetMs, capReason);
+orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
+  // One pointer: the closure fits std::function's inline storage, so wrapping the
+  // step allocates nothing on the turn path (copying ProviderDeps would copy
+  // ~20 std::function members per turn).
+  return [ctx](bool allowTools, const std::vector<orch::HeadToolResult>& prior,
+               uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
+    const ProviderDeps& pd = *ctx->pd;
+    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+    orch::HeadStep sr = (*ctx->inner)(allowTools, prior, budgetMs, capReason);
     if (sr.ok || !wire::lastExchange().unsent) return sr;
-    const unsigned heapAt = pd.freeHeap ? (unsigned)pd.freeHeap() : 0u;
-    if (!heapRecovered(pd, cfg, wire::lastExchange().lowMem)) {
+    const unsigned heapAt = heapNow(pd);
+    const bool shortAtFailure = memoryShort(pd, *ctx->cfg);
+    if (!heapRecovered(pd, *ctx->cfg, wire::lastExchange().lowMem)) {
       hlog::logf("%s: request not sent and the heap did not recover (heap %u) - no resend",
-                 who, heapAt);
-      sr.error = "low memory: the device could not send the request";
+                 ctx->who, heapAt);
+      if (shortAtFailure || memoryShort(pd, *ctx->cfg)) sr.error = kUnsentLowMem;
       return sr;
     }
     hlog::logf("%s: request not sent (heap %u) - one same-host resend after the heap "
                "recovered (heap %u)",
-               who, heapAt, pd.freeHeap ? (unsigned)pd.freeHeap() : 0u);
-    orch::HeadStep sr2 = inner(allowTools, prior, budgetMs, capReason);
-    if (!sr2.ok && wire::lastExchange().unsent) markUnsent(sr2, pd, cfg);
+               ctx->who, heapAt, heapNow(pd));
+    // The resend runs on what is left of THIS round's budget (F25: a round never
+    // gets a fresh full budget), not a second whole one.
+    orch::HeadStep sr2 =
+        (*ctx->inner)(allowTools, prior, budgetLeft(pd, budgetMs, t0), capReason);
+    // Still unsent: memory when it is short, else the plain network failure it was.
+    if (!sr2.ok && wire::lastExchange().unsent && memoryShort(pd, *ctx->cfg))
+      sr2.error = kUnsentLowMem;
     return sr2;
   };
 }

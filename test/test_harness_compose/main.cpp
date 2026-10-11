@@ -120,6 +120,20 @@ static ComposeInputs cannedInputs() {
 // round cap was stated as "~12" while the default is 8 (and owner-tunable); a
 // mem_write was said to apply AFTER the reply, while applyTurn stores it before
 // delivering (test_harness_apply pins that order). Both prompts (v1 and v2).
+// CUM-523 (prism): a device with no Telegram bot is never told it speaks over
+// Telegram - in v1 or v2.
+static void test_prompt_names_telegram_only_with_a_bot() {
+  for (bool v2 : {false, true}) {
+    ComposeInputs in = cannedInputs();
+    in.promptV2 = v2;
+    in.hw.telegram = false;
+    const std::string p = agent::composeInstructions(in);
+    TEST_ASSERT_TRUE(p.find("over Telegram") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("over the web page/voice") != std::string::npos);
+    TEST_ASSERT_TRUE(p.find("(Telegram text or voice)") == std::string::npos);
+  }
+}
+
 static void test_prompt_states_the_real_round_cap_and_write_timing() {
   for (bool v2 : {false, true}) {
     ComposeInputs in = cannedInputs();
@@ -573,6 +587,7 @@ int main(int, char**) {
   RUN_TEST(test_chat_summary_yields_to_window_by_clipping);
   RUN_TEST(test_identity_uses_devname_and_host);
   RUN_TEST(test_prompt_states_the_real_round_cap_and_write_timing);
+  RUN_TEST(test_prompt_names_telegram_only_with_a_bot);
   RUN_TEST(test_identity_names_the_builds_board);
   RUN_TEST(test_empty_devname_falls_back_to_nimbus);
   RUN_TEST(test_role_line_uses_devname);

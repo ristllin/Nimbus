@@ -56,27 +56,34 @@ struct PickLists {
   bool router = false;               // Cumulo: compare canonical selectors
 };
 
-inline bool allowed(const PickLists& l, const std::string& v) {
-  if (v.empty()) return true;
-  auto same = [&](const std::string& a) {
-    if (a == v) return true;
-    return l.router && !a.empty() &&
-           router_catalog::canonical(a) == router_catalog::canonical(v);
-  };
-  if (same(l.defaultModel)) return true;
-  if (nimbus::orch::modelInChoices(l.choices, v)) return true;
+// The trimmed, non-empty items of a comma-separated list.
+inline std::vector<std::string> csvItems(const std::string& csv) {
+  std::vector<std::string> out;
   size_t start = 0;
-  while (l.router && start <= l.choices.size()) {
-    size_t comma = l.choices.find(',', start);
-    if (comma == std::string::npos) comma = l.choices.size();
-    std::string item = l.choices.substr(start, comma - start);
+  while (start <= csv.size()) {
+    size_t comma = csv.find(',', start);
+    if (comma == std::string::npos) comma = csv.size();
+    const std::string item = csv.substr(start, comma - start);
     const size_t b = item.find_first_not_of(" \t");
-    const size_t e = item.find_last_not_of(" \t");
-    if (b != std::string::npos && same(item.substr(b, e - b + 1))) return true;
+    if (b != std::string::npos) out.push_back(item.substr(b, item.find_last_not_of(" \t") - b + 1));
     start = comma + 1;
   }
+  return out;
+}
+
+// One pick: equal, or - for the router - the same canonical selector.
+inline bool samePick(const PickLists& l, const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  return l.router && !a.empty() && !b.empty() &&
+         router_catalog::canonical(a) == router_catalog::canonical(b);
+}
+
+inline bool allowed(const PickLists& l, const std::string& v) {
+  if (v.empty() || samePick(l, l.defaultModel, v)) return true;
+  for (const std::string& item : csvItems(l.choices))
+    if (samePick(l, item, v)) return true;
   for (const std::string& c : l.catalog)
-    if (same(c)) return true;
+    if (samePick(l, c, v)) return true;
   return false;
 }
 
@@ -84,22 +91,10 @@ inline bool allowed(const PickLists& l, const std::string& v) {
 // compact choice list (bounded), plus the default when it is not already in it.
 inline std::string rejectMessage(const std::string& label, const PickLists& l) {
   std::string names;
-  size_t start = 0;
   bool hasDefault = l.defaultModel.empty();
-  while (start <= l.choices.size()) {
-    size_t comma = l.choices.find(',', start);
-    if (comma == std::string::npos) comma = l.choices.size();
-    std::string item = l.choices.substr(start, comma - start);
-    const size_t b = item.find_first_not_of(" \t");
-    if (b != std::string::npos) {
-      item = item.substr(b, item.find_last_not_of(" \t") - b + 1);
-      if (!names.empty()) names += ", ";
-      names += item;
-      hasDefault = hasDefault || item == l.defaultModel ||
-                   (l.router && router_catalog::canonical(item) ==
-                                    router_catalog::canonical(l.defaultModel));
-    }
-    start = comma + 1;
+  for (const std::string& item : csvItems(l.choices)) {
+    names += (names.empty() ? "" : ", ") + item;
+    hasDefault = hasDefault || samePick(l, item, l.defaultModel);
   }
   if (!hasDefault) names = l.defaultModel + (names.empty() ? "" : ", " + names);
   return "That model isn't available for " + label + ". Choose one of: " +

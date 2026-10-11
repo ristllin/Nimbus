@@ -951,7 +951,7 @@ void begin() {
   // (a passive snapshot; never actuates hardware, so it is safe on the turn task).
   // BLE/battery are Notifier-only / absent in the Orchestrator context this runs in.
   g_reg.add("system.health",
-            "Report the device's live hardware + subsystem health (LED ring, display, mic, "
+            "Report the device's live hardware + subsystem health (LED ring or status LED, display, mic, "
             "speaker, SD card, memory, PSRAM, Wi-Fi, Telegram). Use it to answer questions "
             "about what hardware you have or whether a component is working.",
             [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {

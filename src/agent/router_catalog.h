@@ -22,6 +22,9 @@
 #include <string>
 #include <vector>
 
+#include <algorithm>
+#include <cstring>
+
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/router_route.h"
 
@@ -64,7 +67,104 @@ inline std::string undatedAlias(const std::string& id) {
   return std::string();
 }
 
+// ---- the harvest filter (moved here from provider_verify.cpp so it is tested) ----
+
+// Non-chat FAMILIES that can't run the turn contract (embeddings/audio/image/...),
+// by id substring - provider-independent. provider_verify's harvest uses the same
+// list for every provider.
+inline bool neverChatFamily(const std::string& id) {
+  static const char* const kNever[] = {"embed", "moderation", "audio", "realtime",
+                                       "transcribe", "tts", "whisper", "image",
+                                       "dall-e", "ocr", "voxtral", "davinci",
+                                       "babbage", "instruct", "search-", "chatgpt",
+                                       "research",   // deep-research models can't run chat turns
+                                       "fim",        // fill-in-middle = code completion
+                                       nullptr};
+  for (int i = 0; kNever[i]; ++i)
+    if (id.find(kNever[i]) != std::string::npos) return true;
+  return false;
+}
+
+// A router id the device can run as a chat model. The router lists only ROUTABLE
+// (priced + enabled) models, so other upstreams are curated by it; the openai
+// upstream still drops dated snapshots and non-chat families by name.
+inline bool routerChatModel(const std::string& id) {
+  if (id.size() < 3 || neverChatFamily(id)) return false;
+  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(id);
+  if (r.upstream != "openai") return true;
+  const std::string& m = r.model;
+  if (m.find("-202") != std::string::npos) return false;   // dated snapshot of an alias
+  return m.rfind("gpt-", 0) == 0 || (m.size() > 1 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9');
+}
+
+// Each upstream's CURRENT generation first (rows priced only for back-compat
+// billing - claude-3-*, gpt-4o - come after).
+inline bool routerFlagship(const std::string& id) {
+  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(id);
+  if (r.upstream == "openai" || r.upstream == "zai")
+    return nimbus::orch::isFlagshipFamily(r.upstream, r.model);
+  if (r.upstream == "anthropic") return r.model.rfind("claude-3", 0) != 0;
+  return true;
+}
+
+// Every "id" value in a /router/models body (HTTP headers may precede it; pretty or
+// compact JSON), chat models only, flagships first, each group in the router's
+// order. An id over 64 chars ends the scan (it is not an id list).
+inline std::vector<std::string> harvestIds(const char* body) {
+  std::vector<std::string> flag, rest;
+  const char* p = body;
+  while (p && (p = std::strstr(p, "\"id\":")) != nullptr) {
+    p += 5;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p != '"') continue;
+    const char* e = std::strchr(++p, '"');
+    if (!e || e - p > 64) break;
+    const std::string id(p, (size_t)(e - p));
+    p = e;
+    if (routerChatModel(id)) (routerFlagship(id) ? flag : rest).push_back(id);
+  }
+  flag.insert(flag.end(), rest.begin(), rest.end());
+  return flag;
+}
+
 namespace detail {
+
+// The ordering key of a model id within its upstream: its version numbers
+// ("claude-opus-4-8" -> {4,8}, "gpt-5.6-sol" -> {5,6}, "gpt-6-astra" -> {6}) and
+// whether a variant suffix follows them ("-sol", "-flash", "-mini"). A run of 3+
+// digits is a date/build stamp and a number followed by 'b' is a parameter size
+// ("pixtral-12b"); neither is a version. Keys compare as a total preorder, so the
+// stable sort below is well defined.
+struct VersionKey {
+  std::vector<int> v;
+  bool variant = false;
+};
+inline VersionKey versionKey(const std::string& model) {
+  VersionKey k;
+  size_t lastEnd = 0;
+  for (size_t i = 0; i < model.size();) {
+    if (!isdigit((unsigned char)model[i])) { ++i; continue; }
+    size_t j = i;
+    while (j < model.size() && isdigit((unsigned char)model[j])) ++j;
+    const bool size = j < model.size() && (model[j] == 'b' || model[j] == 'B');
+    if (j - i <= 2 && !size) {
+      k.v.push_back(std::atoi(model.substr(i, j - i).c_str()));
+      lastEnd = j;
+    }
+    i = j;
+  }
+  k.variant = !k.v.empty() && lastEnd < model.size();
+  return k;
+}
+
+// Newer first; on the same version the base model before its variants; otherwise
+// the router's order (the sort is stable).
+inline bool newerFirst(const std::string& a, const std::string& b) {
+  const VersionKey ka = versionKey(nimbus::orch::resolveRouterRoute(a).model);
+  const VersionKey kb = versionKey(nimbus::orch::resolveRouterRoute(b).model);
+  if (ka.v != kb.v) return ka.v > kb.v;
+  return !ka.variant && kb.variant;
+}
 
 inline bool contains(const std::vector<std::string>& v, const std::string& x) {
   for (const std::string& e : v)
@@ -107,6 +207,12 @@ inline Queues byUpstream(const std::vector<std::string>& canon, const std::vecto
     }
     qs.q[q].push_back(i);
   }
+  // The router lists each upstream alphabetically within a size class (oldest
+  // generation first): order each upstream newest-first so a cut list keeps
+  // claude-opus-5 / gpt-6-astra / glm-5.3, not the 4.x / 5.5 / glm-5 rows.
+  for (auto& qv : qs.q)
+    std::stable_sort(qv.begin(), qv.end(),
+                     [&](size_t a, size_t b) { return newerFirst(canon[a], canon[b]); });
   return qs;
 }
 
@@ -128,8 +234,9 @@ inline void roundRobin(const Queues& qs, const std::string& defUp, std::vector<s
 // The keep order over `ids` (already filtered to chat-capable models, in the
 // order to prefer them): indexes into `ids`, deduped, dated twins dropped. The
 // router default first, then round-robin across upstreams in their order of first
-// appearance - so any cap keeps the default and one model per upstream, and a cut
-// list stays a spread of upstreams rather than one upstream's whole family.
+// appearance, each upstream newest-first - so any cap keeps the default and each
+// upstream's newest model, and a cut list stays a spread of upstreams rather than
+// one upstream's whole family.
 inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
                                      const std::string& defaultSel) {
   std::vector<std::string> canon;

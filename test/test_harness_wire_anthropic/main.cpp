@@ -545,10 +545,15 @@ static void test_sub_unsafe_model_name_falls_back() {
 static std::string antMsg(const std::string& text) {
   return "{\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":\"" + text + "\"}]}";
 }
-static const char* kSwedenReport =
-    "# Swedish fire rules for a 3-storey timber-frame home\\n\\nBFS 2024:7 replaces BBR "
-    "section 5 from 2026. A three-storey dwelling is building class Br1: load-bearing "
-    "timber needs R60 and separating walls EI60, with sprinklers allowing reductions...";
+// The report body at a realistic size (the bench file was ~11 KB; a few KB here):
+// JSON-escaped, as the events poll returns it.
+static const std::string kSwedenReport = [] {
+  std::string r = "# Swedish fire rules for a 3-storey timber-frame home\\n\\n";
+  for (int i = 0; i < 12; ++i)
+    r += "BFS 2024:7 replaces BBR section 5 from 2026. A three-storey dwelling is building "
+         "class Br1: load-bearing timber needs R60 and separating walls EI60. ";
+  return r;
+}();
 
 static void test_cum514_artifact_drops_the_narration() {
   FakeProviderDeps d;
@@ -565,7 +570,7 @@ static void test_cum514_artifact_drops_the_narration() {
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
   TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
-  std::string want(kSwedenReport);
+  std::string want = kSwedenReport;
   size_t at;
   while ((at = want.find("\\n")) != std::string::npos) want.replace(at, 2, "\n");
   TEST_ASSERT_EQUAL_STRING(want.c_str(), env.reply);
@@ -599,6 +604,23 @@ static void test_cum514_artifact_keeps_what_follows_the_report() {
   agent::ResultEnvelope oenv{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(opd, "anthropic:sess_1", oenv));
   TEST_ASSERT_EQUAL_STRING("curl 8.22.0, dated Sep 2", oenv.reply);
+}
+
+// prism: the narration rule never drops real work. A report written over two
+// model requests (a long section, a tool call, a longer section) keeps both
+// sections in order; only the short note before them goes.
+static void test_cum514_artifact_keeps_a_long_earlier_section() {
+  const std::string sectionA(1500, 'a');
+  const std::string sectionB(3000, 'b');
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"data\":[" + antMsg("Let me check the sources.") + "," + antMsg(sectionA) + "," +
+      antMsg("Fetching one more page.") + "," + antMsg(sectionB) + "," +
+      "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  auto pd = d.contract();
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
+  TEST_ASSERT_EQUAL_STRING((sectionA + "\n\n" + sectionB).c_str(), env.reply);
 }
 
 static void test_sub_poll_states() {
@@ -678,6 +700,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_poll_states);
   RUN_TEST(test_cum514_artifact_drops_the_narration);
   RUN_TEST(test_cum514_artifact_keeps_what_follows_the_report);
+  RUN_TEST(test_cum514_artifact_keeps_a_long_earlier_section);
   RUN_TEST(test_sub_cancel_sends_interrupt);
   UNITY_END();
   return 0;

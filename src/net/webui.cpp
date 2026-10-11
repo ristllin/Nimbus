@@ -967,8 +967,8 @@ static const char* providerDefaultModel(const char* slug) {
 static bool modelPickAllowed(const nimbus::orch::ProviderSlot& slot, bool orchRole,
                              const String& v, String& err) {
   agent::model_pick::PickLists l;
-  String eff = agent::store::modelChoices(slot.slug);
-  l.choices = (eff.length() ? eff : String(providerFallbackChoices(slot.slug))).c_str();
+  l.choices = nimbus::orch::effectiveModelChoices(
+      slot.slug, std::string(agent::store::modelChoices(slot.slug).c_str()));
   l.defaultModel = providerDefaultModel(slot.slug);
   l.router = !strcmp(slot.slug, "cumulo");
   const std::string pick(v.c_str());
@@ -1205,10 +1205,12 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     if (!blob.length()) continue;
     JsonDocument md(&agent::PsramJsonAllocator::instance());
     if (deserializeJson(md, blob) != DeserializationError::Ok) continue;
+    int more = 0;   // CUM-530: a trim marker on a filtered-out entry moves to the last shown
     for (JsonObjectConst m : md.as<JsonArrayConst>()) {
-      if (!includeUnusable && !(m["usable"] | true)) continue;
+      if (!includeUnusable && !(m["usable"] | true)) { more += m["more"] | 0; continue; }
       marr.add(m);   // deep-copies the stored model object into the response
     }
+    if (more && marr.size()) marr[marr.size() - 1]["more"] = more;
   }
   serializeJson(d, out);
 }
@@ -2299,8 +2301,13 @@ void beginWeb(const WebConfig& wc) {
       if (!prm->isPost()) continue;
       if (applyOrchField(prm->name(), prm->value(), cfgDirty, fieldErr)) touched = true;
     }
-    if (fieldErr.length()) {
-      if (cfgDirty) agent::orchestrator::noteConfigChanged();
+    // A directive edit is consumed by the orchestrator at its next turn-task
+    // drain; a token/allowlist change needs a reboot (the poll task captured
+    // them at begin) - the page surfaces that hint.
+    if (cfgDirty) agent::orchestrator::noteConfigChanged();
+    // A refused model pick answers 400 with the allowed values - unless storage
+    // is full, whose 507 (sendSaved) is the more urgent truth.
+    if (fieldErr.length() && !save.failed()) {
       JsonDocument e;
       e["error"] = fieldErr;
       String body;
@@ -2308,10 +2315,6 @@ void beginWeb(const WebConfig& wc) {
       r->send(400, "application/json", body);
       return;
     }
-    // A directive edit is consumed by the orchestrator at its next turn-task
-    // drain; a token/allowlist change needs a reboot (the poll task captured
-    // them at begin) - the page surfaces that hint.
-    if (cfgDirty) agent::orchestrator::noteConfigChanged();
     if (!touched) {
       r->send(400, "application/json", "{\"error\":\"no known field\"}");
       return;

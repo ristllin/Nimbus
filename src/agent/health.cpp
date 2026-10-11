@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Esp.h>
+#include <solide/board.h>        // board().hasRing - name the LED row truthfully (CUM-514)
 #include <solide/storage.h>
 
 #include "memory_subsystem.h"
@@ -81,8 +82,10 @@ std::string reportJson(const Env& env) {
   Row rows[16];
   int n = 0;
 
-  // LED ring + color panel: HAL begin-result AND not fault-injected.
-  rows[n++] = {"led", "LED ring",
+  // LED ring + color panel: HAL begin-result AND not fault-injected. CUM-514: a
+  // ringless board (the Freenove all-in-one) has one status LED, and calling it an
+  // "LED ring" contradicted the board identity the head now states.
+  rows[n++] = {"led", solide::board().hasRing ? "LED ring" : "Status LED",
                active(Cap::LED) ? kAbsent : (hal.leds ? kOk : kDegraded),
                active(Cap::LED) ? "fault-injected (test)" : (hal.leds ? "up" : "init failed")};
   // Display: "up" from a begin() that succeeded at boot is not proof the

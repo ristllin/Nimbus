@@ -199,6 +199,18 @@ std::string TurnEngine::takePendingMemResults() {
 // The input channel a turn arrived on, keyed by the routing chatId (P6). The
 // reply routes back to the SAME channel by default; the model can reach another
 // via the reply.speak / reply.telegram tools when the loop is on.
+bool isTelegramOnlyTool(const std::string& name) {
+  return name == "reply.telegram" || name == "files.send";
+}
+
+// Where a one-shot's reply lands, in words that read well after "delivered to".
+static const char* deliveryPlace(const std::string& chatId) {
+  if (chatId == "web") return "the web chat";
+  if (chatId == "voice") return "the device screen";
+  if (chatId == "serial") return "the serial console";
+  return "this Telegram chat";
+}
+
 bool TurnEngine::telegramOn() const {
   return !d_.cfg.telegramConfigured || d_.cfg.telegramConfigured();
 }
@@ -400,7 +412,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!telegramOn())
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
-                                 return s.name == "reply.telegram";
+                                 return isTelegramOnlyTool(s.name);
                                }),
                 specs.end());
   // Pick the host BEFORE composing: the context budget is derived from the head
@@ -805,7 +817,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // CUM-544: a TIMEOUT is model latency, not a dead link - the same prompt on the
   // same host times out again (Z.ai: 2 x 120 s, then failover at 268 s). Fail over
   // straight away; a transient network error still gets its one same-host retry.
-  const bool timedOut = !ok && classifyErr(err) == orch::ErrorClass::Timeout;
+  // Only the custom head's explicit token: a provider error that merely mentions
+  // "timeout" (a router 504 text) keeps its same-host retry.
+  auto isTimeout = [](const std::string& e) { return e.rfind("timeout:", 0) == 0; };
+  const bool timedOut = !ok && isTimeout(err);
   if (timedOut && !fabricOn && *loopDispatched == 0)
     hlog::logf("orchestrator: %s did not answer in time - failing over without a retry", host.c_str());
   if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !timedOut) {   // one same-host retry on a fresh conversation
@@ -824,14 +839,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (ok || tried >= 2) break;
       tried++;
       hlog::logf("orchestrator: %s down -> failover to %s", host.c_str(), fb.c_str());
-      // The notice names the real reason: a provider that did not answer in time
-      // is not "unavailable" (CUM-544).
+      // The notice names the real reason for THIS host (err is the host that just
+      // failed - the first host, then each fallback): a provider that did not
+      // answer in time is not "unavailable" (CUM-544).
+      const bool slow = isTimeout(err);
       deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host +
-              (ec == orch::ErrorClass::Timeout ? " did not answer in time - switching to "
-                                               : " is unavailable - switching to ") +
+              (slow ? " did not answer in time - switching to " : " is unavailable - switching to ") +
               fb + " (your recent messages carry over; the provider-side thread restarts).");
       // Record the switch as a model-facing context note for the next turn.
-      pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", ec);
+      pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", classifyErr(err));
       turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry above)
       convId = ""; host = fb; ok = runTurnHost(host, convId);
     }
@@ -1104,15 +1120,20 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
   const std::string fresh = d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_) : std::string();
+  // reply.speak / reply.telegram hints ride only a loop turn; the Telegram one only
+  // when a bot is configured (CUM-523).
+  std::string loopHint;
+  if (loopActiveNow()) {
+    loopHint = " reply.speak additionally speaks a line on the device speaker;";
+    if (telegramOn())
+      loopHint += " reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram"
+                  " chat, never for answering this one.";
+  }
   std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
-    (loopActiveNow() ? std::string(" reply.speak additionally speaks a line on the device speaker;") +
-                           (telegramOn() ? " reply.telegram is ONLY for messaging a DIFFERENT"
-                                           " allowlisted Telegram chat, never for answering this one."
-                                         : "")
-                     : std::string()) +
+    loopHint +
     "\n\n[USER]\n" + text;
   runTurn(inputs, chatId, text);   // text drives associative recall
   unverifiedTurn_ = false;
@@ -1169,10 +1190,13 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
   // so stops the model sending a "separate alert" down another channel - the web
   // reminder's turn did exactly that on a Telegram-less device.
+  // Only where channelOf(target) is true: a Telegram-less device never has a
+  // Telegram target, and "" (no chat) names no channel at all.
+  const bool deviceChannel = target == "web" || target == "voice" || target == "serial";
   const std::string where =
-      (once || ownerReminder)
-          ? "\n\n(Your reply is delivered to " + std::string(channelOf(target)) +
-                " - that IS the reminder. Do not send it to any other channel.)"
+      ((once || ownerReminder) && !target.empty() && (deviceChannel || telegramOn()))
+          ? "\n\n(Your reply is delivered to " + std::string(deliveryPlace(target)) +
+                ". Do not send a second copy over another messaging channel.)"
           : std::string();
   std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() +
                        preamble + prompt + where;

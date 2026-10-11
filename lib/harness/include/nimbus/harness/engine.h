@@ -113,6 +113,10 @@ inline bool turnHeapOk(uint32_t freeInternal, uint32_t largestBlock,
   return freeInternal >= freeFloor && largestBlock >= largestFloor;
 }
 
+// CUM-523: tools that can only deliver over Telegram (reply.telegram, files.send).
+// A device with no Telegram bot is never offered them.
+bool isTelegramOnlyTool(const std::string& name);
+
 class TurnEngine {
  public:
   struct Deps {

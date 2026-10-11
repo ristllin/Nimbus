@@ -136,9 +136,12 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
            "arbitrary content to it. The owner navigates it by tapping.\n";
   if (hw.files)
     out += "- A durable PRIVATE artifact store lives on the SD card (/mem/files/<project>/"
-           "<name>). Save reports/documents there with artifact.save; browse with files.list; "
-           "deliver one to the owner with files.send. Files persist across reboots and are "
-           "never auto-deleted.\n";
+           "<name>). Save reports/documents there with artifact.save; browse with files.list; " +
+           std::string(hw.telegram ? "deliver one to the owner with files.send. "
+                                   : "the owner opens one from the Files list on the device "
+                                     "web page (files.send needs Telegram, which this device "
+                                     "does not have). ") +
+           "Files persist across reboots and are never auto-deleted.\n";
   // CUM-523: with no Telegram bot the channel advice never names Telegram (it used
   // to steer a web-only device's turns toward a reply.telegram that cannot work).
   if (hw.speaker || hw.telegram) {

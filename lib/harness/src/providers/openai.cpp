@@ -455,7 +455,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
 
     JsonDocument resp = makeDoc(pd);
     int code = oaiResponses(pd, key, serializeBody(req), roundMs, resp, filter);
-    if (code <= 0) { out.ok = false; out.error = "network"; return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
     if (code != 200) {
       std::string e = "resp HTTP " + std::to_string(code);
       const char* em = resp["error"]["message"] | "";
@@ -525,8 +525,9 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
   tr.addUser(inputs);
   // CUM-477: a request the device could not finish sending is resent once on the
   // same host after the heap recovers (the Cumulo router head runs this loop).
-  orch::HeadStepFn step =
-      resendUnsentOnce(pd, ht.cfg, oaiLoopStep(pd, instructions, ht, usage, tr), "orchTurn(oai-loop)");
+  const orch::HeadStepFn inner = oaiLoopStep(pd, instructions, ht, usage, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(oai-loop)"};
+  orch::HeadStepFn step = resendUnsentOnce(&resend);
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;
@@ -603,7 +604,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = oaiResponses(pd, key, std::move(body), OAI_TIMEOUT_MS, doc, filter);
-  if (code <= 0)   { err = "network"; return false; }
+  if (code <= 0)   { err = wire::transportError(); return false; }
   if (code != 200) {
     err = "resp HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";

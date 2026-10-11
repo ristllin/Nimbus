@@ -2888,7 +2888,7 @@ function modelSel(id,cur,choices,verified){
     o.value=val;o.textContent=label;if(val===curSel)o.selected=true;parent.appendChild(o);seen[val]=1;};
   // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
   // verify harvest fills it - without this that produced one stray blank <option>.
-  const recIds=(choices||'').split(',').map(x=>x.trim()).filter(Boolean);
+  const recIds=(choices||'').split(',').map(x=>modelCurOf(prov,x.trim())).filter(Boolean);
   const cat=(MODELCAT[prov]||[]).filter(m=>m&&m.id&&(m.roles||[]).indexOf(role)>=0);
   if(cat.length){
     // Recommended is a curated shortcut on top (from choices); the grouped list below
@@ -2925,6 +2925,9 @@ function modelPick(id,val){
      if(r.status!==400)return jok(r).then(()=>{setProvMsg(prov,'');toast('Saved');loadOrch();});
      return r.json().catch(()=>({})).then(j=>{
        setProvMsg(prov,(j&&j.error)||'Couldn\'t save that model. Pick another one.',true);
+       // Let the poll put the select back on the stored model (a focused select
+       // is never re-synced - it would keep showing the refused one).
+       const s=$(id);if(s)s.blur();
        toast('Pick another model');loadOrch();});})
    .catch(e=>failToast(e));
 }

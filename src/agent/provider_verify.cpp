@@ -13,7 +13,6 @@
 
 #include "esp_heap_caps.h"
 #include <atomic>                 // g_pending / probe-queue flags touched by three tasks (CUM-537)
-#include <functional>             // forEachModelId visitor (CUM-530)
 #include <memory>                 // unique_ptr - heap-allocate the connectors Info[] (no big stack array)
 #include <new>                    // std::nothrow
 #include <solide/memory.h>        // NVS side channel for the verify-reason token
@@ -224,8 +223,10 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   // Bound each provider's catalog (GET /api/models frames every provider's in one
   // response). Flagships sort first, so drop the trailing (lowest-priority) models
   // until it fits, and say how many were trimmed.
+  // Once trimming starts, keep room for the "more" marker so the file stays
+  // within the bound.
   int dropped = 0;
-  while (out.length() > bound && cat.size() > 1) {
+  while (out.length() > (dropped ? bound - 16 : bound) && cat.size() > 1) {
     cat.pop_back();
     ++dropped;
     doc.clear();
@@ -255,24 +256,6 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   else
     alogf("verify: %s catalog file write failed - the choice list still drives the dropdown",
           provider.c_str());
-}
-
-// Visit every "id" value in a /models response body (headers may precede it).
-// Tolerates pretty-printed JSON ('"id": "x"', OpenAI) as well as the compact form;
-// ids longer than 64 chars end the scan (no provider id is that long - it is not
-// an id list). Used by the Cumulo router harvest (CUM-530).
-static void forEachModelId(const char* buf, const std::function<void(const String&)>& fn) {
-  const char* p = buf;
-  while ((p = strstr(p, "\"id\":")) != nullptr) {
-    p += 5;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-    if (*p != '"') continue;
-    ++p;
-    const char* e = strchr(p, '"');
-    if (!e || e - p > 64) return;
-    fn(String(std::string(p, (size_t)(e - p)).c_str()));   // copy just the id
-    p = e;
-  }
 }
 
 // One minimal probe call confirming a specific model is usable by this key (the
@@ -358,6 +341,14 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
   return nimbus::orch::probeVerdict(code, std::string(errBody.c_str()));
 }
 
+// The "more": n trim marker a size-bounded catalog carries on its last entry.
+static int trimMarker(JsonArrayConst arr) {
+  return arr.size() ? (arr[arr.size() - 1]["more"] | 0) : 0;
+}
+static void setTrimMarker(JsonArray arr, int more) {
+  if (more && arr.size()) arr[arr.size() - 1]["more"] = more;
+}
+
 // Probe the owner's SELECTED models for a provider (bounded to protect the single
 // TLS slot) and fold the verdicts into the cached catalog. An Unknown (transient)
 // verdict leaves the model as-is for a later retry; a definitive verdict marks the
@@ -391,8 +382,12 @@ static void probeSelectedModels(const String& provider) {
           found->usable ? "usable" : "UNUSABLE");
   }
   if (!changed) return;
+  // The trim marker rides the last entry; ModelInfo has no slot for it, so carry
+  // it across the rebuild (CUM-530: a trimmed list keeps saying so).
+  const int more = trimMarker(md.as<JsonArrayConst>());
   JsonDocument out(&PsramJsonAllocator::instance());
   nimbus::orch::modelsToJson(cat, out.to<JsonArray>(), true);
+  setTrimMarker(out.as<JsonArray>(), more);
   String s;
   serializeJson(out, s);
   if (s.length() <= 3900) store::setModelCatalogJson(provider, s);
@@ -771,17 +766,9 @@ static void runOne() {
           // image/etc.), by id substring - provider-independent. Used both by the
           // Mistral metadata path (as its ONLY name filter - capability flags do the
           // rest) and by the legacy string-scan's `rejected` below.
+          // (The list lives in router_catalog.h, shared with the router harvest.)
           auto neverFamily = [](const String& id) -> bool {
-            static const char* kNever[] = {"embed", "moderation", "audio", "realtime",
-                                           "transcribe", "tts", "whisper", "image",
-                                           "dall-e", "ocr", "voxtral", "davinci",
-                                           "babbage", "instruct", "search-", "chatgpt",
-                                           "research",   // deep-research models can't run chat turns
-                                           "fim",        // fill-in-middle = code completion, not a chat/agentic turn
-                                           nullptr};
-            for (int i = 0; kNever[i]; ++i)
-              if (id.indexOf(kNever[i]) >= 0) return true;
-            return false;
+            return router_catalog::neverChatFamily(std::string(id.c_str()));
           };
           // Per-provider chat-capable filter (the legacy id string-scan path).
           auto rejected = [&](const String& id) -> bool {
@@ -899,23 +886,14 @@ static void runOne() {
                     kept, (int)md["data"].as<JsonArrayConst>().size());
             }
           }
-          // openai's list is ordered OLDEST-first (created ascending) - keeping the
-          // first 8 matches served gpt-5 while cutting gpt-5.5/5.4 (live-caught).
-          // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
-          // and mistral uses -latest aliases, so first-8 is right for them.
           // CUM-530: the Cumulo router list. Every chat-capable router id is
           // collected (flagship families first, then the rest, each in the
           // router's order), then router_catalog keeps the router default, one
           // model per upstream, and a round-robin spread within its count/byte
           // bound - saying so when the router offered more.
           if (provider == "cumulo") {
-            std::vector<std::string> ids, rest;
-            forEachModelId(buf, [&](const String& id) {
-              if (id.length() < 3 || rejected(id)) return;
-              (preferred(id) ? ids : rest).push_back(std::string(id.c_str()));
-            });
-            ids.insert(ids.end(), rest.begin(), rest.end());
-            const router_catalog::Shortlist sl = router_catalog::shortlist(ids, CUMULO_MODEL);
+            const router_catalog::Shortlist sl =
+                router_catalog::shortlist(router_catalog::harvestIds(buf), CUMULO_MODEL);
             csv = sl.csv.c_str();
             kept = (int)sl.kept;
             handled = true;
@@ -925,8 +903,10 @@ static void runOne() {
                     (unsigned)sl.kept, (unsigned)sl.total);
           }
           if (!handled) {   // openai/anthropic (+ Mistral parse-failure fallback): id string-scan
-          // openai only: the router's /router/models already arrives curated and
-          // flagship-first, so cumulo keeps the plain preferred-first two-pass.
+          // openai's list is ordered OLDEST-first (created ascending) - keeping the
+          // first 8 matches served gpt-5 while cutting gpt-5.5/5.4 (live-caught).
+          // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
+          // and mistral uses -latest aliases, so first-8 is right for them.
           const bool keepNewestLast = (provider == "openai");
           String ring[8];
           int ringN = 0;

@@ -49,7 +49,7 @@ constexpr const char* kParamLabels[kParamCount] = {
 // User-facing help: what you'd SEE change / why you'd care, plain language.
 // Panel-visible strings: printable ASCII 32-126 only, <= 108 chars each.
 constexpr const char* kParamDescs[kParamCount] = {
-    /* Posture           */ "Dark: off until a session needs you, then a dim glow. Calm: a soft working glow. Full: an arc per session.",
+    /* Posture           */ "Dark: off; only an error shows, as a dim glow. Calm: a soft working glow. Full: an arc per session.",
     /* RingBrightness    */ "How bright the LED ring glows. Lower is dimmer and uses less power.",
     /* RingFps           */ "How smoothly the LED animations move. Higher looks smoother but works the chip harder.",
     // CUM-514 (L20 docs audit): the Dark/Calm cue is one dim glow over the WHOLE

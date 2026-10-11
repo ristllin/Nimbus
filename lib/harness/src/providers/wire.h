@@ -18,6 +18,33 @@ namespace agent {
 namespace providers {
 namespace wire {
 
+// What the most recent exchange()'s transport failure looked like (CUM-477,
+// CUM-544). The turn path is single-task by design (AGENTS.md: no on-device
+// concurrency), so one static record read right after a failed step is exact;
+// exchange() resets it on entry, so a step that fails before reaching the
+// transport never inherits an older call's flags. `unsent`: the request never
+// fully left the device (short head/body write) - a resend duplicates nothing.
+// `lowMem`: the transport tagged the failure as memory pressure. `noResponse`:
+// the request went out and no status line came back (deadline or peer close).
+struct LastExchange {
+  bool unsent = false;
+  bool lowMem = false;
+  bool noResponse = false;
+};
+inline LastExchange& lastExchange() {
+  static LastExchange s;
+  return s;
+}
+
+// The head/step error for a transport failure (status 0): "low memory: ..." when
+// the transport tagged it (the exchange BEGAN starved - CUM-404 v2's only honest
+// memory signal), so the engine answers with the memory reply instead of a
+// retry, a failover and "check the connection" (CUM-477); else "network".
+inline std::string transportError() {
+  return lastExchange().lowMem ? std::string("low memory: the device could not make the request")
+                               : std::string("network");
+}
+
 // One provider REST exchange through the transport: complete request in, HTTP
 // status out, response body filter-parsed into `doc` (the same bounded-memory
 // ArduinoJson filter reads the pre-split adapters did from the socket - now
@@ -27,33 +54,14 @@ namespace wire {
 // `rateLimitHeaders` (optional): on an error response, the provider's
 // x-ratelimit-* headers land there (see HttpRequest::errHeaders) - the quota
 // window a 429 refused on.
-// What the most recent exchange()'s transport failure looked like (CUM-477). The
-// turn path is single-task by design (AGENTS.md: no on-device concurrency), so one
-// static record read right after a failed step is exact. `unsent`: the request
-// never fully left the device (short head/body write) - a resend duplicates
-// nothing. `lowMem`: the transport tagged the failure as memory pressure.
-struct LastExchange {
-  bool unsent = false;
-  bool lowMem = false;
-};
-inline LastExchange& lastExchange() {
-  static LastExchange s;
-  return s;
-}
-
-// `transportErr` (optional): on a transport failure (status 0) the transport's own
-// reason lands there ("no response", "connect failed", "request body truncated
-// ..."), so a caller can tell a provider that never answered from one it never
-// reached (CUM-544).
 inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                     const char* method, const std::string& path,
                     std::vector<std::pair<std::string, std::string>> headers,
                     std::string body, uint32_t timeoutMs,
                     JsonDocument& doc, const JsonDocument& filter,
-                    HeaderList* rateLimitHeaders = nullptr,
-                    std::string* transportErr = nullptr) {
+                    HeaderList* rateLimitHeaders = nullptr) {
   doc.clear();
-  if (transportErr) transportErr->clear();
+  lastExchange() = LastExchange{};
   if (!pd.http) return 0;
   HttpRequest req;
   req.method = method;
@@ -74,10 +82,13 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
-  if (status == 0 && transportErr) *transportErr = terr;
-  lastExchange().unsent = status == 0 && (terr.find("body truncated") != std::string::npos ||
-                                          terr.find("head write failed") != std::string::npos);
-  lastExchange().lowMem = status == 0 && terr.find("low memory") != std::string::npos;
+  if (status == 0) {
+    LastExchange& last = lastExchange();
+    last.unsent = terr.find("body truncated") != std::string::npos ||
+                  terr.find("head write failed") != std::string::npos;
+    last.lowMem = terr.find("low memory") != std::string::npos;
+    last.noResponse = terr.find("no response") != std::string::npos;
+  }
   if (status == 0 && !terr.empty())
     hlog::logf("provider: transport fail %s%s: %s", host, path.c_str(), terr.c_str());
   // A response that arrived but did not parse leaves `doc` holding whatever was
