@@ -30,6 +30,7 @@ New code lives only in this directory:
 | `src/tg_inbound.h` | routes each getUpdates batch through `tg_access.h`: approved text becomes a turn, anyone else is queued for approval and told so |
 | `src/tg_web.h` | the device's `/api/telegram*` + `/api/tenant` routes over `tg_access.h`, so the web app's Telegram panel manages a hosted instance unchanged |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
+| `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`) and the honest copy for each kind |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -45,6 +46,7 @@ New code lives only in this directory:
 /data/mem/episodic/*.jsonl   episodic append-log day-streams (durable per write)
 /data/mem/scratchpad.txt     the model's working-memory tiers
 /data/mem/memconfig.txt      retrieval/decay knobs
+/data/mem/embed.txt          the embedding provider/model/width saved from the web app
 /data/mem/files/             file artifacts + .index
 /data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
                              RBAC roles + limits, in ONE atomically written file
@@ -120,6 +122,19 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_SUB_PRIORITY` | sub-agent provider order (device `subPrio`); unset = same as `NIMBUSD_PRIORITY` |
 | `NIMBUSD_ORCH_HOST` | pin the head provider (device `orchHost`); unset = the first keyed provider in `NIMBUSD_PRIORITY` |
 | `NIMBUSD_TOOL_LOOP` | `1` (default) head tool loop, `0` single-shot head turns (device `orchLoop`) |
+| `NIMBUSD_EMBEDDINGS` | `1` (default) long-term memory embeddings on, `0` off |
+| `NIMBUSD_EMBED_HOST` / `NIMBUSD_EMBED_MODEL` / `NIMBUSD_EMBED_DIMS` | the default embedding provider (`mistral`, `openai` or `cumulo`), model and width; the web app's embedding settings, once saved, win |
+
+**Embeddings on a one-key instance (CUM-540).** Each embedding call resolves its
+route from the current keys: a direct key for the embedding provider wins; without
+one, the Cumulo key carries the call through the router on the same upstream and
+model (`/router/mistral/v1/embeddings` for `mistral-embed`), so the vectors stay
+comparable if a direct key is added later. The `cumulo` provider is the device's
+router route (`/router/openai/v1/embeddings`). `/api/mem/stats` reports
+`embedAvailable` and the route (`direct`, `router` or `none`) truthfully, and the
+web app's embedding settings work as on the device: `POST /api/mem/embedverify`
+makes one real call and saves nothing, `POST /api/mem/embedcfg` refuses a model
+switch while memories exist unless the owner erases them (`reset=1`).
 
 ## Telegram access (the device model)
 

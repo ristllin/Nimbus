@@ -121,6 +121,10 @@ class NimbusdRig {
     std::string devName = "Nimbus";
     std::string role = "admin";                   // hosted instance is single-owner
     bool        toolLoop = true;
+    // Master switch for long-term memory embeddings (NIMBUSD_EMBEDDINGS). Whether a
+    // call can actually run is decided per call from the CURRENT keys (embedRoute),
+    // so a key set in the app later, or a Cumulo-only instance, embeds without a
+    // restart.
     bool        embeddings = true;
     bool        verboseHttp = false;
     std::string embedModel = "mistral-embed";
@@ -257,6 +261,21 @@ class NimbusdRig {
   uint32_t freeHeapBytes() const { return mem_.freeBytes(); }
   uint32_t heapCapBytes() const { return mem_.capBytes(); }
   bool embeddingsOn() const { return opt_.embeddings; }
+  // Whether an embedding call can run right now (the master switch plus a route
+  // with a key: direct, or through the Cumulo router). Engine thread only.
+  bool embedAvailable() const {
+    EmbedRoute r;
+    return opt_.embeddings && embedRoute(opt_.embedHost, r);
+  }
+  // The live embedding config (engine thread only, like every embed call).
+  std::string embedProvider() const { return opt_.embedHost; }
+  std::string embedModelName() const { return opt_.embedModel; }
+  int embedWidth() const { return opt_.embedDims; }
+  // Whether the stored embed route is the Cumulo router (no direct key).
+  bool embedViaRouter() const {
+    EmbedRoute r;
+    return embedRoute(opt_.embedHost, r) && r.viaRouter;
+  }
   // Persist the whole-file stores after a web mutation (config/vector edit). Same
   // atomic writer flush() uses; safe to call on the engine thread.
   void persist() { flush(); }
@@ -717,6 +736,7 @@ class NimbusdRig {
 
   // ---- memory + tools -------------------------------------------------------
   void buildMemory() {
+    loadEmbedCfg();   // the owner's embed choice from the app (CUM-540), else the env defaults
     vec_.configure(opt_.embedDims);
     vec_.setMaxEntries(opt_.maxVectors);
     // Rehydrate the durable stores (each is tolerant of an absent/torn file).
@@ -820,6 +840,35 @@ class NimbusdRig {
              R"({"type":"object","properties":{}})");
   }
 
+  // Where an embedding call for `provider` goes (CUM-540, device parity with
+  // src/agent/adapters/embeddings.cpp + orch::embedRouteFor): a direct key wins;
+  // without one, the Cumulo key carries the call through the router on the SAME
+  // upstream and model, so the vectors stay comparable if a direct key is added
+  // later ("cumulo" itself is the device's router route, /router/openai/v1). False
+  // when no key can carry it.
+  struct EmbedRoute {
+    std::string host, path, key, dialect;   // dialect: the buildEmbeddingRequest provider
+    bool viaRouter = false;
+  };
+  bool embedRoute(const std::string& provider, EmbedRoute& r) const {
+    const orch::EmbedRoute er = orch::embedRouteFor(provider);
+    if (!er.known) return false;
+    r = EmbedRoute{};
+    r.dialect = provider;
+    if (!er.viaCumuloRouter && !cfg_.providerKey(provider).empty()) {
+      r.host = provider == "mistral" ? "api.mistral.ai" : "api.openai.com";
+      r.path = er.path;
+      r.key = cfg_.providerKey(provider);
+      return true;
+    }
+    if (!hasCumulo()) return false;
+    r.host = kCumuloHost;
+    r.path = er.viaCumuloRouter ? std::string(er.path) : "/router/" + provider + er.path;
+    r.key = cumuloKey();
+    r.viaRouter = true;
+    return true;
+  }
+
   // Text -> quantized embedding, on the honest 2-arg Embedder contract (CUM-435):
   // an empty return writes the REAL cause into `err` using the SAME token vocabulary
   // the device seam emits (src/agent/adapters/embeddings.cpp), so orch::classifyEmbedFail
@@ -827,22 +876,31 @@ class NimbusdRig {
   // fixed guess. `err` is left empty on success.
   std::vector<int8_t> embed(const std::string& text, std::string& err) {
     err.clear();
-    if (!opt_.embeddings)     { err = "no model"; return {}; }
-    const std::string key = cfg_.providerKey(opt_.embedHost);
-    if (key.empty())          { err = "no embeddings key for " + opt_.embedHost; return {}; }
-    if (text.empty())         { err = "empty text"; return {}; }
-    if (opt_.embedModel.empty()) { err = "no model"; return {}; }
-    // One provider decision drives both the host and the body dialect (CUM-469:
-    // the portable builder is provider-aware, so mistral never gets OpenAI fields).
-    const std::string prov = opt_.embedHost == "mistral" ? "mistral" : "openai";
+    if (!opt_.embeddings) { err = "no model"; return {}; }
+    return embedWith(text, err, opt_.embedHost, opt_.embedModel, opt_.embedDims);
+  }
+
+  // One embeddings call with an explicit (possibly candidate) config: the live
+  // embed above and the web app's "verify before save" both run through here.
+  // Engine thread only (it uses the engine's transport).
+ public:
+  std::vector<int8_t> embedWith(const std::string& text, std::string& err, const std::string& provider,
+                                const std::string& model, int dims) {
+    err.clear();
+    EmbedRoute route;
+    if (!embedRoute(provider, route)) { err = "no embeddings key for " + provider; return {}; }
+    if (text.empty())  { err = "empty text"; return {}; }
+    if (model.empty()) { err = "no model"; return {}; }
     agent::HttpRequest req;
     req.method = "POST";
-    req.host = prov == "mistral" ? "api.mistral.ai" : "api.openai.com";
-    req.path = "/v1/embeddings";
+    req.host = route.host;
+    req.path = route.path;
     req.timeoutMs = 30000;
     req.headers.push_back({"Content-Type", "application/json"});
-    req.headers.push_back({"Authorization", "Bearer " + key});
-    req.body = orch::buildEmbeddingRequest(prov, opt_.embedModel, text, opt_.embedDims);
+    req.headers.push_back({"Authorization", "Bearer " + route.key});
+    // One provider decision drives the body dialect (CUM-469: mistral never gets
+    // OpenAI fields; "cumulo" is the OpenAI dialect).
+    req.body = orch::buildEmbeddingRequest(route.dialect, model, text, dims);
     agent::HttpResponse resp;
     std::string httpErr;
     if (!http_->exec(req, resp, httpErr))            { err = "connect failed"; return {}; }
@@ -855,6 +913,60 @@ class NimbusdRig {
       return {};
     }
     return orch::VectorMemory::quantize(f);
+  }
+
+  // The web app's embedding settings save (device parity, web_memory.cpp
+  // handleEmbedCfgPost): refused while memories exist unless `reset` erases them
+  // (vectors of two models cannot be compared); dims 0 means the model's own
+  // width, read with one live call. Persisted on the instance volume. Returns ""
+  // or the refusal sentence; `status` carries the HTTP status. Engine thread only.
+  std::string applyEmbedCfg(const std::string& provider, const std::string& model, int dims,
+                            bool reset, int& status) {
+    status = 400;
+    if (!orch::embedRouteFor(provider).known || provider == "custom")
+      return "Choose Cumulo Nimbus, OpenAI or Mistral.";
+    if (model.empty() || model.size() > 64) return "Choose a model.";
+    if (dims < 0 || dims > 4096) return "Dimensions must be 0 to 4096.";
+    if (!reset && vec_.size() > 0) {
+      status = 409;
+      return "Memories exist for the current model. Save again and choose to erase them to switch.";
+    }
+    if (dims == 0) {
+      std::string err;
+      const auto v = embedWith("nimbus embedding check", err, provider, model, 0);
+      if (v.empty()) return "Couldn't read the model's embedding size (" + err + "). Set Dimensions and try again.";
+      dims = (int)v.size();
+    }
+    if (reset) vec_.flushAll();
+    opt_.embedHost = provider;
+    opt_.embedModel = model;
+    opt_.embedDims = dims;
+    vec_.configure(dims);
+    saveEmbedCfg();
+    flush();
+    status = 200;
+    return std::string();
+  }
+
+ private:
+  std::string embedCfgPath() const { return memDir() + "/embed.txt"; }
+  void loadEmbedCfg() {
+    std::string blob;
+    if (!fsutil::readFile(embedCfgPath(), blob)) return;
+    std::istringstream is(blob);
+    std::string line;
+    while (std::getline(is, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+      if (k == "provider" && orch::embedRouteFor(v).known) opt_.embedHost = v;
+      else if (k == "model" && !v.empty()) opt_.embedModel = v;
+      else if (k == "dims" && std::atoi(v.c_str()) > 0) opt_.embedDims = std::atoi(v.c_str());
+    }
+  }
+  void saveEmbedCfg() {
+    fsutil::writeFileAtomic(embedCfgPath(), "provider=" + opt_.embedHost + "\nmodel=" + opt_.embedModel +
+                                                "\ndims=" + std::to_string(opt_.embedDims) + "\n");
   }
 
   // ---- config / provider deps ----------------------------------------------
@@ -1117,7 +1229,7 @@ class NimbusdRig {
     d.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
     d.recall = [this](const std::string& q, const orch::Principal& who) {
       std::vector<std::string> out;
-      if (!opt_.embeddings) return out;
+      if (!embedAvailable()) return out;
       std::string eerr;
       auto v = embed(q, eerr);
       if (v.empty()) return out;

@@ -64,10 +64,14 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // /v1/conversations, where Studio connectors attach to the head turn itself).
   opt.toolLoop = cfg.getInt("NIMBUSD_TOOL_LOOP", 1) != 0;
   opt.role = "admin";  // a hosted instance is single-owner by construction
-  // Embeddings default to Mistral (cheapest); disabled if no key is present so
-  // the daemon still runs (recall simply returns nothing).
+  // Embeddings default to Mistral (cheapest). Each call resolves its route from the
+  // CURRENT keys (a direct key, else the Cumulo router on the same upstream, CUM-540),
+  // so a keyless instance still runs (recall simply returns nothing) and a key set
+  // in the app later turns memory on without a restart. NIMBUSD_EMBEDDINGS=0 turns
+  // embeddings off entirely. The web app's embedding settings, once saved, win
+  // over these defaults (<data>/mem/embed.txt).
   opt.embedHost = cfg.get("NIMBUSD_EMBED_HOST", "mistral");
-  opt.embeddings = !cfg.providerKey(opt.embedHost).empty();
+  opt.embeddings = cfg.getInt("NIMBUSD_EMBEDDINGS", 1) != 0;
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");
   opt.embedDims = cfg.getInt("NIMBUSD_EMBED_DIMS", 1024);
   opt.maxVectors = cfg.getInt("NIMBUSD_MAX_VECTORS", 5000);
@@ -132,8 +136,12 @@ void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Opt
   const std::string ck = cfg.get(nimbusd::kCumuloEnvKey);
   logLine(std::string("provider cumulo (router): ") +
           (ck.empty() ? "no key" : nimbusd::Config::mask(ck)));
+  const bool direct = !cfg.providerKey(opt.embedHost).empty();
   logLine(std::string("embeddings: ") +
-          (opt.embeddings ? ("on (" + opt.embedHost + ")") : "off (no key)"));
+          (!opt.embeddings ? "off (NIMBUSD_EMBEDDINGS=0)"
+           : direct        ? "on (" + opt.embedHost + ", direct key)"
+           : !ck.empty()   ? "on (" + opt.embedHost + " through the Cumulo router)"
+                           : "waiting for a key (" + opt.embedHost + ")"));
 }
 
 int runDaemon(nimbusd::Config& cfg) {

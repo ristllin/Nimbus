@@ -118,6 +118,8 @@ class WebApi {
     if (base == "/api/mem/vector" && m == "GET")   { out = memVectorGet(path);  return true; }
     if (base == "/api/mem/vector" && m == "POST")  { out = memVectorPost(path); return true; }
     if (base == "/api/mem/episodic" && m == "GET") { out = memEpisodic(path);   return true; }
+    if (base == "/api/mem/embedverify" && m == "POST") { out = embedVerify(body); return true; }
+    if (base == "/api/mem/embedcfg")    { out = m == "POST" ? embedCfgPost(body) : embedCfgGet(); return true; }
     return false;
   }
 
@@ -250,8 +252,7 @@ class WebApi {
   bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
     if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
     if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
-    if (base == "/api/mem/embedverify") { out = okJson(R"({"ok":true,"dims":0})"); return true; }
-    if (base == "/api/mem/embedcfg" || base == "/api/verify" || base == "/api/preview")
+    if (base == "/api/verify" || base == "/api/preview")
       { out = okJson(R"({"ok":true})"); return true; }
     return false;
   }
@@ -785,17 +786,88 @@ class WebApi {
                           rig_->scratchpad().count(orch::Tier::Long);
       d["store"] = "instance disk";
       d["maxVectors"] = rig_->memConfig().maxVectors;
-      const bool embed = rig_->embeddingsOn() && rig_->hostAvailable(rig_->options().embedHost);
-      d["embedAvailable"] = embed;
+      // The truth for THIS instance (CUM-540): a direct key, or the Cumulo router
+      // carrying the same model, can embed right now.
+      d["embedAvailable"] = rig_->embedAvailable();
       d["sdPresent"] = true;    // durable instance volume plays the SD role
       d["flashFull"] = false;
       d["embedLocked"] = rig_->vectors().size() > 0;
       JsonObject e = d["embed"].to<JsonObject>();
-      e["provider"] = rig_->options().embedHost;
-      e["model"] = rig_->options().embedModel;
-      e["dims"] = rig_->options().embedDims;
+      e["provider"] = rig_->embedProvider();
+      e["model"] = rig_->embedModelName();
+      e["dims"] = rig_->embedWidth();
+      e["route"] = !rig_->embedAvailable() ? "none" : rig_->embedViaRouter() ? "router" : "direct";
       std::string out; serializeJson(d, out); return out;
     });
+  }
+
+  // ---- embedding settings (CUM-540, device parity web_memory.cpp) -----------
+  // A live embedding call can take seconds, so these wait longer than a plain read;
+  // they are owner-initiated and rare. Refused at once while a turn holds the engine.
+  ApiResp engineCall(std::function<std::string()> fn, int& status, int waitS) {
+    if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
+    auto fut = eng_->dispatchRead(std::move(fn));
+    if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready) return busy();
+    try {
+      const std::string body = fut.get();
+      return ApiResp{status, "application/json", body};
+    } catch (...) {
+      return busy();
+    }
+  }
+
+  // POST embedverify: one REAL embeddings call with a candidate provider/model/dims,
+  // saving nothing; the page only saves when it works.
+  ApiResp embedVerify(const std::string& body) {
+    const std::string prov = formValue(body, "provider"), model = formValue(body, "model");
+    const int dims = atoiOr(formValue(body, "dims"), 0);
+    auto st = std::make_shared<int>(200);
+    int status = 200;
+    ApiResp r = engineCall([this, prov, model, dims, st]() -> std::string {
+      std::string err;
+      const auto v = rig_->embedWith("nimbus embedding check", err, prov, model, dims);
+      JsonDocument d;
+      d["ok"] = !v.empty();
+      d["dims"] = (int)v.size();
+      if (v.empty()) { d["error"] = err; *st = 400; }
+      std::string out; serializeJson(d, out); return out;
+    }, status, 25);
+    if (r.status == 200) r.status = *st;
+    return r;
+  }
+
+  ApiResp embedCfgPost(const std::string& body) {
+    const std::string prov = formValue(body, "provider"), model = formValue(body, "model");
+    const int dims = atoiOr(formValue(body, "dims"), 0);
+    const bool reset = formValue(body, "reset") == "1";
+    auto st = std::make_shared<int>(200);
+    int status = 200;
+    ApiResp r = engineCall([this, prov, model, dims, reset, st]() -> std::string {
+      const std::string err = rig_->applyEmbedCfg(prov, model, dims, reset, *st);
+      if (!err.empty()) {
+        JsonDocument e;
+        e["ok"] = false;
+        e["error"] = err;
+        std::string out; serializeJson(e, out); return out;
+      }
+      return embedCfgJson();
+    }, status, 25);
+    if (r.status == 200) r.status = *st;
+    return r;
+  }
+
+  ApiResp embedCfgGet() {
+    return engineRead([this] { return embedCfgJson(); });
+  }
+  std::string embedCfgJson() {
+    JsonDocument d;
+    d["ok"] = true;
+    d["provider"] = rig_->embedProvider();
+    d["model"] = rig_->embedModelName();
+    d["dims"] = rig_->embedWidth();
+    d["locked"] = rig_->vectors().size() > 0;
+    d["vectors"] = rig_->vectors().size();
+    std::string out; serializeJson(d, out); return out;
   }
 
   ApiResp memScratch() {
