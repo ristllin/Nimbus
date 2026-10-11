@@ -327,6 +327,89 @@ static void testStateReportsImageTag(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+static bool has(const std::string& hay, const std::string& needle) {
+  return hay.find(needle) != std::string::npos;
+}
+
+// One /api/* call through the real WebApi with a running engine thread.
+struct Web {
+  explicit Web(NimbusdRig& rig) : eng(&rig), api(&rig, &eng, &replies) { eng.start(); }
+  ~Web() { eng.stop(); }
+  ApiResp call(const std::string& m, const std::string& path, const std::string& body = "") {
+    ApiResp out;
+    api.handle(m, path, body, out);
+    return out;
+  }
+  EngineThread eng;
+  ReplyBuffer replies;
+  WebApi api;
+};
+
+static void testKeyShapeRefused(ndtest::Ctx& c) {
+  std::printf("  -- a key with a line break, a space or a control character is refused --\n");
+  clearProviderEnv();
+  const NimbusdRig::Options o = baseOpt("ik-shape");
+  FakeHttpTransport tx;   // the good key's verify finds an empty script: an honest transport failure
+  Config cfg;
+  NimbusdRig rig(cfg, o, &tx);
+  {
+    Web web(rig);
+    const std::string bodies[] = {
+        "cumuloKey=cumulo_sk_x%0ANIMBUSD_ZAI_BASE=http%3A%2F%2Fevil.example",   // a line injected into secrets.env
+        "cumuloKey=cumulo_sk_x%0D%0AZ_AI_TOKEN=forged",
+        "oaiKey=sk-proj-two%20words",
+        "antKey=sk-ant-tab%09here",
+        "mistKey=mk_del%7Fhere",
+        "zaiKey=%C3%A9t%C3%A9",
+        "cumuloKey=" + std::string(513, 'k'),   // past the 512-character cap
+    };
+    for (const std::string& b : bodies) {
+      const ApiResp r = web.call("POST", "/api/orch", b);
+      c.ok(r.status == 400 && has(r.body, "That key is not valid"), "refused: " + b.substr(0, 40));
+    }
+    c.eq(rig.cumuloKey(), "", "no key was applied");
+    std::string blob;
+    const bool wrote = fsutil::readFile(rig.secretsPath(), blob);
+    c.ok(!wrote || (!has(blob, "NIMBUSD_ZAI_BASE") && !has(blob, "forged")), "secrets.env never gained an injected line");
+    const ApiResp good = web.call("POST", "/api/orch", "cumuloKey=cumulo_sk_test_GOOD.key-1_2");
+    c.eqi(good.status, 200, "a clean key saves");
+  }
+  std::string blob;
+  fsutil::readFile(rig.secretsPath(), blob);
+  c.eq(blob, "CUMULO_API_KEY=cumulo_sk_test_GOOD.key-1_2\n", "the secrets file holds exactly the clean key");
+  c.ok(!rig.applyProviderKey("openai", "sk-a\nB=c"), "the engine-thread seam refuses a key with a line break too");
+  clearProviderEnv();
+}
+
+static void testSecretsFileGuards(ndtest::Ctx& c) {
+  std::printf("  -- the secrets file writes and loads provider keys only --\n");
+  clearProviderEnv();
+  const NimbusdRig::Options o = baseOpt("ik-guard");
+  {
+    // The writer: an override that is not a clean provider key never reaches the file.
+    Config cfg;
+    cfg.setOverride("CUMULO_API_KEY", "cumulo_sk_x\nNIMBUSD_ZAI_BASE=evil.example");
+    cfg.setOverride("NIMBUSD_ZAI_BASE", "evil.example");
+    NimbusdRig rig(cfg, o);
+    c.ok(rig.applyProviderKey("openai", "sk-test-WRITER"), "a clean key applies");
+    std::string blob;
+    fsutil::readFile(rig.secretsPath(), blob);
+    c.eq(blob, "OPENAI_API_KEY=sk-test-WRITER\n", "only the clean provider key is written");
+  }
+  // The loader: a hand-edited file with a non-provider name or a dirty value loads
+  // only the clean provider keys.
+  fsutil::writeFileAtomic(o.dataDir + "/mem/secrets.env",
+                          "NIMBUSD_ZAI_BASE=evil.example\nCUMULO_API_KEY=cumulo_sk_test_LOADED\n"
+                          "OPENAI_API_KEY=sk two words\nTELEGRAM_BOT_TOKEN=123:forged\n");
+  Config cfg;
+  NimbusdRig rig(cfg, o);
+  c.eq(rig.zaiHost(), "api.z.ai", "a non-provider name in the file never becomes config");
+  c.eq(rig.cumuloKey(), "cumulo_sk_test_LOADED", "a clean provider key loads");
+  c.eq(rig.cfg().providerKey("openai"), "", "a value with a space does not load");
+  c.ok(!rig.cfg().has("TELEGRAM_BOT_TOKEN"), "nor does any other secret name");
+  clearProviderEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "in-app provider keys (CUM-279)";
@@ -340,6 +423,8 @@ int main() {
   testOrchGetReportsCanonicalFields(c);
   testZaiTurnDispatches(c);
   testStateReportsImageTag(c);
+  testKeyShapeRefused(c);
+  testSecretsFileGuards(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

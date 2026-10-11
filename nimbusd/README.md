@@ -151,7 +151,7 @@ applies or is refused; a page never shows "Saved" over a dropped write.
 | `orchLoop` | the head tool loop |
 | `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
-| keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys, head and sub-agent model picks, the Telegram allowlist |
+| keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (1 to 512 printable characters, no spaces or line breaks; the instance's secrets file holds provider keys only), head and sub-agent model picks, the Telegram allowlist |
 
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
 mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
@@ -251,7 +251,7 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/lastturn`, `/api/log`, `/api/errlog/recent?bytes=` | the last turn's anatomy (prompt, input, raw output, tool rounds), the bounded engine log (1000 lines, key-shaped text masked), and its failure lines (device diagnostics, CUM-546). `/api/orch` usage (`sessIn`/`sessOut`/`turns`, `lastIn`/`lastOut`) and `/api/state` `turnCount` keep counting across a key or model save |
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
-| `POST /api/verify` | verifies a keyed provider in the background the device's way (one unmetered read of its model list; the router's `GET /router/models` for Cumulo): `GET /api/orch` then reports `verify` 1 / 0 / -1 with `vfyReason` (`nocredits`, `router_outdated`), and the harvested list is the model picker's catalog. Also run at start and after a key save; a turn that answered on a head marks it verified. `provider=mistral` also re-runs the workspace probe |
+| `POST /api/verify` | verifies a keyed provider in the background the device's way (one unmetered read of its model list; the router's `GET /router/models` for Cumulo): `GET /api/orch` then reports `verify` 1 / 0 / -1 with `vfyReason` (`nocredits`, `router_outdated`), and the harvested list is the model picker's catalog. Also run at start and after a key save (queued right after the key applies, so it always checks the new key, even when an earlier check was still waiting); a turn that answered on a head marks it verified. `provider=mistral` also re-runs the workspace probe |
 | `GET /api/models` | the harvested model catalog per provider (device shape; Cumulo ids are routable `<upstream>/<model>` selectors grouped by upstream) |
 | `GET /api/telegram`, `POST /api/telegram/{add,approve,deny,remove,rename,role,public}` | the Telegram allowlist + approval queue (device routes and shapes); `public` (open access) is refused on a hosted instance |
 | `GET/POST /api/tenant` | RBAC roles + limits per approved chat (device routes, device guards) |

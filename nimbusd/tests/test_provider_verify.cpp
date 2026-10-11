@@ -12,8 +12,11 @@
 //   (d) POST /api/verify and a key save queue the read through the web layer;
 //   (e) the head's [AVAILABLE MODELS] lists the harvested router models, and a
 //       spawn naming one of them runs on it (Anthropic Messages under
-//       /router/anthropic) instead of being coerced to the configured sub model.
+//       /router/anthropic) instead of being coerced to the configured sub model;
+//   (f) a key saved while a check for that provider is still queued (the boot
+//       verify, the workspace probe) is checked with the NEW key after it applies.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
@@ -295,6 +298,80 @@ static void testMemberSpawnRunsTheSubModel(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// Run every task queued so far on the engine thread (the queue is FIFO).
+static void drain(EngineThread& eng) {
+  std::atomic<bool> done{false};
+  eng.postWork([&done] { done.store(true); });
+  for (int i = 0; i < 500 && !done.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+static bool bearerIs(const agent::HttpRequest& r, const std::string& key) {
+  for (const auto& h : r.headers)
+    if (h.first == "Authorization" && h.second == "Bearer " + key) return true;
+  return false;
+}
+
+static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
+  std::printf("  -- (f) a key saved while its check is queued is checked with the new key --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(routerModels(200, kCatalog));   // the boot verify (old key)
+    tx.script.push_back(routerModels(200, kCatalog));   // the new key's verify
+    Config cfg;
+    NimbusdRig rig(cfg, opts("pv-f"), &tx);
+    Web web(rig);
+    web.eng.postWork([] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); });   // work ahead
+    c.ok(rig.claimVerify("cumulo"), "the boot path claims the verify");
+    web.eng.postWork([&rig] { rig.verifyProvider("cumulo"); });   // the boot verify, still queued
+    c.eqi(web.call("POST", "/api/orch", "cumuloKey=cumulo_sk_test_NEWKEY").status, 200, "the key save answers 200");
+    drain(web.eng);
+    web.eng.stop();
+    c.eqi((long)tx.seen.size(), 2, "the new key got its own verify after it applied");
+    if (tx.seen.size() == 2) c.ok(bearerIs(tx.seen[1], "cumulo_sk_test_NEWKEY"), "with the NEW key");
+    c.eqi(rig.verifyState("cumulo").verify, 1, "the badge reads verified");
+    c.ok(!rig.verifyState("cumulo").models.empty(), "and the picker has the router catalog");
+  }
+  clearEnv();
+  setenv("MISTRAL_API_KEY", "mk_test_OLDKEY", 1);
+  {
+    // The sibling check: the Mistral workspace probe of an enabled Studio connector.
+    FakeHttpTransport tx;
+    auto probe = [] {
+      Exchange e;
+      e.expectHost = "api.mistral.ai";
+      e.expectPathContains = "/v1/connectors";
+      e.body = "{\"items\":[{\"id\":\"u-gcal\",\"name\":\"google_calendar\",\"active\":true}]}";
+      return e;
+    };
+    tx.script.push_back(probe());
+    tx.script.push_back(probe());
+    Exchange models;
+    models.expectHost = "api.mistral.ai";
+    models.expectPathContains = "/v1/models";
+    models.body = "{\"data\":[{\"id\":\"mistral-large-latest\"}]}";
+    tx.script.push_back(models);
+    Config cfg;
+    NimbusdRig rig(cfg, opts("pv-f2"), &tx);
+    rig.connectors().replaceBlob(
+        "[{\"name\":\"gcal\",\"type\":\"gcal\",\"prov\":\"mistral\",\"kind\":\"connector\","
+        "\"cid\":\"connector_googlecalendar\",\"en\":1}]");
+    Web web(rig);
+    web.eng.postWork([] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); });
+    c.ok(rig.claimProbe(), "the boot path claims the workspace probe");
+    web.eng.postWork([&rig] { rig.refreshMistralWorkspace(); });   // still queued
+    c.eqi(web.call("POST", "/api/orch", "mistKey=mk_test_NEWKEY").status, 200, "the Mistral key save answers 200");
+    drain(web.eng);
+    web.eng.stop();
+    c.ok(tx.seen.size() >= 2 && bearerIs(tx.seen[1], "mk_test_NEWKEY") &&
+             tx.seen[1].path.find("/v1/connectors") != std::string::npos,
+         "the workspace is probed again with the NEW key");
+    c.ok(rig.workspaceProbed(), "so the Studio connector's answer is the new key's");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== provider verify + router model catalog (CUM-545, offline) ===\n");
@@ -305,6 +382,7 @@ int main() {
   testSpawnOnHarvestedModel(c);
   testZaiBaseIsABareHost(c);
   testMemberSpawnRunsTheSubModel(c);
+  testKeySavedWhileVerifyQueued(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

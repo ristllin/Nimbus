@@ -884,6 +884,9 @@ class WebApi {
     for (const auto* list : {&w.models, &w.subs})
       for (const auto& m : *list)
         if (!NimbusdRig::validSelector(m.second)) return "That model name is not valid.";
+    for (const auto& k : w.keys)
+      if (!k.second.empty() && !NimbusdRig::validKeyValue(k.second))
+        return "That key is not valid. Paste the whole key, with no spaces or line breaks.";
     w.clearConv = formValue(body, "clearConv") == "1";
     w.clearMem = formValue(body, "clearMem") == "1";
     w.convReset = present(names, "convReset");
@@ -895,8 +898,7 @@ class WebApi {
   // Returns "" when the settings could not be stored (the caller answers 500;
   // nothing in the settings changed - SettingsStore applies only what persists).
   std::string applyOrchWrites(const OrchWrites& w) {
-    int applied = 0;
-    for (const auto& k : w.keys) applied += rig_->applyProviderKey(k.first, k.second) ? 1 : 0;
+    int applied = applyKeyWrites(w.keys);
     for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
     for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
     if (!w.settings.empty()) {
@@ -919,6 +921,20 @@ class WebApi {
     return out;
   }
 
+  // Apply the key writes (engine thread) and queue the checks each new key needs
+  // HERE, right after the apply, so they always read the key just applied: a check
+  // queued earlier (the boot verify, a probe) runs before this apply and releases
+  // its claim as it starts, so the claim is free again (CUM-545: a key saved while
+  // a verify was still queued used to be checked with the OLD key, then never again).
+  int applyKeyWrites(const Writes& keys) {
+    int applied = 0;
+    for (const auto& k : keys) applied += rig_->applyProviderKey(k.first, k.second) ? 1 : 0;
+    reprobeOnMistralKey(keys);
+    for (const auto& k : keys)
+      if (!k.second.empty()) kickVerify(k.first);
+    return applied;
+  }
+
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
@@ -935,9 +951,6 @@ class WebApi {
       return okJson(tg ? R"({"ok":true,"applied":1})" : R"({"ok":true,"applied":0})");
     }
     auto fut = eng_->dispatchRead([this, w]() { return applyOrchWrites(w); });
-    reprobeOnMistralKey(w.keys);
-    for (const auto& k : w.keys)   // a new key is verified right after it applies (CUM-545)
-      if (!k.second.empty()) kickVerify(k.first);
     // The write is QUEUED on the engine thread and will apply: past the wait (a
     // background probe ahead of it), say so rather than a 503 that reads as failed
     // and invites a duplicate save.

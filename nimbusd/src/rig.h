@@ -690,7 +690,7 @@ class NimbusdRig {
   // mid-turn - the web layer dispatches it there and refuses mid-turn with a 503).
   bool applyProviderKey(const std::string& host, const std::string& key) {
     const std::string env = keyEnvFor(host);
-    if (env.empty()) return false;
+    if (env.empty() || (!key.empty() && !validKeyValue(key))) return false;
     cfg_.setOverride(env, key);   // authoritative; an empty key erases the override
     saveSecrets();
     verify_.forget(host);         // a new key starts unverified; the web layer re-verifies it
@@ -792,6 +792,24 @@ class NimbusdRig {
     }
     return h == kCumuloSlug ? cumuloModel() : modelFor(h);
   }
+  // The shape of a provider key value: 1 to kKeyMax printable ASCII characters, no
+  // spaces or control characters. Keys are stored one KEY=VALUE per line in the
+  // secrets file, so a line break in a pasted value would add lines of the poster's
+  // choosing that the next start reads as config.
+  static constexpr size_t kKeyMax = 512;
+  static bool validKeyValue(const std::string& v) {
+    if (v.empty() || v.size() > kKeyMax) return false;
+    for (unsigned char ch : v)
+      if (ch < 0x21 || ch > 0x7e) return false;
+    return true;
+  }
+  // The env names the secrets file may hold: the in-app provider keys, nothing else.
+  static bool secretsName(const std::string& name) {
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
+      if (name == Config::providerEnvName(nimbus::orch::kProviderSlots[i].slug)) return true;
+    return false;
+  }
+
   // A bounded selector token ("glm-4.5-flash", "zai/glm-4.5-flash"); "" clears.
   static bool validSelector(const std::string& model) {
     if (model.size() > 64) return false;
@@ -957,7 +975,9 @@ class NimbusdRig {
   // ---- in-app provider keys: durable secrets (CUM-279) ----------------------
   // Load previously-set in-app keys as config OVERRIDES (authoritative), so a key
   // the owner set in the UI persists across restarts. Tolerant of an absent/torn
-  // file (KEY=VALUE lines, trailing CR/LF trimmed). Never logs a value.
+  // file (KEY=VALUE lines, trailing CR/LF trimmed). Only provider key names with a
+  // key-shaped value load: the file is never a general config channel. Never logs
+  // a value.
   void loadSecrets() {
     std::string blob;
     if (!fsutil::readFile(secretsPath(), blob)) return;
@@ -968,7 +988,12 @@ class NimbusdRig {
       if (eq == std::string::npos) continue;
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      if (!k.empty() && !v.empty()) cfg_.setOverride(k, v);
+      if (!secretsName(k) || !validKeyValue(v)) {
+        std::fprintf(stderr, "[nimbusd] secrets: ignored a line that is not a provider key (%s)\n",
+                     secretsName(k) ? k.c_str() : "unknown name");
+        continue;
+      }
+      cfg_.setOverride(k, v);
     }
   }
   // Persist the current in-app overrides to the owner-only secrets file. Written
@@ -978,7 +1003,16 @@ class NimbusdRig {
   // value.
   void saveSecrets() {
     std::string blob;
-    for (const auto& kv : cfg_.overrides()) blob += kv.first + "=" + kv.second + "\n";
+    for (const auto& kv : cfg_.overrides()) {
+      // The writer refuses what the loader would misread (the second guard behind
+      // the web layer's shape check): one clean KEY=VALUE line per provider key.
+      if (!secretsName(kv.first) || !validKeyValue(kv.second)) {
+        std::fprintf(stderr, "[nimbusd] secrets: not writing %s (not a clean provider key)\n",
+                     secretsName(kv.first) ? kv.first.c_str() : "an unknown name");
+        continue;
+      }
+      blob += kv.first + "=" + kv.second + "\n";
+    }
     const std::string tmp = secretsPath() + ".tmp";
     const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
     if (fd < 0) return;
