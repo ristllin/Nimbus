@@ -3,8 +3,8 @@
 Release notes for recent Nimbus firmware releases, newest first. Every release
 ships as a signed image on the public
 [nimbus-fw-releases](https://github.com/ristllin/nimbus-fw-releases)
-repository; a device on Orchestrator mode sees it on its daily check and
-installs on your say-so ([how updates work](ota.md)).
+repository; a device in Orchestrator mode sees it on its daily check and
+installs it when you approve ([how updates work](ota.md)).
 
 ## v4.5.9 - Honest saves, reminders that reach you, helpers that start
 
@@ -16,7 +16,7 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
 - **Research helpers finish properly.** Anthropic helpers failed to start; results that arrived minutes apart were dumped raw instead of summarized; helper notes and summaries now stay in the chat history. The Z.ai host answers in its own words instead of a formatting apology, "remember these facts" writes every fact before it says so, a previous code answer reaches the next turn whole, and a Tavily key enables web search immediately.
 - **Web chat replies pair with their own message.** A failover notice or a late summary can no longer appear under the next question; /clear starts a genuinely fresh conversation.
 - **Memory search finds partial matches**, best match first, instead of requiring every word.
-- **Installer and build.** The command-line installer keeps its board and screen checks on every Python, picks the right Freenove image for the panel size, and the firmware's web-server libraries are pinned so a tagged release rebuilds to the same bytes. Docs for a first install on Linux, macOS and Windows were corrected end to end.
+- **Installer and build.** The command-line installer keeps its board and screen checks on every Python, picks the right Freenove image for the screen size, and the firmware's web-server libraries are pinned so a tagged release rebuilds to the same bytes. Docs for a first install on Linux, macOS and Windows were corrected end to end.
 
 ## v4.5.8 - A factory reset you can trust, voice that starts now, memory on Mistral
 
@@ -27,7 +27,7 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
   card - with the full list on screen before you confirm. The erase refuses honestly
   if the card holding your memories is not readable ("Reseat the SD card and try
   again"), and the confirm button needs a second deliberate tap, so a bounced touch
-  can never wipe the device.
+  can never erase the device.
 - **Voice and web messages start right away.** A hold-to-talk or web message used to
   wait for the next Telegram check, up to half a minute. It now starts at once, and
   Telegram messages still arrive as before.
@@ -146,15 +146,15 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
   an authenticated request larger than 64 KB is refused rather than silently cut
   short. Normal MCP clients see no change.
 - **Power off and wake, and button feedback, are now checked repeatedly on real
-  hardware.** A bench soak drives many power-off then wake cycles and confirms the
-  device comes back each time with its settings intact, and a bench check confirms
+  hardware.** A repeated hardware test drives many power-off then wake cycles and confirms the
+  device comes back each time with its settings intact, and a second hardware check confirms
   every actionable menu control gives its sound and ring cue and then the ring goes
   dark. No change to how the device behaves; these close gaps in what was proven.
 
 ## v4.5.4 - Touch works again on classic boards, honest display check, cloud-sync headroom
 
-- **Touch responds again on the classic (TFT + ring) board.** v4.5.0 introduced a
-  background display-health poll that shares the panel bus with the resistive
+- **Touch responds again on the classic (display + ring) board.** v4.5.0 introduced a
+  background display-health poll that shares the display bus with the resistive
   touch controller on the classic board and could pin touch. That poll is now
   off on those boards; the display and touch reads the board shipped with in
   v4.4.6 are back as they were.
@@ -170,7 +170,7 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
   leaves the scarce internal memory almost untouched. A release check keeps
   those buffers from creeping back.
 - **An unseeded Freenove is offered no update rather than the wrong size.** The
-  three Freenove panel sizes cannot be told apart by the hardware, so a board
+  three Freenove screen sizes cannot be told apart by the hardware, so a board
   with no seeded type no longer guesses 2.8" and is skipped by typed updates
   until it is set up with the installer.
 - Installer and bench tooling: `tools/board_info.py` reads a board over USB
@@ -180,7 +180,7 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
 
 ## v4.4.9 to v4.5.3 - stability under low memory, honest routines and storage
 
-Cut without notes; the user-visible changes across those four releases:
+These releases shipped without separate notes. The user-visible changes across them:
 
 - Turns wait honestly under low memory instead of failing over to a different
   provider, and routines that could not run say why.
@@ -219,26 +219,25 @@ Cut without notes; the user-visible changes across those four releases:
   listed too. Pasting a Cumulo key into a direct provider now says to use the Cumulo
   Nimbus slot instead of a bare "key rejected."
 - Removed the deprecated e-ink display and rotary-knob code paths. Both shipping
-  configurations are color touch panels (the Solide S3 with its LED ring, and the
+  configurations are color touchscreens (the Solide S3 with its LED ring, and the
   Freenove CYD all-in-one). E-ink devices stay on their final firmware (typed OTA
   delivers them no further updates).
-- **Multi-resolution touch UI.** The color renderer is now parameterized by panel
-  resolution, so one code path draws every supported size. The 2.8" panel is
+- **Multi-resolution touch UI.** The color renderer is now parameterized by screen
+  resolution, so one code path draws every supported size. The 2.8" screen is
   unchanged (its goldens are byte-identical). Two larger Freenove sizes are added
   as their own firmware images and typed updates: **3.5" (480×320, `freenove-35`)**
   and **4.0" (480×480, `freenove-40`)**. Both are **host-verified only** - proven
   by per-size golden framebuffers and a linking firmware image, not yet run on a
-  physical panel (the panel driver gains the larger geometry when hardware is in
+  physical screen (the display driver gains the larger geometry when hardware is in
   hand). See [Supported panels](hardware/all-in-one-cyd.md#supported-panels).
 
 ## v4.1.0 - Orchestrator self-knowledge, honest capacity, real file delivery
 
 Everything the assistant tells you about itself is now generated from live,
 validated device state - never hardcoded prose - and it can finally produce and
-deliver real files. Origin: the owner's two-sub-agent task ("collect AI news →
-PDF → Telegram; find financial news → email draft") failed end-to-end on
-v4.0.0; every feature below traces to a root cause of that failure or to the
-owner's follow-up review of the composed prompt.
+deliver real files. Every change below traces to a two-sub-agent task (collect
+news, build a PDF, deliver it over Telegram, then draft an email) that failed end
+to end on v4.0.0, or to the review of the composed prompt that followed.
 
 ### 1. Dynamic, validated self-knowledge (the composed prompt)
 - The provider/connector catalog is **generated from the live device state**:
@@ -261,7 +260,7 @@ owner's follow-up review of the composed prompt.
   ("sign-in FAILED - tell the owner") and a missing credential ("NO credential
   - not usable"), fed from the one credential choke point. Enabled is a
   checkbox; these markers are evidence.
-- **Capability validation is a user setting** (Assistant → Models → Tool
+- **Capability validation is a user setting** (Assistant > Models > Tool
   use): off / passive (default) / active. Passive marks a provider verified
   when a real turn succeeds; active adds a periodic free re-verify
   (`GET /v1/models`, ~$0) so a revoked key is caught.
@@ -298,8 +297,8 @@ The prompt now states the true model: N startable this turn, running
 successive waves - *not a hard total limit*. A deeper pending queue (12,
 decoupled from the concurrency window) accepts a full wave up front. A >60 s
 Mistral sub now reports an honest timeout instead of the false "couldn't
-start". ⛔ Sub-agent concurrency was investigated and permanently rejected -
-hardware-proven unstable (see the development guide).
+start". Sub-agent concurrency was investigated and permanently rejected: it is
+unstable on this hardware (see the development guide).
 
 ### 6. Provider file delivery - the PDF path
 A sub-agent that generates a file in its provider sandbox now has that file
@@ -330,8 +329,8 @@ photo-aware `files.send`.
 
 ### Main architectural decisions
 
-1. **⛔ No on-device sub-agent concurrency - permanent.** Investigated at the
-   owner's prompt; hardware evidence (the tlsSlots=2 A/B failure, recurring
+1. **No on-device sub-agent concurrency, permanently.** Investigated on
+   request; hardware evidence (the tlsSlots=2 A/B failure, recurring
    poll-task stack overflows, a watchdog reset from contending work, ~22.5 KB
    largest contiguous internal SRAM) closed it. Serial single-task/single-TLS
    is the design, not a limitation to fix. Throughput improves only via honest

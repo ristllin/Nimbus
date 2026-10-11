@@ -1,10 +1,11 @@
 # Config and NVS Reference
 
-How Nimbus persists device state: the `solide` NVS namespace and every key it
-holds, the write-only credential fields, the model-vs-human credential-gate
-**rails**, the sparse-override `Config` model and its SD-backed blob (plus the
-no-SD non-persistence limitation, **F10**), and the **set-once** embed-config
-invariant.
+Every setting the device persists, where it lives, and what its default is. Use this
+page when you need an exact NVS key, want to know which fields are write-only, or are
+diagnosing a save that did not land. It covers the `solide` NVS namespace and every key
+in it, the credential-gate rails (what the model may and may not change), the
+sparse-override `Config` blob on the SD card and its no-SD limitation (F10), and the
+set-once embedding config.
 
 Related: [Tools & Commands](../tools-and-commands.md) (provisioning over
 serial), [Orchestrator World](../orchestrator-world.md)
@@ -39,7 +40,7 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 
 | Value | Where | Why |
 |---|---|---|
-| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (~120 entries, nearly a whole page), so four or five verified providers exhausted NVS by themselves (bench unit A: 309 of 494 used entries) |
+| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (~120 entries, nearly a whole page), so four or five verified providers could exhaust NVS by themselves |
 | Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids) and read on every turn |
 | Usage ledger `usgLedger` | NVS | Owner spend history, bounded (12 providers, 48 tags) |
 
@@ -49,7 +50,7 @@ that, `nvs.low` reads `true`. It is a guide, not a guarantee: a string must fit 
 one 126-entry page, so free entries scattered across pages can still refuse a big
 value. The 507 contract below is what stays exact.
 
-Before CUM-479 the catalogs lived in NVS as `mcat_<provider>`. On the first boot of a
+Earlier builds kept the catalogs in NVS as `mcat_<provider>`. On the first boot of a
 build with the move (in either mode), each legacy catalog is copied to its file when
 the file is missing (Orchestrator mode, where flash storage is mounted) and **every
 legacy `mcat_` key is erased**. An erase only frees entries, so this heals a device
@@ -72,7 +73,7 @@ The web page shows that sentence as its failure toast (and in the setup wizard's
 status lines), never "Saved". Side effects wait for the write: a provider key that did
 not store is not verified (that would check the old key), a mode switch that did not
 store does not restart the device, and `/api/mem/embedcfg` stores the new embedding
-config **before** it erases any memories, so a reset never wipes memories for a config
+config **before** it erases any memories, so a reset never erases memories for a config
 that was not saved. A Wi-Fi list change or a budget edit that does not store is
 undone in memory too, so the device never shows a change it will lose at the next
 restart. Values the Save buttons post unchanged (a field still at its default, never
@@ -112,7 +113,7 @@ marks **write-only** fields the UI never reads back into itself.
 | Key | Type | Default | Holds | Read back? |
 |---|---|---|---|---|
 | `nimbus_mode` | int | `Notifier` (0) | Operating mode: `0=Notifier`, `1=Orchestrator` (`Mode` enum). Any value other than 1 resolves to Notifier. | Yes |
-| `nimbus_ble` | int (bool) | `1` (on) | Bluetooth advertising enable (Notifier-mode nsn transport). Runtime-applied, no reboot. | Yes |
+| `nimbus_ble` | int (bool) | `1` (on) | Bluetooth advertising enable (Notifier-mode nsn transport). Applies live, no restart. | Yes |
 | `nimbus_name` | string | `""` (auto) | Device name / identity; `""` = auto-derived. Sanitized on write. | Yes |
 | `nimbus_cfg` | **SD blob** | absent | Versioned profile-override `Config` (see below). **Not an NVS key** - rides `putBlob`/`getBlob` on SD. | - |
 
@@ -199,7 +200,7 @@ security model.
 
 ### OTA / update engine (`src/agent/store.cpp`)
 
-Persisted across the install reboot so the device can validate a fresh image and
+Persisted across the install restart so the device can validate a fresh image and
 roll back if it fails. See [OTA updates](../ota.md).
 
 | Key | Type | Default | Holds | Read back? |
@@ -212,7 +213,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `usbCfm` | bool | `false` | Require an on-device confirm before a USB-cable update. | Yes |
 | `otaNotif` | string | `""` | Last version already Telegram-notified (no re-nag). | Yes (internal) |
 | `otaType` | string | board-derived | Typed-OTA device slug (`nimbus-tft`, `freenove-28`, ...) so a board is only offered a matching image. | Yes |
-| `otaNotes` | string | `""` | `"ver\|notes"` carried across the install reboot. | Yes (internal) |
+| `otaNotes` | string | `""` | `"ver\|notes"` carried across the install restart. | Yes (internal) |
 
 ### Voice, LED, and misc (`src/agent/store.cpp`)
 
@@ -235,7 +236,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `codeSbx` | bool | `false` | Code sandbox toggle (Assistant > Tools). | Yes |
 | `orchPromptV2` | bool | `false` | Use the simplified v2 system prompt (A/B flag). | Yes |
 | `fetchPol` | int | `1` (ask) | Download trust for `files.fetch`: `0` off / `1` ask per link / `2` scan then keep / `3` full trust (Assistant > Safety > Downloads). | Yes |
-| `onbrded` | bool | `false` | First-run onboarding completed. Plain NVS bool (survives a reboot with no SD), not the profile override blob. | Yes |
+| `onbrded` | bool | `false` | First-run onboarding completed. Plain NVS bool (survives a restart with no SD), not the profile override blob. | Yes |
 | `scrModel` | string | `"tft"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value and the default: a fresh or NVS-erased device comes up on the color panel silently. Only an **explicit** stored `"eink"` (a real e-ink migration) boots the unsupported-display notice - an absent key never does. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
@@ -344,7 +345,7 @@ poll loop debounces consecutive getUpdates auth failures (401/403) into a "token
 rejected" verdict (`agent::telegram::authRejected()`, RAM-only, not persisted).
 When it trips, `/api/orch` reports `tgAuthFail = true` and overrides `tgVerify` to
 `0` so a token revoked after it was verified (a key rotation) stops reading
-"verified" (CUM-308). A successful poll clears it; a 409 conflict or a transient
+"verified". A successful poll clears it; a 409 conflict or a transient
 network error never trips it.
 
 A companion key `vrs_<provider>` (e.g. `vrs_anthropic` = 13 chars, written by
@@ -449,11 +450,11 @@ caller.
 ### F10 - no-SD non-persistence limitation
 
 Because the `Config` override blob rides the **SD** half of `solide::memory`
-(`putBlob`), **with no SD card the overrides do not survive reboot** - only
+(`putBlob`), **with no SD card the overrides do not survive a restart**. Only
 `nimbus_mode` (an NVS int) and the other NVS keys persist. This is a known open
-bug (**F10**), flagged in P4 review and not yet fixed. The device
-`test_persist_across_reboot` / `R_F10_persist_no_sd` test encodes the fix and
-**xfails** until the blob is moved to a store that survives without SD.
+limitation (**F10**). The hardware test `R_F10_persist_no_sd` encodes the intended
+behavior and is marked as an expected failure until the blob moves to a store that
+survives without an SD card.
 
 See [Tools & Commands](../tools-and-commands.md) for provisioning over
 serial (`[env:provision]` or the test console `WIFI` / `MODE` commands).
@@ -471,7 +472,7 @@ is `POST /api/mem/embedcfg` (`src/net/web_memory.cpp`): while locked, a change i
 refused with **HTTP 409** unless `reset=1` is passed. The route stores the new config
 **first**; if it does not land (a full NVS) it puts the old config back and answers
 **HTTP 507** `storage_full` without touching the memories. `reset=1` is the
-destructive path - after the config is stored it **flushes and wipes the VDB**
+destructive path: after the config is stored it **flushes and erases the vector store**
 (`flushAll` + `persistVectors`), clears `embLocked`, and reconfigures the engine to the
 new dims. A change can therefore never silently strand incomparable vectors; the web
 UI must warn and require the explicit reset. `provider` must be `openai`,
@@ -479,4 +480,4 @@ UI must warn and require the explicit reset. `provider` must be `openai`,
 resolved to the model's own width with one live embeddings call before it is
 stored (HTTP 400 with the cause if that call fails), so the vector store never
 holds a width no model fills. At boot an empty vector store takes the configured
-width, so a wiped store never keeps the width of the config it replaced.
+width, so an erased store never keeps the width of the config it replaced.

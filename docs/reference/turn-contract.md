@@ -1,10 +1,11 @@
 <!-- audience: dev -->
 # Orchestrator Turn Contract
 
-The **turn contract** is the JSON shape every provider-hosted LLM must return
-for one Orchestrator turn. A provider's raw response string is parsed and
-validated by the portable, Arduino-free `parseTurn()` into a typed `Turn` so the
-device turn-loop never pokes a raw `JsonDocument`.
+The **turn contract** is the JSON shape every provider-hosted model must return
+for one Orchestrator turn. Use this page when you write or debug a provider
+adapter, a prompt, or a test that feeds `parseTurn()`. The portable, Arduino-free
+`parseTurn()` parses and validates a provider's raw response string into a typed
+`Turn`, so the device turn loop never reads a raw `JsonDocument`.
 
 - Authoritative doc-comment: `lib/core/include/nimbus/orch/turn.h`
 - Wire schema advertised to providers: `lib/core/include/nimbus/orch/orch_schema.h` (`ORCH_SCHEMA_BODY`)
@@ -24,8 +25,7 @@ and how a turn flows through the live turn loop -
 Anthropic `tool_use`). But `parseTurn()` is defensive: on Anthropic the wire
 schema is advisory (its strict-grammar budget rejects a contract this size), so
 the parser is the real enforcement layer, and it never throws away a good reply
-over one slightly-off item. Keep the schema string and the parser in lockstep -
-do **not** diverge them.
+over one slightly-off item. Keep the schema string and the parser in lockstep.
 
 The split that matters at the parser is between `reply` and everything else:
 
@@ -40,7 +40,7 @@ The split that matters at the parser is between `reply` and everything else:
 - **Every array** (`device`, `spawn`, `await`, `mem_write`, `mem_query`,
   `session_ops`) is **tolerant**: a present-but-not-array value reads as
   **empty**, and a malformed *item* is **dropped silently**, never a whole-turn
-  error. One slightly-off item can't cost you a good reply.
+  error.
 
 The wire schema still lists `memory` and `ask` under `required`: OpenAI strict
 mode demands every property be listed there. Only the parser is lenient.
@@ -57,7 +57,7 @@ mode demands every property be listed there. Only the parser is lenient.
   "mem_write":   [ { "content","importance","permanent","ttl" } ],
   "mem_query":   [ "search string", ... ],
   "session_ops": [ { "op","id","task","provider","model","skill","name","project","attach" } ],
-  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; persists across turns + reboots */,
+  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; persists across turns and restarts */,
 
   "spawn":   [ { "provider","model","skill","task","category","note","name" } ],
   "await":   [ "job-tag string", ... ]
@@ -72,9 +72,9 @@ surface), but the parser still accepts them so an old client keeps working.
 
 ## String fields
 
-`reply` is the one REQUIRED string: missing (or `null`) rejects with
-`MissingField`, mistyped (e.g. an array) rejects with `WrongType`. `memory` and
-`ask` are optional: absent, `null`, or mistyped all read as `""`.
+`reply` is the one required string: missing (or `null`) rejects with
+`MissingField`, mistyped (for example an array) rejects with `WrongType`. `memory`
+and `ask` are optional: absent, `null`, or mistyped all read as `""`.
 
 | Field | Meaning | Cap on parse |
 |---|---|---|
@@ -82,7 +82,7 @@ surface), but the parser still accepts them so an old client keeps working.
 | `memory` | Updated model running memory (`""` if unchanged) | `kMemModelMax` = **1200** bytes, UTF-8-safe |
 | `ask` | Question to the user (`""` if none) | **uncapped** - user-facing; the device budgets it elsewhere |
 
-`reply` names an action as done only when a tool RESULT confirms it. Delivery is
+`reply` names an action as done only when a tool result confirms it. Delivery is
 itself a tool result: writing "sent to your Telegram" or "reading it aloud now"
 does not send or speak anything - the matching tool (file send, voice readout)
 does, and only its success result lets the reply claim it happened.
@@ -91,13 +91,13 @@ does, and only its success result lets the reply claim it happened.
 `Turn` is self-consistent with the memory module's cap even before
 `OrchMemory::setModel` runs; the definitive cap + truncation flag live there.
 
-## Optional arrays - all absent ⇒ empty
+## Optional arrays
 
-Every array key is OPTIONAL and TOLERANT: **absent ⇒ empty vector**, and
-**present-but-not-an-array ⇒ also empty** (`as<JsonArrayConst>()` on a non-array
-iterates zero times - it is not an error). This is what makes a bare
-`{"reply":"hi"}` a fully valid turn (all arrays empty, `memory`/`ask` `""`), and
-lets a new turn omit `spawn`/`await`/`device` and drive the run through the
+Every array key is optional and tolerant: absent reads as an empty vector, and
+present-but-not-an-array also reads as empty (`as<JsonArrayConst>()` on a
+non-array iterates zero times; it is not an error). A bare `{"reply":"hi"}` is
+therefore a fully valid turn (all arrays empty, `memory`/`ask` `""`), and a new
+turn can omit `spawn`/`await`/`device` and drive the run through the
 live-integration arrays instead.
 
 ### `device[]` (tolerant per-item)
@@ -109,7 +109,7 @@ element is carried as the **raw serialized JSON slice** of the element (compact,
 action, and the executor lives on the device. Keeping the raw slice here
 decouples the turn parser from that module.
 
-### `spawn[]` (tolerant per-item, RETIRED from the wire)
+### `spawn[]` (tolerant per-item, retired from the wire)
 
 Retired from the wire schema (spawning moved to `session_ops`) but kept fully
 parseable, so an old client still works. Per item:
@@ -135,7 +135,7 @@ parseable, so an old client still works. Per item:
 - The accepted `spawn` vector is **truncated to `kAgentMaxJobs` = 6** items;
   extras are dropped (the journal ceiling refuses them device-side).
 
-### `await[]` (tolerant per-item, RETIRED from the wire)
+### `await[]` (tolerant per-item, retired from the wire)
 
 Retired from the wire (`session.poll` superseded it) but still parsed. A
 **non-string** entry is **dropped**; entries are **trimmed** of surrounding
@@ -216,20 +216,17 @@ fan-out runs over successive waves - start a wave now, and when they finish an
 automatic turn lets you spawn the next, so a run can work through dozens. So a
 turn emits one spawn op per unit of work **up to what `[SPAWN CAPACITY]` allows**,
 and carries a larger fan-out across waves rather than silently dropping work.
-(The old `[SPAWN SLOTS] N of 6 free` line read as a hard ceiling and made the
-head under-spawn; `[SPAWN CAPACITY]` states the honest throughput model.)
 
 ## Persistent scratchpad (response object)
 
 `scratchpad` is a top-level, **nullable object** response field - the model's own
 working memory, rewritten as it works. Unlike `memory` (which lives for the
-**next turn only**), the scratchpad **persists across turns and across reboots**
+**next turn only**), the scratchpad **persists across turns and across restarts**
 (`memory::scratchpad()`, serialized to the `orchmem` NVS namespace via
-`persistScratchpad()`). It is a **free write** - returning it costs no tool round.
+`persistScratchpad()`). It is a **free write**: returning it costs no tool round.
 
-New in v4.1.0: the scratchpad used to be reachable only through the admin-only
-`memory.scratchpad` tool; now the model's normal write path is this response
-field. That tool remains as an admin read/edit path - see
+This response field is the model's normal write path. The admin-only
+`memory.scratchpad` tool remains as a read/edit path for operators; see
 [tool-catalog.md](tool-catalog.md).
 
 Shape (every key `required`-but-nullable in the strict wire schema):
@@ -249,7 +246,7 @@ Update semantics (parser step 10, `orch_turn.cpp`):
   **unchanged**.
 - A **non-null `active`** string sets the active line, capped to
   `kScratchActiveMax` = **240** bytes, UTF-8-safe.
-- A **non-null tier array** (`short` / `mid` / `long`) **REPLACES** that tier; a
+- A **non-null tier array** (`short` / `mid` / `long`) **replaces** that tier; a
   **null** tier leaves it unchanged. Each tier keeps at most `kScratchTierItems`
   = **8** items, each capped to `kScratchItemMax` = **160** bytes UTF-8-safe;
   blank / whitespace-only items are dropped.
@@ -260,7 +257,7 @@ then tick items off on later turns so the thread survives across turns.
 
 ## ParseError codes
 
-`parseTurn` returns `true` iff the turn is contract-valid (`err.code == Ok`). On
+`parseTurn` returns `true` only when the turn is contract-valid (`err.code == Ok`). On
 failure `out` is left **cleared** (no half-parsed state leaks) and `err` carries
 the reason; `err.detail` names the offending field/reason for logs + tests.
 

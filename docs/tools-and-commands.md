@@ -14,15 +14,14 @@ Two audiences, one page:
 
 All host scripts live in `tools/` and run with `python3` from the repository
 root unless noted. Most need only the standard library. For a one-line-per-tool
-quick index grouped by audience - and which scripts are load-bearing for CI or
-the build - see [`tools/README.md`](../tools/README.md).
+index grouped by audience, including which scripts CI and the build depend on,
+see [`tools/README.md`](../tools/README.md).
 
-These are workshop tools for people building or servicing boards - a device
+These are workshop tools for people building or servicing boards. A device
 owner configures connectors, credentials, and everything else from the device's
-web page (Assistant → Connectors), never from this repository.
+web page (Assistant, then Connectors), never from this repository.
 
-All scripts live in `tools/` and run with `python3` from the repository root
-unless noted. Most need only the standard library.
+## User tools
 
 ### Device setup & recovery
 
@@ -30,7 +29,7 @@ unless noted. Most need only the standard library.
 |---|---|---|
 | `setup_device.py` | Guarded firmware installer over USB. Discovers connected boards by their USB descriptor, auto-detects the board family (Nimbus board or Freenove CYD) from USB plus the saved NVS, and confirms with an identify-and-confirm prompt before writing anything. On a new board it seeds the display, orientation, operating mode, and typed-OTA slug, then installs the production image built for the board and its display size (`--size 28|35|40` on a Freenove; a configured board keeps its saved size). It re-runs itself with PlatformIO's own Python when the `python3` that launched it has no pyserial, and stops with the one fix to run if no such Python exists, so the board checks never switch off. It refuses a wrong-variant flash two ways: it probes for the Freenove capacitive touch controller and refuses a Solide image on a Freenove regardless of the flag, and after flashing it reads the board's boot screen-health signal and fails loudly if the display did not come up. Never erases NVS or factory-resets a configured device. | Installing firmware on any board, especially a factory-fresh one, which can only be flashed over USB. |
 | `usb_reset.py` | Programmatic unbrick for a wedged ESP32-S3 USB-serial port: a libusb bus-level reset, protocol-equivalent to unplugging and replugging the cable. Supports `--skip`, `--serial`, and `--all` to pick the right board when more than one is attached. Runs on macOS and Linux and needs libusb and pyusb; install steps are in [Recovery](quick-start/flash.md#recovery). If something is missing it says what to install and exits 2. | Serial has gone silent and esptool cannot connect. Or simply unplug and replug the cable. |
-| `tcal_wizard.py` | Touch calibration wizard for the TFT variant: prompts you to press each of four corners, samples the raw ADC, derives the axis-swap and orientation flags, applies the result over the `TCAL` console command, and verifies it. Needs an `[env:test]`-family build. | A touch panel where taps land away from where you aimed - which is otherwise indistinguishable from broken touch. |
+| `tcal_wizard.py` | Touch calibration wizard for the TFT variant: prompts you to press each of four corners, samples the raw ADC, derives the axis-swap and orientation flags, applies the result over the `TCAL` console command, and verifies it. Needs an `[env:test]`-family build. | A touch screen where taps land away from where you aimed, which otherwise looks like broken touch. |
 | `connectors_setup.py` | Pushes connector credentials from the repository-root `.env` (gitignored) to a board via the token-gated `POST /api/connectors` upsert. Idempotent; never prints a secret. Signs in with the `X-Nimbus-Token` header (never a token in the URL, which the device ignores); the board comes from `NIMBUS_BOARD1_IP` / `NIMBUS_BOARD1_TOKEN` in `.env`, or `--ip` / `--token`. `--list` shows the board's current connector state. | Configuring or re-configuring a board's external connectors after a flash or NVS change. |
 
 ### Telegram owner commands
@@ -46,11 +45,11 @@ confused.
 |---|---|
 | `/help` (or `/start`) | Greet and list the owner commands. Available to anyone who can chat with the bot. |
 | `/update` | Install a pending firmware update. |
-| `/remind <when> <what>` | Set a one-time reminder - e.g. `/remind 30m take the cake out`. `<when>` is a span (`45s`, `30m`, `2h`, `1d`; a bare number is minutes), 2 minutes to 7 days. At that time the assistant delivers the reminder in this chat. Cancel with `/loop deny <id>`. |
+| `/remind <when> <what>` | Set a one-time reminder. `<when>` is a span (`45s`, `30m`, `2h`, `1d`; a bare number is minutes) from 2 minutes to 7 days. At that time the assistant delivers the reminder in this chat. Cancel with `/loop deny <id>`. Example: `/remind 30m take the cake out`. |
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
-| `/clear` | Forget the current conversation and its active task, and start fresh: the next reply sees none of the earlier messages, summary or working notes of this chat. Long-term memory, files and the chat history are kept (the web chat shows a "Conversation cleared." divider). Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action for the web chat (Memory, then Clear conversation). |
+| `/clear` | Forget the current conversation and its active task and start fresh: the next reply sees none of this chat's earlier messages, summary, or working notes. Long-term memory, files, and the chat history are kept. A bare `/clear` explains what will happen and asks; `/clear yes` does it. The web page has the same action for the web chat (Memory, then "Clear conversation"). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
 | `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 | `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |
@@ -58,9 +57,9 @@ confused.
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time
 wakeup the assistant sets for itself (a single follow-up turn, minutes to days
-out): it fires once without approval, shows up in /loops like any routine, and
-can be cancelled the same way. Managing people, keys, and other settings stays
-web-only - see the web control surface, not the bot.
+out): it fires once without approval, shows up in `/loops` like any routine, and
+can be cancelled the same way. Managing people, keys, and other settings is
+web-only; the bot has no commands for them.
 
 Wake-ups: ask me first. If you would rather approve even those one-time wakeups,
 turn on "Wake-ups: ask me first" from the web control surface. With it on, a
@@ -72,8 +71,8 @@ wakeup list, arm state, and approval mode) and `POST /api/wakeups` with
 
 ## Contributor tools
 
-Everything below is for working on the firmware or driving a bench board -
-everyday use of a device needs none of it.
+Everything below is for working on the firmware or driving a board on the
+bench. Everyday use of a device needs none of it.
 
 ### Rendering & golden-image review
 
@@ -107,13 +106,12 @@ everyday use of a device needs none of it.
 | `nsn_send.py` | End-to-end hardware validation: encodes nsn frames with the real broker encoder from `nsnotify` and sends them to a device over Bluetooth, optionally reading back the device's debug status echo over serial. Needs `bleak` with a working macOS Bluetooth entitlement. | Proving the full broker→Bluetooth→device pipeline against real hardware. |
 | `ring_check.py` | Quick LED-ring smoke test over serial: drives `LEDTEST` through the console and reports whether the ring data path acknowledges. Errors are console/port problems, not ring verdicts. Needs an `[env:test]`-family build. | A fast eyes-on check that the ring is being driven at all. |
 | `backup_device.py` | Pulls a board's user data - artifact-store files, the full vector DB (embeddings included), scratchpad, and state/usage snapshots - over the token-gated web API into a dated folder. Read-only (GETs only); provider keys and tokens are deliberately never exported. | Backing up a device whose SD card is a single point of failure, before a reflash or as routine insurance. |
-| `restore_device.py` | The write side of `backup_device.py`: pushes a dated backup folder back onto a device (vectors, episodic history, scratchpad, artifact files) over the token-gated web API, idempotently, with `--dry-run` and a MANIFEST check. Vectors restore by id (safe to re-run); episodic appends and refuses a non-empty store unless `--force`. Secrets are never imported. | Restoring a device after a wipe or a failed card, or seeding a scratch device from a known-good backup. |
+| `restore_device.py` | The write side of `backup_device.py`: pushes a dated backup folder back onto a device (vectors, episodic history, scratchpad, artifact files) over the token-gated web API, idempotently, with `--dry-run` and a MANIFEST check. Vectors restore by id (safe to re-run); episodic appends and refuses a non-empty store unless `--force`. Secrets are never imported. | Restoring a device after an erase or a failed SD card, or seeding a spare device from a known-good backup. |
 | `build_all.sh` | Compiles every build environment and flag path in one command - a compile-only gate that proves each target still links. Never uploads or opens a serial port. | Before a release, or after touching flag-gated code that only some environments compile. |
 
-Board-specific bench scripts (a live connector-QA harness, the quality
-benchmark, panic-capture, and the connector-shape grid) live in the private
-`ops/` tree, not the public repo - they name bench boards and burn real provider
-credits, so they are maintainer-only.
+Board-specific test scripts (the live connector QA harness, the quality
+benchmark, panic capture, and the connector-shape grid) are not in the public
+repository: they reference specific boards and spend real provider credits.
 
 ### Tool subprojects
 
@@ -158,18 +156,17 @@ Firmware variants are PlatformIO environments in `platformio.ini`. Build with
 | `provision` | Standalone serial network diagnostic (not first-time setup - it has no setup network or web UI). The Nimbus board on its native USB port uses this variant when `setup_device.py` seeds a new board. It also answers a `PROBE` command that scans the Freenove capacitive touch bus (I2C 0x38), so the installer can tell a Freenove from a Nimbus board and refuse the wrong image before flashing. |
 | `provision-uart` | UART-console variant `setup_device.py` uses to seed a Nimbus board that is on its UART bridge port; the Freenove uses `provision-cyd`. The installer picks the variant that matches the board and the port on its own, so its serial reply always reaches the same cable. |
 
-The `-uart` variants exist because the DevKit has two USB-C ports: the native
-USB port and the UART port. A factory-fresh board can only be flashed through
-the UART port, and on some boards the native USB console drops bytes - the
-`-uart` environments put the console on the UART port so one cable can both
-flash and report.
+The `-uart` variants exist because the DevKit has two USB-C ports: native USB
+and UART. A factory-fresh board can only be flashed through the UART port, and
+on some boards the native USB console drops bytes. The `-uart` environments put
+the console on the UART port so one cable can both flash and report.
 
 ### Console commands
 
 Builds in the `[env:test]` family compile in a serial command console
-(`src/test_console.cpp`). It exists so the HIL harness - and you, at a bench -
-can drive and observe the device without a camera or a finger. Production
-builds do not include it.
+(`src/test_console.cpp`). It lets the HIL harness, or a person at a bench, drive
+and observe the device without a camera or a finger. Production builds do not
+include it.
 
 Open the port carefully: opening a serial session resets the board, so hold one
 session open rather than reconnecting per command (see `tests/hil/device.py`).
@@ -317,11 +314,11 @@ maintainer-internal.
 | Command | What it does |
 |---|---|
 | `CLOUD?` | Cloud-relay status as JSON (opt-in, pairing state, pairing code and claim URL when pairing). |
-| `CLOUDPAIR` | Opt in and start pairing; poll `CLOUD?` for the code (also shown on the panel), then claim it at app.cumulo-nimbus.ai. |
+| `CLOUDPAIR` | Opt in and start pairing; poll `CLOUD?` for the code (also shown on the screen), then claim it at `app.cumulo-nimbus.ai`. |
 | `CLOUDOFF` | Unpair and disable cloud access. |
 | `CLOUDLOOP [path]` | Loopback self-test of the tunnel replay path against a local route (default `/api/state`); no cloud dependency. |
 
 For the pairing flow and security model, see [cloud-relay.md](cloud-relay.md).
 
-The device also answers a few fixed owner commands over Telegram - see
+The device also answers a few fixed owner commands over Telegram. See
 [Telegram owner commands](#telegram-owner-commands) under User tools above.

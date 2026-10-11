@@ -1,9 +1,11 @@
 <!-- audience: dev -->
 # On-device tool catalog
 
-The Nimbus Orchestrator exposes a single, authoritative set of tools through an
-on-device MCP (Model Context Protocol) server. This is the reference for every
-tool: its namespace, name, one-line purpose, arguments, and current state.
+The Orchestrator exposes one set of tools through an on-device MCP (Model
+Context Protocol) server. This page is the reference for every tool: its
+namespace, name, purpose, arguments, and current state. Use it when you need to
+know what the model can call, what each call takes, and which calls are
+admin-only or gated on a key.
 
 **Single source of truth.** Every tool is registered on one `ToolRegistry`
 (`lib/core/include/nimbus/orch/tool_registry.h`): `name` + one-line description
@@ -19,7 +21,9 @@ never drift:
 - **External MCP clients** - a JSON-RPC 2.0 client on the LAN reaches the same
   registry over `POST /mcp` (`handleMcp()` → `ToolRegistry::handleRpc()`,
   `src/agent/memory_subsystem.cpp`). Supported methods: `tools/list`,
-  `tools/call`, `ping`. LAN MCP auth is an open item.
+  `tools/call`, `ping`. The endpoint requires the device token in the
+  `X-Nimbus-Token` header; a token-authenticated client acts in its own
+  namespace with user rights, never as the admin (see [MCP](../mcp.md)).
 
 Both paths execute through the same `dispatch()`, so the capability manifest, the
 prompt's tool list, and what actually runs are the same thing. Architecture:
@@ -34,14 +38,14 @@ them, and the protected-config denylist blocks them by name. Only the human web
 UI may change them. Specifically off-limits to the model:
 
 - provider keys (`oaiKey` / `antKey` / `mistralKey` / `tavilyKey`), `tgToken`,
-  `tgAllow` - SECRETS, blocked entirely; changing them needs owner confirmation
-  via the web UI / Telegram.
+  `tgAllow` - secrets, blocked entirely; only the owner changes them, in the
+  web UI or over Telegram.
 - provider `priority` / routing (`providerPriority` and its aliases),
-  `orchHost` / `fabric` - letting the model rewrite these would let it redirect
-  its own brain / sub-agent backends.
+  `orchHost` / `fabric` - a model that could rewrite these could redirect its
+  own head or its sub-agent providers.
 - `allowlist` - the device's own auth gate; the model must not grant itself
   access.
-- the Local Loops blob (`loops`) and the budget/governor knobs - only the
+- the routines blob (`loops`) and the budget/governor knobs - only the
   dedicated `loop.*` tools and the human web UI write these.
 
 The denial reports only a policy tag (`protected-BLOCKED`), **never** the blocked
@@ -64,15 +68,13 @@ role, and quota. Tools marked *admin-only* require an admin conversation (the
 turns; the rest are open to any approved conversation. Hiding a tool from the
 advertisement is never the boundary - each handler re-checks the caller.
 
-**Advertisement is principal-scoped (v4.1.0).** An admin-only tool is not
-listed in a member's or guest's prompt: previously every conversation was told
-the assistant could call `skill.save`, `tenant.set_role` or `loop.create`, so it
-offered a capability the handler then refused (a wasted round and a confusing
-walk-back) and described the owner's admin surface to a guest. The registry
-carries an `adminOnly` mark (`ToolRegistry::setAdminOnly`) and the turn engine
-advertises `toolSpecsFor(who)`, restoring *advertised == callable*. This is
-**visibility only** - the handler check is unchanged, so a hidden tool reached
-another way (for example over `/mcp`) still refuses exactly as before.
+**Advertisement is principal-scoped.** An admin-only tool is not listed in a
+member's or guest's prompt, so the model is never offered a capability the
+handler would refuse, and a guest is not shown the owner's admin surface. The
+registry carries an `adminOnly` mark (`ToolRegistry::setAdminOnly`) and the turn
+engine advertises `toolSpecsFor(who)`. This is **visibility only**: the handler
+check is unchanged, so a hidden tool reached another way (for example over
+`/mcp`) still refuses.
 
 ## `memory.*` - associative & working memory
 
@@ -102,9 +104,9 @@ Notes:
   evict the admin's memory), so only an admin may `update`; viewing is open to
   any approved conversation.
 - `memory.scratchpad` is injected into every turn's prompt, so it is admin-only
-  until it is per-person. **Since v4.1.0 the model's normal way to write the
-  scratchpad is the top-level `scratchpad` response field of the turn contract**
-  - a free write (no tool round), persistent across turns and reboots (see
+  until it is per-person. The model's normal way to write the scratchpad is the
+  top-level `scratchpad` response field of the turn contract: a free write (no
+  tool round) that persists across turns and restarts (see
   [turn-contract.md](turn-contract.md)). This tool remains as the admin
   read/edit path (`view` / `set_active` / `add` / `replace` / `clear`), also
   reachable over `/mcp`.
@@ -150,9 +152,8 @@ its injected `SessionHandlers` handler; a missing handler makes the tool report
 Notes:
 - Sub-agents are started **only** via the spawn op; there is no separate
   `spawn[]` turn-contract array. The turn wire (`session_ops[]`) offers only the
-  `spawn` and `terminate` ops - `tell`/`poll`/`list` are not on it (they were
-  advertised before and hard-failed at runtime), though they remain registry
-  tools reachable over `/mcp`.
+  `spawn` and `terminate` ops; `tell`, `poll` and `list` are not on it, though
+  they remain registry tools reachable over `/mcp`.
 - The turn's `session_ops[]` **spawn** op accepts, beyond `task`/`provider`/`model`:
   - `skill` - an **approved** skill capsule id, injected into the sub-agent's brief.
   - `name` - a short display name (also the sub-agent's saved-document name).
@@ -247,23 +248,19 @@ Notes:
 - `files.send` is a turn-output tool - refused from the LAN `/mcp` path. A file
   another person owns is invisible: the refusal deliberately matches "not found"
   so its existence is not disclosed.
-- `image.generate` uses OpenAI **gpt-image-1** (it returns base64 natively;
-  dall-e-* need a `response_format` param the current API rejects, or hand back a URL
-  a one-TLS-slot device can't re-fetch). The whole image decodes into **PSRAM**
-  during the download, then lands on SD under a brief lock - it never holds the
-  internal heap, and never the SD bus for the long TLS wait (which would either trip
-  the main-loop watchdog or race other SD users; both were seen live). It is a
-  **turn-only** tool (like `files.send`): it blocks ~1-2 min, so it runs on the turn
-  task, never the AsyncTCP `/mcp` path. `quality` defaults to **low** (fast, small,
-  cheap); SD- and OpenAI-key-gated. The saved PNG is a first-class `Image` artifact:
+- `image.generate` uses OpenAI **gpt-image-1**, which returns the image inline
+  (the dall-e models hand back a URL the device cannot re-fetch). The image is
+  decoded in PSRAM during the download and written to the SD card under a brief
+  lock, so a long download never holds the internal heap or the SD bus. It is a
+  **turn-only** tool (like `files.send`): a call can take 1-2 minutes, so it
+  runs on the turn task and is refused on the `/mcp` path. `quality` defaults to
+  **low** (fast, small, cheap). It needs an SD card and an OpenAI key. The saved PNG is a first-class `Image` artifact:
   `files.list`/`files.search`/`files.send` all see it, and `files.send` delivers it
   as an inline Telegram photo. `describe:true` adds a vision read-back (a second
-  provider call). **Hardware-verified** end-to-end on-device (a 1024×1024
-  gpt-image-1 PNG generated → saved intact → delivered). **Out of scope on this
-  device:** embedding images into PDFs (no PDF engine), email attachments (no
-  outbound email send exists), and in-turn multimodal vision beyond describe-once - a
-  generated or received image enters the conversation as a *description*, not pixels,
-  for the heap reasons in `image_vision.h`.
+  provider call). Not available on this device: embedding images into PDFs,
+  email attachments, and multimodal vision beyond that one read-back; a
+  generated or received image enters the conversation as a description, not as
+  pixels.
 
 ## `results.*` - recent tool outputs
 
@@ -292,7 +289,7 @@ that fire as future Orchestrator turns.
 | `loop.cancel` | Cancel (delete) a routine by its id. | `id` (**required**) | live (admin-only) |
 
 Notes:
-- All three require an admin conversation. `loop.create` is additionally refused
+- All four require an admin conversation. `loop.create` is additionally refused
   in scheduled turns (a routine cannot create routines).
 - A routine the model creates is saved **pending** the owner's approval and
   cannot fire until approved (web Routines tab, or Telegram `/loop approve <id>`).
