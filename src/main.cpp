@@ -118,7 +118,7 @@
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
 #include "sys/config_nvs.h"
 #include "test_console.h"  // no-op inline stubs unless -DNIMBUS_TEST (env:test)
-#include <WiFi.h>  // WiFi.onEvent - SFX link sounds (all builds) + F9 reason (test)
+#include <WiFi.h>  // WiFi.status()/localIP() radio reads + the F8/F9 event echo (test)
 
 using namespace nimbus;
 
@@ -602,8 +602,8 @@ static String firstRunCalGateConsole(int op);
 static bool          g_unsupportedScreenModel = false;
 // White-screen mitigation (TFT): drop the SoftAP once STA is up so its continuous
 // beacon TX stops disturbing the panel; bring it BACK when STA goes down so the
-// setup/recovery web page is always reachable when Wi-Fi is unavailable. Set in
-// the WiFi events, drained in loop() (the mode change must run on the main task).
+// setup/recovery web page is always reachable when Wi-Fi is unavailable. Set by the
+// network-up hook (net::link, CUM-504), drained later in loop() by the AP reconcile.
 static volatile bool g_dropApPending = false;
 static volatile bool g_restoreApPending = false;
 // A fresh TFT needs a bounded AP+STA overlap so its browser can carry the auth
@@ -2513,7 +2513,11 @@ static void orchestratorBegin() {
             String(r.id.c_str()), /*quietOk=*/false, r.once, r.ownerReminder);
       },
       [](const std::string& cid) -> bool {
-        return agent::orchestrator::isChatAllowed(String(cid.c_str()));
+        // Still allowed = on the Telegram allowlist AND not revoked in the tenant table
+        // (a revoke keeps the chat listed so it can be told; its routines must pause).
+        const String c(cid.c_str());
+        return agent::orchestrator::isChatAllowed(c) &&
+               agent::orchestrator::roleOfChat(c) != nimbus::orch::Role::Unknown;
       },
       [](agent::loops::AlertLevel lvl, const std::string&, const std::string& msg) {
         if (lvl == agent::loops::AlertLevel::Info) return;   // Info: ring only (silent)
@@ -2547,6 +2551,16 @@ static void orchestratorBegin() {
   agent::loops::ensureLoop(agent::dream::reservedLoopRecord());
   agent::loops::setFireGate(
       [](const nimbus::orch::LoopRecord& l) { return agent::dream::gateDefer(l); });
+  // CUM-505: a loop the assistant creates (loop.create / wakeup.set) remembers the
+  // chat of the turn that asked for it, so a reminder set in the web chat comes back
+  // to the web chat instead of an empty Telegram default.
+  // Only on the turn task itself: the engine's current chat is written there, and a tool
+  // dispatched from another task (the test-only /api/test/astool) is not that turn.
+  agent::loops::setOriginHook([]() -> std::string {
+    if (strcmp(pcTaskGetName(nullptr), "tg_poll") != 0) return std::string();
+    if (!agent::orchestrator::turnInFlight()) return std::string();
+    return std::string(agent::orchestrator::currentChat().c_str());
+  });
 
   // Telegram long-poll task. begin() returns immediately (spawns tg_poll) only if
   // a token is configured; otherwise it's a no-op and the device idles in
@@ -3507,31 +3521,31 @@ void setup() {
   // counts as activity so a freshly powered device never saver-jumps early.
   g_saver.setThresholdMin(agent::store::saverMin());
   g_saver.noteActivity(millis());
-  // WiFi link sounds, edge-triggered: Arduino re-emits DISCONNECTED every few
-  // seconds while retrying, so only the had-an-IP -> lost transition (and its
-  // inverse) is voiced - reconnect churn stays silent.
-  WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t) {
-    static bool s_hadIp = false;
-    if (ev == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      if (!s_hadIp) ::sfx::fire(nimbus::sfx::Ev::WifiUp);
-      agent::loops::onNetworkUp();   // kick SNTP for wall-clock loop schedules
-      s_hadIp = true;
+  // Network-up consumers (CUM-504): ONE latch in net::link, evaluated every loop tick
+  // from the live station state, never from observing GOT_IP (why: nimbus/wifi/net_up.h;
+  // the GOT_IP handler that lived here was registered after a fast join had already
+  // fired it). Orchestrator-only, like net::link::tick().
+  //   - link sounds: edge-only, so the core's reconnect churn stays silent;
+  //   - TFT setup AP: an up edge schedules the drop, a down edge nudges the restore;
+  //     the 3 s radio-truth reconcile in loop() stays the authority;
+  //   - SNTP: kicked on every up edge, plus a bounded backstop while unsynced.
+  net::link::setNetHook([](const net::link::NetReport& r) {
+    if (r.wentDown) {
+      ::sfx::fire(nimbus::sfx::Ev::WifiDown);
+      if (g_screenIsTft) g_restoreApPending = true;   // Wi-Fi lost: bring the setup AP back
+    }
+    if (r.wentUp) {
+      ::sfx::fire(nimbus::sfx::Ev::WifiUp);
       if (g_screenIsTft) {
-        const uint32_t now = millis();
         // First provisioning gets a bounded fallback window. The web page will
         // normally shorten it through /api/wifi/handoff; if the browser dies,
         // the RF-sensitive TFT is still protected after 20 s.
-        g_dropApAfterMs = g_apHandoffArmed ? now + 20000UL : now;
+        g_dropApAfterMs = g_apHandoffArmed ? r.nowMs + 20000UL : r.nowMs;
         g_apHandoffArmed = false;
         g_dropApPending = true;
       }
-    } else if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      if (s_hadIp) {
-        ::sfx::fire(nimbus::sfx::Ev::WifiDown);
-        if (g_screenIsTft) g_restoreApPending = true;   // Wi-Fi lost: bring the setup AP back
-      }
-      s_hadIp = false;
     }
+    agent::loops::sntpTick(r.nowMs, r.up, r.wentUp);   // wall-clock routine schedules
   });
 
   // Provider key verification runs in BOTH modes (the web page can configure the

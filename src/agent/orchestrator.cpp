@@ -370,6 +370,11 @@ static void deliver(const String& chatId, const String& text, bool system = fals
   // still full after its short block. The queue is now sized for a full turn's burst
   // (see REPLY_QUEUE_DEPTH), but if it ever overflows anyway, log it rather than drop
   // the owner's message silently - a dropped reply is otherwise invisible.
+  // A routine's output to the web chat goes to its history only (CUM-505): the live
+  // GET /api/chat slot holds ONE reply and the next poll claims it, so a routine landing
+  // there would show up as the answer to the owner's next message. captureAssistant
+  // records the reply in session "web", and the chat shows it on its next load.
+  if (chatId == "web" && loops::firing()) return;
   if (g_sinks.send && !g_sinks.send(chatId, text))
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)text.length(), chatId.c_str());
@@ -736,6 +741,9 @@ static agent::ApplyDeps buildApplyDeps() {
     // need a completion to resolve their poll; Telegram (async) stays silent so a
     // scheduled loop never pings a fabricated "Done." A device/spawn turn with no
     // reply still confirms it finished on the channel the owner is watching live.
+    // A loop's own turn is unattended and now delivers to the web chat too (CUM-505):
+    // nobody is polling for it, so it stays silent there as well (no 03:30 "Done.").
+    if (loops::firing()) return;
     if (chatId == "web" || chatId == "voice" || chatId == "serial")
       deliver(String(chatId.c_str()), String("Done."));
   };

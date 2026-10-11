@@ -181,7 +181,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | Command | What it does |
 |---|---|
 | `PING` | Liveness check. |
-| `STATUS` | One-line device summary (firmware, mode, network, battery, faults, SFX tier, and NVS use in bytes: `nvs=<used>/<total> nvsfree=<free> nvsfail=<writes that did not land>`). |
+| `STATUS` | One-line device summary (firmware, mode, network, battery, faults, SFX tier, NVS use in bytes: `nvs=<used>/<total> nvsfree=<free> nvsfail=<writes that did not land>`, and `clk=1` once the clock is set). |
 | `RENDER?` | What the screen, posture, and ring are composed to show - the harness's camera substitute. |
 | `MENU?` | The current settings-menu view. |
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
@@ -193,6 +193,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
 | `REBOOT` | Software restart - the only sanctioned way to restart from the host. |
+| `REBOOT cold` | Restart with the clock cleared, so the boot starts unset like a power-on (a plain restart keeps the clock). |
 | `FACTRESET` | Trigger the deferred factory reset (preserves hardware identity, erases config, restarts) - the console path to the web `/api/factory-reset`. |
 | `HANG` | Deliberately hang the main loop to prove the watchdog recovers (~8 s). |
 | `MEMFILL <epi\|vec> <n> [bytes]` | Fill episodic or vector memory with test rows to exercise caps and pruning. |

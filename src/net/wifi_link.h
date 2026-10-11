@@ -22,8 +22,10 @@
 //   So single-network and first-run flows are byte-identical to before this change.
 //
 // NO new task, NO concurrency (frozen invariant): tick() runs inline in loop(). The one
-// WiFi.onEvent latch it registers runs on the existing Arduino WiFi event task, exactly
-// like the SFX link-sound handler already does.
+// WiFi.onEvent latch it registers runs on the existing Arduino WiFi event task and only
+// sets flags; everything that acts on them runs in tick() on the main task. tick() also
+// drives the network-up latch every consumer keyed on "has an IP" hangs off (CUM-504,
+// setNetHook below).
 
 namespace nimbus::net::link {
 
@@ -39,6 +41,25 @@ struct Status {
 
 // Register the WiFi event latch + configure the policy. Call once, after net::begin().
 void begin();
+
+// ---- network-up (CUM-504) -------------------------------------------------------------
+// Evaluated in tick() on the MAIN task from the LIVE station state (WL_CONNECTED and a
+// non-zero localIP), never from having observed GOT_IP, so a station that joined before
+// anything was listening reads as up on the first tick. Rule + rationale:
+// nimbus/wifi/net_up.h (NetUpLatch).
+struct NetReport {
+  uint32_t nowMs    = 0;       // the tick's millis()
+  bool     up       = false;   // an IP session is live (the latch verdict)
+  bool     wentDown = false;   // a session ended since the last tick (handle first)
+  bool     wentUp   = false;   // a session began since the last tick
+};
+using NetHook = void (*)(const NetReport& r);
+
+// Install the consumer hook (main.cpp, once, in setup()). tick() calls it on EVERY
+// Orchestrator tick, edge or not, so a consumer can also run a schedule off it (the SNTP
+// backstop). The latch only advances while a hook is installed, so an edge is never
+// consumed with nobody listening.
+void setNetHook(NetHook hook);
 
 // Mark the saved-network list changed (add / forget / reorder / connect). SAFE from any
 // task, including the AsyncTCP web server: it only sets a flag, and the main-loop tick()

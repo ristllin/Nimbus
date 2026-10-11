@@ -129,11 +129,24 @@ If this page disagrees with the code, the code wins.
 | Setup-AP state as the radio reports it (the decision's input) | `src/net/wifi_portal.cpp` (`apRadioUp`) |
 | Status copy ("Joining X 2/3...") | `lib/core/src/wifi_copy.cpp` |
 | Device seam wiring the machine to the radio | `src/net/wifi_link.cpp` |
+| Network-up latch and the SNTP kick schedule (every consumer keyed on "has an IP") | `lib/core/src/wifi_net_up.cpp` (`NetUpLatch`, `SntpKick`) |
 | NVS glue for the list | `src/net/wifi_store.cpp` |
 | Web management endpoints (`/api/wifi`) | `src/net/webui.cpp` |
 
 Host tests: `test/test_wifi_known`, `test/test_wifi_policy`, `test/test_wifi_recovery`,
-`test/test_wifi_supervise`, `test/test_wifi_copy`. The two-access-point migration is a
-bench (hardware) test,
+`test/test_wifi_supervise`, `test/test_wifi_copy`, `test/test_net_up`. The two-access-point
+migration is a bench (hardware) test,
 `tests/hil/test_l33_multi_network_failover.py`, marked manual because it needs a
 person to power one access point down.
+
+## Network-up, and why it is not an event
+
+Everything that should happen when the device gets an IP (setting the clock from the
+internet, the Wi-Fi sounds, dropping the setup hotspot on a touchscreen board) hangs off
+one network-up latch. It is evaluated on every main-loop tick from the live link state,
+not from the "got an IP" event: on a strong network with saved credentials the device
+joins within a few seconds of power-on, long before start-up finishes, and an event that
+fires before anyone listens is simply gone. That is exactly how the clock used to stay
+unset for a whole session (CUM-504). A disconnect event is still noted, because a drop
+and rejoin that both land between two ticks must count as a reconnect. The bench check is
+`tests/hil/test_l38_clock_sync.py` (clock set within 60 s of start-up).

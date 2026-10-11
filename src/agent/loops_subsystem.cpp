@@ -1,15 +1,20 @@
 #include "loops_subsystem.h"
 
 #include <LittleFS.h>
+#include <esp_sntp.h>              // esp_sntp_* - restart the client without touching TZ
 #include <time.h>
 #include <esp_heap_caps.h>       // heap_caps_get_largest_free_block (CUM-404 fragmentation gate)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <atomic>
 #include <vector>
 
 #include "../sys/agent_log.h"
 #include "agent_config.h"         // ORCH_AUTO_TURN_MIN_HEAP
+#include "memory_subsystem.h"     // memory::clockSynced - the strict "clock is real" test
+#include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
+#include "nimbus/wifi/net_up.h"   // SntpKick - the pure SNTP kick schedule (CUM-504)
 #include "store.h"
 #include "../sys/config_nvs.h"    // (device name - unused directly, kept for parity)
 #include "net/wifi_portal.h"      // net::staConnected
@@ -29,6 +34,7 @@ static FireHook                g_fire;
 static ChatAllowedHook         g_chatAllowed;
 static AlertHook               g_alert;
 static GateHook                g_gate;          // pre-fire idle gate (dream)
+static OriginHook              g_origin;        // the creating turn's chat (CUM-505)
 static std::vector<std::string> g_reservedIds;  // never-deletable loop ids
 static bool                    g_loaded = false;
 
@@ -135,10 +141,20 @@ static LoopRecord* findById(const std::string& id) {
   return nullptr;
 }
 
-// The chat a fire targets ("" => owner default) + whether it's still allowed.
-static bool fireChatAllowed(const LoopRecord& l) {
-  if (l.chatId.empty()) return true;                 // owner default channel
-  return g_chatAllowed ? g_chatAllowed(l.chatId) : true;
+// Where a fire delivers (CUM-505): the loop's remembered channel, the owner default,
+// or the web chat for the owner's own Telegram loop while the bot is off. The pure rule
+// is orch::resolveDelivery; this seam only reads the Telegram facts (once per tick,
+// `world`) and asks the allow hook (allowlist + tenant role) about a Telegram chat. A
+// Revoked verdict is the "chat revoked" pause rail; no fire is ever aimed at "".
+static orch::DeliveryWorld readDeliveryWorld() {
+  return orch::deliveryWorld(std::string(store::telegramToken().c_str()),
+                             std::string(store::telegramAllowlist().c_str()),
+                             std::string(store::telegramOwners().c_str()));
+}
+static orch::Delivery deliveryFor(const LoopRecord& l, const orch::DeliveryWorld& world) {
+  const bool telegramChat = orch::deliveryChannelOf(l.chatId) == orch::DeliveryChannel::Telegram;
+  const bool allowed = !telegramChat || !g_chatAllowed || g_chatAllowed(l.chatId);
+  return orch::resolveDelivery(l.chatId, world, allowed);
 }
 
 // ---- SNTP-landed rebase (prism correctness fix: no 0->epoch burst) ---------
@@ -151,6 +167,9 @@ static uint32_t s_critAlertDay = 0;   // "device ceiling" alert de-dupe (once/da
 // "waiting for working memory" instead of a bare next-run countdown. Cleared the tick
 // the device clears both floors.
 static bool s_memDefer = false;
+// A loop's scheduled turn is running (CUM-505). Set and cleared around g_fire on
+// tg_poll, read on tg_poll by the turn-completion wiring (orchestrator.cpp).
+static bool s_firing = false;
 
 static void onClockSynced(uint64_t realNow, uint64_t oldNow) {
   const uint32_t day = curLocalDay(realNow);
@@ -169,14 +188,29 @@ static void onClockSynced(uint64_t realNow, uint64_t oldNow) {
   persist();
 }
 
+// The owner's POSIX timezone from NVS ("" => UTC0).
+static String deviceTzOrUtc() {
+  String tz = store::deviceTz();
+  return tz.length() ? tz : String("UTC0");
+}
+
+// Apply the timezone (setenv + tzset). Only in setup() (begin) and on tg_poll (a tz
+// edit), the task that runs localtime_r/mktime here: never from the main task, whose
+// SNTP restarts deliberately leave TZ alone (CUM-504).
+static String applyTz() {
+  const String tz = deviceTzOrUtc();
+  setenv("TZ", tz.c_str(), 1);
+  tzset();
+  return tz;
+}
+
 // ---- live TIMEZONE change (web Settings -> Timezone; drained on tg_poll) ----
 // Deliberately NOT onClockSynced: that path restarts Interval loops (now+interval
 // - wrong here, intervals are epoch-based and tz-independent) and only adopts the
 // day frame when lastSyncedDay==0 (exactly the westward-stall hazard). A tz edit
 // recomputes ONLY wall-clock schedules and adopts the day budget-neutrally.
 static void onTzChanged() {
-  onNetworkUp();   // re-reads devTz -> setenv/tzset via configTzTime + re-kicks
-                   // SNTP (harmless offline: TZ still applies to localtime_r)
+  alogf("loops: timezone applied (tz=%s)", applyTz().c_str());   // local: no network needed
   if (!clockValid()) return;   // nextRun stays 0; onClockSynced rebases at sync
   const uint64_t now = (uint64_t)time(nullptr);
   const uint32_t day = curLocalDay(now);   // day under the NEW tz
@@ -218,6 +252,19 @@ void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert) {
   orch::loadLoops(loadRaw(), g_loops);
   loadWakeupMode();
   g_loaded = true;
+  // The timezone is a local setting: apply it before any wall-clock math below, not on
+  // the first SNTP kick (CUM-504: that lands on the first loop tick, after setup). A
+  // soft restart keeps the RTC clock valid, so daily/weekly next runs are computed right
+  // here and must use local time. Runs in setup(), before tg_poll exists.
+  applyTz();
+  // CUM-505 repair: the old fire-time check paused loops that remembered the web chat or
+  // the device as "chat revoked". Resume the recurring ones (a stale reminder stays).
+  int lifted = 0;
+  for (auto& l : g_loops) lifted += orch::liftDeviceChannelRevoke(l) ? 1 : 0;
+  if (lifted) {
+    alogf("loops: resumed %d routine(s) wrongly paused as chat-revoked", lifted);
+    persist();
+  }
   const bool clk = clockValid();
   const uint64_t now = (uint64_t)time(nullptr);
   s_wasClockValid = clk;
@@ -258,6 +305,13 @@ void setFireGate(GateHook gate) {
   Lock lk;
   g_gate = std::move(gate);
 }
+
+void setOriginHook(OriginHook origin) {
+  Lock lk;
+  g_origin = std::move(origin);
+}
+
+bool firing() { return s_firing; }
 
 // ---- the tick --------------------------------------------------------------
 void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
@@ -307,6 +361,7 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   {
     Lock lk;
     if (g_loops.empty()) return;
+    const orch::DeliveryWorld world = readDeliveryWorld();   // Telegram facts, once per tick
     for (auto& l : g_loops) orch::rollDayIfNeeded(l, day, clk);
     orch::rollDeviceDayIfNeeded(g_dev, g_caps, day, nowEpoch, clk);
 
@@ -314,7 +369,8 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     LoopRecord* due = nullptr;
     bool devCeiling = false;
     for (auto& l : g_loops) {
-      orch::FireDecision d = orch::evaluate(l, g_dev, g_caps, nowEpoch, clk, fireChatAllowed(l));
+      const bool deliverable = deliveryFor(l, world).verdict != orch::DeliveryVerdict::Revoked;
+      orch::FireDecision d = orch::evaluate(l, g_dev, g_caps, nowEpoch, clk, deliverable);
       switch (d) {
         case orch::FireDecision::Fire:
           if (!due || l.nextRun < due->nextRun) due = &l;
@@ -365,17 +421,14 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     }
 
     // --- fire: advance + persist BEFORE (at-most-once, no double-fire) ---
-    req.id = due->id; req.name = due->name; req.chatId = due->chatId;
-    // W20: a one-shot wakeup's turn opens with WHY it exists - the model set
-    // it for itself and needs the context restored ("attach a message for
-    // itself on wakeup").
-    req.prompt = due->prompt;
-    req.once   = (due->sched.kind == orch::SchedKind::Once);   // executor renders [WAKEUP]
-    // An owner-set one-shot (/remind) is a REMINDER, not a self-wakeup - the
-    // OWNER scheduled it, so the framing must not say "you scheduled this for
-    // yourself". createdBy distinguishes the two (both are Once loops).
-    req.ownerReminder = (req.once && due->createdBy == orch::CreatedBy::Owner);
-    req.scheduledFor = nowEpoch;
+    // The request carries the RESOLVED target (never "": the executor would aim that at
+    // the first Telegram allowlist entry, which is "" on a web-only device), the
+    // [WAKEUP]/[REMINDER] framing flags, and on a fallback the instruction to say so.
+    const orch::Delivery dl = deliveryFor(*due, world);
+    req = orch::buildFireRequest(*due, dl, nowEpoch);
+    if (dl.verdict == orch::DeliveryVerdict::FellBack)
+      alogf("loops: '%s' delivers to %s (%s is not available)", due->name.c_str(),
+            orch::deliveryChannelLabel(dl.to), orch::deliveryChannelLabel(dl.from));
     prevLastRun = due->lastRun;   // so a memory defer can un-claim this "run"
     due->lastRun = nowEpoch;
     advanceNextRun(*due, nowEpoch, clk);
@@ -387,7 +440,9 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   if (!haveFire) return;
 
   const std::string id = req.id;
+  s_firing = true;    // tg_poll only: read by the turn-completion wiring (firing())
   FireOutcome o = g_fire ? g_fire(req) : FireOutcome{};
+  s_firing = false;
 
   // Re-acquire: the turn (and any concurrent MCP/web mutation) may have changed
   // g_loops, so re-find by id - the earlier pointer is not safe to reuse.
@@ -459,16 +514,48 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   }
 }
 
-void onNetworkUp() {
-  // Kick SNTP (non-blocking). TZ from AKEY_TZ (POSIX, default UTC). localtime_r/
-  // mktime then get tz + DST right. The 0->epoch jump is handled by onClockSynced.
-  String tz = store::deviceTz();   // "" => UTC0
-  if (tz.length() == 0) tz = "UTC0";
-  configTzTime(tz.c_str(), "pool.ntp.org", "time.nist.gov", "time.google.com");
-  alogf("loops: SNTP kicked (tz=%s)", tz.c_str());
+// The SNTP kick schedule. MAIN TASK ONLY (the net::link hook), and the ONLY thing that
+// restarts the SNTP client: two producers interleaving stop/mode/init on the lwIP
+// thread can trip lwIP's "mode set while running" assert. "Sync now" on tg_poll only
+// raises s_sntpRequested; sntpTick consumes it.
+static nimbus::wifi::SntpKick s_sntpKick;
+static std::atomic<bool>      s_sntpRequested{false};
+
+// Restart the SNTP client WITHOUT touching TZ (see applyTz). esp_sntp_* queue onto the
+// lwIP thread in order.
+static void restartSntpClient() {
+  if (esp_sntp_enabled()) esp_sntp_stop();
+  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_setservername(1, "time.nist.gov");
+  esp_sntp_setservername(2, "time.google.com");
+  esp_sntp_init();
+}
+
+void sntpTick(uint32_t nowMs, bool netUp, bool upEdge) {
+  using nimbus::wifi::SntpKick;
+  if (s_sntpRequested.exchange(false)) s_sntpKick.request();
+  const bool synced = memory::clockSynced();
+  const SntpKick::Why w = s_sntpKick.tick(nowMs, netUp, upEdge, synced);
+  if (w == SntpKick::Why::None) return;
+  restartSntpClient();
+  // Durable only for the evidence a bench reads (the first kick of an unsynced clock, or
+  // the owner's Sync now). Backstop retries and reconnect re-syncs can repeat for hours
+  // on a flapping or NTP-blocking network, so they stay RAM + serial only (flash wear).
+  const bool durable = w == SntpKick::Why::Requested || (w == SntpKick::Why::LinkUp && !synced);
+  const char* why = nimbus::wifi::sntpWhyName(w);
+  const String tz = deviceTzOrUtc();
+  if (durable) alogf("loops: SNTP kicked (tz=%s, %s)", tz.c_str(), why);
+  else         alogif("loops: SNTP kicked (tz=%s, %s)", tz.c_str(), why);
 }
 
 // ---- mutations -------------------------------------------------------------
+// The chat of the turn creating an agent loop ("" for an owner surface or no turn).
+static std::string creatingTurnChat(bool byAgent) {
+  if (!byAgent || !g_origin) return std::string();
+  return g_origin();
+}
+
 // True (and sets `err`) if arming another one-shot wakeup would exceed the cap.
 // Call with the loops lock held (createLoop does).
 static bool wakeupArmedCapReached(std::string& err) {
@@ -507,7 +594,10 @@ CreateResult createLoop(const String& name, const String& prompt, const String& 
   l.id = genId();
   l.name = std::string(name.c_str()).substr(0, orch::kLoopNameMax);
   l.prompt = std::string(prompt.c_str()).substr(0, orch::kLoopPromptMax);
-  l.chatId = std::string(chatId.c_str());
+  // Remember the channel it was created from (CUM-505): an explicit chat wins, else
+  // an agent-created loop takes the creating turn's chat (web chat, Telegram chat,
+  // hold-to-talk), so it delivers where it was asked for.
+  l.chatId = orch::originChat(std::string(chatId.c_str()), creatingTurnChat(byAgent));
   l.sched = spec;
   l.createdBy = byAgent ? orch::CreatedBy::Agent : orch::CreatedBy::Owner;
   l.enabled = true;
@@ -719,14 +809,10 @@ void drainWebMutations() {
       // setenv/tzset must not race this task's own localtime_r/mktime calls.
       onTzChanged();
     } else if (!strcmp(action, "sntp")) {
-      // "Sync now": re-kick SNTP. Rate-limited so a retry-clicker can't churn
-      // the SNTP service; the badge flips via the normal /api/state poll.
-      static uint32_t s_lastSntpKick = 0;
-      const uint32_t nowMs = millis();
-      if (s_lastSntpKick == 0 || nowMs - s_lastSntpKick >= 10000) {
-        s_lastSntpKick = nowMs;
-        onNetworkUp();
-      }
+      // "Sync now": ask the main-task kick schedule for a restart (it is the one
+      // SNTP producer, and it rate-limits to one kick per 10 s). The badge flips via
+      // the normal /api/state poll.
+      s_sntpRequested.store(true);
     }
   }
 }

@@ -4,10 +4,12 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include <atomic>
 #include <vector>
 
 #include <solide/memory.h>
 
+#include "nimbus/wifi/net_up.h"      // NetUpLatch - the pure network-up edge rule (CUM-504)
 #include "nimbus/wifi/supervise.h"   // decideSupervise() - the pure link-down decision
 
 #include "nimbus_config.h"   // NIMBUS_KEY_STA_SSID / _PASS - the boot-slot re-begin
@@ -48,13 +50,18 @@ bool     s_scanInFlight = false;
 uint32_t s_scanStartMs  = 0;
 
 // Event latch. GOT_IP / DISCONNECTED fire on the Arduino WiFi event task; the tick on the
-// main task reads and clears them. Plain bools are fine here (same one-writer/one-reader
-// pattern as the SFX link-sound handler), and a missed edge only delays a decision one
-// tick - the tick also reads the live radio state, so nothing is stranded on a lost event.
-volatile bool s_evGotIp    = false;
-volatile bool s_evDisc     = false;
-volatile int  s_evReason   = 0;
-bool          s_eventsBound = false;
+// main task takes and clears them in one atomic exchange, so an event landing mid-drain
+// is kept for the next tick instead of being cleared unseen. The tick also reads the live
+// radio state, so nothing is stranded on a lost event.
+std::atomic<bool> s_evGotIp{false};
+std::atomic<bool> s_evDisc{false};
+std::atomic<int>  s_evReason{0};
+bool              s_eventsBound = false;
+
+// Network-up latch + its consumer hook (CUM-504). Main task only: set in setup() and
+// advanced in tick(), both on the loop task.
+nimbus::wifi::NetUpLatch s_netUp;
+NetHook                  s_netHook = nullptr;
 
 // Take over the radio from the core (which retries the dead SSID forever): stop it, seed
 // the policy from the CURRENT list, and start a clean failover cycle.
@@ -191,6 +198,19 @@ void execute(const Action& a, uint32_t now) {
   }
 }
 
+// Advance the network-up latch from the live radio and hand the result to the consumer
+// hook (CUM-504). No hook, no advance: an edge is never consumed with nobody listening.
+void reportNet(uint32_t nowMs, bool staLinked, bool disc) {
+  if (!s_netHook) return;
+  const nimbus::wifi::NetEdges e = s_netUp.tick(staLinked, disc);
+  NetReport r;
+  r.nowMs    = nowMs;
+  r.up       = s_netUp.up();
+  r.wentDown = e.down;
+  r.wentUp   = e.up;
+  s_netHook(r);
+}
+
 }  // namespace
 
 void markKnownDirty() { s_knownDirty = true; }
@@ -205,16 +225,18 @@ void begin() {
   if (!s_eventsBound) {
     WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
       if (ev == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-        s_evGotIp = true;
+        s_evGotIp.store(true);
       } else if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        s_evDisc   = true;
-        s_evReason = (int)info.wifi_sta_disconnected.reason;
+        s_evReason.store((int)info.wifi_sta_disconnected.reason);   // before the flag
+        s_evDisc.store(true);
       }
     });
     s_eventsBound = true;
   }
   refreshKnown();
 }
+
+void setNetHook(NetHook hook) { s_netHook = hook; }
 
 void setManualHold(bool held) {
   s_manualHold = held;
@@ -255,12 +277,14 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
   if (s_knownDirty) { s_knownDirty = false; refreshKnown(); }
   if (s_manualHoldClearReq) { s_manualHoldClearReq = false; s_manualHold = false; }
 
-  // Drain the latched radio events for this tick.
-  const bool gotIp    = s_evGotIp;    s_evGotIp = false;
-  const bool disc     = s_evDisc;     s_evDisc  = false;
-  const int  discReas = s_evReason;
+  // Drain the latched radio events for this tick, BEFORE reading the radio: an event that
+  // lands after the drain is then seen next tick, never lost between the two reads.
+  const bool gotIp    = s_evGotIp.exchange(false);
+  const bool disc     = s_evDisc.exchange(false);
+  const int  discReas = s_evReason.load();
 
   const bool staLinked = WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
+  reportNet(nowMs, staLinked, disc);   // CUM-504: every network-up consumer, every tick
   if (staLinked) {
     // Connected: steady state belongs to the core. If we drove this join, record it.
     if (s_engaged) recordJoinAndStepAside();

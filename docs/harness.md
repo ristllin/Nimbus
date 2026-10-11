@@ -44,9 +44,17 @@ Order matters; each step is in `src/main.cpp::setup()` or
    `telegram::begin` spawns **`tg_poll`** - the task every turn runs on. The
    task spawns even with no Telegram token, because web/serial/voice turns are
    injected through the same queue.
-7. SNTP arms on the GOT_IP event (tz from NVS). Until first sync: the prompt
-   says the time is UNKNOWN, wall-clock loops can't fire, dream maintenance is
-   skipped, and pre-sync episodic rows are held and restamped at first sync.
+7. The timezone (NVS) is applied in `loops::begin`, before any wall-clock math.
+   SNTP arms from the network-up latch: the first main-loop tick that finds the
+   station holding an IP kicks it, however early the join landed, and every
+   reconnect kicks it again; while the link is up and the clock is still unsynced
+   a backstop re-kicks on a doubling backoff (3 min up to 30 min, after lwIP's own
+   retries). The latch reads the live link state, never the GOT_IP event, because
+   a fast join on stored credentials fires GOT_IP before `setup()` has finished
+   (CUM-504; see `nimbus/wifi/net_up.h`). The main task is the only SNTP producer
+   ("Sync now" only requests a kick) and never touches TZ. Until first sync: the
+   prompt says the time is UNKNOWN, wall-clock loops can't fire, dream maintenance
+   is skipped, and pre-sync episodic rows are held and restamped at first sync.
 
 ## Lifecycle 2 - who runs what (task topology)
 
@@ -136,6 +144,18 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   Routines tab, and cancellable like any routine. It retires after firing
   (one 5-min retry if the turn itself failed, then an owner alert); at most
   4 armed at once; only an admin's conversation can arm one.
+  **Delivery** (`nimbus/orch/loop_delivery.h`, CUM-505): a loop remembers the
+  chat it was created from (an explicit `chat_id` wins, else the creating
+  turn's chat: `web`, a Telegram chat, `voice`) and the fire is aimed at a
+  resolved target, never `""`. No remembered chat means the owner's Telegram
+  chat (owners list, else first allowlist entry) when a bot token is set, else
+  the web chat. When the bot token is gone, the OWNER's own Telegram loop falls
+  back to the web chat and the reply opens with a sentence saying so; any other
+  unreachable Telegram chat (removed, tenant revoked, allowlist emptied, a
+  member's chat) pauses, because a fallback turn runs as the web chat (admin).
+  A loop's web-chat output is written to the web history only (the live
+  single-slot `GET /api/chat` would hand it to the owner's next message), and a
+  loop turn never fabricates a "Done.".
 - **Dreaming**: a reserved, undeletable (pause-only) daily loop at 03:30 local
   (the device timezone - Settings → Mode & identity). Stage 1 (no LLM): vector
   decay + expiry prune + windowed dedup - skipped entirely if the clock never

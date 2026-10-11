@@ -50,6 +50,7 @@
 #if defined(NIMBUS_TEST)
 
 #include <esp_system.h>
+#include <sys/time.h>                  // settimeofday - REBOOT cold (CUM-504)
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
@@ -303,6 +304,9 @@ void dispatch(String line) {
     // land since boot, so a bench run can assert the owner-config headroom.
     nimbus::store::NvsUsage nvsU;
     nimbus::sys::nvsUsage(nvsU);
+    // clk= (CUM-504) is 1 once the wall clock is real (SNTP synced; the same strict
+    // memory::clockSynced test /api/state clock.synced uses), so a HIL leg can assert
+    // "synced within 60 s of READY" over serial. Appended after board=.
 #ifndef SOLIDE_BOARD
 #define SOLIDE_BOARD solide_s3
 #endif
@@ -310,7 +314,7 @@ void dispatch(String line) {
 #define NIMBUS_STR(x) NIMBUS_STR2(x)
     Serial.printf("STATUS fw=" NIMBUS_FW_VERSION " build=" NIMBUS_FW_BUILD " mode=%d wifi=%d ip=%s rssi=%d heap=%u scr=%s scrok=%s want=%s minheap=%u psram=%u "
                   "nvsdeg=%d sd=%s sdlost=%d vec=%d/%d flashfull=%d faults=0x%02x jobs=%d sfx=%s/%u/%s vol=%u sync=%s drain=%d/%d restmv=%u ota=%s lastOta=%s uptime=%lu board=%s "
-                  "nvs=%u/%u nvsfree=%u nvsfail=%u\n",
+                  "nvs=%u/%u nvsfree=%u nvsfail=%u clk=%d\n",
                   mode,
                   int(wifi), ip.c_str(), rssi, unsigned(ESP.getFreeHeap()),
                   scr, scrok, agent::store::screenModel().c_str(),
@@ -331,7 +335,8 @@ void dispatch(String line) {
                   otaupd::statusStr(), otaupd::lastResult().c_str(),
                   (unsigned long)millis(), NIMBUS_STR(SOLIDE_BOARD),
                   unsigned(nvsU.usedBytes), unsigned(nvsU.totalBytes), unsigned(nvsU.freeBytes),
-                  unsigned(nimbus::sys::persistFailures()));
+                  unsigned(nimbus::sys::persistFailures()),
+                  int(agent::memory::clockSynced()));
     Serial.flush();
     return;
   }
@@ -729,6 +734,19 @@ void dispatch(String line) {
   }
   if (line == "REBOOT") {
     reply("REBOOTING");                                    // F13 flap/recover
+    if (s_h.reboot) s_h.reboot();
+    return;
+  }
+  if (line == "REBOOT cold") {
+    // CUM-504 HIL seam: restart with the wall clock CLEARED, so the next boot starts
+    // unsynced exactly as a power-on does. A plain REBOOT carries the RTC-held clock
+    // across the software reset (bench B read epoch 2798 at uptime 310 s), so a
+    // clock-sync leg run after one would pass on firmware that never starts SNTP.
+    // settimeofday() lands in the RTC boot-time registers, which survive the restart;
+    // the reply is flushed first, so the restart follows the rewind immediately.
+    reply("REBOOTING cold (clock cleared)");
+    struct timeval tv = {0, 0};
+    settimeofday(&tv, nullptr);
     if (s_h.reboot) s_h.reboot();
     return;
   }

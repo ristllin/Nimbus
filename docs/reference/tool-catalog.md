@@ -287,7 +287,7 @@ that fire as future Orchestrator turns.
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `wakeup.set` | Schedule ONE future wakeup for the assistant itself - no owner approval (a bounded single fire under the same daily governor as routines; at most 4 armed; chaining allowed). In `minutes` (2 min–7 days) it gets a single automatic turn carrying its `note`, then the wakeup retires (one short retry if the turn itself failed, then an owner alert). Visible in /loops and web Routines; cancel with `loop.cancel`. | `minutes` (**required**), `note` (**required**) | live (admin-only) |
-| `loop.create` | Schedule a recurring or timed task that fires as a future turn. | `name` (**required**), `prompt` (**required**), `chat_id` (optional, must be allow-listed), `schedule` (**required** object: `{kind:"interval", every_seconds: N≥300}` or `{kind:"daily"\|"weekly", at:"HH:MM", days:[...]}`) | live (admin-only) |
+| `loop.create` | Schedule a recurring or timed task that fires as a future turn. | `name` (**required**), `prompt` (**required**), `chat_id` (optional; defaults to the chat it is created from), `schedule` (**required** object: `{kind:"interval", every_seconds: N≥300}` or `{kind:"daily"\|"weekly", at:"HH:MM", days:[...]}`) | live (admin-only) |
 | `loop.list` | List all routines with schedule, next run, last result, enabled, and approval. | (none) | live (admin-only) |
 | `loop.cancel` | Cancel (delete) a routine by its id. | `id` (**required**) | live (admin-only) |
 
@@ -296,6 +296,12 @@ Notes:
   in scheduled turns (a routine cannot create routines).
 - A routine the model creates is saved **pending** the owner's approval and
   cannot fire until approved (web Routines tab, or Telegram `/loop approve <id>`).
+- Routines, reminders, and wakeups deliver to the chat they were created from (the
+  web chat, a Telegram chat, or the device screen for a hold-to-talk request);
+  `chat_id` overrides that. One with no remembered chat goes to the owner's Telegram
+  when it is set up, otherwise to the web chat. If the bot is turned off when the
+  owner's own Telegram routine fires, it shows in the web chat and the reply says so;
+  a routine aimed at a chat that is no longer allowed pauses instead.
 
 ## `reply.*` - output channels
 

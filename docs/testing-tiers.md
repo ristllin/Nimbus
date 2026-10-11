@@ -104,6 +104,24 @@ can reach, hand the finger/ears part to a human.
   `tests/hil/test_l35_button_feedback_host.py` (the outcome-to-cue mapping itself is
   host-tested in `test/` under `pio test -e native`).
 
+## Clock-sync leg
+
+The clock must set itself from the internet on every boot, including the fast join where
+the station is up before start-up finishes (CUM-504: SNTP hung off a GOT_IP event that
+fired before its handler existed, so a strong network meant a clock stuck at 1970).
+
+- Host (T1): `test/test_net_up` drives fake event timelines (IP before the latch is armed,
+  IP after, a drop and rejoin between two ticks, retry noise) through the network-up latch
+  and the SNTP kick schedule, including a property over every join/arm ordering in a 20 s
+  boot window, flap and backoff bounds (no thrash), and an event-only counter-model that
+  fails the fast-join orderings.
+- Bench (T5): `tests/hil/test_l38_clock_sync.py` restarts with `REBOOT cold` (a plain
+  `REBOOT` carries the RTC-held clock across the reset, which would make the leg vacuous),
+  then asserts the boot started unsynced, STATUS `clk=1` within 60 s of READY, and a
+  `loops: SNTP kicked (..., link up)` line; a LAN half checks `/api/state` `clock.synced`
+  and that the dream routine got a wall-clock next run. A true power cycle is the manual
+  leg. The parsers and verdict are host-tested in `tests/hil/test_l38_clock_sync_host.py`.
+
 ## The release gate
 
 A cross-cutting battery that must be green before any firmware tag or client flash.

@@ -14,7 +14,8 @@
 // NTP bring-up + the SNTP-landed rebase, and epoch<->local civil conversion via
 // libc. Kept FREE of orchestrator/telegram deps: it calls injected hooks so
 // main.cpp wires the actual turn-injection, allowlist check, and alert delivery.
-// EVERYTHING here runs on the tg_poll task (single-writer discipline).
+// EVERYTHING here runs on the tg_poll task (single-writer discipline), with ONE
+// exception: sntpTick() runs on the main task and touches no loop state.
 
 namespace agent {
 namespace loops {
@@ -56,11 +57,29 @@ bool isReservedId(const String& id);
 using GateHook = std::function<uint32_t(const nimbus::orch::LoopRecord&)>;
 void setFireGate(GateHook gate);
 
+// The chat of the turn creating a loop right now ("" when no turn is running, or when
+// called off the turn task), so an agent-created loop (loop.create / wakeup.set)
+// remembers the channel it was asked for in and delivers there (CUM-505). main.cpp
+// installs it. Called with the loops lock held - keep it cheap and lock-free.
+using OriginHook = std::function<std::string()>;
+void setOriginHook(OriginHook origin);
+
 // The tick - call every pollJobs cycle (tg_poll). millis()-gated internally.
 void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t freeHeap);
 
-// SNTP bring-up - call from the WiFi GOT_IP handler (main.cpp).
-void onNetworkUp();
+// True while a loop's scheduled turn is running (tg_poll only; CUM-505). Nobody is
+// waiting on a reply then, so the turn-completion wiring must never fabricate a
+// "Done." into the channel the loop delivers to (the web chat included).
+bool firing();
+
+// SNTP bring-up (CUM-504). Call on EVERY tick of the network-up hook (net::link,
+// main task): netUp is the latch verdict, upEdge says an IP session began this tick.
+// Kicks SNTP on every up edge (the boot join included, however early it landed) and
+// re-kicks on a bounded backoff while the link is up and the clock is still unsynced
+// (nimbus/wifi/net_up.h SntpKick). Never on tg_poll: a kick must not wait out a
+// long-poll or a turn. It is the ONLY SNTP producer: "Sync now" (drained on tg_poll)
+// only requests a kick here, and a timezone edit applies TZ on tg_poll without one.
+void sntpTick(uint32_t nowMs, bool netUp, bool upEdge);
 
 // --- owner/agent mutations (call on tg_poll, or stage from the web task) -----
 // createLoop parses `schedule` via the pure parseSpec. byAgent => createdBy=Agent,
