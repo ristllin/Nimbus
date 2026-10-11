@@ -63,11 +63,11 @@ function modelsPayload() {
       cumulo: {
         keyed: true, verified: 1, probe: 1, refreshedAt: 1700000000, stale: false,
         models: [
-          cm('openai/gpt-5.5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
-          cm('openai/gpt-5.4-mini', 'S', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
-          cm('anthropic/claude-opus-5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
-          cm('anthropic/claude-haiku-4-5', 'S', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
-          cm('zai/glm-4.6', 'M', ['orchestrator', 'sub-agent'], { upstream: 'zai' }),
+          cm('gpt-5.5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+          cm('gpt-5.4-mini', 'S', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+          cm('claude-opus-5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+          cm('claude-haiku-4-5', 'S', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+          cm('glm-4.6', 'M', ['orchestrator', 'sub-agent'], { upstream: 'zai' }),
         ],
       },
       zai: { keyed: false, verified: -1, probe: 1, refreshedAt: 0, stale: true, models: [] },
@@ -130,6 +130,73 @@ test('cumulo picker: Recommended on top, then groups by upstream, with size badg
   const fs = await import('node:fs');
   fs.writeFileSync(`screenshots/cum26-picker-cumulo-options-${testInfo.project.name}.txt`,
     'orchM_cumulo dropdown structure (Recommended shortcut + full catalog grouped by upstream):\n\n' + dump + '\n');
+});
+
+// CUM-530: a router row's option VALUE is its selector "<upstream>/<id>" - the
+// device catalog keeps the bare id + upstream, and the grouped rows used to post
+// the bare id, which the device's save check refused (silently, before CUM-530).
+test('cumulo picker: every grouped row posts its <upstream>/<id> selector', async ({ page }) => {
+  let posted = null;
+  await seedToken(page);
+  await page.route('**/api/orch', (route) => {
+    if (route.request().method() === 'GET')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) });
+    posted = new URLSearchParams(route.request().postData() || '');
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(modelsPayload()) }));
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  await page.locator('#subpane-llm details.setgroup').first().locator('summary').click();
+  const sel = page.locator('#orchM_cumulo');
+  await expect(sel).toBeEnabled();
+  // A catalog-only row (not in Recommended) carries the full selector...
+  await expect(sel.locator('option[value="anthropic/claude-haiku-4-5"]')).toHaveCount(1);
+  await expect(sel.locator('option[value="claude-haiku-4-5"]')).toHaveCount(0);
+  await expect(sel.locator('option[value="zai/glm-4.6"]')).toHaveCount(1);
+  // ...and picking it posts that selector.
+  await sel.selectOption('anthropic/claude-haiku-4-5');
+  await expect.poll(() => posted && posted.get('orchM_cumulo')).toBe('anthropic/claude-haiku-4-5');
+});
+
+// CUM-530: a refused pick answers 400 with the allowed values; the page shows the
+// device's sentence under the provider row instead of a silent "Saved".
+test('cumulo picker: a refused model shows the device reason under the row', async ({ page }) => {
+  const reason = "That model isn't available for Cumulo Nimbus. Choose one of: openai/gpt-5.5, anthropic/claude-opus-5.";
+  await seedToken(page);
+  await page.route('**/api/orch', (route) => {
+    if (route.request().method() === 'GET')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) });
+    return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: reason }) });
+  });
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(modelsPayload()) }));
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  await page.locator('#subpane-llm details.setgroup').first().locator('summary').click();
+  await page.locator('#orchM_cumulo').selectOption('zai/glm-4.6');
+  await expect(page.locator('#pmsg_cumulo')).toHaveText(reason);
+});
+
+// CUM-530: a catalog cut to its size bound says so ("<n> more not shown").
+test('cumulo picker: a trimmed catalog says how many models are not shown', async ({ page }) => {
+  await seedToken(page);
+  await page.route('**/api/orch', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) }));
+  await page.route('**/api/models', (route) => {
+    const m = modelsPayload();
+    const rows = m.providers.cumulo.models;
+    rows[rows.length - 1].more = 7;   // the device marks the last kept row
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(m) });
+  });
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  await page.locator('#subpane-llm details.setgroup').first().locator('summary').click();
+  await expect(page.locator('#orchM_cumulo option', { hasText: '7 more not shown (list truncated)' })).toHaveCount(1);
 });
 
 test('openai picker: grouped by size class, flagship-first, embeddings excluded', async ({ page }) => {

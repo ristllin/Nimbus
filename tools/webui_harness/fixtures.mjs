@@ -127,11 +127,11 @@ export const MODELS = {
     cumulo: {
       keyed: true, verified: 1, probe: 1, refreshedAt: 1700000000, stale: false,
       models: [
-        cm('openai/gpt-5.5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
-        cm('openai/gpt-5.4-mini', 'S', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
-        cm('anthropic/claude-opus-5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
-        cm('anthropic/claude-haiku-4-5', 'S', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
-        cm('zai/glm-4.6', 'M', ['orchestrator', 'sub-agent'], { upstream: 'zai' }),
+        cm('gpt-5.5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+        cm('gpt-5.4-mini', 'S', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+        cm('claude-opus-5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+        cm('claude-haiku-4-5', 'S', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+        cm('glm-4.6', 'M', ['orchestrator', 'sub-agent'], { upstream: 'zai' }),
       ],
     },
     zai: {

@@ -1805,7 +1805,7 @@ function groupModels(prov,cat){
 // CUM-530: a Cumulo router row's pick is its selector "<upstream>/<id>" (the
 // catalog keeps the bare id + its upstream); a bare stored router value is the
 // openai upstream, so "gpt-5.6" and "openai/gpt-5.6" are one choice.
-function modelSelOf(prov,m){return (prov==='cumulo'&&m.upstream)?m.upstream+'/'+m.id:m.id;}
+function modelSelOf(prov,m){return (prov==='cumulo'&&m.upstream&&m.id.indexOf(m.upstream+'/')!==0)?m.upstream+'/'+m.id:m.id;}
 function modelCurOf(prov,cur){return (prov==='cumulo'&&cur&&cur.indexOf('/')<0)?'openai/'+cur:(cur||'');}
 function modelSel(id,cur,choices,verified){
   const s=document.createElement('select'); s.id=id; s.disabled=!verified;
