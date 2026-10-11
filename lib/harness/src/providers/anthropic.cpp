@@ -861,13 +861,16 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                   (const char*)(resp["stop_reason"] | "?") + ")";
       return out;
     }
-    // Extract tool calls; orch_turn is terminal (its input IS the turn).
+    // Extract tool calls; the FIRST orch_turn's input IS the turn, and the scan
+    // goes on (calls after it are still tool calls - CUM-526).
     // Text blocks are COLLECTED into HeadStep.text (Glass Box A4 - they were
     // skipped on the floor; the content filter already requests them). Observed
     // only: they are still never echoed into msgs beyond the verbatim
     // tool-round echo below (the prefill-conflict rule stands).
+    bool endsInCall = false;   // the LAST block is a registry tool_use (not orch_turn)
     for (JsonObjectConst c : content) {
       const char* ty = c["type"] | "";
+      endsInCall = false;
       if (strcmp(ty, "text") == 0) {
         const char* txt = c["text"] | "";
         if (txt[0]) {
@@ -894,6 +897,18 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       call.name     = nm;
       call.argsJson = (args.length() && args != "null") ? args : "{}";
       out.toolCalls.push_back(call);
+      endsInCall = true;
+    }
+    const char* sr = resp["stop_reason"] | "";
+    // A response cut by max_tokens can end INSIDE its last tool_use block, and that
+    // call must be retried, never run (a half-written memory_write). Since the scan
+    // no longer stops at orch_turn, such a call could ride a finished step - so the
+    // round fails with the real cause, exactly like a cut text-only round below.
+    if (endsInCall && !strcmp(sr, "max_tokens")) {
+      out.ok = false;
+      out.error = "truncated at max_tokens inside a tool call";
+      hlog::logf("orchTurn(ant-loop): stop_reason=max_tokens inside a tool call, round dropped");
+      return out;
     }
     // Finished: the turn (plus any siblings) goes to the controller. No echo
     // needed - the transcript records the siblings and their results.
@@ -902,7 +917,6 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       // Text-only round. Distinguish a real stall from max_tokens truncation (the
       // single-shot path surfaces this too) - a truncated round must NOT be echoed
       // or "recovered": fail with the actual cause so it's debuggable from logs.
-      const char* sr = resp["stop_reason"] | "";
       if (!strcmp(sr, "max_tokens")) {
         out.ok = false;
         out.error = "truncated at max_tokens before a tool call";

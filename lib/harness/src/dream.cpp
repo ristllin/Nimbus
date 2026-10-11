@@ -75,16 +75,24 @@ Yesterday readYesterday(const nimbus::orch::EpisodicStore& store, uint32_t nowHo
   using nimbus::orch::MsgKind;
   nimbus::orch::MsgQuery q;
   q.sinceHours = nowHours > 24 ? nowHours - 24 : 0;
-  q.limit = kYesterdayQueryRows;
+  q.limit = kYesterdayRows;
   q.sessionAllow = sessions;
   q.haveKind = true;
   q.kind = MsgKind::Message;
   q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
   std::vector<EpisodicMessage> rows;
-  for (EpisodicMessage& m : store.query(q)) {
-    if (agent::isJobDelivery(m.tags) || agent::isClearBoundary(m)) continue;
-    if ((int)rows.size() >= kYesterdayRows) break;
-    rows.push_back(std::move(m));
+  for (int page = 0; page < kYesterdayPages && (int)rows.size() < kYesterdayRows; ++page) {
+    std::vector<EpisodicMessage> got = store.query(q);
+    // A full page may have older rows behind it: continue strictly below its
+    // oldest row (the store's id cursor). Read before the rows are moved out.
+    const bool more = (int)got.size() == q.limit && !got.back().id.empty();
+    if (more) q.before = got.back().id;
+    for (EpisodicMessage& m : got) {
+      if (agent::isJobDelivery(m.tags) || agent::isClearBoundary(m)) continue;
+      if ((int)rows.size() >= kYesterdayRows) break;
+      rows.push_back(std::move(m));
+    }
+    if (!more) break;
   }
   Yesterday y;
   y.empty = rows.empty();
@@ -108,6 +116,14 @@ std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
     }
     total += line.size();
     lines.push_back(std::move(line));
+  }
+  // The omission note rides INSIDE the cap: drop more of the oldest lines for
+  // it. (It used to ride on top, so a full 8 KB digest overran kDigestCapBytes and
+  // buildDreamInputs' re-cap cut the NEWEST row mid-character - invalid UTF-8.)
+  const size_t noteBytes = sizeof(nimbus::orch::kConvOmittedNote) - 1;
+  while (clipped && !lines.empty() && total + noteBytes > capBytes) {
+    total -= lines.back().size();
+    lines.pop_back();
   }
   std::string out;
   out.reserve(total + 48);
@@ -141,9 +157,9 @@ size_t lineBreakAt(const std::string& t, size_t i) {
   return unicodeBreakAt(t, i);
 }
 
-// THE one break normalizer every rendered row goes through (whole rows, the
-// window's previews, the digest - so the brief, the fold and the nightly digest
-// too): each lineBreakAt() break becomes `sep`. A row-renderer that flattened
+// THE one break normalizer every conversation row rendered here goes through
+// (whole rows, the window's previews, the digest - so the brief, the fold and the
+// nightly digest too): each lineBreakAt() break becomes `sep`. A row-renderer that flattened
 // only LF/CR let U+2028 + "- owner: ..." through on the preview path (gate W2).
 std::string replaceBreaks(const std::string& t, const char* sep) {
   std::string out;
@@ -221,7 +237,7 @@ std::string buildDreamInputs(const std::string& episodicDigest,
                              const MemStats& s) {
   std::string digest = episodicDigest;
   if (digest.size() > kDigestCapBytes) {  // defensive re-cap (callers may bypass the builder)
-    digest.resize(kDigestCapBytes);
+    digest.resize((size_t)nimbus::utf8CapLen(digest.c_str(), (int)digest.size(), (int)kDigestCapBytes));
     digest += "\n...(truncated at byte budget)\n";
   }
   char stats[176];

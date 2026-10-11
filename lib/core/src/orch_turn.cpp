@@ -344,15 +344,16 @@ bool wholeJsonArray(const std::string& text) {
   return !deserializeJson(d, text.substr(b, e - b + 1)) && d.is<JsonArrayConst>();
 }
 
-// Whether the reply opens a JSON array of objects ("[{", bare or fenced) that
-// never closes: a wire reply cut by the provider's output cap. Never prose - the
-// raw partial array would reach the owner (gate W2 #19). Prose that merely starts
-// with "[" ("[1] ...", "[the docs](...)") is not "[{"-shaped and stays prose.
+// Whether the reply opens a JSON array of objects ("[{" or a nested "[[{", bare
+// or fenced) that never closes: a wire reply cut by the provider's output cap.
+// Never prose - the raw partial array would reach the owner (gate W2 #19). Prose
+// that merely starts with "[" ("[1] ...", "[the docs](...)") is not "[{"-shaped
+// and stays prose.
 bool truncatedJsonArray(const std::string& text) {
   bool fenced = false;
   const size_t b = leadingObjectStart(text, fenced);
   if (b == std::string::npos || text[b] != '[') return false;
-  const size_t first = text.find_first_not_of(kSpace, b + 1);
+  const size_t first = text.find_first_not_of(std::string(kSpace) + "[", b + 1);
   return first != std::string::npos && text[first] == '{' &&
          objectEnd(text, b) == std::string::npos;
 }

@@ -411,14 +411,31 @@ static void test_whole_window_still_leaves_room_for_the_scratchpad() {
   TEST_ASSERT_TRUE(a.prompt.find("- assistant: aaaa") != std::string::npos);   // the reply's head stays
 }
 
-// The class over every budget from "rules only" to "everything fits", for a big
-// window beside a small scratchpad and a small window beside a big one: the
-// scratchpad is present whenever it fits at all, the prompt never overflows, the
-// window is whole whenever window + scratchpad fit, and when the scratchpad cannot
-// fit even alone no room is held back for it (a window that fits keeps it).
+// The invariants at every budget from "rules only" to past "everything fits"
+// (room = what the budget leaves after the rules): the scratchpad is present
+// whenever it fits at all, the prompt never overflows, the window is whole
+// whenever window + scratchpad fit (a fold summary gives way first), and when the
+// scratchpad cannot fit even alone no room is held back for it.
+static void checkEveryRoom(const ContextInputs& in, int rulesBytes, int spBytes, const std::string& label) {
+  const int conv = (int)in.recentConversation.size();
+  for (int room = 0; room <= conv + spBytes + (int)in.chatSummary.size() + 200; room += 7) {
+    const int budget = rulesBytes + room;
+    const auto a = nimbus::orch::assembleContext(in, budget);
+    const std::string at = label + " room " + std::to_string(room);
+    TEST_ASSERT_TRUE_MESSAGE((int)a.prompt.size() <= budget, at.c_str());
+    const bool hasSp = a.prompt.find("finish the carbon-stock report") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(room >= spBytes, hasSp, at.c_str());
+    const bool whole = a.prompt.find(in.recentConversation) != std::string::npos;
+    if (room >= conv + spBytes) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
+    if (room < spBytes && room >= conv) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
+  }
+}
+
+// The class, for a big window beside a small scratchpad, a small window beside a
+// big one, and the big window behind a fold summary.
 static void test_scratchpad_and_window_over_every_budget() {
-  for (int shape = 0; shape < 2; ++shape) {
-    const bool bigWindow = shape == 0;
+  for (int shape = 0; shape < 3; ++shape) {
+    const bool bigWindow = shape != 1;
     nimbus::orch::Scratchpad sp;
     sp.setActiveTask("finish the carbon-stock report");
     if (!bigWindow)
@@ -434,20 +451,34 @@ static void test_scratchpad_and_window_over_every_budget() {
       rows.push_back(row(i % 2 ? "user" : "assistant",
                          "row " + std::to_string(i) + " " + std::string(bigWindow ? 180 : 10, 'w')));
     in.recentConversation = std::string(kConvHeader) + agent::dream::buildConversationWindow(rows, 8192);
+    if (shape == 2) in.chatSummary = "\n## CONVERSATION SUMMARY\n" + std::string(1500, 's') + "\n";
     const int conv = (int)in.recentConversation.size();
     TEST_ASSERT_TRUE(bigWindow ? conv > spBytes : conv < spBytes);
-    for (int room = 0; room <= conv + spBytes + 200; room += 7) {
-      const int budget = 2000 + room;
-      const auto a = nimbus::orch::assembleContext(in, budget);
-      const std::string at = "shape " + std::to_string(shape) + " room " + std::to_string(room);
-      TEST_ASSERT_TRUE_MESSAGE((int)a.prompt.size() <= budget, at.c_str());
-      const bool hasSp = a.prompt.find("finish the carbon-stock report") != std::string::npos;
-      TEST_ASSERT_EQUAL_MESSAGE(room >= spBytes, hasSp, at.c_str());
-      const bool whole = a.prompt.find(in.recentConversation) != std::string::npos;
-      if (room >= conv + spBytes) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
-      if (room < spBytes && room >= conv) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
-    }
+    checkEveryRoom(in, 2000, spBytes, "shape " + std::to_string(shape));
   }
+}
+
+// prism (logic lens): the fold summary is sacrificed before the verbatim window -
+// and so before the scratchpad's reserve too. The summary check counted only the
+// window, so with the reserve in place an older summary was emitted whole and the
+// previous reply was clipped instead (the lens's repro: 2000 B rules, a 1.5 KB
+// summary, a 1.26 KB reply, a scratchpad, 4933 B budget).
+static void test_summary_gives_way_before_the_window_and_scratchpad() {
+  nimbus::orch::Scratchpad sp;
+  sp.setActiveTask("finish the carbon-stock report");
+  ContextInputs in;
+  in.immutableRules = std::string(2000, 'r');
+  in.scratchpad = &sp;
+  in.chatSummary = "\n## CONVERSATION SUMMARY\n" + std::string(1500, 's') + "\n";
+  in.recentConversation = std::string(kConvHeader) +
+                          agent::dream::buildConversationWindow({row("assistant", std::string(1240, 'a'))}, 8192);
+  const auto a = nimbus::orch::assembleContext(in, 4933);
+  TEST_ASSERT_TRUE((int)a.prompt.size() <= 4933);
+  TEST_ASSERT_TRUE_MESSAGE(a.prompt.find(in.recentConversation) != std::string::npos, "the previous reply was clipped");
+  TEST_ASSERT_TRUE(a.prompt.find("finish the carbon-stock report") != std::string::npos);
+  bool summaryGaveWay = false;
+  for (const auto& d : a.droppedSections) summaryGaveWay |= (d == "chatsummary" || d == "chatsummary(clipped)");
+  TEST_ASSERT_TRUE(summaryGaveWay);
 }
 
 // A window that fits is emitted byte-for-byte; one whose NEWEST row alone cannot
@@ -513,6 +544,7 @@ int main() {
   RUN_TEST(test_trimmed_window_leaves_room_for_the_scratchpad);
   RUN_TEST(test_whole_window_still_leaves_room_for_the_scratchpad);
   RUN_TEST(test_scratchpad_and_window_over_every_budget);
+  RUN_TEST(test_summary_gives_way_before_the_window_and_scratchpad);
   RUN_TEST(test_prev_reply_code_survives_assembly_on_200k_and_272k_heads);
   return UNITY_END();
 }

@@ -113,9 +113,11 @@ std::string buildEpisodicDigest(const std::vector<nimbus::orch::EpisodicMessage>
 // Not cut at a /clear boundary: the assistant starts that chat afresh, but the
 // day still happened (memory.episodic still searches cleared history too).
 // `empty` = nothing of the owner's in 24 h - the quiet-night signal that skips
-// the paid reflection turn, so job rows alone must keep it true.
-constexpr int kYesterdayRows = 48;        // rows the digest may hold
-constexpr int kYesterdayQueryRows = 64;   // headroom for the skipped rows
+// the paid reflection turn, so job rows alone must keep it true. The read pages
+// past skipped rows (a busy routine's spawn acks must not crowd the owner's words
+// out of the newest page), bounded at kYesterdayPages pages.
+constexpr int kYesterdayRows = 48;    // rows the digest may hold (and the page size)
+constexpr int kYesterdayPages = 4;    // at most 192 rows read per night
 struct Yesterday {
   std::string digest;   // buildEpisodicDigest over the kept rows
   bool empty = true;

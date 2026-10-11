@@ -379,40 +379,71 @@ static void test_loop_sibling_after_orch_turn_is_dispatched_once() {
   }
 }
 
-// The step itself: orch_turn first, a memory_write after it - one finished step
-// that carries the final turn AND the sibling call (today: 1 call, was 0).
-static void test_loop_step_carries_sibling_after_orch_turn() {
+// One antLoopStep round over a scripted /v1/messages response.
+static nimbus::orch::HeadStep stepOver(const std::string& body, const char* user) {
   FakeProviderDeps d;
-  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalWithSiblingBody(true)});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, body});
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   nimbus::orch::Transcript tr;
-  tr.addUser("remember my boat is the Nereid II");
+  tr.addUser(user);
   const std::string instr = "SYS";
-  nimbus::orch::HeadStepFn step = providers::antLoopStep(pd, instr, rig.ht, nullptr, tr);
-  const nimbus::orch::HeadStep st = step(true, {}, 60000, "");
+  return providers::antLoopStep(pd, instr, rig.ht, nullptr, tr)(true, {}, 60000, "");
+}
+
+// The step itself: orch_turn first, a memory_write after it - one finished step
+// that carries the final turn AND the sibling call (0 calls before CUM-526).
+static void test_loop_step_carries_sibling_after_orch_turn() {
+  const nimbus::orch::HeadStep st = stepOver(finalWithSiblingBody(true), "remember my boat is the Nereid II");
   TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
   TEST_ASSERT_TRUE(st.finished);
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"I've saved that permanently.\"}", st.finalTurn.c_str());
   TEST_ASSERT_EQUAL(1, (int)st.toolCalls.size());
   TEST_ASSERT_EQUAL_STRING("memory_write", st.toolCalls[0].name.c_str());
+}
 
-  // Two orch_turn blocks in one response: the FIRST is the turn (the OpenAI and
-  // Mistral steps keep the first too); a later one never overwrites it.
-  FakeProviderDeps d2;
-  d2.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+// Two orch_turn blocks in one response: the FIRST is the turn (the OpenAI and
+// Mistral steps keep the first too); a later one never overwrites it.
+static void test_loop_step_first_orch_turn_wins() {
+  const nimbus::orch::HeadStep st = stepOver(
       "{\"content\":[{\"type\":\"tool_use\",\"id\":\"a\",\"name\":\"orch_turn\",\"input\":{\"reply\":\"first\"}},"
       "{\"type\":\"tool_use\",\"id\":\"b\",\"name\":\"orch_turn\",\"input\":{\"reply\":\"second\"}}],"
-      "\"stop_reason\":\"tool_use\"}"});
-  auto pd2 = d2.contract();
-  nimbus::orch::Transcript tr2;
-  tr2.addUser("hi");
-  nimbus::orch::HeadStepFn step2 = providers::antLoopStep(pd2, instr, rig.ht, nullptr, tr2);
-  const nimbus::orch::HeadStep st2 = step2(true, {}, 60000, "");
-  TEST_ASSERT_TRUE(st2.finished);
-  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"first\"}", st2.finalTurn.c_str());
-  TEST_ASSERT_EQUAL(0, (int)st2.toolCalls.size());
+      "\"stop_reason\":\"tool_use\"}",
+      "hi");
+  TEST_ASSERT_TRUE(st.finished);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"first\"}", st.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(0, (int)st.toolCalls.size());
+}
+
+// prism (roast + logic): a response cut by max_tokens can end INSIDE its last
+// tool_use block; that call must be retried, never run (a half-written
+// memory_write). Since the scan no longer stops at orch_turn, such a call could
+// ride a finished step - the round fails with the real cause instead, nothing is
+// dispatched. A call BEFORE a complete trailing orch_turn is whole and still runs.
+static void test_loop_call_cut_by_max_tokens_never_runs() {
+  const std::string fin = "{\"type\":\"tool_use\",\"id\":\"tu_fin\",\"name\":\"orch_turn\",\"input\":{\"reply\":\"saved\"}}";
+  const std::string cut = "{\"type\":\"tool_use\",\"id\":\"tu_mw\",\"name\":\"memory_write\",\"input\":{\"content\":\"Omar's boat is the Ner\"}}";
+  for (const std::string& blocks : {fin + "," + cut, cut}) {   // after a final, or a plain tool round
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+                             "{\"content\":[" + blocks + "],\"stop_reason\":\"max_tokens\"}"});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
+    TEST_ASSERT_EQUAL_STRING("truncated at max_tokens inside a tool call", err.c_str());
+    TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
+  }
+  const nimbus::orch::HeadStep st = stepOver(
+      "{\"content\":[" +
+          std::string("{\"type\":\"tool_use\",\"id\":\"tu_mw\",\"name\":\"memory_write\",\"input\":{\"content\":\"x\"}},") +
+          fin + "],\"stop_reason\":\"max_tokens\"}",
+      "hi");
+  TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
+  TEST_ASSERT_TRUE(st.finished);
+  TEST_ASSERT_EQUAL(1, (int)st.toolCalls.size());
 }
 
 // A finished step is never re-read as a text-only round: an orch_turn whose
@@ -572,6 +603,8 @@ int main(int, char**) {
   RUN_TEST(test_loop_max_tokens_truncation_fails_loud);
   RUN_TEST(test_loop_sibling_after_orch_turn_is_dispatched_once);
   RUN_TEST(test_loop_step_carries_sibling_after_orch_turn);
+  RUN_TEST(test_loop_step_first_orch_turn_wins);
+  RUN_TEST(test_loop_call_cut_by_max_tokens_never_runs);
   RUN_TEST(test_loop_finished_step_is_not_a_truncated_text_round);
   RUN_TEST(test_sub_dispatch_full_chain_and_caches);
   RUN_TEST(test_sub_dispatch_stale_404_clears_caches);

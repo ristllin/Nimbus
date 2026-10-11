@@ -85,7 +85,9 @@ delivered, then discards that premature reply - it was written before the
 results existed - and the next round hands the results back, so the answer the
 owner gets can only claim saves (or use data) it actually saw. On the forced
 final round (tools withdrawn) such calls are not run. The OpenAI, Mistral and
-Anthropic steps surface every sibling call, before or after `orch_turn`.
+Anthropic steps surface every sibling call, before or after `orch_turn`. An
+Anthropic response cut by `max_tokens` inside its last tool call fails the
+round instead (a half-written call is never run).
 
 Each renderer speaks its provider's dialect from the same record:
 

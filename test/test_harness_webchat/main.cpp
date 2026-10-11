@@ -371,7 +371,7 @@ struct WebSink {
 };
 
 struct HistoryRow {
-  std::string chat, role, text;
+  std::string chat, text;
 };
 
 // GET /api/chat?watch=1 through the real route body: what the page's watcher reads.
@@ -391,7 +391,7 @@ static agent::ApplyDeps routineApplyDeps(WebSink& sink, std::vector<HistoryRow>&
     if (chat == "web") sink.send(text);
   };
   d.captureAssistant = [&history](const std::string& chat, const std::string& text) {
-    history.push_back({chat, "assistant", text});
+    history.push_back({chat, text});
   };
   d.turnComplete = [&sink](const std::string& chat) {
     if (!sink.routine && chat == "web") sink.send("Done.");

@@ -119,18 +119,22 @@ static void test_mistral_128k_derivation() {
 // guess. Static guard over the device source (code lines, comments stripped):
 // exactly ONE deriveBudget call and ONE store::resolvedOrchHost call, both in the
 // shared headBudget() helper, so a new size site cannot drift to another head.
-static std::string codeOf(const char* path) {
-  std::string out;
+static std::string readFile(const char* path) {
   FILE* f = std::fopen(path, "rb");
   TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
-  char buf[4096];
   std::string all;
+  char buf[4096];
   for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) all.append(buf, n);
   std::fclose(f);
-  for (size_t s = 0; s < all.size();) {
-    size_t e = all.find('\n', s);
-    if (e == std::string::npos) e = all.size();
-    std::string line = all.substr(s, e - s);
+  return all;
+}
+// Each line cut at its first "//" (comments carry the helper's name too).
+static std::string stripLineComments(const std::string& src) {
+  std::string out;
+  for (size_t s = 0; s < src.size();) {
+    size_t e = src.find('\n', s);
+    if (e == std::string::npos) e = src.size();
+    std::string line = src.substr(s, e - s);
     const size_t c = line.find("//");
     if (c != std::string::npos) line.erase(c);
     out += line + "\n";
@@ -144,7 +148,7 @@ static int countOf(const std::string& hay, const std::string& needle) {
   return n;
 }
 static void test_orchestrator_sizes_off_one_head_budget() {
-  const std::string src = codeOf("src/agent/orchestrator.cpp");
+  const std::string src = stripLineComments(readFile("src/agent/orchestrator.cpp"));
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "deriveBudget("), "a second budget derivation in orchestrator.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
   const size_t helper = src.find("ContextBudget headBudget()");

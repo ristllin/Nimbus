@@ -4829,7 +4829,8 @@ function _chatWatchNext(){
 }
 function _chatWatchPoll(){
   if(!canPoll()){_chatWatchNext();return;}   // signed out: wait, never flood 401s
-  fetch('/api/chat?watch=1').then(r=>r.json()).then(d=>_chatWatch(d,false)).catch(_chatWatchNext);
+  fetch('/api/chat?watch=1').then(r=>r.ok?r.json():Promise.reject(r.status))
+    .then(d=>_chatWatch(d,false)).catch(_chatWatchNext);
 }
 // Rapid taps must never be lost or mismatched (CUM-218). Every send gets its own
 // user bubble + dim pending bubble IMMEDIATELY - even mid-turn - and is queued.

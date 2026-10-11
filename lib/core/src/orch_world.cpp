@@ -303,7 +303,8 @@ namespace {
 void appendConversation(std::string& out, const std::string& conv, int budget, int reserve,
                         AssembledContext& ctx) {
   if (conv.empty()) return;
-  if (reserve <= budget - (int)out.size()) budget -= reserve;
+  const bool scratchpadCanFit = reserve <= budget - (int)out.size();
+  if (scratchpadCanFit) budget -= reserve;
   if ((int)(out.size() + conv.size()) <= budget) {
     out += conv;
     return;
@@ -419,20 +420,38 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
     tryAppend(out, in.capabilities, "capabilities", softBudget, ctx);
   }
   tryAppend(out, in.sessions, "sessions", softBudget, ctx);
+  // 6 (rendered here, appended after the window): the scratchpad, fit-or-drop as
+  // a unit - it is already tier/count capped, so it is small. ALWAYS shown with
+  // the write instruction rendered right after the data - the reason the
+  // scratchpad went unused was that nothing ever told the model, next to the
+  // block, HOW to write it. Rendered BEFORE the summary and the window are fitted
+  // so neither takes its room (CUM-485, gate W2 #4).
+  std::string sp;
+  if (in.scratchpad) {
+    if (in.scratchpad->empty())
+      sp = "\n## SCRATCHPAD (your own working notes)\n(empty)\n";
+    else
+      in.scratchpad->appendPromptBlock(sp);
+    sp += "To update it, return the `scratchpad` field in orch_turn "
+          "(active/short/mid/long) - a FREE write; a non-null tier replaces it, "
+          "null leaves it. Keep your current multi-step plan here.\n";
+  }
   // 5b: the per-chat conversation window (Release B1) - byte-capped at build
   // time (newest rows whole first), then trimmed oldest-first here if the
   // prompt has less room than its cap (appendConversation, CUM-485).
   // 5a before 5b: the anchored fold summary, then the verbatim recent tail -
   // the researched summary+tail shape. Under budget pressure 5a is sacrificed
   // FIRST (the verbatim tail is the fresher signal): emission order would give
-  // 5a budget priority, so explicitly require room for BOTH before emitting it.
-  if (!in.chatSummary.empty() &&
-      (int)(out.size() + in.chatSummary.size() + in.recentConversation.size()) >
-          softBudget) {
+  // 5a budget priority, so explicitly require room for BOTH before emitting it -
+  // and for the scratchpad after them, whenever it can fit at all (the same
+  // reserve appendConversation holds back).
+  const int spHold = (int)sp.size() <= softBudget - (int)out.size() ? (int)sp.size() : 0;
+  const int tail = (int)in.recentConversation.size() + spHold;
+  if (!in.chatSummary.empty() && (int)(out.size() + in.chatSummary.size()) + tail > softBudget) {
     // Gradient, not fit-or-drop (Context Fabric): CLIP the summary to whatever
     // room remains above the verbatim tail (floor 1024 B) before dropping it
     // outright - a shortened anchored summary still beats no summary at all.
-    const int room = softBudget - (int)(out.size() + in.recentConversation.size());
+    const int room = softBudget - (int)out.size() - tail;
     if (room >= 1024) {
       int keep = utf8CapLen(in.chatSummary.c_str(), (int)in.chatSummary.size(), room - 4);
       out += in.chatSummary.substr(0, (size_t)keep) + "\xE2\x80\xA6\n";
@@ -444,21 +463,6 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
     }
   } else {
     tryAppend(out, in.chatSummary, "chatsummary", softBudget, ctx);
-  }
-  // 6: scratchpad (render then fit-or-drop as a unit - it is already tier/count
-  // capped, so it is small). ALWAYS shown with the write instruction rendered
-  // right after the data - the reason the scratchpad went unused was that
-  // nothing ever told the model, next to the block, HOW to write it. Rendered
-  // BEFORE the window is fitted so a trimmed window leaves its room (CUM-485).
-  std::string sp;
-  if (in.scratchpad) {
-    if (in.scratchpad->empty())
-      sp = "\n## SCRATCHPAD (your own working notes)\n(empty)\n";
-    else
-      in.scratchpad->appendPromptBlock(sp);
-    sp += "To update it, return the `scratchpad` field in orch_turn "
-          "(active/short/mid/long) - a FREE write; a non-null tier replaces it, "
-          "null leaves it. Keep your current multi-step plan here.\n";
   }
   appendConversation(out, in.recentConversation, softBudget, (int)sp.size(), ctx);
   tryAppend(out, sp, "scratchpad", softBudget, ctx);

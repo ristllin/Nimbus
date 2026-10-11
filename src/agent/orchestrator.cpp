@@ -860,11 +860,11 @@ static TurnEngine::Deps buildTurnDeps() {
     { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
     // CUM-511: the window stops at the chat's newest /clear boundary (a cleared
     // chat carries no prior conversation); the in-flight row is excluded.
-    // CUM-485: the byte budget derives from the head model's window (8192 B at
-    // the 200K anchor; the old fixed 3000 B cut the previous reply's code), and
-    // the newest rows are kept WHOLE first - on a stateless tool-loop turn this
-    // window is the only place the model sees its last answer.
-    // Sized for the head the ENGINE will run (headBudget).
+    // CUM-485: the byte budget derives from the window of the head the ENGINE
+    // runs (headBudget; 8192 B at the 200K anchor; the old fixed 3000 B cut the
+    // previous reply's code), and the newest rows are kept WHOLE first - on a
+    // stateless tool-loop turn this window is the only place the model sees its
+    // last answer.
     return agent::recentConversationBlock(rows, std::string(g_curUserRowId),
                                           headBudget().recentConvBytes);
   };

@@ -100,8 +100,8 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   // + inputs are per-fire transients (stack/heap strings freed on return; the
   // digest is byte-capped at kDigestCapBytes) - no steady-state SRAM.
   MemStats stats;
-  std::string digest, scratch;
-  bool emptyDay = false;
+  std::string scratch;
+  Yesterday yesterday;
   uint64_t scratchHash = 0;
   {
     memory::Lock lk;
@@ -110,9 +110,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
     // (prism R2, "namespace laundering"): limited to the owner's OWN surfaces plus
     // the device timeline - a guest's private conversation must never be absorbed
     // into the owner's memories overnight.
-    const Yesterday y = readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
-    emptyDay = y.empty;
-    digest = y.digest;
+    yesterday = readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
     memory::scratchpad().appendPromptBlock(scratch);
     scratchHash = orch::fnv64(memory::scratchpad().serialize());
     memory::Stats s = memory::stats();
@@ -131,7 +129,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   // mistake consecutive quiet nights for a stuck loop and pause dreaming.
   {
     const uint64_t lastHash = strtoull(store::dreamScratchHash().c_str(), nullptr, 16);
-    if (skipReflection(emptyDay, scratchHash, lastHash, force)) {
+    if (skipReflection(yesterday.empty, scratchHash, lastHash, force)) {
       orch::FireOutcome o;
       o.ok = true;
       char fp[128];
@@ -147,7 +145,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
     }
   }
 
-  const std::string inputs = buildDreamInputs(digest, scratch, stats);
+  const std::string inputs = buildDreamInputs(yesterday.digest, scratch, stats);
 
   // Ordinary scheduled turn: same rails (reboot/loop.create refused, LoopCaps
   // metered - attribution tag rides in as "loop:dream"). quietOk: an all-empty
