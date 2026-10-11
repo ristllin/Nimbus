@@ -146,6 +146,7 @@ class WebApi {
     if (base == "/api/voices" && m == "GET")      { out = okJson("[]");     return true; }
     if (base == "/api/token/regen" && m == "POST"){ out = tokenRegen();     return true; }
     if (base == "/api/usage/history" && m == "GET") { out = usageHistory(); return true; }
+    if (base == "/api/models" && m == "GET")      { out = modelsResp(path); return true; }
     return false;
   }
 
@@ -349,7 +350,7 @@ class WebApi {
   bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
     if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
     if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
-    if (base == "/api/verify" || base == "/api/preview")
+    if (base == "/api/preview")
       { out = okJson(R"({"ok":true})"); return true; }
     return false;
   }
@@ -605,11 +606,14 @@ class WebApi {
       // (including Z.ai's Z_AI_TOKEN) is a real env key hostAvailable() reads.
       o["hasKey"] = (slug == kCumuloSlug) ? rig_->hasCumulo() : rig_->hostAvailable(slug);
       if (slot.recommended) o["recommended"] = true;
-      // A hosted instance has no cheap UI key-verify path; the badge stays an honest
-      // "unverified" (vts 0 + verify -1). The page's hosted save-flow does not spin on
-      // a verify poll - it saves and reports "applied" directly (CUM-279).
-      o["verify"] = -1;
-      o["vts"] = 0;
+      // The real verdict (CUM-545): the provider's model-list read on start, on a
+      // key save and on POST /api/verify, or a turn that answered on this head.
+      // The page unlocks the model pickers on verify 1 and shows vfyReason on -1.
+      const ProviderVerify pv = rig_->verifyState(slug);
+      o["verify"] = pv.verify;
+      o["vts"] = (double)pv.vts;
+      if (!pv.reason.empty()) o["vfyReason"] = pv.reason;
+      o["choices"] = rig_->modelChoicesFor(slug);
       // The resolved model this head requests (an in-app pick or the provider
       // default), same field the device page reads (CUM-425), and the sub-agent
       // model a spawn there runs (device subModel).
@@ -904,6 +908,8 @@ class WebApi {
     if (w.empty()) return okJson(R"({"ok":true,"applied":0})");   // only no-op knobs or the allowlist
     auto fut = eng_->dispatchRead([this, w]() { return applyOrchWrites(w); });
     reprobeOnMistralKey(w.keys);
+    for (const auto& k : w.keys)   // a new key is verified right after it applies (CUM-545)
+      if (!k.second.empty()) kickVerify(k.first);
     // The write is QUEUED on the engine thread and will apply: past the wait (a
     // background probe ahead of it), say so rather than a 503 that reads as failed
     // and invites a duplicate save.
@@ -959,8 +965,48 @@ class WebApi {
   // thread (serialized with turns); GET /api/connectors shows the result. Other
   // providers are acknowledged, as before (nothing to check on a hosted instance).
   ApiResp verifyPost(const std::string& body) {
-    if (formValue(body, "provider") == "mistral" && rig_->wantsWorkspaceProbe()) kickProbe();
+    const std::string prov = formValue(body, "provider");
+    if (prov == "mistral" && rig_->wantsWorkspaceProbe()) kickProbe();
+    // Nothing to check without a key: acknowledged, and the badge stays unverified.
+    if (!rig_->keyedForEngine(prov)) return okJson(R"({"ok":true,"verified":false})");
+    kickVerify(prov);
     return okJson(R"({"ok":true})");
+  }
+  // Queue ONE background verify for a provider (coalesced, serialized with turns).
+  void kickVerify(const std::string& slug) {
+    if (!rig_->claimVerify(slug)) return;
+    NimbusdRig* rig = rig_;
+    eng_->postWork([rig, slug] { rig->verifyProvider(slug); });
+  }
+
+  // GET /api/models[?provider=<slug>] - the model catalog the page's pickers group
+  // (device shape, webui.cpp buildModelsCatalog): per provider the verdict and the
+  // models the last verify harvested (the router's priced catalog for Cumulo).
+  ApiResp modelsResp(const std::string& path) {
+    const std::string only = queryParam(path, "provider");
+    JsonDocument d;
+    d["generatedAt"] = (double)time(nullptr);
+    d["ttlSec"] = 86400;
+    int rc = 0;
+    const char* const* rt = nimbus::orch::roleTokens(rc);
+    JsonArray roles = d["roles"].to<JsonArray>();
+    for (int i = 0; i < rc; i++) roles.add(rt[i]);
+    JsonObject provs = d["providers"].to<JsonObject>();
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      const std::string slug = nimbus::orch::kProviderSlots[i].slug;
+      if (!only.empty() && only != slug) continue;
+      const ProviderVerify pv = rig_->verifyState(slug);
+      JsonObject o = provs[slug].to<JsonObject>();
+      o["keyed"] = rig_->keyedForEngine(slug);
+      o["verified"] = pv.verify;
+      if (!pv.reason.empty()) o["vfyReason"] = pv.reason;
+      o["refreshedAt"] = (double)pv.catalogAt;
+      o["stale"] = pv.catalogAt == 0;
+      nimbus::orch::modelsToJson(pv.models, o["models"].to<JsonArray>(), /*includeUnusable=*/false);
+    }
+    std::string out;
+    serializeJson(d, out);
+    return okJson(out);
   }
 
   // ------------------------------------------------------------------ /api/connect

@@ -144,6 +144,21 @@ void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Opt
                            : "waiting for a key (" + opt.embedHost + ")"));
 }
 
+// Background checks queued on the engine thread at start, before any turn:
+//  * the Mistral workspace answer is RAM state, so probe it and an enabled Studio
+//    connector (gcal/notion/slack) is usable after a restart without anyone pressing
+//    verify (a no-op without a Mistral key or an enabled Studio connector);
+//  * verify every keyed provider once (CUM-545): the badge and the model pickers
+//    read the verdict and the harvested catalog (unmetered model-list reads).
+void queueStartupChecks(nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng) {
+  if (rig.claimProbe()) eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
+  for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+    const std::string slug = nimbus::orch::kProviderSlots[i].slug;
+    if (rig.keyedForEngine(slug) && rig.claimVerify(slug))
+      eng.postWork([&rig, slug] { rig.verifyProvider(slug); });
+  }
+}
+
 int runDaemon(nimbusd::Config& cfg) {
   auto opt = buildOptions(cfg);
   logStartupConfig(cfg, opt);
@@ -151,11 +166,7 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::NimbusdRig rig(cfg, opt);
   nimbusd::EngineThread eng(&rig);
   eng.start();
-  // The Mistral workspace answer is RAM state: probe it at startup so an enabled
-  // Studio connector (gcal/notion/slack) is usable after a restart without anyone
-  // pressing verify (a hosted page has no verify button). A no-op without a Mistral
-  // key or an enabled Studio connector; runs on the engine thread before any turn.
-  if (rig.claimProbe()) eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
+  queueStartupChecks(rig, eng);
 
   // The reply ring that backs the web chat page (GET /api/replies). Every reply
   // the engine produces is recorded here and, when a bot is configured, also

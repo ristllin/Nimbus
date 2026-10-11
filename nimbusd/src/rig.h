@@ -9,6 +9,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,6 +38,7 @@
 #include "posix_files.h"
 #include "posix_fs.h"
 #include "posix_platform.h"
+#include "provider_verify.h"
 #include "router_head.h"
 #include "sub_fabric.h"
 #include "tg_access.h"
@@ -526,6 +528,69 @@ class NimbusdRig {
     std::lock_guard<std::mutex> lk(wsMu_);
     return ws_.probed;
   }
+  // ---- provider verify + model catalogs (CUM-545, device provider_verify) -------
+  // One unmetered read of the provider's model list: its status is the badge
+  // (verified / rejected / could not verify + reason) and its body is the catalog
+  // the model picker and the prompt's model list read. Engine thread only (it uses
+  // the engine's transport); readers take a copy from verify_.
+  bool verifyProvider(const std::string& slug) {
+    releaseVerify(slug);
+    const std::string key = slug == kCumuloSlug ? cumuloKey() : cfg_.providerKey(slug);
+    if (key.empty()) return false;
+    const std::string zaiHost = cfg_.get("NIMBUSD_ZAI_BASE").empty() ? kZaiHost : cfg_.get("NIMBUSD_ZAI_BASE");
+    ProbeTarget t;
+    if (!probeTarget(slug, key, zaiHost, t)) return false;
+    agent::HttpRequest req;
+    req.method = "GET";
+    req.host = t.host;
+    req.path = t.path;
+    req.timeoutMs = 15000;
+    req.headers = t.headers;
+    agent::HttpResponse resp;
+    std::string err;
+    const int status = http_->exec(req, resp, err) ? resp.status : 0;
+    std::string reason;
+    verify_.record(slug, probeVerdict(slug, status, reason), reason);
+    if (status == 200) {
+      std::vector<nimbus::orch::ModelInfo> cat;
+      nimbus::orch::parseModelsList(slug, resp.body, cat);
+      // The parser splits a router id into (upstream, bare id); the picker posts the
+      // id back as the head selector, which must be the routable "<upstream>/<model>".
+      for (auto& m : cat)
+        if (slug == kCumuloSlug && !m.upstream.empty() && m.id.find('/') == std::string::npos)
+          m.id = m.upstream + "/" + m.id;
+      if (!cat.empty()) verify_.setCatalog(slug, std::move(cat));
+    }
+    std::fprintf(stderr, "[nimbusd] verify %s: HTTP %d%s%s\n", slug.c_str(), status,
+                 reason.empty() ? "" : " ", reason.c_str());
+    return status == 200;
+  }
+  ProviderVerify verifyState(const std::string& slug) const { return verify_.get(slug); }
+  // At most one verify queued per provider (claim before posting; the verify
+  // releases the claim as it starts, so a request mid-verify queues one more).
+  bool claimVerify(const std::string& slug) {
+    std::lock_guard<std::mutex> lk(verifyMu_);
+    return verifyQueued_.insert(slug).second;
+  }
+  void releaseVerify(const std::string& slug) {
+    std::lock_guard<std::mutex> lk(verifyMu_);
+    verifyQueued_.erase(slug);
+  }
+  // The Recommended list the picker and the prompt read for a provider: the
+  // harvested catalog when there is one, else the compiled default.
+  std::string modelChoicesFor(const std::string& h) const {
+    const std::string harvested =
+        catalogCsv(verify_.get(h).models, nimbus::orch::RoleOrchestrator, 8);
+    return !harvested.empty() ? harvested : staticChoices(h);
+  }
+  static std::string staticChoices(const std::string& h) {
+    if (h == "openai")    return "gpt-6-astra,gpt-5.6,gpt-5.6-luna";
+    if (h == "anthropic") return "claude-opus-5,claude-sonnet-5,claude-haiku-4-5";
+    if (h == "mistral")   return "mistral-large-latest,mistral-medium-latest,mistral-small-latest";
+    if (h == "zai")       return "glm-5.3,glm-5.2,glm-5.3-flash";
+    return std::string();
+  }
+
   // The credential state for one connector by the shared rule, against the current
   // workspace answer. T3 OAuth has no hosted mint, so its live signal is -1.
   int8_t connectorAuth(const nimbus::orch::ConnectorInfo& c) const {
@@ -608,6 +673,7 @@ class NimbusdRig {
     if (env.empty()) return false;
     cfg_.setOverride(env, key);   // authoritative; an empty key erases the override
     saveSecrets();
+    verify_.forget(host);         // a new key starts unverified; the web layer re-verifies it
     // Device parity (resetMistralConnectorsProbe on a mistKey write): a connector
     // listed under the OLD key's workspace must not read usable under the new key
     // until a fresh probe lands (the web layer kicks one right after).
@@ -1148,13 +1214,7 @@ class NimbusdRig {
     p.subPriority = [this] { return subPriority(); };
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
     p.subModel = [this](const std::string& h) { return subModelFor(h); };
-    p.modelChoices = [](const std::string& h) {
-      if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
-      if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
-      if (h == "mistral")   return std::string("mistral-large-latest,mistral-medium-latest,mistral-small-latest");
-      if (h == "zai")       return std::string("glm-5.3,glm-5.2,glm-5.3-flash");
-      return std::string();
-    };
+    p.modelChoices = [this](const std::string& h) { return modelChoicesFor(h); };
     p.convId = [this] { return convId_; };
     p.setConvId = [this](const std::string& v) { convId_ = v; };
     p.customBase = [] { return std::string(); };
@@ -1321,6 +1381,8 @@ class NimbusdRig {
       prefixReply(o.out, fallbackNotice(kind, picked, fallback));
       return true;
     }
+    if (kind == RefusalKind::Auth) verify_.record(kCumuloSlug, 0, "");
+    if (kind == RefusalKind::Account) verify_.record(kCumuloSlug, -1, "nocredits");
     const std::string cause = refusalCause(kind, picked);
     if (!cause.empty()) o.err = cause;
     return false;
@@ -1430,6 +1492,7 @@ class NimbusdRig {
     };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
       lastHost_ = ev.host;
+      if (ev.ok && !ev.host.empty()) verify_.markWorking(ev.host);   // the key answered (CUM-545)
       // Served-by disclosure (CUM-236): remember whether this turn was served by a
       // fallback provider/model and how to say it, so the web chat can surface it.
       lastFallback_ = ev.fallback;
@@ -1710,10 +1773,14 @@ class NimbusdRig {
     jd.subPriority = [this] { return subLadder(); };
     jd.providerHasKey = [this](const std::string& p) { return keyedForEngine(p); };
     jd.subModel = [this](const std::string& p) { return subModelFor(p); };
-    // No live-harvested model catalog on a hosted instance to validate a spawn's
-    // model pick against, so every spawn runs the configured sub model (the engine
-    // coerces when this is unset) - never a model the key may not be entitled to.
-    jd.modelIsValid = nullptr;
+    // A spawn may name a router model the harvested Cumulo catalog lists (the
+    // router prices it, so the key is entitled to it); everything else runs the
+    // configured sub model (the engine coerces) - never a model the key may not be
+    // entitled to. BYOK providers have no per-spawn routing here, so they coerce.
+    jd.modelIsValid = [this](const std::string& p, const std::string& m) {
+      if (p != kCumuloSlug || m.empty()) return false;
+      return m == subModelFor(p) || catalogHas(verify_.get(p).models, m, nimbus::orch::RoleSubAgent);
+    };
     jd.connectorProvider = [this](const std::string& skill) { return connectorProviderFor(skill); };
     jd.nowString = [] { return localNowString(); };
     jd.chatContext = [this](const std::string& chat) { return spawnContext(chat); };
@@ -1829,6 +1896,9 @@ class NimbusdRig {
   mutable std::mutex modelsMu_;  // guards opt_.models + subModels_ (HTTP reads, engine writes)
   std::map<std::string, std::string> subModels_;   // sub-agent model picks (device subM_<slug>)
   SettingsStore settings_;       // the owner's settings (CUM-543), durable, thread-safe
+  ProviderVerifyStore verify_;   // per-provider verify verdict + harvested catalog (CUM-545)
+  std::mutex verifyMu_;
+  std::set<std::string> verifyQueued_;   // providers with a verify queued
   std::string envTz_;            // the operator's TZ at start ("" = none)
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
   uint32_t epiSeq_ = 0;          // episodic row id sequence (engine thread)

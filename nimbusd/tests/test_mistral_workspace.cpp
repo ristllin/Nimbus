@@ -290,9 +290,17 @@ static void testWebSurface(ndtest::Ctx& c) {
   std::printf("  -- (f)(g) web surface: badges, catalog, capabilities, background probes --\n");
   clearEnv();
   FakeHttpTransport tx;
+  // Since CUM-545 a verify and a key write also read the key's model list (the
+  // badge + the picker catalog), queued right after the workspace probe.
+  Exchange models;
+  models.expectHost = "api.mistral.ai";
+  models.expectPathContains = "/v1/models";
+  models.body = "{\"data\":[]}";
   tx.script.push_back(ok200("{\"items\":[]}"));   // probe #1 (connectors write): empty workspace
   tx.script.push_back(ok200(kListing));           // probe #2 (/api/verify)
+  tx.script.push_back(models);                    // the verify's model-list read
   tx.script.push_back(ok200(kListing));           // probe #3 (after a Mistral key write)
+  tx.script.push_back(models);                    // the new key's model-list read
   Config cfg;
   NimbusdRig::Options o = opts("mws-f", "openai,anthropic,mistral,cumulo");
   o.subPriority = "openai,mistral,anthropic";
@@ -318,7 +326,7 @@ static void testWebSurface(ndtest::Ctx& c) {
   // POST /api/verify provider=mistral re-probes; the live-shaped listing flips gcal.
   c.eqi(post(api, "/api/verify", "provider=mistral").status, 200, "POST /api/verify accepted");
   c.ok(waitForProbe(rig, 2, 200) && rig.workspaceProbe().noted, "verify ran the workspace probe");
-  c.eqi(post(api, "/api/verify", "provider=openai").status, 200, "a non-mistral verify is acknowledged");
+  c.eqi(post(api, "/api/verify", "provider=openai").status, 200, "a verify for an unkeyed provider is acknowledged");
   const std::string conns = get(api, "/api/connectors");
   c.eqi(badgeAuthOf(conns, "gcal"), 1, "after verify the gcal badge reads usable (auth 1)");
   c.ok(has(conns, "\"host\":\"mistral\""), "the badge host is the resolved head (mistral)");
@@ -334,7 +342,9 @@ static void testWebSurface(ndtest::Ctx& c) {
   for (const auto& h : tx.seen.back().headers)
     if (h.first == "Authorization" && h.second == "Bearer mk_TEST_KEY_7") newBearer = true;
   c.ok(newBearer, "the re-probe used the NEW key");
-  c.eqi((long)tx.seen.size(), 3, "three probes total (write, verify, key change); no stray requests");
+  for (int i = 0; i < 150 && tx.seen.size() < 5; i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  c.eqi((long)tx.seen.size(), 5,
+        "three workspace probes + two model-list reads (verify, key change); no stray requests");
   eng.stop();
   clearEnv();
 }

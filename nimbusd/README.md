@@ -246,7 +246,8 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
-| `POST /api/verify` | `provider=mistral` re-runs the Mistral workspace probe in the background; other providers are acknowledged |
+| `POST /api/verify` | verifies a keyed provider in the background the device's way (one unmetered read of its model list; the router's `GET /router/models` for Cumulo): `GET /api/orch` then reports `verify` 1 / 0 / -1 with `vfyReason` (`nocredits`, `router_outdated`), and the harvested list is the model picker's catalog. Also run at start and after a key save; a turn that answered on a head marks it verified. `provider=mistral` also re-runs the workspace probe |
+| `GET /api/models` | the harvested model catalog per provider (device shape; Cumulo ids are routable `<upstream>/<model>` selectors grouped by upstream) |
 | `GET /api/telegram`, `POST /api/telegram/{add,approve,deny,remove,rename,role,public}` | the Telegram allowlist + approval queue (device routes and shapes); `public` (open access) is refused on a hosted instance |
 | `GET/POST /api/tenant` | RBAC roles + limits per approved chat (device routes, device guards) |
 
