@@ -78,6 +78,15 @@ This is the invariant that makes a mid-turn provider switch possible (below):
 executed tool results ride the transcript as DATA, so re-rendering a round
 against a different provider replays nothing - the tools already ran.
 
+**Calls sent WITH the final answer run before any reply.** A model may batch
+tool calls (typically `memory_write`) in the same response as its final
+`orch_turn`. The controller runs those calls once, before any reply is
+delivered, then discards that premature reply - it was written before the
+results existed - and the next round hands the results back, so the answer the
+owner gets can only claim saves (or use data) it actually saw. On the forced
+final round (tools withdrawn) such calls are not run. The OpenAI and Mistral
+steps surface every sibling call, before or after `orch_turn`.
+
 Each renderer speaks its provider's dialect from the same record:
 
 - **Anthropic** (`renderAntMessages`, `anthropic.cpp`) rebuilds `messages[]`:

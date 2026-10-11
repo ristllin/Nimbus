@@ -8,7 +8,8 @@
 // head_loop - the portable, provider-agnostic controller for the head
 // orchestrator's multi-turn agentic tool-use loop (ReAct). The model calls tools,
 // sees each result, keeps going across model turns, and STOPS when it emits the
-// terminal `orch_turn` (the "final answer" tool). This driver owns ONLY the loop
+// terminal `orch_turn` (the "final answer" tool) with no other calls beside it -
+// calls batched WITH orch_turn run first and the model answers again (CUM-506). This driver owns ONLY the loop
 // control - bounded rounds / wall-clock deadline / per-round heap re-gate, plus the
 // accumulator bound - and shuttles opaque JSON strings between the provider and the
 // tool dispatcher through injected callbacks. It has NO Arduino / ArduinoJson / TLS
@@ -52,7 +53,8 @@ struct HeadStep {
   std::string error;          // set when !ok - aborts the loop (fail-soft to caller)
   bool        finished = false;  // model emitted the terminal orch_turn
   std::string finalTurn;         // the orch_turn JSON (when finished)
-  std::vector<HeadToolCall> toolCalls;  // tools to dispatch (when !finished)
+  std::vector<HeadToolCall> toolCalls;  // tools to dispatch; when finished, the calls
+                                        // batched WITH orch_turn (run, then re-asked)
   // Round prose ("thinking"): the non-tool text blocks the model emitted this
   // round. OBSERVED, never replayed (adapters keep their own API-pairing rules).
   // Glass Box A4 - this text was previously dropped on the floor at every

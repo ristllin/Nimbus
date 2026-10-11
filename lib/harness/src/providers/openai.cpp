@@ -469,9 +469,10 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
 
     // Walk EVERY function_call before deciding: the model may batch registry calls
     // WITH the terminal orch_turn in one response (tool_choice:"required" invites
-    // it). The batched siblings are DROPPED by design when orch_turn is present -
-    // the turn is over; re-dispatching them would double side effects. (With the
-    // stateless replay there is no chain to poison - the old F20 class is gone.)
+    // it). CUM-506: the siblings are surfaced, before or after orch_turn, and the
+    // controller runs them ONCE before accepting the final turn - dropping them
+    // lost five memory writes while the reply said "saved permanently". (With
+    // the stateless replay there is no chain to poison - the old F20 class is gone.)
     bool sawOrchTurn = false;
     for (JsonObjectConst item : resp["output"].as<JsonArrayConst>()) {
       // Reasoning items: summaries -> HeadStep.text (Glass Box A4, observed by
@@ -497,24 +498,18 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       const char* nm   = item["name"] | "";
       const char* args = item["arguments"] | "";   // a JSON STRING
       if (!strcmp(nm, "orch_turn")) {
+        if (!sawOrchTurn) out.finalTurn = (args && args[0]) ? args : "";
         sawOrchTurn   = true;
         out.finished  = true;
-        out.finalTurn = (args && args[0]) ? args : "";
         continue;                                   // keep scanning for siblings
       }
-      if (!sawOrchTurn) {                           // dispatched normally next
-        orch::HeadToolCall call;
-        call.id       = item["call_id"] | "";
-        call.name     = nm;
-        call.argsJson = (args && args[0]) ? args : "{}";
-        out.toolCalls.push_back(call);
-      }
+      orch::HeadToolCall call;                      // a sibling of orch_turn, or
+      call.id       = item["call_id"] | "";         // an ordinary tool round
+      call.name     = nm;
+      call.argsJson = (args && args[0]) ? args : "{}";
+      out.toolCalls.push_back(call);
     }
-    if (out.finished) {
-      out.toolCalls.clear();   // the turn is over - never dispatch after the final
-      return out;
-    }
-    return out;   // text-only -> controller stall path
+    return out;   // finished (siblings ride along), a tool round, or text-only
   };
 }
 

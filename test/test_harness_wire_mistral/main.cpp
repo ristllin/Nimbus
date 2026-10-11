@@ -64,6 +64,81 @@ static std::string chatProseBody() {
          "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}";
 }
 
+// CUM-506: the response bench unit B got from mistral-large-latest for "keep
+// these five facts on file": five memory_write calls and the final orch_turn in
+// ONE message (the facts and reply text are the captured ones). `orchFirst`
+// puts the orch_turn call ahead of the writes - both orders occur.
+static std::string chatFiveFactsBody(bool orchFirst) {
+  static const char* kFacts[] = {
+      "Omar's advisor is Dr. Leila Mansour.",
+      "Omar's research boat is called the Nereid II.",
+      "Omar's main field site is located at 39.5694 N, 2.6502 E in the Bay of Palma, Mallorca.",
+      "Omar's grant report deadline is 15 January 2027.",
+      "Omar's favourite coffee is a cortado with oat milk.",
+  };
+  JsonDocument d;
+  JsonObject m = d["choices"].add<JsonObject>()["message"].to<JsonObject>();
+  m["content"] = "";
+  JsonArray calls = m["tool_calls"].to<JsonArray>();
+  auto addFinal = [&] {
+    JsonObject c = calls.add<JsonObject>();
+    c["id"] = "fin000001";
+    c["function"]["name"] = "orch_turn";
+    c["function"]["arguments"] =
+        "{\"reply\":\"Got it! I'll remember:\\n- Your advisor is **Dr. Leila Mansour**.\\n"
+        "I've saved these permanently.\",\"memory\":\"\",\"ask\":\"\",\"mem_write\":[]}";
+  };
+  if (orchFirst) addFinal();
+  for (int i = 0; i < 5; ++i) {
+    JsonObject c = calls.add<JsonObject>();
+    c["id"] = std::string("mw000000") + std::to_string(i);
+    c["function"]["name"] = "memory_write";
+    JsonDocument a;
+    a["content"] = kFacts[i];
+    a["importance"] = 0.95;
+    a["permanent"] = true;
+    a["ttl"] = "permanent";
+    std::string args;
+    serializeJson(a, args);
+    c["function"]["arguments"] = args;
+  }
+  if (!orchFirst) addFinal();
+  d["usage"]["prompt_tokens"] = 14737;
+  d["usage"]["completion_tokens"] = 404;
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+// The five saves run BEFORE any reply is delivered (they used to be dropped while
+// the reply said "saved permanently"), in either call order, exactly once; the
+// premature reply is replaced by the next round's, written with the five results
+// in hand (the replay carries the calls and their results, never the premature
+// orch_turn call).
+static void test_cum506_five_facts_batched_with_the_final_turn_are_saved() {
+  for (bool orchFirst : {false, true}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFiveFactsBody(orchFirst)});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.result = "stored memory m00000001";
+    std::string conv, out, err;
+    bool ok = providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
+    TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+    TEST_ASSERT_EQUAL(5, (int)rig.dispatched.size());
+    for (const auto& c : rig.dispatched) TEST_ASSERT_EQUAL_STRING("memory_write", c.name.c_str());
+    TEST_ASSERT_TRUE(rig.dispatched[0].argsJson.find("Dr. Leila Mansour") != std::string::npos);
+    TEST_ASSERT_TRUE(rig.dispatched[4].argsJson.find("cortado with oat milk") != std::string::npos);
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_call_id\":\"mw0000004\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "stored memory m00000001"));
+    TEST_ASSERT_FALSE(bodyHas(d, 1, "fin000001"));      // the premature final is gone
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+  }
+}
+
 // ---- head single-shot -------------------------------------------------------
 
 static void test_new_conversation_request_shape() {
@@ -847,6 +922,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
   RUN_TEST(test_loop_stall_forces_named_final);
+  RUN_TEST(test_cum506_five_facts_batched_with_the_final_turn_are_saved);
   RUN_TEST(test_loop_422_detail_surfaces);
   RUN_TEST(test_foreign_call_ids_normalized);
   RUN_TEST(test_sub_dispatch_and_poll_cache);

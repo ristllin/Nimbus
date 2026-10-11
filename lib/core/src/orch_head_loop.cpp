@@ -24,6 +24,34 @@ const char* capReasonText(const std::string& reason) {
   return "a limit for this turn was reached";
 }
 
+namespace {
+// Clamp one tool result to cfg.maxToolResultBytes (0 = no clamp), spilling the
+// FULL result first so the truncation marker can carry a widenable fetch handle
+// (Context Fabric).
+void clampResult(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks, HeadToolResult& r) {
+  if (!cfg.maxToolResultBytes || r.output.size() <= cfg.maxToolResultBytes) return;
+  const size_t fullSize = r.output.size();
+  // ⚠ Never re-spill a results.* fetch: each page would push a fresh
+  // near-duplicate entry into the 16-slot ring and could evict the very
+  // entry being paged (prism 2026-08-05).
+  const bool isFetch = r.name.rfind("results", 0) == 0;
+  std::string handle = (hooks.spill && !isFetch) ? hooks.spill(r) : std::string();
+  // Clamp at a UTF-8 boundary: if the first dropped byte is a continuation
+  // byte (0b10xxxxxx), the cut splits a multi-byte code point - back up so the
+  // fed-back string stays valid UTF-8 (invalid bytes can 400 the next request).
+  size_t cut = cfg.maxToolResultBytes;
+  while (cut > 0 && ((unsigned char)r.output[cut] & 0xC0) == 0x80) --cut;
+  r.output.resize(cut);
+  if (handle.empty()) {
+    r.output += "…[truncated]";   // legacy marker, byte-identical (null hook)
+  } else {
+    r.output += "…[truncated " + std::to_string((unsigned)cut) + " of " +
+                std::to_string((unsigned)fullSize) +
+                " B - fetch the rest with results.get(\"" + handle + "\")]";
+  }
+}
+}  // namespace
+
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
@@ -31,6 +59,29 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   size_t totalBytes = 0;
   bool forceFinal = false;            // set by a stall / the byte budget
   std::string forceReason;
+
+  // Dispatch one round's calls: clamp + spill each result, record it, and
+  // accumulate it for the next step. Returns true when every call succeeded.
+  // Shared by an ordinary tool round and the siblings of a final orch_turn
+  // (CUM-506), so both get the same clamp, spill, transcript and byte budget.
+  auto dispatchAll = [&](const std::vector<HeadToolCall>& calls, int round) -> bool {
+    bool allOk = true;
+    for (const HeadToolCall& call : calls) {
+      HeadToolResult r = hooks.dispatch(call);
+      if (r.id.empty()) r.id = call.id;      // default: echo the call id
+      if (r.name.empty()) r.name = call.name;
+      if (r.isError) allOk = false;
+      clampResult(cfg, hooks, r);
+      totalBytes += r.output.size();
+      if (hooks.transcript) hooks.transcript->addToolResult(r, round);
+      prior.push_back(std::move(r));
+    }
+    if (cfg.maxTotalToolBytes && totalBytes >= cfg.maxTotalToolBytes) {
+      forceFinal = true;
+      forceReason = "bytes";
+    }
+    return allOk;
+  };
 
   // round increments only when we actually dispatch tools; once round reaches
   // maxRounds the gate below forces the tool-less final call, so the loop always
@@ -121,6 +172,27 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       if (!sr.meta.empty()) hooks.transcript->attachMeta(round, std::move(sr.meta));
     }
     if (sr.finished) {  // terminal orch_turn - the ONLY success exit
+      // CUM-506: tool calls the model batched WITH its final orch_turn (five
+      // memory_write calls beside "I've saved these permanently") were dropped,
+      // so the reply claimed saves that never happened. They run NOW, before any
+      // reply is delivered - and since that reply was written before their
+      // results existed (a failed save, or a read whose data it never saw), it
+      // is discarded: the next round hands the results back and the answer the
+      // owner gets is written with them in hand. Each call runs exactly once.
+      // On the forced final round tools were withdrawn (the model was told
+      // nothing it asks for will run), so stray calls there are not executed.
+      if (!sr.toolCalls.empty() && !lastChance) {
+        prior.clear();
+        const bool allOk = dispatchAll(sr.toolCalls, round);
+        if (hooks.log)
+          hooks.log("headloop: ran " + std::to_string(sr.toolCalls.size()) +
+                    " tool call(s) sent with the final answer" + (allOk ? "" : " (one failed)") +
+                    " - asking again with the results");
+        continue;
+      }
+      if (!sr.toolCalls.empty() && hooks.log)
+        hooks.log("headloop: dropped " + std::to_string(sr.toolCalls.size()) +
+                  " tool call(s) sent with the final answer on the forced round");
       out.ok = true;
       out.finalTurn = sr.finalTurn;
       out.rounds = round;
@@ -148,41 +220,7 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       forceReason = "stalled";
       continue;
     }
-    for (const HeadToolCall& call : sr.toolCalls) {
-      HeadToolResult r = hooks.dispatch(call);
-      if (r.id.empty()) r.id = call.id;      // default: echo the call id
-      if (r.name.empty()) r.name = call.name;
-      if (cfg.maxToolResultBytes && r.output.size() > cfg.maxToolResultBytes) {
-        // Spill the FULL result to the recent-results ring BEFORE clipping, so
-        // the marker can carry a widenable fetch handle (Context Fabric).
-        const size_t fullSize = r.output.size();
-        // ⚠ Never re-spill a results.* fetch: each page would push a fresh
-        // near-duplicate entry into the 16-slot ring and could evict the very
-        // entry being paged (prism 2026-08-05).
-        const bool isFetch = r.name.rfind("results", 0) == 0;
-        std::string handle = (hooks.spill && !isFetch) ? hooks.spill(r) : std::string();
-        // Clamp at a UTF-8 boundary: if the first dropped byte is a continuation
-        // byte (0b10xxxxxx), the cut splits a multi-byte code point - back up so the
-        // fed-back string stays valid UTF-8 (invalid bytes can 400 the next request).
-        size_t cut = cfg.maxToolResultBytes;
-        while (cut > 0 && ((unsigned char)r.output[cut] & 0xC0) == 0x80) --cut;
-        r.output.resize(cut);
-        if (handle.empty()) {
-          r.output += "…[truncated]";   // legacy marker, byte-identical (null hook)
-        } else {
-          r.output += "…[truncated " + std::to_string((unsigned)cut) + " of " +
-                      std::to_string((unsigned)fullSize) +
-                      " B - fetch the rest with results.get(\"" + handle + "\")]";
-        }
-      }
-      totalBytes += r.output.size();
-      if (hooks.transcript) hooks.transcript->addToolResult(r, round);
-      prior.push_back(std::move(r));
-    }
-    if (cfg.maxTotalToolBytes && totalBytes >= cfg.maxTotalToolBytes) {
-      forceFinal = true;
-      forceReason = "bytes";
-    }
+    dispatchAll(sr.toolCalls, round);
   }
 }
 

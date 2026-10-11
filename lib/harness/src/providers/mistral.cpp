@@ -366,9 +366,13 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       else
         serializeJson(t["function"]["arguments"], args);
       if (!strcmp(nm, "orch_turn")) {
-        out.finished  = true;
-        out.finalTurn = args;
-        return out;
+        // CUM-506: keep scanning - calls batched after the final orch_turn are
+        // side effects too (the controller runs them before accepting it).
+        if (!out.finished) {
+          out.finished  = true;
+          out.finalTurn = args;
+        }
+        continue;
       }
       orch::HeadToolCall call;
       call.id       = t["id"] | "";
@@ -376,7 +380,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       call.argsJson = (args.length() && args != "null") ? args : "{}";
       out.toolCalls.push_back(call);
     }
-    return out;   // prose only -> controller stall path
+    return out;   // finished (siblings ride along), a tool round, or prose (stall path)
   };
 }
 

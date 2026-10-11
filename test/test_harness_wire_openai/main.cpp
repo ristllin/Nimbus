@@ -375,10 +375,12 @@ static void test_loop_round2_replays_full_transcript() {
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"output\":\"tool-ok\""));
 }
 
-// A final response that batched a registry call WITH orch_turn: the turn is
-// over, the batched sibling is never dispatched (re-dispatch would double side
-// effects), and - stateless - there is no chain head to worry about.
-static void test_batched_sibling_with_orch_turn_dropped() {
+// A final response that batched a registry call WITH orch_turn (here AFTER it).
+// CUM-506 reversed the old "drop the sibling" rule: dropping lost real side
+// effects (five memory writes) while the reply claimed them. The sibling now runs
+// exactly ONCE before any reply is delivered, and the next round - which replays
+// the call and its output, never the premature final - writes the reply.
+static void test_batched_sibling_with_orch_turn_runs_once() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200,
       "{\"id\":\"resp_dirty\",\"output\":["
@@ -386,6 +388,7 @@ static void test_batched_sibling_with_orch_turn_dropped() {
       "\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"},"
       "{\"type\":\"function_call\",\"call_id\":\"call_x\",\"name\":\"memory_search\","
       "\"arguments\":\"{}\"}]}"});
+  d.http.script.push_back({"", "", 200, finalCallBody("resp_2")});   // the re-asked reply
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
@@ -394,7 +397,38 @@ static void test_batched_sibling_with_orch_turn_dropped() {
   TEST_ASSERT_TRUE(ok);
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
   TEST_ASSERT_EQUAL_STRING("responses", conv.c_str());     // marker, not an id
-  TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());        // sibling dropped
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());        // the sibling ran, once
+  TEST_ASSERT_EQUAL_STRING("memory_search", rig.dispatched[0].name.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());           // the reply is re-asked
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"call_id\":\"call_x\""));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "\"call_id\":\"call_f\""));
+}
+
+// ...and when the batched call FAILS, the premature final is discarded and the
+// model answers again with the failure in hand (the replay carries the call and
+// its output), so the delivered reply cannot claim what did not happen.
+static void test_batched_sibling_failure_reasks_with_the_result() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"id\":\"resp_dirty\",\"output\":["
+      "{\"type\":\"function_call\",\"call_id\":\"call_x\",\"name\":\"memory_write\","
+      "\"arguments\":\"{}\"},"
+      "{\"type\":\"function_call\",\"call_id\":\"call_f\",\"name\":\"orch_turn\","
+      "\"arguments\":\"{\\\"reply\\\":\\\"saved\\\"}\"}]}"});
+  d.http.script.push_back({"", "", 200, finalCallBody("resp_2")});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.resultIsError = true;
+  rig.result = "store full";
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());   // ran once, never re-dispatched
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"call_id\":\"call_x\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "store full"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "\"call_id\":\"call_f\""));   // the premature final is gone
+  TEST_ASSERT_TRUE(out.find("saved") == std::string::npos);
 }
 
 // The loop gate itself: tools supplied but the master switch OFF => single-shot.
@@ -620,7 +654,8 @@ int main(int, char**) {
   RUN_TEST(test_loop_reasoning_param_on_every_gpt_generation);
   RUN_TEST(test_loop_is_stateless);
   RUN_TEST(test_loop_round2_replays_full_transcript);
-  RUN_TEST(test_batched_sibling_with_orch_turn_dropped);
+  RUN_TEST(test_batched_sibling_with_orch_turn_runs_once);
+  RUN_TEST(test_batched_sibling_failure_reasks_with_the_result);
   RUN_TEST(test_loop_gate_respects_toggle);
   RUN_TEST(test_sub_dispatch_shape);
   RUN_TEST(test_sub_dispatch_error_mapping);

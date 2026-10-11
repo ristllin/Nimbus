@@ -555,8 +555,95 @@ static void test_provider_failure_aborts_failsoft() {
   TEST_ASSERT_EQUAL_INT(1, o.rounds);
 }
 
+// ---- CUM-506: calls batched WITH the final orch_turn --------------------------
+
+// The model's terminal response carried five memory_write calls AND the final
+// orch_turn ("I've saved these permanently"). The calls run BEFORE any reply is
+// delivered - exactly once, recorded with their results - and the premature reply
+// is replaced by one the model writes with those results in hand.
+static void test_cum506_siblings_of_the_final_turn_run_before_any_reply() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"I've saved these permanently.\"}");
+  for (int i = 0; i < 5; ++i)
+    fin.toolCalls.push_back(HeadToolCall{"w" + std::to_string(i), "memory_write",
+                                         "{\"content\":\"fact " + std::to_string(i) + "\"}"});
+  f.script = {fin, stepFinished("{\"reply\":\"Saved all five.\"}")};
+  f.dispatchOutput = "stored memory m1";
+  Transcript tr;
+  HeadLoopHooks h = f.hooks();
+  h.transcript = &tr;
+  HeadLoopConfig cfg;
+  HeadOutcome o = runHeadLoop(cfg, h);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Saved all five.\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(5, (int)f.dispatched.size());      // every save ran, once
+  TEST_ASSERT_EQUAL_STRING("{\"content\":\"fact 4\"}", f.dispatched[4].argsJson.c_str());
+  TEST_ASSERT_EQUAL(2, (int)f.priorSeen.size());
+  TEST_ASSERT_EQUAL(5, (int)f.priorSeen[1].size());     // the results reached the model
+  TEST_ASSERT_EQUAL_STRING("stored memory m1", f.priorSeen[1][0].output.c_str());
+  TEST_ASSERT_EQUAL(1, o.rounds);
+  TEST_ASSERT_TRUE(has(tr.renderBrief(4096), "[result] memory_write"));
+}
+
+// A failed batched call: the premature reply ("saved") is never delivered; the
+// failure goes back to the model and its second answer is the one that stands.
+static void test_cum506_a_failed_sibling_discards_the_premature_reply() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"saved\"}");
+  fin.toolCalls.push_back(HeadToolCall{"w0", "memory_write", "{\"content\":\"x\"}"});
+  f.script = {fin, stepFinished("{\"reply\":\"that save failed\"}")};
+  f.dispatchIsError = true;
+  f.dispatchOutput = "store full";
+  HeadLoopConfig cfg;
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"that save failed\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());     // ran once, never re-dispatched
+  TEST_ASSERT_EQUAL(1, (int)f.priorSeen[1].size());
+  TEST_ASSERT_TRUE(f.priorSeen[1][0].isError);
+  TEST_ASSERT_EQUAL_STRING("store full", f.priorSeen[1][0].output.c_str());
+}
+
+// The batch lands on the last tool round: the next round is the forced final one
+// (tools withdrawn), and it still carries the results - the reply is written
+// with them, and nothing runs twice.
+static void test_cum506_siblings_on_the_last_round_reach_the_forced_final() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"premature\"}");
+  fin.toolCalls.push_back(HeadToolCall{"w0", "memory_write", "{}"});
+  f.script = {fin, stepFinished("{\"reply\":\"final\"}")};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 1;
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"final\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());
+  TEST_ASSERT_FALSE(f.allowToolsSeen[1]);               // the forced final round
+  TEST_ASSERT_EQUAL_STRING("rounds", f.capReasonSeen[1].c_str());
+  TEST_ASSERT_EQUAL(1, (int)f.priorSeen[1].size());
+}
+
+// On the FORCED final round the model was told its tools are gone; stray calls
+// it still sends there are not executed, and the answer stands.
+static void test_cum506_forced_round_siblings_are_not_run() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"done\"}");
+  fin.toolCalls.push_back(HeadToolCall{"w0", "memory_write", "{}"});
+  f.script = {fin};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 0;   // round 0 is already the forced tool-less round
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(0, (int)f.dispatched.size());
+  TEST_ASSERT_FALSE(f.allowToolsSeen[0]);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
+  RUN_TEST(test_cum506_a_failed_sibling_discards_the_premature_reply);
+  RUN_TEST(test_cum506_siblings_on_the_last_round_reach_the_forced_final);
+  RUN_TEST(test_cum506_forced_round_siblings_are_not_run);
   RUN_TEST(test_onText_fires_per_round_incl_terminal);
   RUN_TEST(test_onText_null_hook_safe);
   RUN_TEST(test_single_shot_terminates_immediately);
