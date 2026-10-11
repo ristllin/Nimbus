@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 
 UART_GLOBS = (
@@ -141,8 +142,9 @@ def family_from_usb(vid: int | None) -> str | None:
 
 
 # ESP-IDF NVS page layout: a 32-byte header, a 32-byte entry-state bitmap (2 bits
-# per entry), then 126 entries of 32 bytes. A string item is one header entry (type
-# 0x21, key at bytes 8..24, value size at 24..26) followed by its data entries.
+# per entry), then 126 entries of 32 bytes. An item header entry carries a CRC32 of
+# itself (bytes 4..8, over bytes 0..4 and 8..32); a string item is one header entry
+# (type 0x21, key at bytes 8..24, value size at 24..26) followed by its data entries.
 NVS_PAGE_SIZE = 4096
 NVS_ENTRIES_PER_PAGE = 126
 NVS_TYPE_STRING = 0x21
@@ -165,8 +167,16 @@ def nvs_string_values(data: bytes, key: str) -> set[str]:
         while index < NVS_ENTRIES_PER_PAGE:
             entry = page[64 + index * 32 : 96 + index * 32]
             written = (page[32 + index // 4] >> ((index % 4) * 2)) & 0b11 == NVS_ENTRY_WRITTEN
-            span = entry[2] if written and 1 <= entry[2] <= NVS_ENTRIES_PER_PAGE - index else 1
-            if written and entry[1] == NVS_TYPE_STRING and entry[8:24].split(b"\0")[0] == want:
+            # Like ESP-IDF's own loader: an entry is an item header only if its CRC holds and
+            # its span fits the page; anything else (a torn write, a corrupt span, a data
+            # entry) is stepped over one entry at a time.
+            valid = (
+                written
+                and 1 <= entry[2] <= NVS_ENTRIES_PER_PAGE - index
+                and int.from_bytes(entry[4:8], "little") == zlib.crc32(entry[0:4] + entry[8:32], 0xFFFFFFFF)
+            )
+            span = entry[2] if valid else 1
+            if valid and span >= 2 and entry[1] == NVS_TYPE_STRING and entry[8:24].split(b"\0")[0] == want:
                 size = min(int.from_bytes(entry[24:26], "little"), (span - 1) * 32)
                 start = 64 + (index + 1) * 32
                 values.add(page[start : start + size].split(b"\0")[0].decode("utf-8", "replace"))
@@ -873,12 +883,17 @@ def pyserial_available() -> bool:
     return True
 
 
+def _command_line(args: list[str]) -> str:
+    """A command the operator can paste into this system's shell."""
+    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+
+
 def pyserial_stop_message(python: Path | None) -> str:
     """What happened plus the one next step, when no Python with pyserial can run the installer."""
     if python is not None:
-        fix = shlex.join([str(python), "-m", "pip", "install", "pyserial"])
+        fix = _command_line([str(python), "-m", "pip", "install", "pyserial"])
         return f"Stopped: PlatformIO's Python has no pyserial, so the board cannot be read. Install it, then run this again:\n  {fix}"
-    fix = shlex.join([sys.executable, "-m", "pip", "install", "pyserial"])
+    fix = _command_line([sys.executable, "-m", "pip", "install", "pyserial"])
     return (
         "Stopped: this Python has no pyserial and PlatformIO's own Python was not found, so the board "
         f"cannot be read. Install pyserial, then run this again:\n  {fix}"

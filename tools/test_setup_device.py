@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -87,8 +88,9 @@ def _nvs_page(*items):
     for key, value, state in items:
         data = value.encode() + b"\0"
         span = 1 + (len(data) + 31) // 32
-        header = bytes([1, SETUP.NVS_TYPE_STRING, span, 0xFF]) + bytes(4) + key.encode().ljust(16, b"\0")
-        header += len(data).to_bytes(2, "little") + b"\xff\xff" + bytes(4)
+        head, tail = bytes([1, SETUP.NVS_TYPE_STRING, span, 0xFF]), key.encode().ljust(16, b"\0")
+        tail += len(data).to_bytes(2, "little") + b"\xff\xff" + zlib.crc32(data).to_bytes(4, "little")
+        header = head + zlib.crc32(head + tail, 0xFFFFFFFF).to_bytes(4, "little") + tail
         page[64 + index * 32 : 96 + index * 32] = header
         page[96 + index * 32 : 64 + (index + span) * 32] = data.ljust((span - 1) * 32, b"\xff")
         bits = SETUP.NVS_ENTRY_WRITTEN if state == "written" else 0b00
@@ -271,6 +273,12 @@ def test_freenove_slug_comes_only_from_the_live_ota_type_entry():
     solide = _nvs_page(("otaType", "nimbus-tft", "written"), ("devName", "freenove-40", "written"))
     assert SETUP.freenove_slug_from_nvs(_partition(solide)) is None
     assert SETUP.family_from_nvs(_partition(solide)) == SETUP.FAMILY_SOLIDE
+    # A written otaType header that fails its CRC (a torn write, a corrupt span byte) is
+    # stepped over as ESP-IDF does, so it neither adds a value nor hides the real one.
+    for offset, byte in ((2, 0), (2, 200), (2, 3), (9, ord("x"))):
+        page = bytearray(_nvs_page(("otaType", "freenove-28", "written"), ("otaType", "freenove-35", "written")))
+        page[64 + offset] = byte  # corrupt the first item's header entry
+        assert SETUP.freenove_slug_from_nvs(_partition(bytes(page))) == "freenove-35", (offset, byte)
     # Two live values that disagree: ask, never guess.
     split = _partition(
         _nvs_page(("otaType", "freenove-28", "written")), _nvs_page(("otaType", "freenove-40", "written"))
@@ -1324,6 +1332,13 @@ def test_ensure_pyserial_installs_build_tools_first_then_stops_if_still_missing(
             assert SETUP.ensure_pyserial(["--yes"]) == 1
     assert runner.calls == [["pio", "run", "-e", "esp32s3"]]  # the build tools, nothing else
     assert "PlatformIO's own Python was not found" in err.getvalue()
+
+
+def test_stop_message_command_pastes_into_this_systems_shell():
+    with mock.patch.object(SETUP.os, "name", "nt"):
+        assert SETUP._command_line([r"C:\Users\a b\python.exe", "-m", "pip"]) == r'"C:\Users\a b\python.exe" -m pip'
+    with mock.patch.object(SETUP.os, "name", "posix"):
+        assert SETUP._command_line(["/home/a b/python", "-m", "pip"]) == "'/home/a b/python' -m pip"
 
 
 def test_wait_for_child_turns_a_broken_interpreter_into_a_stop():
