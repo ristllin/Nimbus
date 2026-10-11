@@ -364,6 +364,11 @@ sub-agent order, so on a one-key instance a spawn that names no provider runs on
 the router, while a keyed BYOK provider in the order still wins. The key stays out
 of the BYOK-only paths (connector credentials, embeddings by direct key).
 
+A head that calls a configured connector or a field of its reply as if it were a
+tool gets the device's way back (CUM-538): the connector is named as one of its
+provider's sub-agent jobs with the spawn to use instead, and a spawn field carries
+the real remaining spawn room (`tests/test_tool_hints.cpp`).
+
 Every spawn runs the configured sub model for its provider (no live model catalog
 to validate a per-spawn pick against), and a spawn on an unkeyed provider is
 answered with an honest "couldn't start" message; one the provider refuses with

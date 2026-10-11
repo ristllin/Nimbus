@@ -26,6 +26,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic_log.h"
@@ -174,6 +175,7 @@ class NimbusdRig {
     loadSubModels(); // in-app sub-agent model picks (device subM_<slug>)
     conns_.setPath(memDir() + "/connectors.json");
     conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
+    installToolHints();
     buildFabric();   // sub-agent adapters + the durable job journal (device parity)
     buildEngine();
   }
@@ -1170,6 +1172,20 @@ class NimbusdRig {
                return orch::ToolResult::ok(out);
              },
              R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
+  }
+
+  // CUM-538 (device parity, src/agent/orchestrator.cpp): a head that calls a name
+  // that is not a tool gets a way back. A configured connector names the provider
+  // whose sub-agents run it (this instance's own registry), and a spawn field of
+  // the reply carries the REAL remaining spawn room (the [SPAWN CAPACITY] number).
+  // Both read live state and run only on an unknown name, never on a real tool call.
+  void installToolHints() {
+    orch::ToolRegistry::UnknownToolHints hints;
+    hints.connectorProvider = [this](const std::string& name) {
+      return nimbus::orch::connectorProviderForName(conns_.parsed(), name);
+    };
+    hints.spawnRoom = [this] { return orch::spawnRoomFor(jobs_ ? jobs_->pendingCount() : 0); };
+    reg_.setUnknownToolHints(hints);
   }
 
   void registerDeviceStatusTool() {
