@@ -1027,23 +1027,34 @@ class NimbusdRig {
   // bot's path, a query value, a UUID, "bot123:AAH-...", a Slack webhook's last
   // part), and a user:password part always does. A host label counts only when it
   // looks random (a long run of letters and digits with a digit, a function or
-  // tunnel URL's id), so "generativelanguage.googleapis.com" is left alone.
+  // tunnel URL's id), so "generativelanguage.googleapis.com" is left alone. The host
+  // ends at the first character a host cannot hold, so whatever follows a bare host
+  // in the same word (JSON around it, a second URL in a query) is read part by part.
+  // A word with no scheme that holds any character a key cannot (a percent escape, a
+  // quote, a comma) is read part by part too.
   static bool secretInWindow(const std::string& w) {
     const size_t scheme = w.find("://");
     if (scheme == std::string::npos) {
-      if (w.find_first_of("?=&@#\\\"") == std::string::npos) return keyLikeToken(w) && !modelId(w);
+      bool plain = true;
+      for (unsigned char ch : w) plain = plain && tokenChar(ch);
+      if (plain) return keyLikeToken(w) && !modelId(w);
       return anySecretPart(w, 0, w.size());
     }
     const size_t authority = scheme + 3;
-    const size_t hostEnd = std::min(w.find_first_of("/?#", authority), w.size());
+    const size_t authEnd = std::min(w.find_first_of("/?#", authority), w.size());
     size_t host = authority;
-    const size_t at = hostEnd > authority ? w.rfind('@', hostEnd - 1) : std::string::npos;   // the last '@'
+    const size_t at = authEnd > authority ? w.rfind('@', authEnd - 1) : std::string::npos;   // the last '@'
     if (at != std::string::npos && at >= authority) {
       if (hasPassword(w, authority, at) || anySecretPart(w, authority, at)) return true;
       host = at + 1;
     }
+    size_t hostEnd = host;
+    while (hostEnd < authEnd && hostChar((unsigned char)w[hostEnd])) hostEnd++;
     return anySecretPart(w, 0, scheme) || randomHost(w, host, hostEnd) || anySecretPart(w, hostEnd, w.size());
   }
+  // A character a host (with its port) may hold: letters, digits, '.', '-', ':',
+  // the brackets of an IPv6 literal and '%' (an escape or a zone id).
+  static bool hostChar(unsigned char c) { return isalnum(c) || (c != 0 && std::strchr(".-:[]%", c)); }
   // A user:password part with a password (anything after its first ':').
   static bool hasPassword(const std::string& w, size_t from, size_t at) {
     const size_t colon = w.find(':', from);

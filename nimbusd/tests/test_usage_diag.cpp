@@ -372,8 +372,28 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
       {"token [Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b](https://example.com)", "token [[key])"},
       {"the token count=1500 was spent", "the token count=1500 was spent"},
       {"key docs at https://user@example.com/x say so", "key docs at https://user@example.com/x say so"},
+      // Convergence gate: a fully percent-encoded URL or secret with no scheme was
+      // read as one token and failed the key-character test, so it passed in clear.
+      {"webhook token https%3A%2F%2Fhooks.slack" ".com%2Fservices%2FT0ABCDEFG%2FB0ABCDEFG%2Fabcdefghijklmnopqrstuvwx",
+       "webhook token [key]"},
+      {"api key Q8f3kLm2n%2BpQ7rS9tU%2FvW1xY3zA4b%3D", "api key [key]"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
+  // Convergence gate: a URL with no path ended its host at the end of the word, so
+  // a secret later in the same word (JSON around a bare host URL, a second URL in a
+  // query) was read only as a host label and passed in clear. The host now ends at
+  // the first character a host cannot hold, and the rest is read part by part.
+  const char* kHostThenSecret[] = {
+      "my bot token {\"api\":\"https://api.telegram.org\",\"bot\":\"123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b\"}",
+      "webhook token hooks.example.com/notify?next=https://x.com&sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b",
+  };
+  for (const char* in : kHostThenSecret) {
+    const std::string out = NimbusdRig::redactKeys(in);
+    c.ok(out.find("Q8f3kLm2n") == std::string::npos && out.find("[key]") != std::string::npos, in);
+  }
+  // A plain host URL with no path after "token" is still left alone.
+  c.eq(NimbusdRig::redactKeys("token endpoint https://api.openai.com"), "token endpoint https://api.openai.com",
+       "a bare host URL stays");
 }
 
 // CUM-546 gate: the named-value scan rescanned the whole word for every ':' (a
