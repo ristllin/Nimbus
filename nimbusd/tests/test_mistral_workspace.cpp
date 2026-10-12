@@ -335,12 +335,12 @@ static void testWebSurface(ndtest::Ctx& c) {
   checkSurfacesAgree(c, api, conns);
 
   // A Mistral key write resets the answer and queues a fresh probe.
-  c.eqi(post(api, "/api/orch", "mistKey=mk_TEST_KEY_7").status, 200, "POST /api/orch mistKey saves");
+  c.eqi(post(api, "/api/orch", "mistKey=mk_TEST_KEY_7_WEB").status, 200, "POST /api/orch mistKey saves");
   c.ok(waitForProbe(rig, 3, 200), "the key write queued a fresh workspace probe");
   c.eqi(authOf(rig, "gcal"), 1, "the re-probe under the new key restores gcal");
   bool newBearer = false;
   for (const auto& h : tx.seen.back().headers)
-    if (h.first == "Authorization" && h.second == "Bearer mk_TEST_KEY_7") newBearer = true;
+    if (h.first == "Authorization" && h.second == "Bearer mk_TEST_KEY_7_WEB") newBearer = true;
   c.ok(newBearer, "the re-probe used the NEW key");
   for (int i = 0; i < 150 && tx.seen.size() < 5; i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   c.eqi((long)tx.seen.size(), 5,

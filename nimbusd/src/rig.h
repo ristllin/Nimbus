@@ -30,6 +30,7 @@
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic_log.h"
+#include "nimbus/orch/key_shape.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/model_choices.h"
@@ -689,9 +690,10 @@ class NimbusdRig {
   // in place - a head for a newly keyed provider is registered at build time, so a
   // rebuild is how it takes effect. MUST run on the engine thread (serialized, never
   // mid-turn - the web layer dispatches it there and refuses mid-turn with a 503).
-  bool applyProviderKey(const std::string& host, const std::string& key) {
+  bool applyProviderKey(const std::string& host, const std::string& posted) {
     const std::string env = keyEnvFor(host);
-    if (env.empty() || (!key.empty() && !validKeyValue(key))) return false;
+    const std::string key = storableKey(posted);   // stored without spaces around it (CUM-545)
+    if (env.empty() || (!posted.empty() && key.empty())) return false;
     cfg_.setOverride(env, key);   // authoritative; an empty key erases the override
     saveSecrets();
     verify_.forget(host);         // a new key starts unverified; the web layer re-verifies it
@@ -793,26 +795,44 @@ class NimbusdRig {
     }
     return h == kCumuloSlug ? cumuloModel() : modelFor(h);
   }
-  // The shape of a provider key value: 1 to kKeyMax printable ASCII characters, no
-  // spaces or control characters. Keys are stored one KEY=VALUE per line in the
-  // secrets file, so a line break in a pasted value would add lines of the poster's
-  // choosing that the next start reads as config.
+  // A provider key as it is stored (CUM-545), by the shared credential rule the
+  // device applies (lib/core key_shape.h): the spaces around it dropped (a header
+  // never carried them), then 1 to kKeyMax printable ASCII characters with no space
+  // or control character inside. Keys are stored one KEY=VALUE per line in the
+  // secrets file, so a line break in a value would add lines of the poster's
+  // choosing that the next start reads as config. "" when it cannot be stored.
+  // Only a new key from the page meets the field's own shape too (keyShapeErrorFor):
+  // a stored key is held to this rule alone, so a key that worked before still loads.
   static constexpr size_t kKeyMax = 512;
-  static bool validKeyValue(const std::string& v) {
-    if (v.empty() || v.size() > kKeyMax) return false;
-    for (unsigned char ch : v)
-      if (ch < 0x21 || ch > 0x7e) return false;
-    return true;
+  static std::string storableKey(const std::string& v) {
+    const std::string t = nimbus::orch::trimSpaces(v);
+    if (t.empty() || t.size() > kKeyMax || !nimbus::orch::credentialCharsOk(t)) return std::string();
+    return t;
+  }
+  // The device's own check and owner sentence for a key posted to provider `host`
+  // (POST /api/orch): its field's shape in key_shape.h. "" when `posted` fits.
+  static std::string keyShapeErrorFor(const std::string& host, const std::string& posted) {
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      if (host != nimbus::orch::kProviderSlots[i].slug) continue;
+      if (const nimbus::orch::KeyShape* ks = nimbus::orch::keyShapeFor(nimbus::orch::kProviderSlots[i].keyField))
+        return nimbus::orch::keyShapeError(*ks, posted);
+    }
+    return storableKey(posted).empty() ? "That key is not valid. Paste just the key and save again." : "";
   }
   // The env names the secrets file may hold: the in-app provider keys, nothing else.
   static bool secretsName(const std::string& name) {
     return nimbus::orch::anySlotWhere([&name](const char* slug) { return name == Config::providerEnvName(slug); });
   }
-  // Whether a secrets-file line is one clean provider key; logs the NAME (never the
-  // value) of anything else, with `what` saying what happens to it.
-  static bool cleanSecret(const std::string& name, const std::string& value, const char* what) {
+  // Whether a secrets-file line is one clean provider key, with `value` made its
+  // stored form (storableKey); logs the NAME (never the value) of anything else,
+  // with `what` saying what happens to it.
+  static bool cleanSecret(const std::string& name, std::string& value, const char* what) {
     const bool known = secretsName(name);
-    if (known && validKeyValue(value)) return true;
+    const std::string stored = known ? storableKey(value) : std::string();
+    if (!stored.empty()) {
+      value = stored;
+      return true;
+    }
     std::fprintf(stderr, "[nimbusd] secrets: %s %s (not a clean provider key)\n", what,
                  known ? name.c_str() : "a line with an unknown name");
     return false;
@@ -1006,19 +1026,29 @@ class NimbusdRig {
   // the owner set in the UI persists across restarts. Tolerant of an absent/torn
   // file (KEY=VALUE lines, trailing CR/LF trimmed). Only provider key names with a
   // key-shaped value load: the file is never a general config channel. Never logs
-  // a value.
+  // a value. A key an earlier build stored with spaces around it (the page posts
+  // the field as typed, and that build stored it verbatim; it worked, since HTTP
+  // drops them) loads trimmed and the file is rewritten trimmed, instead of the
+  // key vanishing on the first start after an update (CUM-545).
   void loadSecrets() {
     std::string blob;
     if (!fsutil::readFile(secretsPath(), blob)) return;
     std::istringstream is(blob);
     std::string line;
+    bool trimmed = false;
     while (std::getline(is, line)) {
       const size_t eq = line.find('=');
       if (eq == std::string::npos) continue;
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      if (cleanSecret(k, v, "ignored")) cfg_.setOverride(k, v);
+      const size_t was = v.size();
+      if (!cleanSecret(k, v, "ignored")) continue;
+      cfg_.setOverride(k, v);
+      if (v.size() == was) continue;
+      trimmed = true;
+      std::fprintf(stderr, "[nimbusd] secrets: %s had spaces around it; stored trimmed\n", k.c_str());
     }
+    if (trimmed) saveSecrets();
   }
   // Persist the current in-app overrides to the owner-only secrets file. Written
   // 0600 from creation (never a world-readable window - the general atomic writer
@@ -1030,7 +1060,8 @@ class NimbusdRig {
     for (const auto& kv : cfg_.overrides()) {
       // The writer refuses what the loader would misread (the second guard behind
       // the web layer's shape check): one clean KEY=VALUE line per provider key.
-      if (cleanSecret(kv.first, kv.second, "not writing")) blob += kv.first + "=" + kv.second + "\n";
+      std::string v = kv.second;
+      if (cleanSecret(kv.first, v, "not writing")) blob += kv.first + "=" + v + "\n";
     }
     const std::string tmp = secretsPath() + ".tmp";
     const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);

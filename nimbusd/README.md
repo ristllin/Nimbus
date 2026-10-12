@@ -170,7 +170,7 @@ applies or is refused; a page never shows "Saved" over a dropped write.
 | `orchLoop` | the head tool loop |
 | `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
-| keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (1 to 512 printable characters, no spaces or line breaks; the instance's secrets file holds provider keys only), head and sub-agent model picks, the Telegram allowlist |
+| keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (the device's own key rule and sentences: spaces around a key are dropped and it is stored without them, and a key with a space, a line break or another hidden character inside, or of a length that provider never issues, is refused; the instance's secrets file holds provider keys only, and a key an earlier build stored with spaces around it loads trimmed and is rewritten trimmed), head and sub-agent model picks, the Telegram allowlist |
 
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
 mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at

@@ -887,9 +887,14 @@ class WebApi {
     for (const auto* list : {&w.models, &w.subs})
       for (const auto& m : *list)
         if (!NimbusdRig::validSelector(m.second)) return "That model name is not valid.";
-    for (const auto& k : w.keys)
-      if (!k.second.empty() && !NimbusdRig::validKeyValue(k.second))
-        return "That key is not valid. Paste the whole key, with no spaces or line breaks.";
+    // The device's own key rule and sentence (lib/core key_shape.h, CUM-545): spaces
+    // around a key are dropped, and it is stored as checked.
+    for (auto& k : w.keys) {
+      if (k.second.empty()) continue;
+      const std::string why = NimbusdRig::keyShapeErrorFor(k.first, k.second);
+      if (!why.empty()) return why;
+      k.second = NimbusdRig::storableKey(k.second);
+    }
     w.clearConv = formValue(body, "clearConv") == "1";
     w.clearMem = formValue(body, "clearMem") == "1";
     w.convReset = present(names, "convReset");

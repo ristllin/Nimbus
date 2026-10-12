@@ -363,10 +363,10 @@ static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
     web.eng.postWork([] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); });
     c.ok(rig.claimProbe(), "the boot path claims the workspace probe");
     web.eng.postWork([&rig] { rig.refreshMistralWorkspace(); });   // still queued
-    c.eqi(web.call("POST", "/api/orch", "mistKey=mk_test_NEWKEY").status, 200, "the Mistral key save answers 200");
+    c.eqi(web.call("POST", "/api/orch", "mistKey=mk_test_NEWKEY_WEB").status, 200, "the Mistral key save answers 200");
     c.ok(drained(web.eng), "the engine thread ran everything queued");
     web.eng.stop();
-    c.ok(tx.seen.size() >= 2 && bearerIs(tx.seen[1], "mk_test_NEWKEY") &&
+    c.ok(tx.seen.size() >= 2 && bearerIs(tx.seen[1], "mk_test_NEWKEY_WEB") &&
              tx.seen[1].path.find("/v1/connectors") != std::string::npos,
          "the workspace is probed again with the NEW key");
     c.ok(rig.workspaceProbed(), "so the Studio connector's answer is the new key's");

@@ -281,7 +281,7 @@ static void testBackgroundWorkIsNotATurn(ndtest::Ctx& c) {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));   // the work is running now
   c.ok(!eng.snapshot().turnInFlight, "background work does not read as a turn in flight");
   ApiResp out;
-  api.handle("POST", "/api/orch", "oaiKey=sk_TEST_FAB_3", out);
+  api.handle("POST", "/api/orch", "oaiKey=sk_TEST_FAB_3_WEBFORM", out);
   c.eqi(out.status, 200, "the key write queued behind it is applied (200), not refused busy");
   c.ok(has(out.body, "\"applied\":1"), "the write reports it applied");
   ApiResp orch;
