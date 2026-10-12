@@ -22,7 +22,7 @@ New code lives only in this directory:
 |---|---|
 | `src/posix_fs.h` | `PosixEpiFs` (the `EpiFs` byte-file seam over a POSIX tree) + `fsutil` atomic tmp->rename writer |
 | `src/posix_platform.h` | `agent::Platform` with **cgroup v2 heap accounting** so the engine sheds load before the kernel OOM-kills the pod |
-| `src/daemon_http.h` | `agent::HttpTransport` over one persistent, connection-reusing curl handle; bodies never retained; keeps only the bounded error headers a request asks for (a 429's `x-ratelimit-*` quota window) |
+| `src/daemon_http.h` | `agent::HttpTransport` over one persistent, connection-reusing curl handle; bodies never retained; keeps only the bounded error headers a request asks for (a 429's `x-ratelimit-*` quota window); a failure is reported the way the device transport reports it ("no response" once the whole request went out, "request body truncated" when it never fully left, "connect failed" before it was sent), so a sub cut mid-wait reads as one that may have started and is never spawned again |
 | `src/posix_files.h` | disk-backed `files.*` / `artifact.save` (real bytes + `FileStore` index, `validSegment` gate) |
 | `src/daemon_config.h` | `HarnessConfig` inputs from env + an optional config file (env wins); secret masking |
 | `src/telegram.h` | Telegram channel over the portable `nimbus::tg::parseUpdates` + offset arithmetic; durable offset |

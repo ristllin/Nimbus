@@ -11,17 +11,14 @@
 //   (c) a healthy response keeps nothing, and nothing is kept unless asked;
 //   (d) bounded: a flood of matching headers or a huge value stays capped;
 //   (e) only the final header block counts: a 1xx block before the 429 is not an
-//       error, so its headers never decide the window.
+//       error, so its headers never decide the window;
+//   (f) a failure is reported in the provider wire's words (CUM-538): "no
+//       response" once the request went out, "request body truncated" when it
+//       never fully left, "connect failed" before it was sent;
+//   (g) so a hosted Z.ai sub cut after its POST is Timeout (may have started).
 // Every case runs on ONE transport (the persistent handle), so a plain request
 // after a capturing one also proves the per-exchange sink never outlives it.
 // Offline: a loopback server with canned responses; no keys, no external network.
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
-
 #include <cctype>
 #include <csignal>
 #include <cstdio>
@@ -32,91 +29,17 @@
 
 #include "../../test/support/fake_provider_deps.h"
 #include "daemon_http.h"
+#include "loopback_server.h"
 #include "nimbus/harness/rate_limit.h"
 #include "test_util.h"
 
+using ndtest::CannedServer;
+using ndtest::response;
 using nimbusd::DaemonHttpTransport;
 
 static bool has(const std::string& hay, const std::string& needle) {
   return hay.find(needle) != std::string::npos;
 }
-
-// A raw HTTP/1.1 response; every one closes its connection.
-static std::string response(const std::string& statusLine, const std::vector<std::string>& headers,
-                            const std::string& body) {
-  std::string r = statusLine + "\r\n";
-  for (const auto& h : headers) r += h + "\r\n";
-  return r + "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-}
-
-// Serves each scripted response to one loopback connection, after reading that
-// connection's whole request, then closes it. Never hangs the suite: an accept
-// waits at most 5 s and a read is capped by SO_RCVTIMEO.
-class CannedServer {
- public:
-  explicit CannedServer(std::vector<std::string> script) : script_(std::move(script)) {
-    fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = 0;
-    socklen_t len = sizeof a;
-    if (bind(fd_, (sockaddr*)&a, sizeof a) != 0 || listen(fd_, 4) != 0 ||
-        getsockname(fd_, (sockaddr*)&a, &len) != 0)
-      return;
-    port_ = ntohs(a.sin_port);
-    th_ = std::thread([this] { serve(); });
-  }
-  ~CannedServer() {
-    join();
-    close(fd_);
-  }
-  void join() {
-    if (th_.joinable()) th_.join();
-  }
-  int port() const { return port_; }
-  // The first line of each request served; read it only after join().
-  const std::vector<std::string>& requestLines() const { return lines_; }
-
- private:
-  static std::string readRequest(int c) {
-    std::string req;
-    char buf[4096];
-    size_t want = std::string::npos;  // total bytes once the headers are in
-    while (req.size() < want) {
-      const ssize_t got = recv(c, buf, sizeof buf, 0);
-      if (got <= 0) break;
-      req.append(buf, size_t(got));
-      const size_t end = req.find("\r\n\r\n");
-      if (want != std::string::npos || end == std::string::npos) continue;
-      std::string head = req.substr(0, end);
-      for (char& ch : head) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-      const size_t cl = head.find("content-length:");
-      want = end + 4 + (cl == std::string::npos ? 0 : std::strtoul(head.c_str() + cl + 15, nullptr, 10));
-    }
-    return req;
-  }
-  void serve() {
-    for (const auto& resp : script_) {
-      pollfd p{fd_, POLLIN, 0};
-      if (poll(&p, 1, 5000) <= 0) return;
-      const int c = accept(fd_, nullptr, nullptr);
-      if (c < 0) return;
-      timeval tv{5, 0};
-      setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-      const std::string req = readRequest(c);
-      lines_.push_back(req.substr(0, req.find("\r\n")));
-      (void)send(c, resp.data(), resp.size(), 0);
-      close(c);
-    }
-  }
-
-  std::vector<std::string> script_;
-  std::vector<std::string> lines_;
-  int fd_ = -1;
-  int port_ = 0;
-  std::thread th_;
-};
 
 static agent::HttpRequest loopbackGet(const CannedServer& srv) {
   agent::HttpRequest req;
@@ -241,6 +164,85 @@ static void testOnlyTheFinalBlockCounts(ndtest::Ctx& c, DaemonHttpTransport& t) 
         "(e) the window is the 429's, not the 1xx block's");
 }
 
+// (f) CUM-538 gate: a failed exchange is reported in the words the provider wire
+// reads, as the device transport does. curl's own texts ("Server returned
+// nothing", "Timeout was reached") matched none of them, so a hosted Z.ai or
+// Cumulo sub whose POST went out and was then cut read Network ("did not start")
+// and the head was told to spawn the paid work again.
+static agent::HttpRequest loopbackPost(int port, uint32_t timeoutMs) {
+  agent::HttpRequest req;
+  req.method = "POST";
+  req.host = "127.0.0.1";
+  req.port = uint16_t(port);
+  req.tls = false;
+  req.path = "/api/paas/v4/chat/completions";
+  req.headers = {{"Content-Type", "application/json"}};
+  req.body = "{\"model\":\"glm-5.3\",\"messages\":[]}";
+  req.timeoutMs = timeoutMs;
+  return req;
+}
+static void testFailuresSpeakTheWireWords(ndtest::Ctx& c, DaemonHttpTransport& t) {
+  {
+    CannedServer srv({""});   // reads the whole request, then closes: no status line
+    agent::HttpResponse out;
+    std::string err;
+    c.ok(!t.exec(loopbackPost(srv.port(), 5000), out, err) && out.status == 0, "(f) a cut exchange fails");
+    srv.join();
+    c.eq(err, "Server returned nothing (no headers, no data): no response",
+         "(f) sent, then cut: \"no response\" (the run may have started)");
+  }
+  {
+    CannedServer srv({""}, 1500);   // reads the request, then silence past the deadline
+    agent::HttpResponse out;
+    std::string err;
+    c.ok(!t.exec(loopbackPost(srv.port(), 400), out, err), "(f) a request past its deadline fails");
+    srv.join();
+    c.ok(err.rfind("Timeout was reached", 0) == 0 && has(err, ": no response"),
+         "(f) sent, then the deadline: \"no response\" (got \"" + err + "\")");
+  }
+  {
+    agent::HttpResponse out;
+    std::string err;
+    c.ok(!t.exec(loopbackPost(ndtest::closedLoopbackPort(), 5000), out, err), "(f) a refused connection fails");
+    c.ok(err.rfind("connect failed: ", 0) == 0 && !has(err, "no response") && !has(err, "truncated"),
+         "(f) nothing sent: \"connect failed\" (got \"" + err + "\")");
+  }
+  c.eq(DaemonHttpTransport::failureText(CURLE_SEND_ERROR, DaemonHttpTransport::Sent::Whole),
+       "Failed sending data to the peer: request body truncated", "(f) a send error: the request never fully left");
+  c.eq(DaemonHttpTransport::failureText(CURLE_RECV_ERROR, DaemonHttpTransport::Sent::Partly),
+       "Failure when receiving data from the peer: request body truncated", "(f) a short upload: never fully left");
+}
+
+// (g) The real Z.ai sub dispatch over this transport: a POST that went out and was
+// cut is Timeout (the head is told it may have started), a refused connection is
+// Network (it did not start).
+static void testCutSubMayHaveStarted(ndtest::Ctx& c, DaemonHttpTransport& t) {
+  harness_test::FakeProviderDeps d;
+  agent::providers::ProviderDeps pd = d.contract();
+  pd.http = &t;
+  agent::Directive dir;
+  dir.category = "research";
+  dir.instruction = "summarize the GLM release notes";
+  char job[72] = {0};
+  CannedServer srv({""});
+  agent::providers::CompatEndpoint ep;
+  const std::string host = "127.0.0.1";
+  ep.host = host.c_str();
+  ep.port = uint16_t(srv.port());
+  ep.tls = false;
+  ep.basePath = "/api/paas/v4";
+  ep.key = "zai_sk_TEST_CUT";
+  ep.model = "glm-5.3";
+  ep.backendTag = "zai";
+  c.eqi((long)agent::providers::openaiCompatDispatch(pd, ep, dir, job), (long)agent::FabricErr::Timeout,
+        "(g) a Z.ai sub cut after its POST went out is Timeout (may have started)");
+  srv.join();
+  c.eqi((long)srv.requestLines().size(), 1, "(g) the POST reached the server once");
+  ep.port = uint16_t(ndtest::closedLoopbackPort());
+  c.eqi((long)agent::providers::openaiCompatDispatch(pd, ep, dir, job), (long)agent::FabricErr::Network,
+        "(g) a sub whose connection was refused is Network (did not start)");
+}
+
 int main() {
   std::signal(SIGPIPE, SIG_IGN);
   ndtest::Ctx c;
@@ -251,6 +253,8 @@ int main() {
   testNothingKeptUnlessErrorAndAsked(c, t);
   testCaptureIsBounded(c, t);
   testOnlyTheFinalBlockCounts(c, t);
+  testFailuresSpeakTheWireWords(c, t);
+  testCutSubMayHaveStarted(c, t);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

@@ -19,7 +19,10 @@
 //   (h) one person's sub-agent work never reaches another: a member's turn waits
 //       while the owner's results are unreported (and then runs without them), a
 //       spawn from another namespace is refused, and a removed chat's report is
-//       dropped, not delivered.
+//       dropped, not delivered;
+//   (o) a Z.ai or Cumulo sub whose POST went out and was then cut, over the
+//       instance's real curl transport, is reported as one that may have started,
+//       and is not dispatched again (CUM-538).
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <chrono>
 #include <cstdio>
@@ -30,7 +33,9 @@
 #include <vector>
 
 #include "../../test/support/fake_http.h"
+#include "daemon_http.h"
 #include "engine_thread.h"
+#include "loopback_server.h"
 #include "nimbus/harness/rate_limit.h"
 #include "reply_buffer.h"
 #include "rig.h"
@@ -589,6 +594,57 @@ static void testZaiSubCarriesLowEffort(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (o) CUM-538 gate: the instance's own curl transport, every request sent to a
+// loopback server that reads the whole POST and then closes without answering
+// (the Z.ai gateway or the router cutting a sub mid-wait). The JobEngine must read
+// it as a sub that may have started: the owner's note says so and the work is not
+// dispatched again. Before, curl's "Server returned nothing" read Network and the
+// head was told the paid sub did not start.
+struct LoopbackRedirect : agent::HttpTransport {
+  DaemonHttpTransport curl;
+  int port = 0;
+  int calls = 0;
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    ++calls;
+    agent::HttpRequest r = req;   // the path, headers and body exactly as the rig built them
+    r.host = "127.0.0.1";
+    r.port = uint16_t(port);
+    r.tls = false;
+    return curl.exec(r, out, err);
+  }
+};
+static void testCutSubMayHaveStarted(ndtest::Ctx& c) {
+  std::printf("  -- (o) a sub cut after its POST went out may have started, and is not sent again --\n");
+  struct Case { const char* provider; const char* key; };
+  for (const Case& k : {Case{"zai", "zai_sk_TEST_CUT"}, Case{"cumulo", "cumulo_sk_TEST_CUT"}}) {
+    clearEnv();
+    ndtest::CannedServer srv({""});   // reads the POST, then closes: no status line
+    LoopbackRedirect tx;
+    tx.port = srv.port();
+    Config cfg;
+    NimbusdRig rig(cfg, opts(std::string("fab-o-") + k.provider), &tx);
+    rig.applyProviderKey(k.provider, k.key);
+    nimbus::orch::Spawn s;
+    s.task = "summarize the GLM release notes";
+    s.provider = k.provider;
+    s.category = "research";
+    s.name = "glm-notes";
+    s.note = "On it.";
+    rig.jobs().enqueueSpawn(s, "web");
+    rig.jobs().pump();
+    srv.join();
+    bool maybe = false;
+    const std::string notes = rig.jobs().takeSpawnNotes("web", &maybe);
+    const std::string who = k.provider;
+    c.eqi((long)srv.requestLines().size(), 1, who + ": the sub's POST reached the server once");
+    c.ok(has(notes, "'glm-notes' may have started"), who + ": the note says the sub may have started (got \"" + notes + "\")");
+    c.ok(maybe, who + ": the head is told the run may have started");
+    rig.jobs().pump();   // a later pump must not send the paid work again
+    c.eqi((long)tx.calls, 1, who + ": nothing is dispatched again");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "sub-agent fabric (device parity)";
@@ -607,6 +663,7 @@ int main() {
   testRemovedChatReportDropped(c);
   testReplyLessTurnCompletesOnWeb(c);
   testZaiSubCarriesLowEffort(c);
+  testCutSubMayHaveStarted(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
