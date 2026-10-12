@@ -228,7 +228,7 @@ static void test_cum477_fabric_low_memory_does_not_switch() {
   TEST_ASSERT_TRUE(f.delays <= 31);   // bounded: 3 s of 100 ms polls
 }
 
-// prism: the heap came back but the one resend failed anyway (it was sent; no
+// Review: the heap came back but the one resend failed anyway (it was sent; no
 // answer): the request is not sent a third time by the fabric's own same-host
 // retry - the round goes to the next provider.
 static void test_cum477_fabric_never_sends_an_unsent_request_three_times() {

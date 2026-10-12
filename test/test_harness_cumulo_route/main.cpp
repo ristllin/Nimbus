@@ -349,7 +349,7 @@ static void test_device_refusal_after_a_tool_is_not_rerun() {
   TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // no third request on another model
 }
 
-// prism: a refusal of a request that continued a Mistral conversation is about
+// Review: a refusal of a request that continued a Mistral conversation is about
 // the conversation, not the model: the router answers an append to
 // /conversations/<id> with 403 endpoint_not_allowed (it admits only a new one),
 // and a gone conversation with 404. Neither is answered on another model with a
@@ -380,7 +380,7 @@ static void test_device_conversation_refusal_is_not_a_refused_pick() {
   TEST_ASSERT_TRUE(rn.kind == rf::RefusalKind::Selector);
 }
 
-// prism: the pick moves only while it is still the one the turn started with (the
+// Review: the pick moves only while it is still the one the turn started with (the
 // owner may pick another model while a refused turn is answered elsewhere), and
 // only for a refused model; the notice opens the reply either way.
 static void test_settle_moves_only_the_turns_own_pick() {
