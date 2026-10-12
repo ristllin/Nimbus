@@ -157,11 +157,13 @@ PSRAM is free, move more internal churn to PSRAM (lower the spill threshold)
 rather than raising the floor. A turn that still runs out of memory fails soft:
 an honest low-memory reply ("the device ran out of working memory for this
 request; try a shorter question or wait a minute"), no restart. On every head
-(the Cumulo router head and a direct OpenAI, Anthropic or Mistral head alike), a
-request the device could not finish sending is sent once more, on the same
-provider, after the heap recovers past the round floor (a bounded wait of up to
-3 s); only if it does not recover does the turn end with that reply, without
-switching to another provider (the request would run short the same way there).
+while the tool loop is on (the default; the Cumulo router head and a direct
+OpenAI, Anthropic, Mistral or Z.ai head alike), a request the device could not
+finish sending is sent once more, on the same provider, after the heap recovers
+past the round floor (a bounded wait of up to 3 s); only if it does not recover
+does the turn end with that reply, without switching to another provider (the
+request would run short the same way there). A request that went out is never
+sent a second time this way.
 
 ### Levers to free internal SRAM (biggest first, verify on-device)
 

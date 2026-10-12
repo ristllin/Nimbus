@@ -571,6 +571,59 @@ static void test_cum544_no_answer_is_a_timeout_not_network() {
   TEST_ASSERT_EQUAL_STRING("no message content", err.c_str());
 }
 
+// ---- CUM-477 gate: the Z.ai and Cumulo-zai heads get the one resend too -------
+// docs/memory.md says every head sends a request the device could not finish
+// sending once more after the heap recovers; orchTurnCustom (the direct Z.ai head
+// and the Cumulo head's zai path) had no resend, so a short write failed the turn
+// with no wait. It now runs through the per-provider loops' seam
+// (resendUnsentOnce) whenever the tool loop is on: one resend of an unsent
+// request, never a second send of one that went out.
+static void test_cum477_custom_head_resends_an_unsent_request_once() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";
+  d.custJsonMode = "object";
+  d.http.script.push_back(harness_test::transportCut(0, "request body truncated (10/200 bytes written)"));
+  d.http.script.push_back({"", "/api/paas/v4/chat/completions", 200, zaiOkBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING(d.http.seen[0].body.c_str(), d.http.seen[1].body.c_str());   // the same request
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"ok\"}", out.c_str());
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains("orchTurn(custom): request not sent"));
+}
+static void test_cum477_custom_head_never_resends_what_went_out() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custJsonMode = "object";
+  d.http.script.push_back(harness_test::transportCut(1000, "no response"));
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());   // the provider may have it: sent once
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+static void test_cum477_custom_head_heap_that_stays_low_is_memory() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custJsonMode = "object";
+  d.heap = 9000;   // under the round floor, and no way to wait for it
+  d.http.script.push_back(harness_test::transportCut(0, "head write failed"));
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("low memory: the device could not send the request", err.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -592,6 +645,9 @@ int main(int, char**) {
   RUN_TEST(test_cum544_a_400_naming_the_effort_drops_it_on_retry);
   RUN_TEST(test_cum544_effort_rule_is_zai_only);
   RUN_TEST(test_cum544_no_answer_is_a_timeout_not_network);
+  RUN_TEST(test_cum477_custom_head_resends_an_unsent_request_once);
+  RUN_TEST(test_cum477_custom_head_never_resends_what_went_out);
+  RUN_TEST(test_cum477_custom_head_heap_that_stays_low_is_memory);
   UNITY_END();
   return 0;
 }

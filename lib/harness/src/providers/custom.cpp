@@ -247,6 +247,49 @@ static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, u
   return wire::transportError(pd);
 }
 
+// One head request in its formats (orchTurnCustom): the first format, then once
+// with no response_format when the backend refuses it with a 400. `code` is the
+// last status (0: no answer), `sentAt` when the last attempt went out.
+struct CustomHead {
+  const ProviderDeps* pd;
+  const std::string* instructions;
+  const std::string* inputs;
+  JsonDocument* doc;
+  const JsonDocument* filter;
+  HeadFormat first;
+  uint32_t timeoutMs;
+  int code = 0;
+  uint32_t sentAt = 0;
+};
+static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
+  const ProviderDeps& pd = *h.pd;
+  wire::lastExchange() = wire::LastExchange{};   // a step that fails before the wire inherits nothing
+  nimbus::orch::HeadStep st;
+  bool withEffort = true;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    h.sentAt = pd.nowMs ? pd.nowMs() : 0;
+    const bool withFormat = (attempt == 0);
+    std::string body;
+    if (!customHeadBody(pd, *h.instructions, *h.inputs, withFormat ? h.first : HeadFormat::None, body,
+                        withEffort)) {
+      st.ok = false;
+      st.error = "schema parse";
+      return st;
+    }
+    h.code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
+                         /*anthropicAuth=*/false, *h.doc, *h.filter, h.timeoutMs);
+    if (h.code != 400 || !withFormat) break;
+    // Schema-incapable backend: drop response_format and lean on the nudge + the
+    // engine's tolerant parser. A model that refuses the effort field names it; the
+    // retry then goes without it rather than failing the same way twice (CUM-544).
+    hlog::logf("orchTurn(custom): 400 with response_format - retrying schema-less");
+    withEffort = std::string((*h.doc)["error"]["message"] | "").find("reasoning") == std::string::npos;
+  }
+  st.ok = h.code > 0;   // any HTTP answer ends the step; its status is read by the caller
+  if (!st.ok) st.error = headTransportError(pd, h.sentAt, h.timeoutMs);
+  return st;
+}
+
 // One single-shot structured turn over the OpenAI chat-completions dialect:
 // messages = [system(instructions), user(inputs)], response_format json_schema
 // (strict) carrying the canonical orch schema - or, when pd.customJsonMode() is
@@ -255,13 +298,14 @@ static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, u
 // answer 400 - then retry ONCE schema-less with the nudge; the engine's lenient
 // parseHeadReply + salvage absorb dialect wobble (prose becomes the reply).
 // Stateless (convId = "chat" marker). v1 deliberately has NO tool loop -
-// `tools` is ignored (the engine's loop wiring passes through unused), so a
-// small LAN model can't wedge itself in a forced-tool ReAct loop.
+// `tools` advertises nothing (a small LAN model can't wedge itself in a
+// forced-tool ReAct loop); when the engine passes it (the tool loop is on) its
+// round floor drives the one resend of a request that never left (CUM-477), the
+// same seam every other head's loop runs through.
 bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                     const std::string& instructions, const std::string& inputs,
                     std::string& outJson, std::string& err,
                     const HeadTools* tools, nimbus::orch::TokenUsage* usage) {
-  (void)tools;   // v1: single-shot only (see header note)
   outJson.clear(); err.clear();
   if (s(pd.customBase).empty()) { err = "no custom endpoint"; return false; }
   // The head speaks chat-completions only; an anthropic-convention proxy has no
@@ -283,34 +327,23 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   const HeadFormat first = (pd.customJsonMode && pd.customJsonMode() == "object")
                                ? HeadFormat::Object : HeadFormat::Schema;
   const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
-  int code = 0;
-  uint32_t sentAt = 0;
-  bool withEffort = true;
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    sentAt = pd.nowMs ? pd.nowMs() : 0;
-    const bool withFormat = (attempt == 0);
-    std::string body;
-    if (!customHeadBody(pd, instructions, inputs, withFormat ? first : HeadFormat::None, body,
-                        withEffort)) {
-      err = "schema parse";
-      return false;
-    }
-    code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                       /*anthropicAuth=*/false, doc, filter, timeoutMs);
-    if (code == 400 && withFormat) {
-      // Schema-incapable backend: drop response_format and lean on the nudge +
-      // the engine's tolerant parser.
-      hlog::logf("orchTurn(custom): 400 with response_format - retrying schema-less");
-      // A model that refuses the effort field names it; the retry then goes without
-      // it rather than failing the same way twice (CUM-544).
-      withEffort = std::string(doc["error"]["message"] | "").find("reasoning") == std::string::npos;
-      continue;
-    }
-    break;
+  CustomHead h{&pd, &instructions, &inputs, &doc, &filter, first, timeoutMs};
+  // One pointer captured: the step fits std::function's inline storage, so the
+  // turn path allocates nothing for it (nor for the wrapper, see loop_common.cpp).
+  const nimbus::orch::HeadStepFn step = [&h](bool, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t,
+                                             const std::string&) { return runCustomHead(h); };
+  nimbus::orch::HeadStep st;
+  if (tools) {
+    const ResendCtx resend{&pd, &tools->cfg, &step, "orchTurn(custom)"};
+    st = resendUnsentOnce(&resend)(false, {}, UINT32_MAX, std::string());
+  } else {
+    st = step(false, {}, UINT32_MAX, std::string());
   }
-  if (code <= 0) {
-    err = headTransportError(pd, sentAt, timeoutMs);
-    hlog::logf("orchTurn(custom): %s (%u s budget)", err.c_str(), (unsigned)(timeoutMs / 1000));
+  const int code = h.code;
+  if (!st.ok) {
+    err = st.error;
+    if (err != "schema parse")
+      hlog::logf("orchTurn(custom): %s (%u s budget)", err.c_str(), (unsigned)(timeoutMs / 1000));
     return false;
   }
   if (code != 200) {
