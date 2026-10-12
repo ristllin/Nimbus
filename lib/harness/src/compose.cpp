@@ -297,6 +297,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   hw.display = board.display;        // static board facts (flash strings)
   hw.ringOnScreen = !board.physicalRing;
   hw.noTelegram = !in.telegram;      // CUM-523
+  hw.noFileSend = !in.telegram || !in.fileSend;
   ci.capabilities = renderCapabilities(hw, in.tools);
   // "Advertised == callable" (§coherence): the tool list is ALWAYS advertised
   // (owner R7: the self-model used to lose all tool knowledge whenever the loop

@@ -178,7 +178,7 @@ Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
 On-device markdown playbooks: five built-ins (`architecture`, `deep-research`,
 `hardware`, `tools-guide`, `deliver-pdf`) plus owner- or agent-authored capsules
 on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
-that was offered them; on any other turn it points at the Files list on the
+that was offered both; on any other turn it points at the Files list on the
 device web page.
 
 | Tool | Description (as registered) | Arguments | State |
@@ -320,16 +320,17 @@ reach the person. Both refuse outside a live turn.
 
 Note: `reply.speak` degrades honestly when voice replies are switched off or the
 speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
-back to text - the content is never dropped. `reply.telegram` and `files.send`
-are offered only on a turn that can deliver over Telegram: the bot is running and
+back to text - the content is never dropped. `reply.telegram` is
+offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
-over Telegram (`files.send` itself still delivers only to an allowlisted chat).
-Otherwise neither is offered (a web, voice or serial turn in public mode with no
-allowlisted chat included), and a reminder or wakeup answers in the chat that set
-it. The device decides this once per turn, so the tool list and the turn's hints
-agree: on a turn without Telegram the built-in playbooks (`skill.get`), the skills
-list and the `image.generate` result point at the Files list on the device web
-page instead of naming either tool.
+over Telegram. `files.send` delivers only to an allowlisted chat, so it is offered
+only when one exists: a guest's Telegram turn in public mode with no allowlisted
+chat gets `reply.telegram` (its own chat) but not `files.send`. A web, voice or
+serial turn in public mode with no allowlisted chat gets neither, and a reminder
+or wakeup answers in the chat that set it. The device decides this once per turn,
+so the tool list and the turn's hints agree: on a turn without `files.send` the
+built-in playbooks (`skill.get`), the capability line and the `image.generate`
+result point at the Files list on the device web page instead of naming it.
 
 ## `web.*` - live web search
 

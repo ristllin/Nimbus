@@ -123,6 +123,9 @@ String firstAllowedChat();
 // its tool list follows), else - outside a turn - whether any turn could deliver
 // (the bot runs and a chat is allowlisted).
 bool telegramForTurn();
+// CUM-523: whether that text may name files.send: the turn's sample AND a chat it
+// can deliver to (a public-mode guest turn may reply.telegram but not send a file).
+bool fileSendForTurn();
 
 // OTA install hook - the owner-only Telegram `/update` command calls this to
 // approve+install a pending update. Injected from main.cpp (which owns otaupd),

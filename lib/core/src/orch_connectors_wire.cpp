@@ -60,7 +60,7 @@ static const KnownConnector kKnown[] = {
      "None - Mistral: enable in Studio; OpenAI: no setup",
      "Hosted sandboxed Python; can produce files. To deliver one, SPAWN a "
      "sub-agent WITH A PROJECT (session_ops spawn: project=<name>) - the file it "
-     "writes is captured to the file store, then you files.send it to the owner.",
+     "writes is captured to the file store, then you deliver it to the owner.",
      "mistral-builtins",
      "Mistral: images/text output only - its sandbox ERRORS on PDF/CSV files. "
      "OpenAI: full file output INCLUDING PDF. For a PDF, spawn the sub-agent on "
@@ -1223,7 +1223,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
          "A sub-agent returns TEXT ONLY to you and has NO DEVICE tools: it cannot "
          "send Telegram, write the device file store, or touch memory - so YOU "
          "(the head) do every OWNER-delivery step after it returns (artifact.save, "
-         "files.send). It CAN run its provider's connectors server-side, so to "
+         "then delivery). It CAN run its provider's connectors server-side, so to "
          "DRAFT an email or CREATE a Notion/Drive page, spawn a sub on a provider "
          "that has that connector and it performs the action in its own run and "
          "reports back. Decompose a big ask this way: sub-agents GATHER/RESEARCH "

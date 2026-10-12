@@ -427,6 +427,11 @@ static bool telegramDeliverable(const std::string& chatId) {
                                        store::telegramAllowlist().length() > 0,
                                        store::telegramPublic(), chatId);
 }
+// CUM-523: HarnessConfig::fileSendDeliverable - files.send needs an allowlisted chat.
+static bool fileSendDeliverable() {
+  return agent::fileSendDeliverableFor(agent::telegram::enabled(),
+                                       store::telegramAllowlist().length() > 0);
+}
 
 // CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
 // the live-harvested list first - the verify pass reads the provider's /models,
@@ -1368,6 +1373,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   // CUM-523: a turn that cannot deliver over Telegram is never offered a Telegram
   // leg (the engine's one per-turn sample also narrows the manifest's hw.telegram).
   g_cfg.telegramDeliverable = telegramDeliverable;
+  g_cfg.fileSendDeliverable = fileSendDeliverable;
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,
@@ -1816,6 +1822,10 @@ bool isChatAllowed(const String& cid) { return chatAllowed(cid); }
 bool telegramForTurn() {
   if (g_engine && g_engine->turnInFlight()) return g_engine->turnTelegram();
   return telegramDeliverable(std::string());
+}
+bool fileSendForTurn() {
+  if (g_engine && g_engine->turnInFlight()) return g_engine->turnFileSend();
+  return fileSendDeliverable();
 }
 bool inScheduledTurn() { return g_engine && g_engine->inScheduledTurn(); }
 

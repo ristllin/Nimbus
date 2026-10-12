@@ -1306,6 +1306,57 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
   TEST_ASSERT_TRUE(t.debug[0].instructions.find("reply_telegram") != std::string::npos);
 }
 
+// CUM-523 gate: public mode with an empty allowlist. A guest's Telegram turn may
+// answer its own chat with reply.telegram, but files.send delivers only to an
+// allowlisted chat (its handler refuses any other), so that turn is not offered
+// files.send, and neither the capability line nor a built-in served on it names it.
+static void test_cum523_public_guest_turn_gets_reply_but_no_file_send() {
+  Rig t;
+  publicNoAllowlist(t);
+  t.hw.files = t.hw.sd = t.hw.wifi = true;
+  t.hw.telegram = true;
+  t.eng->handleMessage("send me the report as a PDF", "Guest", "5550001");
+  TEST_ASSERT_TRUE(t.eng->turnTelegram());
+  TEST_ASSERT_FALSE(t.eng->turnFileSend());
+  const std::string& sys = t.debug[0].instructions;
+  TEST_ASSERT_TRUE(sys.find("reply_telegram") != std::string::npos);
+  TEST_ASSERT_TRUE(sys.find("files_send") == std::string::npos);
+  const std::string prompt = sys + "\n" + t.debug[0].inputs;
+  TEST_ASSERT_TRUE_MESSAGE(prompt.find("files.send") == std::string::npos, "the capability line");
+  for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
+    const std::string body =
+        agent::builtinSkillBody(agent::builtinSkill(i).id, t.eng->turnTelegram(), t.eng->turnFileSend());
+    TEST_ASSERT_TRUE_MESSAGE(body.find("files.send") == std::string::npos, agent::builtinSkill(i).id);
+  }
+  // ...while the playbooks that name reply.telegram still do (the tool list offers it).
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("architecture", true, false).find("reply.telegram") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("tools-guide", true, false).find("reply.telegram") !=
+                   std::string::npos);
+  // Counter-test: with a chat allowlisted the same guest turn keeps files.send.
+  Rig a;
+  a.cfg.telegramPublic = true;
+  addTelegramSpecs(a);
+  a.hw = t.hw;
+  a.eng->handleMessage("send me the report as a PDF", "Guest", "5550001");
+  TEST_ASSERT_TRUE(a.eng->turnFileSend());
+  TEST_ASSERT_TRUE(a.debug[0].instructions.find("files_send") != std::string::npos);
+  // The rule, and the device text served mid-turn follows the files.send sample.
+  TEST_ASSERT_FALSE(agent::fileSendDeliverableFor(true, false));
+  TEST_ASSERT_FALSE(agent::fileSendDeliverableFor(false, true));
+  TEST_ASSERT_TRUE(agent::fileSendDeliverableFor(true, true));
+  for (const char* src : {"src/agent/skills.cpp", "src/agent/files_subsystem.cpp"}) {
+    FILE* f = std::fopen(src, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, src);
+    std::string text;
+    char buf[8192];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
+    std::fclose(f);
+    TEST_ASSERT_TRUE_MESSAGE(text.find("agent::orchestrator::fileSendForTurn()") != std::string::npos, src);
+  }
+}
+
 // CUM-523: on a turn with no Telegram, nothing the engine composes names a
 // Telegram-only tool - the tool list, the channel hint, the [SKILLS] index (the
 // device's real built-ins), the capability line (SD files bullet) - and every
@@ -2175,6 +2226,7 @@ int main(int, char**) {
   RUN_TEST(test_cum523_telegram_is_sampled_once_per_turn);
   RUN_TEST(test_cum523_deliverability_rule);
   RUN_TEST(test_cum523_public_mode_empty_allowlist_is_decided_per_turn);
+  RUN_TEST(test_cum523_public_guest_turn_gets_reply_but_no_file_send);
   RUN_TEST(test_cum523_telegramless_prompt_names_no_telegram_tool);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);

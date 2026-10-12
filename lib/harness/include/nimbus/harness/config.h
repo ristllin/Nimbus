@@ -101,6 +101,11 @@ inline bool telegramDeliverableFor(bool botOn, bool allowlisted, bool publicMode
   return botOn && (allowlisted || (publicMode && isTelegramChat(chatId)));
 }
 
+// CUM-523: files.send delivers only to an allowlisted chat (its handler refuses
+// any other), so in public mode with an empty allowlist a guest's Telegram turn
+// may answer its own chat with reply.telegram but can send a file nowhere.
+inline bool fileSendDeliverableFor(bool botOn, bool allowlisted) { return botOn && allowlisted; }
+
 struct HarnessConfig {
   ProviderConfig provider;
   LoopConfig     loop;
@@ -115,6 +120,11 @@ struct HarnessConfig {
   // ONCE per turn (TurnEngine::turnTelegram). Nullable = deliverable (host rigs
   // and nimbusd unchanged).
   std::function<bool(const std::string& chatId)> telegramDeliverable;
+  // CUM-523: can files.send deliver at all (fileSendDeliverableFor)? Sampled with
+  // telegramDeliverable at turn entry; false withholds files.send, and the text
+  // that names it, from a turn that may still use reply.telegram. Nullable = the
+  // telegramDeliverable answer.
+  std::function<bool()> fileSendDeliverable;
   std::function<std::string()> deviceName;
   // N11: select the simplified v2 system prompt (NVS `promptV2`, default off).
   // Nullable = off (v1, byte-identical) so host rigs and un-wired devices are

@@ -28,9 +28,12 @@ const BuiltinSkill& builtinSkill(size_t i);
 // True when `id` names a built-in capsule.
 bool isBuiltinSkill(const std::string& id);
 
-// The body of built-in `id` for a turn where the Telegram-only tools are
-// (telegram=true) or are not offered. 'hardware' is this build's board
+// The body of built-in `id` for a turn where reply.telegram is (telegram) or is not
+// offered, and files.send is (fileSend) or is not (CUM-523: a public-mode guest
+// turn has reply.telegram but not files.send). 'hardware' is this build's board
 // inventory (buildBoardIdentity). "" for an id that is not a built-in.
+std::string builtinSkillBody(const std::string& id, bool telegram, bool fileSend);
+// Both tools offered, or neither.
 std::string builtinSkillBody(const std::string& id, bool telegram);
 
 }  // namespace agent

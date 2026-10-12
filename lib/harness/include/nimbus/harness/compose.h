@@ -46,6 +46,9 @@ struct ComposeInputs {
   // sets it from its one HarnessConfig::telegramDeliverable sample). Default true: a caller that
   // does not say (nimbusd, host rigs) keeps the Telegram wording unchanged.
   bool telegram = true;
+  // CUM-523: false = files.send cannot deliver on this turn (no allowlisted chat),
+  // though reply.telegram may (a public-mode guest turn). Default true.
+  bool fileSend = true;
   std::vector<nimbus::orch::SessionInfo> sessions;
   std::string recentConversation;    // pre-rendered "## RECENT CONVERSATION" block
                                      // ("" => none; device fills from the episodic

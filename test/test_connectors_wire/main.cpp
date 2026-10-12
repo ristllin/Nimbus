@@ -393,6 +393,30 @@ static void test_catalog_mistral_studio_points_at_studio_not_device() {
                    != std::string::npos);                                            // slack
 }
 
+// CUM-523: files.send (like reply.telegram) is offered only on a turn that can
+// deliver over Telegram, while the connector catalog rides every turn. So no
+// catalog text names it: not the built-ins' blurbs, not [SUB-AGENT CAPABILITIES],
+// on any provider, with every catalog connector enabled.
+static void test_catalog_never_names_files_send() {
+  int n = 0;
+  const nimbus::orch::KnownConnector* k = knownConnectors(n);
+  std::vector<ConnectorInfo> cs;
+  for (int i = 0; i < n; i++) {
+    for (const char* f : {k[i].oneLine, k[i].caps, k[i].credentialLabel})
+      TEST_ASSERT_TRUE_MESSAGE(std::string(f).find("files.send") == std::string::npos, k[i].id);
+    const std::string provs = k[i].providers;
+    cs.push_back(mk(k[i].id, provs.substr(0, provs.find(',')).c_str(), k[i].kind));
+  }
+  for (const char* host : {"openai", "anthropic", "mistral"}) {
+    ProviderState ps;
+    ps.openaiKeyed = ps.anthropicKeyed = ps.mistralKeyed = true;
+    ps.currentHost = host;
+    const std::string t = catalogText(cs, ps);
+    TEST_ASSERT_TRUE_MESSAGE(t.find("files.send") == std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(t.find("[SUB-AGENT CAPABILITIES]") != std::string::npos, host);
+  }
+}
+
 static void test_catalog_no_connectors() {
   std::vector<ConnectorInfo> cs;
   ProviderState ps;
@@ -1833,6 +1857,7 @@ int main() {
   RUN_TEST(test_anthropic_no_tools_key_polluted);
   RUN_TEST(test_catalog_marks_current_provider);
   RUN_TEST(test_catalog_no_connectors);
+  RUN_TEST(test_catalog_never_names_files_send);
   RUN_TEST(test_catalog_mistral_studio_points_at_studio_not_device);
   RUN_TEST(test_known_catalog_json_shape);
   RUN_TEST(test_catalog_surfaces_connector_caps);

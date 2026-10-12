@@ -137,10 +137,11 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   if (hw.files)
     out += "- A durable PRIVATE artifact store lives on the SD card (/mem/files/<project>/"
            "<name>). Save reports/documents there with artifact.save; browse with files.list; " +
-           std::string(!hw.noTelegram ? "deliver one to the owner with files.send. "
-                                      : "the owner opens one from the Files list on the device "
-                                        "web page (sending a file needs Telegram, which this "
-                                        "turn cannot reach). ") +
+           std::string(!hw.noTelegram && !hw.noFileSend
+                           ? "deliver one to the owner with files.send. "
+                           : "the owner opens one from the Files list on the device web page "
+                             "(sending a file needs an allowlisted Telegram chat, which this "
+                             "turn does not have). ") +
            "Files persist across reboots and are never auto-deleted.\n";
   // CUM-523: on a turn with no Telegram delivery the channel advice never names
   // Telegram (it used to steer a web-only device's turns toward a reply.telegram

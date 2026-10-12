@@ -756,11 +756,14 @@ void begin() {
               if (!agent::orchestrator::speakOnDevice(String(t.c_str())))
                 // Honest failure (owner 2026-07-16: the model kept telling them the
                 // SPEAKER was broken when synthesis was what failed): name both
-                // possible stages, never blame the hardware.
+                // possible stages, never blame the hardware. CUM-523: point at
+                // reply.telegram only on a turn that was offered it.
                 return nimbus::orch::ToolResult::fail(
-                    "on-device speech failed at TTS synthesis or playback (NOT necessarily "
-                    "the speaker hardware - that is usually fine); reply.telegram with "
-                    "voice:true still delivers spoken audio");
+                    std::string("on-device speech failed at TTS synthesis or playback (NOT "
+                                "necessarily the speaker hardware - that is usually fine)") +
+                    (agent::orchestrator::telegramForTurn()
+                         ? "; reply.telegram with voice:true still delivers spoken audio"
+                         : "; reply in text instead"));
               return nimbus::orch::ToolResult::ok("spoken on device speaker");
             },
             R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})");

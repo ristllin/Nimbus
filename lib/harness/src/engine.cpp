@@ -376,6 +376,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
   turnTelegram_ = telegram;   // CUM-523: the one sample every Telegram decision reads
+  turnFileSend_ = telegram && (!d_.cfg.fileSendDeliverable || d_.cfg.fileSendDeliverable());
   toolReplied_ = false;
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
@@ -447,10 +448,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Telegram-less device called reply.telegram, failed, and told the owner it
   // "couldn't send a separate Telegram alert". Dropping the spec here removes it
   // from the prompt's tool list AND the loop's callable set (both read `specs`).
-  if (!telegram)
+  // A public-mode guest turn keeps reply.telegram (its own chat) but not files.send,
+  // which delivers only to an allowlisted chat.
+  const bool fileSend = turnFileSend_;
+  if (!telegram || !fileSend)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
-                               [](const orch::ToolRegistry::Spec& s) {
-                                 return isTelegramOnlyTool(s.name);
+                               [telegram](const orch::ToolRegistry::Spec& s) {
+                                 return telegram ? s.name == "files.send" : isTelegramOnlyTool(s.name);
                                }),
                 specs.end());
   // Pick the host BEFORE composing: the context budget is derived from the head
@@ -503,6 +507,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // narrows the manifest's Telegram flag, so the capability line never offers a
   // channel the tool list just withheld.
   ci.telegram = telegram;
+  ci.fileSend = fileSend;
   ci.hw.telegram = ci.hw.telegram && telegram;
   // N11: opt this turn into the simplified v2 prompt when the device flag is set
   // (nullable closure => v1 when unwired: byte-identical, so a default fleet is

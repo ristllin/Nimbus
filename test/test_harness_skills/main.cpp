@@ -501,8 +501,81 @@ static void test_cum523_no_tool_description_names_a_telegram_tool() {
   TEST_ASSERT_TRUE(scanned >= 40);   // the scan really saw the registrations
 }
 
+// One registration call, read the way the compiler does: from `.add(` to its
+// closing paren, skipping comments, char literals and raw strings (a schema's
+// R"(...)" holds quotes). `lits` gets the ordinary string literals, `code` the
+// text outside every literal and comment.
+struct AddCall {
+  std::string lits, code;
+};
+static size_t skipRaw(const std::string& src, size_t i, std::string* lits) {
+  const size_t open = src.find('(', i + 2);   // R"delim(
+  const std::string close = ")" + src.substr(i + 2, open - (i + 2)) + "\"";
+  const size_t end = src.find(close, open);
+  if (lits) lits->append(src, open + 1, end - open - 1);
+  return end + close.size() - 1;
+}
+static size_t skipQuoted(const std::string& src, size_t i, char q, std::string* lits) {
+  for (++i; i < src.size() && src[i] != q; ++i) {
+    if (src[i] == '\\') ++i;
+    if (lits && i < src.size()) *lits += src[i];
+  }
+  return i;
+}
+static AddCall readAddCall(const std::string& src, size_t from) {
+  AddCall c;
+  int depth = 0;
+  for (size_t i = from; i < src.size(); ++i) {
+    const char ch = src[i];
+    if (ch == '/' && src[i + 1] == '/') { i = src.find('\n', i); continue; }
+    if (ch == '/' && src[i + 1] == '*') { i = src.find("*/", i) + 1; continue; }
+    if (ch == 'R' && src[i + 1] == '"') { i = skipRaw(src, i, nullptr); continue; }
+    if (ch == '"') { i = skipQuoted(src, i, '"', &c.lits); continue; }
+    if (ch == '\'') { i = skipQuoted(src, i, '\'', nullptr); continue; }
+    c.code += ch;
+    if (ch == '(') ++depth;
+    if (ch == ')' && --depth == 0) break;
+  }
+  return c;
+}
+
+// CUM-523 gate: a tool's RESULT text is built per call, so one that names a
+// Telegram-only tool must ask the turn's sample first (reply.speak's failure
+// pointed at reply.telegram on every turn). The class, over every registration in
+// the device sources: a handler whose literals name files.send calls
+// fileSendForTurn() (a public-mode guest turn has reply.telegram, not files.send);
+// one naming only reply.telegram calls telegramForTurn() or fileSendForTurn().
+static void test_cum523_tool_results_name_telegram_tools_only_when_offered() {
+  int handlers = 0;
+  for (const char* path : {"src/agent/files_subsystem.cpp", "src/agent/memory_subsystem.cpp",
+                           "src/main.cpp", "src/sfx/music.cpp"}) {
+    const std::string src = readSource(path);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), path);
+    for (size_t at = src.find(".add(\""); at != std::string::npos; at = src.find(".add(\"", at + 1)) {
+      const size_t nameEnd = src.find('"', at + 6);
+      const std::string name = src.substr(at + 6, nameEnd - (at + 6));
+      if (name.find('.') == std::string::npos || name == "files.send" || name == "reply.telegram")
+        continue;
+      const AddCall call = readAddCall(src, at + 4);
+      const size_t handler = call.code.find('[');   // the description literals come first
+      if (handler == std::string::npos) continue;
+      ++handlers;
+      const bool namesFile = call.lits.find("files.send") != std::string::npos ||
+                             call.lits.find("files_send") != std::string::npos;
+      const bool namesReply = call.lits.find("reply.telegram") != std::string::npos ||
+                              call.lits.find("reply_telegram") != std::string::npos;
+      const bool fileGate = call.code.find("fileSendForTurn()") != std::string::npos;
+      const bool replyGate = fileGate || call.code.find("telegramForTurn()") != std::string::npos;
+      TEST_ASSERT_TRUE_MESSAGE(!namesFile || fileGate, (name + ": files.send").c_str());
+      TEST_ASSERT_TRUE_MESSAGE(!namesReply || replyGate, (name + ": reply.telegram").c_str());
+    }
+  }
+  TEST_ASSERT_TRUE(handlers >= 30);   // the scan really saw the handlers
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_cum523_tool_results_name_telegram_tools_only_when_offered);
   RUN_TEST(test_parse_full_front_matter);
   RUN_TEST(test_parse_defaults_inject_spawn);
   RUN_TEST(test_parse_no_front_matter_whole_file_is_body);

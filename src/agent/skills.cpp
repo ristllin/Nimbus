@@ -129,7 +129,8 @@ std::string get(const std::string& id) {
   if (!md.empty()) return parseSkillMd(md).body;
   // CUM-523: a built-in names reply.telegram / files.send only on a turn that was
   // offered them (the turn's one sample; outside a turn, the device's standing answer).
-  return builtinSkillBody(id, agent::orchestrator::telegramForTurn());
+  return builtinSkillBody(id, agent::orchestrator::telegramForTurn(),
+                          agent::orchestrator::fileSendForTurn());
 }
 
 std::string spawnCapsule(const std::string& id) {

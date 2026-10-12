@@ -172,8 +172,8 @@ what actually landed rather than from an assumption.
 
 A sub-agent returns **text only** to the head and has **no device tools** - it
 cannot send Telegram, write the device file store, or touch memory. So the HEAD
-does every owner-delivery step after a sub returns (`artifact.save`,
-`files.send`). A sub CAN, however, run its provider's connectors server-side: a
+does every owner-delivery step after a sub returns (`artifact.save`, then
+delivery). A sub CAN, however, run its provider's connectors server-side: a
 sub spawned on a provider that hosts Gmail drafts an email in its own run, a
 Notion/Drive sub creates a page, and it reports the outcome back as text.
 

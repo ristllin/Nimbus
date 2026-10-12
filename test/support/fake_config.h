@@ -105,6 +105,9 @@ struct FakeConfig {
                         : agent::telegramDeliverableFor(telegramOn, !telegramAllowlist.empty(),
                                                         telegramPublic, chat);
     };
+    c.fileSendDeliverable = [this] {
+      return agent::fileSendDeliverableFor(telegramOn, !telegramAllowlist.empty());
+    };
     c.deviceName = [this] { return devName; };
     c.promptV2 = [this] { return promptV2; };
     return c;

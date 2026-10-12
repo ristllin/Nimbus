@@ -53,6 +53,9 @@ struct Hardware {
   // "not reported"): the reply-channel and file-delivery advice then never point at
   // Telegram.
   bool noTelegram = false;
+  // CUM-523: files.send cannot deliver on this turn (no allowlisted chat), even
+  // when reply.telegram can: the file-delivery advice then never names it.
+  bool noFileSend = false;
 };
 
 struct ToolInfo {

@@ -1220,7 +1220,7 @@ void registerTools() {
               if (d.length()) out += "\n" + std::string(d.c_str());
             }
             // CUM-523: name files.send only on a turn that was offered it.
-            out += agent::orchestrator::telegramForTurn()
+            out += agent::orchestrator::fileSendForTurn()
                        ? "\nSend it to the owner with files.send."
                        : "\nThe owner opens it from the Files list on the device web page.";
             return nimbus::orch::ToolResult::ok(out);

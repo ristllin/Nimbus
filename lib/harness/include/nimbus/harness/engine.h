@@ -288,6 +288,9 @@ class TurnEngine {
   // all follow it; device text served mid-turn (skill bodies, tool results)
   // reads it too, so one turn never disagrees with itself.
   bool turnTelegram() const { return turnTelegram_; }
+  // CUM-523: files.send for the turn in flight - its Telegram sample AND a chat
+  // files.send can deliver to (a public-mode guest turn has the first only).
+  bool turnFileSend() const { return turnFileSend_; }
   // The same gate against a supplied heap reading - runTurn gates on the
   // turn-ENTRY heap so recall's transient dip can't defer the loop (see the
   // rationale at the top of runTurn).
@@ -363,6 +366,7 @@ class TurnEngine {
   std::string curChat_;                 // routing chatId of the in-flight turn
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
+  volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   // CUM-536: this turn's [FRESH RESULTS] include a result whose connector never

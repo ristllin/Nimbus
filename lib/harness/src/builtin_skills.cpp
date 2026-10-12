@@ -10,7 +10,10 @@ namespace agent {
 namespace {
 
 // Which turns a body part is served on (CUM-523).
-enum class Side : uint8_t { Both, Telegram, NoTelegram };
+// Telegram/NoTelegram: text that names reply.telegram (or Telegram as a channel);
+// FileSend/NoFileSend: text that names files.send (CUM-523: a public-mode guest
+// turn has the first and not the second).
+enum class Side : uint8_t { Both, Telegram, NoTelegram, FileSend, NoFileSend };
 struct Part {
   Side side;
   const char* text;
@@ -62,8 +65,8 @@ const Part kDeepResearch[] = {
      "   contributed). Every non-obvious claim cites a source. No filler.\n"
      "7. The report auto-saves into the project. Deliver it the way the owner asked:\n"
      "   "},
-    {Side::Telegram, "files.send for Telegram"},
-    {Side::NoTelegram, "the Files list on the device web page"},
+    {Side::FileSend, "files.send for Telegram"},
+    {Side::NoFileSend, "the Files list on the device web page"},
     {Side::Both,
      ", or a Gmail DRAFT via a Mistral sub-agent (email can\n"
      "   never be SENT from this device - say 'drafted, not sent'). If the report\n"
@@ -147,10 +150,10 @@ const Part kDeliverPdf[] = {
      "3. When the sub finishes, its result includes a note naming the saved file\n"
      "   (project/name). NO note = NO file landed - say so honestly and retry or\n"
      "   explain; NEVER invent a filename or claim a stale file as new output.\n"},
-    {Side::Telegram,
+    {Side::FileSend,
      "4. Deliver with files.send {project, name}. It queues for Telegram; if it\n"
      "   reports the media queue busy, retry on your next turn.\n"},
-    {Side::NoTelegram,
+    {Side::NoFileSend,
      "4. Tell the owner the saved file's name (project/name): they open it from the\n"
      "   Files list on the device web page.\n"},
     {Side::Both,
@@ -205,20 +208,33 @@ const BuiltinSkill& builtinSkill(size_t i) { return kEntries[i < kEntryCount ? i
 
 bool isBuiltinSkill(const std::string& id) { return findEntry(id) != nullptr; }
 
-std::string builtinSkillBody(const std::string& id, bool telegram) {
+std::string builtinSkillBody(const std::string& id, bool telegram, bool fileSend) {
   const Entry* e = findEntry(id);
   if (!e) return std::string();
   if (!e->parts) return std::string(buildBoardIdentity().hardware);
-  const Side skip = telegram ? Side::NoTelegram : Side::Telegram;
+  auto shown = [telegram, fileSend](Side s) {
+    switch (s) {
+      case Side::Telegram: return telegram;
+      case Side::NoTelegram: return !telegram;
+      case Side::FileSend: return fileSend;
+      case Side::NoFileSend: return !fileSend;
+      case Side::Both: return true;
+    }
+    return true;
+  };
   // One exact allocation (served during a turn, under the heap floor): size first.
   size_t total = 0;
   for (size_t i = 0; i < e->count; ++i)
-    if (e->parts[i].side != skip) total += std::strlen(e->parts[i].text);
+    if (shown(e->parts[i].side)) total += std::strlen(e->parts[i].text);
   std::string out;
   out.reserve(total);
   for (size_t i = 0; i < e->count; ++i)
-    if (e->parts[i].side != skip) out += e->parts[i].text;
+    if (shown(e->parts[i].side)) out += e->parts[i].text;
   return out;
+}
+
+std::string builtinSkillBody(const std::string& id, bool telegram) {
+  return builtinSkillBody(id, telegram, telegram);
 }
 
 }  // namespace agent
