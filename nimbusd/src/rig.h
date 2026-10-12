@@ -1030,14 +1030,13 @@ class NimbusdRig {
   // tunnel URL's id), so "generativelanguage.googleapis.com" is left alone. The host
   // ends at the first character a host cannot hold, so whatever follows a bare host
   // in the same word (JSON around it, a second URL in a query) is read part by part.
-  // A word with no scheme that holds any character a key cannot (a percent escape, a
-  // quote, a comma) is read part by part too.
+  // A word with no scheme that holds URL or query punctuation or a percent escape is
+  // read part by part too; any other word must be one key-like token ("the key
+  // insight is internationalization's reach" is words, not a key).
   static bool secretInWindow(const std::string& w) {
     const size_t scheme = w.find("://");
     if (scheme == std::string::npos) {
-      bool plain = true;
-      for (unsigned char ch : w) plain = plain && tokenChar(ch);
-      if (plain) return keyLikeToken(w) && !modelId(w);
+      if (w.find_first_of("?=&@#\\\"%") == std::string::npos) return keyLikeToken(w) && !modelId(w);
       return anySecretPart(w, 0, w.size());
     }
     const size_t authority = scheme + 3;
@@ -1052,9 +1051,10 @@ class NimbusdRig {
     while (hostEnd < authEnd && hostChar((unsigned char)w[hostEnd])) hostEnd++;
     return anySecretPart(w, 0, scheme) || randomHost(w, host, hostEnd) || anySecretPart(w, hostEnd, w.size());
   }
-  // A character a host (with its port) may hold: letters, digits, '.', '-', ':',
-  // the brackets of an IPv6 literal and '%' (an escape or a zone id).
-  static bool hostChar(unsigned char c) { return isalnum(c) || (c != 0 && std::strchr(".-:[]%", c)); }
+  // A character a host (with its port) may hold: letters, digits, '.', '-', ':' and
+  // the brackets of an IPv6 literal. A percent escape ends the host, so an encoded
+  // path or query stuck to it ("host%2Fpath", "host%3Fsig%3D...") is read part by part.
+  static bool hostChar(unsigned char c) { return isalnum(c) || (c != 0 && std::strchr(".-:[]", c)); }
   // A user:password part with a password (anything after its first ':').
   static bool hasPassword(const std::string& w, size_t from, size_t at) {
     const size_t colon = w.find(':', from);

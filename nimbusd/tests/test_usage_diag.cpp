@@ -394,6 +394,22 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
   // A plain host URL with no path after "token" is still left alone.
   c.eq(NimbusdRig::redactKeys("token endpoint https://api.openai.com"), "token endpoint https://api.openai.com",
        "a bare host URL stays");
+  // Spot gate: a '%' escape ended no host, so a percent-encoded path or query stuck
+  // to a bare host was judged only as a host label; and a long ordinary word with an
+  // apostrophe (straight or curly) is a word, not a key.
+  const char* kEncodedAfterHost[] = {
+      "webhook token https://hooks.example.com%2Fservices%2FT0ABCDEFG%2FB0ABCDEFG%2Fabcdefghijklmnopqrstuvwx",
+      "api key https://x.example%3Fsig%3DQ8f3kLm2n-pQ7rS9tU_vW1xY3zA4b",
+  };
+  for (const char* in : kEncodedAfterHost) {
+    const std::string out = NimbusdRig::redactKeys(in);
+    c.ok(out.find("abcdefghijklmnop") == std::string::npos && out.find("Q8f3kLm2n") == std::string::npos &&
+             out.find("[key]") != std::string::npos, in);
+  }
+  c.eq(NimbusdRig::redactKeys("the key insight is internationalization's reach"),
+       "the key insight is internationalization's reach", "a long word with an apostrophe stays");
+  c.eq(NimbusdRig::redactKeys("the key insight is internationalization\xE2\x80\x99s reach"),
+       "the key insight is internationalization\xE2\x80\x99s reach", "a long word with a curly apostrophe stays");
 }
 
 // CUM-546 gate: the named-value scan rescanned the whole word for every ':' (a
