@@ -126,25 +126,24 @@ static void test_sub_error_mapping() {
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Network,
                       (int)providers::customDispatch(pd, dir, jobId));
   }
-  // CUM-538 gate: the sub runs INSIDE the 30 s POST, so a failure that took about
-  // the whole deadline is a read timeout on a run that most likely started
-  // (Timeout: the head must not spawn it again); a fast one never sent the work.
-  // The fake clock moves 10 ms per read, so elapsed = takesMs + 10.
-  struct Cut { uint32_t takesMs; const char* conv; agent::FabricErr want; };
+  // CUM-538 gate: the sub runs INSIDE the 30 s POST, so once the request went out
+  // and no answer came back, or a failure took about the whole deadline, the run most
+  // likely started (Timeout: the head must not spawn it again); a request that never
+  // fully left, or a fast failure, never sent the work. The fake clock moves 10 ms
+  // per read, so elapsed = takesMs + 10.
+  struct Cut { uint32_t takesMs; const char* err; const char* conv; agent::FabricErr want; };
+  const agent::FabricErr kT = agent::FabricErr::Timeout, kN = agent::FabricErr::Network;
   const Cut cuts[] = {
-      {29000, "openai", agent::FabricErr::Timeout},  {26990, "openai", agent::FabricErr::Timeout},
-      {26980, "openai", agent::FabricErr::Network},  {1000, "openai", agent::FabricErr::Network},
-      {29000, "anthropic", agent::FabricErr::Timeout}, {1000, "anthropic", agent::FabricErr::Network},
+      {29000, "no response", "openai", kT},    {1000, "no response", "openai", kT},
+      {26990, "connect failed", "openai", kT}, {26980, "connect failed", "openai", kN},
+      {1000, "connect failed", "openai", kN},  {29000, "body truncated", "openai", kN},
+      {29000, "no response", "anthropic", kT}, {1000, "connect failed", "anthropic", kN},
   };
   for (const Cut& c : cuts) {
     FakeProviderDeps d; d.custBase = "https://p.example"; d.custConv = c.conv;
-    harness_test::Exchange cut;
-    cut.status = 0;
-    cut.err = "no response";
-    cut.takesMs = c.takesMs;
-    d.http.script.push_back(cut);
+    d.http.script.push_back(harness_test::transportCut(c.takesMs, c.err));
     auto pd = d.contract();
-    TEST_ASSERT_EQUAL_MESSAGE((int)c.want, (int)providers::customDispatch(pd, dir, jobId), c.conv);
+    TEST_ASSERT_EQUAL_MESSAGE((int)c.want, (int)providers::customDispatch(pd, dir, jobId), c.err);
     TEST_ASSERT_EQUAL_UINT32(30000u, d.http.seen.back().timeoutMs);
   }
   {  // CUM-465: a 429 is RateLimited and hands back the window its text names

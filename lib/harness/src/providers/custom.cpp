@@ -107,6 +107,18 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
                   std::move(headers), std::move(body), timeoutMs, doc, filter);
 }
 
+// A transport failure (code 0) of a sub that started at `t0`. The sub runs INSIDE
+// the blocking POST: once the request went out and no answer came back, or the
+// failure took about the whole deadline, the run most likely started, so the head
+// is told not to spawn it again (CUM-538); a request that never fully left, or a
+// fast failure, never sent the work.
+static FabricErr custTransportErr(const ProviderDeps& pd, uint32_t t0) {
+  if (wire::lastExchange().unsent) return FabricErr::Network;
+  if (wire::lastExchange().noResponse) return FabricErr::Timeout;
+  const uint32_t elapsed = (pd.nowMs ? pd.nowMs() : 0) - t0;
+  return elapsed >= (CUST_TIMEOUT_MS / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
+}
+
 FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJobId[72]) {
   // P9: a base URL is required, but an EMPTY key is allowed (a keyless LAN
   // endpoint like Ollama sends no Authorization header). A remote 401/403 still
@@ -148,13 +160,7 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   JsonDocument doc;
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = custRequest(pd, "POST", path, std::move(body), anthropic, doc, filter);
-  if (code <= 0) {
-    // The sub runs INSIDE this blocking POST: a failure that took about the whole
-    // deadline is a read timeout on a run that most likely started, so the head
-    // is told not to spawn it again (CUM-538); a fast failure never sent the work.
-    const uint32_t elapsed = (pd.nowMs ? pd.nowMs() : 0) - t0;
-    return elapsed >= (CUST_TIMEOUT_MS / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
-  }
+  if (code <= 0) return custTransportErr(pd, t0);
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
   if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }

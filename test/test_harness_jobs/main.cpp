@@ -441,11 +441,10 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
     Rig r;
     CompatAdapter zai;
     r.fabric.registerAdapter(&zai);
-    harness_test::Exchange cut;
-    cut.status = 0;
-    cut.err = "no response";
-    cut.takesMs = slow ? 29000 : 1000;
-    zai.deps.http.script.push_back(cut);
+    // Slow: the request went out and nothing came back for 29 s. Fast: the connect
+    // failed at once, so nothing was sent.
+    zai.deps.http.script.push_back(slow ? harness_test::transportCut(29000)
+                                        : harness_test::transportCut(1000, "connect failed"));
     orch::Spawn s = sp("research the GLM release notes");
     s.provider = "zai";
     s.name = "glm-notes";
@@ -471,6 +470,31 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
       TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
     }
   }
+}
+
+// CUM-538 gate: a 200 whose result could not be read (empty content, or a body the
+// device could not parse) means the provider RAN the sub and charged for it. It was
+// told "couldn't start" and the head "did not start", so it could pay again.
+static void test_an_unreadable_answer_may_have_run() {
+  Rig r;
+  CompatAdapter zai;
+  r.fabric.registerAdapter(&zai);
+  zai.deps.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}"});
+  orch::Spawn s = sp("summarize the GLM paper");
+  s.provider = "zai";
+  s.name = "glm-sum";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("The agent on zai answered, but I couldn't read its result - it may have run. "
+                           "Try a smaller task or split it into steps.", r.delivered[0].second.c_str());
+  bool maybe = false;
+  const std::string notes = r.eng->takeSpawnNotes("chat1", &maybe);
+  TEST_ASSERT_TRUE(maybe);
+  TEST_ASSERT_EQUAL_STRING(
+      "- 'glm-sum' may have started: the agent on zai answered but its result could not be read, "
+      "so it may have run, and its result will not arrive. Do not spawn it again unless the owner "
+      "asks\n", notes.c_str());
+  TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
 }
 
 // CUM-538 gate: a "may have started" note survives the chat bound. With 16 other
@@ -984,7 +1008,9 @@ static void test_spawn_refusal_copy_every_window() {
                            refuse(agent::FabricErr::RateLimited, std::nullopt).c_str());
   for (int e = (int)agent::FabricErr::Network; e <= (int)agent::FabricErr::ParseFail; e++) {
     const agent::FabricErr err = agent::FabricErr(e);
-    if (err == agent::FabricErr::RateLimited || err == agent::FabricErr::Timeout) continue;
+    if (err == agent::FabricErr::RateLimited || err == agent::FabricErr::Timeout ||
+        err == agent::FabricErr::ParseFail)
+      continue;   // each has its own line (asserted below and in the may-have-run tests)
     TEST_ASSERT_EQUAL_STRING(refused.c_str(), refuse(err, agent::RateLimit::DailyUtc).c_str());
   }
   TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond in time - it may have "
@@ -1418,6 +1444,7 @@ int main(int, char**) {
   RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
   RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
   RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
+  RUN_TEST(test_an_unreadable_answer_may_have_run);
   RUN_TEST(test_spawn_note_budget_is_per_chat);
   RUN_TEST(test_keyless_provider_refusal);
   RUN_TEST(test_connector_routing_no_hint);

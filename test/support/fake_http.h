@@ -20,6 +20,16 @@ struct Exchange {
   uint32_t takesMs = 0;            // time the exchange takes on the rig clock (see clock)
 };
 
+// A transport failure (status 0) with the transport's `err` text, taking `takesMs`
+// on the rig clock.
+inline Exchange transportCut(uint32_t takesMs, const char* err = "no response") {
+  Exchange e;
+  e.status = 0;
+  e.err = err;
+  e.takesMs = takesMs;
+  return e;
+}
+
 struct FakeHttpTransport : agent::HttpTransport {
   std::vector<Exchange> script;
   size_t idx = 0;

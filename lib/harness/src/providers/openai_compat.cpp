@@ -87,11 +87,15 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
 // The whole sub runs inside one blocking POST, bounded by this read deadline.
 constexpr uint32_t kCompatTimeoutMs = 30000;
 
-// A transport failure (code 0). The sub runs INSIDE the POST, so a failure that
-// took about the whole deadline is a read timeout on a run that most likely
-// started: Timeout, which tells the head not to spawn it again (CUM-538). A fast
-// failure (connect, DNS, TLS) never delivered the work: Network.
+// A transport failure (code 0). The sub runs INSIDE the POST, so once the request
+// went out and no answer came back (a deadline, or a connection dropped mid-wait),
+// or the failure took about the whole deadline, the run most likely started:
+// Timeout, which tells the head not to spawn it again (CUM-538). A request that
+// never fully left, or a fast failure (connect, DNS, TLS), never delivered the
+// work: Network.
 FabricErr compatTransportErr(uint32_t elapsedMs) {
+  if (wire::lastExchange().unsent) return FabricErr::Network;
+  if (wire::lastExchange().noResponse) return FabricErr::Timeout;
   return elapsedMs >= (kCompatTimeoutMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
 }
 

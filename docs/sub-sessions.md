@@ -226,11 +226,17 @@ read deadline, the chat-completions or Messages request of the others with
 30 s), so a slow one outlasts the deadline. `mistralDispatch`,
 `openaiCompatDispatch` and `customDispatch` (`lib/harness/src/providers/`)
 classify a transport failure that took at least nine tenths of the deadline as
-`FabricErr::Timeout` rather than a connection failure (a fast failure stays a
-failed start: the work never left), and `JobEngine::dispatchSpawn`
+`FabricErr::Timeout` rather than a connection failure (the Z.ai, Cumulo and
+custom subs also do so for a request that went out and got no answer, such as a
+connection dropped mid-wait; a request that never fully left, or a fast failure,
+stays a failed start: the work never left), and `JobEngine::dispatchSpawn`
 (`lib/harness/src/jobs.cpp`) tells the owner *"The agent on zai didn't respond
 in time - it may have run without me getting its result. Try a smaller task or
-split it into steps."*, since the agent may have started.
+split it into steps."*, since the agent may have started. A dispatch the
+provider answered with a result that could not be read (`FabricErr::ParseFail`:
+empty content, or a body the device could not parse) ran and was charged, so it
+is told the same way (*"The agent on zai answered, but I couldn't read its
+result - it may have run..."*) and its note is a "may have started" one too.
 
 **A sub the provider refuses with HTTP 429 names the quota window.**
 The dispatch hands the window back through `Directive::rateLimit`

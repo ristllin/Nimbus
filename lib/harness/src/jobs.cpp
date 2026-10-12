@@ -105,6 +105,12 @@ static std::string spawnRefusal(FabricErr err, const std::string& provider, Rate
     return "The agent on " + provider +
            " didn't respond in time - it may have run without me getting "
            "its result. Try a smaller task or split it into steps.";
+  // The provider answered 200 but its result could not be read: it ran (and
+  // charged), so "couldn't start" would be the same lie.
+  if (err == FabricErr::ParseFail)
+    return "The agent on " + provider +
+           " answered, but I couldn't read its result - it may have run. Try a smaller "
+           "task or split it into steps.";
   const std::string refused = "Couldn't start that agent on " + provider + ".";
   // CUM-465: a 429 names the quota window that refused, in the head turn's own
   // copy (rateLimitReply), so "wait a minute" is never promised for a spent day.
@@ -581,14 +587,16 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                (int)err, provider.c_str(), model.c_str(), p.category);
     const std::string refusal = spawnRefusal(err, provider, window);
     deliver(chatId, refusal);
-    if (err == FabricErr::Timeout) {
+    if (err == FabricErr::Timeout || err == FabricErr::ParseFail) {
       // It most likely ran (a synchronous sub - Mistral, Z.ai, Cumulo, custom - runs
-      // inside the POST that timed out) and no job record exists to wait on, so the
-      // head must not spawn it again.
+      // inside the POST that timed out or answered unreadably; an async one was
+      // created) and no job record exists to wait on, so the head must not spawn it
+      // again.
+      const char* what = err == FabricErr::Timeout ? " did not answer in time"
+                                                   : " answered but its result could not be read";
       noteSpawnRefused(chatId, p.name, p.task,
-                       "the agent on " + provider + " did not answer in time, so it may "
-                       "have run, and its result will not arrive. Do not spawn it again "
-                       "unless the owner asks",
+                       "the agent on " + provider + what + ", so it may have run, and its "
+                       "result will not arrive. Do not spawn it again unless the owner asks",
                        /*mayHaveRun=*/true);
       noteDispatchTimeout();
     } else {
