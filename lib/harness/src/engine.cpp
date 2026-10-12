@@ -442,7 +442,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // failed call and a confusing walk-back, and described the admin surface).
   std::vector<orch::ToolRegistry::Spec> specs =
       d_.toolSpecs ? d_.toolSpecs(turnWho) : std::vector<orch::ToolRegistry::Spec>{};
-  // CUM-523: no Telegram bot, no Telegram tool. A web reminder's wakeup turn on a
+  // CUM-523: a turn that cannot deliver over Telegram gets no Telegram tool. A web
+  // reminder's wakeup turn on a
   // Telegram-less device called reply.telegram, failed, and told the owner it
   // "couldn't send a separate Telegram alert". Dropping the spec here removes it
   // from the prompt's tool list AND the loop's callable set (both read `specs`).
@@ -1167,11 +1168,11 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // reply.speak / reply.telegram hints ride only a loop turn; the Telegram one only
   // when this turn can deliver over Telegram (CUM-523) - the SAME sample the
   // turn's tool list follows, taken once here.
-  const bool tg = telegramOn(chatId);
+  const bool telegram = telegramOn(chatId);
   std::string loopHint;
   if (loopActiveNow()) {
     loopHint = " reply.speak additionally speaks a line on the device speaker;";
-    if (tg)
+    if (telegram)
       loopHint += " reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram"
                   " chat, never for answering this one.";
   }
@@ -1181,7 +1182,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     " the one and only answer; never send the same answer twice." +
     loopHint +
     "\n\n[USER]\n" + text;
-  runTurn(inputs, chatId, text, tg);   // text drives associative recall
+  runTurn(inputs, chatId, text, telegram);   // text drives associative recall
   unverifiedTurn_ = false;
 }
 
@@ -1236,19 +1237,19 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
   // so stops the model sending a "separate alert" down another channel - the web
   // reminder's turn did exactly that on a Telegram-less device.
-  // Only where channelOf(target) is true: a Telegram-less device never has a
-  // Telegram target, and "" (no chat) names no channel at all.
-  const bool deviceChannel = target == "web" || target == "voice" || target == "serial";
-  const bool tg = telegramOn(target);   // the turn's one sample: this line and its tool list agree
+  // Only for a device channel, or a Telegram chat this turn can deliver to (the
+  // turn's one sample, which its tool list follows too); "" names no channel.
+  const bool telegram = telegramOn(target);
+  const bool namedTarget = !target.empty() && (!isTelegramChat(target) || telegram);
   const std::string where =
-      ((once || ownerReminder) && !target.empty() && (deviceChannel || tg))
+      ((once || ownerReminder) && namedTarget)
           ? "\n\n(Your reply is delivered to " + std::string(deliveryPlace(target)) +
                 ". Do not send a second copy over another messaging channel.)"
           : std::string();
   std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() +
                        preamble + prompt + where;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
-  o.ok = runTurn(inputs, target, prompt, tg);
+  o.ok = runTurn(inputs, target, prompt, telegram);
   scheduledTurn_ = false;
   quietTurn_ = false;
   attribution_ = "turn";                       // back to the owner default

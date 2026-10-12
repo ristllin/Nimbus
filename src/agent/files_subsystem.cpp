@@ -1135,8 +1135,8 @@ void registerTools() {
   // durable store as an Image file, and (optionally) reads it back with a vision
   // description. The saved Image is a first-class artifact: it appears in Memory
   // & Files, is found by files.list/files.search, and files.send delivers it to
-  // Telegram as an inline photo. NOT gated on a turn - a compute tool, not a
-  // Telegram actuator (files.send is the gated delivery step).
+  // Telegram as an inline photo. Turn-only (see the handler), but a compute tool,
+  // not a Telegram actuator (files.send is the delivery step).
   reg.add("image.generate",
           "Generate an image from a text prompt and save it as a PNG in the durable store. "
           "Returns the saved project/name, which says how the owner gets it. Set describe "

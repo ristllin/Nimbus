@@ -727,10 +727,11 @@ static void test_cum477_refused_in_the_margin_band_reports_memory() {
   TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
 }
 
-// The same refusal when the largest block stays under the round floor for the
-// whole wait while total free is fine: the resend was refused for memory, the
-// error says memory (the round gate already calls this "low on memory").
-static void test_cum477_refused_on_the_largest_block_reports_memory() {
+// Counter-test (CUM-404 v2): the largest block alone under its floor for the whole
+// wait, with total free fine, refuses the resend but is NOT reported as memory - a
+// Freenove pins its largest block near that floor, and "low memory" would skip the
+// engine's retry and failover for what may be a genuine outage.
+static void test_cum477_largest_block_alone_stays_network() {
   RouterRig r(/*recovers=*/false);
   r.d.http.script.pop_back();
   r.pd.freeHeap = [] { return 100000u; };
@@ -738,9 +739,9 @@ static void test_cum477_refused_on_the_largest_block_reports_memory() {
   r.pd.largestBlock = [&r] { return r.d.http.idx >= 2 ? 4000u : 60000u; };
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
-  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());   // refused: no resend
   TEST_ASSERT_TRUE(r.delayed >= 3000u);
-  TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
 }
 
 // Counter-test: with no way to wait (no delay seam) a reading taken the instant
@@ -866,7 +867,7 @@ int main(int, char**) {
   RUN_TEST(test_cum477_router_loop_resends_after_heap_recovers);
   RUN_TEST(test_cum477_no_recovery_fails_as_low_memory_not_network);
   RUN_TEST(test_cum477_refused_in_the_margin_band_reports_memory);
-  RUN_TEST(test_cum477_refused_on_the_largest_block_reports_memory);
+  RUN_TEST(test_cum477_largest_block_alone_stays_network);
   RUN_TEST(test_cum477_no_wait_seam_keeps_network_in_the_band);
   RUN_TEST(test_cum477_only_unsent_requests_are_resent);
   RUN_TEST(test_cum477_resend_gets_the_rest_of_the_round_budget);

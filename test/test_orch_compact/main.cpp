@@ -53,10 +53,14 @@ static void test_ctx_router_selectors_resolve_to_the_upstream_window() {
   // The bare spelling keeps the router's default upstream (openai): unchanged.
   TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "gpt-5.6"));
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
-  // Any provider's "<upstream>/<model>" id reads the upstream's family window too
-  // (a namespaced id on a compatible endpoint); an unknown family stays default.
+  // Another provider's id is split only when its prefix is a router upstream; a
+  // LAN server's namespaced id keeps the conservative default (never a bigger
+  // family window: "mistralai/Mistral-7B" is a 32K model, not mistral-* 128K).
   TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("custom", "anthropic/claude-sonnet-5"));
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "meta-llama/llama-3-70b"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens,
+                           modelCtxTokens("custom", "mistralai/Mistral-7B-Instruct-v0.3"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "TheBloke/Mistral-7B-GGUF"));
   // A leading '/' is not an upstream marker (the router rule's own semantics).
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "/gpt-5.6"));
 }

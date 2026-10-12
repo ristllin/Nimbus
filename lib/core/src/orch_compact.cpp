@@ -20,6 +20,11 @@ std::string lower(const std::string& s) {
   return o;
 }
 
+// The upstreams the Cumulo router serves (its "<upstream>/<model>" prefixes).
+bool isRouterUpstream(const std::string& up) {
+  return up == "openai" || up == "anthropic" || up == "mistral" || up == "zai";
+}
+
 // The family table proper, on a lowercased (provider, bare model) pair.
 uint32_t familyCtxTokens(const std::string& p, const std::string& m) {
   // Family prefixes over exact ids: a new snapshot ("claude-sonnet-4-7") gets its
@@ -49,12 +54,16 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   // rule and read the upstream's window for the bare id; matching the raw
   // selector dropped the router head to the 100K default. A bare id on the router
   // keeps the default upstream (openai), so "gpt-5.6" reads exactly as before.
-  // Any provider's "<upstream>/<model>" id resolves the same way.
-  const std::string::size_type slash = m.find('/');
-  if (p == "cumulo" || (slash != std::string::npos && slash > 0)) {
+  // Another provider's id is split only when it names a router upstream: a
+  // namespaced id on a LAN server ("mistralai/Mistral-7B-...", 32K) must stay on
+  // the conservative default, never inherit a bigger family window.
+  if (p == "cumulo") {
     const RouterRoute r = resolveRouterRoute(m);
     return familyCtxTokens(r.upstream, r.model);
   }
+  const std::string::size_type slash = m.find('/');
+  if (slash != std::string::npos && slash > 0 && isRouterUpstream(m.substr(0, slash)))
+    return familyCtxTokens(m.substr(0, slash), m.substr(slash + 1));
   return familyCtxTokens(p, m);
 }
 

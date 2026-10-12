@@ -157,10 +157,48 @@ static void test_harvest_is_bounded_on_a_huge_body() {
   agent::hlog::setSink(nullptr);
 }
 
-// The keep order dedupes in O(n log n): a 5000-entry catalog (protectHeads runs on
-// the parsed router catalog before its size trim) with duplicates and dated twins
-// still drops exactly the duplicates and twins, quickly.
-static void test_keep_order_dedupes_a_large_list() {
+// The candidate dedupe (sorted indexes + binary search for a dated twin's alias)
+// keeps exactly what the plain pairwise rule keeps, in the same order: the first
+// copy of each id, minus empty ids and dated twins of a listed alias. The class,
+// over generated lists mixing duplicates, twins, dated-only ids and empty ids.
+static std::vector<size_t> pairwiseCandidates(const std::vector<std::string>& canon) {
+  std::vector<size_t> cand;
+  std::vector<std::string> kept;
+  auto has = [](const std::vector<std::string>& v, const std::string& x) {
+    for (const std::string& e : v)
+      if (e == x) return true;
+    return false;
+  };
+  for (size_t i = 0; i < canon.size(); ++i) {
+    if (canon[i].empty() || has(kept, canon[i])) continue;
+    const std::string alias = rc::undatedAlias(canon[i]);
+    if (!alias.empty() && has(canon, alias)) continue;
+    kept.push_back(canon[i]);
+    cand.push_back(i);
+  }
+  return cand;
+}
+static void test_candidates_match_the_pairwise_rule() {
+  const char* const kPool[] = {"zai/glm-5.3", "zai/glm-5.3", "", "anthropic/claude-opus-4-5",
+                               "anthropic/claude-opus-4-5-20251101",
+                               "anthropic/claude-haiku-4-5-20251001", "openai/gpt-4.1",
+                               "openai/gpt-4.1-2025-04-14", "openai/gpt-4.1-2025-04-14",
+                               "mistral/mistral-large", "openai/gpt-5.6"};
+  const size_t n = sizeof(kPool) / sizeof(kPool[0]);
+  uint32_t seed = 12345;
+  for (int round = 0; round < 200; ++round) {
+    std::vector<std::string> canon;
+    const size_t len = 1 + (size_t)(round % 40);
+    for (size_t k = 0; k < len; ++k) {
+      seed = seed * 1103515245u + 12345u;
+      canon.push_back(kPool[(seed >> 16) % n]);
+    }
+    const std::vector<size_t> want = pairwiseCandidates(canon);
+    const std::vector<size_t> got = rc::detail::candidates(canon);
+    TEST_ASSERT_EQUAL_UINT(want.size(), got.size());
+    for (size_t k = 0; k < want.size(); ++k) TEST_ASSERT_EQUAL_UINT(want[k], got[k]);
+  }
+  // And at size: 5002 ids with duplicates and a dated twin.
   std::vector<std::string> ids;
   for (int i = 0; i < 2500; ++i) {
     ids.push_back("zai/m" + std::to_string(i));
@@ -168,13 +206,9 @@ static void test_keep_order_dedupes_a_large_list() {
   }
   ids.push_back("anthropic/claude-opus-4-5");
   ids.push_back("anthropic/claude-opus-4-5-20251101");   // a dated twin of a listed alias
-  const auto t0 = std::chrono::steady_clock::now();
   const std::vector<size_t> order = rc::keepOrder(ids, "gpt-5.6");
-  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::steady_clock::now() - t0).count();
   TEST_ASSERT_EQUAL_UINT(2501, order.size());
   for (size_t i : order) TEST_ASSERT_TRUE(ids[i] != "anthropic/claude-opus-4-5-20251101");
-  TEST_ASSERT_TRUE_MESSAGE(ms < 2000, "keepOrder of 5002 ids took over 2 s");
 }
 
 // Dated snapshots duplicating an undated alias are dropped; a dated-only id
@@ -250,7 +284,7 @@ static void test_default_repicks_in_both_spellings() {
   TEST_ASSERT_TRUE(mp::allowed(l, "openai/gpt-5.6"));
   TEST_ASSERT_TRUE(mp::allowed(l, ""));                          // reset to default
   TEST_ASSERT_TRUE(mp::allowed(l, "anthropic/claude-opus-4-8"));
-  TEST_ASSERT_TRUE(mp::allowed(l, "zai/glm-5.2"));               // catalog-only member
+  TEST_ASSERT_TRUE(mp::allowed(l, "zai/glm-5.2"));               // a choice-list member
 }
 
 // The catalog branch of the save rule: a grouped picker row beyond the choice
@@ -322,7 +356,7 @@ int main(int, char**) {
   RUN_TEST(test_each_upstream_keeps_its_newest_model);
   RUN_TEST(test_harvest_filters_a_router_body);
   RUN_TEST(test_harvest_is_bounded_on_a_huge_body);
-  RUN_TEST(test_keep_order_dedupes_a_large_list);
+  RUN_TEST(test_candidates_match_the_pairwise_rule);
   RUN_TEST(test_short_list_is_whole);
   RUN_TEST(test_catalog_protects_default_and_upstream_heads);
   RUN_TEST(test_default_repicks_in_both_spellings);

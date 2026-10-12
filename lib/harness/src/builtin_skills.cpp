@@ -1,6 +1,7 @@
 #include "nimbus/harness/builtin_skills.h"
 
 #include <cstdint>
+#include <cstring>
 
 #include "nimbus/harness/board_identity.h"   // CUM-514: the build's own 'hardware' capsule
 
@@ -190,29 +191,34 @@ const Entry kEntries[] = {
 #undef NIMBUS_PARTS
 constexpr size_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);
 
+const Entry* findEntry(const std::string& id) {
+  for (const Entry& e : kEntries)
+    if (id == e.meta.id) return &e;
+  return nullptr;
+}
+
 }  // namespace
 
 size_t builtinSkillCount() { return kEntryCount; }
 
 const BuiltinSkill& builtinSkill(size_t i) { return kEntries[i < kEntryCount ? i : 0].meta; }
 
-bool isBuiltinSkill(const std::string& id) {
-  for (const Entry& e : kEntries)
-    if (id == e.meta.id) return true;
-  return false;
-}
+bool isBuiltinSkill(const std::string& id) { return findEntry(id) != nullptr; }
 
 std::string builtinSkillBody(const std::string& id, bool telegram) {
-  for (const Entry& e : kEntries) {
-    if (id != e.meta.id) continue;
-    if (!e.parts) return std::string(buildBoardIdentity().hardware);
-    const Side skip = telegram ? Side::NoTelegram : Side::Telegram;
-    std::string out;
-    for (size_t i = 0; i < e.count; ++i)
-      if (e.parts[i].side != skip) out += e.parts[i].text;
-    return out;
-  }
-  return std::string();
+  const Entry* e = findEntry(id);
+  if (!e) return std::string();
+  if (!e->parts) return std::string(buildBoardIdentity().hardware);
+  const Side skip = telegram ? Side::NoTelegram : Side::Telegram;
+  // One exact allocation (served during a turn, under the heap floor): size first.
+  size_t total = 0;
+  for (size_t i = 0; i < e->count; ++i)
+    if (e->parts[i].side != skip) total += std::strlen(e->parts[i].text);
+  std::string out;
+  out.reserve(total);
+  for (size_t i = 0; i < e->count; ++i)
+    if (e->parts[i].side != skip) out += e->parts[i].text;
+  return out;
 }
 
 }  // namespace agent

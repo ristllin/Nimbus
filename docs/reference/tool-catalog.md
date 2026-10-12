@@ -323,12 +323,13 @@ speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
 back to text - the content is never dropped. `reply.telegram` and `files.send`
 are offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
-over Telegram. Otherwise neither is offered (a web, voice or serial turn in public
-mode with no allowlisted chat included), and a reminder or wakeup answers in the
-chat that set it. The device decides this once per turn, so the tool list and
-every hint in that turn agree: on a turn without Telegram the built-in playbooks
-(`skill.get`), the skills list and the tool results point at the Files list on
-the device web page instead of naming either tool.
+over Telegram (`files.send` itself still delivers only to an allowlisted chat).
+Otherwise neither is offered (a web, voice or serial turn in public mode with no
+allowlisted chat included), and a reminder or wakeup answers in the chat that set
+it. The device decides this once per turn, so the tool list and the turn's hints
+agree: on a turn without Telegram the built-in playbooks (`skill.get`), the skills
+list and the `image.generate` result point at the Files list on the device web
+page instead of naming either tool.
 
 ## `web.*` - live web search
 

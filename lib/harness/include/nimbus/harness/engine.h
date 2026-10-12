@@ -114,7 +114,8 @@ inline bool turnHeapOk(uint32_t freeInternal, uint32_t largestBlock,
 }
 
 // CUM-523: tools that can only deliver over Telegram (reply.telegram, files.send).
-// A device with no Telegram bot is never offered them.
+// A turn that cannot deliver over Telegram (HarnessConfig::telegramDeliverable)
+// is never offered them.
 bool isTelegramOnlyTool(const std::string& name);
 
 class TurnEngine {
@@ -282,11 +283,7 @@ class TurnEngine {
   // runs (runTurn), so "advertised == callable" holds even when memory pressure
   // forces a single-shot turn.
   bool loopActiveNow() const;
-  // CUM-523: the live Telegram predicate for a turn on `chatId`
-  // (HarnessConfig::telegramDeliverable; unset = true). A turn reads it ONCE, at
-  // its entry - see turnTelegram().
-  bool telegramOn(const std::string& chatId) const;
-  // The Telegram answer sampled for the turn in flight (the last turn's when none
+  // CUM-523: the Telegram answer sampled for the turn in flight (the last turn's when none
   // is). The turn's tool list, channel hint, compose wording and capability line
   // all follow it; device text served mid-turn (skill bodies, tool results)
   // reads it too, so one turn never disagrees with itself.
@@ -330,6 +327,10 @@ class TurnEngine {
   // turn sample before they write their hint / delivery line into the inputs.
   bool runTurn(const std::string& inputs, const std::string& chatId,
                const std::string& userText, bool telegram);
+  // CUM-523: the live Telegram predicate for a turn on `chatId`
+  // (HarnessConfig::telegramDeliverable; unset = true). Sampled ONCE, at turn
+  // entry; everything after reads turnTelegram().
+  bool telegramOn(const std::string& chatId) const;
   std::string takePendingMemResults();
   // CUM-538: this chat's "[SPAWN REFUSED]" block ("" when none).
   std::string takeSpawnNotes(const std::string& chatId);
@@ -361,7 +362,7 @@ class TurnEngine {
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
   std::string curChat_;                 // routing chatId of the in-flight turn
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
-  bool turnTelegram_ = true;            // CUM-523: this turn's one Telegram sample
+  volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   // CUM-536: this turn's [FRESH RESULTS] include a result whose connector never

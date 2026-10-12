@@ -19,8 +19,8 @@ namespace agent {
 // (a renamed device used to read "You are Nimbus ... You are <old-name>" twelve
 // lines apart), and it no longer claims every conversation is "your owner"
 // (the device is multi-tenant; the identity block names this turn's speaker).
-// How people reach the device: Telegram is named only when a bot is configured
-// (CUM-523).
+// How people reach the device: Telegram is named only when this turn can deliver
+// over it (ComposeInputs::telegram, CUM-523).
 static const char* reachLine(bool telegram) {
   return telegram ? "You speak with people over Telegram/voice and can act on the device."
                   : "You speak with people over the web page/voice and can act on the device.";

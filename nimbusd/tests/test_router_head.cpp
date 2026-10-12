@@ -340,6 +340,14 @@ static void testMistralFreshConversation(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+// CUM-544: the ONE Z.ai head policy on a recorded request.
+static void expectZaiHeadPolicy(ndtest::Ctx& c, const agent::HttpRequest& r) {
+  c.ok(has(r.body, "json_object"), "json_object, not json_schema (CUM-495)");
+  c.ok(has(r.body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
+  c.eqi((long)r.timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs,
+        "the 50 s Z.ai head budget (CUM-544)");
+}
+
 static void testZaiKeepsCustomPath(ndtest::Ctx& c) {
   std::printf("  -- (g) zai keeps single-shot chat completions with json_object --\n");
   clearProviderEnv();
@@ -353,12 +361,8 @@ static void testZaiKeepsCustomPath(ndtest::Ctx& c) {
   c.eqi((long)tx.seen.size(), 1, "single shot (no tool loop on this path)");
   if (!tx.seen.empty()) {
     c.eq(tx.seen[0].path, "/router/zai/chat/completions", "the zai path has no /v1");
-    c.ok(has(tx.seen[0].body, "json_object"), "json_object, not json_schema (CUM-495)");
     c.ok(has(tx.seen[0].body, "\"model\":\"glm-5.3\""), "the bare model id");
-    // CUM-544: the router's zai upstream rides the ONE Z.ai policy seam.
-    c.ok(has(tx.seen[0].body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
-    c.eqi((long)tx.seen[0].timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs,
-          "the 50 s Z.ai head budget (CUM-544)");
+    expectZaiHeadPolicy(c, tx.seen[0]);   // the router's zai upstream rides the one seam
   }
   c.ok(has(t.reply, "glm here"), "the answer reaches the owner");
   clearProviderEnv();
@@ -384,9 +388,7 @@ static void testZaiDirectHeadOnThePolicySeam(ndtest::Ctx& c) {
   if (!tx.seen.empty()) {
     const agent::HttpRequest& r = tx.seen[0];
     c.eq(r.host, kZaiHost, "the Z.ai host");
-    c.ok(has(r.body, "json_object"), "json_object, not json_schema (CUM-495)");
-    c.ok(has(r.body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
-    c.eqi((long)r.timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs, "the 50 s Z.ai head budget");
+    expectZaiHeadPolicy(c, r);
   }
   c.ok(has(t.reply, "glm direct"), "the answer reaches the owner");
   clearProviderEnv();

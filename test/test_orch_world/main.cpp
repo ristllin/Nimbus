@@ -242,7 +242,7 @@ static void test_cum523_channel_advice_without_telegram() {
   hw.noTelegram = true;   // the caller KNOWS there is no bot
   hw.voiceReplies = true;
   std::string out = renderCapabilities(hw, {});
-  TEST_ASSERT_TRUE(out.find("This device has no Telegram.") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("Telegram is not available on this turn.") != std::string::npos);
   TEST_ASSERT_TRUE(out.find("reply.telegram") == std::string::npos);
   TEST_ASSERT_TRUE(out.find("Telegram text") == std::string::npos);
   hw.voiceReplies = false;

@@ -736,12 +736,13 @@ speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
 back to text - the content is never dropped. `reply.telegram` and `files.send`
 are offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
-over Telegram. Otherwise neither is offered (a web, voice or serial turn in public
-mode with no allowlisted chat included), and a reminder or wakeup answers in the
-chat that set it. The device decides this once per turn, so the tool list and
-every hint in that turn agree: on a turn without Telegram the built-in playbooks
-(`skill.get`), the skills list and the tool results point at the Files list on
-the device web page instead of naming either tool.)NIMBUSDOC"},
+over Telegram (`files.send` itself still delivers only to an allowlisted chat).
+Otherwise neither is offered (a web, voice or serial turn in public mode with no
+allowlisted chat included), and a reminder or wakeup answers in the chat that set
+it. The device decides this once per turn, so the tool list and the turn's hints
+agree: on a turn without Telegram the built-in playbooks (`skill.get`), the skills
+list and the `image.generate` result point at the Files list on the device web
+page instead of naming either tool.)NIMBUSDOC"},
   {"tool-catalog#web-live-web-search", "`web.*` - live web search",
    R"NIMBUSDOC(| Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
@@ -2554,7 +2555,7 @@ A quick example: on a desk, most people run **Full** - every session gets a
 color arc, the screen updates promptly. Unplugged for the evening, switch to
 **Balanced** - the ring quiets to a single soft cue and the screen batches its
 updates. Overnight on battery, **Dark** - no lights unless a job errors or you
-hold to talk (the voice cue shows while you speak).
+hold to talk (the voice cue shows from hold-to-talk until the reply finishes).
 
 One exception on Balanced, in Orchestrator mode only: while the assistant is
 running sub-agents, the ring temporarily splits into one arc per sub-agent -

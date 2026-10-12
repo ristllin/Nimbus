@@ -1211,6 +1211,21 @@ static void test_cum523_telegram_device_keeps_the_tool() {
   TEST_ASSERT_TRUE(w.attempts[0].inputs.find("reply.telegram") == std::string::npos);
 }
 
+// CUM-523 helpers: the Telegram-only tool names (registry and wire spellings), and
+// a rig in public mode with no allowlisted chat (deliverable only from a Telegram
+// turn) that registers both Telegram-only tools.
+static const char* const kTelegramOnlyNames[] = {"files.send", "reply.telegram", "files_send",
+                                                 "reply_telegram"};
+static void addTelegramSpecs(Rig& r) {
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file.", "{}"});
+}
+static void publicNoAllowlist(Rig& r) {
+  r.cfg.telegramPublic = true;
+  r.cfg.telegramAllowlist = "";
+  addTelegramSpecs(r);
+}
+
 // CUM-523: the Telegram predicate reads live device state, so sampling it
 // several times per turn let the hint and the tool list disagree when the owner
 // changed the allowlist mid-turn. ONE sample per turn: a predicate that answers
@@ -1220,7 +1235,7 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   int calls = 0;
   Rig r;
   r.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
-  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  addTelegramSpecs(r);
   r.eng->handleMessage("hi", "Dana", "web");
   TEST_ASSERT_EQUAL(1, calls);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
@@ -1231,7 +1246,7 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   Rig s;
   calls = 0;
   s.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
-  s.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  addTelegramSpecs(s);
   s.eng->injectScheduledTurn("1001", "stretch", "wakeup", "lp1", /*quietOk=*/false, /*once=*/true);
   TEST_ASSERT_EQUAL(1, calls);
   TEST_ASSERT_TRUE(s.attempts[0].inputs.find("(Your reply is delivered to this Telegram chat.") !=
@@ -1268,15 +1283,9 @@ static void test_cum523_deliverability_rule() {
 // files.send (and the reminder fired into the web chat is not either); a turn that
 // came in over Telegram in that mode still is - its own chat is the target.
 static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
-  auto telegramSpecs = [](Rig& r) {
-    r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
-    r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file.", "{}"});
-  };
   for (const char* chat : {"web", "voice", "serial"}) {
     Rig r;
-    r.cfg.telegramPublic = true;
-    r.cfg.telegramAllowlist = "";
-    telegramSpecs(r);
+    publicNoAllowlist(r);
     r.eng->handleMessage("hi", "Dana", chat);
     const std::string& sys = r.debug[0].instructions;
     TEST_ASSERT_TRUE_MESSAGE(sys.find("reply_telegram") == std::string::npos, chat);
@@ -1284,9 +1293,7 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
     TEST_ASSERT_TRUE_MESSAGE(r.attempts[0].inputs.find("reply.telegram") == std::string::npos, chat);
   }
   Rig w;   // the reminder set in the web chat fires into the web chat
-  w.cfg.telegramPublic = true;
-  w.cfg.telegramAllowlist = "";
-  telegramSpecs(w);
+  publicNoAllowlist(w);
   w.eng->injectScheduledTurn("web", "stretch", "reminder", "lp1", false, true, /*ownerReminder=*/true);
   TEST_ASSERT_TRUE(w.debug[0].instructions.find("reply_telegram") == std::string::npos);
   TEST_ASSERT_TRUE(w.debug[0].instructions.find("files_send") == std::string::npos);
@@ -1294,35 +1301,33 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
                    std::string::npos);
 
   Rig t;   // a guest's Telegram turn in the same mode keeps its own chat
-  t.cfg.telegramPublic = true;
-  t.cfg.telegramAllowlist = "";
-  telegramSpecs(t);
+  publicNoAllowlist(t);
   t.eng->handleMessage("hi", "Guest", "5550001");
   TEST_ASSERT_TRUE(t.debug[0].instructions.find("reply_telegram") != std::string::npos);
 }
 
-// CUM-523: on a turn with no Telegram, NOTHING the model reads names a
+// CUM-523: on a turn with no Telegram, nothing the engine composes names a
 // Telegram-only tool - the tool list, the channel hint, the [SKILLS] index (the
 // device's real built-ins), the capability line (SD files bullet) - and every
-// built-in body served on that turn (skill.get) follows the same sample.
+// built-in body served on that turn (skill.get) follows the same sample. (The rig
+// stubs the connector catalog; its own wording is pinned in test_connectors_wire.)
 static void test_cum523_telegramless_prompt_names_no_telegram_tool() {
   Rig r;
   r.cfg.telegramOn = false;
   r.hw.files = r.hw.sd = r.hw.speaker = r.hw.voiceReplies = r.hw.wifi = true;
   r.hw.telegram = true;   // the bot "runs" in the manifest; the turn's sample says no
-  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
-  r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file.", "{}"});
+  addTelegramSpecs(r);
   r.specs.push_back(orch::ToolRegistry::Spec{"reply.speak", "Read text aloud.", "{}"});
   r.eng->handleMessage("make me a PDF report", "Dana", "web");
   TEST_ASSERT_FALSE(r.eng->turnTelegram());
   const std::string prompt = r.debug[0].instructions + "\n" + r.debug[0].inputs;
-  for (const char* t : {"files.send", "reply.telegram", "files_send", "reply_telegram"})
+  for (const char* t : kTelegramOnlyNames)
     TEST_ASSERT_TRUE_MESSAGE(prompt.find(t) == std::string::npos, t);
   TEST_ASSERT_TRUE(prompt.find("- deliver-pdf: ") != std::string::npos);   // the index still rides
   TEST_ASSERT_TRUE(prompt.find("Connectivity: WiFi.\n") != std::string::npos);   // no Telegram
   for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
     const std::string body = agent::builtinSkillBody(agent::builtinSkill(i).id, r.eng->turnTelegram());
-    for (const char* t : {"files.send", "reply.telegram"})
+    for (const char* t : kTelegramOnlyNames)
       TEST_ASSERT_TRUE_MESSAGE(body.find(t) == std::string::npos, agent::builtinSkill(i).id);
   }
 

@@ -32,27 +32,33 @@ constexpr uint32_t kHeapPollMs = 100;
 // admitted at the floor, so resending at exactly the floor would just repeat it.
 constexpr uint32_t kResendHeapMargin = 4096;
 
+// Total free internal heap under the resend threshold (the round floor + margin).
+bool totalBelowResendFloor(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  return cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap + kResendHeapMargin;
+}
+
 bool heapBelowFloor(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
-  if (cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap + kResendHeapMargin)
-    return true;
+  if (totalBelowResendFloor(pd, cfg)) return true;
   return cfg.roundMinLargest && pd.largestBlock && pd.largestBlock() < cfg.roundMinLargest;
 }
 
 // Whether the one resend may go, and if not, why - the reported error follows the
-// reason (CUM-477). `StayedLow`: the heap stayed under the resend threshold for
-// the whole bounded wait. `CannotWait`: it was under at the one instant we could
-// look (no delay seam), which is not evidence on its own - the failed
-// connection's buffers may not be back yet.
-enum class Resend : uint8_t { Go, StayedLow, CannotWait };
+// reason (CUM-477). `StayedLow`: total free stayed under the resend threshold for
+// the whole bounded wait - memory. `Blocked`: the wait ran out on anything else
+// (the largest block alone, which a Freenove pins near its floor) or there was no
+// way to wait (one reading the instant after the failure, before the failed
+// connection's buffers are back) - not evidence of memory on its own.
+enum class Resend : uint8_t { Go, StayedLow, Blocked };
 
-// Go once the heap is back past the resend threshold, waiting (bounded) when a
+// Go once the heap is back past the resend thresholds, waiting (bounded) when a
 // delay seam exists. A transport "low memory" tag gets one settle pause even when
 // the totals look fine at this instant.
 Resend resendVerdict(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg, bool taggedLow) {
   if (taggedLow && pd.delayMs) pd.delayMs(kHeapPollMs);
   for (uint32_t waited = 0; heapBelowFloor(pd, cfg); waited += kHeapPollMs) {
-    if (!pd.delayMs) return Resend::CannotWait;
-    if (waited >= kHeapRecoverMs) return Resend::StayedLow;
+    if (!pd.delayMs) return Resend::Blocked;
+    if (waited >= kHeapRecoverMs)
+      return totalBelowResendFloor(pd, cfg) ? Resend::StayedLow : Resend::Blocked;
     pd.delayMs(kHeapPollMs);
   }
   return Resend::Go;
@@ -62,11 +68,10 @@ constexpr const char* kUnsentLowMem = "low memory: the device could not send the
 
 // Memory - not the network - is the reason a send failed: total free heap is below
 // the round floor. Neither the largest block nor the transport's starved-start tag
-// alone counts at one instant: a Freenove board idles near the block floor, and
-// CUM-404 v2 forbids turning its genuine outages into fake low-memory failures
-// (which skip failover). A heap that stayed under the resend threshold for the
-// whole 3 s wait is different: that is sustained starvation (the turn gate
-// refuses a turn on the same block floor), so the refused resend reports memory.
+// alone counts: a Freenove board idles near the block floor, and CUM-404 v2 forbids
+// turning its genuine outages into fake low-memory failures (which skip failover).
+// A total that stayed low for the whole wait is Resend::StayedLow, read at the call
+// site.
 bool memoryShort(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
   return cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap;
 }
@@ -97,9 +102,10 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
     if (verdict != Resend::Go) {
       hlog::logf("%s: request not sent and the heap did not recover (heap %u) - no resend",
                  ctx->who, heapAt);
-      // The error names the reason the resend was refused: a heap that stayed low
-      // for the whole wait is memory, whichever floor held (total + margin, or the
-      // largest block). With no wait, only a total below the round floor counts.
+      // The error names the reason the resend was refused: total free that stayed
+      // under the resend threshold for the whole wait is memory; otherwise only a
+      // total below the round floor counts, and the largest block alone stays
+      // "network" so failover still runs (CUM-404 v2).
       if (verdict == Resend::StayedLow || shortAtFailure || memoryShort(pd, *ctx->cfg))
         sr.error = kUnsentLowMem;
       return sr;

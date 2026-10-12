@@ -10,8 +10,8 @@
 // CUM-523: a capsule never names a Telegram-only tool (reply.telegram,
 // files.send) on a turn that was not offered one. The index lines are
 // channel-neutral; a body is a list of parts, and a part written for one side
-// (a Telegram device, or a device whose turn has no Telegram) is served only on
-// that side. The device picks the side with the same per-turn sample the engine
+// (a turn offered the Telegram-only tools, or a turn that is not) is served only
+// on that side. The device picks the side with the same per-turn sample the engine
 // filters the tool list with (TurnEngine::turnTelegram).
 namespace agent {
 

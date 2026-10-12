@@ -120,7 +120,7 @@ static ComposeInputs cannedInputs() {
 // round cap was stated as "~12" while the default is 8 (and owner-tunable); a
 // mem_write was said to apply AFTER the reply, while applyTurn stores it before
 // delivering (test_harness_apply pins that order). Both prompts (v1 and v2).
-// CUM-523 (prism): a device with no Telegram bot is never told it speaks over
+// CUM-523: a turn with no Telegram delivery is never told it speaks over
 // Telegram - in v1 or v2.
 static void test_prompt_names_telegram_only_with_a_bot() {
   for (bool v2 : {false, true}) {

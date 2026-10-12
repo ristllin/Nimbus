@@ -252,8 +252,9 @@ is read from `choices[0].message.content`. Paste the key into the Z.ai row's
 GLM always reasons before it answers (Z.ai refuses `thinking: disabled`), and
 Z.ai's gateway closes a request that has not answered after about 60 s. So every
 Z.ai request the device makes (the head, direct or through the Cumulo router's
-`zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`, and
-a Virtual Nimbus does the same through the same code.
+`zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`; a
+Virtual Nimbus's Z.ai heads (direct and through the router) do the same through
+the same code.
 A head request gets 50 s; if Z.ai has not answered by then, the turn fails over
 to the next provider straight away (no same-host retry) and the notice says Z.ai
 did not answer in time.

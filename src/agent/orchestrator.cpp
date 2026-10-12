@@ -419,24 +419,21 @@ static bool providerHasKey(const String& p) {
   return false;
 }
 
-// CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
-// the live-harvested list first - the verify pass reads the provider's /models,
-// keeping current-generation ids selectable without a firmware release - else
-// the cold-start list). The spawn validator, the orch_model validator AND the
-// prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
-// head is never offered a model that validation then coerces away.
-// CUM-523: can the Telegram-only tools deliver from a turn on `chatId`? The rule is
-// the portable agent::telegramDeliverableFor (host-tested) over this device's live
-// facts: the bot runs and a chat is allowlisted, or public mode and the turn itself
-// came in over Telegram. The engine samples it once per turn and narrows the
-// manifest's Telegram flag with that sample, so the prompt never names a tool the
-// turn was not given.
+// CUM-523: HarnessConfig::telegramDeliverable on this device - the portable
+// agent::telegramDeliverableFor rule (config.h, host-tested) over the live bot,
+// allowlist and public-mode facts.
 static bool telegramDeliverable(const std::string& chatId) {
   return agent::telegramDeliverableFor(agent::telegram::enabled(),
                                        store::telegramAllowlist().length() > 0,
                                        store::telegramPublic(), chatId);
 }
 
+// CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
+// the live-harvested list first - the verify pass reads the provider's /models,
+// keeping current-generation ids selectable without a firmware release - else
+// the cold-start list). The spawn validator, the orch_model validator AND the
+// prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
+// head is never offered a model that validation then coerces away.
 static std::string modelChoicesFor(const std::string& p) {
   return nimbus::orch::effectiveModelChoices(p.c_str(),
                                              std::string(store::modelChoices(String(p.c_str())).c_str()));
@@ -1370,7 +1367,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_cfg = harnessConfigFromStore();
   // CUM-523: a turn that cannot deliver over Telegram is never offered a Telegram
   // leg (the engine's one per-turn sample also narrows the manifest's hw.telegram).
-  g_cfg.telegramDeliverable = [](const std::string& chat) { return telegramDeliverable(chat); };
+  g_cfg.telegramDeliverable = telegramDeliverable;
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,

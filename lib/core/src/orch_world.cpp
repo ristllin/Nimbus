@@ -142,8 +142,9 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
                                         "web page (sending a file needs Telegram, which this "
                                         "turn cannot reach). ") +
            "Files persist across reboots and are never auto-deleted.\n";
-  // CUM-523: with no Telegram bot the channel advice never names Telegram (it used
-  // to steer a web-only device's turns toward a reply.telegram that cannot work).
+  // CUM-523: on a turn with no Telegram delivery the channel advice never names
+  // Telegram (it used to steer a web-only device's turns toward a reply.telegram
+  // that cannot work).
   if (hw.speaker || hw.telegram) {
     if (hw.voiceReplies && !hw.noTelegram)
       out += "- YOU choose the reply channel per situation (owner rule): short status or a "
@@ -157,7 +158,7 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
              "heads-up while the owner is nearby -> speak it aloud on the device speaker "
              "(reply.speak, or the tts device action); longer content, lists, code -> your "
              "text reply; a question you need answered -> ask. Never send the SAME content "
-             "as both text and audio. This device has no Telegram.\n";
+             "as both text and audio. Telegram is not available on this turn.\n";
     else
       out += std::string(!hw.noTelegram ? "- Reply in TEXT (Telegram / on-screen)"
                                         : "- Reply in TEXT (on-screen)") +
