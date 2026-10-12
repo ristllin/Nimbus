@@ -46,8 +46,20 @@ inline constexpr size_t kCatalogMaxBytes = 16000;
 inline constexpr size_t kHarvestMax = 128;
 // The most rows the router catalog keeps from the same body (protectHeads), so the
 // store step is bounded: the size trim that follows re-serializes once per
-// dropped row. (The parse and keepOrder before it are O(n log n) over the body.)
+// dropped row. (The parse and keepOrder before it are O(n log n) over the body,
+// and keepOrder groups at most 4 + kOtherUpstreamsMax upstreams.)
 inline constexpr size_t kCatalogMaxRows = kHarvestMax;
+
+// The upstreams the device runs a head on natively (and zai, the router's GLM):
+// always grouped. Any other upstream is grouped only while fewer than
+// kOtherUpstreamsMax of them are (CUM-530 gate: the body is untrusted, and one
+// queue per distinct upstream made a body of thousands of one-row upstreams cost a
+// linear search and a queue each; the rows of an upstream past the bound are not
+// kept).
+inline constexpr size_t kOtherUpstreamsMax = 8;
+inline bool knownUpstream(const std::string& up) {
+  return up == "openai" || up == "anthropic" || up == "mistral" || up == "zai";
+}
 
 // "<upstream>/<model>" for any selector; a bare id is the openai upstream (the
 // router's default), exactly as the head and the sub-agent resolve it.
@@ -230,7 +242,8 @@ inline std::vector<size_t> candidates(const std::vector<std::string>& canon) {
   return cand;
 }
 
-// Candidates grouped per upstream, upstreams in first-appearance order.
+// Candidates grouped per upstream, upstreams in first-appearance order (at most the
+// four known ones plus kOtherUpstreamsMax others, so each lookup is a bounded scan).
 struct Queues {
   std::vector<std::string> ups;
   std::vector<std::vector<size_t>> q;
@@ -238,6 +251,7 @@ struct Queues {
 inline Queues byUpstream(const std::vector<std::string>& canon, const std::vector<size_t>& cand,
                          const std::vector<size_t>& skip) {
   Queues qs;
+  size_t others = 0;
   for (size_t i : cand) {
     bool skipped = false;
     for (size_t k : skip) skipped = skipped || k == i;
@@ -246,6 +260,9 @@ inline Queues byUpstream(const std::vector<std::string>& canon, const std::vecto
     size_t q = 0;
     while (q < qs.ups.size() && qs.ups[q] != up) ++q;
     if (q == qs.ups.size()) {
+      const bool known = knownUpstream(up);
+      if (!known && others >= kOtherUpstreamsMax) continue;   // past the bound: not kept
+      others += known ? 0 : 1;
       qs.ups.push_back(up);
       qs.q.emplace_back();
     }

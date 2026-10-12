@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -417,6 +418,59 @@ static void test_routable_rule() {
   TEST_ASSERT_TRUE(rc::routable("mistral/zai-glm-5-3"));
 }
 
+// CUM-530 gate: the per-upstream grouping searched every upstream seen so far for
+// each row and kept a queue per upstream, so a body of thousands of distinct
+// upstream prefixes (each a one-row "upstream") was quadratic and held thousands
+// of queues. The four known upstreams are always grouped, others only up to
+// kOtherUpstreamsMax; the default and the flagships still lead.
+static void test_catalog_of_many_upstreams_is_bounded() {
+  std::string body = "{\"object\":\"list\",\"data\":[";
+  for (int i = 0; i < 4000; ++i) body += "{\"id\":\"u" + std::to_string(i) + "/m" + std::to_string(i) + "\"},";
+  body += "{\"id\":\"openai/gpt-5.6\"},{\"id\":\"anthropic/claude-opus-5\"},{\"id\":\"zai/glm-5.3\"}]}";
+  std::vector<ModelInfo> cat;
+  nimbus::orch::parseModelsList("cumulo", body, cat);
+  TEST_ASSERT_TRUE(cat.size() > 4000);   // every distinct row reached the grouping
+  const auto t0 = std::chrono::steady_clock::now();
+  rc::protectHeads(cat, "gpt-5.6");
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  TEST_ASSERT_TRUE(cat.size() <= rc::kCatalogMaxRows);
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", rc::selectorOf(cat[0]).c_str());
+  std::vector<std::string> ups;
+  std::string all = ",";
+  for (const auto& m : cat) {
+    all += rc::selectorOf(m) + ",";
+    if (std::find(ups.begin(), ups.end(), m.upstream) == ups.end()) ups.push_back(m.upstream);
+  }
+  for (const char* want : {",anthropic/claude-opus-5,", ",zai/glm-5.3,"})
+    TEST_ASSERT_TRUE_MESSAGE(all.find(want) != std::string::npos, want);
+  TEST_ASSERT_TRUE_MESSAGE(ups.size() <= 3 + rc::kOtherUpstreamsMax, all.substr(0, 200).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(ms < 2000, "grouping 4000 distinct upstreams took over 2 s");
+  // The choice list built from the same rows is bounded the same way.
+  std::vector<std::string> ids;
+  for (int i = 0; i < 4000; ++i) ids.push_back("u" + std::to_string(i) + "/m" + std::to_string(i));
+  ids.push_back("openai/gpt-5.6");
+  const rc::Shortlist sl = rc::shortlist(ids, "gpt-5.6");
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", sl.csv.substr(0, sl.csv.find(',')).c_str());
+  TEST_ASSERT_TRUE(sl.total <= 1 + rc::kOtherUpstreamsMax);
+}
+
+// The catalog deduped by the bare model id across upstreams, so a second upstream's
+// model of the same name vanished from the catalog (and a catalog-only pick of it
+// was refused). A router row's model is its upstream and its id.
+static void test_same_model_under_two_upstreams_is_two_rows() {
+  const std::string body =
+      "{\"object\":\"list\",\"data\":[{\"id\":\"zai/glm-5.3\"},{\"id\":\"mistral/glm-5.3\"},"
+      "{\"id\":\"zai/glm-5.3\"}]}";
+  std::vector<ModelInfo> cat;
+  nimbus::orch::parseModelsList("cumulo", body, cat);
+  TEST_ASSERT_EQUAL_UINT(2, cat.size());   // the repeat of zai/glm-5.3 still goes
+  rc::protectHeads(cat, "gpt-5.6");
+  std::string all = ",";
+  for (const auto& m : cat) all += rc::selectorOf(m) + ",";
+  TEST_ASSERT_TRUE_MESSAGE(all.find(",zai/glm-5.3,") != std::string::npos, all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(all.find(",mistral/glm-5.3,") != std::string::npos, all.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
@@ -435,6 +489,8 @@ int main(int, char**) {
   RUN_TEST(test_catalog_from_a_huge_router_body_is_bounded);
   RUN_TEST(test_ids_no_upstream_runs_are_dropped);
   RUN_TEST(test_routable_rule);
+  RUN_TEST(test_catalog_of_many_upstreams_is_bounded);
+  RUN_TEST(test_same_model_under_two_upstreams_is_two_rows);
   UNITY_END();
   return 0;
 }

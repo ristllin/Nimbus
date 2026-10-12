@@ -326,20 +326,23 @@ const char* jsonStart(const std::string& body) {
   return body.c_str();
 }
 
-// Drop each row from `from` on whose id an earlier row already has (the first
+// Drop each row from `from` on whose model an earlier row already has (the first
 // stays, order kept), with one index sort: O(n log n) however many rows an
 // untrusted body lists (CUM-530: the pairwise scan was quadratic, and a router
-// body of thousands of tiny ids pinned the verify slot).
+// body of thousands of tiny ids pinned the verify slot). A router row's model is
+// its upstream AND its id: "openai/foo" and "zai/foo" are two models.
 void dropDuplicateIds(std::vector<ModelInfo>& out, size_t from) {
   std::vector<size_t> idx(out.size());
   for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+  auto sameModel = [&](size_t a, size_t b) { return out[a].upstream == out[b].upstream && out[a].id == out[b].id; };
   std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
-    const int c = out[a].id.compare(out[b].id);
+    int c = out[a].upstream.compare(out[b].upstream);
+    if (c == 0) c = out[a].id.compare(out[b].id);
     return c != 0 ? c < 0 : a < b;
   });
   std::vector<bool> dup(out.size(), false);
   for (size_t k = 1; k < idx.size(); ++k)
-    dup[idx[k]] = out[idx[k]].id == out[idx[k - 1]].id;
+    dup[idx[k]] = sameModel(idx[k], idx[k - 1]);
   size_t w = from;
   for (size_t i = from; i < out.size(); ++i) {
     if (dup[i]) continue;
