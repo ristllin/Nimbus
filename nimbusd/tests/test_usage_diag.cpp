@@ -322,9 +322,17 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
       {"the token endpoint https://api.openai.com/v1/oauth/token2 refused",
        "the token endpoint https://api.openai.com/v1/oauth/token2 refused"},
       {"the key for gpt-4o-2024-08-06 is set", "the key for gpt-4o-2024-08-06 is set"},
-      // ... while a lowercase token with a random part, or a UUID, still is.
+      {"the key for anthropic/claude-opus-5-20260416 is set", "the key for anthropic/claude-opus-5-20260416 is set"},
+      // ... while a lowercase token with a random part, a UUID (whatever its first
+      // character) or a URL whose path carries a secret still is.
       {"slack token xoxb-1234-5678-abcdefghijklmnopqrstuvwx", "slack token [key]"},
       {"the key 3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b", "the key [key]"},
+      {"the key e3f2a9c1-7d41-4b0a-9e55-0c1d2e3f4a5b", "the key [key]"},
+      {"the key deadbeef-7d41-4b0a-9e55-0c1d2e3f4a5b", "the key [key]"},
+      {"sdk key sdk-3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b", "sdk key [key]"},
+      {"webhook token https://hooks.slack" ".com/services/T0ABCDEFG/B0ABCDEFG/abcdefghijklmnopqrstuvwx",
+       "webhook token [key]"},
+      {"bot token https://api.telegram.org/bot123456789:AAHfakeTokenValue0123456789/getMe", "bot token [key]"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
 }

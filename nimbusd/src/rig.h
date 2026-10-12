@@ -1020,20 +1020,29 @@ class NimbusdRig {
     return {vb, ve};
   }
   // An ordinary identifier a word such as "token" or "key" is often followed by,
-  // never masked by the three-word window: a URL, or a model id
-  // ("claude-sonnet-5-20260301", "gpt-4o-2024-08-06"): lowercase letters and digits
-  // joined by '-', '.', '/' or ':', starting with a letter, with no run of 16
-  // letters and digits (a key's random part has one; "xoxb-..." and Mistral keys do).
+  // never masked by the three-word window: a URL, or a model id of a known family
+  // ("claude-sonnet-5-20260301", "gpt-4o-2024-08-06", "anthropic/claude-opus-5"),
+  // in lowercase and with a '-'. Neither may hold a run of 16 letters and digits: a
+  // key's random part does ("xoxb-...", a webhook URL's secret, a Telegram bot URL).
+  // A UUID or "sdk-<uuid>" names no model family, so it stays masked.
   static bool plainIdentifier(const std::string& t) {
-    if (t.find("://") != std::string::npos) return true;
-    if (t.empty() || !islower((unsigned char)t[0]) || t.find('-') == std::string::npos) return false;
     size_t run = 0;
     for (unsigned char ch : t) {
-      if (isupper(ch)) return false;
       run = isalnum(ch) ? run + 1 : 0;
       if (run >= 16) return false;
     }
-    return true;
+    if (t.find("://") != std::string::npos) return true;
+    if (t.find('-') == std::string::npos) return false;
+    for (unsigned char ch : t)
+      if (isupper(ch)) return false;
+    return modelFamily(t.substr(t.find('/') == std::string::npos ? 0 : t.find('/') + 1));
+  }
+  // A model id's family name at the start of `m` ("o4-mini" counts, "o4x" does not).
+  static bool modelFamily(const std::string& m) {
+    for (const char* fam : {"claude", "gpt", "mistral", "ministral", "magistral", "codestral", "devstral",
+                            "pixtral", "glm", "gemini", "llama", "qwen", "deepseek", "grok"})
+      if (m.rfind(fam, 0) == 0) return true;
+    return m.size() > 2 && m[0] == 'o' && isdigit((unsigned char)m[1]) && m[2] == '-';
   }
   // The (offset, length) of each key-like token named a key: within the three words
   // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx...", but not
@@ -1143,7 +1152,7 @@ class NimbusdRig {
   // the token it sits in: keys of one provider share their first characters
   // (every Anthropic key starts "sk-ant-api03-"), so a DIFFERENT key of that
   // provider must not lose only its prefix and keep its body in clear. A clipped
-  // copy still stops at the clip mark (an ellipsis is not a token character).
+  // copy's clip mark ("..." is made of token characters) is masked with it.
   static constexpr size_t kHeldHead = 12;
   std::string redactHeldKeys(std::string t) const {
     std::vector<std::string> names = {"TAVILY_API_KEY", "TELEGRAM_BOT_TOKEN", "NIMBUSD_WEB_TOKEN"};
