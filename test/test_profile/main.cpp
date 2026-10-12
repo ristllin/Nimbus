@@ -127,6 +127,17 @@ static void test_param_labels_and_descriptions_fit_the_panel() {
   }
 }
 
+// CUM-514: the Dark ring level is off except for TWO things the renderer lights -
+// a job error (a dim glow) and voice (hold-to-talk owns the ring) - and the help
+// the owner reads names both, within the panel's 108 characters.
+static void test_dark_posture_help_names_both_exceptions() {
+  const std::string d = paramDescription(Param::Posture);
+  TEST_ASSERT_TRUE(d.size() <= 108);
+  TEST_ASSERT_TRUE(d.find("Dark: off") == 0);
+  TEST_ASSERT_TRUE(d.find("error") != std::string::npos);
+  TEST_ASSERT_TRUE(d.find("voice") != std::string::npos);
+}
+
 // The call-to-action hold (Param::AttnHoldMs) is posture-scaled since 2026-08-04:
 // Full can afford to insist for 5 min; on Balanced/Dark the same hold read as
 // "the ring is stuck" (owner report - a rainbow breathing for minutes on an idle
@@ -321,6 +332,7 @@ int main() {
   RUN_TEST(test_param_meta_shapes);
   RUN_TEST(test_attn_hold_default_and_range);
   RUN_TEST(test_param_labels_and_descriptions_fit_the_panel);
+  RUN_TEST(test_dark_posture_help_names_both_exceptions);
   RUN_TEST(test_step_param_clamp_and_wrap);
   RUN_TEST(test_effective_uses_preset_then_override);
   RUN_TEST(test_override_survives_profile_switch);

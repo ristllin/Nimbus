@@ -2553,7 +2553,8 @@ screen. **Full** means the Full preset is active, never "plugged in".
 A quick example: on a desk, most people run **Full** - every session gets a
 color arc, the screen updates promptly. Unplugged for the evening, switch to
 **Balanced** - the ring quiets to a single soft cue and the screen batches its
-updates. Overnight on battery, **Dark** - no lights at all unless a job errors.
+updates. Overnight on battery, **Dark** - no lights unless a job errors or you
+hold to talk (the voice cue shows while you speak).
 
 One exception on Balanced, in Orchestrator mode only: while the assistant is
 running sub-agents, the ring temporarily splits into one arc per sub-agent -
