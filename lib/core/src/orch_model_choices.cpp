@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "nimbus/orch/router_route.h"
+
 namespace nimbus {
 namespace orch {
 
@@ -15,9 +17,40 @@ const char* staticModelChoices(const char* slug) {
   return "";
 }
 
+namespace {
+// Each trimmed, non-empty item of a comma-separated list, in order, as a slice
+// `fn(p, n)` of the list (nothing copied); stops (false) when fn returns false.
+template <typename Fn>
+bool eachItem(const std::string& csv, Fn fn) {
+  static const char* kWs = " \t\r\n";
+  size_t start = 0;
+  while (start <= csv.size()) {
+    size_t comma = csv.find(',', start);
+    if (comma == std::string::npos) comma = csv.size();
+    const size_t b = csv.find_first_not_of(kWs, start);
+    if (b != std::string::npos && b < comma &&
+        !fn(csv.data() + b, csv.find_last_not_of(kWs, comma - 1) - b + 1))
+      return false;
+    start = comma + 1;
+  }
+  return true;
+}
+}  // namespace
+
 std::string effectiveModelChoices(const char* slug, const std::string& harvestedCsv) {
-  if (!harvestedCsv.empty()) return harvestedCsv;
-  return staticModelChoices(slug);
+  if (harvestedCsv.empty()) return staticModelChoices(slug);
+  if (!slug || std::strcmp(slug, "cumulo") != 0) return harvestedCsv;
+  // The common case (a list this build harvested) is returned as it is.
+  if (eachItem(harvestedCsv, [](const char* p, size_t n) { return routableSelector(p, n); }))
+    return harvestedCsv;
+  std::string kept;
+  eachItem(harvestedCsv, [&kept](const char* p, size_t n) {
+    if (!routableSelector(p, n)) return true;
+    if (!kept.empty()) kept += ',';
+    kept.append(p, n);
+    return true;
+  });
+  return kept.empty() ? std::string(staticModelChoices(slug)) : kept;
 }
 
 bool modelInChoices(const std::string& csv, const std::string& model) {

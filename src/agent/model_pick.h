@@ -13,7 +13,9 @@
 //     re-picked by name).
 // Router (Cumulo) selectors compare in canonical "<upstream>/<model>" form, so
 // the default's bare spelling "gpt-5.6" and the router's "openai/gpt-5.6" are the
-// same pick. A refusal is a 400 whose error names the allowed values.
+// same pick, and a selector no upstream runs ("mistral/mistral/zai-glm-5-3") is
+// never allowed, offered or named, even from a list an older build stored. A
+// refusal is a 400 whose error names the allowed values.
 // Header-only and Arduino-free: test/test_router_catalog pins it on the host.
 
 #include <ArduinoJson.h>
@@ -27,9 +29,18 @@
 namespace agent {
 namespace model_pick {
 
+// A stored catalog row some upstream can run: a router row ("upstream" set) whose
+// "<upstream>/<id>" is routable, or any row of a direct provider. A catalog an
+// older build harvested can still hold "mistral" / "mistral/zai-glm-5-3" (CUM-530).
+inline bool rowRuns(JsonObjectConst m) {
+  const std::string up = m["upstream"] | "";
+  return up.empty() || router_catalog::routable(up + "/" + std::string(m["id"] | ""));
+}
+
 // The selectors the picker offers for `role` ("orchestrator" | "sub-agent") from a
 // stored catalog blob (the /data/mcat_<p>.json array): usable entries that carry
-// the role. A router entry's selector is "<upstream>/<id>".
+// the role and that some upstream runs. A router entry's selector is
+// "<upstream>/<id>".
 inline std::vector<std::string> catalogSelectors(const std::string& blob, const char* role,
                                                  ArduinoJson::Allocator* alloc = nullptr) {
   std::vector<std::string> out;
@@ -37,7 +48,7 @@ inline std::vector<std::string> catalogSelectors(const std::string& blob, const 
   JsonDocument doc = alloc ? JsonDocument(alloc) : JsonDocument();
   if (deserializeJson(doc, blob)) return out;
   for (JsonObjectConst m : doc.as<JsonArrayConst>()) {
-    if (!(m["usable"] | true)) continue;
+    if (!(m["usable"] | true) || !rowRuns(m)) continue;
     bool hasRole = false;
     for (JsonVariantConst r : m["roles"].as<JsonArrayConst>())
       hasRole = hasRole || std::string(r | "") == role;
@@ -78,8 +89,16 @@ inline bool samePick(const PickLists& l, const std::string& a, const std::string
          router_catalog::canonical(a) == router_catalog::canonical(b);
 }
 
+// A list item the router lists can be offered: always for a direct provider; for
+// the router, only a selector some upstream runs.
+inline bool offered(const PickLists& l, const std::string& item) {
+  return !l.router || router_catalog::routable(item);
+}
+
 inline bool allowed(const PickLists& l, const std::string& v) {
-  if (v.empty() || samePick(l, l.defaultModel, v)) return true;
+  if (v.empty()) return true;
+  if (!offered(l, v)) return false;   // before any list: a stored list may still name it
+  if (samePick(l, l.defaultModel, v)) return true;
   for (const std::string& item : csvItems(l.choices))
     if (samePick(l, item, v)) return true;
   for (const std::string& c : l.catalog)
@@ -93,6 +112,7 @@ inline std::string rejectMessage(const std::string& label, const PickLists& l) {
   std::string names;
   bool hasDefault = l.defaultModel.empty();
   for (const std::string& item : csvItems(l.choices)) {
+    if (!offered(l, item)) continue;
     names += (names.empty() ? "" : ", ") + item;
     hasDefault = hasDefault || samePick(l, item, l.defaultModel);
   }

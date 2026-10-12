@@ -74,15 +74,10 @@ inline std::string upstreamOf(const std::string& sel) {
   return nimbus::orch::resolveRouterRoute(sel).upstream;
 }
 
-// A selector some upstream can run: a model part that is not empty and holds no
-// further '/' once the upstream is split off. The router lists ids such as
-// "mistral/mistral/zai-glm-5-3"; it routes them, but the upstream refuses the
-// model it is sent ("Invalid model: mistral/zai-glm-5-3", bench CUM-530), so the
-// device never offers one.
-inline bool routable(const std::string& sel) {
-  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(sel);
-  return !r.model.empty() && r.model.find('/') == std::string::npos;
-}
+// A selector some upstream can run (nimbus::orch::routableSelector, bench
+// CUM-530): "mistral/mistral/zai-glm-5-3" is routed but no upstream runs it, so
+// the device never offers one.
+inline bool routable(const std::string& sel) { return nimbus::orch::routableSelector(sel); }
 
 // The undated alias of a dated snapshot id ("...-20251101" or "...-2025-04-16"),
 // or "" when the id carries no date suffix.

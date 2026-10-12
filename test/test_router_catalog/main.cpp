@@ -416,6 +416,59 @@ static void test_routable_rule() {
   TEST_ASSERT_FALSE(rc::routable("zai//glm-5"));
   TEST_ASSERT_TRUE(rc::routable("gpt-5.6"));
   TEST_ASSERT_TRUE(rc::routable("mistral/zai-glm-5-3"));
+  // The rule reads the selector in place; it must agree with the route split the
+  // head and the sub resolve through, for every shape.
+  for (const char* sel : {"", "/", "//", "a", "/a", "a/", "a/b", "a//b", "a/b/c", "/a/b", "gpt-5.6",
+                          "openai/gpt-5.6", "mistral/mistral/zai-glm-5-3", " openai/x", "openai/ x"}) {
+    const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(sel);
+    const bool split = !r.model.empty() && r.model.find('/') == std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(split, rc::routable(sel), sel);
+  }
+}
+
+// CUM-530 gate: a device upgraded from v4.5.9 keeps the Cumulo choice list and
+// catalog that build harvested (NVS mch_cumulo, /data/mcat_cumulo.json), slash ids
+// included, and nothing re-harvests until a Verify. The save rule, the copy that
+// names the allowed values and the picker's catalog drop them on read, whatever
+// the stored lists say; every runnable pick still saves.
+static std::string v459Catalog() {
+  // parseModelsList's shape: the upstream split off, a nested model part kept whole.
+  return "[{\"id\":\"gpt-5.6\",\"upstream\":\"openai\",\"roles\":[\"orchestrator\",\"sub-agent\"],"
+         "\"usable\":true},"
+         "{\"id\":\"mistral/zai-glm-5-3\",\"upstream\":\"mistral\",\"roles\":[\"orchestrator\","
+         "\"sub-agent\"],\"usable\":true},"
+         "{\"id\":\"claude-opus-5-5\",\"upstream\":\"anthropic\",\"roles\":[\"orchestrator\"],"
+         "\"usable\":true},"
+         "{\"id\":\"mistral/glm-5-2\",\"upstream\":\"mistral\",\"roles\":[\"orchestrator\"],"
+         "\"usable\":true},"
+         "{\"id\":\"mistral-large-latest\",\"roles\":[\"orchestrator\"],\"usable\":true}]";
+}
+static void test_v459_stored_lists_never_offer_or_accept_slash_ids() {
+  mp::PickLists l;
+  for (const std::string& id : benchSlashList()) l.choices += (l.choices.empty() ? "" : ",") + id;
+  l.catalog = mp::catalogSelectors(v459Catalog(), "orchestrator");
+  l.defaultModel = "gpt-5.6";
+  l.router = true;
+  std::string accepted;
+  for (const std::string& id : benchSlashList())
+    if (!rc::routable(id) && mp::allowed(l, id)) accepted += id + " ";
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("", accepted.c_str(), "a slash id from the stored list saved");
+  for (const char* ok : {"openai/gpt-5.6", "gpt-5.6", "", "anthropic/claude-opus-5-5", "openai/gpt-6.1-sol"})
+    TEST_ASSERT_TRUE_MESSAGE(mp::allowed(l, ok), ok);
+  // The catalog the picker renders: the runnable rows only (a direct row is kept).
+  TEST_ASSERT_EQUAL(3, (int)l.catalog.size());
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", l.catalog[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-opus-5-5", l.catalog[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest", l.catalog[2].c_str());
+  // The refusal copy never names one either.
+  const std::string msg = mp::rejectMessage("Cumulo Nimbus", l);
+  TEST_ASSERT_TRUE_MESSAGE(msg.find("mistral/mistral/") == std::string::npos, msg.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(msg.find("anthropic/claude-opus-5-5") != std::string::npos, msg.c_str());
+  // A direct provider's ids are not router selectors: nothing is filtered there.
+  mp::PickLists d;
+  d.choices = "ft:open-mistral-7b:acme/x,mistral-small-latest";
+  d.defaultModel = "mistral-small-latest";
+  TEST_ASSERT_TRUE(mp::allowed(d, "ft:open-mistral-7b:acme/x"));
 }
 
 // CUM-530 gate: the per-upstream grouping searched every upstream seen so far for
@@ -493,6 +546,7 @@ int main(int, char**) {
   RUN_TEST(test_catalog_from_a_huge_router_body_is_bounded);
   RUN_TEST(test_ids_no_upstream_runs_are_dropped);
   RUN_TEST(test_routable_rule);
+  RUN_TEST(test_v459_stored_lists_never_offer_or_accept_slash_ids);
   RUN_TEST(test_catalog_of_many_upstreams_is_bounded);
   RUN_TEST(test_same_model_under_two_upstreams_is_two_rows);
   UNITY_END();

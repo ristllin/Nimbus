@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <string>
 
 // router_route - the ONE pure rule for turning a Cumulo router model selector
@@ -35,6 +36,14 @@ struct RouterRoute {
 // selector yields an empty model; callers gate on that (BadRequest / a default).
 RouterRoute resolveRouterRoute(const std::string& sel,
                                const std::string& defaultUpstream = "openai");
+
+// A selector some upstream can run: a model part that is not empty and holds no
+// further '/' once the upstream is split off (CUM-530). The router lists ids such
+// as "mistral/mistral/zai-glm-5-3"; it routes them, but the upstream refuses the
+// model it is sent ("Invalid model: mistral/zai-glm-5-3"), so no list, picker or
+// save offers or accepts one, including a list an older build harvested.
+bool routableSelector(const std::string& sel);
+bool routableSelector(const char* sel, size_t len);   // the same, on a slice
 
 }  // namespace orch
 }  // namespace nimbus

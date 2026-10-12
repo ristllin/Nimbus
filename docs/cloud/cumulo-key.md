@@ -33,7 +33,9 @@ models without any other provider account.
 3. Once it verifies, pick the **Orchestrator model** and **Session model**. The
    key is stored write-only: it shows as "set" and is never displayed again.
 
-The model lists show only models the router can run. If the router refuses the
+The model lists show only models the router can run, also right after an update
+from an older version that saved a longer list, and a model the router cannot run
+is never saved. If the router refuses the
 model you picked, the same message is answered on the last model that worked (or
 on the router's default model), the reply opens with a line that names the model
 and says to choose another under **Models**, and the device switches to the model

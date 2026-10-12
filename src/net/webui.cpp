@@ -935,21 +935,6 @@ static bool applyParam(const String& name, const String& value) {
 
 // ---- orchestrator control surface (plan ROUND 3 Part A) ----------------------
 
-// The compiled default model-choice list for a provider (agent_config.h). This is a
-// LEAF map (slug -> compile-time constant), not a provider LIST: the canonical list
-// is nimbus::orch::kProviderSlots. A provider with no static default returns "" and
-// relies on the live verify harvest to fill its choices. The macros live in the
-// firmware layer (agent_config.h), which is why this stays here and not in the
-// portable registry header.
-static const char* providerFallbackChoices(const char* slug) {
-  if (!strcmp(slug, "openai"))    return OPENAI_MODEL_CHOICES;
-  if (!strcmp(slug, "anthropic")) return ANT_MODEL_CHOICES;
-  if (!strcmp(slug, "mistral"))   return MISTRAL_MODEL_CHOICES;
-  if (!strcmp(slug, "cumulo"))    return CUMULO_MODEL_CHOICES;
-  if (!strcmp(slug, "zai"))       return ZAI_MODEL_CHOICES;
-  return "";
-}
-
 // The compiled default model per provider (agent_config.h) - the model a provider
 // runs when no override is stored. Always a valid pick, so the default can be
 // re-picked by name (CUM-530). "" for a slug with none.
@@ -1144,8 +1129,10 @@ static void buildOrchState(String& out) {
     // Live-harvested list first (the verify pass reads /v1/models), static fallback
     // second. cumulo/zai carry a small compiled default so a model is selectable
     // before the first harvest; the harvested list wins once it lands.
-    String dyn = agent::store::modelChoices(slot.slug);
-    o["choices"] = dyn.length() ? dyn : String(providerFallbackChoices(slot.slug));
+    // CUM-530: THE derivation, so a Cumulo list an older build stored drops the
+    // selectors no upstream runs here exactly as on the prompt and the save.
+    o["choices"] = nimbus::orch::effectiveModelChoices(
+        slot.slug, std::string(agent::store::modelChoices(slot.slug).c_str()));
   }
 
   d["hasTav"]    = agent::store::hasTavilyKey();   // web-search tool configured
@@ -1173,6 +1160,18 @@ static bool providerKeyed(const char* p) {
   if (!strcmp(p, "zai")) return agent::store::hasZaiKey();
   if (!strcmp(p, "cumulo")) return agent::store::hasCumuloKey();
   return false;
+}
+// The stored catalog rows GET /api/models shows: unusable ones only with ?all=1,
+// and never a row no upstream runs (an older build's harvest, CUM-530). A trim
+// marker on a row left out moves to the last row shown.
+static void addShownRows(JsonArray marr, JsonArrayConst rows, bool includeUnusable) {
+  int more = 0;
+  for (JsonObjectConst m : rows) {
+    const bool hidden = (!includeUnusable && !(m["usable"] | true)) || !agent::model_pick::rowRuns(m);
+    if (hidden) { more += m["more"] | 0; continue; }
+    marr.add(m);   // deep-copies the stored model object into the response
+  }
+  if (more && marr.size()) marr[marr.size() - 1]["more"] = more;
 }
 static void buildModelsCatalog(String& out, const String& only, bool includeUnusable) {
   JsonDocument d(&agent::PsramJsonAllocator::instance());
@@ -1206,12 +1205,7 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     if (!blob.length()) continue;
     JsonDocument md(&agent::PsramJsonAllocator::instance());
     if (deserializeJson(md, blob) != DeserializationError::Ok) continue;
-    int more = 0;   // CUM-530: a trim marker on a filtered-out entry moves to the last shown
-    for (JsonObjectConst m : md.as<JsonArrayConst>()) {
-      if (!includeUnusable && !(m["usable"] | true)) { more += m["more"] | 0; continue; }
-      marr.add(m);   // deep-copies the stored model object into the response
-    }
-    if (more && marr.size()) marr[marr.size() - 1]["more"] = more;
+    addShownRows(marr, md.as<JsonArrayConst>(), includeUnusable);
   }
   serializeJson(d, out);
 }

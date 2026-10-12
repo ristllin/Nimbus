@@ -1,5 +1,7 @@
 #include "nimbus/orch/router_route.h"
 
+#include <cstring>
+
 namespace nimbus {
 namespace orch {
 
@@ -27,6 +29,18 @@ RouterRoute resolveRouterRoute(const std::string& sel, const std::string& defaul
   r.basePath = "/router/" + r.upstream + (r.upstream == "zai" ? "" : "/v1");
   return r;
 }
+
+// resolveRouterRoute's split, read in place (no route is built, nothing is
+// allocated: the prompt's model line reads every Cumulo choice through this each
+// turn): the model is what follows the first '/' at an index > 0, else the whole
+// selector, and it must be non-empty with no '/' of its own.
+bool routableSelector(const char* sel, size_t len) {
+  const void* first = std::memchr(sel, '/', len);
+  if (!first) return len > 0;
+  const size_t sl = (size_t)(static_cast<const char*>(first) - sel);
+  return sl > 0 && sl + 1 < len && !std::memchr(sel + sl + 1, '/', len - sl - 1);
+}
+bool routableSelector(const std::string& sel) { return routableSelector(sel.data(), sel.size()); }
 
 }  // namespace orch
 }  // namespace nimbus

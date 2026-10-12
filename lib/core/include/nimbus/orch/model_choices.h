@@ -39,6 +39,11 @@ namespace orch {
 const char* staticModelChoices(const char* slug);
 
 // THE derivation: the harvested list when non-empty, else the cold-start list.
+// A Cumulo list never offers a selector no upstream runs (routableSelector): a
+// list an older build harvested and stored can still hold one (CUM-530), and the
+// prompt's model line, the spawn and pick validators and the picker all read
+// this, so each drops it at once instead of waiting for the next verify. A list
+// with nothing left is the cold-start list.
 std::string effectiveModelChoices(const char* slug, const std::string& harvestedCsv);
 
 // Whether `model` is one of the comma-separated `csv` items (items trimmed; an

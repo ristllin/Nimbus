@@ -79,6 +79,27 @@ static void test_derivation_advertised_equals_spawnable_for_every_slot() {
   }
 }
 
+// CUM-530 gate: a Cumulo list an older build harvested and stored (v4.5.9 kept the
+// router's slash ids) is what this derivation reads for the prompt's model line,
+// the spawn and pick validators and the picker; it drops every selector no
+// upstream runs and keeps the rest in order. Nothing left: the cold-start list.
+// Other providers' lists are never filtered (their ids are not router selectors).
+static void test_cumulo_derivation_drops_what_no_upstream_runs() {
+  const std::string v459 =
+      "openai/gpt-5.6,anthropic/claude-opus-5-5,mistral/mistral/zai-glm-5-3, mistral/zai-glm-5-3 ,"
+      "mistral/mistral/glm-5-2,gpt-5.6-terra";
+  const std::string csv = effectiveModelChoices("cumulo", v459);
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6,anthropic/claude-opus-5-5,mistral/zai-glm-5-3,gpt-5.6-terra",
+                           csv.c_str());
+  TEST_ASSERT_FALSE(modelInChoices(csv, "mistral/mistral/zai-glm-5-3"));
+  TEST_ASSERT_EQUAL_STRING(staticModelChoices("cumulo"),
+                           effectiveModelChoices("cumulo", "mistral/mistral/a,zai//b,openai/").c_str());
+  const std::string clean = "openai/gpt-5.6, anthropic/claude-opus-5-5";
+  TEST_ASSERT_EQUAL_STRING(clean.c_str(), effectiveModelChoices("cumulo", clean).c_str());   // untouched
+  TEST_ASSERT_EQUAL_STRING("ft:open-mistral-7b:acme/x,mistral-small-latest",
+                           effectiveModelChoices("mistral", "ft:open-mistral-7b:acme/x,mistral-small-latest").c_str());
+}
+
 static void test_model_in_choices_exact_and_trimmed() {
   TEST_ASSERT_TRUE(modelInChoices("gpt-5.6, gpt-5.6-terra ,gpt-6-astra", "gpt-5.6-terra"));
   TEST_ASSERT_TRUE(modelInChoices("gpt-5.6, gpt-5.6-terra ,gpt-6-astra", "gpt-6-astra"));
@@ -97,6 +118,7 @@ int main(int, char**) {
   RUN_TEST(test_cold_start_lists_hold_no_family_the_harvest_refuses);
   RUN_TEST(test_derivation_advertised_equals_spawnable_for_every_slot);
   RUN_TEST(test_model_in_choices_exact_and_trimmed);
+  RUN_TEST(test_cumulo_derivation_drops_what_no_upstream_runs);
   UNITY_END();
   return 0;
 }
