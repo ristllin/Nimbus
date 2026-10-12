@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #include "nimbus/harness/providers.h"
@@ -149,7 +150,7 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = custRequest(pd, "POST", path, std::move(body), anthropic, doc, filter);
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
-  if (code <= 0) return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, CUST_TIMEOUT_MS);
+  if (code <= 0) return wire::subTransportErr(pd, t0, CUST_TIMEOUT_MS);
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
   if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }
@@ -249,7 +250,9 @@ static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, u
 
 // One head request in its formats (orchTurnCustom): the first format, then once
 // with no response_format when the backend refuses it with a 400. `code` is the
-// last status (0: no answer), `sentAt` when the last attempt went out.
+// last status (0: no answer). The attempt and the effort choice carry over to a
+// resend, so a resend repeats only the request that never left, never the
+// answered one before it.
 struct CustomHead {
   const ProviderDeps* pd;
   const std::string* instructions;
@@ -259,19 +262,20 @@ struct CustomHead {
   HeadFormat first;
   uint32_t timeoutMs;
   int code = 0;
-  uint32_t sentAt = 0;
+  int attempt = 0;
+  bool withEffort = true;
 };
 static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
   const ProviderDeps& pd = *h.pd;
   wire::lastExchange() = wire::LastExchange{};   // a step that fails before the wire inherits nothing
   nimbus::orch::HeadStep st;
-  bool withEffort = true;
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    h.sentAt = pd.nowMs ? pd.nowMs() : 0;
-    const bool withFormat = (attempt == 0);
+  uint32_t sentAt = 0;
+  for (; h.attempt < 2; ++h.attempt) {
+    sentAt = pd.nowMs ? pd.nowMs() : 0;
+    const bool withFormat = (h.attempt == 0);
     std::string body;
     if (!customHeadBody(pd, *h.instructions, *h.inputs, withFormat ? h.first : HeadFormat::None, body,
-                        withEffort)) {
+                        h.withEffort)) {
       st.ok = false;
       st.error = "schema parse";
       return st;
@@ -283,10 +287,10 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
     // engine's tolerant parser. A model that refuses the effort field names it; the
     // retry then goes without it rather than failing the same way twice (CUM-544).
     hlog::logf("orchTurn(custom): 400 with response_format - retrying schema-less");
-    withEffort = std::string((*h.doc)["error"]["message"] | "").find("reasoning") == std::string::npos;
+    h.withEffort = std::string((*h.doc)["error"]["message"] | "").find("reasoning") == std::string::npos;
   }
   st.ok = h.code > 0;   // any HTTP answer ends the step; its status is read by the caller
-  if (!st.ok) st.error = headTransportError(pd, h.sentAt, h.timeoutMs);
+  if (!st.ok) st.error = headTransportError(pd, sentAt, h.timeoutMs);
   return st;
 }
 
@@ -328,10 +332,12 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                                ? HeadFormat::Object : HeadFormat::Schema;
   const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
   CustomHead h{&pd, &instructions, &inputs, &doc, &filter, first, timeoutMs};
-  // One pointer captured: the step fits std::function's inline storage, so the
-  // turn path allocates nothing for it (nor for the wrapper, see loop_common.cpp).
-  const nimbus::orch::HeadStepFn step = [&h](bool, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t,
-                                             const std::string&) { return runCustomHead(h); };
+  auto run = [&h](bool, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t, const std::string&) {
+    return runCustomHead(h);
+  };
+  // Held by reference: a std::function never allocates for a reference_wrapper, so
+  // the turn path allocates nothing for the step.
+  const nimbus::orch::HeadStepFn step = std::ref(run);
   nimbus::orch::HeadStep st;
   if (tools) {
     const ResendCtx resend{&pd, &tools->cfg, &step, "orchTurn(custom)"};

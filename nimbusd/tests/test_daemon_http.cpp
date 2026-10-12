@@ -43,16 +43,17 @@ static bool has(const std::string& hay, const std::string& needle) {
   return hay.find(needle) != std::string::npos;
 }
 
-static agent::HttpRequest loopbackGet(const CannedServer& srv) {
+static agent::HttpRequest loopbackGet(int port, const char* path) {
   agent::HttpRequest req;
   req.method = "GET";
   req.host = "127.0.0.1";
-  req.port = uint16_t(srv.port());
+  req.port = uint16_t(port);
   req.tls = false;
-  req.path = "/v1/x";
+  req.path = path;
   req.timeoutMs = 5000;
   return req;
 }
+static agent::HttpRequest loopbackGet(const CannedServer& srv) { return loopbackGet(srv.port(), "/v1/x"); }
 
 // (a) The live 2026-09-27 shape of a spent daily Studio connector quota, through
 // the real Mistral head adapter. The router base points it at the loopback server
@@ -264,13 +265,7 @@ static void testPostNeverResentOnAReusedConnection(ndtest::Ctx& c, DaemonHttpTra
   {
     ndtest::KeepAliveServer srv({keepAliveResponse("HTTP/1.1 200 OK", "{\"data\":[]}"),
                                  keepAliveResponse("HTTP/1.1 200 OK", "{\"data\":[]}")});
-    agent::HttpRequest get;
-    get.method = "GET";
-    get.host = "127.0.0.1";
-    get.port = uint16_t(srv.port());
-    get.tls = false;
-    get.path = "/api/paas/v4/models";
-    get.timeoutMs = 5000;
+    const agent::HttpRequest get = loopbackGet(srv.port(), "/api/paas/v4/models");
     agent::HttpResponse out;
     std::string err;
     const bool g1 = t.exec(get, out, err) && out.status == 200;
@@ -293,13 +288,7 @@ static void testPostNeverResentOnAReusedConnection(ndtest::Ctx& c, DaemonHttpTra
     harness_test::FakeProviderDeps d;
     agent::providers::ProviderDeps pd = d.contract();
     pd.http = &t;
-    agent::HttpRequest warm;
-    warm.method = "GET";
-    warm.host = "127.0.0.1";
-    warm.port = uint16_t(srv.port());
-    warm.tls = false;
-    warm.path = "/api/paas/v4/models";
-    warm.timeoutMs = 5000;
+    const agent::HttpRequest warm = loopbackGet(srv.port(), "/api/paas/v4/models");
     agent::HttpResponse out;
     std::string err;
     const bool warmed = t.exec(warm, out, err) && out.status == 200;

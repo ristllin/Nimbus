@@ -34,7 +34,7 @@ static agent::Directive directive() {
 
 static FabricErr compat(FakeProviderDeps& rig, const char* host, const char* base, const char* tag,
                         prov::CompatWire wire) {
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   prov::CompatEndpoint ep;
   ep.host = host;
   ep.basePath = base;
@@ -57,7 +57,7 @@ static FabricErr cumuloMessagesSub(FakeProviderDeps& rig) {
 }
 static FabricErr customSub(FakeProviderDeps& rig) {
   rig.custBase = "https://p.example";
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   char job[72] = {};
   return prov::customDispatch(pd, directive(), job);
 }
@@ -66,12 +66,12 @@ static FabricErr customMessagesSub(FakeProviderDeps& rig) {
   return customSub(rig);
 }
 static FabricErr mistralSub(FakeProviderDeps& rig) {
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   char job[72] = {};
   return prov::mistralDispatch(pd, "mistral-small-latest", directive(), job);
 }
 static FabricErr openaiSub(FakeProviderDeps& rig) {
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   char job[72] = {};
   return prov::oaiDispatch(pd, "api.openai.com", "sk-fake-oai", "gpt-5.6", "openai", directive(), job);
 }
@@ -82,7 +82,7 @@ static FabricErr anthropicSub(FakeProviderDeps& rig) {
   rig.antAgents = "claude-sonnet-5=ag_1;";
   rig.http.script.insert(rig.http.script.begin(),
                          Exchange{"", "/v1/sessions", 200, "{\"id\":\"sess_1\"}"});
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   char job[72] = {};
   return prov::antDispatch(pd, "claude-sonnet-5", directive(), job);
 }
@@ -120,7 +120,9 @@ static const Cut kCuts[] = {
 };
 
 static const char* errName(FabricErr e) {
-  return e == FabricErr::Timeout ? "Timeout" : e == FabricErr::Network ? "Network" : "other";
+  if (e == FabricErr::Timeout) return "Timeout";
+  if (e == FabricErr::Network) return "Network";
+  return "other";
 }
 
 // Every (dispatcher, cut) pair; the mismatches are listed together, so a failure
@@ -152,7 +154,7 @@ static void test_anthropic_session_cut_did_not_start() {
   rig.antEnv = "env_1";
   rig.antAgents = "claude-sonnet-5=ag_1;";
   rig.http.script.push_back(transportCut(1000, "no response"));
-  const agent::providers::ProviderDeps pd = rig.contract();
+  const prov::ProviderDeps pd = rig.contract();
   char job[72] = {};
   TEST_ASSERT_EQUAL((int)FabricErr::Network,
                     (int)prov::antDispatch(pd, "claude-sonnet-5", directive(), job));

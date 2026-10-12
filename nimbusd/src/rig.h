@@ -1021,19 +1021,33 @@ class NimbusdRig {
   }
   // Whether a word inside the three-word window after "key" or "token" may be a
   // key. A model id of a known family ("claude-sonnet-5-20260301",
-  // "gpt-4o-2024-08-06", "anthropic/claude-opus-5") is not, nor is a URL none of
-  // whose parts after the host looks like a secret. The host never is one (a long
-  // label such as "generativelanguage" is fine), but a webhook's or a bot's path, a
-  // query value or a user:password part can be, broken by '-' or '_' or not (a
-  // UUID, "bot123:AAH-...", a Slack webhook's last part). A URL is judged by its
-  // parts even when its '?', '=' or '@' make it no key-like token as a whole.
+  // "gpt-4o-2024-08-06", "anthropic/claude-opus-5") is not. A word with URL or
+  // query punctuation (a URL, "host/path?sig=...", JSON around a URL) is judged by
+  // its parts: any part that looks like a secret makes it one (a webhook's or a
+  // bot's path, a query value, a UUID, "bot123:AAH-...", a Slack webhook's last
+  // part), and a user:password part always does. A host label counts only when it
+  // looks random (a long run of letters and digits with a digit, a function or
+  // tunnel URL's id), so "generativelanguage.googleapis.com" is left alone.
   static bool secretInWindow(const std::string& w) {
     const size_t scheme = w.find("://");
-    if (scheme == std::string::npos) return keyLikeToken(w) && !modelId(w);
-    const size_t hostEnd = std::min(w.find_first_of("/?#", scheme + 3), w.size());
-    const size_t at = w.find('@', scheme + 3);   // user:password@host
-    if (at < hostEnd && anySecretPart(w, scheme + 3, at)) return true;
-    return anySecretPart(w, hostEnd, w.size());
+    if (scheme == std::string::npos) {
+      if (w.find_first_of("?=&@#\\\"") == std::string::npos) return keyLikeToken(w) && !modelId(w);
+      return anySecretPart(w, 0, w.size());
+    }
+    const size_t authority = scheme + 3;
+    const size_t hostEnd = std::min(w.find_first_of("/?#", authority), w.size());
+    size_t host = authority;
+    const size_t at = hostEnd > authority ? w.rfind('@', hostEnd - 1) : std::string::npos;   // the last '@'
+    if (at != std::string::npos && at >= authority) {
+      if (hasPassword(w, authority, at) || anySecretPart(w, authority, at)) return true;
+      host = at + 1;
+    }
+    return anySecretPart(w, 0, scheme) || randomHost(w, host, hostEnd) || anySecretPart(w, hostEnd, w.size());
+  }
+  // A user:password part with a password (anything after its first ':').
+  static bool hasPassword(const std::string& w, size_t from, size_t at) {
+    const size_t colon = w.find(':', from);
+    return colon < at && colon + 1 < at;
   }
   // A model id: lowercase, holding a '-', no 16-character run of letters and digits
   // (a key's random part has one: "xoxb-..."), a known family after any
@@ -1044,6 +1058,7 @@ class NimbusdRig {
       if (isupper(ch)) return false;
     return modelFamily(t.substr(t.find('/') == std::string::npos ? 0 : t.find('/') + 1));
   }
+  // A run of 16 or more letters and digits (a key's random part), anywhere in `t`.
   static bool longRun(const std::string& t) {
     size_t run = 0;
     for (unsigned char ch : t) {
@@ -1052,15 +1067,41 @@ class NimbusdRig {
     }
     return false;
   }
-  // Whether a part of t[from, to) between URL separators looks like a secret: a
-  // 16-character run, or a key-like token (20+ characters with letters and digits)
-  // that is no model id. One pass: each part is read once.
+  // A character that stays inside one part of a URL or a query: letters, digits,
+  // RFC 3986 unreserved punctuation, '%' (an escape) and '+'. Anything else (/ ? &
+  // = : @ # ; and the quotes, commas and brackets of JSON around a URL) separates.
+  static bool partChar(unsigned char c) { return isalnum(c) || (c != 0 && std::strchr("-._~%+", c)); }
+  // A part that looks like a secret: a 16-character run, or 20+ characters with
+  // letters and digits that is no model id.
+  static bool secretPart(const std::string& p) {
+    if (longRun(p)) return true;
+    bool alpha = false, digit = false;
+    for (unsigned char ch : p) {
+      alpha = alpha || isalpha(ch);
+      digit = digit || isdigit(ch);
+    }
+    return p.size() >= 20 && alpha && digit && !modelId(p);
+  }
+  // Whether any part of t[from, to) looks like a secret. Each part is read once.
   static bool anySecretPart(const std::string& t, size_t from, size_t to) {
     for (size_t b = from; b < to;) {
-      const size_t e = std::min(t.find_first_of("/?#&=:;@", b), to);
-      const std::string part = t.substr(b, e - b);
-      if (longRun(part) || (keyLikeToken(part) && !modelId(part))) return true;
+      size_t e = b;
+      while (e < to && partChar((unsigned char)t[e])) e++;
+      if (e > b && secretPart(t.substr(b, e - b))) return true;
       b = e + 1;
+    }
+    return false;
+  }
+  // Whether a host t[from, to) has a label that looks random: a run of 16 or more
+  // letters and digits holding a digit.
+  static bool randomHost(const std::string& t, size_t from, size_t to) {
+    size_t run = 0;
+    bool digit = false;
+    for (size_t i = from; i < to; ++i) {
+      const unsigned char ch = (unsigned char)t[i];
+      if (!isalnum(ch)) { run = 0; digit = false; continue; }
+      digit = digit || isdigit(ch);
+      if (++run >= 16 && digit) return true;
     }
     return false;
   }
@@ -1084,8 +1125,14 @@ class NimbusdRig {
       const std::pair<size_t, size_t> at = nextWord(l, i);
       if (at.first == at.second) continue;
       const std::string w = l.substr(at.first, at.second - at.first);
-      if (!namedValues(w, at.first, out) && window > 0 && secretInWindow(w))
+      const size_t named = out.size();
+      namedValues(w, at.first, out);
+      // In the window the whole word may be the secret; it covers any named value
+      // inside it (spans never overlap: they are replaced back to front).
+      if (window > 0 && secretInWindow(w)) {
+        out.resize(named);
         out.push_back({at.first, w.size()});
+      }
       window = namesAKey(w) ? 3 : std::max(window - 1, 0);
     }
     return out;

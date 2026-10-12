@@ -1,8 +1,10 @@
 #pragma once
-// loopback_server - a canned HTTP server on 127.0.0.1 for the offline transport
-// tests: each scripted response answers one connection after that connection's
-// whole request was read, then the connection closes. An empty response answers
-// nothing (the peer cuts the exchange after the request went out).
+// loopback_server - canned HTTP servers on 127.0.0.1 for the offline transport
+// tests. CannedServer: each scripted response answers one connection after that
+// connection's whole request was read, then the connection closes. KeepAliveServer:
+// connections stay open across requests, as a provider gateway's do. In both, an
+// empty response answers nothing (the peer cuts the exchange after the request
+// went out).
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -14,7 +16,6 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -22,6 +23,17 @@
 #include <vector>
 
 namespace ndtest {
+
+// The total size of the request at the front of `buf` (headers plus a
+// Content-Length body) once its headers are in, else npos.
+inline size_t requestSize(const std::string& buf) {
+  const size_t end = buf.find("\r\n\r\n");
+  if (end == std::string::npos) return std::string::npos;
+  std::string head = buf.substr(0, end);
+  for (char& ch : head) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  const size_t cl = head.find("content-length:");
+  return end + 4 + (cl == std::string::npos ? 0 : std::strtoul(head.c_str() + cl + 15, nullptr, 10));
+}
 
 // A raw HTTP/1.1 response; every one closes its connection.
 inline std::string response(const std::string& statusLine, const std::vector<std::string>& headers,
@@ -72,12 +84,7 @@ class CannedServer {
       const ssize_t got = recv(c, buf, sizeof buf, 0);
       if (got <= 0) break;
       req.append(buf, size_t(got));
-      const size_t end = req.find("\r\n\r\n");
-      if (want != std::string::npos || end == std::string::npos) continue;
-      std::string head = req.substr(0, end);
-      for (char& ch : head) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-      const size_t cl = head.find("content-length:");
-      want = end + 4 + (cl == std::string::npos ? 0 : std::strtoul(head.c_str() + cl + 15, nullptr, 10));
+      if (want == std::string::npos) want = requestSize(req);
     }
     return req;
   }
@@ -170,17 +177,11 @@ class KeepAliveServer {
   std::string readRequest(int c, std::string& buf) const {
     char chunk[4096];
     for (;;) {
-      const size_t end = buf.find("\r\n\r\n");
-      if (end != std::string::npos) {
-        std::string head = buf.substr(0, end);
-        for (char& ch : head) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-        const size_t cl = head.find("content-length:");
-        const size_t want = end + 4 + (cl == std::string::npos ? 0 : std::strtoul(head.c_str() + cl + 15, nullptr, 10));
-        if (buf.size() >= want) {
-          std::string req = buf.substr(0, want);
-          buf.erase(0, want);
-          return req;
-        }
+      const size_t want = requestSize(buf);
+      if (want != std::string::npos && buf.size() >= want) {
+        std::string req = buf.substr(0, want);
+        buf.erase(0, want);
+        return req;
       }
       if (!readable(c)) return std::string();
       const ssize_t got = recv(c, chunk, sizeof chunk, 0);

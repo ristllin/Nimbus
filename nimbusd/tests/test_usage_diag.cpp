@@ -351,6 +351,27 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
        "key docs at https://platform.openai.com/docs/models/gpt-4o-2024-08-06 say so"},
       {"token https://generativelanguage.googleapis.com:443/v1beta/models/gemini-2.5-pro:generateContent",
        "token https://generativelanguage.googleapis.com:443/v1beta/models/gemini-2.5-pro:generateContent"},
+      // Review: the same secrets inside compact JSON or percent-encoded, a random
+      // host label (a function or tunnel URL), a path secret next to a named value,
+      // a password with an '@' in it or of any shape, no scheme, escaped slashes and
+      // a Markdown link; ordinary words with '=' and a user with no password stay.
+      {"my bot token {\"api\":\"https://api.telegram.org/bot123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b\",\"x\":1}",
+       "my bot token {\"[key]}"},
+      {"my bot token {\"ok\":true,\"url\":\"https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b\",\"n\":2}",
+       "my bot token {\"[key]}"},
+      {"api key https://hooks.example.com/notify?sig=Q8f3kLm2n%2BpQ7rS9tU%2FvW1xY3zA4b%3D", "api key [key]"},
+      {"webhook token https://a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.lambda-url.us-east-1.on.aws/", "webhook token [key]"},
+      {"webhook token https://eo1a2b3c4d5e6f7g8h.m.pipedream.net", "webhook token [key]"},
+      {"webhook token https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b?token=q7KxPLAINMISTRALKEY000000000001",
+       "webhook token [key]"},
+      {"token https://user:Q8f3kLm2n@pQ7rS9tU_vW1xY3zA4b@hooks.example.com/x", "token [key]"},
+      {"db key postgres://app:Hunter2Prod77@db.internal:5432/app", "db key [key]"},
+      {"webhook token hooks.example.com/notify?sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b", "webhook token [key]"},
+      {"the token https:\\/\\/hooks.slack" ".com\\/services\\/T0ABCDEFG\\/B0ABCDEFG\\/abcdefghijklmnopqrstuvwx",
+       "the token [key]"},
+      {"token [Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b](https://example.com)", "token [[key])"},
+      {"the token count=1500 was spent", "the token count=1500 was spent"},
+      {"key docs at https://user@example.com/x say so", "key docs at https://user@example.com/x say so"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
 }

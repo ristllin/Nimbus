@@ -124,7 +124,7 @@ FabricErr oaiDispatch(const ProviderDeps& pd, const char* host, const std::strin
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, backend, doc["error"]["message"] | "");
   // This POST creates the billed background job: a cut after it went out may have.
-  if (code <= 0) return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, OAI_TIMEOUT_MS);
+  if (code <= 0) return wire::subTransportErr(pd, t0, OAI_TIMEOUT_MS);
   if (code != 200)               { hlog::logf("%s: dispatch HTTP %d", backend, code); return FabricErr::RemoteFail; }
 
   const char* id = doc["id"] | "";

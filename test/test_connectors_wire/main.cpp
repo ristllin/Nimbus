@@ -1690,6 +1690,11 @@ static void test_cum536_one_rule_for_every_gate_string() {
       {"post it on Slack Huddles", "slack", "Slack"},
       {"Add the plan in Slack Canvas for the team", "slack", "Slack"},
       {"Run the standup in a slack workflow", "slack", "Slack"},
+      // Review: a colon after the product names the message, not a book subtitle,
+      // unless the phrase cites a source ("from").
+      {"Post this to Slack: Deploy finished", "slack", "Slack"},
+      {"File it in Linear: Login page broken", "linear", "Linear"},
+      {"Quote chapter 2 from Linear: A Field Guide", "linear", ""},
   };
   std::string wrong;   // every mismatch, so one run lists them all
   for (const Case& c : kCases) {

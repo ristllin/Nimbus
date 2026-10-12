@@ -57,11 +57,12 @@ inline std::string transportError(const ProviderDeps& pd) {
 // answer back ("no response": the peer closed, or the deadline passed) may have
 // started a paid run - a synchronous sub runs inside its POST, an async one was
 // created by it - so it is Timeout ("may have started", never spawned again).
-// Otherwise a failure that took about the whole `deadlineMs` most likely started
-// it too, and a fast one (connect, DNS, TLS) did not.
-inline FabricErr subTransportErr(uint32_t elapsedMs, uint32_t deadlineMs) {
+// Otherwise a failure that took about the whole `deadlineMs` since `sentAtMs` most
+// likely started it too, and a fast one (connect, DNS, TLS) did not.
+inline FabricErr subTransportErr(const ProviderDeps& pd, uint32_t sentAtMs, uint32_t deadlineMs) {
   if (lastExchange().unsent) return FabricErr::Network;
   if (lastExchange().noResponse) return FabricErr::Timeout;
+  const uint32_t elapsedMs = (pd.nowMs ? pd.nowMs() : 0) - sentAtMs;
   return elapsedMs >= (deadlineMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
 }
 

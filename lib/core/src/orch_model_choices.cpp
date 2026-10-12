@@ -55,19 +55,9 @@ std::string effectiveModelChoices(const char* slug, const std::string& harvested
 
 bool modelInChoices(const std::string& csv, const std::string& model) {
   if (model.empty()) return false;
-  static const char* kWs = " \t\r\n";
-  size_t start = 0;
-  while (start <= csv.size()) {
-    size_t comma = csv.find(',', start);
-    if (comma == std::string::npos) comma = csv.size();
-    const size_t b = csv.find_first_not_of(kWs, start);
-    if (b != std::string::npos && b < comma) {
-      const size_t e = csv.find_last_not_of(kWs, comma - 1);
-      if (csv.compare(b, e - b + 1, model) == 0) return true;   // equal length + bytes
-    }
-    start = comma + 1;
-  }
-  return false;
+  return !eachItem(csv, [&model](const char* p, size_t n) {   // stops at the match
+    return !(n == model.size() && std::memcmp(p, model.data(), n) == 0);
+  });
 }
 
 }  // namespace orch

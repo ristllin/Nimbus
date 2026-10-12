@@ -778,7 +778,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts our 60 s
   // read deadline and a peer that cuts it after the request went out may have run
   // it: either is "may have started", never the misleading "couldn't start".
-  if (code <= 0) return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, MISTRAL_TIMEOUT_MS);
+  if (code <= 0) return wire::subTransportErr(pd, t0, MISTRAL_TIMEOUT_MS);
   if (code == 401) return FabricErr::Auth;
   if (code == 429) {
     // Classified exactly like a head turn's 429 (CUM-465): the headers' window,

@@ -596,6 +596,27 @@ static void test_cum477_custom_head_resends_an_unsent_request_once() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"ok\"}", out.c_str());
   TEST_ASSERT_TRUE(harness_test::LogCapture::contains("orchTurn(custom): request not sent"));
 }
+// Review: the resend repeats only the request that never left: after a 400 to the
+// response_format attempt, an unsent schema-less retry is sent again schema-less,
+// never the answered first request.
+static void test_cum477_custom_head_resend_resumes_at_the_unsent_attempt() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custJsonMode = "object";
+  d.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"unsupported\"}}"});
+  d.http.script.push_back(harness_test::transportCut(0, "request body truncated (10/200 bytes written)"));
+  d.http.script.push_back({"", "", 200, zaiOkBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "response_format"));
+  TEST_ASSERT_FALSE(bodyHas(d, 2, "response_format"));
+  TEST_ASSERT_EQUAL_STRING(d.http.seen[1].body.c_str(), d.http.seen[2].body.c_str());
+}
 static void test_cum477_custom_head_never_resends_what_went_out() {
   FakeProviderDeps d;
   d.custBase = "https://api.z.ai";
@@ -646,6 +667,7 @@ int main(int, char**) {
   RUN_TEST(test_cum544_effort_rule_is_zai_only);
   RUN_TEST(test_cum544_no_answer_is_a_timeout_not_network);
   RUN_TEST(test_cum477_custom_head_resends_an_unsent_request_once);
+  RUN_TEST(test_cum477_custom_head_resend_resumes_at_the_unsent_attempt);
   RUN_TEST(test_cum477_custom_head_never_resends_what_went_out);
   RUN_TEST(test_cum477_custom_head_heap_that_stays_low_is_memory);
   UNITY_END();

@@ -124,7 +124,7 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
                       std::move(body), kCompatTimeoutMs, out, filter);
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
-  if (code <= 0) return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, kCompatTimeoutMs);
+  if (code <= 0) return wire::subTransportErr(pd, t0, kCompatTimeoutMs);
   if (code != 200) return compatHttpErr(code, d, out, backendTag);
   std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
                                 : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));

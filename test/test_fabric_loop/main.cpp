@@ -23,8 +23,10 @@ using harness_test::reqBody;
 namespace providers = agent::providers;
 namespace orch = nimbus::orch;
 
-// Every operator new in this test binary is counted, so a test can read how many
-// allocations are live at a moment (the device turn path must not grow the heap).
+// Every plain operator new in this test binary is counted (the array and nothrow
+// forms call it; the over-aligned forms are not used on this path), so a test can
+// read how many allocations are live at a moment (the device turn path must not
+// grow the heap).
 static long g_live = 0;
 void* operator new(std::size_t n) {
   void* p = std::malloc(n ? n : 1);

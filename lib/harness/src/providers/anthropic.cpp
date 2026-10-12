@@ -400,7 +400,7 @@ FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
   const int code = sendTurn(pd, session.id.c_str(), d.instruction, turnDoc);
   if (code <= 0) {
     logCallFail("send turn", code, turnDoc);
-    return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, ANT_TIMEOUT_MS);
+    return wire::subTransportErr(pd, t0, ANT_TIMEOUT_MS);
   }
   if (!is2xx(code)) return chainErr(d, "send turn", code, turnDoc);
 

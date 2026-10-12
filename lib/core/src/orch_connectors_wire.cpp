@@ -606,15 +606,17 @@ namespace {
 // request for the owner's calendar. A phrase is matched case-insensitively,
 // except one with a capital letter, which is matched as written or with its
 // first letter capitalized ("in Linear", "In Linear," are the product; "in linear
-// time" is not). `tail` limits what may follow it (and no limited phrase is
-// followed by a colon and a capitalized word, a subtitle: "from Slack: Getting
-// Past Burnout" is a book), and `notAfter` names the words (space-separated) that
-// may not come right before it. Ids are catalog ids; lists end in a null text.
+// time" is not). `tail` limits what may follow it, and `notAfter` names the words
+// (space-separated) that may not come right before it. Ids are catalog ids; lists
+// end in a null text.
 enum class Tail : uint8_t {
   Any,           // any word boundary
   NotTitleCase,  // not another capitalized word ("from Linear Algebra Done Right" is a title)
+  NotBookTitle,  // nor a colon and a capitalized word: "from Slack: Getting Past Burnout"
+                 // cites a book ("post this to Slack: Deploy finished" is still an ask)
   NoWord,        // no further word ("in my linear" ends the ask; "my linear algebra" does not)
-  NoWordOrAnd,   // no further word, or "and" / "then" starting the next step of the ask
+  NextStep,      // no further word, or "and" / "then" starting the next step of the ask,
+                 // and no book subtitle
 };
 struct Phrase {
   const char* text;
@@ -652,8 +654,8 @@ const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my rep
 // Connect, a canvas, a huddle, a workflow) name it in any case. "my slack" is the
 // owner's workspace ("read my slack and summarize the day") except in the idiom
 // "pick up my slack".
-// constexpr: a plain const pointer is no constant expression, so the phrase table
-// would be built at boot in RAM instead of living in flash.
+// constexpr: a const char* variable is no constant expression, so without it the
+// phrase table may be built at boot in RAM instead of flash (it was: +320 B).
 constexpr const char* kInfinitiveFrame =
     "tend tends tended tending want wants wanted wanting going begin begins began start starts "
     "started starting seem seems seemed need needs needed try tries tried trying like likes "
@@ -666,10 +668,10 @@ const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack
                                 {"slack workflow"},  {"slack workflows"},
                                 {"in slack", Tail::NoWord},
                                 {"on slack", Tail::NoWord, "low short"},
-                                {"from slack", Tail::NoWordOrAnd},
+                                {"from slack", Tail::NextStep},
                                 {"to slack", Tail::NoWord, kInfinitiveFrame},
                                 {"in Slack", Tail::NotTitleCase},    {"on Slack", Tail::NotTitleCase},
-                                {"from Slack", Tail::NotTitleCase},  {"to Slack", Tail::NotTitleCase},
+                                {"from Slack", Tail::NotBookTitle},  {"to Slack", Tail::NotTitleCase},
                                 {"my slack", Tail::Any, "up"},       {nullptr}};
 // "linear" is an ordinary word after any preposition ("in linear time"), so those
 // phrases need the capital, and a title ("in Linear Programming") is not the product.
@@ -678,7 +680,7 @@ const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack
 const Phrase kLinearPhrases[] = {{"linear issue"},     {"linear issues"},  {"linear ticket"},
                                  {"linear tickets"},   {"linear project"}, {"linear projects"},
                                  {"linear workspace"}, {"linear connector"},
-                                 {"in Linear", Tail::NotTitleCase},   {"from Linear", Tail::NotTitleCase},
+                                 {"in Linear", Tail::NotTitleCase},   {"from Linear", Tail::NotBookTitle},
                                  {"to Linear", Tail::NotTitleCase},   {"in my linear", Tail::NoWord},
                                  {"into my linear", Tail::NoWord},    {"to my linear", Tail::NoWord},
                                  {nullptr}};
@@ -735,13 +737,18 @@ bool isWordChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 }
 
+// text[at, at + n) is `word` (lowercase, n characters), in any case.
+bool sameWordAt(const std::string& text, size_t at, const char* word, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    if (tolower((unsigned char)text[at + i]) != word[i]) return false;
+  return true;
+}
+
 // The word starting at `at` of `text` is `word` (lowercase), whole.
 bool wordAt(const std::string& text, size_t at, const char* word) {
   const size_t n = std::strlen(word);
   if (at + n > text.size() || (at + n < text.size() && isWordChar(text[at + n]))) return false;
-  for (size_t i = 0; i < n; ++i)
-    if (tolower((unsigned char)text[at + i]) != word[i]) return false;
-  return true;
+  return sameWordAt(text, at, word, n);
 }
 
 // A colon at `at` followed by a capitalized word: a subtitle ("from Slack: Getting
@@ -759,12 +766,14 @@ bool tailOk(const std::string& text, size_t end, Tail tail) {
   size_t at = end;
   while (at < text.size() && text[at] == ' ') at++;
   const bool word = at < text.size() && isWordChar(text[at]);
-  if (tail != Tail::Any && subtitleAt(text, at)) return false;
+  const bool capital = word && text[at] >= 'A' && text[at] <= 'Z';
   switch (tail) {
     case Tail::Any: return true;
     case Tail::NoWord: return !word;
-    case Tail::NoWordOrAnd: return !word || wordAt(text, at, "and") || wordAt(text, at, "then");
-    case Tail::NotTitleCase: return !(word && text[at] >= 'A' && text[at] <= 'Z');
+    case Tail::NextStep:
+      return !subtitleAt(text, at) && (!word || wordAt(text, at, "and") || wordAt(text, at, "then"));
+    case Tail::NotTitleCase: return !capital;
+    case Tail::NotBookTitle: return !capital && !subtitleAt(text, at);
   }
   return true;   // unreachable: every Tail is a case above (-Wswitch flags a new one)
 }
@@ -778,9 +787,7 @@ bool wordBefore(const std::string& text, size_t at, const char* words) {
   for (const char* w = words; *w;) {
     const char* e = std::strchr(w, ' ');
     const size_t n = e ? (size_t)(e - w) : std::strlen(w);
-    bool same = n == at - b;
-    for (size_t i = 0; same && i < n; ++i) same = tolower((unsigned char)text[b + i]) == w[i];
-    if (same) return true;
+    if (n == at - b && sameWordAt(text, b, w, n)) return true;
     w += n + (e ? 1 : 0);
   }
   return false;
@@ -789,7 +796,7 @@ bool wordBefore(const std::string& text, size_t at, const char* words) {
 // `needle` occurs in `hay` with no letter or digit against either edge that is
 // itself a letter or digit ("calendar events" matches "Google Calendar events",
 // not "calendar eventsx"; "'s calendar" matches "dana's calendar"), and `tail`
-// allows what follows it, and `notAfter` (when set) is not the word before it.
+// allows what follows it, and the word before it is none of `notAfter` (when set).
 // Exact bytes: the caller lowercases both sides for a case-insensitive match and
 // passes the task as written (`cased`, same length) for the tail to read.
 bool containsWord(const std::string& hay, const std::string& needle, Tail tail = Tail::Any,

@@ -221,9 +221,10 @@ std::string mistralCallId(const std::string& id);
 // engine's lenient parseHeadReply + salvage). Each request may take up to the
 // head budget: pd.customHeadTimeoutMs, else 120 s (the OpenAI/Anthropic ceiling).
 // The Z.ai heads share this path with their own 50 s budget (kZaiHeadTimeoutMs).
-// v1 has NO tool loop (tools ignored); customConv "anthropic" is refused (the
-// head speaks chat-completions only). Registered in orchestrator.cpp ONLY when
-// store::hasCustom().
+// v1 has NO tool loop (`tools` advertises nothing; when the engine passes it,
+// its round floor drives the one resend of a request that never left, CUM-477);
+// customConv "anthropic" is refused (the head speaks chat-completions only).
+// Registered in orchestrator.cpp ONLY when store::hasCustom().
 // A request that reached the provider but got no answer inside the budget fails
 // with err "timeout: ..." (the engine reads it as a Timeout - no same-host retry,
 // an honest "did not answer in time" notice); any other transport failure is

@@ -89,8 +89,8 @@ inline bool samePick(const PickLists& l, const std::string& a, const std::string
          router_catalog::canonical(a) == router_catalog::canonical(b);
 }
 
-// A list item the router lists can be offered: always for a direct provider; for
-// the router, only a selector some upstream runs.
+// Whether a list item may be offered: always for a direct provider; for the
+// router, only a selector some upstream runs.
 inline bool offered(const PickLists& l, const std::string& item) {
   return !l.router || router_catalog::routable(item);
 }

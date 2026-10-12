@@ -159,7 +159,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // each wrapped step holds only its pointer, and nothing is allocated for them.
   // A host switched away from drops its step at once (it holds a copy of the deps).
   constexpr size_t kMaxHosts = 3;
-  const size_t hosts = std::min(hostList.size(), kMaxHosts);
+  const size_t hostCount = std::min(hostList.size(), kMaxHosts);
+  if (hostList.size() > kMaxHosts)
+    hlog::logf("fabric: %u hosts offered, the first %u are used", (unsigned)hostList.size(), (unsigned)kMaxHosts);
   std::array<orch::HeadStepFn, kMaxHosts> inner;
   std::array<ResendCtx, kMaxHosts> resend{};
   auto wrap = [&](size_t i, orch::HeadStepFn step, const char* who) -> orch::HeadStepFn {
@@ -204,7 +206,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         sr2 = cur(allowTools, prior, budgetMs, capReason);
         if (sr2.ok) return sr2;
       }
-      if (switches >= kMaxSwitches || hostIdx + 1 >= hosts)
+      if (switches >= kMaxSwitches || hostIdx + 1 >= hostCount)
         return sr2;   // exhausted - the controller fails soft to the caller
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[hostIdx + 1];
