@@ -318,7 +318,9 @@ the shared `resolveRouterRoute` rule (`"<upstream>/<model>"`, a bare id is
 wire for `anthropic/...`, the OpenAI Responses wire for `openai/...` and bare ids,
 Mistral for `mistral/...`, each with its real tool loop (the registry tools ride
 every round) when the tool loop is on. `zai/...` and any upstream the native wire
-does not cover keep the single-shot chat-completions path with `json_object`.
+does not cover keep the single-shot chat-completions path with `json_object`;
+`zai/...`, like the direct Z.ai head (`Z_AI_TOKEN`), also carries the device's
+Z.ai policy: `reasoning_effort: "low"` and a 50 s head budget.
 The head advertises provider built-in tools only; the owner's private connectors
 never ride the shared router key.
 

@@ -75,7 +75,6 @@ namespace orch = nimbus::orch;
 constexpr const char* kCumuloEnvKey     = "CUMULO_API_KEY";      // canonical env name
 constexpr const char* kCumuloHost       = "app.cumulo-nimbus.ai";  // CUMULO_HOST_DEFAULT
 constexpr const char* kCumuloPathPrefix = "/router/openai/v1";     // replaces the default /v1
-constexpr const char* kCumuloConv       = "openai";                // wire convention
 constexpr const char* kCumuloModel      = "gpt-5.6";               // CUMULO_MODEL default
 constexpr const char* kCumuloSlug       = "cumulo";               // head + routing slug
 
@@ -1591,13 +1590,10 @@ class NimbusdRig {
     }
     if (rr.upstream == "openai")
       return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
-    const std::string upstream = rr.upstream, model = rr.model;
-    pd.customBase       = [] { return std::string(kCumuloHost); };
-    pd.customPathPrefix = [upstream] { return std::string("/router/") + upstream; };
-    pd.customKey        = [this] { return cumuloKey(); };
-    pd.customConv       = [] { return std::string(kCumuloConv); };
-    pd.customModel      = [model] { return model; };
-    pd.customJsonMode   = [] { return std::string("object"); };
+    // zai / any other upstream: the device's ONE seam (CUM-544) - base and key from
+    // the router override above, /router/<upstream>, json_object, and for zai the
+    // bounded reasoning effort + 50 s head budget.
+    agent::providers::configureRouterCompatHead(pd, rr.upstream, rr.model);
     return agent::providers::orchTurnCustom(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
   }
 
@@ -1716,6 +1712,9 @@ class NimbusdRig {
     pd.customKey        = [this] { return cfg_.providerKey(kZaiSlug); };
     pd.customConv       = [] { return std::string(kZaiConv); };
     pd.customModel      = [this] { return modelFor(kZaiSlug); };
+    // CUM-544: the ONE Z.ai head policy the device heads use (json_object,
+    // reasoning_effort "low", the 50 s head budget under Z.ai's gateway cut).
+    agent::providers::applyZaiHeadPolicy(pd);
     return pd;
   }
 

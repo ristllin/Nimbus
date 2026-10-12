@@ -31,7 +31,9 @@
 //   (m) a pick whose last working selector is refused too is answered on the router
 //       default (pick -> last working -> default, each tried once);
 //   (n) every refusal cause fits the engine's 100-character cut, so the fix at the
-//       end of the sentence is never cut off.
+//       end of the sentence is never cut off;
+//   (o) the zai upstream and the direct Z.ai head both carry the ONE Z.ai policy
+//       (json_object, reasoning_effort "low", the 50 s head budget - CUM-544).
 #include <cstdio>
 #include <string>
 
@@ -353,8 +355,40 @@ static void testZaiKeepsCustomPath(ndtest::Ctx& c) {
     c.eq(tx.seen[0].path, "/router/zai/chat/completions", "the zai path has no /v1");
     c.ok(has(tx.seen[0].body, "json_object"), "json_object, not json_schema (CUM-495)");
     c.ok(has(tx.seen[0].body, "\"model\":\"glm-5.3\""), "the bare model id");
+    // CUM-544: the router's zai upstream rides the ONE Z.ai policy seam.
+    c.ok(has(tx.seen[0].body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
+    c.eqi((long)tx.seen[0].timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs,
+          "the 50 s Z.ai head budget (CUM-544)");
   }
   c.ok(has(t.reply, "glm here"), "the answer reaches the owner");
+  clearProviderEnv();
+}
+
+// CUM-544: the hosted direct-BYOK Z.ai head (Z_AI_TOKEN) is on the same policy seam
+// as the device's: json_object, reasoning_effort "low", the 50 s head budget.
+static void testZaiDirectHeadOnThePolicySeam(ndtest::Ctx& c) {
+  std::printf("  -- (o) the direct Z.ai head carries the Z.ai policy --\n");
+  clearProviderEnv();
+  setenv("Z_AI_TOKEN", "zai_test_HEAD", 1);
+  FakeHttpTransport tx;
+  Exchange e;
+  e.expectHost = kZaiHost;
+  e.expectPathContains = "/api/paas/v4/chat/completions";
+  e.status = 200;
+  e.body = chatBody("glm direct");
+  tx.script.push_back(e);
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-o", false), &tx);
+  const TurnRecord t = rig.say("owner", "hello");
+  c.eqi((long)tx.seen.size(), 1, "one request");
+  if (!tx.seen.empty()) {
+    const agent::HttpRequest& r = tx.seen[0];
+    c.eq(r.host, kZaiHost, "the Z.ai host");
+    c.ok(has(r.body, "json_object"), "json_object, not json_schema (CUM-495)");
+    c.ok(has(r.body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
+    c.eqi((long)r.timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs, "the 50 s Z.ai head budget");
+  }
+  c.ok(has(t.reply, "glm direct"), "the answer reaches the owner");
   clearProviderEnv();
 }
 
@@ -501,6 +535,7 @@ int main() {
   testUpstreamPausedKeepsPick(c);
   testRouteRefusalKeepsPick(c);
   testZaiKeepsCustomPath(c);
+  testZaiDirectHeadOnThePolicySeam(c);
   testMidLoopRefusalNotRerun(c);
   testFoldNeverGetsANotice(c);
   testHonestCauses(c);
