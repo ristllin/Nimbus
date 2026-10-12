@@ -1276,7 +1276,7 @@ function loadConnect(){
     if(o&&o.token){setTok(o.token);
       if($('cxToken'))$('cxToken').textContent=o.token;
       toast('New token set');}
-  }).catch(e=>{if(e===507)failToast(e);else toast('Couldn\'t generate a token - try again');});});};
+  }).catch(e=>{if(hasServerText(e))failToast(e);else toast('Couldn\'t generate a token - try again');});});};
 })();
 // Erase storage: type-to-confirm SD wipe (keeps config, keeps the token, so no
 // localStorage cleanup needed - the device reboots on the same network).
@@ -1461,16 +1461,28 @@ document.addEventListener('DOMContentLoaded',initLoopForm);
 // 507 with a sentence for the owner; jok() keeps that sentence so failToast and the
 // inline status lines show it - never "Saved". STORAGE_FULL_MSG mirrors the device's
 // own text (nimbus::store::kStorageFullMessage) for a body that did not parse.
+// CUM-514: a value the device refuses (a key with a space in it, a directive that
+// is too long) answers 400 with the sentence to show in "error"; jok() keeps that
+// too, so the owner reads why instead of "Couldn't save - try again", which no
+// retry would ever clear. A code ("bad_action") is not a sentence and is not shown.
 const STORAGE_FULL_MSG='Couldn\'t save: device storage is full. Remove an unused provider key or connector and try again.';
-let _saveErr='',_lastFail=0;
+let _saveErr='',_refuseErr='',_lastFail=0;
+function refusalText(j){const s=j&&j.error;
+  return(typeof s==='string'&&/^[A-Z]/.test(s)&&s.indexOf(' ')>0&&s.length<=300)?s:'';}
 function jok(r){
   if(r.ok)return r.json();
+  if(r.status===400)return r.json().catch(()=>({})).then(j=>{_refuseErr=refusalText(j);throw 400;});
   if(r.status!==507)throw r.status;
   return r.json().catch(()=>({})).then(j=>{_saveErr=(j&&j.message)||STORAGE_FULL_MSG;throw 507;});
 }
-// The failure sentence for a status: storage-full gets the device's sentence, any
-// other failure the caller's fallback.
-function saveFailText(e,dflt){return e===507?(_saveErr||STORAGE_FULL_MSG):(dflt||'Couldn\'t save - try again');}
+// Whether a failure carries the device's own sentence (storage full, a refusal).
+function hasServerText(e){return e===507||(e===400&&!!_refuseErr);}
+// The failure sentence for a status: storage-full and a refusal get the device's
+// sentence, any other failure the caller's fallback.
+function saveFailText(e,dflt){
+  if(e===507)return _saveErr||STORAGE_FULL_MSG;
+  if(e===400&&_refuseErr)return _refuseErr;
+  return dflt||'Couldn\'t save - try again';}
 // For callers that only see apply()/orchApply()'s false: the last failure's text.
 function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
@@ -1484,7 +1496,7 @@ function _tfetch(url){
   }));
 }
 function failToast(e){_lastFail=e;
-  if(e===507){toast(saveFailText(e),6000);return;}
+  if(hasServerText(e)){toast(saveFailText(e),6000);return;}
   toast(e===401?'Sign in required':saveFailText(e));}
 
 // ---- Feedback-state system (CUM-31) ----------------------------------------
@@ -2565,7 +2577,7 @@ function mcpApprove(name,id,bit){
       .then(r=>{if(!r.ok)return jok(r);return r;}),
     ok:()=>{setTimeout(loadConnectors,300);
       return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
-    error:e=>e===507?saveFailText(e):'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
+    error:e=>saveFailText(e,'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.')});
 }
 // MCP OAuth sign-in (CUM-256): arm the flow on the device, then poll status and
 // render the link + code + QR the owner opens on their phone/laptop.
@@ -3233,7 +3245,7 @@ $('embsave').onclick=()=>{
         });
       } else { save(false); }
     })
-    .catch(e=>{btn.disabled=false;failToast(e);msg.textContent='Couldn\'t verify - try again.';});
+    .catch(e=>{btn.disabled=false;failToast(e);msg.textContent=saveFailText(e,'Couldn\'t verify - try again.');});
 };
 function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();}
 

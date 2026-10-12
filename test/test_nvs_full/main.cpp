@@ -674,7 +674,8 @@ static void test_embedcfg_stores_before_it_wipes() {
 }
 
 // The web UI shows the device's sentence on a 507 (its offline fallback is the same
-// text, JS-escaped) and never toasts "Saved" for it.
+// text, JS-escaped) and never toasts "Saved" for it. A 400 refusal's own sentence is
+// shown the same way (CUM-514), so it shares the long toast.
 static void test_web_ui_shows_the_storage_full_text() {
   const std::string js = readFile("include/web/ui_js.h");
   std::string esc;
@@ -685,7 +686,9 @@ static void test_web_ui_shows_the_storage_full_text() {
   TEST_ASSERT_TRUE_MESSAGE(js.find("const STORAGE_FULL_MSG='" + esc + "';") != std::string::npos,
                            "ui_js.h STORAGE_FULL_MSG drifted from kStorageFullMessage");
   TEST_ASSERT_TRUE(js.find("if(r.status!==507)throw r.status;") != std::string::npos);
-  TEST_ASSERT_TRUE(js.find("if(e===507){toast(saveFailText(e),6000);return;}") != std::string::npos);
+  TEST_ASSERT_TRUE(js.find("function hasServerText(e){return e===507||(e===400&&!!_refuseErr);}") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(js.find("if(hasServerText(e)){toast(saveFailText(e),6000);return;}") != std::string::npos);
 }
 
 int main(int, char**) {
