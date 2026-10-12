@@ -2199,6 +2199,7 @@ class NimbusdRig {
         ep.basePath = kZaiPathPrefix;
         ep.key = cfg_.providerKey(kZaiSlug);
         ep.model = modelFor(kZaiSlug);
+        ep.reasoningEffort = agent::providers::reasoningEffortFor("zai");   // CUM-544
       } else {
         // The model the JobEngine resolved for this spawn (the configured sub model
         // when the pick was not one it accepts), routed by the same split as the head.
@@ -2209,6 +2210,7 @@ class NimbusdRig {
         ep.basePath = route.basePath;
         ep.key = cumuloKey();
         ep.model = route.model;
+        ep.reasoningEffort = agent::providers::reasoningEffortFor(route.upstream);   // CUM-544
         ep.wire = route.upstream == "anthropic" ? agent::providers::CompatWire::AnthropicMessages
                                                 : agent::providers::CompatWire::OpenAIChat;
       }

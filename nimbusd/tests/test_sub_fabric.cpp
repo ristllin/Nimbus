@@ -550,6 +550,45 @@ static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// CUM-544: a hosted Z.ai sub-agent carries the same bounded reasoning effort as the
+// Z.ai head and the device's Z.ai subs (glm-5.x always reasons and otherwise
+// outruns the 30 s dispatch): direct, and the router's zai upstream. Another
+// upstream sends none.
+static void testZaiSubCarriesLowEffort(ndtest::Ctx& c) {
+  std::printf("  -- (n) a hosted Z.ai sub carries reasoning_effort low, direct and over the router --\n");
+  struct Case { const char* provider; const char* subModel; const char* path; bool effort; };
+  const Case cases[] = {
+      {"zai", "", "/api/paas/v4/chat/completions", true},
+      {"cumulo", "zai/glm-5.3", "/router/zai/chat/completions", true},
+      {"cumulo", "openai/gpt-5.6", "/router/openai/v1/chat/completions", false},
+      {"cumulo", "anthropic/claude-sonnet-5", "/router/anthropic/v1/messages", false},
+  };
+  for (const Case& k : cases) {
+    clearEnv();
+    FakeHttpTransport tx;
+    Exchange done;
+    done.body = "{\"choices\":[{\"message\":{\"content\":\"done\"}}]}";
+    tx.script.push_back(done);
+    Config cfg;
+    NimbusdRig rig(cfg, opts(std::string("fab-n-") + k.provider + (k.effort ? "1" : "0")), &tx);
+    const bool zai = std::string(k.provider) == "zai";
+    rig.applyProviderKey(zai ? "zai" : "cumulo", zai ? "zai_sk_TEST_EFFORT" : "cumulo_sk_TEST_EFFORT");
+    if (k.subModel[0]) rig.applySubModel(k.provider, k.subModel);
+    nimbus::orch::Spawn s;
+    s.task = "summarize the GLM release notes";
+    s.provider = k.provider;
+    s.category = "research";
+    s.note = "On it.";
+    rig.jobs().enqueueSpawn(s, "web");
+    rig.jobs().pump();
+    const std::string what = std::string(k.provider) + " " + k.subModel;
+    c.ok(!tx.seen.empty() && has(tx.seen[0].path, k.path), "the sub went to " + std::string(k.path));
+    const bool sent = !tx.seen.empty() && has(tx.seen[0].body, "\"reasoning_effort\":\"low\"");
+    c.ok(sent == k.effort, (k.effort ? "carries reasoning_effort low: " : "carries no effort: ") + what);
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "sub-agent fabric (device parity)";
@@ -567,6 +606,7 @@ int main() {
   testSpawnFromOtherNamespaceRefused(c);
   testRemovedChatReportDropped(c);
   testReplyLessTurnCompletesOnWeb(c);
+  testZaiSubCarriesLowEffort(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
