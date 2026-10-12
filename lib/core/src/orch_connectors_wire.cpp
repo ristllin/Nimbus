@@ -606,48 +606,62 @@ namespace {
 // request for the owner's calendar. A phrase is matched case-insensitively,
 // except one with a capital letter, which is matched as written or with its
 // first letter capitalized ("in Linear", "In Linear," are the product; "in linear
-// time" is not). `tail` limits what may follow it. Ids are catalog ids; lists end
-// in a null text.
+// time" is not). `tail` limits what may follow it, and `notAfter` names a word that
+// may not come right before it. Ids are catalog ids; lists end in a null text.
 enum class Tail : uint8_t {
   Any,           // any word boundary
   NotTitleCase,  // not another capitalized word ("from Linear Algebra Done Right" is a title)
   NoWord,        // no further word ("in my linear" ends the ask; "my linear algebra" does not)
-  NotOff,        // not "off" ("to slack off" is the verb)
 };
 struct Phrase {
   const char* text;
   Tail tail = Tail::Any;
+  const char* notAfter = nullptr;   // "up": "picked up my slack" is the idiom
 };
 const Phrase kGcalPhrases[] = {{"my calendar"},     {"your calendar"}, {"'s calendar"},
                                {"calendar event"},  {"calendar events"}, {"my schedule"},
                                {"your schedule"},   {"'s schedule"},   {nullptr}};
 const Phrase kGmailPhrases[] = {{"my inbox"},  {"your inbox"}, {"'s inbox"}, {"my email"},
                                 {"my emails"}, {"'s email"},   {"'s emails"}, {nullptr}};
-// "notion" and "slack" have no ordinary reading after these prepositions, so they
-// match in any case ("post it in slack"); "my notion" must end the ask ("my notion
-// of fairness" is the word).
+// "notion" has no ordinary reading after these prepositions, so they match in any
+// case ("add this to notion"). "my notion" is the owner's workspace only after a
+// preposition and at the end of the ask ("put the plan in my notion"): "my notion
+// of fairness" and "the paragraph is my notion." are the word.
 const Phrase kNotionPhrases[] = {{"notion page"},      {"notion pages"},     {"notion database"},
                                  {"notion databases"}, {"notion workspace"}, {"notion doc"},
                                  {"notion docs"},      {"notion connector"}, {"in notion"},
                                  {"from notion"},      {"to notion"},        {"on notion"},
-                                 {"my notion", Tail::NoWord},                {nullptr}};
+                                 {"in my notion", Tail::NoWord},             {"into my notion", Tail::NoWord},
+                                 {"to my notion", Tail::NoWord},             {nullptr}};
 const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my repository"},
                                  {"my repositories"},   {"your repo"},  {"your repos"},
                                  {"your repository"},   {"your repositories"},
                                  {"'s repo"},           {"'s repos"},   {nullptr}};
+// "slack" is an ordinary word after a preposition too ("slack periods", "tend to
+// slack in August", "slack off"), so the lowercase forms must end the ask ("post
+// the summary in slack", "send it to slack"); the capitalized product name may go
+// on ("post it in Slack for the team") unless a title follows. "my slack" is the
+// owner's workspace ("read my slack and summarize the day") except in the idiom
+// "pick up my slack".
 const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack message"},
                                 {"slack messages"},  {"slack thread"},   {"slack threads"},
                                 {"slack dm"},        {"slack dms"},      {"slack workspace"},
-                                {"slack connector"}, {"in slack"},       {"on slack"},
-                                {"from slack"},      {"to slack", Tail::NotOff},
-                                {"my slack"},        {nullptr}};
+                                {"slack connector"},
+                                {"in slack", Tail::NoWord},          {"on slack", Tail::NoWord},
+                                {"from slack", Tail::NoWord},        {"to slack", Tail::NoWord},
+                                {"in Slack", Tail::NotTitleCase},    {"on Slack", Tail::NotTitleCase},
+                                {"from Slack", Tail::NotTitleCase},  {"to Slack", Tail::NotTitleCase},
+                                {"my slack", Tail::Any, "up"},       {nullptr}};
 // "linear" is an ordinary word after any preposition ("in linear time"), so those
 // phrases need the capital, and a title ("in Linear Programming") is not the product.
+// "my linear" is the workspace only after a preposition and at the end of the ask
+// ("file it in my linear"), as for Notion.
 const Phrase kLinearPhrases[] = {{"linear issue"},     {"linear issues"},  {"linear ticket"},
                                  {"linear tickets"},   {"linear project"}, {"linear projects"},
                                  {"linear workspace"}, {"linear connector"},
                                  {"in Linear", Tail::NotTitleCase},   {"from Linear", Tail::NotTitleCase},
-                                 {"to Linear", Tail::NotTitleCase},   {"my linear", Tail::NoWord},
+                                 {"to Linear", Tail::NotTitleCase},   {"in my linear", Tail::NoWord},
+                                 {"into my linear", Tail::NoWord},    {"to my linear", Tail::NoWord},
                                  {nullptr}};
 struct ProvenanceWords {
   const char* id;
@@ -711,18 +725,28 @@ bool tailOk(const std::string& text, size_t end, Tail tail) {
     case Tail::Any: return true;
     case Tail::NoWord: return !word;
     case Tail::NotTitleCase: return !(word && text[at] >= 'A' && text[at] <= 'Z');
-    case Tail::NotOff:
-      return !(text.compare(at, 3, "off") == 0 && (at + 3 >= text.size() || !isWordChar(text[at + 3])));
   }
   return true;   // unreachable: every Tail is a case above (-Wswitch flags a new one)
+}
+
+// The word right before `at` in `text` (spaces skipped) is `word`, in any case.
+bool wordBefore(const std::string& text, size_t at, const char* word) {
+  while (at > 0 && text[at - 1] == ' ') at--;
+  size_t b = at;
+  while (b > 0 && isWordChar(text[b - 1])) b--;
+  if (at - b != std::strlen(word)) return false;
+  for (size_t i = 0; i < at - b; ++i)
+    if (tolower((unsigned char)text[b + i]) != word[i]) return false;
+  return true;
 }
 
 // `needle` occurs in `hay` with no letter or digit against either edge that is
 // itself a letter or digit ("calendar events" matches "Google Calendar events",
 // not "calendar eventsx"; "'s calendar" matches "dana's calendar"), and `tail`
-// allows what follows it. Exact bytes: the caller lowercases both sides for a
-// case-insensitive match.
-bool containsWord(const std::string& hay, const std::string& needle, Tail tail = Tail::Any) {
+// allows what follows it, and `notAfter` (when set) is not the word before it.
+// Exact bytes: the caller lowercases both sides for a case-insensitive match.
+bool containsWord(const std::string& hay, const std::string& needle, Tail tail = Tail::Any,
+                  const char* notAfter = nullptr) {
   if (needle.empty()) return false;
   const bool wordStart = isWordChar(needle.front());
   const bool wordEnd = isWordChar(needle.back());
@@ -730,7 +754,8 @@ bool containsWord(const std::string& hay, const std::string& needle, Tail tail =
     const bool startOk = !wordStart || at == 0 || !isWordChar(hay[at - 1]);
     const size_t end = at + needle.size();
     const bool endOk = !wordEnd || end >= hay.size() || !isWordChar(hay[end]);
-    if (startOk && endOk && tailOk(hay, end, tail)) return true;
+    const bool leadOk = !notAfter || !wordBefore(hay, at, notAfter);
+    if (startOk && endOk && leadOk && tailOk(hay, end, tail)) return true;
   }
   return false;
 }
@@ -745,7 +770,7 @@ bool hasUpper(const std::string& s) {
 // capital in it, as written or with its first letter capitalized (sentence start).
 bool phraseMatches(const std::string& task, const std::string& hay, const Phrase& ph) {
   const std::string text = ph.text;
-  if (!hasUpper(text)) return containsWord(hay, text, ph.tail);
+  if (!hasUpper(text)) return containsWord(hay, text, ph.tail, ph.notAfter);
   std::string initial = text;
   initial[0] = (char)toupper((unsigned char)initial[0]);
   return containsWord(task, text, ph.tail) || containsWord(task, initial, ph.tail);

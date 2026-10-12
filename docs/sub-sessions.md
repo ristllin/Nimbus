@@ -318,10 +318,13 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    names one of them (its name, catalog or workspace id, or an owner-data phrase
    such as "my calendar"; talk about calendars in general does not count). A
    catalog name that is an ordinary English word (Linear, Notion, Slack) counts
-   only inside a phrase ("Linear issues", "post it in slack", "my notion",
-   "Linear connector"), so "explain linear regression" is not a Linear request;
-   Linear's prepositional phrases need the capital ("In Linear, list my bugs")
-   and are never part of a title ("from Linear Algebra Done Right"). The name
+   only inside a phrase ("Linear issues", "post it in slack", "put it in my
+   notion", "Linear connector"), so "explain linear regression" is not a Linear
+   request; a lowercase "in slack" or "to slack" ends the ask ("tend to slack in
+   August" and "slack periods" are the word), "my notion" and "my linear" count
+   after "in", "into" or "to" at the end of the ask, Linear's prepositional
+   phrases need the capital ("In Linear, list my bugs"), and none is part of a
+   title ("from Linear Algebra Done Right"). The name
    the owner gave a catalog connector never counts on its own (a Notion
    connector named "notes" does not claim "summarize the meeting notes"). The wire
    carries only connector ids, and a custom Studio connector rides by UUID, so

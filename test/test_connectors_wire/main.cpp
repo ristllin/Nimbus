@@ -1647,6 +1647,26 @@ static void test_cum536_one_rule_for_every_gate_string() {
       {"My notion of fairness differs from yours", "notion", ""},
       {"Is it fine to slack off on Fridays?", "slack", ""},
       {"Write it up in my linear algebra notebook", "linear", ""},
+      // The final gate's research-text negatives (CUM-536): a lowercase "slack"
+      // after a preposition goes on with a word, the idiom "pick up my slack", and a
+      // bare "my notion" / "my linear" that is not after a preposition.
+      {"Demand falls in slack periods; explain the seasonality", "slack", ""},
+      {"Explain why teams tend to slack in December", "slack", ""},
+      {"Who picked up my slack last week? Summarize what Dana covered", "slack", ""},
+      {"Research why employees tend to slack in August and what managers can do", "slack", ""},
+      {"Why do students tend to slack on Fridays?", "slack", ""},
+      {"We ran low on slack this sprint", "slack", ""},
+      {"Critique the draft; the second paragraph is my notion.", "notion", ""},
+      {"Compare his notion of fairness with my notion", "notion", ""},
+      {"The first fit is quadratic and the second is my linear", "linear", ""},
+      // ... and the owner asks they must keep.
+      {"send it to slack", "slack", "Slack"},
+      {"add this to slack", "slack", "Slack"},
+      {"pull yesterday's thread from slack", "slack", "Slack"},
+      {"post it in Slack for the team", "slack", "Slack"},
+      {"Send the summary to Slack when it is done", "slack", "Slack"},
+      {"save the outline into my notion", "notion", "Notion"},
+      {"move these bugs to my linear", "linear", "Linear"},
   };
   std::string wrong;   // every mismatch, so one run lists them all
   for (const Case& c : kCases) {
