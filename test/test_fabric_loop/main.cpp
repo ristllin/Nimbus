@@ -1,7 +1,10 @@
 #include <unity.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
+#include <vector>
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
@@ -19,6 +22,22 @@ using harness_test::FakeProviderDeps;
 using harness_test::reqBody;
 namespace providers = agent::providers;
 namespace orch = nimbus::orch;
+
+// Every operator new in this test binary is counted, so a test can read how many
+// allocations are live at a moment (the device turn path must not grow the heap).
+static long g_live = 0;
+void* operator new(std::size_t n) {
+  void* p = std::malloc(n ? n : 1);
+  if (!p) throw std::bad_alloc();
+  ++g_live;
+  return p;
+}
+void operator delete(void* p) noexcept {
+  if (!p) return;
+  --g_live;
+  std::free(p);
+}
+void operator delete(void* p, std::size_t) noexcept { operator delete(p); }
 
 void setUp() { harness_test::LogCapture::install(); }
 void tearDown() { agent::hlog::setSink(nullptr); }
@@ -245,6 +264,52 @@ static void test_cum477_fabric_never_sends_an_unsent_request_three_times() {
   TEST_ASSERT_EQUAL(1, notifies);
 }
 
+// ---- CUM-477 gate: the fabric keeps no heap residents for its hosts ------------
+// runFabricLoop kept two vectors and every switched-away host's step closure (a
+// copy of the deps) alive for the whole turn. After two switches the live
+// allocations at the answering host's request equal a one-host turn's.
+struct LiveAtAnswer : agent::HttpTransport {
+  int cuts = 0;            // requests that get no answer before the one that does
+  std::string body;        // that answer
+  int calls = 0;
+  long liveAtAnswer = -1;  // live allocations as the answered request arrives
+  bool exec(const agent::HttpRequest&, agent::HttpResponse& out, std::string& err) override {
+    if (++calls <= cuts) {
+      out.status = 0;
+      err = "connect failed";
+      return false;
+    }
+    liveAtAnswer = g_live;
+    out.status = 200;
+    out.body = body;
+    return true;
+  }
+};
+static long liveWhenTheLastHostAnswers(const std::vector<std::string>& hosts) {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  LiveAtAnswer tx;
+  tx.cuts = 2 * (int)(hosts.size() - 1);   // each earlier host: its request and the retry
+  tx.body = antFinalBody();
+  agent::providers::ProviderDeps pd = d.contract();
+  pd.http = &tx;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(pd, hosts, "S", "U", out, err, rig.ht, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(tx.cuts + 1, tx.calls);
+  return tx.liveAtAnswer;
+}
+static void test_cum477_switched_hosts_leave_nothing_on_the_heap() {
+  agent::hlog::setSink(nullptr);   // a log recorder would keep the switch lines
+  const std::vector<std::string> three = {"openai", "mistral", "anthropic"};
+  const std::vector<std::string> one = {"anthropic"};
+  liveWhenTheLastHostAnswers(three);   // any first-use static is made here, not below
+  const long single = liveWhenTheLastHostAnswers(one);
+  const long switched = liveWhenTheLastHostAnswers(three);
+  TEST_ASSERT_EQUAL_MESSAGE(single, switched, "live allocations when the third host answers");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
@@ -255,5 +320,6 @@ int main(int, char**) {
   RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);
   RUN_TEST(test_cum477_fabric_low_memory_does_not_switch);
   RUN_TEST(test_cum477_fabric_never_sends_an_unsent_request_three_times);
+  RUN_TEST(test_cum477_switched_hosts_leave_nothing_on_the_heap);
   return UNITY_END();
 }

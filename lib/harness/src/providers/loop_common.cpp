@@ -1,5 +1,8 @@
 #include "loop_common.h"
 
+#include <algorithm>
+#include <array>
+
 #include "nimbus/harness/log.h"
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "nimbus/orch/head_loop.h"
@@ -151,10 +154,14 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // the device could not finish sending is resent once on the same host after a
   // bounded wait for the heap, and reads as low memory when the heap never comes
   // back - so the fabric's own retry and any switch come after that wait. One
-  // context per host, sized once (never reallocated) and alive for the whole loop:
-  // each wrapped step holds only its pointer.
-  std::vector<orch::HeadStepFn> inner(hostList.size());
-  std::vector<ResendCtx> resend(hostList.size());
+  // context per host in fixed storage sized to the three hosts the fabric speaks
+  // (fabricSupports; the engine passes at most three), alive for the whole loop:
+  // each wrapped step holds only its pointer, and nothing is allocated for them.
+  // A host switched away from drops its step at once (it holds a copy of the deps).
+  constexpr size_t kMaxHosts = 3;
+  const size_t hosts = std::min(hostList.size(), kMaxHosts);
+  std::array<orch::HeadStepFn, kMaxHosts> inner;
+  std::array<ResendCtx, kMaxHosts> resend{};
   auto wrap = [&](size_t i, orch::HeadStepFn step, const char* who) -> orch::HeadStepFn {
     inner[i] = std::move(step);
     resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
@@ -197,7 +204,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         sr2 = cur(allowTools, prior, budgetMs, capReason);
         if (sr2.ok) return sr2;
       }
-      if (switches >= kMaxSwitches || hostIdx + 1 >= hostList.size())
+      if (switches >= kMaxSwitches || hostIdx + 1 >= hosts)
         return sr2;   // exhausted - the controller fails soft to the caller
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[hostIdx + 1];
@@ -210,6 +217,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                  from.c_str(), to.c_str(), (unsigned)tr.toolBytes());
       if (notify) notify(from, to);
       cur = next;
+      inner[hostIdx - 1] = nullptr;   // the abandoned host's step and its deps copy
       // loop: the SAME round re-runs on the new host. The transcript already
       // holds every executed tool result - nothing re-dispatches.
     }
