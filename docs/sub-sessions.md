@@ -76,7 +76,8 @@ with its quota window) is told to the owner at once and also leaves one line in
 the job engine, kept per spawning chat with its own 640-byte budget (past it,
 that chat gets one `(more refusals not listed)` line; no other chat is
 affected). At most 16 chats (the chat registry size, `kFoldMaxChats`) hold
-notes at once; a seventeenth drops the notes that waited longest. That chat's
+notes at once; a seventeenth drops the notes that waited longest, but never a
+chat's "may have started" line (below) while another chat's notes hold none. That chat's
 next turn (and no other chat's: the line carries its task text) reads them in a
 `[SPAWN REFUSED]` block (`JobEngine::takeSpawnNotes(chatId)`, background framing:
 the owner was already told, nothing is running for them), so the head neither

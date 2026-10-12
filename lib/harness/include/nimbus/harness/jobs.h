@@ -330,7 +330,8 @@ class JobEngine {
     bool mayHaveRun = false;   // a timed-out dispatch is among the lines
   };
   std::vector<SpawnNotes> spawnNotes_;
-  SpawnNotes& spawnNotesFor(const std::string& chatId);   // found or added (bounded)
+  // Found or added (bounded); nullptr when there is no room for a plain refusal.
+  SpawnNotes* spawnNotesFor(const std::string& chatId, bool mayHaveRun);
   // Dispatch-timeout times, <= kAgentMaxJobs, none older than kMaybeRunningMs
   // (mutable: the const count drops expired entries too).
   mutable std::vector<uint32_t> timedOutAt_;

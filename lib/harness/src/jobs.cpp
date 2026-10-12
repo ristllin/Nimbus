@@ -335,7 +335,8 @@ void JobEngine::deliverOwnerFallback() {
 // with a per-chat budget: past it that chat gets one fold line and nothing more,
 // and no other chat is affected. At most kSpawnNoteChats chats hold notes (the
 // chat registry bound); a further chat's first note drops the notes that have
-// waited longest (their owner was told each refusal at once). The per-chat text
+// waited longest (their owner was told each refusal at once), but never a chat's
+// "may have started" line while any entry holds none (see spawnNotesFor). The per-chat text
 // grows past the small-allocation threshold at once (reserved), so on the device
 // it lives in PSRAM, not internal SRAM.
 static constexpr size_t kSpawnNotesMax = 640;
@@ -346,19 +347,33 @@ static constexpr size_t kSpawnNotesMaybeMax = 2 * kSpawnNotesMax;
 static constexpr size_t kSpawnNoteChats = orch::kFoldMaxChats;
 static const char kSpawnNotesFold[] = "(more refusals not listed)\n";
 
-JobEngine::SpawnNotes& JobEngine::spawnNotesFor(const std::string& chatId) {
+// A new chat takes the place of the oldest entry with no "may have started" line:
+// dropping that line would let its chat's head spawn the paid job twice. When
+// every entry holds one, only another "may have started" note displaces the
+// oldest; a plain refusal is not kept (its owner was told it at once).
+JobEngine::SpawnNotes* JobEngine::spawnNotesFor(const std::string& chatId, bool mayHaveRun) {
   for (auto& e : spawnNotes_)
-    if (e.chatId == chatId) return e;
-  if (spawnNotes_.size() >= kSpawnNoteChats) spawnNotes_.erase(spawnNotes_.begin());
+    if (e.chatId == chatId) return &e;
+  if (spawnNotes_.size() >= kSpawnNoteChats) {
+    auto victim = std::find_if(spawnNotes_.begin(), spawnNotes_.end(),
+                               [](const SpawnNotes& e) { return !e.mayHaveRun; });
+    if (victim == spawnNotes_.end()) {
+      if (!mayHaveRun) return nullptr;
+      victim = spawnNotes_.begin();
+    }
+    spawnNotes_.erase(victim);
+  }
   spawnNotes_.push_back(SpawnNotes{chatId, std::string(), false, false});
   spawnNotes_.back().text.reserve(kSpawnNotesMax + sizeof(kSpawnNotesFold));
-  return spawnNotes_.back();
+  return &spawnNotes_.back();
 }
 
 void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
                                  const std::string& task, const std::string& reason,
                                  bool mayHaveRun) {
-  SpawnNotes& n = spawnNotesFor(chatId);
+  SpawnNotes* np = spawnNotesFor(chatId, mayHaveRun);
+  if (!np) return;
+  SpawnNotes& n = *np;
   if (mayHaveRun) n.mayHaveRun = true;   // the framing warns even if the line cannot fit
   if (n.folded && !mayHaveRun) return;
   const std::string who = (name && name[0]) ? std::string(name)

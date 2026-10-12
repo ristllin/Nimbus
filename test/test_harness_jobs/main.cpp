@@ -473,6 +473,46 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
   }
 }
 
+// CUM-538 gate: a "may have started" note survives the chat bound. With 16 other
+// chats holding unread refusals, the 17th chat's note evicted the oldest entry
+// whole, so the spawning chat's head never heard the do-not-respawn order.
+static void test_may_have_started_note_survives_the_chat_bound() {
+  Rig r;
+  r.adapter.dispatchErr = agent::FabricErr::Timeout;
+  orch::Spawn s = sp("fetch the calendar");
+  s.name = "gcal-fetch";
+  r.eng->enqueueSpawn(s, "chatA");
+  r.eng->pump();   // times out: chatA holds the oldest entry, a "may have started" line
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) r.eng->enqueueSpawn(sp(), "fill");
+  for (int i = 0; i < (int)orch::kFoldMaxChats; i++)   // every further spawn is refused: queue full
+    r.eng->enqueueSpawn(sp(), "chat" + std::to_string(i));
+  bool maybe = false;
+  const std::string a = r.eng->takeSpawnNotes("chatA", &maybe);
+  TEST_ASSERT_TRUE(maybe);
+  TEST_ASSERT_TRUE_MESSAGE(a.find("'gcal-fetch' may have started") != std::string::npos, a.c_str());
+  // The entry that made room was the oldest plain refusal; the newest is kept.
+  TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes("chat0").c_str());
+  TEST_ASSERT_TRUE(r.eng->takeSpawnNotes("chat15").find("did not start: the spawn queue is full") !=
+                   std::string::npos);
+
+  // Every entry holds a "may have started" line: a plain refusal is not kept (its
+  // owner was told it at once), and no timeout note is dropped for it.
+  Rig t;
+  t.adapter.dispatchErr = agent::FabricErr::Timeout;
+  for (int i = 0; i < (int)orch::kFoldMaxChats; i++) {
+    t.eng->enqueueSpawn(sp(), "t" + std::to_string(i));
+    t.eng->pump();
+    t.plat.ms += 10000;
+  }
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) t.eng->enqueueSpawn(sp(), "fill");
+  t.eng->enqueueSpawn(sp(), "late");   // refused: queue full
+  TEST_ASSERT_EQUAL_STRING("", t.eng->takeSpawnNotes("late").c_str());
+  for (int i = 0; i < (int)orch::kFoldMaxChats; i++) {
+    (void)t.eng->takeSpawnNotes("t" + std::to_string(i), &maybe);
+    TEST_ASSERT_TRUE_MESSAGE(maybe, ("t" + std::to_string(i)).c_str());
+  }
+}
+
 // CUM-538 gate: the note budget is per chat. One chat's unread flood used to spend
 // the single engine-wide budget, so another chat's first refusal became a bare
 // "(more refusals not listed)" with no name and no reason.
@@ -1377,6 +1417,7 @@ int main(int, char**) {
   RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);
   RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
   RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
+  RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
   RUN_TEST(test_spawn_note_budget_is_per_chat);
   RUN_TEST(test_keyless_provider_refusal);
   RUN_TEST(test_connector_routing_no_hint);
