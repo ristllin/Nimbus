@@ -348,6 +348,32 @@ static void test_catalog_selectors_follow_role_and_usable() {
   TEST_ASSERT_EQUAL(0, (int)mp::catalogSelectors("not json", "orchestrator").size());
 }
 
+// CUM-530 gate: the harvest is bounded, but the catalog built from the SAME
+// untrusted 64 KB router body was not: parseModelsList deduped pairwise
+// (quadratic) and the store step re-serialized once per dropped row over every
+// row. The parse now dedupes in one sort and protectHeads keeps at most
+// kCatalogMaxRows, the default, each upstream's head and the flagships first,
+// however late they are listed.
+static void test_catalog_from_a_huge_router_body_is_bounded() {
+  std::string body = "{\"object\":\"list\",\"data\":[";
+  for (int i = 0; i < 4000; ++i) body += "{\"id\":\"zai/m" + std::to_string(i) + "\"},";
+  body += "{\"id\":\"zai/m7\"},";   // a duplicate keeps one row
+  body += "{\"id\":\"openai/gpt-5.6\"},{\"id\":\"anthropic/claude-opus-5\"},{\"id\":\"zai/glm-5.3\"}]}";
+  std::vector<ModelInfo> cat;
+  nimbus::orch::parseModelsList("cumulo", body, cat);
+  size_t m7 = 0;
+  for (const auto& m : cat) m7 += rc::selectorOf(m) == "zai/m7" ? 1 : 0;
+  TEST_ASSERT_EQUAL_UINT(1, m7);
+  const size_t cut = rc::protectHeads(cat, "gpt-5.6");
+  TEST_ASSERT_TRUE(cat.size() <= rc::kCatalogMaxRows);
+  TEST_ASSERT_TRUE(cut > 0);   // counted for the stored "<n> more" marker
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", rc::selectorOf(cat[0]).c_str());
+  std::string all = ",";
+  for (const auto& m : cat) all += rc::selectorOf(m) + ",";
+  for (const char* want : {",openai/gpt-5.6,", ",anthropic/claude-opus-5,", ",zai/glm-5.3,"})
+    TEST_ASSERT_TRUE_MESSAGE(all.find(want) != std::string::npos, want);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
@@ -363,6 +389,7 @@ int main(int, char**) {
   RUN_TEST(test_catalog_only_pick_is_allowed_by_the_catalog);
   RUN_TEST(test_rejected_pick_names_the_allowed_values);
   RUN_TEST(test_catalog_selectors_follow_role_and_usable);
+  RUN_TEST(test_catalog_from_a_huge_router_body_is_bounded);
   UNITY_END();
   return 0;
 }

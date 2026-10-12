@@ -44,6 +44,10 @@ inline constexpr size_t kCatalogMaxBytes = 16000;
 // cost a string and a sort slot inside the verify slot. Far above any real router
 // list, and ten times the choice list.
 inline constexpr size_t kHarvestMax = 128;
+// The most rows the router catalog keeps from the same body (protectHeads), so the
+// store step is bounded: the size trim that follows re-serializes once per
+// dropped row. (The parse and keepOrder before it are O(n log n) over the body.)
+inline constexpr size_t kCatalogMaxRows = kHarvestMax;
 
 // "<upstream>/<model>" for any selector; a bare id is the openai upstream (the
 // router's default), exactly as the head and the sub-agent resolve it.
@@ -318,17 +322,34 @@ inline std::string selectorOf(const nimbus::orch::ModelInfo& m) {
 }
 
 // Reorder a parsed router catalog in place to keepOrder() (dropping dated twins
-// and duplicates), so a size trim from the back keeps the router default and one
-// model per upstream.
-inline void protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std::string& defaultSel) {
+// and duplicates) and bound it to kCatalogMaxRows (CUM-530: the body is untrusted,
+// and thousands of tiny ids used to reach the store step whole). The router
+// default and each upstream's head come first, then every upstream's current
+// generation (routerFlagship), then the rest, so neither a row cap nor the size
+// trim from the back costs the default, an upstream or a flagship listed late.
+// Returns how many rows the cap cut (the stored list says "<n> more").
+inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std::string& defaultSel) {
   std::vector<std::string> ids;
   ids.reserve(cat.size());
   for (const auto& m : cat) ids.push_back(selectorOf(m));
-  const std::vector<size_t> order = keepOrder(ids, defaultSel);
+  std::vector<size_t> order = keepOrder(ids, defaultSel);
+  std::vector<std::string> ups;   // the heads: the first row of each upstream (bounded scan)
+  size_t heads = 0;
+  while (heads < order.size() && heads < kCatalogMaxRows) {
+    const std::string up = upstreamOf(ids[order[heads]]);
+    if (std::find(ups.begin(), ups.end(), up) != ups.end()) break;
+    ups.push_back(up);
+    ++heads;
+  }
+  std::stable_partition(order.begin() + static_cast<std::ptrdiff_t>(heads), order.end(),
+                        [&](size_t i) { return routerFlagship(ids[i]); });
+  const size_t cut = order.size() > kCatalogMaxRows ? order.size() - kCatalogMaxRows : 0;
+  order.resize(order.size() - cut);
   std::vector<nimbus::orch::ModelInfo> out;
   out.reserve(order.size());
-  for (size_t i : order) out.push_back(cat[i]);
+  for (size_t i : order) out.push_back(std::move(cat[i]));
   cat.swap(out);
+  return cut;
 }
 
 }  // namespace router_catalog

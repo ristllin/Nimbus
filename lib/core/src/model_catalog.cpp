@@ -4,7 +4,8 @@
 #include <cctype>
 #include <cstring>
 
-#include "nimbus/orch/compact.h"  // modelCtxTokens - the family context-window table
+#include "nimbus/orch/compact.h"       // modelCtxTokens - the family context-window table
+#include "nimbus/orch/router_route.h"  // resolveRouterRoute - a router pick's upstream model
 
 namespace nimbus {
 namespace orch {
@@ -132,6 +133,12 @@ bool isFlagshipFamily(const std::string& provider, const std::string& id) {
 }
 
 std::string modelFamily(const std::string& provider, const std::string& id) {
+  // A Cumulo router pick ("openai/gpt-5.6", "anthropic/claude-opus-5") is its
+  // upstream's model (CUM-530).
+  if (provider == "cumulo") {
+    const RouterRoute r = resolveRouterRoute(id);
+    if (r.upstream != "cumulo") return modelFamily(r.upstream, r.model);
+  }
   const std::string m = lower(id);
   if (isClaude(provider, m)) return claudeFamily(m);
   if (isOSeries(m)) return "o-series";
@@ -155,6 +162,12 @@ std::string modelFamily(const std::string& provider, const std::string& id) {
 }
 
 char modelSizeClass(const std::string& provider, const std::string& id) {
+  // A Cumulo router pick is sized as its upstream's model (CUM-530): the fallback
+  // rules' size class used to read unknown for "anthropic/claude-opus-5".
+  if (provider == "cumulo") {
+    const RouterRoute r = resolveRouterRoute(id);
+    if (r.upstream != "cumulo") return modelSizeClass(r.upstream, r.model);
+  }
   const std::string m = lower(id);
   if (isClaude(provider, m)) {
     if (has(m, "opus")) return 'L';
@@ -313,10 +326,27 @@ const char* jsonStart(const std::string& body) {
   return body.c_str();
 }
 
-bool alreadyHave(const std::vector<ModelInfo>& out, const std::string& id) {
-  for (const ModelInfo& e : out)
-    if (e.id == id) return true;
-  return false;
+// Drop each row from `from` on whose id an earlier row already has (the first
+// stays, order kept), with one index sort: O(n log n) however many rows an
+// untrusted body lists (CUM-530: the pairwise scan was quadratic, and a router
+// body of thousands of tiny ids pinned the verify slot).
+void dropDuplicateIds(std::vector<ModelInfo>& out, size_t from) {
+  std::vector<size_t> idx(out.size());
+  for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+  std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+    const int c = out[a].id.compare(out[b].id);
+    return c != 0 ? c < 0 : a < b;
+  });
+  std::vector<bool> dup(out.size(), false);
+  for (size_t k = 1; k < idx.size(); ++k)
+    dup[idx[k]] = out[idx[k]].id == out[idx[k - 1]].id;
+  size_t w = from;
+  for (size_t i = from; i < out.size(); ++i) {
+    if (dup[i]) continue;
+    if (w != i) out[w] = std::move(out[i]);
+    ++w;
+  }
+  out.resize(w);
 }
 
 // Stable flagship-first ordering: L before M before S before unclassified, input
@@ -373,9 +403,9 @@ size_t parseModelsList(const std::string& provider, const std::string& body,
     }
     if (mi.roles == 0) keep = false;  // role-less (non-agentic) models never surface
     if (!keep) continue;
-    if (alreadyHave(out, mi.id)) continue;
     out.push_back(std::move(mi));
   }
+  dropDuplicateIds(out, startCount);
   sortFlagshipFirst(out);
   return out.size() - startCount;
 }

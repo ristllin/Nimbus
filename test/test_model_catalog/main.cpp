@@ -448,6 +448,28 @@ static void test_models_json_round_trip() {
   TEST_ASSERT_EQUAL_STRING("anthropic", cum->upstream.c_str());  // upstream tag survives
 }
 
+// CUM-530: a Cumulo router pick ("<upstream>/<model>", a bare id is openai) is the
+// upstream's model for its family and size class, so the fallback rules' size class
+// and the served-by family check read it like the direct pick. Every upstream.
+static void test_router_pick_reads_as_its_upstream_model() {
+  struct Pair { const char* routerPick; const char* upstream; const char* model; };
+  static const Pair kPairs[] = {
+      {"openai/gpt-5.6", "openai", "gpt-5.6"},
+      {"gpt-5.6", "openai", "gpt-5.6"},
+      {"anthropic/claude-opus-5", "anthropic", "claude-opus-5"},
+      {"anthropic/claude-haiku-4-5", "anthropic", "claude-haiku-4-5"},
+      {"mistral/mistral-large-latest", "mistral", "mistral-large-latest"},
+      {"zai/glm-5.3", "zai", "glm-5.3"},
+  };
+  for (const Pair& p : kPairs) {
+    TEST_ASSERT_EQUAL_MESSAGE((int)modelSizeClass(p.upstream, p.model),
+                              (int)modelSizeClass("cumulo", p.routerPick), p.routerPick);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(modelFamily(p.upstream, p.model).c_str(),
+                                     modelFamily("cumulo", p.routerPick).c_str(), p.routerPick);
+  }
+  TEST_ASSERT_EQUAL('L', modelSizeClass("cumulo", "anthropic/claude-opus-5"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_probe_verdict);
@@ -469,6 +491,7 @@ int main(int, char**) {
   RUN_TEST(test_classify_catalog_entry_from_bare_ids);
   RUN_TEST(test_models_to_json_shape_and_usable_filter);
   RUN_TEST(test_parse_tolerates_http_headers);
+  RUN_TEST(test_router_pick_reads_as_its_upstream_model);
   UNITY_END();
   return 0;
 }
