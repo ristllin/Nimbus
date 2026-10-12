@@ -206,6 +206,61 @@ static void testHeldKeyMaskedWhole(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// CUM-546 gate: the anatomy was masked once, when the turn was captured, with the
+// keys held then. A key the owner typed in chat before saving it stayed in clear on
+// /api/lastturn until the next turn; it is now masked again as the page is served.
+// A Tavily key, a long token named a key and a KEY=value are masked even when the
+// instance holds none of them.
+static void testLastTurnMaskedOnRead(ndtest::Ctx& c) {
+  std::printf("  -- (f) /api/lastturn masks a key saved after the turn, and the formats the page takes --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_USAGE", 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(respTurn("/router/openai/v1/responses", "noted"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ud-f"), &tx);
+  const std::string mistral = "q7KxPLAINMISTRALKEY000000000001";   // no prefix: not recognizable unheld
+  rig.say("owner", "for mistral use " + mistral + " from now on, and search with tvly-UNHELD0123456789abcd");
+  c.ok(has(rig.lastTurnAnatomy(), mistral), "precondition: a shapeless value is not recognizable before it is held");
+  c.ok(!has(rig.lastTurnAnatomy(), "UNHELD0123456789abcd"), "a Tavily key the instance does not hold is masked");
+  c.ok(rig.applyProviderKey("mistral", mistral), "the owner saves that key after the turn");
+  {
+    Web web(rig);
+    const ApiResp lt = web.call("GET", "/api/lastturn");
+    c.eqi(lt.status, 200, "the anatomy is served");
+    c.ok(!has(lt.body, mistral) && !has(lt.body, "PLAINMISTRAL"), "a key saved after the turn is masked as it is served");
+    c.ok(has(lt.body, "for mistral use [key] from now on"), "the rest of the turn is kept");
+  }
+  // A fresh instance (the saved Mistral key would now take the head).
+  FakeHttpTransport tx2;
+  tx2.script.push_back(respTurn("/router/openai/v1/responses", "noted again"));
+  Config cfg2;
+  NimbusdRig rig2(cfg2, opts("ud-f2"), &tx2);
+  rig2.say("owner", "my other mistral key is q7KxSECONDPLAIN" "KEY00000000000002, and ZAI_TOKEN=zaiPLAINTOKEN1234567890abcdef");
+  const std::string lt2 = rig2.lastTurnAnatomy();
+  c.ok(!has(lt2, "SECONDPLAINKEY"), "a long token named a key is masked though nothing holds it");
+  c.ok(!has(lt2, "zaiPLAINTOKEN"), "the value of a NAME=value named a token is masked");
+  c.ok(has(lt2, "my other mistral key is [key], and ZAI_TOKEN=[key]"), "only the values are masked");
+  clearEnv();
+}
+
+// The bounded rule on its own: what it masks, and the ordinary text it leaves alone.
+static void testNamedTokenRule(ndtest::Ctx& c) {
+  std::printf("  -- (g) the named-token rule masks key-like tokens only --\n");
+  struct Case { const char* in; const char* out; };
+  const Case kCases[] = {
+      {"the key: q7KxPLAINMISTRALKEY000000000001.", "the key: [key]."},
+      {"MISTRAL_API_KEY=q7KxPLAINMISTRALKEY000000000001", "MISTRAL_API_KEY=[key]"},
+      {"{\"api_key\":\"q7KxPLAINMISTRALKEY000000000001\"}", "{\"api_key\":\"[key]\"}"},
+      {"bot token is 123456789:AAHfakeTokenValue0123456789", "bot token is [key]"},
+      {"search key tvly-dev-ABCDEF0123456789", "search key [key]"},
+      {"the key insight is internationalization", "the key insight is internationalization"},
+      {"keys are 1, 2 and 3; build abc123def456ghi789jkl0 passed", "keys are 1, 2 and 3; build abc123def456ghi789jkl0 passed"},
+      {"a monkey ate q7KxPLAINMISTRALKEY000000000001", "a monkey ate q7KxPLAINMISTRALKEY000000000001"},
+  };
+  for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== usage across saves + diagnostics (item 4, CUM-546, offline) ===\n");
@@ -214,6 +269,8 @@ int main() {
   testLogIsBounded(c);
   testLastTurnIsMasked(c);
   testHeldKeyMaskedWhole(c);
+  testLastTurnMaskedOnRead(c);
+  testNamedTokenRule(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

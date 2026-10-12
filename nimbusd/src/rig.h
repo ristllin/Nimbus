@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -913,13 +914,15 @@ class NimbusdRig {
     for (auto it = picked.rbegin(); it != picked.rend(); ++it) out += *it + "\n";
     return out;
   }
-  // Mask anything shaped like a provider or router key in a log line before it is
-  // kept (provider error texts can quote a key's prefix and last characters, and
-  // the log is served by /api/log): sk-..., cumulo_sk_..., key-shaped tokens.
+  // Mask anything shaped like a key in a log line before it is kept (provider error
+  // texts can quote a key's prefix and last characters, and the log is served by
+  // /api/log): the prefixes of the keys the page takes (sk-, which covers sk-ant-,
+  // sk_, cumulo_sk_, Tavily's tvly-), and, for a key with no prefix (a Mistral
+  // key), a long token named a key or a token (namedTokenSpans).
   static constexpr const char* kKeyMask = "[key]";   // what a masked key reads as
   static constexpr size_t kKeyMaskLen = 5;
   static std::string redactKeys(std::string l) {
-    for (const char* pre : {"cumulo_sk_", "sk-", "sk_"}) {
+    for (const char* pre : {"cumulo_sk_", "sk-", "sk_", "tvly-"}) {
       for (size_t at = l.find(pre); at != std::string::npos; at = l.find(pre, at + 1)) {
         size_t end = at + std::strlen(pre);
         while (end < l.size() && (isalnum((unsigned char)l[end]) || l[end] == '_' || l[end] == '-' || l[end] == '*' ||
@@ -928,7 +931,81 @@ class NimbusdRig {
         if (end - at > std::strlen(pre) + 3) l.replace(at, end - at, kKeyMask);
       }
     }
+    const std::vector<std::pair<size_t, size_t>> spans = namedTokenSpans(l);
+    for (auto it = spans.rbegin(); it != spans.rend(); ++it) l.replace(it->first, it->second, kKeyMask);
     return l;
+  }
+  // A token that could be a key: 20 to 512 characters of letters, digits and
+  // _ - . : + / with at least one letter and one digit (a long ordinary word has
+  // no digit, so "the key internationalization" is left alone).
+  static bool keyLikeToken(const std::string& t) {
+    if (t.size() < 20 || t.size() > 512) return false;
+    bool alpha = false, digit = false;
+    for (unsigned char ch : t) {
+      if (isalpha(ch)) alpha = true;
+      else if (isdigit(ch)) digit = true;
+      else if (ch == 0 || !std::strchr("_-.:+/", ch)) return false;
+    }
+    return alpha && digit;
+  }
+  // "key", "keys", "token", "tokens" (any case), or a name ending in one ("API_KEY").
+  static bool namesAKey(std::string w) {
+    for (char& ch : w) ch = (char)tolower((unsigned char)ch);
+    for (const char* k : {"key", "keys", "token", "tokens"}) {
+      const size_t n = std::strlen(k);
+      if (w.size() >= n && w.compare(w.size() - n, n, k) == 0 &&
+          (w.size() == n || !isalpha((unsigned char)w[w.size() - n - 1])))
+        return true;
+    }
+    return false;
+  }
+  // The next whitespace-separated word at or after `i` (moving `i` past it), with
+  // the quotes, brackets and punctuation around it left out: [first, second), empty
+  // at the end of the text.
+  static std::pair<size_t, size_t> nextWord(const std::string& l, size_t& i) {
+    static const char* kEdge = "\"'`()[]{}<>,;:.!?";
+    while (i < l.size() && isspace((unsigned char)l[i])) i++;
+    size_t b = i;
+    while (i < l.size() && !isspace((unsigned char)l[i])) i++;
+    size_t e = i;
+    while (b < e && std::strchr(kEdge, l[b])) b++;
+    while (e > b && std::strchr(kEdge, l[e - 1])) e--;
+    return {b, e};
+  }
+  // In word `w`, a NAME=value or "name":"value" whose name ends in key or token
+  // and whose value is key-like: the value's offset and length in `w`.
+  static bool namedValue(const std::string& w, size_t& off, size_t& len) {
+    const size_t sep = w.find_first_of("=:");
+    if (sep == std::string::npos) return false;
+    std::string name = w.substr(0, sep);
+    while (!name.empty() && (name.back() == '"' || name.back() == '\'')) name.pop_back();
+    size_t b = sep + 1;
+    while (b < w.size() && (w[b] == '"' || w[b] == '\'')) b++;
+    if (!namesAKey(name) || !keyLikeToken(w.substr(b))) return false;
+    off = b;
+    len = w.size() - b;
+    return true;
+  }
+  // The (offset, length) of each key-like token named a key: within the three words
+  // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx..."), or the
+  // value of a NAME=value or "name":"value" whose name ends in one
+  // ("MISTRAL_API_KEY=q7Kx...", {"api_key":"q7Kx..."}). One pass over the words,
+  // so it stays linear in the text however long it is.
+  static std::vector<std::pair<size_t, size_t>> namedTokenSpans(const std::string& l) {
+    std::vector<std::pair<size_t, size_t>> out;
+    int window = 0;   // words left in which a key-like token is masked
+    for (size_t i = 0; i < l.size();) {
+      const std::pair<size_t, size_t> at = nextWord(l, i);
+      if (at.first == at.second) continue;
+      const std::string w = l.substr(at.first, at.second - at.first);
+      size_t off = 0, len = 0;
+      if (namedValue(w, off, len))
+        out.push_back({at.first + off, len});
+      else if (window > 0 && keyLikeToken(w))
+        out.push_back({at.first, w.size()});
+      window = namesAKey(w) ? 3 : std::max(window - 1, 0);
+    }
+    return out;
   }
   static bool isFailureLine(const std::string& l) {
     for (const char* k : {"fail", "FAIL", "error", "refused", "HTTP 4", "HTTP 5", "rejected", "timed out"})
@@ -936,10 +1013,17 @@ class NimbusdRig {
     return false;
   }
   // The most recent turn's anatomy (device /api/lastturn): what the model got and
-  // what it answered. "" before the first turn.
+  // what it answered. "" before the first turn. Masked again as it is served: a key
+  // saved after the turn (typed in chat before the instance held it) is masked
+  // too, not only the keys held when the turn was captured (256 KB at most, a few
+  // linear passes).
   std::string lastTurnAnatomy() const {
-    std::lock_guard<std::mutex> lk(diagMu_);
-    return lastTurn_;
+    std::string t;
+    {
+      std::lock_guard<std::mutex> lk(diagMu_);
+      t = lastTurn_;
+    }
+    return redactKeys(redactHeldKeys(std::move(t)));
   }
 
  private:
