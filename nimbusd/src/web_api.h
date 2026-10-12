@@ -894,6 +894,9 @@ class WebApi {
       const std::string why = NimbusdRig::keyShapeErrorFor(k.first, k.second);
       if (!why.empty()) return why;
       k.second = NimbusdRig::storableKey(k.second);
+      // A posted key never becomes "" (which erases the stored one), even if a shape
+      // ever allowed what the store refuses.
+      if (k.second.empty()) return "That key is not valid. Paste just the key and save again.";
     }
     w.clearConv = formValue(body, "clearConv") == "1";
     w.clearMem = formValue(body, "clearMem") == "1";

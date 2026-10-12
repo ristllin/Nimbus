@@ -813,30 +813,25 @@ class NimbusdRig {
   // The device's own check and owner sentence for a key posted to provider `host`
   // (POST /api/orch): its field's shape in key_shape.h. "" when `posted` fits.
   static std::string keyShapeErrorFor(const std::string& host, const std::string& posted) {
-    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
-      if (host != nimbus::orch::kProviderSlots[i].slug) continue;
-      if (const nimbus::orch::KeyShape* ks = nimbus::orch::keyShapeFor(nimbus::orch::kProviderSlots[i].keyField))
-        return nimbus::orch::keyShapeError(*ks, posted);
-    }
+    const nimbus::orch::ProviderSlot* slot = nimbus::orch::findProviderSlot(host.c_str());
+    const nimbus::orch::KeyShape* ks = slot ? nimbus::orch::keyShapeFor(slot->keyField) : nullptr;
+    if (ks) return nimbus::orch::keyShapeError(*ks, posted);
     return storableKey(posted).empty() ? "That key is not valid. Paste just the key and save again." : "";
   }
   // The env names the secrets file may hold: the in-app provider keys, nothing else.
   static bool secretsName(const std::string& name) {
     return nimbus::orch::anySlotWhere([&name](const char* slug) { return name == Config::providerEnvName(slug); });
   }
-  // Whether a secrets-file line is one clean provider key, with `value` made its
-  // stored form (storableKey); logs the NAME (never the value) of anything else,
+  // A secrets-file line's stored form: the provider key it holds (storableKey), or
+  // "" when it is not one clean provider key, logging the NAME (never the value)
   // with `what` saying what happens to it.
-  static bool cleanSecret(const std::string& name, std::string& value, const char* what) {
+  static std::string storedSecret(const std::string& name, const std::string& value, const char* what) {
     const bool known = secretsName(name);
     const std::string stored = known ? storableKey(value) : std::string();
-    if (!stored.empty()) {
-      value = stored;
-      return true;
-    }
-    std::fprintf(stderr, "[nimbusd] secrets: %s %s (not a clean provider key)\n", what,
-                 known ? name.c_str() : "a line with an unknown name");
-    return false;
+    if (stored.empty())
+      std::fprintf(stderr, "[nimbusd] secrets: %s %s (not a clean provider key)\n", what,
+                   known ? name.c_str() : "a line with an unknown name");
+    return stored;
   }
 
   // A bounded selector token ("glm-4.5-flash", "zai/glm-4.5-flash"); "" clears.
@@ -1125,10 +1120,10 @@ class NimbusdRig {
       if (eq == std::string::npos) continue;
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      const size_t was = v.size();
-      if (!cleanSecret(k, v, "ignored")) continue;
-      cfg_.setOverride(k, v);
-      if (v.size() == was) continue;
+      const std::string stored = storedSecret(k, v, "ignored");
+      if (stored.empty()) continue;
+      cfg_.setOverride(k, stored);
+      if (stored == v) continue;
       trimmed = true;
       std::fprintf(stderr, "[nimbusd] secrets: %s had spaces around it; stored trimmed\n", k.c_str());
     }
@@ -1144,8 +1139,8 @@ class NimbusdRig {
     for (const auto& kv : cfg_.overrides()) {
       // The writer refuses what the loader would misread (the second guard behind
       // the web layer's shape check): one clean KEY=VALUE line per provider key.
-      std::string v = kv.second;
-      if (cleanSecret(kv.first, v, "not writing")) blob += kv.first + "=" + v + "\n";
+      const std::string v = storedSecret(kv.first, kv.second, "not writing");
+      if (!v.empty()) blob += kv.first + "=" + v + "\n";
     }
     const std::string tmp = secretsPath() + ".tmp";
     const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
