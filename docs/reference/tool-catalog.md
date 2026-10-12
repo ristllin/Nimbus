@@ -317,9 +317,13 @@ reach the person. Both refuse outside a live turn.
 
 Note: `reply.speak` degrades honestly when voice replies are switched off or the
 speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
-back to text - the content is never dropped. On a device with no Telegram bot,
-`reply.telegram` is not offered at all, and a reminder or wakeup answers in the
-chat that set it.
+back to text - the content is never dropped. `reply.telegram` and `files.send`
+are offered only on a turn that can deliver over Telegram: the bot is running and
+either a chat is allowlisted, or public mode is on and the message itself came in
+over Telegram. Otherwise neither is offered (a web, voice or serial turn in public
+mode with no allowlisted chat included), and a reminder or wakeup answers in the
+chat that set it. The device decides this once per turn, so the tool list and
+every hint in that turn agree.
 
 ## `web.*` - live web search
 

@@ -1206,6 +1206,96 @@ static void test_cum523_telegram_device_keeps_the_tool() {
   TEST_ASSERT_TRUE(w.attempts[0].inputs.find("reply.telegram") == std::string::npos);
 }
 
+// CUM-523: the Telegram predicate reads live device state, so sampling it
+// several times per turn let the hint and the tool list disagree when the owner
+// changed the allowlist mid-turn. ONE sample per turn: a predicate that answers
+// true once and false afterwards must leave hint, tool list and compose wording
+// all on the first answer, on every turn entry.
+static void test_cum523_telegram_is_sampled_once_per_turn() {
+  int calls = 0;
+  Rig r;
+  r.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.eng->handleMessage("hi", "Dana", "web");
+  TEST_ASSERT_EQUAL(1, calls);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(r.debug[0].instructions.find("reply_telegram") != std::string::npos);
+
+  // A scheduled one-shot: the delivery line and the tool list share the sample.
+  Rig s;
+  calls = 0;
+  s.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
+  s.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  s.eng->injectScheduledTurn("1001", "stretch", "wakeup", "lp1", /*quietOk=*/false, /*once=*/true);
+  TEST_ASSERT_EQUAL(1, calls);
+  TEST_ASSERT_TRUE(s.attempts[0].inputs.find("(Your reply is delivered to this Telegram chat.") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(s.debug[0].instructions.find("reply_telegram") != std::string::npos);
+
+  // The synthesis turn and a direct runTurn sample once too.
+  Rig y;
+  calls = 0;
+  y.cfg.telegramFn = [&calls](const std::string&) { ++calls; return false; };
+  y.jobs->addFreshResult("job0000", "modelX", "findings");
+  y.eng->maybeConsolidate("1001");
+  TEST_ASSERT_EQUAL(1, calls);
+  calls = 0;
+  y.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_EQUAL(1, calls);
+}
+
+// The per-turn rule as a truth table (the device answers its predicate with it).
+static void test_cum523_deliverability_rule() {
+  using agent::telegramDeliverableFor;
+  TEST_ASSERT_FALSE(telegramDeliverableFor(false, true, true, "5550001"));   // no bot, nothing
+  TEST_ASSERT_TRUE(telegramDeliverableFor(true, true, false, "web"));       // an allowlisted target
+  TEST_ASSERT_TRUE(telegramDeliverableFor(true, false, true, "5550001"));   // public: its own chat
+  for (const char* dev : {"web", "voice", "serial", ""})
+    TEST_ASSERT_FALSE_MESSAGE(telegramDeliverableFor(true, false, true, dev), dev);
+  TEST_ASSERT_FALSE(telegramDeliverableFor(true, false, false, "5550001"));
+  TEST_ASSERT_TRUE(agent::isTelegramChat("5550001"));
+  for (const char* dev : {"web", "voice", "serial", ""}) TEST_ASSERT_FALSE(agent::isTelegramChat(dev));
+}
+
+// CUM-523: public mode with an empty allowlist. A web, voice or serial turn has
+// no Telegram chat it may deliver to, so it is not offered reply.telegram or
+// files.send (and the reminder fired into the web chat is not either); a turn that
+// came in over Telegram in that mode still is - its own chat is the target.
+static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
+  auto telegramSpecs = [](Rig& r) {
+    r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+    r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file.", "{}"});
+  };
+  for (const char* chat : {"web", "voice", "serial"}) {
+    Rig r;
+    r.cfg.telegramPublic = true;
+    r.cfg.telegramAllowlist = "";
+    telegramSpecs(r);
+    r.eng->handleMessage("hi", "Dana", chat);
+    const std::string& sys = r.debug[0].instructions;
+    TEST_ASSERT_TRUE_MESSAGE(sys.find("reply_telegram") == std::string::npos, chat);
+    TEST_ASSERT_TRUE_MESSAGE(sys.find("files_send") == std::string::npos, chat);
+    TEST_ASSERT_TRUE_MESSAGE(r.attempts[0].inputs.find("reply.telegram") == std::string::npos, chat);
+  }
+  Rig w;   // the reminder set in the web chat fires into the web chat
+  w.cfg.telegramPublic = true;
+  w.cfg.telegramAllowlist = "";
+  telegramSpecs(w);
+  w.eng->injectScheduledTurn("web", "stretch", "reminder", "lp1", false, true, /*ownerReminder=*/true);
+  TEST_ASSERT_TRUE(w.debug[0].instructions.find("reply_telegram") == std::string::npos);
+  TEST_ASSERT_TRUE(w.debug[0].instructions.find("files_send") == std::string::npos);
+  TEST_ASSERT_TRUE(w.attempts[0].inputs.find("(Your reply is delivered to the web chat.") !=
+                   std::string::npos);
+
+  Rig t;   // a guest's Telegram turn in the same mode keeps its own chat
+  t.cfg.telegramPublic = true;
+  t.cfg.telegramAllowlist = "";
+  telegramSpecs(t);
+  t.eng->handleMessage("hi", "Guest", "5550001");
+  TEST_ASSERT_TRUE(t.debug[0].instructions.find("reply_telegram") != std::string::npos);
+}
+
 // ---- (9) synthesis consolidation + raw fallback -----------------------------
 
 static void test_synthesis_consolidation_and_raw_fallback() {
@@ -2034,6 +2124,9 @@ int main(int, char**) {
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);
   RUN_TEST(test_cum523_telegram_device_keeps_the_tool);
+  RUN_TEST(test_cum523_telegram_is_sampled_once_per_turn);
+  RUN_TEST(test_cum523_deliverability_rule);
+  RUN_TEST(test_cum523_public_mode_empty_allowlist_is_decided_per_turn);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);
   RUN_TEST(test_stuck_turn_reaper);

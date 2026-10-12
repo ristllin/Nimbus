@@ -85,18 +85,36 @@ struct BudgetConfig {
       recordTokens;
 };
 
+// CUM-523: true when `chatId` names a Telegram chat - not one of the device's own
+// channels (web, voice, serial) and not "" (no chat).
+inline bool isTelegramChat(const std::string& chatId) {
+  return !chatId.empty() && chatId != "web" && chatId != "voice" && chatId != "serial";
+}
+
+// CUM-523: the per-turn rule for HarnessConfig::telegramDeliverable. The bot runs
+// and either a chat is allowlisted (a target any turn can reach) or the owner
+// opted into public mode and this turn came in over Telegram (its own chat is the
+// target). A web, voice or serial turn in public mode with an empty allowlist has
+// no Telegram chat it may deliver to.
+inline bool telegramDeliverableFor(bool botOn, bool allowlisted, bool publicMode,
+                                   const std::string& chatId) {
+  return botOn && (allowlisted || (publicMode && isTelegramChat(chatId)));
+}
+
 struct HarnessConfig {
   ProviderConfig provider;
   LoopConfig     loop;
   BudgetConfig   budget;
 
   std::function<bool()> ttsEnabled;      // "Voice replies" master toggle
-  // CUM-523: is a Telegram bot configured and running on this device? false =
-  // the Telegram-only tools (reply.telegram, files.send) are not offered, and the
-  // channel hint, the capability line's reply-channel advice and the reminder
-  // delivery line do not steer toward Telegram. Nullable = configured (host rigs
+  // CUM-523: can the Telegram-only tools (reply.telegram, files.send) deliver from
+  // a turn on `chatId`? The device answers with telegramDeliverableFor() over its
+  // live bot / allowlist / public-mode facts. false = those tools are not offered,
+  // and the channel hint, the capability line's reply-channel advice and the
+  // reminder delivery line do not steer toward Telegram. The engine samples it
+  // ONCE per turn (TurnEngine::turnTelegram). Nullable = deliverable (host rigs
   // and nimbusd unchanged).
-  std::function<bool()> telegramConfigured;
+  std::function<bool(const std::string& chatId)> telegramDeliverable;
   std::function<std::string()> deviceName;
   // N11: select the simplified v2 system prompt (NVS `promptV2`, default off).
   // Nullable = off (v1, byte-identical) so host rigs and un-wired devices are

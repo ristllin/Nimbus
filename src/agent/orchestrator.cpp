@@ -425,13 +425,16 @@ static bool providerHasKey(const String& p) {
 // the cold-start list). The spawn validator, the orch_model validator AND the
 // prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
 // head is never offered a model that validation then coerces away.
-// CUM-523: can a Telegram bot actually deliver from this device? The bot runs and
-// either a chat is allowlisted or the owner opted into public mode (then the
-// current chat is reachable). One predicate for the turn's Telegram tools and the
-// capability manifest, so the prompt never names a tool the turn was not given.
-static bool telegramDeliverable() {
-  return agent::telegram::enabled() &&
-         (store::telegramAllowlist().length() > 0 || store::telegramPublic());
+// CUM-523: can the Telegram-only tools deliver from a turn on `chatId`? The rule is
+// the portable agent::telegramDeliverableFor (host-tested) over this device's live
+// facts: the bot runs and a chat is allowlisted, or public mode and the turn itself
+// came in over Telegram. The engine samples it once per turn and narrows the
+// manifest's Telegram flag with that sample, so the prompt never names a tool the
+// turn was not given.
+static bool telegramDeliverable(const std::string& chatId) {
+  return agent::telegramDeliverableFor(agent::telegram::enabled(),
+                                       store::telegramAllowlist().length() > 0,
+                                       store::telegramPublic(), chatId);
 }
 
 static std::string modelChoicesFor(const std::string& p) {
@@ -922,7 +925,9 @@ static TurnEngine::Deps buildTurnDeps() {
     in.hw.sd       = memory::haveSd() && !active(nimbus::fault::SD);
     in.hw.wifi     = true;                              // a turn only runs with WiFi up
     in.hw.ble      = false;                             // BLE is Notifier-mode only
-    in.hw.telegram = telegramDeliverable();   // CUM-523: the same predicate the turn's tools follow
+    // CUM-523: the bot is running; the engine narrows this with the turn's one
+    // deliverability sample (the same one its tool list follows).
+    in.hw.telegram = agent::telegram::enabled();
     in.hw.voiceReplies = agent::store::ttsEnabled();   // owner's "Voice replies" toggle (P2.5)
     in.hw.files = agent::files::available();            // E1 artifact store (SD-backed)
     // CUM-514: the BUILD's board (the same -DSOLIDE_BOARD /api/state reports), not
@@ -1363,9 +1368,9 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   static_assert(ORCH_LOOP_MAX_ROUNDS == agent::kLoopRoundsDefault,
                 "the prompt's stated round cap must be the device default (CUM-514)");
   g_cfg = harnessConfigFromStore();
-  // CUM-523: a device with no running Telegram bot is never offered a Telegram leg
-  // (the same predicate the capability manifest's hw.telegram reads).
-  g_cfg.telegramConfigured = [] { return telegramDeliverable(); };
+  // CUM-523: a turn that cannot deliver over Telegram is never offered a Telegram
+  // leg (the engine's one per-turn sample also narrows the manifest's hw.telegram).
+  g_cfg.telegramDeliverable = [](const std::string& chat) { return telegramDeliverable(chat); };
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,

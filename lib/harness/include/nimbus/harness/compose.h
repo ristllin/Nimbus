@@ -42,8 +42,8 @@ struct ComposeInputs {
   std::vector<nimbus::orch::ToolInfo> tools;  // filtered + sanitized by caller
   bool loopOn = false;               // loopActiveNow() at the device
   int loopRounds = kLoopRoundsDefault;  // the loop's round cap, as the prompt states it
-  // CUM-523: false = this device has no Telegram bot that can deliver (the engine
-  // sets it from HarnessConfig::telegramConfigured). Default true: a caller that
+  // CUM-523: false = this turn has no Telegram chat it can deliver to (the engine
+  // sets it from its one HarnessConfig::telegramDeliverable sample). Default true: a caller that
   // does not say (nimbusd, host rigs) keeps the Telegram wording unchanged.
   bool telegram = true;
   std::vector<nimbus::orch::SessionInfo> sessions;

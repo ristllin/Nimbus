@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -34,7 +35,13 @@ struct FakeConfig {
   std::vector<Recorded> recorded;
 
   bool tts = false;
-  bool telegramOn = true;   // CUM-523: a Telegram bot is configured (the device default here)
+  // CUM-523: the device facts telegramDeliverableFor() reads. Default: the bot
+  // runs and chat 1001 is allowlisted (deliverable from every turn).
+  bool telegramOn = true;
+  bool telegramPublic = false;
+  std::string telegramAllowlist = "1001";
+  // Optional: replaces the predicate outright (a test that counts or flips samples).
+  std::function<bool(const std::string& chatId)> telegramFn;
   bool promptV2 = false;   // N11: select the simplified v2 system prompt
   std::string devName = "Nimbus";
   // CUM-211: simulate a router/relay provider (Cumulo, Z.ai) that is configured +
@@ -93,7 +100,11 @@ struct FakeConfig {
     };
 
     c.ttsEnabled = [this] { return tts; };
-    c.telegramConfigured = [this] { return telegramOn; };
+    c.telegramDeliverable = [this](const std::string& chat) {
+      return telegramFn ? telegramFn(chat)
+                        : agent::telegramDeliverableFor(telegramOn, !telegramAllowlist.empty(),
+                                                        telegramPublic, chat);
+    };
     c.deviceName = [this] { return devName; };
     c.promptV2 = [this] { return promptV2; };
     return c;
