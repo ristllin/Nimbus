@@ -797,20 +797,20 @@ const ProvenanceWords* provenanceWordsFor(const AttachedConnector& a, const std:
 // counts bare, however the connector was added.
 bool namesByName(const std::string& hay, const AttachedConnector& a, const std::string& canon,
                  const std::string& display, const ProvenanceWords* p) {
-  struct Form { const std::string& text; bool fixed; };   // fixed: the catalog's own name, counts bare
-  static const std::string kNone;
+  struct Form { const std::string* text; bool fixed; };   // fixed: the catalog's own name, counts bare
   const bool catalog = catalogEntry(canon) != nullptr;
-  // A fixed array of references to the strings already held: no container is built
-  // per call on the device turn path.
-  const Form forms[] = {{a.id, catalog && canonicalConnectorId(a.id) == canon},
-                        {canon, catalog},
-                        {display, catalog},
-                        {catalog ? kNone : a.name, false},
-                        {catalog ? kNone : a.type, false}};
+  // A fixed array pointing at the strings already held: no container is built per
+  // call on the device turn path, and no static storage either.
+  const Form forms[] = {{&a.id, catalog && canonicalConnectorId(a.id) == canon},
+                        {&canon, catalog},
+                        {&display, catalog},
+                        {catalog ? nullptr : &a.name, false},
+                        {catalog ? nullptr : &a.type, false}};
   for (const Form& form : forms) {
-    const std::string f = lowerStr(form.text);
+    if (!form.text) continue;
+    const std::string f = lowerStr(*form.text);
     if (f.empty() || (p && p->phraseOnly && f == p->id)) continue;   // an ordinary word: phrases only
-    const bool bare = form.fixed || distinctiveName(form.text);
+    const bool bare = form.fixed || distinctiveName(*form.text);
     if (bare ? containsWord(hay, f) : inOwnerFrame(hay, f)) return true;
   }
   return false;
