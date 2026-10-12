@@ -349,19 +349,28 @@ static void test_device_refusal_after_a_tool_is_not_rerun() {
   TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // no third request on another model
 }
 
-// prism: a 404 on a request that continued a Mistral conversation says the
-// conversation is gone (the adapter answers "conversation gone" and the engine
-// retries on a fresh one); it is not the router refusing the model, so the pick
-// is neither answered elsewhere nor moved.
-static void test_device_gone_conversation_is_not_a_refused_pick() {
+// prism: a refusal of a request that continued a Mistral conversation is about
+// the conversation, not the model: the router answers an append to
+// /conversations/<id> with 403 endpoint_not_allowed (it admits only a new one),
+// and a gone conversation with 404. Neither is answered on another model with a
+// "cannot run" or "does not offer" line, and the pick does not move (the device
+// head now starts a fresh Mistral conversation every turn anyway).
+static void test_device_conversation_refusal_is_not_a_refused_pick() {
   DeviceCumuloHead h;
-  h.cv = "conv_old";
-  h.push("/router/mistral/v1/conversations/conv_old", 404, "{\"message\":\"Not found\"}");
+  h.cv = "chat";
+  h.push("/router/mistral/v1/conversations/chat", 403, routerRefusal("endpoint_not_allowed"));
   const rf::LadderResult r = h.turn("mistral/mistral-large-latest");
   TEST_ASSERT_FALSE(r.ok);
   TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Other);
-  TEST_ASSERT_EQUAL_STRING("conversation gone", h.err.c_str());
   TEST_ASSERT_EQUAL(1, (int)h.d.http.seen.size());   // no other model was asked
+  DeviceCumuloHead g;
+  g.cv = "conv_old";
+  g.push("/router/mistral/v1/conversations/conv_old", 404, "{\"message\":\"Not found\"}");
+  const rf::LadderResult rg = g.turn("mistral/mistral-large-latest");
+  TEST_ASSERT_FALSE(rg.ok);
+  TEST_ASSERT_TRUE(rg.kind == rf::RefusalKind::Other);
+  TEST_ASSERT_EQUAL_STRING("conversation gone", g.err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)g.d.http.seen.size());
   // A 404 on a new conversation (the model or its upstream unknown) still is one.
   DeviceCumuloHead n;
   n.push("/router/mistral/v1/conversations", 404, "{\"message\":\"Not found\"}");
@@ -411,7 +420,7 @@ int main(int, char**) {
   RUN_TEST(test_device_refused_everywhere_names_the_cause);
   RUN_TEST(test_device_other_refusals_are_not_answered_elsewhere);
   RUN_TEST(test_device_refusal_after_a_tool_is_not_rerun);
-  RUN_TEST(test_device_gone_conversation_is_not_a_refused_pick);
+  RUN_TEST(test_device_conversation_refusal_is_not_a_refused_pick);
   RUN_TEST(test_settle_moves_only_the_turns_own_pick);
   UNITY_END();
   return 0;

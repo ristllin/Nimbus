@@ -903,8 +903,13 @@ static bool cumuloAttempt(const std::string& sel, CumuloCall& c) {
   };
   if (upstream == "anthropic")
     return providers::orchTurnAnthropic(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
-  if (upstream == "mistral")
+  if (upstream == "mistral") {
+    // The router admits only POST /v1/conversations (a new conversation), never an
+    // append to /v1/conversations/<id>: start fresh every turn, as the hosted head
+    // does. The prompt already carries the recent conversation.
+    c.cv.clear();
     return providers::orchTurnMistral(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
+  }
   if (upstream == "openai")
     return providers::orchTurnOpenAI(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
   // zai / unknown upstream: single-shot chat-completions over /router/<upstream>

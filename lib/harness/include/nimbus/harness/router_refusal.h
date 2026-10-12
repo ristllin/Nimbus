@@ -34,7 +34,9 @@ struct RouterRefusal {
   std::string message;         // the error text (an upstream's own, passed through)
   bool firstRequest = false;   // it refused the attempt's FIRST request (no tool ran)
   // The refused request continued a provider-side conversation (Mistral's
-  // /conversations/<id>): its 404 says that conversation is gone, not the model.
+  // /conversations/<id>): the router admits only a new one (403
+  // endpoint_not_allowed) and a gone one answers 404. Either way the refusal is
+  // about the conversation, not the model or its upstream.
   bool continuedThread = false;
 };
 
@@ -76,15 +78,16 @@ inline RefusalKind kindOfReason(const std::string& why) {
   return RefusalKind::None;
 }
 
-// A 404 for the model or its upstream (not for a conversation that is gone), or
-// the upstream's own 400 naming the model unknown: the router does not offer it.
+// A 404 for the model or its upstream, or the upstream's own 400 naming the
+// model unknown: the router does not offer it.
 inline bool refusesTheModel(const RouterRefusal& r) {
-  if (r.status == 404) return !r.continuedThread;
+  if (r.status == 404) return true;
   return r.status == 400 && (namesUnknownModel(r.reason) || namesUnknownModel(r.message));
 }
 
 inline RefusalKind classifyRefusal(const RouterRefusal& r) {
   if (r.status == 0) return RefusalKind::None;
+  if (r.continuedThread) return RefusalKind::Other;   // the conversation, not the model: the engine retries fresh
   const RefusalKind byReason = kindOfReason(r.reason);
   if (byReason == RefusalKind::Selector || refusesTheModel(r)) return RefusalKind::Selector;
   if (byReason != RefusalKind::None) return byReason;
