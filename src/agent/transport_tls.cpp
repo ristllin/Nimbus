@@ -356,6 +356,9 @@ providers::ProviderDeps deviceProviderDeps() {
   pd.attachMistral = [](JsonDocument& d) { connectors::attachMistral(d); };
   pd.attachAnthropic = [](JsonDocument& d) { connectors::attachAnthropic(d); };
   pd.nowMs = [] { return (uint32_t)millis(); };
+  // CUM-477: every head loop's one resend of an unsent request may wait (bounded)
+  // for the internal heap to recover - on the calling task, no new task.
+  pd.delayMs = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
   pd.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
   pd.largestBlock = [] {
     return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

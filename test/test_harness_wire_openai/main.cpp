@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <string>
 
 #include "../support/fake_platform.h"
@@ -744,6 +745,68 @@ static void test_cum477_largest_block_alone_stays_network() {
   TEST_ASSERT_EQUAL_STRING("network", err.c_str());
 }
 
+// CUM-477 gate: after a wait the verdict is the one source. The total read 9940 the
+// instant after the failure (before the failed connection's buffers came back) and
+// recovered at the first poll, while the largest block stayed pinned for the whole
+// wait: that is the largest block alone, so "network" (failover runs), not memory.
+static void test_cum477_a_total_that_recovered_in_the_wait_is_not_memory() {
+  RouterRig r(/*recovers=*/true);   // the default script: 9940, then 100000 after the first wait
+  r.d.http.script.pop_back();       // no resend: the largest block never recovers
+  r.rig.ht.cfg.roundMinLargest = 5000;
+  r.pd.largestBlock = [&r] { return r.d.http.idx >= 2 ? 4000u : 60000u; };
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(r.delayed >= 3000u);
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+
+// CUM-477 gate: StayedLow means the total stayed low on every reading of the wait,
+// not one reading at the 3 s mark: healthy for the whole wait and 15000 (inside the
+// resend margin) only at the end is the largest block alone, "network".
+static void test_cum477_stayed_low_is_the_whole_wait_not_its_last_reading() {
+  RouterRig r(/*recovers=*/false);
+  r.d.http.script.pop_back();
+  r.rig.ht.cfg.roundMinLargest = 5000;
+  r.pd.largestBlock = [&r] { return r.d.http.idx >= 2 ? 4000u : 60000u; };
+  r.pd.freeHeap = [&r] { return r.delayed >= 3000u ? 15000u : 100000u; };
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+
+// CUM-477 gate: a direct head (no router) runs the same per-host loop and gets the
+// same bounded wait and resend, and the device wires the wait for every head, not
+// only the router's (deviceProviderDeps sets the delay seam, on the calling task).
+static void test_cum477_direct_heads_get_the_wait_too() {
+  RouterRig r(/*recovers=*/true);
+  r.pd.routerBase = nullptr;
+  r.pd.routerKey = nullptr;
+  for (auto& e : r.d.http.script) {
+    e.expectHost = "api.openai.com";
+    e.expectPathContains = "/v1/responses";
+  }
+  std::string conv, out, err;
+  const bool ok = providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)r.d.http.seen.size());   // round 0, the unsent round 1, its resend
+  TEST_ASSERT_TRUE(r.delays >= 1);
+  FILE* f = std::fopen("src/agent/transport_tls.cpp", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t fn = src.find("providers::ProviderDeps deviceProviderDeps() {");
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  const std::string body = src.substr(fn, src.find("\n}\n", fn) - fn);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("pd.delayMs = ") != std::string::npos,
+                           "deviceProviderDeps wires the delay seam for every head");
+  TEST_ASSERT_TRUE(body.find("vTaskDelay(") != std::string::npos);   // same task, no new task
+}
+
 // Counter-test: with no way to wait (no delay seam) a reading taken the instant
 // after the failure is not evidence - the failed connection's buffers may not be
 // back yet - so the margin band stays the plain network failure it was.
@@ -869,6 +932,9 @@ int main(int, char**) {
   RUN_TEST(test_cum477_refused_in_the_margin_band_reports_memory);
   RUN_TEST(test_cum477_largest_block_alone_stays_network);
   RUN_TEST(test_cum477_no_wait_seam_keeps_network_in_the_band);
+  RUN_TEST(test_cum477_a_total_that_recovered_in_the_wait_is_not_memory);
+  RUN_TEST(test_cum477_stayed_low_is_the_whole_wait_not_its_last_reading);
+  RUN_TEST(test_cum477_direct_heads_get_the_wait_too);
   RUN_TEST(test_cum477_only_unsent_requests_are_resent);
   RUN_TEST(test_cum477_resend_gets_the_rest_of_the_round_budget);
   RUN_TEST(test_cum477_no_transport_no_resend);
