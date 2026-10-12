@@ -858,8 +858,8 @@ const char* SettingsMenu::helpText() const {
   // light behavior (owner 2026-07-18) - no separate light level to explain.
   if (state_ == State::ProfilePick && sel_ < kProfileCount) {
     switch (sel_) {
-      case 0: return "Dark: no lights - only an error breathes red. Slow screen "
-                     "refresh. Best on battery.";
+      case 0: return "Dark: no lights except an error (breathes red) or voice. "
+                     "Slow screen refresh. Best on battery.";
       case 1: return "Balanced: theme active as a single soft cue, lower "
                      "brightness, shorter light hold times. Medium refresh.";
       case 2: return "Full: every session a color arc at full brightness, fast "

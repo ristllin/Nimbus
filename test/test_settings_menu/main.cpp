@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <string>
 
 #include "nimbus/settings_menu.h"
@@ -1795,6 +1796,32 @@ static void test_ringless_board_hides_ring_params() {
   TEST_ASSERT_EQUAL(0, viewOf(m).selected); // parked on the same (first) visible param
 }
 
+// CUM-514: Dark keeps two cues lit, a job error and the voice cue while you hold to
+// talk, so every surface that explains Dark names both: the device menu's help and
+// the web app's Battery mode hint said "only an error".
+static void test_dark_help_names_voice_on_every_surface() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  cw(m, 1);
+  m.onClick();   // -> ProfilePick
+  while (viewOf(m).selected != 0) m.onRotate(+1);   // Dark
+  const std::string help = m.helpText();
+  TEST_ASSERT_TRUE_MESSAGE(contains(help, "error") && contains(help, "voice"), help.c_str());
+  for (unsigned char ch : help) TEST_ASSERT_TRUE(ch >= 32 && ch <= 126);
+  FILE* f = std::fopen("include/web/ui_device.h", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  std::string web;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) web.append(buf, n);
+  std::fclose(f);
+  const size_t at = web.find("<b>Dark</b>:");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string dark = web.substr(at, web.find("<b>Balanced</b>", at) - at);
+  TEST_ASSERT_TRUE_MESSAGE(contains(dark, "error") && contains(dark, "voice"), dark.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_selftest_battery_fullscreen);
@@ -1851,5 +1878,6 @@ int main() {
   RUN_TEST(test_flip_toggle_dirties_and_labels);
   RUN_TEST(test_customize_shows_all_params_with_a_ring);
   RUN_TEST(test_ringless_board_hides_ring_params);
+  RUN_TEST(test_dark_help_names_voice_on_every_surface);
   return UNITY_END();
 }

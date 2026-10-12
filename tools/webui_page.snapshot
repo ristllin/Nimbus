@@ -404,7 +404,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <label class=pr><input type=radio name=profile value=1> Balanced</label>
 <label class=pr><input type=radio name=profile value=2> Full</label>
 </div>
-<p class="hint tip">The battery mode is a behavior profile: it sets the ring light and how much power the device spends. <b>Dark</b>: lights off, only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Choosing a mode also sets a starting screen rest and sound level; any value you set yourself always stays. Each battery mode is a preset you can adjust under Customize below.</p>
+<p class="hint tip">The battery mode is a behavior profile: it sets the ring light and how much power the device spends. <b>Dark</b>: lights off, except a job error (breathes red) or voice while you hold to talk. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Choosing a mode also sets a starting screen rest and sound level; any value you set yourself always stays. Each battery mode is a preset you can adjust under Customize below.</p>
 <p class=hint id=effprof></p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
 <p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. Turn it on when the device has a battery, or before fitting one. Takes effect after a restart.</p>
