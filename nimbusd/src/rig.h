@@ -579,8 +579,7 @@ class NimbusdRig {
       // "<upstream>/<model>" the picker posts back as the head selector.
       if (slug == kCumuloSlug) {
         agent::router_catalog::protectHeads(cat, kCumuloModel);
-        for (auto& m : cat)
-          if (!m.upstream.empty() && m.id.find('/') == std::string::npos) m.id = m.upstream + "/" + m.id;
+        for (auto& m : cat) m.id = agent::router_catalog::selectorOf(m);
       }
       if (!cat.empty()) verify_.setCatalog(slug, std::move(cat));
     }
@@ -1825,9 +1824,8 @@ class NimbusdRig {
     if (!eng_ || !eng_->turnInFlight()) return true;
     // Only a model the router does not offer moves the pick, and only once the
     // fallback has answered (a failed fallback leaves the owner's choice alone).
-    if (r.kind == RefusalKind::Selector)
-      setModelPick(kCumuloSlug, sameRoute(r.used, kCumuloModel) ? std::string() : r.used);
-    prefixReply(o.out, fallbackNotice(r.kind, picked, r.used));
+    settleFallback(r, picked, kCumuloModel, o.out, [this] { return cumuloModel(); },
+                   [this](const std::string& p) { setModelPick(kCumuloSlug, p); });
     return true;
   }
 

@@ -431,9 +431,11 @@ static void test_catalog_of_many_upstreams_is_bounded() {
   nimbus::orch::parseModelsList("cumulo", body, cat);
   TEST_ASSERT_TRUE(cat.size() > 4000);   // every distinct row reached the grouping
   const auto t0 = std::chrono::steady_clock::now();
-  rc::protectHeads(cat, "gpt-5.6");
+  const size_t offered = cat.size();
+  const size_t cut = rc::protectHeads(cat, "gpt-5.6");
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
   TEST_ASSERT_TRUE(cat.size() <= rc::kCatalogMaxRows);
+  TEST_ASSERT_EQUAL_UINT(offered, cat.size() + cut);   // every row left out counts toward "<n> more"
   TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", rc::selectorOf(cat[0]).c_str());
   std::vector<std::string> ups;
   std::string all = ",";
@@ -451,7 +453,9 @@ static void test_catalog_of_many_upstreams_is_bounded() {
   ids.push_back("openai/gpt-5.6");
   const rc::Shortlist sl = rc::shortlist(ids, "gpt-5.6");
   TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", sl.csv.substr(0, sl.csv.find(',')).c_str());
-  TEST_ASSERT_TRUE(sl.total <= 1 + rc::kOtherUpstreamsMax);
+  TEST_ASSERT_TRUE(sl.kept <= 1 + rc::kOtherUpstreamsMax);
+  TEST_ASSERT_EQUAL_UINT(4001, sl.total);   // the left-out upstreams still count as offered
+  TEST_ASSERT_TRUE(sl.truncated());
 }
 
 // The catalog deduped by the bare model id across upstreams, so a second upstream's

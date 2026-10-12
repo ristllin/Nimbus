@@ -349,6 +349,53 @@ static void test_device_refusal_after_a_tool_is_not_rerun() {
   TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // no third request on another model
 }
 
+// prism: a 404 on a request that continued a Mistral conversation says the
+// conversation is gone (the adapter answers "conversation gone" and the engine
+// retries on a fresh one); it is not the router refusing the model, so the pick
+// is neither answered elsewhere nor moved.
+static void test_device_gone_conversation_is_not_a_refused_pick() {
+  DeviceCumuloHead h;
+  h.cv = "conv_old";
+  h.push("/router/mistral/v1/conversations/conv_old", 404, "{\"message\":\"Not found\"}");
+  const rf::LadderResult r = h.turn("mistral/mistral-large-latest");
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Other);
+  TEST_ASSERT_EQUAL_STRING("conversation gone", h.err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)h.d.http.seen.size());   // no other model was asked
+  // A 404 on a new conversation (the model or its upstream unknown) still is one.
+  DeviceCumuloHead n;
+  n.push("/router/mistral/v1/conversations", 404, "{\"message\":\"Not found\"}");
+  n.push("/router/openai/v1/responses", 200, oaiBody());
+  const rf::LadderResult rn = n.turn("mistral/mistral-huge");
+  TEST_ASSERT_TRUE_MESSAGE(rn.ok, n.err.c_str());
+  TEST_ASSERT_TRUE(rn.kind == rf::RefusalKind::Selector);
+}
+
+// prism: the pick moves only while it is still the one the turn started with (the
+// owner may pick another model while a refused turn is answered elsewhere), and
+// only for a refused model; the notice opens the reply either way.
+static void test_settle_moves_only_the_turns_own_pick() {
+  rf::LadderResult r;
+  r.ok = true;
+  r.kind = rf::RefusalKind::Selector;
+  r.used = "gpt-5.6";
+  std::string stored = "mistral/mistral/zai-glm-5-3", out = "{\"reply\":\"hi\"}";
+  auto current = [&] { return stored; };
+  auto set = [&](const std::string& p) { stored = p; };
+  rf::settleFallback(r, "mistral/mistral/zai-glm-5-3", "gpt-5.6", out, current, set);
+  TEST_ASSERT_EQUAL_STRING("", stored.c_str());   // the router default is stored as ""
+  TEST_ASSERT_TRUE(out.find("does not offer mistral/mistral/zai-glm-5-3") != std::string::npos);
+  stored = "anthropic/claude-opus-5";             // the owner picked another meanwhile
+  rf::settleFallback(r, "mistral/mistral/zai-glm-5-3", "gpt-5.6", out, current, set);
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-opus-5", stored.c_str());
+  r.kind = rf::RefusalKind::Upstream;             // a paused upstream keeps the pick
+  stored = "zai/glm-5.3";
+  std::string out2 = "{\"reply\":\"hi\"}";
+  rf::settleFallback(r, "zai/glm-5.3", "gpt-5.6", out2, current, set);
+  TEST_ASSERT_EQUAL_STRING("zai/glm-5.3", stored.c_str());
+  TEST_ASSERT_TRUE(out2.find("Your model choice is kept.") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anthropic_routes_through_router);
@@ -364,6 +411,8 @@ int main(int, char**) {
   RUN_TEST(test_device_refused_everywhere_names_the_cause);
   RUN_TEST(test_device_other_refusals_are_not_answered_elsewhere);
   RUN_TEST(test_device_refusal_after_a_tool_is_not_rerun);
+  RUN_TEST(test_device_gone_conversation_is_not_a_refused_pick);
+  RUN_TEST(test_settle_moves_only_the_turns_own_pick);
   UNITY_END();
   return 0;
 }

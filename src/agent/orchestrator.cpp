@@ -803,6 +803,13 @@ static std::string cumuloPick() {
 // turn path grows the heap (the tap's filter copy is transient and in PSRAM).
 static char g_cumuloRouterHost[64] = "";   // the host the tap watches (set per turn)
 static char g_cumuloLastGood[72] = "";     // a router id is at most 64 characters (harvestIds)
+// Copy `s` whole into `dst`, or clear it when it does not fit: a cut host or
+// selector would name a different one.
+template <size_t N>
+static void copyWholeOrClear(char (&dst)[N], const std::string& s) {
+  if (s.size() < N) strlcpy(dst, s.c_str(), N);
+  else dst[0] = '\0';
+}
 static agent::router_refusal::RouterTap& cumuloTap() {
   static agent::router_refusal::RouterTap tap(nullptr, g_cumuloRouterHost, &PsramJsonAllocator::instance());
   return tap;
@@ -852,9 +859,7 @@ struct CumuloCall {
 static void setCumuloRouterHost() {
   const std::string h = nimbus::orch::cumuloHostFromBase(std::string(store::cumuloBase().c_str()),
                                                          CUMULO_HOST_DEFAULT);
-  const std::string bare = h.substr(0, h.find(':'));
-  if (bare.size() < sizeof(g_cumuloRouterHost)) strlcpy(g_cumuloRouterHost, bare.c_str(), sizeof(g_cumuloRouterHost));
-  else g_cumuloRouterHost[0] = '\0';
+  copyWholeOrClear(g_cumuloRouterHost, h.substr(0, h.find(':')));
 }
 
 // One cumulo head attempt on router selector `sel` (CUM-242 tool loop, built ON
@@ -943,12 +948,13 @@ static bool cumuloTurn(CumuloCall& c) {
     if (!cause.empty()) c.err = cause;
     return false;
   }
-  if (r.used.size() < sizeof(g_cumuloLastGood)) strlcpy(g_cumuloLastGood, r.used.c_str(), sizeof(g_cumuloLastGood));
-  else g_cumuloLastGood[0] = '\0';
+  copyWholeOrClear(g_cumuloLastGood, r.used);
   if (!r.fellBack() || !g_engine || !g_engine->turnInFlight()) return true;
-  if (r.kind == rf::RefusalKind::Selector)
-    store::setOrchModel("cumulo", rf::sameRoute(r.used, CUMULO_MODEL) ? String() : String(r.used.c_str()));
-  rf::prefixReply(c.out, rf::fallbackNotice(r.kind, picked, r.used));
+  rf::settleFallback(r, picked, std::string(CUMULO_MODEL), c.out, [] { return cumuloPick(); },
+                     [](const std::string& p) { store::setOrchModel("cumulo", String(p.c_str())); });
+  // The conversation marker is the answering model's: it carries over only when
+  // that model is now the pick (a kept pick on another upstream starts fresh).
+  if (!rf::sameRoute(cumuloPick(), r.used)) c.cv.clear();
   return true;
 }
 

@@ -334,15 +334,17 @@ const char* jsonStart(const std::string& body) {
 void dropDuplicateIds(std::vector<ModelInfo>& out, size_t from) {
   std::vector<size_t> idx(out.size());
   for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
-  auto sameModel = [&](size_t a, size_t b) { return out[a].upstream == out[b].upstream && out[a].id == out[b].id; };
+  auto cmp = [&](size_t a, size_t b) {   // one rule for the sort and the duplicate test
+    const int c = out[a].upstream.compare(out[b].upstream);
+    return c != 0 ? c : out[a].id.compare(out[b].id);
+  };
   std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
-    int c = out[a].upstream.compare(out[b].upstream);
-    if (c == 0) c = out[a].id.compare(out[b].id);
+    const int c = cmp(a, b);
     return c != 0 ? c < 0 : a < b;
   });
   std::vector<bool> dup(out.size(), false);
   for (size_t k = 1; k < idx.size(); ++k)
-    dup[idx[k]] = sameModel(idx[k], idx[k - 1]);
+    dup[idx[k]] = cmp(idx[k], idx[k - 1]) == 0;
   size_t w = from;
   for (size_t i = from; i < out.size(); ++i) {
     if (dup[i]) continue;

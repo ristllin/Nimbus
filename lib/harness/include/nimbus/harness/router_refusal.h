@@ -33,6 +33,9 @@ struct RouterRefusal {
   std::string reason;          // the router's machine reason ("model_not_priced", ...)
   std::string message;         // the error text (an upstream's own, passed through)
   bool firstRequest = false;   // it refused the attempt's FIRST request (no tool ran)
+  // The refused request continued a provider-side conversation (Mistral's
+  // /conversations/<id>): its 404 says that conversation is gone, not the model.
+  bool continuedThread = false;
 };
 
 // How a refusal should be answered:
@@ -60,15 +63,31 @@ inline bool namesUnknownModel(const std::string& text) {
          t.find("model_not_found") != std::string::npos;
 }
 
+// The router's own machine reasons and how each is answered.
+inline RefusalKind kindOfReason(const std::string& why) {
+  static const struct {
+    const char* reason;
+    RefusalKind kind;
+  } kReasons[] = {{"model_not_priced", RefusalKind::Selector},     {"funding_cap_reached", RefusalKind::Upstream},
+                  {"provider_disabled", RefusalKind::Upstream},    {"endpoint_not_allowed", RefusalKind::Upstream},
+                  {"native_tool_not_metered", RefusalKind::Tool}, {"router_disabled", RefusalKind::Paused}};
+  for (const auto& e : kReasons)
+    if (why == e.reason) return e.kind;
+  return RefusalKind::None;
+}
+
+// A 404 for the model or its upstream (not for a conversation that is gone), or
+// the upstream's own 400 naming the model unknown: the router does not offer it.
+inline bool refusesTheModel(const RouterRefusal& r) {
+  if (r.status == 404) return !r.continuedThread;
+  return r.status == 400 && (namesUnknownModel(r.reason) || namesUnknownModel(r.message));
+}
+
 inline RefusalKind classifyRefusal(const RouterRefusal& r) {
   if (r.status == 0) return RefusalKind::None;
-  const std::string& why = r.reason;
-  if (why == "model_not_priced" || r.status == 404) return RefusalKind::Selector;
-  if (r.status == 400 && (namesUnknownModel(why) || namesUnknownModel(r.message))) return RefusalKind::Selector;
-  if (why == "funding_cap_reached" || why == "provider_disabled" || why == "endpoint_not_allowed")
-    return RefusalKind::Upstream;
-  if (why == "native_tool_not_metered") return RefusalKind::Tool;
-  if (why == "router_disabled") return RefusalKind::Paused;
+  const RefusalKind byReason = kindOfReason(r.reason);
+  if (byReason == RefusalKind::Selector || refusesTheModel(r)) return RefusalKind::Selector;
+  if (byReason != RefusalKind::None) return byReason;
   if (r.status == 429) return RefusalKind::RateLimit;
   if (r.status == 402) return RefusalKind::Account;
   if (r.status == 401) return RefusalKind::Auth;
@@ -170,22 +189,22 @@ class RouterTap : public agent::HttpTransport {
     const bool ok = inner_->exec(req, out, err);
     if (!counts(req)) return ok;
     if (ok && out.status >= 400 && refusal_.status == 0) {
-      JsonDocument d = alloc_ ? JsonDocument(alloc_) : JsonDocument();
+      JsonDocument d = newDoc();
       if (deserializeJson(d, out.body)) d.clear();
-      note(out.status, d);
+      note(req, out.status, d);
     }
     return ok;
   }
 
   int execJson(const agent::HttpRequest& req, JsonDocument& doc, const JsonDocument& filter,
                std::string& err) override {
-    JsonDocument wide = alloc_ ? JsonDocument(alloc_) : JsonDocument();
+    JsonDocument wide = newDoc();
     wide.set(filter);
     wide["reason"] = true;
     wide["error"] = true;     // a string reason, or the whole (small) error object
     wide["message"] = true;
     const int status = inner_->execJson(req, doc, wide, err);
-    if (counts(req) && status >= 400 && refusal_.status == 0) note(status, doc);
+    if (counts(req) && status >= 400 && refusal_.status == 0) note(req, status, doc);
     return status;
   }
 
@@ -195,11 +214,13 @@ class RouterTap : public agent::HttpTransport {
     ++requests_;
     return true;
   }
+  JsonDocument newDoc() const { return alloc_ ? JsonDocument(alloc_) : JsonDocument(); }
   // The router names its reason in `reason`, and in `error` as a plain string; an
   // upstream's own refusal carries its text in error.message or message.
-  void note(int status, const JsonDocument& d) {
+  void note(const agent::HttpRequest& req, int status, const JsonDocument& d) {
     refusal_.status = status;
     refusal_.firstRequest = requests_ == 1;
+    refusal_.continuedThread = req.path.find("/conversations/") != std::string::npos;
     const char* why = d["reason"] | "";
     if (!why[0] && d["error"].is<const char*>()) why = d["error"].as<const char*>();
     const char* msg = d["error"]["message"] | "";
@@ -291,6 +312,19 @@ LadderResult runLadder(RouterTap& tap, const std::string& picked, const std::str
   r.lastKind = classifyRefusal(tap.refusal());   // the last model tried was refused too
   r.lastTried = fb;
   return r;
+}
+
+// A conversation turn a fallback answered: only a refused model moves the pick,
+// to the model that answered ("" when that is the router default), and only while
+// the pick is still the one this turn started with (the owner may have chosen
+// another meanwhile); the notice opens the reply. A fold is not a conversation
+// turn: its caller skips this.
+template <class CurrentPick, class SetPick>
+void settleFallback(const LadderResult& r, const std::string& picked, const std::string& routerDefault,
+                    std::string& outJson, CurrentPick&& currentPick, SetPick&& setPick) {
+  if (r.kind == RefusalKind::Selector && currentPick() == picked)
+    setPick(sameRoute(r.used, routerDefault) ? std::string() : r.used);
+  prefixReply(outJson, fallbackNotice(r.kind, picked, r.used));
 }
 
 }  // namespace router_refusal

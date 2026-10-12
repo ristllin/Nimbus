@@ -9,17 +9,14 @@
 
 namespace nimbusd {
 
-using agent::router_refusal::classifyRefusal;
-using agent::router_refusal::fallbackNotice;
 using agent::router_refusal::kEngineCauseMax;
 using agent::router_refusal::LadderResult;
-using agent::router_refusal::prefixReply;
 using agent::router_refusal::refusalCause;
 using agent::router_refusal::RefusalKind;
 using agent::router_refusal::refusalSentence;
-using agent::router_refusal::RouterRefusal;
 using agent::router_refusal::RouterTap;
 using agent::router_refusal::runLadder;
 using agent::router_refusal::sameRoute;
+using agent::router_refusal::settleFallback;
 
 }  // namespace nimbusd

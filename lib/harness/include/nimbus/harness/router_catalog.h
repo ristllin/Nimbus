@@ -249,6 +249,7 @@ inline std::vector<size_t> candidates(const std::vector<std::string>& canon) {
 struct Queues {
   std::vector<std::string> ups;
   std::vector<std::vector<size_t>> q;
+  size_t dropped = 0;   // candidates of upstreams past the bound (counted as "more")
 };
 inline Queues byUpstream(const std::vector<std::string>& canon, const std::vector<size_t>& cand,
                          const std::vector<size_t>& skip) {
@@ -263,7 +264,10 @@ inline Queues byUpstream(const std::vector<std::string>& canon, const std::vecto
     while (q < qs.ups.size() && qs.ups[q] != up) ++q;
     if (q == qs.ups.size()) {
       const bool known = knownUpstream(up);
-      if (!known && others >= kOtherUpstreamsMax) continue;   // past the bound: not kept
+      if (!known && others >= kOtherUpstreamsMax) {   // past the bound: not kept
+        ++qs.dropped;
+        continue;
+      }
       others += known ? 0 : 1;
       qs.ups.push_back(up);
       qs.q.emplace_back();
@@ -304,8 +308,10 @@ inline void roundRobin(const Queues& qs, const std::string& defUp, std::vector<s
 // appearance, each upstream newest-first - so any cap keeps the default and each
 // upstream's newest model, and a cut list stays a spread of upstreams rather than
 // one upstream's whole family.
+// `dropped` (optional) receives how many models of upstreams past the bound were
+// left out, so a cut list still says the router offered more.
 inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
-                                     const std::string& defaultSel) {
+                                     const std::string& defaultSel, size_t* dropped = nullptr) {
   std::vector<std::string> canon;
   canon.reserve(ids.size());
   for (const std::string& id : ids) canon.push_back(routable(id) ? canonical(id) : std::string());
@@ -315,7 +321,9 @@ inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
   for (size_t i : cand)
     if (canon[i] == def) { order.push_back(i); break; }
   const std::string defUp = order.empty() ? std::string() : upstreamOf(def);
-  detail::roundRobin(detail::byUpstream(canon, cand, order), defUp, order);
+  const detail::Queues qs = detail::byUpstream(canon, cand, order);
+  if (dropped) *dropped = qs.dropped;
+  detail::roundRobin(qs, defUp, order);
   return order;
 }
 
@@ -331,8 +339,9 @@ struct Shortlist {
 inline Shortlist shortlist(const std::vector<std::string>& ids, const std::string& defaultSel,
                            size_t maxCount = kChoicesMax, size_t maxBytes = kChoicesMaxBytes) {
   Shortlist out;
-  const std::vector<size_t> order = keepOrder(ids, defaultSel);
-  out.total = order.size();
+  size_t dropped = 0;
+  const std::vector<size_t> order = keepOrder(ids, defaultSel, &dropped);
+  out.total = order.size() + dropped;
   for (size_t i : order) {
     const std::string& id = ids[i];
     const size_t add = id.size() + (out.csv.empty() ? 0 : 1);
@@ -357,12 +366,14 @@ inline std::string selectorOf(const nimbus::orch::ModelInfo& m) {
 // default and each upstream's head come first, then every upstream's current
 // generation (routerFlagship), then the rest, so neither a row cap nor the size
 // trim from the back costs the default, an upstream or a flagship listed late.
-// Returns how many rows the cap cut (the stored list says "<n> more").
+// Returns how many rows the cap cut or the upstream bound left out (the stored
+// list says "<n> more").
 inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std::string& defaultSel) {
   std::vector<std::string> ids;
   ids.reserve(cat.size());
   for (const auto& m : cat) ids.push_back(selectorOf(m));
-  std::vector<size_t> order = keepOrder(ids, defaultSel);
+  size_t dropped = 0;
+  std::vector<size_t> order = keepOrder(ids, defaultSel, &dropped);
   std::vector<std::string> ups;   // the heads: the first row of each upstream (bounded scan)
   size_t heads = 0;
   while (heads < order.size() && heads < kCatalogMaxRows) {
@@ -379,7 +390,7 @@ inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std:
   out.reserve(order.size());
   for (size_t i : order) out.push_back(std::move(cat[i]));
   cat.swap(out);
-  return cut;
+  return cut + dropped;
 }
 
 }  // namespace router_catalog

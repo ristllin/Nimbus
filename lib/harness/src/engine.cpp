@@ -30,6 +30,11 @@
 namespace agent {
 
 namespace {
+// CUM-544: a TIMEOUT is model latency, not a dead link. Only the custom head's
+// explicit token: a provider error that merely mentions "timeout" (a router 504
+// text) is not one.
+bool isTimeout(const std::string& e) { return e.rfind("timeout:", 0) == 0; }
+
 // The failover notice's reason for `host`, up to "switching to ": a timeout, a
 // router refusal (its cause, which carries the fix), else an outage.
 std::string failoverReason(const std::string& host, const std::string& err) {
@@ -38,7 +43,7 @@ std::string failoverReason(const std::string& host, const std::string& err) {
     why[0] = (char)toupper((unsigned char)why[0]);
     return why + ". Switching to ";
   }
-  if (err.rfind("timeout:", 0) == 0) return host + " did not answer in time - switching to ";
+  if (isTimeout(err)) return host + " did not answer in time - switching to ";
   return host + " is unavailable - switching to ";
 }
 }  // namespace
@@ -887,7 +892,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // straight away; a transient network error still gets its one same-host retry.
   // Only the custom head's explicit token: a provider error that merely mentions
   // "timeout" (a router 504 text) keeps its same-host retry.
-  auto isTimeout = [](const std::string& e) { return e.rfind("timeout:", 0) == 0; };
   const bool timedOut = !ok && isTimeout(err);
   if (timedOut && !fabricOn && *loopDispatched == 0)
     hlog::logf("orchestrator: %s did not answer in time - failing over without a retry", host.c_str());
@@ -973,7 +977,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     else {
       cause = err;  // short adapter tokens ("schema parse", "loop failed", …)
       for (char& c : cause) if (c == '\n' || c == '\r') c = ' ';
-      if (cause.size() > 100) { cause.resize(100); cause += "…"; }
+      if (cause.size() > router_refusal::kEngineCauseMax) {
+        cause.resize(router_refusal::kEngineCauseMax);
+        cause += "…";
+      }
     }
     deliver(chatId, "That didn't finish - " + cause +
                     ". Nothing is still running; ask again to retry.");
