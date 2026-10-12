@@ -1668,6 +1668,28 @@ static void test_cum536_one_rule_for_every_gate_string() {
       {"Send the summary to Slack when it is done", "slack", "Slack"},
       {"save the outline into my notion", "notion", "Notion"},
       {"move these bugs to my linear", "linear", "Linear"},
+      // The last gate (CUM-536): the verb after an infinitive frame at the end of a
+      // clause, "low on slack", "from slack" in its ordinary readings ...
+      {"Why do students tend to slack?", "slack", ""},
+      {"Explain why teams tend to slack.", "slack", ""},
+      {"We ran low on slack.", "slack", ""},
+      {"Do people want to slack?", "slack", ""},
+      {"Explain why remote teams start to slack", "slack", ""},
+      {"Teams that tend not to slack ship on time.", "slack", ""},
+      {"Explain how a mooring line goes from slack to taut under load", "slack", ""},
+      {"Explain how a rope goes from slack to taut", "slack", ""},
+      {"Research the recovery from slack demand", "slack", ""},
+      {"Summarize chapter 3 from Slack: Getting Past Burnout", "slack", ""},
+      // ... while the owner asks stay asks, Slack's own features included.
+      {"post it to slack.", "slack", "Slack"},
+      {"Send the digest to slack?", "slack", "Slack"},
+      {"get the notes from Slack and draft a reply", "slack", "Slack"},
+      {"pull the thread from slack, then draft a reply", "slack", "Slack"},
+      {"Share the quote in Slack Connect with the vendor", "slack", "Slack"},
+      {"Start it in Slack Huddles", "slack", "Slack"},
+      {"post it on Slack Huddles", "slack", "Slack"},
+      {"Add the plan in Slack Canvas for the team", "slack", "Slack"},
+      {"Run the standup in a slack workflow", "slack", "Slack"},
   };
   std::string wrong;   // every mismatch, so one run lists them all
   for (const Case& c : kCases) {
