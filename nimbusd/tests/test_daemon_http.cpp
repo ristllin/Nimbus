@@ -15,7 +15,9 @@
 //   (f) a failure is reported in the provider wire's words (CUM-538): "no
 //       response" once the request went out, "request body truncated" when it
 //       never fully left, "connect failed" before it was sent;
-//   (g) so a hosted Z.ai sub cut after its POST is Timeout (may have started).
+//   (g) so a hosted Z.ai sub cut after its POST is Timeout (may have started);
+//   (h) a POST never rides a kept-alive connection, so libcurl never re-sends one
+//       the peer read and then cut (it is sent, and billed, once).
 // Every case runs on ONE transport (the persistent handle), so a plain request
 // after a capturing one also proves the per-exchange sink never outlives it.
 // Offline: a loopback server with canned responses; no keys, no external network.
@@ -246,6 +248,82 @@ static void testCutSubMayHaveStarted(ndtest::Ctx& c, DaemonHttpTransport& t) {
         "(g) a sub whose connection was refused is Network (did not start)");
 }
 
+// (h) CUM-538 gate (High): libcurl re-sends a request on a new connection when a
+// REUSED keep-alive connection dies before any answer, and it does that for a POST
+// too. A gateway that read the POST, ran the paid sub and then closed would bill it
+// twice while the owner is told once that it may have started. Connection 1
+// answers two GETs (a model list, a poll) and stays open; the POST that follows
+// is read and cut without a status line, and so is anything sent after it.
+static int postsSeen(const ndtest::KeepAliveServer& srv) {
+  int n = 0;
+  for (const auto& s : srv.seen()) n += s.line.rfind("POST ", 0) == 0;
+  return n;
+}
+static void testPostNeverResentOnAReusedConnection(ndtest::Ctx& c, DaemonHttpTransport& t) {
+  using ndtest::keepAliveResponse;
+  {
+    ndtest::KeepAliveServer srv({keepAliveResponse("HTTP/1.1 200 OK", "{\"data\":[]}"),
+                                 keepAliveResponse("HTTP/1.1 200 OK", "{\"data\":[]}")});
+    agent::HttpRequest get;
+    get.method = "GET";
+    get.host = "127.0.0.1";
+    get.port = uint16_t(srv.port());
+    get.tls = false;
+    get.path = "/api/paas/v4/models";
+    get.timeoutMs = 5000;
+    agent::HttpResponse out;
+    std::string err;
+    const bool g1 = t.exec(get, out, err) && out.status == 200;
+    const bool g2 = t.exec(get, out, err) && out.status == 200;
+    const bool sent = t.exec(loopbackPost(srv.port(), 5000), out, err);
+    srv.stop();
+    const auto& seen = srv.seen();
+    c.ok(g1 && g2 && seen.size() >= 2 && seen[0].conn == 1 && seen[1].conn == 1,
+         "(h) the GETs share one kept-alive connection (the warm cache still works)");
+    c.eqi(postsSeen(srv), 1, "(h) the cut POST reached the server exactly once (never re-sent)");
+    c.ok(seen.size() == 3 && seen[2].line.rfind("POST ", 0) == 0 && seen[2].conn == 2,
+         "(h) the POST went out on a new connection, not the kept-alive one");
+    c.ok(!sent && out.status == 0 && has(err, ": no response"),
+         "(h) the cut POST reads \"no response\" (got \"" + err + "\")");
+  }
+  {
+    // The same through the real Z.ai sub dispatch: a warm connection to the
+    // gateway, then the sub's POST is cut. Once, and Timeout (may have started).
+    ndtest::KeepAliveServer srv({keepAliveResponse("HTTP/1.1 200 OK", "{\"data\":[]}")});
+    harness_test::FakeProviderDeps d;
+    agent::providers::ProviderDeps pd = d.contract();
+    pd.http = &t;
+    agent::HttpRequest warm;
+    warm.method = "GET";
+    warm.host = "127.0.0.1";
+    warm.port = uint16_t(srv.port());
+    warm.tls = false;
+    warm.path = "/api/paas/v4/models";
+    warm.timeoutMs = 5000;
+    agent::HttpResponse out;
+    std::string err;
+    const bool warmed = t.exec(warm, out, err) && out.status == 200;
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "summarize the GLM release notes";
+    char job[72] = {0};
+    agent::providers::CompatEndpoint ep;
+    const std::string host = "127.0.0.1";
+    ep.host = host.c_str();
+    ep.port = uint16_t(srv.port());
+    ep.tls = false;
+    ep.basePath = "/api/paas/v4";
+    ep.key = "zai_sk_TEST_REUSE";
+    ep.model = "glm-5.3";
+    ep.backendTag = "zai";
+    const agent::FabricErr e = agent::providers::openaiCompatDispatch(pd, ep, dir, job);
+    srv.stop();
+    c.ok(warmed, "(h) the gateway connection was warm before the sub");
+    c.eqi(postsSeen(srv), 1, "(h) the Z.ai sub cut after its POST was sent once (billed once)");
+    c.eqi((long)e, (long)agent::FabricErr::Timeout, "(h) and it is Timeout (may have started), never respawned");
+  }
+}
+
 int main() {
   std::signal(SIGPIPE, SIG_IGN);
   ndtest::Ctx c;
@@ -258,6 +336,7 @@ int main() {
   testOnlyTheFinalBlockCounts(c, t);
   testFailuresSpeakTheWireWords(c, t);
   testCutSubMayHaveStarted(c, t);
+  testPostNeverResentOnAReusedConnection(c, t);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

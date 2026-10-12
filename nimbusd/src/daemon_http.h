@@ -15,7 +15,9 @@
 // persistent CURL easy handle is reused across exchanges, so its connection +
 // TLS-session cache is kept warm (the lab's per-call init/cleanup is fine for a
 // CLI, wasteful for a long-lived process doing thousands of provider round
-// trips). recordBodies is hard-off by construction - the log-discipline rule
+// trips). Only a GET reuses a kept-alive connection; every other request (each
+// POST: a paid head round or sub dispatch) goes out on a new one, see
+// failureText. recordBodies is hard-off by construction - the log-discipline rule
 // (§3.4) is that nimbusd never keeps prompt/completion content in memory or
 // logs; only the injected transport ever sees the bytes, and it drops them. (The
 // one exception is the owner's own turn anatomy, GET /api/lastturn: a single
@@ -92,6 +94,9 @@ class DaemonHttpTransport : public agent::HttpTransport {
     // persistent handle) and cap redirects off - provider APIs never redirect.
     curl_easy_setopt(handle_, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(handle_, CURLOPT_FOLLOWLOCATION, 0L);
+    // A request that is not safe to repeat never rides a kept-alive connection
+    // (the rule beside failureText's "no response").
+    if (req.method != "GET") curl_easy_setopt(handle_, CURLOPT_FRESH_CONNECT, 1L);
 
     if (req.method == "POST") {
       curl_easy_setopt(handle_, CURLOPT_POST, 1L);
@@ -130,6 +135,16 @@ class DaemonHttpTransport : public agent::HttpTransport {
   // started, so the head must not spawn it again), "request body truncated" when
   // it never fully left (a resend duplicates nothing), and "connect failed" before
   // anything was sent. curl's own text stays in front for the log.
+  //
+  // "no response" is final only because a POST is never sent on a reused
+  // connection (CUM-538): when a REUSED connection dies before any answer, libcurl
+  // silently sends the same request again on a new one, and a gateway that read
+  // the POST, ran the paid work and then closed would bill it twice while the
+  // owner is told once that it may have started. On a new connection libcurl has
+  // nothing to retry, so a cut is one cut. Every request but a GET therefore
+  // opens a new connection (CURLOPT_FRESH_CONNECT); the handle's TLS session
+  // cache still shortens that handshake. A GET (a poll, a model list) is safe to
+  // repeat and keeps the warm connection.
   static std::string failureText(CURLcode rc, Sent sent) {
     const std::string what = curl_easy_strerror(rc);
     if (sent == Sent::No) return "connect failed: " + what;
