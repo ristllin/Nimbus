@@ -297,7 +297,12 @@ the models the router can route (priced and enabled), as `<upstream>/<model>`
 ids with a size class and the billed rates as metadata, so the Cumulo model list
 tracks the router's catalog rather than one upstream's `/v1/models`. The router
 default comes first, then one model per upstream, then a spread of the rest (a
-dated snapshot whose undated alias is listed is left out). The short list behind
+dated snapshot whose undated alias is listed is left out, and so is an id whose
+model part still holds a `/` after the upstream, such as
+`mistral/mistral/zai-glm-5-3`, which no upstream runs). The same model name under
+two upstreams is two models; the four upstreams the device knows (OpenAI,
+Anthropic, Mistral, Z.ai) are always listed, and at most 8 others. A Virtual
+Nimbus applies the same rule to the same list. The short list behind
 the picker's Recommended group and the head's model line holds up to 12 of them;
 the full list (up to about 48) is the catalog, and the picker says when the router
 offered more than fits. The short-list harvest reads at most 128 chat models from

@@ -374,6 +374,34 @@ static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// CUM-530 gate (critic): the device bounds the router catalog it keeps, the hosted
+// consumer of the same untrusted body did not, so a body of thousands of ids was
+// held whole and served on every GET /api/orch. It now takes the device's rule:
+// at most 128 rows, the router default first, the flagships kept wherever they are
+// listed, and no id that no upstream runs.
+static void testHostedCatalogIsBounded(ndtest::Ctx& c) {
+  std::printf("  -- (h) the hosted router catalog is bounded like the device's --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  std::string body = "{\"object\":\"list\",\"data\":[";
+  for (int i = 0; i < 4000; ++i) body += "{\"id\":\"zai/m" + std::to_string(i) + "\"},";
+  body += "{\"id\":\"mistral/mistral/zai-glm-5-3\"},{\"id\":\"openai/gpt-5.6\"},"
+          "{\"id\":\"anthropic/claude-opus-5\"},{\"id\":\"zai/glm-5.3\"}]}";
+  FakeHttpTransport tx;
+  tx.script.push_back(routerModels(200, body));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("pv-h"), &tx);
+  c.ok(rig.verifyProvider("cumulo"), "the verify succeeds");
+  const auto models = rig.verifyState("cumulo").models;
+  c.ok(!models.empty() && models.size() <= 128, "at most 128 rows are kept (got " + std::to_string(models.size()) + ")");
+  c.ok(!models.empty() && models[0].id == "openai/gpt-5.6", "the router default comes first");
+  std::string all = ",";
+  for (const auto& m : models) all += m.id + ",";
+  c.ok(has(all, ",anthropic/claude-opus-5,") && has(all, ",zai/glm-5.3,"), "the flagships listed last are kept");
+  c.ok(!has(all, "zai-glm-5-3"), "an id no upstream runs is not offered");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== provider verify + router model catalog (CUM-545, offline) ===\n");
@@ -383,6 +411,7 @@ int main() {
   testWebTriggers(c);
   testSpawnOnHarvestedModel(c);
   testZaiBaseIsABareHost(c);
+  testHostedCatalogIsBounded(c);
   testMemberSpawnRunsTheSubModel(c);
   testKeySavedWhileVerifyQueued(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

@@ -45,6 +45,7 @@
 #include "posix_platform.h"
 #include "provider_verify.h"
 #include "router_head.h"
+#include "nimbus/harness/router_catalog.h"   // CUM-530: the device's bound + order for the router list
 #include "sub_fabric.h"
 #include "tg_access.h"
 #include "version.h"
@@ -571,11 +572,16 @@ class NimbusdRig {
     if (status == 200) {
       std::vector<nimbus::orch::ModelInfo> cat;
       nimbus::orch::parseModelsList(slug, resp.body, cat);
-      // The parser splits a router id into (upstream, bare id); the picker posts the
-      // id back as the head selector, which must be the routable "<upstream>/<model>".
-      if (slug == kCumuloSlug)
+      // The router body is untrusted and only byte-bounded: the device's rule keeps
+      // at most kCatalogMaxRows rows, the router default, each upstream's newest
+      // model and the flagships first, and drops dated twins and ids no upstream
+      // runs. Then the parser's (upstream, bare id) becomes the routable
+      // "<upstream>/<model>" the picker posts back as the head selector.
+      if (slug == kCumuloSlug) {
+        agent::router_catalog::protectHeads(cat, kCumuloModel);
         for (auto& m : cat)
           if (!m.upstream.empty() && m.id.find('/') == std::string::npos) m.id = m.upstream + "/" + m.id;
+      }
       if (!cat.empty()) verify_.setCatalog(slug, std::move(cat));
     }
     std::fprintf(stderr, "[nimbusd] verify %s: HTTP %d%s%s\n", slug.c_str(), status,
