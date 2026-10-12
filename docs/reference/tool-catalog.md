@@ -174,9 +174,12 @@ Notes:
 ## `skill.*` - knowledge capsules (read + author)
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
-`src/agent/skills.cpp`). On-device markdown playbooks: four built-ins
-(`architecture`, `deep-research`, `hardware`, `tools-guide`) plus owner- or
-agent-authored capsules on the SD card.
+`src/agent/skills.cpp`, built-in text in `lib/harness/src/builtin_skills.cpp`).
+On-device markdown playbooks: five built-ins (`architecture`, `deep-research`,
+`hardware`, `tools-guide`, `deliver-pdf`) plus owner- or agent-authored capsules
+on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
+that was offered them; on any other turn it points at the Files list on the
+device web page.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
@@ -323,7 +326,9 @@ either a chat is allowlisted, or public mode is on and the message itself came i
 over Telegram. Otherwise neither is offered (a web, voice or serial turn in public
 mode with no allowlisted chat included), and a reminder or wakeup answers in the
 chat that set it. The device decides this once per turn, so the tool list and
-every hint in that turn agree.
+every hint in that turn agree: on a turn without Telegram the built-in playbooks
+(`skill.get`), the skills list and the tool results point at the Files list on
+the device web page instead of naming either tool.
 
 ## `web.*` - live web search
 

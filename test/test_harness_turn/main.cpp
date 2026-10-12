@@ -17,6 +17,7 @@
 #include "nimbus/orch/journal.h"
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: connectorNotCalledNote
 #include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
+#include "nimbus/harness/builtin_skills.h"   // CUM-523: the device's real built-in capsules
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
 #include "nimbus/orch/model_choices.h"   // CUM-486: the one model-choice derivation
 #include "nimbus/orch/provider_slots.h"
@@ -123,6 +124,7 @@ struct Rig {
 
   std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
+  orch::Hardware hw;   // the manifest the device closure would report (default: struct defaults)
 
   explicit Rig(bool withSubFabric = false) {
     JobEngine::Deps jd;
@@ -154,6 +156,7 @@ struct Rig {
     };
     d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
+      in.hw = hw;
       in.devName = "Nimbus";
       in.hostLabel = "anthropic / model-anthropic";
       in.recentConversation = recentConversation;
@@ -166,11 +169,13 @@ struct Rig {
       return mcpResponse;
     };
     d.connectorsCatalog = [] { return std::string("## PROVIDERS & CONNECTORS\n"); };
-    // W15: the rig advertises a minimal skills index the way the device does
-    // (skills::indexText -> agent::skillsIndexText over the capsule list).
+    // W15: the rig advertises the skills index the way the device does
+    // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
+    // device's REAL built-ins (CUM-523: a copied line drifted from the device text).
     d.skillsIndex = [] {
-      std::vector<agent::SkillIndexEntry> es = {
-          {"deliver-pdf", "Build a PDF via an openai sub's code_interpreter and send it with files.send", false}};
+      std::vector<agent::SkillIndexEntry> es;
+      for (size_t i = 0; i < agent::builtinSkillCount(); ++i)
+        es.push_back({agent::builtinSkill(i).id, agent::builtinSkill(i).desc, false});
       return agent::skillsIndexText(es);
     };
     d.modelChoices = [this](const std::string& p) {
@@ -1296,6 +1301,44 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
   TEST_ASSERT_TRUE(t.debug[0].instructions.find("reply_telegram") != std::string::npos);
 }
 
+// CUM-523: on a turn with no Telegram, NOTHING the model reads names a
+// Telegram-only tool - the tool list, the channel hint, the [SKILLS] index (the
+// device's real built-ins), the capability line (SD files bullet) - and every
+// built-in body served on that turn (skill.get) follows the same sample.
+static void test_cum523_telegramless_prompt_names_no_telegram_tool() {
+  Rig r;
+  r.cfg.telegramOn = false;
+  r.hw.files = r.hw.sd = r.hw.speaker = r.hw.voiceReplies = r.hw.wifi = true;
+  r.hw.telegram = true;   // the bot "runs" in the manifest; the turn's sample says no
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file.", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.speak", "Read text aloud.", "{}"});
+  r.eng->handleMessage("make me a PDF report", "Dana", "web");
+  TEST_ASSERT_FALSE(r.eng->turnTelegram());
+  const std::string prompt = r.debug[0].instructions + "\n" + r.debug[0].inputs;
+  for (const char* t : {"files.send", "reply.telegram", "files_send", "reply_telegram"})
+    TEST_ASSERT_TRUE_MESSAGE(prompt.find(t) == std::string::npos, t);
+  TEST_ASSERT_TRUE(prompt.find("- deliver-pdf: ") != std::string::npos);   // the index still rides
+  TEST_ASSERT_TRUE(prompt.find("Connectivity: WiFi.\n") != std::string::npos);   // no Telegram
+  for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
+    const std::string body = agent::builtinSkillBody(agent::builtinSkill(i).id, r.eng->turnTelegram());
+    for (const char* t : {"files.send", "reply.telegram"})
+      TEST_ASSERT_TRUE_MESSAGE(body.find(t) == std::string::npos, agent::builtinSkill(i).id);
+  }
+
+  // Counter-test: the same turn with a deliverable bot keeps every Telegram name.
+  Rig b;
+  b.hw = r.hw;
+  b.specs = r.specs;
+  b.eng->handleMessage("make me a PDF report", "Dana", "web");
+  TEST_ASSERT_TRUE(b.eng->turnTelegram());
+  TEST_ASSERT_TRUE(b.debug[0].instructions.find("files_send") != std::string::npos);
+  TEST_ASSERT_TRUE(b.debug[0].instructions.find("deliver one to the owner with files.send") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("deliver-pdf", b.eng->turnTelegram()).find("files.send") !=
+                   std::string::npos);
+}
+
 // ---- (9) synthesis consolidation + raw fallback -----------------------------
 
 static void test_synthesis_consolidation_and_raw_fallback() {
@@ -2127,6 +2170,7 @@ int main(int, char**) {
   RUN_TEST(test_cum523_telegram_is_sampled_once_per_turn);
   RUN_TEST(test_cum523_deliverability_rule);
   RUN_TEST(test_cum523_public_mode_empty_allowlist_is_decided_per_turn);
+  RUN_TEST(test_cum523_telegramless_prompt_names_no_telegram_tool);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);
   RUN_TEST(test_stuck_turn_reaper);

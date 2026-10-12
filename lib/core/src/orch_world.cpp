@@ -139,8 +139,8 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
            "<name>). Save reports/documents there with artifact.save; browse with files.list; " +
            std::string(!hw.noTelegram ? "deliver one to the owner with files.send. "
                                       : "the owner opens one from the Files list on the device "
-                                        "web page (files.send needs Telegram, which this device "
-                                        "does not have). ") +
+                                        "web page (sending a file needs Telegram, which this "
+                                        "turn cannot reach). ") +
            "Files persist across reboots and are never auto-deleted.\n";
   // CUM-523: with no Telegram bot the channel advice never names Telegram (it used
   // to steer a web-only device's turns toward a reply.telegram that cannot work).

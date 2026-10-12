@@ -118,6 +118,11 @@ bool inScheduledTurn();
 bool isChatAllowed(const String& cid);
 // The first allow-listed chat (owner default target for a loop with no chat_id).
 String firstAllowedChat();
+// CUM-523: whether text the device serves to the model may name the Telegram-only
+// tools (reply.telegram, files.send): the running turn's one sample (the same one
+// its tool list follows), else - outside a turn - whether any turn could deliver
+// (the bot runs and a chat is allowlisted).
+bool telegramForTurn();
 
 // OTA install hook - the owner-only Telegram `/update` command calls this to
 // approve+install a pending update. Injected from main.cpp (which owns otaupd),

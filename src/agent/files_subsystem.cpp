@@ -1139,7 +1139,7 @@ void registerTools() {
   // Telegram actuator (files.send is the gated delivery step).
   reg.add("image.generate",
           "Generate an image from a text prompt and save it as a PNG in the durable store. "
-          "Returns the saved project/name; send it to the owner with files.send. Set describe "
+          "Returns the saved project/name, which says how the owner gets it. Set describe "
           "true to also get a vision read-back of the result (an extra provider call). Needs "
           "an OpenAI key and an SD card.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
@@ -1219,7 +1219,10 @@ void registerTools() {
                                                       String(prompt.c_str()));
               if (d.length()) out += "\n" + std::string(d.c_str());
             }
-            out += "\nSend it to the owner with files.send.";
+            // CUM-523: name files.send only on a turn that was offered it.
+            out += agent::orchestrator::telegramForTurn()
+                       ? "\nSend it to the owner with files.send."
+                       : "\nThe owner opens it from the Files list on the device web page.";
             return nimbus::orch::ToolResult::ok(out);
           },
           R"({"type":"object","properties":{"prompt":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["low","medium","high"]},"model":{"type":"string"},"describe":{"type":"boolean"}},"required":["prompt"]})");

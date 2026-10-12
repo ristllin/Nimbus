@@ -6,9 +6,10 @@
 // dynamic, both origins).
 //
 // Two sources, merged (SD wins on an id collision):
-//   1. PROGMEM built-ins (architecture / hardware / tools-guide /
-//      deep-research) - work with no SD and no WiFi; static playbooks the model
-//      pulls via skill.get.
+//   1. Built-ins (architecture / deep-research / hardware / tools-guide /
+//      deliver-pdf; portable text in nimbus/harness/builtin_skills.h) - work
+//      with no SD and no WiFi; static playbooks the model pulls via skill.get.
+//      A built-in names the Telegram-only tools only on a turn offered them.
 //   2. SD capsules at /mem/skills/<id>/SKILL.md - a front-matter header
 //      (title / version / inject / created_by / created_at / approved; parser
 //      is the PORTABLE agent::parseSkillMd in lib/harness) over a markdown

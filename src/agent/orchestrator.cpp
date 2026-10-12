@@ -1816,6 +1816,10 @@ String firstAllowedChat() {
   return t;
 }
 bool isChatAllowed(const String& cid) { return chatAllowed(cid); }
+bool telegramForTurn() {
+  if (g_engine && g_engine->turnInFlight()) return g_engine->turnTelegram();
+  return telegramDeliverable(std::string());
+}
 bool inScheduledTurn() { return g_engine && g_engine->inScheduledTurn(); }
 
 nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String& prompt,

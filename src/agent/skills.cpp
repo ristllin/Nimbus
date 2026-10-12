@@ -6,155 +6,14 @@
 #include <cstring>
 
 #include "memory_subsystem.h"          // dataFs() + haveSd() + Lock (SD serialization)
+#include "orchestrator.h"              // telegramForTurn - which side of a built-in to serve
 #include "../sys/agent_log.h"
-#include "nimbus/harness/board_identity.h"   // CUM-514: the build's own 'hardware' capsule
+#include "nimbus/harness/builtin_skills.h"   // the built-in capsules (portable, host-tested)
 #include "nimbus/harness/skill_md.h"   // portable parseSkillMd (host-tested)
 
 namespace agent::skills {
 
 namespace {
-
-// ---- built-in PROGMEM capsules ----------------------------------------------
-// Kept deliberately concise (distilled from docs/ + AGENTS.md). PROGMEM so they
-// cost flash, not RAM. Update these when the architecture they describe changes.
-const char kDeepResearch[] PROGMEM =
-    "# Deep research (multi-stage fan-out playbook)\n"
-    "A head-side playbook for thorough, cited research using waves of sub-agents and\n"
-    "the durable file store. Requires the SD card: if files are unavailable, say so\n"
-    "honestly and OFFER the degraded mode instead (one wave of <=6 sub-agents,\n"
-    "synthesized straight into your reply, nothing persisted).\n\n"
-    "## Setup\n"
-    "1. Pick ONE project tag for the whole run: dr-<topic-slug>-<MMDDHHMM> (<=24\n"
-    "   chars, e.g. dr-mkt-08061530). Every spawn in this run carries it in\n"
-    "   session_ops project - each sub-agent's full result then AUTO-SAVES as\n"
-    "   <project>/<name>-<tag>.md (the [saved: ...] line in FRESH RESULTS confirms it).\n"
-    "2. Plan ORTHOGONAL sub-questions that together cover the ask - not overlapping\n"
-    "   rephrasings. Default breadth 4-8 for a normal ask; scale up only for genuinely\n"
-    "   broad briefs. HARD CAP: 100 sub-agents per run, and the project holds at most\n"
-    "   128 docs. Keep the wave plan + a checklist in your SCRATCHPAD (the `scratchpad`\n"
-    "   field: put steps in scratchpad.short, tick them off as sub-agents finish) - it\n"
-    "   persists across the run's turns, unlike the next-turn-only memory field.\n\n"
-    "## Waves\n"
-    "3. Spawn up to 6 sub-agents per turn (the job table's limit) - one per\n"
-    "   sub-question, small/default model, with: a clear brief (what to find, what to\n"
-    "   IGNORE), an instruction to CITE sources with URLs and dates, prefer primary\n"
-    "   sources, and end with a one-line TL;DR. Give each a short name (its doc name).\n"
-    "4. Between waves you get an automatic synthesis turn when results land. There:\n"
-    "   check the [saved: ...] confirmations, update the scratchpad checklist, note\n"
-    "   GAPS (unanswered questions, claims needing a second source, new angles), and\n"
-    "   spawn the next wave AIMED AT THE GAPS. For calculations or data crunching,\n"
-    "   spawn a calculation sub-agent between research waves (multi-stage: research ->\n"
-    "   compute -> more research is normal for e.g. finance).\n"
-    "5. STOP when saturated: a wave that mostly repeats what earlier docs already say\n"
-    "   means more waves will not help. Do not burn the cap for its own sake.\n\n"
-    "## The report\n"
-    "6. Select the STRONGEST docs (files.list the project; files.read a PAGE to skim\n"
-    "   - never full-read every doc yourself, that burns your tool budget). Then\n"
-    "   spawn ONE final sub-agent on a LARGE model (provider default, model from\n"
-    "   [AVAILABLE MODELS]) with project set and the attach ARRAY FIELD listing the\n"
-    "   selected docs (up to 4; the device splices their full content into its brief\n"
-    "   - doc names in the task text alone attach nothing). Its task: write the\n"
-    "   final report - TL;DR bullets, key findings with inline [n] citations, an\n"
-    "   'Open questions / contested points' section naming disagreements between\n"
-    "   sources, and a numbered Sources list (URL + date + one line on what it\n"
-    "   contributed). Every non-obvious claim cites a source. No filler.\n"
-    "7. The report auto-saves into the project. Deliver it the way the owner asked:\n"
-    "   files.send for Telegram, or a Gmail DRAFT via a Mistral sub-agent (email can\n"
-    "   never be SENT from this device - say 'drafted, not sent'). If the report\n"
-    "   sub-agent fails, write the report YOURSELF from files.read of the best docs -\n"
-    "   degraded but delivered beats silent loss.\n"
-    "8. VERIFY grounding before delivering: if the report says its sources were\n"
-    "   missing or it wrote from general knowledge, the attachment did not happen -\n"
-    "   do NOT deliver it as the report; re-spawn with the attach field set, and say\n"
-    "   so if you already told the owner it was under way.\n\n"
-    "## Honesty rails\n"
-    "- Only claim a doc/report exists after the [saved: ...] line or a files.list/\n"
-    "  files.read confirms it. Quote real doc names.\n"
-    "- Report partial progress plainly (waves run, docs saved, gaps left) - never\n"
-    "  round up. A failed wave is stated, not papered over.\n";
-
-const char kArchitecture[] PROGMEM =
-    "# Device architecture (how you run)\n"
-    "You are the head orchestrator on a Nimbus desk device (ESP32-S3) with two modes\n"
-    "(the 'hardware' capsule names this board):\n"
-    "- NOTIFIER: a BLE-driven status light for AI coding sessions (you are inactive).\n"
-    "- ORCHESTRATOR (current): a hosted-LLM agent reachable over Telegram, the device\n"
-    "  microphone (hold-to-talk), the web UI, and the serial console.\n\n"
-    "A turn = one user message -> you produce ONE orch_turn (reply/ask + optional\n"
-    "device actions + memory/session ops). With the tool loop ON (the default) you may\n"
-    "first call tools across several rounds, THEN finish by emitting orch_turn.\n\n"
-    "Your reply routes back to the channel the message arrived on (see [CHANNEL] each\n"
-    "turn). To reach a DIFFERENT channel, use reply.speak (device speaker) or\n"
-    "reply.telegram. Sub-work you delegate via session.spawn runs on a cloud provider\n"
-    "(OpenAI/Anthropic/Mistral) as a fire-and-forget job; poll session.list for status.\n\n"
-    "Memory: a vector store (memory.write/search) + a scratchpad + episodic history,\n"
-    "backed by the SD card when present (degraded but functional on internal flash).\n"
-    "You may NEVER set provider keys, the orchestrator host, or provider priority -\n"
-    "those are human-only. You MAY retune the sub-session provider preference.\n";
-
-const char kToolsGuide[] PROGMEM =
-    "# Using your tools\n"
-    "memory.write/search/update/pin: your long-term vector memory - save durable facts\n"
-    "the owner will want later; search before claiming you don't know something.\n"
-    "session.spawn/list/terminate: delegate heavy/long work to a cloud sub-agent. A\n"
-    "spawn's `skill` field names a capsule from skill.list - owner-authored (SD)\n"
-    "capsules are INJECTED into that sub-agent's instructions at spawn.\n"
-    "web.search: live web lookups (only if a Tavily key is set).\n"
-    "system.health: your own hardware/subsystem status.\n"
-    "skill.list/skill.get: pull long-form docs about yourself (this guide included).\n"
-    "Device state (LED theme, ring level, brightness, power profile, lights on/off,\n"
-    "voice) is NOT a callable tool: change it with the device[] actions of your\n"
-    "orch_turn (lights / led / config / tts). Protected settings are refused.\n"
-    "reply.speak / reply.telegram: choose an output channel beyond the default reply.\n"
-    "Answer simple questions immediately; reserve tool rounds for work that needs them.\n";
-
-// The W15 deliver-pdf playbook. Lives here (flash rodata, rides OTA) so every
-// board has the default; the owner overrides it live by saving an SD capsule
-// with the same id (SD wins on collision) - recipe fixes never need a release.
-// The catalog's [PROVIDERS & CONNECTORS] block carries only the config-gated
-// one-line DISCLOSURE pointing here; this is the procedure.
-static const char kDeliverPdf[] =
-    "How to deliver a PDF (or any generated document) to the owner.\n"
-    "The device cannot render documents itself; a sub-agent builds one in its\n"
-    "provider sandbox and the device captures the file. The working recipe:\n"
-    "1. Spawn ONE sub-agent on openai WITH A PROJECT:\n"
-    "   session_ops: {op:\"spawn\", provider:\"openai\", project:\"<short-slug>\",\n"
-    "   task:\"...\"}. The project field is what routes the captured file into\n"
-    "   the device file store - no project, no capture.\n"
-    "2. In the task, tell the sub EXPLICITLY to gather/prepare the content, then\n"
-    "   'use Python code_interpreter to render <name>.pdf, save it as a file,\n"
-    "   and output the file'. A sub not told to output a file returns prose.\n"
-    "3. When the sub finishes, its result includes a note naming the saved file\n"
-    "   (project/name). NO note = NO file landed - say so honestly and retry or\n"
-    "   explain; NEVER invent a filename or claim a stale file as new output.\n"
-    "4. Deliver with files.send {project, name}. It queues for Telegram; if it\n"
-    "   reports the media queue busy, retry on your next turn.\n"
-    "Provider limits: mistral's sandbox ERRORS on PDF/CSV (images/text only);\n"
-    "an anthropic sub can build files in its sandbox but nothing can capture\n"
-    "them back - openai is the only delivery path. Do not silently downgrade\n"
-    "the owner to markdown: if PDF is unavailable, say exactly why.\n";
-
-struct Builtin { const char* id; const char* title; const char* desc; const char* body; };
-const Builtin kBuiltins[] = {
-    {"architecture", "How this device is wired + how a turn runs",
-     "How you run: turns, tool loop, sub-agents, memory tiers - read when unsure how your own machinery behaves.",
-     kArchitecture},
-    {"deep-research", "Deep research: multi-wave fan-out with cited report",
-     "Multi-wave research fan-out producing a cited report - read BEFORE any deep/thorough research request.",
-     kDeepResearch},
-    // CUM-514: the body is per board - nullptr here, served from
-    // buildBoardIdentity().hardware (a static flash string per board) in get().
-    {"hardware", "The device's hardware inventory",
-     "What hardware this body has (ring, screen, mic, speaker, battery, SD) and what each can do.",
-     nullptr},
-    {"tools-guide", "How to use your own tools",
-     "Which tool to reach for, per job - read when a task needs tools you rarely use.",
-     kToolsGuide},
-    {"deliver-pdf", "Deliver a PDF or generated document to the owner",
-     "Build a PDF via an openai sub's code_interpreter and send it with files.send - read BEFORE promising, refusing, or downgrading a PDF/document request.",
-     kDeliverPdf},
-};
-constexpr int kBuiltinCount = sizeof(kBuiltins) / sizeof(kBuiltins[0]);
 
 // ---- SD capsules ------------------------------------------------------------
 const char*  kSkillsDir  = "/mem/skills";
@@ -205,9 +64,10 @@ bool sdAvailable() { return memory::haveSd(); }
 
 std::vector<Capsule> list() {
   std::vector<Capsule> out;
-  for (int i = 0; i < kBuiltinCount; i++)
-    out.push_back(Capsule{kBuiltins[i].id, kBuiltins[i].title, kBuiltins[i].desc,
-                          "", "builtin", "builtin", true});
+  for (size_t i = 0; i < builtinSkillCount(); i++) {
+    const BuiltinSkill& b = builtinSkill(i);
+    out.push_back(Capsule{b.id, b.title, b.desc, "", "builtin", "builtin", true});
+  }
   if (!memory::haveSd()) return out;
 
   // Scan /mem/skills/<id>/SKILL.md. Directory walk under the Lock; the per-file
@@ -267,10 +127,9 @@ std::string get(const std::string& id) {
   // SD first (SD wins on collision), then the built-ins.
   std::string md = readMd(id);
   if (!md.empty()) return parseSkillMd(md).body;
-  for (int i = 0; i < kBuiltinCount; i++)
-    if (id == kBuiltins[i].id)
-      return std::string(kBuiltins[i].body ? kBuiltins[i].body : buildBoardIdentity().hardware);
-  return std::string();
+  // CUM-523: a built-in names reply.telegram / files.send only on a turn that was
+  // offered them (the turn's one sample; outside a turn, the device's standing answer).
+  return builtinSkillBody(id, agent::orchestrator::telegramForTurn());
 }
 
 std::string spawnCapsule(const std::string& id) {
@@ -291,11 +150,7 @@ std::string spawnCapsule(const std::string& id) {
 
 std::string raw(const std::string& id) { return readMd(id); }
 
-bool reservedId(const std::string& id) {
-  for (int i = 0; i < kBuiltinCount; i++)
-    if (id == kBuiltins[i].id) return true;
-  return false;
-}
+bool reservedId(const std::string& id) { return isBuiltinSkill(id); }
 
 int pendingAgentCount() {
   int n = 0;

@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <set>
@@ -8,6 +9,7 @@
 
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
+#include "nimbus/harness/builtin_skills.h"
 #include "nimbus/harness/jobs.h"
 #include "nimbus/harness/skill_md.h"
 #include "nimbus/orch/journal.h"
@@ -407,6 +409,98 @@ static void test_cjk_desc_cap_is_utf8_safe() {
   }
 }
 
+// ---- CUM-523: no built-in text names a Telegram tool the turn was not given ----
+
+static const char* const kTelegramOnlyNames[] = {"files.send", "reply.telegram", "files_send",
+                                                 "reply_telegram"};
+
+// The class: every built-in capsule's index line, and every body served on a turn
+// with no Telegram, names neither Telegram-only tool. The Telegram side keeps the
+// delivery steps (the variant is a different recipe, not deleted text).
+static void test_cum523_builtin_capsules_follow_the_turn() {
+  TEST_ASSERT_EQUAL(5, (int)agent::builtinSkillCount());
+  for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
+    const agent::BuiltinSkill& b = agent::builtinSkill(i);
+    TEST_ASSERT_TRUE_MESSAGE(agent::isBuiltinSkill(b.id), b.id);
+    const std::string body = agent::builtinSkillBody(b.id, /*telegram=*/false);
+    TEST_ASSERT_FALSE_MESSAGE(body.empty(), b.id);
+    for (const char* t : kTelegramOnlyNames) {
+      const std::string where = std::string(b.id) + ": " + t;
+      TEST_ASSERT_TRUE_MESSAGE(std::string(b.desc).find(t) == std::string::npos, where.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(body.find(t) == std::string::npos, where.c_str());
+    }
+  }
+  const std::string tgPdf = agent::builtinSkillBody("deliver-pdf", true);
+  TEST_ASSERT_TRUE(tgPdf.find("4. Deliver with files.send {project, name}.") != std::string::npos);
+  const std::string webPdf = agent::builtinSkillBody("deliver-pdf", false);
+  TEST_ASSERT_TRUE(webPdf.find("Files list on the device web page") != std::string::npos);
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("architecture", true).find("or\nreply.telegram") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("tools-guide", true).find("reply.speak / reply.telegram") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(agent::builtinSkillBody("deep-research", true).find("files.send for Telegram") !=
+                   std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("no-such-skill", true).c_str());
+  TEST_ASSERT_FALSE(agent::isBuiltinSkill("no-such-skill"));
+}
+
+// The class, over the device's tool registrations: a tool description is static
+// (registered once at boot, for every turn), so only files.send's and
+// reply.telegram's own may name a Telegram-only tool. Reads the registering
+// sources and every description literal between the tool name and its handler.
+static std::string readSource(const char* path) {
+  std::string out;
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return out;
+  char buf[8192];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+// The concatenated string literals from `from` up to the first '[' outside a
+// literal (the handler lambda's capture list).
+static std::string literalsUntilLambda(const std::string& src, size_t from) {
+  std::string text;
+  bool in = false;
+  for (size_t i = from; i < src.size(); ++i) {
+    const char c = src[i];
+    if (in) {
+      if (c == '\\' && i + 1 < src.size()) { text += src[++i]; continue; }
+      if (c == '"') { in = false; continue; }
+      text += c;
+    } else if (c == '"') {
+      in = true;
+    } else if (c == '[') {
+      break;
+    }
+  }
+  return text;
+}
+static void test_cum523_no_tool_description_names_a_telegram_tool() {
+  int scanned = 0;
+  for (const char* path : {"src/agent/files_subsystem.cpp", "src/agent/memory_subsystem.cpp",
+                           "src/main.cpp", "src/sfx/music.cpp", "lib/core/src/orch_memory_tools.cpp",
+                           "lib/core/src/orch_session_tools.cpp", "lib/core/src/orch_result_store.cpp",
+                           "lib/harness/src/websearch.cpp"}) {
+    const std::string src = readSource(path);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), path);
+    for (size_t at = src.find(".add(\""); at != std::string::npos; at = src.find(".add(\"", at + 1)) {
+      const size_t nameStart = at + 6;
+      const size_t nameEnd = src.find('"', nameStart);
+      if (nameEnd == std::string::npos || src.compare(nameEnd, 2, "\",") != 0) continue;
+      const std::string name = src.substr(nameStart, nameEnd - nameStart);
+      if (name.find('.') == std::string::npos) continue;   // not a tool id
+      ++scanned;
+      if (name == "files.send" || name == "reply.telegram") continue;
+      const std::string desc = literalsUntilLambda(src, nameEnd + 2);
+      for (const char* t : kTelegramOnlyNames)
+        TEST_ASSERT_TRUE_MESSAGE(desc.find(t) == std::string::npos, (name + ": " + t).c_str());
+    }
+  }
+  TEST_ASSERT_TRUE(scanned >= 40);   // the scan really saw the registrations
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_full_front_matter);
@@ -435,5 +529,7 @@ int main(int, char**) {
   RUN_TEST(test_skills_index_names_every_approved_skill);
   RUN_TEST(test_skills_index_bounds_and_names_the_overflow);
   RUN_TEST(test_cjk_desc_cap_is_utf8_safe);
+  RUN_TEST(test_cum523_builtin_capsules_follow_the_turn);
+  RUN_TEST(test_cum523_no_tool_description_names_a_telegram_tool);
   return UNITY_END();
 }
