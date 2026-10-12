@@ -332,7 +332,8 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    huddle or workflow name it in any case; "my notion" and "my linear" count
    after "in", "into" or "to" at the end of the ask, Linear's prepositional
    phrases need the capital ("In Linear, list my bugs"), and none is part of a
-   title ("from Linear Algebra Done Right"). The name
+   title ("from Linear Algebra Done Right", "from Slack: Getting Past Burnout";
+   "post this to Slack: Deploy finished" is still an ask). The name
    the owner gave a catalog connector never counts on its own (a Notion
    connector named "notes" does not claim "summarize the meeting notes"). The wire
    carries only connector ids, and a custom Studio connector rides by UUID, so

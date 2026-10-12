@@ -89,6 +89,13 @@ inline bool samePick(const PickLists& l, const std::string& a, const std::string
          router_catalog::canonical(a) == router_catalog::canonical(b);
 }
 
+// The router pick a dispatch runs: `stored` when some upstream runs it, else
+// `fallback`. A pick an older build saved can name an id no upstream runs
+// ("mistral/mistral/zai-glm-5-3"), and every request on it would be refused.
+inline std::string runnableRouterPick(const std::string& stored, const std::string& fallback) {
+  return router_catalog::routable(stored) ? stored : fallback;
+}
+
 // Whether a list item may be offered: always for a direct provider; for the
 // router, only a selector some upstream runs.
 inline bool offered(const PickLists& l, const std::string& item) {

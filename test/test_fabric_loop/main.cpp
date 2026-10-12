@@ -28,10 +28,12 @@ namespace orch = nimbus::orch;
 // read how many allocations are live at a moment (the device turn path must not
 // grow the heap).
 static long g_live = 0;
+static size_t g_largest = 0;   // the largest single allocation since it was reset
 void* operator new(std::size_t n) {
   void* p = std::malloc(n ? n : 1);
   if (!p) throw std::bad_alloc();
   ++g_live;
+  if (n > g_largest) g_largest = n;
   return p;
 }
 void operator delete(void* p) noexcept {
@@ -312,6 +314,27 @@ static void test_cum477_switched_hosts_leave_nothing_on_the_heap() {
   TEST_ASSERT_EQUAL_MESSAGE(single, switched, "live allocations when the third host answers");
 }
 
+// ... and nothing sized to the host list: a list of 257 hosts (the engine passes at
+// most three, the fabric uses the first three) makes no allocation of 257 steps'
+// worth, which the old per-turn vectors were.
+static void test_cum477_fabric_allocates_nothing_per_listed_host() {
+  agent::hlog::setSink(nullptr);
+  const std::vector<std::string> many(257, "anthropic");
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  LiveAtAnswer tx;
+  tx.body = antFinalBody();
+  agent::providers::ProviderDeps pd = d.contract();
+  pd.http = &tx;
+  std::string out, err;
+  g_largest = 0;
+  const bool ok = providers::runFabricLoop(pd, many, "S", "U", out, err, rig.ht, nullptr, nullptr);
+  const size_t largest = g_largest;
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_LESS_THAN_size_t(many.size() * sizeof(orch::HeadStepFn), largest);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
@@ -323,5 +346,6 @@ int main(int, char**) {
   RUN_TEST(test_cum477_fabric_low_memory_does_not_switch);
   RUN_TEST(test_cum477_fabric_never_sends_an_unsent_request_three_times);
   RUN_TEST(test_cum477_switched_hosts_leave_nothing_on_the_heap);
+  RUN_TEST(test_cum477_fabric_allocates_nothing_per_listed_host);
   return UNITY_END();
 }

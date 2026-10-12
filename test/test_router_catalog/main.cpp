@@ -464,6 +464,11 @@ static void test_v459_stored_lists_never_offer_or_accept_slash_ids() {
   const std::string msg = mp::rejectMessage("Cumulo Nimbus", l);
   TEST_ASSERT_TRUE_MESSAGE(msg.find("mistral/mistral/") == std::string::npos, msg.c_str());
   TEST_ASSERT_TRUE_MESSAGE(msg.find("anthropic/claude-opus-5-5") != std::string::npos, msg.c_str());
+  // A pick such a build saved runs the default instead (every request on it would
+  // be refused); a runnable pick runs as saved.
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", mp::runnableRouterPick("mistral/mistral/zai-glm-5-3", "gpt-5.6").c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-opus-5-5",
+                           mp::runnableRouterPick("anthropic/claude-opus-5-5", "gpt-5.6").c_str());
   // A direct provider's ids are not router selectors: nothing is filtered there.
   mp::PickLists d;
   d.choices = "ft:open-mistral-7b:acme/x,mistral-small-latest";

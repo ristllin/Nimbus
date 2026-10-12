@@ -1695,6 +1695,7 @@ static void test_cum536_one_rule_for_every_gate_string() {
       {"Post this to Slack: Deploy finished", "slack", "Slack"},
       {"File it in Linear: Login page broken", "linear", "Linear"},
       {"Quote chapter 2 from Linear: A Field Guide", "linear", ""},
+      {"save to my notion: Reading List", "notion", "Notion"},
   };
   std::string wrong;   // every mismatch, so one run lists them all
   for (const Case& c : kCases) {

@@ -1,6 +1,7 @@
 #include "cumulo_adapter.h"
 
 #include "../agent_config.h"
+#include "../model_pick.h"   // runnableRouterPick: a stale saved pick runs the default (CUM-530)
 #include "../store.h"
 #include "../transport_tls.h"
 #include "nimbus/harness/providers.h"
@@ -29,8 +30,8 @@ FabricErr CumuloAdapter::dispatch(const Directive& d, char outJobId[72]) {
   // Resolve the selector through the ONE shared rule the orchestrator head also
   // uses (CUM-369), so both address the router identically: base
   // /router/<upstream>/v1 and only the bare model (the id the router prices).
-  const nimbus::orch::RouterRoute route =
-      nimbus::orch::resolveRouterRoute(std::string(sel.c_str()));
+  const nimbus::orch::RouterRoute route = nimbus::orch::resolveRouterRoute(
+      agent::model_pick::runnableRouterPick(std::string(sel.c_str()), CUMULO_MODEL));
   if (route.model.empty()) return FabricErr::BadRequest;
   String host = store::cumuloBase();
   if (!host.length()) host = CUMULO_HOST_DEFAULT;
