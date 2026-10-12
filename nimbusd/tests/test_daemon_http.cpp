@@ -207,10 +207,13 @@ static void testFailuresSpeakTheWireWords(ndtest::Ctx& c, DaemonHttpTransport& t
     c.ok(err.rfind("connect failed: ", 0) == 0 && !has(err, "no response") && !has(err, "truncated"),
          "(f) nothing sent: \"connect failed\" (got \"" + err + "\")");
   }
-  c.eq(DaemonHttpTransport::failureText(CURLE_SEND_ERROR, DaemonHttpTransport::Sent::Whole),
-       "Failed sending data to the peer: request body truncated", "(f) a send error: the request never fully left");
+  c.eq(DaemonHttpTransport::failureText(CURLE_SEND_ERROR, DaemonHttpTransport::Sent::Partly),
+       "Failed sending data to the peer: request body truncated", "(f) a send error mid-body: never fully left");
   c.eq(DaemonHttpTransport::failureText(CURLE_RECV_ERROR, DaemonHttpTransport::Sent::Partly),
        "Failure when receiving data from the peer: request body truncated", "(f) a short upload: never fully left");
+  c.eq(DaemonHttpTransport::failureText(CURLE_SEND_ERROR, DaemonHttpTransport::Sent::Whole),
+       "Failed sending data to the peer: no response",
+       "(f) a send error after the whole request went out (HTTP/2 frames mid-wait): it may have started");
 }
 
 // (g) The real Z.ai sub dispatch over this transport: a POST that went out and was

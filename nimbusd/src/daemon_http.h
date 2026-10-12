@@ -125,26 +125,28 @@ class DaemonHttpTransport : public agent::HttpTransport {
 
   // A failure in the words the provider wire reads (wire.h exchange(), the same
   // words the device transport uses, CUM-538): "no response" once the whole
-  // request was out and no answer came back (the peer closed, the read failed or
-  // the deadline passed: a sub that runs inside its POST may have started, so the
-  // head must not spawn it again), "request body truncated" when it never fully
-  // left (a resend duplicates nothing), and "connect failed" before anything was
-  // sent. curl's own text stays in front for the log.
+  // request was out and no answer came back (the peer closed, the read or a later
+  // send failed, or the deadline passed: a sub that runs inside its POST may have
+  // started, so the head must not spawn it again), "request body truncated" when
+  // it never fully left (a resend duplicates nothing), and "connect failed" before
+  // anything was sent. curl's own text stays in front for the log.
   static std::string failureText(CURLcode rc, Sent sent) {
     const std::string what = curl_easy_strerror(rc);
     if (sent == Sent::No) return "connect failed: " + what;
-    if (sent == Sent::Partly || rc == CURLE_SEND_ERROR) return what + ": request body truncated";
+    if (sent == Sent::Partly) return what + ": request body truncated";
     return what + ": no response";
   }
 
  private:
   // Whether the request left, read from the handle after a failure: the transfer
   // phase starts once the connection (and TLS) is up, and the upload count says
-  // how much of the body went out.
+  // how much of the body went out. A count curl cannot give reads as Whole: when
+  // in doubt the work may have started (never spawned twice).
   Sent howFarSent(const agent::HttpRequest& req) {
     curl_off_t pretransfer = 0, uploaded = 0;
-    curl_easy_getinfo(handle_, CURLINFO_PRETRANSFER_TIME_T, &pretransfer);
-    curl_easy_getinfo(handle_, CURLINFO_SIZE_UPLOAD_T, &uploaded);
+    if (curl_easy_getinfo(handle_, CURLINFO_PRETRANSFER_TIME_T, &pretransfer) != CURLE_OK ||
+        curl_easy_getinfo(handle_, CURLINFO_SIZE_UPLOAD_T, &uploaded) != CURLE_OK)
+      return Sent::Whole;
     if (pretransfer <= 0) return Sent::No;
     return uploaded >= (curl_off_t)req.body.size() ? Sent::Whole : Sent::Partly;
   }
