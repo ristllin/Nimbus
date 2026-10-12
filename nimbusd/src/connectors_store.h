@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/key_shape.h"   // connectorTokenError - the device's token rule (CUM-514)
 #include "posix_fs.h"
 
 namespace nimbusd {
@@ -105,6 +106,10 @@ class ConnectorsStore {
     JsonDocument d;
     if (newBlob.size() > kBlobCap || deserializeJson(d, newBlob) || !d.is<JsonArray>())
       return "blob must be a JSON array (<=3500B)";
+    for (JsonObjectConst c : d.as<JsonArrayConst>()) {
+      const std::string te = tokenError(c);
+      if (!te.empty()) return te;
+    }
     std::string err = validateSet(newBlob);
     if (!err.empty()) return err;
     blob_ = newBlob;
@@ -135,6 +140,8 @@ class ConnectorsStore {
       return "patch must be a JSON object";
     const char* nm = pd["name"] | "";
     if (!nm[0]) return "patch needs a name";
+    const std::string te = tokenError(pd.as<JsonObjectConst>());
+    if (!te.empty()) return te;
     std::lock_guard<std::mutex> lk(mu_);
     JsonDocument cur = current();
     JsonArray arr = cur.as<JsonArray>();
@@ -181,6 +188,15 @@ class ConnectorsStore {
   }
 
  private:
+  // CUM-514 (device parity, src/net/webui.cpp): a connector token rides
+  // "Authorization: Bearer <tok>" as it is, so a posted token with a space, a line
+  // break or another hidden character inside is refused with the device's
+  // sentence, which the page shows. A blank or absent token is not checked (a patch
+  // keeps the stored one).
+  static std::string tokenError(JsonObjectConst c) {
+    return nimbus::orch::connectorTokenError(c["name"] | "", std::string(c["tok"] | ""));
+  }
+
   // The non-secret ConnectorInfo for one RAW blob entry, with the same defaults the
   // device GET applies (prov "any", kind "mcp") - so the per-entry auth there and
   // here are computed from identical inputs.

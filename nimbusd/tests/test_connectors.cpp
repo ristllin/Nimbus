@@ -146,10 +146,41 @@ static void checkRouterRoute(ndtest::Ctx& c) {
   c.eq(bare.model, "gpt-5.6", "a bare id is sent unchanged");
 }
 
+// CUM-514 gate (device parity): a connector token rides "Authorization: Bearer
+// <tok>" as it is, so a posted token with a space or a hidden character inside is
+// refused with the device's sentence, in both POST modes, and nothing is stored.
+static void checkTokenRule(ndtest::Ctx& c) {
+  const std::string dir = ndtest::scratchDir("conns-tok");
+  fsutil::mkdirs(dir);
+  ConnectorsStore s;
+  s.setPath(dir + "/connectors.json");
+  const std::string kSpace =
+      "The token for github has a space or a hidden character in it. Paste just the token and save again.";
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":"ghp_abc def"})"),
+       kSpace, "patch: a token with a space inside is refused with the device sentence");
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":"ghp_abc\r"})"),
+       kSpace, "patch: a trailing line break from a copy is refused");
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":"ghp_a\u0007bc"})"),
+       kSpace, "patch: a control byte inside is refused");
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":" ghp_abc "})"),
+       "", "patch: spaces around a token are tolerated, as for a key");
+  c.eq(s.removeByName("github"), "", "(cleanup)");
+  c.eq(s.replaceBlob(R"([{"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":"ghp_abc def"}])"),
+       kSpace, "blob: a token with a space inside is refused with the device sentence");
+  c.eq(sanitized(s), "[]", "nothing refused was stored");
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":1,"url":"https://api.githubcopilot.com/mcp/","tok":"ghp_clean123"})"),
+       "", "a clean token saves");
+  c.eq(s.patchUpsert(R"({"name":"github","prov":"openai","kind":"mcp","en":0,"url":"https://api.githubcopilot.com/mcp/","tok":""})"),
+       "", "a blank token in a card edit is not checked (it keeps the stored one)");
+  c.eq(s.bearerForName("github"), "ghp_clean123", "the stored token is kept");
+  ndtest::rmTree(dir);
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== connectors registry (T1, offline, CUM-424/425) ===\n");
   checkStoreOps(c);
+  checkTokenRule(c);
   checkParseAndAttach(c);
   checkRouterRoute(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

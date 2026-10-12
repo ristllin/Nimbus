@@ -318,6 +318,14 @@ static void testWebSurface(ndtest::Ctx& c) {
 
   // A connectors write with the workspace unchecked queues a probe; the empty
   // workspace is a REAL answer, so every Studio connector reads refused.
+  {   // CUM-514 gate: the hosted save refuses a token with a space inside, with the device's sentence
+    const ApiResp bad = post(api, "/api/connectors",
+                             formEncode("patch", R"({"name":"github","prov":"openai","kind":"mcp","en":1,)"
+                                                 R"("url":"https://api.githubcopilot.com/mcp/","tok":"ghp_abc def"})"));
+    c.eqi(bad.status, 400, "POST /api/connectors refuses a token with a space inside");
+    c.ok(has(bad.body, "The token for github has a space or a hidden character in it. Paste just the token and save again."),
+         "the refusal carries the device's sentence for the page to show");
+  }
   c.eqi(post(api, "/api/connectors", formEncode("blob", kBlob)).status, 200, "POST /api/connectors saves the registry");
   c.ok(waitForProbe(rig, 1, 200), "the write queued a workspace probe (it was unchecked)");
   c.eqi(badgeAuthOf(get(api, "/api/connectors"), "gcal"), 2,
