@@ -603,35 +603,56 @@ namespace {
 // What a connector's data IS for the owner ("not your calendar"), and the
 // phrases a task may use for the OWNER'S data instead of the connector's name.
 // Phrases, not bare words: "research the Gregorian calendar" must not read as a
-// request for the owner's calendar. A phrase with a capital letter is matched as
-// written ("in Linear" is the product, "in linear time" is not). Ids are catalog
-// ids; lists end in nullptr.
-const char* const kGcalPhrases[] = {"my calendar", "your calendar", "'s calendar",
-                                    "calendar event", "calendar events", "my schedule",
-                                    "your schedule", "'s schedule", nullptr};
-const char* const kGmailPhrases[] = {"my inbox", "your inbox", "'s inbox", "my email",
-                                     "my emails", "'s email", "'s emails", nullptr};
-const char* const kNotionPhrases[] = {"notion page", "notion pages", "notion database",
-                                      "notion databases", "notion workspace", "notion doc",
-                                      "notion docs", "notion connector", "in Notion",
-                                      "from Notion", "to Notion", nullptr};
-const char* const kGithubPhrases[] = {"my repo", "my repos", "my repository",
-                                      "my repositories", "your repo", "your repos",
-                                      "your repository", "your repositories", "'s repo",
-                                      "'s repos", nullptr};
-const char* const kSlackPhrases[] = {"slack channel", "slack channels", "slack message",
-                                     "slack messages", "slack thread", "slack threads",
-                                     "slack dm", "slack dms", "slack workspace",
-                                     "slack connector", "in Slack", "on Slack", "from Slack",
-                                     "to Slack", nullptr};
-const char* const kLinearPhrases[] = {"linear issue", "linear issues", "linear ticket",
-                                      "linear tickets", "linear project", "linear projects",
-                                      "linear workspace", "linear connector", "in Linear",
-                                      "from Linear", nullptr};
+// request for the owner's calendar. A phrase is matched case-insensitively,
+// except one with a capital letter, which is matched as written or with its
+// first letter capitalized ("in Linear", "In Linear," are the product; "in linear
+// time" is not). `tail` limits what may follow it. Ids are catalog ids; lists end
+// in a null text.
+enum class Tail : uint8_t {
+  Any,           // any word boundary
+  NotTitleCase,  // not another capitalized word ("from Linear Algebra Done Right" is a title)
+  NoWord,        // no further word ("in my linear" ends the ask; "my linear algebra" does not)
+  NotOff,        // not "off" ("to slack off" is the verb)
+};
+struct Phrase {
+  const char* text;
+  Tail tail = Tail::Any;
+};
+const Phrase kGcalPhrases[] = {{"my calendar"},     {"your calendar"}, {"'s calendar"},
+                               {"calendar event"},  {"calendar events"}, {"my schedule"},
+                               {"your schedule"},   {"'s schedule"},   {nullptr}};
+const Phrase kGmailPhrases[] = {{"my inbox"},  {"your inbox"}, {"'s inbox"}, {"my email"},
+                                {"my emails"}, {"'s email"},   {"'s emails"}, {nullptr}};
+// "notion" and "slack" have no ordinary reading after these prepositions, so they
+// match in any case ("post it in slack"); "my notion" must end the ask ("my notion
+// of fairness" is the word).
+const Phrase kNotionPhrases[] = {{"notion page"},      {"notion pages"},     {"notion database"},
+                                 {"notion databases"}, {"notion workspace"}, {"notion doc"},
+                                 {"notion docs"},      {"notion connector"}, {"in notion"},
+                                 {"from notion"},      {"to notion"},        {"on notion"},
+                                 {"my notion", Tail::NoWord},                {nullptr}};
+const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my repository"},
+                                 {"my repositories"},   {"your repo"},  {"your repos"},
+                                 {"your repository"},   {"your repositories"},
+                                 {"'s repo"},           {"'s repos"},   {nullptr}};
+const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack message"},
+                                {"slack messages"},  {"slack thread"},   {"slack threads"},
+                                {"slack dm"},        {"slack dms"},      {"slack workspace"},
+                                {"slack connector"}, {"in slack"},       {"on slack"},
+                                {"from slack"},      {"to slack", Tail::NotOff},
+                                {"my slack"},        {nullptr}};
+// "linear" is an ordinary word after any preposition ("in linear time"), so those
+// phrases need the capital, and a title ("in Linear Programming") is not the product.
+const Phrase kLinearPhrases[] = {{"linear issue"},     {"linear issues"},  {"linear ticket"},
+                                 {"linear tickets"},   {"linear project"}, {"linear projects"},
+                                 {"linear workspace"}, {"linear connector"},
+                                 {"in Linear", Tail::NotTitleCase},   {"from Linear", Tail::NotTitleCase},
+                                 {"to Linear", Tail::NotTitleCase},   {"my linear", Tail::NoWord},
+                                 {nullptr}};
 struct ProvenanceWords {
   const char* id;
   const char* noun;
-  const char* const* phrases;   // nullptr = none
+  const Phrase* phrases;   // nullptr = none
   // The catalog name is an ordinary English word ("explain linear regression",
   // "the notion of", "some slack in the plan"): the bare id or display name never
   // names the connector, only a phrase does.
@@ -681,11 +702,27 @@ bool isWordChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 }
 
+// What follows a phrase that ended at `end` of `text` is allowed by `tail`.
+bool tailOk(const std::string& text, size_t end, Tail tail) {
+  size_t at = end;
+  while (at < text.size() && text[at] == ' ') at++;
+  const bool word = at < text.size() && isWordChar(text[at]);
+  switch (tail) {
+    case Tail::Any: return true;
+    case Tail::NoWord: return !word;
+    case Tail::NotTitleCase: return !(word && text[at] >= 'A' && text[at] <= 'Z');
+    case Tail::NotOff:
+      return !(text.compare(at, 3, "off") == 0 && (at + 3 >= text.size() || !isWordChar(text[at + 3])));
+  }
+  return true;   // unreachable: every Tail is a case above (-Wswitch flags a new one)
+}
+
 // `needle` occurs in `hay` with no letter or digit against either edge that is
 // itself a letter or digit ("calendar events" matches "Google Calendar events",
-// not "calendar eventsx"; "'s calendar" matches "dana's calendar"). Exact bytes:
-// the caller lowercases both sides for a case-insensitive match.
-bool containsWord(const std::string& hay, const std::string& needle) {
+// not "calendar eventsx"; "'s calendar" matches "dana's calendar"), and `tail`
+// allows what follows it. Exact bytes: the caller lowercases both sides for a
+// case-insensitive match.
+bool containsWord(const std::string& hay, const std::string& needle, Tail tail = Tail::Any) {
   if (needle.empty()) return false;
   const bool wordStart = isWordChar(needle.front());
   const bool wordEnd = isWordChar(needle.back());
@@ -693,15 +730,49 @@ bool containsWord(const std::string& hay, const std::string& needle) {
     const bool startOk = !wordStart || at == 0 || !isWordChar(hay[at - 1]);
     const size_t end = at + needle.size();
     const bool endOk = !wordEnd || end >= hay.size() || !isWordChar(hay[end]);
-    if (startOk && endOk) return true;
+    if (startOk && endOk && tailOk(hay, end, tail)) return true;
   }
   return false;
 }
 
-bool hasUpper(const char* s) {
-  for (; *s; ++s)
-    if (*s >= 'A' && *s <= 'Z') return true;
+bool hasUpper(const std::string& s) {
+  for (char c : s)
+    if (c >= 'A' && c <= 'Z') return true;
   return false;
+}
+
+// One phrase against the task: case-insensitively (`hay` is lowercased), or, with a
+// capital in it, as written or with its first letter capitalized (sentence start).
+bool phraseMatches(const std::string& task, const std::string& hay, const Phrase& ph) {
+  const std::string text = ph.text;
+  if (!hasUpper(text)) return containsWord(hay, text, ph.tail);
+  std::string initial = text;
+  initial[0] = (char)toupper((unsigned char)initial[0]);
+  return containsWord(task, text, ph.tail) || containsWord(task, initial, ph.tail);
+}
+
+// An owner-chosen name cannot be an ordinary word when it holds a digit, a
+// separator or a space, or mixes case past its first letter ("crm-eu", "work_cal",
+// "HubSpot"). One made of plain letters in one case ("notes", "work", "CRM") may be
+// one.
+bool distinctiveName(const std::string& n) {
+  bool innerUpper = false, lower = false;
+  for (size_t i = 0; i < n.size(); ++i) {
+    const char c = n[i];
+    const bool upper = c >= 'A' && c <= 'Z';
+    if (!upper && !(c >= 'a' && c <= 'z')) return true;
+    innerUpper = innerUpper || (upper && i > 0);
+    lower = lower || !upper;
+  }
+  return innerUpper && lower;
+}
+
+// A plain-letter owner-chosen name counts only in an owner-data frame: "my notes",
+// "our crm", "your crm", "the notes connector", "from crm".
+bool inOwnerFrame(const std::string& hay, const std::string& name) {
+  for (const char* pre : {"my ", "our ", "your ", "from "})
+    if (containsWord(hay, pre + name)) return true;
+  return containsWord(hay, name + " connector");
 }
 
 // The provenance words for an attached connector: its catalog entry's, else, for
@@ -717,19 +788,43 @@ const ProvenanceWords* provenanceWordsFor(const AttachedConnector& a, const std:
   return nullptr;
 }
 
-// Whether the task (`task` as written, `hay` lowercased) names this connector.
+// Whether the task names connector `a` by one of its own names (`hay` lowercased).
+// A catalog connector is named by its catalog id, display name or standard wire
+// id, never by the name the owner gave it (a Notion connector named "notes" must
+// not claim "summarize the meeting notes"). A connector outside the catalog has
+// only its own names: a distinctive one counts bare, a plain-letter one only in an
+// owner-data frame. An ordinary-word catalog id (linear, notion, slack) never
+// counts bare, however the connector was added.
+bool namesByName(const std::string& hay, const AttachedConnector& a, const std::string& canon,
+                 const std::string& display, const ProvenanceWords* p) {
+  struct Form { const std::string& text; bool fixed; };   // fixed: the catalog's own name, counts bare
+  static const std::string kNone;
+  const bool catalog = catalogEntry(canon) != nullptr;
+  // A fixed array of references to the strings already held: no container is built
+  // per call on the device turn path.
+  const Form forms[] = {{a.id, catalog && canonicalConnectorId(a.id) == canon},
+                        {canon, catalog},
+                        {display, catalog},
+                        {catalog ? kNone : a.name, false},
+                        {catalog ? kNone : a.type, false}};
+  for (const Form& form : forms) {
+    const std::string f = lowerStr(form.text);
+    if (f.empty() || (p && p->phraseOnly && f == p->id)) continue;   // an ordinary word: phrases only
+    const bool bare = form.fixed || distinctiveName(form.text);
+    if (bare ? containsWord(hay, f) : inOwnerFrame(hay, f)) return true;
+  }
+  return false;
+}
+
+// Whether the task (`task` as written, `hay` lowercased) names this connector: by
+// one of its names, or by an owner-data phrase.
 bool taskNames(const std::string& task, const std::string& hay, const AttachedConnector& a,
                const std::string& canon, const std::string& display) {
   const ProvenanceWords* p = provenanceWordsFor(a, canon);
-  const std::string bareForms[] = {a.id, canon, display, a.name, a.type};
-  for (const std::string& form : bareForms) {
-    const std::string f = lowerStr(form);
-    if (p && p->phraseOnly && f == p->id) continue;   // an ordinary word: phrases only
-    if (containsWord(hay, f)) return true;
-  }
+  if (namesByName(hay, a, canon, display, p)) return true;
   if (!p || !p->phrases) return false;
-  for (const char* const* ph = p->phrases; *ph; ++ph)
-    if (hasUpper(*ph) ? containsWord(task, *ph) : containsWord(hay, *ph)) return true;
+  for (const Phrase* ph = p->phrases; ph->text; ++ph)
+    if (phraseMatches(task, hay, *ph)) return true;
   return false;
 }
 

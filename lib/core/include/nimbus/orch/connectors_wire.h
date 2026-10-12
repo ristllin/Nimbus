@@ -304,13 +304,20 @@ struct AttachedConnector {
 // when `skill` names it exactly, or the task text, case-insensitively on word
 // boundaries, mentions:
 //   - an owner-data phrase ("my calendar", "calendar events", "'s inbox",
-//     "Linear issues", "Notion page", "Slack channel", "my repos", ...), or
-//   - its display name, catalog id, wire id or device name - EXCEPT a catalog
-//     name that is an ordinary English word (linear, notion, slack): research
-//     text ("explain linear regression", "the notion of", "some slack in the
-//     plan") uses those words without meaning the connector, so for them only a
-//     phrase or "<Name> connector" counts. A phrase with a capital letter
-//     ("in Linear") matches only as written, so "in linear time" is not one.
+//     "Linear issues", "Notion page", "post it in slack", "my repos", ...);
+//   - for a catalog connector, its display name, catalog id or standard wire id,
+//     EXCEPT a catalog name that is an ordinary English word (linear, notion,
+//     slack): research text ("explain linear regression", "the notion of", "some
+//     slack in the plan") uses those words without meaning the connector, so for
+//     them only a phrase counts. Linear's prepositional phrases need the capital,
+//     as written or at a sentence start ("in Linear", "In Linear,"), and not
+//     followed by another capitalized word ("from Linear Algebra Done Right" is a
+//     title). The name the owner gave a catalog connector never counts (a Notion
+//     connector named "notes" does not claim "the meeting notes");
+//   - for a connector outside the catalog, its wire id, device name or type: bare
+//     when it cannot be an ordinary word (a digit, a separator, a space or mixed
+//     case: "crm_x", "crm-eu", "HubSpot"), else only in an owner-data
+//     frame ("my notes", "our crm", "from crm", "the notes connector").
 // A heuristic: a task that names none of these (e.g. "is Friday free?") is not
 // marked, so the sub system prompt's no-invention rule is the backstop.
 // `askedIdOut` (optional) receives the matched wire id.

@@ -312,14 +312,20 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    names one of them (its name, catalog or workspace id, or an owner-data phrase
    such as "my calendar"; talk about calendars in general does not count). A
    catalog name that is an ordinary English word (Linear, Notion, Slack) counts
-   only inside a phrase ("Linear issues", "in Notion", "Slack channel", "Linear
-   connector"), so "explain linear regression" is not a Linear request. The wire
+   only inside a phrase ("Linear issues", "post it in slack", "my notion",
+   "Linear connector"), so "explain linear regression" is not a Linear request;
+   Linear's prepositional phrases need the capital ("In Linear, list my bugs")
+   and are never part of a title ("from Linear Algebra Done Right"). The name
+   the owner gave a catalog connector never counts on its own (a Notion
+   connector named "notes" does not claim "summarize the meeting notes"). The wire
    carries only connector ids, and a custom Studio connector rides by UUID, so
    the dispatch also runs the attach once on a scratch document that is never
    sent (`kMistralIdentityProbe`), which adds each connector's device name and
    type: a task that says "pull my deals from crm" is matched to the connector
-   named `crm` on the device, and an explicit id such as `notion_mcp` still reads
-   as Notion. After it, `countsAsConnectorRun` decides which runs count for that
+   named `crm` on the device (a plain-word name such as `crm` or `notes` counts
+   in an owner-data frame like "from crm" or "my notes"; one with a digit, a
+   separator or mixed case, such as `crm-eu` or `HubSpot`, counts anywhere), and an
+   explicit id such as `notion_mcp` still reads as Notion. After it, `countsAsConnectorRun` decides which runs count for that
    connector (named by its id, catalog id, device name or type):
    provider built-ins (`isProviderBuiltinTool`) and runs named for another
    attached connector (`gmail_search` when Google Calendar was asked) do not;

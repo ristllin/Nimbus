@@ -1551,6 +1551,87 @@ static void test_cum536_every_catalog_connector_is_classified() {
   }
 }
 
+// CUM-536 gate 3: one rule for every string the gate findings named.
+//  (a) the name the owner gave a CATALOG connector is never a bare form (a Notion
+//      connector named "notes" claimed "the meeting notes"), and a plain-letter
+//      name of a connector outside the catalog counts only in an owner-data frame;
+//  (b) lowercase owner asks for Slack, Notion and Linear count again ("post the
+//      summary in slack" stopped marking after the L21 rule);
+//  (c) a sentence-initial "In Linear," counts, while a Title Case title ("from
+//      Linear Algebra Done Right") does not.
+// Plus every earlier research-text negative and the ordinary readings the new
+// phrases must leave alone.
+static void test_cum536_one_rule_for_every_gate_string() {
+  using nimbus::orch::AttachedConnector;
+  using nimbus::orch::connectorAskedFor;
+  const char* uuid = "3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b";
+  const AttachedConnector notesNotion("notion", "notes", "notion");   // catalog, owner-named
+  const AttachedConnector notesCustom(uuid, "notes", "notes");
+  const AttachedConnector workCustom(uuid, "work", "work");
+  const AttachedConnector crmCustom(uuid, "crm", "crm");
+  const AttachedConnector crmEu(uuid, "crm-eu", "crm-eu");
+  const AttachedConnector crmCaps(uuid, "CRM", "CRM");      // one case: may be a word
+  const AttachedConnector workCaps(uuid, "WORK", "WORK");
+  const AttachedConnector hubspot(uuid, "HubSpot", "HubSpot");   // mixed case: a name
+  struct Case { const char* task; AttachedConnector att; const char* want; };
+  const Case kCases[] = {
+      // (a) owner-chosen names
+      {"Summarize the meeting notes I pasted below", notesNotion, ""},
+      {"Update my Notion page with the summary", notesNotion, "Notion"},
+      {"Research the release notes for ESP-IDF 5.3", notesCustom, ""},
+      {"Pull my notes from the notes connector", notesCustom, "notes"},
+      {"Research how remote work affects productivity", workCustom, ""},
+      {"Use the work connector to list my tickets", workCustom, "work"},
+      {"Pull my open deals from crm", crmCustom, "crm"},
+      {"Explain the CRM market for small shops", crmCustom, ""},
+      {"List the open deals in crm-eu", crmEu, "crm-eu"},
+      {"Explain the CRM market for small shops", crmCaps, ""},
+      {"Research how remote WORK affects productivity", workCaps, ""},
+      {"Pull my open deals from CRM", crmCaps, "CRM"},
+      {"Sync the deals into HubSpot", hubspot, "HubSpot"},
+      // (b) lowercase owner asks
+      {"post the summary in slack", "slack", "Slack"},
+      {"add this to notion", "notion", "Notion"},
+      {"In Slack, post the digest", "slack", "Slack"},
+      {"file it in my linear", "linear", "Linear"},
+      {"read my slack and summarize the day", "slack", "Slack"},
+      {"put the plan in my notion", "notion", "Notion"},
+      {"list my linear issues", "linear", "Linear"},
+      {"create linear tickets for each crash", "linear", "Linear"},
+      {"open the notion pages about hiring", "notion", "Notion"},
+      {"summarize the slack channel and the slack messages", "slack", "Slack"},
+      // (c) capitals
+      {"In Linear, list the open bugs assigned to me", "linear", "Linear"},
+      {"On Slack, post the digest", "slack", "Slack"},
+      {"In Notion, update the roadmap", "notion", "Notion"},
+      {"Move the bug to Linear.", "linear", "Linear"},
+      {"In linear algebra, a basis spans the space", "linear", ""},
+      {"Summarize chapter 3 from Linear Algebra Done Right", "linear", ""},
+      {"Read the proof in Linear Programming by Vanderbei", "linear", ""},
+      // The earlier research-text negatives (L21).
+      {"Explain linear regression for the report", "linear", ""},
+      {"Explain linear regression with a worked example", "linear", ""},
+      {"Survey linear regression libraries for ESP32", "linear", ""},
+      {"Linear interpolation vs cubic splines", "linear", ""},
+      {"Why does the algorithm run in linear time?", "linear", ""},
+      {"topics in linear algebra", "linear", ""},
+      {"There is some slack in the build schedule", "slack", ""},
+      {"Pick up the slack on the Q4 plan", "slack", ""},
+      {"Explain the notion of back-pressure", "notion", ""},
+      {"Notion of free will: a short survey", "notion", ""},
+      // Ordinary readings the new phrases leave alone.
+      {"My notion of fairness differs from yours", "notion", ""},
+      {"Is it fine to slack off on Fridays?", "slack", ""},
+      {"Write it up in my linear algebra notebook", "linear", ""},
+  };
+  std::string wrong;   // every mismatch, so one run lists them all
+  for (const Case& c : kCases) {
+    const std::string got = connectorAskedFor(c.task, "", {c.att});
+    if (got != c.want) wrong += std::string(" | \"") + c.task + "\" -> \"" + got + "\" want \"" + c.want + "\"";
+  }
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("", wrong.c_str(), "connector-ask table mismatches");
+}
+
 // ---- CUM-536 gate: custom or explicitly-id'd Studio connectors -------------------
 // A custom Studio connector rides by UUID, and a catalog connector may carry an
 // owner-set explicit id; the task names it by its device name or catalog name, so
@@ -1781,6 +1862,7 @@ int main() {
   RUN_TEST(test_cum536_not_called_note_and_builtins);
   RUN_TEST(test_cum536_word_names_need_an_owner_data_phrase);
   RUN_TEST(test_cum536_every_catalog_connector_is_classified);
+  RUN_TEST(test_cum536_one_rule_for_every_gate_string);
   RUN_TEST(test_cum536_custom_ids_resolve_through_the_device_list);
   RUN_TEST(test_cum537_save_queues_probe_only_when_stale);
   RUN_TEST(test_cum537_card_state_never_says_connect_while_unchecked);
