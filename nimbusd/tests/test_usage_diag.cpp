@@ -237,6 +237,19 @@ static void testLastTurnMaskedOnRead(ndtest::Ctx& c) {
   Config cfg2;
   NimbusdRig rig2(cfg2, opts("ud-f2"), &tx2);
   rig2.say("owner", "my other mistral key is q7KxSECONDPLAIN" "KEY00000000000002, and ZAI_TOKEN=zaiPLAINTOKEN1234567890abcdef");
+  // A held key cut short (tool-loop and job lines are clipped with an ellipsis
+  // before the anatomy is built) is masked as far as it goes.
+  {
+    FakeHttpTransport tx3;
+    tx3.script.push_back(respTurn("/router/openai/v1/responses", "ok"));
+    Config cfg3;
+    cfg3.setOverride("NIMBUSD_WEB_TOKEN", "q7KxCUTHELDVALUE0000000000000009");   // held, no prefix
+    NimbusdRig rig3(cfg3, opts("ud-f3"), &tx3);
+    rig3.say("owner", "the brief showed q7KxCUTHELDVALUE00000000000\xE2\x80\xA6 and stopped");
+    const std::string lt3 = rig3.lastTurnAnatomy();
+    c.ok(!has(lt3, "q7KxCUTHELD") && has(lt3, "the brief showed [key]\xE2\x80\xA6 and stopped"),
+         "a held key cut short is masked as far as it goes");
+  }
   const std::string lt2 = rig2.lastTurnAnatomy();
   c.ok(!has(lt2, "SECONDPLAINKEY"), "a long token named a key is masked though nothing holds it");
   c.ok(!has(lt2, "zaiPLAINTOKEN"), "the value of a NAME=value named a token is masked");
@@ -257,6 +270,17 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
       {"the key insight is internationalization", "the key insight is internationalization"},
       {"keys are 1, 2 and 3; build abc123def456ghi789jkl0 passed", "keys are 1, 2 and 3; build abc123def456ghi789jkl0 passed"},
       {"a monkey ate q7KxPLAINMISTRALKEY000000000001", "a monkey ate q7KxPLAINMISTRALKEY000000000001"},
+      {"MONKEY q7KxPLAINMISTRALKEY000000000001", "MONKEY q7KxPLAINMISTRALKEY000000000001"},
+      {"apiKey: q7KxPLAINMISTRALKEY000000000001", "apiKey: [key]"},
+      {"{\"accessToken\":\"q7KxPLAINMISTRALKEY000000000001\"}", "{\"accessToken\":\"[key]\"}"},
+      {"{\\\"api_key\\\":\\\"q7KxPLAINMISTRALKEY000000000001\\\"}", "{\\\"api_key\\\":\\\"[key]\\\"}"},
+      {"the key is \xE2\x80\x9Cq7KxPLAINMISTRALKEY000000000001\xE2\x80\x9D", "the key is \xE2\x80\x9C[key]\xE2\x80\x9D"},
+      {"Your key is **q7KxPLAINMISTRALKEY000000000001**", "Your key is **[key]**"},
+      {"Authorization: Bearer q7KxPLAINMISTRALKEY000000000001", "Authorization: Bearer [key]"},
+      {"{\"model\":\"mistral-large\",\"api_key\":\"q7KxPLAINMISTRALKEY000000000001\",\"n\":1}",
+       "{\"model\":\"mistral-large\",\"api_key\":\"[key]\",\"n\":1}"},
+      {"GET https://x.example/v1?key=q7KxPLAINMISTRALKEY000000000001&alt=json",
+       "GET https://x.example/v1?key=[key]&alt=json"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
 }

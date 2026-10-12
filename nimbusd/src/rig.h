@@ -937,49 +937,67 @@ class NimbusdRig {
     if (t.size() < 20 || t.size() > 512) return false;
     bool alpha = false, digit = false;
     for (unsigned char ch : t) {
-      if (isalpha(ch)) alpha = true;
-      else if (isdigit(ch)) digit = true;
-      else if (ch == 0 || !std::strchr("_-.:+/", ch)) return false;
+      if (!tokenChar(ch)) return false;
+      alpha = alpha || isalpha(ch);
+      digit = digit || isdigit(ch);
     }
     return alpha && digit;
   }
-  // "key", "keys", "token", "tokens" (any case), or a name ending in one ("API_KEY").
-  static bool namesAKey(std::string w) {
-    for (char& ch : w) ch = (char)tolower((unsigned char)ch);
-    for (const char* k : {"key", "keys", "token", "tokens"}) {
+  // "key", "keys", "token", "tokens" or "bearer" (any case), or a name ending in
+  // one after a separator or a camel-case hump ("API_KEY", "apiKey", "accessToken").
+  static bool namesAKey(const std::string& w) {
+    std::string lw = w;
+    for (char& ch : lw) ch = (char)tolower((unsigned char)ch);
+    for (const char* k : {"key", "keys", "token", "tokens", "bearer"}) {
       const size_t n = std::strlen(k);
-      if (w.size() >= n && w.compare(w.size() - n, n, k) == 0 &&
-          (w.size() == n || !isalpha((unsigned char)w[w.size() - n - 1])))
-        return true;
+      if (lw.size() < n || lw.compare(lw.size() - n, n, k) != 0) continue;
+      const size_t at = lw.size() - n;   // where the naming word starts
+      if (at == 0 || !isalpha((unsigned char)w[at - 1])) return true;
+      if (islower((unsigned char)w[at - 1]) && isupper((unsigned char)w[at])) return true;
     }
     return false;
   }
+  // Text around a token that is not part of it: ASCII quotes, brackets, punctuation,
+  // markdown emphasis, a JSON escape, and any non-ASCII byte (curly quotes).
+  static bool edgeChar(unsigned char c) {
+    return c != 0 && (c >= 0x80 || std::strchr("\"'`()[]{}<>,;:.!?*\\", c));
+  }
+  // The characters a key or token is made of (keyLikeToken), and those of a name.
+  static bool tokenChar(unsigned char c) { return isalnum(c) || (c != 0 && std::strchr("_-.:+/", c)); }
+  static bool nameChar(unsigned char c) { return isalnum(c) || c == '_' || c == '-'; }
   // The next whitespace-separated word at or after `i` (moving `i` past it), with
   // the quotes, brackets and punctuation around it left out: [first, second), empty
   // at the end of the text.
   static std::pair<size_t, size_t> nextWord(const std::string& l, size_t& i) {
-    static const char* kEdge = "\"'`()[]{}<>,;:.!?";
     while (i < l.size() && isspace((unsigned char)l[i])) i++;
     size_t b = i;
     while (i < l.size() && !isspace((unsigned char)l[i])) i++;
     size_t e = i;
-    while (b < e && std::strchr(kEdge, l[b])) b++;
-    while (e > b && std::strchr(kEdge, l[e - 1])) e--;
+    while (b < e && edgeChar((unsigned char)l[b])) b++;
+    while (e > b && edgeChar((unsigned char)l[e - 1])) e--;
     return {b, e};
   }
-  // In word `w`, a NAME=value or "name":"value" whose name ends in key or token
-  // and whose value is key-like: the value's offset and length in `w`.
-  static bool namedValue(const std::string& w, size_t& off, size_t& len) {
-    const size_t sep = w.find_first_of("=:");
-    if (sep == std::string::npos) return false;
-    std::string name = w.substr(0, sep);
-    while (!name.empty() && (name.back() == '"' || name.back() == '\'')) name.pop_back();
-    size_t b = sep + 1;
-    while (b < w.size() && (w[b] == '"' || w[b] == '\'')) b++;
-    if (!namesAKey(name) || !keyLikeToken(w.substr(b))) return false;
-    off = b;
-    len = w.size() - b;
-    return true;
+  // Each NAME=value or "name":"value" in word `w` (at `base` in the text) whose name
+  // ends in key or token and whose value is key-like, as (offset, length) spans. One
+  // word can hold several: compact JSON ({"model":"m","api_key":"..."}) and a query
+  // string (?api_key=...&alt=json). False when it holds none.
+  static bool namedValues(const std::string& w, size_t base, std::vector<std::pair<size_t, size_t>>& out) {
+    bool any = false;
+    for (size_t sep = w.find_first_of("=:"); sep != std::string::npos; sep = w.find_first_of("=:", sep + 1)) {
+      size_t ne = sep;
+      while (ne > 0 && edgeChar((unsigned char)w[ne - 1])) ne--;   // the name's closing quote
+      size_t nb = ne;
+      while (nb > 0 && nameChar((unsigned char)w[nb - 1])) nb--;
+      size_t vb = sep + 1;
+      while (vb < w.size() && edgeChar((unsigned char)w[vb])) vb++;   // the value's opening quote
+      size_t ve = vb;
+      while (ve < w.size() && tokenChar((unsigned char)w[ve])) ve++;
+      if (!namesAKey(w.substr(nb, ne - nb)) || !keyLikeToken(w.substr(vb, ve - vb))) continue;
+      out.push_back({base + vb, ve - vb});
+      any = true;
+      sep = ve - 1;   // a ':' inside the value (a Telegram token) is not a separator
+    }
+    return any;
   }
   // The (offset, length) of each key-like token named a key: within the three words
   // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx..."), or the
@@ -993,10 +1011,7 @@ class NimbusdRig {
       const std::pair<size_t, size_t> at = nextWord(l, i);
       if (at.first == at.second) continue;
       const std::string w = l.substr(at.first, at.second - at.first);
-      size_t off = 0, len = 0;
-      if (namedValue(w, off, len))
-        out.push_back({at.first + off, len});
-      else if (window > 0 && keyLikeToken(w))
+      if (!namedValues(w, at.first, out) && window > 0 && keyLikeToken(w))
         out.push_back({at.first, w.size()});
       window = namesAKey(w) ? 3 : std::max(window - 1, 0);
     }
@@ -1072,7 +1087,12 @@ class NimbusdRig {
     lastTurn_ = std::move(t);
   }
   // Mask every secret value this instance holds wherever it appears, whatever its
-  // shape (a Mistral or Tavily key has no prefix redactKeys can recognize).
+  // shape (a Mistral or Tavily key has no prefix redactKeys can recognize), and a
+  // cut copy of one too: tool-loop and job lines are clipped (ending in "...")
+  // before the anatomy is built, so a held key can arrive as its first part only.
+  // A run of at least kHeldHead of a key's leading characters is masked as far as
+  // it matches.
+  static constexpr size_t kHeldHead = 12;
   std::string redactHeldKeys(std::string t) const {
     std::vector<std::string> names = {"TAVILY_API_KEY", "TELEGRAM_BOT_TOKEN", "NIMBUSD_WEB_TOKEN"};
     for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
@@ -1080,8 +1100,13 @@ class NimbusdRig {
     for (const auto& n : names) {
       const std::string v = cfg_.get(n);
       if (v.size() < 8) continue;   // too short to be a key, and masking it would garble text
-      for (size_t at = t.find(v); at != std::string::npos; at = t.find(v, at + kKeyMaskLen))
-        t.replace(at, v.size(), kKeyMask);
+      const size_t head = std::min(v.size(), kHeldHead);
+      for (size_t at = t.find(v.data(), 0, head); at != std::string::npos;
+           at = t.find(v.data(), at + kKeyMaskLen, head)) {
+        size_t len = head;
+        while (len < v.size() && at + len < t.size() && t[at + len] == v[len]) len++;
+        t.replace(at, len, kKeyMask);
+      }
     }
     return t;
   }
