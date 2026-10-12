@@ -508,6 +508,64 @@ static void testRefusedFallbackFallsToDefault(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+// CUM-539 gate: "openai/gpt-5.6" is the router default spelled with its upstream.
+// Compared as strings it read as a different model, so a refusal of it was re-tried
+// on the default (the same model) and named a selector the owner never chose, and a
+// refused fallback of that spelling fell to the default again. Routes are compared.
+static void testDefaultSpelledWithItsUpstream(ndtest::Ctx& c) {
+  std::printf("  -- (p) the default spelled openai/gpt-5.6 is never re-tried as a different model --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  {
+    FakeHttpTransport tx;
+    for (int i = 0; i < 2; i++)   // one request per head run; the engine retries a failed head once
+      tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("rh-o", false), &tx);
+    rig.applyOrchModel("cumulo", "openai/gpt-5.6");
+    const TurnRecord t = rig.say("owner", "hi");
+    c.eqi((long)tx.seen.size(), 2, "one request per head run: the refused default is not re-tried as a fallback");
+    c.ok(has(t.reply, "does not offer openai/gpt-5.6"), "the cause names the model the owner picked");
+  }
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("default here")));
+    for (int i = 0; i < 2; i++) {
+      tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+      tx.script.push_back(ex("/router/openai/v1/responses", 402, refusal("funding_cap_reached")));
+    }
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("rh-o2", false), &tx);
+    rig.applyOrchModel("cumulo", "openai/gpt-5.6");
+    c.ok(has(rig.say("owner", "hi").reply, "default here"), "the default, spelled with its upstream, answers");
+    rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+    rig.say("owner", "hi again");
+    const char* const want[] = {"/router/openai/v1/responses", "/router/anthropic/v1/messages",
+                                "/router/openai/v1/responses", "/router/anthropic/v1/messages",
+                                "/router/openai/v1/responses"};
+    bool order = tx.seen.size() == 5;
+    for (size_t i = 0; order && i < 5; i++) order = tx.seen[i].path == want[i];
+    c.ok(order, "each head run: the pick, then the last working selector, never the same default again");
+    c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "nothing answered, so the pick is left alone");
+  }
+  {
+    // The last working selector is the default in its upstream spelling and answers:
+    // the pick moves to the default itself, not to an alias of it.
+    FakeHttpTransport tx;
+    tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("default here")));
+    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("answered on it")));
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("rh-o3", false), &tx);
+    rig.applyOrchModel("cumulo", "openai/gpt-5.6");
+    rig.say("owner", "hi");
+    rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+    c.ok(has(rig.say("owner", "hi again").reply, "answered on it"), "the alias of the default answers");
+    c.eq(rig.modelFor("cumulo"), "gpt-5.6", "the pick moves to the default, not to its alias");
+  }
+  clearProviderEnv();
+}
+
 static void testCausesFitTheCut(ndtest::Ctx& c) {
   std::printf("  -- (n) every refusal cause fits the engine's 100-character cut --\n");
   int over = 0, unnamed = 0;
@@ -545,6 +603,7 @@ int main() {
   testMarkerNeverCrossesUpstreams(c);
   testLoopMarkerIsNotAResponseId(c);
   testRefusedFallbackFallsToDefault(c);
+  testDefaultSpelledWithItsUpstream(c);
   testCausesFitTheCut(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");

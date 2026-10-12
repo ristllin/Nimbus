@@ -329,7 +329,7 @@ reads the router's own reason from the refused request):
 
 | Router answer | What happens |
 |---|---|
-| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once; the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
+| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once and never the same model twice (`openai/gpt-5.6` is the default `gpt-5.6`); the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
 | That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
 | A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
 | Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |

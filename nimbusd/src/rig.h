@@ -1764,7 +1764,8 @@ class NimbusdRig {
     if (!eng_ || !eng_->turnInFlight()) return true;   // a fold, not a conversation turn
     // Only a model the router does not offer moves the pick, and only once the
     // fallback has answered (a failed fallback leaves the owner's choice alone).
-    if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
+    if (kind == RefusalKind::Selector)
+      setModelPick(kCumuloSlug, sameRoute(fallback, kCumuloModel) ? std::string() : fallback);
     prefixReply(o.out, fallbackNotice(kind, picked, fallback));
     return true;
   }
@@ -1785,8 +1786,15 @@ class NimbusdRig {
   bool defaultIsNext(const std::string& picked, const std::string& tried) const {
     const RouterRefusal rf = tap_.refusal();
     const RefusalKind k = classifyRefusal(rf);
-    return tried != kCumuloModel && picked != kCumuloModel && rf.firstRequest &&
+    return !sameRoute(tried, kCumuloModel) && !sameRoute(picked, kCumuloModel) && rf.firstRequest &&
            (k == RefusalKind::Selector || k == RefusalKind::Upstream);
+  }
+  // Two selectors that reach the same router model: "openai/gpt-5.6" is the default
+  // "gpt-5.6" spelled with its upstream, so it is never a "different" fallback.
+  static bool sameRoute(const std::string& a, const std::string& b) {
+    const nimbus::orch::RouterRoute ra = nimbus::orch::resolveRouterRoute(a);
+    const nimbus::orch::RouterRoute rb = nimbus::orch::resolveRouterRoute(b);
+    return ra.upstream == rb.upstream && ra.model == rb.model;
   }
 
   // A refusal no other model can answer: the badge learns what it means, and the
@@ -1806,10 +1814,11 @@ class NimbusdRig {
   std::string cumuloFallbackFor(const std::string& picked, RefusalKind kind) const {
     std::string fb;
     if (kind == RefusalKind::Selector)
-      fb = (!lastGoodCumulo_.empty() && lastGoodCumulo_ != picked) ? lastGoodCumulo_ : std::string(kCumuloModel);
+      fb = (!lastGoodCumulo_.empty() && !sameRoute(lastGoodCumulo_, picked)) ? lastGoodCumulo_
+                                                                             : std::string(kCumuloModel);
     else if (kind == RefusalKind::Upstream)
       fb = kCumuloModel;
-    return fb == picked ? std::string() : fb;
+    return (fb.empty() || sameRoute(fb, picked)) ? std::string() : fb;
   }
 
   // The provider deps for the Z.ai direct-BYOK head (CUM-445): the base ProviderDeps
