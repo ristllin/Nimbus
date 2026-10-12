@@ -2131,9 +2131,10 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    only inside a phrase ("Linear issues", "post it in slack", "put it in my
    notion", "Linear connector"), so "explain linear regression" is not a Linear
    request; a lowercase "in slack", "on slack" or "to slack" ends the ask ("tend
-   to slack in August" and "slack periods" are the word) and "from slack" goes on
-   only to the next step ("from slack and draft a reply", not "from slack to
-   taut"), never after the words that make it the verb or the idiom ("teams tend
+   to slack in August" and "slack periods" are the word) and "from slack" counts
+   unless "to" or a noun the word describes follows it ("summarize the messages
+   from slack about the outage" counts; "from slack to taut" and "from slack
+   demand" do not), never after the words that make it the verb or the idiom ("teams tend
    to slack.", "we ran low on slack."), while Slack Connect, a Slack canvas,
    huddle or workflow name it in any case; "my notion" and "my linear" count
    after "in", "into" or "to" at the end of the ask, Linear's prepositional
@@ -2144,10 +2145,10 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    connector named "notes" does not claim "summarize the meeting notes"). The wire
    carries only connector ids, and a custom Studio connector rides by UUID, so
    the dispatch also runs the attach once on a scratch document that is never
-   sent (`kMistralIdentityProbe`), which adds each connector's device name and
-   type: a task that says "pull my deals from crm" is matched to the connector)NIMBUSDOC"},
+   sent (`kMistralIdentityProbe`), which adds each connector's device name and)NIMBUSDOC"},
   {"sub-sessions#results-how-output-reaches-you-2", "Results - how output reaches you (2/3)",
-   R"NIMBUSDOC(   named `crm` on the device (a plain-word name such as `crm` or `notes` counts
+   R"NIMBUSDOC(   type: a task that says "pull my deals from crm" is matched to the connector
+   named `crm` on the device (a plain-word name such as `crm` or `notes` counts
    in an owner-data frame like "from crm" or "my notes"; one with a digit, a
    separator or mixed case, such as `crm-eu` or `HubSpot`, counts anywhere), and an
    explicit id such as `notion_mcp` still reads as Notion. After it, `countsAsConnectorRun` decides which runs count for that

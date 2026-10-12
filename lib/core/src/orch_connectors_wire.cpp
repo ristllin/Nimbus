@@ -615,8 +615,9 @@ enum class Tail : uint8_t {
   NotBookTitle,  // nor a colon and a capitalized word: "from Slack: Getting Past Burnout"
                  // cites a book ("post this to Slack: Deploy finished" is still an ask)
   NoWord,        // no further word ("in my linear" ends the ask; "my linear algebra" does not)
-  NextStep,      // no further word, or "and" / "then" starting the next step of the ask,
-                 // and no book subtitle
+  NextStep,      // no book subtitle, and the next word (if any) does not make the
+                 // product name a plain word: not "to" ("from slack to taut") and not
+                 // a noun the word describes ("from slack demand"); see kSlackAsWord
 };
 struct Phrase {
   const char* text;
@@ -645,8 +646,9 @@ const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my rep
 // "slack" is an ordinary word after "in", "on", "to" and "from" ("in slack
 // periods", "low on slack this sprint", "tend to slack in August", "from slack to
 // taut", "slack off"), so those lowercase forms must end the ask ("post the
-// summary in slack", "send it to slack"), "from slack" may only go on to the next
-// step ("get the notes from slack and draft a reply"), and none counts after the
+// summary in slack", "send it to slack"), "from slack" may go on with any word but
+// "to" or a noun that makes it the adjective ("summarize the messages from slack
+// about the outage" is an ask; "from slack demand" is not), and none counts after the
 // words that make it the ordinary one: an infinitive frame before "to slack"
 // ("teams tend to slack.", "do they want to slack?") or "low" / "short" before "on
 // slack" ("we ran low on slack."). The capitalized product name may go on ("post
@@ -660,6 +662,11 @@ constexpr const char* kInfinitiveFrame =
     "tend tends tended tending want wants wanted wanting going begin begins began start starts "
     "started starting seem seems seemed need needs needed try tries tried trying like likes "
     "liked used allowed able how not never";
+// The words after a lowercase "from slack" that make "slack" the plain word: "to"
+// ("from slack to taut") and the nouns the adjective describes ("from slack demand").
+constexpr const char* kSlackAsWord =
+    "to demand demands time times period periods season seasons month months week weeks quarter "
+    "quarters market markets water tide tides capacity growth conditions economy line lines";
 const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack message"},
                                 {"slack messages"},  {"slack thread"},   {"slack threads"},
                                 {"slack dm"},        {"slack dms"},      {"slack workspace"},
@@ -744,11 +751,17 @@ bool sameWordAt(const std::string& text, size_t at, const char* word, size_t n) 
   return true;
 }
 
-// The word starting at `at` of `text` is `word` (lowercase), whole.
-bool wordAt(const std::string& text, size_t at, const char* word) {
-  const size_t n = std::strlen(word);
-  if (at + n > text.size() || (at + n < text.size() && isWordChar(text[at + n]))) return false;
-  return sameWordAt(text, at, word, n);
+// The word starting at `at` of `text` is one of `words` (lowercase, space-separated),
+// whole, in any case.
+bool wordIsOneOf(const std::string& text, size_t at, const char* words) {
+  for (const char* w = words; *w;) {
+    const char* e = std::strchr(w, ' ');
+    const size_t n = e ? (size_t)(e - w) : std::strlen(w);
+    const bool whole = at + n <= text.size() && (at + n == text.size() || !isWordChar(text[at + n]));
+    if (whole && sameWordAt(text, at, w, n)) return true;
+    w += n + (e ? 1 : 0);
+  }
+  return false;
 }
 
 // A colon at `at` followed by a capitalized word: a subtitle ("from Slack: Getting
@@ -770,8 +783,7 @@ bool tailOk(const std::string& text, size_t end, Tail tail) {
   switch (tail) {
     case Tail::Any: return true;
     case Tail::NoWord: return !word;
-    case Tail::NextStep:
-      return !subtitleAt(text, at) && (!word || wordAt(text, at, "and") || wordAt(text, at, "then"));
+    case Tail::NextStep: return !subtitleAt(text, at) && !(word && wordIsOneOf(text, at, kSlackAsWord));
     case Tail::NotTitleCase: return !capital;
     case Tail::NotBookTitle: return !capital && !subtitleAt(text, at);
   }

@@ -325,9 +325,10 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    only inside a phrase ("Linear issues", "post it in slack", "put it in my
    notion", "Linear connector"), so "explain linear regression" is not a Linear
    request; a lowercase "in slack", "on slack" or "to slack" ends the ask ("tend
-   to slack in August" and "slack periods" are the word) and "from slack" goes on
-   only to the next step ("from slack and draft a reply", not "from slack to
-   taut"), never after the words that make it the verb or the idiom ("teams tend
+   to slack in August" and "slack periods" are the word) and "from slack" counts
+   unless "to" or a noun the word describes follows it ("summarize the messages
+   from slack about the outage" counts; "from slack to taut" and "from slack
+   demand" do not), never after the words that make it the verb or the idiom ("teams tend
    to slack.", "we ran low on slack."), while Slack Connect, a Slack canvas,
    huddle or workflow name it in any case; "my notion" and "my linear" count
    after "in", "into" or "to" at the end of the ask, Linear's prepositional

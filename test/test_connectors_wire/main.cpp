@@ -1705,6 +1705,31 @@ static void test_cum536_one_rule_for_every_gate_string() {
   TEST_ASSERT_EQUAL_STRING_MESSAGE("", wrong.c_str(), "connector-ask table mismatches");
 }
 
+// ---- Convergence gate: lowercase "from slack" reads on --------------------------
+// "from slack" went on only to "and" / "then", so ordinary owner asks with a
+// following word stopped counting. It now refuses only the readings that make
+// "slack" a plain word: "from slack to ...", an adjective before a noun ("from slack
+// demand"), or a book subtitle (the earlier negatives in the table above stay).
+static void test_cum536_from_slack_reads_on() {
+  using nimbus::orch::AttachedConnector;
+  using nimbus::orch::connectorAskedFor;
+  const AttachedConnector slack("slack");
+  struct Case { const char* task; const char* want; };
+  const Case kCases[] = {
+      {"summarize the messages from slack about the outage", "Slack"},
+      {"pull yesterday's notes from slack for the standup", "Slack"},
+      {"get the decisions from slack this week", "Slack"},
+      {"Research the recovery from slack periods in retail", ""},
+      {"Model the shift from slack times to peak load", ""},
+  };
+  std::string wrong;
+  for (const Case& c : kCases) {
+    const std::string got = connectorAskedFor(c.task, "", {slack});
+    if (got != c.want) wrong += std::string(" | \"") + c.task + "\" -> \"" + got + "\" want \"" + c.want + "\"";
+  }
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("", wrong.c_str(), "from-slack mismatches");
+}
+
 // ---- CUM-536 gate: custom or explicitly-id'd Studio connectors -------------------
 // A custom Studio connector rides by UUID, and a catalog connector may carry an
 // owner-set explicit id; the task names it by its device name or catalog name, so
@@ -1937,6 +1962,7 @@ int main() {
   RUN_TEST(test_cum536_word_names_need_an_owner_data_phrase);
   RUN_TEST(test_cum536_every_catalog_connector_is_classified);
   RUN_TEST(test_cum536_one_rule_for_every_gate_string);
+  RUN_TEST(test_cum536_from_slack_reads_on);
   RUN_TEST(test_cum536_custom_ids_resolve_through_the_device_list);
   RUN_TEST(test_cum537_save_queues_probe_only_when_stale);
   RUN_TEST(test_cum537_card_state_never_says_connect_while_unchecked);
