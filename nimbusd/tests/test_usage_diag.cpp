@@ -314,8 +314,90 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
        "{\"model\":\"mistral-large\",\"api_key\":\"[key]\",\"n\":1}"},
       {"GET https://x.example/v1?key=q7KxPLAINMISTRALKEY000000000001&alt=json",
        "GET https://x.example/v1?key=[key]&alt=json"},
+      // CUM-546 gate: a model id or a URL after "tokens"/"token" is not a key ...
+      {"max output tokens for claude-sonnet-5-20260301 is 64000",
+       "max output tokens for claude-sonnet-5-20260301 is 64000"},
+      {"token budget exceeded calling https://api.openai.com/v1/responses",
+       "token budget exceeded calling https://api.openai.com/v1/responses"},
+      {"the token endpoint https://api.openai.com/v1/oauth/token2 refused",
+       "the token endpoint https://api.openai.com/v1/oauth/token2 refused"},
+      {"the key for gpt-4o-2024-08-06 is set", "the key for gpt-4o-2024-08-06 is set"},
+      // ... while a lowercase token with a random part, or a UUID, still is.
+      {"slack token xoxb-1234-5678-abcdefghijklmnopqrstuvwx", "slack token [key]"},
+      {"the key 3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b", "the key [key]"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
+}
+
+// CUM-546 gate: the named-value scan rescanned the whole word for every ':' (a
+// separator, a quote character and a token character at once), so one long
+// colon-dense word cost seconds on the engine thread at capture and on the HTTP
+// thread per GET. Every scan around a separator is now bounded.
+static void testMaskStaysLinear(ndtest::Ctx& c) {
+  std::printf("  -- (h) masking a long colon-dense word stays linear --\n");
+  const std::string colons = "a" + std::string(1 << 17, ':') + "a";
+  std::string pairs;
+  for (int i = 0; i < 60000; i++) pairs += "ab:";
+  std::string tokens;
+  for (int i = 0; i < 40000; i++) tokens += "token:";
+  tokens += "x";
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool same = NimbusdRig::redactKeys(colons) == colons && NimbusdRig::redactKeys(pairs) == pairs &&
+                    NimbusdRig::redactKeys(tokens) == tokens;
+  const long ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+                      .count();
+  c.ok(same, "nothing in those words is a key, and nothing is masked");
+  c.ok(ms < 1000, "three ~200 KB colon-dense words are masked in under a second (took " + std::to_string(ms) + " ms)");
+  // The bound never costs a real key: a named value at the end of a long run.
+  c.eq(NimbusdRig::redactKeys(tokens + ":api_key=q7KxPLAINMISTRALKEY000000000001").substr(tokens.size()),
+       ":api_key=[key]", "a NAME=value after a long colon run is still masked");
+}
+
+// CUM-546 gate: /api/lastturn is masked again as it is served, but on the copy
+// already cut at 256 KB: a key the owner saved after the turn that straddled the
+// cut kept its first characters, too few for the held-key mask to recognize. The
+// cut now never keeps the head of a word it splits.
+static void testCutKeepsNoKeyHead(ndtest::Ctx& c) {
+  std::printf("  -- (i) the 256 KB cut never keeps the head of a key it splits --\n");
+  std::string t = std::string(100, 'x') + " q7KxCUTKEY0123456789abcdefABCDE tail";
+  NimbusdRig::capAnatomy(t, 110);
+  c.eq(t, std::string(100, 'x') + " ", "the word the cut splits is dropped");
+  std::string run = "a " + std::string(2000, 'z');
+  NimbusdRig::capAnatomy(run, 1000);
+  c.eqi((long)run.size(), 1000, "a run longer than any key is no key's head and is kept");
+  // End to end: a turn whose message puts an unheld 31-character key across the
+  // cut (its 8th character at 256 KB), saved by the owner afterwards.
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_USAGE", 1);
+  const std::string key = "q7KxSTRADDLEKEY0000000000000007";
+  // Where the owner's message starts in the anatomy (a first, identical turn).
+  const size_t cut = 256 * 1024;
+  size_t mark = 0;
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(respTurn("/router/openai/v1/responses", "noted"));
+    Config cfg;
+    NimbusdRig rig(cfg, opts("ud-i1"), &tx);
+    rig.say("owner", "MARKHERE " + std::string(cut, 'm'));
+    mark = rig.lastTurnAnatomy().find("MARKHERE");
+  }
+  c.ok(mark != std::string::npos && mark < 200000, "the message's place in the anatomy is known");
+  std::string pad;
+  while (pad.size() + 4 <= cut - 7 - mark) pad += "pad ";
+  pad += std::string(cut - 7 - mark - pad.size(), '.');
+  pad.back() = ' ';   // the pad ends in a space, so the key is a word of its own
+  FakeHttpTransport tx;
+  tx.script.push_back(respTurn("/router/openai/v1/responses", "noted"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ud-i2"), &tx);
+  rig.say("owner", pad + key + " and more after it");
+  const std::string before = rig.lastTurnAnatomy();
+  c.ok(before.size() <= cut, "the anatomy is cut at 256 KB");
+  c.ok(rig.applyProviderKey("mistral", key), "the owner saves the key after the turn");
+  Web web(rig);
+  const ApiResp lt = web.call("GET", "/api/lastturn");
+  c.ok(!has(lt.body, "q7KxSTR") && !has(lt.body, "STRADDLE"), "no head of the saved key is served");
+  clearEnv();
 }
 
 int main() {
@@ -329,6 +411,8 @@ int main() {
   testSameProviderKeyMaskedWhole(c);
   testLastTurnMaskedOnRead(c);
   testNamedTokenRule(c);
+  testMaskStaysLinear(c);
+  testCutKeepsNoKeyHead(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

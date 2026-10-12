@@ -980,27 +980,59 @@ class NimbusdRig {
   // Each NAME=value or "name":"value" in word `w` (at `base` in the text) whose name
   // ends in key or token and whose value is key-like, as (offset, length) spans. One
   // word can hold several: compact JSON ({"model":"m","api_key":"..."}) and a query
-  // string (?api_key=...&alt=json). False when it holds none.
+  // string (?api_key=...&alt=json). False when it holds none. Every scan around a
+  // separator is bounded (a quote run, a naming word, a key's longest form), so a
+  // word of thousands of ':' costs a constant per separator, not a rescan of the word.
+  static constexpr size_t kEdgeMax = 8;    // quotes and escapes around a name or value
+  static constexpr size_t kNameMax = 64;   // a key's name ("ANTHROPIC_API_KEY") is shorter
   static bool namedValues(const std::string& w, size_t base, std::vector<std::pair<size_t, size_t>>& out) {
     bool any = false;
     for (size_t sep = w.find_first_of("=:"); sep != std::string::npos; sep = w.find_first_of("=:", sep + 1)) {
-      size_t ne = sep;
-      while (ne > 0 && edgeChar((unsigned char)w[ne - 1])) ne--;   // the name's closing quote
-      size_t nb = ne;
-      while (nb > 0 && nameChar((unsigned char)w[nb - 1])) nb--;
-      size_t vb = sep + 1;
-      while (vb < w.size() && edgeChar((unsigned char)w[vb])) vb++;   // the value's opening quote
-      size_t ve = vb;
-      while (ve < w.size() && tokenChar((unsigned char)w[ve])) ve++;
-      if (!namesAKey(w.substr(nb, ne - nb)) || !keyLikeToken(w.substr(vb, ve - vb))) continue;
-      out.push_back({base + vb, ve - vb});
+      if (!namesAKey(nameBefore(w, sep))) continue;
+      const std::pair<size_t, size_t> v = valueAfter(w, sep);
+      if (!keyLikeToken(w.substr(v.first, v.second - v.first))) continue;   // over kKeyMax never is
+      out.push_back({base + v.first, v.second - v.first});
       any = true;
-      sep = ve - 1;   // a ':' inside the value (a Telegram token) is not a separator
+      sep = v.second - 1;   // a ':' inside the value (a Telegram token) is not a separator
     }
     return any;
   }
+  // The name before the separator at `sep` (its closing quote skipped), bounded.
+  static std::string nameBefore(const std::string& w, size_t sep) {
+    size_t ne = sep;
+    while (ne > 0 && sep - ne < kEdgeMax && edgeChar((unsigned char)w[ne - 1])) ne--;
+    size_t nb = ne;
+    while (nb > 0 && ne - nb < kNameMax && nameChar((unsigned char)w[nb - 1])) nb--;
+    return w.substr(nb, ne - nb);
+  }
+  // The value after the separator at `sep` (its opening quote skipped) as [first,
+  // second), at most kKeyMax + 1 characters: anything longer is no key.
+  static std::pair<size_t, size_t> valueAfter(const std::string& w, size_t sep) {
+    size_t vb = sep + 1;
+    while (vb < w.size() && vb - sep <= kEdgeMax && edgeChar((unsigned char)w[vb])) vb++;
+    size_t ve = vb;
+    while (ve < w.size() && ve - vb <= kKeyMax && tokenChar((unsigned char)w[ve])) ve++;
+    return {vb, ve};
+  }
+  // An ordinary identifier a word such as "token" or "key" is often followed by,
+  // never masked by the three-word window: a URL, or a model id
+  // ("claude-sonnet-5-20260301", "gpt-4o-2024-08-06"): lowercase letters and digits
+  // joined by '-', '.', '/' or ':', starting with a letter, with no run of 16
+  // letters and digits (a key's random part has one; "xoxb-..." and Mistral keys do).
+  static bool plainIdentifier(const std::string& t) {
+    if (t.find("://") != std::string::npos) return true;
+    if (t.empty() || !islower((unsigned char)t[0]) || t.find('-') == std::string::npos) return false;
+    size_t run = 0;
+    for (unsigned char ch : t) {
+      if (isupper(ch)) return false;
+      run = isalnum(ch) ? run + 1 : 0;
+      if (run >= 16) return false;
+    }
+    return true;
+  }
   // The (offset, length) of each key-like token named a key: within the three words
-  // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx..."), or the
+  // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx...", but not
+  // a URL or a model id there: plainIdentifier), or the
   // value of a NAME=value or "name":"value" whose name ends in one
   // ("MISTRAL_API_KEY=q7Kx...", {"api_key":"q7Kx..."}). One pass over the words,
   // so it stays linear in the text however long it is.
@@ -1011,7 +1043,7 @@ class NimbusdRig {
       const std::pair<size_t, size_t> at = nextWord(l, i);
       if (at.first == at.second) continue;
       const std::string w = l.substr(at.first, at.second - at.first);
-      if (!namedValues(w, at.first, out) && window > 0 && keyLikeToken(w))
+      if (!namedValues(w, at.first, out) && window > 0 && keyLikeToken(w) && !plainIdentifier(w))
         out.push_back({at.first, w.size()});
       window = namesAKey(w) ? 3 : std::max(window - 1, 0);
     }
@@ -1021,6 +1053,17 @@ class NimbusdRig {
     for (const char* k : {"fail", "FAIL", "error", "refused", "HTTP 4", "HTTP 5", "rejected", "timed out"})
       if (l.find(k) != std::string::npos) return true;
     return false;
+  }
+  // Cut the anatomy at `cap` without keeping the head of a word the cut splits: a
+  // key saved after the turn is masked on read only when enough of it is left to
+  // recognize, so the trailing run of key characters (at most a key's length) goes
+  // too. A longer run is no key's tail and stays.
+  static void capAnatomy(std::string& t, size_t cap) {
+    if (t.size() <= cap) return;
+    t.resize(cap);
+    size_t b = t.size();
+    while (b > 0 && t.size() - b <= kKeyMax && tokenChar((unsigned char)t[b - 1])) b--;
+    if (t.size() - b <= kKeyMax) t.resize(b);
   }
   // The most recent turn's anatomy (device /api/lastturn): what the model got and
   // what it answered. "" before the first turn. Masked again as it is served: a key
@@ -1082,7 +1125,7 @@ class NimbusdRig {
     // held values go first and the cap last, so neither the prefix mask nor the cut
     // can leave part of a key that the exact-value mask no longer recognizes.
     t = redactKeys(redactHeldKeys(std::move(t)));
-    if (t.size() > kCap) t.resize(kCap);
+    capAnatomy(t, kCap);
     std::lock_guard<std::mutex> lk(diagMu_);
     lastTurn_ = std::move(t);
   }
