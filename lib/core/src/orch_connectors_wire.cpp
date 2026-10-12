@@ -615,9 +615,9 @@ enum class Tail : uint8_t {
   NotBookTitle,  // nor a colon and a capitalized word: "from Slack: Getting Past Burnout"
                  // cites a book ("post this to Slack: Deploy finished" is still an ask)
   NoWord,        // no further word ("in my linear" ends the ask; "my linear algebra" does not)
-  NextStep,      // no book subtitle, and the next word (if any) does not make the
-                 // product name a plain word: not "to" ("from slack to taut") and not
-                 // a noun the word describes ("from slack demand"); see kSlackAsWord
+  NextStep,      // no further word, or one that starts the next step, a time or a
+                 // topic of the ask (kAfterFromSlack: "and", "then", "about", "since",
+                 // ...), lowercase, and no book subtitle
 };
 struct Phrase {
   const char* text;
@@ -646,9 +646,9 @@ const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my rep
 // "slack" is an ordinary word after "in", "on", "to" and "from" ("in slack
 // periods", "low on slack this sprint", "tend to slack in August", "from slack to
 // taut", "slack off"), so those lowercase forms must end the ask ("post the
-// summary in slack", "send it to slack"), "from slack" may go on with any word but
-// "to" or a noun that makes it the adjective ("summarize the messages from slack
-// about the outage" is an ask; "from slack demand" is not), and none counts after the
+// summary in slack", "send it to slack"), "from slack" may go on only with the next
+// step, a time or a topic ("summarize the messages from slack about the outage" is
+// an ask; "from slack demand" is not), and none counts after the
 // words that make it the ordinary one: an infinitive frame before "to slack"
 // ("teams tend to slack.", "do they want to slack?") or "low" / "short" before "on
 // slack" ("we ran low on slack."). The capitalized product name may go on ("post
@@ -662,11 +662,13 @@ constexpr const char* kInfinitiveFrame =
     "tend tends tended tending want wants wanted wanting going begin begins began start starts "
     "started starting seem seems seemed need needs needed try tries tried trying like likes "
     "liked used allowed able how not never";
-// The words after a lowercase "from slack" that make "slack" the plain word: "to"
-// ("from slack to taut") and the nouns the adjective describes ("from slack demand").
-constexpr const char* kSlackAsWord =
-    "to demand demands time times period periods season seasons month months week weeks quarter "
-    "quarters market markets water tide tides capacity growth conditions economy line lines";
+// The words that may follow a lowercase "from slack" in an ask: the next step, a
+// time or a topic ("from slack and draft a reply", "from slack about the outage",
+// "from slack since Monday"). Any other word reads "slack" as the plain word ("from
+// slack to taut", "from slack demand", "from slack labor markets").
+constexpr const char* kAfterFromSlack =
+    "and then about for this that these those today yesterday tonight tomorrow since on at over "
+    "during regarding re last past";
 const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack message"},
                                 {"slack messages"},  {"slack thread"},   {"slack threads"},
                                 {"slack dm"},        {"slack dms"},      {"slack workspace"},
@@ -783,7 +785,8 @@ bool tailOk(const std::string& text, size_t end, Tail tail) {
   switch (tail) {
     case Tail::Any: return true;
     case Tail::NoWord: return !word;
-    case Tail::NextStep: return !subtitleAt(text, at) && !(word && wordIsOneOf(text, at, kSlackAsWord));
+    case Tail::NextStep:
+      return !subtitleAt(text, at) && (!word || (!capital && wordIsOneOf(text, at, kAfterFromSlack)));
     case Tail::NotTitleCase: return !capital;
     case Tail::NotBookTitle: return !capital && !subtitleAt(text, at);
   }

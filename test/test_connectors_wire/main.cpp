@@ -1721,6 +1721,14 @@ static void test_cum536_from_slack_reads_on() {
       {"get the decisions from slack this week", "Slack"},
       {"Research the recovery from slack periods in retail", ""},
       {"Model the shift from slack times to peak load", ""},
+      // Spot gate: the rule is an allowlist of what may follow (the next step, a
+      // time or a topic), so an unlisted reading stays the plain word, and a title
+      // after a capitalized "from Slack" is a book even without a colon.
+      {"Research the move from slack labor markets to full employment", ""},
+      {"Explain the move from slack inventory policies to lean ones", ""},
+      {"Summarize chapter 3 from Slack Getting Past Burnout", ""},
+      {"get the notes from slack, then draft a reply", "Slack"},
+      {"collect the decisions from slack since Monday", "Slack"},
   };
   std::string wrong;
   for (const Case& c : kCases) {
