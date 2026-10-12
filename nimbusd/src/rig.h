@@ -1091,7 +1091,11 @@ class NimbusdRig {
   // cut copy of one too: tool-loop and job lines are clipped (ending in "...")
   // before the anatomy is built, so a held key can arrive as its first part only.
   // A run of at least kHeldHead of a key's leading characters is masked as far as
-  // it matches.
+  // it matches, and when it stops matching before the key ends, on to the end of
+  // the token it sits in: keys of one provider share their first characters
+  // (every Anthropic key starts "sk-ant-api03-"), so a DIFFERENT key of that
+  // provider must not lose only its prefix and keep its body in clear. A clipped
+  // copy still stops at the clip mark (an ellipsis is not a token character).
   static constexpr size_t kHeldHead = 12;
   std::string redactHeldKeys(std::string t) const {
     std::vector<std::string> names = {"TAVILY_API_KEY", "TELEGRAM_BOT_TOKEN", "NIMBUSD_WEB_TOKEN"};
@@ -1105,6 +1109,8 @@ class NimbusdRig {
            at = t.find(v.data(), at + kKeyMaskLen, head)) {
         size_t len = head;
         while (len < v.size() && at + len < t.size() && t[at + len] == v[len]) len++;
+        if (len < v.size())
+          while (at + len < t.size() && tokenChar((unsigned char)t[at + len])) len++;
         t.replace(at, len, kKeyMask);
       }
     }

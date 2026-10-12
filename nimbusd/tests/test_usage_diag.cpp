@@ -206,6 +206,39 @@ static void testHeldKeyMaskedWhole(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// CUM-546 gate (High): the held-key mask matched a held key's first kHeldHead
+// characters and masked only as far as they matched. Every Anthropic key starts
+// with "sk-ant-api03-", so a DIFFERENT Anthropic key typed in chat lost only that
+// prefix and its body stayed in clear (and the prefix mask no longer saw "sk-").
+// A partial match now masks the whole token it sits in.
+static void testSameProviderKeyMaskedWhole(ndtest::Ctx& c) {
+  std::printf("  -- (e2) a second key with a held key's prefix is masked whole --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_USAGE", 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(respTurn("/router/openai/v1/responses", "ok"));
+  Config cfg;
+  cfg.setOverride("ANTHROPIC_API_KEY", "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  NimbusdRig::Options o = opts("ud-e2");
+  o.orchHost = "cumulo";   // the turn stays on the scripted router head
+  NimbusdRig rig(cfg, o, &tx);
+  rig.say("owner", "my new key is sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBB, and the old one ends there");
+  const std::string lt = rig.lastTurnAnatomy();
+  c.ok(!has(lt, "BBBB"), "no piece of the second key is left in clear");
+  c.ok(has(lt, "my new key is [key], and the old one ends there"), "the second key reads [key] and the text around it is kept");
+  // The same rule for a held key with no prefix: a different value that only shares
+  // its first characters is masked whole too.
+  FakeHttpTransport tx2;
+  tx2.script.push_back(respTurn("/router/openai/v1/responses", "ok"));
+  Config cfg2;
+  cfg2.setOverride("NIMBUSD_WEB_TOKEN", "q7KxSHAREDHEAD00AAAAAAAAAAAAAAAA");
+  NimbusdRig rig2(cfg2, opts("ud-e3"), &tx2);
+  rig2.say("owner", "try q7KxSHAREDHEAD00ZZZZZZZZZZZZZZZZ/next instead");
+  const std::string lt2 = rig2.lastTurnAnatomy();
+  c.ok(!has(lt2, "ZZZZ") && has(lt2, "try [key] instead"), "a shapeless value sharing a held key's head is masked whole");
+  clearEnv();
+}
+
 // CUM-546 gate: the anatomy was masked once, when the turn was captured, with the
 // keys held then. A key the owner typed in chat before saving it stayed in clear on
 // /api/lastturn until the next turn; it is now masked again as the page is served.
@@ -293,6 +326,7 @@ int main() {
   testLogIsBounded(c);
   testLastTurnIsMasked(c);
   testHeldKeyMaskedWhole(c);
+  testSameProviderKeyMaskedWhole(c);
   testLastTurnMaskedOnRead(c);
   testNamedTokenRule(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
