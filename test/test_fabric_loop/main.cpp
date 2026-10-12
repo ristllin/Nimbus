@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 
@@ -15,11 +16,12 @@
 
 using harness_test::bodyHas;
 using harness_test::FakeProviderDeps;
+using harness_test::reqBody;
 namespace providers = agent::providers;
 namespace orch = nimbus::orch;
 
-void setUp() {}
-void tearDown() {}
+void setUp() { harness_test::LogCapture::install(); }
+void tearDown() { agent::hlog::setSink(nullptr); }
 
 static std::string antToolUseBody() {
   return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"memory_search\","
@@ -161,6 +163,71 @@ static void test_single_host_list_never_switches() {
   TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // initial + one retry only
 }
 
+// ---- CUM-477 gate: the fabric gets the resend wait too ------------------------
+// A LOOP turn on a direct openai/anthropic/mistral head runs the fabric (the
+// fleet's default config), which retried a short write at once and then switched
+// hosts: the bounded wait for the heap and the memory label never reached it.
+// Bench numbers: the write fails with free heap at 9940, under the round floor.
+struct LowHeapFabric {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  agent::providers::ProviderDeps pd;
+  int delays = 0;
+  bool recovered = false;
+  explicit LowHeapFabric(bool recovers) {
+    harness_test::Exchange unsent;
+    unsent.expectHost = "api.openai.com";
+    unsent.expectPathContains = "/v1/responses";
+    unsent.status = 0;
+    unsent.err = "head write failed";
+    d.http.script.push_back(unsent);
+    pd = d.contract();
+    // Healthy until the failed write, then 9940 until the heap recovers.
+    pd.freeHeap = [this] { return (d.http.idx >= 1 && !recovered) ? 9940u : 100000u; };
+    pd.delayMs = [this, recovers](uint32_t ms) {
+      ++delays;
+      d.now += ms;
+      if (recovers) recovered = true;
+    };
+    d.fillTools(rig);
+    rig.ht.cfg.roundMinHeap = 12000;   // ORCH_LOOP_MIN_HEAP on the device
+  }
+};
+
+static void test_cum477_fabric_resends_once_after_the_heap_recovers() {
+  LowHeapFabric f(/*recovers=*/true);
+  f.d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  int notifies = 0;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(f.pd, {"openai", "anthropic"}, "SYS", "USER", out, err, f.rig.ht,
+                                           nullptr, [&](const std::string&, const std::string&) { notifies++; });
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)f.d.http.seen.size());   // the unsent request and its one resend
+  TEST_ASSERT_EQUAL_STRING(reqBody(f.d, 0).c_str(), reqBody(f.d, 1).c_str());
+  TEST_ASSERT_TRUE(f.delays >= 1);                    // it waited for the heap first
+  TEST_ASSERT_EQUAL(0, notifies);                     // no switch
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains(
+      "orchTurn(oai-loop): request not sent (heap 9940) - one same-host resend after the heap recovered"));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+}
+
+// The heap never comes back: a bounded wait, no resend, and no switch either (the
+// same request fails the same way on every host) - the turn ends as low memory,
+// which the engine answers with the memory reply, never "network".
+static void test_cum477_fabric_low_memory_does_not_switch() {
+  LowHeapFabric f(/*recovers=*/false);   // an anthropic request would be unscripted: loud
+  int notifies = 0;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(f.pd, {"openai", "anthropic"}, "SYS", "USER", out, err, f.rig.ht,
+                                           nullptr, [&](const std::string&, const std::string&) { notifies++; });
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL_STRING("low memory: the device could not send the request", err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)f.d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, notifies);
+  TEST_ASSERT_TRUE(f.delays >= 1);
+  TEST_ASSERT_TRUE(f.delays <= 31);   // bounded: 3 s of 100 ms polls
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
@@ -168,5 +235,7 @@ int main(int, char**) {
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_single_host_list_never_switches);
+  RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);
+  RUN_TEST(test_cum477_fabric_low_memory_does_not_switch);
   return UNITY_END();
 }

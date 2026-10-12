@@ -187,7 +187,8 @@ bool fabricSupports(const std::string& host);
 // past that floor; if it does not, the step fails with "low memory: ..." so the
 // owner hears the device ran out of working memory, not "check the connection".
 // The per-host loops (runOaiLoop/runAntLoop/runMisLoop - the Cumulo router head
-// runs these, never the fabric) use it; the fabric keeps its own same-host retry.
+// runs these, never the fabric) use it, and so does every host step of the fabric
+// (runFabricLoop), whose own same-host retry and switch come after it.
 // The caller keeps the context (and what it points at) alive for the whole loop;
 // the returned step holds only the pointer.
 struct ResendCtx {

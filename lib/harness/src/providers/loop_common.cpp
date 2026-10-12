@@ -145,17 +145,37 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // ⚠ Keep in sync with fabricSupports() below - a host listed here but not
   // there is silently excluded from fabric turns; the reverse fails the turn
   // with "unknown host" before any HTTP (the 2026-08-12 custom-head regression).
-  auto makeStep = [&](const std::string& h) -> orch::HeadStepFn {
-    if (h == "anthropic") return antLoopStep(pd, instructions, ht, usage, tr);
-    if (h == "openai")    return oaiLoopStep(pd, instructions, ht, usage, tr);
-    if (h == "mistral")   return misLoopStep(pd, instructions, ht, usage, tr);
-    return nullptr;
+  // CUM-477: each host's step is wrapped like the per-provider loops' - a request
+  // the device could not finish sending is resent once on the same host after a
+  // bounded wait for the heap, and reads as low memory when the heap never comes
+  // back - so the fabric's own retry and any switch come after that wait. One
+  // context per host, sized once (never reallocated) and alive for the whole loop:
+  // each wrapped step holds only its pointer.
+  std::vector<orch::HeadStepFn> inner(hostList.size());
+  std::vector<ResendCtx> resend(hostList.size());
+  auto makeStep = [&](size_t i) -> orch::HeadStepFn {
+    const std::string& h = hostList[i];
+    const char* who = nullptr;
+    if (h == "anthropic") {
+      inner[i] = antLoopStep(pd, instructions, ht, usage, tr);
+      who = "orchTurn(ant-loop)";
+    } else if (h == "openai") {
+      inner[i] = oaiLoopStep(pd, instructions, ht, usage, tr);
+      who = "orchTurn(oai-loop)";
+    } else if (h == "mistral") {
+      inner[i] = misLoopStep(pd, instructions, ht, usage, tr);
+      who = "orchTurn(mistral-loop)";
+    } else {
+      return nullptr;
+    }
+    resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
+    return resendUnsentOnce(&resend[i]);
   };
 
   size_t hostIdx = 0;
   int    switches = 0;
   const int kMaxSwitches = 2;
-  orch::HeadStepFn cur = makeStep(hostList[0]);
+  orch::HeadStepFn cur = makeStep(0);
   if (!cur) { err = "unknown host " + hostList[0]; return false; }
 
   // The wrapper IS the controller's step: retry/failover happens INSIDE one
@@ -168,8 +188,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       orch::HeadStep sr = cur(allowTools, prior, budgetMs, capReason);
       if (sr.ok) return sr;
       // Device-side contract failure - identical on every host; do not burn
-      // switches on it.
-      if (sr.error == "schema parse") return sr;
+      // switches on it. Nor on memory: a request the device could not make or
+      // send for want of heap fails the same way on any host (CUM-404, CUM-477),
+      // and the engine answers it with the memory reply.
+      if (sr.error == "schema parse" || sr.error.rfind("low memory", 0) == 0) return sr;
       hlog::logf("fabric: %s step failed (%s) - same-host retry",
                  hostList[hostIdx].c_str(), sr.error.c_str());
       orch::HeadStep sr2 = cur(allowTools, prior, budgetMs, capReason);
@@ -178,7 +200,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         return sr2;   // exhausted - the controller fails soft to the caller
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[hostIdx + 1];
-      orch::HeadStepFn next = makeStep(to);
+      orch::HeadStepFn next = makeStep(hostIdx + 1);
       if (!next) return sr2;
       ++hostIdx;
       ++switches;
