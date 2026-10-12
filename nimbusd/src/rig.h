@@ -1019,23 +1019,50 @@ class NimbusdRig {
     while (ve < w.size() && ve - vb <= kKeyMax && tokenChar((unsigned char)w[ve])) ve++;
     return {vb, ve};
   }
-  // An ordinary identifier a word such as "token" or "key" is often followed by,
-  // never masked by the three-word window: a URL, or a model id of a known family
-  // ("claude-sonnet-5-20260301", "gpt-4o-2024-08-06", "anthropic/claude-opus-5"),
-  // in lowercase and with a '-'. Neither may hold a run of 16 letters and digits: a
-  // key's random part does ("xoxb-...", a webhook URL's secret, a Telegram bot URL).
-  // A UUID or "sdk-<uuid>" names no model family, so it stays masked.
-  static bool plainIdentifier(const std::string& t) {
-    size_t run = 0;
-    for (unsigned char ch : t) {
-      run = isalnum(ch) ? run + 1 : 0;
-      if (run >= 16) return false;
-    }
-    if (t.find("://") != std::string::npos) return true;
-    if (t.find('-') == std::string::npos) return false;
+  // Whether a word inside the three-word window after "key" or "token" may be a
+  // key. A model id of a known family ("claude-sonnet-5-20260301",
+  // "gpt-4o-2024-08-06", "anthropic/claude-opus-5") is not, nor is a URL none of
+  // whose parts after the host looks like a secret. The host never is one (a long
+  // label such as "generativelanguage" is fine), but a webhook's or a bot's path, a
+  // query value or a user:password part can be, broken by '-' or '_' or not (a
+  // UUID, "bot123:AAH-...", a Slack webhook's last part). A URL is judged by its
+  // parts even when its '?', '=' or '@' make it no key-like token as a whole.
+  static bool secretInWindow(const std::string& w) {
+    const size_t scheme = w.find("://");
+    if (scheme == std::string::npos) return keyLikeToken(w) && !modelId(w);
+    const size_t hostEnd = std::min(w.find_first_of("/?#", scheme + 3), w.size());
+    const size_t at = w.find('@', scheme + 3);   // user:password@host
+    if (at < hostEnd && anySecretPart(w, scheme + 3, at)) return true;
+    return anySecretPart(w, hostEnd, w.size());
+  }
+  // A model id: lowercase, holding a '-', no 16-character run of letters and digits
+  // (a key's random part has one: "xoxb-..."), a known family after any
+  // "<upstream>/". A UUID or "sdk-<uuid>" names no family, so it is none.
+  static bool modelId(const std::string& t) {
+    if (longRun(t) || t.find('-') == std::string::npos) return false;
     for (unsigned char ch : t)
       if (isupper(ch)) return false;
     return modelFamily(t.substr(t.find('/') == std::string::npos ? 0 : t.find('/') + 1));
+  }
+  static bool longRun(const std::string& t) {
+    size_t run = 0;
+    for (unsigned char ch : t) {
+      run = isalnum(ch) ? run + 1 : 0;
+      if (run >= 16) return true;
+    }
+    return false;
+  }
+  // Whether a part of t[from, to) between URL separators looks like a secret: a
+  // 16-character run, or a key-like token (20+ characters with letters and digits)
+  // that is no model id. One pass: each part is read once.
+  static bool anySecretPart(const std::string& t, size_t from, size_t to) {
+    for (size_t b = from; b < to;) {
+      const size_t e = std::min(t.find_first_of("/?#&=:;@", b), to);
+      const std::string part = t.substr(b, e - b);
+      if (longRun(part) || (keyLikeToken(part) && !modelId(part))) return true;
+      b = e + 1;
+    }
+    return false;
   }
   // A model id's family name at the start of `m` ("o4-mini" counts, "o4x" does not).
   static bool modelFamily(const std::string& m) {
@@ -1046,7 +1073,7 @@ class NimbusdRig {
   }
   // The (offset, length) of each key-like token named a key: within the three words
   // after "key" or "token" ("my mistral key is q7Kx...", "the key: q7Kx...", but not
-  // a URL or a model id there: plainIdentifier), or the
+  // a URL or a model id there: secretInWindow), or the
   // value of a NAME=value or "name":"value" whose name ends in one
   // ("MISTRAL_API_KEY=q7Kx...", {"api_key":"q7Kx..."}). One pass over the words,
   // so it stays linear in the text however long it is.
@@ -1057,7 +1084,7 @@ class NimbusdRig {
       const std::pair<size_t, size_t> at = nextWord(l, i);
       if (at.first == at.second) continue;
       const std::string w = l.substr(at.first, at.second - at.first);
-      if (!namedValues(w, at.first, out) && window > 0 && keyLikeToken(w) && !plainIdentifier(w))
+      if (!namedValues(w, at.first, out) && window > 0 && secretInWindow(w))
         out.push_back({at.first, w.size()});
       window = namesAKey(w) ? 3 : std::max(window - 1, 0);
     }

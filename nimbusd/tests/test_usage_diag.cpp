@@ -333,6 +333,24 @@ static void testNamedTokenRule(ndtest::Ctx& c) {
       {"webhook token https://hooks.slack" ".com/services/T0ABCDEFG/B0ABCDEFG/abcdefghijklmnopqrstuvwx",
        "webhook token [key]"},
       {"bot token https://api.telegram.org/bot123456789:AAHfakeTokenValue0123456789/getMe", "bot token [key]"},
+      // CUM-546 gate: the URL exemption read the whole URL for a 16-character run, so
+      // a secret in the path broken by '-' or '_' (a UUID-keyed webhook, a Telegram
+      // bot token) passed in clear, while a long host label masked a plain URL. Each
+      // part after the host gets the secret-shape tests; the host is never a secret.
+      {"webhook token https://hooks.example.com/t/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b", "webhook token [key]"},
+      {"webhook token https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b?x=1",
+       "webhook token [key]"},
+      {"bot token https://api.telegram.org/bot123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b/getMe", "bot token [key]"},
+      {"bot token https://api.telegram.org/bot7123456789:AAH-abc_defghijklmn-opqrstuvwxyz012/getMe",
+       "bot token [key]"},
+      {"token https://bot:Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b@hooks.example.com/notify", "token [key]"},
+      {"api key https://hooks.example.com/notify?sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b", "api key [key]"},
+      {"token endpoint https://generativelanguage.googleapis.com/v1beta/models",
+       "token endpoint https://generativelanguage.googleapis.com/v1beta/models"},
+      {"key docs at https://platform.openai.com/docs/models/gpt-4o-2024-08-06 say so",
+       "key docs at https://platform.openai.com/docs/models/gpt-4o-2024-08-06 say so"},
+      {"token https://generativelanguage.googleapis.com:443/v1beta/models/gemini-2.5-pro:generateContent",
+       "token https://generativelanguage.googleapis.com:443/v1beta/models/gemini-2.5-pro:generateContent"},
   };
   for (const Case& k : kCases) c.eq(NimbusdRig::redactKeys(k.in), k.out, k.in);
 }
@@ -349,13 +367,15 @@ static void testMaskStaysLinear(ndtest::Ctx& c) {
   std::string tokens;
   for (int i = 0; i < 40000; i++) tokens += "token:";
   tokens += "x";
+  std::string url = "token https://x.example/";   // a URL's parts are each read once
+  for (int i = 0; i < 60000; i++) url += "ab/";
   const auto t0 = std::chrono::steady_clock::now();
   const bool same = NimbusdRig::redactKeys(colons) == colons && NimbusdRig::redactKeys(pairs) == pairs &&
-                    NimbusdRig::redactKeys(tokens) == tokens;
+                    NimbusdRig::redactKeys(tokens) == tokens && NimbusdRig::redactKeys(url) == url;
   const long ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
                       .count();
   c.ok(same, "nothing in those words is a key, and nothing is masked");
-  c.ok(ms < 1000, "three ~200 KB colon-dense words are masked in under a second (took " + std::to_string(ms) + " ms)");
+  c.ok(ms < 1000, "four ~200 KB separator-dense words are masked in under a second (took " + std::to_string(ms) + " ms)");
   // The bound never costs a real key: a named value at the end of a long run.
   c.eq(NimbusdRig::redactKeys(tokens + ":api_key=q7KxPLAINMISTRALKEY000000000001").substr(tokens.size()),
        ":api_key=[key]", "a NAME=value after a long colon run is still masked");
