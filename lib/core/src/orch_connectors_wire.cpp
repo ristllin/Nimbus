@@ -637,18 +637,20 @@ const Phrase kGithubPhrases[] = {{"my repo"},           {"my repos"},   {"my rep
                                  {"my repositories"},   {"your repo"},  {"your repos"},
                                  {"your repository"},   {"your repositories"},
                                  {"'s repo"},           {"'s repos"},   {nullptr}};
-// "slack" is an ordinary word after a preposition too ("slack periods", "tend to
-// slack in August", "slack off"), so the lowercase forms must end the ask ("post
-// the summary in slack", "send it to slack"); the capitalized product name may go
-// on ("post it in Slack for the team") unless a title follows. "my slack" is the
-// owner's workspace ("read my slack and summarize the day") except in the idiom
-// "pick up my slack".
+// "slack" is an ordinary word after "in", "on" and "to" ("in slack periods", "low
+// on slack this sprint", "tend to slack in August", "slack off"), so those
+// lowercase forms must end the ask ("post the summary in slack", "send it to
+// slack"); "from slack" has no such reading and may go on ("get the notes from
+// slack and draft a reply"). The capitalized product name may go on ("post it in
+// Slack for the team") unless a title follows. "my slack" is the owner's
+// workspace ("read my slack and summarize the day") except in the idiom "pick up
+// my slack".
 const Phrase kSlackPhrases[] = {{"slack channel"},   {"slack channels"}, {"slack message"},
                                 {"slack messages"},  {"slack thread"},   {"slack threads"},
                                 {"slack dm"},        {"slack dms"},      {"slack workspace"},
                                 {"slack connector"},
                                 {"in slack", Tail::NoWord},          {"on slack", Tail::NoWord},
-                                {"from slack", Tail::NoWord},        {"to slack", Tail::NoWord},
+                                {"from slack"},                      {"to slack", Tail::NoWord},
                                 {"in Slack", Tail::NotTitleCase},    {"on Slack", Tail::NotTitleCase},
                                 {"from Slack", Tail::NotTitleCase},  {"to Slack", Tail::NotTitleCase},
                                 {"my slack", Tail::Any, "up"},       {nullptr}};

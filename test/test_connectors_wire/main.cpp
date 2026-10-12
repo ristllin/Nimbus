@@ -1663,6 +1663,7 @@ static void test_cum536_one_rule_for_every_gate_string() {
       {"send it to slack", "slack", "Slack"},
       {"add this to slack", "slack", "Slack"},
       {"pull yesterday's thread from slack", "slack", "Slack"},
+      {"get the notes from slack and draft a reply", "slack", "Slack"},
       {"post it in Slack for the team", "slack", "Slack"},
       {"Send the summary to Slack when it is done", "slack", "Slack"},
       {"save the outline into my notion", "notion", "Notion"},
