@@ -2027,17 +2027,21 @@ tool call) arrive as their own short messages, so the reply - and the file it is
 saved to - is the run's longest message plus anything after it; short notes before
 it are left out, while a long earlier message (part of the work) is kept.
 
-**A sub that outruns its blocking read is reported as a timeout, not as a
-failed start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs
-inside one synchronous request (Mistral's `POST /v1/conversations` with a 60 s
-read deadline, the chat-completions or Messages request of the others with
-30 s), so a slow one outlasts the deadline. `mistralDispatch`,
-`openaiCompatDispatch` and `customDispatch` (`lib/harness/src/providers/`)
-classify a transport failure that took at least nine tenths of the deadline as
-`FabricErr::Timeout` rather than a connection failure (the Z.ai, Cumulo and
-custom subs also do so for a request that went out and got no answer, such as a
-connection dropped mid-wait; a request that never fully left, or a fast failure,
-stays a failed start: the work never left), and `JobEngine::dispatchSpawn`
+**A sub that may have started is reported as a timeout, not as a failed
+start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs inside one
+synchronous request (Mistral's `POST /v1/conversations` with a 60 s read
+deadline, the chat-completions or Messages request of the others with 30 s), so
+a slow one outlasts the deadline; an OpenAI sub's `POST /v1/responses` and an
+Anthropic sub's first turn (`POST /v1/sessions/<id>/events`) start a billed run
+of their own. Every sub dispatcher reads a transport failure of that request by
+one rule (`wire::subTransportErr`, `lib/harness/src/providers/wire.h`, on the
+device and a hosted instance alike): a request that went out and got no answer
+(a connection dropped mid-wait, or the deadline), or a failure that took at
+least nine tenths of the deadline, is `FabricErr::Timeout`; a request that
+never fully left, or a fast failure, stays a failed start (the work never left),
+and so does a cut in the Anthropic calls before the turn, which run nothing. On
+a hosted instance a sub's request never rides a kept-alive connection, so the
+transport never sends a cut one a second time. `JobEngine::dispatchSpawn`
 (`lib/harness/src/jobs.cpp`) tells the owner *"The agent on zai didn't respond
 in time - it may have run without me getting its result. Try a smaller task or
 split it into steps."*, since the agent may have started. A dispatch the

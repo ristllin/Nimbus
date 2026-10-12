@@ -775,16 +775,10 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
                             MISTRAL_TIMEOUT_MS, &quota);
-  if (code <= 0) {
-    // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts our
-    // 60 s read deadline. Distinguish that read TIMEOUT (elapsed ~= the whole
-    // deadline - the run started, we just couldn't wait for it) from a genuine
-    // connection failure (fails fast): the timeout is reported honestly upstream
-    // as "started but ran too long", never the misleading "couldn't start".
-    const uint32_t elapsed = (pd.nowMs ? pd.nowMs() : 0) - t0;
-    return elapsed >= (MISTRAL_TIMEOUT_MS * 9) / 10 ? FabricErr::Timeout
-                                                    : FabricErr::Network;
-  }
+  // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts our 60 s
+  // read deadline and a peer that cuts it after the request went out may have run
+  // it: either is "may have started", never the misleading "couldn't start".
+  if (code <= 0) return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, MISTRAL_TIMEOUT_MS);
   if (code == 401) return FabricErr::Auth;
   if (code == 429) {
     // Classified exactly like a head turn's 429 (CUM-465): the headers' window,

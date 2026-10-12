@@ -613,12 +613,29 @@ struct LoopbackRedirect : agent::HttpTransport {
     return curl.exec(r, out, err);
   }
 };
+// Every hosted sub provider (CUM-538 gate: the Mistral, OpenAI and Anthropic subs
+// read "did not start" too). The Anthropic chain's environment, agent and session
+// calls are answered; the turn that starts the run is the request cut.
 static void testCutSubMayHaveStarted(ndtest::Ctx& c) {
   std::printf("  -- (o) a sub cut after its POST went out may have started, and is not sent again --\n");
-  struct Case { const char* provider; const char* key; };
-  for (const Case& k : {Case{"zai", "zai_sk_TEST_CUT"}, Case{"cumulo", "cumulo_sk_TEST_CUT"}}) {
+  using ndtest::response;
+  const auto ok = [](const char* body) { return response("HTTP/1.1 200 OK", {"Content-Type: application/json"}, body); };
+  struct Case {
+    const char* provider;
+    const char* key;
+    std::vector<std::string> script;   // the answered calls before the cut one, then ""
+  };
+  const Case cases[] = {
+      {"zai", "zai_sk_TEST_CUT", {""}},
+      {"cumulo", "cumulo_sk_TEST_CUT", {""}},
+      {"mistral", "mk_TEST_CUT", {""}},
+      {"openai", "sk-proj-TEST_CUT", {""}},
+      {"anthropic", "sk-ant-api03-TEST_CUT",
+       {ok("{\"id\":\"env_1\"}"), ok("{\"id\":\"ag_1\"}"), ok("{\"id\":\"sess_1\"}"), ""}},
+  };
+  for (const Case& k : cases) {
     clearEnv();
-    ndtest::CannedServer srv({""});   // reads the POST, then closes: no status line
+    ndtest::CannedServer srv(k.script);   // the last one reads the POST, then closes: no status line
     LoopbackRedirect tx;
     tx.port = srv.port();
     Config cfg;
@@ -636,11 +653,13 @@ static void testCutSubMayHaveStarted(ndtest::Ctx& c) {
     bool maybe = false;
     const std::string notes = rig.jobs().takeSpawnNotes("web", &maybe);
     const std::string who = k.provider;
-    c.eqi((long)srv.requestLines().size(), 1, who + ": the sub's POST reached the server once");
+    const long calls = (long)k.script.size();
+    c.eqi((long)srv.requestLines().size(), calls,
+          who + ": the cut POST reached the server once (" + std::to_string(calls) + " requests in all)");
     c.ok(has(notes, "'glm-notes' may have started"), who + ": the note says the sub may have started (got \"" + notes + "\")");
     c.ok(maybe, who + ": the head is told the run may have started");
     rig.jobs().pump();   // a later pump must not send the paid work again
-    c.eqi((long)tx.calls, 1, who + ": nothing is dispatched again");
+    c.eqi((long)tx.calls, calls, who + ": nothing is dispatched again");
   }
   clearEnv();
 }

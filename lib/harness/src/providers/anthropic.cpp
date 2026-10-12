@@ -392,8 +392,16 @@ FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
     return FabricErr::RemoteFail;
   }
 
+  // The run starts with this turn (the environment, agent and session above run
+  // nothing by themselves, so a cut there is "did not start"): a turn cut after it
+  // went out may have started the paid run.
   JsonDocument turnDoc;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   const int code = sendTurn(pd, session.id.c_str(), d.instruction, turnDoc);
+  if (code <= 0) {
+    logCallFail("send turn", code, turnDoc);
+    return wire::subTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0, ANT_TIMEOUT_MS);
+  }
   if (!is2xx(code)) return chainErr(d, "send turn", code, turnDoc);
 
   snprintf(outJobId, 72, "anthropic:%s", session.id.c_str());

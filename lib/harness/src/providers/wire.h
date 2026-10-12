@@ -50,6 +50,21 @@ inline std::string transportError(const ProviderDeps& pd) {
              : std::string("network");
 }
 
+// The FabricErr for a sub dispatch whose request failed in the transport (status
+// 0), ONE rule for every sub dispatcher on the device and the hosted builds
+// (CUM-538). A request that never fully left never delivered the work: Network
+// ("did not start", a respawn duplicates nothing). One that went out with no
+// answer back ("no response": the peer closed, or the deadline passed) may have
+// started a paid run - a synchronous sub runs inside its POST, an async one was
+// created by it - so it is Timeout ("may have started", never spawned again).
+// Otherwise a failure that took about the whole `deadlineMs` most likely started
+// it too, and a fast one (connect, DNS, TLS) did not.
+inline FabricErr subTransportErr(uint32_t elapsedMs, uint32_t deadlineMs) {
+  if (lastExchange().unsent) return FabricErr::Network;
+  if (lastExchange().noResponse) return FabricErr::Timeout;
+  return elapsedMs >= (deadlineMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
+}
+
 // One provider REST exchange through the transport: complete request in, HTTP
 // status out, response body filter-parsed into `doc` (the same bounded-memory
 // ArduinoJson filter reads the pre-split adapters did from the socket - now
