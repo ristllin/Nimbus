@@ -376,7 +376,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
   turnTelegram_ = telegram;   // CUM-523: the one sample every Telegram decision reads
-  turnFileSend_ = telegram && (!d_.cfg.fileSendDeliverable || d_.cfg.fileSendDeliverable());
+  // files.send needs an allowlisted chat: a Telegram turn's own answer may come from
+  // public mode, so it also asks for no chat (""); any other turn's answer already
+  // meant an allowlisted chat. No second closure: the static config stays as it was.
+  turnFileSend_ = telegram && (!isTelegramChat(chatId) || telegramOn(std::string()));
   toolReplied_ = false;
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).

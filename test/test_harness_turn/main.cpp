@@ -1234,7 +1234,9 @@ static void publicNoAllowlist(Rig& r) {
 static void test_cum523_telegram_is_sampled_once_per_turn() {
   int calls = 0;
   Rig r;
-  r.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
+  // The turn's own chat is asked once; "" (is a chat allowlisted, for files.send)
+  // is a different question and is not counted.
+  r.cfg.telegramFn = [&calls](const std::string& c) { return c.empty() || ++calls == 1; };
   addTelegramSpecs(r);
   r.eng->handleMessage("hi", "Dana", "web");
   TEST_ASSERT_EQUAL(1, calls);
@@ -1245,7 +1247,7 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   // A scheduled one-shot: the delivery line and the tool list share the sample.
   Rig s;
   calls = 0;
-  s.cfg.telegramFn = [&calls](const std::string&) { return ++calls == 1; };
+  s.cfg.telegramFn = [&calls](const std::string& c) { return c.empty() || ++calls == 1; };
   addTelegramSpecs(s);
   s.eng->injectScheduledTurn("1001", "stretch", "wakeup", "lp1", /*quietOk=*/false, /*once=*/true);
   TEST_ASSERT_EQUAL(1, calls);
@@ -1256,7 +1258,7 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   // The synthesis turn and a direct runTurn sample once too.
   Rig y;
   calls = 0;
-  y.cfg.telegramFn = [&calls](const std::string&) { ++calls; return false; };
+  y.cfg.telegramFn = [&calls](const std::string& c) { calls += c.empty() ? 0 : 1; return false; };
   y.jobs->addFreshResult("job0000", "modelX", "findings");
   y.eng->maybeConsolidate("1001");
   TEST_ASSERT_EQUAL(1, calls);
@@ -1341,10 +1343,11 @@ static void test_cum523_public_guest_turn_gets_reply_but_no_file_send() {
   a.eng->handleMessage("send me the report as a PDF", "Guest", "5550001");
   TEST_ASSERT_TRUE(a.eng->turnFileSend());
   TEST_ASSERT_TRUE(a.debug[0].instructions.find("files_send") != std::string::npos);
-  // The rule, and the device text served mid-turn follows the files.send sample.
-  TEST_ASSERT_FALSE(agent::fileSendDeliverableFor(true, false));
-  TEST_ASSERT_FALSE(agent::fileSendDeliverableFor(false, true));
-  TEST_ASSERT_TRUE(agent::fileSendDeliverableFor(true, true));
+  // The rule for no chat ("") is files.send's own: the bot runs and a chat is
+  // allowlisted. The device text served mid-turn follows the files.send sample.
+  TEST_ASSERT_FALSE(agent::telegramDeliverableFor(true, false, true, ""));
+  TEST_ASSERT_FALSE(agent::telegramDeliverableFor(false, true, true, ""));
+  TEST_ASSERT_TRUE(agent::telegramDeliverableFor(true, true, true, ""));
   for (const char* src : {"src/agent/skills.cpp", "src/agent/files_subsystem.cpp"}) {
     FILE* f = std::fopen(src, "rb");
     TEST_ASSERT_NOT_NULL_MESSAGE(f, src);
