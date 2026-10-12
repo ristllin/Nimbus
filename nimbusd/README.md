@@ -340,7 +340,9 @@ answers by the same shared rule):
 | Rate limited (429) | the engine's rate-limit reply |
 
 Only a refusal of an attempt's first request is answered again on another model,
-so a tool that already ran is never repeated; a refusal no model can answer gets
+so a tool that already ran is never repeated (a request that got no answer is not
+counted: nothing can have run on it, so a refusal of its resend is still the
+first); a refusal no model can answer gets
 its own honest cause, and the selector it names is replaced by "that model" when
 the sentence would not fit the engine's 100-character cut, so the fix at its end
 is always whole. The context fold runs through the same head: it is answered

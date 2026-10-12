@@ -349,6 +349,28 @@ static void test_device_refusal_after_a_tool_is_not_rerun() {
   TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // no third request on another model
 }
 
+// CUM-530 gate: a request the device could not finish sending is resent once on
+// the same host (CUM-477); a refusal answering that resend is still the attempt's
+// first ANSWERED request (no tool ran), so the ladder answers on the last working
+// model. The tap counted the unsent request too, read the refusal as the second
+// request, and the turn failed although nothing had run.
+static void test_device_refusal_of_a_resend_still_falls_back() {
+  DeviceCumuloHead h;
+  h.d.toolLoop = true;
+  FakeProviderDeps::ToolRig rig;
+  h.d.fillTools(rig);
+  h.d.http.script.push_back(harness_test::transportCut(0, "request body truncated (10/200 bytes written)"));
+  h.push("/router/anthropic/v1/messages", 403, routerRefusal("model_not_priced"));
+  h.push("/router/anthropic/v1/messages", 200, antBody());
+  const rf::LadderResult r = h.turn("anthropic/claude-opus-9", "anthropic/claude-sonnet-5", &rig.ht);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, h.err.c_str());
+  TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Selector);
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-sonnet-5", r.used.c_str());
+  TEST_ASSERT_EQUAL_UINT(0, rig.dispatched.size());
+  TEST_ASSERT_EQUAL(3, (int)h.d.http.seen.size());   // the cut, its resend (refused), the fallback
+  TEST_ASSERT_TRUE(h.d.http.seen[2].body.find("claude-sonnet-5") != std::string::npos);
+}
+
 // Review: a refusal of a request that continued a Mistral conversation is about
 // the conversation, not the model: the router answers an append to
 // /conversations/<id> with 403 endpoint_not_allowed (it admits only a new one),
@@ -420,6 +442,7 @@ int main(int, char**) {
   RUN_TEST(test_device_refused_everywhere_names_the_cause);
   RUN_TEST(test_device_other_refusals_are_not_answered_elsewhere);
   RUN_TEST(test_device_refusal_after_a_tool_is_not_rerun);
+  RUN_TEST(test_device_refusal_of_a_resend_still_falls_back);
   RUN_TEST(test_device_conversation_refusal_is_not_a_refused_pick);
   RUN_TEST(test_settle_moves_only_the_turns_own_pick);
   UNITY_END();

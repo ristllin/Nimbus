@@ -190,7 +190,7 @@ class RouterTap : public agent::HttpTransport {
 
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
     const bool ok = inner_->exec(req, out, err);
-    if (!counts(req)) return ok;
+    if (!counts(req, ok ? out.status : 0)) return ok;
     if (ok && out.status >= 400 && refusal_.status == 0) {
       JsonDocument d = newDoc();
       if (deserializeJson(d, out.body)) d.clear();
@@ -207,13 +207,17 @@ class RouterTap : public agent::HttpTransport {
     wide["error"] = true;     // a string reason, or the whole (small) error object
     wide["message"] = true;
     const int status = inner_->execJson(req, doc, wide, err);
-    if (counts(req) && status >= 400 && refusal_.status == 0) note(req, status, doc);
+    if (counts(req, status) && status >= 400 && refusal_.status == 0) note(req, status, doc);
     return status;
   }
 
  private:
-  bool counts(const agent::HttpRequest& req) {
-    if (host_ && host_[0] && req.host != host_) return false;
+  // Counts the router's answers (status > 0): a request that never left, or got
+  // no answer, can have led to no tool run, so a refusal answering its resend
+  // (CUM-477) is still the attempt's first request and is answered on another
+  // model.
+  bool counts(const agent::HttpRequest& req, int status) {
+    if (status <= 0 || (host_ && host_[0] && req.host != host_)) return false;
     ++requests_;
     return true;
   }
