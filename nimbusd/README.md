@@ -147,7 +147,10 @@ wait for it at most 5 s (`src/embed_check.h`). Past that, Verify answers `202
 answers `503` with the same body: nothing is saved, the call goes on, `GET
 /api/mem/embedcfg` and `/api/mem/stats` show it as `check` (`checking`, then `ok`
 with the `width` the model returned, or `failed` with the `error`), and the next
-Verify or Save of the same candidate answers from that result at once. A width is
+Verify or Save of the same candidate answers from that result at once. A check
+waiting behind a turn is still "checking", not lost (it counts as lost only 90 s
+after it starts), and one a newer check replaced makes no call when its turn
+comes, so one candidate is never paid for twice. A width is
 saved only as the check read it: Dimensions 0 takes the model's own width, and a
 set width the model does not return (Mistral ignores a requested width) is refused
 with the real one. A save still queued past the bound answers `503` ("Still

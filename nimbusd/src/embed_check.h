@@ -12,7 +12,10 @@
 // thread and the HTTP thread waits for it only a short bound. A check that has not
 // settled by then answers "still checking", and its result is kept here, so the
 // next Verify or Save of the same candidate answers at once from it. Thread-safe:
-// the engine thread settles a check, the HTTP thread reads and starts them.
+// the engine thread starts and settles a check, the HTTP thread reads and queues
+// them. A check queued behind other engine work is never presumed lost while it
+// waits (the lost window runs from when it starts), and a check another one has
+// replaced makes no call when its turn comes, so one press never pays twice.
 namespace nimbusd {
 
 // What one check is of: the provider, the model and the width asked for (0 = the
@@ -32,24 +35,31 @@ struct EmbedCheck {
   EmbedCandidate cand;
   int width = 0;           // the width the model returned (0 = it did not answer)
   std::string error;       // why it failed
-  int64_t at = 0;          // when it started (Checking) or settled, in steady seconds
+  int64_t at = 0;          // when it was queued or started (Checking) or settled, in steady seconds
+  bool started = false;    // Checking: the engine thread has begun the call (else it is queued)
+  uint32_t gen = 0;        // which check this is: one replaced by a newer one never runs
   bool reported = false;   // a failure is answered once; asking again runs a new check
 };
 
 class EmbedCheckSlot {
  public:
   static constexpr int64_t kOkFreshS = 600;     // a working check is reused this long
-  static constexpr int64_t kLostCheckS = 90;    // past the 30 s call: a check this old is presumed lost
+  static constexpr int64_t kLostCheckS = 90;    // past the 30 s call: a check running this long is presumed lost
+  // A check still queued this long is presumed dropped; one queued behind turns is
+  // not, and if it does run after all, it was replaced and makes no call.
+  static constexpr int64_t kLostQueuedS = 600;
 
   enum class Next { Run, Checking, Settled };
   // What a Verify or Save of `c` does now, decided atomically:
   //   Settled  - `out` is a result for `c` (a fresh working one, or a failure not
   //              yet answered, which this call now answers);
-  //   Checking - a check is still running (of `c` or of another candidate): `out`;
-  //   Run      - no usable result: `c` is marked checking and the caller runs it.
+  //   Checking - a check is queued or running (of `c` or of another candidate): `out`;
+  //   Run      - no usable result: `c` is marked checking (queued, generation
+  //              out.gen) and the caller queues it, then calls start() as it runs.
   Next begin(const EmbedCandidate& c, int64_t now, EmbedCheck& out) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (s_.state == EmbedCheck::State::Checking && now - s_.at < kLostCheckS) {
+    const int64_t lostAfter = s_.started ? kLostCheckS : kLostQueuedS;
+    if (s_.state == EmbedCheck::State::Checking && now - s_.at < lostAfter) {
       out = s_;
       return Next::Checking;
     }
@@ -65,13 +75,23 @@ class EmbedCheckSlot {
     s_.state = EmbedCheck::State::Checking;
     s_.cand = c;
     s_.at = now;
+    s_.gen = ++gen_;
     out = s_;
     return Next::Run;
   }
-  // The outcome of the check of `c` (dropped if the slot moved on to another).
-  void settle(const EmbedCandidate& c, int width, const std::string& error, int64_t now) {
+  // The queued check `gen` begins (engine thread): true = make the call now, and the
+  // lost window runs from here; false = a newer check replaced it, so make none.
+  bool start(uint32_t gen, int64_t now) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (!(s_.cand == c) || s_.state != EmbedCheck::State::Checking) return;
+    if (s_.gen != gen || s_.state != EmbedCheck::State::Checking || s_.started) return false;
+    s_.started = true;
+    s_.at = now;
+    return true;
+  }
+  // The outcome of check `gen` (dropped unless it is the one that started).
+  void settle(uint32_t gen, int width, const std::string& error, int64_t now) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (s_.gen != gen || s_.state != EmbedCheck::State::Checking || !s_.started) return;
     s_.state = error.empty() ? EmbedCheck::State::Ok : EmbedCheck::State::Failed;
     s_.width = width;
     s_.error = error;
@@ -90,6 +110,7 @@ class EmbedCheckSlot {
  private:
   mutable std::mutex mu_;
   EmbedCheck s_;
+  uint32_t gen_ = 0;
 };
 
 }  // namespace nimbusd

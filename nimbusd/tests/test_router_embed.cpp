@@ -402,6 +402,53 @@ static void testLoadReconcilesWidth(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// CUM-540 gate: a check queued behind other engine work (a long turn) was presumed
+// lost 90 s after it was QUEUED, so a second press queued a second paid embeddings
+// call and the first one's result was thrown away. The lost window now runs from
+// when a check starts, a queued check is not presumed lost while it waits, and a
+// check a newer one replaced makes no call when its turn comes. Driven on the
+// slot's own clock, in the order the web layer drives it.
+static void testQueuedCheckNeverPaysTwice(ndtest::Ctx& c) {
+  std::printf("  -- (h) a check queued behind other work is never presumed lost, and never pays twice --\n");
+  using Next = EmbedCheckSlot::Next;
+  EmbedCandidate cand;
+  cand.provider = "openai";
+  cand.model = "text-embedding-3-small";
+  cand.dims = 16;
+  EmbedCheck r;
+  EmbedCheckSlot slot;
+  c.ok(slot.begin(cand, 1000, r) == Next::Run, "the first press queues one check");
+  const uint32_t first = r.gen;
+  c.ok(slot.begin(cand, 1095, r) == Next::Checking,
+       "95 s later, still queued behind a long turn: still checking, no second call");
+  c.ok(slot.start(first, 1120), "the queued check starts when its turn comes");
+  c.ok(slot.begin(cand, 1200, r) == Next::Checking, "80 s into its run: still checking");
+  slot.settle(first, 16, "", 1205);
+  c.ok(slot.begin(cand, 1210, r) == Next::Settled && r.width == 16, "the next press answers from its result");
+
+  // A RUNNING check is presumed lost 90 s after it started; only its replacement settles.
+  EmbedCheckSlot run;
+  run.begin(cand, 0, r);
+  const uint32_t a = r.gen;
+  c.ok(run.start(a, 10), "a check starts");
+  c.ok(run.begin(cand, 99, r) == Next::Checking, "89 s into its run: still checking");
+  c.ok(run.begin(cand, 100, r) == Next::Run, "90 s into its run: presumed lost, one new check is queued");
+  const uint32_t b = r.gen;
+  run.settle(a, 16, "", 101);
+  c.ok(run.get().state == EmbedCheck::State::Checking && run.get().gen == b, "the lost check's late result is dropped");
+  c.ok(run.start(b, 102), "the new check runs");
+
+  // A queued check replaced by a newer one makes no call when it runs at last.
+  EmbedCheckSlot q;
+  q.begin(cand, 0, r);
+  const uint32_t old = r.gen;
+  c.ok(q.begin(cand, EmbedCheckSlot::kLostQueuedS, r) == Next::Run, "a check queued past the queued bound is replaced");
+  const uint32_t fresh = r.gen;
+  c.ok(!q.start(old, EmbedCheckSlot::kLostQueuedS + 1), "the replaced check makes no call when its turn comes");
+  c.ok(q.start(fresh, EmbedCheckSlot::kLostQueuedS + 2), "the newer one does");
+  c.ok(!q.start(fresh, EmbedCheckSlot::kLostQueuedS + 3), "and only once");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== embeddings through the Cumulo router (CUM-540, offline) ===\n");
@@ -411,6 +458,7 @@ int main() {
   testCumuloProviderRoute(c);
   testVerifyThenSave(c);
   testSlowCheckNeverParksTheHttpThread(c);
+  testQueuedCheckNeverPaysTwice(c);
   testQueuedSaveIsNotSaved(c);
   testUncheckedWidthNeverSaved(c);
   testLoadReconcilesWidth(c);

@@ -1195,8 +1195,9 @@ class WebApi {
     // up as if the assistant were answering while the call runs.
     auto done = std::make_shared<std::promise<void>>();
     std::future<void> fut = done->get_future();
-    eng_->postWork([this, c, done] {
-      runEmbedCheck(c);
+    const uint32_t gen = r.gen;
+    eng_->postWork([this, c, gen, done] {
+      runEmbedCheck(c, gen);
       done->set_value();
     });
     const bool settled = fut.wait_for(std::chrono::seconds(kEmbedWaitS)) == std::future_status::ready;
@@ -1208,7 +1209,8 @@ class WebApi {
   // The live call (engine thread): the model must answer, and at the width asked
   // for when one is set (Mistral ignores a requested width; saving one it does not
   // produce made every later memory write fail).
-  void runEmbedCheck(const EmbedCandidate& c) {
+  void runEmbedCheck(const EmbedCandidate& c, uint32_t gen) {
+    if (!embedCheck_.start(gen, steadyS())) return;   // replaced while it waited: no call
     std::string err;
     int width = 0;
     try {
@@ -1220,7 +1222,7 @@ class WebApi {
     } catch (...) {
       err = "check failed";
     }
-    embedCheck_.settle(c, width, err, steadyS());
+    embedCheck_.settle(gen, width, err, steadyS());
   }
   static int64_t steadyS() {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
