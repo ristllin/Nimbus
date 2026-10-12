@@ -30,7 +30,7 @@ New code lives only in this directory:
 | `src/tg_inbound.h` | routes each getUpdates batch through `tg_access.h`: approved text becomes a turn, anyone else is queued for approval and told so |
 | `src/tg_web.h` | the device's `/api/telegram*` + `/api/tenant` routes over `tg_access.h`, so the web app's Telegram panel manages a hosted instance unchanged |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
-| `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`) and the honest copy for each kind |
+| `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`), the honest copy for each kind and the ladder that answers a refused pick, named from the rule the device's cumulo head shares (`lib/harness/.../router_refusal.h`) |
 | `src/hosted_settings.h` | the owner's settings (durable, thread-safe) and the apply-or-refuse rule for every field the web app posts |
 | `src/embed_check.h` | the embedding settings' live check: run on the engine thread, never awaited past 5 s, its result kept for the next Verify or Save |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
@@ -328,11 +328,12 @@ The head advertises provider built-in tools only; the owner's private connectors
 never ride the shared router key.
 
 A router refusal never leaves the assistant without an answer (`src/router_head.h`
-reads the router's own reason from the refused request):
+reads the router's own reason from the refused request; the device's cumulo head
+answers by the same shared rule):
 
 | Router answer | What happens |
 |---|---|
-| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once and never the same model twice (`openai/gpt-5.6` is the default `gpt-5.6`); the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
+| The picked model is not offered (`model_not_priced`, 404, or the upstream's own 400 "Invalid model" for an id it does not run) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once and never the same model twice (`openai/gpt-5.6` is the default `gpt-5.6`); the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
 | That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
 | A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
 | Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |

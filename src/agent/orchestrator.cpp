@@ -48,6 +48,9 @@
 #include <solide/board.h>        // the build's board profile -> hw.ledCount (W10, CUM-514)
 #include "nimbus/orch/world.h"          // SessionInfo / Hardware (composeInputs closure)
 #include "nimbus/orch/router_route.h"   // CUM-369: shared router "<upstream>/<model>" resolution
+#include "nimbus/harness/router_refusal.h" // CUM-539/530: a router refusal, read and answered like the hosted head
+#include "nimbus/orch/safety_activity.h"  // cumuloHostFromBase - the router host the refusal tap watches
+#include "../sys/ps_json.h"              // PsramJsonAllocator - the refusal tap's filter copy stays off internal heap
 
 #include "nimbus/orch/budget.h"         // deriveBudget - brief/fold-slice bytes from the head window
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
@@ -779,16 +782,30 @@ static agent::ApplyDeps buildApplyDeps() {
   return d;
 }
 
-// CUM-369: the Cumulo head's live route. Resolved fresh every turn (the selected
-// model can change via NVS after boot) through the SAME rule the sub-session
-// CumuloAdapter uses, so head and sub-session address the router identically:
-// base /router/<upstream>/v1 and the bare model the router prices. A bare id (no
-// '/') keeps the openai upstream. store::orchModel already defaults an empty
-// selector to CUMULO_MODEL; the belt-and-suspenders default keeps it non-empty.
-static nimbus::orch::RouterRoute cumuloHeadRoute() {
+// CUM-369: the Cumulo head's picked selector, read fresh every turn (the selected
+// model can change via NVS after boot) and split by the SAME rule the sub-session
+// CumuloAdapter uses (resolveRouterRoute), so head and sub-session address the
+// router identically: base /router/<upstream>/v1 and the bare model the router
+// prices. A bare id (no '/') keeps the openai upstream. store::orchModel already
+// defaults an empty selector to CUMULO_MODEL; the belt-and-suspenders default
+// keeps it non-empty.
+static std::string cumuloPick() {
   String m = store::orchModel("cumulo");
-  return nimbus::orch::resolveRouterRoute(
-      std::string((m.length() ? m : String(CUMULO_MODEL)).c_str()));
+  return std::string((m.length() ? m : String(CUMULO_MODEL)).c_str());
+}
+
+// CUM-539 on the device (bench CUM-530: a router id the upstream refused read as
+// "cumulo is unavailable" and the bad pick stayed): the cumulo head reads WHY the
+// router refused a request and answers a refused model on one that works, by the
+// rule the hosted head runs (nimbus/harness/router_refusal.h). The tap is static
+// (no per-turn object), and the host it watches and the selector that last
+// answered (RAM only, like the hosted head's) are fixed buffers: nothing on the
+// turn path grows the heap (the tap's filter copy is transient and in PSRAM).
+static char g_cumuloRouterHost[64] = "";   // the host the tap watches (set per turn)
+static char g_cumuloLastGood[72] = "";     // a router id is at most 64 characters (harvestIds)
+static agent::router_refusal::RouterTap& cumuloTap() {
+  static agent::router_refusal::RouterTap tap(nullptr, g_cumuloRouterHost, &PsramJsonAllocator::instance());
+  return tap;
 }
 
 // CUM-242 x1 item 2: the connector list a CUMULO-routed head advertises. It runs
@@ -816,6 +833,123 @@ static std::vector<nimbus::orch::ConnectorInfo> cumuloRouteConnectors() {
       }
   }
   return cs;
+}
+
+// One cumulo head call's arguments (the ProviderHosts signature), passed as one.
+struct CumuloCall {
+  std::string& cv;
+  const std::string& ins;
+  const std::string& inp;
+  std::string& out;
+  std::string& err;
+  const agent::HeadTools* tools;
+  nimbus::orch::TokenUsage* usage;
+};
+
+// The bare host the router requests go to (wire::applyRouter's rule: no scheme,
+// path or port), so the refusal tap watches exactly those ("" when it does not
+// fit: then every request counts, and every request of this head is a router one).
+static void setCumuloRouterHost() {
+  const std::string h = nimbus::orch::cumuloHostFromBase(std::string(store::cumuloBase().c_str()),
+                                                         CUMULO_HOST_DEFAULT);
+  const std::string bare = h.substr(0, h.find(':'));
+  if (bare.size() < sizeof(g_cumuloRouterHost)) strlcpy(g_cumuloRouterHost, bare.c_str(), sizeof(g_cumuloRouterHost));
+  else g_cumuloRouterHost[0] = '\0';
+}
+
+// One cumulo head attempt on router selector `sel` (CUM-242 tool loop, built ON
+// CUM-369's shared route resolution): a Cumulo head runs the SELECTED upstream's
+// NATIVE head (its real mid-turn tool loop for anthropic/openai/mistral) over the
+// router, instead of the old single-shot chat-completions that ignored `tools`.
+// The "<upstream>/<model>" selector is split by the SAME resolveRouterRoute the
+// sub-session uses, so head and sub-session never drift. Then a router-override
+// pd (base = cumuloBase, key = cumuloKey, orchModel = the bare model) dispatches
+// to that upstream's orchTurn*, which picks the tool loop vs a single shot from
+// `tools` + the loop toggle; wire::applyRouter reroutes every request through
+// /router/<upstream>, and every request passes the refusal tap. zai (and any name
+// the native fabric does not drive) stays the single-shot chat-completions path
+// (orchTurnCustom over /router/<upstream>).
+static bool cumuloAttempt(const std::string& sel, CumuloCall& c) {
+  const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(sel);
+  const std::string upstream = rr.upstream;
+  const std::string model = rr.model;
+  providers::ProviderDeps pd = deviceProviderDeps();
+  cumuloTap().setInner(pd.http);
+  pd.http = &cumuloTap();
+  pd.routerBase = [] { String b = store::cumuloBase();
+                       return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
+  pd.routerKey  = [] { return std::string(store::cumuloKey().c_str()); };
+  // The upstream loop steps read pd.key(<upstream>) / pd.orchModel(<upstream>);
+  // over the router BOTH resolve to the router credential + the selected model
+  // regardless of the host arg (applyRouter then swaps in Bearer cumuloKey).
+  pd.key       = [](const char*) { return std::string(store::cumuloKey().c_str()); };
+  pd.orchModel = [model](const char*) { return model; };
+  // Per-route tool advertisement (item 2): a cumulo head advertises provider
+  // BUILT-IN tools only - the account's private connectors stay off the shared
+  // router key. attach*Wire with builtinsOnly=true does the filtering.
+  pd.attachOpenAI = [](JsonDocument& doc) {
+    nimbus::orch::attachOpenAIWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
+  };
+  pd.attachMistral = [](JsonDocument& doc) {
+    nimbus::orch::attachMistralWire(doc, cumuloRouteConnectors(), /*builtinsOnly=*/true);
+  };
+  pd.attachAnthropic = [](JsonDocument& doc) {
+    nimbus::orch::attachAnthropicWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
+  };
+  if (upstream == "anthropic")
+    return providers::orchTurnAnthropic(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
+  if (upstream == "mistral")
+    return providers::orchTurnMistral(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
+  if (upstream == "openai")
+    return providers::orchTurnOpenAI(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
+  // zai / unknown upstream: single-shot chat-completions over /router/<upstream>
+  // (NOT rr.basePath - the zai upstream path carries no /v1, unlike the fabric
+  // upstreams; custRequest maps "/v1/chat/completions" to prefix + "/chat/...").
+  // json_object for every such upstream (GLM behind the router ignores
+  // json_schema exactly like direct Z.ai, CUM-495), and for zai the same bounded
+  // reasoning effort + 50 s budget as the direct Z.ai head (CUM-544) - one
+  // portable helper, host-tested, so the two Z.ai paths cannot drift.
+  providers::configureRouterCompatHead(pd, upstream, model);
+  return providers::orchTurnCustom(pd, c.cv, c.ins, c.inp, c.out, c.err, c.tools, c.usage);
+}
+
+// The cumulo head turn with the hosted head's refusal ladder (CUM-539): a model
+// the router does not offer (model_not_priced, a 404, or the upstream's own 400
+// "Invalid model") is answered in the same turn on the last selector that worked,
+// else on the router default, with a first line naming the refused model and the
+// fix, and the pick moves to the model that answered; a paused upstream or a
+// route the router does not allow answers on the default and keeps the pick. A
+// refusal no model can answer fails with its own cause (never "unavailable").
+// Only a refusal of an attempt's FIRST request is answered again, so a tool that
+// already ran is never repeated. The fold (a background compaction through this
+// same head) gets the answer only: no notice, and the pick never moves.
+static bool cumuloTurn(CumuloCall& c) {
+  namespace rf = agent::router_refusal;
+  rf::RouterTap& tap = cumuloTap();
+  setCumuloRouterHost();
+  const std::string picked = cumuloPick();
+  auto attempt = [&c](const std::string& sel, bool fresh) {
+    if (fresh) {   // a fresh conversation and a clean output for another model
+      c.cv.clear();
+      c.out.clear();
+      c.err.clear();
+    }
+    return cumuloAttempt(sel, c);
+  };
+  const rf::LadderResult r =
+      rf::runLadder(tap, picked, std::string(g_cumuloLastGood), std::string(CUMULO_MODEL), attempt);
+  if (!r.ok) {
+    const std::string cause = rf::refusalCause(r.lastKind, r.lastTried);
+    if (!cause.empty()) c.err = cause;
+    return false;
+  }
+  if (r.used.size() < sizeof(g_cumuloLastGood)) strlcpy(g_cumuloLastGood, r.used.c_str(), sizeof(g_cumuloLastGood));
+  else g_cumuloLastGood[0] = '\0';
+  if (!r.fellBack() || !g_engine || !g_engine->turnInFlight()) return true;
+  if (r.kind == rf::RefusalKind::Selector)
+    store::setOrchModel("cumulo", rf::sameRoute(r.used, CUMULO_MODEL) ? String() : String(r.used.c_str()));
+  rf::prefixReply(c.out, rf::fallbackNotice(r.kind, picked, r.used));
+  return true;
 }
 
 // Execution-only closures for the portable turn orchestration - every decision
@@ -1259,58 +1393,8 @@ static TurnEngine::Deps buildTurnDeps() {
   d.hosts.add("cumulo", [](std::string& cv, const std::string& ins, const std::string& inp,
                            std::string& out, std::string& err, const agent::HeadTools* tools,
                            nimbus::orch::TokenUsage* usage) {
-    // CUM-242 tool loop, built ON CUM-369's shared route resolution: a Cumulo head
-    // runs the SELECTED upstream's NATIVE head (its real mid-turn tool loop for
-    // anthropic/openai/mistral) over the router, instead of the old single-shot
-    // chat-completions that ignored `tools`. The "<upstream>/<model>" selector is
-    // split by the SAME cumuloHeadRoute()/resolveRouterRoute the sub-session uses,
-    // so head and sub-session never drift. Then a router-override pd (base =
-    // cumuloBase, key = cumuloKey, orchModel = the bare model) dispatches to that
-    // upstream's orchTurn*, which picks the tool loop vs a single shot from `tools`
-    // + the loop toggle; wire::applyRouter reroutes every request through
-    // /router/<upstream>. This EXTENDS CUM-369: where the single-shot head had to
-    // REFUSE an anthropic pick, the native Messages wire now serves it over the
-    // router. zai (and any name the native fabric does not drive) stays the
-    // single-shot chat-completions path (orchTurnCustom over /router/<upstream>).
-    const nimbus::orch::RouterRoute rr = cumuloHeadRoute();
-    const std::string upstream = rr.upstream;
-    const std::string model = rr.model;
-    providers::ProviderDeps pd = deviceProviderDeps();
-    pd.routerBase = [] { String b = store::cumuloBase();
-                         return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
-    pd.routerKey  = [] { return std::string(store::cumuloKey().c_str()); };
-    // The upstream loop steps read pd.key(<upstream>) / pd.orchModel(<upstream>);
-    // over the router BOTH resolve to the router credential + the selected model
-    // regardless of the host arg (applyRouter then swaps in Bearer cumuloKey).
-    pd.key       = [](const char*) { return std::string(store::cumuloKey().c_str()); };
-    pd.orchModel = [model](const char*) { return model; };
-    // Per-route tool advertisement (item 2): a cumulo head advertises provider
-    // BUILT-IN tools only - the account's private connectors stay off the shared
-    // router key. attach*Wire with builtinsOnly=true does the filtering.
-    pd.attachOpenAI = [](JsonDocument& doc) {
-      nimbus::orch::attachOpenAIWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
-    };
-    pd.attachMistral = [](JsonDocument& doc) {
-      nimbus::orch::attachMistralWire(doc, cumuloRouteConnectors(), /*builtinsOnly=*/true);
-    };
-    pd.attachAnthropic = [](JsonDocument& doc) {
-      nimbus::orch::attachAnthropicWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
-    };
-    if (upstream == "anthropic")
-      return providers::orchTurnAnthropic(pd, cv, ins, inp, out, err, tools, usage);
-    if (upstream == "mistral")
-      return providers::orchTurnMistral(pd, cv, ins, inp, out, err, tools, usage);
-    if (upstream == "openai")
-      return providers::orchTurnOpenAI(pd, cv, ins, inp, out, err, tools, usage);
-    // zai / unknown upstream: single-shot chat-completions over /router/<upstream>
-    // (NOT rr.basePath - the zai upstream path carries no /v1, unlike the fabric
-    // upstreams; custRequest maps "/v1/chat/completions" to prefix + "/chat/...").
-    // json_object for every such upstream (GLM behind the router ignores
-    // json_schema exactly like direct Z.ai, CUM-495), and for zai the same bounded
-    // reasoning effort + 50 s budget as the direct Z.ai head (CUM-544) - one
-    // portable helper, host-tested, so the two Z.ai paths cannot drift.
-    providers::configureRouterCompatHead(pd, upstream, model);
-    return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
+    CumuloCall c{cv, ins, inp, out, err, tools, usage};
+    return cumuloTurn(c);
   });
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
                         std::string& out, std::string& err, const agent::HeadTools* tools,

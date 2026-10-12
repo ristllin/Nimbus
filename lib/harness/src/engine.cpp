@@ -17,6 +17,7 @@
 
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
+#include "nimbus/harness/router_refusal.h"   // a router refusal is not an outage (failover notice)
 #include "nimbus/orch/turn.h"
 
 // Lifted from src/agent/orchestrator.cpp (Stage G - the final lift: runTurn /
@@ -27,6 +28,20 @@
 // ladder, the budget refusal, the salvage path, the scheduled-turn rails).
 
 namespace agent {
+
+namespace {
+// The failover notice's reason for `host`, up to "switching to ": a timeout, a
+// router refusal (its cause, which carries the fix), else an outage.
+std::string failoverReason(const std::string& host, const std::string& err) {
+  if (router_refusal::isRefusalCause(err)) {
+    std::string why = err;
+    why[0] = (char)toupper((unsigned char)why[0]);
+    return why + ". Switching to ";
+  }
+  if (err.rfind("timeout:", 0) == 0) return host + " did not answer in time - switching to ";
+  return host + " is unavailable - switching to ";
+}
+}  // namespace
 
 namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
@@ -894,11 +909,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hlog::logf("orchestrator: %s down -> failover to %s", host.c_str(), fb.c_str());
       // The notice names the real reason for THIS host (err is the host that just
       // failed - the first host, then each fallback): a provider that did not
-      // answer in time is not "unavailable" (CUM-544).
-      const bool slow = isTimeout(err);
-      deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host +
-              (slow ? " did not answer in time - switching to " : " is unavailable - switching to ") +
-              fb + " (your recent messages carry over; the provider-side thread restarts).");
+      // answer in time is not "unavailable" (CUM-544), and neither is a Cumulo
+      // router that refused the model or the account (its own cause and fix,
+      // router_refusal.h; bench CUM-530).
+      deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) + fb +
+              " (your recent messages carry over; the provider-side thread restarts).");
       // Record the switch as a model-facing context note for the next turn.
       pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", classifyErr(err));
       turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry above)

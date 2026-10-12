@@ -60,6 +60,16 @@ inline std::string upstreamOf(const std::string& sel) {
   return nimbus::orch::resolveRouterRoute(sel).upstream;
 }
 
+// A selector some upstream can run: a model part that is not empty and holds no
+// further '/' once the upstream is split off. The router lists ids such as
+// "mistral/mistral/zai-glm-5-3"; it routes them, but the upstream refuses the
+// model it is sent ("Invalid model: mistral/zai-glm-5-3", bench CUM-530), so the
+// device never offers one.
+inline bool routable(const std::string& sel) {
+  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(sel);
+  return !r.model.empty() && r.model.find('/') == std::string::npos;
+}
+
 // The undated alias of a dated snapshot id ("...-20251101" or "...-2025-04-16"),
 // or "" when the id carries no date suffix.
 inline std::string undatedAlias(const std::string& id) {
@@ -99,7 +109,7 @@ inline bool neverChatFamily(const std::string& id) {
 // (priced + enabled) models, so other upstreams are curated by it; the openai
 // upstream still drops dated snapshots and non-chat families by name.
 inline bool routerChatModel(const std::string& id) {
-  if (id.size() < 3 || neverChatFamily(id)) return false;
+  if (id.size() < 3 || neverChatFamily(id) || !routable(id)) return false;
   const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(id);
   if (r.upstream != "openai") return true;
   const std::string& m = r.model;
@@ -269,7 +279,8 @@ inline void roundRobin(const Queues& qs, const std::string& defUp, std::vector<s
 }  // namespace detail
 
 // The keep order over `ids` (already filtered to chat-capable models, in the
-// order to prefer them): indexes into `ids`, deduped, dated twins dropped. The
+// order to prefer them): indexes into `ids`, deduped, dated twins and ids no
+// upstream runs (routable) dropped. The
 // router default first, then round-robin across upstreams in their order of first
 // appearance, each upstream newest-first - so any cap keeps the default and each
 // upstream's newest model, and a cut list stays a spread of upstreams rather than
@@ -278,7 +289,7 @@ inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
                                      const std::string& defaultSel) {
   std::vector<std::string> canon;
   canon.reserve(ids.size());
-  for (const std::string& id : ids) canon.push_back(canonical(id));
+  for (const std::string& id : ids) canon.push_back(routable(id) ? canonical(id) : std::string());
   const std::vector<size_t> cand = detail::candidates(canon);
   std::vector<size_t> order;
   const std::string def = canonical(defaultSel);

@@ -33,6 +33,12 @@ models without any other provider account.
 3. Once it verifies, pick the **Orchestrator model** and **Session model**. The
    key is stored write-only: it shows as "set" and is never displayed again.
 
+The model lists show only models the router can run. If the router refuses the
+model you picked, the same message is answered on the last model that worked (or
+on the router's default model), the reply opens with a line that names the model
+and says to choose another under **Models**, and the device switches to the model
+that answered so the next message works too.
+
 You can also mint a key from the device instead of pasting one. The option appears
 under **Device > Cloud access** once the device is paired with the cloud (see
 [Cloud access](../cloud-relay.md); pairing needs Orchestrator mode), and only while

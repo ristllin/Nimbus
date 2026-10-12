@@ -566,6 +566,35 @@ static void testDefaultSpelledWithItsUpstream(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+// Bench (CUM-530, nimbus-light): the router routed "mistral/mistral/zai-glm-5-3" and
+// the upstream refused the model it was sent with its own 400 ("Invalid model:
+// mistral/zai-glm-5-3"), which read as an outage. It is a refused pick like
+// model_not_priced: answered on the router default with the honest line, the pick
+// moves, and the next turn answers.
+static void testUpstreamInvalidModelIsARefusedPick(ndtest::Ctx& c) {
+  std::printf("  -- (q) an upstream's 400 Invalid model is a refused pick --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/mistral/v1/conversations", 400,
+                         "{\"object\":\"error\",\"message\":\"Invalid model: mistral/zai-glm-5-3\","
+                         "\"type\":\"invalid_model\",\"param\":null,\"code\":\"1500\"}"));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("answered by the default")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("next one")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-p", false), &tx);
+  rig.applyOrchModel("cumulo", "mistral/mistral/zai-glm-5-3");
+  const TurnRecord t1 = rig.say("owner", "draft the update");
+  c.ok(has(t1.reply, "The Cumulo router does not offer mistral/mistral/zai-glm-5-3"), "the reply names the refused pick");
+  c.ok(has(t1.reply, "Choose another model under Models"), "the reply names the fix");
+  c.ok(has(t1.reply, "answered by the default"), "the same turn is answered on the router default");
+  c.ok(!has(t1.reply, "unavailable") && !has(t1.reply, "That didn't finish"), "never an outage or a failure");
+  c.eq(rig.modelFor("cumulo"), "gpt-5.6", "the pick goes back to the router default");
+  c.ok(has(rig.say("owner", "and now?").reply, "next one"), "the next turn answers");
+  c.eqi((long)tx.seen.size(), 3, "the refused model is not asked again");
+  clearProviderEnv();
+}
+
 static void testCausesFitTheCut(ndtest::Ctx& c) {
   std::printf("  -- (n) every refusal cause fits the engine's 100-character cut --\n");
   int over = 0, unnamed = 0;
@@ -605,6 +634,7 @@ int main() {
   testRefusedFallbackFallsToDefault(c);
   testDefaultSpelledWithItsUpstream(c);
   testCausesFitTheCut(c);
+  testUpstreamInvalidModelIsARefusedPick(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

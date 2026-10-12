@@ -6,6 +6,8 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/router_refusal.h"
+#include "nimbus/orch/router_route.h"
 
 // CUM-242 x1 (lane L1) - the Cumulo router HEAD rewrite. A device holding only a
 // Cumulo key runs the SELECTED upstream's NATIVE head (its real mid-turn tool
@@ -187,6 +189,166 @@ static void test_no_override_is_direct() {
   TEST_ASSERT_EQUAL_STRING("", headerOf(r, "Authorization").c_str());
 }
 
+// ---- a router refusal on the device's cumulo head (CUM-539 parity, CUM-530) ----
+// The device cumulo head (src/agent/orchestrator.cpp cumuloAttempt/cumuloTurn)
+// runs each attempt over the router with every request through the refusal tap,
+// and the turn through the shared ladder. This rig is that head on the fake.
+namespace rf = agent::router_refusal;
+
+struct DeviceCumuloHead {
+  FakeProviderDeps d;
+  rf::RouterTap tap{nullptr, kRouterHost};
+  std::string cv, out, err;
+  DeviceCumuloHead() { d.toolLoop = false; }
+  bool attempt(const std::string& sel, bool fresh, agent::HeadTools* tools = nullptr) {
+    if (fresh) {
+      cv.clear();
+      out.clear();
+      err.clear();
+    }
+    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(sel);
+    agent::providers::ProviderDeps pd;
+    makeRouterPd(d, pd, kRouterHost, rr.model);
+    tap.setInner(pd.http);
+    pd.http = &tap;
+    if (rr.upstream == "anthropic") return providers::orchTurnAnthropic(pd, cv, "SYS", "USER", out, err, tools, nullptr);
+    if (rr.upstream == "mistral") return providers::orchTurnMistral(pd, cv, "SYS", "USER", out, err, tools, nullptr);
+    if (rr.upstream == "openai") return providers::orchTurnOpenAI(pd, cv, "SYS", "USER", out, err, tools, nullptr);
+    providers::configureRouterCompatHead(pd, rr.upstream, rr.model);
+    return providers::orchTurnCustom(pd, cv, "SYS", "USER", out, err, tools, nullptr);
+  }
+  rf::LadderResult turn(const std::string& picked, const std::string& lastGood = "",
+                        agent::HeadTools* tools = nullptr) {
+    return rf::runLadder(tap, picked, lastGood, "gpt-5.6",
+                         [&](const std::string& sel, bool fresh) { return attempt(sel, fresh, tools); });
+  }
+  void push(const char* path, int status, const std::string& body) {
+    d.http.script.push_back({kRouterHost, path, status, body});
+  }
+};
+
+static const char* kInvalidModel400 =
+    "{\"object\":\"error\",\"message\":\"Invalid model: mistral/zai-glm-5-3\",\"type\":\"invalid_model\","
+    "\"param\":null,\"code\":\"1500\"}";
+static std::string routerRefusal(const char* reason) {
+  return std::string("{\"error\":\"") + reason + "\",\"reason\":\"" + reason + "\",\"charged\":false,\"message\":\"refused\"}";
+}
+
+// The bench: the pick mistral/mistral/zai-glm-5-3 reached the router, the upstream
+// answered 400 "Invalid model", and the device failed over with "cumulo is
+// unavailable" while the pick stayed. Now the SAME turn answers on the router
+// default with the honest line, on a fresh conversation.
+static void test_device_invalid_model_pick_answers_on_default() {
+  DeviceCumuloHead h;
+  h.push("/router/mistral/v1/conversations", 400, kInvalidModel400);
+  h.push("/router/openai/v1/responses", 200, oaiBody());
+  const std::string picked = "mistral/mistral/zai-glm-5-3";
+  const rf::LadderResult r = h.turn(picked);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, h.err.c_str());
+  TEST_ASSERT_TRUE(r.fellBack());
+  TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Selector);
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.used.c_str());
+  TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());
+  TEST_ASSERT_TRUE(h.d.http.seen[0].body.find("\"model\":\"mistral/zai-glm-5-3\"") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("/router/openai/v1/responses", h.d.http.seen[1].path.c_str());
+  rf::prefixReply(h.out, rf::fallbackNotice(r.kind, picked, r.used));
+  TEST_ASSERT_TRUE_MESSAGE(h.out.find("The Cumulo router does not offer mistral/mistral/zai-glm-5-3 for this key, so "
+                                      "gpt-5.6 answered instead. Choose another model under Models.") !=
+                               std::string::npos,
+                           h.out.c_str());
+  TEST_ASSERT_TRUE(h.out.find("unavailable") == std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("router refused mistral/mistral/zai-glm-5-3 () - answering on gpt-5.6"));
+}
+
+// The router's own refusal names its reason as a STRING "error" plus "reason",
+// which the Anthropic wire's error.message filter drops: the tap widens the
+// filter, so model_not_priced is read on every upstream wire.
+static void test_device_model_not_priced_is_read_through_the_filter() {
+  DeviceCumuloHead h;
+  h.push("/router/anthropic/v1/messages", 403, routerRefusal("model_not_priced"));
+  h.push("/router/openai/v1/responses", 200, oaiBody());
+  const rf::LadderResult r = h.turn("anthropic/claude-opus-9");
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, h.err.c_str());
+  TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Selector);
+  TEST_ASSERT_TRUE(LogCapture::contains("router refused anthropic/claude-opus-9 (model_not_priced)"));
+}
+
+// A route the router does not allow is not the pick's fault: answered on the
+// default, the notice says the choice is kept (the device moves only a Selector).
+static void test_device_route_refusal_answers_on_default_and_keeps_pick() {
+  DeviceCumuloHead h;
+  h.push("/router/zai/chat/completions", 403, routerRefusal("endpoint_not_allowed"));
+  h.push("/router/openai/v1/responses", 200, oaiBody());
+  const rf::LadderResult r = h.turn("zai/glm-5.3");
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, h.err.c_str());
+  TEST_ASSERT_TRUE(r.kind == rf::RefusalKind::Upstream);
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.used.c_str());
+  TEST_ASSERT_TRUE(rf::fallbackNotice(r.kind, "zai/glm-5.3", r.used).find("Your model choice is kept.") !=
+                   std::string::npos);
+}
+
+// The last selector that worked is tried before the router default.
+static void test_device_refused_pick_goes_back_to_last_working() {
+  DeviceCumuloHead h;
+  h.push("/router/mistral/v1/conversations", 400, kInvalidModel400);
+  h.push("/router/anthropic/v1/messages", 200, antBody());
+  const rf::LadderResult r = h.turn("mistral/mistral/zai-glm-5-3", "anthropic/claude-sonnet-5");
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, h.err.c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-sonnet-5", r.used.c_str());
+}
+
+// Refused everywhere: the turn fails with the router's own cause, which the
+// engine's failover notice and failure reply carry instead of "unavailable".
+static void test_device_refused_everywhere_names_the_cause() {
+  DeviceCumuloHead h;
+  h.push("/router/mistral/v1/conversations", 400, kInvalidModel400);
+  h.push("/router/openai/v1/responses", 403, routerRefusal("model_not_priced"));
+  const rf::LadderResult r = h.turn("mistral/mistral/zai-glm-5-3");
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_TRUE(r.lastKind == rf::RefusalKind::Selector);
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.lastTried.c_str());
+  const std::string cause = rf::refusalCause(r.lastKind, r.lastTried);
+  TEST_ASSERT_EQUAL_STRING("the Cumulo router does not offer gpt-5.6 right now. Choose another model under Models",
+                           cause.c_str());
+  TEST_ASSERT_TRUE(rf::isRefusalCause(cause));
+  TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // each model once
+}
+
+// Not every 4xx is a refused model: a key refusal (401) or a 400 about something
+// else is answered by the engine's own reply, never on another model.
+static void test_device_other_refusals_are_not_answered_elsewhere() {
+  DeviceCumuloHead h;
+  h.push("/router/openai/v1/responses", 401, "{\"error\":{\"message\":\"Incorrect API key\"}}");
+  const rf::LadderResult a = h.turn("openai/gpt-6.1-sol");
+  TEST_ASSERT_FALSE(a.ok);
+  TEST_ASSERT_TRUE(a.kind == rf::RefusalKind::Auth);
+  TEST_ASSERT_EQUAL_STRING("", rf::refusalCause(a.lastKind, a.lastTried).c_str());
+  DeviceCumuloHead b;
+  b.push("/router/openai/v1/responses", 400, "{\"error\":{\"message\":\"Invalid value for 'input'\"}}");
+  const rf::LadderResult rb = b.turn("openai/gpt-6.1-sol");
+  TEST_ASSERT_FALSE(rb.ok);
+  TEST_ASSERT_TRUE(rb.kind == rf::RefusalKind::Other);
+  TEST_ASSERT_EQUAL(1, (int)b.d.http.seen.size());
+}
+
+// A refusal after a tool already ran is never answered again (the retry would
+// repeat the tool): only an attempt's FIRST request is re-run.
+static void test_device_refusal_after_a_tool_is_not_rerun() {
+  DeviceCumuloHead h;
+  h.d.toolLoop = true;
+  FakeProviderDeps::ToolRig rig;
+  h.d.fillTools(rig);
+  h.push("/router/anthropic/v1/messages", 200,
+         "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"memory_search\","
+         "\"input\":{\"q\":\"tea\"}}],\"stop_reason\":\"tool_use\","
+         "\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}");
+  h.push("/router/anthropic/v1/messages", 403, routerRefusal("model_not_priced"));
+  const rf::LadderResult r = h.turn("anthropic/claude-opus-5", "", &rig.ht);
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_EQUAL_UINT(1, rig.dispatched.size());
+  TEST_ASSERT_EQUAL(2, (int)h.d.http.seen.size());   // no third request on another model
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anthropic_routes_through_router);
@@ -195,6 +357,13 @@ int main(int, char**) {
   RUN_TEST(test_tool_loop_runs_over_router);
   RUN_TEST(test_http_base_uses_plain_http_and_port);
   RUN_TEST(test_no_override_is_direct);
+  RUN_TEST(test_device_invalid_model_pick_answers_on_default);
+  RUN_TEST(test_device_model_not_priced_is_read_through_the_filter);
+  RUN_TEST(test_device_route_refusal_answers_on_default_and_keeps_pick);
+  RUN_TEST(test_device_refused_pick_goes_back_to_last_working);
+  RUN_TEST(test_device_refused_everywhere_names_the_cause);
+  RUN_TEST(test_device_other_refusals_are_not_answered_elsewhere);
+  RUN_TEST(test_device_refusal_after_a_tool_is_not_rerun);
   UNITY_END();
   return 0;
 }

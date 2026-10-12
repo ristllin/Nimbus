@@ -374,6 +374,49 @@ static void test_catalog_from_a_huge_router_body_is_bounded() {
     TEST_ASSERT_TRUE_MESSAGE(all.find(want) != std::string::npos, want);
 }
 
+// Bench (nimbus-light, v4.5.10): 4 of the router's 12 ids carry a second '/' in
+// the model part ("mistral/mistral/zai-glm-5-3"). The device offered them, a save
+// answered 200, and the next turn got "Invalid model: mistral/zai-glm-5-3" from
+// the upstream. No upstream runs such an id, so the harvest, the choice list and
+// the catalog drop every one of them and keep the rest in order.
+static std::vector<std::string> benchSlashList() {
+  return {"openai/gpt-5.6",          "anthropic/claude-opus-5-5",    "mistral/mistral/zai-glm-5-3",
+          "anthropic/claude-opus-5.5", "mistral/mistral/glm-5-2",    "openai/gpt-6.1-sol",
+          "anthropic/claude-sonnet-5-5", "mistral/mistral/zai-glm-5-2", "openai/gpt-6.1-sol-pro",
+          "anthropic/claude-sonnet-5.5", "mistral/mistral/zai-glm-5",  "openai/gpt-6.1-sol-pro:batch"};
+}
+static void test_ids_no_upstream_runs_are_dropped() {
+  std::string body = "{\"object\":\"list\",\"data\":[";
+  for (const std::string& id : benchSlashList()) body += "{\"id\":\"" + id + "\"},";
+  body.back() = ']';
+  body += "}";
+  const std::vector<std::string> ids = rc::harvestIds(body.c_str());
+  TEST_ASSERT_EQUAL_UINT(8, ids.size());
+  for (const std::string& id : ids)
+    TEST_ASSERT_TRUE_MESSAGE(id.find('/', id.find('/') + 1) == std::string::npos, id.c_str());
+  // The choice list, built from the raw list too (the keep order is the one rule).
+  const rc::Shortlist sl = rc::shortlist(benchSlashList(), "gpt-5.6");
+  TEST_ASSERT_TRUE_MESSAGE(sl.csv.find("mistral/mistral/") == std::string::npos, sl.csv.c_str());
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", sl.csv.substr(0, sl.csv.find(',')).c_str());
+  TEST_ASSERT_EQUAL_UINT(8, sl.total);
+  // The catalog: parseModelsList keeps "mistral/zai-glm-5-3" under upstream mistral;
+  // protectHeads drops it.
+  std::vector<ModelInfo> cat;
+  nimbus::orch::parseModelsList("cumulo", body, cat);
+  rc::protectHeads(cat, "gpt-5.6");
+  TEST_ASSERT_EQUAL_UINT(8, cat.size());
+  for (const auto& m : cat) TEST_ASSERT_TRUE_MESSAGE(m.id.find('/') == std::string::npos, m.id.c_str());
+}
+// The rule itself: a nested model part, an empty one, or a leading '/' on the
+// model is not routable; a bare id and an ordinary selector are.
+static void test_routable_rule() {
+  TEST_ASSERT_FALSE(rc::routable("mistral/mistral/zai-glm-5-3"));
+  TEST_ASSERT_FALSE(rc::routable("openai/"));
+  TEST_ASSERT_FALSE(rc::routable("zai//glm-5"));
+  TEST_ASSERT_TRUE(rc::routable("gpt-5.6"));
+  TEST_ASSERT_TRUE(rc::routable("mistral/zai-glm-5-3"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
@@ -390,6 +433,8 @@ int main(int, char**) {
   RUN_TEST(test_rejected_pick_names_the_allowed_values);
   RUN_TEST(test_catalog_selectors_follow_role_and_usable);
   RUN_TEST(test_catalog_from_a_huge_router_body_is_bounded);
+  RUN_TEST(test_ids_no_upstream_runs_are_dropped);
+  RUN_TEST(test_routable_rule);
   UNITY_END();
   return 0;
 }

@@ -1739,7 +1739,8 @@ class NimbusdRig {
   }
 
   // The Cumulo head turn (CUM-539). A refusal never leaves the assistant dead:
-  //   * the picked model is not offered (model_not_priced, 404): THIS turn is
+  //   * the picked model is not offered (model_not_priced, a 404, or the upstream's
+  //     own 400 "Invalid model" passed through): THIS turn is
   //     answered on the last selector that worked, else (none, or it is refused
   //     too) on the router default, with a first line naming the refusal and the
   //     fix; the pick moves to the model that answered - so the next turn answers
@@ -1754,73 +1755,31 @@ class NimbusdRig {
   // yet, so the retry cannot repeat a side effect.
   bool cumuloTurn(HeadCall& c, HeadOut& o) {
     const std::string picked = cumuloModel();
-    tap_.begin();
-    if (runRouterHead(picked, c, o)) {
-      lastGoodCumulo_ = picked;
-      return true;
-    }
-    const RouterRefusal rf = tap_.refusal();
-    const RefusalKind kind = classifyRefusal(rf);
-    const std::string fallback = cumuloFallbackFor(picked, kind);
-    if (rf.firstRequest && !fallback.empty()) return answerOnFallback(picked, fallback, kind, c, o);
-    noteRefusal(kind, picked, o);
-    return false;
-  }
-
-  // The refused pick's turn, answered on `fallback`. A background compaction call
-  // (the fold runs through this same head, with no turn in flight) gets the
-  // answer only: no notice prefixed into the summary, and the owner's pick is
-  // never moved by housekeeping.
-  bool answerOnFallback(const std::string& picked, std::string fallback, RefusalKind kind, HeadCall& c,
-                        HeadOut& o) {
-    agent::hlog::logf("router refused %s (%s) - answering on %s", picked.c_str(), tap_.refusal().reason.c_str(),
-                      fallback.c_str());
-    bool answered = attemptOn(fallback, c, o);
-    if (!answered && defaultIsNext(picked, fallback)) {
-      agent::hlog::logf("router refused %s too (%s) - answering on %s", fallback.c_str(),
-                        tap_.refusal().reason.c_str(), kCumuloModel);
-      fallback = kCumuloModel;
-      answered = attemptOn(fallback, c, o);
-    }
-    if (!answered) {
-      noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the last model tried was refused too
+    const LadderResult r =
+        runLadder(tap_, picked, lastGoodCumulo_, kCumuloModel, [&](const std::string& sel, bool fresh) {
+          if (fresh) {   // a fresh conversation and a clean output for another model
+            c.conv.clear();
+            o.out.clear();
+            o.err.clear();
+          }
+          return runRouterHead(sel, c, o);
+        });
+    if (!r.ok) {
+      noteRefusal(r.lastKind, r.lastTried, o);
       return false;
     }
-    lastGoodCumulo_ = fallback;
-    if (!eng_ || !eng_->turnInFlight()) return true;   // a fold, not a conversation turn
+    lastGoodCumulo_ = r.used;
+    if (!r.fellBack()) return true;
+    // A background compaction call (the fold runs through this same head, with no
+    // turn in flight) gets the answer only: no notice prefixed into the summary,
+    // and the owner's pick is never moved by housekeeping.
+    if (!eng_ || !eng_->turnInFlight()) return true;
     // Only a model the router does not offer moves the pick, and only once the
     // fallback has answered (a failed fallback leaves the owner's choice alone).
-    if (kind == RefusalKind::Selector)
-      setModelPick(kCumuloSlug, sameRoute(fallback, kCumuloModel) ? std::string() : fallback);
-    prefixReply(o.out, fallbackNotice(kind, picked, fallback));
+    if (r.kind == RefusalKind::Selector)
+      setModelPick(kCumuloSlug, sameRoute(r.used, kCumuloModel) ? std::string() : r.used);
+    prefixReply(o.out, fallbackNotice(r.kind, picked, r.used));
     return true;
-  }
-
-  // One more head attempt on `selector` after a refusal: a fresh conversation, a
-  // clean output and the tap re-armed. False when it failed or was refused too.
-  bool attemptOn(const std::string& selector, HeadCall& c, HeadOut& o) {
-    tap_.begin();
-    c.conv.clear();
-    o.out.clear();
-    o.err.clear();
-    return runRouterHead(selector, c, o);
-  }
-
-  // The router default is the last resort after the fallback `tried` was refused
-  // too: tried once, only when that refusal came before any tool ran and names the
-  // model or its upstream (an account-wide refusal would refuse the default too).
-  bool defaultIsNext(const std::string& picked, const std::string& tried) const {
-    const RouterRefusal rf = tap_.refusal();
-    const RefusalKind k = classifyRefusal(rf);
-    return !sameRoute(tried, kCumuloModel) && !sameRoute(picked, kCumuloModel) && rf.firstRequest &&
-           (k == RefusalKind::Selector || k == RefusalKind::Upstream);
-  }
-  // Two selectors that reach the same router model: "openai/gpt-5.6" is the default
-  // "gpt-5.6" spelled with its upstream, so it is never a "different" fallback.
-  static bool sameRoute(const std::string& a, const std::string& b) {
-    const nimbus::orch::RouterRoute ra = nimbus::orch::resolveRouterRoute(a);
-    const nimbus::orch::RouterRoute rb = nimbus::orch::resolveRouterRoute(b);
-    return ra.upstream == rb.upstream && ra.model == rb.model;
   }
 
   // A refusal no other model can answer: the badge learns what it means, and the
@@ -1830,21 +1789,6 @@ class NimbusdRig {
     if (kind == RefusalKind::Account) verify_.record(kCumuloSlug, -1, "nocredits");
     const std::string cause = refusalCause(kind, selector);
     if (!cause.empty()) o.err = cause;
-  }
-
-
-  // The selector a refused pick falls back to first, or "" when none would help: a
-  // refused model goes back to the last selector that worked (else the router
-  // default, which answerOnFallback also tries if that one is refused too); a
-  // paused upstream answers on the router default.
-  std::string cumuloFallbackFor(const std::string& picked, RefusalKind kind) const {
-    std::string fb;
-    if (kind == RefusalKind::Selector)
-      fb = (!lastGoodCumulo_.empty() && !sameRoute(lastGoodCumulo_, picked)) ? lastGoodCumulo_
-                                                                             : std::string(kCumuloModel);
-    else if (kind == RefusalKind::Upstream)
-      fb = kCumuloModel;
-    return (fb.empty() || sameRoute(fb, picked)) ? std::string() : fb;
   }
 
   // The provider deps for the Z.ai direct-BYOK head (CUM-445): the base ProviderDeps

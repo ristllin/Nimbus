@@ -702,6 +702,37 @@ static void test_cum544_all_timeouts_say_no_answer_in_time() {
   TEST_ASSERT_TRUE(n.anyDelivered("zai is unavailable - switching to openai"));
 }
 
+// ---- CUM-530 bench: a router refusal is not an outage --------------------------
+// nimbus-light: the Cumulo router refused the picked model and the owner read
+// "cumulo is unavailable - switching to openai". When the cumulo head fails with
+// a refusal no router model could answer (router_refusal.h causes), the failover
+// notice carries that cause and its fix; an outage keeps "is unavailable".
+static void test_cum530_router_refusal_notice_is_never_unavailable() {
+  Rig r;
+  r.cfg.keyed = {"cumulo", "openai"};
+  r.cfg.orchHost = "cumulo";
+  r.cfg.priority = "openai";
+  r.scripts["cumulo"] = {{false, "",
+                          "the Cumulo router does not offer mistral/mistral/zai-glm-5-3 right now. "
+                          "Choose another model under Models",
+                          0, "", 0, 0}};
+  r.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_TRUE(r.anyDelivered(
+      "\xE2\x9A\xA0\xEF\xB8\x8F The Cumulo router does not offer mistral/mistral/zai-glm-5-3 right now. "
+      "Choose another model under Models. Switching to openai (your recent messages carry over; "
+      "the provider-side thread restarts)."));
+  TEST_ASSERT_FALSE(r.anyDelivered("unavailable"));
+  TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+  // Counter-test: an outage of the same head still reads as one.
+  Rig n;
+  n.cfg.keyed = {"cumulo", "openai"};
+  n.cfg.orchHost = "cumulo";
+  n.cfg.priority = "openai";
+  n.scripts["cumulo"] = {{false, "", "network", 0, "", 0, 0}};
+  n.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_TRUE(n.anyDelivered("cumulo is unavailable - switching to openai"));
+}
+
 // ---- (5) NO retry after a tool dispatched -----------------------------------
 
 static void test_no_retry_after_tool_dispatched() {
@@ -2201,6 +2232,7 @@ int main(int, char**) {
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
+  RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
   RUN_TEST(test_cum544_second_notice_names_its_own_reason);
   RUN_TEST(test_cum544_only_the_timeout_token_skips_the_retry);
   RUN_TEST(test_cum523_telegram_only_tools_are_exactly_these);
