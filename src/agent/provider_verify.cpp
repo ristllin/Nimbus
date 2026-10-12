@@ -209,7 +209,8 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   // or a whole upstream (the bench kept 8 anthropic/claude-opus rows and nothing
   // else).
   const bool router = (provider == "cumulo");
-  if (router) router_catalog::protectHeads(cat, CUMULO_MODEL);
+  // The row cap's cut counts toward the "<n> more not shown" marker below.
+  const size_t cut = router ? router_catalog::protectHeads(cat, CUMULO_MODEL) : 0;
   const size_t bound = router ? router_catalog::kCatalogMaxBytes : nimbus::store::kCatalogMaxBytes;
   JsonDocument doc(&PsramJsonAllocator::instance());
   modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
@@ -220,7 +221,7 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   // until it fits, and say how many were trimmed.
   // Once trimming starts, keep room for the "more" marker so the file stays
   // within the bound.
-  int dropped = 0;
+  int dropped = (int)cut;
   while (out.length() > (dropped ? bound - 16 : bound) && cat.size() > 1) {
     cat.pop_back();
     ++dropped;
@@ -244,7 +245,7 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   // choice list is unaffected either way.
   const bool stored = store::setModelCatalogJson(provider, out);
   if (dropped)
-    alogf("verify: %s catalog trimmed %d model(s) to its size bound", provider.c_str(), dropped);
+    alogf("verify: %s catalog trimmed %d model(s) to its size and row bounds", provider.c_str(), dropped);
   if (stored)
     alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
           (unsigned)cat.size(), (unsigned)out.length());
