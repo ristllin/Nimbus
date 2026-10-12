@@ -81,8 +81,9 @@ next turn (and no other chat's: the line carries its task text) reads them in a
 `[SPAWN REFUSED]` block (`JobEngine::takeSpawnNotes(chatId)`, background framing:
 the owner was already told, nothing is running for them), so the head neither
 retries blind nor invents a reason. A dispatch that **timed out** is different:
-a Mistral sub runs inside the request that outlived the 60 s wait, so it most
-likely ran and only its result was lost, and no job exists to wait on. Its line
+a synchronous sub (Mistral, Z.ai, the Cumulo router, the custom endpoint) runs
+inside the request that outlived its wait, so it most likely ran and only its
+result was lost, and no job exists to wait on. Its line
 reads `'<name>' may have started: ... Do not spawn it again unless the owner
 asks` (such a line is never folded away while the chat's notes are under twice
 the budget), the block's framing says a "may have started" sub must not be
@@ -217,15 +218,18 @@ tool call) arrive as their own short messages, so the reply - and the file it is
 saved to - is the run's longest message plus anything after it; short notes before
 it are left out, while a long earlier message (part of the work) is kept.
 
-**A Mistral sub that outruns the 60 s blocking read is reported as a timeout,
-not as a failed start.** Because the sub runs inside that synchronous
-`POST /v1/conversations`, a slow one outlasts the device's 60 s read deadline.
-`mistralDispatch` (`lib/harness/src/providers/mistral.cpp`) classifies that case
-as `FabricErr::Timeout` (elapsed is roughly the whole deadline) rather than a
-connection failure, and `JobEngine::dispatchSpawn` (`lib/harness/src/jobs.cpp`)
-tells the owner *"The agent on mistral didn't respond within 60s - it may have
-run without me getting its result. Try a smaller task or split it into steps."*,
-since the agent may have started.
+**A sub that outruns its blocking read is reported as a timeout, not as a
+failed start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs
+inside one synchronous request (Mistral's `POST /v1/conversations` with a 60 s
+read deadline, the chat-completions or Messages request of the others with
+30 s), so a slow one outlasts the deadline. `mistralDispatch`,
+`openaiCompatDispatch` and `customDispatch` (`lib/harness/src/providers/`)
+classify a transport failure that took at least nine tenths of the deadline as
+`FabricErr::Timeout` rather than a connection failure (a fast failure stays a
+failed start: the work never left), and `JobEngine::dispatchSpawn`
+(`lib/harness/src/jobs.cpp`) tells the owner *"The agent on zai didn't respond
+in time - it may have run without me getting its result. Try a smaller task or
+split it into steps."*, since the agent may have started.
 
 **A sub the provider refuses with HTTP 429 names the quota window.**
 The dispatch hands the window back through `Directive::rateLimit`

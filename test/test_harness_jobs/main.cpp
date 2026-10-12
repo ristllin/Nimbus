@@ -360,7 +360,7 @@ static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
   s.name = "gcal-fetch";
   r.eng->enqueueSpawn(s, "chat1");
   r.eng->pump();
-  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond within 60s - it may have run "
+  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond in time - it may have run "
                            "without me getting its result. Try a smaller task or split it into "
                            "steps.", r.delivered[0].second.c_str());   // the owner's honest line
   bool maybe = false;
@@ -368,7 +368,7 @@ static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
   TEST_ASSERT_TRUE(maybe);
   TEST_ASSERT_TRUE_MESSAGE(notes.find("did not start") == std::string::npos, notes.c_str());
   TEST_ASSERT_EQUAL_STRING(
-      "- 'gcal-fetch' may have started: the agent on anthropic did not answer within 60s, so "
+      "- 'gcal-fetch' may have started: the agent on anthropic did not answer in time, so "
       "it may have run, and its result will not arrive. Do not spawn it again unless the "
       "owner asks\n", notes.c_str());
   TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
@@ -405,6 +405,71 @@ static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
     TEST_ASSERT_FALSE(maybe);
     TEST_ASSERT_TRUE(n.find("did not start: Couldn't start that agent on anthropic.") != std::string::npos);
     TEST_ASSERT_EQUAL(0, f.eng->maybeRunningCount());
+  }
+}
+
+// A real synchronous sub adapter over the compat wire, as the device's ZaiAdapter
+// and CumuloAdapter and the hosted zai/cumulo fabric adapters wrap it, on a
+// scripted transport whose clock moves inside the exchange.
+struct CompatAdapter : agent::ManagedAgentAdapter {
+  harness_test::FakeProviderDeps deps;
+  agent::providers::ProviderDeps pd = deps.contract();
+  const char* backendId() const override { return "zai"; }
+  agent::Capabilities capabilities() const override { return {}; }
+  agent::FabricErr dispatch(const agent::Directive& d, char outJobId[72]) override {
+    agent::providers::CompatEndpoint ep;
+    ep.host = "api.z.ai";
+    ep.basePath = "/api/paas/v4";
+    ep.key = "tok";
+    ep.model = "glm-5.3";
+    ep.backendTag = "zai";
+    return agent::providers::openaiCompatDispatch(pd, ep, d, outJobId);
+  }
+  agent::FabricErr poll(const char* jobId, agent::ResultEnvelope& env) override {
+    return agent::providers::openaiCompatPoll(pd, "zai", jobId, env);
+  }
+  agent::FabricErr cancel(const char* jobId) override {
+    return agent::providers::openaiCompatCancel(pd, jobId);
+  }
+};
+
+// CUM-538 gate: the may-have-started path held for Mistral only. A Z.ai
+// sub whose completion outlives the 30 s POST got "did not start", so the head was
+// told to spawn the same paid work again. Wire to note, both sides of the line.
+static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
+  for (const bool slow : {true, false}) {
+    Rig r;
+    CompatAdapter zai;
+    r.fabric.registerAdapter(&zai);
+    harness_test::Exchange cut;
+    cut.status = 0;
+    cut.err = "no response";
+    cut.takesMs = slow ? 29000 : 1000;
+    zai.deps.http.script.push_back(cut);
+    orch::Spawn s = sp("research the GLM release notes");
+    s.provider = "zai";
+    s.name = "glm-notes";
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(1, (int)zai.deps.http.seen.size());
+    bool maybe = false;
+    const std::string notes = r.eng->takeSpawnNotes("chat1", &maybe);
+    if (slow) {
+      TEST_ASSERT_TRUE(maybe);
+      TEST_ASSERT_EQUAL_STRING(
+          "- 'glm-notes' may have started: the agent on zai did not answer in time, so it "
+          "may have run, and its result will not arrive. Do not spawn it again unless the "
+          "owner asks\n", notes.c_str());
+      TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
+      TEST_ASSERT_EQUAL_STRING("The agent on zai didn't respond in time - it may have run "
+                               "without me getting its result. Try a smaller task or split "
+                               "it into steps.", r.delivered[0].second.c_str());
+    } else {
+      TEST_ASSERT_FALSE(maybe);
+      TEST_ASSERT_EQUAL_STRING("- 'glm-notes' did not start: Couldn't start that agent on zai.\n",
+                               notes.c_str());
+      TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
+    }
   }
 }
 
@@ -882,7 +947,7 @@ static void test_spawn_refusal_copy_every_window() {
     if (err == agent::FabricErr::RateLimited || err == agent::FabricErr::Timeout) continue;
     TEST_ASSERT_EQUAL_STRING(refused.c_str(), refuse(err, agent::RateLimit::DailyUtc).c_str());
   }
-  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond within 60s - it may have "
+  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond in time - it may have "
                            "run without me getting its result. Try a smaller task or split "
                            "it into steps.",
                            refuse(agent::FabricErr::Timeout, std::nullopt).c_str());
@@ -1311,6 +1376,7 @@ int main(int, char**) {
   RUN_TEST(test_job_limit_refusal);
   RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);
   RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
+  RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
   RUN_TEST(test_spawn_note_budget_is_per_chat);
   RUN_TEST(test_keyless_provider_refusal);
   RUN_TEST(test_connector_routing_no_hint);

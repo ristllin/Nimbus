@@ -17,12 +17,16 @@ struct Exchange {
   std::string body;                // canned provider JSON
   std::string err = "scripted transport error";
   agent::HeaderList headers;       // response headers (e.g. a 429's x-ratelimit-*)
+  uint32_t takesMs = 0;            // time the exchange takes on the rig clock (see clock)
 };
 
 struct FakeHttpTransport : agent::HttpTransport {
   std::vector<Exchange> script;
   size_t idx = 0;
   std::vector<agent::HttpRequest> seen;
+  // When set, each scripted exchange advances this clock by its takesMs, so a
+  // test can make a request outlive (or not) the caller's deadline.
+  uint32_t* clock = nullptr;
 
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out,
             std::string& err) override {
@@ -34,6 +38,7 @@ struct FakeHttpTransport : agent::HttpTransport {
       return false;
     }
     const Exchange& e = script[idx++];
+    if (clock) *clock += e.takesMs;
     if (!e.expectHost.empty() && req.host != e.expectHost) {
       out.status = 0;
       err = "FakeHttpTransport: host mismatch, expected " + e.expectHost +

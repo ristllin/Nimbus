@@ -96,13 +96,14 @@ static std::string jobLabel(const orch::JobRecord& rec) {
 
 // The owner's reply when a spawn's dispatch fails.
 static std::string spawnRefusal(FabricErr err, const std::string& provider, RateLimit window) {
-  // A Timeout usually means the sub STARTED and outran the 60 s wait (the old
+  // A Timeout usually means the sub STARTED and outran the dispatch wait (the old
   // "couldn't start" was a lie the owner caught) - but the same signal can be
   // a very slow connection that never delivered the request, so the honest
-  // wording claims neither outcome as certain (prism v4.1 #4).
+  // wording claims neither outcome as certain (prism v4.1 #4). The wait is the
+  // adapter's own (60 s Mistral, 30 s Z.ai, Cumulo and custom), so no number.
   if (err == FabricErr::Timeout)
     return "The agent on " + provider +
-           " didn't respond within 60s - it may have run without me getting "
+           " didn't respond in time - it may have run without me getting "
            "its result. Try a smaller task or split it into steps.";
   const std::string refused = "Couldn't start that agent on " + provider + ".";
   // CUM-465: a 429 names the quota window that refused, in the head turn's own
@@ -340,7 +341,7 @@ void JobEngine::deliverOwnerFallback() {
 static constexpr size_t kSpawnNotesMax = 640;
 // A "may have started" line is never folded away while this much room is left:
 // dropping it would let the head spawn a paid job twice. Timeouts are rare (each
-// holds the single dispatch for the whole 60 s wait), so the extra room is too.
+// holds the single dispatch for its whole 30 to 60 s wait), so the extra room is too.
 static constexpr size_t kSpawnNotesMaybeMax = 2 * kSpawnNotesMax;
 static constexpr size_t kSpawnNoteChats = orch::kFoldMaxChats;
 static const char kSpawnNotesFold[] = "(more refusals not listed)\n";
@@ -566,10 +567,11 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     const std::string refusal = spawnRefusal(err, provider, window);
     deliver(chatId, refusal);
     if (err == FabricErr::Timeout) {
-      // It most likely ran (a Mistral sub runs inside the POST that timed out) and
-      // no job record exists to wait on, so the head must not spawn it again.
+      // It most likely ran (a synchronous sub - Mistral, Z.ai, Cumulo, custom - runs
+      // inside the POST that timed out) and no job record exists to wait on, so the
+      // head must not spawn it again.
       noteSpawnRefused(chatId, p.name, p.task,
-                       "the agent on " + provider + " did not answer within 60s, so it may "
+                       "the agent on " + provider + " did not answer in time, so it may "
                        "have run, and its result will not arrive. Do not spawn it again "
                        "unless the owner asks",
                        /*mayHaveRun=*/true);

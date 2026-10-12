@@ -84,12 +84,22 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
   return serializeBody(doc);
 }
 
-// The FabricErr for an answer that is not a 200 (code 0 = transport failure). A
-// 429 names its window when the error text does (CUM-465).
+// The whole sub runs inside one blocking POST, bounded by this read deadline.
+constexpr uint32_t kCompatTimeoutMs = 30000;
+
+// A transport failure (code 0). The sub runs INSIDE the POST, so a failure that
+// took about the whole deadline is a read timeout on a run that most likely
+// started: Timeout, which tells the head not to spawn it again (CUM-538). A fast
+// failure (connect, DNS, TLS) never delivered the work: Network.
+FabricErr compatTransportErr(uint32_t elapsedMs) {
+  return elapsedMs >= (kCompatTimeoutMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
+}
+
+// The FabricErr for an HTTP answer that is not a 200. A 429 names its window when
+// the error text does (CUM-465).
 FabricErr compatHttpErr(int code, const Directive& d, const JsonDocument& out,
                         const char* backendTag) {
   if (code == 401 || code == 403) return FabricErr::Auth;
-  if (code <= 0) return FabricErr::Network;
   if (code == 429) return wire::rateLimitedByText(d, backendTag, out["error"]["message"] | "");
   hlog::logf("%s: HTTP %d", backendTag, code);
   return FabricErr::RemoteFail;
@@ -118,8 +128,10 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   if (anthropic) headers.push_back({"anthropic-version", "2023-06-01"});
 
   JsonDocument out;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
-                      std::move(body), 30000, out, filter);
+                      std::move(body), kCompatTimeoutMs, out, filter);
+  if (code <= 0) return compatTransportErr((pd.nowMs ? pd.nowMs() : 0) - t0);
   if (code != 200) return compatHttpErr(code, d, out, backendTag);
   std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
                                 : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));

@@ -40,6 +40,7 @@ struct FakeProviderDeps {
   agent::providers::ProviderDeps contract() {
     agent::providers::ProviderDeps pd;
     pd.http = &http;
+    http.clock = &now;   // a scripted exchange's takesMs passes on this rig's clock
     pd.key = [this](const char* h) {
       auto it = keys.find(h);
       return it == keys.end() ? std::string() : it->second;

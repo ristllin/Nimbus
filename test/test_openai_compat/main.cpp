@@ -153,6 +153,46 @@ static void test_cum544_zai_sub_carries_low_effort() {
   TEST_ASSERT_TRUE(rig.http.seen[1].body.find("reasoning_effort") == std::string::npos);
 }
 
+// One compat dispatch whose transport fails after `takesMs` on the rig clock.
+static agent::FabricErr dispatchFailingAfter(uint32_t takesMs, CompatWire wire,
+                                             const char* backendTag,
+                                             const char* err = "no response") {
+  FakeProviderDeps rig;
+  harness_test::Exchange cut;
+  cut.status = 0;
+  cut.err = err;
+  cut.takesMs = takesMs;
+  rig.http.script.push_back(cut);
+  agent::providers::ProviderDeps pd = rig.contract();
+  CompatEndpoint ep;
+  ep.host = "api.z.ai"; ep.basePath = "/api/paas/v4"; ep.key = "x"; ep.model = "glm-5.3";
+  ep.backendTag = backendTag;
+  ep.wire = wire;
+  char jobId[72] = {};
+  const agent::FabricErr e = openaiCompatDispatch(pd, ep, makeDirective(), jobId);
+  TEST_ASSERT_EQUAL_UINT32(30000u, rig.http.seen.back().timeoutMs);   // the deadline judged
+  return e;
+}
+
+// CUM-538 gate: a Z.ai or Cumulo sub runs INSIDE its one 30 s POST, so a transport
+// failure that took about the whole deadline is a read timeout on a run that most
+// likely started: Timeout, which tells the head not to spawn the paid work again.
+// A fast failure never delivered the work: Network ("did not start"). The fake
+// clock moves 10 ms per read, so elapsed = takesMs + 10. Every backend and wire.
+static void test_cum538_a_sub_that_outruns_its_post_is_a_timeout() {
+  const agent::FabricErr kT = agent::FabricErr::Timeout, kN = agent::FabricErr::Network;
+  for (const char* tag : {"zai", "cumulo"}) {
+    for (CompatWire w : {CompatWire::OpenAIChat, CompatWire::AnthropicMessages}) {
+      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(29000, w, tag), tag);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(26990, w, tag), tag);  // 9/10
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(26980, w, tag), tag);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(1000, w, tag), tag);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN,
+                                (int)dispatchFailingAfter(1000, w, tag, "connect failed"), tag);
+    }
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
@@ -160,6 +200,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_429_names_the_window);
   RUN_TEST(test_cum544_zai_sub_carries_low_effort);
+  RUN_TEST(test_cum538_a_sub_that_outruns_its_post_is_a_timeout);
   UNITY_END();
   return 0;
 }

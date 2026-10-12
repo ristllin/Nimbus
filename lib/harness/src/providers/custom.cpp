@@ -146,9 +146,16 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   }
 
   JsonDocument doc;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = custRequest(pd, "POST", path, std::move(body), anthropic, doc, filter);
+  if (code <= 0) {
+    // The sub runs INSIDE this blocking POST: a failure that took about the whole
+    // deadline is a read timeout on a run that most likely started, so the head
+    // is told not to spawn it again (CUM-538); a fast failure never sent the work.
+    const uint32_t elapsed = (pd.nowMs ? pd.nowMs() : 0) - t0;
+    return elapsed >= (CUST_TIMEOUT_MS / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
+  }
   if (code == 401 || code == 403) return FabricErr::Auth;
-  if (code <= 0)                  return FabricErr::Network;
   if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
   if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }
 
