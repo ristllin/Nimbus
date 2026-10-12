@@ -228,6 +228,23 @@ static void test_cum477_fabric_low_memory_does_not_switch() {
   TEST_ASSERT_TRUE(f.delays <= 31);   // bounded: 3 s of 100 ms polls
 }
 
+// prism: the heap came back but the one resend failed anyway (it was sent; no
+// answer): the request is not sent a third time by the fabric's own same-host
+// retry - the round goes to the next provider.
+static void test_cum477_fabric_never_sends_an_unsent_request_three_times() {
+  LowHeapFabric f(/*recovers=*/true);
+  f.d.http.script.push_back({"api.openai.com", "/v1/responses", 0, ""});   // the resend: sent, no answer
+  f.d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalBody()});
+  int notifies = 0;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(f.pd, {"openai", "anthropic"}, "SYS", "USER", out, err, f.rig.ht,
+                                           nullptr, [&](const std::string&, const std::string&) { notifies++; });
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)f.d.http.seen.size());   // openai, its one resend, then anthropic
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", f.d.http.seen[2].host.c_str());
+  TEST_ASSERT_EQUAL(1, notifies);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
@@ -237,5 +254,6 @@ int main(int, char**) {
   RUN_TEST(test_single_host_list_never_switches);
   RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);
   RUN_TEST(test_cum477_fabric_low_memory_does_not_switch);
+  RUN_TEST(test_cum477_fabric_never_sends_an_unsent_request_three_times);
   return UNITY_END();
 }

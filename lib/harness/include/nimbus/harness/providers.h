@@ -196,6 +196,10 @@ struct ResendCtx {
   const nimbus::orch::HeadLoopConfig* cfg;
   const nimbus::orch::HeadStepFn* inner;
   const char* who;
+  // OUT: the last step's request was not sent and this wrapper settled it (resent
+  // it once, or refused to for memory), so a caller's own same-host retry must not
+  // send it again (the fabric loop).
+  mutable bool settled = false;
 };
 nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 
