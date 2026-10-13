@@ -1,24 +1,30 @@
-// Host tests for the OTA headroom rule (lib/core nimbus/ota/ota_headroom.h, lane L31).
+// Host tests for where an OTA check or install runs (lib/core nimbus/ota/ota_headroom.h,
+// lanes L31/L32).
 //
 // Bench 2026-10-13: Lumi (Telegram long-poll on, cloud link online) refused every
 // update check with "low-heap", also its daily one: intLargest 16372 against the
-// OTA task's 16384 B stack. The fix pauses the idle Telegram poll task (24 KB stack)
-// for the length of the OTA task. These pin the CLASS (AGENTS.md section 3):
-//   - the gate itself at its exact boundaries, and the two measured devices;
-//   - the decision over EVERY input combination: pause only when the poll runs,
-//     is idle, and pausing frees enough; never while a turn or job runs on it;
-//   - the spawn sequence over EVERY scripted device outcome (128 paths): at most one
-//     pause and two spawns, and a paused poll is owed its restart on every path;
-//   - the restart over the whole OTA lifecycle: never while the OTA task runs,
-//     always once it ends (success or failure) or never started, retried until it
-//     lands, and exactly once after it lands (no thrash);
-//   - the restart itself never runs two pollers.
+// OTA task's 16384 B stack. Lane L31 paused the Telegram poll to lend its stack, and
+// the release gate (P2J) showed the poll could then never come back. The design now:
+// the dedicated task when it fits, else the job is staged for the poll task, which
+// runs it inline between its own work; nothing is paused or restarted. These pin the
+// CLASS (AGENTS.md section 3):
+//   - the gates at their exact boundaries, and the two measured devices;
+//   - the decision over EVERY input combination (free, largest, mode, poll alive,
+//     spawn failed): the dedicated task first whenever it fits, the poll task only in
+//     Orchestrator mode with the poll alive, otherwise the honest refusal;
+//   - single-flight staging: a second request while one is staged or running is
+//     refused, a staged job is taken (run) exactly once, and the claim and the slot
+//     are released only after the run, in an order no racing request can split;
+//   - the routing over EVERY scripted device outcome (128 paths): at most one task
+//     create and one staging, a job is staged only where the decision allows it, and
+//     an unloaded device never touches the poll task.
+// The class rule "no path pauses, deletes or restarts the poll task for OTA" is the
+// source guard in test/test_ota_poll_guard.
 
 #include <unity.h>
 
 #include <atomic>
 #include <cstdint>
-#include <initializer_list>
 
 #include "nimbus/ota/ota_headroom.h"
 
@@ -27,9 +33,7 @@ using namespace nimbus::ota;
 void setUp() {}
 void tearDown() {}
 
-static constexpr uint32_t kPollStack = 24576;   // telegram.cpp POLL_STACK_BYTES
-
-// ---- the gate ----------------------------------------------------------------
+// ---- the gates -----------------------------------------------------------------
 
 static void test_gate_boundaries() {
   TEST_ASSERT_TRUE(fitsOtaTask(kSpawnFreeInternal, kOtaTaskStackBytes));
@@ -39,313 +43,344 @@ static void test_gate_boundaries() {
   // The floor is the real stack, not a rounder number below it: the old 16000 floor
   // passed Lumi's 16372 and the task create then failed on the 16384 B stack.
   TEST_ASSERT_EQUAL_UINT32(16384u, kOtaTaskStackBytes);
+  // The poll task needs no stack block, but the same free heap for the TLS fetch.
+  TEST_ASSERT_TRUE(fitsOnPoll(kSpawnFreeInternal));
+  TEST_ASSERT_FALSE(fitsOnPoll(kSpawnFreeInternal - 1));
+  TEST_ASSERT_FALSE(fitsOnPoll(0));
+}
+
+static HeadroomInput lumiInput() {
+  // Lumi on v4.5.10: free 45236, largest 16372, Telegram + cloud on.
+  HeadroomInput in;
+  in.freeInternal = 45236;
+  in.largestInternal = 16372;
+  in.orchMode = true;
+  in.pollAlive = true;
+  return in;
 }
 
 static void test_measured_devices() {
-  // Lumi on v4.5.10: free 45236, largest 16372, Telegram + cloud on.
-  HeadroomInput lumi;
-  lumi.freeInternal = 45236;
-  lumi.largestInternal = 16372;
-  lumi.pollRunning = true;
-  lumi.pollStackBytes = kPollStack;
+  HeadroomInput lumi = lumiInput();
   TEST_ASSERT_FALSE(fitsOtaTask(lumi.freeInternal, lumi.largestInternal));
-  TEST_ASSERT_EQUAL_INT((int)Headroom::PausePoll, (int)decideHeadroom(lumi));
-  lumi.pollBusy = true;   // a turn in flight: never pause, the honest refusal stands
-  TEST_ASSERT_EQUAL_INT((int)Headroom::LowMemory, (int)decideHeadroom(lumi));
-  // nimbus-light (no Telegram, no cloud): largest 23540 fits as it is.
+  TEST_ASSERT_EQUAL_INT((int)Headroom::OnPoll, (int)decideHeadroom(lumi));
+  // The same heap with no poll task to take it, or in Notifier mode: the honest refusal.
+  HeadroomInput noPoll = lumi;
+  noPoll.pollAlive = false;
+  TEST_ASSERT_EQUAL_INT((int)Headroom::LowMemory, (int)decideHeadroom(noPoll));
+  HeadroomInput notifier = lumi;
+  notifier.orchMode = false;
+  TEST_ASSERT_EQUAL_INT((int)Headroom::LowMemory, (int)decideHeadroom(notifier));
+  // nimbus-light (no Telegram, no cloud): largest 23540 fits, and the dedicated task
+  // stays first even with a live poll task (no change for an unloaded device).
   HeadroomInput light;
   light.freeInternal = 60000;
   light.largestInternal = 23540;
+  light.orchMode = true;
+  light.pollAlive = true;
   TEST_ASSERT_EQUAL_INT((int)Headroom::Fits, (int)decideHeadroom(light));
 }
 
-// ---- the decision, every combination -------------------------------------------
+// ---- the decision, every combination -----------------------------------------------
 
 struct HeapCase {
   uint32_t freeB, largestB;
 };
-// Fits; largest short; free short; both short; far too short even with the pause.
+// Fits; Lumi (largest short); free short with a big block; free just at the floor with
+// a short block; free just under it; both far too short.
 static const HeapCase kHeaps[] = {
-    {60000, 30000}, {45236, 16372}, {20000, 30000}, {12000, 9000}, {1000, 1000},
+    {60000, 30000}, {45236, 16372}, {20000, 30000},
+    {kSpawnFreeInternal, 9000}, {kSpawnFreeInternal - 1, 9000}, {1000, 1000},
 };
 
-// The rule restated from the spec (not from the code): fits now -> Fits; else the
-// poll runs, is idle, and pausing it frees enough -> PausePoll; else LowMemory.
+// The rule restated from the spec (not from the code): the task fits and its create did
+// not fail -> Fits; else Orchestrator mode, a live poll task and enough free heap ->
+// OnPoll; else LowMemory.
 static Headroom spec(const HeadroomInput& in) {
-  if (!in.spawnFailed && fitsOtaTask(in.freeInternal, in.largestInternal)) return Headroom::Fits;
-  const uint32_t stack = in.pollStackBytes;
-  const uint32_t largestAfter = in.largestInternal > stack ? in.largestInternal : stack;
-  const bool helps = stack > 0 && fitsOtaTask(in.freeInternal + stack, largestAfter);
-  const bool idleRunning = in.pollRunning && !in.pollBusy;
-  return (idleRunning && helps) ? Headroom::PausePoll : Headroom::LowMemory;
+  const bool taskFits = in.freeInternal >= 24000 && in.largestInternal >= 16384;
+  if (taskFits && !in.spawnFailed) return Headroom::Fits;
+  if (in.orchMode && in.pollAlive && in.freeInternal >= 24000) return Headroom::OnPoll;
+  return Headroom::LowMemory;
 }
 
-// One combination: the decision matches the spec, and the two class rules hold on
-// their own. Returns whether it paused.
+// One combination: the decision matches the spec, and the class rules hold on their
+// own. Returns whether it chose the poll task.
 static bool checkCombination(const HeadroomInput& in) {
   const Headroom d = decideHeadroom(in);
   TEST_ASSERT_EQUAL_INT_MESSAGE((int)spec(in), (int)d, headroomStr(d));
-  if (in.pollBusy || !in.pollRunning) TEST_ASSERT_NOT_EQUAL((int)Headroom::PausePoll, (int)d);
-  return d == Headroom::PausePoll;
+  // Never the poll task without a poll task, or in Notifier mode.
+  if (!in.orchMode || !in.pollAlive) TEST_ASSERT_NOT_EQUAL((int)Headroom::OnPoll, (int)d);
+  // The dedicated task first whenever it fits: mode and poll state never change that.
+  if (fitsOtaTask(in.freeInternal, in.largestInternal) && !in.spawnFailed)
+    TEST_ASSERT_EQUAL_INT((int)Headroom::Fits, (int)d);
+  // A failed create is never answered with another create.
+  if (in.spawnFailed) TEST_ASSERT_NOT_EQUAL((int)Headroom::Fits, (int)d);
+  return d == Headroom::OnPoll;
 }
 
 static void test_decision_every_combination() {
-  int pauses = 0;
+  int onPoll = 0, combos = 0;
   for (const HeapCase& hc : kHeaps)
-    for (int bits = 0; bits < 8; ++bits)
-      for (uint32_t stack : {0u, kPollStack}) {
-        HeadroomInput in;
-        in.freeInternal = hc.freeB;
-        in.largestInternal = hc.largestB;
-        in.pollRunning = bits & 1;
-        in.pollBusy = bits & 2;
-        in.spawnFailed = bits & 4;
-        in.pollStackBytes = stack;
-        if (checkCombination(in)) ++pauses;
-      }
-  TEST_ASSERT_TRUE(pauses > 0);   // the pause path is reachable at all
+    for (int bits = 0; bits < 8; ++bits) {
+      HeadroomInput in;
+      in.freeInternal = hc.freeB;
+      in.largestInternal = hc.largestB;
+      in.orchMode = bits & 1;
+      in.pollAlive = bits & 2;
+      in.spawnFailed = bits & 4;
+      if (checkCombination(in)) ++onPoll;
+      ++combos;
+    }
+  TEST_ASSERT_EQUAL_INT(48, combos);
+  TEST_ASSERT_TRUE(onPoll > 0);   // the poll path is reachable at all
 }
 
-static void test_headroom_str() {
+static void test_names() {
   TEST_ASSERT_EQUAL_STRING("fits", headroomStr(Headroom::Fits));
-  TEST_ASSERT_EQUAL_STRING("pause-poll", headroomStr(Headroom::PausePoll));
+  TEST_ASSERT_EQUAL_STRING("on-poll", headroomStr(Headroom::OnPoll));
   TEST_ASSERT_EQUAL_STRING("low-memory", headroomStr(Headroom::LowMemory));
+  // The job names are the task names the device logs: the bench check reads them.
+  TEST_ASSERT_EQUAL_STRING("otacheck", otaJobName(OtaJob::Check));
+  TEST_ASSERT_EQUAL_STRING("otainstall", otaJobName(OtaJob::Install));
+  TEST_ASSERT_EQUAL_STRING("", otaJobName(OtaJob::None));
 }
 
-// ---- the spawn sequence, every scripted path -------------------------------------
+// ---- single-flight staging ---------------------------------------------------------
 
-// A scripted device: what the heap reads, whether the poll runs and is busy, and
-// what each seam answers. Counts every call so a test can assert the absence of a
-// second pause or a third spawn.
+static void test_slot_stages_one_job_at_a_time() {
+  OnPollSlot slot;
+  TEST_ASSERT_FALSE(slot.pending());
+  TEST_ASSERT_FALSE(slot.busy());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::None));   // nothing to stage
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+  TEST_ASSERT_TRUE(slot.pending());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+  // A second request while one is staged is refused, whatever it asks for, and the
+  // staged job is unchanged (never merged into something else, never overwritten).
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+  // done() before take() frees nothing: only a running job ends.
+  slot.done();
+  TEST_ASSERT_TRUE(slot.pending());
+}
+
+static void test_slot_runs_a_job_exactly_once() {
+  OnPollSlot slot;
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());   // nothing staged
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.take());
+  // Running: no longer pending (the poll loop's probe goes quiet), still busy, and a
+  // request while it runs is refused.
+  TEST_ASSERT_FALSE(slot.pending());
+  TEST_ASSERT_TRUE(slot.busy());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.job());
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
+  // Never handed out a second time.
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  slot.done();
+  TEST_ASSERT_FALSE(slot.busy());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  // Empty again: the next request stages normally.
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+}
+
+// The device's request skeleton (requestCheck / requestInstall): take the single-flight
+// claim, route, release the claim unless the work now runs somewhere. Returns the
+// route, with Busy for a claim already held.
+static Route request(std::atomic<bool>& claim, OnPollSlot& slot, const RouteHooks& h,
+                     OtaJob job) {
+  bool expected = false;
+  if (!claim.compare_exchange_strong(expected, true)) return Route::Busy;
+  const Route r = routeOtaWork(h, slot, job);
+  if (r != Route::Spawned && r != Route::OnPoll) claim.store(false);
+  return r;
+}
+
+static HeadroomInput lumiSnapshot(void*) { return lumiInput(); }
+static int g_spawns = 0;
+static bool countingSpawn(void*) { ++g_spawns; return true; }
+
+static RouteHooks lumiHooks() {
+  RouteHooks h;
+  h.snapshot = lumiSnapshot;
+  h.spawn = countingSpawn;
+  return h;
+}
+
+static void test_second_request_is_refused_until_the_run_ends() {
+  std::atomic<bool> claim{false};
+  OnPollSlot slot;
+  const RouteHooks h = lumiHooks();
+  g_spawns = 0;
+  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Check));
+  TEST_ASSERT_TRUE(claim.load());   // held while staged
+  // A second check or an install while it is staged: refused "busy", nothing staged.
+  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Check));
+  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+
+  int runs = 0;
+  const OtaJob ran = runStaged(slot, claim, [&](OtaJob j) {
+    ++runs;
+    TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)j);
+    // While it runs, the claim and the slot are both still held: a request racing the
+    // run is refused, and even one that skipped the claim could not stage a second job.
+    TEST_ASSERT_TRUE(claim.load());
+    TEST_ASSERT_TRUE(slot.busy());
+    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
+    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)routeOtaWork(h, slot, OtaJob::Install));
+  });
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)ran);
+  TEST_ASSERT_EQUAL_INT(1, runs);
+  // Ended: both released, and a second step runs nothing (never twice).
+  TEST_ASSERT_FALSE(claim.load());
+  TEST_ASSERT_FALSE(slot.busy());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, claim, [&](OtaJob) { ++runs; }));
+  TEST_ASSERT_EQUAL_INT(1, runs);
+  TEST_ASSERT_EQUAL_INT(0, g_spawns);   // Lumi never even tried the dedicated task
+  // The next request after the run is accepted again.
+  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Install));
+}
+
+// The release order is what keeps single flight across tasks: the slot is emptied
+// BEFORE the claim is released, so the first request that wins the claim after a run
+// always finds an empty slot (never "busy" from a half-finished hand-over). A spy
+// claim records what the slot looked like at the instant the claim was let go.
+struct SpyClaim {
+  const OnPollSlot* slot = nullptr;
+  bool held = true;
+  int releases = 0;
+  bool slotBusyAtRelease = true;
+  void store(bool v) {
+    if (!v) { ++releases; slotBusyAtRelease = slot->busy(); }
+    held = v;
+  }
+};
+
+static void test_release_order_never_strands_a_request() {
+  OnPollSlot slot;
+  SpyClaim claim;
+  claim.slot = &slot;
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+  runStaged(slot, claim, [&](OtaJob) {
+    TEST_ASSERT_TRUE(claim.held);           // held through the whole run
+    TEST_ASSERT_EQUAL_INT(0, claim.releases);
+  });
+  TEST_ASSERT_EQUAL_INT(1, claim.releases);  // released exactly once, at the end
+  TEST_ASSERT_FALSE(claim.slotBusyAtRelease);
+  TEST_ASSERT_FALSE(claim.held);
+  // Nothing staged: the claim is not touched (it belongs to whoever holds it).
+  SpyClaim idle;
+  idle.slot = &slot;
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, idle, [](OtaJob) {}));
+  TEST_ASSERT_EQUAL_INT(0, idle.releases);
+  TEST_ASSERT_TRUE(idle.held);
+}
+
+// ---- the routing, every scripted path ---------------------------------------------
+
+// A scripted device: what the heap reads before and after a failed create, the mode,
+// whether the poll task lives, what the create answers, and whether the slot already
+// holds a job. Counts every call so a test can assert the absence of a second create.
 struct FakeDevice {
-  bool fitsFirst = true;      // the first measurement passes the gate
-  bool pollRunning = true;
-  bool pollBusy = false;
-  bool pauseOk = true;        // the quiesce joined the task in time
-  bool headroomOk = true;     // the freed stack came back within the wait
-  bool spawn1Ok = true;
-  bool spawn2Ok = true;
-  int snapshots = 0, pauses = 0, waits = 0, spawns = 0;
-  bool pausedNow = false;     // the poll task is paused (the model's view)
+  bool fitsFirst = true;       // the first measurement passes the task gate
+  bool spawnOk = true;         // the task create succeeds
+  bool freeForPoll = true;     // the free heap carries the TLS fetch on the poll task
+  bool orchMode = true;
+  bool pollAlive = true;
+  int snapshots = 0, spawns = 0;
 };
 
 static HeadroomInput fakeSnapshot(void* ctx) {
   FakeDevice* d = static_cast<FakeDevice*>(ctx);
   ++d->snapshots;
   HeadroomInput in;
-  const bool fits = d->fitsFirst || (d->pausedNow && d->headroomOk);
-  in.freeInternal = fits ? 60000 : 45236;
-  in.largestInternal = fits ? 30000 : 16372;
-  in.pollRunning = d->pollRunning && !d->pausedNow;
-  in.pollBusy = d->pollBusy;
-  in.pollStackBytes = kPollStack;
+  in.freeInternal = d->freeForPoll ? 45236 : 20000;
+  in.largestInternal = d->fitsFirst ? 30000 : 16372;
+  in.orchMode = d->orchMode;
+  in.pollAlive = d->pollAlive;
   return in;
-}
-static bool fakePause(void* ctx) {
-  FakeDevice* d = static_cast<FakeDevice*>(ctx);
-  ++d->pauses;
-  if (d->pauseOk) d->pausedNow = true;
-  return d->pauseOk;
-}
-static bool fakeWait(void* ctx) {
-  FakeDevice* d = static_cast<FakeDevice*>(ctx);
-  ++d->waits;
-  return d->headroomOk;
 }
 static bool fakeSpawn(void* ctx) {
   FakeDevice* d = static_cast<FakeDevice*>(ctx);
   ++d->spawns;
-  return d->spawns == 1 ? d->spawn1Ok : d->spawn2Ok;
+  return d->spawnOk;
 }
-static SpawnHooks hooksFor(FakeDevice& d) {
-  SpawnHooks h;
+static RouteHooks hooksFor(FakeDevice& d) {
+  RouteHooks h;
   h.ctx = &d;
   h.snapshot = fakeSnapshot;
-  h.pausePoll = fakePause;
-  h.waitHeadroom = fakeWait;
   h.spawn = fakeSpawn;
   return h;
 }
 
-static void test_fits_spawns_without_touching_the_poll() {
-  FakeDevice d;
-  PollResumeLedger ledger;
-  const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::Spawned, (int)o.result);
-  TEST_ASSERT_FALSE(o.paused);
-  TEST_ASSERT_EQUAL_INT(0, d.pauses);
-  TEST_ASSERT_EQUAL_INT(1, d.spawns);
-  TEST_ASSERT_FALSE(ledger.owed());
+// The route restated from the spec: the task first; a failed create or a short heap
+// falls to the poll task when it can take the job; a full slot is Busy, never a
+// second job.
+static Route expectedRoute(bool fitsTask, bool spawnOk, bool pollCan, bool preoccupied) {
+  if (fitsTask && spawnOk) return Route::Spawned;
+  if (!pollCan) return fitsTask ? Route::SpawnFailed : Route::LowMemory;
+  return preoccupied ? Route::Busy : Route::OnPoll;
 }
 
-static void test_loaded_device_pauses_then_spawns() {
-  FakeDevice d;
-  d.fitsFirst = false;
-  PollResumeLedger ledger;
-  const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::Spawned, (int)o.result);
-  TEST_ASSERT_TRUE(o.paused);
-  TEST_ASSERT_EQUAL_INT(1, d.pauses);
-  TEST_ASSERT_EQUAL_INT(1, d.waits);
-  TEST_ASSERT_EQUAL_INT(1, d.spawns);
-  TEST_ASSERT_TRUE(ledger.owed());
-}
-
-static void test_busy_poll_is_never_paused() {
-  FakeDevice d;
-  d.fitsFirst = false;
-  d.pollBusy = true;
-  PollResumeLedger ledger;
-  const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::LowMemory, (int)o.result);
-  TEST_ASSERT_EQUAL_INT(0, d.pauses);
-  TEST_ASSERT_EQUAL_INT(0, d.spawns);
-  TEST_ASSERT_FALSE(ledger.owed());
-}
-
-static void test_pause_that_times_out_still_owes_the_restart() {
-  FakeDevice d;
-  d.fitsFirst = false;
-  d.pauseOk = false;   // a turn began between the busy check and the quiesce
-  PollResumeLedger ledger;
-  const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::LowMemory, (int)o.result);
-  TEST_ASSERT_TRUE(o.paused);
-  TEST_ASSERT_EQUAL_INT(0, d.spawns);
-  TEST_ASSERT_TRUE(ledger.owed());   // its loop stopped all the same
-}
-
-static void test_gate_pass_but_spawn_failure_gets_the_pause() {
-  FakeDevice d;
-  d.spawn1Ok = false;   // the heap moved between the measurement and the create
-  d.fitsFirst = true;
-  PollResumeLedger ledger;
-  // The re-measure after the failure must not read "fits" (spawnFailed forces it).
-  const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::Spawned, (int)o.result);
-  TEST_ASSERT_TRUE(o.paused);
-  TEST_ASSERT_EQUAL_INT(1, d.pauses);
-  TEST_ASSERT_EQUAL_INT(2, d.spawns);
-  TEST_ASSERT_TRUE(ledger.owed());
-}
-
-static void test_null_snapshot_never_guesses() {
-  FakeDevice d;
-  SpawnHooks h = hooksFor(d);
-  h.snapshot = nullptr;
-  PollResumeLedger ledger;
-  const SpawnOutcome o = spawnWithHeadroom(h, ledger);
-  TEST_ASSERT_EQUAL_INT((int)SpawnResult::LowMemory, (int)o.result);
-  TEST_ASSERT_EQUAL_INT(0, d.spawns);
-  TEST_ASSERT_EQUAL_INT(0, d.pauses);
-}
-
-// The device glue's lifecycle over one request: the claim is held while the OTA task
-// runs (Spawned) and released at once otherwise; tick() runs the ledger step. A
-// resume seam that fails `failuresLeft` times first, then lands.
-struct ResumeSeam {
-  int calls = 0;
-  int failuresLeft = 0;
-  bool operator()() {
-    ++calls;
-    if (failuresLeft > 0) { --failuresLeft; return false; }
-    return true;
+// What the slot holds after the route: the requested job when it was staged, else
+// exactly what it held before (a refusal or a task start never stages or replaces).
+static void checkSlotAfter(const OnPollSlot& slot, Route r, OtaJob job, bool preoccupied) {
+  if (r == Route::OnPoll) {
+    TEST_ASSERT_TRUE(slot.pending());
+    TEST_ASSERT_EQUAL_INT((int)job, (int)slot.job());
+    return;
   }
-};
-
-static void test_every_path_restarts_a_paused_poll() {
-  int paths = 0, pausedPaths = 0;
-  for (int mask = 0; mask < 128; ++mask) {
-    FakeDevice d;
-    d.fitsFirst   = mask & 1;
-    d.pollRunning = mask & 2;
-    d.pollBusy    = mask & 4;
-    d.pauseOk     = mask & 8;
-    d.headroomOk  = mask & 16;
-    d.spawn1Ok    = mask & 32;
-    d.spawn2Ok    = mask & 64;
-    PollResumeLedger ledger;
-    const SpawnOutcome o = spawnWithHeadroom(hooksFor(d), ledger);
-    ++paths;
-
-    // Bounded: never two pauses, never three spawns.
-    TEST_ASSERT_TRUE(d.pauses <= 1);
-    TEST_ASSERT_TRUE(o.spawns <= 2);
-    TEST_ASSERT_EQUAL_INT(d.spawns, o.spawns);
-    // Only an idle, running poll is ever paused.
-    if (d.pauses) TEST_ASSERT_TRUE(d.pollRunning && !d.pollBusy);
-    // The ledger owes a restart exactly when the poll was paused.
-    TEST_ASSERT_EQUAL(o.paused, ledger.owed());
-    TEST_ASSERT_EQUAL(o.paused, d.pauses == 1);
-    if (o.paused) ++pausedPaths;
-
-    // Lifecycle: a spawned OTA task holds the claim while it runs. No restart then.
-    ResumeSeam seam;
-    seam.failuresLeft = mask % 3;   // 0..2 failed restarts before it lands
-    std::atomic<bool> claim{o.result == SpawnResult::Spawned};   // the OTA task holds it
-    if (claim.load()) {
-      for (int t = 0; t < 5; ++t) ledger.tick(claim, [&] { return seam(); });
-      TEST_ASSERT_EQUAL_INT(0, seam.calls);
-      TEST_ASSERT_TRUE(claim.load());   // the tick never takes a held claim
-      claim.store(false);               // the task ends
-    }
-    // The task ends (success of a check, or any failure of either task), or it never
-    // started and the refusal released the claim at once: the restart comes, retries
-    // until it lands, then stops (no thrash), and the claim is free again after.
-    for (int t = 0; t < 10; ++t) ledger.tick(claim, [&] { return seam(); });
-    TEST_ASSERT_FALSE(claim.load());
-    if (o.paused) {
-      TEST_ASSERT_EQUAL_INT(1 + mask % 3, seam.calls);
-      TEST_ASSERT_FALSE(ledger.owed());
-    } else {
-      TEST_ASSERT_EQUAL_INT(0, seam.calls);   // never "restart" a poll nobody paused
-    }
-  }
-  TEST_ASSERT_EQUAL_INT(128, paths);
-  TEST_ASSERT_TRUE(pausedPaths > 0);
+  TEST_ASSERT_EQUAL(preoccupied, slot.busy());
+  if (preoccupied) TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
 }
 
-// A successful install restarts the device and holds the claim through it: the
-// ledger never restarts the poll under the new image's feet.
-static void test_install_success_holds_until_restart() {
-  PollResumeLedger ledger;
-  ledger.notePaused();
-  ResumeSeam seam;
-  std::atomic<bool> claim{true};   // held through esp_restart
-  for (int t = 0; t < 100; ++t) ledger.tick(claim, [&] { return seam(); });
-  TEST_ASSERT_EQUAL_INT(0, seam.calls);
-  TEST_ASSERT_TRUE(ledger.owed());
+static void checkPath(int mask) {
+  FakeDevice d;
+  d.fitsFirst   = mask & 1;
+  d.spawnOk     = mask & 2;
+  d.freeForPoll = mask & 4;
+  d.orchMode    = mask & 8;
+  d.pollAlive   = mask & 16;
+  const bool preoccupied = mask & 32;   // a job already staged (the claim was bypassed)
+  const OtaJob job = (mask & 64) ? OtaJob::Install : OtaJob::Check;
+  const bool fitsTask = d.fitsFirst && d.freeForPoll;   // free 20000 never fits the task
+  const bool pollCan = d.orchMode && d.pollAlive && d.freeForPoll;
+  OnPollSlot slot;
+  if (preoccupied) TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+  const Route r = routeOtaWork(hooksFor(d), slot, job);
+
+  TEST_ASSERT_EQUAL_INT((int)expectedRoute(fitsTask, d.spawnOk, pollCan, preoccupied), (int)r);
+  // Bounded: never two creates, and a create only when the task fits.
+  TEST_ASSERT_TRUE(d.spawns <= 1);
+  TEST_ASSERT_EQUAL(fitsTask, d.spawns == 1);
+  // The poll task takes a job only in Orchestrator mode, alive, with the free heap;
+  // an unloaded device (the task fits and starts) never touches it.
+  if (r == Route::OnPoll) TEST_ASSERT_TRUE(pollCan && !preoccupied);
+  if (fitsTask && d.spawnOk) TEST_ASSERT_EQUAL_INT((int)Route::Spawned, (int)r);
+  checkSlotAfter(slot, r, job, preoccupied);
 }
 
-// The restart holds the claim while it runs, so a web request that arrives in the
-// gap between the restart and the debt clearing is refused "busy" instead of
-// pausing the poll again (which the ledger would then forget: the poll would stay
-// down until the next restart).
-static void test_restart_holds_the_claim_against_a_racing_request() {
-  PollResumeLedger ledger;
-  ledger.notePaused();
-  std::atomic<bool> claim{false};
-  bool requesterGotIn = true;
-  ledger.tick(claim, [&] {
-    bool expected = false;   // a requester on another task tries to claim mid-restart
-    requesterGotIn = claim.compare_exchange_strong(expected, true);
-    return true;
-  });
-  TEST_ASSERT_FALSE(requesterGotIn);
-  TEST_ASSERT_FALSE(ledger.owed());
-  TEST_ASSERT_FALSE(claim.load());   // released after the restart
+static void test_every_path_routes_once_and_honestly() {
+  for (int mask = 0; mask < 128; ++mask) checkPath(mask);
 }
 
-// ---- the restart never runs two pollers ------------------------------------------
-
-static void test_restart_step_never_runs_two_pollers() {
-  TEST_ASSERT_EQUAL_INT((int)PollRestart::Running, (int)pollRestartStep(true, true));
-  TEST_ASSERT_EQUAL_INT((int)PollRestart::WaitExit, (int)pollRestartStep(true, false));
-  TEST_ASSERT_EQUAL_INT((int)PollRestart::Start, (int)pollRestartStep(false, false));
-  TEST_ASSERT_EQUAL_INT((int)PollRestart::Start, (int)pollRestartStep(false, true));
-  // Class rule: a live task handle is never answered with Start.
-  for (int run = 0; run < 2; ++run)
-    TEST_ASSERT_NOT_EQUAL((int)PollRestart::Start, (int)pollRestartStep(true, run));
+static void test_null_hooks_never_guess() {
+  OnPollSlot slot;
+  RouteHooks none;
+  TEST_ASSERT_EQUAL_INT((int)Route::LowMemory, (int)routeOtaWork(none, slot, OtaJob::Check));
+  FakeDevice d;
+  d.fitsFirst = false;   // would go to the poll task
+  TEST_ASSERT_EQUAL_INT((int)Route::LowMemory, (int)routeOtaWork(hooksFor(d), slot, OtaJob::None));
+  TEST_ASSERT_FALSE(slot.busy());
+  TEST_ASSERT_EQUAL_INT(0, d.spawns);
+  // No create hook on a device where the task fits: the poll task still takes it.
+  FakeDevice fits;
+  RouteHooks noSpawn = hooksFor(fits);
+  noSpawn.spawn = nullptr;
+  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)routeOtaWork(noSpawn, slot, OtaJob::Check));
 }
 
 int main(int, char**) {
@@ -353,16 +388,12 @@ int main(int, char**) {
   RUN_TEST(test_gate_boundaries);
   RUN_TEST(test_measured_devices);
   RUN_TEST(test_decision_every_combination);
-  RUN_TEST(test_headroom_str);
-  RUN_TEST(test_fits_spawns_without_touching_the_poll);
-  RUN_TEST(test_loaded_device_pauses_then_spawns);
-  RUN_TEST(test_busy_poll_is_never_paused);
-  RUN_TEST(test_pause_that_times_out_still_owes_the_restart);
-  RUN_TEST(test_gate_pass_but_spawn_failure_gets_the_pause);
-  RUN_TEST(test_null_snapshot_never_guesses);
-  RUN_TEST(test_every_path_restarts_a_paused_poll);
-  RUN_TEST(test_install_success_holds_until_restart);
-  RUN_TEST(test_restart_holds_the_claim_against_a_racing_request);
-  RUN_TEST(test_restart_step_never_runs_two_pollers);
+  RUN_TEST(test_names);
+  RUN_TEST(test_slot_stages_one_job_at_a_time);
+  RUN_TEST(test_slot_runs_a_job_exactly_once);
+  RUN_TEST(test_second_request_is_refused_until_the_run_ends);
+  RUN_TEST(test_release_order_never_strands_a_request);
+  RUN_TEST(test_every_path_routes_once_and_honestly);
+  RUN_TEST(test_null_hooks_never_guess);
   return UNITY_END();
 }

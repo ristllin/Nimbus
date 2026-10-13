@@ -2,130 +2,127 @@
 #include <atomic>
 #include <cstdint>
 
-// OTA headroom - the pure decision behind "an update check or install that would
-// be refused only for low internal memory" (lane L31, bench 2026-10-13).
+// OTA headroom - where an update check or install runs (lane L31 bench 2026-10-13,
+// lane L32 design).
 //
-// The OTA check and install each run on ONE self-deleting task whose stack must be
-// a single contiguous block of internal SRAM. A loaded device (Telegram long-poll
+// The check and the install each run on ONE self-deleting task whose 16 KB stack must
+// be a single contiguous block of internal SRAM. A loaded device (Telegram long-poll
 // on, cloud link online) can sit just under that block: Lumi read intLargest 16372
-// against a 16384 B stack, so every check (also the daily one) was refused and the
-// device could never update itself over the air. The Telegram poll task holds a
-// 24 KB internal stack and already has a bounded, non-destructive stop (quiesce,
-// the seam the factory reset uses): it joins the task and keeps its queues, so the
-// same task can be started again on the same queues afterwards.
+// against the 16384 B stack, so every check (the daily one too) was refused. Lending
+// the Telegram poll task's stack (pause it, run the OTA task, restart it) cannot be
+// made safe: nothing guarantees the poll's 24 KB block re-forms after the OTA task,
+// and then Telegram and every local turn stay down until a reboot (release gate P2J).
 //
 // The rule, pinned by test/test_ota_headroom:
-//   1. The stack fits      -> spawn the OTA task, nothing else happens.
-//   2. It does not fit, the poll task is running and idle, and pausing it frees
-//      enough -> pause it (bounded), wait for its stack to come back, re-check,
-//      spawn. A spawn that fails although the gate passed (the heap moved) gets
-//      the same one chance.
-//   3. Anything else (no poll task, a turn or background job in flight, or still
-//      short after the pause) -> refuse with the same honest "low memory" answer.
-//   4. A paused poll task is owed a restart from the moment the pause begins, on
-//      EVERY path: a refusal, a spawn failure, an OTA task that ends in success or
-//      in any failure. The restart waits until no OTA task holds the memory, and it
-//      is retried until it lands.
-// No new task and no concurrency: the OTA task already exists, and pausing the
-// poll task only ever reduces what runs at once (AGENTS.md section 4).
+//   1. The stack fits -> the dedicated OTA task, exactly as on an unloaded device.
+//   2. It does not fit (or its create fails although the gate passed), the device is
+//      in Orchestrator mode, the poll task is alive and the free heap carries the TLS
+//      fetch -> hand the job to the POLL TASK ITSELF: stage it in a single-flight slot
+//      and the poll loop runs it inline between its own work (never inside a turn or
+//      a helper dispatch), on its own stack. No task is created, paused, deleted or
+//      restarted, so there is nothing to restore.
+//   3. Anything else (Notifier mode, no poll task, or too little free heap) -> refuse
+//      with the same honest "low-heap" answer.
+// No new task and no concurrency (AGENTS.md section 4): the work runs on a task that
+// already exists, one TLS session at a time.
 namespace nimbus {
 namespace ota {
 
 // The stack of the otacheck / otainstall task, in bytes (the Xtensa port counts
 // stack in bytes). One contiguous internal block of at least this size must be free.
 inline constexpr uint32_t kOtaTaskStackBytes = 16384;
-// Free internal heap the spawn needs beyond the stack itself: the TCB, lwIP and
-// the TLS session's internal transients stay above the TLS/lwIP danger zone.
+// Free internal heap the work needs: the TCB, lwIP and the TLS session's internal
+// transients stay above the TLS/lwIP danger zone. The same floor holds for a run on
+// the poll task, which needs no stack block but the same TLS fetch.
 inline constexpr uint32_t kSpawnFreeInternal = 24000;
 
-// True when the OTA task's stack fits the heap as measured.
+// True when the dedicated OTA task's stack fits the heap as measured.
 bool fitsOtaTask(uint32_t freeInternal, uint32_t largestInternal);
+// True when the free heap carries the work inline on the poll task.
+bool fitsOnPoll(uint32_t freeInternal);
 
 struct HeadroomInput {
   uint32_t freeInternal = 0;      // free internal 8-bit heap
   uint32_t largestInternal = 0;   // largest free internal 8-bit block
-  bool pollRunning = false;       // the Telegram poll task exists (Orchestrator mode)
-  bool pollBusy = false;          // a turn or background job runs on it, or the
-                                  // caller IS it: never pause it then
-  uint32_t pollStackBytes = 0;    // what pausing it frees (its stack, one block)
-  bool spawnFailed = false;       // the gate passed but the task create failed
+  bool orchMode = false;          // Orchestrator mode (Notifier mode has no poll task)
+  bool pollAlive = false;         // the Telegram poll task exists (token or not: it is
+                                  // also the local turn processor)
+  bool spawnFailed = false;       // the gate passed but the dedicated task create failed
 };
 
 enum class Headroom : uint8_t {
-  Fits = 0,    // spawn the OTA task now
-  PausePoll,   // pause the idle poll task first: that frees enough
-  LowMemory,   // refuse "low-heap": nothing safe to free
+  Fits = 0,    // spawn the dedicated OTA task
+  OnPoll,      // stage the job for the poll task
+  LowMemory,   // refuse "low-heap"
 };
 Headroom decideHeadroom(const HeadroomInput& in);
-const char* headroomStr(Headroom h);   // "fits" / "pause-poll" / "low-memory"
+const char* headroomStr(Headroom h);   // "fits" / "on-poll" / "low-memory"
 
-// Rule 4 as a ledger the device glue drives: notePaused() as the pause begins (a
-// pause that times out still stopped the poll loop, so it is owed too), tick()
-// on every main-loop tick. The requesting task (web or main loop) and the tick
-// run on different tasks; the OTA single-flight claim orders them: a requester
-// pauses only while it holds the claim, and tick() restarts only while IT holds
-// the claim, so a pause can never land between a restart and the debt clearing.
-class PollResumeLedger {
+enum class OtaJob : uint8_t { None = 0, Check, Install };
+const char* otaJobName(OtaJob j);      // "otacheck" / "otainstall" / ""
+
+// The single-flight hand-over to the poll task: at most one job is staged or running
+// at a time, and a staged job is taken (and so run) exactly once. stage() runs on the
+// requesting task (web, main loop, or the poll task itself for /update), take() and
+// done() on the poll task; one atomic word orders them.
+class OnPollSlot {
  public:
-  void notePaused() { owed_.store(true); }
-  bool owed() const { return owed_.load(); }
-  // One tick of rule 4, the exact step otaupd::tick() runs. When owed and the
-  // claim is free (no OTA task holds the memory, no requester is mid-pause), take
-  // the claim, restart, release. A failed restart (the old task still exiting, or
-  // no room for its stack yet) stays owed and is retried on the next tick.
-  // Returns true when a restart was tried.
-  template <class Resume>
-  bool tick(std::atomic<bool>& otaClaim, Resume&& resume) {
-    if (!owed()) return false;
-    bool expected = false;
-    if (!otaClaim.compare_exchange_strong(expected, true)) return false;
-    if (resume()) owed_.store(false);
-    otaClaim.store(false);
-    return true;
-  }
+  // Stage a job. False, staging nothing, while a job is staged or running.
+  bool stage(OtaJob j);
+  // A job is staged and not yet taken (the poll loop's cheap probe, any task).
+  bool pending() const;
+  // A job is staged or running.
+  bool busy() const;
+  // The job staged or running (None when the slot is empty).
+  OtaJob job() const;
+  // Poll task: the staged job, now marked running. None when nothing is staged (a
+  // running job is never handed out a second time).
+  OtaJob take();
+  // Poll task: the running job ended; the slot is empty again.
+  void done();
 
  private:
-  std::atomic<bool> owed_{false};
+  static constexpr uint8_t kRunning = 0x80;
+  std::atomic<uint8_t> state_{0};   // 0 empty, else the job, | kRunning once taken
 };
 
-// The restart itself (telegram::resume) never runs two pollers. `taskAlive` = the
-// poll task handle is live, `runFlag` = its run flag is set.
-enum class PollRestart : uint8_t {
-  Running = 0,   // alive and running: nothing to do, the restart is done
-  WaitExit,      // alive but stopping (a quiesce that timed out): it exits after
-                 // its current cycle; starting another now would run two pollers
-  Start,         // gone: start a fresh task on the live queues
-};
-constexpr PollRestart pollRestartStep(bool taskAlive, bool runFlag) {
-  if (!taskAlive) return PollRestart::Start;
-  return runFlag ? PollRestart::Running : PollRestart::WaitExit;
+// The poll task's whole step, in the order that keeps single flight: take the staged
+// job, run it, empty the slot, THEN release the OTA claim the requester took. A
+// request racing the end of a run sees the claim still held ("busy") or an empty
+// slot, never a half-finished hand-over. A run that restarts the device (a successful
+// install) never returns, so it holds both through the restart, as the dedicated task
+// holds the claim. Returns the job that ran (None: nothing was staged). `claim` is
+// the device's std::atomic<bool> (anything with store(bool): a test spies the order).
+template <class Claim, class Run>
+OtaJob runStaged(OnPollSlot& slot, Claim& claim, Run&& run) {
+  const OtaJob j = slot.take();
+  if (j == OtaJob::None) return j;
+  run(j);
+  slot.done();
+  claim.store(false);
+  return j;
 }
 
-// The device seams spawnWithHeadroom() runs against (the house hook pattern, like
+// The device seams routeOtaWork() runs against (the house hook pattern, like
 // usbfw::CommitHooks): plain function pointers + an opaque context.
-struct SpawnHooks {
+struct RouteHooks {
   void* ctx = nullptr;
-  HeadroomInput (*snapshot)(void* ctx) = nullptr;   // live heap + poll state
-  bool (*pausePoll)(void* ctx) = nullptr;           // bounded quiesce: true when gone
-  bool (*waitHeadroom)(void* ctx) = nullptr;        // after a pause: true once it fits
-  bool (*spawn)(void* ctx) = nullptr;               // create the OTA task
+  HeadroomInput (*snapshot)(void* ctx) = nullptr;   // live heap + mode + poll task
+  bool (*spawn)(void* ctx) = nullptr;               // create the dedicated OTA task
 };
 
-enum class SpawnResult : uint8_t {
-  Spawned = 0,   // the OTA task runs (it clears the claim when it ends)
-  LowMemory,     // refused before any spawn: "low-heap"
-  SpawnFailed,   // the gate passed but the task create failed, even after a pause
+enum class Route : uint8_t {
+  Spawned = 0,   // the dedicated task runs; it releases the claim when it ends
+  OnPoll,        // staged for the poll task; its run releases the claim
+  LowMemory,     // refused before anything ran: "low-heap"
+  SpawnFailed,   // the gate passed, the create failed, and the poll task cannot take it
+  Busy,          // the slot already holds a job: refused, never staged twice
 };
 
-struct SpawnOutcome {
-  SpawnResult result = SpawnResult::LowMemory;
-  bool paused = false;   // the poll task was paused (the ledger owes its restart)
-  int spawns = 0;        // task-create attempts (at most 2)
-};
-
-// Rules 1-3, with rule 4's ledger noted at the pause. The caller holds the OTA
-// single-flight claim and releases it on any result but Spawned.
-SpawnOutcome spawnWithHeadroom(const SpawnHooks& h, PollResumeLedger& ledger);
+// Rules 1-3 for one request: at most one task create, at most one staging. The
+// caller holds the OTA single-flight claim and releases it on any result but
+// Spawned and OnPoll.
+Route routeOtaWork(const RouteHooks& h, OnPollSlot& slot, OtaJob job);
 
 }  // namespace ota
 }  // namespace nimbus

@@ -106,22 +106,20 @@ void stop();
 // waiting out a TLS exchange. Returns true when the task is gone.
 bool quiesce(uint32_t timeoutMs);
 
-// OTA headroom (src/sys/ota_update): an update task that cannot get its stack on a
-// loaded device may quiesce() this task for its own length, then restart it here.
-// resume() starts a fresh poll task on the SAME live queues (begin() would replace
-// them and drop what they hold). True when the task runs (it already did, or it
-// started now). False when it cannot start yet: the old task has not exited (a
-// quiesce that timed out lets it finish its cycle, and a second task over it would
-// run two pollers) or its stack did not fit. The caller retries on its next tick.
-bool resume();
 // True while the poll task exists. Unlike enabled(), a bot token is not required:
 // the task is also the local turn processor (web / voice / serial injects).
 bool taskAlive();
-// True when the caller runs ON the poll task (a turn's tool, the /update hook).
-// Such a caller must never quiesce it: it would wait for itself.
-bool onPollTask();
-// The poll task's stack in bytes: the internal SRAM a quiesce gives back.
-uint32_t stackBytes();
+
+// Work another module stages for this task to run BETWEEN its own work: an OTA
+// check or install whose own task did not fit (src/sys/ota_update, wired by
+// main.cpp). `pending` is cheap and safe from any task; `run` runs the staged work on
+// this task. The poll loop calls it at its loop top, after every turn, job dispatch
+// and reply send of the previous cycle has returned, so it never runs inside a turn
+// or a helper dispatch, with the keep-alive poll socket closed (one TLS session at a
+// time). Pending work ends the idle waits like a waiting local turn, and what a run
+// queues for Telegram is delivered before the next run. Nothing here pauses, stops
+// or restarts the task. nullptr = none (the default).
+void setStagedWork(bool (*pending)(), void (*run)());
 
 // self-heal hooks (a future net-recovery ladder can read these).
 uint32_t consecutiveFails();

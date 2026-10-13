@@ -2810,10 +2810,10 @@ static void otaEventHook(int ev, const char* a, const char* b) {
       // still-running tg_poll task, whose next xQueueReceive(g_replyQ,...) hit a
       // NULL queue (configASSERT -> abort -> RTC_SW_CPU_RST). Normally the
       // install runs alongside the live poller (TLS is PSRAM-backed; the full
-      // 3 MB download + verify keeps internal heap steady at ~52 KB). Only when
-      // the OTA task's stack does not fit at all does otaupd pause the poller,
-      // BEFORE the spawn and through quiesce()/resume() (kOtaPollHooks below),
-      // which join the task and keep its queues - never stop().
+      // 3 MB download + verify keeps internal heap steady at ~52 KB). When the
+      // OTA task's stack does not fit, the install runs ON the poll task
+      // instead, between its messages (otaupd::runOnPoll) - the poller is never
+      // paused, stopped or restarted for it.
       agent::memory::captureEvent("ota", String("Update install started (") +
                                          (a ? a : "?") + ")");
       break;
@@ -2859,25 +2859,6 @@ static void otaEventHook(int ev, const char* a, const char* b) {
     default: break;
   }
 }
-
-// OTA headroom (lane L31): a check or install refused only for low internal memory
-// may pause the Telegram poll task (its 24 KB stack) for the length of the OTA task.
-// Never while a turn or background job runs on it, never from the poll task itself
-// (the /update hook runs there), and otaupd::tick() always restarts it afterwards.
-// The quiesce is bounded short: an idle poll joins within a slice or two, and the
-// caller (main loop or AsyncTCP task) should not stall on a busy one.
-static constexpr uint32_t kOtaPollQuiesceMs = 3000;
-static constexpr otaupd::PollHooks kOtaPollHooks = {
-    /*alive=*/[] { return g_orchMode && agent::telegram::taskAlive(); },
-    /*busy=*/
-    [] {
-      return agent::orchestrator::turnInFlight() || agent::telegram::activeJobCount() > 0 ||
-             agent::telegram::onPollTask();
-    },
-    /*pause=*/[] { return agent::telegram::quiesce(kOtaPollQuiesceMs); },
-    /*resume=*/agent::telegram::resume,
-    /*stackBytes=*/agent::telegram::stackBytes,
-};
 
 static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   s.turnInFlight = g_orchMode && agent::orchestrator::turnInFlight();
@@ -2974,7 +2955,12 @@ void setup() {
   otaupd::bootGuard();
   otaupd::setEventHook(otaEventHook);
   otaupd::setIdleProvider(otaIdleSnapshot);
-  otaupd::setPollHooks(&kOtaPollHooks);
+  // A check or install whose own task does not fit (a loaded device sits just
+  // under its 16 KB stack) is handed to the Telegram poll task, which runs it
+  // between its own work (lane L32, docs/ota.md "On a busy device"). Wired before
+  // telegram::begin() so the hooks are set before that task starts.
+  otaupd::setPollProbe([] { return g_orchMode; }, agent::telegram::taskAlive);
+  agent::telegram::setStagedWork(otaupd::onPollPending, otaupd::runOnPoll);
   // Owner-only Telegram `/update` approves + installs a pending OTA. Runs on the
   // tg_poll task (handleMessage); returns the reply text the owner sees.
   // ⚠ The OTA state is IN-RAM and resets on every boot, so "not available" here
@@ -2982,22 +2968,23 @@ void setup() {
   // reboot (live bug, Board 1 2026-07-22: notify -> reboot -> /update -> "up to
   // date on v3.0.0" while v3.1.1 was published). So /update runs a FRESH check
   // when no update is staged, waits for it (bounded ~25 s; tg_poll blocks far
-  // longer on ordinary turns), and installs what the check finds.
+  // longer on ordinary turns), and installs what the check finds. On a loaded
+  // device the check or install is handed to THIS task (the poll task) and runs
+  // right after this command returns, between messages (lane L32).
   agent::orchestrator::setOtaInstallHook([]() -> String {
-    if (otaupd::installing()) return "An update is already installing. I'll confirm when it's done.";
+    if (otaupd::installing() || otaupd::pollJob() == nimbus::ota::OtaJob::Install)
+      return "An update is already installing. I'll confirm when it's done.";
     String st = otaupd::statusStr();
     if (st == "unsupported") return "Updates aren't available on this build.";
     if (st != "available" && st != "checking") {
-      const char* why = "";
-      if (!otaupd::requestCheck(&why)) {
-        // From inside a turn the headroom pause cannot run (see the install
-        // refusal below), so a busy device is pointed at the web page.
-        if (why && strcmp(why, "low-heap") == 0)
-          return "Not enough free memory to check from this chat. Open Software update on the device's web page and choose Check for Updates.";
+      if (!otaupd::requestCheck())
         return "Couldn't check for updates right now (network or memory busy). Try again in a minute.";
-      }
       st = "checking";
     }
+    // A check handed to the poll task runs right after this command, on this very
+    // task: waiting for it here would only hold the reply for nothing.
+    if (st == "checking" && otaupd::pollJob() == nimbus::ota::OtaJob::Check)
+      return "Checking for updates. Send /update again in a minute to install what it finds.";
     if (st == "checking") {   // ours or the scheduled one - wait for the verdict
       const uint32_t until = millis() + 25000;
       while ((int32_t)(until - millis()) > 0) {
@@ -3014,11 +3001,9 @@ void setup() {
                "minutes. The ring shows progress. Keep the device powered on.";
       }
       String w = why && why[0] ? why : "busy";
-      // This hook runs INSIDE a turn on the poll task, so the OTA headroom pause
-      // (which never pauses a poll mid-turn) cannot help here; the web page's
-      // Install Update runs outside a turn and can.
+      // low-heap: too little memory even to run it on the poll task.
       if (w == "low-heap")
-        return "Not enough free memory to update from this chat. Open Software update on the device's web page and choose Install Update.";
+        return "Not enough free memory to update right now. Try again in a few minutes, or update over USB.";
       if (w == "unsupported")
         return "This build can't update itself. Update it over USB instead.";
       if (w == "no-wifi") return "Couldn't reach the network. Check Wi-Fi and try again.";

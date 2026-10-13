@@ -31,7 +31,6 @@
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
-#include "nimbus/ota/ota_headroom.h"  // pollRestartStep: an OTA pause never runs two pollers
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
 #include <WiFi.h>
@@ -252,17 +251,28 @@ static bool localTurnWaiting() {
   return g_cb && g_inboundStage && g_inboundQ && uxQueueMessagesWaiting(g_inboundQ) > 0;
 }
 
+// Work another module staged for this task (setStagedWork: an OTA check or install
+// whose own task did not fit). Set once at boot, before the task starts; read here.
+static bool (*g_stagedPending)() = nullptr;
+static void (*g_stagedRun)() = nullptr;
+static bool stagedWorkWaiting() { return g_stagedPending && g_stagedRun && g_stagedPending(); }
+
+// The idle waits (the inter-cycle pause, a poll-error backoff, an idle long-poll)
+// end for a waiting local turn (CUM-462), for staged work, and for a quiesce
+// (!g_running): each means "stop idling, let the loop come around".
+static bool idleWaitEnds() { return localTurnWaiting() || stagedWorkWaiting() || !g_running; }
+
 // Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short
 // slices, ending it the moment a local turn is waiting (nimbus/net/tg_poll_sched.h).
 static void idlePause(uint32_t pauseMs) {
   const uint32_t start = millis();
   for (;;) {
-    // A quiesce request (!g_running) ends the pause exactly like a waiting
-    // local turn: both mean "stop idling, let the loop come around" - the loop
-    // top then exits on g_running. Without this the factory-reset quiesce only
-    // ever joined an idle task by luck (release-gate verifier, 2026-10-04).
-    const uint32_t ms = nimbus::net::tgIdleSleepMs(localTurnWaiting() || !g_running,
-                                                   millis() - start, pauseMs);
+    // A quiesce request (!g_running) or staged work ends the pause exactly like a
+    // waiting local turn: all mean "stop idling, let the loop come around" - the
+    // loop top then exits on g_running or runs the staged work. Without this the
+    // factory-reset quiesce only ever joined an idle task by luck (release-gate
+    // verifier, 2026-10-04).
+    const uint32_t ms = nimbus::net::tgIdleSleepMs(idleWaitEnds(), millis() - start, pauseMs);
     if (ms == 0) return;
     vTaskDelay(pdMS_TO_TICKS(ms));
   }
@@ -710,13 +720,14 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
 static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
   for (;;) {
     const bool bytes = g_pollSc.available() > 0;
-    // !g_running rides the local-turn input: a quiesce ends the long-poll wait
-    // through the same GiveUp path as a waiting turn (socket closed, offset
-    // uncommitted - Telegram re-sends; nothing is lost), instead of sitting out
-    // up to 30s of getUpdates while the factory reset waits.
+    // !g_running and staged work ride the local-turn input: a quiesce or an OTA
+    // check handed to this task ends the long-poll wait through the same GiveUp
+    // path as a waiting turn (socket closed, offset uncommitted - Telegram
+    // re-sends; nothing is lost), instead of sitting out up to 30s of getUpdates
+    // while the factory reset or the update check waits.
     const nimbus::net::TgWait w = nimbus::net::tgWaitStep(
         bytes, bytes || g_pollSc.connected(), (int32_t)(millis() - deadline) >= 0,
-        localTurnWaiting() || !g_running, timeoutS);
+        idleWaitEnds(), timeoutS);
     if (w != nimbus::net::TgWait::Keep) return w;
     vTaskDelay(1);
   }
@@ -1333,6 +1344,20 @@ void pollTask(void*) {
             haveToken ? "polling the new bot" : "token cleared, poll idle");
     }
 
+    // Work staged for this task by another module (setStagedWork: an OTA check or
+    // install whose own task did not fit). Here at the loop top every turn, job
+    // dispatch and reply send of the previous cycle has returned, so it never runs
+    // inside a turn or a helper dispatch and holds no TLS work slot from them. One
+    // run per cycle: what it queues for Telegram (an update notice, the /update
+    // answer) goes out with this cycle's replies, before the next run (an install
+    // that ends in a restart) can start. Nothing pauses, stops or restarts this
+    // task for it; turns and Telegram simply wait while it runs.
+    if (stagedWorkWaiting()) {
+      closePollSocket();   // one TLS session at a time: the staged work opens its own
+      g_stagedRun();
+      if (!g_running) break;   // a quiesce arrived during the run: start nothing new
+    }
+
     // Telegram long-poll: ONLY with a token. Without one the task still runs so
     // console/web-injected turns and background job polling execute off the main
     // loop (no watchdog reboot on a multi-second turn).
@@ -1383,9 +1408,9 @@ void pollTask(void*) {
     }
 
     // Quiesce: once asked to stop, start NO new work this cycle (an injected local
-    // turn, a voice note or file, job polling, reply sends). It all stays queued: a
-    // resume() picks it up, a factory reset discards it with the restart. Without
-    // this an OTA headroom pause could itself start a turn and then time out.
+    // turn, a voice note or file, job polling, reply sends). It all stays queued and
+    // the factory reset discards it with the restart. Without this the reset's own
+    // quiesce could start a turn and then time out on it.
     if (!g_running) break;
 
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
@@ -1473,14 +1498,9 @@ void pollTask(void*) {
     if (!g_running) break;
     idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
   }
-  // Close the keep-alive poll socket on the way out: a quiesce for OTA headroom
-  // wants this task's internal memory back (stack AND socket), and a resumed task
-  // reconnects fresh instead of inheriting a socket the server may have dropped.
-  closePollSocket();
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
-  // touching a dead task's state. Queues are deliberately left alive (reboot,
-  // resume() or a fresh begin() follows; deleting them here is the stop()-crash
-  // in reverse).
+  // touching a dead task's state. Queues are deliberately left alive (reboot or
+  // a fresh begin() follows; deleting them here is the stop()-crash in reverse).
   g_task = nullptr;
   vTaskDelete(nullptr);
 }
@@ -1733,53 +1753,21 @@ bool quiesce(uint32_t timeoutMs) {
                        // path), so an idle task - token or not - joins within a
                        // slice or two; only a turn mid-provider-call holds it.
   const uint32_t t0 = millis();
-  // Feed the caller's watchdog while waiting: the factory reset runs this on the
-  // watchdog'd main task (a 7s wait without feeding starved the 8s loop WDT,
-  // verifier), and an OTA headroom pause can run it on the AsyncTCP task, which
-  // AsyncTCP also subscribes. An unsubscribed caller is skipped: resetting from
-  // one logs a "task not found" error on every pass.
-  const bool feedWdt = esp_task_wdt_status(nullptr) == ESP_OK;
   while (g_task != nullptr) {
     if (millis() - t0 >= timeoutMs) break;
-    if (feedWdt) esp_task_wdt_reset();
+    esp_task_wdt_reset();   // this runs ON the watchdog'd main task: a 7s wait
+                            // without feeding starved the 8s loop WDT (verifier)
     vTaskDelay(pdMS_TO_TICKS(50));
   }
   return g_task == nullptr;
 }
 
-bool resume() {
-  using nimbus::ota::PollRestart;
-  switch (nimbus::ota::pollRestartStep(g_task != nullptr, g_running)) {
-    case PollRestart::Running:  return true;
-    case PollRestart::WaitExit: return false;   // the old task finishes its cycle first
-    case PollRestart::Start:    break;
-  }
-  if (!g_replyQ || !g_inboundQ || !g_cb) return false;   // begin() never ran: nothing to resume
-  g_running = true;
-  if (xTaskCreatePinnedToCore(pollTask, "tg_poll", POLL_STACK_BYTES, nullptr, 3, &g_task, 0) !=
-      pdPASS) {
-    g_task = nullptr;
-    g_running = false;
-    // The caller retries every tick; say so once a minute, with the number that
-    // decides it, so a heap that never re-forms the stack's block is visible.
-    static uint32_t s_lastLogMs = 0;
-    if (s_lastLogMs == 0 || millis() - s_lastLogMs >= 60000) {
-      s_lastLogMs = millis() ? millis() : 1;
-      alogf("telegram: poll restart waits for memory (largest %u, needs %u)",
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-            (unsigned)POLL_STACK_BYTES);
-    }
-    return false;
-  }
-  alog("telegram: poll task resumed");
-  return true;
-}
-
 bool taskAlive() { return g_task != nullptr; }
 
-bool onPollTask() { return g_task != nullptr && xTaskGetCurrentTaskHandle() == g_task; }
-
-uint32_t stackBytes() { return (uint32_t)POLL_STACK_BYTES; }
+void setStagedWork(bool (*pending)(), void (*run)()) {
+  g_stagedPending = pending;
+  g_stagedRun = run;
+}
 
 uint32_t consecutiveFails() { return g_pollFails; }
 int      activeJobCount()   { return g_activeJobs; }

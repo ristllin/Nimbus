@@ -13,12 +13,14 @@
 // attempt); loop() calls tick() (internally rate-limited) which handles
 // mark-valid, the daily check cadence, and the auto-install idle window.
 
-#include "nimbus/ota/ota_logic.h"   // IdleSnapshot (portable, host-tested)
+#include "nimbus/ota/ota_headroom.h"   // OtaJob (portable, host-tested)
+#include "nimbus/ota/ota_logic.h"      // IdleSnapshot (portable, host-tested)
 
 namespace otaupd {
 
-// Events fired from the OTA tasks (hook runs in TASK context - keep it cheap;
-// main.cpp wires Telegram notify + telegram-stop here, loops-subsystem style).
+// Events fired from the OTA work (hook runs in the context of the task running it:
+// the OTA task, or the Telegram poll task for a staged job - keep it cheap; main.cpp
+// wires the Telegram notify here, loops-subsystem style).
 enum Event : int {
   EvAvailable = 1,     // a="version", b="notes" - new release seen (once per version)
   EvInstallStart,      // a="dry"|"real"
@@ -34,26 +36,23 @@ void setEventHook(EventHook h);
 using IdleProvider = bool (*)(nimbus::ota::IdleSnapshot&);
 void setIdleProvider(IdleProvider p);
 
-// Headroom seam (main.cpp wires the Telegram poll task here). An update check or
-// install that would be refused only for low internal memory may pause the poll
-// task for the length of the OTA task (nimbus/ota/ota_headroom.h has the rule):
-//   alive():  the poll task exists (Orchestrator mode, token or not).
-//   busy():   a turn or background job runs on it, or the caller IS it: never pause.
-//   pause():  bounded quiesce; true when the task is gone.
-//   resume(): restart it on its live queues; true when it runs again.
-//   stackBytes(): the internal SRAM a pause gives back.
-// tick() restarts a paused poll as soon as no OTA task runs, on EVERY path (a
-// refusal, a failed spawn, a check or install that ends in success or failure),
-// retrying each tick until it lands. The table must have static storage (it is
-// kept by pointer); nullptr or a missing hook = never pause (the old behavior).
-struct PollHooks {
-  bool (*alive)();
-  bool (*busy)();
-  bool (*pause)();
-  bool (*resume)();
-  uint32_t (*stackBytes)();
-};
-void setPollHooks(const PollHooks* h);
+// Poll-task seam (main.cpp wires the Telegram poll task here). A check or install
+// whose own task does not fit (a loaded device sits just under its 16 KB stack) is
+// handed to the poll task instead: staged here, single-flight, and run inline by the
+// poll loop between its own work, never inside a turn or a background-job dispatch
+// (nimbus/ota/ota_headroom.h has the rule). No task is created, paused or restarted
+// for it. Without the probes (or in Notifier mode, or with no poll task) a heap too
+// small for the task refuses "low-heap", as before.
+//   setPollProbe(orchMode, pollAlive): Orchestrator mode / the poll task exists.
+//   onPollPending(): a job waits for the poll task (cheap, any task).
+//   pollJob():       the job staged for or running on the poll task, or None.
+//   runOnPoll():     poll task only: run the staged job, if any, to its end. The
+//                    claim is released when it returns; a committed install
+//                    restarts the device instead of returning.
+void setPollProbe(bool (*orchMode)(), bool (*pollAlive)());
+bool onPollPending();
+nimbus::ota::OtaJob pollJob();
+void runOnPoll();
 
 // Rollback/validation guard - ms-scale, runs before the watchdog is armed.
 void bootGuard();
@@ -62,13 +61,15 @@ void bootGuard();
 // every loop() pass; it self-limits to ~1 Hz.
 void tick();
 
-// Spawn the on-demand check task (manifest fetch + compare). False when refused;
+// Start the on-demand check (manifest fetch + compare) on its own task, or stage it
+// for the poll task when that task does not fit (see above). False when refused;
 // *whyOut (optional) gets the machine reason ("busy"/"unsupported"/"no-wifi"/
 // "low-heap"/"in-progress") so the caller can name the real cause instead of
 // blaming the network (CUM-197). Map it with nimbus::ota::checkRefusalCopy().
 bool requestCheck(const char** whyOut = nullptr);
 
-// Spawn the install task. dryRun = download + verify only, never flips.
+// Start the install on its own task, or stage it for the poll task when that task
+// does not fit (see above). dryRun = download + verify only, never flips.
 // force = allow Same/Older (explicit web-UI downgrade). False when refused;
 // *whyOut (optional) gets a static reason string.
 bool requestInstall(bool dryRun, bool force, const char** whyOut = nullptr);
