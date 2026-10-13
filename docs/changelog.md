@@ -6,6 +6,17 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.12 - Updates on a busy device, a reset that erases, keys that apply at once
+
+Found by hardware checks on two desk devices (a full factory reset read back from raw flash, a device with Telegram and the cloud link that could not update), a live check of a fresh hosted Virtual Nimbus on v4.5.11, and adversarial reviews of each change and of the whole release.
+
+- **A busy device updates over the air again.** A device with Telegram, the cloud link and audio on could refuse every update check with "Can't check now: low memory", the daily one included. When the update cannot get memory of its own, it now runs on the assistant's own task between messages; while an install runs, new messages wait. Nothing is paused or restarted, so Telegram keeps working afterwards.
+- **A full factory reset erases the internal storage.** Deleted routines and chat state used to stay readable in the internal storage after a full reset to anyone with the board and a flashing tool. A full reset now erases all of it before it clears the settings; if the erase cannot finish, the reset stops and the device keeps its settings. Files on the SD card are deleted but not overwritten: to hand a device over, remove the card or format it on a computer with an overwriting format ([security](security.md)).
+- **A key added later works at once.** A Cumulo, Z.ai or custom endpoint key added on the web page after the device started left research helpers failing with "isn't configured" until a restart. It now applies to the next helper.
+- **Helpers on the Cumulo router get time to finish.** A router helper now has 120 seconds to answer (Z.ai 50 seconds, under its own cutoff) instead of 30, so a normal brief on a reasoning model no longer times out and then passes on a retry.
+- **Answers from reasoning models are read.** A model that sends its answer after a "thinking" part (Mistral's mistral-large-4-0, Anthropic with thinking) was reported as "couldn't read its result" after it had run. Every reply reader now takes the answer text.
+- **A quieter setup mode.** A new device waiting for Wi-Fi no longer logs a settings error every five seconds.
+
 ## v4.5.11 - Helpers that run on your Cumulo key
 
 Found by a live check of a fresh hosted Virtual Nimbus on v4.5.10 with only a Cumulo key.
