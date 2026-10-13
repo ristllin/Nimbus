@@ -144,142 +144,7 @@ static void test_names() {
   TEST_ASSERT_EQUAL_STRING("", otaJobName(OtaJob::None));
 }
 
-// ---- single-flight staging ---------------------------------------------------------
-
-static void test_slot_stages_one_job_at_a_time() {
-  OnPollSlot slot;
-  TEST_ASSERT_FALSE(slot.pending());
-  TEST_ASSERT_FALSE(slot.busy());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
-  TEST_ASSERT_FALSE(slot.stage(OtaJob::None));   // nothing to stage
-  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
-  TEST_ASSERT_TRUE(slot.pending());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
-  // A second request while one is staged is refused, whatever it asks for, and the
-  // staged job is unchanged (never merged into something else, never overwritten).
-  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
-  TEST_ASSERT_FALSE(slot.stage(OtaJob::Install));
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
-  // done() before take() frees nothing: only a running job ends.
-  slot.done();
-  TEST_ASSERT_TRUE(slot.pending());
-}
-
-static void test_slot_runs_a_job_exactly_once() {
-  OnPollSlot slot;
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());   // nothing staged
-  TEST_ASSERT_TRUE(slot.stage(OtaJob::Install));
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.take());
-  // Running: no longer pending (the poll loop's probe goes quiet), still busy, and a
-  // request while it runs is refused.
-  TEST_ASSERT_FALSE(slot.pending());
-  TEST_ASSERT_TRUE(slot.busy());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.job());
-  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
-  // Never handed out a second time.
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
-  slot.done();
-  TEST_ASSERT_FALSE(slot.busy());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
-  // Empty again: the next request stages normally.
-  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
-}
-
-// The device's request skeleton (requestCheck / requestInstall): take the single-flight
-// claim, route, release the claim unless the work now runs somewhere. Returns the
-// route, with Busy for a claim already held.
-static Route request(std::atomic<bool>& claim, OnPollSlot& slot, const RouteHooks& h,
-                     OtaJob job) {
-  bool expected = false;
-  if (!claim.compare_exchange_strong(expected, true)) return Route::Busy;
-  const Route r = routeOtaWork(h, slot, job);
-  if (r != Route::Spawned && r != Route::OnPoll) claim.store(false);
-  return r;
-}
-
-static HeadroomInput lumiSnapshot(void*) { return lumiInput(); }
-static int g_spawns = 0;
-static bool countingSpawn(void*) { ++g_spawns; return true; }
-
-static RouteHooks lumiHooks() {
-  RouteHooks h;
-  h.snapshot = lumiSnapshot;
-  h.spawn = countingSpawn;
-  return h;
-}
-
-static void test_second_request_is_refused_until_the_run_ends() {
-  std::atomic<bool> claim{false};
-  OnPollSlot slot;
-  const RouteHooks h = lumiHooks();
-  g_spawns = 0;
-  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Check));
-  TEST_ASSERT_TRUE(claim.load());   // held while staged
-  // A second check or an install while it is staged: refused "busy", nothing staged.
-  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Check));
-  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
-
-  int runs = 0;
-  const OtaJob ran = runStaged(slot, claim, [&](OtaJob j) {
-    ++runs;
-    TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)j);
-    // While it runs, the claim and the slot are both still held: a request racing the
-    // run is refused, and even one that skipped the claim could not stage a second job.
-    TEST_ASSERT_TRUE(claim.load());
-    TEST_ASSERT_TRUE(slot.busy());
-    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
-    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)routeOtaWork(h, slot, OtaJob::Install));
-  });
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)ran);
-  TEST_ASSERT_EQUAL_INT(1, runs);
-  // Ended: both released, and a second step runs nothing (never twice).
-  TEST_ASSERT_FALSE(claim.load());
-  TEST_ASSERT_FALSE(slot.busy());
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, claim, [&](OtaJob) { ++runs; }));
-  TEST_ASSERT_EQUAL_INT(1, runs);
-  TEST_ASSERT_EQUAL_INT(0, g_spawns);   // Lumi never even tried the dedicated task
-  // The next request after the run is accepted again.
-  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Install));
-}
-
-// The release order is what keeps single flight across tasks: the slot is emptied
-// BEFORE the claim is released, so the first request that wins the claim after a run
-// always finds an empty slot (never "busy" from a half-finished hand-over). A spy
-// claim records what the slot looked like at the instant the claim was let go.
-struct SpyClaim {
-  const OnPollSlot* slot = nullptr;
-  bool held = true;
-  int releases = 0;
-  bool slotBusyAtRelease = true;
-  void store(bool v) {
-    if (!v) { ++releases; slotBusyAtRelease = slot->busy(); }
-    held = v;
-  }
-};
-
-static void test_release_order_never_strands_a_request() {
-  OnPollSlot slot;
-  SpyClaim claim;
-  claim.slot = &slot;
-  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
-  runStaged(slot, claim, [&](OtaJob) {
-    TEST_ASSERT_TRUE(claim.held);           // held through the whole run
-    TEST_ASSERT_EQUAL_INT(0, claim.releases);
-  });
-  TEST_ASSERT_EQUAL_INT(1, claim.releases);  // released exactly once, at the end
-  TEST_ASSERT_FALSE(claim.slotBusyAtRelease);
-  TEST_ASSERT_FALSE(claim.held);
-  // Nothing staged: the claim is not touched (it belongs to whoever holds it).
-  SpyClaim idle;
-  idle.slot = &slot;
-  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, idle, [](OtaJob) {}));
-  TEST_ASSERT_EQUAL_INT(0, idle.releases);
-  TEST_ASSERT_TRUE(idle.held);
-}
-
-// ---- the routing, every scripted path ---------------------------------------------
+// ---- a scripted device ------------------------------------------------------------
 
 // A scripted device: what the heap reads before and after a failed create, the mode,
 // whether the poll task lives, what the create answers, and whether the slot already
@@ -316,6 +181,150 @@ static RouteHooks hooksFor(FakeDevice& d) {
   return h;
 }
 
+// ---- single-flight staging ---------------------------------------------------------
+
+static void test_slot_stages_one_job_at_a_time() {
+  OnPollSlot slot;
+  TEST_ASSERT_FALSE(slot.pending());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::None));   // nothing to stage
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+  TEST_ASSERT_TRUE(slot.pending());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+  // A second request while one is staged is refused, whatever it asks for, and the
+  // staged job is unchanged (never merged into something else, never overwritten).
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+  // done() before take() frees nothing: only a running job ends.
+  slot.done();
+  TEST_ASSERT_TRUE(slot.pending());
+}
+
+static void test_slot_runs_a_job_exactly_once() {
+  OnPollSlot slot;
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());   // nothing staged
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.take());
+  // Running: no longer pending (the poll loop's probe goes quiet), still held, and a
+  // request while it runs is refused.
+  TEST_ASSERT_FALSE(slot.pending());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.job());
+  TEST_ASSERT_FALSE(slot.stage(OtaJob::Check));
+  // Never handed out a second time.
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  slot.done();
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());
+  // Empty again: the next request stages normally.
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+}
+
+// A job whose poll task is gone (the factory reset joined it) is dropped from the slot
+// so its claim can be released; a job that already runs is never dropped, and a
+// dropped job never runs.
+static void test_cancel_drops_only_a_staged_job() {
+  OnPollSlot slot;
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.cancel());   // nothing staged
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Install, (int)slot.cancel());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+  TEST_ASSERT_FALSE(slot.pending());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.take());     // never runs
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));                     // the slot is free again
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.take());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.cancel());   // running: untouched
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+  slot.done();
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+}
+
+// The device's request skeleton (requestCheck / requestInstall): take the single-flight
+// claim, route, release the claim unless the work now runs somewhere. Returns the
+// route, with Busy for a claim already held.
+static Route request(std::atomic<bool>& claim, OnPollSlot& slot, const RouteHooks& h,
+                     OtaJob job) {
+  bool expected = false;
+  if (!claim.compare_exchange_strong(expected, true)) return Route::Busy;
+  const Route r = routeOtaWork(h, slot, job);
+  if (r != Route::Spawned && r != Route::OnPoll) claim.store(false);
+  return r;
+}
+
+static void test_second_request_is_refused_until_the_run_ends() {
+  std::atomic<bool> claim{false};
+  OnPollSlot slot;
+  FakeDevice lumi;
+  lumi.fitsFirst = false;   // reads exactly Lumi: free 45236, largest 16372
+  const RouteHooks h = hooksFor(lumi);
+  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Check));
+  TEST_ASSERT_TRUE(claim.load());   // held while staged
+  // A second check or an install while it is staged: refused "busy", nothing staged.
+  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Check));
+  TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+
+  int runs = 0;
+  const OtaJob ran = runStaged(slot, claim, [&](OtaJob j) {
+    ++runs;
+    TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)j);
+    // While it runs, the claim and the slot are both still held: a request racing the
+    // run is refused, and even one that skipped the claim could not stage a second job.
+    TEST_ASSERT_TRUE(claim.load());
+    TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
+    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)request(claim, slot, h, OtaJob::Install));
+    TEST_ASSERT_EQUAL_INT((int)Route::Busy, (int)routeOtaWork(h, slot, OtaJob::Install));
+  });
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)ran);
+  TEST_ASSERT_EQUAL_INT(1, runs);
+  // Ended: both released, and a second step runs nothing (never twice).
+  TEST_ASSERT_FALSE(claim.load());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, claim, [&](OtaJob) { ++runs; }));
+  TEST_ASSERT_EQUAL_INT(1, runs);
+  TEST_ASSERT_EQUAL_INT(0, lumi.spawns);   // Lumi never even tried the dedicated task
+  // The next request after the run is accepted again.
+  TEST_ASSERT_EQUAL_INT((int)Route::OnPoll, (int)request(claim, slot, h, OtaJob::Install));
+}
+
+// The release order is what keeps single flight across tasks: the slot is emptied
+// BEFORE the claim is released, so the first request that wins the claim after a run
+// always finds an empty slot (never "busy" from a half-finished hand-over). A spy
+// claim records what the slot looked like at the instant the claim was let go.
+struct SpyClaim {
+  const OnPollSlot* slot = nullptr;
+  bool held = true;
+  int releases = 0;
+  bool slotBusyAtRelease = true;
+  void store(bool v) {
+    if (!v) { ++releases; slotBusyAtRelease = slot->job() != OtaJob::None; }
+    held = v;
+  }
+};
+
+static void test_release_order_never_strands_a_request() {
+  OnPollSlot slot;
+  SpyClaim claim;
+  claim.slot = &slot;
+  TEST_ASSERT_TRUE(slot.stage(OtaJob::Check));
+  runStaged(slot, claim, [&](OtaJob) {
+    TEST_ASSERT_TRUE(claim.held);           // held through the whole run
+    TEST_ASSERT_EQUAL_INT(0, claim.releases);
+  });
+  TEST_ASSERT_EQUAL_INT(1, claim.releases);  // released exactly once, at the end
+  TEST_ASSERT_FALSE(claim.slotBusyAtRelease);
+  TEST_ASSERT_FALSE(claim.held);
+  // Nothing staged: the claim is not touched (it belongs to whoever holds it).
+  SpyClaim idle;
+  idle.slot = &slot;
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)runStaged(slot, idle, [](OtaJob) {}));
+  TEST_ASSERT_EQUAL_INT(0, idle.releases);
+  TEST_ASSERT_TRUE(idle.held);
+}
+
+// ---- the routing, every scripted path ---------------------------------------------
+
 // The route restated from the spec: the task first; a failed create or a short heap
 // falls to the poll task when it can take the job; a full slot is Busy, never a
 // second job.
@@ -333,7 +342,7 @@ static void checkSlotAfter(const OnPollSlot& slot, Route r, OtaJob job, bool pre
     TEST_ASSERT_EQUAL_INT((int)job, (int)slot.job());
     return;
   }
-  TEST_ASSERT_EQUAL(preoccupied, slot.busy());
+  TEST_ASSERT_EQUAL(preoccupied, slot.job() != OtaJob::None);
   if (preoccupied) TEST_ASSERT_EQUAL_INT((int)OtaJob::Check, (int)slot.job());
 }
 
@@ -374,7 +383,7 @@ static void test_null_hooks_never_guess() {
   FakeDevice d;
   d.fitsFirst = false;   // would go to the poll task
   TEST_ASSERT_EQUAL_INT((int)Route::LowMemory, (int)routeOtaWork(hooksFor(d), slot, OtaJob::None));
-  TEST_ASSERT_FALSE(slot.busy());
+  TEST_ASSERT_EQUAL_INT((int)OtaJob::None, (int)slot.job());
   TEST_ASSERT_EQUAL_INT(0, d.spawns);
   // No create hook on a device where the task fits: the poll task still takes it.
   FakeDevice fits;
@@ -391,6 +400,7 @@ int main(int, char**) {
   RUN_TEST(test_names);
   RUN_TEST(test_slot_stages_one_job_at_a_time);
   RUN_TEST(test_slot_runs_a_job_exactly_once);
+  RUN_TEST(test_cancel_drops_only_a_staged_job);
   RUN_TEST(test_second_request_is_refused_until_the_run_ends);
   RUN_TEST(test_release_order_never_strands_a_request);
   RUN_TEST(test_every_path_routes_once_and_honestly);

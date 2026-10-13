@@ -263,15 +263,12 @@ static bool stagedWorkWaiting() { return g_stagedPending && g_stagedRun && g_sta
 static bool idleWaitEnds() { return localTurnWaiting() || stagedWorkWaiting() || !g_running; }
 
 // Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short
-// slices, ending it the moment a local turn is waiting (nimbus/net/tg_poll_sched.h).
+// slices, ending it as soon as idleWaitEnds() says so (nimbus/net/tg_poll_sched.h).
 static void idlePause(uint32_t pauseMs) {
   const uint32_t start = millis();
   for (;;) {
-    // A quiesce request (!g_running) or staged work ends the pause exactly like a
-    // waiting local turn: all mean "stop idling, let the loop come around" - the
-    // loop top then exits on g_running or runs the staged work. Without this the
-    // factory-reset quiesce only ever joined an idle task by luck (release-gate
-    // verifier, 2026-10-04).
+    // Without the quiesce leg the factory-reset quiesce only ever joined an idle
+    // task by luck (release-gate verifier, 2026-10-04).
     const uint32_t ms = nimbus::net::tgIdleSleepMs(idleWaitEnds(), millis() - start, pauseMs);
     if (ms == 0) return;
     vTaskDelay(pdMS_TO_TICKS(ms));
@@ -720,11 +717,10 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
 static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
   for (;;) {
     const bool bytes = g_pollSc.available() > 0;
-    // !g_running and staged work ride the local-turn input: a quiesce or an OTA
-    // check handed to this task ends the long-poll wait through the same GiveUp
-    // path as a waiting turn (socket closed, offset uncommitted - Telegram
-    // re-sends; nothing is lost), instead of sitting out up to 30s of getUpdates
-    // while the factory reset or the update check waits.
+    // A quiesce or staged work ends the long-poll wait through the same path as a
+    // waiting turn (socket closed, offset uncommitted - Telegram re-sends; nothing
+    // is lost), instead of sitting out up to 30s of getUpdates while the factory
+    // reset or the update check waits.
     const nimbus::net::TgWait w = nimbus::net::tgWaitStep(
         bytes, bytes || g_pollSc.connected(), (int32_t)(millis() - deadline) >= 0,
         idleWaitEnds(), timeoutS);
@@ -1310,6 +1306,24 @@ void pollTask(void*) {
 
   int activeJobs = 0;
   while (g_running) {
+    // Work staged for this task by another module (setStagedWork: an OTA check or
+    // install whose own task did not fit). Here at the loop top every turn, job
+    // dispatch and reply send of the previous cycle has returned, so it never runs
+    // inside a turn or a helper dispatch and holds no TLS work slot from them. It
+    // runs before the Wi-Fi wait below: without Wi-Fi it fails fast and frees the
+    // OTA claim (USB updates take the same claim), as its own task would. One run
+    // per cycle, and this cycle's Telegram poll is then a Check (an immediate
+    // getUpdates, read whole): Telegram is served between runs however steady the
+    // staged work, and what a run queued (an update notice) goes out with this
+    // cycle's replies before the next run can start. Nothing pauses, stops or
+    // restarts this task for it; turns and Telegram simply wait while it runs.
+    const bool ranStaged = stagedWorkWaiting();
+    if (ranStaged) {
+      closePollSocket();   // one TLS session at a time: the staged work opens its own
+      g_stagedRun();
+      if (!g_running) break;   // a quiesce arrived during the run: start nothing new
+    }
+
     if (!wifiReady()) { closePollSocket(); vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
 
     // P8: pick up a live allowlist / public-mode change (owner approved a pending
@@ -1344,20 +1358,6 @@ void pollTask(void*) {
             haveToken ? "polling the new bot" : "token cleared, poll idle");
     }
 
-    // Work staged for this task by another module (setStagedWork: an OTA check or
-    // install whose own task did not fit). Here at the loop top every turn, job
-    // dispatch and reply send of the previous cycle has returned, so it never runs
-    // inside a turn or a helper dispatch and holds no TLS work slot from them. One
-    // run per cycle: what it queues for Telegram (an update notice, the /update
-    // answer) goes out with this cycle's replies, before the next run (an install
-    // that ends in a restart) can start. Nothing pauses, stops or restarts this
-    // task for it; turns and Telegram simply wait while it runs.
-    if (stagedWorkWaiting()) {
-      closePollSocket();   // one TLS session at a time: the staged work opens its own
-      g_stagedRun();
-      if (!g_running) break;   // a quiesce arrived during the run: start nothing new
-    }
-
     // Telegram long-poll: ONLY with a token. Without one the task still runs so
     // console/web-injected turns and background job polling execute off the main
     // loop (no watchdog reboot on a multi-second turn).
@@ -1365,8 +1365,9 @@ void pollTask(void*) {
     // (tg_poll_sched.h): Skip the poll and run the turn below at once - or, right
     // after a skip, Check Telegram first with an immediate getUpdates, so Telegram
     // is served at least every other cycle.
-    const nimbus::net::TgPoll plan =
+    nimbus::net::TgPoll plan =
         haveToken ? g_pollSched.plan(localTurnWaiting()) : nimbus::net::TgPoll::LongPoll;
+    if (haveToken && ranStaged) plan = nimbus::net::TgPoll::Check;   // Telegram's turn first
     if (haveToken && plan == nimbus::net::TgPoll::Skip) {
       closePollSocket();   // the local turn needs the single TLS session
     } else if (haveToken) {
@@ -1460,10 +1461,11 @@ void pollTask(void*) {
 
     // Advance background jobs (orchestrator::pollJobs) - synchronous, this task.
     // This is where a turn (incl. the full tool loop) runs, so it is the deepest
-    // this stack ever gets. Sample the high-water AFTER it and surface the WORST
-    // seen, so the stack size is set from real peaks, not a guess - and so a stack
-    // creeping toward the canary is visible long before it overflows (that
-    // overflow is the recurring crash(panic); see POLL_STACK_BYTES).
+    // this stack gets (the staged OTA run at the loop top is shallower, and the
+    // lifetime mark sampled here covers it too). Sample the high-water AFTER it and
+    // surface the WORST seen, so the stack size is set from real peaks, not a guess -
+    // and so a stack creeping toward the canary is visible long before it overflows
+    // (that overflow is the recurring crash(panic); see POLL_STACK_BYTES).
     activeJobs = g_tick ? g_tick() : 0;
     g_activeJobs = activeJobs;
     {

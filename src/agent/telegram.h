@@ -111,14 +111,10 @@ bool quiesce(uint32_t timeoutMs);
 bool taskAlive();
 
 // Work another module stages for this task to run BETWEEN its own work: an OTA
-// check or install whose own task did not fit (src/sys/ota_update, wired by
-// main.cpp). `pending` is cheap and safe from any task; `run` runs the staged work on
-// this task. The poll loop calls it at its loop top, after every turn, job dispatch
-// and reply send of the previous cycle has returned, so it never runs inside a turn
-// or a helper dispatch, with the keep-alive poll socket closed (one TLS session at a
-// time). Pending work ends the idle waits like a waiting local turn, and what a run
-// queues for Telegram is delivered before the next run. Nothing here pauses, stops
-// or restarts the task. nullptr = none (the default).
+// check or install whose own task did not fit (src/sys/ota_update, wired by main.cpp
+// before begin()). `pending` is cheap and safe from any task; `run` runs on this task,
+// at its loop top, never inside a turn (the full rule at the call site in pollTask).
+// nullptr = none (the default).
 void setStagedWork(bool (*pending)(), void (*run)());
 
 // self-heal hooks (a future net-recovery ladder can read these).

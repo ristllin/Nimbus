@@ -205,9 +205,10 @@ between messages.
 - **Between messages, never in the middle of one.** The update starts the next
   time the poll is between its own work: right away when it is idle, or as soon
   as the turn in progress ends. It never runs inside a turn.
-- **A check only delays the next message.** A check takes a few seconds.
-  Telegram and web chat messages that arrive meanwhile are answered right after
-  it.
+- **A check only delays the next message.** A check takes a few seconds, a
+  little longer while the device is busy with another download. Telegram and web
+  chat messages that arrive meanwhile are answered right after it, Telegram
+  first.
 - **During an install, messages wait.** An install takes about two minutes.
   Telegram messages wait at Telegram, and web chat messages wait in the device's
   queue, which holds a few (when it is full the page says so). The web page and

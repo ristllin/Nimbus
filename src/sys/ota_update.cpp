@@ -504,11 +504,27 @@ static nimbus::ota::Route routeOtaJob(TaskFunction_t fn, nimbus::ota::OtaJob job
   return r;
 }
 
+// The refusal reason a route maps to, or nullptr when the job now runs (its task or
+// the poll task). `spawnFailedWhy` keeps each caller's existing token for a create
+// that failed after a passing gate ("low-heap" for a check, "task" for an install).
+static const char* routeRefusal(nimbus::ota::Route r, const char* spawnFailedWhy) {
+  switch (r) {
+    case nimbus::ota::Route::Spawned:
+    case nimbus::ota::Route::OnPoll:      return nullptr;
+    case nimbus::ota::Route::Busy:        return "busy";
+    case nimbus::ota::Route::LowMemory:   return "low-heap";
+    case nimbus::ota::Route::SpawnFailed: return spawnFailedWhy;
+  }
+  return "low-heap";
+}
+
 // Stack high-water of the running job, logged once as it ends: the evidence a
 // future stack-size change is set from (CUM-556). On the poll task the mark is that
 // task's lifetime low (its turns included), so the value before the run is logged
 // beside it: a lower value after means this run went deepest.
 static void logRunStack(const char* name) {
+  // In bytes: the Xtensa port's StackType_t is uint8_t (see telegram.cpp's tg_poll
+  // stack sampler), so the FreeRTOS "words" here are bytes.
   const unsigned minFree = (unsigned)uxTaskGetStackHighWaterMark(nullptr);
   if (g_runOnPoll)
     agent::alogf("ota: %s ran on the Telegram poll task, stack min free %u B (%u B before)",
@@ -642,15 +658,8 @@ bool requestCheck(const char** whyOut) {
   // (CUM-249). checkTask re-affirms Checking when it runs; both are idempotent.
   const State prevState = g_state;
   g_state = State::Checking;
-  const char* refused = nullptr;
-  switch (routeOtaJob(checkTask, nimbus::ota::OtaJob::Check)) {
-    case nimbus::ota::Route::Spawned:     // the task runs
-    case nimbus::ota::Route::OnPoll:      // the poll task runs it next, between messages
-      break;
-    case nimbus::ota::Route::Busy:        refused = "busy"; break;
-    case nimbus::ota::Route::LowMemory:
-    case nimbus::ota::Route::SpawnFailed: refused = "low-heap"; break;
-  }
+  const char* refused =
+      routeRefusal(routeOtaJob(checkTask, nimbus::ota::OtaJob::Check), "low-heap");
   if (refused) {
     g_state = prevState;   // nothing will run - do not strand a Checking state
     g_taskRunning = false;
@@ -880,17 +889,17 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
   }
   g_installDry = dryRun;
   g_installForce = force;
-  // The heap leg last: nothing is handed to the poll task for an install refused above.
-  switch (routeOtaJob(installTask, nimbus::ota::OtaJob::Install)) {
-    case nimbus::ota::Route::Spawned:     break;
-    case nimbus::ota::Route::OnPoll:
-      // Accepted, and it starts once the poll task is between messages: show it as
-      // under way now (the run re-affirms it), so the page offers no second Install.
-      g_state = State::Checking;
-      break;
-    case nimbus::ota::Route::LowMemory:   return refuse("low-heap");
-    case nimbus::ota::Route::SpawnFailed: return refuse("task");
-    case nimbus::ota::Route::Busy:        return refuse("busy");
+  // The heap leg last: nothing is handed to the poll task for an install refused
+  // above. The install shows as under way BEFORE it is handed over (the run
+  // re-affirms it), so the page offers no second Install while a staged one waits,
+  // and no write here can land after a fast-failing run has already settled it.
+  const State prevState = g_state;
+  g_state = State::Checking;
+  const char* refused =
+      routeRefusal(routeOtaJob(installTask, nimbus::ota::OtaJob::Install), "task");
+  if (refused) {
+    g_state = prevState;   // nothing will run - do not strand a Checking state
+    return refuse(refused);
   }
   if (whyOut) *whyOut = "";
   return true;
@@ -908,6 +917,21 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
 
 bool onPollPending() { return g_onPoll.pending(); }
 nimbus::ota::OtaJob pollJob() { return g_onPoll.job(); }
+
+// A job staged for a poll task that is gone can never run (only the factory reset
+// joins that task, and a reset whose erase fails keeps the device up without it).
+// Drop it, in the same order a run ends (slot, then claim), so its claim does not
+// refuse every later request, USB updates included. Main loop (tick) only; a job
+// the poll task already took is never dropped.
+static void dropStrandedJob() {
+  if (!g_onPoll.pending() || (g_pollAliveProbe && g_pollAliveProbe())) return;
+  const nimbus::ota::OtaJob job = g_onPoll.cancel();
+  if (job == nimbus::ota::OtaJob::None) return;
+  setLastError("cancelled");
+  g_state = State::Error;
+  g_taskRunning = false;
+  agent::alogf("ota: %s dropped: the Telegram poll task is gone", nimbus::ota::otaJobName(job));
+}
 
 void runOnPoll() {
   const uint32_t before = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
@@ -1103,6 +1127,7 @@ void tick() {
   lastMs = now;
 
   if (WiFi.status() == WL_CONNECTED) g_wifiEverUp = true;
+  dropStrandedJob();
 
   // The !installing() guard is load-bearing for the USB path: a local install
   // arms a FRESH pending flag for the NEXT image and stays "installing" through the

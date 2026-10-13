@@ -6,8 +6,9 @@
 // re-formed, so the restart could wait forever and Telegram plus every local turn
 // stayed down until a reboot, even after the unattended daily check. The design now
 // hands the work to the poll task itself, which runs it between its own work. These
-// pin the CLASS over the firmware sources (comments stripped, so prose that NAMES a
-// call never counts as one):
+// pin the CLASS over the firmware sources and lib/core (comments stripped, so prose
+// that NAMES a call never counts as one; whitespace squeezed out, so a call split
+// across lines or spaced out still counts):
 //   - the OTA module never reaches the poll task, and controls only its own task;
 //   - nothing in the firmware suspends or resumes a task, and the poll task is created
 //     in exactly one place (telegram::begin) and deleted only by itself;
@@ -20,6 +21,7 @@
 
 #include <unity.h>
 
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -48,6 +50,24 @@ static size_t skipRawString(const std::string& s, size_t q) {
   return end == std::string::npos ? s.size() : end + close.size();
 }
 
+// True when the ' at `i` is a C++14 digit separator (24'576, 0xFF'FF): the token it
+// sits in starts with a digit. A character literal never does (u8'a', case 'a').
+static bool isDigitSeparator(const std::string& s, size_t i) {
+  size_t t = i;
+  while (t > 0 && (std::isalnum((unsigned char)s[t - 1]) || s[t - 1] == '\'')) --t;
+  return t < i && std::isdigit((unsigned char)s[t]);
+}
+
+// Index of the newline that ends the // comment starting at `at`: a backslash right
+// before a newline splices the next line into the comment (translation phase 2).
+static size_t lineCommentEnd(const std::string& s, size_t at) {
+  size_t nl = s.find('\n', at);
+  while (nl != std::string::npos && nl > 0 &&
+         (s[nl - 1] == '\\' || (s[nl - 1] == '\r' && nl > 1 && s[nl - 2] == '\\')))
+    nl = s.find('\n', nl + 1);
+  return nl;
+}
+
 // Index just past the literal that opens at `i`: a "..." string (raw or not) or a
 // '...' character.
 static size_t skipLiteral(const std::string& s, size_t i) {
@@ -69,12 +89,15 @@ static std::string stripComments(const std::string& src) {
     const size_t at = src.find_first_of("\"'/", i);
     if (at == std::string::npos) { out.append(src, i, std::string::npos); break; }
     out.append(src, i, at - i);
-    if (src[at] != '/') {   // a literal: copy it whole
+    if (src[at] == '\'' && isDigitSeparator(src, at)) {
+      out += '\'';
+      i = at + 1;
+    } else if (src[at] != '/') {   // a literal: copy it whole
       i = skipLiteral(src, at);
       out.append(src, at, i - at);
     } else if (src.compare(at, 2, "//") == 0) {
       out += ' ';
-      i = src.find('\n', at);   // the newline itself stays
+      i = lineCommentEnd(src, at);   // the newline itself stays
       if (i == std::string::npos) break;
     } else if (src.compare(at, 2, "/*") == 0) {
       out += ' ';
@@ -88,12 +111,6 @@ static std::string stripComments(const std::string& src) {
   return out;
 }
 
-static size_t countOf(const std::string& hay, const std::string& needle) {
-  size_t n = 0;
-  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) ++n;
-  return n;
-}
-
 static std::vector<size_t> findAll(const std::string& hay, const std::string& needle) {
   std::vector<size_t> at;
   for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1))
@@ -101,27 +118,51 @@ static std::vector<size_t> findAll(const std::string& hay, const std::string& ne
   return at;
 }
 
+static size_t countOf(const std::string& hay, const std::string& needle) {
+  return findAll(hay, needle).size();
+}
+
+// Code with every whitespace character removed: "xTaskCreate(\n    pollTask," and
+// "vTaskDelete (g_task)" read as "xTaskCreate(pollTask," and "vTaskDelete(g_task)".
+static std::string squeeze(const std::string& code) {
+  std::string out;
+  out.reserve(code.size());
+  for (char c : code)
+    if (!std::isspace((unsigned char)c)) out += c;
+  return out;
+}
+
 struct Source {
   std::string path;
-  std::string code;   // comments stripped
+  std::string code;   // comments stripped, whitespace squeezed out
 };
 
-// Every firmware source under src/ and include/. Bring-up sketches (src/bringup/) are
-// bench diagnostics, not the product image.
+// Every firmware source under src/ and include/, plus lib/core (the portable policy the
+// firmware links). Bring-up sketches (src/bringup/) are bench diagnostics, not the
+// product image; the generated docs pack is prose data.
 static const std::vector<Source>& firmware() {
   static std::vector<Source> all;
   if (!all.empty()) return all;
-  for (const char* root : {"src", "include"}) {
+  for (const char* root : {"src", "include", "lib/core/src", "lib/core/include"}) {
     for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
       if (!e.is_regular_file()) continue;
       const std::string path = e.path().generic_string();
       const std::string ext = e.path().extension().string();
       if (ext != ".cpp" && ext != ".h") continue;
       if (path.rfind("src/bringup/", 0) == 0) continue;
-      all.push_back({path, stripComments(readFile(path))});
+      if (path == "lib/core/include/nimbus/docs_pack_data.h") continue;
+      all.push_back({path, squeeze(stripComments(readFile(path)))});
     }
   }
   return all;
+}
+
+// Position of `needle` in `hay` at or after `from`, failing the test when it is absent:
+// an order check against a missing anchor would compare against npos and pass.
+static size_t anchor(const std::string& hay, const std::string& needle, size_t from = 0) {
+  const size_t at = hay.find(needle, from);
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, needle.c_str());
+  return at;
 }
 
 static const std::string& codeOf(const std::string& path) {
@@ -144,6 +185,15 @@ static void test_comment_stripper() {
   TEST_ASSERT_EQUAL_size_t(1, countOf(s, "d(R\"j({\"q\":\"//\"})j\");"));   // raw string kept
   TEST_ASSERT_EQUAL_size_t(1, countOf(s, "e('\\'');"));
   TEST_ASSERT_EQUAL_size_t(1, countOf(s, "f(\"\\\"// no\");"));            // escaped quote
+  // A digit separator is not a character literal, and a spliced // comment goes on.
+  const std::string t = stripComments(
+      "int n = 24'576; g(\"https://y\"); // a \\\n quiesce(2)\nh(); u8'a'; k(\"//z\");");
+  TEST_ASSERT_EQUAL_size_t(1, countOf(t, "24'576"));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(t, "g(\"https://y\");"));
+  TEST_ASSERT_EQUAL_size_t(0, countOf(t, "quiesce"));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(t, "h();"));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(t, "k(\"//z\");"));
+  TEST_ASSERT_EQUAL_STRING("vTaskDelete(g_task);", squeeze("vTaskDelete (\n  g_task );").c_str());
   TEST_ASSERT_TRUE(firmware().size() > 100);   // the walk really covered the firmware
 }
 
@@ -164,18 +214,19 @@ static void test_ota_module_never_touches_the_poll_task() {
 // Nothing in the firmware suspends or resumes a task; the poll task is created in one
 // place and only ever deletes itself.
 static void test_poll_task_lifecycle_has_one_owner() {
-  size_t pollCreates = 0;
+  size_t pollNamed = 0;
   std::string offenders;
   for (const Source& s : firmware()) {
     if (countOf(s.code, "vTaskSuspend") || countOf(s.code, "vTaskResume")) offenders += s.path + " ";
-    pollCreates += countOf(s.code, "(pollTask,");
+    pollNamed += countOf(s.code, "pollTask");
   }
   TEST_ASSERT_EQUAL_STRING_MESSAGE("", offenders.c_str(), "no task suspend/resume in the firmware");
-  TEST_ASSERT_EQUAL_size_t(1, pollCreates);
+  // The task function is named twice in all the code: its definition and its one
+  // create, in begin(). Any other mention (a second create, a restart) fails.
+  TEST_ASSERT_EQUAL_size_t(2, pollNamed);
   const std::string& tg = codeOf("src/agent/telegram.cpp");
-  const size_t begin = tg.find("void begin(");
-  TEST_ASSERT_TRUE(begin != std::string::npos);
-  TEST_ASSERT_TRUE(tg.find("(pollTask,") > begin);   // the one create is in begin()
+  anchor(tg, "voidpollTask(void*){");
+  anchor(tg, "(pollTask,", anchor(tg, "voidbegin("));
   TEST_ASSERT_EQUAL_size_t(countOf(tg, "vTaskDelete("), countOf(tg, "vTaskDelete(nullptr)"));
 }
 
@@ -191,8 +242,15 @@ static void test_quiesce_is_factory_reset_only() {
       TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(s.code, gone), (s.path + ": " + gone).c_str());
   }
   TEST_ASSERT_EQUAL_size_t(0, stopCalls);
-  // Both quiesce calls live in main.cpp, each inside a factory-reset step: the full
-  // reset's sweep (gated on g_factoryEraseSd) and the tail's internal file area erase.
+  // "quiesce(" however it is reached (a namespace alias, a using-declaration): the
+  // declaration, the definition and the two calls, nothing else.
+  size_t bare = 0;
+  for (const Source& s : firmware()) bare += countOf(s.code, "quiesce(");
+  TEST_ASSERT_EQUAL_size_t(4, bare);
+  TEST_ASSERT_EQUAL_size_t(1, countOf(codeOf("src/agent/telegram.h"), "boolquiesce(uint32_ttimeoutMs);"));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(codeOf("src/agent/telegram.cpp"), "boolquiesce(uint32_ttimeoutMs){"));
+  // Both calls live in main.cpp, each inside a factory-reset step: the full reset's
+  // sweep (gated on g_factoryEraseSd) and the tail's internal file area erase.
   const std::string& m = codeOf("src/main.cpp");
   const std::vector<size_t> at = findAll(m, "telegram::quiesce(");
   TEST_ASSERT_EQUAL_size_t(2, at.size());
@@ -208,28 +266,42 @@ static void test_quiesce_is_factory_reset_only() {
     TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(h, banned), banned);
 }
 
-// The staged work runs only from the poll loop's top, before any of that cycle's turns
-// (the long-poll drain and the inbound drain both run turns), so never inside a turn
-// or a helper dispatch; nothing else runs the OTA job.
+// The staged work runs only from the poll loop's top, before the Wi-Fi wait and any of
+// that cycle's turns (the long-poll drain and the inbound drain both run turns), so
+// never inside a turn or a helper dispatch; nothing else runs the OTA job.
 static void test_staged_work_runs_only_at_the_poll_loop_top() {
   const std::string& tg = codeOf("src/agent/telegram.cpp");
   const std::vector<size_t> runs = findAll(tg, "g_stagedRun()");
   TEST_ASSERT_EQUAL_size_t(1, runs.size());
-  const size_t body = tg.find("void pollTask(void*) {");
-  const size_t loop = tg.find("while (g_running) {", body);
-  const size_t firstTurn = tg.find("drainAndDispatch(", loop);
-  const size_t inbound = tg.find("g_cb(", loop);
-  const size_t jobs = tg.find("g_tick()", loop);
-  TEST_ASSERT_TRUE(body != std::string::npos && loop != std::string::npos);
+  const size_t body = anchor(tg, "voidpollTask(void*){");
+  const size_t loop = anchor(tg, "while(g_running){", body);
+  const size_t firstTurn = anchor(tg, "drainAndDispatch(", loop);
+  const size_t inbound = anchor(tg, "g_cb(", loop);
+  const size_t jobs = anchor(tg, "g_tick()", loop);
+  // Before the Wi-Fi wait too: without Wi-Fi the run fails fast and frees the OTA
+  // claim (USB updates share it) instead of holding it for the whole outage.
+  const size_t wifiWait = anchor(tg, "if(!wifiReady()){", loop);
   TEST_ASSERT_TRUE(runs[0] > loop);
+  TEST_ASSERT_TRUE(runs[0] < wifiWait);
   TEST_ASSERT_TRUE(runs[0] < firstTurn);
   TEST_ASSERT_TRUE(runs[0] < inbound);
   TEST_ASSERT_TRUE(runs[0] < jobs);
+  // The job bodies run on their own task or from that run, nowhere else: no request
+  // path (the /update hook runs inside a turn) can reach a check or install inline.
+  const std::string& ota = codeOf("src/sys/ota_update.cpp");
+  const size_t onPoll = anchor(ota, "voidrunOnPoll(){");
+  for (const char* body : {"checkRun();", "installRun();"}) {
+    const std::vector<size_t> calls = findAll(ota, body);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, calls.size(), body);
+    TEST_ASSERT_TRUE_MESSAGE(calls[0] < onPoll && calls[1] > onPoll, body);   // task + run
+  }
+  TEST_ASSERT_TRUE(anchor(ota, "checkRun();") > anchor(ota, "staticvoidcheckTask(void*){"));
+  TEST_ASSERT_TRUE(anchor(ota, "installRun();") > anchor(ota, "staticvoidinstallTask(void*){"));
   // The OTA run is reached only through that seam: main.cpp hands it over and never
   // calls it, and no other module names it.
   const std::string& m = codeOf("src/main.cpp");
   TEST_ASSERT_EQUAL_size_t(
-      1, countOf(m, "agent::telegram::setStagedWork(otaupd::onPollPending, otaupd::runOnPoll)"));
+      1, countOf(m, "agent::telegram::setStagedWork(otaupd::onPollPending,otaupd::runOnPoll)"));
   for (const Source& s : firmware()) {
     if (s.path == "src/sys/ota_update.cpp" || s.path == "src/sys/ota_update.h") continue;
     const size_t named = countOf(s.code, "runOnPoll");

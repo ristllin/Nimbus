@@ -37,12 +37,11 @@ using IdleProvider = bool (*)(nimbus::ota::IdleSnapshot&);
 void setIdleProvider(IdleProvider p);
 
 // Poll-task seam (main.cpp wires the Telegram poll task here). A check or install
-// whose own task does not fit (a loaded device sits just under its 16 KB stack) is
-// handed to the poll task instead: staged here, single-flight, and run inline by the
-// poll loop between its own work, never inside a turn or a background-job dispatch
-// (nimbus/ota/ota_headroom.h has the rule). No task is created, paused or restarted
-// for it. Without the probes (or in Notifier mode, or with no poll task) a heap too
-// small for the task refuses "low-heap", as before.
+// whose own task does not fit is staged here, single-flight, and the poll loop runs
+// it between its own work (the rule: nimbus/ota/ota_headroom.h; where it runs and
+// why it cannot deadlock: ota_update.cpp runOnPoll). Without the probes, in
+// Notifier mode or with no poll task, a heap too small for the task refuses
+// "low-heap", as before.
 //   setPollProbe(orchMode, pollAlive): Orchestrator mode / the poll task exists.
 //   onPollPending(): a job waits for the poll task (cheap, any task).
 //   pollJob():       the job staged for or running on the poll task, or None.

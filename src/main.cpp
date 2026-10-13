@@ -2981,8 +2981,8 @@ void setup() {
         return "Couldn't check for updates right now (network or memory busy). Try again in a minute.";
       st = "checking";
     }
-    // A check handed to the poll task runs right after this command, on this very
-    // task: waiting for it here would only hold the reply for nothing.
+    // A check handed to the poll task cannot start until this command returns (it
+    // runs on this very task), so the wait below could never see its verdict.
     if (st == "checking" && otaupd::pollJob() == nimbus::ota::OtaJob::Check)
       return "Checking for updates. Send /update again in a minute to install what it finds.";
     if (st == "checking") {   // ours or the scheduled one - wait for the verdict

@@ -44,14 +44,19 @@ bool OnPollSlot::pending() const {
   return s != 0 && !(s & kRunning);
 }
 
-bool OnPollSlot::busy() const { return state_.load() != 0; }
-
 OtaJob OnPollSlot::job() const { return static_cast<OtaJob>(state_.load() & ~kRunning); }
 
 OtaJob OnPollSlot::take() {
   uint8_t s = state_.load();
   if (s == 0 || (s & kRunning)) return OtaJob::None;
   if (!state_.compare_exchange_strong(s, static_cast<uint8_t>(s | kRunning))) return OtaJob::None;
+  return static_cast<OtaJob>(s);
+}
+
+OtaJob OnPollSlot::cancel() {
+  uint8_t s = state_.load();
+  if (s == 0 || (s & kRunning)) return OtaJob::None;
+  if (!state_.compare_exchange_strong(s, 0)) return OtaJob::None;
   return static_cast<OtaJob>(s);
 }
 

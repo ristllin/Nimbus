@@ -71,8 +71,6 @@ class OnPollSlot {
   bool stage(OtaJob j);
   // A job is staged and not yet taken (the poll loop's cheap probe, any task).
   bool pending() const;
-  // A job is staged or running.
-  bool busy() const;
   // The job staged or running (None when the slot is empty).
   OtaJob job() const;
   // Poll task: the staged job, now marked running. None when nothing is staged (a
@@ -80,6 +78,10 @@ class OnPollSlot {
   OtaJob take();
   // Poll task: the running job ended; the slot is empty again.
   void done();
+  // A staged job that can no longer run (its poll task is gone): the slot is empty
+  // again and the job is returned. None, changing nothing, when nothing is staged or
+  // the job already runs: a running job is never cancelled.
+  OtaJob cancel();
 
  private:
   static constexpr uint8_t kRunning = 0x80;
