@@ -6,6 +6,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>   // the headroom wait feeds a subscribed caller
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <nvs.h>
@@ -17,7 +18,9 @@
 #include "../agent/agent_config.h"
 #include "net_util.h"              // tlsSetup (CA bundle / setInsecure) + tlsClose
 #include "../agent/store.h"
+#include "agent_log.h"             // alogf - headroom pause + task stack high-water lines
 #include "tls_arbiter.h"
+#include "nimbus/ota/ota_headroom.h"   // spawn-or-pause decision + resume ledger (host-tested)
 #include "nimbus/ota/ota_logic.h"
 #include "ota_pubkey.h"
 #include "usb_updater.h"          // nimbus::usbfw wire protocol + commit-order sequencer
@@ -428,25 +431,116 @@ static int httpsGetUrl(const String& url, ByteSink sink, void* ctx,
 }
 
 // ---- task-spawn gates -------------------------------------------------------
-// Internal heap only (the ~266 KB pool): the 10 KB task stack + lwIP transients
-// must fit with margin above the ~24 KB TLS/lwIP danger zone. mbedTLS's big
-// buffers are PSRAM-routed (main.cpp), so these floors are the honest cost.
-
-static const uint32_t kSpawnFreeInternal = 24000;
-static const uint32_t kSpawnLargestBlock = 16000;
-
-// Non-claim gates only (variant/wifi/heap). The busy check is the atomic
-// g_taskRunning claim in requestCheck/requestInstall, done BEFORE these.
+// Non-claim, non-heap gates (variant/wifi). The busy check is the atomic
+// g_taskRunning claim in requestCheck/requestInstall, done BEFORE these; the heap
+// leg runs LAST (spawnOtaTask below), after every other gate has passed, so the
+// Telegram poll is never paused for a request that would be refused anyway.
 static bool spawnGates(const char** why) {
   if (!NIMBUS_OTA_VARIANT[0]) { *why = "unsupported"; return false; }
   if (WiFi.status() != WL_CONNECTED) { *why = "no-wifi"; return false; }
-  if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < kSpawnFreeInternal ||
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < kSpawnLargestBlock) {
-    *why = "low-heap";
-    return false;
-  }
   *why = "";
   return true;
+}
+
+// ---- heap leg: spawn the OTA task, pausing the Telegram poll if that is all
+// that stands in the way (nimbus/ota/ota_headroom.h, lane L31) ----------------
+// Internal heap only (the ~266 KB pool): the OTA task's 16 KB stack must be ONE
+// contiguous internal block, plus free room above the TLS/lwIP danger zone.
+// mbedTLS's big buffers are PSRAM-routed (main.cpp), so these floors are the
+// honest cost. A loaded device (Telegram poll + cloud link) can sit just under the
+// block: Lumi read intLargest 16372 against the 16384 B stack. The poll task's own
+// 24 KB stack is the one block that can be handed back safely, for the length of
+// the OTA task, and only while it is idle.
+static const PollHooks* g_pollHooks = nullptr;
+static nimbus::ota::PollResumeLedger g_pollLedger;   // the "always resume" rule
+static const uint32_t kHeadroomWaitMs = 1000;   // a self-deleted task's stack is
+                                                // freed by the idle task, shortly
+
+void setPollHooks(const PollHooks* h) { g_pollHooks = h; }
+
+// A hook table usable for a pause: every entry wired. Anything less never pauses.
+static bool pollHooksWired() {
+  const PollHooks* p = g_pollHooks;
+  return p && p->alive && p->busy && p->pause && p->resume && p->stackBytes;
+}
+
+static uint32_t freeInternal() {
+  return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+static uint32_t largestInternal() {
+  return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+// The caller may be the watchdog'd main loop or the AsyncTCP task (also
+// subscribed); feed only a subscribed caller (an unsubscribed reset logs an error).
+static void feedWdtIfSubscribed() {
+  if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
+}
+
+struct SpawnCtx {
+  TaskFunction_t fn;
+  const char*    name;
+};
+
+static nimbus::ota::HeadroomInput headroomSnapshot(void*) {
+  nimbus::ota::HeadroomInput in;
+  in.freeInternal    = freeInternal();
+  in.largestInternal = largestInternal();
+  if (!pollHooksWired()) return in;   // no poll seam: never pause (LowMemory if short)
+  in.pollRunning     = g_pollHooks->alive();
+  in.pollBusy        = g_pollHooks->busy();
+  in.pollStackBytes  = g_pollHooks->stackBytes();
+  return in;
+}
+
+static bool pausePollHook(void*) {
+  agent::alogf("ota: pausing the Telegram poll for update memory (free %u largest %u)",
+               (unsigned)freeInternal(), (unsigned)largestInternal());
+  return pollHooksWired() && g_pollHooks->pause();
+}
+
+static bool waitHeadroomHook(void*) {
+  const uint32_t t0 = millis();
+  while (!nimbus::ota::fitsOtaTask(freeInternal(), largestInternal())) {
+    if (millis() - t0 >= kHeadroomWaitMs) return false;
+    feedWdtIfSubscribed();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  return true;
+}
+
+static bool spawnHook(void* ctx) {
+  const SpawnCtx* c = (const SpawnCtx*)ctx;
+  return xTaskCreate(c->fn, c->name, nimbus::ota::kOtaTaskStackBytes, nullptr, 1, nullptr) ==
+         pdPASS;
+}
+
+// The heap leg + the spawn. The caller holds the g_taskRunning claim and releases
+// it on any result but Spawned; a paused poll is restarted by tick() as soon as
+// the claim is free, whatever happened here.
+static nimbus::ota::SpawnResult spawnOtaTask(TaskFunction_t fn, const char* name) {
+  SpawnCtx ctx{fn, name};
+  nimbus::ota::SpawnHooks h;
+  h.ctx          = &ctx;
+  h.snapshot     = headroomSnapshot;
+  h.pausePoll    = pausePollHook;
+  h.waitHeadroom = waitHeadroomHook;
+  h.spawn        = spawnHook;
+  const nimbus::ota::SpawnOutcome o = nimbus::ota::spawnWithHeadroom(h, g_pollLedger);
+  if (o.paused)
+    agent::alogf("ota: %s %s after the Telegram poll pause (free %u largest %u)", name,
+                 o.result == nimbus::ota::SpawnResult::Spawned ? "started" : "still short",
+                 (unsigned)freeInternal(), (unsigned)largestInternal());
+  return o.result;
+}
+
+// Stack high-water of the running OTA task, logged once as it ends: the evidence a
+// future stack-size change is set from (the 16 KB is kept until a bench run shows
+// the real peak).
+static void logTaskStack(const char* name) {
+  agent::alogf("ota: %s stack min free %u B of %u", name,
+               (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+               (unsigned)nimbus::ota::kOtaTaskStackBytes);
 }
 
 // ---- manifest fetch (shared by check + install) -----------------------------
@@ -539,6 +633,7 @@ static void checkTask(void*) {
   } else {
     finishCheck();
   }
+  logTaskStack("otacheck");
   g_taskRunning = false;
   vTaskDelete(nullptr);
 }
@@ -550,7 +645,7 @@ bool requestCheck(const char** whyOut) {
     if (whyOut) *whyOut = "busy";   // an OTA task is already running (single-flight)
     return false;
   }
-  if (!spawnGates(&why)) {          // "unsupported" / "no-wifi" / "low-heap"
+  if (!spawnGates(&why)) {          // "unsupported" / "no-wifi"
     g_taskRunning = false;
     if (whyOut) *whyOut = why;
     return false;
@@ -566,7 +661,7 @@ bool requestCheck(const char** whyOut) {
   // (CUM-249). checkTask re-affirms Checking when it runs; both are idempotent.
   const State prevState = g_state;
   g_state = State::Checking;
-  if (xTaskCreate(checkTask, "otacheck", 16384, nullptr, 1, nullptr) != pdPASS) {
+  if (spawnOtaTask(checkTask, "otacheck") != nimbus::ota::SpawnResult::Spawned) {
     g_state = prevState;   // task never started - do not strand a Checking state
     g_taskRunning = false;
     if (whyOut) *whyOut = "low-heap";
@@ -625,6 +720,7 @@ static bool g_installDry = false;
 static bool g_installForce = false;
 
 static void failInstall(const char* why) {
+  logTaskStack("otainstall");   // runs on the install task (its only caller)
   if (Update.isRunning()) Update.abort();
   g_progressPct = -1;
   setLastError(why);
@@ -717,6 +813,7 @@ static void installTask(void*) {
   }
 
   if (g_installDry) {
+    logTaskStack("otainstall");
     Update.abort();
     g_progressPct = -1;
     agent::store::setOtaLastResult(String("dryrun ok ") + g_manifest.version);
@@ -751,6 +848,7 @@ static void installTask(void*) {
 
   g_state = State::ReadyToReboot;
   g_progressPct = 100;
+  logTaskStack("otainstall");
   fireEvent(EvRebooting, g_manifest.version, "");
   // Give the main loop time to paint the e-ink "restarting" frame (~2.2 s panel).
   vTaskDelay(pdMS_TO_TICKS(3500));
@@ -768,7 +866,7 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
   }
   auto refuse = [&](const char* w) { if (whyOut) *whyOut = w; g_taskRunning = false; return false; };
   const char* why;
-  if (!spawnGates(&why)) return refuse(why);
+  if (!spawnGates(&why)) return refuse(why);   // "unsupported" / "no-wifi"
   if (!nimbus::ota::canInstall(g_state)) {
     // force allows Same/Older/minVersion-blocked installs, but only from a
     // settled state with a manifest already seen (check first).
@@ -800,10 +898,11 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
   }
   g_installDry = dryRun;
   g_installForce = force;
-  if (xTaskCreate(installTask, "otainstall", 16384, nullptr, 1, nullptr) != pdPASS) {
-    g_taskRunning = false;
-    if (whyOut) *whyOut = "task";
-    return false;
+  // The heap leg last: never pause the Telegram poll for an install refused above.
+  switch (spawnOtaTask(installTask, "otainstall")) {
+    case nimbus::ota::SpawnResult::Spawned:     break;
+    case nimbus::ota::SpawnResult::LowMemory:   return refuse("low-heap");
+    case nimbus::ota::SpawnResult::SpawnFailed: return refuse("task");
   }
   if (whyOut) *whyOut = "";
   return true;
@@ -988,6 +1087,14 @@ void tick() {
   lastMs = now;
 
   if (WiFi.status() == WL_CONNECTED) g_wifiEverUp = true;
+
+  // ALWAYS restart a Telegram poll paused for OTA headroom, once no OTA task holds
+  // the memory: the check/install ended (success or any failure), a refusal
+  // released the claim, or the spawn never happened. A restart that cannot land yet
+  // (the old task still finishing its cycle, or no room for its stack) stays owed
+  // and is retried here every tick. A successful install never gets here: it holds
+  // the claim through its restart, and the poll starts with the new image.
+  g_pollLedger.tick(g_taskRunning.load(), [] { return pollHooksWired() && g_pollHooks->resume(); });
 
   // The !installing() guard is load-bearing for the USB path: a local install
   // arms a FRESH pending flag for the NEXT image and stays "installing" through the

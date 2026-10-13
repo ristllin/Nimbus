@@ -2807,11 +2807,12 @@ static void otaEventHook(int ev, const char* a, const char* b) {
       // "stop the poller to free heap for the download" hook crash-rebooted the
       // device mid-install: telegram::stop() deletes g_replyQ out from under the
       // still-running tg_poll task, whose next xQueueReceive(g_replyQ,...) hit a
-      // NULL queue (configASSERT -> abort -> RTC_SW_CPU_RST). It was also never
-      // necessary - the dry-run path leaves the poller up and the full 3 MB
-      // download + verify completes with internal heap steady at ~52 KB. So the
-      // install now runs alongside the live poller (TLS is PSRAM-backed); the
-      // device just reboots on success.
+      // NULL queue (configASSERT -> abort -> RTC_SW_CPU_RST). Normally the
+      // install runs alongside the live poller (TLS is PSRAM-backed; the full
+      // 3 MB download + verify keeps internal heap steady at ~52 KB). Only when
+      // the OTA task's stack does not fit at all does otaupd pause the poller,
+      // BEFORE the spawn and through quiesce()/resume() (otaPollHooks above),
+      // which join the task and keep its queues - never stop().
       agent::memory::captureEvent("ota", String("Update install started (") +
                                          (a ? a : "?") + ")");
       break;
@@ -2857,6 +2858,25 @@ static void otaEventHook(int ev, const char* a, const char* b) {
     default: break;
   }
 }
+
+// OTA headroom (lane L31): a check or install refused only for low internal memory
+// may pause the Telegram poll task (its 24 KB stack) for the length of the OTA task.
+// Never while a turn or background job runs on it, never from the poll task itself
+// (the /update hook runs there), and otaupd::tick() always restarts it afterwards.
+// The quiesce is bounded short: an idle poll joins within a slice or two, and the
+// caller (main loop or AsyncTCP task) should not stall on a busy one.
+static constexpr uint32_t kOtaPollQuiesceMs = 3000;
+static constexpr otaupd::PollHooks kOtaPollHooks = {
+    /*alive=*/[] { return g_orchMode && agent::telegram::taskAlive(); },
+    /*busy=*/
+    [] {
+      return agent::orchestrator::turnInFlight() || agent::telegram::activeJobCount() > 0 ||
+             agent::telegram::onPollTask();
+    },
+    /*pause=*/[] { return agent::telegram::quiesce(kOtaPollQuiesceMs); },
+    /*resume=*/agent::telegram::resume,
+    /*stackBytes=*/agent::telegram::stackBytes,
+};
 
 static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   s.turnInFlight = g_orchMode && agent::orchestrator::turnInFlight();
@@ -2953,6 +2973,7 @@ void setup() {
   otaupd::bootGuard();
   otaupd::setEventHook(otaEventHook);
   otaupd::setIdleProvider(otaIdleSnapshot);
+  otaupd::setPollHooks(&kOtaPollHooks);
   // Owner-only Telegram `/update` approves + installs a pending OTA. Runs on the
   // tg_poll task (handleMessage); returns the reply text the owner sees.
   // ⚠ The OTA state is IN-RAM and resets on every boot, so "not available" here
@@ -2986,8 +3007,13 @@ void setup() {
                "minutes. The ring shows progress. Keep the device powered on.";
       }
       String w = why && why[0] ? why : "busy";
-      if (w == "low-heap" || w == "unsupported")
-        return "This device can't update itself right now. It needs Orchestrator mode and more free memory. Update it over USB instead.";
+      // This hook runs INSIDE a turn on the poll task, so the OTA headroom pause
+      // (which never pauses a poll mid-turn) cannot help here; the web page's
+      // Install Update runs outside a turn and can.
+      if (w == "low-heap")
+        return "Not enough free memory to update from this chat. Open Software update on the device's web page and choose Install Update.";
+      if (w == "unsupported")
+        return "This build can't update itself. Update it over USB instead.";
       if (w == "no-wifi") return "Couldn't reach the network. Check Wi-Fi and try again.";
       if (w == "need-power")
         return "Battery is low. Connect power, then send /update again. It will also install on its own once you plug in.";

@@ -4,8 +4,8 @@
 // telegram - Telegram Bot API long-poll client for Nimbus, ported from
 // Nuage-Solide src/telegram_client.{h,cpp} (Head Orchestrator v2).
 //
-// Runs a background FreeRTOS task (tg_poll, core 0, 16 KB stack - the mbedTLS
-// handshake needs it; 12 KB overflowed the canary) that long-polls getUpdates():
+// Runs a background FreeRTOS task (tg_poll, core 0, 24 KB stack - the mbedTLS
+// handshake plus the whole tool loop; see POLL_STACK_BYTES) that long-polls getUpdates():
 // each call blocks server-side up to ~18-30 s (shorter while jobs run), then a
 // short inter-cycle delay before the next poll. Only one resident TLS session is
 // open at a time (the persistent keep-alive poll socket), torn down before ANY
@@ -105,6 +105,23 @@ void stop();
 // timeout; the caller then proceeds behind the erase barriers instead of
 // waiting out a TLS exchange. Returns true when the task is gone.
 bool quiesce(uint32_t timeoutMs);
+
+// OTA headroom (src/sys/ota_update): an update task that cannot get its stack on a
+// loaded device may quiesce() this task for its own length, then restart it here.
+// resume() starts a fresh poll task on the SAME live queues (begin() would replace
+// them and drop what they hold). True when the task runs (it already did, or it
+// started now). False when it cannot start yet: the old task has not exited (a
+// quiesce that timed out lets it finish its cycle, and a second task over it would
+// run two pollers) or its stack did not fit. The caller retries on its next tick.
+bool resume();
+// True while the poll task exists. Unlike enabled(), a bot token is not required:
+// the task is also the local turn processor (web / voice / serial injects).
+bool taskAlive();
+// True when the caller runs ON the poll task (a turn's tool, the /update hook).
+// Such a caller must never quiesce it: it would wait for itself.
+bool onPollTask();
+// The poll task's stack in bytes: the internal SRAM a quiesce gives back.
+uint32_t stackBytes();
 
 // self-heal hooks (a future net-recovery ladder can read these).
 uint32_t consecutiveFails();

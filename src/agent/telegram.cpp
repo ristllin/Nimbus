@@ -31,6 +31,7 @@
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
+#include "nimbus/ota/ota_headroom.h"  // pollRestartStep: an OTA pause never runs two pollers
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
 #include <WiFi.h>
@@ -1466,9 +1467,14 @@ void pollTask(void*) {
     if (!g_running) break;
     idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
   }
+  // Close the keep-alive poll socket on the way out: a quiesce for OTA headroom
+  // wants this task's internal memory back (stack AND socket), and a resumed task
+  // reconnects fresh instead of inheriting a socket the server may have dropped.
+  closePollSocket();
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
-  // touching a dead task's state. Queues are deliberately left alive (reboot or
-  // a fresh begin() follows; deleting them here is the stop()-crash in reverse).
+  // touching a dead task's state. Queues are deliberately left alive (reboot,
+  // resume() or a fresh begin() follows; deleting them here is the stop()-crash
+  // in reverse).
   g_task = nullptr;
   vTaskDelete(nullptr);
 }
@@ -1721,14 +1727,44 @@ bool quiesce(uint32_t timeoutMs) {
                        // path), so an idle task - token or not - joins within a
                        // slice or two; only a turn mid-provider-call holds it.
   const uint32_t t0 = millis();
+  // Feed the caller's watchdog while waiting: the factory reset runs this on the
+  // watchdog'd main task (a 7s wait without feeding starved the 8s loop WDT,
+  // verifier), and an OTA headroom pause can run it on the AsyncTCP task, which
+  // AsyncTCP also subscribes. An unsubscribed caller is skipped: resetting from
+  // one logs a "task not found" error on every pass.
+  const bool feedWdt = esp_task_wdt_status(nullptr) == ESP_OK;
   while (g_task != nullptr) {
     if (millis() - t0 >= timeoutMs) break;
-    esp_task_wdt_reset();   // this runs ON the watchdog'd main task: a 7s wait
-                            // without feeding starved the 8s loop WDT (verifier)
+    if (feedWdt) esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(50));
   }
   return g_task == nullptr;
 }
+
+bool resume() {
+  using nimbus::ota::PollRestart;
+  switch (nimbus::ota::pollRestartStep(g_task != nullptr, g_running)) {
+    case PollRestart::Running:  return true;
+    case PollRestart::WaitExit: return false;   // the old task finishes its cycle first
+    case PollRestart::Start:    break;
+  }
+  if (!g_replyQ || !g_inboundQ || !g_cb) return false;   // begin() never ran: nothing to resume
+  g_running = true;
+  if (xTaskCreatePinnedToCore(pollTask, "tg_poll", POLL_STACK_BYTES, nullptr, 3, &g_task, 0) !=
+      pdPASS) {
+    g_task = nullptr;
+    g_running = false;
+    return false;
+  }
+  alog("telegram: poll task resumed");
+  return true;
+}
+
+bool taskAlive() { return g_task != nullptr; }
+
+bool onPollTask() { return g_task != nullptr && xTaskGetCurrentTaskHandle() == g_task; }
+
+uint32_t stackBytes() { return (uint32_t)POLL_STACK_BYTES; }
 
 uint32_t consecutiveFails() { return g_pollFails; }
 int      activeJobCount()   { return g_activeJobs; }

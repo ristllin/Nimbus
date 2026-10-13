@@ -34,6 +34,27 @@ void setEventHook(EventHook h);
 using IdleProvider = bool (*)(nimbus::ota::IdleSnapshot&);
 void setIdleProvider(IdleProvider p);
 
+// Headroom seam (main.cpp wires the Telegram poll task here). An update check or
+// install that would be refused only for low internal memory may pause the poll
+// task for the length of the OTA task (nimbus/ota/ota_headroom.h has the rule):
+//   alive():  the poll task exists (Orchestrator mode, token or not).
+//   busy():   a turn or background job runs on it, or the caller IS it: never pause.
+//   pause():  bounded quiesce; true when the task is gone.
+//   resume(): restart it on its live queues; true when it runs again.
+//   stackBytes(): the internal SRAM a pause gives back.
+// tick() restarts a paused poll as soon as no OTA task runs, on EVERY path (a
+// refusal, a failed spawn, a check or install that ends in success or failure),
+// retrying each tick until it lands. The table must have static storage (it is
+// kept by pointer); nullptr or a missing hook = never pause (the old behavior).
+struct PollHooks {
+  bool (*alive)();
+  bool (*busy)();
+  bool (*pause)();
+  bool (*resume)();
+  uint32_t (*stackBytes)();
+};
+void setPollHooks(const PollHooks* h);
+
 // Rollback/validation guard - ms-scale, runs before the watchdog is armed.
 void bootGuard();
 

@@ -153,7 +153,8 @@ release, and no release moves running Virtual Nimbus instances by itself.
   the check: it claims the single-flight guard, runs a few cheap local gates
   (Wi-Fi up, heap headroom), hands the manifest fetch and signature verify to a
   short-lived worker, and answers `202 {"ok":true,"state":"checking"}` right
-  away. The verdict is read afterwards from `/api/state` (above). A second check
+  away (on a busy device after a pause of at most a few seconds, see
+  [On a busy device](#on-a-busy-device-telegram-pauses-for-the-update)). The verdict is read afterwards from `/api/state` (above). A second check
   pressed while one is in flight is refused with `409 busy` rather than starting
   a second fetch. Because the slow HTTPS work runs off the web task, a check
   started through the encrypted relay also returns promptly instead of timing out
@@ -170,7 +171,8 @@ release, and no release moves running Virtual Nimbus instances by itself.
   downloads and verifies without flipping; `force=1` allows the same or an older
   version and bypasses the battery gate below). During install the ring is a
   theme-color progress bar, the screen says "do not power off", and voice capture
-  is refused. The download runs alongside the live Telegram poller.
+  is refused. The download normally runs alongside the live Telegram poller
+  (a busy device pauses it first, see below).
 - **Battery / health gate** (manual and auto path): an interrupted flash on a
   dying pack can leave a slot unbootable, so install is allowed only when the
   pack can finish the write. The rule: level at or above 40% and estimated health
@@ -185,13 +187,49 @@ release, and no release moves running Virtual Nimbus instances by itself.
   no turn or voice in flight, battery at or above 50% or on external power,
   estimated health at or above 60% when on battery, and heap headroom.
 
+## On a busy device: Telegram pauses for the update
+
+The check and the install each run on one short-lived worker whose stack needs
+one 16 KB block of internal memory. A device with Telegram on and the cloud link
+online can sit just under that (measured: a largest free block of 16,372 bytes
+against the 16,384 the worker needs), so such a device used to refuse every
+check, its daily one included, with `409 low-heap`.
+
+When memory is the only thing in the way, the device now pauses its Telegram
+poll (the task that also runs turns, so this applies with or without a bot
+token) for the length of the update work:
+
+- **Only when nothing is running on it.** No turn, no background job, and never
+  from inside a turn. If one is in flight the request is refused as before.
+- **Bounded.** The device waits at most 3 seconds for the poll to stop (an idle
+  poll stops within a fraction of a second), then checks memory again and starts
+  the worker. The poll gives back its 24 KB stack, which is enough on its own.
+- **Always resumed.** The poll comes back as soon as no update work holds the
+  memory: when a check ends (any result), when an install fails or a dry run
+  finishes, and when the device still cannot fit the worker and refuses. A
+  restart of the poll that cannot happen yet is retried every second until it
+  does. A successful install restarts the device, and Telegram starts with the
+  new firmware.
+- **Nothing is lost.** While the poll is paused, Telegram messages wait at
+  Telegram and web chat messages wait in the device's queue; they are answered
+  once it is back (a check takes seconds, an install about two minutes).
+
+If memory is still short after the pause, the request is refused with the same
+answer as before: `409` with `err` `low-heap` and "Can't check now: low memory.
+Try again." Telegram `/update` runs inside a turn, so on a busy device it cannot
+use the pause and asks you to use **Install Update** on the web page instead.
+
+The worker logs its stack high-water mark when it ends (`ota: otacheck stack min
+free ...` in `/api/log`); the 16 KB stack stays until a bench run shows the real
+peak.
+
 ## Notifier mode: OTA is heap-gated
 
 OTA check and install refuse with `409` in Notifier mode and never run there. In
 Notifier mode Bluetooth owns most of the internal SRAM, leaving less than the OTA
 task-spawn floor (24 KB free internal plus a 16 KB largest block), and the gate
 refuses rather than risk running out of memory during the TLS download and flash
-write. To update a Notifier-mode device, reflash it over USB or switch it to
+write. There is no Telegram poll to pause in Notifier mode. To update a Notifier-mode device, reflash it over USB or switch it to
 Orchestrator mode first.
 
 ## Rollback
