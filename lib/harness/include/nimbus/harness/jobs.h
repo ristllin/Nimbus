@@ -99,7 +99,7 @@ class JobEngine {
         spillResult;
 
     // Config reads (device: store::). firstSubProvider = first key'd provider
-    // in subPriority order.
+    // in subPriority order, then the router keys (cumulo, then zai).
     std::function<std::string()> subPriority;
     std::function<bool(const std::string& provider)> providerHasKey;
     std::function<std::string(const std::string& provider)> subModel;
@@ -318,6 +318,22 @@ class JobEngine {
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
+  // Where a spawn runs: the provider (explicit hint, connector routing, then
+  // firstSubProvider), its adapter and the model. A provider with no key of its
+  // own runs on the Cumulo router when the router offers its model (CUM-541).
+  // False when it cannot start; the owner was told why and the head noted it.
+  bool routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
+                  ManagedAgentAdapter*& adapter);
+  std::string spawnProvider(const PendingSpawn& p) const;
+  bool keylessToRouter(const PendingSpawn& p, std::string& provider, std::string& model,
+                       std::string& connector) const;
+  void coerceSpawnModel(const std::string& provider, std::string& model) const;
+  std::string routerOffer(const std::string& provider, const std::string& model) const;
+  void refuseKeyless(const PendingSpawn& p, const std::string& provider,
+                     const std::string& model, const std::string& connector);
+  bool hasKey(const std::string& provider) const {
+    return d_.providerHasKey && d_.providerHasKey(provider);
+  }
   void noteSpawnRefused(const std::string& chatId, const char* name, const std::string& task,
                         const std::string& reason, bool mayHaveRun = false);
   // The Done text exactly as every copy must carry it (CUM-536 marker included).

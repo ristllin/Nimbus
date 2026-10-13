@@ -12,6 +12,7 @@
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
 #include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
+#include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
 
 // Lifted from src/agent/orchestrator.cpp (Stage F). Every owner-visible string,
@@ -201,7 +202,13 @@ void JobEngine::reapDone() {
   if (reaped && d_.journal) d_.journal->gc();   // compact the just-collapsed delivered records
 }
 
-// First key'd provider in subPriority order ("" if none configured).
+// The Cumulo router: one key that carries every upstream it lists (CUM-541).
+static const char kRouterSlug[] = "cumulo";
+
+// First key'd provider in subPriority order, then the router keys this device
+// holds (Cumulo, then Z.ai; the head's own fallback order, routerFallbackHost),
+// so a one-key device runs a spawn that names no provider on that key instead of
+// refusing it. "" if none is configured.
 std::string JobEngine::firstSubProvider() const {
   std::string prio = d_.subPriority ? d_.subPriority() : std::string();
   size_t start = 0;
@@ -212,10 +219,75 @@ std::string JobEngine::firstSubProvider() const {
     // trim (matches Arduino String::trim on the device)
     while (!p.empty() && isspace((unsigned char)p.front())) p.erase(p.begin());
     while (!p.empty() && isspace((unsigned char)p.back())) p.pop_back();
-    if (p.length() && d_.providerHasKey && d_.providerHasKey(p)) return p;
+    if (p.length() && hasKey(p)) return p;
     start = comma + 1;
   }
+  for (const char* r : {kRouterSlug, "zai"})
+    if (hasKey(r)) return r;
   return "";
+}
+
+// "<provider>/<model>" (a model that already names that provider is kept).
+static std::string routerSelector(const std::string& provider, const std::string& model) {
+  const std::string prefix = provider + "/";
+  return model.rfind(prefix, 0) == 0 ? model : prefix + model;
+}
+
+// The router selector a spawn on `provider` (no key of its own) runs as: its own
+// model, else the model the coercion gives that provider (subModel), whichever the
+// keyed router offers first (modelIsValid("cumulo", ...): the router's choice list
+// or catalog). A bare id on the router is its default upstream
+// (resolveRouterRoute), so a list of bare ids offers "openai/<id>" as "<id>", and
+// that form is returned so the coercion keeps it. "" when the router is not keyed
+// or offers neither.
+std::string JobEngine::routerOffer(const std::string& provider, const std::string& model) const {
+  if (!hasKey(kRouterSlug) || !d_.modelIsValid) return "";
+  const std::string sub = d_.subModel ? d_.subModel(provider) : std::string();
+  for (const std::string& m : {model, sub}) {
+    if (m.empty()) continue;
+    const std::string sel = routerSelector(provider, m);
+    if (!orch::routableSelector(sel)) continue;
+    if (d_.modelIsValid(kRouterSlug, sel)) return sel;
+    const orch::RouterRoute r = orch::resolveRouterRoute(sel);
+    if (orch::resolveRouterRoute(r.model).upstream == r.upstream &&
+        d_.modelIsValid(kRouterSlug, r.model))
+      return r.model;
+  }
+  return "";
+}
+
+// A spawn on a provider with no key that the router cannot carry: the real
+// reason, to the owner and to the head, instead of a doomed keyless dispatch.
+// `connector` names the connector the spawn asked for: it runs only on its own
+// provider's key (the router never carries the owner's connectors, and its subs
+// report no connector run, so the result could not be marked unverified).
+void JobEngine::refuseKeyless(const PendingSpawn& p, const std::string& provider,
+                              const std::string& model, const std::string& connector) {
+  const bool router = hasKey(kRouterSlug);
+  const std::string m = !model.empty() ? model : (d_.subModel ? d_.subModel(provider) : std::string());
+  const std::string want = m.empty() ? std::string() : routerSelector(provider, m);
+  std::string owner = "Couldn't start that agent on " + provider + ". No " + provider + " key is set";
+  std::string note = provider + " has no key here";
+  if (!connector.empty()) {
+    owner += ", and the " + connector + " connector runs only on it. Add the key under Providers & models.";
+    note += "; its connector " + connector + " runs only on a " + provider + " key, never on the Cumulo router";
+    hlog::logf("orchestrator: spawn refused (%s has no key, connector %s)", provider.c_str(),
+               connector.c_str());
+    deliver(p.chatId, owner);
+    noteSpawnRefused(p.chatId, p.name, p.task, note);
+    return;
+  }
+  if (router && !want.empty()) {
+    owner += ", and the Cumulo router does not offer " + want;
+    note += " and the Cumulo router does not offer " + want +
+            "; spawn it on cumulo with a model its [AVAILABLE MODELS] entry lists";
+  }
+  owner += router ? ". Add the key under Providers & models, or ask for a model the router lists."
+                  : ". Add the key under Providers & models.";
+  hlog::logf("orchestrator: spawn refused (%s has no key%s%s)", provider.c_str(),
+             router ? ", router does not offer " : "", router ? want.c_str() : "");
+  deliver(p.chatId, owner);
+  noteSpawnRefused(p.chatId, p.name, p.task, note);
 }
 
 // ---- fresh-result store -----------------------------------------------------
@@ -481,45 +553,88 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
   pp->quiet = quiet;
 }
 
+// Provider resolution: explicit hint wins; else connector-aware routing (a
+// connector task lands on the provider that hosts it); else the sub-priority
+// default. This is what lets a Notion/Drive/Gmail spawn run on lab compute
+// instead of struggling on-device.
+std::string JobEngine::spawnProvider(const PendingSpawn& p) const {
+  if (p.provider[0]) return std::string(p.provider);
+  if (p.skill[0] && d_.connectorProvider) {
+    std::string cp = d_.connectorProvider(p.skill);
+    // Only accept the connector's provider if it's actually key'd - otherwise fall
+    // through to the sub-priority default (preserves the keyless-provider refusal
+    // instead of dispatching a doomed keyless request).
+    if (!cp.empty() && (!d_.providerHasKey || d_.providerHasKey(cp))) return cp;
+  }
+  return firstSubProvider();
+}
+
+// CUM-541 one-key spawns: a provider with no key of its own (the head named openai
+// on a device whose only key is Cumulo) runs on the router when the router offers
+// its model, instead of a doomed keyless dispatch. True when `provider`/`model` now
+// name the router; false leaves them for refuseKeyless. A connector task stays on
+// its provider's own key: `connector` names it.
+bool JobEngine::keylessToRouter(const PendingSpawn& p, std::string& provider, std::string& model,
+                                std::string& connector) const {
+  if (p.skill[0] && d_.connectorProvider && !d_.connectorProvider(p.skill).empty()) {
+    connector = p.skill;
+    return false;
+  }
+  const std::string offered = routerOffer(provider, model);
+  if (offered.empty()) return false;
+  hlog::logf("orchestrator: spawn on %s has no key - runs on the Cumulo router as %s (asked %s)",
+             provider.c_str(), offered.c_str(), model.length() ? model.c_str() : "(none)");
+  provider = kRouterSlug;
+  model = offered;
+  return true;
+}
+
+// A model the provider does not list runs its sub-model default.
+void JobEngine::coerceSpawnModel(const std::string& provider, std::string& model) const {
+  if (d_.modelIsValid && d_.modelIsValid(provider, model)) return;
+  std::string coerced = d_.subModel ? d_.subModel(provider) : std::string();
+  hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)",
+             model.length() ? model.c_str() : "(none)", coerced.c_str(), provider.c_str());
+  model = coerced;
+}
+
+bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
+                           ManagedAgentAdapter*& a) {
+  const std::string chatId = p.chatId;
+  provider = spawnProvider(p);
+  if (provider.length() == 0) {
+    deliver(chatId, "No provider is configured to run that agent.");
+    noteSpawnRefused(chatId, p.name, p.task, "no provider with a key can run it");
+    return false;
+  }
+  model = p.model;
+  const bool keyless = d_.providerHasKey && !d_.providerHasKey(provider);
+  std::string connector;
+  const bool routed = keyless && keylessToRouter(p, provider, model, connector);
+  a = d_.fabric->adapterFor(provider.c_str());
+  if (!a) {
+    deliver(chatId, std::string("Provider '") + provider + "' isn't configured.");
+    noteSpawnRefused(chatId, p.name, p.task,
+                     "provider '" + provider + "' isn't configured on this device");
+    return false;
+  }
+  if (keyless && !routed) {
+    refuseKeyless(p, provider, model, connector);
+    return false;
+  }
+  coerceSpawnModel(provider, model);
+  return true;
+}
+
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (!d_.fabric) return;
   std::string chatId = p.chatId;
   char tag[24];
   snprintf(tag, sizeof(tag), "job%04lu", (unsigned long)(tagSeq_++));
 
-  // Provider resolution: explicit hint wins; else connector-aware routing (a
-  // connector task lands on the provider that hosts it); else the sub-priority
-  // default. This is what lets a Notion/Drive/Gmail spawn run on lab compute
-  // instead of struggling on-device.
-  std::string provider = p.provider[0] ? std::string(p.provider) : std::string();
-  if (provider.empty() && p.skill[0] && d_.connectorProvider) {
-    std::string cp = d_.connectorProvider(p.skill);
-    // Only accept the connector's provider if it's actually key'd - otherwise fall
-    // through to the sub-priority default (preserves the keyless-provider refusal
-    // instead of dispatching a doomed keyless request).
-    if (!cp.empty() && (!d_.providerHasKey || d_.providerHasKey(cp))) provider = cp;
-  }
-  if (provider.empty()) provider = firstSubProvider();
-  if (provider.length() == 0) {
-    deliver(chatId, "No provider is configured to run that agent.");
-    noteSpawnRefused(chatId, p.name, p.task, "no provider with a key can run it");
-    return;
-  }
-  ManagedAgentAdapter* a = d_.fabric->adapterFor(provider.c_str());
-  if (!a) {
-    deliver(chatId, std::string("Provider '") + provider + "' isn't configured.");
-    noteSpawnRefused(chatId, p.name, p.task,
-                     "provider '" + provider + "' isn't configured on this device");
-    return;
-  }
-
-  std::string model = p.model;
-  if (!d_.modelIsValid || !d_.modelIsValid(provider, model)) {
-    std::string coerced = d_.subModel ? d_.subModel(provider) : std::string();
-    hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)",
-               model.length() ? model.c_str() : "(none)", coerced.c_str(), provider.c_str());
-    model = coerced;
-  }
+  std::string provider, model;
+  ManagedAgentAdapter* a = nullptr;
+  if (!routeSpawn(p, provider, model, a)) return;
 
   // Dynamic-skill injection (roadmap P2): when the spawn names a skill and the
   // resolver returns a capsule, PREPEND it to the instruction -

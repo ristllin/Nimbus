@@ -25,7 +25,10 @@ static String bareHost(String h) {
 }
 
 FabricErr CumuloAdapter::dispatch(const Directive& d, char outJobId[72]) {
-  String sel = store::subModel("cumulo");   // "<upstream>/<model>"
+  // "<upstream>/<model>": the model the JobEngine resolved for this spawn (a router
+  // pick it accepted, or a keyless provider's model it moved here, CUM-541), else
+  // the configured sub model.
+  String sel = (d.model && d.model[0]) ? String(d.model) : store::subModel("cumulo");
   if (!sel.length()) sel = store::orchModel("cumulo");
   // Resolve the selector through the ONE shared rule the orchestrator head also
   // uses (CUM-369), so both address the router identically: base

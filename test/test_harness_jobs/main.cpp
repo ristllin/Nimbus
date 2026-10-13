@@ -15,6 +15,7 @@
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
 #include "nimbus/orch/journal.h"
+#include "nimbus/orch/provider_slots.h"   // kProviderSlots - the one-key spawn class test
 
 // Stage F suite - the sub-agent job machinery, host-tested for the first time:
 // the one-dispatch-per-cycle gate (+2500/+1500 timers), the job-limit and
@@ -75,6 +76,9 @@ struct Rig {
   std::vector<SpawnUsage> spawnUsage;                      // recordSpawnUsage recorder
   std::vector<std::string> persisted;                      // persistResult texts (project runs)
   std::function<std::string(const std::string&)> chatContext;  // B4 (nullable)
+  // CUM-541: the models each provider accepts (modelIsValid). Unset = the good-*
+  // rule below; the Cumulo router's list is "<upstream>/<model>" selectors.
+  std::function<bool(const std::string&, const std::string&)> modelValid;
   // Context Fabric: recent-results spill recorder (nullable - legacy shape when unset).
   std::function<std::string(const char*, const char*, const std::string&, const std::string&)> spill;
 
@@ -113,6 +117,7 @@ struct Rig {
     d.modelIsValid = [](const std::string&, const std::string& m) {
       return m.rfind("good-", 0) == 0;   // models named good-* validate
     };
+    if (modelValid) d.modelIsValid = modelValid;
     if (chatContext) d.chatContext = chatContext;   // B4: sub-brief [CONTEXT]
     if (spill) d.spillResult = spill;               // Context Fabric: results ring
     d.connectorProvider = [this](const std::string& skill) -> std::string {
@@ -441,6 +446,7 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
     Rig r;
     CompatAdapter zai;
     r.fabric.registerAdapter(&zai);
+    r.keyed.insert("zai");
     // Slow: the request went out and nothing came back for 29 s. Fast: the connect
     // failed at once, so nothing was sent.
     zai.deps.http.script.push_back(slow ? harness_test::transportCut(29000)
@@ -479,6 +485,7 @@ static void test_an_unreadable_answer_may_have_run() {
   Rig r;
   CompatAdapter zai;
   r.fabric.registerAdapter(&zai);
+  r.keyed.insert("zai");
   zai.deps.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}"});
   orch::Spawn s = sp("summarize the GLM paper");
   s.provider = "zai";
@@ -655,6 +662,203 @@ static void test_model_coercion_to_sub_default() {
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
   TEST_ASSERT_EQUAL_STRING("sub-anthropic", r.adapter.dispatched[0].model.c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("spawn model coerced (bad-x -> sub-anthropic on anthropic)"));
+}
+
+// ---- CUM-541: one-key spawns (a provider with no key runs on the router) -------
+
+// A device or instance whose only key is the Cumulo router, with an adapter for
+// every backend so a test sees which one a spawn really reached.
+struct OneKeyRig {
+  Rig r;
+  FakeAdapter oai, mis, cumulo, zai;
+  std::set<std::string> routerOffers{"openai/gpt-5.6", "anthropic/claude-opus-5-5",
+                                     "mistral/mistral-large-4-0", "zai/glm-5.3"};
+  OneKeyRig() {
+    oai.backend = "openai";
+    mis.backend = "mistral";
+    cumulo.backend = "cumulo";
+    zai.backend = "zai";
+    r.fabric.registerAdapter(&oai);
+    r.fabric.registerAdapter(&mis);
+    r.fabric.registerAdapter(&cumulo);
+    r.fabric.registerAdapter(&zai);
+    r.keyed = {"cumulo"};
+    r.modelValid = [this](const std::string& p, const std::string& m) {
+      if (p == "cumulo") return routerOffers.count(m) > 0;
+      return p == "openai" && m == "gpt-5.6";
+    };
+    r.build();
+  }
+  // Every dispatch any backend received.
+  int dispatches() const {
+    return (int)(r.adapter.dispatched.size() + oai.dispatched.size() + mis.dispatched.size() +
+                 cumulo.dispatched.size() + zai.dispatched.size());
+  }
+  void spawn(const char* provider, const char* model, const char* name = "fca-helper") {
+    orch::Spawn s = sp("Summarise the UK FCA Consumer Duty");
+    s.provider = provider;
+    s.model = model;
+    s.name = name;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.plat.ms += 5000;
+    r.eng->pump();
+  }
+};
+
+// (a) the live Joiner-VN3 case: the head named openai/gpt-5.6 on a Cumulo-only
+// instance, the coercion kept openai and the keyless openai sub failed ("spawn
+// failed 2"). It runs on the router as openai/gpt-5.6.
+static void test_one_key_spawn_openai_runs_on_router() {
+  OneKeyRig k;
+  k.spawn("openai", "gpt-5.6");
+  TEST_ASSERT_EQUAL(0, (int)k.oai.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)k.cumulo.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", k.cumulo.dispatched[0].model.c_str());
+  TEST_ASSERT_EQUAL(1, (int)k.r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("On it.  [fca-helper \xC2\xB7 cumulo/openai/gpt-5.6]",
+                           k.r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING("", k.r.eng->takeSpawnNotes("chat1").c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "spawn on openai has no key - runs on the Cumulo router as openai/gpt-5.6 (asked gpt-5.6)"));
+  TEST_ASSERT_EQUAL(1, k.r.eng->activeJobCount());
+
+  // A router list of bare ids (the cold-start list: the router's default upstream
+  // is openai) offers openai/gpt-5.6 as gpt-5.6.
+  OneKeyRig bare;
+  bare.routerOffers = {"gpt-5.6", "gpt-5.6-terra"};
+  bare.spawn("openai", "gpt-5.6");
+  TEST_ASSERT_EQUAL(1, (int)bare.cumulo.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", bare.cumulo.dispatched[0].model.c_str());
+  TEST_ASSERT_EQUAL(0, (int)bare.oai.dispatched.size());
+
+  // No model named: the model the coercion gives openai (its sub model) is the one
+  // asked of the router.
+  OneKeyRig sub;
+  sub.routerOffers.insert("openai/sub-openai");
+  sub.spawn("openai", "");
+  TEST_ASSERT_EQUAL(1, (int)sub.cumulo.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("openai/sub-openai", sub.cumulo.dispatched[0].model.c_str());
+}
+
+// (b) any provider the router lists: anthropic with a model the router offers,
+// named bare or already as the router selector.
+static void test_one_key_spawn_anthropic_runs_on_router() {
+  for (const char* model : {"claude-opus-5-5", "anthropic/claude-opus-5-5"}) {
+    OneKeyRig k;
+    k.spawn("anthropic", model);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)k.r.adapter.dispatched.size(), model);   // the anthropic adapter
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)k.cumulo.dispatched.size(), model);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("anthropic/claude-opus-5-5",
+                                     k.cumulo.dispatched[0].model.c_str(), model);
+  }
+}
+
+// (c) a direct key wins: with an OpenAI key the spawn stays on openai, never the
+// router.
+static void test_one_key_spawn_direct_key_stays_direct() {
+  OneKeyRig k;
+  k.r.keyed = {"cumulo", "openai"};
+  k.spawn("openai", "gpt-5.6");
+  TEST_ASSERT_EQUAL(1, (int)k.oai.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", k.oai.dispatched[0].model.c_str());
+  TEST_ASSERT_EQUAL(0, (int)k.cumulo.dispatched.size());
+  TEST_ASSERT_FALSE(LogCapture::contains("runs on the Cumulo router"));
+}
+
+// (d) nothing offers it: no openai key and the router does not list the model (or
+// there is no router key at all) - refused with the real reason, to the owner and
+// the head, and no keyless request is sent anywhere.
+static void test_one_key_spawn_nothing_offers_it_is_refused() {
+  OneKeyRig k;
+  k.spawn("openai", "gpt-9-imaginary");
+  TEST_ASSERT_EQUAL(0, k.dispatches());
+  TEST_ASSERT_EQUAL(1, (int)k.r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(
+      "Couldn't start that agent on openai. No openai key is set, and the Cumulo router does "
+      "not offer openai/gpt-9-imaginary. Add the key under Providers & models, or ask for a "
+      "model the router lists.", k.r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "- 'fca-helper' did not start: openai has no key here and the Cumulo router does not "
+      "offer openai/gpt-9-imaginary; spawn it on cumulo with a model its [AVAILABLE MODELS] "
+      "entry lists\n", k.r.eng->takeSpawnNotes("chat1").c_str());
+  TEST_ASSERT_EQUAL(0, k.r.eng->activeJobCount());
+
+  OneKeyRig none;
+  none.r.keyed.clear();
+  none.spawn("openai", "gpt-5.6");
+  TEST_ASSERT_EQUAL(0, none.dispatches());
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on openai. No openai key is set. Add the "
+                           "key under Providers & models.", none.r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING("- 'fca-helper' did not start: openai has no key here\n",
+                           none.r.eng->takeSpawnNotes("chat1").c_str());
+}
+
+// A connector task is never moved to the router: the router does not carry the
+// owner's connectors and its subs report no connector run, so the result could not
+// be marked unverified (CUM-536). Refused with that reason instead.
+static void test_one_key_spawn_connector_task_stays_off_the_router() {
+  OneKeyRig k;
+  k.r.connectorProv["gcal"] = "mistral";
+  orch::Spawn s = sp("List every event on my calendar today");
+  s.provider = "mistral";
+  s.model = "mistral-large-4-0";
+  s.skill = "gcal";
+  s.name = "gcal-fetch";
+  k.r.eng->enqueueSpawn(s, "chat1");
+  k.r.eng->pump();
+  TEST_ASSERT_EQUAL(0, k.dispatches());
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on mistral. No mistral key is set, and the "
+                           "gcal connector runs only on it. Add the key under Providers & models.",
+                           k.r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING("- 'gcal-fetch' did not start: mistral has no key here; its connector "
+                           "gcal runs only on a mistral key, never on the Cumulo router\n",
+                           k.r.eng->takeSpawnNotes("chat1").c_str());
+  // The same spawn without the connector runs on the router.
+  OneKeyRig plain;
+  plain.spawn("mistral", "mistral-large-4-0");
+  TEST_ASSERT_EQUAL(1, (int)plain.cumulo.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("mistral/mistral-large-4-0", plain.cumulo.dispatched[0].model.c_str());
+}
+
+// A spawn that names no provider on a one-key device: the configured order has no
+// keyed entry, so the router key is the next rung (the device's default order is
+// openai,anthropic,mistral), never "No provider is configured".
+static void test_one_key_spawn_no_provider_runs_on_router() {
+  OneKeyRig k;
+  k.spawn("", "");
+  TEST_ASSERT_EQUAL(1, (int)k.cumulo.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("sub-cumulo", k.cumulo.dispatched[0].model.c_str());
+
+  OneKeyRig z;   // a Z.ai-only device: its key is the rung
+  z.r.keyed = {"zai"};
+  z.spawn("", "");
+  TEST_ASSERT_EQUAL(1, (int)z.zai.dispatched.size());
+  TEST_ASSERT_EQUAL(0, (int)z.cumulo.dispatched.size());
+}
+
+// The class: for EVERY provider slot, a Cumulo-only spawn naming that provider runs
+// on the router when the router offers "<slug>/<model>", and is refused naming the
+// real reason (never dispatched) when it does not.
+static void test_one_key_spawn_every_provider_slot() {
+  for (size_t i = 0; i < orch::kProviderSlotCount; i++) {
+    const std::string slug = orch::kProviderSlots[i].slug;
+    if (slug == "cumulo") continue;
+    OneKeyRig k;
+    k.routerOffers = {slug + "/m1"};
+    k.spawn(slug.c_str(), "m1");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)k.cumulo.dispatched.size(), slug.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE((slug + "/m1").c_str(), k.cumulo.dispatched[0].model.c_str(),
+                                     slug.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, k.dispatches(), slug.c_str());
+
+    OneKeyRig no;
+    no.routerOffers = {};
+    no.spawn(slug.c_str(), "m1");
+    TEST_ASSERT_EQUAL_MESSAGE(0, no.dispatches(), slug.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(no.r.delivered[0].second.find("Couldn't start that agent on " + slug +
+                                                          ". No " + slug + " key is set") == 0,
+                             slug.c_str());
+  }
 }
 
 // ---- lifecycle hooks + spawn spend attribution -------------------------------
@@ -1452,6 +1656,13 @@ int main(int, char**) {
   RUN_TEST(test_connector_routing_falls_through);
   RUN_TEST(test_connector_routing_unkeyed_falls_through);
   RUN_TEST(test_model_coercion_to_sub_default);
+  RUN_TEST(test_one_key_spawn_openai_runs_on_router);
+  RUN_TEST(test_one_key_spawn_anthropic_runs_on_router);
+  RUN_TEST(test_one_key_spawn_direct_key_stays_direct);
+  RUN_TEST(test_one_key_spawn_nothing_offers_it_is_refused);
+  RUN_TEST(test_one_key_spawn_connector_task_stays_off_the_router);
+  RUN_TEST(test_one_key_spawn_no_provider_runs_on_router);
+  RUN_TEST(test_one_key_spawn_every_provider_slot);
   RUN_TEST(test_fresh_overflow_becomes_stub_not_drop);
   RUN_TEST(test_fresh_block_budget_bounds_the_seed);
   RUN_TEST(test_spill_called_with_full_text_every_result);

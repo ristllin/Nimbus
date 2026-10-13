@@ -8,7 +8,12 @@
 //       has no keyed entry, so the router key is the next rung), on the
 //       OpenAI-compatible sub wire with the Cumulo key, and the synthesis turn
 //       delivers its result;
-//   (c) a keyed BYOK provider in the configured ladder still wins over the router.
+//   (c) a keyed BYOK provider in the configured ladder still wins over the router;
+//   (d) the Joiner-VN3 case: a spawn that NAMES a provider with no key (openai,
+//       gpt-5.6) runs on the router as openai/gpt-5.6 instead of "spawn failed 2",
+//       and one naming an anthropic model the verified router catalog lists runs
+//       on the router's Anthropic wire; one the router does not offer is refused
+//       with the real reason and sends nothing.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <chrono>
 #include <cstdio>
@@ -167,12 +172,129 @@ static void testByokLadderWins(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// A head turn that spawns one helper naming `provider` and `model`.
+static std::string spawnTurn(const char* provider, const char* model) {
+  return std::string("{\"reply\":\"I've started one helper.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":"
+                     "\"spawn\",\"id\":null,\"task\":\"Summarise the UK FCA Consumer Duty\",\"provider\":\"") +
+         provider + "\",\"model\":\"" + model + "\"}]}";
+}
+
+static const char* kRouterCatalog =
+    "{\"object\":\"list\",\"data\":["
+    "{\"id\":\"openai/gpt-5.6\",\"object\":\"model\",\"owned_by\":\"openai\",\"size_class\":\"large\"},"
+    "{\"id\":\"anthropic/claude-sonnet-5\",\"object\":\"model\",\"owned_by\":\"anthropic\",\"size_class\":\"medium\"}]}";
+
+static bool bearerIs(const agent::HttpRequest& r, const std::string& key) {
+  for (const auto& h : r.headers)
+    if (h.first == "Authorization" && h.second == "Bearer " + key) return true;
+  return false;
+}
+
+static void testNamedKeylessProviderRunsOnRouter(ndtest::Ctx& c) {
+  std::printf("  -- (d) a spawn naming openai on a Cumulo-only instance runs on the router --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(routerHead(spawnTurn("openai", "gpt-5.6")));
+  Exchange sub;
+  sub.expectHost = kCumuloHost;
+  sub.expectPathContains = "/router/openai/v1/chat/completions";
+  sub.body = "{\"choices\":[{\"message\":{\"content\":\"Consumer Duty: good outcomes for retail customers.\"}}],"
+             "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8}}";
+  tx.script.push_back(sub);
+  tx.script.push_back(routerHead("{\"reply\":\"The helper is back: good outcomes for retail customers.\",\"memory\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ck-d"), &tx);
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("owner", "spawn one helper to summarise the UK FCA Consumer Duty");
+  c.ok(inbox.waitFor("I've started one helper.", 5000), "the head turn replied and spawned");
+  c.ok(inbox.waitFor("good outcomes for retail customers.", 15000),
+       "the synthesis turn delivered the router sub's result");
+  c.ok(!inbox.waitFor("Couldn't start that agent", 200), "the spawn is not refused");
+  eng.stop();
+  c.eqi((long)tx.seen.size(), 3, "three router calls: head, sub, synthesis (none to api.openai.com)");
+  if (tx.seen.size() >= 2) {
+    const agent::HttpRequest& r = tx.seen[1];
+    c.eq(r.host, kCumuloHost, "the sub goes to the router host");
+    c.ok(has(r.path, "/router/openai/v1/chat/completions"), "on the router's openai upstream");
+    c.ok(has(r.body, "\"model\":\"gpt-5.6\""), "with the model the spawn named");
+    c.ok(bearerIs(r, kKey), "and the Cumulo key as the bearer");
+  }
+  clearEnv();
+}
+
+static void testNamedAnthropicRunsOnRouterCatalog(ndtest::Ctx& c) {
+  std::printf("  -- (d2) an anthropic model the router catalog lists runs on its Anthropic wire --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  Exchange models;
+  models.expectHost = kCumuloHost;
+  models.expectPathContains = "/router/models";
+  models.body = kRouterCatalog;
+  tx.script.push_back(models);
+  tx.script.push_back(routerHead(spawnTurn("anthropic", "claude-sonnet-5")));
+  Exchange sub;
+  sub.expectHost = kCumuloHost;
+  sub.expectPathContains = "/router/anthropic/v1/messages";
+  sub.body = "{\"content\":[{\"type\":\"text\",\"text\":\"Consumer Duty: fair value.\"}],"
+             "\"usage\":{\"input_tokens\":20,\"output_tokens\":8}}";
+  tx.script.push_back(sub);
+  tx.script.push_back(routerHead("{\"reply\":\"Done: fair value.\",\"memory\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ck-d2"), &tx);
+  c.ok(rig.verifyProvider("cumulo"), "the router catalog is harvested");
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("owner", "spawn one helper on Claude");
+  c.ok(inbox.waitFor("Done: fair value.", 15000), "the router sub's result came back");
+  eng.stop();
+  c.eqi((long)tx.seen.size(), 4, "verify, head, sub, synthesis");
+  if (tx.seen.size() >= 3) {
+    c.ok(has(tx.seen[2].path, "/router/anthropic/v1/messages"), "the sub runs on the router's Anthropic wire");
+    c.ok(has(tx.seen[2].body, "\"model\":\"claude-sonnet-5\""), "with the model the spawn named");
+  }
+  clearEnv();
+}
+
+static void testNamedProviderNothingOffers(ndtest::Ctx& c) {
+  std::printf("  -- (d3) a model neither a key nor the router offers is refused with the reason --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  // Neither the named model nor mistral's own sub model (mistral-large-latest) is
+  // offered: the instance holds no router catalog, so the router offers only its
+  // default (an openai model named for openai is carried, see (d)).
+  tx.script.push_back(routerHead(spawnTurn("mistral", "mistral-medium-9")));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ck-d3"), &tx);
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("owner", "spawn a helper on mistral");
+  c.ok(inbox.waitFor("Couldn't start that agent on mistral. No mistral key is set, and the Cumulo "
+                     "router does not offer mistral/mistral-medium-9.", 8000),
+       "the owner hears the real reason");
+  eng.stop();
+  c.eqi((long)tx.seen.size(), 1, "only the head turn: no keyless or unoffered sub request");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== Cumulo key is a keyed provider (CUM-541, offline) ===\n");
   testPromptListsCumulo(c);
   testSpawnRunsOnRouter(c);
   testByokLadderWins(c);
+  testNamedKeylessProviderRunsOnRouter(c);
+  testNamedAnthropicRunsOnRouterCatalog(c);
+  testNamedProviderNothingOffers(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

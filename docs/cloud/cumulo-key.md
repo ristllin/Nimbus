@@ -64,7 +64,10 @@ same as a device:
   Claude models). A model you pick runs with the assistant's tools.
 - **Memory.** Long-term memory works with only the Cumulo key: memories are saved
   and searched through the router.
-- **Sub-agents.** Background research and other sub-agents run on the Cumulo key.
+- **Sub-agents.** Background research and other sub-agents run on the Cumulo key,
+  also one the assistant starts on a provider you have no key for (for example
+  OpenAI's gpt-5.6), as long as the router offers that model. A model the router
+  does not offer is refused with the reason, and nothing is charged.
 - **A model the router does not offer.** If the router refuses the model you
   picked, the reply says so and the assistant switches back to the last model that
   worked (or to the router's default model if that one is refused too), so the
