@@ -306,6 +306,28 @@ static void test_loop_stall_forces_named_final() {
   TEST_ASSERT_FALSE(bodyHas(d, 1, "just prose"));
 }
 
+// CUM-557: a reasoning model's loop round whose content is a chunk list (thinking,
+// then text) still yields its prose: the text chunks reach the round observer.
+static void test_loop_chunk_list_prose_reads() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/chat/completions", 200,
+      "{\"choices\":[{\"message\":{\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"private plan\"}]},"
+      "{\"type\":\"text\",\"text\":\"chunked prose\"}]}}],"
+      "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}"});
+  d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::vector<std::string> seen;
+  rig.ht.onRoundText = [&seen](const std::string& text, int) { seen.push_back(text); };
+  std::string conv, out, err;
+  bool ok = providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)seen.size());
+  TEST_ASSERT_EQUAL_STRING("chunked prose", seen[0].c_str());   // thinking left out
+}
+
 // The 422 validation detail shape surfaces in the loop error.
 static void test_loop_422_detail_surfaces() {
   FakeProviderDeps d;
@@ -1096,6 +1118,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
   RUN_TEST(test_loop_stall_forces_named_final);
+  RUN_TEST(test_loop_chunk_list_prose_reads);
   RUN_TEST(test_cum506_five_facts_batched_with_the_final_turn_are_saved);
   RUN_TEST(test_loop_422_detail_surfaces);
   RUN_TEST(test_foreign_call_ids_normalized);

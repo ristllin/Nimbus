@@ -5,10 +5,10 @@
 #include <functional>
 #include <string>
 
-#include "nimbus/orch/reply_text.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/orch_schema.h"       // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - usage extraction
+#include "nimbus/orch/reply_text.h"
 #include "wire.h"
 
 // Custom / proxy - the PORTABLE wire half of the pre-split

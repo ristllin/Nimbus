@@ -11,6 +11,7 @@
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
+#include "nimbus/orch/reply_text.h"
 #include "wire.h"
 
 // Mistral - the PORTABLE wire half of the pre-split
@@ -355,8 +356,9 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
 
     JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
-    const char* prose = m["content"] | "";
-    if (prose[0]) out.text = prose;
+    // A reasoning model's content may be a chunk list (thinking, then text).
+    const std::string prose = nimbus::orch::chatContentText(m["content"]);
+    if (!prose.empty()) out.text = prose;
     for (JsonObjectConst t : m["tool_calls"].as<JsonArrayConst>()) {
       const char* nm = t["function"]["name"] | "";
       // arguments may arrive as a JSON string OR an object - normalize to string.

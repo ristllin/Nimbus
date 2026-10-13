@@ -254,13 +254,12 @@ int scanVerdict(const std::string& headText, const std::string& url,
   // The content may be a chunk list (a reasoning model's thinking, then its text).
   const std::string answer = p.anthropic ? nimbus::orch::messagesContentText(resp["content"])
                                          : nimbus::orch::chatContentText(resp["choices"][0]["message"]["content"]);
-  const char* txt = answer.c_str();
-  if (!txt[0]) {
+  if (answer.empty()) {
     const char* em = resp["error"]["message"] | "";
     reason = em[0] ? (std::string("scan: ") + em) : "scan: empty reply";
     return -1;
   }
-  String t(txt); t.trim();
+  String t(answer.c_str()); t.trim();
   alogf("fetch: scan verdict for %s: %.60s", name.c_str(), t.c_str());
   if (t.startsWith("SAFE")) { reason = "scan: safe"; return 1; }
   if (t.startsWith("UNSAFE")) { reason = std::string(t.c_str()); return 0; }

@@ -316,8 +316,7 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
   if (deserializeJson(doc, body)) { alog("vision: unparseable reply"); return String(); }
   String out;
   if (prov.anthropic) {
-    for (JsonVariantConst blk : doc["content"].as<JsonArrayConst>())
-      if (blk["type"] == "text") { out = blk["text"] | ""; break; }
+    out = nimbus::orch::messagesContentText(doc["content"]).c_str();
   } else {
     out = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]).c_str();
   }

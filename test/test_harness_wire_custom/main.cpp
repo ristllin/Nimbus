@@ -95,6 +95,42 @@ static void test_anthropic_convention_wire() {
   TEST_ASSERT_EQUAL((int)agent::FabricErr::NotFound, (int)providers::customPoll(pd, jobId, env));
 }
 
+// CUM-557: a custom-endpoint helper on a reasoning model: an openai-convention
+// chunk list (thinking, then text) and an anthropic-convention reply that opens with
+// a thinking block both read as the answer, never as an unreadable result.
+static void test_sub_chunk_list_content_reads() {
+  {
+    FakeProviderDeps d;
+    d.custBase = "http://192.168.1.5:11434";
+    d.http.script.push_back({"192.168.1.5", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":["
+        "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"plan\"}]},"
+        "{\"type\":\"text\",\"text\":\"chunk answer\"}]}}]}"});
+    auto pd = d.contract();
+    agent::Directive dir; dir.instruction = "solve it";
+    char jobId[72];
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::customDispatch(pd, dir, jobId));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::customPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL_STRING("chunk answer", env.reply);
+  }
+  {
+    FakeProviderDeps d;
+    d.custBase = "https://claude-proxy.local";
+    d.custConv = "anthropic";
+    d.http.script.push_back({"claude-proxy.local", "/v1/messages", 200,
+        "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"plan\"},"
+        "{\"type\":\"text\",\"text\":\"the answer\"}]}"});
+    auto pd = d.contract();
+    agent::Directive dir; dir.instruction = "solve it";
+    char jobId[72];
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::customDispatch(pd, dir, jobId));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::customPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL_STRING("the answer", env.reply);
+  }
+}
+
 static void test_sub_error_mapping() {
   agent::Directive dir; dir.instruction = "x";
   char jobId[72];
@@ -205,6 +241,24 @@ static void test_head_single_shot_shape_and_parse() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());
   TEST_ASSERT_EQUAL(42, (int)u.promptTokens);
   TEST_ASSERT_EQUAL(7, (int)u.completionTokens);
+}
+
+// CUM-557: the custom (and Z.ai / router compat) head parses the joined text as the
+// orch_turn JSON. A reasoning model's chunk list (thinking, then the JSON as text)
+// reads as exactly that JSON, never "no message content".
+static void test_head_chunk_list_content_is_the_turn_json() {
+  FakeProviderDeps d;
+  d.custBase = "http://10.0.0.2:11434";
+  d.http.script.push_back({"10.0.0.2", "/v1/chat/completions", 200,
+      "{\"choices\":[{\"message\":{\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"draft\"}]},"
+      "{\"type\":\"text\",\"text\":\"{\\\"reply\\\":\\\"hello there\\\"}\"}]}}],"
+      "\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  bool ok = providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\"}", out.c_str());
 }
 
 // CUM-242: the Cumulo/Z.ai heads reuse orchTurnCustom over a fixed base + a
@@ -650,8 +704,10 @@ int main(int, char**) {
   RUN_TEST(test_keyless_on_http);
   RUN_TEST(test_https_sends_bearer);
   RUN_TEST(test_anthropic_convention_wire);
+  RUN_TEST(test_sub_chunk_list_content_reads);
   RUN_TEST(test_sub_error_mapping);
   RUN_TEST(test_head_single_shot_shape_and_parse);
+  RUN_TEST(test_head_chunk_list_content_is_the_turn_json);
   RUN_TEST(test_head_cumulo_path_prefix);
   RUN_TEST(test_head_zai_path_prefix_drops_v1);
   RUN_TEST(test_head_ignores_tools_v1);

@@ -52,7 +52,8 @@ CompatSlot& claimSlot() {
 
 // Build the request for the endpoint's wire: sets `path` + response `filter`, and
 // returns the serialized body. OpenAI/Mistral use chat-completions; Anthropic uses
-// Messages (system is top-level, max_tokens required, reply at content[0].text).
+// Messages (system is top-level, max_tokens required, the reply is its text blocks in
+// order).
 std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
                                const std::string& sysText, std::string& path,
                                JsonDocument& filter) {
