@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.11 - Helpers that run on your Cumulo key
+
+Found by a live check of a fresh hosted Virtual Nimbus on v4.5.10 with only a Cumulo key.
+
+- **Research helpers run on your Cumulo key.** When the assistant asked for a helper on a provider you have no key for, the helper failed even though the Cumulo router offers that model, and the assistant had already said it started. A helper now runs on the router when you have no key of your own for its provider, on a desk device and on a hosted Virtual Nimbus. A connector task (your calendar, inbox or workspace) never runs on the router, because the router cannot use your connectors; it is refused with the provider that can.
+- **A hosted Virtual Nimbus knows where a message came from.** A message typed on its web page is described to the assistant as the web chat, not Telegram, so replies and reminders go back to the page.
+- **Hosted settings that do not apply say so by name.** Device-only switches on a hosted page (such as automatic updates) are refused with their real name instead of an unreadable message.
+
 ## v4.5.10 - A hosted Nimbus that keeps its promises, helpers that say what they did
 
 Found by a new joiner's journey on a fresh hosted Virtual Nimbus with only a Cumulo key, a second journey on a freshly provisioned desk device, a page-by-page review of the public docs, and six adversarial review rounds over the change set.
