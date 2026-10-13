@@ -76,7 +76,7 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
     u["role"] = "user";
     u["content"] = instr;
     // CUM-544: a Z.ai sub-agent carries the same bounded reasoning effort as the
-    // Z.ai head - glm-5.x always reasons and otherwise outruns the 30 s dispatch.
+    // Z.ai head - glm-5.x always reasons and otherwise outruns its 50 s dispatch.
     if (!ep.reasoningEffort.empty()) doc["reasoning_effort"] = ep.reasoningEffort;
     filter["choices"][0]["message"]["content"] = true;
   }

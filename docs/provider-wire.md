@@ -349,8 +349,9 @@ with no cloud key and no internet. Example with Ollama:
    you want the binding to persist.
 2. On the device (Assistant > Models > Custom endpoint, or
    `POST /api/orch`): Base URL `http://<server-ip>:11434/v1`, wire
-   `openai wire`, Model ID `qwen2.5:3b`. Restart the device; the custom
-   endpoint registers at start. Any URL path (the `/v1`) is ignored; only the
+   `openai wire`, Model ID `qwen2.5:3b`. Helpers can use it right away; to
+   run the head on it, restart the device (the custom head registers at start).
+   Any URL path (the `/v1`) is ignored; only the
    host and port matter. `<server-ip>` is a LAN address: a plain DHCP lease
    moves when the server machine reconnects or changes networks, and the device
    then cannot reach it (you see a stuck or failed sub-agent, not an error on

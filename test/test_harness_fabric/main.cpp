@@ -6,6 +6,7 @@
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
 #include "nimbus/harness/fabric.h"
+#include "nimbus/orch/provider_slots.h"
 
 // First suite of the standalone-harness pyramid: the HeavyFabric registry -
 // category binding, jobId "backend:remoteId" routing, unknown-backend
@@ -121,14 +122,20 @@ static void test_directive_skill_field_reaches_adapter() {
 }
 
 static void test_every_device_backend_fits_the_table() {
-  // The device registers all six backends at boot, keyed or not, so a key added
-  // later works without a restart. Each must stay reachable by id, and a seventh
-  // must be refused loudly rather than dropped in silence.
-  const char* ids[] = {"anthropic", "openai", "mistral", "custom", "zai", "cumulo"};
-  FakeAdapter a[6];
+  // The device registers every backend at boot through registerDeviceBackends,
+  // keyed or not, so a key added later works without a restart (CUM-541). Each id
+  // must stay reachable, and a seventh must be refused loudly, not in silence.
+  FakeAdapter a[agent::kDeviceBackendCount];
+  agent::ManagedAgentAdapter* list[agent::kDeviceBackendCount];
+  for (int i = 0; i < agent::kDeviceBackendCount; i++) {
+    a[i].backend = agent::kDeviceBackends[i];
+    list[i] = &a[i];
+  }
   HeavyFabric f;
-  for (int i = 0; i < 6; i++) { a[i].backend = ids[i]; f.registerAdapter(&a[i]); }
-  for (int i = 0; i < 6; i++) TEST_ASSERT_TRUE(f.adapterFor(ids[i]) == &a[i]);
+  agent::ManagedAgentAdapter* const (&ref)[agent::kDeviceBackendCount] = list;
+  TEST_ASSERT_NULL(agent::registerDeviceBackends(f, ref));
+  for (int i = 0; i < agent::kDeviceBackendCount; i++)
+    TEST_ASSERT_TRUE(f.adapterFor(agent::kDeviceBackends[i]) == &a[i]);
   TEST_ASSERT_FALSE(LogCapture::contains("adapter table full"));
 
   FakeAdapter extra;
@@ -136,6 +143,38 @@ static void test_every_device_backend_fits_the_table() {
   f.registerAdapter(&extra);
   TEST_ASSERT_NULL(f.adapterFor("seventh"));
   TEST_ASSERT_TRUE(LogCapture::contains("adapter table full (6), seventh not registered"));
+}
+
+// A slot holding the wrong adapter, or none, is named instead of passing quietly.
+static void test_device_backend_miswired_is_named() {
+  FakeAdapter a[agent::kDeviceBackendCount];
+  agent::ManagedAgentAdapter* list[agent::kDeviceBackendCount];
+  for (int i = 0; i < agent::kDeviceBackendCount; i++) {
+    a[i].backend = agent::kDeviceBackends[i];
+    list[i] = &a[i];
+  }
+  list[4] = &a[5];   // "zai" slot holds the cumulo adapter
+  HeavyFabric f;
+  agent::ManagedAgentAdapter* const (&ref)[agent::kDeviceBackendCount] = list;
+  TEST_ASSERT_EQUAL_STRING("zai", agent::registerDeviceBackends(f, ref));
+
+  list[4] = nullptr;
+  HeavyFabric g;
+  TEST_ASSERT_EQUAL_STRING("zai", agent::registerDeviceBackends(g, ref));
+  TEST_ASSERT_TRUE(LogCapture::contains("null adapter not registered"));
+}
+
+// The class: every first-class provider and the custom endpoint is a device
+// backend, so none of them can again need a restart before its helpers run.
+static void test_every_provider_is_a_device_backend() {
+  auto listed = [](const char* id) {
+    for (const char* b : agent::kDeviceBackends)
+      if (std::strcmp(b, id) == 0) return true;
+    return false;
+  };
+  for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
+    TEST_ASSERT_TRUE_MESSAGE(listed(nimbus::orch::kProviderSlots[i].slug), nimbus::orch::kProviderSlots[i].slug);
+  TEST_ASSERT_TRUE(listed("custom"));
 }
 
 int main(int, char**) {
@@ -148,6 +187,8 @@ int main(int, char**) {
   RUN_TEST(test_null_log_sink_never_crashes);
   RUN_TEST(test_directive_skill_field_reaches_adapter);
   RUN_TEST(test_every_device_backend_fits_the_table);
+  RUN_TEST(test_device_backend_miswired_is_named);
+  RUN_TEST(test_every_provider_is_a_device_backend);
   UNITY_END();
   return 0;
 }

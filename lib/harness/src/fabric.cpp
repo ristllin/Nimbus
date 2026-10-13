@@ -12,11 +12,19 @@
 namespace agent {
 
 void HeavyFabric::registerAdapter(ManagedAgentAdapter* a) {
+  if (!a) { hlog::log("fabric: null adapter not registered"); return; }
   if (adapterCount_ < MAX_ADAPTERS) { adapters_[adapterCount_++] = a; return; }
   // Every device backend is registered at boot, keyed or not; a backend past the
   // table is unreachable, so say so instead of dropping it silently.
-  hlog::logf("fabric: adapter table full (%d), %s not registered", MAX_ADAPTERS,
-             a ? a->backendId() : "?");
+  hlog::logf("fabric: adapter table full (%d), %s not registered", MAX_ADAPTERS, a->backendId());
+}
+
+const char* registerDeviceBackends(HeavyFabric& fabric,
+                                   ManagedAgentAdapter* const (&adapters)[kDeviceBackendCount]) {
+  for (int i = 0; i < kDeviceBackendCount; i++) fabric.registerAdapter(adapters[i]);
+  for (int i = 0; i < kDeviceBackendCount; i++)
+    if (!adapters[i] || fabric.adapterFor(kDeviceBackends[i]) != adapters[i]) return kDeviceBackends[i];
+  return nullptr;
 }
 
 void HeavyFabric::bindCategory(const char* category, const char* backendId) {

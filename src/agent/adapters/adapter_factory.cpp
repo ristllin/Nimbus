@@ -45,17 +45,15 @@ static void bindCategories(HeavyFabric& fabric, const String& cfg) {
 
 void fabricInit(HeavyFabric& fabric) {
   // Every backend is registered at boot whether or not it is configured yet; each
-  // dispatch answers Auth while its key (or the custom base URL) is absent.
-  // Registering Z.ai, the Cumulo router and the custom endpoint only when set at
-  // boot meant one added later on the web page left helpers on it failing with
-  // "Provider 'cumulo' isn't configured." until a restart (bench nimbus-light,
-  // v4.5.11, Cumulo key added after a factory reset).
-  fabric.registerAdapter(&s_anthropic);
-  fabric.registerAdapter(&s_openai);
-  fabric.registerAdapter(&s_mistral);
-  fabric.registerAdapter(&s_custom);   // backend "custom" - proxy endpoint
-  fabric.registerAdapter(&s_zai);      // backend "zai" - Z.ai GLM
-  fabric.registerAdapter(&s_cumulo);   // backend "cumulo" - router
+  // dispatch answers Auth while its key (or the custom base URL) is absent, so one
+  // added later on the web page works on the next helper without a restart
+  // (CUM-541: registering zai/cumulo/custom only when set at boot left helpers
+  // failing with "Provider 'cumulo' isn't configured." until a restart). The list
+  // and the reachability check are lib/harness's (registerDeviceBackends, host-tested).
+  static ManagedAgentAdapter* const kAdapters[kDeviceBackendCount] = {
+      &s_anthropic, &s_openai, &s_mistral, &s_custom, &s_zai, &s_cumulo};
+  if (const char* missing = registerDeviceBackends(fabric, kAdapters))
+    alogf("fabric: backend %s is not reachable; its helpers will fail", missing);
   alogf("fabric: custom %s (conv=%s), zai %s, cumulo %s",
         store::hasCustom() ? "set" : "not set", store::customConv().c_str(),
         store::hasZaiKey() ? "keyed" : "no key yet", store::hasCumuloKey() ? "keyed" : "no key yet");

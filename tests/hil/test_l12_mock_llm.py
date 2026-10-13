@@ -252,7 +252,8 @@ def custom_backend(device, net, secrets, mock_llm):  # noqa: F811 - fixture name
     )
     assert r.status_code == 200, f"provision POST /api/orch -> {r.status_code}"
 
-    # Reboot: backend "custom" registers only when hasCustom() at fabricInit.
+    # Reboot: the custom HEAD registers only when hasCustom() at boot (helpers no
+    # longer need it since CUM-541, but L12 also drives the custom head).
     device.reset()
     device.wait_ready(timeout=25.0)
     _wait_http(net, ip)
@@ -265,7 +266,7 @@ def custom_backend(device, net, secrets, mock_llm):  # noqa: F811 - fixture name
         yield be
     finally:
         # RESTORE: prior custom endpoint + routing + head, drop any pushed key,
-        # then reboot so the custom adapter de-registers again.
+        # then reboot so the custom head de-registers again.
         fields = {
             "custBase": prior_cust.get("base", ""),
             "custConv": prior_cust.get("conv", "openai"),

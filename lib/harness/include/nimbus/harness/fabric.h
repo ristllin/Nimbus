@@ -95,6 +95,8 @@ class ManagedAgentAdapter {
 // backend prefix before ':'. One indirection the core loop holds.
 class HeavyFabric {
  public:
+  static constexpr int MAX_ADAPTERS = 6;   // the device backends below, all always registered
+
   void registerAdapter(ManagedAgentAdapter* a);
   void bindCategory(const char* category, const char* backendId);
 
@@ -109,7 +111,6 @@ class HeavyFabric {
   struct Binding { char category[16]; char backendId[16]; };
 
  private:
-  static constexpr int MAX_ADAPTERS = 6;   // anthropic/openai/mistral/custom/zai/cumulo, all always registered
   static constexpr int MAX_BINDINGS = 8;
 
   ManagedAgentAdapter* adapters_[MAX_ADAPTERS] = {};
@@ -117,5 +118,19 @@ class HeavyFabric {
   Binding              bindings_[MAX_BINDINGS] = {};
   int                  bindingCount_ = 0;
 };
+
+// The sub-agent backends a device registers at boot, keyed or not (CUM-541): each
+// adapter's dispatch refuses until its key (or the custom base URL) is set, so one
+// added later on the web page works on the next helper without a restart.
+inline constexpr const char* kDeviceBackends[] = {"anthropic", "openai", "mistral",
+                                                  "custom",    "zai",    "cumulo"};
+inline constexpr int kDeviceBackendCount = (int)(sizeof(kDeviceBackends) / sizeof(kDeviceBackends[0]));
+static_assert(kDeviceBackendCount <= HeavyFabric::MAX_ADAPTERS,
+              "every device backend must fit the adapter table");
+// Registers one adapter per kDeviceBackends entry, in that order, then checks each
+// id resolves to its adapter. Returns the first id that does not (a wrong adapter in
+// a slot, a null, or a full table), or nullptr when every backend is reachable.
+const char* registerDeviceBackends(HeavyFabric& fabric,
+                                   ManagedAgentAdapter* const (&adapters)[kDeviceBackendCount]);
 
 }  // namespace agent

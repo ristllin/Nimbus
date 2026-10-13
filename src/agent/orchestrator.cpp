@@ -1383,9 +1383,10 @@ static TurnEngine::Deps buildTurnDeps() {
   // Head on the custom/LAN endpoint (Stage H): a single-shot chat-completions
   // structured turn (no tool loop v1 - the portable fn ignores `tools`), so a
   // fully keyless LAN setup (e.g. Ollama) can run the whole orchestrator.
-  // Registered ONLY when configured - mirrors adapter_factory's boot-time
-  // hasCustom() gate (reboot to apply), and hostHasKey('custom') maps to
-  // store::hasCustom() via the HarnessConfig view, so priority/failover just work.
+  // The head is registered ONLY when configured at boot (restart to use a newly
+  // set endpoint as the head; custom HELPERS need no restart since CUM-541), and
+  // hostHasKey('custom') maps to store::hasCustom() via the HarnessConfig view, so
+  // priority/failover just work.
   if (store::hasCustom())
     d.hosts.add("custom", [](std::string& cv, const std::string& ins, const std::string& inp,
                              std::string& out, std::string& err, const agent::HeadTools* tools,

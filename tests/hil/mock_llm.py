@@ -380,9 +380,9 @@ def find_lan_ip(peer_ip: Optional[str] = None) -> str:
 @pytest.fixture(scope="module")
 def mock_llm(tmp_path_factory) -> "MockLLMServer":
     """Module-scoped mock server on an ephemeral port. Module-scoped so ONE
-    device provisioning + reboot cycle (the adapter registration is boot-gated:
-    adapter_factory.cpp registers backend "custom" only when store::hasCustom()
-    at fabricInit) serves every scenario - tests switch scenarios live via
+    device provisioning + reboot cycle (the custom head is boot-gated:
+    orchestrator.cpp registers the "custom" head only when store::hasCustom()
+    at boot) serves every scenario - tests switch scenarios live via
     ``custModel`` (read per-dispatch by the firmware) and call ``reset()``."""
     dump = str(tmp_path_factory.mktemp("mock_llm") / "requests.jsonl")
     server = MockLLMServer(dump_path=dump).start()

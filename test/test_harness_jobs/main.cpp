@@ -919,6 +919,23 @@ static void test_backend_added_at_runtime_works_without_restart() {
     TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("isn't configured") == std::string::npos,
                              slug);
 
+    if (std::string(slug) == "custom") {   // with the router keyed: no router clause
+      Rig k;
+      FakeAdapter c;
+      c.backend = "custom";
+      k.fabric.registerAdapter(&c);
+      k.keyed = {"cumulo"};
+      k.modelValid = [](const std::string&, const std::string&) { return false; };
+      k.build();
+      k.eng->enqueueSpawn(s, "chat1");
+      k.plat.ms += 5000;
+      k.eng->pump();
+      TEST_ASSERT_EQUAL(0, (int)c.dispatched.size());
+      const std::string& said = k.delivered[0].second;
+      TEST_ASSERT_TRUE(said.find("No custom endpoint is set") != std::string::npos);
+      TEST_ASSERT_TRUE_MESSAGE(said.find("does not offer") == std::string::npos, said.c_str());
+    }
+
     r.keyed.insert(slug);   // the owner adds it on the web page; no restart
     r.eng->enqueueSpawn(s, "chat1");
     r.plat.ms += 5000;

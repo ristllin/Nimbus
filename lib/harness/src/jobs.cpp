@@ -101,7 +101,8 @@ static std::string spawnRefusal(FabricErr err, const std::string& provider, Rate
   // "couldn't start" was a lie the owner caught) - but the same signal can be
   // a very slow connection that never delivered the request, so the honest
   // wording claims neither outcome as certain (prism v4.1 #4). The wait is the
-  // adapter's own (60 s Mistral, 30 s Z.ai, Cumulo and custom), so no number.
+  // adapter's own (120 s OpenAI, Anthropic and Cumulo, 60 s Mistral, 50 s Z.ai,
+  // 30 s custom), so no number.
   if (err == FabricErr::Timeout)
     return "The agent on " + provider +
            " didn't respond in time - it may have run without me getting "
@@ -263,7 +264,9 @@ void JobEngine::refuseKeyless(const PendingSpawn& p, const std::string& provider
   const bool router = hasKey(kRouterSlug);
   const std::string m = !model.empty() ? model : subModelOf(provider);
   const std::string want = m.empty() ? std::string() : routerSelector(provider, m);
-  const bool named = router && !want.empty();   // the router selector that was asked for
+  // The router selector that was asked for. Never for custom: the router carries no
+  // custom endpoint, so "the router does not offer custom/<model>" would mislead.
+  const bool named = router && !want.empty() && provider != "custom";
   // The custom provider is a base URL the owner sets, not a key.
   const std::string what = provider == "custom" ? " endpoint" : " key";
   std::string owner = "Couldn't start that agent on " + provider + ". No " + provider + what + " is set";
