@@ -18,6 +18,7 @@
 #include <solide/memory.h>        // NVS side channel for the verify-reason token
 #include "agent_config.h"
 #include "../sys/agent_log.h"
+#include "../sys/config_nvs.h"    // nvsGetStr - a quiet read of the unset verify reason
 #include "../sys/net_util.h"      // tlsClose - RST-close on every path
 #include "store.h"
 #include "connectors.h"           // Mistral Studio connector workspace-auth probe
@@ -85,7 +86,7 @@ static void setReason(const String& provider, const char* rsn) {
   solide::memory::setString(reasonKey(provider).c_str(), rsn ? rsn : "");
 }
 String reason(const String& provider) {
-  return solide::memory::getString(reasonKey(provider).c_str(), "");
+  return nimbus::sys::nvsGetStr(reasonKey(provider).c_str(), "");   // unset until a verify
 }
 
 // ---- low-memory deferral: measured number + self-retry (CUM-447) -------------

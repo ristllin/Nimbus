@@ -66,12 +66,24 @@ String deviceName();
 // not land is reported through the persist ledger below, so a SaveScope sees it.
 String saveDeviceName(const String& raw);
 
+// The ONE string read of the device's NVS settings: an absent key is a normal
+// state and returns `def` quietly. Preferences::getString() (under
+// solide::memory::getString) logs "[E] ... nvs_get_str len fail: <key> NOT_FOUND"
+// for every read of a key that was never written; on a factory-fresh device in
+// setup mode (no Wi-Fi saved yet) that was one error line every 5 s from the
+// Wi-Fi slot reads alone (lane L31). has() probes the value types silently, so an
+// absent key never enters getString's error path. Values are unchanged; only the
+// noise goes. test/test_nvs_quiet_reads fails on any other string read in src/.
+inline String nvsGetStr(const char* key, const char* def = "") {
+  return solide::memory::has(key) ? solide::memory::getString(key, def) : String(def);
+}
+
 // ---- owner-config persistence honesty (CUM-479) -----------------------------
 // The solide::memory (NVS) seam the portable write primitives in nimbus/store/
 // persist.h run against - shared by agent::store and the saves in this file.
 struct NvsKv {
   bool   setString(const char* k, const String& v) { return solide::memory::setString(k, v); }
-  String getString(const char* k, const char* def) { return solide::memory::getString(k, def); }
+  String getString(const char* k, const char* def) { return nvsGetStr(k, def); }
   bool   has(const char* k) { return solide::memory::has(k); }
   bool   erase(const char* k) { return solide::memory::eraseKey(k); }
 };

@@ -71,7 +71,7 @@ bool persistLocked(const std::string& preferSsid = "") {
     // No caller-supplied preference - a momentary link drop makes staConnected()
     // false, and falling back to the HEAD there is what re-pointed a device at a
     // network it had merely saved. Keep whatever the slot already names.
-    const String cur = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+    const String cur = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
     const int at = cur.length()
         ? nimbus::wifi::findNetwork(s_nets, std::string(cur.c_str())) : -1;
     pick = (at >= 0) ? &s_nets[(size_t)at] : &s_nets[0];
@@ -90,7 +90,7 @@ void keepOrRevertLocked(const std::vector<KnownNet>& before, const std::string& 
 
 void begin() {
   Lock g;
-  const String blob = solide::memory::getString(NIMBUS_KEY_STA_NETS, "");
+  const String blob = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_NETS);
   if (!nimbus::wifi::loadNetworks(std::string(blob.c_str()), s_nets)) {
     // A corrupt blob must not brick provisioning: start empty and let the legacy
     // slot (or the owner) repopulate. Never leaves a half-parsed list behind.
@@ -98,8 +98,8 @@ void begin() {
   }
   // Fold the legacy single slot in. Idempotent, so this is safe on every boot; it
   // only writes when something actually changed.
-  const String ls = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
-  const String lp = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+  const String ls = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
+  const String lp = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_PASS);
   if (nimbus::wifi::migrateLegacySlot(s_nets, std::string(ls.c_str()),
                                       std::string(lp.c_str())))
     persistLocked();

@@ -12,6 +12,7 @@
 #include "nimbus/wifi/net_up.h"      // NetUpLatch - the pure network-up edge rule (CUM-504)
 #include "nimbus/wifi/supervise.h"   // decideSupervise() - the pure link-down decision
 
+#include "../sys/config_nvs.h"   // nvsGetStr - an unsaved Wi-Fi slot reads quietly
 #include "nimbus_config.h"   // NIMBUS_KEY_STA_SSID / _PASS - the boot-slot re-begin
 #include "wifi_portal.h"     // msSinceJoinAttempt() - is a manual credential test in flight
 #include "wifi_store.h"      // the known-networks list (count / snapshot / note a join)
@@ -90,9 +91,9 @@ void disengage() {
 // would otherwise sit idle until reboot (F2). Kicking the boot slot hands a live retry back
 // to the core, which then maintains it.
 void rebeginBootSlot() {
-  const String ssid = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+  const String ssid = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
   if (!ssid.length()) return;
-  const String pass = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+  const String pass = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_PASS);
   WiFi.begin(ssid.c_str(), pass.c_str());
 }
 

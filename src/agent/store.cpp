@@ -72,7 +72,7 @@ bool putBoolDef(const char* key, bool v, bool def) {
 // so every string getter reads through has() - the quiet idiom pcRead introduced for
 // CUM-299. Values are unchanged; only the log noise goes.
 String getStrQuiet(const char* key, const char* def) {
-  return solide::memory::has(key) ? solide::memory::getString(key, def) : String(def);
+  return nimbus::sys::nvsGetStr(key, def);
 }
 }  // namespace
 

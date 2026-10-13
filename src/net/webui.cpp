@@ -296,7 +296,7 @@ bool webAuthOk(::AsyncWebServerRequest* r) {
 // it is not, and a join screen must carry a sign-in code instead (CUM-453). One rule
 // for all of them so the handout and the on-screen code can never disagree.
 bool apSignsInAutomatically() {
-  return solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() == 0;
+  return nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID).length() == 0;
 }
 
 // Reject an unauthenticated state-changing request with 401. Returns true if it blocked.

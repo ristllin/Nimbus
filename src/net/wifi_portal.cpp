@@ -116,9 +116,9 @@ void begin(const char* apSsid, const char* apPass) {
 
   // Reconnect to the most recently used network. The store mirrors the list head back
   // into the legacy keys, so these stay the right credentials to try first.
-  String sta = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+  String sta = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
   if (sta.length()) {
-    String p = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+    String p = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_PASS);
     WiFi.begin(sta.c_str(), p.c_str());
   }
 }
@@ -188,9 +188,9 @@ static bool s_scanStoodDown = false;
 static void rearmStationAfterScan() {
   if (!s_scanStoodDown) return;
   s_scanStoodDown = false;
-  const String ssid = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+  const String ssid = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
   if (!ssid.length()) return;
-  const String pass = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+  const String pass = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_PASS);
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str());
 }
@@ -300,9 +300,9 @@ void publishSetupNetwork() {
 void cancelSetupHold() {
   link::setManualHold(false);   // resume normal joining - the supervisor may act again
   WiFi.setAutoReconnect(true);
-  const String sta = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+  const String sta = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_SSID);
   if (sta.length()) {
-    const String p = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+    const String p = nimbus::sys::nvsGetStr(NIMBUS_KEY_STA_PASS);
     WiFi.begin(sta.c_str(), p.c_str());
     s_lastJoinMs = millis() ? millis() : 1;   // a fresh attempt begins; watch it too
   }
