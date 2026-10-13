@@ -33,11 +33,15 @@
 namespace nimbus {
 namespace orch {
 
+// The chat id a hosted instance's (nimbusd) web page runs its turns under (CUM-542).
+// Like "web" it is the web chat, never a Telegram chat (a Telegram chat id is a number).
+inline constexpr char kHostedWebChatId[] = "owner";
+
 // Every chatId routing value the device uses. The slugs ("web", "voice", "serial", a
 // Telegram chat id, "") are persisted in loops.json and are frozen.
 enum class DeliveryChannel : uint8_t {
   OwnerDefault = 0,   // ""
-  Web,                // "web"     - the web chat (history-backed)
+  Web,                // "web" (or kHostedWebChatId) - the web chat (history-backed)
   Voice,              // "voice"   - the device screen (hold-to-talk replies)
   Serial,             // "serial"  - the developer console
   Telegram,           // anything else: a Telegram chat id

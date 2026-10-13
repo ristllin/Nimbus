@@ -50,7 +50,7 @@ std::string fallbackInstruction(const Delivery& d) {
 
 DeliveryChannel deliveryChannelOf(const std::string& chatId) {
   if (chatId.empty()) return DeliveryChannel::OwnerDefault;
-  if (chatId == kWebChat) return DeliveryChannel::Web;
+  if (chatId == kWebChat || chatId == kHostedWebChatId) return DeliveryChannel::Web;
   if (chatId == "voice") return DeliveryChannel::Voice;
   if (chatId == "serial") return DeliveryChannel::Serial;
   return DeliveryChannel::Telegram;

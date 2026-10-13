@@ -153,6 +153,7 @@ void checkFireRequest(const LoopRecord& l, const Delivery& d, const char* msg) {
 static void test_channel_of_every_slug() {
   TEST_ASSERT_EQUAL(DeliveryChannel::OwnerDefault, deliveryChannelOf(""));
   TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf("web"));
+  TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf(nimbus::orch::kHostedWebChatId));   // CUM-542
   TEST_ASSERT_EQUAL(DeliveryChannel::Voice, deliveryChannelOf("voice"));
   TEST_ASSERT_EQUAL(DeliveryChannel::Serial, deliveryChannelOf("serial"));
   TEST_ASSERT_EQUAL(DeliveryChannel::Telegram, deliveryChannelOf("123456789"));

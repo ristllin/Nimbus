@@ -203,7 +203,7 @@ truth: a cloud instance that is always online, with no screen, microphone, speak
 LED ring or battery (the composer's desk-device lines are replaced for every head
 this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording). A message
 from the instance's web page (its turns run as the `owner` chat) is told it arrived
-via the web UI, as the device's own page is (`agent::isWebChat`), and a
+via the web UI, as the device's own page is (`nimbus::orch::deliveryChannelOf`), and a
 Telegram message still says Telegram.
 
 **Files, routines and the rest.** The Files panel (`/api/files/list`, `upload`,

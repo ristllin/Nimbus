@@ -100,7 +100,7 @@ constexpr const char* kZaiSlug       = "zai";            // head + routing slug
 // every /api/chat turn with it). It is the hosted instance's SYNCHRONOUS channel:
 // the page resolves its poll only on a delivered message. The shared engine names
 // it the web UI in the turn's [CHANNEL] line, never Telegram (CUM-542).
-constexpr const char* kWebChatId = agent::kHostedWebChatId;
+constexpr const char* kWebChatId = nimbus::orch::kHostedWebChatId;
 
 struct TurnRecord {
   std::string chatId, userText, reply;

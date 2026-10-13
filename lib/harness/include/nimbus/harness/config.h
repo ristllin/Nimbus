@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/orch/loop_delivery.h"   // deliveryChannelOf - the one chat id -> channel rule
+
 // HarnessConfig - the harness's read-mostly view of device configuration,
 // clustered by consumer. This replaces direct agent::store:: (NVS) access in
 // every lifted function; the device implements it over store:: in
@@ -85,22 +87,18 @@ struct BudgetConfig {
       recordTokens;
 };
 
-// CUM-542: the chat id a hosted instance's (nimbusd) web page runs its turns under.
-// Like the device's "web" it is the composition's own web chat, never a Telegram
-// chat (a Telegram chat id is a number).
-inline constexpr char kHostedWebChatId[] = "owner";
-
 // CUM-542: true when `chatId` is a web page chat: the device's "web" or a hosted
-// instance's page. The turn's [CHANNEL] line and a one-shot's delivery line name
-// it the web UI / web chat.
+// instance's page (nimbus::orch::kHostedWebChatId). The turn's [CHANNEL] line, a
+// one-shot's delivery line and a routine's delivery all read the one rule,
+// nimbus::orch::deliveryChannelOf.
 inline bool isWebChat(const std::string& chatId) {
-  return chatId == "web" || chatId == kHostedWebChatId;
+  return nimbus::orch::deliveryChannelOf(chatId) == nimbus::orch::DeliveryChannel::Web;
 }
 
 // CUM-523: true when `chatId` names a Telegram chat - not one of the device's own
 // channels (a web page chat, voice, serial) and not "" (no chat).
 inline bool isTelegramChat(const std::string& chatId) {
-  return !chatId.empty() && !isWebChat(chatId) && chatId != "voice" && chatId != "serial";
+  return nimbus::orch::deliveryChannelOf(chatId) == nimbus::orch::DeliveryChannel::Telegram;
 }
 
 // CUM-523: the per-turn rule for HarnessConfig::telegramDeliverable. The bot runs

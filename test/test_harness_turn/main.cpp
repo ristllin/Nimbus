@@ -648,7 +648,7 @@ static void test_cum523_no_delivery_line_without_a_real_target() {
 // ---- CUM-542: the composition's web page chat is named the web UI ----------
 // Joiner-VN3: a message from the hosted web page was told "[CHANNEL] This message
 // arrived via Telegram": the hosted page runs its turns as "owner"
-// (agent::kHostedWebChatId), and only "web" was a web chat. Both page chats are the
+// (nimbus::orch::kHostedWebChatId), and only "web" was a web chat. Both page chats are the
 // web UI; every other chat id (a Telegram chat id is a number) is still Telegram.
 static bool channelSays(const Rig& r, const char* where) {
   return r.attempts.back().inputs.find(std::string("[CHANNEL] This message arrived via ") + where) !=
@@ -656,10 +656,10 @@ static bool channelSays(const Rig& r, const char* where) {
 }
 
 static void test_cum542_web_page_chat_is_the_web_ui() {
-  TEST_ASSERT_TRUE(agent::isWebChat("web") && agent::isWebChat(agent::kHostedWebChatId));
+  TEST_ASSERT_TRUE(agent::isWebChat("web") && agent::isWebChat(nimbus::orch::kHostedWebChatId));
   for (const char* other : {"1001", "-100200300", "voice", "serial", "", "owner2"})
     TEST_ASSERT_FALSE_MESSAGE(agent::isWebChat(other), other);
-  TEST_ASSERT_FALSE(agent::isTelegramChat(agent::kHostedWebChatId));   // one rule for both readers
+  TEST_ASSERT_FALSE(agent::isTelegramChat(nimbus::orch::kHostedWebChatId));   // one rule for every reader
 
   Rig hosted;   // a hosted instance: its page chats as "owner"
   hosted.eng->handleMessage("hello from the page", "", "owner");
