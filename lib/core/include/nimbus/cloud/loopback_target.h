@@ -33,8 +33,11 @@ namespace cloud {
 // blocked/suspected list + scoped allowlist UI and its JS) pushed the assembled page to
 // ~341 KB, so page + 16 KB headroom (~357 KB) landed ~5.5 KB OVER the 352 KB line, not
 // under it; it moves to 376 KB (~357 KB fits with room to spare; base64 ~501 KB, ~11 KB
-// under the 512 KB res frame - the static_assert bounds that).
-constexpr unsigned kLoopbackMaxRespBody = 376u * 1024u;
+// under the 512 KB res frame - the static_assert bounds that). Per-model prices (the
+// Usage pane's Prices table, By model list and chart, 2026-10) took the page to ~366 KB
+// and page + headroom over 376 KB: 383 KB, the LAST step the frame allows (base64 ~511 KB,
+// ~1.3 KB under 512 KB). The next growth needs a smaller page (compression), not a cap.
+constexpr unsigned kLoopbackMaxRespBody = 383u * 1024u;
 
 // The relay frames each response body as base64 inside a res-frame bounded by this
 // protocol max; the raw cap MUST leave room after the 4/3 base64 expansion or a full

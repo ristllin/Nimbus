@@ -134,6 +134,22 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .tile .g{height:5px;border-radius:4px;background:var(--line);margin-top:8px;position:relative;overflow:hidden}
 .tile .g i{display:block;height:100%;border-radius:4px}
 .tile .g .mk{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--warn);opacity:.85}
+/* Usage: the Prices grid (rows stack on a phone) and the By model list. */
+.ptab{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(70px,.7fr) minmax(70px,.7fr) minmax(92px,auto) auto;gap:6px 8px;align-items:center;margin-top:10px}
+.ptab .ph,.bym .bh{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:650}
+.ptab .pm{color:var(--ink);font-size:13px;overflow-wrap:anywhere}
+.ptab small{display:block;color:var(--ink3);font-size:11px}
+.ptab input{padding:6px 8px;font-size:13px}.ptab .pi{margin:0;min-width:0}.ptab .pi span{display:none}
+.ptab .pa{display:flex;gap:6px}.ptab .pa button{padding:6px 10px;font-size:12.5px}.ptab .clr{background:var(--raise3);color:var(--ink2)}
+.ptab .sep{grid-column:1/-1;border-top:1px solid var(--line)}
+.provrow .g{height:5px;border-radius:4px;background:var(--line);overflow:hidden}.provrow .g i{display:block;height:100%}
+.bym .bp,.bym .br{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.bym .bp{margin-top:10px;font-weight:650;font-size:13px;color:var(--ink)}
+.bym .br{padding:3px 0 3px 12px;font-size:12.5px;color:var(--ink2);border-bottom:1px solid var(--line)}
+.bym .bn{overflow-wrap:anywhere;min-width:0}.bym .bv{font-variant-numeric:tabular-nums;white-space:nowrap;margin-left:auto}
+.lchip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--line2);border-radius:11px;background:var(--raise2);color:var(--ink2);font-size:11.5px;font-weight:550;overflow-wrap:anywhere}
+.lchip i{width:9px;height:9px;border-radius:2px;flex:none}.lchip.off{opacity:.45;text-decoration:line-through}
+@media(max-width:560px){.ptab{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.ptab .ph{display:none}.ptab .pi span{display:block;margin-bottom:2px}.ptab .pm{grid-column:1/-1;margin-top:4px}.ptab .pa{justify-content:flex-end}}
 .subtabs{display:flex;gap:5px;flex-wrap:wrap;margin:2px 0 14px;padding:5px;background:var(--raise2);border:1px solid var(--line);border-radius:12px}
 .subtab{flex:1 1 auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border:0;border-radius:9px;font-size:13.5px;font-weight:600;color:var(--ink2);cursor:pointer;background:transparent;transition:.15s}
 .subtab:hover{color:var(--ink);background:var(--raise3)}

@@ -8,7 +8,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 ## Unreleased
 
-- **Spend is priced per model.** Each model's usage is priced at that model's own price, so two models from the same provider no longer cost the same, and a provider's dollar budget adds them up. Cumulo usage is priced at what Cumulo bills for each model; a model nothing else prices uses a built-in estimate.
+- **Prices per model, usage per model.** Each model now has its own price: two models from the same provider no longer cost the same, and a provider's dollar budget adds them up. The Usage page lists this period's spend per model, the Spend over time chart shows models (or providers, your choice), and Prices takes dollars per million tokens for each model, with a last row for any other model of that provider. Cumulo usage is priced at what Cumulo bills for each model. Models you have not priced use built-in estimates, marked ~.
 - **A dollar budget now counts built-in estimates.** A dollar cap used to count only the prices you had entered, so a cap with no prices never stopped anything. It now counts every model at its price, built-in estimates included, and stays off only for a model nothing prices (such as a custom endpoint model you have not priced). If you set a dollar cap without entering prices, check it under Usage, Budgets: the cap may now stop a provider when its estimated spend reaches it.
 - **Going back to an earlier release.** An earlier release keeps your usage, budgets and provider prices, and reads the per-day history (each day's spend is still counted). It ignores the per-model prices and per-model spend, which come back if you update again; the history it rewrites while you run it records days without the model.
 

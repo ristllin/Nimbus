@@ -123,7 +123,8 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <div class=sec>
 <div id=usageTiles class=tiles></div>
 <div id=usageSummary class=tiles></div>
-<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below - a close guide, not an invoice.</p>
+<div id=usageByModel></div>
+<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the prices below - a close guide, not an invoice.</p>
 </div>
 
 <div class=sec>
@@ -135,36 +136,37 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <button type=button class=rangeBtn data-days=60 style="padding:5px 10px;font-size:12px">60d</button>
 </div>
 <div class=row>
+<button type=button id=groupModel style="padding:5px 10px;font-size:12px">By model</button>
+<button type=button id=groupProv style="padding:5px 10px;font-size:12px">By provider</button>
+</div>
+<div class=row>
 <button type=button id=unitTok style="padding:5px 10px;font-size:12px">tokens</button>
 <button type=button id=unitUsd style="padding:5px 10px;font-size:12px">$ est</button>
 </div>
 </div>
 <canvas id=usageChart width=880 height=260 style="width:100%;height:auto;margin-top:10px"></canvas>
-<div id=usageLegend class=row style="flex-wrap:wrap;gap:10px;margin-top:6px"></div>
+<div id=usageLegend class=row style="flex-wrap:wrap;gap:6px;margin-top:6px"></div>
 <p class=hint id=usageChartMsg></p>
 </div>
 
-<div class=sec>
-<h2>Rates <button class=qh type=button aria-expanded=false aria-label="About rates">?</button></h2>
-<p class="hint tip">What each provider charges - used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
+<div class=sec id=pricesSec>
+<h2>Prices <button class=qh type=button aria-expanded=false aria-label="About prices">?</button></h2>
+<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row prices any other model.</p>
 <div class=row>
-<select id=rate_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
-<input id=rate_in type=number min=0 step=0.01 placeholder="$ per 1M input" style="flex:1 1 110px">
-<input id=rate_out type=number min=0 step=0.01 placeholder="$ per 1M output" style="flex:1 1 110px">
-<input id=rate_call type=number min=0 step=0.01 placeholder="$ per 1,000 calls" style="flex:1 1 100px">
-<button id=ratesave type=button>Save</button>
+<select id=price_prov aria-label="Provider" style="flex:1 1 160px;max-width:280px"></select>
 </div>
+<div id=priceRows class=ptab></div>
 <p class=hint id=ratemsg></p>
 </div>
 
-<div class=sec>
+<div class=sec id=budgetsSec>
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
-<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
+<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a cap, that provider's turns and searches are refused until the reset day; the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>
 <div class=row>
-<select id=bud_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
+<select id=bud_prov aria-label="Provider" style="flex:1 1 120px"></select>
 <input id=bud_tok type=number min=0 placeholder="Tokens per month" style="flex:1 1 120px">
 <input id=bud_usd type=number min=0 step=0.01 placeholder="$ per month" style="flex:1 1 100px">
 <input id=bud_call type=number min=0 placeholder="Calls per month" style="flex:1 1 120px">

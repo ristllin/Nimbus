@@ -203,10 +203,25 @@ nothing until you approve it (here, or `/skill approve <id>` in Telegram).
 ### Usage
 
 Token usage reported by your providers, tracked since the device last restarted.
-Token counts are actual billed usage; dollar figures are estimates. A
-7/30/60-day **Spend over time** chart, per-provider **Rates**, and a monthly
-**Budget** per provider (0 = unlimited; at the cap that provider is refused until
-the reset day and the assistant fails over when it can).
+Token counts are actual billed usage; dollar figures are estimates, and **~**
+marks a built-in price estimate.
+
+- **This period by model** - every model you used this billing period, grouped by
+  provider, with its tokens and estimated cost; usage from before model tracking
+  shows as its own row. The rows add up to the provider's total.
+- **Spend over time** - a 7/30/60-day chart in tokens or dollars, **By model** (the
+  default; the top 8 models are drawn and the rest fold into Other models) or **By
+  provider**. Tap a legend entry to hide or show it.
+- **Prices** - pick a provider, then set dollars per million input and output
+  tokens for each of its models (**Clear** goes back to the built-in or Cumulo
+  price). The last row, **Any other** model, prices everything you did not price
+  per model; Tavily takes dollars per thousand searches.
+- **Budgets** - a monthly cap per provider by tokens, dollars, or calls (0 =
+  unlimited). The dollar cap counts every model at its price, built-in estimates
+  included; at the cap that provider is refused until the reset day and the
+  assistant fails over when it can.
+
+A hosted Virtual Nimbus does not track usage yet, so it shows no Prices or Budgets.
 
 ### Safety
 

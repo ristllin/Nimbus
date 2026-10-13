@@ -5,6 +5,7 @@
 //
 // Contracts consumed from other lanes are STUBS here (TASK.md): /api/models +
 // /api/fallbacks (N3), /api/ota/check + files payloads (N5), /api/wakeups (N2).
+import { readFileSync } from 'node:fs';
 
 export const STATE = {
   fw: 'v4.3.0-pre', build: 'n1-harness', mode: 1, jobs: 2,
@@ -75,18 +76,31 @@ export const ORCH = {
   sfxLvlN: 2, sfxLvlO: 2, sfxTheme: 'terran', sfxVol: 60, sfxTier: 'basic', sfxSync: 'idle',
   usage: {
     sessIn: 12000, sessOut: 4300, turns: 8, lastIn: 900, lastOut: 300,
-    // Per-provider ledger row. Field names mirror the device's providerUsageJson()
+    // Per-provider ledger rows. Field names mirror the device's providerUsageJson()
     // (store.cpp): prov / tokens / calls / tok(In|Out) / tot(In|Out|Calls) / rate*
-    // / (token|call|cents)Limit / estCents. A prior fixture used provider/in/out/limit,
-    // which the Budgets renderer does not read - it printed the provider as "undefined".
-    byProvider: [{
-      prov: 'anthropic', tokens: 16300, calls: 8,
-      tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
-      tokIn: 12000, tokOut: 4300, totIn: 12000, totOut: 4300, totCalls: 8,
-      // estCents is server-computed from tok(In|Out) x rate(In|Out): 12000/1e6*300 +
-      // 4300/1e6*1500 = 10 cents, kept consistent with the All-time tile's own estimate.
-      rateIn: 300, rateOut: 1500, rateCall: 0, centsLimit: 0, estCents: 10, tags: [],
-    }],
+    // / (token|call|cents)Limit / estCents / approx. A prior fixture used
+    // provider/in/out/limit, which the Budgets renderer does not read - it printed the
+    // provider as "undefined". These rows (and USAGE_MODELS below) were produced by the
+    // REAL lib/core ledger (UsageLedger + writeUsageModelsJson) for one multi-model
+    // month, so estCents is the server's own per-model figure and the By model list
+    // adds up to it exactly. totIn/totOut include an earlier month (All time > period).
+    byProvider: [
+      { prov: 'openai', tokens: 4128000, calls: 0, tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
+        tokIn: 3660000, tokOut: 468000, totIn: 5200000, totOut: 640000, totCalls: 0,
+        rateIn: 0, rateOut: 0, rateCall: 0, centsLimit: 2500, estCents: 1044, approx: true, tags: [] },
+      { prov: 'anthropic', tokens: 1920000, calls: 0, tokenLimit: 5000000, callLimit: 0, resetDay: 1, over: false,
+        tokIn: 1700000, tokOut: 220000, totIn: 2900000, totOut: 380000, totCalls: 0,
+        rateIn: 300, rateOut: 1500, rateCall: 0, centsLimit: 0, estCents: 722, approx: false, tags: [] },
+      { prov: 'cumulo', tokens: 1221000, calls: 0, tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
+        tokIn: 1090000, tokOut: 131000, totIn: 1090000, totOut: 131000, totCalls: 0,
+        rateIn: 0, rateOut: 0, rateCall: 0, centsLimit: 0, estCents: 522, approx: false, tags: [] },
+      { prov: 'mistral', tokens: 293000, calls: 0, tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
+        tokIn: 260000, tokOut: 33000, totIn: 260000, totOut: 33000, totCalls: 0,
+        rateIn: 0, rateOut: 0, rateCall: 0, centsLimit: 0, estCents: 71, approx: true, tags: [] },
+      { prov: 'tavily', tokens: 0, calls: 37, tokenLimit: 0, callLimit: 1000, resetDay: 1, over: false,
+        tokIn: 0, tokOut: 0, totIn: 0, totOut: 0, totCalls: 121,
+        rateIn: 0, rateOut: 0, rateCall: 0, centsLimit: 0, estCents: 29, approx: true, tags: [] },
+    ],
   },
   budget: { dailyUsd: 5, spentUsd: 1.24, cap: 'auto', effective: 5 },
   // Session rows as applyOrch renders them.
@@ -255,17 +269,38 @@ export const FETCHQ = { queue: [], downloads: [] };
 // a dayKey is whole days since the Unix epoch. A prior fixture served {buckets:[{t,usd}]},
 // a shape the chart does not read, so it always fell back to "clock not set yet" and no
 // chart ever rendered in the audit. Match the device contract.
+// Per-model prices (2026-10): buckets are (day, provider, model) with optional m / cr /
+// cw (omitted when empty or 0, as the device sends them). 30 days of nine models over
+// four providers, older days carrying spend from before model tracking (no m), and
+// Tavily searches - more than 8 series, so the chart's "Other models" fold is live.
 const _dayKey = Math.floor(Date.now() / 86400000);
-export const USAGE_HISTORY = {
-  today: _dayKey,
-  days: [
-    { d: _dayKey - 3, prov: 'anthropic', in: 2600, out: 800, calls: 2 },
-    { d: _dayKey - 2, prov: 'anthropic', in: 3200, out: 900, calls: 2 },
-    { d: _dayKey - 1, prov: 'anthropic', in: 5100, out: 1600, calls: 3 },
-    { d: _dayKey - 1, prov: 'cumulo', in: 2000, out: 700, calls: 2 },
-    { d: _dayKey, prov: 'anthropic', in: 1100, out: 1000, calls: 1 },
-  ],
-};
+const HIST_MODELS = [
+  ['openai', 'gpt-5.6', 30000, 3500], ['openai', 'gpt-5.6-luna', 90000, 11000],
+  ['openai', 'gpt-6-astra', 6000, 900], ['anthropic', 'claude-sonnet-5', 40000, 5500, 32000, 4000],
+  ['anthropic', 'claude-haiku-4-5', 22000, 2600], ['cumulo', 'openai/gpt-5.6', 18000, 2200],
+  ['cumulo', 'anthropic/claude-opus-5', 8000, 1100], ['cumulo', 'zai/glm-5.3', 14000, 1500],
+  ['mistral', 'mistral-large', 9000, 1200],
+];
+const _histDays = [];
+for (let off = 0; off < 30; off++) {
+  HIST_MODELS.forEach(([prov, m, i, o, cr = 0, cw = 0], k) => {
+    if ((off + k) % 4 === 3) return;                    // not every model every day
+    const f = 0.5 + ((off * 7 + k * 13) % 10) / 10;     // a deterministic wobble
+    const b = { d: _dayKey - off, prov, in: Math.round(i * f), out: Math.round(o * f), calls: 0, m };
+    if (cr) { b.cr = Math.round(cr * f); b.cw = Math.round(cw * f); }
+    _histDays.push(b);
+  });
+  if (off >= 22) _histDays.push({ d: _dayKey - off, prov: 'openai', in: 52000, out: 6400, calls: 0 });
+  if (off % 3 === 0) _histDays.push({ d: _dayKey - off, prov: 'tavily', in: 0, out: 0, calls: 2 + (off % 4) });
+}
+export const USAGE_HISTORY = { today: _dayKey, days: _histDays };
+
+// GET /api/usage/models (store.cpp usageModelsJsonPs -> lib/core writeUsageModelsJson),
+// produced by the real core for the same month as ORCH.usage.byProvider above: per-model
+// rows (period p*, all-time t*, resolved micro-USD prices, source, cents), the residual
+// (openai spend from before model tracking), the Prices table rows and provider rates.
+// The body lives in usage_models.json (one document, so a regeneration replaces it whole).
+export const USAGE_MODELS = JSON.parse(readFileSync(new URL('./usage_models.json', import.meta.url), 'utf8'));
 export const TELEGRAM = { enabled: false, allowlist: [], pending: [], public: false };
 export const TENANT = { name: 'default', tenants: ['default'] };
 export const TRACE = { turns: [] };
@@ -357,6 +392,7 @@ export const DEFAULTS = {
   '/api/fetchq': FETCHQ,
   '/api/safety': SAFETY,
   '/api/usage/history': USAGE_HISTORY,
+  '/api/usage/models': USAGE_MODELS,
   '/api/telegram': TELEGRAM,
   '/api/tenant': TENANT,
   '/api/trace': TRACE,

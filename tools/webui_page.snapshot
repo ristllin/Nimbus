@@ -122,6 +122,22 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .tile .g{height:5px;border-radius:4px;background:var(--line);margin-top:8px;position:relative;overflow:hidden}
 .tile .g i{display:block;height:100%;border-radius:4px}
 .tile .g .mk{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--warn);opacity:.85}
+/* Usage: the Prices grid (rows stack on a phone) and the By model list. */
+.ptab{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(70px,.7fr) minmax(70px,.7fr) minmax(92px,auto) auto;gap:6px 8px;align-items:center;margin-top:10px}
+.ptab .ph,.bym .bh{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:650}
+.ptab .pm{color:var(--ink);font-size:13px;overflow-wrap:anywhere}
+.ptab small{display:block;color:var(--ink3);font-size:11px}
+.ptab input{padding:6px 8px;font-size:13px}.ptab .pi{margin:0;min-width:0}.ptab .pi span{display:none}
+.ptab .pa{display:flex;gap:6px}.ptab .pa button{padding:6px 10px;font-size:12.5px}.ptab .clr{background:var(--raise3);color:var(--ink2)}
+.ptab .sep{grid-column:1/-1;border-top:1px solid var(--line)}
+.provrow .g{height:5px;border-radius:4px;background:var(--line);overflow:hidden}.provrow .g i{display:block;height:100%}
+.bym .bp,.bym .br{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.bym .bp{margin-top:10px;font-weight:650;font-size:13px;color:var(--ink)}
+.bym .br{padding:3px 0 3px 12px;font-size:12.5px;color:var(--ink2);border-bottom:1px solid var(--line)}
+.bym .bn{overflow-wrap:anywhere;min-width:0}.bym .bv{font-variant-numeric:tabular-nums;white-space:nowrap;margin-left:auto}
+.lchip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--line2);border-radius:11px;background:var(--raise2);color:var(--ink2);font-size:11.5px;font-weight:550;overflow-wrap:anywhere}
+.lchip i{width:9px;height:9px;border-radius:2px;flex:none}.lchip.off{opacity:.45;text-decoration:line-through}
+@media(max-width:560px){.ptab{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.ptab .ph{display:none}.ptab .pi span{display:block;margin-bottom:2px}.ptab .pm{grid-column:1/-1;margin-top:4px}.ptab .pa{justify-content:flex-end}}
 .subtabs{display:flex;gap:5px;flex-wrap:wrap;margin:2px 0 14px;padding:5px;background:var(--raise2);border:1px solid var(--line);border-radius:12px}
 .subtab{flex:1 1 auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border:0;border-radius:9px;font-size:13.5px;font-weight:600;color:var(--ink2);cursor:pointer;background:transparent;transition:.15s}
 .subtab:hover{color:var(--ink);background:var(--raise3)}
@@ -902,7 +918,8 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <div class=sec>
 <div id=usageTiles class=tiles></div>
 <div id=usageSummary class=tiles></div>
-<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below - a close guide, not an invoice.</p>
+<div id=usageByModel></div>
+<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the prices below - a close guide, not an invoice.</p>
 </div>
 
 <div class=sec>
@@ -914,36 +931,37 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <button type=button class=rangeBtn data-days=60 style="padding:5px 10px;font-size:12px">60d</button>
 </div>
 <div class=row>
+<button type=button id=groupModel style="padding:5px 10px;font-size:12px">By model</button>
+<button type=button id=groupProv style="padding:5px 10px;font-size:12px">By provider</button>
+</div>
+<div class=row>
 <button type=button id=unitTok style="padding:5px 10px;font-size:12px">tokens</button>
 <button type=button id=unitUsd style="padding:5px 10px;font-size:12px">$ est</button>
 </div>
 </div>
 <canvas id=usageChart width=880 height=260 style="width:100%;height:auto;margin-top:10px"></canvas>
-<div id=usageLegend class=row style="flex-wrap:wrap;gap:10px;margin-top:6px"></div>
+<div id=usageLegend class=row style="flex-wrap:wrap;gap:6px;margin-top:6px"></div>
 <p class=hint id=usageChartMsg></p>
 </div>
 
-<div class=sec>
-<h2>Rates <button class=qh type=button aria-expanded=false aria-label="About rates">?</button></h2>
-<p class="hint tip">What each provider charges - used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
+<div class=sec id=pricesSec>
+<h2>Prices <button class=qh type=button aria-expanded=false aria-label="About prices">?</button></h2>
+<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row prices any other model.</p>
 <div class=row>
-<select id=rate_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
-<input id=rate_in type=number min=0 step=0.01 placeholder="$ per 1M input" style="flex:1 1 110px">
-<input id=rate_out type=number min=0 step=0.01 placeholder="$ per 1M output" style="flex:1 1 110px">
-<input id=rate_call type=number min=0 step=0.01 placeholder="$ per 1,000 calls" style="flex:1 1 100px">
-<button id=ratesave type=button>Save</button>
+<select id=price_prov aria-label="Provider" style="flex:1 1 160px;max-width:280px"></select>
 </div>
+<div id=priceRows class=ptab></div>
 <p class=hint id=ratemsg></p>
 </div>
 
-<div class=sec>
+<div class=sec id=budgetsSec>
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
-<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
+<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a cap, that provider's turns and searches are refused until the reset day; the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>
 <div class=row>
-<select id=bud_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
+<select id=bud_prov aria-label="Provider" style="flex:1 1 120px"></select>
 <input id=bud_tok type=number min=0 placeholder="Tokens per month" style="flex:1 1 120px">
 <input id=bud_usd type=number min=0 step=0.01 placeholder="$ per month" style="flex:1 1 100px">
 <input id=bud_call type=number min=0 placeholder="Calls per month" style="flex:1 1 120px">
@@ -3175,15 +3193,12 @@ function applyOrch(d){
     $('usageTiles').innerHTML=
       _tile('This session',kt(u.sessIn+u.sessOut),'in '+kt(u.sessIn)+' · out '+kt(u.sessOut)+' · '+(u.turns||0)+' turns',0,'')+
       _tile('Last turn',kt(u.lastIn+u.lastOut),'in '+kt(u.lastIn)+' · out '+kt(u.lastOut),0,'');
-    _usageBP=u.byProvider||[];
-    renderBudgets(_usageBP);
-    renderUsageSummary();
-    renderUsageChart();
-    // Populate the rate editor from the stored rates (review: without this, the
-    // initially-selected provider's fields stayed blank and a Save silently wiped
-    // its stored rates to 0). Never clobber a field the owner is typing in.
-    const _ra=document.activeElement;
-    if(_ra!==$('rate_in')&&_ra!==$('rate_out')&&_ra!==$('rate_call'))_fillRateInputs();}
+    _usageBP=Array.isArray(u.byProvider)?u.byProvider:[];
+    if(d.providers)_provSlugs=Object.keys(d.providers);
+    // Refetch the per-model prices when the ledger moved (the list must add up to the tile).
+    const _sig=JSON.stringify(_usageBP),_uv=$('subpane-usage');
+    if(_sig!==_bpSig){_bpSig=_sig;if(_uv&&_uv.offsetParent)loadUsageModels();}
+    renderUsageAll();}
   if(d.sfxLvlN!==undefined){$('sfxLvlN').value=d.sfxLvlN;$('sfxLvlO').value=d.sfxLvlO;$('sfxTheme').value=d.sfxTheme;
     if(d.sfxVol!==undefined){$('sfxVol').value=d.sfxVol;$('sfxVolPct').textContent=d.sfxVol+'%';}
     $('sfxtier').textContent='tier: '+d.sfxTier+(d.sfxSync&&d.sfxSync!=='idle'?' · '+d.sfxSync:'');}
@@ -3343,7 +3358,7 @@ if($('modSave'))$('modSave').onclick=()=>{
 function renderBudgets(bp){
   const box=$('budgetRows'); if(!box)return;
   if(!bp.length){box.innerHTML='<p class=hint>No provider usage yet this month. Set a budget below to start tracking against a cap.</p>';return;}
-  const kt=n=>(n||0)>=1000?((n/1000).toFixed(1)+'K'):(''+(n||0));
+  const kt=_kt2,P='<p class=hint style="margin:2px 0 0">';
   let h='';
   bp.forEach(p=>{
     const isCall=(p.callLimit>0)||(p.calls>0&&!p.tokens);
@@ -3358,145 +3373,230 @@ function renderBudgets(bp){
                     :(lim>0?Math.min(100,used/lim*100):0);
     const col=p.over?'#f0687a':(pct>80?'#e0b870':'#7fd1c8');
     const io=(p.tokIn||p.tokOut)?('in '+kt(p.tokIn)+' / out '+kt(p.tokOut)+' · '):'';
-    const noRates=hasUsd&&!(p.rateIn||p.rateOut||p.rateCall);
-    const spend=hasUsd?(_usd(p.estCents||0,false)+' / '+_usd(p.centsLimit,false))
-                      :_usd((p.estCents!=null?p.estCents:_cost(p.prov,p.tokIn||0,p.tokOut||0,p.calls||0).c),
-                            p.estCents==null);
+    const pr=_um()&&_um().provRate?_um().provRate[p.prov]:null;
+    const noPrice=hasUsd&&pr&&pr.src==='none'&&!pr.rCall;
+    const approxCap=hasUsd&&!!p.approx&&!_d1Hint();
+    const spend=hasUsd?(_usd(p.estCents||0,!!p.approx)+' / '+_usd(p.centsLimit,false))
+                      :_usd(p.estCents||0,!!p.approx);
     const right=(lim>0?(kt(used)+' / '+kt(lim)+' '+unit):(kt(used)+' '+unit))+
                 ' · '+spend+' · resets day '+(p.resetDay||1);
     h+='<div class=provrow style="border-top:0;padding-top:8px;margin-top:8px"><div class=row style="justify-content:space-between">'+
        '<b>'+(BUDLBL[p.prov]||p.prov)+(p.over?' <span class="badge vfy bad">over budget</span>':'')+'</b>'+
        '<span class=hint>'+io+right+'</span></div>'+
        ((lim>0||hasUsd)?'<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>':'')+
-       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices - set rates above or this cap can\'t count.</p>':'')+'</div>';
+       (noPrice?P+'Nothing prices this provider yet. Set a price above so this cap can count.</p>':'')+
+       (approxCap?P+'This cap now counts built-in estimates (~). Set your prices above to match your bill. <a href="#" class=d1ok>Got it</a></p>':'')+'</div>';
   });
   box.innerHTML=h;
+  box.querySelectorAll('.d1ok').forEach(a=>a.onclick=e=>{e.preventDefault();_d1Hint(1);renderBudgets(_usageBP);});
 }
-// ---- Spend graphs + $ estimates (owner ask) ----------------------------------
-// $ figures are ESTIMATES: cents = tokens x the per-provider rates (owner-editable;
-// 0 falls back to the built-in defaults below, marked ~). Counts stay honest raw data.
-const DEF_RATES={openai:{i:250,o:1000,c:0},anthropic:{i:300,o:1500,c:0},
-                 mistral:{i:200,o:600,c:0},tavily:{i:0,o:0,c:800},custom:{i:0,o:0,c:0}};
-const PROVCOL={openai:'#7fd1c8',anthropic:'#f0b45a',mistral:'#f0947a',tavily:'#6cb8ff',custom:'#a7adba'};
-let _usageBP=[],_usageHist=null,_chartDays=30,_chartUnit='tok';
-// Per-FIELD default fallback (review: the all-or-nothing gate priced output tokens
-// at $0 when only the input rate was set, silently under-reporting ~80%). Any field
-// stored as 0 uses its ~default; def=true when a nonzero default was actually used,
-// carried PER COMPUTATION (the old sticky global marked owner-set rows with ~).
-function _rateFor(prov){
-  const p=_usageBP.find(x=>x.prov===prov)||{};
-  const d=DEF_RATES[prov]||{i:0,o:0,c:0};
-  return {i:p.rateIn||d.i,o:p.rateOut||d.o,c:p.rateCall||d.c,
-          def:(!p.rateIn&&!!d.i)||(!p.rateOut&&!!d.o)||(!p.rateCall&&!!d.c)};
+// D1: a $ cap counts built-in estimates; the Budgets row says so until "Got it".
+let _d1Mem=false;
+function _d1Hint(done){try{if(done){_d1Mem=true;localStorage.setItem('nimbusD1Hint','1');}return _d1Mem||localStorage.getItem('nimbusD1Hint')==='1';}catch(e){return _d1Mem;}}
+// ---- Spend graphs + $ estimates: every $ is from the server's prices (/api/usage/models).
+const PROVCOL={cumulo:'#e98fcf',openai:'#7fd1c8',anthropic:'#f0b45a',mistral:'#f0947a',zai:'#a3d977',tavily:'#6cb8ff',custom:'#c9a7f5'};
+const OTHERCOL='#7b8290';
+const SRCLBL={owner:'yours',router:'Cumulo price',provider:'provider price',est:'~estimate',none:'not priced'};
+function _bcls(s){return s==='owner'?'badge':(s==='router'||s==='provider')?'badge ext':'badge un';}
+let _usageBP=[],_usageHist=null,_usageModels=null,_chartDays=30,_chartUnit='tok',_chartGroup='model',_chartHidden=new Set(),_provSlugs=null,_bpSig='';
+try{const g=localStorage.getItem('nimbusUsageGroup');if(g==='model'||g==='prov')_chartGroup=g;}catch(e){}
+function _um(){const m=_usageModels;return (m&&Array.isArray(m.models))?m:null;}
+function _aEsc(s){return _sEsc(String(s==null?'':s)).replace(/"/g,'&quot;');}
+function _mLabel(prov,m){const pl=BUDLBL[prov]||prov;return !m?pl+' (before model tracking)':m==='~other'?pl+' other models':m;}
+// Cents at the server's prices (cache 0.1x/1.25x of input): model row, else provider rate.
+function _costOf(prov,m,tin,tout,cr,cw,calls){
+  const u=_um(); if(!u)return null;
+  const p=(u.provRate||{})[prov]||{};
+  const x=(m&&m!=='~other')?(u.models.find(y=>y.prov===prov&&y.m===m)||((u.editable||{})[prov]||[]).find(y=>y.m===m)):null;
+  const i=(x||p).rIn||0,o=(x||p).rOut||0,src=(x||p).src||'none';
+  tin=tin||0;tout=tout||0;cr=cr||0;cw=cw||0;calls=calls||0;
+  return {c:((tin*i+tout*o+cr*i*0.1+cw*i*1.25)/1e6+calls*(p.rCall||0)/1000)/1e4,
+          def:((tin||tout||cr||cw)>0&&src==='est')||(calls>0&&p.srcCall==='est')};
 }
-function _cost(prov,tin,tout,calls){
-  const r=_rateFor(prov);
-  return {c:tin/1e6*r.i + tout/1e6*r.o + calls/1000*r.c, def:r.def};
-}
-function _costCents(prov,tin,tout,calls){return _cost(prov,tin,tout,calls).c;}
 function _usd(cents,approx){return (cents>=100?'$'+(cents/100).toFixed(2):'$'+(cents/100).toFixed(3))+(approx?'~':'');}
+function _usdOr(k){return k?_usd(k.c,k.def):'$-';}
 function _kt2(n){return (n||0)>=1e6?((n/1e6).toFixed(2)+'M'):(n||0)>=1000?((n/1000).toFixed(1)+'K'):(''+(n||0));}
+function _allTimeCost(){   // the server's all-time estimate per provider (allEst)
+  const u=_um();if(!u)return null;let c=0,def=false;
+  Object.values(u.provRate||{}).forEach(r=>{c+=r.allEst||0;def=def||!!r.allApprox;});
+  return {c:c,def:def};
+}
 function renderUsageSummary(){
   const box=$('usageSummary'); if(!box)return;
-  // All-time + this billing period come from the ledger; 7/30-day from the buckets.
-  let atI=0,atO=0,atC=0,pI=0,pO=0,pC=0,atCost=0,pCost=0,atDef=false,pDef=false;
+  let atI=0,atO=0,atC=0,pI=0,pO=0,pCost=0,pDef=false;
   _usageBP.forEach(p=>{atI+=p.totIn||0;atO+=p.totOut||0;atC+=p.totCalls||0;
-    pI+=p.tokIn||0;pO+=p.tokOut||0;pC+=p.calls||0;
-    const a=_cost(p.prov,p.totIn||0,p.totOut||0,p.totCalls||0);atCost+=a.c;atDef=atDef||a.def;
-    const b=_cost(p.prov,p.tokIn||0,p.tokOut||0,p.calls||0);pCost+=b.c;pDef=pDef||b.def;});
-  const win=(days)=>{let i=0,o=0,c=0,cost=0,def=false;
-    // today==0 = clock never synced this boot; the persisted buckets carry REAL day
-    // keys, so an unguarded cut of (0-days) would sum the whole retained history
-    // into a "last 7 days" tile (review). Show zeros until the clock is sane.
-    if(_usageHist&&_usageHist.today){const cut=_usageHist.today-days;
-      _usageHist.days.forEach(b=>{if(b.d>cut){i+=b.in;o+=b.out;c+=b.calls;
-        const w=_cost(b.prov,b.in,b.out,b.calls);cost+=w.c;def=def||w.def;}});}
-    return {t:i+o,c:c,cost:cost,def:def};};
+    pI+=p.tokIn||0;pO+=p.tokOut||0;pCost+=p.estCents||0;pDef=pDef||!!p.approx;});
+  const win=(days)=>{let i=0,o=0,c=0,cost=_um()?0:null,def=false;
+    // today==0: clock never synced, and buckets carry real days - zeros until it is.
+    if(_usageHist&&_usageHist.today&&Array.isArray(_usageHist.days)){const cut=_usageHist.today-days;
+      _usageHist.days.forEach(b=>{if(b.d>cut){i+=b.in||0;o+=b.out||0;c+=b.calls||0;
+        const w=_costOf(b.prov,b.m||'',b.in,b.out,b.cr,b.cw,b.calls);if(w){cost+=w.c;def=def||w.def;}}});}
+    return {t:i+o,c:c,k:cost==null?null:{c:cost,def:def}};};
   const w7=win(7),w30=win(30);
   box.innerHTML=
-    _tile('All time',_kt2(atI+atO),_usd(atCost,atDef)+' est · '+_kt2(atC)+' calls',0,'')+
+    _tile('All time',_kt2(atI+atO),_usdOr(_allTimeCost())+' est · '+_kt2(atC)+' calls',0,'')+
     _tile('This period',_kt2(pI+pO),_usd(pCost,pDef)+' est · billing window',0,'')+
-    _tile('Last 30 days',_kt2(w30.t),_usd(w30.cost,w30.def)+' est · '+_kt2(w30.c)+' calls',0,'')+
-    _tile('Last 7 days',_kt2(w7.t),_usd(w7.cost,w7.def)+' est · '+_kt2(w7.c)+' calls',0,'');
+    _tile('Last 30 days',_kt2(w30.t),_usdOr(w30.k)+' est · '+_kt2(w30.c)+' calls',0,'')+
+    _tile('Last 7 days',_kt2(w7.t),_usdOr(w7.k)+' est · '+_kt2(w7.c)+' calls',0,'');
+}
+// This period by model (the server's breakdown: rows add up to the provider and the tile).
+function renderByModel(){
+  const box=$('usageByModel'); if(!box)return;
+  const u=_um(),kt=_kt2,live=_usageBP.filter(p=>(p.tokIn||0)+(p.tokOut||0)+(p.calls||0)>0);
+  if(!u||!live.length){box.innerHTML='';return;}
+  let h='<div class=bym><div class=bh>This period by model</div>',cur='';
+  const has=x=>x.prov===cur&&((x.pIn||0)+(x.pOut||0)+(x.pCr||0)+(x.pCw||0))>0;
+  const row=(name,v,c,est)=>'<div class=br><span class=bn>'+name+'</span><span class=bv>'+v+' · '+_usd(c||0,est)+'</span></div>';
+  live.forEach(p=>{cur=p.prov;const tok=(p.tokIn||0)+(p.tokOut||0),pr=(u.provRate||{})[p.prov]||{};
+    h+='<div class=bp><span>'+_sEsc(BUDLBL[p.prov]||p.prov)+'</span><span class=bv>'+
+       (tok||!p.calls?kt(tok)+' tokens':kt(p.calls)+' calls')+' · '+_usd(p.estCents||0,!!p.approx)+'</span></div>';
+    u.models.filter(has).forEach(x=>{h+=row(_sEsc(_mLabel(p.prov,x.m))+' <span class="'+_bcls(x.src)+'">'+(SRCLBL[x.src]||x.src)+'</span>',
+      kt((x.pIn||0)+(x.pOut||0))+' tokens',x.est,x.src==='est');});
+    (u.residual||[]).filter(has).forEach(r=>{h+=row('Earlier usage, model not recorded',kt((r.pIn||0)+(r.pOut||0))+' tokens',r.est,r.src==='est');});
+    if(p.calls>0)h+=row('Searches',kt(p.calls)+' calls',pr.callEst,pr.srcCall==='est');});
+  box.innerHTML=h+'</div>';
 }
 function loadUsageHistory(){
   fetch('/api/usage/history').then(jok).then(d=>{_usageHist=d;renderUsageSummary();renderUsageChart();}).catch(()=>{});
+  loadUsageModels(1);
+}
+function loadUsageModels(f){
+  fetch('/api/usage/models').then(jok).then(d=>{_usageModels=(d&&Array.isArray(d.models))?d:null;renderUsageAll(f);}).catch(()=>{});
+}
+function renderUsageAll(f){renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
+// One provider's models: its colour mixed toward black or white by rank.
+function _shade(hex,r){const n=parseInt(hex.slice(1),16),f=[0,-.35,.4,-.55,.65,-.2,.22,-.68][r%8];
+  return 'rgb('+[16,8,0].map(s=>{const c=n>>s&255;return Math.round(f<0?c*(1+f):c+(255-c)*f);}).join()+')';}
+function _cssVar(n,d){try{return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||d;}catch(e){return d;}}
+function _chartSeries(today,days){
+  const perDay={},tot={},meta={};let def=false;
+  (_usageHist.days||[]).forEach(b=>{const off=today-b.d;if(off<0||off>=days)return;
+    const m=b.m||'',key=_chartGroup==='prov'?b.prov:(b.prov+'|'+m);
+    let v=(b.in||0)+(b.out||0);
+    if(_chartUnit!=='tok'){const k=_costOf(b.prov,m,b.in,b.out,b.cr,b.cw,b.calls);v=k?k.c:0;def=def||(k&&k.def);}
+    (perDay[b.d]=perDay[b.d]||{})[key]=(perDay[b.d][key]||0)+v;
+    tot[key]=(tot[key]||0)+v;meta[key]={prov:b.prov,m:_chartGroup==='prov'?null:m};});
+  return {perDay:perDay,tot:tot,meta:meta,def:def};
+}
+// Top 8 series, the rest folded into "Other models".
+function _chartPlan(s){
+  const keys=Object.keys(s.tot).filter(k=>s.tot[k]>0).sort((a,b)=>s.tot[b]-s.tot[a]),rank={},out=[];
+  keys.slice(0,8).forEach(k=>{const t=s.meta[k],p=t.prov,c=PROVCOL[p]||OTHERCOL,r=rank[p]||0;rank[p]=r+1;
+    out.push({k:k,keys:[k],p:p,col:t.m===null?c:_shade(c,r),label:t.m===null?(BUDLBL[p]||p):
+      _mLabel(p,t.m)+(t.m&&t.m!=='~other'?' ('+(p==='cumulo'?'Cumulo':BUDLBL[p]||p)+')':'')});});
+  out.sort((a,b)=>a.p<b.p?-1:a.p>b.p?1:s.tot[b.k]-s.tot[a.k]);
+  if(keys.length>8)out.push({k:'~fold',keys:keys.slice(8),col:OTHERCOL,label:'Other models'});
+  return out;
 }
 function renderUsageChart(){
   const cv=$('usageChart'); if(!cv)return;
-  // Hide the tall canvas (and its legend) whenever there is nothing to draw, so a
-  // new device shows a slim empty-state line instead of a large empty panel (CUM-214).
+  // Nothing to draw: a slim empty-state line, not a large empty canvas (CUM-214).
   const msg=$('usageChartMsg'),lg=$('usageLegend');
-  const showChart=on=>{cv.style.display=on?'':'none';if(lg)lg.style.display=on?'':'none';};
-  if(!_usageHist){showChart(false);if(msg)msg.textContent='No usage recorded yet - run a chat or Telegram turn and it will appear here.';return;}
-  const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,padL=52,padB=22,padT=10;
-  ctx.clearRect(0,0,W,H);
+  const show=(on,t)=>{cv.style.display=on?'':'none';if(lg)lg.style.display=on?'':'none';if(msg)msg.textContent=t;return on;};
+  const run=' - run a chat or Telegram turn and it will appear here.';
+  if(!_usageHist||!Array.isArray(_usageHist.days))return show(false,'No usage recorded yet'+run);
   const today=_usageHist.today||0,days=_chartDays;
-  if(!today){showChart(false);if(msg)msg.textContent='Device clock not set yet - daily history starts once it syncs.';return;}
-  // day -> {prov: value}; value = tokens or est cents per the unit toggle.
-  const perDay={},provs=new Set();
-  _usageHist.days.forEach(b=>{const off=today-b.d;
-    if(off<0||off>=days)return;
-    const v=_chartUnit==='tok'?(b.in+b.out):_costCents(b.prov,b.in,b.out,b.calls);
-    if(!perDay[b.d])perDay[b.d]={};
-    perDay[b.d][b.prov]=(perDay[b.d][b.prov]||0)+v;
-    provs.add(b.prov);});
-  const plist=[...provs].sort();
+  if(!today)return show(false,'Device clock not set yet - daily history starts once it syncs.');
+  if(_chartUnit!=='tok'&&!_um())return show(false,'Prices are loading.');
+  const s=_chartSeries(today,days),series=_chartPlan(s),shown=series.filter(x=>!_chartHidden.has(x.k));
+  const sum=(row,x)=>x.keys.reduce((a,k)=>a+(row[k]||0),0);
   let maxV=0;
-  for(let i=0;i<days;i++){const d=today-days+1+i,row=perDay[d];if(!row)continue;
-    maxV=Math.max(maxV,Object.values(row).reduce((a,b)=>a+b,0));}
-  if(!maxV){showChart(false);if(msg)msg.textContent='No usage recorded in this window yet - run a chat or Telegram turn and it will appear here.';return;}
-  showChart(true);if(msg)msg.textContent='';
-  const scale=(H-padT-padB)/maxV;
-  // gridlines + y labels
-  ctx.font='11px system-ui';ctx.fillStyle='rgba(160,170,185,.8)';ctx.strokeStyle='rgba(255,255,255,.06)';
-  for(let g=0;g<=3;g++){const v=maxV*g/3,y=H-padB-v*scale;
+  for(let i=0;i<days;i++){const row=s.perDay[today-days+1+i];if(row)maxV=Math.max(maxV,shown.reduce((a,x)=>a+sum(row,x),0));}
+  if(!series.length)return show(false,'No usage recorded in this window yet'+run);
+  show(true,(_chartUnit!=='tok'&&s.def)?'~ marks a built-in price estimate.':'');
+  const dpr=window.devicePixelRatio||1,W=Math.max(280,cv.clientWidth||880),H=W<560?210:260;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.height=H+'px';
+  const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const padL=W<560?44:52,padB=22,ph=H-10-padB,ink=_cssVar('--ink3','#6f7684'),scale=maxV?ph/maxV:0;
+  ctx.font='11px system-ui';ctx.fillStyle=ink;ctx.strokeStyle=_cssVar('--line','#2a2d36');
+  for(let g=0;g<=3;g++){const v=maxV*g/3,y=H-padB-ph*g/3;
     ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(W-6,y);ctx.stroke();
     ctx.fillText(_chartUnit==='tok'?_kt2(Math.round(v)):('$'+(v/100).toFixed(v>=100?1:2)),4,y+4);}
-  // stacked daily bars
-  const bw=Math.max(2,Math.floor((W-padL-10)/days)-2);
+  const slot=(W-padL-10)/days,bw=Math.max(2,Math.floor(slot)-2),every=Math.ceil(days/Math.max(2,Math.floor((W-padL)/56)));
   for(let i=0;i<days;i++){
-    const d=today-days+1+i,row=perDay[d];
-    const x=padL+i*((W-padL-10)/days);
-    let y=H-padB;
-    if(row)plist.forEach(p=>{const v=row[p]||0;if(!v)return;const h=v*scale;
-      ctx.fillStyle=PROVCOL[p]||'#888';ctx.fillRect(x,y-h,bw,h);y-=h;});
-    // x labels: ~6 ticks
-    if(days<=7||i%Math.ceil(days/6)===0){
-      const dt=new Date(d*86400000);ctx.fillStyle='rgba(160,170,185,.8)';
-      ctx.fillText((dt.getUTCMonth()+1)+'/'+dt.getUTCDate(),x-2,H-6);}
+    const d=today-days+1+i,row=s.perDay[d],x=padL+i*slot;let y=H-padB;
+    if(row)shown.forEach(z=>{const h=sum(row,z)*scale;if(h){ctx.fillStyle=z.col;ctx.fillRect(x,y-h,bw,h);y-=h;}});
+    if(days<=7||i%every===0){const dt=new Date(d*86400000);ctx.fillStyle=ink;ctx.fillText((dt.getUTCMonth()+1)+'/'+dt.getUTCDate(),x-2,H-6);}
   }
-  // legend (lg captured at the top of this function, next to the show/hide toggle)
-  if(lg)lg.innerHTML=plist.map(p=>'<span class=hint><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(PROVCOL[p]||'#888')+';margin-right:4px"></span>'+(BUDLBL[p]||p)+'</span>').join('');
+  if(lg){lg.innerHTML=series.map(x=>{const off=_chartHidden.has(x.k);return '<button type=button class="lchip'+(off?' off':'')+'" data-k="'+_aEsc(x.k)+
+      '" aria-pressed='+!off+'><i style="background:'+x.col+'"></i>'+_sEsc(x.label)+'</button>';}).join('');
+    lg.querySelectorAll('.lchip').forEach(b=>b.onclick=()=>{const k=b.dataset.k;if(!_chartHidden.delete(k))_chartHidden.add(k);renderUsageChart();});}
 }
 document.querySelectorAll('.rangeBtn').forEach(b=>b.onclick=()=>{_chartDays=+b.dataset.days;_syncChartBtns();renderUsageChart();});
-if($('unitTok'))$('unitTok').onclick=()=>{_chartUnit='tok';_syncChartBtns();renderUsageChart();};
-if($('unitUsd'))$('unitUsd').onclick=()=>{_chartUnit='usd';_syncChartBtns();renderUsageChart();};
+const _CB=[['unitTok','u','tok'],['unitUsd','u','usd'],['groupModel','g','model'],['groupProv','g','prov']];
+_CB.forEach(([id,k,v])=>{if($(id))$(id).onclick=()=>{if(k==='g'){_chartGroup=v;try{localStorage.setItem('nimbusUsageGroup',v);}catch(e){}}
+  else _chartUnit=v;_syncChartBtns();renderUsageChart();};});
 function _syncChartBtns(){
-  document.querySelectorAll('.rangeBtn').forEach(b=>b.style.cssText='padding:5px 10px;font-size:12px'+(+b.dataset.days===_chartDays?';background:var(--teal);color:#052420':';background:var(--raise3);color:var(--ink2)'));
-  const t=$('unitTok'),u=$('unitUsd');
-  if(t)t.style.cssText='padding:5px 10px;font-size:12px'+(_chartUnit==='tok'?';background:var(--teal);color:#052420':';background:var(--raise3);color:var(--ink2)');
-  if(u)u.style.cssText='padding:5px 10px;font-size:12px'+(_chartUnit==='usd'?';background:var(--teal);color:#052420':';background:var(--raise3);color:var(--ink2)');
+  const css=a=>'padding:5px 10px;font-size:12px'+(a?';background:var(--teal);color:#052420':';background:var(--raise3);color:var(--ink2)');
+  document.querySelectorAll('.rangeBtn').forEach(b=>b.style.cssText=css(+b.dataset.days===_chartDays));
+  _CB.forEach(([id,k,v])=>{const b=$(id),a=(k==='g'?_chartGroup:_chartUnit)===v;if(b){b.style.cssText=css(a);b.setAttribute('aria-pressed',a);}});
 }
-// Rates editor: dollars in the UI, integer cents on the wire.
-function _fillRateInputs(){
-  const prov=$('rate_prov').value,p=_usageBP.find(x=>x.prov===prov)||{};
-  $('rate_in').value=p.rateIn?(p.rateIn/100):'';
-  $('rate_out').value=p.rateOut?(p.rateOut/100):'';
-  $('rate_call').value=p.rateCall?(p.rateCall/100):'';
-  const d=DEF_RATES[prov]||{};
-  $('rate_in').placeholder='$/1M in'+(d.i?' (~'+(d.i/100)+')':'');
-  $('rate_out').placeholder='$/1M out'+(d.o?' (~'+(d.o/100)+')':'');
-  $('rate_call').placeholder='$/1k calls'+(d.c?' (~'+(d.c/100)+')':'');
+// ---- Prices: per model (mrate, micro-USD per 1M) + "Any other" (rates, cents).
+function _priceProvs(){return (_provSlugs||[]).concat(Object.keys(PROVLBL),['custom','tavily']).filter((v,i,a)=>a.indexOf(v)===i);}
+function _provOptLabel(p){return p==='tavily'?'Tavily (search)':(BUDLBL[p]||PROVLBL[p]||p);}
+function _fillProvSelect(sel,dflt){
+  const provs=_priceProvs(),sig=provs.join();
+  if(!sel||sel.dataset.sig===sig)return;
+  const cur=sel.value;sel.dataset.sig=sig;
+  sel.innerHTML=provs.map(p=>'<option value="'+_aEsc(p)+'">'+_sEsc(_provOptLabel(p))+'</option>').join('');
+  sel.value=provs.indexOf(cur)>=0?cur:dflt;
 }
-if($('rate_prov'))$('rate_prov').onchange=_fillRateInputs;
-if($('ratesave'))$('ratesave').onclick=()=>{
-  const prov=$('rate_prov').value;
-  const c=(v)=>Math.max(0,Math.round((parseFloat(v)||0)*100));
-  orchApply({rates:prov+':'+c($('rate_in').value)+':'+c($('rate_out').value)+':'+c($('rate_call').value)})
-    .then(ok=>{if(ok!==false){$('ratemsg').textContent='Rates saved for '+(BUDLBL[prov]||prov)+' - estimates updated.';loadOrch();loadUsageHistory();}});
-};
+function _dollars(micro){return micro?String(+(micro/1e6).toFixed(4)):'';}
+function _ph(v,src){return v?(src==='est'?'~':'')+_dollars(v):'';}
+function _priceIn(m,f,cap,v,ph,name){
+  return '<label class=pi><span>'+cap+'</span><input type=number min=0 step=0.01 data-f='+f+
+    ' data-m="'+_aEsc(m)+'" value="'+_aEsc(v)+'" placeholder="'+_aEsc(ph)+'" aria-label="'+_aEsc(name+' '+cap)+'"></label>';
+}
+function _priceRow(m,name,sub,v,ph,src){   // v, ph: [in,out] or [searches]
+  const b=a=>'<button type=button'+(a==='clear'?' class=clr':'')+' data-a='+a+' data-m="'+_aEsc(m)+'">'+(a==='clear'?'Clear':'Save')+'</button>';
+  return '<div class=pm>'+_sEsc(name)+(sub?'<small>'+sub+'</small>':'')+'</div>'+
+    _priceIn(m,'in',v.length>1?'$ per 1M in':'$ per 1,000',v[0],ph[0],name)+
+    (v.length>1?_priceIn(m,'out','$ per 1M out',v[1],ph[1],name):'<span></span>')+
+    '<span><span class="'+_bcls(src)+'">'+(SRCLBL[src]||src)+'</span></span><div class=pa>'+b('save')+b('clear')+'</div>';
+}
+function renderPrices(force){
+  const box=$('priceRows'),sel=$('price_prov');if(!box||!sel)return;
+  _fillProvSelect(sel,'openai');_fillProvSelect($('bud_prov'),'openai');
+  // The 5 s poll never clobbers a price being typed or not yet saved.
+  if(!force&&(box.contains(document.activeElement)||[...box.querySelectorAll('input')].some(i=>i.value!==i.defaultValue)))return;
+  const u=_um(),prov=sel.value;
+  if(!u){box.innerHTML='<p class=hint style="grid-column:1/-1">Prices are loading.</p>';return;}
+  const pr=(u.provRate||{})[prov]||{},bp=_usageBP.find(x=>x.prov===prov)||{},c=v=>v?String(v/100):'';
+  let h=['Model','$ per 1M in','$ per 1M out','Price',''].map(t=>'<div class=ph>'+t+'</div>').join('');
+  if(prov==='tavily')h+=_priceRow('*','Searches','Dollars per 1,000 searches',[c(bp.rateCall)],[_ph(pr.rCall,pr.srcCall)],pr.srcCall||'none');
+  else{((u.editable||{})[prov]||[]).forEach(r=>{h+=_priceRow(r.m,r.m,'',[_dollars(r.oIn),_dollars(r.oOut)],[_ph(r.rIn,r.src),_ph(r.rOut,r.src)],r.src);});
+    h+='<div class=sep></div>'+_priceRow('*','Any other '+_provOptLabel(prov)+' model','',[c(bp.rateIn),c(bp.rateOut)],
+       [_ph(pr.fIn,pr.fSrc),_ph(pr.fOut,pr.fSrc)],pr.fSrc||'none');}
+  box.innerHTML=h;
+  box.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>_savePrice(prov,b.dataset.m,b.dataset.a==='clear'));
+}
+function _savePrice(prov,m,clear){
+  const box=$('priceRows'),msg=$('ratemsg'),bp=_usageBP.find(x=>x.prov===prov)||{};
+  const val=f=>{const i=[...box.querySelectorAll('input[data-f='+f+']')].find(x=>x.dataset.m===m);return clear||!i?0:parseFloat(i.value)||0;};
+  const mi=f=>Math.min(4294967295,Math.max(0,Math.round(val(f)*1e6))),c=f=>Math.max(0,Math.round(val(f)*100));
+  const body=m!=='*'?{mrate:prov+':'+mi('in')+':'+mi('out')+':'+m}
+    :{rates:prov+':'+(prov==='tavily'?(bp.rateIn||0)+':'+(bp.rateOut||0)+':'+c('in'):c('in')+':'+c('out')+':'+(bp.rateCall||0))};
+  if(msg)msg.textContent='';
+  if(box.contains(document.activeElement))document.activeElement.blur();
+  orchApply(body).then(ok=>{if(msg)msg.textContent=ok===false?lastFailText():(clear?'Price cleared':'Price saved')+' - estimates updated.';
+    if(ok!==false)loadUsageModels(1);});
+}
+if($('price_prov'))$('price_prov').onchange=()=>{if($('ratemsg'))$('ratemsg').textContent='';renderPrices(1);};
+// Hosted (CUM-279): no usage ledger there yet, so no editors.
+function applyHostedUsage(){
+  if(!HOSTED)return;
+  try{const ps=$('pricesSec'),bs=$('budgetsSec');
+    if(bs)bs.style.display='none';
+    if(ps&&!$('hostedUsageLine')){ps.style.display='none';
+      const n=document.createElement('div');n.id='hostedUsageLine';n.className='hint';n.style.margin='14px 0';
+      n.textContent='A hosted instance does not track prices or budgets yet.';
+      ps.parentNode.insertBefore(n,ps);}
+  }catch(e){}
+}
+applyHostedUsage();
 _syncChartBtns();
+_fillProvSelect($('bud_prov'),'openai');
+_fillProvSelect($('price_prov'),'openai');
 // History loads lazily on the Usage tab (review: an unconditional page-load fetch
 // pulled the multi-KB bucket payload in EVERY mode, including Notifier).
 function loadOrch(){if(!canPoll())return;fetch('/api/orch').then(r=>r.json()).then(applyOrch).catch(()=>{});}
