@@ -24,6 +24,7 @@
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/directive.h"
+#include "nimbus/orch/model_price_defaults.h"   // kBuiltinPricesAsOf (usage models stub)
 #include "nimbus/qr.h"
 #include "nimbus/status_style.h"
 #include "nimbus/theme.h"
@@ -156,6 +157,7 @@ class WebApi {
     if (base == "/api/voices" && m == "GET")      { out = okJson("[]");     return true; }
     if (base == "/api/token/regen" && m == "POST"){ out = tokenRegen();     return true; }
     if (base == "/api/usage/history" && m == "GET") { out = usageHistory(); return true; }
+    if (base == "/api/usage/models" && m == "GET")  { out = usageModels();  return true; }
 
     return false;
   }
@@ -1627,6 +1629,20 @@ class WebApi {
     JsonDocument d;
     d["today"] = (uint32_t)(time(nullptr) / 86400);
     d["days"].to<JsonArray>();
+    std::string out; serializeJson(d, out);
+    return okJson(out);
+  }
+
+  // Per-model spend and prices (device GET /api/usage/models): a hosted instance
+  // keeps no usage ledger yet, so the truthful body is the empty shape - the page
+  // renders its empty states, and the Prices editor is hidden on hosted.
+  ApiResp usageModels() {
+    JsonDocument d;
+    d["asOf"] = nimbus::orch::kBuiltinPricesAsOf;
+    d["models"].to<JsonArray>();
+    d["residual"].to<JsonArray>();
+    d["editable"].to<JsonObject>();
+    d["provRate"].to<JsonObject>();
     std::string out; serializeJson(d, out);
     return okJson(out);
   }

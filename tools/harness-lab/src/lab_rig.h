@@ -409,7 +409,8 @@ class LabRig {
 
     c.budget.overBudget = [](const std::string&) { return false; };
     c.budget.recordTokens = [this](const std::string& h, uint32_t in, uint32_t out,
-                                   uint32_t, uint32_t, const std::string& tag) {
+                                   uint32_t, uint32_t, const std::string& tag,
+                                   const std::string&) {
       spend_.push_back({h, in, out, tag});
     };
     c.ttsEnabled = [] { return false; };

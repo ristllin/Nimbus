@@ -271,6 +271,16 @@ static void testRefusals(ndtest::Ctx& c) {
   c.eqi(web.call("POST", "/api/config", "clockSync=1").status, 200, "Sync now is an honest no-op");
   c.eqi(web.call("POST", "/api/orch", "tgToken=123:abc").status, 400, "a typed bot token is refused");
   c.eqi(web.call("POST", "/api/orch", "orchHost=custom").status, 400, "the custom endpoint is refused");
+  // Prices and budgets (per-model prices, 2026-10): a hosted instance keeps no usage
+  // ledger, so the model price, the provider fallback price and a budget are refused
+  // by name - never a 200 over a price nothing would ever read.
+  for (const char* f : {"mrate=openai:5000000:30000000:gpt-5.6", "rates=openai:250:1000:0",
+                        "budget=openai:0:0:1:500"}) {
+    const ApiResp pr = web.call("POST", "/api/orch", f);
+    const std::string name = std::string(f).substr(0, std::string(f).find('='));
+    c.ok(pr.status == 400 && has(pr.body, "Not available on a hosted Nimbus: " + name),
+         std::string("/api/orch refuses ") + name);
+  }
   clearEnv();
 }
 

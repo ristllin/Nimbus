@@ -16,7 +16,11 @@
 #include <mutex>
 
 #include "agent_config.h"
+#include "fs_atomic.h"                     // writeFileAtomic - the usage files (tmp + rename)
+#include "nimbus/orch/model_choices.h"     // effectiveModelChoices - the priceable models
+#include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/usage_ledger.h"
+#include "nimbus/orch/usage_models_json.h" // GET /api/usage/models body
 #include "nimbus/store/provider_cache.h"   // CUM-238: bounded provider-config reads
 #include "nimbus/store/persist.h"          // CUM-479: write verdicts + catalog placement
 #include "../sys/agent_log.h"              // alogc + errlog::cat - loud NVS-full seed hint (CUM-408)
@@ -912,12 +916,55 @@ std::mutex             g_ledgerMx;
 nimbus::orch::UsageLedger g_ledger;
 bool                   g_ledgerLoaded = false;
 
+// ---- per-model spend + prices (2026-10) ------------------------------------------
+// Three bounded LittleFS files beside usage_hist.txt, never NVS (usgLedger stays
+// byte-identical): the spend rows (32, rewritten each turn that names a model), the
+// owner's model prices (32, only an owner edit writes them) and the Cumulo router's
+// prices (24, only the verify task writes them). Loaded with the ledger, under the
+// same mutex. Until LittleFS is mounted (memory::begin, both modes) they are neither
+// read nor written, so an early read can never pass for an empty ledger and then
+// overwrite the stored one.
+constexpr const char* kUsageModelsPath  = "/data/usage_models.txt";
+constexpr const char* kUsageMratesPath  = "/data/usage_mrates.txt";
+constexpr const char* kUsageRpricesPath = "/data/usage_rprices.txt";
+bool g_modelsLoaded = false;
+
+std::string readFileQuiet(const char* path) {
+  if (!LittleFS.exists(path)) return std::string();   // absent = empty, no open() error line
+  File f = LittleFS.open(path, "r");
+  if (!f) return std::string();
+  String s = f.readString();
+  f.close();
+  return std::string(s.c_str(), s.length());
+}
+
+void loadModelsLocked() {  // caller holds g_ledgerMx
+  if (g_modelsLoaded || LittleFS.totalBytes() == 0) return;   // 0 = not mounted yet
+  auto& M = g_ledger.models();
+  M.deserializeSpend(readFileQuiet(kUsageModelsPath));
+  M.deserializeOwnerRates(readFileQuiet(kUsageMratesPath));
+  M.deserializeRouterRates(readFileQuiet(kUsageRpricesPath));
+  g_modelsLoaded = true;
+}
+
+// A per-turn file write that failed: one log line a minute, never one per turn.
+void logUsageFileFailure(const char* what) {
+  static uint32_t lastMs = 0;
+  static bool logged = false;
+  const uint32_t now = millis();
+  if (logged && (uint32_t)(now - lastMs) < 60000) return;
+  logged = true;
+  lastMs = now;
+  alogf("usage: %s write failed - keeping the previous copy", what);
+}
+
 nimbus::orch::UsageLedger& ledgerLocked() {  // caller holds g_ledgerMx
   if (!g_ledgerLoaded) {
     String blob = getStrQuiet(AKEY_USAGE_LEDGER, "");
     g_ledger.deserialize(std::string(blob.c_str()));
     g_ledgerLoaded = true;
   }
+  loadModelsLocked();
   return g_ledger;
 }
 
@@ -978,13 +1025,19 @@ nimbus::orch::UsageHistory& histLocked() {  // caller holds g_ledgerMx
   return g_hist;
 }
 
+// Atomic since 2026-10 (tmp + rename): a power loss mid-write keeps the previous
+// history instead of truncating it.
 void persistHistLocked() {  // caller holds g_ledgerMx
   LittleFS.mkdir("/data");
-  File f = LittleFS.open(kUsageHistPath, "w");
-  if (!f) return;
-  std::string s = g_hist.serialize();
-  f.write((const uint8_t*)s.data(), s.size());
-  f.close();
+  if (!agent::writeFileAtomic(kUsageHistPath, g_hist.serialize(), "usage_hist", false))
+    logUsageFileFailure("usage_hist");
+}
+
+void persistModelsLocked() {  // caller holds g_ledgerMx
+  if (!g_modelsLoaded) return;   // never overwrite a file that was not read
+  if (!agent::writeFileAtomic(kUsageModelsPath, g_ledger.models().serializeSpend(),
+                              "usage_models", false))
+    logUsageFileFailure("usage_models");
 }
 }  // namespace
 
@@ -999,22 +1052,35 @@ void recordProviderTokens(const String& provider, uint32_t tokensIn, uint32_t to
 
 void recordProviderTokens(const String& provider, uint32_t tokensIn, uint32_t tokensOut,
                           uint32_t cacheRead, uint32_t cacheWrite, const char* tag) {
-  if (provider.length() == 0 ||
-      (tokensIn == 0 && tokensOut == 0 && cacheRead == 0 && cacheWrite == 0))
-    return;
+  nimbus::orch::TokenDelta d;
+  d.in = tokensIn;
+  d.out = tokensOut;
+  d.cacheR = cacheRead;
+  d.cacheW = cacheWrite;
+  recordProviderTokens(provider, d, tag, "");   // provider level only
+}
+
+void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta& d,
+                          const char* tag, const char* model) {
+  if (provider.length() == 0 || d.empty()) return;
+  if (!model) model = "";
   std::lock_guard<std::mutex> lk(g_ledgerMx);
   auto& L = ledgerLocked();
   const std::string prov(provider.c_str());
   const auto* e = L.find(prov);
   uint8_t rd = e ? e->resetDay : 1;
-  L.recordTokens(prov, tokensIn, tokensOut, cacheRead, cacheWrite, currentPeriodKey(rd),
-                 std::string(tag ? tag : ""));
-  persistLedgerLocked();
-  // Daily bucket for the graphs (skipped pre-SNTP: dayKey 0 is refused by the core).
   const uint32_t day = currentDayKey();
+  // 1. The provider ledger -> NVS, unchanged (the budget's source of truth).
+  // 2. The model row -> /data/usage_models.txt (only once that file was read).
+  L.recordTokens(prov, d, currentPeriodKey(rd), std::string(tag ? tag : ""),
+                 g_modelsLoaded ? model : "", day);
+  persistLedgerLocked();
+  if (*model) persistModelsLocked();
+  // 3. Daily (day, provider, model) bucket for the graphs (skipped pre-SNTP: dayKey 0
+  //    is refused by the core).
   if (day) {
     auto& H = histLocked();
-    H.record(prov, day, tokensIn, tokensOut, 0);
+    H.record(prov, model, day, d, 0);
     H.prune(day, 60);
     persistHistLocked();
   }
@@ -1048,33 +1114,99 @@ bool setProviderRates(const String& provider, uint32_t centsPerMIn,
   return persistOrRevertLocked(before);
 }
 
+nimbus::orch::RateEdit setModelRate(const String& provider, const char* model,
+                                    uint32_t microIn, uint32_t microOut) {
+  using nimbus::orch::RateEdit;
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  RateEdit r = RateEdit::WriteFailed;
+  if (g_modelsLoaded) {   // storage not mounted: nothing can be stored
+    // Only the owner table is snapshotted; a failed write puts it back exactly.
+    r = L.models().setOwnerRateDurable(
+        provider.c_str(), model, microIn, microOut,
+        [](const std::string& blob) { return agent::writeFileAtomic(kUsageMratesPath, blob, "usage_mrates"); });
+  }
+  // CUM-479: report a store failure to the persist ledger, so the route's SaveScope
+  // answers 507 storage_full instead of {"ok":true} over a dropped price.
+  if (r == RateEdit::WriteFailed) notePersist(false, "lfs_mrates");
+  return r;
+}
+
+bool replaceRouterPrices(const std::vector<nimbus::orch::ModelRate>& rows) {
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  if (!g_modelsLoaded) return false;
+  L.models().replaceRouterRates(rows);
+  return agent::writeFileAtomic(kUsageRpricesPath, L.models().serializeRouterRates(),
+                                "usage_rprices");
+}
+
+std::string editableModels(const String& provider) {
+  // The NVS reads first, outside the ledger lock.
+  const char* p = provider.c_str();
+  const std::string choices =
+      nimbus::orch::isProviderSlug(p)
+          ? nimbus::orch::effectiveModelChoices(p, std::string(modelChoices(provider).c_str()))
+          : std::string();
+  const std::string orchSel(orchModel(provider).c_str());
+  const std::string subSel(subModel(provider).c_str());
+  const std::string extra(provider == "custom" ? customModel().c_str() : "");
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  return nimbus::orch::editableModelKeys(p, choices, orchSel, subSel, extra,
+                                         ledgerLocked().models());
+}
+
+namespace {
+// ONE PSRAM allocation for a big JSON body (review HIGH: an internal-heap String of
+// tens of KB, plus the response copy, was exactly the near-OOM class v2.5.1 fixed;
+// big dynamic payloads go to PSRAM, streamed chunked).
+char* jsonBuffer(size_t cap) {
+  char* buf = (char*)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+  if (!buf) buf = (char*)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  return buf;
+}
+}  // namespace
+
 char* usageHistoryJsonPs(size_t& outLen) {
   outLen = 0;
   std::lock_guard<std::mutex> lk(g_ledgerMx);
   auto& H = histLocked();
-  // Build into ONE PSRAM allocation (review HIGH: an internal-heap String of up to
-  // ~50 KB at the bucket cap - plus the response copy - was exactly the near-OOM
-  // class v2.5.1 fixed; big dynamic payloads go to PSRAM, streamed chunked).
-  // 128 B/entry upper-bounds the widest bucket line; +48 for the envelope.
-  const size_t cap = 48 + H.entries().size() * 128;
-  char* buf = (char*)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
-  if (!buf) buf = (char*)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  // kHistoryJsonEntryMax upper-bounds the widest bucket object (host-tested at its
+  // worst case); +48 for the envelope.
+  const size_t cap = 48 + H.entries().size() * nimbus::orch::kHistoryJsonEntryMax;
+  char* buf = jsonBuffer(cap);
   if (!buf) return nullptr;
   size_t off = (size_t)snprintf(buf, cap, "{\"today\":%lu,\"days\":[",
                                 (unsigned long)currentDayKey());
   bool first = true;
   for (const auto& e : H.entries()) {
-    int n = snprintf(buf + off, cap - off,
-                     "%s{\"d\":%lu,\"prov\":\"%s\",\"in\":%llu,\"out\":%llu,\"calls\":%lu}",
-                     first ? "" : ",", (unsigned long)e.dayKey, e.prov.c_str(),
-                     (unsigned long long)e.tokIn, (unsigned long long)e.tokOut,
-                     (unsigned long)e.calls);
-    if (n < 0 || off + (size_t)n >= cap - 3) break;   // bound respected by sizing; belt anyway
-    off += (size_t)n;
+    const size_t n = nimbus::orch::historyEntryJson(e, first, buf + off, cap - off - 3);
+    if (n == 0) break;   // bound respected by sizing; belt anyway
+    off += n;
     first = false;
   }
   off += (size_t)snprintf(buf + off, cap - off, "]}");
   outLen = off;
+  return buf;
+}
+
+char* usageModelsJsonPs(size_t& outLen) {
+  outLen = 0;
+  std::vector<nimbus::orch::EditableModels> ed;   // NVS reads outside the ledger lock
+  ed.reserve(nimbus::orch::kProviderSlotCount + 1);
+  for (const auto& slot : nimbus::orch::kProviderSlots)
+    ed.push_back({slot.slug, editableModels(slot.slug)});
+  ed.push_back({"custom", editableModels("custom")});
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  const size_t cap = nimbus::orch::usageModelsJsonCap(L, ed);
+  char* buf = jsonBuffer(cap);
+  if (!buf) return nullptr;
+  outLen = nimbus::orch::writeUsageModelsJson(L, ed, buf, cap);
+  if (outLen == 0) {   // never a truncated document
+    free(buf);
+    return nullptr;
+  }
   return buf;
 }
 
@@ -1111,11 +1243,15 @@ String providerBudgetJson() {
   for (const auto& e : L.entries()) {
     if (!first) out += ",";
     first = false;
+    // The one formula (per-model prices, 2026-10): each model at its own price.
+    nimbus::orch::PriceSummary ps;
+    const uint64_t est = L.priceProvider(e.name, &ps);
     out += "{\"prov\":\"";     out += e.name.c_str();
     out += "\",\"in\":";       out += String((double)e.tokensIn, 0);
     out += ",\"out\":";         out += String((double)e.tokensOut, 0);
     out += ",\"calls\":";       out += String(e.calls);
-    out += ",\"estCents\":";    out += String((double)e.estCents(), 0);
+    out += ",\"estCents\":";    out += String((double)est, 0);
+    out += ",\"approx\":";      out += ps.approx ? "true" : "false";   // a built-in estimate is in it
     out += ",\"centsLimit\":";  out += String((double)e.centsLimit, 0);
     out += ",\"tokenLimit\":";  out += String((double)e.tokenLimit, 0);
     out += ",\"callLimit\":";   out += String(e.callLimit);
@@ -1135,6 +1271,8 @@ String providerUsageJson() {
   for (const auto& e : L.entries()) {
     if (!first) out += ",";
     first = false;
+    nimbus::orch::PriceSummary ps;
+    const uint64_t est = L.priceProvider(e.name, &ps);
     out += "{\"prov\":\"";
     out += e.name.c_str();
     out += "\",\"tokens\":";     out += String((double)e.tokens, 0);
@@ -1152,10 +1290,12 @@ String providerUsageJson() {
     out += ",\"rateOut\":";      out += String(e.centsPerMOut);
     out += ",\"rateCall\":";     out += String(e.centsPerKCalls);
     // W16: the $ ceiling + the SERVER-computed period spend estimate (cents) -
-    // one formula (ProviderBudget::estCents) shared with the budget gate and
-    // device.status, so no surface can disagree with another.
+    // one formula (UsageLedger::estCents: each model at its own price, 2026-10)
+    // shared with the budget gate and device.status, so no surface can disagree
+    // with another. approx = some part of it is a built-in estimate ('~').
     out += ",\"centsLimit\":";   out += String((double)e.centsLimit, 0);
-    out += ",\"estCents\":";     out += String((double)e.estCents(), 0);
+    out += ",\"estCents\":";     out += String((double)est, 0);
+    out += ",\"approx\":";       out += ps.approx ? "true" : "false";
     // Spend attribution (additive): all-time per-tag split for this provider -
     // turn / synthesis / loop:<id> / spawn:<backend>. Bounded (kMaxTags total).
     out += ",\"tags\":[";

@@ -48,6 +48,7 @@
 #include <solide/board.h>        // the build's board profile -> hw.ledCount (W10, CUM-514)
 #include "nimbus/orch/world.h"          // SessionInfo / Hardware (composeInputs closure)
 #include "nimbus/orch/router_route.h"   // CUM-369: shared router "<upstream>/<model>" resolution
+#include "nimbus/orch/model_key.h"      // usageModelKey - a sub-agent's per-model spend key
 #include "nimbus/harness/router_refusal.h" // CUM-539/530: a router refusal, read and answered like the hosted head
 #include "nimbus/orch/safety_activity.h"  // cumuloHostFromBase - the router host the refusal tap watches
 #include "../sys/ps_json.h"              // PsramJsonAllocator - the refusal tap's filter copy stays off internal heap
@@ -644,10 +645,20 @@ static JobEngine::Deps buildJobDeps() {
     return std::string();
   };
   // Sub-session spend attribution: real usage from a terminal poll (OpenAI
-  // Responses reports it) files under "spawn:<backend>" in the usage ledger.
-  d.recordSpawnUsage = [](const std::string& backend, uint32_t in, uint32_t out) {
-    store::recordProviderTokens(String(backend.c_str()), in, out,
-                                ("spawn:" + backend).c_str());
+  // Responses reports it) files under "spawn:<backend>" in the usage ledger, and
+  // (per-model prices, 2026-10) under the job's model: "default" is the model the
+  // adapter actually ran, store::subModel(backend).
+  d.recordSpawnUsage = [](const std::string& backend, const std::string& model, uint32_t in,
+                          uint32_t out) {
+    const String be(backend.c_str());
+    const String resolved = (model.empty() || model == "default") ? store::subModel(be)
+                                                                  : String(model.c_str());
+    char key[nimbus::orch::kModelKeyCap];
+    nimbus::orch::usageModelKey(backend.c_str(), resolved.c_str(), "", key);
+    nimbus::orch::TokenDelta d;
+    d.in = in;
+    d.out = out;
+    store::recordProviderTokens(be, d, ("spawn:" + backend).c_str(), key);
   };
   // Recent-results spill: every finished sub-agent's FULL text into the ring,
   // so [FRESH RESULTS] stubs/clips can point at results.get("sub:<tag>").

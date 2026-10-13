@@ -83,8 +83,11 @@ class JobEngine {
     // terminal poll carries real provider token usage (today only the OpenAI
     // Responses poll reports it; the Anthropic events poll has none - no data
     // is invented). Device wires store::recordProviderTokens(backend, in, out,
-    // "spawn:<backend>").
-    std::function<void(const std::string& backend, uint32_t tokensIn, uint32_t tokensOut)>
+    // "spawn:<backend>", <model key>). `model` is the job's JobRecord.model: the
+    // sub-agent's model or selector, or the literal "default" when none was
+    // resolved (the device resolves that to store::subModel(backend)).
+    std::function<void(const std::string& backend, const std::string& model, uint32_t tokensIn,
+                       uint32_t tokensOut)>
         recordSpawnUsage;
 
     // Recent-results spill (nullable - Context Fabric Stage 1): called with the

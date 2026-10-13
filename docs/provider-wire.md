@@ -299,7 +299,12 @@ supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
 special: it harvests the router's own `GET /router/models`, which lists exactly
 the models the router can route (priced and enabled), as `<upstream>/<model>`
 ids with a size class and the billed rates as metadata, so the Cumulo model list
-tracks the router's catalog rather than one upstream's `/v1/models`. The router
+tracks the router's catalog rather than one upstream's `/v1/models`. The same verify
+keeps the billed rates (`in_micro_per_mtok` / `out_micro_per_mtok`) of the models the
+device uses - its Cumulo choice list plus the head and sub-agent models, at most 24 -
+so the Usage page prices Cumulo spend at what Cumulo bills (shown as "Cumulo price";
+a price you enter for a model still wins). They are read from the verify's own
+response, never fetched on a turn. The router
 default comes first, then one model per upstream, then a spread of the rest (a
 dated snapshot whose undated alias is listed is left out, and so is an id whose
 model part still holds a `/` after the upstream, such as

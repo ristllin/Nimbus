@@ -955,7 +955,8 @@ int JobEngine::pump() {
     // records at most once (markSeen removes it from the poll set after this).
     if (orch::isTerminal(env_ref().state) && d_.recordSpawnUsage &&
         (env_ref().promptTokens || env_ref().completionTokens))
-      d_.recordSpawnUsage(rec.backend, env_ref().promptTokens, env_ref().completionTokens);
+      d_.recordSpawnUsage(rec.backend, rec.model, env_ref().promptTokens,
+                          env_ref().completionTokens);
     const bool done = env_ref().state == orch::JobState::Done;
     bool unverified = false;
     std::string reply = done ? deliveredReply(rec, unverified) : std::string();

@@ -1740,8 +1740,8 @@ class NimbusdRig {
     c.loop.totalCap = [] { return 24576; };
 
     c.budget.overBudget = [](const std::string&) { return false; };
-    c.budget.recordTokens = [](const std::string&, uint32_t, uint32_t,
-                               uint32_t, uint32_t, const std::string&) {};
+    c.budget.recordTokens = [](const std::string&, uint32_t, uint32_t, uint32_t, uint32_t,
+                               const std::string&, const std::string&) {};
     c.ttsEnabled = [] { return false; };
     c.deviceName = [this] { return settings_.get().devName; };
     return c;

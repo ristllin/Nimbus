@@ -12,6 +12,7 @@
 
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
+#include "nimbus/orch/model_key.h"       // usageModelKey - the per-model spend key
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 
@@ -1009,10 +1010,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // prompt count (Anthropic). OpenAI includes cached tokens in input_tokens -
     // passing its cacheRead would double-meter the $ estimate.
     const bool excludesCache = host == "anthropic";
+    // Per-model prices (2026-10): file the spend under the model that served it -
+    // the host's configured model, or the served echo on a real substitution.
+    char modelKey[orch::kModelKeyCap];
+    orch::usageModelKey(host.c_str(),
+                        d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host).c_str() : "",
+                        turnUsage.servedModel.c_str(), modelKey);
     d_.cfg.budget.recordTokens(host, turnUsage.promptTokens, turnUsage.completionTokens,
                                excludesCache ? turnUsage.cacheReadTokens : 0,
                                excludesCache ? turnUsage.cacheWriteTokens : 0,
-                               attribution_);   // spend attribution: turn/synthesis/loop:<id>
+                               attribution_,   // spend attribution: turn/synthesis/loop:<id>
+                               modelKey);
   }
   // cacheR/cacheW (v4.1.1): prompt-cache hits/writes this turn - the proof the
   // caching breakpoints are actually landing, visible in /api/log.
@@ -1423,11 +1431,16 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     orch::TokenUsage u;
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
-    if (d_.cfg.budget.recordTokens && !u.empty())
+    if (d_.cfg.budget.recordTokens && !u.empty()) {
+      char modelKey[orch::kModelKeyCap];
+      orch::usageModelKey(h.c_str(),
+                          d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "",
+                          u.servedModel.c_str(), modelKey);
       d_.cfg.budget.recordTokens(h, u.promptTokens, u.completionTokens,
                                  h == "anthropic" ? u.cacheReadTokens : 0,
                                  h == "anthropic" ? u.cacheWriteTokens : 0,
-                                 "compact");
+                                 "compact", modelKey);
+    }
     if (ok) { host = h; usage = u; break; }
     hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
   }

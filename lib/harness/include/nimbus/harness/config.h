@@ -79,11 +79,16 @@ struct BudgetConfig {
   // `tag` = spend attribution ("turn" | "synthesis" | "loop:<id>") - the engine
   // knows the turn's source, the ledger files it (device: recordProviderTokens
   // tag overload). Consumers that don't care may ignore it.
-  // cacheRead/cacheWrite (v4.1.3 prism): tokens Anthropic EXCLUDES from
+  // cacheRead/cacheWrite (v4.1.3): tokens Anthropic EXCLUDES from
   // tokensIn but bills (0.1x / 1.25x). The engine passes them only for hosts
   // with that exclusion semantic; consumers meter them into the $ estimate.
+  // `model` (2026-10, per-model prices): the key the spend files under, from
+  // nimbus::orch::usageModelKey (the configured model, or the served echo on a
+  // real substitution); "" = provider level only. No default on purpose: a stale
+  // caller fails to compile instead of silently dropping the model.
   std::function<void(const std::string& host, uint32_t tokensIn, uint32_t tokensOut,
-                     uint32_t cacheRead, uint32_t cacheWrite, const std::string& tag)>
+                     uint32_t cacheRead, uint32_t cacheWrite, const std::string& tag,
+                     const std::string& model)>
       recordTokens;
 };
 

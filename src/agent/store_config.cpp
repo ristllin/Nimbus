@@ -90,8 +90,14 @@ HarnessConfig harnessConfigFromStore() {
     return store::providerOverBudget(h.c_str());
   };
   c.budget.recordTokens = [](const std::string& h, uint32_t in, uint32_t out,
-                             uint32_t cacheR, uint32_t cacheW, const std::string& tag) {
-    store::recordProviderTokens(h.c_str(), in, out, cacheR, cacheW, tag.c_str());
+                             uint32_t cacheR, uint32_t cacheW, const std::string& tag,
+                             const std::string& model) {
+    nimbus::orch::TokenDelta d;
+    d.in = in;
+    d.out = out;
+    d.cacheR = cacheR;
+    d.cacheW = cacheW;
+    store::recordProviderTokens(h.c_str(), d, tag.c_str(), model.c_str());
   };
 
   c.ttsEnabled = [] { return store::ttsEnabled(); };

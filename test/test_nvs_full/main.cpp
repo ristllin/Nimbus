@@ -12,6 +12,7 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/orch/model_ledger.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/store/persist.h"
 
@@ -691,6 +692,62 @@ static void test_web_ui_shows_the_storage_full_text() {
   TEST_ASSERT_TRUE(js.find("if(hasServerText(e)){toast(saveFailText(e),6000);return;}") != std::string::npos);
 }
 
+// ---- per-model prices (2026-10): the owner's model price file ------------------------
+// A model price lives in /data/usage_mrates.txt (LittleFS, never NVS, so usgLedger and
+// the NVS budget model above are untouched). A failed write of it reports
+// "lfs_mrates" to the SAME per-task persist ledger, so the route answers 507
+// storage_full like any NVS key, and the RAM table is put back exactly (CUM-479).
+static void test_model_price_write_failure_is_507_with_ram_reverted() {
+  using nimbus::orch::ModelLedger;
+  using nimbus::orch::RateEdit;
+  ModelLedger L;
+  L.setOwnerRate("openai", "gpt-5.6", 4000000, 20000000);
+  const std::string before = L.serializeOwnerRates();
+  PersistLedger led;
+  const uint32_t since = led.seq();
+  // What store::setModelRate does: the durable edit, then the ledger note on failure.
+  const RateEdit r = L.setOwnerRateDurable("openai", "gpt-5.6-luna", 200000, 1200000,
+                                           [](const std::string&) { return false; });
+  TEST_ASSERT_EQUAL((int)RateEdit::WriteFailed, (int)r);
+  led.noteFailure(/*task=*/7, "lfs_mrates");
+  const SaveReply rep = saveReply(!led.failedSince(since, 7), 200, "{\"ok\":true}");
+  TEST_ASSERT_EQUAL_INT(507, rep.status);
+  TEST_ASSERT_FALSE(claimsOk(rep.body));
+  TEST_ASSERT_TRUE(rep.body.find("storage_full") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(before.c_str(), L.serializeOwnerRates().c_str());   // RAM reverted
+  TEST_ASSERT_NULL(L.ownerRate("openai", "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL_STRING("lfs_mrates", led.lastKey());
+  // With room, the same edit stores and the route answers its ok body.
+  PersistLedger led2;
+  const uint32_t since2 = led2.seq();
+  TEST_ASSERT_EQUAL((int)RateEdit::Ok,
+                    (int)L.setOwnerRateDurable("openai", "gpt-5.6-luna", 200000, 1200000,
+                                               [](const std::string&) { return true; }));
+  TEST_ASSERT_EQUAL_INT(200, saveReply(!led2.failedSince(since2, 7), 200, "{\"ok\":true}").status);
+}
+
+// The device seam: setModelRate stores through the atomic LittleFS writer and the
+// durable edit, reports "lfs_mrates" on failure, and makes no NVS write and no bare
+// solide::memory call; the route field goes through POST /api/orch (a covered route).
+static void test_model_price_store_reports_lfs_mrates() {
+  const std::string src = readFile("src/agent/store.cpp");
+  const size_t s = src.find("nimbus::orch::RateEdit setModelRate(");
+  TEST_ASSERT_TRUE(s != std::string::npos);
+  const std::string body = src.substr(s, src.find("\n}\n", s) - s);
+  TEST_ASSERT_TRUE(body.find("setOwnerRateDurable(") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("writeFileAtomic(kUsageMratesPath") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("notePersist(false, \"lfs_mrates\")") != std::string::npos);
+  for (const char* nvs : {"putStr", "putOrClear", "putInt", "clearKey", "solide::memory"})
+    TEST_ASSERT_TRUE_MESSAGE(body.find(nvs) == std::string::npos, nvs);
+  const std::string web = readFile("src/net/webui.cpp");
+  TEST_ASSERT_TRUE(web.find("if (n == \"mrate\") { applyModelRateField(v, err); return true; }") !=
+                   std::string::npos);
+  // usgLedger stays the one ledger key: the model files never reach NVS.
+  TEST_ASSERT_TRUE(src.find("\"/data/usage_mrates.txt\"") != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("\"/data/usage_models.txt\"") != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("\"/data/usage_rprices.txt\"") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_reply_is_507_storage_full_never_ok);
@@ -713,5 +770,7 @@ int main(int, char**) {
   RUN_TEST(test_raw_nvs_writers_are_a_reviewed_set);
   RUN_TEST(test_embedcfg_stores_before_it_wipes);
   RUN_TEST(test_web_ui_shows_the_storage_full_text);
+  RUN_TEST(test_model_price_write_failure_is_507_with_ram_reverted);
+  RUN_TEST(test_model_price_store_reports_lfs_mrates);
   return UNITY_END();
 }

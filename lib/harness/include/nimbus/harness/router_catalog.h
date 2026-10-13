@@ -29,6 +29,8 @@
 
 #include "nimbus/harness/log.h"   // hlog - one line when the harvest bound is hit
 #include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/model_key.h"      // usageModelKey - the price row's key
+#include "nimbus/orch/model_ledger.h"   // ModelRate, kMaxRouterRates
 #include "nimbus/orch/router_route.h"
 
 namespace agent {
@@ -346,6 +348,117 @@ inline Shortlist shortlist(const std::vector<std::string>& ids, const std::strin
     ++out.kept;
   }
   return out;
+}
+
+// ---- router prices (per-model prices, 2026-10) -------------------------------------
+// The router's /router/models rows carry what Cumulo bills per model
+// (in_micro_per_mtok / out_micro_per_mtok, micro-USD per 1M tokens). The harvest
+// keeps ONLY the device's own models - the choice list plus the configured head and
+// sub-agent selectors - at most kMaxRouterRates rows, reading the body in place
+// (the verify task's PSRAM buffer): no copy of the body, one short string per id.
+
+namespace detail {
+// The unsigned integer after "<field>": inside [from, to), saturating at u32 max;
+// 0 when the field is absent or not a number.
+inline uint32_t priceField(const char* from, const char* to, const char* field) {
+  const size_t fl = std::strlen(field);
+  for (const char* p = from; p + fl <= to; ++p) {
+    if (std::memcmp(p, field, fl) != 0) continue;
+    p += fl;
+    while (p < to && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
+    uint64_t v = 0;
+    bool any = false;
+    while (p < to && *p >= '0' && *p <= '9') {
+      any = true;
+      v = v * 10 + (uint64_t)(*p - '0');
+      if (v > UINT32_MAX) return UINT32_MAX;
+      ++p;
+    }
+    return any ? (uint32_t)v : 0;
+  }
+  return 0;
+}
+
+// The next "id" string at or after `p`: `idKey` is where its key starts, `p` leaves
+// on its closing quote. False at the end of the body, or when an id over 64 chars
+// says this is not an id list.
+inline bool nextId(const char*& p, const char*& idKey, std::string& id) {
+  while ((p = std::strstr(p, "\"id\":")) != nullptr) {
+    idKey = p;
+    p += 5;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p != '"') continue;
+    const char* e = std::strchr(++p, '"');
+    if (!e || e - p > 64) return false;
+    id.assign(p, (size_t)(e - p));
+    p = e;
+    return true;
+  }
+  return false;
+}
+
+// The price row of the router object around one id: from its '{' to its '}' (router
+// rows are flat objects). False when the object is unterminated.
+inline bool rowPrice(const char* body, const char* idKey, const char* idEnd, const std::string& id,
+                     nimbus::orch::ModelRate& r) {
+  const char* lb = idKey;
+  while (lb > body && *lb != '{') --lb;
+  const char* rb = std::strchr(idEnd, '}');
+  if (!rb) return false;
+  r = nimbus::orch::ModelRate{};
+  std::strcpy(r.prov, "cumulo");
+  nimbus::orch::usageModelKey("cumulo", id.c_str(), "", r.model);
+  r.microIn = priceField(lb, rb, "\"in_micro_per_mtok\":");
+  r.microOut = priceField(lb, rb, "\"out_micro_per_mtok\":");
+  return true;
+}
+
+inline bool keyed(const std::vector<nimbus::orch::ModelRate>& v, const char* model) {
+  for (const auto& o : v)
+    if (std::strcmp(o.model, model) == 0) return true;
+  return false;
+}
+}  // namespace detail
+
+// The ids whose router prices the device keeps: the compact choice list (CSV) plus
+// the configured head and sub-agent selectors. Bounded by kChoicesMax + 2.
+inline std::vector<std::string> priceKeepIds(const std::string& choicesCsv,
+                                             const std::string& orchSel,
+                                             const std::string& subSel) {
+  std::vector<std::string> keep;
+  keep.reserve(kChoicesMax + 2);
+  size_t p = 0;
+  while (p < choicesCsv.size() && keep.size() < kChoicesMax) {
+    size_t c = choicesCsv.find(',', p);
+    if (c == std::string::npos) c = choicesCsv.size();
+    if (c > p) keep.push_back(choicesCsv.substr(p, c - p));
+    p = c + 1;
+  }
+  for (const std::string* s : {&orchSel, &subSel})
+    if (!s->empty()) keep.push_back(*s);
+  return keep;
+}
+
+inline size_t harvestPrices(const char* body, const std::vector<std::string>& keepIds,
+                            std::vector<nimbus::orch::ModelRate>& out) {
+  out.clear();
+  if (!body) return 0;
+  out.reserve(nimbus::orch::ModelLedger::kMaxRouterRates);
+  std::vector<std::string> keep;   // canonical "<upstream>/<model>", bounded by the caller
+  keep.reserve(keepIds.size());
+  for (const std::string& k : keepIds)
+    if (routable(k)) keep.push_back(canonical(k));
+  const char* p = body;
+  const char* idKey = nullptr;
+  std::string id;
+  while (out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && detail::nextId(p, idKey, id)) {
+    if (!routable(id) || std::find(keep.begin(), keep.end(), canonical(id)) == keep.end()) continue;
+    nimbus::orch::ModelRate r;
+    if (!detail::rowPrice(body, idKey, p, id, r)) break;
+    if (!r.model[0] || (!r.microIn && !r.microOut) || detail::keyed(out, r.model)) continue;
+    out.push_back(r);
+  }
+  return out.size();
 }
 
 // The router selector of a parsed catalog entry. parseModelsList keeps the bare

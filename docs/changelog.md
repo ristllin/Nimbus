@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## Unreleased
+
+- **Spend is priced per model.** Each model's usage is priced at that model's own price, so two models from the same provider no longer cost the same, and a provider's dollar budget adds them up. Cumulo usage is priced at what Cumulo bills for each model; a model nothing else prices uses a built-in estimate.
+- **A dollar budget now counts built-in estimates.** A dollar cap used to count only the prices you had entered, so a cap with no prices never stopped anything. It now counts every model at its price, built-in estimates included, and stays off only for a model nothing prices (such as a custom endpoint model you have not priced). If you set a dollar cap without entering prices, check it under Usage, Budgets: the cap may now stop a provider when its estimated spend reaches it.
+- **Going back to an earlier release.** An earlier release keeps your usage, budgets and provider prices, and reads the per-day history (each day's spend is still counted). It ignores the per-model prices and per-model spend, which come back if you update again; the history it rewrites while you run it records days without the model.
+
 ## v4.5.12 - Updates on a busy device, a reset that erases, keys that apply at once
 
 Found by hardware checks on two desk devices (a full factory reset read back from raw flash, a device with Telegram and the cloud link that could not update), a live check of a fresh hosted Virtual Nimbus on v4.5.11, and adversarial reviews of each change and of the whole release.

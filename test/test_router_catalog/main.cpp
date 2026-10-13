@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -533,6 +536,81 @@ static void test_same_model_under_two_upstreams_is_two_rows() {
   TEST_ASSERT_TRUE_MESSAGE(all.find(",mistral/glm-5.3,") != std::string::npos, all.c_str());
 }
 
+// ---- router prices (per-model prices, 2026-10) -----------------------------------
+// The real /router/models body captured 2026-10-13 (623 rows, ~95 KB; ids and
+// prices only, no credentials): the harvest keeps ONLY the device's own models.
+static std::string routerBody() {
+  std::ifstream f("test/support/fixtures/router_models_2026-10-13.json", std::ios::binary);
+  TEST_ASSERT_TRUE_MESSAGE(f.good(), "router fixture missing");
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+static const nimbus::orch::ModelRate* priceOf(const std::vector<nimbus::orch::ModelRate>& v,
+                                              const char* model) {
+  for (const auto& r : v)
+    if (std::strcmp(r.model, model) == 0) return &r;
+  return nullptr;
+}
+
+static void test_price_harvest_keeps_only_the_devices_models() {
+  const std::string body = routerBody();
+  TEST_ASSERT_TRUE(body.size() > 90000);
+  const std::vector<std::string> keep = rc::priceKeepIds(
+      NIMBUS_CUMULO_MODEL_CHOICES, "anthropic/claude-opus-5", "zai/glm-5.3");
+  std::vector<nimbus::orch::ModelRate> out;
+  TEST_ASSERT_EQUAL(5, (int)rc::harvestPrices(body.c_str(), keep, out));
+  // Keys are the usage keys ("<upstream>/<bare>"), prices the router's own.
+  const auto* g = priceOf(out, "openai/gpt-5.6");
+  TEST_ASSERT_NOT_NULL(g);
+  TEST_ASSERT_EQUAL_STRING("cumulo", g->prov);
+  TEST_ASSERT_EQUAL_UINT32(4000000, g->microIn);
+  TEST_ASSERT_EQUAL_UINT32(20000000, g->microOut);
+  TEST_ASSERT_EQUAL_UINT32(200000, priceOf(out, "openai/gpt-5.6-luna")->microIn);
+  TEST_ASSERT_EQUAL_UINT32(12000000, priceOf(out, "openai/gpt-5.6-terra")->microOut);
+  TEST_ASSERT_EQUAL_UINT32(25000000, priceOf(out, "anthropic/claude-opus-5")->microOut);
+  TEST_ASSERT_EQUAL_UINT32(79000, priceOf(out, "zai/glm-5.3")->microIn);
+  // Never a twin under another route (openai/azure/gpt-5.6) or a variant (-sol).
+  for (const auto& r : out) TEST_ASSERT_NULL(std::strstr(r.model, "azure"));
+  TEST_ASSERT_NULL(priceOf(out, "openai/gpt-5.6-sol"));
+  // The device reads at most 64 KB of the body: the rows past it are simply absent.
+  const std::string cut = body.substr(0, 65535);
+  TEST_ASSERT_TRUE(rc::harvestPrices(cut.c_str(), keep, out) >= 3);
+  TEST_ASSERT_NULL(priceOf(out, "openai/gpt-5.6-luna"));   // its row sits past 64 KB
+}
+
+static void test_price_harvest_is_bounded_and_saturating() {
+  const std::string body = routerBody();
+  // Every routable id of the body as the keep list: still at most 24 rows.
+  std::vector<std::string> all = rc::harvestIds(body.c_str());
+  TEST_ASSERT_TRUE(all.size() > 24);
+  std::vector<nimbus::orch::ModelRate> out;
+  TEST_ASSERT_EQUAL((int)nimbus::orch::ModelLedger::kMaxRouterRates,
+                    (int)rc::harvestPrices(body.c_str(), all, out));
+  // An over-range price saturates (never wraps to a cheap one); a row with no price
+  // is not kept; a body cut inside an object ends the scan without a crash.
+  const char* odd =
+      "{\"data\":[{\"id\":\"openai/gpt-5.6\",\"in_micro_per_mtok\":99999999999,"
+      "\"out_micro_per_mtok\":5},{\"id\":\"openai/gpt-5.6-terra\"},"
+      "{\"id\":\"openai/gpt-5.6-luna\",\"in_micro_per_mtok\":7";
+  TEST_ASSERT_EQUAL(1, (int)rc::harvestPrices(odd, rc::priceKeepIds(NIMBUS_CUMULO_MODEL_CHOICES, "", ""), out));
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, out[0].microIn);
+  TEST_ASSERT_EQUAL_UINT32(5, out[0].microOut);
+  TEST_ASSERT_EQUAL(0, (int)rc::harvestPrices(nullptr, all, out));
+  TEST_ASSERT_EQUAL(0, (int)rc::harvestPrices("", all, out));
+}
+
+static void test_price_keep_ids_are_choices_plus_selectors() {
+  const std::vector<std::string> k = rc::priceKeepIds("a,b,,c", "anthropic/claude-opus-5", "");
+  TEST_ASSERT_EQUAL(4, (int)k.size());
+  TEST_ASSERT_EQUAL_STRING("c", k[2].c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-opus-5", k[3].c_str());
+  std::string many;
+  for (int i = 0; i < 30; ++i) many += (i ? "," : "") + std::string("m") + std::to_string(i);
+  TEST_ASSERT_EQUAL((int)rc::kChoicesMax + 2, (int)rc::priceKeepIds(many, "x", "y").size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
@@ -554,6 +632,9 @@ int main(int, char**) {
   RUN_TEST(test_v459_stored_lists_never_offer_or_accept_slash_ids);
   RUN_TEST(test_catalog_of_many_upstreams_is_bounded);
   RUN_TEST(test_same_model_under_two_upstreams_is_two_rows);
+  RUN_TEST(test_price_harvest_keeps_only_the_devices_models);
+  RUN_TEST(test_price_harvest_is_bounded_and_saturating);
+  RUN_TEST(test_price_keep_ids_are_choices_plus_selectors);
   UNITY_END();
   return 0;
 }

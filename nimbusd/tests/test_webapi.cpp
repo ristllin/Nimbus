@@ -92,6 +92,15 @@ static void checkStatus(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const
   c.ok(has(o.body, "\"mistral\"") && has(o.body, "\"hasKey\":false"),
        "providers are listed with an honest hasKey (keyless here)");
   c.ok(has(o.body, "\"usage\""), "orch carries the real session usage block");
+
+  // Per-model prices (2026-10): no hosted ledger yet, so the truthful empty shape
+  // the page renders its empty states from - never a 404 or a faked row.
+  Out um = G(cl, port, "/api/usage/models", tok);
+  c.ok(um.status == 200, "GET /api/usage/models -> 200");
+  c.ok(has(um.body, "\"models\":[]") && has(um.body, "\"residual\":[]") &&
+           has(um.body, "\"editable\":{}") && has(um.body, "\"provRate\":{}"),
+       "usage/models is the empty shape on a hosted instance");
+  c.ok(has(um.body, "\"asOf\":\"2026-10\""), "usage/models names the built-in price date");
 }
 
 // Memory dashboard: real engine reads in the shapes the app renders.

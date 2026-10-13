@@ -42,7 +42,11 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 |---|---|---|
 | Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (16000 B for the Cumulo router, which lists every upstream), so in NVS (~120 entries per 3800 B, nearly a whole page) four or five verified providers could exhaust it by themselves |
 | Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids; the Cumulo router list at most 12 ids and 480 B) and read on every turn |
-| Usage ledger `usgLedger` | NVS | Owner spend history, bounded (12 providers, 48 tags) |
+| Usage ledger `usgLedger` | NVS | Owner spend history and budgets per provider, bounded (12 providers, 48 tags). Per-model prices left it unchanged, byte for byte: everything per model lives in the files below |
+| Per-model spend | LittleFS file `/data/usage_models.txt` | Which models each provider's spend went to this period and all time. At most 32 rows (the 9th model of one provider, or a model past the cap, folds into that provider's "other models" row). Rewritten after each turn that names a model |
+| Your model prices | LittleFS file `/data/usage_mrates.txt` | The prices you enter per model on the Usage page, at most 32 rows. Written only when you save a price; a write that does not land answers 507 like an NVS save (failure key `lfs_mrates`) and changes nothing |
+| Cumulo router prices | LittleFS file `/data/usage_rprices.txt` | What Cumulo bills for each model the device keeps (its choice list plus the head and sub-agent models), at most 24 rows. Written only by the Cumulo verify |
+| Daily usage history | LittleFS file `/data/usage_hist.txt` | One bucket per day, provider and model (plus prompt-cache counts since per-model prices), at most 12 per day and 720 in all (60 days). Written atomically (a copy, then a rename) after each turn |
 
 The guide `/api/state` checks: at least **4 KB** stays free, room for the largest
 single owner value (the connectors blob, capped at 3500 B = 3552 B of entries). Below

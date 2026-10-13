@@ -31,7 +31,7 @@ struct FakeConfig {
   int rounds = 12, deadlineS = 600, resultCap = 4096, totalCap = 24576;
 
   std::set<std::string> overBudgetHosts;
-  struct Recorded { std::string host; uint32_t in, out; std::string tag; };
+  struct Recorded { std::string host; uint32_t in, out; std::string tag; std::string model; };
   std::vector<Recorded> recorded;
 
   bool tts = false;
@@ -95,8 +95,9 @@ struct FakeConfig {
       return overBudgetHosts.count(h) > 0;
     };
     c.budget.recordTokens = [this](const std::string& h, uint32_t in, uint32_t out,
-                                   uint32_t, uint32_t, const std::string& tag) {
-      recorded.push_back({h, in, out, tag});
+                                   uint32_t, uint32_t, const std::string& tag,
+                                   const std::string& model) {
+      recorded.push_back({h, in, out, tag, model});
     };
 
     c.ttsEnabled = [this] { return tts; };

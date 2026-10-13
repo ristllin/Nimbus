@@ -53,6 +53,8 @@
 #include "nimbus_board_flip.h"                // explicit per-board display-flip base (CUM-189)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 #include "nimbus/orch/provider_slots.h"       // CUM-213: canonical provider registry (one source)
+#include "nimbus/orch/model_key.h"            // usageModelKey - the mrate field's key
+#include "nimbus/orch/model_ledger.h"         // parseModelRateField, editableHas
 #include "nimbus/orch/caps.h"                  // kMemDirectiveMax - owner-directive byte cap
 #include "nimbus/orch/directive.h"             // kOwnerDirectiveDefault - shipped default (single source)
 
@@ -978,6 +980,58 @@ static bool isKnownProvider(const String& p) {
   return nimbus::orch::isProviderSlug(p.c_str()) || p == "custom";
 }
 
+// Stream a store-built PSRAM JSON body (usage history, usage models) chunked and free
+// it through the shared_ptr once the response is done - never copied into an
+// internal-heap String. raw == nullptr (allocation failed) answers 500 oom.
+static void sendPsJson(AsyncWebServerRequest* r, char* raw, size_t len) {
+  if (!raw) { r->send(500, "application/json", "{\"error\":\"oom\"}"); return; }
+  std::shared_ptr<char> body(raw, free);
+  AsyncWebServerResponse* res = r->beginChunkedResponse(
+      "application/json",
+      [body, len](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+        if (index >= len) return 0;   // complete
+        size_t take = len - index;
+        if (take > maxLen) take = maxLen;
+        memcpy(buf, body.get() + index, take);
+        return take;
+      });
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+}
+
+// POST /api/orch field "mrate" (per-model prices, 2026-10):
+// "prov:microIn:microOut:model", the model last so an id holding ':' or '/' survives.
+// The provider must be a known LLM provider (Tavily has no models) and the model one
+// the Prices table shows (store::editableModels: the choice list, the head and
+// sub-agent models, models with spend or a price), so a stray value can never seed
+// an arbitrary row. 0:0 clears the price. A refusal names the fix (400); a store
+// failure is a 507 through the route's SaveScope (setModelRate reports "lfs_mrates").
+static void applyModelRateField(const String& v, String& err) {
+  static const char* kPick = "Pick a model from the list";
+  nimbus::orch::ModelRateField f;
+  if (!nimbus::orch::parseModelRateField(std::string(v.c_str(), v.length()), f) ||
+      !isKnownProvider(String(f.prov.c_str()))) {
+    err = kPick;
+    return;
+  }
+  const String prov(f.prov.c_str());
+  const std::string editable = agent::store::editableModels(prov);
+  char key[nimbus::orch::kModelKeyCap];
+  nimbus::orch::usageModelKey(f.prov.c_str(), f.model.c_str(), "", key);
+  const char* pick = nimbus::orch::editableHas(editable, f.model.c_str()) ? f.model.c_str()
+                     : nimbus::orch::editableHas(editable, key)           ? key
+                                                                          : nullptr;
+  if (!pick) {
+    err = kPick;
+    return;
+  }
+  switch (agent::store::setModelRate(prov, pick, f.microIn, f.microOut)) {
+    case nimbus::orch::RateEdit::Full:    err = "Price list full (32 models) - clear one first"; break;
+    case nimbus::orch::RateEdit::Invalid: err = kPick; break;
+    default: break;   // Ok, or WriteFailed: the SaveScope answers 507
+  }
+}
+
 // True when the provider's API key is set (leaf map over the per-provider store
 // accessors; defined below, forward-declared for the registry-driven emitter).
 static bool providerKeyed(const char* p);
@@ -1300,9 +1354,10 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
   if (n == "clr_cumuloKey") { agent::store::setCumuloKey(""); agent::store::setVerify("cumulo", -1, 0); return true; }
 
   // Per-provider budget (owner: "limit budget per provider"). Composite value
-  // "provider:tokenLimit:callLimit:resetDay" - one field, four correlated knobs.
-  // 0 limit = unlimited; resetDay 1..28. Provider allowlisted to the known set so a
-  // stray value can't seed an arbitrary NVS ledger entry.
+  // "provider:tokenLimit:callLimit:resetDay[:centsLimit]" - one field, correlated
+  // knobs (W16 added the optional $ ceiling in cents). 0 limit = unlimited; resetDay
+  // 1..28. Provider allowlisted to the known set so a stray value can't seed an
+  // arbitrary NVS ledger entry.
   if (n == "budget") {
     int c1 = v.indexOf(':');
     if (c1 <= 0) return true;
@@ -1322,10 +1377,11 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
     agent::store::setProviderBudget(prov, tl, cl, (uint8_t)rd, cents);
     return true;
   }
-  // Per-provider price rates for $ estimates. Same composite pattern as budget:
-  // "provider:centsPerMIn:centsPerMOut:centsPerKCalls". Since W16 the rates ALSO
-  // arm the $ budget ceiling (estCents >= centsLimit refuses the provider), so
-  // they are enforcement inputs, not display-only; 0 = unset.
+  // The provider FALLBACK prices: "provider:centsPerMIn:centsPerMOut:centsPerKCalls"
+  // (same composite pattern as budget; 0 = unset). Since per-model prices (2026-10)
+  // they price every model of the provider with no price of its own (the Prices
+  // table's "Any other <provider> model" row). They feed the $ estimate, so they arm
+  // the $ ceiling too: enforcement inputs, not display-only.
   if (n == "rates") {
     int c1 = v.indexOf(':');
     if (c1 <= 0) return true;
@@ -1340,6 +1396,8 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
     agent::store::setProviderRates(prov, ri, ro, rc);
     return true;
   }
+  // One model's price (per-model prices, 2026-10): "prov:microIn:microOut:model".
+  if (n == "mrate") { applyModelRateField(v, err); return true; }
 
   // Conversation reset (benchmark isolation + owner "start fresh"): drops the
   // provider-side history chain so the next turn starts clean. State-only - no
@@ -1536,8 +1594,9 @@ void beginWeb(const WebConfig& wc) {
   s_wc = wc;
 
   // Bring up the orchestrator memory subsystem (loads persisted vectors +
-  // scratchpad, binds the embedder, registers memory.* tools). Both modes: a
-  // Notifier-mode device can still browse/edit its memory from the dashboard.
+  // scratchpad, binds the embedder, registers memory.* tools) and, inside it, the
+  // LittleFS mount. main.cpp starts the web server in Orchestrator mode only, so
+  // flash storage (and every /data file) is mounted in that mode only.
   agent::memory::begin();
 
   s_server.on("/", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -2263,19 +2322,15 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     size_t len = 0;
     char* raw = agent::store::usageHistoryJsonPs(len);
-    if (!raw) { r->send(500, "application/json", "{\"error\":\"oom\"}"); return; }
-    std::shared_ptr<char> body(raw, free);
-    AsyncWebServerResponse* res = r->beginChunkedResponse(
-        "application/json",
-        [body, len](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
-          if (index >= len) return 0;   // complete
-          size_t take = len - index;
-          if (take > maxLen) take = maxLen;
-          memcpy(buf, body.get() + index, take);
-          return take;
-        });
-    res->addHeader("Cache-Control", "no-store");
-    r->send(res);
+    sendPsJson(r, raw, len);
+  });
+  // Per-model spend and prices (2026-10): the Usage pane's By model list, the
+  // Prices table and the chart's $ unit all read the server-resolved prices here.
+  s_server.on("/api/usage/models", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    size_t len = 0;
+    char* raw = agent::store::usageModelsJsonPs(len);
+    sendPsJson(r, raw, len);
   });
 
   s_server.on("/api/orch", HTTP_POST, [](AsyncWebServerRequest* r) {

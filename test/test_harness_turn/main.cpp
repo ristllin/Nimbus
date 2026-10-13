@@ -57,6 +57,7 @@ struct Rig {
     std::string convOut = "c1";
     uint32_t usageIn = 100, usageOut = 20;
     std::string toolName = "memory_search";   // the tool a dispatchTools call names
+    std::string served;                       // the model the provider echoes ("" = none)
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -275,6 +276,7 @@ struct Rig {
         convId = s.convOut;
         out = s.outJson;
         if (usage) usage->add(s.usageIn, s.usageOut);
+        if (usage && !s.served.empty()) usage->servedModel = s.served;
       } else {
         err = s.err.empty() ? "scripted failure" : s.err;
       }
@@ -489,6 +491,8 @@ static void test_happy_turn_delivers_and_accounts() {
   TEST_ASSERT_EQUAL_STRING("anthropic", r.cfg.recorded[0].host.c_str());
   TEST_ASSERT_EQUAL(100, (int)r.cfg.recorded[0].in);
   TEST_ASSERT_EQUAL(20, (int)r.cfg.recorded[0].out);
+  // Per-model prices: no echo -> filed under the host's configured model.
+  TEST_ASSERT_EQUAL_STRING("model-anthropic", r.cfg.recorded[0].model.c_str());
   TEST_ASSERT_EQUAL(1, (int)r.eng->turnCount());
   TEST_ASSERT_EQUAL(120, (int)r.eng->sessionUsage().total());
   TEST_ASSERT_EQUAL(120, (int)r.eng->lastTurnUsage().total());
@@ -561,6 +565,35 @@ static void test_failover_walks_priority_with_owner_notice() {
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("c1", agent::convMapGet(r.cfg.convId, "1001", "openai").c_str());
   TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+}
+
+// Per-model prices (2026-10): a turn files its spend under the model that served
+// it - the configured model when the echo is only its alias, the served model on a
+// real substitution, and the failover-final host's model, never the first host's.
+static void test_turn_spend_files_under_the_serving_model() {
+  {
+    Rig r;
+    r.cfg.orchModels["anthropic"] = "claude-haiku-4-5";
+    Rig::Script s;
+    s.served = "claude-haiku-4-5-20251001";   // a dated alias echo
+    r.scripts["anthropic"] = {s};
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5", r.cfg.recorded[0].model.c_str());
+  }
+  {
+    Rig r;
+    r.cfg.orchModels["anthropic"] = "claude-opus-5";
+    r.cfg.orchModels["openai"] = "gpt-5.6";
+    r.scripts["anthropic"] = {{false, "", "down", 0, "", 0, 0}};
+    Rig::Script s;
+    s.served = "gpt-5.6-luna";                // a real substitution
+    r.scripts["openai"] = {s};
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", r.cfg.recorded[0].model.c_str());
+  }
 }
 
 // CUM-514 (L20 docs audit): the round cap the prompt states IS the loop's cap -
@@ -1897,6 +1930,8 @@ static void test_cumulo_only_instance_folds_via_router_host() {
   TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
   TEST_ASSERT_EQUAL_STRING("cumulo", r.cfg.recorded[0].host.c_str());
   TEST_ASSERT_EQUAL_STRING("compact", r.cfg.recorded[0].tag.c_str());
+  // ...under the router's model key ("<upstream>/<bare>"; a bare selector is openai).
+  TEST_ASSERT_EQUAL_STRING("openai/model-cumulo", r.cfg.recorded[0].model.c_str());
 }
 
 // CUM-288 counter-test (pin the class boundary): the router head is a LAST resort
@@ -2265,6 +2300,7 @@ int main(int, char**) {
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
+  RUN_TEST(test_turn_spend_files_under_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);

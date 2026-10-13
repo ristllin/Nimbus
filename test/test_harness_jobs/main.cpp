@@ -72,7 +72,7 @@ struct Rig {
   std::map<std::string, std::string> connectorProv;  // skill -> hosting provider
   std::vector<agent::SpawnEv> hookSpawns;                  // HookRecorder
   std::vector<agent::ResultEv> hookResults;
-  struct SpawnUsage { std::string backend; uint32_t in, out; };
+  struct SpawnUsage { std::string backend; std::string model; uint32_t in, out; };
   std::vector<SpawnUsage> spawnUsage;                      // recordSpawnUsage recorder
   std::vector<std::string> persisted;                      // persistResult texts (project runs)
   std::function<std::string(const std::string&)> chatContext;  // B4 (nullable)
@@ -131,8 +131,9 @@ struct Rig {
     d.turnInFlight = [this] { return turnInFlight; };
     d.hooks.onSpawn = [this](const agent::SpawnEv& ev) { hookSpawns.push_back(ev); };
     d.hooks.onResult = [this](const agent::ResultEv& ev) { hookResults.push_back(ev); };
-    d.recordSpawnUsage = [this](const std::string& b, uint32_t in, uint32_t out) {
-      spawnUsage.push_back({b, in, out});
+    d.recordSpawnUsage = [this](const std::string& b, const std::string& m, uint32_t in,
+                                uint32_t out) {
+      spawnUsage.push_back({b, m, in, out});
     };
     d.persistResult = [this](const std::string&, const std::string&, const std::string&,
                              const std::string& text, const std::string&) {
@@ -981,6 +982,7 @@ static void test_spawn_usage_recorded_once_on_terminal_poll() {
   r.eng->pump();                       // Done: recorded exactly once
   TEST_ASSERT_EQUAL(1, (int)r.spawnUsage.size());
   TEST_ASSERT_EQUAL_STRING("anthropic", r.spawnUsage[0].backend.c_str());
+  TEST_ASSERT_EQUAL_STRING("good-m", r.spawnUsage[0].model.c_str());   // per-model prices: rec.model
   TEST_ASSERT_EQUAL(1500, (int)r.spawnUsage[0].in);
   TEST_ASSERT_EQUAL(300, (int)r.spawnUsage[0].out);
   r.plat.ms = 40000;

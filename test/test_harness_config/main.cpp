@@ -54,12 +54,13 @@ static void test_budget_gate_and_recording() {
   agent::HarnessConfig c = fc.contract();
   TEST_ASSERT_TRUE(c.budget.overBudget("openai"));
   TEST_ASSERT_FALSE(c.budget.overBudget("anthropic"));
-  c.budget.recordTokens("anthropic", 1000, 250, 0, 0, "turn");
+  c.budget.recordTokens("anthropic", 1000, 250, 0, 0, "turn", "claude-opus-5");
   TEST_ASSERT_EQUAL(1, (int)fc.recorded.size());
   TEST_ASSERT_EQUAL_STRING("anthropic", fc.recorded[0].host.c_str());
   TEST_ASSERT_EQUAL(1000, (int)fc.recorded[0].in);
   TEST_ASSERT_EQUAL(250, (int)fc.recorded[0].out);
   TEST_ASSERT_EQUAL_STRING("turn", fc.recorded[0].tag.c_str());
+  TEST_ASSERT_EQUAL_STRING("claude-opus-5", fc.recorded[0].model.c_str());
 }
 
 static void test_no_provider_write_surface_beyond_convid() {

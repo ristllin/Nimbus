@@ -180,6 +180,22 @@ bool workspaceProbePending() {
 // CUM-479). Independent of the legacy CSV harvest; an empty parse keeps the last
 // good catalog. The body may still carry HTTP headers (the portable parser locates
 // the JSON). The doc rides PSRAM, not internal heap.
+// Per-model prices (2026-10): what the Cumulo router bills for each model this device
+// keeps - the choice list plus the configured head and sub-agent selectors, at most
+// 24 rows - read in place from the verify's PSRAM body (never copied whole). Verify
+// task only, never the turn path; stored apart from the owner's own prices.
+static void storeRouterPrices(const char* body, const std::string& choicesCsv) {
+  std::vector<nimbus::orch::ModelRate> prices;
+  const std::vector<std::string> keep = router_catalog::priceKeepIds(
+      choicesCsv, std::string(store::orchModel("cumulo").c_str()),
+      std::string(store::subModel("cumulo").c_str()));
+  if (!router_catalog::harvestPrices(body, keep, prices)) return;
+  if (store::replaceRouterPrices(prices))
+    alogf("verify: cumulo router prices kept for %u models", (unsigned)prices.size());
+  else
+    alogf("verify: cumulo router prices not stored");
+}
+
 static void buildAndStoreCatalog(const String& provider, const char* body, size_t len,
                                  const String& csvFallback) {
   using namespace nimbus::orch;
@@ -904,6 +920,7 @@ static void runOne() {
             csv = sl.csv.c_str();
             kept = (int)sl.kept;
             handled = true;
+            storeRouterPrices(buf, sl.csv);
             if (sl.truncated())
               alogf("verify: cumulo choice list keeps %u of %u router models (list truncated; "
                     "the default and one per upstream first, the full list is GET /api/models)",

@@ -1,6 +1,10 @@
 #include "nimbus/orch/usage_ledger.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+
+#include "nimbus/orch/model_price_defaults.h"
 
 namespace nimbus {
 namespace orch {
@@ -87,6 +91,19 @@ void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t
   e->cacheWrite += cacheWrite;
 }
 
+void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
+                               uint32_t periodKey, const std::string& tag,
+                               const char* model, uint32_t dayKey) {
+  recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
+  if (!model || !*model) return;   // provider level only
+  // The model row follows its provider's period (already rolled above): when the
+  // provider kept its stored period on an unsynced record (key 0), the row files
+  // under that same period, so the two never disagree about "this period".
+  const ProviderBudget* e = find(name);
+  if (!e) return;   // the provider ledger is full: nothing to attribute against
+  models_.record(name.c_str(), model, d, e->periodKey, dayKey);
+}
+
 void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                                uint32_t periodKey, const std::string& tag) {
   recordTokens(name, tokIn, tokOut, periodKey);   // budget math is unchanged
@@ -150,11 +167,314 @@ bool UsageLedger::overCallBudget(const std::string& name) const {
 bool UsageLedger::overCostBudget(const std::string& name) const {
   const ProviderBudget* e = find(name);
   if (!e || e->centsLimit == 0) return false;
-  // No rates -> estimate is structurally $0 -> honest answer is "cannot tell",
-  // which must gate NOTHING (the UI nudges the owner to set prices instead).
-  if (e->centsPerMIn == 0 && e->centsPerMOut == 0 && e->centsPerKCalls == 0)
-    return false;
-  return e->estCents() >= e->centsLimit;
+  // D1 (2026-10): every price tier counts, the built-in estimates included; only a
+  // provider whose whole spend resolves to no price at all ("cannot tell") gates
+  // nothing. Reversing D1 is this one line: test the provider's own rates instead.
+  PriceSummary sum;
+  const uint64_t cents = priceProvider(name, &sum);
+  return sum.anyPriced && cents >= e->centsLimit;
+}
+
+// ---- per-model pricing (2026-10) ------------------------------------------------
+
+const char* rateSrcName(RateSrc s) {
+  switch (s) {
+    case RateSrc::Owner:        return "owner";
+    case RateSrc::Router:       return "router";
+    case RateSrc::Provider:     return "provider";
+    case RateSrc::BuiltinModel:
+    case RateSrc::BuiltinProv:  return "est";
+    case RateSrc::None:         break;
+  }
+  return "none";
+}
+
+namespace {
+
+constexpr uint64_t kM = 1000000ULL;
+
+uint64_t mulSat(uint64_t a, uint64_t b, bool& sat) {
+  if (a != 0 && b > UINT64_MAX / a) { sat = true; return UINT64_MAX; }
+  return a * b;
+}
+uint64_t addSat(uint64_t a, uint64_t b, bool& sat) {
+  if (UINT64_MAX - a < b) { sat = true; return UINT64_MAX; }
+  return a + b;
+}
+
+// floor(t * r / 1e6) without an intermediate overflow: with t = a*M + b and
+// r = c*M + d it is a*r + b*c + floor(b*d / M) (b, d < M, so b*c and b*d fit).
+uint64_t costMicroSat(uint64_t t, uint64_t r, bool& sat) {
+  const uint64_t a = t / kM, b = t % kM, c = r / kM, d = r % kM;
+  uint64_t v = mulSat(a, r, sat);
+  v = addSat(v, mulSat(b, c, sat), sat);
+  return addSat(v, b * d / kM, sat);
+}
+
+// Pick one field through the tiers: the first non-zero value wins.
+void pickField(uint64_t& v, RateSrc& src, uint64_t cand, RateSrc candSrc) {
+  if (v == 0 && cand != 0) { v = cand; src = candSrc; }
+}
+
+// The running micro-USD total of one provider's estimate. Each component's cents are
+// floor(running total) - floor(running total before it), so the parts add up
+// exactly to the one floor of the whole; a saturated total reads UINT64_MAX.
+struct MicroSum {
+  uint64_t micro = 0, cents = 0;
+  bool     sat = false;
+  // Tokens at a rate; cache reads at 0.1x and writes at 1.25x of the input rate.
+  void addTokens(const TokenDelta& t, const EffRate& r) {
+    micro = addSat(micro, costMicroSat(t.in, r.in, sat), sat);
+    micro = addSat(micro, costMicroSat(t.out, r.out, sat), sat);
+    micro = addSat(micro, costMicroSat(t.cacheR, r.in, sat) / 10, sat);
+    micro = addSat(micro, costMicroSat(mulSat(t.cacheW, 5, sat), r.in, sat) / 4, sat);
+  }
+  void addCalls(uint64_t calls, uint64_t microPerK) {
+    micro = addSat(micro, mulSat(calls, microPerK, sat) / 1000ULL, sat);
+  }
+  uint64_t take() {   // this component's cents
+    const uint64_t now = sat ? UINT64_MAX : micro / 10000ULL;
+    const uint64_t part = now - cents;
+    cents = now;
+    return part;
+  }
+};
+
+// Whether a component with this spend resolved to a price, and whether that price
+// leaned on a built-in estimate.
+void notePriced(PriceSummary& s, const TokenDelta& t, const EffRate& r) {
+  const bool inSide = (t.in || t.cacheR || t.cacheW) && r.in;
+  const bool outSide = t.out && r.out;
+  if (inSide || outSide) s.anyPriced = true;
+  if ((inSide && rateSrcIsEstimate(r.srcIn)) || (outSide && rateSrcIsEstimate(r.srcOut)))
+    s.approx = true;
+}
+
+// The legacy formula's terms cannot wrap (so the fast path stays exact).
+bool legacyFits(const ProviderBudget& e) {
+  const uint64_t r = e.centsPerMIn > e.centsPerMOut ? e.centsPerMIn : e.centsPerMOut;
+  const uint64_t lim = r ? UINT64_MAX / (r * 5ULL) : UINT64_MAX;
+  return e.tokensIn <= lim && e.tokensOut <= lim && e.cacheRead <= lim && e.cacheWrite <= lim;
+}
+
+TokenDelta periodTokens(const ProviderBudget& e) {
+  TokenDelta t;
+  t.in = e.tokensIn;
+  t.out = e.tokensOut;
+  t.cacheR = e.cacheRead;
+  t.cacheW = e.cacheWrite;
+  return t;
+}
+
+uint64_t minU(uint64_t a, uint64_t b) { return a < b ? a : b; }
+
+// A row's share, clamped field by field to what its provider still has unclaimed.
+TokenDelta claim(const ModelSpend& r, TokenDelta& rem) {
+  TokenDelta t;
+  t.in = minU(r.tokIn, rem.in);
+  t.out = minU(r.tokOut, rem.out);
+  t.cacheR = minU(r.cacheR, rem.cacheR);
+  t.cacheW = minU(r.cacheW, rem.cacheW);
+  rem.in -= t.in;
+  rem.out -= t.out;
+  rem.cacheR -= t.cacheR;
+  rem.cacheW -= t.cacheW;
+  return t;
+}
+
+// The bit-exact fast path: the provider's own rates fully price its spend and no
+// model row claims any of it -> ProviderBudget::estCents(), verbatim.
+bool fastPathApplies(const ProviderBudget& e, bool anyRow) {
+  const bool noTokens = periodTokens(e).empty();
+  const bool tokensPriced = (e.centsPerMIn && e.centsPerMOut) || noTokens;
+  const bool callsPriced = e.calls == 0 || e.centsPerKCalls != 0;
+  return !anyRow && tokensPriced && callsPriced && legacyFits(e);
+}
+
+void fillFastPath(const ProviderBudget& e, PriceSummary& s) {
+  s.fastPath = true;
+  s.cents = e.estCents();
+  s.callCents = (uint64_t)e.calls * e.centsPerKCalls / 1000ULL;
+  s.resCents = s.cents - s.callCents;
+  const TokenDelta t = periodTokens(e);
+  s.resIn = t.in;
+  s.resOut = t.out;
+  s.resCr = t.cacheR;
+  s.resCw = t.cacheW;
+  s.resRate.in = (uint64_t)e.centsPerMIn * 10000ULL;
+  s.resRate.out = (uint64_t)e.centsPerMOut * 10000ULL;
+  s.resRate.srcIn = e.centsPerMIn ? RateSrc::Provider : RateSrc::None;
+  s.resRate.srcOut = e.centsPerMOut ? RateSrc::Provider : RateSrc::None;
+  s.anyPriced = !t.empty() || (e.calls && e.centsPerKCalls);
+}
+
+}  // namespace
+
+uint64_t costMicro(uint64_t tokens, uint64_t microPerM) {
+  bool sat = false;
+  const uint64_t v = costMicroSat(tokens, microPerM, sat);
+  return sat ? UINT64_MAX : v;
+}
+
+EffRate UsageLedger::effectiveRate(const std::string& prov, const char* model) const {
+  EffRate r;
+  if (!model) model = "";
+  const ProviderBudget* e = find(prov);
+  const char* p = prov.c_str();
+  if (const ModelRate* o = models_.ownerRate(p, model)) {
+    pickField(r.in, r.srcIn, o->microIn, RateSrc::Owner);
+    pickField(r.out, r.srcOut, o->microOut, RateSrc::Owner);
+  }
+  if (prov == "cumulo") {
+    if (const ModelRate* rt = models_.routerRate(p, model)) {
+      pickField(r.in, r.srcIn, rt->microIn, RateSrc::Router);
+      pickField(r.out, r.srcOut, rt->microOut, RateSrc::Router);
+    }
+  }
+  if (e) {
+    pickField(r.in, r.srcIn, (uint64_t)e->centsPerMIn * 10000ULL, RateSrc::Provider);
+    pickField(r.out, r.srcOut, (uint64_t)e->centsPerMOut * 10000ULL, RateSrc::Provider);
+  }
+  if (const BuiltinPrice* b = builtinModelPrice(p, model)) {
+    pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinModel);
+    pickField(r.out, r.srcOut, b->microOut, RateSrc::BuiltinModel);
+  }
+  if (const BuiltinPrice* b = builtinDefaultPrice(p, model)) {
+    pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinProv);
+    pickField(r.out, r.srcOut, b->microOut, RateSrc::BuiltinProv);
+  }
+  return r;
+}
+
+EffRate UsageLedger::residualRate(const std::string& prov) const {
+  EffRate r;
+  const char* p = prov.c_str();
+  if (const ProviderBudget* e = find(prov)) {
+    pickField(r.in, r.srcIn, (uint64_t)e->centsPerMIn * 10000ULL, RateSrc::Provider);
+    pickField(r.out, r.srcOut, (uint64_t)e->centsPerMOut * 10000ULL, RateSrc::Provider);
+  }
+  // Fail-closed: the HIGHEST model price the owner (or the router) set for this
+  // provider, per field, so unattributed spend is never priced below a known model.
+  uint64_t hiIn = 0, hiOut = 0;
+  RateSrc hiInSrc = RateSrc::None, hiOutSrc = RateSrc::None;
+  auto scan = [&](const std::vector<ModelRate>& v, RateSrc src) {
+    for (const ModelRate& m : v) {
+      if (std::strcmp(m.prov, p) != 0) continue;
+      if (m.microIn > hiIn) { hiIn = m.microIn; hiInSrc = src; }
+      if (m.microOut > hiOut) { hiOut = m.microOut; hiOutSrc = src; }
+    }
+  };
+  scan(models_.ownerRates(), RateSrc::Owner);
+  if (prov == "cumulo") scan(models_.routerRates(), RateSrc::Router);
+  pickField(r.in, r.srcIn, hiIn, hiInSrc);
+  pickField(r.out, r.srcOut, hiOut, hiOutSrc);
+  if (const BuiltinPrice* b = builtinDefaultPrice(p, "")) {
+    pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinProv);
+    pickField(r.out, r.srcOut, b->microOut, RateSrc::BuiltinProv);
+  }
+  return r;
+}
+
+EffRate UsageLedger::rowRate(const std::string& prov, const char* model) const {
+  if (model && std::strcmp(model, kOtherModel) == 0) return residualRate(prov);
+  return effectiveRate(prov, model);
+}
+
+uint64_t UsageLedger::callRate(const std::string& prov, RateSrc* src) const {
+  uint64_t v = 0;
+  RateSrc s = RateSrc::None;
+  if (const ProviderBudget* e = find(prov))
+    pickField(v, s, (uint64_t)e->centsPerKCalls * 10000ULL, RateSrc::Provider);
+  if (const BuiltinPrice* b = builtinSlotDefault(prov.c_str()))
+    pickField(v, s, b->microPerKCalls, RateSrc::BuiltinProv);
+  if (src) *src = s;
+  return v;
+}
+
+namespace {
+
+bool rowOf(const ModelSpend& r, const ProviderBudget& e) {
+  return std::strcmp(r.prov, e.name.c_str()) == 0 && UsageLedger::inPeriod(e, r);
+}
+
+bool anyInPeriodRow(const UsageLedger& L, const ProviderBudget& e) {
+  for (const auto& r : L.models().rows())
+    if (rowOf(r, e) && (r.tokIn || r.tokOut || r.cacheR || r.cacheW)) return true;
+  return false;
+}
+
+// The in-period model rows of one provider, each at its own price, clamped to the
+// provider counters (a row can never claim more than its provider recorded this
+// period). `rem` leaves with what no row claimed: the residual.
+void priceRows(const UsageLedger& L, const ProviderBudget& e, MicroSum& m, TokenDelta& rem,
+               PriceSummary& s, RowPrice* out) {
+  const auto& rows = L.models().rows();
+  for (size_t i = 0; i < rows.size() && i < ModelLedger::kMaxRows; ++i) {
+    if (!rowOf(rows[i], e)) continue;
+    const TokenDelta t = claim(rows[i], rem);
+    if (t.empty()) continue;
+    const EffRate rate = L.rowRate(e.name, rows[i].model);
+    m.addTokens(t, rate);
+    notePriced(s, t, rate);
+    const uint64_t part = m.take();
+    if (out) {
+      out[i].take = t;
+      out[i].rate = rate;
+      out[i].cents = part;
+    }
+  }
+}
+
+void priceCalls(MicroSum& m, PriceSummary& s) {
+  if (s.calls) {
+    m.addCalls(s.calls, s.callRate);
+    if (s.callRate) {
+      s.anyPriced = true;
+      if (rateSrcIsEstimate(s.callSrc)) s.approx = true;
+    }
+  }
+  s.callCents = m.take();
+}
+
+}  // namespace
+
+uint64_t UsageLedger::priceProvider(const std::string& name, PriceSummary* out,
+                                    RowPrice* rows) const {
+  PriceSummary s;
+  if (rows)
+    for (size_t i = 0; i < ModelLedger::kMaxRows; ++i) rows[i] = RowPrice{};
+  const ProviderBudget* e = find(name);
+  if (e) {
+    s.calls = e->calls;
+    s.callRate = callRate(name, &s.callSrc);
+    if (fastPathApplies(*e, anyInPeriodRow(*this, *e))) {
+      fillFastPath(*e, s);
+    } else {
+      MicroSum m;
+      TokenDelta rem = periodTokens(*e);
+      priceRows(*this, *e, m, rem, s, rows);
+      s.resIn = rem.in;
+      s.resOut = rem.out;
+      s.resCr = rem.cacheR;
+      s.resCw = rem.cacheW;
+      s.resRate = residualRate(name);
+      if (!rem.empty()) {
+        m.addTokens(rem, s.resRate);
+        notePriced(s, rem, s.resRate);
+      }
+      s.resCents = m.take();
+      priceCalls(m, s);
+      s.cents = m.cents;
+    }
+  }
+  if (out) *out = s;
+  return s.cents;
+}
+
+bool UsageLedger::anyPriced(const std::string& name) const {
+  PriceSummary s;
+  priceProvider(name, &s);
+  return s.anyPriced;
 }
 
 // ---- serialization -----------------------------------------------------------
@@ -283,31 +603,142 @@ void UsageLedger::deserialize(const std::string& s) {
 
 // ---- UsageHistory --------------------------------------------------------------
 
-void UsageHistory::record(const std::string& prov, uint32_t dayKey, uint64_t tokIn,
-                          uint64_t tokOut, uint32_t calls) {
-  if (prov.empty() || dayKey == 0) return;   // no sane clock -> no dated bucket
-  for (auto& e : entries_) {
-    if (e.dayKey == dayKey && e.prov == prov) {
-      e.tokIn += tokIn;
-      e.tokOut += tokOut;
-      e.calls += calls;
-      return;
-    }
-  }
+namespace {
+bool histModelOk(const char* m) {
+  return m && (!*m || std::strcmp(m, kOtherModel) == 0 || modelKeySafe(m));
+}
+uint64_t bucketTokens(const DayUsage& e) { return e.tokIn + e.tokOut + e.cacheR + e.cacheW; }
+void mergeInto(DayUsage& dst, const DayUsage& src) {
+  dst.tokIn += src.tokIn;
+  dst.tokOut += src.tokOut;
+  dst.calls += src.calls;
+  dst.cacheR += src.cacheR;
+  dst.cacheW += src.cacheW;
+}
+void setModel(DayUsage& e, const char* m) {
+  const size_t n = std::strlen(m);
+  const size_t k = n < kModelKeyCap - 1 ? n : kModelKeyCap - 1;
+  std::memcpy(e.model, m, k);
+  e.model[k] = 0;
+}
+}  // namespace
+
+DayUsage* UsageHistory::find(uint32_t dayKey, const std::string& prov, const char* model) {
+  for (auto& e : entries_)
+    if (e.dayKey == dayKey && e.prov == prov && std::strcmp(e.model, model) == 0) return &e;
+  return nullptr;
+}
+
+size_t UsageHistory::countDay(uint32_t dayKey) const {
+  size_t n = 0;
+  for (const auto& e : entries_)
+    if (e.dayKey == dayKey) ++n;
+  return n;
+}
+
+DayUsage* UsageHistory::push(const std::string& prov, const char* model, uint32_t dayKey) {
   if (entries_.size() >= kMaxEntries) {
     // Evict the OLDEST bucket to make room (the graphs only show recent windows).
     size_t oldest = 0;
     for (size_t i = 1; i < entries_.size(); ++i)
       if (entries_[i].dayKey < entries_[oldest].dayKey) oldest = i;
-    entries_.erase(entries_.begin() + oldest);
+    entries_.erase(entries_.begin() + (std::ptrdiff_t)oldest);
   }
-  DayUsage d;
+  entries_.emplace_back();
+  DayUsage& d = entries_.back();
   d.dayKey = dayKey;
-  d.prov = prov;
-  d.tokIn = tokIn;
-  d.tokOut = tokOut;
-  d.calls = calls;
-  entries_.push_back(std::move(d));
+  d.prov = prov;   // a provider id fits the string's inline buffer: no allocation
+  setModel(d, model);
+  return &d;
+}
+
+// Free one bucket on a full day: the provider with the most buckets that day folds
+// its smallest named bucket into its ~other bucket (or, with no ~other bucket yet,
+// its two smallest named buckets become one ~other bucket). Provider totals per day
+// are unchanged; only model attribution is coarsened.
+size_t UsageHistory::countDayProv(uint32_t dayKey, const std::string& prov) const {
+  size_t n = 0;
+  for (const auto& e : entries_)
+    if (e.dayKey == dayKey && e.prov == prov) ++n;
+  return n;
+}
+
+namespace {
+bool isOtherBucket(const DayUsage& e) { return std::strcmp(e.model, kOtherModel) == 0; }
+
+// The two smallest named buckets of (day, prov), as indexes (n = none).
+void twoSmallest(const std::vector<DayUsage>& v, uint32_t day, const std::string& prov,
+                 size_t& a, size_t& b) {
+  const size_t n = v.size();
+  a = b = n;
+  for (size_t i = 0; i < n; ++i) {
+    if (v[i].dayKey != day || v[i].prov != prov || isOtherBucket(v[i])) continue;
+    if (a == n || bucketTokens(v[i]) < bucketTokens(v[a])) { b = a; a = i; }
+    else if (b == n || bucketTokens(v[i]) < bucketTokens(v[b])) b = i;
+  }
+}
+}  // namespace
+
+bool UsageHistory::foldOnePair(uint32_t dayKey) {
+  const DayUsage* busiest = nullptr;   // the provider with the most buckets that day
+  size_t most = 0;
+  for (const auto& e : entries_) {
+    if (e.dayKey != dayKey) continue;
+    const size_t n = countDayProv(dayKey, e.prov);
+    if (n > most) { most = n; busiest = &e; }
+  }
+  if (most < 2) return false;
+  const std::string prov = busiest->prov;   // a provider id: inline, no allocation
+  size_t a, b;
+  twoSmallest(entries_, dayKey, prov, a, b);
+  if (a == entries_.size()) return false;
+  if (DayUsage* other = find(dayKey, prov, kOtherModel)) {
+    mergeInto(*other, entries_[a]);
+    entries_.erase(entries_.begin() + (std::ptrdiff_t)a);
+    return true;
+  }
+  if (b == entries_.size()) return false;
+  mergeInto(entries_[a], entries_[b]);
+  setModel(entries_[a], kOtherModel);
+  entries_.erase(entries_.begin() + (std::ptrdiff_t)b);
+  return true;
+}
+
+// The bucket a (day, prov, model) record lands in, creating it within the per-day
+// cap: a 13th distinct (prov, model) on a day goes to (day, prov, ~other).
+DayUsage* UsageHistory::bucketFor(const std::string& prov, const char* model, uint32_t dayKey) {
+  if (DayUsage* e = find(dayKey, prov, model)) return e;
+  if (countDay(dayKey) < kMaxPerDay) return push(prov, model, dayKey);
+  if (DayUsage* o = find(dayKey, prov, kOtherModel)) return o;
+  // No ~other bucket for this provider yet and no room: its smallest named bucket
+  // that day becomes it (spend kept, attribution coarsened).
+  DayUsage* smallest = nullptr;
+  for (auto& e : entries_) {
+    if (e.dayKey != dayKey || e.prov != prov) continue;
+    if (!smallest || bucketTokens(e) < bucketTokens(*smallest)) smallest = &e;
+  }
+  if (smallest) {
+    setModel(*smallest, kOtherModel);
+    return smallest;
+  }
+  // The provider has no bucket that day at all: fold another provider's pair to
+  // make room (only impossible with more than kMaxPerDay providers in one day, when
+  // the bucket is created anyway - spend is never dropped).
+  foldOnePair(dayKey);
+  return push(prov, model, dayKey);
+}
+
+void UsageHistory::record(const std::string& prov, const char* model, uint32_t dayKey,
+                          const TokenDelta& d, uint32_t calls) {
+  if (prov.empty() || dayKey == 0) return;   // no sane clock -> no dated bucket
+  if (!histModelOk(model)) model = "";       // an unsafe key records unattributed
+  if (entries_.capacity() < kMaxEntries) entries_.reserve(kMaxEntries);   // once
+  DayUsage* e = bucketFor(prov, model, dayKey);
+  e->tokIn += d.in;
+  e->tokOut += d.out;
+  e->calls += calls;
+  e->cacheR += d.cacheR;
+  e->cacheW += d.cacheW;
 }
 
 int UsageHistory::prune(uint32_t todayKey, uint32_t keepDays) {
@@ -332,12 +763,18 @@ std::string UsageHistory::serialize() const {
     out.push_back('|'); appendU64(out, e.tokIn);
     out.push_back('|'); appendU64(out, e.tokOut);
     out.push_back('|'); appendU64(out, e.calls);
+    // 2026-10 tail (fields 6-8), each present only when it or a later one is set.
+    const int tail = e.cacheW ? 3 : e.cacheR ? 2 : e.model[0] ? 1 : 0;
+    if (tail >= 1) { out.push_back('|'); out += e.model; }
+    if (tail >= 2) { out.push_back('|'); appendU64(out, e.cacheR); }
+    if (tail >= 3) { out.push_back('|'); appendU64(out, e.cacheW); }
   }
   return out;
 }
 
 void UsageHistory::deserialize(const std::string& s) {
   entries_.clear();
+  if (entries_.capacity() < kMaxEntries) entries_.reserve(kMaxEntries);   // once
   size_t i = 0, n = s.size();
   while (i < n) {
     size_t semi = s.find(';', i);
@@ -345,8 +782,8 @@ void UsageHistory::deserialize(const std::string& s) {
     std::string group = s.substr(i, semi - i);
     i = semi + 1;
     if (group.empty()) continue;
-    std::string parts[5];
-    int np = splitBars(group, parts, 5);
+    std::string parts[8];
+    int np = splitBars(group, parts, 8);
     if (np < 5 || parts[1].empty()) continue;   // malformed group -> skip
     if (entries_.size() >= kMaxEntries) break;
     DayUsage d;
@@ -355,9 +792,34 @@ void UsageHistory::deserialize(const std::string& s) {
     d.tokIn  = (uint64_t)strtoull(parts[2].c_str(), nullptr, 10);
     d.tokOut = (uint64_t)strtoull(parts[3].c_str(), nullptr, 10);
     d.calls  = (uint32_t)strtoul(parts[4].c_str(), nullptr, 10);
+    if (np > 5 && histModelOk(parts[5].c_str())) setModel(d, parts[5].c_str());
+    if (np > 6) d.cacheR = (uint64_t)strtoull(parts[6].c_str(), nullptr, 10);
+    if (np > 7) d.cacheW = (uint64_t)strtoull(parts[7].c_str(), nullptr, 10);
     if (d.dayKey == 0) continue;
     entries_.push_back(std::move(d));
   }
+}
+
+size_t historyEntryJson(const DayUsage& e, bool first, char* out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  int n = snprintf(out, cap, "%s{\"d\":%lu,\"prov\":\"%.15s\",\"in\":%llu,\"out\":%llu,\"calls\":%lu",
+                   first ? "" : ",", (unsigned long)e.dayKey, e.prov.c_str(),
+                   (unsigned long long)e.tokIn, (unsigned long long)e.tokOut,
+                   (unsigned long)e.calls);
+  if (n < 0 || (size_t)n >= cap) return 0;
+  size_t off = (size_t)n;
+  auto more = [&](int k) {
+    if (k < 0 || off + (size_t)k >= cap) return false;
+    off += (size_t)k;
+    return true;
+  };
+  if (e.model[0] && !more(snprintf(out + off, cap - off, ",\"m\":\"%s\"", e.model))) return 0;
+  if (e.cacheR && !more(snprintf(out + off, cap - off, ",\"cr\":%llu", (unsigned long long)e.cacheR)))
+    return 0;
+  if (e.cacheW && !more(snprintf(out + off, cap - off, ",\"cw\":%llu", (unsigned long long)e.cacheW)))
+    return 0;
+  if (!more(snprintf(out + off, cap - off, "}"))) return 0;
+  return off;
 }
 
 }  // namespace orch

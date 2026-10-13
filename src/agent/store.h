@@ -1,6 +1,10 @@
 #pragma once
 #include <Arduino.h>
 
+#include <string>
+#include <vector>
+
+#include "nimbus/orch/model_ledger.h"   // TokenDelta, ModelRate, RateEdit (per-model prices)
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
 
 // store - device configuration accessors for the Orchestrator subsystem, backed
@@ -376,26 +380,48 @@ void   recordProviderTokens(const String& provider, uint32_t tokensIn,
 void   recordProviderTokens(const String& provider, uint32_t tokensIn,
                             uint32_t tokensOut, uint32_t cacheRead,
                             uint32_t cacheWrite, const char* tag);
+// + the model (2026-10, per-model prices): `model` is the usageModelKey ("" =
+// provider level only). Files the same spend under (provider, model) in the model
+// ledger (/data/usage_models.txt) and the (day, provider, model) history bucket.
+// Bounded: O(32 + 720) per call, no allocation that outlives it, no new task.
+void   recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta& d,
+                            const char* tag, const char* model);
 void   recordProviderCall(const String& provider);                     // per search call
 bool   providerOverBudget(const String& provider);                     // gate before spend
 bool   setProviderBudget(const String& provider, uint64_t tokenLimit,
                          uint32_t callLimit, uint8_t resetDay,
                          uint64_t centsLimit = 0);                      // owner web edit (W16: + $ cap in cents)
-// Owner-editable price rates for $ estimates (display-time only, never enforcement):
-// cents per 1M input tokens / 1M output tokens / 1000 calls. 0 = unset.
+// The owner's provider FALLBACK prices (cents per 1M input / 1M output tokens /
+// 1000 calls; 0 = unset): they price every model of the provider with no price of
+// its own. They feed the $ estimate and so arm the $ cap (enforcement inputs).
 bool   setProviderRates(const String& provider, uint32_t centsPerMIn,
                         uint32_t centsPerMOut, uint32_t centsPerKCalls);
-String providerUsageJson();   // JSON array: [{prov,tokens,calls,...,tokIn,tokOut,totIn,totOut,totCalls,rateIn,rateOut,rateCall,centsLimit,estCents}]
+// The owner's price for one model (micro-USD per 1M tokens; 0:0 clears it), stored
+// in /data/usage_mrates.txt (never NVS). Full answers without changing anything;
+// WriteFailed restores the table and reports "lfs_mrates" to the persist ledger, so
+// the route's SaveScope answers 507 (CUM-479).
+nimbus::orch::RateEdit setModelRate(const String& provider, const char* model,
+                                    uint32_t microIn, uint32_t microOut);
+// The Cumulo router's prices from the verify harvest (verify task only, never the
+// turn path), stored in /data/usage_rprices.txt. False when the file did not store.
+bool   replaceRouterPrices(const std::vector<nimbus::orch::ModelRate>& rows);
+// The models an owner may price for `provider`: comma-separated keys (the mrate
+// allowlist, nimbus::orch::editableHas).
+std::string editableModels(const String& provider);
+String providerUsageJson();   // JSON array: [{prov,tokens,calls,...,tokIn,tokOut,totIn,totOut,totCalls,rateIn,rateOut,rateCall,centsLimit,estCents,approx}]
 // W16: compact per-provider budget view for the MODEL (device.status usage.budget):
 // period counters + $ estimate vs ceilings + reset day. No tags/all-time detail -
 // that stays on the web Usage page; this is what PLANNING needs.
 String providerBudgetJson();
-// Daily usage buckets for the Usage-pane graphs: {"today":<dayKey>,"days":[{d,prov,in,out,calls}]}
+// Daily usage buckets for the Usage-pane graphs: {"today":<dayKey>,"days":[{d,prov,in,out,calls[,m,cr,cw]}]}
 // (UTC days-since-epoch; ~60 days retained; LittleFS-backed). Returns a
-// heap_caps_malloc'd buffer - PSRAM-preferred, up to ~90 KB at the bucket cap, so
+// heap_caps_malloc'd buffer - PSRAM-preferred, up to ~170 KB at the bucket cap, so
 // it must NEVER be copied into an internal-heap String; stream it chunked and
 // free() it when done (nullptr on alloc failure). outLen = payload bytes.
 char* usageHistoryJsonPs(size_t& outLen);
+// GET /api/usage/models (nimbus::orch::writeUsageModelsJson): per-model spend and
+// prices, the residual, the Prices table rows. Same buffer contract as above.
+char* usageModelsJsonPs(size_t& outLen);
 
 }  // namespace store
 }  // namespace agent
