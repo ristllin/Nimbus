@@ -273,6 +273,10 @@ resolve the selector the same way, splitting the upstream off, routing to
 id the router prices). This
 lets one key drive the orchestrator on one upstream and sub-agents on another,
 with embeddings/vision/STT/TTS available where the chosen upstream supports them.
+A reasoning model may answer with a list of content chunks instead of a string
+(Mistral's `mistral-large-4-0` sends a `thinking` chunk, then `text` chunks; an
+Anthropic reply can lead with a `thinking` block): every reader on the device and a
+hosted instance takes only the `text` chunks, in order, as the answer.
 Get the key from your Cumulo Nimbus account (see
 [Use your Cumulo key](cloud/cumulo-key.md)); paste it into the Cumulo Nimbus row
 under Assistant > Models > Providers & keys.

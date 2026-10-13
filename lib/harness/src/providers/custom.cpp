@@ -5,6 +5,7 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/orch/reply_text.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/orch_schema.h"       // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - usage extraction
@@ -155,8 +156,8 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
   if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }
 
-  std::string reply = anthropic ? std::string((const char*)(doc["content"][0]["text"] | ""))
-                                : std::string((const char*)(doc["choices"][0]["message"]["content"] | ""));
+  std::string reply = anthropic ? nimbus::orch::messagesContentText(doc["content"])
+                                : nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
   if (reply.empty()) return FabricErr::ParseFail;
 
   char id[24]; snprintf(id, sizeof(id), "c%08lx", (unsigned long)(pd.nowMs ? pd.nowMs() : 0));
@@ -363,7 +364,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
   nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
-  outJson = (const char*)(doc["choices"][0]["message"]["content"] | "");
+  outJson = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
   if (outJson.empty()) { err = "no message content"; return false; }
   convId = "chat";   // stateless host: marker keeps per-host conv bookkeeping happy
   return true;

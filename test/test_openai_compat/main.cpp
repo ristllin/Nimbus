@@ -216,10 +216,48 @@ static void test_compat_sub_deadline_by_endpoint() {
   }
 }
 
+// A reasoning model's chunk-list content: the router's mistral upstream answers
+// mistral-large-4-0 with [{"type":"thinking",...},{"type":"text",...}] (bench, 13 Oct
+// 2026), and a Messages reply can lead with a thinking block. Both read as the
+// answer, never as an unreadable result (FabricErr::ParseFail) for a helper that ran.
+static void test_chunk_list_content_reads_as_the_answer() {
+  FakeProviderDeps rig;
+  rig.http.script.push_back({"", "", 200,
+      "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":null,\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"count words\"}]},"
+      "{\"type\":\"text\",\"text\":\"The Duty raises standards.\"}]}}]}"});
+  rig.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"plan\"},"
+      "{\"type\":\"text\",\"text\":\"hi-ant\"}]}"});
+  agent::providers::ProviderDeps pd = rig.contract();
+  CompatEndpoint mis;
+  mis.host = "app.cumulo-nimbus.ai";
+  mis.basePath = "/router/mistral/v1";
+  mis.key = "routerkey";
+  mis.model = "mistral-large-4-0";
+  mis.backendTag = "cumulo";
+  char jobId[72] = {};
+  TEST_ASSERT_TRUE(openaiCompatDispatch(pd, mis, makeDirective(), jobId) == agent::FabricErr::Ok);
+  agent::ResultEnvelope env;
+  TEST_ASSERT_TRUE(openaiCompatPoll(pd, "cumulo", jobId, env) == agent::FabricErr::Ok);
+  TEST_ASSERT_EQUAL_STRING("The Duty raises standards.", env.reply);
+
+  CompatEndpoint ant = mis;
+  ant.basePath = "/router/anthropic/v1";
+  ant.model = "claude-sonnet-5";
+  ant.wire = CompatWire::AnthropicMessages;
+  char jobId2[72] = {};
+  TEST_ASSERT_TRUE(openaiCompatDispatch(pd, ant, makeDirective(), jobId2) == agent::FabricErr::Ok);
+  agent::ResultEnvelope env2;
+  TEST_ASSERT_TRUE(openaiCompatPoll(pd, "cumulo", jobId2, env2) == agent::FabricErr::Ok);
+  TEST_ASSERT_EQUAL_STRING("hi-ant", env2.reply);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
   RUN_TEST(test_anthropic_wire_hits_messages_not_chat);
+  RUN_TEST(test_chunk_list_content_reads_as_the_answer);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_429_names_the_window);
   RUN_TEST(test_cum544_zai_sub_carries_low_effort);

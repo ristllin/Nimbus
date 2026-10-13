@@ -9,6 +9,7 @@
 #include "../agent_config.h"   // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
+#include "nimbus/orch/reply_text.h"
 #include "../../sys/net_util.h"
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/fetch_policy.h"
@@ -250,8 +251,10 @@ int scanVerdict(const std::string& headText, const std::string& url,
   tlsClose(c);
   arbiter::releaseWork();
   if (je) { reason = "scan: bad response"; return -1; }
-  const char* txt = p.anthropic ? (resp["content"][0]["text"] | "")
-                                : (resp["choices"][0]["message"]["content"] | "");
+  // The content may be a chunk list (a reasoning model's thinking, then its text).
+  const std::string answer = p.anthropic ? nimbus::orch::messagesContentText(resp["content"])
+                                         : nimbus::orch::chatContentText(resp["choices"][0]["message"]["content"]);
+  const char* txt = answer.c_str();
   if (!txt[0]) {
     const char* em = resp["error"]["message"] | "";
     reason = em[0] ? (std::string("scan: ") + em) : "scan: empty reply";

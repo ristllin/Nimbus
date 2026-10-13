@@ -5,6 +5,7 @@
 #include <string>
 
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/reply_text.h"
 #include "wire.h"
 
 // openai_compat - a PORTABLE synchronous sub-session over the OpenAI
@@ -65,7 +66,9 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
     JsonObject u = doc["messages"].to<JsonArray>().add<JsonObject>();
     u["role"] = "user";
     u["content"] = instr;
-    filter["content"][0]["text"] = true;
+    JsonObject blk = filter["content"].add<JsonObject>();   // every block: type + text
+    blk["type"] = true;
+    blk["text"] = true;
   } else {
     path = ep.basePath + "/chat/completions";
     JsonArray msgs = doc["messages"].to<JsonArray>();
@@ -141,8 +144,9 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
   if (code <= 0) return wire::subTransportErr(pd, t0, deadlineMs);
   if (code != 200) return compatHttpErr(code, d, out, backendTag);
-  std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
-                                : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));
+  // The content may be a chunk list (a reasoning model's thinking, then its text).
+  std::string reply = anthropic ? nimbus::orch::messagesContentText(out["content"])
+                                : nimbus::orch::chatContentText(out["choices"][0]["message"]["content"]);
   if (reply.empty()) return FabricErr::ParseFail;
 
   char id[24];

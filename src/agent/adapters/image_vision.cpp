@@ -9,6 +9,7 @@
 #include "../../sys/agent_log.h"
 #include "../../sys/net_util.h"      // tlsClose, tlsSetup
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
+#include "nimbus/orch/reply_text.h"
 #include "../agent_config.h"         // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
 #include "../store.h"
 
@@ -318,7 +319,7 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
     for (JsonVariantConst blk : doc["content"].as<JsonArrayConst>())
       if (blk["type"] == "text") { out = blk["text"] | ""; break; }
   } else {
-    out = doc["choices"][0]["message"]["content"] | "";
+    out = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]).c_str();
   }
   out.trim();
   alogf("vision: described %u bytes -> %u chars", (unsigned)raw, (unsigned)out.length());
