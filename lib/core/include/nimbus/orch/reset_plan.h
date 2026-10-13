@@ -12,12 +12,22 @@
 // happens to reuse them. Its format() is no better here: it rewrites only the two
 // superblock blocks. On the bench a FULL reset left the deleted routines file
 // readable in a raw read of the partition (41 hits of the previous owner's routine
-// text). So the FULL reset erases every block of the partition after everything
-// else that writes or removes files has run, then lays down an empty file system,
-// right before the restart. Nothing on it needs to survive: it holds only private
+// text). So the FULL reset erases every block of the partition and lays down an
+// empty file system. Nothing on it needs to survive: it holds only private
 // data (routines, chat state, per-chat memory, the member table, usage history,
 // logs, staged audio) and rebuildable caches (provider catalogs); the board
 // identity the reset keeps lives in NVS.
+//
+// The order of the FULL tail is the contract the tests pin:
+//   1. The internal file area erase runs FIRST, before the settings are touched.
+//      It unmounts LittleFS, so no later writer can put bytes back on it; and if
+//      the erase cannot finish (an erase error, power lost, a crash), the device
+//      still has its settings, so it never reads factory-fresh over readable data.
+//      An erase error stops the tail there and the owner is told (the only step
+//      that may stop it, and only before the settings are erased).
+//   2. Then the settings (NVS) and the crash dump.
+//   3. The SD card's final sweep runs LAST, right before the restart, so a late
+//      writer during the erase above (it takes several seconds) is mopped up.
 //
 // The settings-only reset (no storage erase) keeps its behavior: NVS identity
 // reset, crash-dump erase, restart.
@@ -27,12 +37,15 @@ namespace orch {
 enum class ResetStep : uint8_t {
   ResetNvs = 0,      // erase NVS, keep only the board identity, seed setup mode
   EraseCoreDump,     // a crash dump captures task stacks (keys, message text)
-  FinalSweep,        // re-sweep the file trees a late writer could have refilled
+  FinalSweep,        // re-sweep the card's file trees a late writer could have refilled
   ScrubInternalFs,   // erase every block of the internal file area, then an empty FS
   Restart,
   Count              // sentinel: a new step must find its place in the plans
 };
 const char* resetStepStr(ResetStep s);
+// True for a step whose failure stops the tail (the owner is told and the device
+// keeps running with its settings). Only steps before ResetNvs may stop it.
+bool resetStepMayStop(ResetStep s);
 
 struct ResetPlan {
   const ResetStep* steps;

@@ -495,14 +495,19 @@ static void buildState(String& out) {
   // Data store for orchestrator vectors/episodic: the SD card (16 GB+) when mounted,
   // else internal LittleFS flash. Reported as doubles (bytes) - a 16 GB card overflows
   // uint32 - with a label so the UI shows the right device + adaptive units.
-  d["fsTotal"]    = (uint32_t)LittleFS.totalBytes();   // internal flash (firmware/config)
-  d["fsUsed"]     = (uint32_t)LittleFS.usedBytes();
+  // No LittleFS walk while a storage erase runs: a full factory reset unmounts the
+  // internal file area (scrubInternalFs) under this polled request otherwise.
+  const bool fsUp = !agent::memory::erasing();
+  const uint32_t fsTotal = fsUp ? (uint32_t)LittleFS.totalBytes() : 0;
+  const uint32_t fsUsed  = fsUp ? (uint32_t)LittleFS.usedBytes() : 0;
+  d["fsTotal"]    = fsTotal;   // internal flash (firmware/config)
+  d["fsUsed"]     = fsUsed;
   const bool sd = solide::storage::available();
   d["storeSD"]    = sd;
   d["storeLabel"] = sd ? "SD card" : "internal flash";
-  d["storeTotal"] = sd ? (double)solide::storage::cardSizeMB() * 1048576.0 : (double)LittleFS.totalBytes();
+  d["storeTotal"] = sd ? (double)solide::storage::cardSizeMB() * 1048576.0 : (double)fsTotal;
   d["storeFree"]  = sd ? (double)solide::storage::freeMB()   * 1048576.0
-                       : (double)(LittleFS.totalBytes() - LittleFS.usedBytes());
+                       : (double)(fsTotal - fsUsed);
   // Named-unit twins (owner: storeFree/Total read ambiguously vs sdprobe's MB
   // fields). The unnamed originals stay in BYTES for the page's sz() formatter.
   if (sd) {

@@ -56,14 +56,15 @@ bool      factoryEraseWouldRefuse();
 // usage, loops, TTS/staging audio, the safety log's /log). Best-effort mop -
 // the NVS erase has already happened, so a failure is logged, never refused.
 bool      finalSweepPass();
-// The FULL reset's last step before the restart (nimbus/orch/reset_plan.h): erase
-// EVERY block of the internal file area (the LittleFS partition) and lay down an
-// empty file system. Deleting files only unlinks them; their old blocks stay
-// readable in a raw read of the flash until reused, and LittleFS's format rewrites
-// only the superblock. Unmounts LittleFS first, so nothing reaches the partition
-// through the file system afterwards: call it only right before a restart.
-// Feeds the caller's watchdog between 64 KB erases. False when an erase or the
-// format failed (best-effort like finalSweepPass: NVS is already erased by then).
+// The FULL reset's internal-file-area step (order: nimbus/orch/reset_plan.h): erase
+// EVERY block of the LittleFS partition and lay down an empty file system.
+// Deleting files only unlinks them; their old blocks stay readable in a raw read
+// of the flash until reused, and LittleFS's format rewrites only the superblock.
+// Unmounts LittleFS first (under the engine lock), and nothing remounts it, so no
+// writer reaches the partition afterwards: call it only on the way to a restart.
+// Feeds the caller's watchdog between 64 KB erases. False when an erase failed:
+// the reset then stops before the settings are touched. A format failure is
+// logged only (the blocks are already erased; the next boot formats them).
 bool      scrubInternalFs();
 
 // Load config + persisted state, bind the embedder, register tools. Safe to call

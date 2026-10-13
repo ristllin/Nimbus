@@ -112,13 +112,15 @@ server - findings are weighted by real reachability.
   and any crash dump, across internal flash and the SD card. The authoritative
   path list lives in `agent::memory::eraseAllPrivateData()`
   (src/agent/memory_subsystem.cpp); prose lists drift, so this doc deliberately
-  does not repeat it. Deleting a file only unlinks it, so as its last step before
-  the restart the full reset also erases every block of the internal file area
-  (the flash partition that holds routines, chat state, and logs) and lays down
-  an empty file system (`agent::memory::scrubInternalFs()`, order pinned by
-  `nimbus/orch/reset_plan.h`), so even a raw read of that partition finds nothing
-  of the previous owner (NVS and the crash-dump area are erased as well). **The
-  SD card is different.** The reset deletes Nimbus's
+  does not repeat it. Deleting a file only unlinks it, so the full reset also
+  erases every block of the internal file area (the flash partition that holds
+  routines, chat state, and logs) and lays down an empty file system
+  (`agent::memory::scrubInternalFs()`, order pinned by `nimbus/orch/reset_plan.h`),
+  so even a raw read of that partition finds nothing of the previous owner (NVS
+  and the crash-dump area are erased as well). That erase runs before the
+  settings are erased: if it cannot finish, the reset stops and says so, and the
+  device keeps its settings, so it never reads factory-fresh over data that
+  survived. **The SD card is different.** The reset deletes Nimbus's
   files on the card but does not overwrite the card, so recovery software can
   still read deleted data from it, and **Format Card** rebuilds the card's file
   system without overwriting the old data either. To hand a device to someone

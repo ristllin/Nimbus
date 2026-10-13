@@ -226,7 +226,9 @@ bool factoryEraseWouldRefuse() {
 // The sidecar sweep, shared by eraseAllPrivateData and the pre-restart mop
 // (finalSweepPass): LittleFS /data, loose audio, /audio, /log on both tiers,
 // SD /music + settings mirror. Absent paths count as erased.
-static bool sweepSidecars() {
+// The internal-flash half (LittleFS). Skipped once scrubInternalFs() has run: the
+// partition is unmounted and blank by then, and every call would log "not mounted".
+static bool sweepInternalSidecars() {
   bool ok = rmTreeIfPresent(LittleFS, "/data");
   LittleFS.mkdir("/data");
   // Loose private files outside any tree: the last push-to-talk recording, the
@@ -240,13 +242,26 @@ static bool sweepSidecars() {
   // wipe the /log tree on BOTH tiers (errlog writes to SD when present, else
   // LittleFS; a device that changed tiers can have both).
   ok = rmTreeIfPresent(LittleFS, "/log") && ok;
-  if (g_haveSd && effHaveSd()) {
-    ok = rmTreeIfPresent(*g_fs, "/log") && ok;
-    ok = rmTreeIfPresent(*g_fs, "/music") && ok;    // owner-uploaded music
-    ok = rmTreeIfPresent(*g_fs, "/memory") && ok;   // solide settings mirror (nimbus_cfg.bin)
-  }
   return ok;
 }
+
+// The SD card half.
+static bool sweepCardSidecars() {
+  if (!g_haveSd || !effHaveSd()) return true;
+  bool ok = rmTreeIfPresent(*g_fs, "/log");
+  ok = rmTreeIfPresent(*g_fs, "/music") && ok;    // owner-uploaded music
+  ok = rmTreeIfPresent(*g_fs, "/memory") && ok;   // solide settings mirror (nimbus_cfg.bin)
+  return ok;
+}
+
+static bool sweepSidecars() {
+  bool ok = sweepInternalSidecars();
+  return sweepCardSidecars() && ok;
+}
+
+// Set once scrubInternalFs() has unmounted LittleFS: from then on only the card is
+// left for the final sweep to mop.
+static bool g_internalFsScrubbed = false;
 
 bool finalSweepPass() {
   // The last word before ESP.restart() (release-gate verifier, 2026-10-04): any
@@ -257,14 +272,19 @@ bool finalSweepPass() {
   // a false here is loudly Serial-logged by the caller but cannot refuse (the
   // NVS erase has already happened).
   esp_task_wdt_reset();
-  bool ok = sweepSidecars();
+  // After the scrub the internal file area is unmounted and blank (and nothing can
+  // write it again before the restart), so only the card half is left.
+  bool ok = g_internalFsScrubbed || sweepInternalSidecars();
+  ok = sweepCardSidecars() && ok;
   // Re-sweep the WHOLE store root, not just /mem/trace: the skills and files
   // tools recreate their own directories under /mem and nothing gates them
   // (verifier round 2). The store is already empty, so this is cheap, and it
   // catches any writer added later without this list needing to know.
-  const char* root = g_haveSd ? "/mem" : "/data";
-  ok = rmTreeIfPresent(*g_fs, root) && ok;
-  g_fs->mkdir(root);   // the next boot expects the empty parent
+  if (g_haveSd || !g_internalFsScrubbed) {
+    const char* root = g_haveSd ? "/mem" : "/data";
+    ok = rmTreeIfPresent(*g_fs, root) && ok;
+    g_fs->mkdir(root);   // the next boot expects the empty parent
+  }
   return ok;
 }
 
@@ -279,21 +299,30 @@ bool scrubInternalFs() {
     alog("memory: no internal file area partition - nothing to erase");
     return true;
   }
+  // Unmount under the engine lock: the web/MCP memory handlers persist through it,
+  // so none of them is inside LittleFS at that instant, and once it is unmounted
+  // nothing can reach the partition (nothing remounts it before the restart).
+  lock();
   LittleFS.end();   // no-op when it was never mounted (Notifier mode)
-  bool ok = true;
+  g_internalFsScrubbed = true;
+  unlock();
+  bool erased = true;
   uint32_t off = 0, len = 0;
   for (uint32_t i = 0; nimbus::orch::scrubChunk(part->size, i, off, len); ++i) {
     esp_err_t e = esp_partition_erase_range(part, off, len);
     if (e != ESP_OK) e = esp_partition_erase_range(part, off, len);   // one retry
-    ok = (e == ESP_OK) && ok;
+    erased = (e == ESP_OK) && erased;
     esp_task_wdt_reset();   // one 64 KB block erase can take up to ~2 s
   }
   // An empty, valid file system for the next boot, so it mounts without a
   // mount-failure-then-format pass. Formats by partition: the label-based
-  // LittleFS.format() has no label when Notifier mode never mounted it.
-  ok = (esp_littlefs_format_partition(part) == ESP_OK) && ok;
-  alogf("memory: internal file area erased (%u bytes) ok=%d", (unsigned)part->size, (int)ok);
-  return ok;
+  // LittleFS.format() has no label when Notifier mode never mounted it. A format
+  // failure leaves only erased blocks (nothing private), and the next boot's
+  // mount formats them, so it is logged but does not fail the scrub.
+  const bool formatted = esp_littlefs_format_partition(part) == ESP_OK;
+  alogf("memory: internal file area erased (%u bytes) erased=%d formatted=%d",
+        (unsigned)part->size, (int)erased, (int)formatted);
+  return erased;
 }
 
 bool eraseAllPrivateData() {
@@ -388,6 +417,7 @@ void begin() {
   g_haveSd = (g_fs != &LittleFS);
   g_vecPath = g_haveSd ? kVecSdPath : kVecLfsPath;
   g_epiPath = g_haveSd ? kEpiSdPath : kEpiLfsPath;
+  LittleFS.mkdir("/data");   // routines, chat state, member table: LittleFS on every tier
   g_fs->mkdir(g_haveSd ? "/mem" : "/data");  // parent dir for the blobs; neither FS
                          // auto-creates it, so an absent dir made every persist fopen
                          // fail silently (state lost across reboot). Idempotent.

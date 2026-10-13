@@ -5190,10 +5190,26 @@ static void factoryResetPreserveIdentity() {
   }
 }
 
+// A full reset that could not erase everything: say so honestly and keep running
+// (no restart into a device that reads factory-fresh while private data survived).
+// Durable logs come back on; the poll task stays down until the owner retries or
+// restarts. The memory barrier stays up whenever the store erase began.
+static void failFactoryErase(const char* serialLine) {
+  nimbus::errlog::setSuspended(false);
+  g_factoryEraseSd = false;
+  Serial.println(serialLine);
+  g_askOverride = "Couldn't erase storage. Try again, or restart the device.";
+  g_askSticky = true; g_askPage = 0;
+  renderScreen(attn::ScreenId::Ask, -1);
+  emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
+                         nimbus::action::Outcome::Failed);   // error tone
+}
+
 // One step of the factory-reset tail (the plan and its order: nimbus/orch/
 // reset_plan.h, host-tested). Each step starts with a watchdog feed: the sweep and
-// a timed-out quiesce can near the 8 s budget before the tail even starts.
-static void runFactoryResetStep(nimbus::orch::ResetStep step) {
+// a timed-out quiesce can near the 8 s budget before the tail even starts. Returns
+// false only for a step that may stop the tail (resetStepMayStop) and failed.
+static bool runFactoryResetStep(nimbus::orch::ResetStep step) {
   using nimbus::orch::ResetStep;
   esp_task_wdt_reset();
   switch (step) {
@@ -5216,9 +5232,7 @@ static void runFactoryResetStep(nimbus::orch::ResetStep step) {
       // before LittleFS is unmounted under it (returns at once when the poll task
       // is already gone, or never existed in Notifier mode).
       agent::telegram::quiesce(3000);
-      if (!agent::memory::scrubInternalFs())
-        Serial.println("FACTORY RESET: internal file area erase incomplete (see scrubInternalFs)");
-      break;
+      return agent::memory::scrubInternalFs();   // false: an erase failed, stop here
     case ResetStep::Restart:
       delay(50);
       ESP.restart();
@@ -5226,6 +5240,7 @@ static void runFactoryResetStep(nimbus::orch::ResetStep step) {
     case ResetStep::Count:
       break;
   }
+  return true;
 }
 
 void loop() {
@@ -5319,20 +5334,19 @@ void loop() {
       // store erase began; the one sub-path where it is not (the store
       // refused before any delete - a card demoted during the quiesce) erased
       // nothing at all, which is equally safe.
-      nimbus::errlog::setSuspended(false);
-      g_factoryEraseSd = false;
-      Serial.println("FACTORY RESET failed mid-sweep -> a delete failed on existing data");
-      g_askOverride = "Couldn't erase storage. Try again, or restart the device.";
-      g_askSticky = true; g_askPage = 0;
-      renderScreen(attn::ScreenId::Ask, -1);
-      emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
-                             nimbus::action::Outcome::Failed);   // error tone
+      failFactoryErase("FACTORY RESET failed mid-sweep -> a delete failed on existing data");
     } else {
-      // The tail runs the host-tested plan (nimbus/orch/reset_plan.h) step by step:
-      // the FULL reset ends with the whole-partition erase of the internal file
-      // area; the settings-only reset is NVS + crash dump + restart, as before.
+      // The tail runs the host-tested plan (nimbus/orch/reset_plan.h) step by step.
+      // FULL: erase the internal file area, then the settings and crash dump, then
+      // the card's final sweep, then restart. Settings-only: NVS + crash dump +
+      // restart, as before. Only the erase may stop the tail, and it runs before
+      // the settings are touched, so a stop leaves the device as it was.
       const nimbus::orch::ResetPlan plan = nimbus::orch::factoryResetTail(g_factoryEraseSd);
-      for (size_t i = 0; i < plan.count; ++i) runFactoryResetStep(plan.steps[i]);
+      for (size_t i = 0; i < plan.count; ++i) {
+        if (runFactoryResetStep(plan.steps[i])) continue;
+        failFactoryErase("FACTORY RESET failed -> the internal file area did not erase");
+        break;
+      }
     }
   }
   if (g_sdResetPending) {  // web SD reset: erase the durable /mem store, keep config, reboot

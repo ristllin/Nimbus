@@ -15,12 +15,13 @@ const char* resetStepStr(ResetStep s) {
   return "?";
 }
 
-// FULL reset: everything that writes or removes files runs first, the whole-
-// partition erase runs last before the restart, so no later write can leave
-// private bytes behind in the internal file area.
+bool resetStepMayStop(ResetStep s) { return s == ResetStep::ScrubInternalFs; }
+
+// FULL reset (order and reasons: reset_plan.h): the internal file area erase
+// first, then the settings and the crash dump, then the card's final sweep.
 static constexpr ResetStep kFullTail[] = {
-    ResetStep::ResetNvs,   ResetStep::EraseCoreDump,   ResetStep::FinalSweep,
-    ResetStep::ScrubInternalFs, ResetStep::Restart,
+    ResetStep::ScrubInternalFs, ResetStep::ResetNvs, ResetStep::EraseCoreDump,
+    ResetStep::FinalSweep,      ResetStep::Restart,
 };
 // Settings-only reset: unchanged behavior (NVS identity reset, crash dump, restart).
 static constexpr ResetStep kSettingsTail[] = {
