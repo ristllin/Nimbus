@@ -48,9 +48,15 @@ std::string fallbackInstruction(const Delivery& d) {
 
 }  // namespace
 
+namespace {
+bool g_hostedWebChatAlias = false;   // set once by the hosted composition, never on a device
+}  // namespace
+
+void setHostedWebChatAlias(bool on) { g_hostedWebChatAlias = on; }
+
 DeliveryChannel deliveryChannelOf(const std::string& chatId) {
   if (chatId.empty()) return DeliveryChannel::OwnerDefault;
-  if (chatId == kWebChat || chatId == kHostedWebChatId) return DeliveryChannel::Web;
+  if (chatId == kWebChat || (g_hostedWebChatAlias && chatId == kHostedWebChatId)) return DeliveryChannel::Web;
   if (chatId == "voice") return DeliveryChannel::Voice;
   if (chatId == "serial") return DeliveryChannel::Serial;
   return DeliveryChannel::Telegram;

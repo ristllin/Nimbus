@@ -116,6 +116,14 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
 // page's turn (POST /api/chat) names the web UI, as the device's page does, and a
 // real Telegram message from an approved chat still says Telegram.
 static void testWebPageIsTheWebChannel(ndtest::Ctx& c) {
+  // The hosted rig opts in to the page alias at construction (a device never does).
+  nimbus::orch::setHostedWebChatAlias(false);
+  {
+    Config cfgA;
+    NimbusdRig probe(cfgA, opts("hp-alias"));
+    c.ok(nimbus::orch::deliveryChannelOf(nimbus::orch::kHostedWebChatId) == nimbus::orch::DeliveryChannel::Web,
+         "constructing the hosted rig turns the page alias on");
+  }
   std::printf("  -- a page message is the web UI, a Telegram message is Telegram --\n");
   clearEnv();
   setenv("CUMULO_API_KEY", "cumulo_sk_test_PROMPT", 1);

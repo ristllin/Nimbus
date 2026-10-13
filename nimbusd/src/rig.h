@@ -159,6 +159,9 @@ class NimbusdRig {
   // offline. Production passes nullptr and gets the owned DaemonHttpTransport.
   NimbusdRig(Config cfg, Options opt, agent::HttpTransport* httpOverride = nullptr)
       : cfg_(std::move(cfg)), opt_(std::move(opt)) {
+    // The hosted page chats as "owner" (kWebChatId): make the shared chat rule read it
+    // as the web chat for this process (a device never does this).
+    nimbus::orch::setHostedWebChatAlias(true);
     if (httpOverride) {
       http_ = httpOverride;
     } else {

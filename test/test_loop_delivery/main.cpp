@@ -153,7 +153,16 @@ void checkFireRequest(const LoopRecord& l, const Delivery& d, const char* msg) {
 static void test_channel_of_every_slug() {
   TEST_ASSERT_EQUAL(DeliveryChannel::OwnerDefault, deliveryChannelOf(""));
   TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf("web"));
-  TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf(nimbus::orch::kHostedWebChatId));   // CUM-542
+  // CUM-542 gate: "owner" is the hosted page's chat only when the hosted daemon opts
+  // in. On a device it stays what it always was (a Telegram chat id), so a device
+  // routine stored as "owner" is not resumed into a web chat nobody reads.
+  TEST_ASSERT_EQUAL(DeliveryChannel::Telegram, deliveryChannelOf(nimbus::orch::kHostedWebChatId));
+  nimbus::orch::setHostedWebChatAlias(true);
+  TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf(nimbus::orch::kHostedWebChatId));
+  TEST_ASSERT_EQUAL(DeliveryChannel::Web, deliveryChannelOf("web"));
+  TEST_ASSERT_EQUAL(DeliveryChannel::Telegram, deliveryChannelOf("123456789"));
+  nimbus::orch::setHostedWebChatAlias(false);
+  TEST_ASSERT_EQUAL(DeliveryChannel::Telegram, deliveryChannelOf(nimbus::orch::kHostedWebChatId));
   TEST_ASSERT_EQUAL(DeliveryChannel::Voice, deliveryChannelOf("voice"));
   TEST_ASSERT_EQUAL(DeliveryChannel::Serial, deliveryChannelOf("serial"));
   TEST_ASSERT_EQUAL(DeliveryChannel::Telegram, deliveryChannelOf("123456789"));

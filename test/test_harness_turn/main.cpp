@@ -656,6 +656,9 @@ static bool channelSays(const Rig& r, const char* where) {
 }
 
 static void test_cum542_web_page_chat_is_the_web_ui() {
+  // A device never opts in: "owner" stays a Telegram chat id there (gate finding).
+  TEST_ASSERT_FALSE(agent::isWebChat(nimbus::orch::kHostedWebChatId));
+  nimbus::orch::setHostedWebChatAlias(true);   // what the hosted daemon does at startup
   TEST_ASSERT_TRUE(agent::isWebChat("web") && agent::isWebChat(nimbus::orch::kHostedWebChatId));
   for (const char* other : {"1001", "-100200300", "voice", "serial", "", "owner2"})
     TEST_ASSERT_FALSE_MESSAGE(agent::isWebChat(other), other);
@@ -676,6 +679,7 @@ static void test_cum542_web_page_chat_is_the_web_ui() {
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_TRUE(hosted.attempts.back().inputs.find("(Your reply is delivered to the web chat.") !=
                    std::string::npos);
+  nimbus::orch::setHostedWebChatAlias(false);
 }
 
 // ---- CUM-544: a timeout fails over at once, and the notice says why ---------
