@@ -1090,11 +1090,14 @@ void tick() {
 
   // ALWAYS restart a Telegram poll paused for OTA headroom, once no OTA task holds
   // the memory: the check/install ended (success or any failure), a refusal
-  // released the claim, or the spawn never happened. A restart that cannot land yet
-  // (the old task still finishing its cycle, or no room for its stack) stays owed
-  // and is retried here every tick. A successful install never gets here: it holds
-  // the claim through its restart, and the poll starts with the new image.
-  g_pollLedger.tick(g_taskRunning.load(), [] { return pollHooksWired() && g_pollHooks->resume(); });
+  // released the claim, or the spawn never happened. The restart takes the same
+  // single-flight claim, so a web request cannot pause the poll again in the gap
+  // before the debt clears (it is refused "busy" for that instant instead). A
+  // restart that cannot land yet (the old task still finishing its cycle, or no
+  // room for its stack) stays owed and is retried here every tick. A successful
+  // install never gets here: it holds the claim through its restart, and the poll
+  // starts with the new image.
+  g_pollLedger.tick(g_taskRunning, [] { return pollHooksWired() && g_pollHooks->resume(); });
 
   // The !installing() guard is load-bearing for the USB path: a local install
   // arms a FRESH pending flag for the NEXT image and stays "installing" through the

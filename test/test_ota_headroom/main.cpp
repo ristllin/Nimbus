@@ -16,6 +16,7 @@
 
 #include <unity.h>
 
+#include <atomic>
 #include <cstdint>
 #include <initializer_list>
 
@@ -241,7 +242,7 @@ static void test_null_snapshot_never_guesses() {
 
 // The device glue's lifecycle over one request: the claim is held while the OTA task
 // runs (Spawned) and released at once otherwise; tick() runs the ledger step. A
-// resume seam that fails `resumeFailures` times first, then lands.
+// resume seam that fails `failuresLeft` times first, then lands.
 struct ResumeSeam {
   int calls = 0;
   int failuresLeft = 0;
@@ -281,14 +282,18 @@ static void test_every_path_restarts_a_paused_poll() {
     // Lifecycle: a spawned OTA task holds the claim while it runs. No restart then.
     ResumeSeam seam;
     seam.failuresLeft = mask % 3;   // 0..2 failed restarts before it lands
-    if (o.result == SpawnResult::Spawned) {
-      for (int t = 0; t < 5; ++t) ledger.tick(/*otaTaskRunning=*/true, [&] { return seam(); });
+    std::atomic<bool> claim{o.result == SpawnResult::Spawned};   // the OTA task holds it
+    if (claim.load()) {
+      for (int t = 0; t < 5; ++t) ledger.tick(claim, [&] { return seam(); });
       TEST_ASSERT_EQUAL_INT(0, seam.calls);
+      TEST_ASSERT_TRUE(claim.load());   // the tick never takes a held claim
+      claim.store(false);               // the task ends
     }
     // The task ends (success of a check, or any failure of either task), or it never
     // started and the refusal released the claim at once: the restart comes, retries
-    // until it lands, then stops (no thrash).
-    for (int t = 0; t < 10; ++t) ledger.tick(/*otaTaskRunning=*/false, [&] { return seam(); });
+    // until it lands, then stops (no thrash), and the claim is free again after.
+    for (int t = 0; t < 10; ++t) ledger.tick(claim, [&] { return seam(); });
+    TEST_ASSERT_FALSE(claim.load());
     if (o.paused) {
       TEST_ASSERT_EQUAL_INT(1 + mask % 3, seam.calls);
       TEST_ASSERT_FALSE(ledger.owed());
@@ -306,9 +311,29 @@ static void test_install_success_holds_until_restart() {
   PollResumeLedger ledger;
   ledger.notePaused();
   ResumeSeam seam;
-  for (int t = 0; t < 100; ++t) ledger.tick(/*otaTaskRunning=*/true, [&] { return seam(); });
+  std::atomic<bool> claim{true};   // held through esp_restart
+  for (int t = 0; t < 100; ++t) ledger.tick(claim, [&] { return seam(); });
   TEST_ASSERT_EQUAL_INT(0, seam.calls);
   TEST_ASSERT_TRUE(ledger.owed());
+}
+
+// The restart holds the claim while it runs, so a web request that arrives in the
+// gap between the restart and the debt clearing is refused "busy" instead of
+// pausing the poll again (which the ledger would then forget: the poll would stay
+// down until the next restart).
+static void test_restart_holds_the_claim_against_a_racing_request() {
+  PollResumeLedger ledger;
+  ledger.notePaused();
+  std::atomic<bool> claim{false};
+  bool requesterGotIn = true;
+  ledger.tick(claim, [&] {
+    bool expected = false;   // a requester on another task tries to claim mid-restart
+    requesterGotIn = claim.compare_exchange_strong(expected, true);
+    return true;
+  });
+  TEST_ASSERT_FALSE(requesterGotIn);
+  TEST_ASSERT_FALSE(ledger.owed());
+  TEST_ASSERT_FALSE(claim.load());   // released after the restart
 }
 
 // ---- the restart never runs two pollers ------------------------------------------
@@ -337,6 +362,7 @@ int main(int, char**) {
   RUN_TEST(test_null_snapshot_never_guesses);
   RUN_TEST(test_every_path_restarts_a_paused_poll);
   RUN_TEST(test_install_success_holds_until_restart);
+  RUN_TEST(test_restart_holds_the_claim_against_a_racing_request);
   RUN_TEST(test_restart_step_never_runs_two_pollers);
   return UNITY_END();
 }

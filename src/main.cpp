@@ -2812,7 +2812,7 @@ static void otaEventHook(int ev, const char* a, const char* b) {
       // install runs alongside the live poller (TLS is PSRAM-backed; the full
       // 3 MB download + verify keeps internal heap steady at ~52 KB). Only when
       // the OTA task's stack does not fit at all does otaupd pause the poller,
-      // BEFORE the spawn and through quiesce()/resume() (otaPollHooks above),
+      // BEFORE the spawn and through quiesce()/resume() (kOtaPollHooks below),
       // which join the task and keep its queues - never stop().
       agent::memory::captureEvent("ota", String("Update install started (") +
                                          (a ? a : "?") + ")");
@@ -2988,8 +2988,14 @@ void setup() {
     String st = otaupd::statusStr();
     if (st == "unsupported") return "Updates aren't available on this build.";
     if (st != "available" && st != "checking") {
-      if (!otaupd::requestCheck())
+      const char* why = "";
+      if (!otaupd::requestCheck(&why)) {
+        // From inside a turn the headroom pause cannot run (see the install
+        // refusal below), so a busy device is pointed at the web page.
+        if (why && strcmp(why, "low-heap") == 0)
+          return "Not enough free memory to check from this chat. Open Software update on the device's web page and choose Check for Updates.";
         return "Couldn't check for updates right now (network or memory busy). Try again in a minute.";
+      }
       st = "checking";
     }
     if (st == "checking") {   // ours or the scheduled one - wait for the verdict

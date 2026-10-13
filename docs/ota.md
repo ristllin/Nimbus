@@ -208,16 +208,20 @@ token) for the length of the update work:
   memory: when a check ends (any result), when an install fails or a dry run
   finishes, and when the device still cannot fit the worker and refuses. A
   restart of the poll that cannot happen yet is retried every second until it
-  does. A successful install restarts the device, and Telegram starts with the
-  new firmware.
-- **Nothing is lost.** While the poll is paused, Telegram messages wait at
-  Telegram and web chat messages wait in the device's queue; they are answered
-  once it is back (a check takes seconds, an install about two minutes).
+  does (`telegram: poll restart waits for memory` in `/api/log` while it waits).
+  A successful install restarts the device, and Telegram starts with the new
+  firmware.
+- **Nothing is dropped silently.** While the poll is paused, Telegram messages
+  wait at Telegram and are answered once it is back (a check takes seconds, an
+  install about two minutes). Web chat messages wait in the device's queue,
+  which holds a few; when it is full the page says so. The web page may show
+  Telegram as not live for that time.
 
 If memory is still short after the pause, the request is refused with the same
 answer as before: `409` with `err` `low-heap` and "Can't check now: low memory.
 Try again." Telegram `/update` runs inside a turn, so on a busy device it cannot
-use the pause and asks you to use **Install Update** on the web page instead.
+use the pause and points you to **Check for Updates** or **Install Update** on
+the web page instead.
 
 The worker logs its stack high-water mark when it ends (`ota: otacheck stack min
 free ...` in `/api/log`); the 16 KB stack stays until a bench run shows the real

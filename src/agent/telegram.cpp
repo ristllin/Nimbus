@@ -1382,6 +1382,12 @@ void pollTask(void*) {
         closePollSocket();
     }
 
+    // Quiesce: once asked to stop, start NO new work this cycle (an injected local
+    // turn, a voice note or file, job polling, reply sends). It all stays queued: a
+    // resume() picks it up, a factory reset discards it with the restart. Without
+    // this an OTA headroom pause could itself start a turn and then time out.
+    if (!g_running) break;
+
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
     // CUM-398: batch them the same way as Telegram - a burst of injects for one chat
     // becomes ONE turn per chat. The staging slot is single-consumer (tg_poll only)
@@ -1754,6 +1760,15 @@ bool resume() {
       pdPASS) {
     g_task = nullptr;
     g_running = false;
+    // The caller retries every tick; say so once a minute, with the number that
+    // decides it, so a heap that never re-forms the stack's block is visible.
+    static uint32_t s_lastLogMs = 0;
+    if (s_lastLogMs == 0 || millis() - s_lastLogMs >= 60000) {
+      s_lastLogMs = millis() ? millis() : 1;
+      alogf("telegram: poll restart waits for memory (largest %u, needs %u)",
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            (unsigned)POLL_STACK_BYTES);
+    }
     return false;
   }
   alog("telegram: poll task resumed");

@@ -3347,7 +3347,8 @@ void beginWeb(const WebConfig& wc) {
     const bool ok = otaupd::requestCheck(&why);
     // The check runs OFF this AsyncTCP task (requestCheck spawns the self-deleting
     // checkTask; the manifest fetch + verify never block here), so the accept is
-    // immediate and cannot outlive the tunnel/origin budget - the browser sees this
+    // immediate (on a busy device it may first pause the Telegram poll, bounded at
+    // about 4 s, docs/ota.md) and cannot outlive the tunnel/origin budget - the browser sees this
     // 202, never a raw upstream 5xx while the device quietly finishes the check
     // (CUM-441). The verdict is not in this body; the client polls /api/state for
     // the settled otaResult. "state":"checking" makes the accept self-describing.

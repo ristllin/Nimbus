@@ -40,28 +40,29 @@ static bool pauseForHeadroom(const SpawnHooks& h, PollResumeLedger& ledger, Spaw
 
 static bool trySpawn(const SpawnHooks& h, SpawnOutcome& out) {
   ++out.spawns;
-  return h.spawn && h.spawn(h.ctx);
+  const bool ok = h.spawn && h.spawn(h.ctx);
+  out.result = ok ? SpawnResult::Spawned : SpawnResult::SpawnFailed;
+  return ok;
+}
+
+// The gate passed but the stack still did not fit (the heap moved between the
+// measurement and the create): the same memory refusal, so the pause gets its
+// one chance here too. A pause that does not free enough leaves SpawnFailed.
+static void retryWithPause(const SpawnHooks& h, PollResumeLedger& ledger, SpawnOutcome& out) {
+  HeadroomInput again = h.snapshot(h.ctx);
+  again.spawnFailed = true;
+  if (decideHeadroom(again) != Headroom::PausePoll) return;
+  if (pauseForHeadroom(h, ledger, out)) trySpawn(h, out);
 }
 
 SpawnOutcome spawnWithHeadroom(const SpawnHooks& h, PollResumeLedger& ledger) {
-  SpawnOutcome out;
-  if (!h.snapshot) return out;   // LowMemory: no way to measure, never guess
+  SpawnOutcome out;              // LowMemory until a spawn is tried
+  if (!h.snapshot) return out;   // no way to measure: never guess
   const Headroom first = decideHeadroom(h.snapshot(h.ctx));
   if (first == Headroom::LowMemory) return out;
   if (first == Headroom::PausePoll && !pauseForHeadroom(h, ledger, out)) return out;
-  if (trySpawn(h, out)) {
-    out.result = SpawnResult::Spawned;
-    return out;
-  }
-  out.result = SpawnResult::SpawnFailed;
-  if (out.paused) return out;   // the pause already had its chance
-  // The gate passed but the stack still did not fit (the heap moved between the
-  // measurement and the create): the same memory refusal, so the pause gets its
-  // one chance here too.
-  HeadroomInput again = h.snapshot(h.ctx);
-  again.spawnFailed = true;
-  if (decideHeadroom(again) != Headroom::PausePoll) return out;
-  if (pauseForHeadroom(h, ledger, out) && trySpawn(h, out)) out.result = SpawnResult::Spawned;
+  if (trySpawn(h, out)) return out;
+  if (!out.paused) retryWithPause(h, ledger, out);   // at most one pause in all
   return out;
 }
 

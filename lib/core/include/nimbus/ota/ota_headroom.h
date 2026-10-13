@@ -59,28 +59,28 @@ enum class Headroom : uint8_t {
 Headroom decideHeadroom(const HeadroomInput& in);
 const char* headroomStr(Headroom h);   // "fits" / "pause-poll" / "low-memory"
 
-// Rule 4 as a ledger the device glue drives. notePaused() as the pause begins
-// (a pause that times out still stopped the poll loop, so it is owed too);
-// shouldResume() on every tick; noteResumed() with the restart's verdict.
-// Shared between the requesting task (web or main loop) and the main-loop tick,
-// so the flag is atomic; the OTA single-flight claim orders the two.
+// Rule 4 as a ledger the device glue drives: notePaused() as the pause begins (a
+// pause that times out still stopped the poll loop, so it is owed too), tick()
+// on every main-loop tick. The requesting task (web or main loop) and the tick
+// run on different tasks; the OTA single-flight claim orders them: a requester
+// pauses only while it holds the claim, and tick() restarts only while IT holds
+// the claim, so a pause can never land between a restart and the debt clearing.
 class PollResumeLedger {
  public:
   void notePaused() { owed_.store(true); }
   bool owed() const { return owed_.load(); }
-  // Restart now? Only while owed and only when no OTA task holds the memory.
-  bool shouldResume(bool otaTaskRunning) const { return owed_.load() && !otaTaskRunning; }
-  // A failed restart (the old task still exiting, or no room for its stack yet)
-  // stays owed and is retried on the next tick.
-  void noteResumed(bool ok) {
-    if (ok) owed_.store(false);
-  }
-  // One tick of rule 4, the exact step the device glue runs (otaupd::tick):
-  // restart when owed and no OTA task runs. Returns true when a restart was tried.
+  // One tick of rule 4, the exact step otaupd::tick() runs. When owed and the
+  // claim is free (no OTA task holds the memory, no requester is mid-pause), take
+  // the claim, restart, release. A failed restart (the old task still exiting, or
+  // no room for its stack yet) stays owed and is retried on the next tick.
+  // Returns true when a restart was tried.
   template <class Resume>
-  bool tick(bool otaTaskRunning, Resume&& resume) {
-    if (!shouldResume(otaTaskRunning)) return false;
-    noteResumed(resume());
+  bool tick(std::atomic<bool>& otaClaim, Resume&& resume) {
+    if (!owed()) return false;
+    bool expected = false;
+    if (!otaClaim.compare_exchange_strong(expected, true)) return false;
+    if (resume()) owed_.store(false);
+    otaClaim.store(false);
     return true;
   }
 
@@ -97,8 +97,8 @@ enum class PollRestart : uint8_t {
   Start,         // gone: start a fresh task on the live queues
 };
 constexpr PollRestart pollRestartStep(bool taskAlive, bool runFlag) {
-  return taskAlive ? (runFlag ? PollRestart::Running : PollRestart::WaitExit)
-                   : PollRestart::Start;
+  if (!taskAlive) return PollRestart::Start;
+  return runFlag ? PollRestart::Running : PollRestart::WaitExit;
 }
 
 // The device seams spawnWithHeadroom() runs against (the house hook pattern, like
