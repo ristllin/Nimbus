@@ -12,7 +12,11 @@
 namespace agent {
 
 void HeavyFabric::registerAdapter(ManagedAgentAdapter* a) {
-  if (adapterCount_ < MAX_ADAPTERS) adapters_[adapterCount_++] = a;
+  if (adapterCount_ < MAX_ADAPTERS) { adapters_[adapterCount_++] = a; return; }
+  // Every device backend is registered at boot, keyed or not; a backend past the
+  // table is unreachable, so say so instead of dropping it silently.
+  hlog::logf("fabric: adapter table full (%d), %s not registered", MAX_ADAPTERS,
+             a ? a->backendId() : "?");
 }
 
 void HeavyFabric::bindCategory(const char* category, const char* backendId) {

@@ -893,6 +893,40 @@ static void test_one_key_spawn_every_provider_slot() {
   }
 }
 
+// The device registers every backend at boot, keyed or not (CUM-541 bench: a
+// Cumulo key added after a factory reset left helpers "isn't configured" until a
+// restart). A backend that is registered but not yet set is refused with the real
+// reason, and works on the next spawn once its key (or endpoint) is added, with no
+// re-registration.
+static void test_backend_added_at_runtime_works_without_restart() {
+  for (const char* slug : {"zai", "cumulo", "custom"}) {
+    Rig r;
+    FakeAdapter late;
+    late.backend = slug;
+    r.fabric.registerAdapter(&late);
+    r.keyed = {};
+    r.build();
+    orch::Spawn s = sp("Summarise the UK FCA Consumer Duty");
+    s.provider = slug;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.plat.ms += 5000;
+    r.eng->pump();
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)late.dispatched.size(), slug);
+    const std::string what = std::string(slug) == "custom" ? " endpoint" : " key";
+    const std::string want = std::string("Couldn't start that agent on ") + slug + ". No " + slug +
+                             what + " is set. Add the" + what + " under Providers & models.";
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), slug);
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("isn't configured") == std::string::npos,
+                             slug);
+
+    r.keyed.insert(slug);   // the owner adds it on the web page; no restart
+    r.eng->enqueueSpawn(s, "chat1");
+    r.plat.ms += 5000;
+    r.eng->pump();
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)late.dispatched.size(), slug);
+  }
+}
+
 // ---- lifecycle hooks + spawn spend attribution -------------------------------
 
 static void test_hooks_spawn_and_result_fire() {
@@ -1695,6 +1729,7 @@ int main(int, char**) {
   RUN_TEST(test_one_key_spawn_connector_task_stays_off_the_router);
   RUN_TEST(test_one_key_spawn_no_provider_runs_on_router);
   RUN_TEST(test_one_key_spawn_every_provider_slot);
+  RUN_TEST(test_backend_added_at_runtime_works_without_restart);
   RUN_TEST(test_fresh_overflow_becomes_stub_not_drop);
   RUN_TEST(test_fresh_block_budget_bounds_the_seed);
   RUN_TEST(test_spill_called_with_full_text_every_result);

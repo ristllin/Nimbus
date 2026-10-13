@@ -213,7 +213,8 @@ owner picks a spawn's model). When neither a key nor the router offers the model
 nothing is sent and the owner hears the reason, for example *"Couldn't start that agent
 on openai. No openai key is set, and the Cumulo router does not offer
 openai/gpt-9. Add the key under Providers & models, or ask for a model the router
-lists."*
+lists."* A key or custom endpoint added later on the web page applies to the next
+spawn; no restart is needed.
 
 The model id is checked against the provider's choice list (live-harvested,
 else the cold-start list); an id outside it logs `spawn model coerced` and uses

@@ -264,16 +264,18 @@ void JobEngine::refuseKeyless(const PendingSpawn& p, const std::string& provider
   const std::string m = !model.empty() ? model : subModelOf(provider);
   const std::string want = m.empty() ? std::string() : routerSelector(provider, m);
   const bool named = router && !want.empty();   // the router selector that was asked for
-  std::string owner = "Couldn't start that agent on " + provider + ". No " + provider + " key is set";
-  std::string note = provider + " has no key here";
+  // The custom provider is a base URL the owner sets, not a key.
+  const std::string what = provider == "custom" ? " endpoint" : " key";
+  std::string owner = "Couldn't start that agent on " + provider + ". No " + provider + what + " is set";
+  std::string note = provider + " has no" + what + " here";
   if (named) {
     owner += ", and the Cumulo router does not offer " + want;
     note += " and the Cumulo router does not offer " + want +
             "; spawn it on cumulo with a model its [AVAILABLE MODELS] entry lists";
   }
-  owner += router ? ". Add the key under Providers & models, or ask for a model the router lists."
-                  : ". Add the key under Providers & models.";
-  hlog::logf("orchestrator: spawn refused (%s has no key%s%s)", provider.c_str(),
+  owner += router ? ". Add the" + what + " under Providers & models, or ask for a model the router lists."
+                  : ". Add the" + what + " under Providers & models.";
+  hlog::logf("orchestrator: spawn refused (%s has no%s%s%s)", provider.c_str(), what.c_str(),
              named ? ", router does not offer " : "", named ? want.c_str() : "");
   deliver(p.chatId, owner);
   noteSpawnRefused(p.chatId, p.name, p.task, note);

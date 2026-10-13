@@ -120,6 +120,24 @@ static void test_directive_skill_field_reaches_adapter() {
   TEST_ASSERT_EQUAL_STRING("deep_research", a.dispatched[0].skill.c_str());
 }
 
+static void test_every_device_backend_fits_the_table() {
+  // The device registers all six backends at boot, keyed or not, so a key added
+  // later works without a restart. Each must stay reachable by id, and a seventh
+  // must be refused loudly rather than dropped in silence.
+  const char* ids[] = {"anthropic", "openai", "mistral", "custom", "zai", "cumulo"};
+  FakeAdapter a[6];
+  HeavyFabric f;
+  for (int i = 0; i < 6; i++) { a[i].backend = ids[i]; f.registerAdapter(&a[i]); }
+  for (int i = 0; i < 6; i++) TEST_ASSERT_TRUE(f.adapterFor(ids[i]) == &a[i]);
+  TEST_ASSERT_FALSE(LogCapture::contains("adapter table full"));
+
+  FakeAdapter extra;
+  extra.backend = "seventh";
+  f.registerAdapter(&extra);
+  TEST_ASSERT_NULL(f.adapterFor("seventh"));
+  TEST_ASSERT_TRUE(LogCapture::contains("adapter table full (6), seventh not registered"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_dispatch_routes_by_category_binding);
@@ -129,6 +147,7 @@ int main(int, char**) {
   RUN_TEST(test_oversized_backend_prefix_logs_and_bails);
   RUN_TEST(test_null_log_sink_never_crashes);
   RUN_TEST(test_directive_skill_field_reaches_adapter);
+  RUN_TEST(test_every_device_backend_fits_the_table);
   UNITY_END();
   return 0;
 }

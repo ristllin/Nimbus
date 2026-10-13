@@ -25,6 +25,7 @@ static String bareHost(String h) {
 }
 
 FabricErr CumuloAdapter::dispatch(const Directive& d, char outJobId[72]) {
+  if (!store::hasCumuloKey()) return FabricErr::Auth;   // registered before a key exists
   // "<upstream>/<model>": the model the JobEngine resolved for this spawn (a router
   // pick it accepted, or a keyless provider's model it moved here, CUM-541), else
   // the configured sub model.

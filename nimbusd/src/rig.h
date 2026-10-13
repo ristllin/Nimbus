@@ -2231,10 +2231,11 @@ class NimbusdRig {
   }
 
   // ---- sub-agent fabric (device parity: adapters/adapter_factory.cpp) -------
-  // The five backends the device registers (anthropic/openai/mistral always; zai +
-  // cumulo when keyed there - here always, since a key can arrive in-app later and
-  // dispatch answers Auth without one). Each call resolves the CURRENT deps, key
-  // and model, mirroring the device adapters line for line.
+  // The backends the device registers, all of them whether keyed or not, since a
+  // key can arrive in-app later and dispatch answers Auth without one (the device
+  // also registers its custom endpoint; a hosted instance has none). Each call
+  // resolves the CURRENT deps, key and model, mirroring the device adapters line
+  // for line.
   void buildFabric() {
     journalStore_.reset(new FileJournalStore(memDir() + "/journal"));
     journal_.begin(journalStore_.get());   // re-attach unfinished jobs after a restart

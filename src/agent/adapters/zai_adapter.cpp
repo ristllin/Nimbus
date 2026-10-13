@@ -14,6 +14,7 @@ Capabilities ZaiAdapter::capabilities() const {
 }
 
 FabricErr ZaiAdapter::dispatch(const Directive& d, char outJobId[72]) {
+  if (!store::hasZaiKey()) return FabricErr::Auth;   // registered before a key exists
   String host = store::zaiBase();
   if (!host.length()) host = ZAI_HOST_PRIMARY;
   String model = store::subModel("zai");

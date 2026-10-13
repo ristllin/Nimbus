@@ -44,21 +44,21 @@ static void bindCategories(HeavyFabric& fabric, const String& cfg) {
 }
 
 void fabricInit(HeavyFabric& fabric) {
+  // Every backend is registered at boot whether or not it is configured yet; each
+  // dispatch answers Auth while its key (or the custom base URL) is absent.
+  // Registering Z.ai, the Cumulo router and the custom endpoint only when set at
+  // boot meant one added later on the web page left helpers on it failing with
+  // "Provider 'cumulo' isn't configured." until a restart (bench nimbus-light,
+  // v4.5.11, Cumulo key added after a factory reset).
   fabric.registerAdapter(&s_anthropic);
   fabric.registerAdapter(&s_openai);
-  fabric.registerAdapter(&s_mistral);  // dispatch checks the key (Auth when absent)
-  if (store::hasCustom()) {
-    fabric.registerAdapter(&s_custom);   // backend "custom" - proxy endpoint
-    alogf("fabric: custom backend (conv=%s)", store::customConv().c_str());
-  }
-  if (store::hasZaiKey()) {
-    fabric.registerAdapter(&s_zai);      // backend "zai" - Z.ai GLM
-    alog("fabric: zai backend (GLM)");
-  }
-  if (store::hasCumuloKey()) {
-    fabric.registerAdapter(&s_cumulo);   // backend "cumulo" - router
-    alog("fabric: cumulo backend (router)");
-  }
+  fabric.registerAdapter(&s_mistral);
+  fabric.registerAdapter(&s_custom);   // backend "custom" - proxy endpoint
+  fabric.registerAdapter(&s_zai);      // backend "zai" - Z.ai GLM
+  fabric.registerAdapter(&s_cumulo);   // backend "cumulo" - router
+  alogf("fabric: custom %s (conv=%s), zai %s, cumulo %s",
+        store::hasCustom() ? "set" : "not set", store::customConv().c_str(),
+        store::hasZaiKey() ? "keyed" : "no key yet", store::hasCumuloKey() ? "keyed" : "no key yet");
   // Legacy category bindings. The v2.x sub-session router (orchestrator.cpp
   // dispatchSpawn) routes by the per-spawn provider / store::subPriority(), NOT by
   // these category bindings, so HeavyFabric::dispatch() is no longer the spawn
