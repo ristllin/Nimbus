@@ -109,10 +109,22 @@ server - findings are weighted by real reachability.
   scraps everything the owner set, including the device name, and the unit re-onboards
   fresh with a new name. With "erase storage" it also runs the full private-data
   sweep in the same flow - memories, chat state, routines, logs, leftover audio,
-  and any crash dump, across internal flash and the SD card - so a handed-over
-  board carries nothing of its previous owner. The authoritative path list lives
-  in `agent::memory::eraseAllPrivateData()` (src/agent/memory_subsystem.cpp);
-  prose lists drift, so this doc deliberately does not repeat it. The erase
+  and any crash dump, across internal flash and the SD card. The authoritative
+  path list lives in `agent::memory::eraseAllPrivateData()`
+  (src/agent/memory_subsystem.cpp); prose lists drift, so this doc deliberately
+  does not repeat it. Deleting a file only unlinks it, so as its last step before
+  the restart the full reset also erases every block of the internal file area
+  (the flash partition that holds routines, chat state, and logs) and lays down
+  an empty file system (`agent::memory::scrubInternalFs()`, order pinned by
+  `nimbus/orch/reset_plan.h`), so even a raw read of that partition finds nothing
+  of the previous owner (NVS and the crash-dump area are erased as well). **The
+  SD card is different.** The reset deletes Nimbus's
+  files on the card but does not overwrite the card, so recovery software can
+  still read deleted data from it, and **Format Card** rebuilds the card's file
+  system without overwriting the old data either. To hand a device to someone
+  else, remove the card and keep it, or erase the card on a computer with a
+  format that overwrites the whole card (for example the overwrite option of the
+  SD Association's SD Memory Card Formatter). The erase
   REFUSES - keeping config, telling the owner to reseat the card and try again -
   whenever private data could survive somewhere it cannot reach: a card with
   memories that is not mounted (pulled since boot, or absent at boot according to

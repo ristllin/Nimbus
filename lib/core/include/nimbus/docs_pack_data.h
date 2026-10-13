@@ -2634,6 +2634,10 @@ switches until you reset it.
   Reset screen also offers Factory reset: the full erase - Wi-Fi and passwords,
   provider keys, paired computers, settings, memories, routines, and logs,
   including the SD card - after which the device restarts into first-time setup.
+  The device's internal storage is erased, not just its files deleted; files on
+  the SD card are deleted but not overwritten, so before giving the device away,
+  remove the card or erase it on a computer with an overwriting format (see the
+  security doc).
 - **On the web page:** Settings → Battery to pick a mode; Settings → Customize
   battery mode to change individual values; **Revert to Defaults** clears all
   overrides at once.

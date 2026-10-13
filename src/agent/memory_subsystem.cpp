@@ -1,5 +1,10 @@
 #include "memory_subsystem.h"
 
+#include <esp_littlefs.h>    // esp_littlefs_format_partition - the scrub's empty FS
+#include <esp_partition.h>   // esp_partition_erase_range - the scrub erases every block
+
+#include "nimbus/orch/reset_plan.h"   // scrubChunk: the erase plan (host-tested)
+
 
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -260,6 +265,34 @@ bool finalSweepPass() {
   const char* root = g_haveSd ? "/mem" : "/data";
   ok = rmTreeIfPresent(*g_fs, root) && ok;
   g_fs->mkdir(root);   // the next boot expects the empty parent
+  return ok;
+}
+
+// LittleFS's partition: memory::begin() mounts it with LittleFS.begin()'s default
+// label, so the scrub erases the same partition the file system lives on.
+static const char* kLfsPartitionLabel = "spiffs";
+
+bool scrubInternalFs() {
+  const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, kLfsPartitionLabel);
+  if (!part) {
+    alog("memory: no internal file area partition - nothing to erase");
+    return true;
+  }
+  LittleFS.end();   // no-op when it was never mounted (Notifier mode)
+  bool ok = true;
+  uint32_t off = 0, len = 0;
+  for (uint32_t i = 0; nimbus::orch::scrubChunk(part->size, i, off, len); ++i) {
+    esp_err_t e = esp_partition_erase_range(part, off, len);
+    if (e != ESP_OK) e = esp_partition_erase_range(part, off, len);   // one retry
+    ok = (e == ESP_OK) && ok;
+    esp_task_wdt_reset();   // one 64 KB block erase can take up to ~2 s
+  }
+  // An empty, valid file system for the next boot, so it mounts without a
+  // mount-failure-then-format pass. Formats by partition: the label-based
+  // LittleFS.format() has no label when Notifier mode never mounted it.
+  ok = (esp_littlefs_format_partition(part) == ESP_OK) && ok;
+  alogf("memory: internal file area erased (%u bytes) ok=%d", (unsigned)part->size, (int)ok);
   return ok;
 }
 

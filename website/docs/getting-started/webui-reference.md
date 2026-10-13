@@ -295,4 +295,8 @@ collapsible groups:
   themes, sound settings, the device name, and the device sign-in code) and
   restarts into first-time setup. Tick **Also erase storage** to also erase every
   memory, routine, and log, including the SD card. Both need the exact
-  confirmation phrase typed.
+  confirmation phrase typed. The device's internal storage is erased, not just its
+  files deleted, but files on the SD card are deleted, not overwritten, and
+  **Format Card** does not overwrite them either: before giving the device to
+  someone else, remove the card, or erase it on a computer with a format that
+  overwrites the whole card.

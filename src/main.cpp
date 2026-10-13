@@ -82,6 +82,7 @@
 #include "hw/ring_out.h"
 #include "hw/selftest.h"   // device health-check engine + device.* tools + SELFTEST
 #include "sys/ota_update.h"   // OTA firmware update (boot guard + check/install)
+#include "nimbus/orch/reset_plan.h"   // factory-reset tail order + internal FS erase plan
 #include "sys/usb_updater.h"  // USB serial firmware update listener (production-only pump)
 #include "modes/notifier_mode.h"
 #include "nimbus/attention.h"
@@ -5183,6 +5184,44 @@ static void factoryResetPreserveIdentity() {
   }
 }
 
+// One step of the factory-reset tail (the plan and its order: nimbus/orch/
+// reset_plan.h, host-tested). Each step starts with a watchdog feed: the sweep and
+// a timed-out quiesce can near the 8 s budget before the tail even starts.
+static void runFactoryResetStep(nimbus::orch::ResetStep step) {
+  using nimbus::orch::ResetStep;
+  esp_task_wdt_reset();
+  switch (step) {
+    case ResetStep::ResetNvs:
+      factoryResetPreserveIdentity();   // wipes NVS, keeps ONLY the hardware identity
+      break;
+    case ResetStep::EraseCoreDump:
+#if __has_include(<esp_core_dump.h>)
+      // A crash dump captures task stacks, which can hold keys or message text in
+      // transit; a factory-fresh device must not carry one from its previous owner.
+      esp_core_dump_image_erase();      // best-effort; absent/blank partition is fine
+#endif
+      break;
+    case ResetStep::FinalSweep:
+      if (!agent::memory::finalSweepPass())
+        Serial.println("FACTORY RESET: final mop pass incomplete (see finalSweepPass)");
+      break;
+    case ResetStep::ScrubInternalFs:
+      // One more bounded chance for a turn that outlived the first quiesce to end
+      // before LittleFS is unmounted under it (returns at once when the poll task
+      // is already gone, or never existed in Notifier mode).
+      agent::telegram::quiesce(3000);
+      if (!agent::memory::scrubInternalFs())
+        Serial.println("FACTORY RESET: internal file area erase incomplete (see scrubInternalFs)");
+      break;
+    case ResetStep::Restart:
+      delay(50);
+      ESP.restart();
+      break;
+    case ResetStep::Count:
+      break;
+  }
+}
+
 void loop() {
   esp_task_wdt_reset();
 #ifdef NIMBUS_NOTIFIER_DEBUG
@@ -5231,7 +5270,9 @@ void loop() {
     // Wi-Fi onboarding wizard. Everything the owner set - keys/token/bonds/config AND the
     // device name - is scrapped; the unit re-onboards fresh with a new name + mDNS.
     // g_factoryEraseSd additionally erases every private durable byte in the same
-    // flow; the authoritative path list lives in agent::memory::eraseAllPrivateData().
+    // flow; the authoritative path list lives in agent::memory::eraseAllPrivateData(),
+    // and the tail ends by erasing every block of the internal file area
+    // (scrubInternalFs, order in nimbus/orch/reset_plan.h): a delete only unlinks.
     Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + storage, restart"
                                     : "FACTORY RESET -> keep identity, erase config, restart");
     // Progress screen with an honest duration; also buys the panel ~2.2 s to paint
@@ -5281,18 +5322,11 @@ void loop() {
       emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
                              nimbus::action::Outcome::Failed);   // error tone
     } else {
-      esp_task_wdt_reset();   // the sweep + a timed-out quiesce can near the 8s budget
-      factoryResetPreserveIdentity();   // wipes NVS, keeps ONLY the hardware identity
-      esp_task_wdt_reset();   // a 5-sector NVS erase + 64KB coredump erase cost ~0.5s
-#if __has_include(<esp_core_dump.h>)
-      // A crash dump captures task stacks, which can hold keys or message text in
-      // transit; a factory-fresh device must not carry one from its previous owner.
-      esp_core_dump_image_erase();      // best-effort; absent/blank partition is fine
-#endif
-      if (g_factoryEraseSd && !agent::memory::finalSweepPass())
-        Serial.println("FACTORY RESET: final mop pass incomplete (see finalSweepPass)");
-      delay(50);
-      ESP.restart();
+      // The tail runs the host-tested plan (nimbus/orch/reset_plan.h) step by step:
+      // the FULL reset ends with the whole-partition erase of the internal file
+      // area; the settings-only reset is NVS + crash dump + restart, as before.
+      const nimbus::orch::ResetPlan plan = nimbus::orch::factoryResetTail(g_factoryEraseSd);
+      for (size_t i = 0; i < plan.count; ++i) runFactoryResetStep(plan.steps[i]);
     }
   }
   if (g_sdResetPending) {  // web SD reset: erase the durable /mem store, keep config, reboot
