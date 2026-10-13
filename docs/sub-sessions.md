@@ -245,8 +245,9 @@ it are left out, while a long earlier message (part of the work) is kept.
 **A sub that may have started is reported as a timeout, not as a failed
 start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs inside one
 synchronous request (Mistral's `POST /v1/conversations` with a 60 s read
-deadline, the chat-completions or Messages request of the others with 30 s), so
-a slow one outlasts the deadline; an OpenAI sub's `POST /v1/responses` and an
+deadline, a Z.ai sub's chat-completions request with 50 s, a Cumulo router sub's
+chat-completions or Messages request with 120 s, or 50 s on the router's zai
+upstream, and a custom-endpoint sub's with 30 s), so a slow one outlasts the deadline; an OpenAI sub's `POST /v1/responses` and an
 Anthropic sub's first turn (`POST /v1/sessions/<id>/events`) start a billed run
 of their own. Every sub dispatcher reads a transport failure of that request by
 one rule (`wire::subTransportErr`, `lib/harness/src/providers/wire.h`, on the

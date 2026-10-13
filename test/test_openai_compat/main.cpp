@@ -153,41 +153,66 @@ static void test_cum544_zai_sub_carries_low_effort() {
   TEST_ASSERT_TRUE(rig.http.seen[1].body.find("reasoning_effort") == std::string::npos);
 }
 
-// One compat dispatch whose transport fails after `takesMs` on the rig clock.
+// One compat dispatch whose transport fails after `takesMs` on the rig clock, at
+// the endpoint `base` names; `deadline` is the read deadline it must have judged.
 static agent::FabricErr dispatchFailingAfter(uint32_t takesMs, CompatWire wire,
-                                             const char* backendTag,
-                                             const char* err = "no response") {
+                                             const char* backendTag, const char* base,
+                                             uint32_t deadline, const char* err = "no response") {
   FakeProviderDeps rig;
   rig.http.script.push_back(harness_test::transportCut(takesMs, err));
   agent::providers::ProviderDeps pd = rig.contract();
   CompatEndpoint ep;
-  ep.host = "api.z.ai"; ep.basePath = "/api/paas/v4"; ep.key = "x"; ep.model = "glm-5.3";
+  ep.host = "api.example"; ep.basePath = base; ep.key = "x"; ep.model = "m1";
   ep.backendTag = backendTag;
   ep.wire = wire;
   char jobId[72] = {};
   const agent::FabricErr e = openaiCompatDispatch(pd, ep, makeDirective(), jobId);
-  TEST_ASSERT_EQUAL_UINT32(30000u, rig.http.seen.back().timeoutMs);   // the deadline judged
+  TEST_ASSERT_EQUAL_UINT32(deadline, rig.http.seen.back().timeoutMs);   // the deadline judged
   return e;
 }
 
-// CUM-538 gate: a Z.ai or Cumulo sub runs INSIDE its one 30 s POST. Once the
-// request went out and no answer came back ("no response": the deadline, or the
-// connection dropped mid-wait), or a failure took about the whole deadline, the run
-// most likely started: Timeout, which tells the head not to spawn the paid work
-// again. A request that never fully left ("head write failed") or a fast failure
-// ("connect failed") never delivered the work: Network ("did not start"). The fake
-// clock moves 10 ms per read, so elapsed = takesMs + 10. Every backend and wire.
+// CUM-538 gate: a Z.ai or Cumulo sub runs INSIDE its one POST (50 s on Z.ai, under
+// its gateway cut; 120 s on every other upstream). Once the request went out and no
+// answer came back ("no response": the deadline, or the connection dropped
+// mid-wait), or a failure took at least nine tenths of the deadline, the run most
+// likely started: Timeout, which tells the head not to spawn the paid work again. A
+// request that never fully left ("head write failed") or a fast failure ("connect
+// failed") never delivered the work: Network ("did not start"). The fake clock moves
+// 10 ms per read, so elapsed = takesMs + 10. Every backend, upstream and wire.
 static void test_cum538_a_sub_that_outruns_its_post_is_a_timeout() {
   const agent::FabricErr kT = agent::FabricErr::Timeout, kN = agent::FabricErr::Network;
-  for (const char* tag : {"zai", "cumulo"}) {
+  struct Ep { const char* tag; const char* base; uint32_t deadline; };
+  const Ep eps[] = {{"zai", "/api/paas/v4", 50000},
+                    {"cumulo", "/router/zai", 50000},
+                    {"cumulo", "/router/openai/v1", 120000},
+                    {"cumulo", "/router/anthropic/v1", 120000}};
+  for (const Ep& e : eps) {
+    const uint32_t D = e.deadline, edge = D / 10 * 9 - 10;   // elapsed == 9/10 D
     for (CompatWire w : {CompatWire::OpenAIChat, CompatWire::AnthropicMessages}) {
-      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(29000, w, tag), tag);
-      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(1000, w, tag), tag);  // sent, then dropped
-      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(26990, w, tag, "connect failed"), tag);
-      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(26980, w, tag, "connect failed"), tag);
-      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(1000, w, tag, "connect failed"), tag);
-      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(29000, w, tag, "head write failed"), tag);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(D - 1000, w, e.tag, e.base, D), e.base);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(1000, w, e.tag, e.base, D), e.base);  // sent, then dropped
+      TEST_ASSERT_EQUAL_MESSAGE((int)kT, (int)dispatchFailingAfter(edge, w, e.tag, e.base, D, "connect failed"), e.base);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(edge - 10, w, e.tag, e.base, D, "connect failed"), e.base);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(1000, w, e.tag, e.base, D, "connect failed"), e.base);
+      TEST_ASSERT_EQUAL_MESSAGE((int)kN, (int)dispatchFailingAfter(D - 1000, w, e.tag, e.base, D, "head write failed"), e.base);
     }
+  }
+}
+
+// The deadline rule, by endpoint: only a Z.ai endpoint keeps the Z.ai budget; a
+// router path that merely starts with "zai" is not one.
+static void test_compat_sub_deadline_by_endpoint() {
+  CompatEndpoint ep;
+  ep.backendTag = "zai"; ep.basePath = "/api/paas/v4";
+  TEST_ASSERT_EQUAL_UINT32(agent::providers::kZaiHeadTimeoutMs, agent::providers::compatSubDeadlineMs(ep));
+  ep.backendTag = "cumulo";
+  for (const char* b : {"/router/zai", "/router/zai/v1"}) {
+    ep.basePath = b;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(agent::providers::kZaiHeadTimeoutMs, agent::providers::compatSubDeadlineMs(ep), b);
+  }
+  for (const char* b : {"/router/openai/v1", "/router/anthropic/v1", "/router/mistral/v1", "/router/zaix"}) {
+    ep.basePath = b;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(120000u, agent::providers::compatSubDeadlineMs(ep), b);
   }
 }
 
@@ -199,6 +224,7 @@ int main(int, char**) {
   RUN_TEST(test_429_names_the_window);
   RUN_TEST(test_cum544_zai_sub_carries_low_effort);
   RUN_TEST(test_cum538_a_sub_that_outruns_its_post_is_a_timeout);
+  RUN_TEST(test_compat_sub_deadline_by_endpoint);
   UNITY_END();
   return 0;
 }

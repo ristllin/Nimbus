@@ -94,9 +94,9 @@ struct Dispatcher {
   uint32_t deadlineMs;    // its read deadline
 };
 static const Dispatcher kDispatchers[] = {
-    {"zai", zaiSub, "/api/paas/v4/chat/completions", 30000},
-    {"cumulo", cumuloSub, "/router/openai/v1/chat/completions", 30000},
-    {"cumulo-messages", cumuloMessagesSub, "/router/anthropic/v1/messages", 30000},
+    {"zai", zaiSub, "/api/paas/v4/chat/completions", 50000},
+    {"cumulo", cumuloSub, "/router/openai/v1/chat/completions", 120000},
+    {"cumulo-messages", cumuloMessagesSub, "/router/anthropic/v1/messages", 120000},
     {"custom", customSub, "/v1/chat/completions", 30000},
     {"custom-messages", customMessagesSub, "/v1/messages", 30000},
     {"mistral", mistralSub, "/v1/conversations", 60000},

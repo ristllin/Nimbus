@@ -327,6 +327,9 @@ struct CompatEndpoint {
 };
 FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
                                const Directive& d, char outJobId[72]);
+// The read deadline of that one POST: kZaiHeadTimeoutMs for a Z.ai sub (backend
+// "zai", or the router's zai upstream at basePath /router/zai), else 120 s.
+uint32_t compatSubDeadlineMs(const CompatEndpoint& ep);
 FabricErr openaiCompatPoll(const ProviderDeps& pd, const char* backendTag, const char* jobId,
                            ResultEnvelope& env);
 FabricErr openaiCompatCancel(const ProviderDeps& pd, const char* jobId);

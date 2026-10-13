@@ -84,8 +84,22 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
   return serializeBody(doc);
 }
 
-// The whole sub runs inside one blocking POST, bounded by this read deadline.
-constexpr uint32_t kCompatTimeoutMs = 30000;
+// The whole sub runs inside one blocking POST, bounded by this read deadline. A
+// Z.ai sub (direct, or the router's zai upstream at /router/zai) keeps the Z.ai
+// budget, under its ~60 s gateway cut; every other upstream gets the 120 s the
+// OpenAI and Anthropic paths use. At 30 s a router sub on gpt-5.6 timed out on a
+// 120-word brief while the same brief passed on the retry (hosted v4.5.11,
+// 13 Oct 2026): the same field lesson as OAI_TIMEOUT_MS in openai.cpp.
+constexpr uint32_t kCompatTimeoutMs = 120000;
+}  // namespace
+
+uint32_t compatSubDeadlineMs(const CompatEndpoint& ep) {
+  const bool zai = (ep.backendTag && strcmp(ep.backendTag, "zai") == 0) ||
+                   ep.basePath == "/router/zai" || ep.basePath.rfind("/router/zai/", 0) == 0;
+  return zai ? kZaiHeadTimeoutMs : kCompatTimeoutMs;
+}
+
+namespace {
 
 // The FabricErr for an HTTP answer that is not a 200. A 429 names its window when
 // the error text does (CUM-465).
@@ -120,11 +134,12 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   if (anthropic) headers.push_back({"anthropic-version", "2023-06-01"});
 
   JsonDocument out;
+  const uint32_t deadlineMs = compatSubDeadlineMs(ep);
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
-                      std::move(body), kCompatTimeoutMs, out, filter);
+                      std::move(body), deadlineMs, out, filter);
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
-  if (code <= 0) return wire::subTransportErr(pd, t0, kCompatTimeoutMs);
+  if (code <= 0) return wire::subTransportErr(pd, t0, deadlineMs);
   if (code != 200) return compatHttpErr(code, d, out, backendTag);
   std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
                                 : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));
