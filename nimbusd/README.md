@@ -36,6 +36,7 @@ New code lives only in this directory:
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
+| `src/multipart_form.h` | the page's `FormData` posts (multipart/form-data) read into the urlencoded fields every `/api/*` handler parses, bounded, file parts refused |
 | `src/web_ui.h` | assembles the served page and seeds the tunnel sign-in token ahead of the app script |
 | `src/webui_page.h` | GENERATED (`tools/gen_webui.py`): the device's web app fragments, byte-parity with `tools/webui_page.snapshot`, plus the brand logo |
 | `src/reply_buffer.h` | the bounded, thread-safe ring of recent chat entries (seq + timestamp + role) that backs `GET /api/replies` and `/api/chat` |
@@ -165,6 +166,15 @@ is erased and the log says so.
 
 Every field the web app posts to `POST /api/orch` or `POST /api/config` either
 applies or is refused; a page never shows "Saved" over a dropped write.
+
+**Both encodings the page posts.** Most forms post urlencoded; the Updates and
+battery toggles and the cloud and sign-in forms post `FormData`
+(multipart/form-data). Every `/api/*` route reads a multipart form's text parts as
+the same fields (`src/multipart_form.h`: at most 64 parts, names up to 64 bytes and
+values up to 64 KB, inside the 1 MB body cap), so a device-only toggle is refused by
+its own name (`Not available on a hosted Nimbus: autoUpd`) and a hosted field
+applies. Only `/api/files/upload` takes a file part; anywhere else one is refused
+(400), as is a form that cannot be read (400) or one past the bounds (413).
 
 | Applies (persisted on the instance volume, read back by GET, used from the next turn) | |
 |---|---|

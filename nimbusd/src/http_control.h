@@ -193,7 +193,7 @@ class HttpControl {
         return;
       }
       ApiResp r;
-      if (api_.handle(method, path, body, r)) {
+      if (api_.handle(method, path, body, r, headerValue(head, "content-type:"))) {
         respond(fd, r.status, r.ctype.c_str(), r.body);
         return;
       }
@@ -322,6 +322,15 @@ class HttpControl {
   static bool pathIs(const std::string& path, const char* p) {
     const std::string base = path.substr(0, path.find('?'));
     return base == p;
+  }
+  // The trimmed value of header `headerLower` (case-insensitive, matched at the start
+  // of a header line), or "" when the request does not carry it.
+  static std::string headerValue(const std::string& head, const std::string& headerLower) {
+    const size_t p = ciFind(head, "\r\n" + headerLower);
+    if (p == std::string::npos) return std::string();
+    const size_t vs = p + 2 + headerLower.size();
+    const size_t eol = head.find("\r\n", vs);
+    return trim(head.substr(vs, (eol == std::string::npos ? head.size() : eol) - vs));
   }
   // True iff the request carries header `headerLower` (case-insensitive) whose
   // trimmed value equals `want` exactly.

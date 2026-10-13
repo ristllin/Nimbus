@@ -59,6 +59,44 @@ static bool httpPost(DaemonHttpTransport& c, int port, const std::string& path,
   return true;
 }
 
+// CUM-543: the page posts its Updates and battery toggles as FormData. Over the real
+// socket, with the browser's multipart Content-Type, a device-only toggle is refused
+// by its own name (it used to be refused as "------WebKitFormBoundary...") and a
+// hosted field applies.
+static bool postForm(DaemonHttpTransport& c, int port, const std::string& token,
+                     const std::string& field, const std::string& value, HttpOut& out) {
+  const std::string b = "----WebKitFormBoundaryN1mbusCtlTest";
+  agent::HttpRequest req;
+  req.method = "POST";
+  req.host = "127.0.0.1";
+  req.port = port;
+  req.tls = false;
+  req.path = "/api/config";
+  req.timeoutMs = 5000;
+  req.headers.push_back({"Content-Type", "multipart/form-data; boundary=" + b});
+  req.headers.push_back({"X-Nimbus-Token", token});
+  req.body = "--" + b + "\r\nContent-Disposition: form-data; name=\"" + field + "\"\r\n\r\n" + value +
+             "\r\n--" + b + "--\r\n";
+  agent::HttpResponse resp;
+  std::string err;
+  if (!c.exec(req, resp, err)) return false;
+  out.status = resp.status;
+  out.body = resp.body;
+  return true;
+}
+
+static void checkFormData(ndtest::Ctx& c, DaemonHttpTransport& client, int port, const std::string& token,
+                          NimbusdRig& rig) {
+  HttpOut r;
+  c.ok(postForm(client, port, token, "autoUpd", "1", r) && r.status == 400,
+       "a FormData device-only toggle -> 400");
+  c.eq(r.body, R"({"ok":false,"error":"Not available on a hosted Nimbus: autoUpd"})",
+       "refused by its real name, never the boundary line");
+  c.ok(postForm(client, port, token, "devName", "Form Name", r) && r.status == 200,
+       "a FormData hosted field -> 200");
+  c.eq(rig.settings().devName, "Form Name", "and it applies");
+}
+
 // The web chat surface: the static page (ungated) plus the gated replies route.
 // Assumes an owner prompt ("hi") was already posted, so the ring holds one user
 // entry to read back. Kept out of main() so each stays within the complexity gate.
@@ -175,6 +213,9 @@ int main() {
 
   // ---- the web chat surface: static page (ungated) + replies (gated) --------
   checkWebChat(c, client, port, token);
+
+  // ---- the page's FormData posts (multipart/form-data) ----------------------
+  checkFormData(c, client, port, token, rig);
 
   // ---- backup: flush-and-stream a consistent tar of the mem tree -----------
   // Seed a vector so the flushed vectors.bin has content, then pull /backup.

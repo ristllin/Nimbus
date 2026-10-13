@@ -16,6 +16,7 @@
 
 #include "embed_check.h"
 #include "engine_thread.h"
+#include "multipart_form.h"
 #include "reply_buffer.h"
 #include "rig.h"
 #include "tg_web.h"
@@ -64,9 +65,16 @@ class WebApi {
   // Handle one gated /api/* request. Returns false if the path is not part of the
   // web surface (the caller then 404s). `path` includes any query string. The work
   // is split across grouped dispatchers so each stays within the complexity gate.
+  // `contentType` is the request's Content-Type: a multipart form (the page's
+  // FormData posts) is read into the urlencoded body every handler parses (CUM-543).
   bool handle(const std::string& method, const std::string& path,
-              const std::string& body, ApiResp& out) {
+              const std::string& rawBody, ApiResp& out,
+              const std::string& contentType = std::string()) {
     const std::string base = path.substr(0, path.find('?'));
+    std::string fields;
+    const bool multipart = form::isMultipart(contentType) && base != "/api/files/upload";
+    if (multipart && !readForm(rawBody, contentType, fields, out)) return true;
+    const std::string& body = multipart ? fields : rawBody;
     return tryStatus(method, base, body, out) ||
            tryChat(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
@@ -462,28 +470,16 @@ class WebApi {
     return kvLookup(path.substr(qs + 1), key, '&', /*decode=*/true);
   }
 
-  // A form value from a request body: handles both urlencoded (k=v&...) and
-  // multipart/form-data (name="k"\r\n\r\nv). "" when absent.
+  // A form value from a urlencoded request body (k=v&...; handle() reads a multipart
+  // form into this shape first). "" when absent.
   static std::string formValue(const std::string& body, const std::string& key) {
-    // urlencoded first.
-    std::string v = kvLookup(body, key, '&', /*decode=*/true);
-    if (!v.empty()) return v;
-    // multipart: find the field header then the value up to the next boundary.
-    const std::string marker = "name=\"" + key + "\"";
-    size_t p = body.find(marker);
-    if (p == std::string::npos) return "";
-    size_t nl = body.find("\r\n\r\n", p);
-    if (nl == std::string::npos) return "";
-    size_t start = nl + 4;
-    size_t end = body.find("\r\n--", start);
-    if (end == std::string::npos) end = body.size();
-    return body.substr(start, end - start);
+    return kvLookup(body, key, '&', /*decode=*/true);
   }
 
-  // Every form field NAME present in a request body, across both encodings the web
-  // app uses: urlencoded (`k=v&...`, name is the part before `=`, URL-decoded) and
-  // multipart (`name="k"` headers). Values are ignored - this exists so orchPost can
-  // refuse an unknown key field rather than silently drop it (CUM-445).
+  // Every form field NAME present in a urlencoded request body (`k=v&...`, name is
+  // the part before `=`, URL-decoded; handle() reads a multipart form into this
+  // shape first). Values are ignored - this exists so orchPost can refuse an unknown
+  // key field rather than silently drop it (CUM-445).
   static std::vector<std::string> formFieldNames(const std::string& body) {
     std::vector<std::string> names;
     for (size_t start = 0; start < body.size();) {
@@ -495,14 +491,6 @@ class WebApi {
       if (!name.empty()) names.push_back(name);
       if (amp == std::string::npos) break;
       start = amp + 1;
-    }
-    const std::string marker = "name=\"";
-    for (size_t p = body.find(marker); p != std::string::npos; p = body.find(marker, p)) {
-      p += marker.size();
-      const size_t q = body.find('"', p);
-      if (q == std::string::npos) break;
-      names.push_back(body.substr(p, q - p));
-      p = q + 1;
     }
     return names;
   }
@@ -814,6 +802,27 @@ class WebApi {
       if (host.empty()) continue;
       formWrite(body, field, host, keyWrites);
       formWrite(body, "orchM_" + host, host, modelWrites);
+    }
+  }
+
+  // A multipart form as the urlencoded body (multipart_form.h), or the refusal: a
+  // file part outside the Files panel's upload, a form past the bounds, or one that
+  // cannot be read.
+  static bool readForm(const std::string& body, const std::string& contentType,
+                       std::string& fields, ApiResp& out) {
+    switch (form::toUrlencoded(body, form::boundaryOf(contentType), fields)) {
+      case form::Result::Ok:
+        return true;
+      case form::Result::FilePart:
+        out = refuse("Files can be added only from the Files panel.");
+        return false;
+      case form::Result::TooLarge:
+        out = refuse("The form is too large. Shorten it and try again.");
+        out.status = 413;
+        return false;
+      default:
+        out = refuse("Couldn't read the form. Reload the page and try again.");
+        return false;
     }
   }
 
