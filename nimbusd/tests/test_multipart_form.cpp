@@ -121,6 +121,33 @@ static void testParser(ndtest::Ctx& c) {
   c.ok(form::toUrlencoded(std::string("--") + kBoundary + "\r\nX-Other: 1\r\n\r\nv\r\n--" + kBoundary + "--",
                           kBoundary, out) == form::Result::Malformed, "a part with no field name");
   c.ok(form::toUrlencoded("", kBoundary, out) == form::Result::Malformed, "an empty body");
+
+  // Review hardening: a part with no header block never borrows the next part's name
+  // (and never rescans the body), and a file part is a file in every spelling.
+  const std::string d = std::string("--") + kBoundary;
+  c.ok(form::toUrlencoded(d + "\r\n\r\nFILEBYTES\r\n" + d +
+                              "\r\nContent-Disposition: form-data; name=\"devName\"\r\n\r\nx\r\n" + d + "--",
+                          kBoundary, out) == form::Result::Malformed,
+       "a part with no header block is refused");
+  auto part = [&](const std::string& headers) {
+    return form::toUrlencoded(d + "\r\n" + headers + "\r\n\r\nEvil\r\n" + d + "--\r\n", kBoundary, out);
+  };
+  c.ok(part("Content-Disposition: form-data; name=\"devName\"; filename*=UTF-8''x.txt") == form::Result::FilePart,
+       "filename*= is a file");
+  c.ok(part("Content-Disposition: form-data; name=\"devName\"; filename=x.txt") == form::Result::FilePart,
+       "an unquoted filename is a file");
+  c.ok(part("Content-Disposition: form-data; name=\"devName\"\r\nContent-Type: application/octet-stream") ==
+           form::Result::FilePart, "a binary content type is a file");
+  c.ok(part("Content-Disposition: form-data; name=\"devName\"\r\nContent-Disposition: form-data; "
+            "name=\"x\"; filename=\"x.txt\"") == form::Result::Malformed,
+       "a second Content-Disposition line is refused");
+  c.ok(part("Content-Disposition: form-data; name=\"devName\"\r\nContent-Type: text/plain; charset=UTF-8") ==
+           form::Result::Ok && out == "devName=Evil", "a text/plain field still reads");
+  c.ok(part("Content-Disposition: form-data; name=devName") == form::Result::Ok && out == "devName=Evil",
+       "an unquoted name reads");
+  c.eq(form::boundaryOf("multipart/form-data; xboundary=evil; boundary=real"), "real",
+       "the boundary parameter is matched whole");
+  c.ok(!form::isMultipart("multipart/form-dataX; boundary=a"), "only the exact media type is a form");
 }
 
 // A rig + engine + web API with no keys (settings writes need no provider).

@@ -33,29 +33,46 @@ inline std::string lower(std::string s) {
   return s;
 }
 
+// The media type multipart/form-data (the type token ends at ';', a space or the end).
+inline bool isMultipart(const std::string& contentType) {
+  const std::string low = lower(contentType);
+  if (low.compare(0, 19, "multipart/form-data") != 0) return false;
+  return low.size() == 19 || low[19] == ';' || low[19] == ' ' || low[19] == '\t';
+}
+
+// Where the value of parameter `key` starts in the lowercased header value `low`:
+// just past "key=" where key is a whole parameter name (after ';', a space or a
+// tab, so "name" never matches inside "filename"), or npos.
+inline size_t paramValueAt(const std::string& low, const std::string& key) {
+  const std::string want = key + "=";
+  for (size_t p = low.find(want); p != std::string::npos; p = low.find(want, p + 1))
+    if (p > 0 && (low[p - 1] == ';' || low[p - 1] == ' ' || low[p - 1] == '\t')) return p + want.size();
+  return std::string::npos;
+}
+
+// The parameter value at `v` of the raw header value: quoted, or a bare token up to
+// ';' or whitespace. False for an unterminated quote.
+inline bool paramValue(const std::string& raw, size_t v, std::string& out) {
+  if (v < raw.size() && raw[v] == '"') {
+    const size_t q = raw.find('"', v + 1);
+    if (q == std::string::npos) return false;
+    out = raw.substr(v + 1, q - v - 1);
+    return true;
+  }
+  const size_t e = raw.find_first_of("; \t", v);
+  out = raw.substr(v, (e == std::string::npos ? raw.size() : e) - v);
+  return true;
+}
+
 // The boundary of a "multipart/form-data; boundary=..." Content-Type value (quoted
 // or not, any case), or "" when the value is not multipart/form-data or carries no
 // usable boundary.
 inline std::string boundaryOf(const std::string& contentType) {
-  const std::string low = lower(contentType);
-  if (low.compare(0, 19, "multipart/form-data") != 0) return std::string();
-  const size_t at = low.find("boundary=");
-  if (at == std::string::npos) return std::string();
-  size_t b = at + 9;
-  size_t e;
-  if (b < contentType.size() && contentType[b] == '"') {
-    e = contentType.find('"', ++b);
-    if (e == std::string::npos) return std::string();
-  } else {
-    e = contentType.find_first_of("; \t", b);
-    if (e == std::string::npos) e = contentType.size();
-  }
-  const std::string bnd = contentType.substr(b, e - b);
+  if (!isMultipart(contentType)) return std::string();
+  const size_t v = paramValueAt(lower(contentType), "boundary");
+  std::string bnd;
+  if (v == std::string::npos || !paramValue(contentType, v, bnd)) return std::string();
   return bnd.size() <= kMaxBoundary ? bnd : std::string();
-}
-
-inline bool isMultipart(const std::string& contentType) {
-  return lower(contentType).compare(0, 19, "multipart/form-data") == 0;
 }
 
 // Percent-encode everything but the unreserved characters, so the decoded field is
@@ -76,37 +93,34 @@ inline std::string pctEncode(const std::string& s) {
   return o;
 }
 
-// A quoted parameter of a Content-Disposition line (name="..." / filename="..."),
-// matched as a whole parameter so `name` never matches inside `filename`.
-inline bool dispositionParam(const std::string& line, const char* key, std::string& out) {
+// One header line of a part: a file marker (a filename in any form, or a content
+// type other than text/plain: browsers send one with every file part and none with a
+// text field), the field name, or neither.
+inline Result partHeader(const std::string& line, bool& named, std::string& name) {
   const std::string low = lower(line);
-  const std::string want = std::string(key) + "=\"";
-  for (size_t p = low.find(want); p != std::string::npos; p = low.find(want, p + 1)) {
-    if (p > 0 && low[p - 1] != ' ' && low[p - 1] != ';' && low[p - 1] != '\t') continue;
-    const size_t v = p + want.size();
-    const size_t q = line.find('"', v);
-    if (q == std::string::npos) return false;
-    out = line.substr(v, q - v);
-    return true;
-  }
-  return false;
+  if (low.compare(0, 13, "content-type:") == 0)
+    return low.find("text/plain") == std::string::npos ? Result::FilePart : Result::Ok;
+  if (low.compare(0, 20, "content-disposition:") != 0) return Result::Ok;
+  if (named) return Result::Malformed;   // one Content-Disposition per part
+  named = true;
+  if (paramValueAt(low, "filename") != std::string::npos || paramValueAt(low, "filename*") != std::string::npos)
+    return Result::FilePart;
+  const size_t v = paramValueAt(low, "name");
+  return v != std::string::npos && paramValue(line, v, name) ? Result::Ok : Result::Malformed;
 }
 
-// One part's header block: its field name, and whether it is a file.
+// One part's header block: its field name, or why the part is refused.
 inline Result partName(const std::string& headers, std::string& name) {
-  size_t at = 0;
-  while (at < headers.size()) {
+  bool named = false;
+  for (size_t at = 0; at < headers.size();) {
     size_t eol = headers.find("\r\n", at);
     if (eol == std::string::npos) eol = headers.size();
-    const std::string line = headers.substr(at, eol - at);
+    const Result r = partHeader(headers.substr(at, eol - at), named, name);
+    if (r != Result::Ok) return r;
     at = eol + 2;
-    if (lower(line).compare(0, 20, "content-disposition:") != 0) continue;
-    std::string file;
-    if (dispositionParam(line, "filename", file)) return Result::FilePart;
-    if (!dispositionParam(line, "name", name) || name.empty()) return Result::Malformed;
-    return name.size() <= kMaxNameBytes ? Result::Ok : Result::TooLarge;
   }
-  return Result::Malformed;
+  if (name.empty()) return Result::Malformed;
+  return name.size() <= kMaxNameBytes ? Result::Ok : Result::TooLarge;
 }
 
 // The text parts of a multipart body as a urlencoded body ("k=v&k2=v2"). Anything
@@ -121,8 +135,10 @@ inline Result toUrlencoded(const std::string& body, const std::string& boundary,
     if (body.compare(at, 2, "--") == 0) return Result::Ok;   // the closing delimiter
     if (body.compare(at, 2, "\r\n") != 0) return Result::Malformed;
     if (parts == kMaxParts) return Result::TooLarge;
+    // A part with no header block at all (the delimiter line runs straight into the
+    // blank line) has no field name.
     const size_t hdrEnd = body.find("\r\n\r\n", at);
-    if (hdrEnd == std::string::npos) return Result::Malformed;
+    if (hdrEnd == std::string::npos || hdrEnd == at) return Result::Malformed;
     std::string name;
     const Result r = partName(body.substr(at + 2, hdrEnd - at - 2), name);
     if (r != Result::Ok) return r;
