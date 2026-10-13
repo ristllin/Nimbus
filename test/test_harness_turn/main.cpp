@@ -645,6 +645,39 @@ static void test_cum523_no_delivery_line_without_a_real_target() {
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("Your reply is delivered to") == std::string::npos);
 }
 
+// ---- CUM-542: the composition's web page chat is named the web UI ----------
+// Joiner-VN3: a message from the hosted web page was told "[CHANNEL] This message
+// arrived via Telegram": the hosted page runs its turns as "owner"
+// (agent::kHostedWebChatId), and only "web" was a web chat. Both page chats are the
+// web UI; every other chat id (a Telegram chat id is a number) is still Telegram.
+static bool channelSays(const Rig& r, const char* where) {
+  return r.attempts.back().inputs.find(std::string("[CHANNEL] This message arrived via ") + where) !=
+         std::string::npos;
+}
+
+static void test_cum542_web_page_chat_is_the_web_ui() {
+  TEST_ASSERT_TRUE(agent::isWebChat("web") && agent::isWebChat(agent::kHostedWebChatId));
+  for (const char* other : {"1001", "-100200300", "voice", "serial", "", "owner2"})
+    TEST_ASSERT_FALSE_MESSAGE(agent::isWebChat(other), other);
+  TEST_ASSERT_FALSE(agent::isTelegramChat(agent::kHostedWebChatId));   // one rule for both readers
+
+  Rig hosted;   // a hosted instance: its page chats as "owner"
+  hosted.eng->handleMessage("hello from the page", "", "owner");
+  TEST_ASSERT_TRUE(channelSays(hosted, "the web UI."));
+  TEST_ASSERT_FALSE(channelSays(hosted, "Telegram"));
+  hosted.eng->handleMessage("hello from Telegram", "Ana", "424242");
+  TEST_ASSERT_TRUE(channelSays(hosted, "Telegram;"));
+  hosted.eng->handleMessage("hi", "", "web");
+  TEST_ASSERT_TRUE(channelSays(hosted, "the web UI."));
+
+  // A one-shot set from the page is answered in the web chat, not "this Telegram chat".
+  orch::FireOutcome o = hosted.eng->injectScheduledTurn("owner", "stretch now", "wakeup", "lp1",
+                                                        /*quietOk=*/false, /*once=*/true);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_TRUE(hosted.attempts.back().inputs.find("(Your reply is delivered to the web chat.") !=
+                   std::string::npos);
+}
+
 // ---- CUM-544: a timeout fails over at once, and the notice says why ---------
 // Bench (nimbus-light): the Z.ai head timed out, the engine retried the same host
 // on a fresh conversation (another full timeout), then failed over at 268 s with
@@ -2231,6 +2264,7 @@ int main(int, char**) {
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
+  RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
   RUN_TEST(test_cum544_second_notice_names_its_own_reason);

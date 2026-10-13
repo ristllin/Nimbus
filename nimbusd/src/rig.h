@@ -98,8 +98,9 @@ constexpr const char* kZaiSlug       = "zai";            // head + routing slug
 
 // The chat id the web app's chat surface runs its turns under (web_api.h posts
 // every /api/chat turn with it). It is the hosted instance's SYNCHRONOUS channel:
-// the page resolves its poll only on a delivered message.
-constexpr const char* kWebChatId = "owner";
+// the page resolves its poll only on a delivered message. The shared engine names
+// it the web UI in the turn's [CHANNEL] line, never Telegram (CUM-542).
+constexpr const char* kWebChatId = agent::kHostedWebChatId;
 
 struct TurnRecord {
   std::string chatId, userText, reply;

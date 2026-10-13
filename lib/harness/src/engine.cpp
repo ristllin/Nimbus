@@ -248,7 +248,7 @@ bool isTelegramOnlyTool(const std::string& name) {
 
 // Where a one-shot's reply lands, in words that read well after "delivered to".
 static const char* deliveryPlace(const std::string& chatId) {
-  if (chatId == "web") return "the web chat";
+  if (isWebChat(chatId)) return "the web chat";
   if (chatId == "voice") return "the device screen";
   if (chatId == "serial") return "the serial console";
   return "this Telegram chat";
@@ -261,7 +261,7 @@ bool TurnEngine::telegramOn(const std::string& chatId) const {
 const char* TurnEngine::channelOf(const std::string& chatId) {
   if (chatId == "serial") return "the developer serial console";
   if (chatId == "voice")  return "the device microphone (hold-to-talk); your reply shows on the panel";
-  if (chatId == "web")    return "the web UI";
+  if (isWebChat(chatId))  return "the web UI";
   return "Telegram; your reply is delivered as a Telegram message to that chat";
 }
 

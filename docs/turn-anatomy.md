@@ -86,7 +86,7 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | `[YOUR MODEL]` | always | the host/model serving THIS turn |
 | `[AVAILABLE MODELS]` | always | per-provider model choice lists (yours + sub-agents'), filtered to keyed providers. Built from the same list the spawn validator checks (live harvest, else the cold-start list), so an advertised model always spawns as named |
 | `[PROVIDERS & CONNECTORS]` | connectors configured | which cloud connectors each provider carries |
-| `[CHANNEL]` | owner turns | which channel the message arrived on + reply-routing rules |
+| `[CHANNEL]` | owner turns | which channel the message arrived on (the web UI for the device's own page and a Virtual Nimbus page, Telegram for a Telegram chat) + reply-routing rules |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |
 | `[SYSTEM]` | synthesis turns | "sub-agents finished, no new user message - synthesize" |
 | `[SCHEDULED LOOP]` | routine firings | the routine's stored prompt; no user message |

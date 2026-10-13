@@ -85,10 +85,22 @@ struct BudgetConfig {
       recordTokens;
 };
 
+// CUM-542: the chat id a hosted instance's (nimbusd) web page runs its turns under.
+// Like the device's "web" it is the composition's own web chat, never a Telegram
+// chat (a Telegram chat id is a number).
+inline constexpr char kHostedWebChatId[] = "owner";
+
+// CUM-542: true when `chatId` is a web page chat: the device's "web" or a hosted
+// instance's page. The turn's [CHANNEL] line and a one-shot's delivery line name
+// it the web UI / web chat.
+inline bool isWebChat(const std::string& chatId) {
+  return chatId == "web" || chatId == kHostedWebChatId;
+}
+
 // CUM-523: true when `chatId` names a Telegram chat - not one of the device's own
-// channels (web, voice, serial) and not "" (no chat).
+// channels (a web page chat, voice, serial) and not "" (no chat).
 inline bool isTelegramChat(const std::string& chatId) {
-  return !chatId.empty() && chatId != "web" && chatId != "voice" && chatId != "serial";
+  return !chatId.empty() && !isWebChat(chatId) && chatId != "voice" && chatId != "serial";
 }
 
 // CUM-523: the per-turn rule for HarnessConfig::telegramDeliverable. The bot runs

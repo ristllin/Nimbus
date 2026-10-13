@@ -191,7 +191,10 @@ member's spawn runs the configured sub-agent model.
 carries the real clock in the owner's time zone, the engine version and the hosted
 truth: a cloud instance that is always online, with no screen, microphone, speaker,
 LED ring or battery (the composer's desk-device lines are replaced for every head
-this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording).
+this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording). A message
+from the instance's web page (its turns run as the `owner` chat) is told it arrived
+via the web UI, as the device's own page is (`agent::isWebChat`), and a
+Telegram message still says Telegram.
 
 **Files, routines and the rest.** The Files panel (`/api/files/list`, `upload`,
 `dl`, `rm`, `rmproject`) works on the instance disk: it is the same store the

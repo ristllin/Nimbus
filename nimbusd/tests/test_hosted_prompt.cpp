@@ -12,11 +12,15 @@
 #include <cstdio>
 #include <string>
 
+#include <chrono>
+#include <thread>
+
 #include "../../test/support/fake_http.h"
 #include "engine_thread.h"
 #include "reply_buffer.h"
 #include "rig.h"
 #include "test_util.h"
+#include "tg_inbound.h"
 #include "web_api.h"
 
 using namespace nimbusd;
@@ -107,11 +111,58 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// Joiner-VN3: a message sent from the hosted web page was told "[CHANNEL] This
+// message arrived via Telegram; your reply is delivered as a Telegram message". The
+// page's turn (POST /api/chat) names the web UI, as the device's page does, and a
+// real Telegram message from an approved chat still says Telegram.
+static void testWebPageIsTheWebChannel(ndtest::Ctx& c) {
+  std::printf("  -- a page message is the web UI, a Telegram message is Telegram --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_PROMPT", 1);
+  FakeHttpTransport tx;
+  for (int i = 0; i < 8; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});   // we read the requests
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hp-chan"), &tx);
+  {
+    EngineThread eng(&rig);
+    eng.start();
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+    ApiResp out;
+    api.handle("POST", "/api/chat", "text=hello+from+the+page", out);
+    c.eqi(out.status, 200, "the page's message is accepted");
+    for (int i = 0; i < 250 && tx.seen.empty(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    eng.stop();
+  }
+  c.ok(!tx.seen.empty(), "the page's turn dispatched");
+  if (!tx.seen.empty()) {
+    const std::string& b = tx.seen[0].body;
+    c.ok(has(b, "[CHANNEL] This message arrived via the web UI."), "[CHANNEL] names the web UI");
+    c.ok(!has(b, "arrived via Telegram"), "never Telegram for a page message");
+  }
+  std::string err;
+  c.ok(rig.telegramAccess().approve("424242", "Ana", err), "a Telegram chat is approved");
+  const size_t before = tx.seen.size();
+  nimbusd::TgInboundIo io;
+  io.turn = [&rig](const std::string& chat, const std::string& text) { rig.say(chat, text); };
+  nimbus::tg::Update u;
+  u.chatId = "424242";
+  u.from = "Ana";
+  u.text = "hello from Telegram";
+  nimbusd::routeTelegramUpdates({u}, rig.telegramAccess(), io, time(nullptr));
+  c.ok(tx.seen.size() > before, "the Telegram message ran a turn");
+  if (tx.seen.size() > before)
+    c.ok(has(tx.seen[before].body, "[CHANNEL] This message arrived via Telegram;"),
+         "a real Telegram message still says Telegram");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted prompt truth (CUM-542, offline) ===\n");
   testEveryHeadGetsTheHostedTruth(c);
   testClockFollowsTheOwnersZone(c);
+  testWebPageIsTheWebChannel(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
