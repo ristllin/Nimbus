@@ -13,7 +13,9 @@
 //       gpt-5.6) runs on the router as openai/gpt-5.6 instead of "spawn failed 2",
 //       and one naming an anthropic model the verified router catalog lists runs
 //       on the router's Anthropic wire; one the router does not offer is refused
-//       with the real reason and sends nothing.
+//       with the real reason and sends nothing; an approved member naming a
+//       provider with no key runs the configured router sub model (only the owner
+//       picks a spawn's model on the owner's key).
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <chrono>
 #include <cstdio>
@@ -286,6 +288,47 @@ static void testNamedProviderNothingOffers(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static void testMemberKeylessProviderRunsTheSubModel(ndtest::Ctx& c) {
+  std::printf("  -- (d4) a member naming anthropic runs the configured router sub model --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  Exchange models;
+  models.expectHost = kCumuloHost;
+  models.expectPathContains = "/router/models";
+  models.body = "{\"object\":\"list\",\"data\":["
+                "{\"id\":\"openai/gpt-5.6\",\"object\":\"model\",\"size_class\":\"large\"},"
+                "{\"id\":\"anthropic/claude-sonnet-4-6\",\"object\":\"model\",\"size_class\":\"large\"}]}";
+  tx.script.push_back(models);
+  tx.script.push_back(routerHead(spawnTurn("anthropic", "claude-sonnet-4-6")));
+  Exchange sub;
+  sub.expectHost = kCumuloHost;
+  sub.body = "{\"choices\":[{\"message\":{\"content\":\"Consumer Duty: outcomes.\"}}],"
+             "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8}}";
+  tx.script.push_back(sub);
+  tx.script.push_back(routerHead("{\"reply\":\"Member summary: outcomes.\",\"memory\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ck-d4"), &tx);
+  c.ok(rig.verifyProvider("cumulo"), "the router catalog lists anthropic/claude-sonnet-4-6");
+  std::string err;
+  c.ok(rig.telegramAccess().approve("424242", "Ana", err), "a member chat is approved");
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("424242", "spawn a helper on Claude to summarise the Consumer Duty");
+  c.ok(inbox.waitFor("Member summary: outcomes.", 15000), "the member's helper ran and reported");
+  eng.stop();
+  if (tx.seen.size() >= 3) {
+    c.ok(has(tx.seen[2].path, "/router/openai/v1/chat/completions"), "on the configured router sub model's upstream");
+    c.ok(has(tx.seen[2].body, "\"model\":\"gpt-5.6\"") && !has(tx.seen[2].body, "claude"),
+         "the router sub model, never the anthropic model the member's provider named");
+  } else {
+    c.ok(false, "the sub request was sent");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== Cumulo key is a keyed provider (CUM-541, offline) ===\n");
@@ -295,6 +338,7 @@ int main() {
   testNamedKeylessProviderRunsOnRouter(c);
   testNamedAnthropicRunsOnRouterCatalog(c);
   testNamedProviderNothingOffers(c);
+  testMemberKeylessProviderRunsTheSubModel(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

@@ -401,8 +401,11 @@ that selector, or it is the router's default model (the shared engine's one-key
 rule, CUM-541, also on the device). With neither a key nor a router offer it is
 answered with the real reason
 ("No openai key is set, and the Cumulo router does not offer ...") and nothing is
-sent. One the provider refuses with HTTP 429 also names the quota window, read the
-same way as a head turn's 429.
+sent. A spawn that asks for a connector never runs on the router (it is refused
+with the connector's own provider), and an approved member's spawn that names a
+provider with no key runs the configured sub-agent order, since only the owner
+picks a spawn's model on the owner's key. One the provider refuses with HTTP 429
+also names the quota window, read the same way as a head turn's 429.
 Not wired yet on a hosted
 instance: skill capsules, document attachments, auto-saving a sub's result into a
 project, and provider file capture (the engine passes the task through and notes

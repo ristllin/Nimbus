@@ -66,8 +66,10 @@ same as a device:
   and searched through the router.
 - **Sub-agents.** Background research and other sub-agents run on the Cumulo key,
   also one the assistant starts on a provider you have no key for (for example
-  OpenAI's gpt-5.6), as long as the router offers that model. A model the router
-  does not offer is refused with the reason, and nothing is charged.
+  OpenAI's gpt-5.6), as long as the router offers that model or that provider's
+  default model, which then runs instead. When it offers neither, the sub-agent is
+  refused with the reason and nothing is charged. A sub-agent that needs one of
+  your connectors runs only on that connector's own provider key.
 - **A model the router does not offer.** If the router refuses the model you
   picked, the reply says so and the assistant switches back to the last model that
   worked (or to the router's default model if that one is refused too), so the

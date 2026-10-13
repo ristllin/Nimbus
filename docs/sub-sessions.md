@@ -202,10 +202,15 @@ default, must be in the router's choice list (the `cumulo` entry of
 `[AVAILABLE MODELS]`; a bare id there is the router's default upstream,
 openai). The log says `spawn on openai has no key - runs on the Cumulo router as
 openai/gpt-5.6` and the sub runs on the `cumulo` backend with that selector. A
-provider with a key of its own always runs on it, and a spawn whose `skill`
-names a connector stays on its provider's own key (the router never carries the
-owner's connectors). When neither a key nor the router offers the model, nothing
-is sent and the owner hears the reason, for example *"Couldn't start that agent
+provider with a key of its own always runs on it. A spawn whose `skill` names a
+connector never runs on the router (the router never carries the owner's
+connectors, and its result could not be marked as one whose connector did not
+run): without that provider's key it is refused, for example *"Couldn't start
+that agent on mistral. The gcal connector runs only on a mistral key. Add it
+under Providers & models."* On a hosted instance an approved member's spawn that
+names a provider with no key runs the configured sub-agent order instead (only the
+owner picks a spawn's model). When neither a key nor the router offers the model,
+nothing is sent and the owner hears the reason, for example *"Couldn't start that agent
 on openai. No openai key is set, and the Cumulo router does not offer
 openai/gpt-9. Add the key under Providers & models, or ask for a model the router
 lists."*

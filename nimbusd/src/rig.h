@@ -2160,9 +2160,17 @@ class NimbusdRig {
     }
     bgNs_ = ns;
     // Only the owner chooses a spawn's model on the owner's keys: a member's spawn
-    // runs the configured sub model (the JobEngine coerces an empty pick).
+    // runs the configured sub model (the JobEngine coerces an empty pick). Naming a
+    // provider with no key of its own would pick that provider's model on the
+    // router (CUM-541), so a member's such spawn runs the configured sub-agent
+    // order instead (a connector task keeps its provider and is refused there).
     orch::Spawn spawn = s;
-    if (!access_->principalFor(chat).owner) spawn.model.clear();
+    if (!access_->principalFor(chat).owner) {
+      spawn.model.clear();
+      if (!spawn.provider.empty() && !keyedForEngine(spawn.provider) &&
+          connectorProviderFor(spawn.skill).empty())
+        spawn.provider.clear();
+    }
     if (jobs_) jobs_->enqueueSpawn(spawn, chat, quiet);
   }
 
@@ -2357,7 +2365,7 @@ class NimbusdRig {
     for (const auto& c : conns_.parsed()) {
       if (!c.enabled) continue;
       const bool match = skill == c.name || (!c.type.empty() && skill == c.type);
-      if (match && c.prov != "any") return c.prov;
+      if (match) return c.prov;   // "any": no routing, never the router
     }
     return std::string();
   }

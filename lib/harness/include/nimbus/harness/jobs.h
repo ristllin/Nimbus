@@ -107,9 +107,11 @@ class JobEngine {
 
     // Connector-aware routing: given a spawn's skill/connector id, return the
     // provider that HOSTS that connector (e.g. "mistral" for a Studio Notion
-    // connector), or "" if none/ambiguous. Used only when the spawn carries no
+    // connector), "any" for a connector any provider runs, or "" when the skill is
+    // no enabled connector. A provider is used only when the spawn carries no
     // explicit provider - so a connector task lands on the provider that can
-    // actually run it (heavy connector work then executes on lab compute).
+    // actually run it (heavy connector work then executes on lab compute) - and a
+    // connector task never runs on the Cumulo router (CUM-541).
     // Device wires this to the connectors registry; nullable => no routing.
     std::function<std::string(const std::string& skill)> connectorProvider;
 
@@ -325,14 +327,17 @@ class JobEngine {
   bool routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
                   ManagedAgentAdapter*& adapter);
   std::string spawnProvider(const PendingSpawn& p) const;
-  bool keylessToRouter(const PendingSpawn& p, std::string& provider, std::string& model,
-                       std::string& connector) const;
+  bool keylessToRouter(std::string& provider, std::string& model) const;
   void coerceSpawnModel(const std::string& provider, std::string& model) const;
   std::string routerOffer(const std::string& provider, const std::string& model) const;
-  void refuseKeyless(const PendingSpawn& p, const std::string& provider,
-                     const std::string& model, const std::string& connector);
+  void refuseKeyless(const PendingSpawn& p, const std::string& provider, const std::string& model);
+  std::string connectorHost(const PendingSpawn& p) const;
+  void refuseConnector(const PendingSpawn& p, const std::string& provider, const std::string& host);
   bool hasKey(const std::string& provider) const {
     return d_.providerHasKey && d_.providerHasKey(provider);
+  }
+  std::string subModelOf(const std::string& provider) const {
+    return d_.subModel ? d_.subModel(provider) : std::string();
   }
   void noteSpawnRefused(const std::string& chatId, const char* name, const std::string& task,
                         const std::string& reason, bool mayHaveRun = false);

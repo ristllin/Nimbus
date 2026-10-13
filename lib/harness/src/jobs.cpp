@@ -242,7 +242,7 @@ static std::string routerSelector(const std::string& provider, const std::string
 // or offers neither.
 std::string JobEngine::routerOffer(const std::string& provider, const std::string& model) const {
   if (!hasKey(kRouterSlug) || !d_.modelIsValid) return "";
-  const std::string sub = d_.subModel ? d_.subModel(provider) : std::string();
+  const std::string sub = subModelOf(provider);
   for (const std::string& m : {model, sub}) {
     if (m.empty()) continue;
     const std::string sel = routerSelector(provider, m);
@@ -258,26 +258,15 @@ std::string JobEngine::routerOffer(const std::string& provider, const std::strin
 
 // A spawn on a provider with no key that the router cannot carry: the real
 // reason, to the owner and to the head, instead of a doomed keyless dispatch.
-// `connector` names the connector the spawn asked for: it runs only on its own
-// provider's key (the router never carries the owner's connectors, and its subs
-// report no connector run, so the result could not be marked unverified).
 void JobEngine::refuseKeyless(const PendingSpawn& p, const std::string& provider,
-                              const std::string& model, const std::string& connector) {
+                              const std::string& model) {
   const bool router = hasKey(kRouterSlug);
-  const std::string m = !model.empty() ? model : (d_.subModel ? d_.subModel(provider) : std::string());
+  const std::string m = !model.empty() ? model : subModelOf(provider);
   const std::string want = m.empty() ? std::string() : routerSelector(provider, m);
+  const bool named = router && !want.empty();   // the router selector that was asked for
   std::string owner = "Couldn't start that agent on " + provider + ". No " + provider + " key is set";
   std::string note = provider + " has no key here";
-  if (!connector.empty()) {
-    owner += ", and the " + connector + " connector runs only on it. Add the key under Providers & models.";
-    note += "; its connector " + connector + " runs only on a " + provider + " key, never on the Cumulo router";
-    hlog::logf("orchestrator: spawn refused (%s has no key, connector %s)", provider.c_str(),
-               connector.c_str());
-    deliver(p.chatId, owner);
-    noteSpawnRefused(p.chatId, p.name, p.task, note);
-    return;
-  }
-  if (router && !want.empty()) {
+  if (named) {
     owner += ", and the Cumulo router does not offer " + want;
     note += " and the Cumulo router does not offer " + want +
             "; spawn it on cumulo with a model its [AVAILABLE MODELS] entry lists";
@@ -285,7 +274,38 @@ void JobEngine::refuseKeyless(const PendingSpawn& p, const std::string& provider
   owner += router ? ". Add the key under Providers & models, or ask for a model the router lists."
                   : ". Add the key under Providers & models.";
   hlog::logf("orchestrator: spawn refused (%s has no key%s%s)", provider.c_str(),
-             router ? ", router does not offer " : "", router ? want.c_str() : "");
+             named ? ", router does not offer " : "", named ? want.c_str() : "");
+  deliver(p.chatId, owner);
+  noteSpawnRefused(p.chatId, p.name, p.task, note);
+}
+
+// The provider a spawn's skill names as a configured connector's host ("any" for a
+// connector any provider runs), or "" when the skill is no connector.
+std::string JobEngine::connectorHost(const PendingSpawn& p) const {
+  return p.skill[0] && d_.connectorProvider ? d_.connectorProvider(p.skill) : std::string();
+}
+
+// A connector task on a provider with no key, or on the Cumulo router: refused with
+// the real reason instead of moving to (or running on) the router. The router never
+// carries the owner's connectors, and its subs report no connector run, so its
+// result could not be marked unverified (CUM-536).
+void JobEngine::refuseConnector(const PendingSpawn& p, const std::string& provider,
+                                const std::string& host) {
+  const std::string skill = p.skill;
+  std::string owner = "Couldn't start that agent on " + provider + ". The " + skill + " connector ";
+  std::string note = skill + " is a ";
+  if (host == "any") {
+    owner += "needs a provider key of its own, not the Cumulo router. Add one under Providers & models.";
+    note += "connector, and connectors never run on the Cumulo router; spawn it on a provider with a key";
+  } else if (hasKey(host)) {
+    owner += "runs on " + host + ", so ask for it there.";
+    note += host + " connector; spawn it on " + host;
+  } else {
+    owner += "runs only on a " + host + " key. Add it under Providers & models.";
+    note += host + " connector; it runs only on a " + host + " key, never on the Cumulo router";
+  }
+  hlog::logf("orchestrator: spawn refused (connector %s on %s, not %s)", skill.c_str(), host.c_str(),
+             provider.c_str());
   deliver(p.chatId, owner);
   noteSpawnRefused(p.chatId, p.name, p.task, note);
 }
@@ -563,8 +583,8 @@ std::string JobEngine::spawnProvider(const PendingSpawn& p) const {
     std::string cp = d_.connectorProvider(p.skill);
     // Only accept the connector's provider if it's actually key'd - otherwise fall
     // through to the sub-priority default (preserves the keyless-provider refusal
-    // instead of dispatching a doomed keyless request).
-    if (!cp.empty() && (!d_.providerHasKey || d_.providerHasKey(cp))) return cp;
+    // instead of dispatching a doomed keyless request). "any" names no provider.
+    if (!cp.empty() && cp != "any" && (!d_.providerHasKey || d_.providerHasKey(cp))) return cp;
   }
   return firstSubProvider();
 }
@@ -572,14 +592,8 @@ std::string JobEngine::spawnProvider(const PendingSpawn& p) const {
 // CUM-541 one-key spawns: a provider with no key of its own (the head named openai
 // on a device whose only key is Cumulo) runs on the router when the router offers
 // its model, instead of a doomed keyless dispatch. True when `provider`/`model` now
-// name the router; false leaves them for refuseKeyless. A connector task stays on
-// its provider's own key: `connector` names it.
-bool JobEngine::keylessToRouter(const PendingSpawn& p, std::string& provider, std::string& model,
-                                std::string& connector) const {
-  if (p.skill[0] && d_.connectorProvider && !d_.connectorProvider(p.skill).empty()) {
-    connector = p.skill;
-    return false;
-  }
+// name the router; false leaves them for refuseKeyless.
+bool JobEngine::keylessToRouter(std::string& provider, std::string& model) const {
   const std::string offered = routerOffer(provider, model);
   if (offered.empty()) return false;
   hlog::logf("orchestrator: spawn on %s has no key - runs on the Cumulo router as %s (asked %s)",
@@ -592,7 +606,7 @@ bool JobEngine::keylessToRouter(const PendingSpawn& p, std::string& provider, st
 // A model the provider does not list runs its sub-model default.
 void JobEngine::coerceSpawnModel(const std::string& provider, std::string& model) const {
   if (d_.modelIsValid && d_.modelIsValid(provider, model)) return;
-  std::string coerced = d_.subModel ? d_.subModel(provider) : std::string();
+  std::string coerced = subModelOf(provider);
   hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)",
              model.length() ? model.c_str() : "(none)", coerced.c_str(), provider.c_str());
   model = coerced;
@@ -608,9 +622,10 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
     return false;
   }
   model = p.model;
+  // A connector task never moves to (or runs on) the router: refuseConnector.
+  const std::string host = connectorHost(p);
   const bool keyless = d_.providerHasKey && !d_.providerHasKey(provider);
-  std::string connector;
-  const bool routed = keyless && keylessToRouter(p, provider, model, connector);
+  const bool routed = keyless && host.empty() && keylessToRouter(provider, model);
   a = d_.fabric->adapterFor(provider.c_str());
   if (!a) {
     deliver(chatId, std::string("Provider '") + provider + "' isn't configured.");
@@ -618,8 +633,12 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
                      "provider '" + provider + "' isn't configured on this device");
     return false;
   }
+  if (!host.empty() && (keyless || provider == kRouterSlug)) {
+    refuseConnector(p, provider, host);
+    return false;
+  }
   if (keyless && !routed) {
-    refuseKeyless(p, provider, model, connector);
+    refuseKeyless(p, provider, model);
     return false;
   }
   coerceSpawnModel(provider, model);

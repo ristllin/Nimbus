@@ -639,7 +639,7 @@ static JobEngine::Deps buildJobDeps() {
       if (!cs[i].enabled) continue;
       const bool match = skill == cs[i].name.c_str() ||
                          (cs[i].type.length() && skill == cs[i].type.c_str());
-      if (match && cs[i].prov != "any") return std::string(cs[i].prov.c_str());
+      if (match) return std::string(cs[i].prov.c_str());   // "any": no routing, never the router
     }
     return std::string();
   };

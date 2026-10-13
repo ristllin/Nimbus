@@ -793,27 +793,59 @@ static void test_one_key_spawn_nothing_offers_it_is_refused() {
                            none.r.eng->takeSpawnNotes("chat1").c_str());
 }
 
-// A connector task is never moved to the router: the router does not carry the
-// owner's connectors and its subs report no connector run, so the result could not
-// be marked unverified (CUM-536). Refused with that reason instead.
-static void test_one_key_spawn_connector_task_stays_off_the_router() {
-  OneKeyRig k;
-  k.r.connectorProv["gcal"] = "mistral";
+// A connector task never moves to (or runs on) the router: the router does not carry
+// the owner's connectors and its subs report no connector run, so the result could
+// not be marked unverified (CUM-536). Refused with the connector's real host instead,
+// however the spawn got there (a keyless provider, no provider, or cumulo named).
+static void connectorSpawn(OneKeyRig& k, const char* provider, const char* skill) {
   orch::Spawn s = sp("List every event on my calendar today");
-  s.provider = "mistral";
+  s.provider = provider;
   s.model = "mistral-large-4-0";
-  s.skill = "gcal";
+  s.skill = skill;
   s.name = "gcal-fetch";
   k.r.eng->enqueueSpawn(s, "chat1");
+  k.r.plat.ms += 5000;
   k.r.eng->pump();
-  TEST_ASSERT_EQUAL(0, k.dispatches());
-  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on mistral. No mistral key is set, and the "
-                           "gcal connector runs only on it. Add the key under Providers & models.",
-                           k.r.delivered[0].second.c_str());
-  TEST_ASSERT_EQUAL_STRING("- 'gcal-fetch' did not start: mistral has no key here; its connector "
-                           "gcal runs only on a mistral key, never on the Cumulo router\n",
-                           k.r.eng->takeSpawnNotes("chat1").c_str());
-  // The same spawn without the connector runs on the router.
+}
+
+static void test_one_key_spawn_connector_task_stays_off_the_router() {
+  for (const char* provider : {"mistral", "", "cumulo"}) {
+    OneKeyRig k;
+    k.r.connectorProv["gcal"] = "mistral";
+    connectorSpawn(k, provider, "gcal");
+    const std::string on = provider[0] ? provider : "cumulo";   // no provider: the router rung
+    TEST_ASSERT_EQUAL_MESSAGE(0, k.dispatches(), provider);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(("Couldn't start that agent on " + on + ". The gcal connector runs "
+                                      "only on a mistral key. Add it under Providers & models.").c_str(),
+                                     k.r.delivered[0].second.c_str(), provider);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("- 'gcal-fetch' did not start: gcal is a mistral connector; it runs "
+                                     "only on a mistral key, never on the Cumulo router\n",
+                                     k.r.eng->takeSpawnNotes("chat1").c_str(), provider);
+  }
+  // The head named the wrong provider while the connector's own provider is keyed.
+  OneKeyRig wrong;
+  wrong.r.keyed = {"cumulo", "mistral"};
+  wrong.r.connectorProv["gcal"] = "mistral";
+  connectorSpawn(wrong, "openai", "gcal");
+  TEST_ASSERT_EQUAL(0, wrong.dispatches());
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on openai. The gcal connector runs on mistral, "
+                           "so ask for it there.", wrong.r.delivered[0].second.c_str());
+  // A connector any provider runs ("any") never runs on the router either, and still
+  // runs on a keyed provider of the configured order.
+  OneKeyRig any;
+  any.r.connectorProv["notion"] = "any";
+  connectorSpawn(any, "", "notion");
+  TEST_ASSERT_EQUAL(0, any.dispatches());
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on cumulo. The notion connector needs a provider "
+                           "key of its own, not the Cumulo router. Add one under Providers & models.",
+                           any.r.delivered[0].second.c_str());
+  OneKeyRig keyed;
+  keyed.r.keyed = {"cumulo", "openai"};
+  keyed.r.connectorProv["notion"] = "any";
+  connectorSpawn(keyed, "", "notion");
+  TEST_ASSERT_EQUAL(1, (int)keyed.oai.dispatched.size());
+  TEST_ASSERT_EQUAL(0, (int)keyed.cumulo.dispatched.size());
+  // The same spawn without a connector runs on the router.
   OneKeyRig plain;
   plain.spawn("mistral", "mistral-large-4-0");
   TEST_ASSERT_EQUAL(1, (int)plain.cumulo.dispatched.size());
