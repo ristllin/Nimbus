@@ -73,7 +73,8 @@ String saveDeviceName(const String& raw);
 // setup mode (no Wi-Fi saved yet) that was one error line every 5 s from the
 // Wi-Fi slot reads alone (lane L31). has() probes the value types silently, so an
 // absent key never enters getString's error path. Values are unchanged; only the
-// noise goes. test/test_nvs_quiet_reads fails on any other string read in src/.
+// noise goes. test/test_nvs_quiet_reads fails on any other solide::memory string
+// read in src/.
 inline String nvsGetStr(const char* key, const char* def = "") {
   return solide::memory::has(key) ? solide::memory::getString(key, def) : String(def);
 }

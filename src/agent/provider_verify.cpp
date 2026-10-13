@@ -86,7 +86,7 @@ static void setReason(const String& provider, const char* rsn) {
   solide::memory::setString(reasonKey(provider).c_str(), rsn ? rsn : "");
 }
 String reason(const String& provider) {
-  return nimbus::sys::nvsGetStr(reasonKey(provider).c_str(), "");   // unset until a verify
+  return nimbus::sys::nvsGetStr(reasonKey(provider).c_str());   // unset until a verify
 }
 
 // ---- low-memory deferral: measured number + self-retry (CUM-447) -------------

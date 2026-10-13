@@ -8,9 +8,11 @@
 // nimbus::sys::nvsGetStr (src/sys/config_nvs.h), that probes has() first, so an
 // absent key reads as its default with no log line. These pin the CLASS
 // (AGENTS.md section 3), not the one key: no firmware source outside that getter
-// reads an NVS string the loud way, so a new reader of ANY possibly-unset key
-// fails here instead of shipping a fresh-device log flood. The device half (no
-// error line on glass) is the bench check in the PR.
+// calls solide::memory::getString (the settings store every setting read goes
+// through), so a new reader of ANY possibly-unset setting fails here instead of
+// shipping a fresh-device log flood. Direct Preferences handles opened by a few
+// subsystems at boot are outside this seam. The device half (no error line on
+// glass) is the bench check in the PR.
 
 #include <unity.h>
 

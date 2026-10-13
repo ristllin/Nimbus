@@ -190,7 +190,7 @@ bool saveBleEnabled(bool enabled) { return putIntNoted(kBleKey, enabled ? 1 : 0)
 
 String deviceName() {
   if (!nvsReady()) return String("");
-  return nvsGetStr(kNameKey, "");   // unset on a fresh device: a normal state
+  return nvsGetStr(kNameKey);   // unset on a fresh device: a normal state
 }
 
 String saveDeviceName(const String& raw) {
