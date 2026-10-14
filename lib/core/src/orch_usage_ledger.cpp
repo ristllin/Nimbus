@@ -665,14 +665,23 @@ bool UsageHistory::hasModelOn(uint32_t dayKey) const {
   return false;
 }
 
+bool UsageHistory::hasBucketOn(uint32_t dayKey) const {
+  for (const auto& b : entries_)
+    if (b.dayKey == dayKey) return true;
+  return false;
+}
+
 // Every record with a model writes a model bucket for its day, and an earlier release
 // rewrites the whole history without models; so with tracking on, a history that has
-// no model bucket on the latest day a row recorded on was rewritten by an earlier
-// release (or none of its writes since that day landed: fail-closed either way).
+// buckets on the latest day a row recorded on, none of them with a model, was rewritten
+// by an earlier release. No bucket at all on that day is positive evidence of nothing
+// but a history write that did not land (a power cut mid-write on this release): the
+// rows then follow the ordinary behind-the-counters rule (the gap at otherRate), so the
+// period is not repriced and the per-model all-time totals are kept.
 bool UsageLedger::earlierReleaseRecorded(const UsageHistory* history) const {
   if (!history || !models_.tracking()) return false;
   const uint32_t d = latestRowDay(models_);
-  return d != 0 && !history->hasModelOn(d);
+  return d != 0 && history->hasBucketOn(d) && !history->hasModelOn(d);
 }
 
 // Nothing the spend file says about the provider is about these counters (gate M1):

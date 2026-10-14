@@ -963,6 +963,15 @@ static void test_gate_m1_reset_on_an_earlier_release_never_prices_new_spend_low(
   older.record("openai", "gpt-5.6", 20650, td(1000), 0);
   TEST_ASSERT_FALSE(T.earlierReleaseRecorded(&older));
   TEST_ASSERT_FALSE(T.earlierReleaseRecorded(nullptr));
+  // Gate P2N: a history write lost to a power cut leaves NO bucket on the latest row day;
+  // that is not an earlier release (which rewrites buckets without a model), so the
+  // period is not repriced and the per-model totals survive.
+  UsageHistory lost;
+  lost.record("openai", "gpt-5.6", 20649, td(5), 0);
+  TEST_ASSERT_FALSE(lost.hasBucketOn(20650));
+  TEST_ASSERT_FALSE(T.earlierReleaseRecorded(&lost));
+  lost.record("openai", 20650, 1000, 0, 0);                         // an earlier release's rewrite
+  TEST_ASSERT_TRUE(T.earlierReleaseRecorded(&lost));
 }
 
 // Gate M2: an update from an earlier release (its history has buckets, none with a

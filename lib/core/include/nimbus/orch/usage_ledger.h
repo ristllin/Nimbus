@@ -253,7 +253,9 @@ class UsageLedger {
   // names a model, or the history is empty while the counters hold token spend.
   bool historyShowsTracking(const UsageHistory& history) const;
   // Whether `history` shows an earlier release recorded since tracking started: it has
-  // no model bucket on the latest day a row recorded on.
+  // buckets on the latest day a row recorded on and none of them names a model (an
+  // earlier release rewrites every bucket without one). A day with no bucket at all is
+  // a history write that did not land (a power cut), not an earlier release.
   bool earlierReleaseRecorded(const UsageHistory* history) const;
 
   // ---- per-model pricing (2026-10) ----
@@ -419,6 +421,8 @@ class UsageHistory {
   const std::vector<DayUsage>& entries() const { return entries_; }
   // Whether a bucket of day `dayKey` names a model.
   bool hasModelOn(uint32_t dayKey) const;
+  // Whether any bucket of day `dayKey` exists.
+  bool hasBucketOn(uint32_t dayKey) const;
 
   // Same compact text form as the ledger, one ';'-group per bucket:
   // day|prov|tokIn|tokOut|calls[|model[|cacheR[|cacheW]]]. The trailing fields are
