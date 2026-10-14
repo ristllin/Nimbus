@@ -940,44 +940,34 @@ std::string readFileQuiet(const char* path) {
   return std::string(s.c_str(), s.length());
 }
 
-// No spend file says tracking started, but the daily history shows it did: a bucket
-// names a model (the file was lost or never written, gate G3), or the history is gone
-// while the counters hold token spend (/data erased with NVS kept, e.g. Erase Storage
-// on a device with no SD card; a device updating from an earlier release has the
-// history that release wrote). Then none of this period's spend is taken for earlier
-// usage (fail-closed). Caller holds g_ledgerMx.
-bool historyShowsTracking() {
-  const auto& days = histLocked().entries();
-  for (const auto& b : days)
-    if (b.model[0]) return true;
-  if (!days.empty()) return false;
-  for (const auto& e : g_ledger.entries())
-    if (e.tokensIn || e.tokensOut || e.cacheRead || e.cacheWrite) return true;
-  return false;
-}
-
 void loadModelsLocked() {  // caller holds g_ledgerMx
   if (g_modelsLoaded || LittleFS.totalBytes() == 0) return;   // 0 = not mounted yet
   auto& M = g_ledger.models();
   M.deserializeSpend(readFileQuiet(kUsageModelsPath));
   M.deserializeOwnerRates(readFileQuiet(kUsageMratesPath));
   M.deserializeRouterRates(readFileQuiet(kUsageRpricesPath));
-  const bool inferred = !M.tracking() && historyShowsTracking();
-  if (inferred) M.markTracking();
-  // The rows and the NVS provider counters are stored apart: when they disagree (a
-  // failed NVS or file write, a settings-only reset that erases NVS, not /data) the
-  // provider's spend since tracking began loses its model attribution here and is
-  // priced at its highest known price, never a cheaper one (gate G1, G3).
-  const bool orphaned = g_ledger.rebaseModelRows();
-  // Stored now, so it outlives what made it true (a later boot may see different
-  // history, e.g. after a trip to an earlier release): tracking inferred from the
-  // history, and a track dropped for a provider NVS no longer holds, which must not
-  // come back when that provider is created again. When that write fails the file is
-  // removed (removing needs no free space; the history then still shows tracking).
-  if ((inferred || orphaned) &&
-      !agent::writeFileAtomic(kUsageModelsPath, M.serializeSpend(), "usage_models", false) &&
-      orphaned)
-    LittleFS.remove(kUsageModelsPath);
+  // Tracking inferred from the history, or started now with the stored counters as
+  // earlier usage (gate M2), then the rebase: rows and NVS counters are stored apart,
+  // and when they disagree the provider's spend since tracking began is priced at its
+  // highest known price, never a cheaper one (gate G1, G3, M1).
+  const auto settled = g_ledger.settleModels(histLocked());
+  // Stored now, so it outlives what made it true: tracking inferred or started (a
+  // later boot may see different history), and counters the file described that are
+  // gone (a later boot may no longer see it, gate M1). When that write fails after
+  // such counters, the file is removed only while the history shows tracking
+  // (removing needs no free space; the next load then infers it); otherwise it stays
+  // and the next load decides again. While the file on flash does not hold this
+  // load's result, the next record writes it first (ModelLedger::spendFileFirst), and
+  // while one is there that lacks it, history buckets name no model (historyKey).
+  bool current = true;
+  if (settled.mustStore() &&
+      !agent::writeFileAtomic(kUsageModelsPath, M.serializeSpend(), "usage_models", false)) {
+    current = false;
+    if (settled.removable) LittleFS.remove(kUsageModelsPath);
+  }
+  const bool present = LittleFS.exists(kUsageModelsPath);
+  M.setSpendFileStored(current && present);
+  M.setSpendFileStale(!current && present);
   g_modelsLoaded = true;
 }
 
@@ -1006,8 +996,11 @@ bool persistLedgerLocked() {  // caller holds g_ledgerMx
   std::string s = g_ledger.serialize();
   const bool ok = putOrClear(AKEY_USAGE_LEDGER, String(s.c_str()));
   // Rides the next spend-file write: a load can then tell a spend file that is only
-  // behind the stored counters (rows kept) from one that may be ahead (gate G1, G3).
+  // behind the stored counters (rows kept) from one that may be ahead (gate G1, G3),
+  // and, from the totals a landed write stored, re-created counters from ones that
+  // grew (gate M1).
   g_ledger.models().setCountersBehind(!ok);
+  if (ok) g_ledger.noteCountersStored();
   return ok;
 }
 
@@ -1073,8 +1066,10 @@ void persistHistLocked() {  // caller holds g_ledgerMx
 
 void persistModelsLocked() {  // caller holds g_ledgerMx
   if (!g_modelsLoaded) return;   // never overwrite a file that was not read
-  if (!agent::writeFileAtomic(kUsageModelsPath, g_ledger.models().serializeSpend(),
-                              "usage_models", false))
+  if (agent::writeFileAtomic(kUsageModelsPath, g_ledger.models().serializeSpend(),
+                             "usage_models", false))
+    g_ledger.models().setSpendFileStored(true);
+  else
     logUsageFileFailure("usage_models");
 }
 }  // namespace
@@ -1115,13 +1110,20 @@ void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta
   //    failed (gate G1-G3).
   const char* key = g_modelsLoaded ? L.models().spendKey(model) : "";
   L.recordTokens(prov, d, currentPeriodKey(rd), std::string(tag ? tag : ""), key, day);
+  // Gate M1, M2: while the spend file on flash does not hold the load's result (none
+  // is there, or the load could not store it), it goes first, marked as ahead of the
+  // counters ("!n": this record's usgLedger write has not landed yet).
+  if (*key && L.models().spendFileFirst()) {
+    L.models().setCountersBehind(true);
+    persistModelsLocked();
+  }
   persistLedgerLocked();
   if (*key) persistModelsLocked();
   // 3. Daily (day, provider, model) bucket for the graphs (skipped pre-SNTP: dayKey 0
-  //    is refused by the core).
+  //    is refused by the core; no model while a stale spend file is on flash, gate M1).
   if (day) {
     auto& H = histLocked();
-    H.record(prov, key, day, d, 0);
+    H.record(prov, L.models().historyKey(key), day, d, 0);
     H.prune(day, 60);
     persistHistLocked();
   }

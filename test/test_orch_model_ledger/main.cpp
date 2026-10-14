@@ -175,15 +175,28 @@ static void test_tracking_marker_tracks_and_spend_key_round_trip() {
   t->lost = td(5, 6, 7, 8);
   t->preTotIn = 9;
   t->preTotOut = 10;
+  t->storedTotIn = 11;
+  t->storedTotOut = 12;
+  t->storedBeforeIn = 13;
+  t->storedBeforeOut = 14;
   TEST_ASSERT_EQUAL_PTR(t, L.trackFor("openai"));    // found, not made twice
   TEST_ASSERT_NULL(L.trackFor("Bad Prov"));
   const std::string blob = L.serializeSpend();
-  TEST_ASSERT_TRUE(blob.find(";!t;!p|openai|5|1|2|3|4|5|6|7|8|9|10;openai|gpt-5.6|") != std::string::npos);
+  TEST_ASSERT_TRUE(blob.find(";!t;!p|openai|5|1|2|3|4|5|6|7|8|9|10|11|12|13|14;openai|gpt-5.6|") !=
+                   std::string::npos);
   ModelLedger R;
   R.deserializeSpend(blob);
   TEST_ASSERT_TRUE(R.tracking());
   TEST_ASSERT_EQUAL_STRING(blob.c_str(), R.serializeSpend().c_str());
   TEST_ASSERT_EQUAL_UINT64(8, R.track("openai")->lost.cacheW);
+  TEST_ASSERT_EQUAL_UINT64(12, R.track("openai")->storedTotOut);
+  TEST_ASSERT_EQUAL_UINT64(13, R.track("openai")->storedBeforeIn);
+  TEST_ASSERT_EQUAL_UINT64(14, R.track("openai")->storedBeforeOut);
+  // A track group written before the stored totals existed reads them as 0.
+  R.deserializeSpend("!v|1;!p|zai|3|7|0|0|0|0|0|0|0|9|1");
+  TEST_ASSERT_EQUAL_UINT64(9, R.track("zai")->preTotIn);
+  TEST_ASSERT_EQUAL_UINT64(0, R.track("zai")->storedTotIn);
+  TEST_ASSERT_EQUAL_UINT64(0, R.track("zai")->storedBeforeOut);
   // A file with rows and no marker (written before tracks existed) is tracking; an
   // empty file is not; garbage and a duplicate track are skipped.
   R.deserializeSpend("!v|1;openai|gpt-5.6|5|10|0|0|0|10|0|100");
@@ -209,6 +222,24 @@ static void test_tracking_marker_tracks_and_spend_key_round_trip() {
   TEST_ASSERT_EQUAL_UINT64(4, L.track("zai")->pre.in);
   L.dropTrack("zai");
   TEST_ASSERT_NULL(L.track("zai"));
+  // Gate M2: a record stores the spend file before its usgLedger write exactly while
+  // tracking is on and no spend file is on flash.
+  ModelLedger F;
+  TEST_ASSERT_FALSE(F.spendFileFirst());       // not tracking: nothing to show yet
+  F.markTracking();
+  TEST_ASSERT_TRUE(F.spendFileFirst());
+  F.setSpendFileStored(true);
+  TEST_ASSERT_FALSE(F.spendFileFirst());
+  F.setSpendFileStored(false);
+  TEST_ASSERT_TRUE(F.spendFileFirst());
+  // "!n" (the latest usgLedger write did not land) round-trips; a load without it
+  // clears it.
+  F.setCountersBehind(true);
+  ModelLedger G;
+  G.deserializeSpend(F.serializeSpend());
+  TEST_ASSERT_TRUE(G.countersBehind());
+  G.deserializeSpend("!v|1;!t");
+  TEST_ASSERT_FALSE(G.countersBehind());
   // dropAttribution: the period spend leaves the row, totals included.
   L.record("openai", "gpt-5.6", td(25), 7, 101);
   const size_t i = (size_t)(L.findRow("openai", "gpt-5.6") - L.rows().data());

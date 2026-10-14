@@ -697,14 +697,14 @@ static void test_rebase_drops_rows_the_counters_do_not_cover() {
 // as they last landed, loaded and rebased the way the device does it.
 static UsageLedger restart(const std::string& nvs, const std::string& spend,
                            const std::string& owner, const std::string& router = "",
-                           bool* orphaned = nullptr) {
+                           bool* forgot = nullptr) {
   UsageLedger R;
   R.deserialize(nvs);
   R.models().deserializeSpend(spend);
   R.models().deserializeOwnerRates(owner);
   R.models().deserializeRouterRates(router);
-  const bool o = R.rebaseModelRows();
-  if (orphaned) *orphaned = o;
+  const bool f = R.rebaseModelRows();
+  if (forgot) *forgot = f;
   return R;
 }
 
@@ -819,26 +819,451 @@ static void test_gate_g3_failed_model_file_write_never_reprices_cheaper() {
   TEST_ASSERT_TRUE(N.estCents("openai") >= 1600);
 }
 
+// The device's load in a test: the stores as they last landed, then settleModels with
+// the history as stored (store.cpp loadModelsLocked).
+static UsageLedger load(const std::string& nvs, const std::string& spend, const std::string& owner,
+                        const UsageHistory& history, UsageLedger::Settled* settled = nullptr) {
+  UsageLedger R;
+  R.deserialize(nvs);
+  R.models().deserializeSpend(spend);
+  R.models().deserializeOwnerRates(owner);
+  const UsageLedger::Settled s = R.settleModels(history);
+  if (settled) *settled = s;
+  return R;
+}
+
+// The history an earlier release leaves: our lines read (extra fields ignored) and
+// rewritten without models, plus its own model-less buckets.
+static UsageHistory earlierReleaseHistory(const UsageHistory& ours) {
+  UsageHistory h;
+  for (const auto& b : ours.entries()) h.record(b.prov, b.dayKey, b.tokIn, b.tokOut, b.calls);
+  return h;
+}
+
 // Back to an earlier release and updated again: the earlier release keeps counting
 // in usgLedger but never touches the spend file, so after the update the rows are
-// only behind. They stay (each model at its own price) and the earlier release's
-// spend, whose model is unknown, is priced at the provider's highest price.
+// only behind. When the history it rewrote shows it recorded, it may have reset the
+// counters first (gate M1), so the provider's rows and earlier usage are not trusted:
+// all its spend this period is priced at its highest price. When none of its history
+// writes landed, the rows stay (each model at its own price) and its spend, whose
+// model is unknown, is priced at the provider's highest price.
 static void test_downgrade_and_back_keeps_the_rows() {
   UsageLedger L;
   L.models().setOwnerRate("openai", "gpt-5.6-luna", 200000, 1200000);
   turn(L, "openai", "gpt-5.6-luna", 1000000, 100000);               // 20 + 12
   turn(L, "openai", "gpt-6-astra", 1000000, 0);                     // 1000
+  L.noteCountersStored();
   const std::string file = L.models().serializeSpend();
   const std::string owner = L.models().serializeOwnerRates();
+  UsageHistory ours;
+  ours.record("openai", "gpt-5.6-luna", 20650, td(1000000, 100000), 0);
+  ours.record("openai", "gpt-6-astra", 20650, td(1000000), 0);
   UsageLedger old;                                                   // v4.5.12 boots
   old.deserialize(L.serialize());
   old.recordTokens("openai", 1000, 0, 24300);
-  UsageLedger R = restart(old.serialize(), file, owner);             // updated again
+  UsageLedger R = load(old.serialize(), file, owner, ours);         // its history never landed
   TEST_ASSERT_EQUAL_UINT64(1000000, R.models().findRow("openai", "gpt-5.6-luna")->tokIn);
   TEST_ASSERT_EQUAL_UINT64(1000000, R.models().findRow("openai", "gpt-6-astra")->tokIn);
   PriceSummary s;
   TEST_ASSERT_EQUAL_UINT64(1032 + 1, R.priceProvider("openai", &s));   // 1000 tokens at ~$10/M
   TEST_ASSERT_EQUAL_UINT64(1000, s.othIn);
+  UsageHistory rewritten = earlierReleaseHistory(ours);
+  rewritten.record("openai", 20651, 1000, 0, 0);
+  UsageLedger W = load(old.serialize(), file, owner, rewritten);   // its history landed
+  TEST_ASSERT_EQUAL_UINT64(0, W.models().findRow("openai", "gpt-5.6-luna")->tokIn);
+  W.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(2001000, s.othIn);                        // everything at ~$10/M
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+}
+
+// Gate M1: a settings-only reset on an earlier release (NVS erased, /data kept), new
+// spend there, and an update back in the same period. The spend file's track and rows
+// describe counters that no longer exist; the new spend is never priced below the
+// provider's highest price, whether it is smaller or larger than what the file knew.
+static void test_gate_m1_reset_on_an_earlier_release_never_prices_new_spend_low() {
+  UsageLedger L;
+  L.recordTokens("openai", 1400000, 180000, 24300);                 // earlier usage
+  turn(L, "openai", "gpt-5.6-luna", 2000000, 200000);                // tracking starts
+  L.noteCountersStored();                                             // its usgLedger write landed
+  const std::string file = L.models().serializeSpend();
+  UsageHistory ours;
+  ours.record("openai", 20650, 1400000, 180000, 0);
+  ours.record("openai", "gpt-5.6-luna", 20650, td(2000000, 200000), 0);
+  auto afterReset = [](uint64_t in, uint64_t out) {   // the earlier release, reset
+    UsageLedger old;
+    old.recordTokens("openai", in, out, 24300);
+    return old.serialize();
+  };
+  // 6M / 600K of gpt-6-astra (true price 6000 + 3000 cents): MORE than the file knew
+  // (3.4M), on a device with no earlier period. The earlier release's history shows it.
+  UsageHistory rewritten = earlierReleaseHistory(ours);
+  rewritten.record("openai", 20651, 6000000, 600000, 0);
+  UsageLedger A = load(afterReset(6000000, 600000), file, "", rewritten);
+  PriceSummary s;
+  TEST_ASSERT_EQUAL_UINT64(9000, A.priceProvider("openai", &s));     // all at ~$10/$50
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(0, A.models().findRow("openai", "gpt-5.6-luna")->totIn);
+  // LESS than the file knew (1M): the stored totals (3.4M) show the re-creation even
+  // with no history evidence.
+  UsageLedger B = load(afterReset(1000000, 100000), file, "", ours);
+  TEST_ASSERT_EQUAL_UINT64(1000 + 500, B.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  // A device with spend before the tracking period: the counters' spend before this
+  // period can never shrink, so 9M re-created (more than every total the file knew,
+  // 8.4M) shows even with no history evidence.
+  UsageLedger P;
+  P.recordTokens("openai", 5000000, 0, 24299);                       // last month
+  P.recordTokens("openai", 1400000, 180000, 24300);
+  turn(P, "openai", "gpt-5.6-luna", 2000000, 200000);
+  P.noteCountersStored();
+  UsageLedger C = load(afterReset(9000000, 900000), P.models().serializeSpend(), "", ours);
+  TEST_ASSERT_EQUAL_UINT64(9000 + 4500, C.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  // The next load sees nothing new to drop (the reset is stored with the file).
+  UsageLedger D = load(afterReset(9000000, 900000), C.models().serializeSpend(), "", ours);
+  TEST_ASSERT_EQUAL_UINT64(9000 + 4500, D.priceProvider("openai", &s));
+  // The same trip right after the update boot (no turn since): the totals the boot
+  // stored with its spend file already show it.
+  UsageLedger P0;
+  P0.recordTokens("openai", 5000000, 0, 24299);
+  P0.recordTokens("openai", 1400000, 180000, 24300);
+  UsageHistory h0;
+  h0.record("openai", 20650, 1400000, 180000, 0);
+  const std::string bootFile = load(P0.serialize(), "", "", h0).models().serializeSpend();
+  UsageLedger C0 = load(afterReset(9000000, 900000), bootFile, "", h0);
+  TEST_ASSERT_EQUAL_UINT64(9000 + 4500, C0.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  // The latest usgLedger write did not land ("!n": the rows may hold spend the counters
+  // lack): the totals of the last write that did land (3.4M) still show 2M re-created.
+  L.models().setCountersBehind(true);
+  UsageLedger E = load(afterReset(2000000, 200000), L.models().serializeSpend(), "", ours);
+  TEST_ASSERT_EQUAL_UINT64(2000 + 1000, E.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  // Either direction alone shows it: more input than the file knew, less output.
+  L.models().setCountersBehind(false);
+  UsageLedger F = load(afterReset(5000000, 100000), L.models().serializeSpend(), "", ours);
+  F.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(5000000, s.othIn);
+  // A spend file from before the stored totals (a track with no such fields) still
+  // shows counters below the totals when tracking started: its earlier usage is gone.
+  UsageLedger V = load(afterReset(1000000, 100000),
+                       "!v|1;!t;!p|openai|24300|1000000|100000|0|0|0|0|0|0|1400000|180000", "", ours);
+  V.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(1000000, s.othIn);
+  // The history evidence is the latest row day's: a model bucket only on an older day
+  // does not show that day was recorded by this release.
+  UsageLedger T;
+  turn(T, "openai", "gpt-5.6", 1000, 0);                             // day 20650
+  UsageHistory older;
+  older.record("openai", "gpt-5.6", 20649, td(5), 0);
+  older.record("openai", 20650, 1000, 0, 0);
+  TEST_ASSERT_TRUE(T.earlierReleaseRecorded(&older));
+  older.record("openai", "gpt-5.6", 20650, td(1000), 0);
+  TEST_ASSERT_FALSE(T.earlierReleaseRecorded(&older));
+  TEST_ASSERT_FALSE(T.earlierReleaseRecorded(nullptr));
+}
+
+// Gate M2: an update from an earlier release (its history has buckets, none with a
+// model). Tracking starts at the load with the stored counters as earlier usage and the
+// spend file is stored then, so a later turn whose spend-file write fails never reads
+// as earlier usage after a restart. When that first store fails too, the next record
+// stores the spend file BEFORE its usgLedger write (spendFileFirst): a failure between
+// the two leaves the file ahead (fail-closed).
+static void test_gate_m2_failed_first_spend_file_write_never_makes_earlier_usage() {
+  UsageLedger v12;                                                    // v4.5.12's counters
+  v12.recordTokens("cumulo", 500000, 50000, 24300);
+  const std::string nvs0 = v12.serialize();
+  UsageHistory h12;
+  h12.record("cumulo", 20650, 500000, 50000, 0);                     // its 5-field history
+  UsageLedger::Settled st;
+  UsageLedger L = load(nvs0, "", "", h12, &st);                      // the update boot
+  TEST_ASSERT_TRUE(st.started);
+  TEST_ASSERT_TRUE(st.mustStore());
+  TEST_ASSERT_TRUE(L.models().tracking());
+  TEST_ASSERT_EQUAL_UINT64(500000, L.models().track("cumulo")->pre.in);
+  const std::string bootFile = L.models().serializeSpend();          // stored at the load
+  // anthropic/claude-opus-5 via Cumulo, 1M / 1M (true price ~$5/$25: 3000 cents); its
+  // usgLedger write lands, its spend-file and history writes do not.
+  turn(L, "cumulo", "anthropic/claude-opus-5", 1000000, 1000000);
+  L.noteCountersStored();
+  const std::string nvs1 = L.serialize();
+  UsageLedger R = load(nvs1, bootFile, "", h12);
+  PriceSummary s;
+  const uint64_t est = R.priceProvider("cumulo", &s);
+  TEST_ASSERT_EQUAL_UINT64(500000, s.resIn);                         // only v4.5.12's spend
+  TEST_ASSERT_EQUAL_UINT64(1000000, s.othIn);                        // the turn: highest price
+  TEST_ASSERT_TRUE(est >= 125 + 50 + 3000);                          // earlier usage + true
+  // The store at the load failed: the first record goes file first. Its usgLedger write
+  // then fails (a power cut): the file is ahead, so the turn is not counted and the
+  // row drops it. Its history write never happened either, so the history cannot show
+  // that no earlier release ran since (gate M1): the stored counters lose their
+  // earlier usage too, all priced at the highest price (fail-closed).
+  UsageLedger F = load(nvs0, "", "", h12);
+  F.models().setSpendFileStored(false);
+  TEST_ASSERT_TRUE(F.models().spendFileFirst());
+  turn(F, "cumulo", "anthropic/claude-opus-5", 1000000, 1000000);
+  F.models().setCountersBehind(true);                                // as the device marks it
+  UsageLedger G = load(nvs0, F.models().serializeSpend(), "", h12);
+  G.priceProvider("cumulo", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(500000, s.othIn);
+  TEST_ASSERT_EQUAL_UINT64(0, G.models().findRow("cumulo", "anthropic/claude-opus-5")->tokIn);
+  // With the turn's history bucket on flash (only its usgLedger write failed), the
+  // stored counters keep their earlier usage at the residual price.
+  UsageHistory h13 = h12;
+  h13.record("cumulo", "anthropic/claude-opus-5", 20650, td(1000000, 1000000), 0);
+  UsageLedger G2 = load(nvs0, F.models().serializeSpend(), "", h13);
+  G2.priceProvider("cumulo", &s);
+  TEST_ASSERT_EQUAL_UINT64(500000, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+  TEST_ASSERT_EQUAL_UINT64(0, G2.models().findRow("cumulo", "anthropic/claude-opus-5")->tokIn);
+}
+
+// A device on this release, in the device's store order (store.cpp loadModelsLocked,
+// recordProviderTokens): each store lands unless the settings store or /data fails.
+struct Dev {
+  UsageLedger g;
+  UsageHistory hram;
+  std::string nvs, file, hist;
+  bool nvsFails = false, dataFails = false;
+  UsageLedger::Settled load() {
+    g = UsageLedger();
+    g.deserialize(nvs);
+    g.models().deserializeSpend(file);
+    hram = UsageHistory();
+    hram.deserialize(hist);
+    const UsageLedger::Settled s = g.settleModels(hram);
+    const bool current = !s.mustStore() || storeFile();
+    if (!current && s.removable) file.clear();
+    g.models().setSpendFileStored(current && !file.empty());
+    g.models().setSpendFileStale(!current && !file.empty());
+    return s;
+  }
+  bool storeFile() {
+    if (dataFails) return false;
+    file = g.models().serializeSpend();
+    g.models().setSpendFileStored(true);
+    return true;
+  }
+  void record(const char* p, const char* model, const TokenDelta& d, uint32_t per = 24300,
+              uint32_t day = 20650) {
+    const char* key = g.models().spendKey(model);
+    g.recordTokens(p, d, per, "turn", key, day);
+    if (*key && g.models().spendFileFirst()) {
+      g.models().setCountersBehind(true);
+      storeFile();
+    }
+    if (!nvsFails) {
+      nvs = g.serialize();
+      g.noteCountersStored();
+    }
+    g.models().setCountersBehind(nvsFails);
+    if (*key) storeFile();
+    hram.record(p, g.models().historyKey(key), day, d, 0);
+    if (!dataFails) hist = hram.serialize();
+  }
+  // A trip to an earlier release with a settings-only reset there: it records `in` /
+  // `out` for `p` (provider level) and rewrites the history without models when
+  // `landed`.
+  void tripWithReset(const char* p, uint64_t in, uint64_t out, bool landed, uint32_t day = 20651) {
+    UsageLedger old;
+    old.recordTokens(p, in, out, 24300);
+    nvs = old.serialize();
+    if (!landed) return;
+    UsageHistory h;
+    h.deserialize(hist);
+    UsageHistory rewritten = earlierReleaseHistory(h);
+    rewritten.record(p, day, in, out, 0);
+    hist = rewritten.serialize();
+  }
+};
+
+// Gate M1 review: the history evidence reads every row's day, also the rows of a
+// provider the earlier release did not use again (the rebase clears their period
+// spend), so a provider that only had earlier usage this period (no row of its own) is
+// not taken for one that kept counting.
+static void test_gate_m1_history_evidence_reads_every_row() {
+  UsageLedger v12;
+  v12.recordTokens("openai", 1400000, 180000, 24300);
+  UsageHistory h12;
+  h12.record("openai", 20649, 1400000, 180000, 0);
+  Dev d;
+  d.nvs = v12.serialize();
+  d.hist = h12.serialize();
+  d.load();                                                          // the update boot
+  d.record("anthropic", "claude-haiku-4-5", td(500000, 50000));      // only anthropic is used
+  d.tripWithReset("openai", 6000000, 600000, true);                  // its history landed
+  d.load();
+  PriceSummary s;
+  TEST_ASSERT_EQUAL_UINT64(9000, d.g.priceProvider("openai", &s));  // all at ~$10/$50
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(6000000, s.othIn);
+  // A row recorded before the clock synced has no day: with no dated row the history
+  // cannot show an earlier release ran, and only the stored totals can (the documented
+  // narrow hole, gate M1).
+  UsageLedger U;
+  U.recordTokens("openai", td(5), 0, "turn", "gpt-5.6", 0);
+  TEST_ASSERT_FALSE(U.earlierReleaseRecorded(&h12));
+}
+
+// The spend file is removed when its store at a load fails after a dropped track only
+// while the history shows tracking (the next load infers it): after an earlier release
+// rewrote the history, the file stays, so a plain restart never starts tracking afresh
+// and takes spend counted after it started for earlier usage.
+static void test_failed_store_after_a_dropped_track_keeps_the_file_unless_inferred() {
+  UsageLedger v12;
+  v12.recordTokens("openai", 300000, 30000, 24300);
+  v12.recordTokens("anthropic", 200000, 20000, 24300);
+  UsageHistory h12;
+  h12.record("openai", 20640, 300000, 30000, 0);
+  h12.record("anthropic", 20640, 200000, 20000, 0);
+  Dev d;
+  d.nvs = v12.serialize();
+  d.hist = h12.serialize();
+  d.load();
+  d.record("openai", "gpt-5.6-luna", td(1000000, 100000));
+  d.record("anthropic", "claude-haiku-4-5", td(500000, 50000));
+  d.tripWithReset("openai", 2000000, 200000, true);                  // anthropic: no entry now
+  d.dataFails = true;                                                // /data has no free block
+  UsageLedger::Settled st = d.load();
+  TEST_ASSERT_TRUE(st.forgot);
+  TEST_ASSERT_FALSE(st.removable);
+  TEST_ASSERT_FALSE(d.file.empty());
+  TEST_ASSERT_TRUE(d.g.models().spendFileFirst());   // the file on flash lacks the result
+  PriceSummary s;
+  const uint64_t est = d.g.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(2000 + 1000, est);                        // all at ~$10/$50
+  st = d.load();                                                     // a plain restart
+  TEST_ASSERT_FALSE(st.started);
+  TEST_ASSERT_EQUAL_UINT64(est, d.g.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  // A settings-only reset on this release keeps a history with model buckets: the
+  // file is removed when its store fails, and the next load infers tracking.
+  Dev r;
+  r.nvs = v12.serialize();
+  r.hist = h12.serialize();
+  r.load();
+  r.record("openai", "gpt-5.6-luna", td(1000000, 100000));
+  r.nvs.clear();
+  r.dataFails = true;
+  st = r.load();
+  TEST_ASSERT_TRUE(st.forgot);
+  TEST_ASSERT_TRUE(st.removable);
+  TEST_ASSERT_TRUE(r.file.empty());
+  TEST_ASSERT_TRUE(r.load().inferred);
+}
+
+// Counters found re-created at a load are forgotten in the spend file at once (gate
+// M1): what showed it (the stored totals, the history) may not show it at a later
+// load, once the counters grow past the old totals or a later turn writes a model
+// bucket on the same day. While that store fails, the next record writes the file
+// first.
+static void test_gate_m1_forgotten_counters_are_stored_at_load() {
+  for (int viaHistory = 0; viaHistory < 2; ++viaHistory) {
+    UsageLedger v12;
+    v12.recordTokens("openai", 1400000, 180000, 24300);
+    UsageHistory h12;
+    h12.record("openai", 20649, 1400000, 180000, 0);
+    Dev d;
+    d.nvs = v12.serialize();
+    d.hist = h12.serialize();
+    d.load();
+    d.record("openai", "gpt-5.6-luna", td(2000000, 200000));
+    // 3M/300K below the stored 3.4M, or 4M/400K above it with the history landed.
+    d.tripWithReset("openai", viaHistory ? 4000000 : 3000000, viaHistory ? 400000 : 300000,
+                    viaHistory != 0, 20650);
+    const UsageLedger::Settled st = d.load();
+    TEST_ASSERT_TRUE(st.forgot);
+    TEST_ASSERT_TRUE(st.mustStore());
+    // A later turn of gpt-6-astra: its usgLedger write lands, its spend-file write does
+    // not; its history write lands too.
+    const uint64_t in = viaHistory ? 100000 : 1000000;
+    d.dataFails = true;
+    d.record("openai", "gpt-6-astra", td(in, in / 10));
+    d.hist = d.hram.serialize();
+    d.dataFails = false;
+    d.load();
+    PriceSummary s;
+    const EffRate astra = d.g.effectiveRate("openai", "gpt-6-astra");
+    const uint64_t allIn = (viaHistory ? 4000000 : 3000000) + in;
+    const uint64_t truth = (nimbus::orch::costMicro(allIn, astra.in) +
+                            nimbus::orch::costMicro(allIn / 10, astra.out)) / 10000;
+    TEST_ASSERT_TRUE(d.g.priceProvider("openai", &s) >= truth);
+    TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  }
+  // The store at that load failed: the next record goes file first, and until a write
+  // of the file lands its history bucket names no model, so the history keeps showing
+  // that an earlier release rewrote it.
+  UsageLedger v12;
+  v12.recordTokens("openai", 1400000, 180000, 24300);
+  UsageHistory h12;
+  h12.record("openai", 20649, 1400000, 180000, 0);
+  Dev f;
+  f.nvs = v12.serialize();
+  f.hist = h12.serialize();
+  f.load();
+  f.record("openai", "gpt-5.6-luna", td(2000000, 200000));
+  f.tripWithReset("openai", 4000000, 400000, true, 20650);
+  f.dataFails = true;
+  TEST_ASSERT_TRUE(f.load().forgot);
+  TEST_ASSERT_TRUE(f.g.models().spendFileFirst());
+  TEST_ASSERT_EQUAL_STRING("", f.g.models().historyKey("gpt-6-astra"));
+  f.record("openai", "gpt-6-astra", td(100000, 10000));   // only usgLedger and history land
+  f.hist = f.hram.serialize();
+  f.dataFails = false;
+  f.load();
+  PriceSummary s;
+  f.g.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(4100000, s.othIn);              // all at the highest price
+  f.record("openai", "gpt-6-astra", td(100000, 10000));   // its file write lands
+  TEST_ASSERT_EQUAL_STRING("gpt-6-astra", f.g.models().historyKey("gpt-6-astra"));
+}
+
+// The re-created-counter check never fires on counters that only grew: a provider
+// still in a pre-2026-07-16 group (period spend, no all-time), a usgLedger write that
+// failed just after a period roll, and a settings-only reset on this release followed
+// by new spend. Each keeps its estimate across a plain restart.
+static void test_re_created_check_never_fires_on_counters_that_grew() {
+  UsageLedger v;
+  v.deserialize("mistral|24294|3000000|0|0|0|1");                    // the 7-field group
+  v.setRates("mistral", 20, 20, 0);
+  UsageHistory h;
+  h.record("mistral", 20400, 3000000, 0, 0);
+  Dev a;
+  a.nvs = v.serialize();
+  a.hist = h.serialize();
+  PriceSummary s;
+  for (int boot = 0; boot < 2; ++boot) {
+    a.load();
+    TEST_ASSERT_EQUAL_UINT64(a.g.find("mistral")->estCents(), a.g.priceProvider("mistral", &s));
+    TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+  }
+  Dev b;
+  b.load();
+  b.record("openai", "gpt-5.6-luna", td(1000000, 100000), 24300, 20650);
+  b.nvsFails = true;                                                 // a new period's write fails
+  b.record("openai", "gpt-5.6-luna", td(2000000, 200000), 24301, 20680);
+  b.load();
+  b.nvsFails = false;
+  b.record("openai", "gpt-5.6-luna", td(1000000, 100000), 24301, 20681);
+  const uint64_t est = b.g.priceProvider("openai", &s);
+  b.load();
+  TEST_ASSERT_EQUAL_UINT64(est, b.g.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+  Dev c;
+  c.load();
+  c.record("openai", "gpt-5.6-luna", td(5000000, 500000));
+  c.nvs.clear();                                                     // settings-only reset
+  c.load();
+  c.record("openai", "gpt-5.6-luna", td(1000000, 100000));
+  const uint64_t est2 = c.g.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+  c.load();
+  TEST_ASSERT_EQUAL_UINT64(est2, c.g.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
 }
 
 // A spend file can keep more earlier usage than the stored counters hold: spend
@@ -877,7 +1302,7 @@ static void test_stale_earlier_usage_is_dropped_at_load() {
   N.setLimits("openai", 0, 0, 1, 1500);
   N.recordTokens("openai", 1200000, 150000, 24300);
   UsageLedger B = restart(N.serialize(), stale, "", "", &orphaned);
-  TEST_ASSERT_FALSE(orphaned);
+  TEST_ASSERT_TRUE(orphaned);                                       // forgotten: stored at once
   B.priceProvider("openai", &s);
   TEST_ASSERT_EQUAL_UINT64(0, s.resIn);                             // never earlier usage
   TEST_ASSERT_TRUE(B.overCostBudget("openai"));                     // 1.2M/150K at ~$10/$50
@@ -940,8 +1365,8 @@ struct TrueRec {
 };
 
 // Each counted token at its own model's price (earlier usage at the residual price),
-// the same cache multipliers and floors as the estimate.
-static uint64_t trueCents(const UsageLedger& L, const std::vector<TrueRec>& live, const char* p) {
+// the same cache multipliers and floors as the estimate, in micro-dollars.
+static uint64_t trueMicro(const UsageLedger& L, const std::vector<TrueRec>& live, const char* p) {
   const nimbus::orch::ProviderBudget* e = L.find(p);
   if (!e) return 0;
   std::vector<std::pair<std::string, TokenDelta>> agg;
@@ -962,19 +1387,62 @@ static uint64_t trueCents(const UsageLedger& L, const std::vector<TrueRec>& live
              nimbus::orch::costMicro(a.second.cacheR, rt.in) / 10 +
              nimbus::orch::costMicro(a.second.cacheW * 5, rt.in) / 4;
   }
-  return micro / 10000;
+  return micro;
 }
 
-// Class (gate G1-G3): for ANY sequence of turns (named models, spend with no model,
-// more models than rows, each provider on its own reset day, records before the clock
-// syncs, price edits), restarts after store failures (a usgLedger write or spend-file
-// writes that did not land, in any mix), settings-only resets, Erase Storage on a
-// device with no SD card, and trips to an earlier release and back, estCents is never
-// below pricing every counted token at its true model's own price (earlier usage at
-// the residual price). The load is the device's (store.cpp loadModelsLocked: the
-// history check, then the rebase, stored or the file removed when it dropped an
-// orphaned track). One modeled assumption: a write onto an absent spend file lands
-// (ClassSim::fileLands; the documented narrow hole).
+// Whether an estimate of `got` cents is below the true price (`trueMicro`). The
+// estimate floors each priced part (a row, the lost spend, the earlier usage) to a
+// micro-dollar per term where the truth floors each model once, so a model whose spend
+// is split over parts at the same price reads under 4 micro-dollars per part lower (at
+// most 14 parts): a cent short only when the truth is within 64 micro-dollars above a
+// cent. The bit-exact legacy formula floors each of its four token terms to a cent.
+static bool belowTruth(uint64_t got, uint64_t trueMicro, bool fastPath) {
+  const uint64_t want = trueMicro / 10000;
+  if (got + (fastPath ? 4 : 0) >= want) return false;
+  return got + 1 != want || trueMicro % 10000 >= 64;
+}
+
+// The class test's tolerance ignores only that: two cents short, or a cent short with
+// the truth further above the cent, still fail.
+static void test_class_check_tolerates_only_per_part_flooring() {
+  TEST_ASSERT_FALSE(belowTruth(11, 110000, false));
+  TEST_ASSERT_FALSE(belowTruth(10, 110063, false));   // split flooring: tolerated
+  TEST_ASSERT_TRUE(belowTruth(10, 110064, false));
+  TEST_ASSERT_TRUE(belowTruth(9, 110000, false));
+  TEST_ASSERT_TRUE(belowTruth(10, 119999, false));
+  TEST_ASSERT_FALSE(belowTruth(7, 110000, true));     // the legacy formula's four floors
+  TEST_ASSERT_TRUE(belowTruth(6, 110000, true));
+}
+
+// Class (gate G1-G3, M1, M2): for ANY sequence of turns (named models, spend with no
+// model, more models than rows, each provider on its own reset day, records before the
+// clock syncs, price edits), restarts after store failures (usgLedger, spend-file and
+// history writes that did not land, in any mix, the first spend-file write included),
+// settings-only resets, Erase Storage on a device with no SD card, and trips to an
+// earlier release and back (with or without a settings-only reset there), estCents is
+// never below pricing every counted token at its true model's own price (earlier usage
+// at the residual price). The device's protocol is modeled as written: the update boot
+// and every restart load through UsageLedger::settleModels with the history as stored
+// (store.cpp loadModelsLocked: the spend file is stored then, and removed when that
+// fails only while Settled::removable), a record stores the spend file first while
+// the file on flash lacks what the load decided (ModelLedger::spendFileFirst) and its
+// history bucket names no model while a stale one is there (historyKey), an earlier
+// release rewrites the history without models. Spend counted while nothing stored
+// shows tracking started (no spend file on flash) is earlier usage by definition, as
+// on a device that never ran this release. Two modeled exclusions, the documented
+// narrow holes:
+//  - gate M2: no restart while the spend file is not on flash because its writes did
+//    not land (not because the device removed it with no write tried since), the
+//    stored counters hold spend of this period recorded after tracking started, and the
+//    stored history does not show tracking; nor a trip to an earlier release (it
+//    rewrites the history) while the file is not on flash and the stored counters hold
+//    such spend;
+//  - gate M1: a provider whose stored counters were re-created (a settings-only reset,
+//    on this release or an earlier one) while the spend file on flash still describes
+//    the old ones, when the history does not show an earlier release recorded since
+//    the rows' latest record and the new counters hold at least every total the file
+//    recorded and as much spend from before their period (the device cannot tell them
+//    apart): skipped until its period rolls.
 // One simulated device for the class test: the ledger in RAM, what its stores last
 // took (the usgLedger blob, the spend file, the price files, the history), and the
 // true record of every counted spend.
@@ -990,13 +1458,20 @@ struct ClassSim {
        "openai/c-3", "openai/c-4", "openai/c-5", "openai/c-6", "openai/c-7"}};
   uint64_t seed;
   UsageLedger L;
+  UsageHistory hram;   // the history in RAM
   std::vector<TrueRec> live;
-  std::string nvs, file, owner, router;
+  std::string nvs, file, owner, router, histFlash;
   size_t nvsLive = 0;
-  bool histAny = false, histModel = false;   // the history holds a bucket / a model bucket
+  bool recreated[kProvs] = {};   // the stored counters are not the ones the file describes
+  bool seen[kProvs] = {};        // ...and a load since told them apart
+  bool removed = false;          // the device removed the spend file (no write tried since)
+  bool stale = false;            // the file on flash lacks the latest load's result
+  uint32_t lastDk = 0;           // the day of the latest count() (0 = before the clock synced)
+  uint32_t skipPer[kProvs] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
   uint32_t per[kProvs] = {24300, 24300, 24300, 24300, 24300};   // each provider's period
   uint32_t day = 20650;
-  int restarts = 0, drops = 0, downgrades = 0, resets = 0;
+  int restarts = 0, drops = 0, downgrades = 0, resets = 0, oldResets = 0, firstFails = 0;
+  int detected = 0, undetectable = 0;   // re-created counters at a load
   uint64_t nvsOk = 85, fileOk = 75;   // percent of writes that land, per simulated device
 
   explicit ClassSim(uint64_t s) : seed(s) {
@@ -1010,58 +1485,124 @@ struct ClassSim {
   TokenDelta spend(int p, uint64_t scale) {   // cache traffic only for anthropic
     return td(rnd(scale), rnd(scale / 10), p == 1 ? rnd(scale * 3 / 10) : 0, p == 1 ? rnd(scale / 30) : 0);
   }
-  // A record's period: the provider's own, or 0 (the clock has not synced yet).
-  uint32_t recPeriod(int p) { return rnd(10) ? per[p] : 0; }
   // Record d for provider p in ledger R and keep its truth: counted in the period the
-  // provider holds after it; a first sync carries the pre-sync records along.
-  void count(UsageLedger& R, int p, const std::string& trueModel, const TokenDelta& d,
-             const char* model) {
+  // provider holds after it; a first sync carries the pre-sync records along. A record
+  // before the clock syncs has period 0 and day 0 (no history bucket, no lastDay).
+  // `model` null = an earlier release's provider-level record. Returns the key it filed
+  // under and keeps its day in lastDk; writes its history bucket to H when given.
+  std::string count(UsageLedger& R, int p, const std::string& trueModel, const TokenDelta& d,
+                    const char* model, UsageHistory* H) {
+    const uint32_t rp = rnd(10) ? per[p] : 0, dk = rp ? day : 0;
     const nimbus::orch::ProviderBudget* e = R.find(provs[p]);
     const uint32_t before = e ? e->periodKey : 0;
-    if (model) R.recordTokens(provs[p], d, recPeriod(p), "turn", model, day);
-    else R.recordTokens(provs[p], d.in, d.out, d.cacheR, d.cacheW, recPeriod(p), "turn");
+    if (model) R.recordTokens(provs[p], d, rp, "turn", model, dk);
+    else R.recordTokens(provs[p], d.in, d.out, d.cacheR, d.cacheW, rp, "turn");
     e = R.find(provs[p]);
     const uint32_t after = e ? e->periodKey : 0;
     if (before == 0 && after != 0)
       for (TrueRec& r : live)
         if (r.prov == provs[p] && r.period == 0) r.period = after;
     live.push_back({provs[p], trueModel, d, after});
+    const char* key = model ? R.models().spendKey(model) : "";
+    if (dk && H) H->record(provs[p], key, dk, d, 0);
+    lastDk = dk;
+    return std::string(key);
   }
-  void storeNvs() {   // a usgLedger write that lands (the device clears the marker)
+  void storeNvs() {   // a usgLedger write that lands (store.cpp persistLedgerLocked)
     nvs = L.serialize();
     nvsLive = live.size();
     L.models().setCountersBehind(false);
+    L.noteCountersStored();
   }
-  // The previous firmware's spend: earlier usage, all of it stored.
+  bool storeFile() {   // a spend-file write; true when it lands
+    removed = false;   // a write was tried since
+    if (rnd(100) >= fileOk) return false;
+    file = L.models().serializeSpend();
+    L.models().setSpendFileStored(true);
+    for (int p = 0; p < kProvs; ++p) recreated[p] = seen[p] = false;   // it describes RAM
+    stale = false;
+    return true;
+  }
+  // Whether the stored counters hold spend of their period recorded after tracking
+  // started (a record with a true model; zero-token records count for nothing).
+  bool nvsHoldsTracked() const {
+    UsageLedger R;
+    R.deserialize(nvs);
+    for (size_t i = 0; i < nvsLive; ++i) {
+      const TrueRec& r = live[i];
+      if (r.model.empty() || (!r.d.in && !r.d.out && !r.d.cacheR && !r.d.cacheW)) continue;
+      const nimbus::orch::ProviderBudget* e = R.find(r.prov);
+      if (e && e->periodKey == r.period) return true;
+    }
+    return false;
+  }
+  // One direction of re-created counters at or above every floor the spend file gives
+  // (UsageLedger::rebaseModelRows): the totals it recorded, and its spend from before
+  // its period plus their period spend.
+  static bool floorsMiss(uint64_t stored, uint64_t preTot, uint64_t before, uint64_t total,
+                         uint64_t period) {
+    if (total < (stored > preTot ? stored : preTot)) return false;
+    return total < period || total - period >= before;
+  }
+  // The gate M1 exclusion, read from what is stored before the load (R: the stored
+  // counters with the stored spend file, not settled yet).
+  void markUndetectable(const UsageLedger& R, const UsageHistory& H) {
+    const bool evidence = R.earlierReleaseRecorded(&H);
+    for (int p = 0; p < kProvs; ++p) {
+      const nimbus::orch::ProviderBudget* e = R.find(provs[p]);
+      const nimbus::orch::ProvTrack* t = R.models().track(provs[p]);
+      if (!recreated[p] || !e || !t) continue;
+      // Once a load told them apart, the device knows (it stores that, or writes the
+      // file first): no later load is excused.
+      const bool miss =
+          !seen[p] && !evidence &&
+          floorsMiss(t->storedTotIn, t->preTotIn, t->storedBeforeIn, e->totalIn, e->tokensIn) &&
+          floorsMiss(t->storedTotOut, t->preTotOut, t->storedBeforeOut, e->totalOut, e->tokensOut);
+      ++(miss ? undetectable : detected);
+      if (miss) skipPer[p] = e->periodKey;
+      seen[p] = seen[p] || !miss;
+    }
+  }
+  void storeHistory() {
+    if (rnd(100) < fileOk) histFlash = hram.serialize();
+  }
+  // The previous firmware's spend (earlier usage, stored, with its model-less
+  // history), then the update boot.
   void earlier() {
     for (int p = 0; p < kProvs; ++p) {
       if (rnd(3)) L.setRates(provs[p], (uint32_t)rnd(400), (uint32_t)rnd(2000), 0);
       if (!rnd(2)) continue;
-      count(L, p, "", spend(p, 3000000), nullptr);
-      histAny = histAny || rnd(2);   // that release's history may have landed
+      count(L, p, "", spend(p, 3000000), nullptr, &hram);
+      storeHistory();
     }
     storeNvs();
+    restartStep();
   }
   // One turn: a named model, or none (filed under ~other once tracking started; its
-  // true model is still one of the provider's). Each store may fail to take it.
+  // true model is still one of the provider's). Each store may fail to take it, in
+  // the device's order (store.cpp recordProviderTokens).
   void turnStep() {
     const int p = (int)rnd(kProvs);
     const std::string& m = models[p][rnd(10)];
     const bool named = rnd(6) != 0, tracked = L.models().tracking();
-    count(L, p, named || tracked ? m : std::string(), spend(p, 2000000), named ? m.c_str() : "");
+    const TokenDelta d = spend(p, 2000000);
+    const std::string key =
+        count(L, p, named || tracked ? m : std::string(), d, named ? m.c_str() : "", nullptr);
+    const uint32_t dk = lastDk;
+    const bool keyed = named || tracked;
+    // While the spend file on flash lacks what the load decided (none there, or its
+    // store failed), every tracked record writes it first (gate M1, M2).
+    if (keyed && (file.empty() || stale)) TEST_ASSERT_TRUE(L.models().spendFileFirst());
+    if (keyed && L.models().spendFileFirst()) {   // marked ahead, as the device does
+      L.models().setCountersBehind(true);
+      storeFile();
+    }
     if (rnd(100) < nvsOk) storeNvs();
     else L.models().setCountersBehind(true);   // the write did not land
-    if (rnd(100) < fileOk) {                    // the history write
-      histAny = true;
-      histModel = histModel || named || tracked;
-    }
-    if (!named && !tracked) return;   // nothing for the spend file
-    if (fileLands()) file = L.models().serializeSpend();
+    if (keyed) storeFile();
+    if (dk) hram.record(provs[p], L.models().historyKey(key.c_str()), dk, d, 0);
+    storeHistory();
   }
-  // Whether a spend-file write lands. The modeled assumption: a write onto an absent
-  // file always does (a device whose /data takes no write while that file is absent
-  // cannot be told from a fresh upgrade: the documented narrow hole).
-  bool fileLands() { return file.empty() || rnd(100) < fileOk; }
   void priceStep() {
     const int p = (int)rnd(kProvs);
     const uint64_t kind = rnd(4);
@@ -1082,13 +1623,16 @@ struct ClassSim {
       router = L.models().serializeRouterRates();
     }
   }
-  // The device's history check (store.cpp historyShowsTracking).
-  bool historyShowsTracking(const UsageLedger& R) const {
-    if (histModel) return true;
-    if (histAny) return false;
-    for (const auto& e : R.entries())
-      if (e.tokensIn || e.tokensOut || e.cacheRead || e.cacheWrite) return true;
-    return false;
+  // The gate M2 exclusion: the spend file is not on flash because its writes did not
+  // land (not removed by the device with no write tried since), the stored counters
+  // hold tracked spend of their period, and the stored history does not show tracking.
+  bool hole() const {
+    if (!file.empty() || removed || !nvsHoldsTracked()) return false;
+    UsageLedger R;
+    R.deserialize(nvs);
+    UsageHistory H;
+    H.deserialize(histFlash);
+    return !R.historyShowsTracking(H);
   }
   // A restart, loaded the way the device loads (store.cpp loadModelsLocked).
   void restartStep() {
@@ -1097,42 +1641,79 @@ struct ClassSim {
     R.models().deserializeSpend(file);
     R.models().deserializeOwnerRates(owner);
     R.models().deserializeRouterRates(router);
-    const bool inferred = !R.models().tracking() && historyShowsTracking(R);
-    if (inferred) R.models().markTracking();
-    const bool orphaned = R.rebaseModelRows();
-    if ((inferred || orphaned) && fileLands()) file = R.models().serializeSpend();
-    else if (orphaned) file.clear();   // the write failed: the device removes the file
+    hram = UsageHistory();
+    hram.deserialize(histFlash);
+    markUndetectable(R, hram);
+    const UsageLedger::Settled s = R.settleModels(hram);
+    // Tracking starts afresh only when nothing stored shows it started, so no stored
+    // spend can be tracked spend (the exclusions keep the documented holes out).
+    if (s.started) TEST_ASSERT_FALSE(nvsHoldsTracked());
     L = R;
+    stale = false;
+    const bool current = !s.mustStore() || storeFile();
+    if (!current) {
+      firstFails += file.empty() ? 1 : 0;
+      if (s.removable) file.clear();   // the write failed: the device removes the file
+      removed = s.removable;
+      stale = !file.empty();           // the file on flash lacks this load's result
+    }
+    L.models().setSpendFileStored(current && !file.empty());
+    L.models().setSpendFileStale(stale);
     live.resize(nvsLive);
     ++restarts;
     for (const auto& t : L.models().tracks()) drops += (t.lost.in || t.lost.out) ? 1 : 0;
   }
-  // A downgrade and back: the earlier release reads only usgLedger, records a few
-  // turns provider level (their model unknown to the ledger, true model one of the
-  // provider's, or earlier usage when tracking never started) and stores them; the
-  // spend file stays as it was. Then update again.
+  // The earlier release's history: it reads our lines (the extra fields ignored),
+  // merges the buckets of a day and provider, and rewrites them without models.
+  static UsageHistory stripModels(const std::string& flash) {
+    UsageHistory in, out;
+    in.deserialize(flash);
+    for (const auto& b : in.entries()) out.record(b.prov, b.dayKey, b.tokIn, b.tokOut, b.calls);
+    return out;
+  }
+  // The stored counters are gone (a settings-only reset): the spend file on flash
+  // describes counters that no longer exist, and nothing skipped is counted any more.
+  void countersErased() {
+    live.clear();
+    nvsLive = 0;
+    for (int p = 0; p < kProvs; ++p) {
+      recreated[p] = true;
+      seen[p] = false;
+      skipPer[p] = UINT32_MAX;
+    }
+  }
+  // A downgrade and back: the earlier release reads usgLedger (or starts empty after a
+  // settings-only reset there), records a few turns provider level and stores them,
+  // rewriting the history without models; the spend file stays as it was. Then update
+  // again. Its spend is tracked spend (a true model) when the spend file on flash shows
+  // tracking started; with none there, it is earlier usage.
   void downgradeStep() {
+    if (file.empty() && nvsHoldsTracked()) return;   // the gate M2 hole: excluded
+    const bool reset = rnd(10) < 3, tracked = !file.empty();
     UsageLedger old;
-    old.deserialize(nvs);
-    live.resize(nvsLive);
-    const size_t first = live.size();
+    if (reset) {
+      countersErased();
+      ++oldResets;
+    } else {
+      old.deserialize(nvs);
+      live.resize(nvsLive);
+    }
+    UsageHistory oh = stripModels(histFlash);
     for (uint64_t n = 1 + rnd(3); n > 0; --n) {
       const int p = (int)rnd(kProvs);
-      count(old, p, models[p][rnd(10)], spend(p, 1000000), nullptr);
-      histAny = histAny || rnd(100) < fileOk;   // its 5-field history lines
+      count(old, p, tracked ? models[p][rnd(10)] : std::string(), spend(p, 6000000), nullptr, &oh);
+      if (rnd(100) < fileOk) histFlash = oh.serialize();
     }
     nvs = old.serialize();
     nvsLive = live.size();
     ++downgrades;
     restartStep();
-    if (L.models().tracking()) return;
-    for (size_t i = first; i < live.size(); ++i) live[i].model.clear();   // earlier usage
   }
   // A settings-only reset: NVS erased (the counters and provider rates with it),
-  // /data kept. Nothing is counted any more.
+  // /data kept.
   void settingsResetStep() {
     nvs.clear();
-    nvsLive = 0;
+    countersErased();
     ++resets;
     restartStep();
   }
@@ -1140,9 +1721,10 @@ struct ClassSim {
   // erased, NVS kept.
   void eraseStorageStep() {
     file.clear();
+    removed = false;
     owner.clear();
     router.clear();
-    histAny = histModel = false;
+    histFlash.clear();
     restartStep();
   }
   void rollStep() {   // some providers reach their reset day
@@ -1164,33 +1746,37 @@ struct ClassSim {
       settingsResetStep();
     } else if (op < 89) {
       eraseStorageStep();
-    } else {
+    } else if (!hole()) {
       restartStep();
     }
   }
   // Every provider: the estimate is never below the true price of what it counts.
   void check(int iter, int at) {
-    for (const char* p : provs) {
-      const uint64_t want = trueCents(L, live, p);
+    for (int i = 0; i < kProvs; ++i) {
+      const char* p = provs[i];
+      const nimbus::orch::ProviderBudget* e = L.find(p);
+      if (e && skipPer[i] == 0 && e->periodKey != 0) skipPer[i] = e->periodKey;   // carried
+      if (e && e->periodKey == skipPer[i]) continue;   // the gate M1 exclusion
+      const uint64_t want = trueMicro(L, live, p);
       PriceSummary s;
       const uint64_t got = L.priceProvider(p, &s);
-      // The bit-exact legacy formula (earlier usage only, the owner's provider rates
-      // complete) floors each of its four token terms to a cent, by design.
       if (s.fastPath) TEST_ASSERT_EQUAL_UINT64(L.find(p)->estCents(), got);
-      if (got + (s.fastPath ? 4 : 0) >= want) continue;
+      if (!belowTruth(got, want, s.fastPath)) continue;
       char msg[160];
       std::snprintf(msg, sizeof(msg), "iter %d step %d %s: est %llu < true %llu", iter, at, p,
-                    (unsigned long long)got, (unsigned long long)want);
+                    (unsigned long long)got, (unsigned long long)(want / 10000));
       TEST_FAIL_MESSAGE(msg);
     }
   }
 };
 
 static void test_class_estimate_never_below_true_model_prices() {
-  int restarts = 0, drops = 0, downgrades = 0, resets = 0;
+  int restarts = 0, drops = 0, downgrades = 0, resets = 0, oldResets = 0, firstFails = 0;
+  int detected = 0, undetectable = 0;
   for (int iter = 0; iter < 1000; ++iter) {
     ClassSim sim(4242 + (uint64_t)iter * 7919);
     sim.earlier();
+    sim.check(iter, -1);
     for (int at = 0; at < 40; ++at) {
       sim.step();
       sim.check(iter, at);
@@ -1199,11 +1785,19 @@ static void test_class_estimate_never_below_true_model_prices() {
     drops += sim.drops;
     downgrades += sim.downgrades;
     resets += sim.resets;
+    oldResets += sim.oldResets;
+    firstFails += sim.firstFails;
+    detected += sim.detected;
+    undetectable += sim.undetectable;
   }
   TEST_ASSERT_TRUE(restarts > 1000);   // the sequences really restart...
   TEST_ASSERT_TRUE(drops > 100);       // ...really hit store failures...
   TEST_ASSERT_TRUE(downgrades > 500);  // ...really go back to an earlier release...
-  TEST_ASSERT_TRUE(resets > 200);      // ...and really reset their settings
+  TEST_ASSERT_TRUE(resets > 200);      // ...really reset their settings...
+  TEST_ASSERT_TRUE(oldResets > 100);   // ...also on the earlier release...
+  TEST_ASSERT_TRUE(firstFails > 100);  // ...really fail the first spend-file write...
+  TEST_ASSERT_TRUE(detected > 100);    // ...and really meet re-created counters, which the
+  TEST_ASSERT_TRUE(undetectable * 10 < detected);   // file shows in all but a few cases
 }
 
 // Leaving the fast path never lowers the estimate: the same counters filed under a
@@ -1680,8 +2274,15 @@ int main() {
   RUN_TEST(test_gate_g2_full_ledger_new_provider_still_gets_a_row);
   RUN_TEST(test_gate_g3_failed_model_file_write_never_reprices_cheaper);
   RUN_TEST(test_downgrade_and_back_keeps_the_rows);
+  RUN_TEST(test_gate_m1_reset_on_an_earlier_release_never_prices_new_spend_low);
+  RUN_TEST(test_gate_m2_failed_first_spend_file_write_never_makes_earlier_usage);
+  RUN_TEST(test_gate_m1_history_evidence_reads_every_row);
+  RUN_TEST(test_failed_store_after_a_dropped_track_keeps_the_file_unless_inferred);
+  RUN_TEST(test_gate_m1_forgotten_counters_are_stored_at_load);
+  RUN_TEST(test_re_created_check_never_fires_on_counters_that_grew);
   RUN_TEST(test_stale_earlier_usage_is_dropped_at_load);
   RUN_TEST(test_earlier_usage_keeps_the_residual_price);
+  RUN_TEST(test_class_check_tolerates_only_per_part_flooring);
   RUN_TEST(test_class_estimate_never_below_true_model_prices);
   RUN_TEST(test_first_model_row_never_lowers_the_provider_formula);
   RUN_TEST(test_breakdown_parts_add_up_exactly);

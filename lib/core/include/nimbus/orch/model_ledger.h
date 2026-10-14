@@ -81,6 +81,12 @@ struct ProvTrack {
   TokenDelta pre;
   TokenDelta lost;
   uint64_t   preTotIn = 0, preTotOut = 0;   // all-time totals before tracking started
+  // The provider's all-time totals as of the latest usgLedger write that landed (or
+  // the load), and the part of them from before that write's period: stored counters
+  // only grow from there, and their period spend counts only since their latest roll,
+  // so less at a later load means they were re-created (gate M1).
+  uint64_t   storedTotIn = 0, storedTotOut = 0;
+  uint64_t   storedBeforeIn = 0, storedBeforeOut = 0;
 };
 
 // The answer to an owner price edit.
@@ -121,6 +127,13 @@ class ModelLedger {
   void setRowPeriod(size_t i, uint32_t periodKey) {
     if (i < rows_.size()) rows_[i].periodKey = periodKey;
   }
+  // Row i's period counters and all-time totals are zeroed (its provider's stored
+  // counters were re-created, so none of what the row counted is in them).
+  void forgetRow(size_t i) {
+    if (i >= rows_.size()) return;
+    clearPeriodSpend(i);
+    rows_[i].totIn = rows_[i].totOut = 0;
+  }
   // Row i's period spend leaves the row entirely (its period counters, and the same
   // amounts off its all-time totals): a load-time rebase found the rows and the
   // provider counters disagree, so that spend's model is no longer known.
@@ -140,6 +153,24 @@ class ModelLedger {
   // (rows kept) from one that may be ahead of them (attribution dropped).
   bool countersBehind() const { return countersBehind_; }
   void setCountersBehind(bool behind) { countersBehind_ = behind; }
+  // Whether the spend file on flash holds what the load decided (the device sets it at
+  // load: false when the file is missing or the load's store of it failed; true after
+  // every write that landed). While tracking is on and it is not, a record must store the
+  // spend file BEFORE its usgLedger write (gate M2), marked countersBehind (that write
+  // has not landed yet): tracked spend may then reach the counters only after a file
+  // that shows tracking started, and a failure between the two leaves the file ahead
+  // (attribution dropped: fail-closed), never counters a later load would take for
+  // earlier usage.
+  void setSpendFileStored(bool stored) { spendFileStored_ = stored; }
+  bool spendFileFirst() const { return tracking_ && !spendFileStored_; }
+  // Whether a spend file IS on flash but lacks what the load decided (its store at load
+  // failed: the device sets it then). Until a write lands, a record's history bucket
+  // names no model (historyKey): a model bucket on the day the stale rows last
+  // recorded would hide that an earlier release rewrote the history (gate M1).
+  void setSpendFileStale(bool stale) { spendFileStale_ = stale; }
+  const char* historyKey(const char* key) const {
+    return spendFileStale_ && !spendFileStored_ ? "" : key;
+  }
   // The key a record files its spend under: `model` when set; once tracking has
   // started, spend with no model goes to ~other (priced at the provider's highest
   // known price); before that, "" (provider level only, earlier usage).
@@ -200,6 +231,8 @@ class ModelLedger {
   std::vector<ProvTrack>  tracks_;
   bool                    tracking_ = false;
   bool                    countersBehind_ = false;
+  bool                    spendFileStored_ = false;
+  bool                    spendFileStale_ = false;
 };
 
 // The models an owner may price for `prov` (the web field's allowlist and the Prices

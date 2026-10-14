@@ -601,43 +601,104 @@ RowsVs rowsVsCounters(const UsageLedger& L, const ProviderBudget& e, TokenDelta&
   return RowsVs::Behind;
 }
 
-// Earlier usage a track keeps above what the stored counters hold is spend the
-// counters never kept (a usgLedger write that did not land before tracking started)
-// or counters that are not the ones it described (a settings-only reset, then new
-// spend): either way none of it can be trusted, and taking later spend for it would
-// price that spend low. It is dropped (that spend then reads as lost: fail-closed).
-void dropStaleEarlier(ProvTrack& t, const ProviderBudget& e) {
-  const bool stale = t.pre.in > e.tokensIn || t.pre.out > e.tokensOut ||
-                     t.pre.cacheR > e.cacheRead || t.pre.cacheW > e.cacheWrite;
-  if (stale) t.pre = TokenDelta{};
-  if (stale || t.preTotIn > e.totalIn || t.preTotOut > e.totalOut) t.preTotIn = t.preTotOut = 0;
-}
-
-// A track goes with its provider; its period parts count only in that period (a
-// pre-sync track cannot tell which period its spend was carried into: dropped).
-// Returns whether a track of a provider with no entry was dropped (a settings-only
-// reset): that must not outlive this boot (the caller stores the result).
-bool rebaseTracks(UsageLedger& L) {
+// Drops the track of every provider with no entry. Returns whether one was dropped (a
+// settings-only reset): that must not outlive this boot (the caller stores the result).
+bool dropOrphanTracks(UsageLedger& L) {
   ModelLedger& M = L.models();
   bool orphaned = false;
   for (size_t i = M.tracks().size(); i-- > 0;) {
     const std::string prov = M.tracks()[i].prov;   // load time only
-    const ProviderBudget* e = L.find(prov);
-    if (!e) {
-      M.dropTrack(prov.c_str());
-      orphaned = true;
-      continue;
-    }
-    ProvTrack* t = M.trackFor(prov.c_str());   // present: found, never made
-    if (t->periodKey != e->periodKey) {
-      t->periodKey = e->periodKey;
-      t->pre = t->lost = TokenDelta{};
-    }
-    dropStaleEarlier(*t, *e);
+    if (L.find(prov)) continue;
+    M.dropTrack(prov.c_str());
+    orphaned = true;
   }
   return orphaned;
 }
+
+uint64_t subSat(uint64_t a, uint64_t b) { return a > b ? a - b : 0; }
+
+// What the spend file recorded of one direction of a provider's stored counters.
+struct StoredFloor {
+  uint64_t known = 0;    // all-time as of the latest usgLedger write that landed (a spend
+                         // file from before that field: as of when tracking started)
+  uint64_t before = 0;   // the part of it from before that write's period
+};
+
+// The least all-time spend that direction of the stored counters holds if they are
+// the ones the spend file describes: never below `known`; and never below `before`
+// plus their period spend now (period spend counts only since their latest roll, or
+// the first sync that carried it, so their all-time minus it never shrinks).
+uint64_t leastAllTime(const StoredFloor& f, uint64_t total, uint64_t period) {
+  if (total < period) return f.known;   // a pre-2026-07-16 group: all-time counted later
+  bool sat = false;
+  const uint64_t least = addSat(f.before, period, sat);
+  return least > f.known ? least : f.known;
+}
+
+// Whether the stored counters cannot be the ones the spend file describes (gate M1: a
+// settings-only reset, on this release or an earlier one, re-created them).
+bool countersRecreated(const UsageLedger& L, const ProviderBudget& e) {
+  const ProvTrack* t = L.models().track(e.name.c_str());
+  if (!t) return false;
+  const StoredFloor in{t->storedTotIn > t->preTotIn ? t->storedTotIn : t->preTotIn,
+                       t->storedBeforeIn};
+  const StoredFloor out{t->storedTotOut > t->preTotOut ? t->storedTotOut : t->preTotOut,
+                        t->storedBeforeOut};
+  return e.totalIn < leastAllTime(in, e.totalIn, e.tokensIn) ||
+         e.totalOut < leastAllTime(out, e.totalOut, e.tokensOut);
+}
+
+// The latest UTC day a row recorded on (0 = none, or only before the clock synced):
+// any row, also one whose period spend was cleared (a provider an earlier release reset
+// and did not use again has no entry, and its rows lose their period spend).
+uint32_t latestRowDay(const ModelLedger& M) {
+  uint32_t d = 0;
+  for (const auto& r : M.rows())
+    if (r.lastDay > d) d = r.lastDay;
+  return d;
+}
 }  // namespace
+
+bool UsageHistory::hasModelOn(uint32_t dayKey) const {
+  for (const auto& b : entries_)
+    if (b.dayKey == dayKey && b.model[0]) return true;
+  return false;
+}
+
+// Every record with a model writes a model bucket for its day, and an earlier release
+// rewrites the whole history without models; so with tracking on, a history that has
+// no model bucket on the latest day a row recorded on was rewritten by an earlier
+// release (or none of its writes since that day landed: fail-closed either way).
+bool UsageLedger::earlierReleaseRecorded(const UsageHistory* history) const {
+  if (!history || !models_.tracking()) return false;
+  const uint32_t d = latestRowDay(models_);
+  return d != 0 && !history->hasModelOn(d);
+}
+
+// Nothing the spend file says about the provider is about these counters (gate M1):
+// every row of the provider loses its period spend and its all-time, and all of the
+// provider's spend this period is lost spend (no earlier usage), priced at otherRate.
+void UsageLedger::resetProvider(const ProviderBudget& e) {
+  const auto& rows = models_.rows();
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (std::strcmp(rows[i].prov, e.name.c_str()) == 0) models_.forgetRow(i);
+  ProvTrack* t = models_.trackFor(e.name.c_str());
+  if (!t) return;   // a provider id the ledger cannot carry: priced the same anyway
+  t->periodKey = e.periodKey;
+  t->pre = TokenDelta{};
+  t->preTotIn = t->preTotOut = 0;
+  t->lost = periodTokens(e);
+}
+
+// A track's period parts count only in its provider's period (a pre-sync track cannot
+// tell which period its spend was carried into: they are dropped).
+void UsageLedger::alignTrack(const ProviderBudget& e) {
+  if (!models_.track(e.name.c_str())) return;
+  ProvTrack* t = models_.trackFor(e.name.c_str());   // present: found, never made
+  if (t->periodKey == e.periodKey) return;
+  t->periodKey = e.periodKey;
+  t->pre = t->lost = TokenDelta{};
+}
 
 // The rows may hold spend the stored counters lack (gate G1, G3): no row's
 // attribution can be trusted, so all of the provider's spend since tracking began is
@@ -659,7 +720,7 @@ void UsageLedger::loseAttribution(const ProviderBudget& e) {
 void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
   ProvTrack* t = models_.trackFor(e.name.c_str());
   if (!t) return;   // a provider id the ledger cannot carry: priced the same anyway
-  t->periodKey = e.periodKey;   // tracks are already aligned (rebaseTracks); a new one starts here
+  t->periodKey = e.periodKey;   // tracks are already aligned (alignTrack); a new one starts here
   bool sat = false;
   t->lost.in = addSat(t->lost.in, gap.in, sat);
   t->lost.out = addSat(t->lost.out, gap.out, sat);
@@ -667,7 +728,7 @@ void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
   t->lost.cacheW = addSat(t->lost.cacheW, gap.cacheW, sat);
 }
 
-bool UsageLedger::rebaseModelRows() {
+bool UsageLedger::rebaseModelRows(const UsageHistory* history) {
   const auto& rows = models_.rows();
   for (size_t i = 0; i < rows.size(); ++i) {
     const ProviderBudget* e = find(std::string(rows[i].prov));   // load time only
@@ -677,18 +738,75 @@ bool UsageLedger::rebaseModelRows() {
     // then lands in the period the provider counts in, even before the clock syncs).
     if (e) models_.setRowPeriod(i, e->periodKey);
   }
-  const bool orphaned = rebaseTracks(*this);
-  if (!models_.tracking()) return orphaned;
+  bool forgot = dropOrphanTracks(*this);
+  if (!models_.tracking()) return forgot;
+  const bool earlierRelease = earlierReleaseRecorded(history);
   for (const auto& e : entries_) {
+    if (countersRecreated(*this, e)) {
+      resetProvider(e);
+      forgot = true;
+      continue;
+    }
+    alignTrack(e);
     TokenDelta gap;
     const RowsVs v = rowsVsCounters(*this, e, gap);
     if (v == RowsVs::Match) continue;
-    // Behind is safe to keep only when the counters' latest store landed: then they
-    // hold every record the rows hold (a later landed write is a superset).
-    if (v == RowsVs::Behind && !models_.countersBehind()) addLost(e, gap);
-    else loseAttribution(e);
+    // An earlier release that recorded since may have reset the counters first (gate
+    // M1). Otherwise rows only behind the counters are kept when the counters hold
+    // every record the rows hold: their latest store landed (a later landed write is a
+    // superset).
+    if (earlierRelease) {
+      resetProvider(e);
+      forgot = true;
+    } else if (v == RowsVs::Behind && !models_.countersBehind()) {
+      addLost(e, gap);
+    } else {
+      loseAttribution(e);
+    }
   }
-  return orphaned;
+  return forgot;
+}
+
+void UsageLedger::noteCountersStored() {
+  if (!models_.tracking()) return;
+  for (const auto& e : entries_) {
+    ProvTrack* t = models_.trackFor(e.name.c_str());   // capacity reserved: no growth
+    if (!t) continue;
+    t->storedTotIn = e.totalIn;
+    t->storedTotOut = e.totalOut;
+    t->storedBeforeIn = subSat(e.totalIn, e.tokensIn);
+    t->storedBeforeOut = subSat(e.totalOut, e.tokensOut);
+  }
+}
+
+UsageLedger::Settled UsageLedger::settleModels(const UsageHistory& history) {
+  Settled s;
+  s.inferred = !models_.tracking() && historyShowsTracking(history);
+  if (s.inferred) models_.markTracking();
+  // No spend file and nothing shows tracking ever started (an update from an earlier
+  // release, or a first boot): it starts now, before any turn records (gate M2), so
+  // the earlier usage it keeps is exactly what the stored counters hold.
+  s.started = !models_.tracking();
+  if (s.started) startTracking();
+  s.forgot = rebaseModelRows(&history);
+  s.removable = s.forgot && historyShowsTracking(history);
+  noteCountersStored();   // the counters just loaded are, by definition, stored
+  return s;
+}
+
+// No spend file says tracking started, but the history shows it did: a bucket names
+// a model (the file was lost or never written, gate G3), or the history is gone while
+// the counters hold token spend (/data erased with NVS kept, e.g. Erase Storage on a
+// device with no SD card; a device updating from an earlier release has the history
+// that release wrote). Then none of this period's spend is taken for earlier usage.
+bool UsageLedger::historyShowsTracking(const UsageHistory& history) const {
+  const auto& days = history.entries();
+  for (const auto& b : days)
+    if (b.model[0]) return true;
+  if (!days.empty()) return false;
+  for (const auto& e : entries_)
+    if (e.tokensIn || e.tokensOut || e.cacheRead || e.cacheWrite) return true;
+  return false;
 }
 
 // ---- serialization -----------------------------------------------------------

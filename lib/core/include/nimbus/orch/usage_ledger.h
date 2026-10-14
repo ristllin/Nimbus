@@ -163,6 +163,8 @@ struct RowPrice {
   uint64_t   cents = 0;
 };
 
+class UsageHistory;   // below
+
 class UsageLedger {
  public:
   static constexpr size_t kMaxProviders = 12;
@@ -203,22 +205,56 @@ class UsageLedger {
   // Once, after the model rows are loaded beside a provider ledger stored apart from
   // them: a row of another period, or of a provider with no entry, loses its period
   // counters (they are not counted); a track of a provider with no entry is dropped.
-  // Then, for each provider, its in-period rows must add up exactly to its counters
-  // minus its earlier usage and its already-lost spend (every record files under a
-  // row once tracking has started). When they are only BEHIND (a spend-file write
-  // that did not land, spend an earlier release recorded after a downgrade) and the
-  // counters' latest store landed (models().countersBehind() is false), every row is
-  // still true: the rows stay and what they miss becomes lost spend. Otherwise (a
-  // row above the counters, or a usgLedger write that did not land, possibly mixed
-  // with a stale spend file) no row's attribution can be trusted: every in-period
-  // row of that provider drops its period spend (dropAttribution) and the provider's
-  // spend since tracking began is lost spend. Lost spend is priced at otherRate
-  // (gate G1, G3: never at a cheaper price than any model it may have been). Earlier
-  // usage a track keeps above the stored counters is dropped (it cannot be trusted).
-  // Returns true when a track of a provider with no entry was dropped (what a
-  // settings-only reset looks like): the caller must store the result now, or remove
-  // the spend file, so the stale track can never come back for a re-created provider.
-  bool rebaseModelRows();
+  // Then, for each provider:
+  //  - counters the spend file shows were re-created (they hold less all-time spend
+  //    than its latest landed usgLedger write did, or less than that write's spend
+  //    from before its period plus their period spend now: a settings-only reset, on
+  //    this release or an earlier one, gate M1) describe none of it: every row of the
+  //    provider and its earlier usage are forgotten, and all its spend this period is
+  //    lost spend;
+  //  - otherwise its in-period rows must add up exactly to its counters minus its
+  //    earlier usage and its already-lost spend (every record files under a row once
+  //    tracking has started). When they do not and `history` shows an earlier release
+  //    recorded since the rows' latest record (it may have reset the counters first),
+  //    the provider is forgotten as above. Rows only BEHIND (a spend-file write that
+  //    did not land) stay, and what they miss is lost spend, when the counters' latest
+  //    store landed (models().countersBehind() is false). Otherwise (a row above the
+  //    counters, or a usgLedger write that did not land) no row's attribution can be
+  //    trusted: every in-period row drops its period spend and the provider's spend
+  //    since tracking began is lost spend.
+  // Lost spend is priced at otherRate (gate G1, G3: never at a cheaper price than any
+  // model it may have been). Returns true when the spend file was found to describe
+  // counters that are gone (a track of a provider with no entry dropped, a provider
+  // forgotten): the caller must store the result now, since what showed it (the
+  // stored totals, the history) may not show it at a later load.
+  bool rebaseModelRows(const UsageHistory* history = nullptr);
+  // The device's load, after the spend and price files were read into models(): when
+  // the history shows tracking started though no spend file says so (inferred), it is
+  // on with no earlier usage; when nothing shows it (an update from an earlier
+  // release, a first boot), it starts now with every provider's counters as earlier
+  // usage (started, gate M2); then the rebase (forgot). When any of the three holds,
+  // the caller stores the spend file now; while it fails to, the file on flash does
+  // not hold this load's result, so the next record writes it first. When that write
+  // fails after `forgot` and `removable` holds (the history shows tracking, so the
+  // next load infers it with no earlier usage), the caller removes the spend file
+  // instead (removing needs no free space); otherwise the file stays and the next load
+  // decides again.
+  struct Settled {
+    bool inferred = false, started = false, forgot = false, removable = false;
+    bool mustStore() const { return inferred || started || forgot; }
+  };
+  Settled settleModels(const UsageHistory& history);
+  // After a usgLedger write that landed (and at the load): every provider's track keeps
+  // its all-time totals as stored, and their part from before the stored period
+  // (ProvTrack.storedTot*, storedBefore*), so a later load can tell re-created
+  // counters from grown ones. Allocation-free once loaded.
+  void noteCountersStored();
+  // Whether the history shows tracking started though no spend file says so: a bucket
+  // names a model, or the history is empty while the counters hold token spend.
+  bool historyShowsTracking(const UsageHistory& history) const;
+  // Whether `history` shows an earlier release recorded since tracking started: it has
+  // no model bucket on the latest day a row recorded on.
+  bool earlierReleaseRecorded(const UsageHistory* history) const;
 
   // ---- per-model pricing (2026-10) ----
   // The price of (prov, model key), PER FIELD, strongest tier first: the owner's
@@ -327,6 +363,8 @@ class UsageLedger {
   void            startTracking();
   void            loseAttribution(const ProviderBudget& e);
   void            addLost(const ProviderBudget& e, const TokenDelta& gap);
+  void            resetProvider(const ProviderBudget& e);
+  void            alignTrack(const ProviderBudget& e);
   static uint32_t periodOf(const void* self, const char* prov);   // ModelLedger::PeriodOf
   std::vector<ProviderBudget> entries_;
   std::vector<TagUsage>       tags_;
@@ -379,6 +417,8 @@ class UsageHistory {
   int prune(uint32_t todayKey, uint32_t keepDays = 60);
 
   const std::vector<DayUsage>& entries() const { return entries_; }
+  // Whether a bucket of day `dayKey` names a model.
+  bool hasModelOn(uint32_t dayKey) const;
 
   // Same compact text form as the ledger, one ';'-group per bucket:
   // day|prov|tokIn|tokOut|calls[|model[|cacheR[|cacheW]]]. The trailing fields are

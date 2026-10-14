@@ -439,7 +439,7 @@ void ModelLedger::replaceRouterRates(const std::vector<ModelRate>& rows) {
 // tracking:   !t   (tracking started)
 // behind:     !n   (the provider counters' latest store did not land)
 // track:      !p|prov|periodKey|preIn|preOut|preCr|preCw|lostIn|lostOut|lostCr|lostCw|
-//             preTotIn|preTotOut
+//             preTotIn|preTotOut|storedTotIn|storedTotOut|storedBeforeIn|storedBeforeOut
 // price row:  prov|model|microIn|microOut
 
 std::string ModelLedger::serializeSpend() const {
@@ -451,7 +451,8 @@ std::string ModelLedger::serializeSpend() const {
     out += t.prov;
     const uint64_t f[] = {t.periodKey, t.pre.in,  t.pre.out,  t.pre.cacheR,  t.pre.cacheW,
                           t.lost.in,   t.lost.out, t.lost.cacheR, t.lost.cacheW,
-                          t.preTotIn,  t.preTotOut};
+                          t.preTotIn,  t.preTotOut, t.storedTotIn, t.storedTotOut,
+                          t.storedBeforeIn, t.storedBeforeOut};
     for (uint64_t v : f) {
       out.push_back('|');
       appendU64(out, v);
@@ -475,16 +476,17 @@ std::string ModelLedger::serializeSpend() const {
 
 void ModelLedger::parseTrack(const std::string& group) {
   tracking_ = true;
-  std::string p[13];
-  const int np = splitBars(group, p, 13);
+  std::string p[17];
+  const int np = splitBars(group, p, 17);
   if (np < 2 || !provKeySafe(p[1].c_str()) || track(p[1].c_str())) return;
   ProvTrack* t = trackFor(p[1].c_str());
   if (!t) return;
-  uint64_t* u64[] = {&t->pre.in,  &t->pre.out,  &t->pre.cacheR,  &t->pre.cacheW,
-                     &t->lost.in, &t->lost.out, &t->lost.cacheR, &t->lost.cacheW,
-                     &t->preTotIn, &t->preTotOut};
+  uint64_t* u64[] = {&t->pre.in,   &t->pre.out,   &t->pre.cacheR,  &t->pre.cacheW,
+                     &t->lost.in,  &t->lost.out,  &t->lost.cacheR, &t->lost.cacheW,
+                     &t->preTotIn, &t->preTotOut, &t->storedTotIn, &t->storedTotOut,
+                     &t->storedBeforeIn, &t->storedBeforeOut};
   if (np > 2) t->periodKey = (uint32_t)parseSat(p[2], UINT32_MAX);
-  for (int k = 0; k < 10; ++k)
+  for (int k = 0; k < 14; ++k)
     if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
 }
 
