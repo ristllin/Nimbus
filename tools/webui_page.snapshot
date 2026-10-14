@@ -946,7 +946,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 
 <div class=sec id=pricesSec>
 <h2>Prices <button class=qh type=button aria-expanded=false aria-label="About prices">?</button></h2>
-<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row prices any other model.</p>
+<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row is the provider's default: it replaces ~ estimates and prices unpriced models.</p>
 <div class=row>
 <select id=price_prov aria-label="Provider" style="flex:1 1 160px;max-width:280px"></select>
 </div>
@@ -3373,8 +3373,8 @@ function renderBudgets(bp){
                     :(lim>0?Math.min(100,used/lim*100):0);
     const col=p.over?'#f0687a':(pct>80?'#e0b870':'#7fd1c8');
     const io=(p.tokIn||p.tokOut)?('in '+kt(p.tokIn)+' / out '+kt(p.tokOut)+' · '):'';
-    const pr=_um()&&_um().provRate?_um().provRate[p.prov]:null;
-    const noPrice=hasUsd&&pr&&pr.src==='none'&&!pr.rCall;
+    const pr=((_um()||{}).provRate||{})[p.prov];
+    const noPrice=hasUsd&&(p.unpriced||pr&&pr.src==='none'&&!pr.rCall);
     const approxCap=hasUsd&&!!p.approx&&!_d1Hint();
     const spend=hasUsd?(_usd(p.estCents||0,!!p.approx)+' / '+_usd(p.centsLimit,false))
                       :_usd(p.estCents||0,!!p.approx);
@@ -3396,7 +3396,7 @@ function _d1Hint(done){try{if(done){_d1Mem=true;localStorage.setItem('nimbusD1Hi
 // ---- Spend graphs + $ estimates: every $ is from the server's prices (/api/usage/models).
 const PROVCOL={cumulo:'#e98fcf',openai:'#7fd1c8',anthropic:'#f0b45a',mistral:'#f0947a',zai:'#a3d977',tavily:'#6cb8ff',custom:'#c9a7f5'};
 const OTHERCOL='#7b8290';
-const SRCLBL={owner:'yours',router:'Cumulo price',provider:'provider price',est:'~estimate',none:'not priced'};
+const SRCLBL={owner:'yours',router:'Cumulo price',provider:'your default',est:'~estimate',none:'not priced'};
 function _bcls(s){return s==='owner'?'badge':(s==='router'||s==='provider')?'badge ext':'badge un';}
 let _usageBP=[],_usageHist=null,_usageModels=null,_chartDays=30,_chartUnit='tok',_chartGroup='model',_chartHidden=new Set(),_provSlugs=null,_bpSig='';
 try{const g=localStorage.getItem('nimbusUsageGroup');if(g==='model'||g==='prov')_chartGroup=g;}catch(e){}
@@ -3407,7 +3407,7 @@ function _mLabel(prov,m){const pl=BUDLBL[prov]||prov;return !m?pl+' (before mode
 function _costOf(prov,m,tin,tout,cr,cw,calls){
   const u=_um(); if(!u)return null;
   const p=(u.provRate||{})[prov]||{};
-  const x=(m&&m!=='~other')?(u.models.find(y=>y.prov===prov&&y.m===m)||((u.editable||{})[prov]||[]).find(y=>y.m===m)):null;
+  const x=m?(u.models.find(y=>y.prov===prov&&y.m===m)||((u.editable||{})[prov]||[]).find(y=>y.m===m)):null;
   const i=(x||p).rIn||0,o=(x||p).rOut||0,src=(x||p).src||'none';
   tin=tin||0;tout=tout||0;cr=cr||0;cw=cw||0;calls=calls||0;
   return {c:((tin*i+tout*o+cr*i*0.1+cw*i*1.25)/1e6+calls*(p.rCall||0)/1000)/1e4,
@@ -3444,10 +3444,10 @@ function renderByModel(){
   const box=$('usageByModel'); if(!box)return;
   const u=_um(),kt=_kt2,live=_usageBP.filter(p=>(p.tokIn||0)+(p.tokOut||0)+(p.calls||0)>0);
   if(!u||!live.length){box.innerHTML='';return;}
-  let h='<div class=bym><div class=bh>This period by model</div>',cur='';
-  const has=x=>x.prov===cur&&((x.pIn||0)+(x.pOut||0)+(x.pCr||0)+(x.pCw||0))>0;
+  let h='<div class=bym><div class=bh>This period by model</div>';
   const row=(name,v,c,est)=>'<div class=br><span class=bn>'+name+'</span><span class=bv>'+v+' · '+_usd(c||0,est)+'</span></div>';
-  live.forEach(p=>{cur=p.prov;const tok=(p.tokIn||0)+(p.tokOut||0),pr=(u.provRate||{})[p.prov]||{};
+  live.forEach(p=>{const has=x=>x.prov===p.prov&&((x.pIn||0)+(x.pOut||0)+(x.pCr||0)+(x.pCw||0))>0;
+    const tok=(p.tokIn||0)+(p.tokOut||0),pr=(u.provRate||{})[p.prov]||{};
     h+='<div class=bp><span>'+_sEsc(BUDLBL[p.prov]||p.prov)+'</span><span class=bv>'+
        (tok||!p.calls?kt(tok)+' tokens':kt(p.calls)+' calls')+' · '+_usd(p.estCents||0,!!p.approx)+'</span></div>';
     u.models.filter(has).forEach(x=>{h+=row(_sEsc(_mLabel(p.prov,x.m))+' <span class="'+_bcls(x.src)+'">'+(SRCLBL[x.src]||x.src)+'</span>',
@@ -3464,7 +3464,7 @@ function loadUsageModels(f){
   fetch('/api/usage/models').then(jok).then(d=>{_usageModels=(d&&Array.isArray(d.models))?d:null;renderUsageAll(f);}).catch(()=>{});
 }
 function renderUsageAll(f){renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
-// One provider's models: its colour mixed toward black or white by rank.
+// One provider's models: its color mixed toward black or white by rank.
 function _shade(hex,r){const n=parseInt(hex.slice(1),16),f=[0,-.35,.4,-.55,.65,-.2,.22,-.68][r%8];
   return 'rgb('+[16,8,0].map(s=>{const c=n>>s&255;return Math.round(f<0?c*(1+f):c+(255-c)*f);}).join()+')';}
 function _cssVar(n,d){try{return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||d;}catch(e){return d;}}
@@ -3533,7 +3533,7 @@ function _syncChartBtns(){
 }
 // ---- Prices: per model (mrate, micro-USD per 1M) + "Any other" (rates, cents).
 function _priceProvs(){return (_provSlugs||[]).concat(Object.keys(PROVLBL),['custom','tavily']).filter((v,i,a)=>a.indexOf(v)===i);}
-function _provOptLabel(p){return p==='tavily'?'Tavily (search)':(BUDLBL[p]||PROVLBL[p]||p);}
+function _provOptLabel(p){return p==='tavily'?'Tavily (search)':(BUDLBL[p]||p);}
 function _fillProvSelect(sel,dflt){
   const provs=_priceProvs(),sig=provs.join();
   if(!sel||sel.dataset.sig===sig)return;
@@ -3565,7 +3565,7 @@ function renderPrices(force){
   let h=['Model','$ per 1M in','$ per 1M out','Price',''].map(t=>'<div class=ph>'+t+'</div>').join('');
   if(prov==='tavily')h+=_priceRow('*','Searches','Dollars per 1,000 searches',[c(bp.rateCall)],[_ph(pr.rCall,pr.srcCall)],pr.srcCall||'none');
   else{((u.editable||{})[prov]||[]).forEach(r=>{h+=_priceRow(r.m,r.m,'',[_dollars(r.oIn),_dollars(r.oOut)],[_ph(r.rIn,r.src),_ph(r.rOut,r.src)],r.src);});
-    h+='<div class=sep></div>'+_priceRow('*','Any other '+_provOptLabel(prov)+' model','',[c(bp.rateIn),c(bp.rateOut)],
+    h+='<div class=sep></div>'+_priceRow('*','Default for '+_provOptLabel(prov)+' models','Used instead of ~estimates and for unpriced models',[c(bp.rateIn),c(bp.rateOut)],
        [_ph(pr.fIn,pr.fSrc),_ph(pr.fOut,pr.fSrc)],pr.fSrc||'none');}
   box.innerHTML=h;
   box.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>_savePrice(prov,b.dataset.m,b.dataset.a==='clear'));
@@ -3578,8 +3578,9 @@ function _savePrice(prov,m,clear){
     :{rates:prov+':'+(prov==='tavily'?(bp.rateIn||0)+':'+(bp.rateOut||0)+':'+c('in'):c('in')+':'+c('out')+':'+(bp.rateCall||0))};
   if(msg)msg.textContent='';
   if(box.contains(document.activeElement))document.activeElement.blur();
+  // Only the saved row turns clean: a price typed in another row survives the reload.
   orchApply(body).then(ok=>{if(msg)msg.textContent=ok===false?lastFailText():(clear?'Price cleared':'Price saved')+' - estimates updated.';
-    if(ok!==false)loadUsageModels(1);});
+    if(ok!==false){box.querySelectorAll('input').forEach(i=>{if(i.dataset.m===m){if(clear)i.value='';i.defaultValue=i.value;}});loadUsageModels();}});
 }
 if($('price_prov'))$('price_prov').onchange=()=>{if($('ratemsg'))$('ratemsg').textContent='';renderPrices(1);};
 // Hosted (CUM-279): no usage ledger there yet, so no editors.

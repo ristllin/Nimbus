@@ -16,11 +16,13 @@
 // Bounded by construction (zero heap growth on the turn path):
 //   - fixed-size rows (char buffers, no std::string), vectors reserve()d to their
 //     caps once, so recording into an existing row allocates nothing;
-//   - 32 spend rows; the 9th named model of one provider folds into
-//     "<prov>|~other"; when every row is taken, the row with the oldest lastDay that
-//     has no spend this period is folded into its provider's ~other row. Spend is
-//     never dropped: what no row can hold stays in the provider counter, where the
-//     residual rule prices it (fail-closed).
+//   - 32 spend rows, at most 8 named per provider: a new model takes over the
+//     provider's named row with the oldest lastDay and no spend this period (its
+//     all-time totals fold into "<prov>|~other"); with all 8 busy it goes to ~other.
+//     When every row is taken, the row with the oldest lastDay and no spend this
+//     period is folded into its provider's ~other row. Spend is never dropped: what
+//     no row can hold stays in the provider counter, where the residual rule prices
+//     it, and ~other is priced at the provider's highest known price (fail-closed).
 //   - 32 owner price rows (only an owner edit writes them), 24 router price rows
 //     (only the Cumulo verify harvest writes them).
 // Persisted by the device to three LittleFS files (never NVS), one text form each:
@@ -79,6 +81,13 @@ class ModelLedger {
   // stamps lastDay. model may be kOtherModel; any other key must be modelKeySafe.
   void record(const char* prov, const char* model, const TokenDelta& d, uint32_t periodKey,
               uint32_t dayKey);
+  // Roll every row to its provider's current period (periodOf(ctx, prov); 0 = keep),
+  // so a row's period counters always belong to the period its provider counts in.
+  using PeriodOf = uint32_t (*)(const void* ctx, const char* prov);
+  void syncPeriods(PeriodOf periodOf, const void* ctx);
+  // Zero row i's period counters (all-time totals kept): its period spend reads as
+  // the provider's residual.
+  void clearPeriodSpend(size_t i);
   const std::vector<ModelSpend>& rows() const { return rows_; }
   const ModelSpend* findRow(const char* prov, const char* model) const;
 
@@ -115,7 +124,8 @@ class ModelLedger {
   ModelSpend* rowFor(const char* prov, const char* model, uint32_t periodKey);
   ModelSpend* otherRowFor(const char* prov, uint32_t periodKey);
   ModelSpend* pushRow(const char* prov, const char* model);
-  bool        evictOne(uint32_t periodKey);
+  ModelSpend* recycleStale(const char* prov, const char* model, uint32_t periodKey);
+  bool        evictOne(const char* prov, uint32_t periodKey);
   ModelSpend* relabelSmallest(const char* prov);
   size_t      namedCount(const char* prov) const;
   static std::string serializeRates(const std::vector<ModelRate>& v);

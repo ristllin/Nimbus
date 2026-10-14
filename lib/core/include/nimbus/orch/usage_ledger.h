@@ -176,10 +176,11 @@ class UsageLedger {
   void recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                     uint64_t cacheRead, uint64_t cacheWrite,
                     uint32_t periodKey, const std::string& tag);
-  // + the model (2026-10): runs the path above unchanged, then files the same spend
-  // under (name, model) in the model ledger when `model` is a non-empty key (from
-  // usageModelKey; "" = provider level only). `dayKey` (UTC days, 0 = unknown)
-  // stamps the model row's lastDay. Allocation-free once the ledger is loaded.
+  // + the model (2026-10): runs the path above unchanged, rolls every model row to
+  // its own provider's period, then files the same spend under (name, model) in the
+  // model ledger when `model` is a non-empty key (from usageModelKey; "" = provider
+  // level only). `dayKey` (UTC days, 0 = unknown) stamps the model row's lastDay.
+  // Allocation-free once the ledger is loaded.
   void recordTokens(const std::string& name, const TokenDelta& d, uint32_t periodKey,
                     const std::string& tag, const char* model, uint32_t dayKey);
   const std::vector<TagUsage>& tagEntries() const { return tags_; }
@@ -189,6 +190,13 @@ class UsageLedger {
   // persists the model ledger to its own LittleFS files.
   ModelLedger&       models() { return models_; }
   const ModelLedger& models() const { return models_; }
+  // Once, after the model rows are loaded beside a provider ledger stored apart from
+  // them (a settings-only reset or a failed NVS write can leave rows the provider
+  // counters no longer cover): a row of another period, or of a provider with no
+  // entry, loses its period counters, and so does every row of a provider whose
+  // in-period rows add up to more than its counters in any field. That spend then
+  // reads as the provider's residual; all-time totals are kept.
+  void rebaseModelRows();
 
   // ---- per-model pricing (2026-10) ----
   // The price of (prov, model key), PER FIELD, strongest tier first: the owner's
@@ -199,8 +207,12 @@ class UsageLedger {
   // provider fallback, else the HIGHEST owner or router model price of that provider
   // (fail-closed), else the built-in provider default. Never $0 while any price exists.
   EffRate residualRate(const std::string& prov) const;
-  // The price a model ROW is charged at: its effectiveRate, except the "~other" fold
-  // row (models the ledger could not name), which is priced like the residual.
+  // The price of the "~other" fold row (live spend of models the ledger could not
+  // name, which may be the provider's dearest): per field the HIGHEST price known
+  // for the provider - its fallback, any owner or router model price, any built-in
+  // model estimate, its built-in default (fail-closed).
+  EffRate otherRate(const std::string& prov) const;
+  // The price a model ROW is charged at: its effectiveRate, or otherRate for ~other.
   EffRate rowRate(const std::string& prov, const char* model) const;
   // micro-USD per 1000 calls: the owner's provider rate, else the built-in default.
   uint64_t callRate(const std::string& prov, RateSrc* src = nullptr) const;
@@ -216,10 +228,12 @@ class UsageLedger {
   // False only when every part of the provider's spend resolves to no price at all
   // (e.g. a custom model the owner never priced).
   bool anyPriced(const std::string& name) const;
-  // A model row counts toward its provider's period when it belongs to that period
-  // (or was recorded before the clock synced); a row from another period is stale.
+  // A model row counts toward its provider's period only when it belongs to exactly
+  // that period. Rows recorded before the clock synced carry into the first real
+  // period with their provider (recordTokens rolls every row to its provider's
+  // period), so a stale pre-sync row can never claim a later month's spend.
   static bool inPeriod(const ProviderBudget& e, const ModelSpend& r) {
-    return r.periodKey == e.periodKey || r.periodKey == 0;
+    return r.periodKey == e.periodKey;
   }
   // Add one billable call (search providers); same roll semantics.
   void recordCall(const std::string& name, uint32_t periodKey);
@@ -281,6 +295,7 @@ class UsageLedger {
  private:
   ProviderBudget* findMut(const std::string& name);
   ProviderBudget* ensure(const std::string& name);
+  static uint32_t periodOf(const void* self, const char* prov);   // ModelLedger::PeriodOf
   std::vector<ProviderBudget> entries_;
   std::vector<TagUsage>       tags_;
   ModelLedger                 models_;
@@ -333,8 +348,8 @@ class UsageHistory {
 
   // Same compact text form as the ledger, one ';'-group per bucket:
   // day|prov|tokIn|tokOut|calls[|model[|cacheR[|cacheW]]]. The trailing fields are
-  // omitted when empty or 0. Downgrade-safe: an older parser splits at most 5 parts,
-  // so the extras fold into its calls part, where strtoul still reads the calls.
+  // omitted when empty or 0. Downgrade-safe: an older parser splits at most 5 parts
+  // and ignores the rest, so it still reads the calls.
   std::string serialize() const;
   void        deserialize(const std::string& s);
 

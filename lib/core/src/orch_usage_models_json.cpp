@@ -143,8 +143,8 @@ uint64_t allTimeCents(const UsageLedger& L, const std::string& prov, bool& appro
   return micro == UINT64_MAX ? UINT64_MAX : micro / 10000ULL;
 }
 
-// r* = the residual price (spend no model row covers); f* = what any OTHER model of
-// the provider costs (the provider fallback, else the built-in default).
+// r* = the residual price (spend no model row covers); f* = the provider default (the
+// owner's provider rate, else the built-in default).
 void provRateRow(Out& o, const UsageLedger& L, const std::string& prov, const PriceSummary& s,
                  bool& first) {
   const EffRate res = L.residualRate(prov), any = L.effectiveRate(prov, "");

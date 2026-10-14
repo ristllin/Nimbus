@@ -100,8 +100,10 @@ static void test_full_ledger_evicts_oldest_idle_row_into_other() {
   for (int p = 0; p < 4; ++p)
     for (int i = 0; i < 8; ++i) L.record(provs[p], mname(i).c_str(), td(10), 5, (uint32_t)day++);
   TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, L.rows().size());
-  // Next period: one fresh row per provider... the new model needs a row; every row
-  // is idle in period 6, so the OLDEST (openai model-0, day 100) is evicted.
+  // Next period: every provider rolled to period 6 (UsageLedger syncs the rows to
+  // their providers' periods), so every row is idle and the new model takes the
+  // OLDEST (openai model-0, day 100).
+  L.syncPeriods([](const void*, const char*) -> uint32_t { return 6; }, nullptr);
   L.record("cumulo", "openai/gpt-5.6", td(7), 6, 200);
   TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, L.rows().size());
   TEST_ASSERT_NOT_NULL(L.findRow("cumulo", "openai/gpt-5.6"));
@@ -118,6 +120,41 @@ static void test_full_ledger_evicts_oldest_idle_row_into_other() {
   TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, B.rows().size());
   TEST_ASSERT_EQUAL_UINT64(89, sumTotIn(B, "openai"));     // kept, under ~other
   TEST_ASSERT_NOT_NULL(B.findRow("openai", kOtherModel));
+
+  // Providers keep their own periods (each has its own reset day): a provider that
+  // moved to period 6 never evicts another provider's row that still has spend,
+  // whatever that row's period key says.
+  ModelLedger C;
+  for (int p = 0; p < 4; ++p)
+    for (int i = 0; i < 8; ++i) C.record(provs[p], mname(i).c_str(), td(10), 5, (uint32_t)day++);
+  C.record("cumulo", "openai/gpt-5.6", td(7), 6, 300);
+  for (int p = 0; p < 4; ++p)
+    for (int i = 0; i < 8; ++i) TEST_ASSERT_NOT_NULL(C.findRow(provs[p], mname(i).c_str()));
+  TEST_ASSERT_NULL(C.findRow("cumulo", "openai/gpt-5.6"));   // spend stays in the counter
+}
+
+// A provider at its 8-named cap: a new model takes over the provider's oldest named
+// row with no spend this period (its all-time totals fold into ~other), so the cap
+// is per period, not for the life of the device.
+static void test_named_cap_recycles_a_stale_row() {
+  ModelLedger L;
+  for (int i = 0; i < 8; ++i) L.record("openai", mname(i).c_str(), td(10), 5, (uint32_t)(100 + i));
+  L.record("openai", "gpt-6-astra", td(1000), 6, 200);   // a new month, a 9th model
+  const ModelSpend* a = L.findRow("openai", "gpt-6-astra");
+  TEST_ASSERT_NOT_NULL(a);
+  TEST_ASSERT_EQUAL_UINT64(1000, a->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(1000, a->totIn);
+  TEST_ASSERT_NULL(L.findRow("openai", mname(0).c_str()));   // oldest lastDay retired
+  const ModelSpend* o = L.findRow("openai", kOtherModel);
+  TEST_ASSERT_NOT_NULL(o);
+  TEST_ASSERT_EQUAL_UINT64(0, o->tokIn);     // no period spend moved
+  TEST_ASSERT_EQUAL_UINT64(10, o->totIn);    // model-0's all-time total, kept
+  TEST_ASSERT_EQUAL_UINT64(1080, sumTotIn(L, "openai"));
+  // All 8 named rows busy this period: the next new model goes to ~other.
+  for (int i = 1; i < 8; ++i) L.record("openai", mname(i).c_str(), td(1), 6, 201);
+  L.record("openai", "brand-new", td(5), 6, 202);
+  TEST_ASSERT_NULL(L.findRow("openai", "brand-new"));
+  TEST_ASSERT_EQUAL_UINT64(5, L.findRow("openai", kOtherModel)->tokIn);
 }
 
 static void test_spend_round_trip_and_garbage() {
@@ -295,6 +332,7 @@ int main(int, char**) {
   RUN_TEST(test_bad_keys_and_empty_spend_are_ignored);
   RUN_TEST(test_named_cap_per_provider_folds_to_other);
   RUN_TEST(test_full_ledger_evicts_oldest_idle_row_into_other);
+  RUN_TEST(test_named_cap_recycles_a_stale_row);
   RUN_TEST(test_spend_round_trip_and_garbage);
   RUN_TEST(test_owner_rates_set_clear_cap_and_round_trip);
   RUN_TEST(test_durable_owner_edit_reverts_on_a_failed_write);

@@ -213,9 +213,11 @@ marks a built-in price estimate.
   default; the top 8 models are drawn and the rest fold into Other models) or **By
   provider**. Tap a legend entry to hide or show it.
 - **Prices** - pick a provider, then set dollars per million input and output
-  tokens for each of its models (**Clear** goes back to the built-in or Cumulo
-  price). The last row, **Any other** model, prices everything you did not price
-  per model; Tavily takes dollars per thousand searches.
+  tokens for each of its models. The last row, **Default for** the provider's
+  models, replaces the ~ estimates and prices models with no price at all; your
+  per-model prices (and, for Cumulo, the prices Cumulo bills) still win over it.
+  **Clear** on a model goes back to the Cumulo price, the default, or the
+  built-in estimate, in that order. Tavily takes dollars per thousand searches.
 - **Budgets** - a monthly cap per provider by tokens, dollars, or calls (0 =
   unlimited). The dollar cap counts every model at its price, built-in estimates
   included; at the cap that provider is refused until the reset day and the

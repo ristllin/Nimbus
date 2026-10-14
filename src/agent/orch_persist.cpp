@@ -1,6 +1,6 @@
 #include "orch_persist.h"
 #include "../sys/agent_log.h"
-#include "fs_atomic.h"          // writeFileAtomic - tmp + rename, honours erasing()
+#include "fs_atomic.h"          // writeFileAtomic - tmp + rename, honors erasing()
 
 #include <Arduino.h>
 #include <LittleFS.h>

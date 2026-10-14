@@ -921,7 +921,7 @@ bool                   g_ledgerLoaded = false;
 // byte-identical): the spend rows (32, rewritten each turn that names a model), the
 // owner's model prices (32, only an owner edit writes them) and the Cumulo router's
 // prices (24, only the verify task writes them). Loaded with the ledger, under the
-// same mutex. Until LittleFS is mounted (memory::begin, both modes) they are neither
+// same mutex. Until LittleFS is mounted (memory::begin, Orchestrator mode) they are neither
 // read nor written, so an early read can never pass for an empty ledger and then
 // overwrite the stored one.
 constexpr const char* kUsageModelsPath  = "/data/usage_models.txt";
@@ -944,6 +944,10 @@ void loadModelsLocked() {  // caller holds g_ledgerMx
   M.deserializeSpend(readFileQuiet(kUsageModelsPath));
   M.deserializeOwnerRates(readFileQuiet(kUsageMratesPath));
   M.deserializeRouterRates(readFileQuiet(kUsageRpricesPath));
+  // The rows and the NVS provider counters are stored apart: rows the counters no
+  // longer cover (a settings-only reset erases NVS, not /data) lose their period
+  // spend here, so a stale row can never claim new spend at its own price.
+  g_ledger.rebaseModelRows();
   g_modelsLoaded = true;
 }
 
@@ -1296,6 +1300,10 @@ String providerUsageJson() {
     out += ",\"centsLimit\":";   out += String((double)e.centsLimit, 0);
     out += ",\"estCents\":";     out += String((double)est, 0);
     out += ",\"approx\":";       out += ps.approx ? "true" : "false";
+    // unpriced: spend this period of which no part resolves to a price, so a $ cap
+    // cannot count it (the Budgets row says so).
+    const bool spent = e.tokens || e.calls || e.cacheRead || e.cacheWrite;
+    out += ",\"unpriced\":";     out += (spent && !ps.anyPriced) ? "true" : "false";
     // Spend attribution (additive): all-time per-tag split for this provider -
     // turn / synthesis / loop:<id> / spawn:<backend>. Bounded (kMaxTags total).
     out += ",\"tags\":[";

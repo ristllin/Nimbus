@@ -32,6 +32,12 @@ const ProviderBudget* UsageLedger::find(const std::string& name) const {
   return nullptr;
 }
 
+uint32_t UsageLedger::periodOf(const void* self, const char* prov) {
+  for (const auto& e : static_cast<const UsageLedger*>(self)->entries_)
+    if (e.name == prov) return e.periodKey;
+  return 0;   // no entry: keep the row's period
+}
+
 ProviderBudget* UsageLedger::ensure(const std::string& name) {
   ProviderBudget* e = findMut(name);
   if (e) return e;
@@ -95,6 +101,9 @@ void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
                                uint32_t periodKey, const std::string& tag,
                                const char* model, uint32_t dayKey) {
   recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
+  // Every row follows its own provider's period: a provider that rolled zeroes its
+  // rows' period counters, one that first synced carries its pre-sync rows along.
+  models_.syncPeriods(&UsageLedger::periodOf, this);
   if (!model || !*model) return;   // provider level only
   // The model row follows its provider's period (already rolled above): when the
   // provider kept its stored period on an unsynced record (key 0), the row files
@@ -214,6 +223,11 @@ uint64_t costMicroSat(uint64_t t, uint64_t r, bool& sat) {
 // Pick one field through the tiers: the first non-zero value wins.
 void pickField(uint64_t& v, RateSrc& src, uint64_t cand, RateSrc candSrc) {
   if (v == 0 && cand != 0) { v = cand; src = candSrc; }
+}
+
+// Raise one field to a higher candidate (a tie keeps the tier offered first).
+void raiseField(uint64_t& v, RateSrc& src, uint64_t cand, RateSrc candSrc) {
+  if (cand > v) { v = cand; src = candSrc; }
 }
 
 // The running micro-USD total of one provider's estimate. Each component's cents are
@@ -354,7 +368,7 @@ EffRate UsageLedger::residualRate(const std::string& prov) const {
     pickField(r.out, r.srcOut, (uint64_t)e->centsPerMOut * 10000ULL, RateSrc::Provider);
   }
   // Fail-closed: the HIGHEST model price the owner (or the router) set for this
-  // provider, per field, so unattributed spend is never priced below a known model.
+  // provider, per field, so unattributed spend is never priced below one of those.
   uint64_t hiIn = 0, hiOut = 0;
   RateSrc hiInSrc = RateSrc::None, hiOutSrc = RateSrc::None;
   auto scan = [&](const std::vector<ModelRate>& v, RateSrc src) {
@@ -375,8 +389,30 @@ EffRate UsageLedger::residualRate(const std::string& prov) const {
   return r;
 }
 
+EffRate UsageLedger::otherRate(const std::string& prov) const {
+  EffRate r;
+  const char* p = prov.c_str();
+  auto raise = [&r](uint64_t in, uint64_t out, RateSrc s) {
+    raiseField(r.in, r.srcIn, in, s);
+    raiseField(r.out, r.srcOut, out, s);
+  };
+  for (const ModelRate& m : models_.ownerRates())
+    if (std::strcmp(m.prov, p) == 0) raise(m.microIn, m.microOut, RateSrc::Owner);
+  if (prov == "cumulo")
+    for (const ModelRate& m : models_.routerRates()) raise(m.microIn, m.microOut, RateSrc::Router);
+  if (const ProviderBudget* e = find(prov))
+    raise((uint64_t)e->centsPerMIn * 10000ULL, (uint64_t)e->centsPerMOut * 10000ULL,
+          RateSrc::Provider);
+  uint32_t bIn = 0, bOut = 0;
+  builtinHighestPrice(p, bIn, bOut);
+  raise(bIn, bOut, RateSrc::BuiltinModel);
+  if (const BuiltinPrice* b = builtinDefaultPrice(p, ""))
+    raise(b->microIn, b->microOut, RateSrc::BuiltinProv);
+  return r;
+}
+
 EffRate UsageLedger::rowRate(const std::string& prov, const char* model) const {
-  if (model && std::strcmp(model, kOtherModel) == 0) return residualRate(prov);
+  if (model && std::strcmp(model, kOtherModel) == 0) return otherRate(prov);
   return effectiveRate(prov, model);
 }
 
@@ -475,6 +511,36 @@ bool UsageLedger::anyPriced(const std::string& name) const {
   PriceSummary s;
   priceProvider(name, &s);
   return s.anyPriced;
+}
+
+namespace {
+// Whether the in-period rows of `e` add up to more than its counters in any field.
+bool rowsOverclaim(const UsageLedger& L, const ProviderBudget& e) {
+  bool sat = false;
+  TokenDelta want;
+  for (const auto& r : L.models().rows()) {
+    if (!rowOf(r, e)) continue;
+    want.in = addSat(want.in, r.tokIn, sat);
+    want.out = addSat(want.out, r.tokOut, sat);
+    want.cacheR = addSat(want.cacheR, r.cacheR, sat);
+    want.cacheW = addSat(want.cacheW, r.cacheW, sat);
+  }
+  return want.in > e.tokensIn || want.out > e.tokensOut || want.cacheR > e.cacheRead ||
+         want.cacheW > e.cacheWrite;
+}
+}  // namespace
+
+void UsageLedger::rebaseModelRows() {
+  const auto& rows = models_.rows();
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const ProviderBudget* e = find(std::string(rows[i].prov));   // load time only
+    if (!e || !inPeriod(*e, rows[i])) models_.clearPeriodSpend(i);
+  }
+  for (const auto& e : entries_) {
+    if (!rowsOverclaim(*this, e)) continue;
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (rowOf(rows[i], e)) models_.clearPeriodSpend(i);
+  }
 }
 
 // ---- serialization -----------------------------------------------------------

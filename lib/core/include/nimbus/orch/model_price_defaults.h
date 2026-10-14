@@ -111,5 +111,19 @@ inline const BuiltinPrice* builtinDefaultPrice(const char* prov, const char* key
   return p;
 }
 
+// The highest built-in token price, per field, of any row `prov` can be priced from:
+// its own slot, or every slot for Cumulo (whose keys read their upstream's rows).
+// 0 when there is none (custom).
+inline void builtinHighestPrice(const char* prov, uint32_t& microIn, uint32_t& microOut) {
+  microIn = microOut = 0;
+  if (!prov) return;
+  const bool anySlot = std::strcmp(prov, "cumulo") == 0;
+  for (const BuiltinPrice& p : kBuiltinPrices) {
+    if (!anySlot && std::strcmp(p.slot, prov) != 0) continue;
+    if (p.microIn > microIn) microIn = p.microIn;
+    if (p.microOut > microOut) microOut = p.microOut;
+  }
+}
+
 }  // namespace orch
 }  // namespace nimbus

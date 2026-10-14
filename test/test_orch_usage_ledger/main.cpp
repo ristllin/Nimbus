@@ -586,10 +586,10 @@ static void test_clamp_and_stale_rows_ignored() {
   turn(L, "openai", "other-model", 1000000, 0, 24301);   // new period: gpt-5.6 row is stale
   // other-model: provider fallback $1/M = 100c; the stale gpt-5.6 row adds nothing.
   TEST_ASSERT_EQUAL_UINT64(100, L.estCents("openai"));
-  // A row whose counters exceed the provider's (a pre-sync row carried late) is
+  // A row whose counters exceed the provider's (spend filed under the row only) is
   // clamped to the provider counter.
   UsageLedger C;
-  C.models().record("zai", "glm-5.3", td(5000000), 0, 0);   // row only, no provider spend
+  C.models().record("zai", "glm-5.3", td(5000000), 24300, 0);   // row only, no provider spend
   C.recordTokens("zai", 1000000, 0, 24300);
   PriceSummary s;
   RowPrice rows[ModelLedger::kMaxRows];
@@ -598,6 +598,113 @@ static void test_clamp_and_stale_rows_ignored() {
   TEST_ASSERT_EQUAL_UINT64(140, rows[0].cents);
   TEST_ASSERT_EQUAL_UINT64(1000000, rows[0].take.in);
   TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+}
+
+static std::string mk(int i) { return "m-" + std::to_string(i); }
+
+// A row recorded before the clock synced carries into the first real period with
+// its provider and rolls with it afterwards: it never claims a later month's spend
+// at its own (cheaper) price.
+static void test_pre_sync_row_never_claims_a_later_month() {
+  UsageLedger L;
+  turn(L, "openai", "gpt-5.6-luna", 1000000, 0, 0);       // before SNTP: ~$0.20/M
+  turn(L, "openai", "gpt-6-astra", 1000000, 0, 24300);    // first sync: both carried
+  TEST_ASSERT_EQUAL_UINT64(20 + 1000, L.estCents("openai"));
+  turn(L, "openai", "gpt-6-astra", 1000000, 0, 24301);    // the next month
+  TEST_ASSERT_EQUAL_UINT64(1000, L.estCents("openai"));  // ~$10/M, not luna's $0.20
+  TEST_ASSERT_EQUAL_UINT64(0, L.models().findRow("openai", "gpt-5.6-luna")->tokIn);
+}
+
+// Each provider rolls on its own reset day: one that moved to a new period never
+// evicts another provider's rows that still carry spend in that provider's period.
+static void test_eviction_respects_each_providers_period() {
+  UsageLedger L;
+  turn(L, "openai", "gpt-6-astra", 1000000, 0, 24300);
+  for (int i = 1; i < 8; ++i) turn(L, "openai", mk(i).c_str(), 1000, 0, 24300);
+  for (int i = 0; i < 8; ++i) turn(L, "mistral", mk(i).c_str(), 1000, 0, 24300);
+  for (int i = 0; i < 8; ++i) turn(L, "zai", mk(i).c_str(), 1000, 0, 24300);
+  for (int i = 0; i < 7; ++i) turn(L, "anthropic", mk(i).c_str(), 1000, 0, 24300);
+  turn(L, "cumulo", "openai/gpt-5.6", 1000, 0, 24300);
+  TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, L.models().rows().size());
+  const uint64_t before = L.estCents("openai");
+  turn(L, "anthropic", "claude-opus-5", 1000, 0, 24301);   // anthropic's reset day came
+  TEST_ASSERT_NOT_NULL(L.models().findRow("anthropic", "claude-opus-5"));
+  TEST_ASSERT_NOT_NULL(L.models().findRow("openai", "gpt-6-astra"));
+  for (int i = 1; i < 8; ++i) TEST_ASSERT_NOT_NULL(L.models().findRow("openai", mk(i).c_str()));
+  TEST_ASSERT_EQUAL_UINT64(before, L.estCents("openai"));
+}
+
+// The ~other row holds live spend of models the ledger could not name - possibly the
+// provider's dearest - so it is priced at the highest price known for the provider.
+static void test_other_row_priced_at_highest_known_price() {
+  UsageLedger L;
+  for (int i = 0; i < 8; ++i) turn(L, "openai", mk(i).c_str(), 1000, 0);
+  turn(L, "openai", "gpt-6-astra", 1000000, 1000000);   // the 9th model this period
+  TEST_ASSERT_NULL(L.models().findRow("openai", "gpt-6-astra"));
+  const EffRate o = L.rowRate("openai", nimbus::orch::kOtherModel);
+  TEST_ASSERT_EQUAL_UINT64(10000000, o.in);    // gpt-6-astra's built-in, not '*' 2.5
+  TEST_ASSERT_EQUAL_UINT64(50000000, o.out);
+  // 8 x 1000 tokens of unknown models at '*' $2.50/M (2 cents) + astra 1M/1M at $10/$50.
+  TEST_ASSERT_EQUAL_UINT64(2 + 1000 + 5000, L.estCents("openai"));
+  // An owner model price above every built-in one raises it; an owner default below
+  // them does not lower it.
+  L.models().setOwnerRate("openai", mk(1).c_str(), 20000000, 0);
+  L.setRates("openai", 100, 100, 0);
+  const EffRate o2 = L.rowRate("openai", nimbus::orch::kOtherModel);
+  TEST_ASSERT_EQUAL_UINT64(20000000, o2.in);
+  TEST_ASSERT_EQUAL((int)RateSrc::Owner, (int)o2.srcIn);
+  TEST_ASSERT_EQUAL_UINT64(50000000, o2.out);
+  // Cumulo's ~other reads every upstream's built-in rows.
+  TEST_ASSERT_EQUAL_UINT64(10000000, UsageLedger().rowRate("cumulo", nimbus::orch::kOtherModel).in);
+}
+
+// Model rows and the provider counters are stored apart on the device: at load, rows
+// the counters no longer cover lose their period spend (all-time totals kept), so a
+// stale row can never claim new spend at its own price.
+static void test_rebase_drops_rows_the_counters_do_not_cover() {
+  UsageLedger L;
+  L.recordTokens("openai", 1000000, 0, 24300);                       // NVS counters
+  L.models().record("openai", "gpt-5.6-luna", td(5000000), 24300, 9);  // more than that
+  L.models().record("openai", "gpt-6-astra", td(1000), 24300, 9);
+  L.models().record("zai", "glm-5.3", td(7), 24300, 9);              // no provider entry
+  L.recordTokens("anthropic", 10, 0, 24301);
+  L.models().record("anthropic", "claude-opus-5", td(10), 24300, 9);  // another period
+  L.rebaseModelRows();
+  for (const auto& r : L.models().rows()) {
+    TEST_ASSERT_EQUAL_UINT64(0, r.tokIn);
+    TEST_ASSERT_TRUE(r.totIn > 0);
+  }
+  PriceSummary s;
+  // The whole 1M is the residual now, at openai's '*' $2.50/M.
+  TEST_ASSERT_EQUAL_UINT64(250, L.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(1000000, s.resIn);
+  // Rows the counters do cover are untouched.
+  UsageLedger K;
+  turn(K, "openai", "gpt-6-astra", 1000000, 0);
+  K.rebaseModelRows();
+  TEST_ASSERT_EQUAL_UINT64(1000000, K.models().findRow("openai", "gpt-6-astra")->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(1000, K.estCents("openai"));
+}
+
+// Leaving the fast path never lowers the estimate: the same counters filed under a
+// model row (priced at the provider's own rates) floor once instead of per term.
+static void test_first_model_row_never_lowers_the_provider_formula() {
+  uint64_t seed = 777;
+  auto rnd = [&](uint64_t mod) {
+    seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    return (seed >> 33) % mod;
+  };
+  for (int i = 0; i < 500; ++i) {
+    UsageLedger L;
+    L.setRates("openai", 1 + (uint32_t)rnd(5000), 1 + (uint32_t)rnd(20000), 0);
+    turn(L, "openai", "x-1", td(rnd(50000000), rnd(5000000), rnd(9000000), rnd(900000)));
+    PriceSummary s;
+    const uint64_t got = L.priceProvider("openai", &s);
+    const uint64_t legacy = L.find("openai")->estCents();
+    TEST_ASSERT_FALSE(s.fastPath);
+    TEST_ASSERT_TRUE(got >= legacy);
+    TEST_ASSERT_TRUE(got <= legacy + 4);   // four floored terms, each under a cent
+  }
 }
 
 static void test_model_rows_meter_cache_traffic() {
@@ -986,6 +1093,11 @@ int main() {
   RUN_TEST(test_clamp_and_stale_rows_ignored);
   RUN_TEST(test_model_rows_meter_cache_traffic);
   RUN_TEST(test_fast_path_equals_provider_formula);
+  RUN_TEST(test_pre_sync_row_never_claims_a_later_month);
+  RUN_TEST(test_eviction_respects_each_providers_period);
+  RUN_TEST(test_other_row_priced_at_highest_known_price);
+  RUN_TEST(test_rebase_drops_rows_the_counters_do_not_cover);
+  RUN_TEST(test_first_model_row_never_lowers_the_provider_formula);
   RUN_TEST(test_breakdown_parts_add_up_exactly);
   RUN_TEST(test_d1_arming_none_saturation_and_dated_ungate);
   RUN_TEST(test_usg_ledger_blob_byte_identical_after_model_activity);

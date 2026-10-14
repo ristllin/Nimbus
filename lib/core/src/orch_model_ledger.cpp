@@ -27,10 +27,16 @@ bool same(const char* aProv, const char* aModel, const char* prov, const char* m
 
 uint64_t periodSpend(const ModelSpend& r) { return r.tokIn + r.tokOut + r.cacheR + r.cacheW; }
 
-// Spend that counts in the current period: an incoming 0 (clock unsynced) keeps
-// every stored period current; a real key makes a row from another period stale.
-bool hasCurrentSpend(const ModelSpend& r, uint32_t periodKey) {
+// Spend that counts in the current period. Only a row of the recording provider
+// `prov` can be judged by `periodKey` (each provider has its own reset day, so its
+// own period key): an incoming 0 (clock unsynced) keeps every stored period current,
+// a real key makes that provider's row from another period stale. Another
+// provider's row with period spend counts as current (fail-closed): UsageLedger
+// rolls every row to its own provider's period first (syncPeriods), so a row whose
+// provider moved on already reads 0 here.
+bool hasCurrentSpend(const ModelSpend& r, const char* prov, uint32_t periodKey) {
   if (periodSpend(r) == 0) return false;
+  if (std::strcmp(r.prov, prov) != 0) return true;
   return periodKey == 0 || r.periodKey == 0 || r.periodKey == periodKey;
 }
 
@@ -43,6 +49,13 @@ void rollTo(ModelSpend& r, uint32_t periodKey) {
 }
 
 uint64_t satAdd(uint64_t a, uint64_t b) { return (UINT64_MAX - a < b) ? UINT64_MAX : a + b; }
+
+// A retired row's all-time totals move into its provider's ~other row.
+void foldTotals(ModelSpend& into, const ModelSpend& from) {
+  into.totIn = satAdd(into.totIn, from.totIn);
+  into.totOut = satAdd(into.totOut, from.totOut);
+  if (from.lastDay > into.lastDay) into.lastDay = from.lastDay;
+}
 
 void appendU64(std::string& out, uint64_t v) {
   char buf[24];
@@ -65,8 +78,8 @@ uint64_t parseSat(const std::string& s, uint64_t max) {
   return v;
 }
 
-// Split one ';'-group on '|' into at most maxParts parts (extra bars fold into the
-// last part, which is then not a valid number or key and is rejected by the caller).
+// Split one ';'-group on '|' into at most maxParts parts; text after the maxParts-th
+// bar is ignored (fields are append-only: a newer build's extra fields are skipped).
 int splitBars(const std::string& group, std::string* parts, int maxParts) {
   int np = 0;
   size_t p = 0;
@@ -136,12 +149,12 @@ ModelSpend* ModelLedger::pushRow(const char* prov, const char* model) {
 // Free one row: the named row with the oldest lastDay and no spend this period
 // folds its all-time totals into its provider's ~other row. When that provider has
 // no ~other row yet, the victim BECOMES it (totals kept) and the search goes on.
-bool ModelLedger::evictOne(uint32_t periodKey) {
+bool ModelLedger::evictOne(const char* prov, uint32_t periodKey) {
   for (size_t guard = 0; guard <= kMaxRows; ++guard) {
     size_t victim = rows_.size();
     for (size_t i = 0; i < rows_.size(); ++i) {
       const ModelSpend& r = rows_[i];
-      if (isOther(r.model) || hasCurrentSpend(r, periodKey)) continue;
+      if (isOther(r.model) || hasCurrentSpend(r, prov, periodKey)) continue;
       if (victim == rows_.size() || r.lastDay < rows_[victim].lastDay) victim = i;
     }
     if (victim == rows_.size()) return false;
@@ -150,13 +163,50 @@ bool ModelLedger::evictOne(uint32_t periodKey) {
       copyField(rows_[victim].model, sizeof(rows_[victim].model), kOtherModel);
       continue;
     }
-    other->totIn = satAdd(other->totIn, rows_[victim].totIn);
-    other->totOut = satAdd(other->totOut, rows_[victim].totOut);
-    if (rows_[victim].lastDay > other->lastDay) other->lastDay = rows_[victim].lastDay;
+    foldTotals(*other, rows_[victim]);
     rows_.erase(rows_.begin() + (std::ptrdiff_t)victim);
     return true;
   }
   return false;
+}
+
+// A provider at its named cap: its named row with the oldest lastDay and no spend
+// this period takes the new model, after the old model's all-time totals fold into
+// the provider's ~other row (made from free room when it has none). With no ~other
+// row and no room, the old row itself becomes ~other (a named slot frees up) and
+// nullptr tells the caller to go on.
+ModelSpend* ModelLedger::recycleStale(const char* prov, const char* model, uint32_t periodKey) {
+  size_t v = rows_.size();
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    const ModelSpend& r = rows_[i];
+    if (std::strcmp(r.prov, prov) != 0 || isOther(r.model) || hasCurrentSpend(r, prov, periodKey))
+      continue;
+    if (v == rows_.size() || r.lastDay < rows_[v].lastDay) v = i;
+  }
+  if (v == rows_.size()) return nullptr;
+  ModelSpend* other = findMut(prov, kOtherModel);
+  if (!other) other = pushRow(prov, kOtherModel);   // reserved: rows_[v] never moves
+  if (!other) {
+    copyField(rows_[v].model, sizeof(rows_[v].model), kOtherModel);
+    return nullptr;
+  }
+  foldTotals(*other, rows_[v]);
+  ModelSpend& r = rows_[v];
+  r = ModelSpend{};
+  copyField(r.prov, sizeof(r.prov), prov);
+  copyField(r.model, sizeof(r.model), model);
+  return &r;
+}
+
+void ModelLedger::syncPeriods(PeriodOf periodOf, const void* ctx) {
+  if (!periodOf) return;
+  for (auto& r : rows_) rollTo(r, periodOf(ctx, r.prov));
+}
+
+void ModelLedger::clearPeriodSpend(size_t i) {
+  if (i >= rows_.size()) return;
+  ModelSpend& r = rows_[i];
+  r.tokIn = r.tokOut = r.cacheR = r.cacheW = 0;
 }
 
 // Last resort when no row can be freed: the provider's named row with the least
@@ -173,7 +223,7 @@ ModelSpend* ModelLedger::relabelSmallest(const char* prov) {
 
 ModelSpend* ModelLedger::otherRowFor(const char* prov, uint32_t periodKey) {
   if (ModelSpend* o = findMut(prov, kOtherModel)) return o;
-  if (rows_.size() < kMaxRows || evictOne(periodKey)) {
+  if (rows_.size() < kMaxRows || evictOne(prov, periodKey)) {
     if (ModelSpend* o = findMut(prov, kOtherModel)) return o;   // eviction may have made it
     return pushRow(prov, kOtherModel);
   }
@@ -183,8 +233,11 @@ ModelSpend* ModelLedger::otherRowFor(const char* prov, uint32_t periodKey) {
 ModelSpend* ModelLedger::rowFor(const char* prov, const char* model, uint32_t periodKey) {
   if (ModelSpend* r = findMut(prov, model)) return r;
   if (isOther(model)) return otherRowFor(prov, periodKey);
-  if (namedCount(prov) >= kMaxNamedPerProv) return otherRowFor(prov, periodKey);
-  if (rows_.size() < kMaxRows || evictOne(periodKey)) return pushRow(prov, model);
+  if (namedCount(prov) >= kMaxNamedPerProv) {
+    if (ModelSpend* r = recycleStale(prov, model, periodKey)) return r;
+    if (namedCount(prov) >= kMaxNamedPerProv) return otherRowFor(prov, periodKey);
+  }
+  if (rows_.size() < kMaxRows || evictOne(prov, periodKey)) return pushRow(prov, model);
   return otherRowFor(prov, periodKey);
 }
 

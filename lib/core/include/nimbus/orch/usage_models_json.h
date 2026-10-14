@@ -15,8 +15,9 @@
 //  "editable":{"<prov>":[{m,rIn,rOut,src,oIn,oOut}]},                the Prices table rows
 //  "provRate":{"<prov>":{rIn,rOut,rCall,src,srcCall,fIn,fOut,fSrc,est,callEst,approx,
 //                        allEst,allApprox}}}
-// provRate r* is the residual's price (unattributed spend, the "~other" row), f* what
-// any other model of the provider costs (the Prices table's "Any other" row), allEst
+// provRate r* is the residual's price (unattributed spend; the "~other" row carries
+// its own rIn/rOut in models[]), f* the provider default (the owner's, else the
+// built-in one: the Prices table's "Default for" row), allEst
 // the all-time estimate (all-time tokens at today's prices, the All time tile).
 // Rates are micro-USD per 1M tokens (rCall: per 1000 calls); est is cents, src one of
 // "owner" | "router" | "provider" | "est" | "none". p* are this period's tokens (as

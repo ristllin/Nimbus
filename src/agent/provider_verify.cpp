@@ -175,11 +175,6 @@ bool workspaceProbePending() {
   return g_wsq.queued() || (g_pending && strcmp(g_provider, "mistral") == 0);
 }
 
-// Build the rich capability catalog from a raw /v1/models response body and
-// persist it to its flash file (/data/mcat_<provider>.json - never NVS since
-// CUM-479). Independent of the legacy CSV harvest; an empty parse keeps the last
-// good catalog. The body may still carry HTTP headers (the portable parser locates
-// the JSON). The doc rides PSRAM, not internal heap.
 // Per-model prices (2026-10): what the Cumulo router bills for each model this device
 // keeps - the choice list plus the configured head and sub-agent selectors, at most
 // 24 rows - read in place from the verify's PSRAM body (never copied whole). Verify
@@ -196,6 +191,11 @@ static void storeRouterPrices(const char* body, const std::string& choicesCsv) {
     alogf("verify: cumulo router prices not stored");
 }
 
+// Build the rich capability catalog from a raw /v1/models response body and
+// persist it to its flash file (/data/mcat_<provider>.json - never NVS since
+// CUM-479). Independent of the legacy CSV harvest; an empty parse keeps the last
+// good catalog. The body may still carry HTTP headers (the portable parser locates
+// the JSON). The doc rides PSRAM, not internal heap.
 static void buildAndStoreCatalog(const String& provider, const char* body, size_t len,
                                  const String& csvFallback) {
   using namespace nimbus::orch;

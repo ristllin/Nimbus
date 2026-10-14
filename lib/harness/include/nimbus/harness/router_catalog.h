@@ -413,9 +413,16 @@ inline bool rowPrice(const char* body, const char* idKey, const char* idEnd, con
   return true;
 }
 
-inline bool keyed(const std::vector<nimbus::orch::ModelRate>& v, const char* model) {
-  for (const auto& o : v)
-    if (std::strcmp(o.model, model) == 0) return true;
+// A second router row for a key already kept (two ids can share one key, e.g. an
+// alias and its 4-digit build) raises the kept price to the higher one, per field
+// (fail-closed: spend on that key is never priced at the cheaper id's rate).
+inline bool mergeKeyed(std::vector<nimbus::orch::ModelRate>& v, const nimbus::orch::ModelRate& r) {
+  for (auto& o : v) {
+    if (std::strcmp(o.model, r.model) != 0) continue;
+    if (r.microIn > o.microIn) o.microIn = r.microIn;
+    if (r.microOut > o.microOut) o.microOut = r.microOut;
+    return true;
+  }
   return false;
 }
 }  // namespace detail
@@ -451,11 +458,17 @@ inline size_t harvestPrices(const char* body, const std::vector<std::string>& ke
   const char* p = body;
   const char* idKey = nullptr;
   std::string id;
-  while (out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && detail::nextId(p, idKey, id)) {
+  // Each kept id appears once in a real body; the bound caps the row scans a
+  // malformed body (one id repeated without prices) could cost the verify task.
+  size_t scans = 0;
+  const size_t maxScans = 4 * nimbus::orch::ModelLedger::kMaxRouterRates;
+  while (out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && scans < maxScans &&
+         detail::nextId(p, idKey, id)) {
     if (!routable(id) || std::find(keep.begin(), keep.end(), canonical(id)) == keep.end()) continue;
+    ++scans;
     nimbus::orch::ModelRate r;
     if (!detail::rowPrice(body, idKey, p, id, r)) break;
-    if (!r.model[0] || (!r.microIn && !r.microOut) || detail::keyed(out, r.model)) continue;
+    if (!r.model[0] || (!r.microIn && !r.microOut) || detail::mergeKeyed(out, r)) continue;
     out.push_back(r);
   }
   return out.size();

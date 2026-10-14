@@ -601,6 +601,29 @@ static void test_price_harvest_is_bounded_and_saturating() {
   TEST_ASSERT_EQUAL(0, (int)rc::harvestPrices("", all, out));
 }
 
+// Two router ids that share one usage key (an alias and its 4-digit build) keep the
+// HIGHER price per field, whatever the body order; a body repeating a kept id stops
+// after a bounded number of row scans (the verify task never spins on it).
+static void test_price_harvest_shared_key_keeps_the_higher_price() {
+  const char* body =
+      "{\"data\":[{\"id\":\"mistral/mistral-large-2512\",\"in_micro_per_mtok\":500000,"
+      "\"out_micro_per_mtok\":9000000},{\"id\":\"mistral/mistral-large\","
+      "\"in_micro_per_mtok\":2000000,\"out_micro_per_mtok\":6000000}]}";
+  std::vector<nimbus::orch::ModelRate> out;
+  const std::vector<std::string> keep = {"mistral/mistral-large", "mistral/mistral-large-2512"};
+  TEST_ASSERT_EQUAL(1, (int)rc::harvestPrices(body, keep, out));
+  TEST_ASSERT_EQUAL_STRING("mistral/mistral-large", out[0].model);
+  TEST_ASSERT_EQUAL_UINT32(2000000, out[0].microIn);
+  TEST_ASSERT_EQUAL_UINT32(9000000, out[0].microOut);
+  std::string rep = "{\"data\":[{";
+  for (int i = 0; i < 500; ++i) rep += "\"id\":\"openai/gpt-5.6\",";
+  rep += "\"id\":\"openai/gpt-5.6-terra\",\"in_micro_per_mtok\":1}]}";
+  TEST_ASSERT_EQUAL(1, (int)rc::harvestPrices(rep.c_str(),
+                                              rc::priceKeepIds(NIMBUS_CUMULO_MODEL_CHOICES, "", ""), out));
+  TEST_ASSERT_NOT_NULL(priceOf(out, "openai/gpt-5.6"));
+  TEST_ASSERT_NULL(priceOf(out, "openai/gpt-5.6-terra"));   // never reached: bounded
+}
+
 static void test_price_keep_ids_are_choices_plus_selectors() {
   const std::vector<std::string> k = rc::priceKeepIds("a,b,,c", "anthropic/claude-opus-5", "");
   TEST_ASSERT_EQUAL(4, (int)k.size());
@@ -634,6 +657,7 @@ int main(int, char**) {
   RUN_TEST(test_same_model_under_two_upstreams_is_two_rows);
   RUN_TEST(test_price_harvest_keeps_only_the_devices_models);
   RUN_TEST(test_price_harvest_is_bounded_and_saturating);
+  RUN_TEST(test_price_harvest_shared_key_keeps_the_higher_price);
   RUN_TEST(test_price_keep_ids_are_choices_plus_selectors);
   UNITY_END();
   return 0;

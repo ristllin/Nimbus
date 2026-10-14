@@ -151,7 +151,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 
 <div class=sec id=pricesSec>
 <h2>Prices <button class=qh type=button aria-expanded=false aria-label="About prices">?</button></h2>
-<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row prices any other model.</p>
+<p class="hint tip">Dollars per million input and output tokens, per model - used for the estimates above and the dollar caps below. ~ marks a built-in estimate; enter your own to match your bill. The last row is the provider's default: it replaces ~ estimates and prices unpriced models.</p>
 <div class=row>
 <select id=price_prov aria-label="Provider" style="flex:1 1 160px;max-width:280px"></select>
 </div>
