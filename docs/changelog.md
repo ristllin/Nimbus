@@ -6,7 +6,9 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
-## Unreleased
+## v4.5.13 - Prices and usage per model
+
+Asked for by the owner: prices were set per provider, though models from the same provider cost differently, and the usage graphs showed providers only. Checked on a desk device over turns on three router models and by four adversarial review rounds over the change and the release.
 
 - **Prices per model, usage per model.** Each model now has its own price: two models from the same provider no longer cost the same, and a provider's dollar budget adds them up. The Usage page lists this period's spend per model, the Spend over time chart shows models (or providers, your choice), and Prices takes dollars per million tokens for each model, with a last row that sets the provider's default in place of the estimates. Cumulo usage is priced at what Cumulo bills for each model. Models you have not priced use built-in estimates, marked ~.
 - **A dollar budget now counts built-in estimates.** A dollar cap used to count only the prices you had entered, so a cap with no prices never stopped anything. It now counts every model at its price, built-in estimates included, and stays off only for a model nothing prices (such as a custom endpoint model you have not priced). If you set a dollar cap without entering prices, check it under Usage, Budgets: the cap may now stop a provider when its estimated spend reaches it.
