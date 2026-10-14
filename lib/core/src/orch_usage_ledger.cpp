@@ -100,17 +100,21 @@ void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t
 void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
                                uint32_t periodKey, const std::string& tag,
                                const char* model, uint32_t dayKey) {
+  // The first record with a model starts tracking: what every provider counted so far
+  // is earlier usage, kept before this record adds to it.
+  if (model && *model && !models_.tracking()) startTracking();
+  const char* key = models_.spendKey(model);
   recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
   // Every row follows its own provider's period: a provider that rolled zeroes its
   // rows' period counters, one that first synced carries its pre-sync rows along.
   models_.syncPeriods(&UsageLedger::periodOf, this);
-  if (!model || !*model) return;   // provider level only
+  if (!*key) return;   // before tracking: provider level only (earlier usage)
   // The model row follows its provider's period (already rolled above): when the
   // provider kept its stored period on an unsynced record (key 0), the row files
   // under that same period, so the two never disagree about "this period".
   const ProviderBudget* e = find(name);
   if (!e) return;   // the provider ledger is full: nothing to attribute against
-  models_.record(name.c_str(), model, d, e->periodKey, dayKey);
+  models_.record(name.c_str(), key, d, e->periodKey, dayKey);
 }
 
 void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
@@ -282,6 +286,20 @@ TokenDelta periodTokens(const ProviderBudget& e) {
 
 uint64_t minU(uint64_t a, uint64_t b) { return a < b ? a : b; }
 
+// a - b per field, floored at 0.
+TokenDelta minus(const TokenDelta& a, const TokenDelta& b) {
+  TokenDelta t;
+  t.in = a.in > b.in ? a.in - b.in : 0;
+  t.out = a.out > b.out ? a.out - b.out : 0;
+  t.cacheR = a.cacheR > b.cacheR ? a.cacheR - b.cacheR : 0;
+  t.cacheW = a.cacheW > b.cacheW ? a.cacheW - b.cacheW : 0;
+  return t;
+}
+
+bool sameDelta(const TokenDelta& a, const TokenDelta& b) {
+  return a.in == b.in && a.out == b.out && a.cacheR == b.cacheR && a.cacheW == b.cacheW;
+}
+
 // A row's share, clamped field by field to what its provider still has unclaimed.
 TokenDelta claim(const ModelSpend& r, TokenDelta& rem) {
   TokenDelta t;
@@ -368,7 +386,7 @@ EffRate UsageLedger::residualRate(const std::string& prov) const {
     pickField(r.out, r.srcOut, (uint64_t)e->centsPerMOut * 10000ULL, RateSrc::Provider);
   }
   // Fail-closed: the HIGHEST model price the owner (or the router) set for this
-  // provider, per field, so unattributed spend is never priced below one of those.
+  // provider, per field, so earlier usage is never priced below one of those.
   uint64_t hiIn = 0, hiOut = 0;
   RateSrc hiInSrc = RateSrc::None, hiOutSrc = RateSrc::None;
   auto scan = [&](const std::vector<ModelRate>& v, RateSrc src) {
@@ -416,6 +434,34 @@ EffRate UsageLedger::rowRate(const std::string& prov, const char* model) const {
   return effectiveRate(prov, model);
 }
 
+void UsageLedger::startTracking() {
+  models_.markTracking();
+  for (const auto& e : entries_) {
+    const TokenDelta t = periodTokens(e);
+    if (t.empty() && !e.totalIn && !e.totalOut) continue;
+    ProvTrack* tr = models_.trackFor(e.name.c_str());
+    if (!tr) continue;
+    tr->periodKey = e.periodKey;
+    tr->pre = t;
+    tr->lost = TokenDelta{};
+    tr->preTotIn = e.totalIn;
+    tr->preTotOut = e.totalOut;
+  }
+}
+
+TokenDelta UsageLedger::earlierUsage(const ProviderBudget& e) const {
+  const TokenDelta all = periodTokens(e);
+  if (!models_.tracking()) return all;
+  TokenDelta pre;
+  const ProvTrack* t = models_.track(e.name.c_str());
+  if (!t || t->periodKey != e.periodKey) return pre;
+  pre.in = minU(t->pre.in, all.in);
+  pre.out = minU(t->pre.out, all.out);
+  pre.cacheR = minU(t->pre.cacheR, all.cacheR);
+  pre.cacheW = minU(t->pre.cacheW, all.cacheW);
+  return pre;
+}
+
 uint64_t UsageLedger::callRate(const std::string& prov, RateSrc* src) const {
   uint64_t v = 0;
   RateSrc s = RateSrc::None;
@@ -439,9 +485,9 @@ bool anyInPeriodRow(const UsageLedger& L, const ProviderBudget& e) {
   return false;
 }
 
-// The in-period model rows of one provider, each at its own price, clamped to the
-// provider counters (a row can never claim more than its provider recorded this
-// period). `rem` leaves with what no row claimed: the residual.
+// The in-period model rows of one provider, each at its own price, clamped to what
+// the provider recorded since tracking began (a row can never claim more). `rem`
+// leaves with what no row claimed: spend whose model was lost.
 void priceRows(const UsageLedger& L, const ProviderBudget& e, MicroSum& m, TokenDelta& rem,
                PriceSummary& s, RowPrice* out) {
   const auto& rows = L.models().rows();
@@ -459,6 +505,13 @@ void priceRows(const UsageLedger& L, const ProviderBudget& e, MicroSum& m, Token
       out[i].cents = part;
     }
   }
+}
+
+// One part of the spend no row prices, at one rate; its cents are the running floor's step.
+uint64_t pricePart(MicroSum& m, PriceSummary& s, const TokenDelta& t, const EffRate& r) {
+  m.addTokens(t, r);
+  notePriced(s, t, r);
+  return m.take();
 }
 
 void priceCalls(MicroSum& m, PriceSummary& s) {
@@ -483,22 +536,26 @@ uint64_t UsageLedger::priceProvider(const std::string& name, PriceSummary* out,
   if (e) {
     s.calls = e->calls;
     s.callRate = callRate(name, &s.callSrc);
-    if (fastPathApplies(*e, anyInPeriodRow(*this, *e))) {
+    const TokenDelta pre = earlierUsage(*e);
+    TokenDelta rem = minus(periodTokens(*e), pre);   // spend since tracking began
+    if (rem.empty() && fastPathApplies(*e, anyInPeriodRow(*this, *e))) {
       fillFastPath(*e, s);
     } else {
       MicroSum m;
-      TokenDelta rem = periodTokens(*e);
       priceRows(*this, *e, m, rem, s, rows);
-      s.resIn = rem.in;
-      s.resOut = rem.out;
-      s.resCr = rem.cacheR;
-      s.resCw = rem.cacheW;
+      // What no row accounts for lost its model (gate G1-G3): any model's price.
+      s.othIn = rem.in;
+      s.othOut = rem.out;
+      s.othCr = rem.cacheR;
+      s.othCw = rem.cacheW;
+      if (!rem.empty()) s.othRate = otherRate(name);
+      s.othCents = pricePart(m, s, rem, s.othRate);
+      s.resIn = pre.in;
+      s.resOut = pre.out;
+      s.resCr = pre.cacheR;
+      s.resCw = pre.cacheW;
       s.resRate = residualRate(name);
-      if (!rem.empty()) {
-        m.addTokens(rem, s.resRate);
-        notePriced(s, rem, s.resRate);
-      }
-      s.resCents = m.take();
+      s.resCents = pricePart(m, s, pre, s.resRate);
       priceCalls(m, s);
       s.cents = m.cents;
     }
@@ -514,33 +571,124 @@ bool UsageLedger::anyPriced(const std::string& name) const {
 }
 
 namespace {
-// Whether the in-period rows of `e` add up to more than its counters in any field.
-bool rowsOverclaim(const UsageLedger& L, const ProviderBudget& e) {
+// Whether the in-period rows of `e` add up exactly to its spend since tracking began
+// that is not already lost spend: every record files under a row once tracking has
+// started, so they always do unless a store failed.
+// How a provider's in-period rows compare with its spend since tracking began that is
+// not already lost spend (every record files under a row once tracking has started,
+// so they match unless the stores diverged).
+enum class RowsVs : uint8_t {
+  Match,    // the same, field by field
+  Behind,   // no field above it (`gap` = what the rows miss): a stale spend file
+  Ahead,    // some field above it (or saturated): the counters lack spend the rows hold
+};
+RowsVs rowsVsCounters(const UsageLedger& L, const ProviderBudget& e, TokenDelta& gap) {
   bool sat = false;
-  TokenDelta want;
+  TokenDelta have;
   for (const auto& r : L.models().rows()) {
     if (!rowOf(r, e)) continue;
-    want.in = addSat(want.in, r.tokIn, sat);
-    want.out = addSat(want.out, r.tokOut, sat);
-    want.cacheR = addSat(want.cacheR, r.cacheR, sat);
-    want.cacheW = addSat(want.cacheW, r.cacheW, sat);
+    have.in = addSat(have.in, r.tokIn, sat);
+    have.out = addSat(have.out, r.tokOut, sat);
+    have.cacheR = addSat(have.cacheR, r.cacheR, sat);
+    have.cacheW = addSat(have.cacheW, r.cacheW, sat);
   }
-  return want.in > e.tokensIn || want.out > e.tokensOut || want.cacheR > e.cacheRead ||
-         want.cacheW > e.cacheWrite;
+  TokenDelta want = minus(periodTokens(e), L.earlierUsage(e));
+  const ProvTrack* t = L.models().track(e.name.c_str());
+  if (t && t->periodKey == e.periodKey) want = minus(want, t->lost);
+  if (!sat && sameDelta(have, want)) return RowsVs::Match;
+  if (sat || !minus(have, want).empty()) return RowsVs::Ahead;
+  gap = minus(want, have);
+  return RowsVs::Behind;
+}
+
+// Earlier usage a track keeps above what the stored counters hold is spend the
+// counters never kept (a usgLedger write that did not land before tracking started)
+// or counters that are not the ones it described (a settings-only reset, then new
+// spend): either way none of it can be trusted, and taking later spend for it would
+// price that spend low. It is dropped (that spend then reads as lost: fail-closed).
+void dropStaleEarlier(ProvTrack& t, const ProviderBudget& e) {
+  const bool stale = t.pre.in > e.tokensIn || t.pre.out > e.tokensOut ||
+                     t.pre.cacheR > e.cacheRead || t.pre.cacheW > e.cacheWrite;
+  if (stale) t.pre = TokenDelta{};
+  if (stale || t.preTotIn > e.totalIn || t.preTotOut > e.totalOut) t.preTotIn = t.preTotOut = 0;
+}
+
+// A track goes with its provider; its period parts count only in that period (a
+// pre-sync track cannot tell which period its spend was carried into: dropped).
+// Returns whether a track of a provider with no entry was dropped (a settings-only
+// reset): that must not outlive this boot (the caller stores the result).
+bool rebaseTracks(UsageLedger& L) {
+  ModelLedger& M = L.models();
+  bool orphaned = false;
+  for (size_t i = M.tracks().size(); i-- > 0;) {
+    const std::string prov = M.tracks()[i].prov;   // load time only
+    const ProviderBudget* e = L.find(prov);
+    if (!e) {
+      M.dropTrack(prov.c_str());
+      orphaned = true;
+      continue;
+    }
+    ProvTrack* t = M.trackFor(prov.c_str());   // present: found, never made
+    if (t->periodKey != e->periodKey) {
+      t->periodKey = e->periodKey;
+      t->pre = t->lost = TokenDelta{};
+    }
+    dropStaleEarlier(*t, *e);
+  }
+  return orphaned;
 }
 }  // namespace
 
-void UsageLedger::rebaseModelRows() {
+// The rows may hold spend the stored counters lack (gate G1, G3): no row's
+// attribution can be trusted, so all of the provider's spend since tracking began is
+// lost spend, priced at otherRate.
+void UsageLedger::loseAttribution(const ProviderBudget& e) {
+  const auto& rows = models_.rows();
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rowOf(rows[i], e)) models_.dropAttribution(i);
+  const TokenDelta lost = minus(periodTokens(e), earlierUsage(e));
+  ProvTrack* t = models_.trackFor(e.name.c_str());
+  if (!t) return;   // a provider id the ledger cannot carry: priced the same anyway
+  t->periodKey = e.periodKey;
+  t->lost = lost;
+}
+
+// The rows are only behind the counters (gate G3: a spend-file write that did not
+// land, or spend an earlier release recorded after a downgrade): every row is still
+// true, so the rows stay and only what they miss is lost spend.
+void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
+  ProvTrack* t = models_.trackFor(e.name.c_str());
+  if (!t) return;   // a provider id the ledger cannot carry: priced the same anyway
+  t->periodKey = e.periodKey;   // tracks are already aligned (rebaseTracks); a new one starts here
+  bool sat = false;
+  t->lost.in = addSat(t->lost.in, gap.in, sat);
+  t->lost.out = addSat(t->lost.out, gap.out, sat);
+  t->lost.cacheR = addSat(t->lost.cacheR, gap.cacheR, sat);
+  t->lost.cacheW = addSat(t->lost.cacheW, gap.cacheW, sat);
+}
+
+bool UsageLedger::rebaseModelRows() {
   const auto& rows = models_.rows();
   for (size_t i = 0; i < rows.size(); ++i) {
     const ProviderBudget* e = find(std::string(rows[i].prov));   // load time only
-    if (!e || !inPeriod(*e, rows[i])) models_.clearPeriodSpend(i);
+    if (e && inPeriod(*e, rows[i])) continue;
+    models_.clearPeriodSpend(i);
+    // A row of an existing provider follows that provider's period (its next record
+    // then lands in the period the provider counts in, even before the clock syncs).
+    if (e) models_.setRowPeriod(i, e->periodKey);
   }
+  const bool orphaned = rebaseTracks(*this);
+  if (!models_.tracking()) return orphaned;
   for (const auto& e : entries_) {
-    if (!rowsOverclaim(*this, e)) continue;
-    for (size_t i = 0; i < rows.size(); ++i)
-      if (rowOf(rows[i], e)) models_.clearPeriodSpend(i);
+    TokenDelta gap;
+    const RowsVs v = rowsVsCounters(*this, e, gap);
+    if (v == RowsVs::Match) continue;
+    // Behind is safe to keep only when the counters' latest store landed: then they
+    // hold every record the rows hold (a later landed write is a superset).
+    if (v == RowsVs::Behind && !models_.countersBehind()) addLost(e, gap);
+    else loseAttribution(e);
   }
+  return orphaned;
 }
 
 // ---- serialization -----------------------------------------------------------

@@ -57,6 +57,37 @@ void foldTotals(ModelSpend& into, const ModelSpend& from) {
   if (from.lastDay > into.lastDay) into.lastDay = from.lastDay;
 }
 
+// A whole row (period spend and totals) moves into its provider's ~other row. Rows
+// are synced to their provider's period before a record, so both share it; a row of
+// an older period (never counted) brings its totals only.
+void mergeRow(ModelSpend& into, const ModelSpend& from) {
+  const uint32_t k = into.periodKey > from.periodKey ? into.periodKey : from.periodKey;
+  rollTo(into, k);
+  if (from.periodKey == k || from.periodKey == 0) {
+    into.tokIn = satAdd(into.tokIn, from.tokIn);
+    into.tokOut = satAdd(into.tokOut, from.tokOut);
+    into.cacheR = satAdd(into.cacheR, from.cacheR);
+    into.cacheW = satAdd(into.cacheW, from.cacheW);
+  }
+  foldTotals(into, from);
+}
+
+// The track's period parts follow its provider like a row's (rollTo rules).
+void rollTrack(ProvTrack& t, uint32_t periodKey) {
+  if (t.periodKey == periodKey || periodKey == 0) return;
+  if (t.periodKey != 0) {
+    t.pre = TokenDelta{};
+    t.lost = TokenDelta{};
+  }
+  t.periodKey = periodKey;
+}
+
+// The fold victim order (gate G2): the least spend this period, then the oldest lastDay.
+bool foldsBefore(const ModelSpend& a, const ModelSpend& b) {
+  if (periodSpend(a) != periodSpend(b)) return periodSpend(a) < periodSpend(b);
+  return a.lastDay < b.lastDay;
+}
+
 void appendU64(std::string& out, uint64_t v) {
   char buf[24];
   int i = 0;
@@ -92,7 +123,8 @@ int splitBars(const std::string& group, std::string* parts, int maxParts) {
   return np;
 }
 
-// Walk the ';'-groups of a blob, skipping empty groups and the "!v|N" header.
+// Walk the non-empty ';'-groups of a blob. '!' groups (the "!v|N" header, the spend
+// file's tracking groups) reach `fn` too: a reader skips the ones it does not know.
 template <typename F>
 void forEachGroup(const std::string& s, F fn) {
   size_t i = 0;
@@ -102,7 +134,7 @@ void forEachGroup(const std::string& s, F fn) {
     if (semi == std::string::npos) semi = n;
     const std::string group = s.substr(i, semi - i);
     i = semi + 1;
-    if (group.empty() || group[0] == '!') continue;
+    if (group.empty()) continue;
     if (!fn(group)) break;
   }
 }
@@ -116,6 +148,42 @@ void ModelLedger::reserveAll() {
   if (rows_.capacity() < kMaxRows) rows_.reserve(kMaxRows);
   if (owner_.capacity() < kMaxOwnerRates) owner_.reserve(kMaxOwnerRates);
   if (router_.capacity() < kMaxRouterRates) router_.reserve(kMaxRouterRates);
+  if (tracks_.capacity() < kMaxTracks) tracks_.reserve(kMaxTracks);
+}
+
+const char* ModelLedger::spendKey(const char* model) const {
+  if (model && *model) return model;
+  return tracking_ ? kOtherModel : "";
+}
+
+const ProvTrack* ModelLedger::track(const char* prov) const {
+  for (const auto& t : tracks_)
+    if (std::strcmp(t.prov, prov) == 0) return &t;
+  return nullptr;
+}
+
+ProvTrack* ModelLedger::trackFor(const char* prov) {
+  for (auto& t : tracks_)
+    if (std::strcmp(t.prov, prov) == 0) return &t;
+  if (!provKeySafe(prov) || tracks_.size() >= kMaxTracks) return nullptr;
+  reserveAll();
+  tracks_.emplace_back();
+  copyField(tracks_.back().prov, sizeof(tracks_.back().prov), prov);
+  return &tracks_.back();
+}
+
+void ModelLedger::dropTrack(const char* prov) {
+  for (size_t i = 0; i < tracks_.size(); ++i)
+    if (std::strcmp(tracks_[i].prov, prov) == 0) {
+      tracks_.erase(tracks_.begin() + (std::ptrdiff_t)i);
+      return;
+    }
+}
+
+bool ModelLedger::hasRow(const char* prov) const {
+  for (const auto& r : rows_)
+    if (std::strcmp(r.prov, prov) == 0) return true;
+  return false;
 }
 
 const ModelSpend* ModelLedger::findRow(const char* prov, const char* model) const {
@@ -201,12 +269,50 @@ ModelSpend* ModelLedger::recycleStale(const char* prov, const char* model, uint3
 void ModelLedger::syncPeriods(PeriodOf periodOf, const void* ctx) {
   if (!periodOf) return;
   for (auto& r : rows_) rollTo(r, periodOf(ctx, r.prov));
+  for (auto& t : tracks_) rollTrack(t, periodOf(ctx, t.prov));
 }
 
 void ModelLedger::clearPeriodSpend(size_t i) {
   if (i >= rows_.size()) return;
   ModelSpend& r = rows_[i];
   r.tokIn = r.tokOut = r.cacheR = r.cacheW = 0;
+}
+
+void ModelLedger::dropAttribution(size_t i) {
+  if (i >= rows_.size()) return;
+  ModelSpend& r = rows_[i];
+  r.totIn = r.totIn > r.tokIn ? r.totIn - r.tokIn : 0;
+  r.totOut = r.totOut > r.tokOut ? r.totOut - r.tokOut : 0;
+  clearPeriodSpend(i);
+}
+
+// Gate G2: every row holds spend this period and `prov` has no row at all, so no
+// slot can be freed the usual way. The smallest named row of another provider
+// (foldsBefore) moves whole into its provider's ~other row - priced at that
+// provider's highest known price, so nothing it held reads cheaper - and its room is
+// `prov`'s. A victim whose provider has no ~other row yet becomes it (no room freed)
+// and the search goes on, bounded: with at most 12 providers holding counters
+// (UsageLedger::kMaxProviders) over 32 rows some provider holds two, so a fold comes.
+// It fails only when no other provider holds a named row (a hand-made file).
+bool ModelLedger::foldSmallestElsewhere(const char* prov) {
+  for (size_t guard = 0; guard <= kMaxRows; ++guard) {
+    size_t v = rows_.size();
+    for (size_t i = 0; i < rows_.size(); ++i) {
+      const ModelSpend& r = rows_[i];
+      if (isOther(r.model) || std::strcmp(r.prov, prov) == 0) continue;
+      if (v == rows_.size() || foldsBefore(r, rows_[v])) v = i;
+    }
+    if (v == rows_.size()) return false;
+    ModelSpend* other = findMut(rows_[v].prov, kOtherModel);
+    if (!other) {
+      copyField(rows_[v].model, sizeof(rows_[v].model), kOtherModel);
+      continue;
+    }
+    mergeRow(*other, rows_[v]);
+    rows_.erase(rows_.begin() + (std::ptrdiff_t)v);
+    return true;
+  }
+  return false;
 }
 
 // Last resort when no row can be freed: the provider's named row with the least
@@ -227,7 +333,9 @@ ModelSpend* ModelLedger::otherRowFor(const char* prov, uint32_t periodKey) {
     if (ModelSpend* o = findMut(prov, kOtherModel)) return o;   // eviction may have made it
     return pushRow(prov, kOtherModel);
   }
-  return relabelSmallest(prov);
+  if (ModelSpend* r = relabelSmallest(prov)) return r;
+  if (foldSmallestElsewhere(prov)) return pushRow(prov, kOtherModel);   // gate G2
+  return nullptr;
 }
 
 ModelSpend* ModelLedger::rowFor(const char* prov, const char* model, uint32_t periodKey) {
@@ -238,6 +346,8 @@ ModelSpend* ModelLedger::rowFor(const char* prov, const char* model, uint32_t pe
     if (namedCount(prov) >= kMaxNamedPerProv) return otherRowFor(prov, periodKey);
   }
   if (rows_.size() < kMaxRows || evictOne(prov, periodKey)) return pushRow(prov, model);
+  // Gate G2: a provider with no row at all still gets one for its live spend.
+  if (!hasRow(prov) && foldSmallestElsewhere(prov)) return pushRow(prov, model);
   return otherRowFor(prov, periodKey);
 }
 
@@ -246,7 +356,10 @@ void ModelLedger::record(const char* prov, const char* model, const TokenDelta& 
   if (!provKeySafe(prov) || !acceptModel(model) || d.empty()) return;
   reserveAll();
   ModelSpend* r = rowFor(prov, model, periodKey);
-  if (!r) return;   // no row can hold it: the provider counter keeps it (residual)
+  // No row found or made (only a hand-made file of 32 fold rows of 32 providers):
+  // the provider counter keeps the spend, priced at the provider's highest price.
+  if (!r) return;
+  tracking_ = true;
   rollTo(*r, periodKey);
   r->tokIn = satAdd(r->tokIn, d.in);
   r->tokOut = satAdd(r->tokOut, d.out);
@@ -323,10 +436,27 @@ void ModelLedger::replaceRouterRates(const std::vector<ModelRate>& rows) {
 
 // ---- text forms ------------------------------------------------------------------
 // spend row:  prov|model|periodKey|tokIn|tokOut|cacheR|cacheW|totIn|totOut|lastDay
+// tracking:   !t   (tracking started)
+// behind:     !n   (the provider counters' latest store did not land)
+// track:      !p|prov|periodKey|preIn|preOut|preCr|preCw|lostIn|lostOut|lostCr|lostCw|
+//             preTotIn|preTotOut
 // price row:  prov|model|microIn|microOut
 
 std::string ModelLedger::serializeSpend() const {
   std::string out = kHeader;
+  if (tracking_) out += ";!t";
+  if (countersBehind_) out += ";!n";
+  for (const auto& t : tracks_) {
+    out += ";!p|";
+    out += t.prov;
+    const uint64_t f[] = {t.periodKey, t.pre.in,  t.pre.out,  t.pre.cacheR,  t.pre.cacheW,
+                          t.lost.in,   t.lost.out, t.lost.cacheR, t.lost.cacheW,
+                          t.preTotIn,  t.preTotOut};
+    for (uint64_t v : f) {
+      out.push_back('|');
+      appendU64(out, v);
+    }
+  }
   for (const auto& r : rows_) {
     out.push_back(';');
     out += r.prov;
@@ -343,11 +473,35 @@ std::string ModelLedger::serializeSpend() const {
   return out;
 }
 
+void ModelLedger::parseTrack(const std::string& group) {
+  tracking_ = true;
+  std::string p[13];
+  const int np = splitBars(group, p, 13);
+  if (np < 2 || !provKeySafe(p[1].c_str()) || track(p[1].c_str())) return;
+  ProvTrack* t = trackFor(p[1].c_str());
+  if (!t) return;
+  uint64_t* u64[] = {&t->pre.in,  &t->pre.out,  &t->pre.cacheR,  &t->pre.cacheW,
+                     &t->lost.in, &t->lost.out, &t->lost.cacheR, &t->lost.cacheW,
+                     &t->preTotIn, &t->preTotOut};
+  if (np > 2) t->periodKey = (uint32_t)parseSat(p[2], UINT32_MAX);
+  for (int k = 0; k < 10; ++k)
+    if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
+}
+
 void ModelLedger::deserializeSpend(const std::string& s) {
   reserveAll();
   rows_.clear();
+  tracks_.clear();
+  tracking_ = false;
+  countersBehind_ = false;
   forEachGroup(s, [&](const std::string& group) {
-    if (rows_.size() >= kMaxRows) return false;
+    if (group[0] == '!') {
+      if (group == "!t") tracking_ = true;
+      else if (group == "!n") countersBehind_ = true;
+      else if (group.compare(0, 3, "!p|") == 0) parseTrack(group);
+      return true;   // the header, or a group a newer build added
+    }
+    if (rows_.size() >= kMaxRows) return false;   // the cap (tracks are written first)
     std::string p[10];
     const int np = splitBars(group, p, 10);
     if (np < 2 || !provKeySafe(p[0].c_str()) || !acceptModel(p[1].c_str())) return true;
@@ -361,6 +515,7 @@ void ModelLedger::deserializeSpend(const std::string& s) {
       if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
     if (np > 9) r.lastDay = (uint32_t)parseSat(p[9], UINT32_MAX);
     rows_.push_back(r);
+    tracking_ = true;   // a row means tracking had started (a file without "!t")
     return true;
   });
 }
@@ -381,6 +536,7 @@ void ModelLedger::deserializeRates(const std::string& s, std::vector<ModelRate>&
   if (v.capacity() < cap) v.reserve(cap);
   v.clear();
   forEachGroup(s, [&](const std::string& group) {
+    if (group[0] == '!') return true;   // the header
     if (v.size() >= cap) return false;
     std::string p[4];
     const int np = splitBars(group, p, 4);

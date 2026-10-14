@@ -208,7 +208,10 @@ marks a built-in price estimate.
 
 - **This period by model** - every model you used this billing period, grouped by
   provider, with its tokens and estimated cost; usage from before model tracking
-  shows as its own row. The rows add up to the provider's total.
+  shows as its own row. Usage the device cannot name a model for (more models than
+  it keeps, or a model lost when the device could not save its usage) shows as the
+  provider's other models, priced at the provider's highest known price. The rows
+  add up to the provider's total.
 - **Spend over time** - a 7/30/60-day chart in tokens or dollars, **By model** (the
   default; the top 8 models are drawn and the rest fold into Other models) or **By
   provider**. Tap a legend entry to hide or show it.

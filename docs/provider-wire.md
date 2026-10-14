@@ -304,7 +304,12 @@ keeps the billed rates (`in_micro_per_mtok` / `out_micro_per_mtok`) of the model
 device uses - its Cumulo choice list plus the head and sub-agent models, at most 24 -
 so the Usage page prices Cumulo spend at what Cumulo bills (shown as "Cumulo price";
 a price you enter for a model still wins). They are read from the verify's own
-response, never fetched on a turn. The router
+response, never fetched on a turn. A device with a verified Cumulo key and no stored
+router prices (for example right after an update) runs one Cumulo verify shortly
+after boot, on the same verify task, when no turn is running. The verify reads the
+first 64 KB of the router's list (about 95 KB in full): a model listed past that, or
+whose row the window cuts short, keeps no router price (the next price applies,
+never a wrong one) and is named in the log. The router
 default comes first, then one model per upstream, then a spread of the rest (a
 dated snapshot whose undated alias is listed is left out, and so is an id whose
 model part still holds a `/` after the upstream, such as

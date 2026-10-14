@@ -58,6 +58,7 @@ struct Rig {
     uint32_t usageIn = 100, usageOut = 20;
     std::string toolName = "memory_search";   // the tool a dispatchTools call names
     std::string served;                       // the model the provider echoes ("" = none)
+    bool usageOnFail = false;                 // a failed attempt still bills its tokens
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -73,6 +74,10 @@ struct Rig {
 
   std::vector<std::pair<std::string, std::string>> delivered;  // chat, text
   std::vector<std::vector<std::string>> fabricCalls;  // hostLists routed to the fabric
+  // Opt-in fabric switch: the first host bills 50/10 and echoes fabricFirstEcho, then
+  // the round moves to the next host in the list, which bills 100/20 and echoes nothing.
+  bool fabricSwitch = false;
+  std::string fabricFirstEcho;
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -229,9 +234,16 @@ struct Rig {
                             const std::string&, std::string& out, std::string&,
                             const agent::HeadTools&, orch::TokenUsage* usage,
                             const std::function<void(const std::string&,
-                                                     const std::string&)>&) {
+                                                     const std::string&)>& notify) {
       fabricCalls.push_back(hl);
       out = kGoodTurn;
+      if (fabricSwitch && hl.size() > 1 && usage) {
+        usage->add(50, 10);
+        usage->servedModel = fabricFirstEcho;
+        if (notify) notify(hl[0], hl[1]);
+        usage->add(100, 20);
+        return true;
+      }
       if (usage) { usage->promptTokens = 100; usage->completionTokens = 20; }
       return true;
     };
@@ -272,13 +284,16 @@ struct Rig {
         }
       }
       if (onProviderCall) onProviderCall();
+      // Like the adapters: the echo is captured on the HTTP 200, before the turn is
+      // known to parse, so a failed attempt can carry one too.
+      if (usage && !s.served.empty()) usage->servedModel = s.served;
       if (s.ok) {
         convId = s.convOut;
         out = s.outJson;
         if (usage) usage->add(s.usageIn, s.usageOut);
-        if (usage && !s.served.empty()) usage->servedModel = s.served;
       } else {
         err = s.err.empty() ? "scripted failure" : s.err;
+        if (usage && s.usageOnFail) usage->add(s.usageIn, s.usageOut);
       }
       return s.ok;
     };
@@ -593,6 +608,65 @@ static void test_turn_spend_files_under_the_serving_model() {
     TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
     TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
     TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", r.cfg.recorded[0].model.c_str());
+  }
+}
+
+// Gate G5: only the attempt that served the turn names its model. A failed attempt
+// that echoed a model (captured on its HTTP 200, before the turn failed to parse) and
+// a host that then serves the turn WITHOUT an echo: the spend is filed under the
+// serving host's configured model, never the failed attempt's echo - on the
+// failover ladder, on the same-host retry and across a fabric switch. Token counts
+// keep summing across the attempts.
+static void test_failed_attempt_echo_never_names_the_serving_model() {
+  {   // failover ladder: anthropic echoes and fails, openai serves with no echo
+    Rig r;
+    r.cfg.orchModels["anthropic"] = "claude-opus-5";
+    r.cfg.orchModels["openai"] = "gpt-5.6";
+    Rig::Script bad;
+    bad.ok = false;
+    bad.err = "no orch_turn tool_use (stop_reason=max_tokens)";
+    bad.served = "claude-haiku-4-5";   // would be a substitution under any host
+    bad.usageOnFail = true;
+    r.scripts["anthropic"] = {bad};
+    r.scripts["openai"] = {Rig::Script{}};
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[0].model.c_str());
+    TEST_ASSERT_TRUE(r.attempts.size() >= 2);
+    // The failed attempts' tokens still count (filed under the final host, CUM-559).
+    TEST_ASSERT_EQUAL((int)(100 * (r.attempts.size() - 1) + 100), (int)r.cfg.recorded[0].in);
+  }
+  {   // same-host retry: the first attempt echoes a cheaper model and fails
+    Rig r;
+    r.cfg.orchModels["anthropic"] = "claude-opus-5";
+    Rig::Script bad;
+    bad.ok = false;
+    bad.err = "network";
+    bad.served = "claude-haiku-4-5";
+    r.scripts["anthropic"] = {bad, Rig::Script{}};
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
+    TEST_ASSERT_EQUAL_STRING("anthropic", r.attempts[1].host.c_str());
+    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("claude-opus-5", r.cfg.recorded[0].model.c_str());
+  }
+  {   // fabric: anthropic echoes, the round moves to openai, which echoes nothing
+    Rig r;
+    r.cfg.midFail = true;
+    r.cfg.orchHost = "anthropic";
+    r.cfg.priority = "anthropic,openai";
+    r.cfg.orchModels["anthropic"] = "claude-opus-5";
+    r.cfg.orchModels["openai"] = "gpt-5.6";
+    r.fabricSwitch = true;
+    r.fabricFirstEcho = "claude-haiku-4-5";
+    TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+    TEST_ASSERT_EQUAL(1, (int)r.fabricCalls.size());
+    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[0].model.c_str());
+    TEST_ASSERT_EQUAL(150, (int)r.cfg.recorded[0].in);
+    TEST_ASSERT_EQUAL(30, (int)r.cfg.recorded[0].out);
   }
 }
 
@@ -2301,6 +2375,7 @@ int main(int, char**) {
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
   RUN_TEST(test_turn_spend_files_under_the_serving_model);
+  RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);

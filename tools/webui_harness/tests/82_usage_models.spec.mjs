@@ -7,6 +7,8 @@
 //     provider line and the tile (the server's own breakdown, never a client guess);
 //   - the chart groups By model (default, remembered) or By provider, draws the top 8
 //     series and folds the rest into "Other models", and a legend chip toggles a series;
+//   - a history bucket whose model has no row costs the fold price (provRate oIn/oOut),
+//     only earlier usage (no model) the residual price;
 //   - the Prices table lists each model the owner can price plus "Default for <provider>
 //     models" (Tavily: searches only), posts mrate with a model id holding '/' or ':'
 //     intact, keeps a price typed in another row across a save, and shows a 400 or 507
@@ -57,7 +59,29 @@ test('This period lists each model under its provider and adds up to the tile', 
   expect(dollars(tile.split(' est')[0])).toBeCloseTo((1044 + 722 + 522 + 71 + 29) / 100, 2);
   await expect(page.locator('#usageSummary .tile').nth(1)).toContainText('~');
   const all = await page.locator('#usageSummary .tile').nth(0).locator('.cx').textContent();
-  expect(dollars(all.split(' est')[0])).toBeCloseTo((522 + 2330 + 1250 + 71 + 96) / 100, 2);
+  expect(dollars(all.split(' est')[0])).toBeCloseTo((522 + 1095 + 1250 + 71 + 96) / 100, 2);
+});
+
+// Gate G4: a history bucket whose model has no row (a 9th model folded into ~other, or
+// "~other" itself with no ledger row) is priced at the provider's fold price (provRate
+// oIn/oOut, the server's own ~other price), never the cheaper residual price that only
+// earlier usage (no model) gets.
+test('history $: a model with no row costs the fold price, earlier usage the residual', async ({ page }) => {
+  const today = Math.floor(Date.now() / 86400000);
+  let days = [{ d: today, prov: 'openai', in: 1000000, out: 0, calls: 0, m: 'gpt-x-unlisted' }];
+  await page.route('**/api/usage/history', (r) => r.fulfill({ contentType: 'application/json',
+    body: JSON.stringify({ today, days }) }));
+  await openUsage(page);
+  const week = page.locator('#usageSummary .tile').nth(3);   // Last 7 days
+  // openai's fold price is its highest known price: ~$10/M in (a built-in estimate).
+  await expect(week).toContainText('$10.00~ est');
+  days = [{ d: today, prov: 'openai', in: 1000000, out: 0, calls: 0, m: '~other' }];
+  await page.evaluate(() => loadUsageHistory());
+  await expect(week).toContainText('$10.00~ est');
+  // Earlier usage (no model): the residual price, the owner's $0.20/M.
+  days = [{ d: today, prov: 'openai', in: 1000000, out: 0, calls: 0 }];
+  await page.evaluate(() => loadUsageHistory());
+  await expect(week).toContainText('$0.20 est');
 });
 
 test('chart: By model by default, By provider remembered, top 8 + Other models, chips toggle', async ({ page }) => {

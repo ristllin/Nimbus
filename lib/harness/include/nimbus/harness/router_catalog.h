@@ -413,6 +413,29 @@ inline bool rowPrice(const char* body, const char* idKey, const char* idEnd, con
   return true;
 }
 
+// The kept ids in canonical "<upstream>/<model>" form (bounded by the caller), and
+// which of them a whole row was read for.
+struct KeepSet {
+  std::vector<std::string> ids;
+  std::vector<bool>        seen;
+  explicit KeepSet(const std::vector<std::string>& keepIds) {
+    ids.reserve(keepIds.size());
+    for (const std::string& k : keepIds)
+      if (routable(k)) ids.push_back(canonical(k));
+    seen.assign(ids.size(), false);
+  }
+  bool has(const std::string& c) const { return std::find(ids.begin(), ids.end(), c) != ids.end(); }
+  void mark(const std::string& c) {
+    for (size_t k = 0; k < ids.size(); ++k) seen[k] = seen[k] || ids[k] == c;
+  }
+  // The kept ids no row was read for, once each.
+  void missing(std::vector<std::string>& out) const {
+    out.clear();
+    for (size_t i = 0; i < ids.size(); ++i)
+      if (!seen[i] && std::find(out.begin(), out.end(), ids[i]) == out.end()) out.push_back(ids[i]);
+  }
+};
+
 // A second router row for a key already kept (two ids can share one key, e.g. an
 // alias and its 4-digit build) raises the kept price to the higher one, per field
 // (fail-closed: spend on that key is never priced at the cheaper id's rate).
@@ -446,15 +469,18 @@ inline std::vector<std::string> priceKeepIds(const std::string& choicesCsv,
   return keep;
 }
 
+// The verify reads at most 64 KB of the router's body (CUM-564; the full list is
+// ~95 KB), so a kept id listed late may not be in the read window, and the last row
+// in it may be cut short. Neither gets a price: a row is priced only when its whole
+// object ('{' to '}') is in the window, and an id never seen is named in `missing`
+// (canonical form, when given) so the caller can log it - its price stays unset (the
+// next tier prices it), never a wrong one.
 inline size_t harvestPrices(const char* body, const std::vector<std::string>& keepIds,
-                            std::vector<nimbus::orch::ModelRate>& out) {
+                            std::vector<nimbus::orch::ModelRate>& out,
+                            std::vector<std::string>* missing = nullptr) {
   out.clear();
-  if (!body) return 0;
+  detail::KeepSet keep(keepIds);
   out.reserve(nimbus::orch::ModelLedger::kMaxRouterRates);
-  std::vector<std::string> keep;   // canonical "<upstream>/<model>", bounded by the caller
-  keep.reserve(keepIds.size());
-  for (const std::string& k : keepIds)
-    if (routable(k)) keep.push_back(canonical(k));
   const char* p = body;
   const char* idKey = nullptr;
   std::string id;
@@ -462,15 +488,17 @@ inline size_t harvestPrices(const char* body, const std::vector<std::string>& ke
   // malformed body (one id repeated without prices) could cost the verify task.
   size_t scans = 0;
   const size_t maxScans = 4 * nimbus::orch::ModelLedger::kMaxRouterRates;
-  while (out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && scans < maxScans &&
+  while (p && out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && scans < maxScans &&
          detail::nextId(p, idKey, id)) {
-    if (!routable(id) || std::find(keep.begin(), keep.end(), canonical(id)) == keep.end()) continue;
+    if (!routable(id) || !keep.has(canonical(id))) continue;
     ++scans;
     nimbus::orch::ModelRate r;
-    if (!detail::rowPrice(body, idKey, p, id, r)) break;
+    if (!detail::rowPrice(body, idKey, p, id, r)) break;   // cut short: no price
+    keep.mark(canonical(id));
     if (!r.model[0] || (!r.microIn && !r.microOut) || detail::mergeKeyed(out, r)) continue;
     out.push_back(r);
   }
+  if (missing) keep.missing(*missing);
   return out.size();
 }
 

@@ -175,16 +175,50 @@ bool workspaceProbePending() {
   return g_wsq.queued() || (g_pending && strcmp(g_provider, "mistral") == 0);
 }
 
+// Router prices after an upgrade: one Cumulo verify per boot while none is stored
+// (armed at boot, fired by pumpRetry; RouterPriceRefill holds the policy).
+static RouterPriceRefill g_rpRefill;
+
+void queueRouterPriceRefill(uint32_t delayMs) {
+  if (!store::hasCumuloKey()) return;   // the rest is checked when it fires
+  g_rpRefill.arm((uint32_t)millis(), delayMs);
+}
+
+// The pump's refill step: true when it was due and acted (the pump stops this pass).
+static bool pumpRouterPriceRefill(uint32_t now, bool inTurn, bool online) {
+  if (!g_rpRefill.due(now, inTurn, online)) return false;
+  using Next = RouterPriceRefill::Next;
+  const Next next = RouterPriceRefill::decide(
+      store::hasCumuloKey(), store::verifyResult("cumulo") == 1, store::routerPriceState());
+  if (next == Next::Done) {
+    g_rpRefill.done();
+  } else if (next == Next::Later || !request("cumulo")) {
+    g_rpRefill.startFailed(now);
+  } else {
+    g_rpRefill.done();
+    alog("verify: cumulo router prices missing - verifying once to fetch them");
+  }
+  return true;
+}
+
 // Per-model prices (2026-10): what the Cumulo router bills for each model this device
 // keeps - the choice list plus the configured head and sub-agent selectors, at most
 // 24 rows - read in place from the verify's PSRAM body (never copied whole). Verify
 // task only, never the turn path; stored apart from the owner's own prices.
 static void storeRouterPrices(const char* body, const std::string& choicesCsv) {
   std::vector<nimbus::orch::ModelRate> prices;
+  std::vector<std::string> missing;
   const std::vector<std::string> keep = router_catalog::priceKeepIds(
       choicesCsv, std::string(store::orchModel("cumulo").c_str()),
       std::string(store::subModel("cumulo").c_str()));
-  if (!router_catalog::harvestPrices(body, keep, prices)) return;
+  const size_t n = router_catalog::harvestPrices(body, keep, prices, &missing);
+  // CUM-564: the read window holds the first 64 KB of the router's list; a model
+  // listed later, cut off at the window's end, or not listed at all keeps no router
+  // price - the next price tier applies, never a wrong one.
+  for (const std::string& id : missing)
+    alogf("verify: no whole cumulo price row for %s (first 64 KB read, or not listed) - "
+          "left unset", id.c_str());
+  if (!n) return;
   if (store::replaceRouterPrices(prices))
     alogf("verify: cumulo router prices kept for %u models", (unsigned)prices.size());
   else
@@ -1082,6 +1116,7 @@ void pumpRetry() {
       rearmWorkspaceProbe(gen, "could not start the worker", /*countsTry=*/true);
     return;
   }
+  if (pumpRouterPriceRefill(now, inTurn, online)) return;
   for (int i = 0; i < kNRetry; ++i) {
     if (!g_retry[i].due(now, inTurn, online, /*busy=*/false)) continue;
     if (request(kRetryProv[i])) return;   // one retry per pass; the slot is now busy

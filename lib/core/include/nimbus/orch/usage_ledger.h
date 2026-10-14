@@ -44,7 +44,8 @@ struct ProviderBudget {
   // cents per 1M input tokens, cents per 1M output tokens, cents per 1000 calls.
   // 0 = unset. Since per-model prices (2026-10) these are the provider FALLBACK:
   // they price every model of the provider that has no price of its own, and the
-  // spend no model row covers (see UsageLedger::effectiveRate / estCents).
+  // earlier usage from before per-model tracking (see UsageLedger::effectiveRate,
+  // residualRate / estCents).
   uint32_t    centsPerMIn  = 0;
   uint32_t    centsPerMOut = 0;
   uint32_t    centsPerKCalls = 0;
@@ -131,17 +132,23 @@ uint64_t costMicro(uint64_t tokens, uint64_t microPerM);
 
 // The pieces of one provider's period estimate (UsageLedger::priceProvider). Every
 // component's cents are the cumulative floor of the running micro total, so the
-// model rows + residual + calls add up EXACTLY to `cents`.
+// model rows + lost-model spend + residual + calls add up EXACTLY to `cents`.
 struct PriceSummary {
   uint64_t cents = 0;       // == UsageLedger::estCents(name)
   bool     approx = false;  // some priced part used a built-in estimate
   bool     anyPriced = false;   // some part with spend resolved to a price
   bool     fastPath = false;    // the legacy provider-rate formula, verbatim
-  // Residual: period spend no in-period model row accounts for (pre-upgrade spend,
-  // a spend the model ledger could not attribute), priced at residualRate().
+  // Residual: earlier usage - period spend recorded before model tracking started on
+  // this device (no model was ever known for it), priced at residualRate().
   uint64_t resIn = 0, resOut = 0, resCr = 0, resCw = 0;
   EffRate  resRate;
   uint64_t resCents = 0;
+  // Spend recorded AFTER tracking started that no in-period row accounts for (its
+  // model was lost to a storage failure, gate G1-G3): it may have been any model, so
+  // it is priced at otherRate(), the provider's highest known price, like ~other.
+  uint64_t othIn = 0, othOut = 0, othCr = 0, othCw = 0;
+  EffRate  othRate;
+  uint64_t othCents = 0;
   // Calls (search providers), priced at callRate().
   uint64_t calls = 0, callRate = 0;   // callRate: micro-USD per 1000 calls
   RateSrc  callSrc = RateSrc::None;
@@ -177,10 +184,13 @@ class UsageLedger {
                     uint64_t cacheRead, uint64_t cacheWrite,
                     uint32_t periodKey, const std::string& tag);
   // + the model (2026-10): runs the path above unchanged, rolls every model row to
-  // its own provider's period, then files the same spend under (name, model) in the
-  // model ledger when `model` is a non-empty key (from usageModelKey; "" = provider
-  // level only). `dayKey` (UTC days, 0 = unknown) stamps the model row's lastDay.
-  // Allocation-free once the ledger is loaded.
+  // its own provider's period, then files the same spend under (name, key) in the
+  // model ledger, key = models().spendKey(model): the model (from usageModelKey), or
+  // ~other for spend with no model once tracking has started, or nothing before it
+  // (provider level only). The first record with a model starts tracking and first
+  // keeps every provider's counters as its earlier usage (ProvTrack.pre). `dayKey`
+  // (UTC days, 0 = unknown) stamps the model row's lastDay. Allocation-free once the
+  // ledger is loaded.
   void recordTokens(const std::string& name, const TokenDelta& d, uint32_t periodKey,
                     const std::string& tag, const char* model, uint32_t dayKey);
   const std::vector<TagUsage>& tagEntries() const { return tags_; }
@@ -191,35 +201,54 @@ class UsageLedger {
   ModelLedger&       models() { return models_; }
   const ModelLedger& models() const { return models_; }
   // Once, after the model rows are loaded beside a provider ledger stored apart from
-  // them (a settings-only reset or a failed NVS write can leave rows the provider
-  // counters no longer cover): a row of another period, or of a provider with no
-  // entry, loses its period counters, and so does every row of a provider whose
-  // in-period rows add up to more than its counters in any field. That spend then
-  // reads as the provider's residual; all-time totals are kept.
-  void rebaseModelRows();
+  // them: a row of another period, or of a provider with no entry, loses its period
+  // counters (they are not counted); a track of a provider with no entry is dropped.
+  // Then, for each provider, its in-period rows must add up exactly to its counters
+  // minus its earlier usage and its already-lost spend (every record files under a
+  // row once tracking has started). When they are only BEHIND (a spend-file write
+  // that did not land, spend an earlier release recorded after a downgrade) and the
+  // counters' latest store landed (models().countersBehind() is false), every row is
+  // still true: the rows stay and what they miss becomes lost spend. Otherwise (a
+  // row above the counters, or a usgLedger write that did not land, possibly mixed
+  // with a stale spend file) no row's attribution can be trusted: every in-period
+  // row of that provider drops its period spend (dropAttribution) and the provider's
+  // spend since tracking began is lost spend. Lost spend is priced at otherRate
+  // (gate G1, G3: never at a cheaper price than any model it may have been). Earlier
+  // usage a track keeps above the stored counters is dropped (it cannot be trusted).
+  // Returns true when a track of a provider with no entry was dropped (what a
+  // settings-only reset looks like): the caller must store the result now, or remove
+  // the spend file, so the stale track can never come back for a re-created provider.
+  bool rebaseModelRows();
 
   // ---- per-model pricing (2026-10) ----
   // The price of (prov, model key), PER FIELD, strongest tier first: the owner's
   // model price, the Cumulo router's price (cumulo only), the owner's provider
   // fallback, the built-in model estimate, the built-in provider default, none.
   EffRate effectiveRate(const std::string& prov, const char* model) const;
-  // The price of spend no model row covers (the residual), per field: the owner's
-  // provider fallback, else the HIGHEST owner or router model price of that provider
-  // (fail-closed), else the built-in provider default. Never $0 while any price exists.
+  // The price of earlier usage (spend from before model tracking started, the
+  // residual), per field: the owner's provider fallback, else the HIGHEST owner or
+  // router model price of that provider (fail-closed), else the built-in provider
+  // default. Never $0 while any price exists.
   EffRate residualRate(const std::string& prov) const;
-  // The price of the "~other" fold row (live spend of models the ledger could not
-  // name, which may be the provider's dearest): per field the HIGHEST price known
-  // for the provider - its fallback, any owner or router model price, any built-in
-  // model estimate, its built-in default (fail-closed).
+  // The price of the "~other" fold row and of any spend recorded after tracking
+  // started that lost its model (live spend of models the ledger cannot name, which
+  // may be the provider's dearest): per field the HIGHEST price known for the
+  // provider - its fallback, any owner or router model price, any built-in model
+  // estimate, its built-in default (fail-closed).
   EffRate otherRate(const std::string& prov) const;
+  // The part of the provider's period counters that is earlier usage: all of it
+  // before tracking started, else its track's `pre` when that track is of the
+  // provider's period (clamped to the counters), else nothing.
+  TokenDelta earlierUsage(const ProviderBudget& e) const;
   // The price a model ROW is charged at: its effectiveRate, or otherRate for ~other.
   EffRate rowRate(const std::string& prov, const char* model) const;
   // micro-USD per 1000 calls: the owner's provider rate, else the built-in default.
   uint64_t callRate(const std::string& prov, RateSrc* src = nullptr) const;
   // THE one formula (UI, device.status, the $ gate): the provider's period estimate in
-  // cents = each in-period model row at its own effectiveRate + the residual at
-  // residualRate + calls at callRate; cache reads at 0.1x and writes at 1.25x of the
-  // input rate; one floor to cents; saturating (a saturated total reads UINT64_MAX).
+  // cents = each in-period model row at its own rowRate + spend since tracking began
+  // that no row accounts for at otherRate + earlier usage at residualRate + calls at
+  // callRate; cache reads at 0.1x and writes at 1.25x of the input rate; one floor to
+  // cents; saturating (a saturated total reads UINT64_MAX).
   // `sum` (optional) receives the breakdown; `rows` (optional, ModelLedger::kMaxRows
   // entries, indexed like models().rows()) receives each row's part.
   uint64_t priceProvider(const std::string& name, PriceSummary* sum = nullptr,
@@ -295,11 +324,16 @@ class UsageLedger {
  private:
   ProviderBudget* findMut(const std::string& name);
   ProviderBudget* ensure(const std::string& name);
+  void            startTracking();
+  void            loseAttribution(const ProviderBudget& e);
+  void            addLost(const ProviderBudget& e, const TokenDelta& gap);
   static uint32_t periodOf(const void* self, const char* prov);   // ModelLedger::PeriodOf
   std::vector<ProviderBudget> entries_;
   std::vector<TagUsage>       tags_;
   ModelLedger                 models_;
 };
+static_assert(ModelLedger::kMaxTracks >= UsageLedger::kMaxProviders,
+              "every provider entry needs room for its model-tracking record");
 
 // ---- daily usage history (the graphs' time series) ----------------------------
 // One bucket per (UTC day, provider, model): prompt/completion tokens, calls and

@@ -74,5 +74,14 @@ void queueWorkspaceProbeIfStale(uint32_t delayMs);
 // card says "checking your Mistral workspace" and the head's catalog says so too.
 bool workspaceProbePending();
 
+// Per-model prices (2026-10 bench): when a Cumulo key is set, arm ONE Cumulo verify
+// for no sooner than `delayMs` from now. pumpRetry() starts it through the same
+// self-deleting, TLS-arbited verify task (no new task, never on the turn path) once
+// the device is online and no turn runs - and only if the key is verified and no
+// router price is stored yet, so an upgraded device gets the router's per-model
+// prices without a manual Verify. Called once at boot (orchestrator::begin), on the
+// main task the pump also runs on.
+void queueRouterPriceRefill(uint32_t delayMs);
+
 }  // namespace provider_verify
 }  // namespace agent

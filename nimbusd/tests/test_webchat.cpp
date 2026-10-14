@@ -2,8 +2,10 @@
 // reply ring buffer (bounds, sequence numbers, JSON escaping) and the assembled
 // web app nimbusd serves (the device's real page, byte-parity with the blessed
 // fragments, plus the tunnel token seed). No sockets, no engine, no keys.
+#include <algorithm>
 #include <string>
 
+#include "nimbus/cloud/loopback_target.h"   // kRelayResFrameMax - the relay's frame max
 #include "reply_buffer.h"
 #include "test_util.h"
 #include "web_ui.h"
@@ -93,11 +95,43 @@ static void checkPage(ndtest::Ctx& c) {
   c.ok(!emdash, "the served page contains no em dash");
 }
 
+// The hosted GET / body crosses the relay tunnel as ONE res-frame: the sidecar
+// base64-encodes it into a frame of at most MAX_FRAME_BYTES (the relay's 512 KiB
+// protocol max) with 2 KiB kept for the envelope, and refuses a raw body over its
+// 480 KiB cap (Cumulo PR #6, forward.ts). A body past either bound is a 502 and the
+// hosted web app never loads, while every API call still works. This mirrors that
+// check over the whole served page (snapshot + bootstrap script + refusal shim) with
+// room for a long web token, so page growth fails here first, never in the field.
+// nimbusd does not bound NIMBUSD_WEB_TOKEN (the sidecar injects it; real tokens are
+// short alphanumerics): the page must keep room for a token of kTokenRoom characters
+// that each escape to 4 bytes (4 KiB in the page), and the test prints how long a
+// token the page could carry today.
+static void checkPageFitsTheRelayFrame(ndtest::Ctx& c) {
+  constexpr size_t kMaxFrameBytes = nimbus::cloud::kRelayResFrameMax;   // 512 KiB
+  constexpr size_t kEnvelopeHeadroom = 2048;
+  constexpr size_t kRawCap = 480 * 1024;
+  constexpr size_t kTokenRoom = 1024;
+  const std::string page = buildWebUiPage(std::string(kTokenRoom, '<'));
+  const size_t raw = page.size();
+  const size_t b64 = 4 * ((raw + 2) / 3);
+  const size_t rawRoom = std::min(kRawCap, (kMaxFrameBytes - kEnvelopeHeadroom) / 4 * 3);
+  std::printf("  hosted page with a %zu-char escaping token: %zu B raw, %zu B base64 "
+              "(+%zu envelope) of %zu; room left for about %zu more token characters\n",
+              kTokenRoom, raw, b64, kEnvelopeHeadroom, kMaxFrameBytes,
+              raw < rawRoom ? (rawRoom - raw) / 4 : 0);
+  c.ok(raw > buildWebUiPage("tok-abc-123").size() + 3 * kTokenRoom,
+       "every token character escapes to 4 bytes in the page");
+  c.ok(raw <= kRawCap, "the hosted page fits the sidecar's raw body cap (480 KiB)");
+  c.ok(b64 + kEnvelopeHeadroom <= kMaxFrameBytes,
+       "the hosted page, base64-encoded, fits one relay frame with its 2 KiB envelope");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== web surface (T1, offline) ===\n");
   checkBuffer(c);
   checkPage(c);
+  checkPageFitsTheRelayFrame(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

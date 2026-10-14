@@ -11,14 +11,19 @@
 //
 // {"asOf":"2026-10",
 //  "models":[{prov,m,pIn,pOut,pCr,pCw,tIn,tOut,rIn,rOut,src,est}],   per model row
-//  "residual":[{prov,pIn,pOut,pCr,pCw,rIn,rOut,src,est}],            unattributed spend
+//  "residual":[{prov,pIn,pOut,pCr,pCw,rIn,rOut,src,est}],            earlier usage
 //  "editable":{"<prov>":[{m,rIn,rOut,src,oIn,oOut}]},                the Prices table rows
-//  "provRate":{"<prov>":{rIn,rOut,rCall,src,srcCall,fIn,fOut,fSrc,est,callEst,approx,
-//                        allEst,allApprox}}}
-// provRate r* is the residual's price (unattributed spend; the "~other" row carries
-// its own rIn/rOut in models[]), f* the provider default (the owner's, else the
-// built-in one: the Prices table's "Default for" row), allEst
-// the all-time estimate (all-time tokens at today's prices, the All time tile).
+//  "provRate":{"<prov>":{rIn,rOut,rCall,src,srcCall,fIn,fOut,fSrc,oIn,oOut,oSrc,est,
+//                        callEst,approx,allEst,allApprox}}}
+// provRate r* is the residual's price (earlier usage: spend from before model tracking
+// started), f* the provider default (the owner's, else the built-in one: the Prices
+// table's "Default for" row), o* the fold price (otherRate: the "~other" row's price,
+// and the price of any model with no row of its own, gate G4), allEst the all-time
+// estimate (all-time tokens at today's prices, the All time tile). In editable[],
+// oIn/oOut is the owner's own price for the model (0 = none) - not the fold price.
+// Spend recorded
+// after tracking started whose model was lost to a storage failure is part of the
+// provider's "~other" entry in models[] (one is made when the ledger has none).
 // Rates are micro-USD per 1M tokens (rCall: per 1000 calls); est is cents, src one of
 // "owner" | "router" | "provider" | "est" | "none". p* are this period's tokens (as
 // priced: clamped to the provider counters), t* all-time. For every provider, the

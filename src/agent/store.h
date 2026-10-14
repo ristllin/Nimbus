@@ -405,6 +405,10 @@ nimbus::orch::RateEdit setModelRate(const String& provider, const char* model,
 // The Cumulo router's prices from the verify harvest (verify task only, never the
 // turn path), stored in /data/usage_rprices.txt. False when the file did not store.
 bool   replaceRouterPrices(const std::vector<nimbus::orch::ModelRate>& rows);
+// Whether a Cumulo router price is stored (/data/usage_rprices.txt): 1 = none (the
+// file missing or empty), 0 = stored, -1 = flash storage not loaded yet (cannot tell).
+// Boot asks for one Cumulo verify while it reads 1.
+int8_t routerPriceState();
 // The models an owner may price for `provider`: comma-separated keys (the mrate
 // allowlist, nimbus::orch::editableHas).
 std::string editableModels(const String& provider);

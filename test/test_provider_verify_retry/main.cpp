@@ -127,6 +127,45 @@ static void test_stuck_window_tracks_the_first_defer_not_the_last() {
   TEST_ASSERT_FALSE(r.stuckFor(t0 + win + 1000000, win));
 }
 
+// ---- router prices after an upgrade (per-model prices, 2026-10 bench) -------------
+// Boot arms ONE Cumulo verify: it starts only with a verified Cumulo key and no router
+// price stored, waits when storage cannot tell yet, and is done otherwise (every
+// combination below); it fires no sooner than its delay and never during a turn or
+// offline (the pump skips it while a verify holds the slot), is done once started or
+// no longer wanted, and a start that failed (or could not tell) is retried on a slow
+// clock a few times.
+static void test_router_price_refill_once_after_boot() {
+  using agent::provider_verify::RouterPriceRefill;
+  using Next = RouterPriceRefill::Next;
+  // price state: -1 cannot tell yet, 0 stored, 1 none stored
+  TEST_ASSERT_EQUAL((int)Next::Start, (int)RouterPriceRefill::decide(true, true, 1));
+  TEST_ASSERT_EQUAL((int)Next::Later, (int)RouterPriceRefill::decide(true, true, -1));
+  TEST_ASSERT_EQUAL((int)Next::Done, (int)RouterPriceRefill::decide(true, true, 0));
+  for (int8_t state = -1; state <= 1; ++state) {   // no key, or not verified: never
+    TEST_ASSERT_EQUAL((int)Next::Done, (int)RouterPriceRefill::decide(false, true, state));
+    TEST_ASSERT_EQUAL((int)Next::Done, (int)RouterPriceRefill::decide(true, false, state));
+    TEST_ASSERT_EQUAL((int)Next::Done, (int)RouterPriceRefill::decide(false, false, state));
+  }
+  RouterPriceRefill r;
+  TEST_ASSERT_FALSE(r.due(1000000, false, true));   // never armed: never due
+  const uint32_t boot = 0xFFFF0000u;   // across the millis() wrap
+  r.arm(boot, 150000);
+  TEST_ASSERT_FALSE(r.due(boot + 149999, false, true));
+  TEST_ASSERT_TRUE(r.due(boot + 150000, false, true));
+  TEST_ASSERT_FALSE(r.due(boot + 150000, true, true));    // a turn runs
+  TEST_ASSERT_FALSE(r.due(boot + 150000, false, false));  // offline
+  r.startFailed(boot + 150000);
+  TEST_ASSERT_FALSE(r.due(boot + 150001, false, true));
+  TEST_ASSERT_TRUE(r.due(boot + 150000 + RouterPriceRefill::kRetryMs, false, true));
+  r.startFailed(boot + 400000);
+  r.startFailed(boot + 600000);   // the third failed start: given up for this boot
+  TEST_ASSERT_FALSE(r.armed);
+  r.arm(boot, 0);
+  TEST_ASSERT_TRUE(r.due(boot, false, true));
+  r.done();   // started (or no longer wanted): once per boot
+  TEST_ASSERT_FALSE(r.due(boot + 10000000, false, true));
+}
+
 // ---- CUM-537 gate: the probe queue never loses a request ---------------------------
 // (a) The pump used to clear the queued flag AFTER creating the worker; a worker that
 // failed fast (low memory) and re-armed in between had its retry wiped. With the
@@ -344,6 +383,7 @@ int main() {
   RUN_TEST(test_due_respects_backoff_and_gates);
   RUN_TEST(test_due_is_skipped_during_a_turn_offline_or_busy);
   RUN_TEST(test_stuck_window_tracks_the_first_defer_not_the_last);
+  RUN_TEST(test_router_price_refill_once_after_boot);
   RUN_TEST(test_probe_rearm_before_the_starter_returns_is_kept);
   RUN_TEST(test_probe_save_during_a_fetch_stays_queued);
   RUN_TEST(test_probe_drop_never_drops_a_newer_save);

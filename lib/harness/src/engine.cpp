@@ -719,6 +719,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // With headToolsPtr set, every host runs the bounded multi-turn tool-use loop
   // instead of the single shot.
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
+    // Only the attempt that serves the turn may name its model (gate G5): an adapter
+    // captures the echo on its HTTP 200, before it knows the turn parsed, so a failed
+    // attempt's echo must not file the next host's spend under that model. Token
+    // counts keep summing across attempts.
+    turnUsage.servedModel.clear();
     return d_.hosts.run(h, cv, instructions, inputs, outJson, err, headToolsPtr, &turnUsage);
   };
   // Keyed AND runnable: the device registered exactly the three orchTurn* hosts,
@@ -864,6 +869,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                   ". Your progress this turn carries over.");
           pendingFallbackNote_ = orch::fallbackNote(from, "", to, "", orch::ErrorClass::None);
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
+          turnUsage.servedModel.clear();   // the echo names the final host's model (G5)
         });
     convId = "";   // stateless loops keep no provider-side conversation
   } else {

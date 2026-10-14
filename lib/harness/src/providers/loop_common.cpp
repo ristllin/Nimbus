@@ -203,6 +203,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       if (!resend[hostIdx].settled) {
         hlog::logf("fabric: %s step failed (%s) - same-host retry",
                    hostList[hostIdx].c_str(), sr.error.c_str());
+        // Gate G5: the failed step may have captured a served-model echo on its HTTP
+        // 200; only the attempt that serves the round may name the model.
+        if (usage) usage->servedModel.clear();
         sr2 = cur(allowTools, prior, budgetMs, capReason);
         if (sr2.ok) return sr2;
       }
@@ -218,6 +221,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                  "%u tool-result bytes carry over)",
                  from.c_str(), to.c_str(), (unsigned)tr.toolBytes());
       if (notify) notify(from, to);
+      if (usage) usage->servedModel.clear();   // G5: the new host names its own model
       cur = next;
       inner[hostIdx - 1] = nullptr;   // the abandoned host's step and its deps copy
       // loop: the SAME round re-runs on the new host. The transcript already

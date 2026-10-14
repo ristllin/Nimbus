@@ -1539,6 +1539,9 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   // Queue the probe once, 90 s out so the first turns after a restart (queued
   // Telegram messages) get the work slot first; the pump runs it when idle.
   provider_verify::queueWorkspaceProbeIfStale(90000);
+  // Per-model prices: an upgraded device with a verified Cumulo key has no router
+  // prices until a Cumulo verify fetches them; ask for one, after the probe above.
+  provider_verify::queueRouterPriceRefill(150000);
   int n = g_journal.count();
   alogf("orchestrator: ready (%d active job%s)", n, n == 1 ? "" : "s");
 }

@@ -10,6 +10,8 @@
 //     answer with REAL engine data in the shapes the app reads;
 //   * the hardware panels answer honestly ("not on a hosted instance") and never
 //     fake a reading or leave a dead control.
+#include <ArduinoJson.h>
+
 #include <chrono>
 #include <string>
 #include <thread>
@@ -93,13 +95,23 @@ static void checkStatus(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const
        "providers are listed with an honest hasKey (keyless here)");
   c.ok(has(o.body, "\"usage\""), "orch carries the real session usage block");
 
-  // Per-model prices (2026-10): no hosted ledger yet, so the truthful empty shape
-  // the page renders its empty states from - never a 404 or a faked row.
+  // Per-model prices (2026-10): no hosted ledger yet, so no spend rows and no
+  // editable models - never a 404 or a faked row - but every provider's prices in
+  // the device's own shape, the fold price (oIn/oOut, gate G4) included.
   Out um = G(cl, port, "/api/usage/models", tok);
   c.ok(um.status == 200, "GET /api/usage/models -> 200");
-  c.ok(has(um.body, "\"models\":[]") && has(um.body, "\"residual\":[]") &&
-           has(um.body, "\"editable\":{}") && has(um.body, "\"provRate\":{}"),
-       "usage/models is the empty shape on a hosted instance");
+  JsonDocument ud;
+  c.ok(deserializeJson(ud, um.body) == DeserializationError::Ok, "usage/models is one JSON document");
+  c.ok(ud["models"].as<JsonArrayConst>().size() == 0 && ud["residual"].as<JsonArrayConst>().size() == 0,
+       "usage/models has no spend rows on a hosted instance");
+  c.ok(ud["editable"]["openai"].is<JsonArrayConst>() && ud["editable"]["openai"].as<JsonArrayConst>().size() == 0,
+       "usage/models offers no model to price on a hosted instance");
+  for (const char* p : {"cumulo", "openai", "anthropic", "mistral", "zai", "custom", "tavily"})
+    c.ok(ud["provRate"][p]["oIn"].is<unsigned long long>() && ud["provRate"][p]["est"] == 0,
+         std::string("usage/models prices ") + p + " with its fold price and no spend");
+  c.ok((ud["provRate"]["openai"]["oIn"] | 0ULL) == 10000000ULL &&
+           (ud["provRate"]["openai"]["rIn"] | 0ULL) == 2500000ULL,
+       "openai's fold price is its highest built-in price, the residual its default");
   c.ok(has(um.body, "\"asOf\":\"2026-10\""), "usage/models names the built-in price date");
 }
 

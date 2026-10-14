@@ -3422,12 +3422,12 @@ try{const g=localStorage.getItem('nimbusUsageGroup');if(g==='model'||g==='prov')
 function _um(){const m=_usageModels;return (m&&Array.isArray(m.models))?m:null;}
 function _aEsc(s){return _sEsc(String(s==null?'':s)).replace(/"/g,'&quot;');}
 function _mLabel(prov,m){const pl=BUDLBL[prov]||prov;return !m?pl+' (before model tracking)':m==='~other'?pl+' other models':m;}
-// Cents at the server's prices (cache 0.1x/1.25x of input): model row, else provider rate.
+// Cents at server prices (cache 0.1x/1.25x in): model row, else fold price, else (no model) residual.
 function _costOf(prov,m,tin,tout,cr,cw,calls){
   const u=_um(); if(!u)return null;
   const p=(u.provRate||{})[prov]||{};
   const x=m?(u.models.find(y=>y.prov===prov&&y.m===m)||((u.editable||{})[prov]||[]).find(y=>y.m===m)):null;
-  const i=(x||p).rIn||0,o=(x||p).rOut||0,src=(x||p).src||'none';
+  const q=x||(m?{rIn:p.oIn,rOut:p.oOut,src:p.oSrc}:p),i=q.rIn||0,o=q.rOut||0,src=q.src||'none';
   tin=tin||0;tout=tout||0;cr=cr||0;cw=cw||0;calls=calls||0;
   return {c:((tin*i+tout*o+cr*i*0.1+cw*i*1.25)/1e6+calls*(p.rCall||0)/1000)/1e4,
           def:((tin||tout||cr||cw)>0&&src==='est')||(calls>0&&p.srcCall==='est')};

@@ -123,14 +123,98 @@ static void test_full_ledger_evicts_oldest_idle_row_into_other() {
 
   // Providers keep their own periods (each has its own reset day): a provider that
   // moved to period 6 never evicts another provider's row that still has spend,
-  // whatever that row's period key says.
+  // whatever that row's period key says. Gate G2: a provider with no row at all
+  // still gets one - another provider's smallest row folds whole (period spend and
+  // totals) into that provider's ~other row (made from its oldest row when it has
+  // none), so the folded spend is priced at that provider's highest price.
   ModelLedger C;
   for (int p = 0; p < 4; ++p)
     for (int i = 0; i < 8; ++i) C.record(provs[p], mname(i).c_str(), td(10), 5, (uint32_t)day++);
   C.record("cumulo", "openai/gpt-5.6", td(7), 6, 300);
-  for (int p = 0; p < 4; ++p)
-    for (int i = 0; i < 8; ++i) TEST_ASSERT_NOT_NULL(C.findRow(provs[p], mname(i).c_str()));
-  TEST_ASSERT_NULL(C.findRow("cumulo", "openai/gpt-5.6"));   // spend stays in the counter
+  TEST_ASSERT_NOT_NULL(C.findRow("cumulo", "openai/gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT64(7, C.findRow("cumulo", "openai/gpt-5.6")->tokIn);
+  TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, C.rows().size());
+  TEST_ASSERT_NULL(C.findRow("openai", mname(0).c_str()));   // became openai's ~other
+  TEST_ASSERT_NULL(C.findRow("openai", mname(1).c_str()));   // folded into it
+  TEST_ASSERT_EQUAL_UINT64(20, C.findRow("openai", kOtherModel)->tokIn);
+  for (int p = 0; p < 4; ++p) {
+    uint64_t period = 0;
+    for (const auto& r : C.rows())
+      if (std::strcmp(r.prov, provs[p]) == 0) period += r.tokIn;
+    TEST_ASSERT_EQUAL_UINT64(80, period);              // no period spend dropped
+    TEST_ASSERT_EQUAL_UINT64(80, sumTotIn(C, provs[p]));
+  }
+  // A second new provider takes the room the same way: the smallest row (cumulo's 7)
+  // becomes cumulo's ~other (no room freed), then the next smallest and oldest
+  // (openai's model-2) folds into openai's ~other row.
+  C.record("custom", "llama3.1:8b", td(3), 6, 301);
+  TEST_ASSERT_NOT_NULL(C.findRow("custom", "llama3.1:8b"));
+  TEST_ASSERT_NULL(C.findRow("cumulo", "openai/gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT64(7, C.findRow("cumulo", kOtherModel)->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(30, C.findRow("openai", kOtherModel)->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(80, sumTotIn(C, "openai"));
+  TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, C.rows().size());
+}
+
+// Tracking (gate G1-G3): a recorded row starts it; spend with no model then files
+// under ~other; the spend file keeps the marker and every provider's track, and a
+// file from before tracks existed (rows, no marker) still reads as tracking.
+static void test_tracking_marker_tracks_and_spend_key_round_trip() {
+  ModelLedger L;
+  TEST_ASSERT_FALSE(L.tracking());
+  TEST_ASSERT_EQUAL_STRING("", L.spendKey(""));
+  TEST_ASSERT_EQUAL_STRING("", L.spendKey(nullptr));
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6", L.spendKey("gpt-5.6"));
+  L.record("openai", "gpt-5.6", td(10), 5, 100);
+  TEST_ASSERT_TRUE(L.tracking());
+  TEST_ASSERT_EQUAL_STRING(kOtherModel, L.spendKey(""));
+  ProvTrack* t = L.trackFor("openai");
+  TEST_ASSERT_NOT_NULL(t);
+  t->periodKey = 5;
+  t->pre = td(1, 2, 3, 4);
+  t->lost = td(5, 6, 7, 8);
+  t->preTotIn = 9;
+  t->preTotOut = 10;
+  TEST_ASSERT_EQUAL_PTR(t, L.trackFor("openai"));    // found, not made twice
+  TEST_ASSERT_NULL(L.trackFor("Bad Prov"));
+  const std::string blob = L.serializeSpend();
+  TEST_ASSERT_TRUE(blob.find(";!t;!p|openai|5|1|2|3|4|5|6|7|8|9|10;openai|gpt-5.6|") != std::string::npos);
+  ModelLedger R;
+  R.deserializeSpend(blob);
+  TEST_ASSERT_TRUE(R.tracking());
+  TEST_ASSERT_EQUAL_STRING(blob.c_str(), R.serializeSpend().c_str());
+  TEST_ASSERT_EQUAL_UINT64(8, R.track("openai")->lost.cacheW);
+  // A file with rows and no marker (written before tracks existed) is tracking; an
+  // empty file is not; garbage and a duplicate track are skipped.
+  R.deserializeSpend("!v|1;openai|gpt-5.6|5|10|0|0|0|10|0|100");
+  TEST_ASSERT_TRUE(R.tracking());
+  TEST_ASSERT_EQUAL(0, (int)R.tracks().size());
+  R.deserializeSpend("");
+  TEST_ASSERT_FALSE(R.tracking());
+  R.deserializeSpend("!v|1;!p|bad prov|1;!p|zai|3|7;!p|zai|4|8;!q|x");
+  TEST_ASSERT_TRUE(R.tracking());
+  TEST_ASSERT_EQUAL(1, (int)R.tracks().size());
+  TEST_ASSERT_EQUAL_UINT32(3, R.track("zai")->periodKey);
+  TEST_ASSERT_EQUAL_UINT64(7, R.track("zai")->pre.in);
+  // Tracks roll with their provider like rows: a new period zeroes the period parts
+  // (the all-time part stays), a stored 0 carries into the first real period.
+  L.syncPeriods([](const void*, const char*) -> uint32_t { return 6; }, nullptr);
+  TEST_ASSERT_EQUAL_UINT32(6, L.track("openai")->periodKey);
+  TEST_ASSERT_EQUAL_UINT64(0, L.track("openai")->pre.in);
+  TEST_ASSERT_EQUAL_UINT64(0, L.track("openai")->lost.in);
+  TEST_ASSERT_EQUAL_UINT64(9, L.track("openai")->preTotIn);
+  ProvTrack* z = L.trackFor("zai");
+  z->pre = td(4);
+  L.syncPeriods([](const void*, const char*) -> uint32_t { return 7; }, nullptr);
+  TEST_ASSERT_EQUAL_UINT64(4, L.track("zai")->pre.in);
+  L.dropTrack("zai");
+  TEST_ASSERT_NULL(L.track("zai"));
+  // dropAttribution: the period spend leaves the row, totals included.
+  L.record("openai", "gpt-5.6", td(25), 7, 101);
+  const size_t i = (size_t)(L.findRow("openai", "gpt-5.6") - L.rows().data());
+  L.dropAttribution(i);
+  TEST_ASSERT_EQUAL_UINT64(0, L.rows()[i].tokIn);
+  TEST_ASSERT_EQUAL_UINT64(10, L.rows()[i].totIn);
 }
 
 // A provider at its 8-named cap: a new model takes over the provider's oldest named
@@ -332,6 +416,7 @@ int main(int, char**) {
   RUN_TEST(test_bad_keys_and_empty_spend_are_ignored);
   RUN_TEST(test_named_cap_per_provider_folds_to_other);
   RUN_TEST(test_full_ledger_evicts_oldest_idle_row_into_other);
+  RUN_TEST(test_tracking_marker_tracks_and_spend_key_round_trip);
   RUN_TEST(test_named_cap_recycles_a_stale_row);
   RUN_TEST(test_spend_round_trip_and_garbage);
   RUN_TEST(test_owner_rates_set_clear_cap_and_round_trip);

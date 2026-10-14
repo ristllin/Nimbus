@@ -624,6 +624,37 @@ static void test_price_harvest_shared_key_keeps_the_higher_price() {
   TEST_ASSERT_NULL(priceOf(out, "openai/gpt-5.6-terra"));   // never reached: bounded
 }
 
+// CUM-564: the verify reads only the first 64 KB of the ~95 KB router list. A kept
+// model listed later, or whose row the window cuts short, gets no router price (the
+// next tier prices it), never a wrong one, and is named so the verify can log it.
+static void test_price_harvest_names_models_past_the_read_window() {
+  const std::string body = routerBody();
+  const std::vector<std::string> keep = rc::priceKeepIds(
+      NIMBUS_CUMULO_MODEL_CHOICES, "anthropic/claude-opus-5", "zai/glm-5.3");
+  std::vector<nimbus::orch::ModelRate> whole, out;
+  std::vector<std::string> missing = {"stale"};
+  TEST_ASSERT_EQUAL(5, (int)rc::harvestPrices(body.c_str(), keep, whole, &missing));
+  TEST_ASSERT_EQUAL(0, (int)missing.size());   // the whole list: every kept id found
+  const std::string cut = body.substr(0, 65535);
+  rc::harvestPrices(cut.c_str(), keep, out, &missing);
+  TEST_ASSERT_TRUE(std::find(missing.begin(), missing.end(), "openai/gpt-5.6-luna") != missing.end());
+  for (const std::string& m : missing) TEST_ASSERT_NULL(priceOf(out, m.c_str()));
+  TEST_ASSERT_EQUAL((int)keep.size(), (int)(out.size() + missing.size()));
+  for (const auto& r : out) {   // what the window holds is priced exactly as in the whole list
+    const auto* w = priceOf(whole, r.model);
+    TEST_ASSERT_NOT_NULL(w);
+    TEST_ASSERT_EQUAL_UINT32(w->microIn, r.microIn);
+    TEST_ASSERT_EQUAL_UINT32(w->microOut, r.microOut);
+  }
+  // A row the window cuts mid-object: its id is in the window, its price is not.
+  const size_t at = body.find("\"id\":\"anthropic/claude-haiku-4-5\"");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string mid = body.substr(0, at + 60);
+  TEST_ASSERT_EQUAL(0, (int)rc::harvestPrices(mid.c_str(), {"anthropic/claude-haiku-4-5"}, out, &missing));
+  TEST_ASSERT_EQUAL(1, (int)missing.size());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-haiku-4-5", missing[0].c_str());
+}
+
 static void test_price_keep_ids_are_choices_plus_selectors() {
   const std::vector<std::string> k = rc::priceKeepIds("a,b,,c", "anthropic/claude-opus-5", "");
   TEST_ASSERT_EQUAL(4, (int)k.size());
@@ -659,6 +690,7 @@ int main(int, char**) {
   RUN_TEST(test_price_harvest_is_bounded_and_saturating);
   RUN_TEST(test_price_harvest_shared_key_keeps_the_higher_price);
   RUN_TEST(test_price_keep_ids_are_choices_plus_selectors);
+  RUN_TEST(test_price_harvest_names_models_past_the_read_window);
   UNITY_END();
   return 0;
 }

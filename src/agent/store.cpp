@@ -929,6 +929,8 @@ constexpr const char* kUsageMratesPath  = "/data/usage_mrates.txt";
 constexpr const char* kUsageRpricesPath = "/data/usage_rprices.txt";
 bool g_modelsLoaded = false;
 
+nimbus::orch::UsageHistory& histLocked();   // the daily history (below), same mutex
+
 std::string readFileQuiet(const char* path) {
   if (!LittleFS.exists(path)) return std::string();   // absent = empty, no open() error line
   File f = LittleFS.open(path, "r");
@@ -938,16 +940,44 @@ std::string readFileQuiet(const char* path) {
   return std::string(s.c_str(), s.length());
 }
 
+// No spend file says tracking started, but the daily history shows it did: a bucket
+// names a model (the file was lost or never written, gate G3), or the history is gone
+// while the counters hold token spend (/data erased with NVS kept, e.g. Erase Storage
+// on a device with no SD card; a device updating from an earlier release has the
+// history that release wrote). Then none of this period's spend is taken for earlier
+// usage (fail-closed). Caller holds g_ledgerMx.
+bool historyShowsTracking() {
+  const auto& days = histLocked().entries();
+  for (const auto& b : days)
+    if (b.model[0]) return true;
+  if (!days.empty()) return false;
+  for (const auto& e : g_ledger.entries())
+    if (e.tokensIn || e.tokensOut || e.cacheRead || e.cacheWrite) return true;
+  return false;
+}
+
 void loadModelsLocked() {  // caller holds g_ledgerMx
   if (g_modelsLoaded || LittleFS.totalBytes() == 0) return;   // 0 = not mounted yet
   auto& M = g_ledger.models();
   M.deserializeSpend(readFileQuiet(kUsageModelsPath));
   M.deserializeOwnerRates(readFileQuiet(kUsageMratesPath));
   M.deserializeRouterRates(readFileQuiet(kUsageRpricesPath));
-  // The rows and the NVS provider counters are stored apart: rows the counters no
-  // longer cover (a settings-only reset erases NVS, not /data) lose their period
-  // spend here, so a stale row can never claim new spend at its own price.
-  g_ledger.rebaseModelRows();
+  const bool inferred = !M.tracking() && historyShowsTracking();
+  if (inferred) M.markTracking();
+  // The rows and the NVS provider counters are stored apart: when they disagree (a
+  // failed NVS or file write, a settings-only reset that erases NVS, not /data) the
+  // provider's spend since tracking began loses its model attribution here and is
+  // priced at its highest known price, never a cheaper one (gate G1, G3).
+  const bool orphaned = g_ledger.rebaseModelRows();
+  // Stored now, so it outlives what made it true (a later boot may see different
+  // history, e.g. after a trip to an earlier release): tracking inferred from the
+  // history, and a track dropped for a provider NVS no longer holds, which must not
+  // come back when that provider is created again. When that write fails the file is
+  // removed (removing needs no free space; the history then still shows tracking).
+  if ((inferred || orphaned) &&
+      !agent::writeFileAtomic(kUsageModelsPath, M.serializeSpend(), "usage_models", false) &&
+      orphaned)
+    LittleFS.remove(kUsageModelsPath);
   g_modelsLoaded = true;
 }
 
@@ -974,7 +1004,11 @@ nimbus::orch::UsageLedger& ledgerLocked() {  // caller holds g_ledgerMx
 
 bool persistLedgerLocked() {  // caller holds g_ledgerMx
   std::string s = g_ledger.serialize();
-  return putOrClear(AKEY_USAGE_LEDGER, String(s.c_str()));
+  const bool ok = putOrClear(AKEY_USAGE_LEDGER, String(s.c_str()));
+  // Rides the next spend-file write: a load can then tell a spend file that is only
+  // behind the stored counters (rows kept) from one that may be ahead (gate G1, G3).
+  g_ledger.models().setCountersBehind(!ok);
+  return ok;
 }
 
 // An OWNER edit of budgets/rates (CUM-479): if it cannot be stored, put the RAM ledger
@@ -1075,16 +1109,19 @@ void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta
   uint8_t rd = e ? e->resetDay : 1;
   const uint32_t day = currentDayKey();
   // 1. The provider ledger -> NVS, unchanged (the budget's source of truth).
-  // 2. The model row -> /data/usage_models.txt (only once that file was read).
-  L.recordTokens(prov, d, currentPeriodKey(rd), std::string(tag ? tag : ""),
-                 g_modelsLoaded ? model : "", day);
+  // 2. The model row -> /data/usage_models.txt (only once that file was read). Once
+  //    tracking has started, spend with no model files under ~other (spendKey), so
+  //    the rows always add up to the counters and a mismatch at load means a store
+  //    failed (gate G1-G3).
+  const char* key = g_modelsLoaded ? L.models().spendKey(model) : "";
+  L.recordTokens(prov, d, currentPeriodKey(rd), std::string(tag ? tag : ""), key, day);
   persistLedgerLocked();
-  if (*model) persistModelsLocked();
+  if (*key) persistModelsLocked();
   // 3. Daily (day, provider, model) bucket for the graphs (skipped pre-SNTP: dayKey 0
   //    is refused by the core).
   if (day) {
     auto& H = histLocked();
-    H.record(prov, model, day, d, 0);
+    H.record(prov, key, day, d, 0);
     H.prune(day, 60);
     persistHistLocked();
   }
@@ -1143,6 +1180,13 @@ bool replaceRouterPrices(const std::vector<nimbus::orch::ModelRate>& rows) {
   L.models().replaceRouterRates(rows);
   return agent::writeFileAtomic(kUsageRpricesPath, L.models().serializeRouterRates(),
                                 "usage_rprices");
+}
+
+int8_t routerPriceState() {
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  if (!g_modelsLoaded) return -1;
+  return L.models().routerRates().empty() ? 1 : 0;
 }
 
 std::string editableModels(const String& provider) {

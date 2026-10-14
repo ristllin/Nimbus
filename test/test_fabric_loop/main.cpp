@@ -169,6 +169,46 @@ static void test_all_hosts_down_fails_soft_with_error() {
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
 }
 
+// Gate G5 inside the fabric: a step that captured a served-model echo on its HTTP 200
+// and then failed (empty content) never names the model of the attempt that serves
+// the round - not on the same-host retry, not after a switch to another host.
+static std::string antEchoEmptyBody() {
+  return "{\"model\":\"claude-haiku-4-5\",\"content\":[],\"stop_reason\":\"max_tokens\","
+         "\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}";
+}
+
+static void test_failed_step_echo_never_names_the_serving_model() {
+  {   // same-host retry serves the round, with no echo
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antEchoEmptyBody()});
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string out, err;
+    orch::TokenUsage u;
+    TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err,
+                                              rig.ht, &u, nullptr));
+    TEST_ASSERT_EQUAL_STRING("", u.servedModel.c_str());
+    TEST_ASSERT_EQUAL(17, (int)u.promptTokens);   // the failed step's tokens still count
+  }
+  {   // both anthropic attempts echo and fail; openai serves the round, with no echo
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antEchoEmptyBody()});
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antEchoEmptyBody()});
+    d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string out, err;
+    orch::TokenUsage u;
+    TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err,
+                                              rig.ht, &u, nullptr));
+    TEST_ASSERT_EQUAL_STRING("", u.servedModel.c_str());
+    TEST_ASSERT_EQUAL(7 + 7 + 60, (int)u.promptTokens);
+  }
+}
+
 static void test_single_host_list_never_switches() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 0, ""});
@@ -342,6 +382,7 @@ int main(int, char**) {
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_single_host_list_never_switches);
+  RUN_TEST(test_failed_step_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);
   RUN_TEST(test_cum477_fabric_low_memory_does_not_switch);
   RUN_TEST(test_cum477_fabric_never_sends_an_unsent_request_three_times);

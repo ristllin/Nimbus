@@ -24,7 +24,8 @@
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/directive.h"
-#include "nimbus/orch/model_price_defaults.h"   // kBuiltinPricesAsOf (usage models stub)
+#include "nimbus/orch/provider_slots.h"        // kProviderSlots (usage models body)
+#include "nimbus/orch/usage_models_json.h"     // writeUsageModelsJson (usage models body)
 #include "nimbus/qr.h"
 #include "nimbus/status_style.h"
 #include "nimbus/theme.h"
@@ -1634,16 +1635,18 @@ class WebApi {
   }
 
   // Per-model spend and prices (device GET /api/usage/models): a hosted instance
-  // keeps no usage ledger yet, so the truthful body is the empty shape - the page
-  // renders its empty states, and the Prices editor is hidden on hosted.
+  // keeps no usage ledger yet (CUM-562), so there are no spend rows and no editable
+  // models (the Prices editor is hidden on hosted). The body comes from the same
+  // portable writer as the device's, over an empty ledger, so every provider's prices
+  // ride the device's shape - the fold price (provRate oIn/oOut) a page uses for a
+  // model with no row of its own included (gate G4) - and the two cannot drift.
   ApiResp usageModels() {
-    JsonDocument d;
-    d["asOf"] = nimbus::orch::kBuiltinPricesAsOf;
-    d["models"].to<JsonArray>();
-    d["residual"].to<JsonArray>();
-    d["editable"].to<JsonObject>();
-    d["provRate"].to<JsonObject>();
-    std::string out; serializeJson(d, out);
+    const nimbus::orch::UsageLedger empty;
+    std::vector<nimbus::orch::EditableModels> provs;
+    for (const auto& slot : nimbus::orch::kProviderSlots) provs.push_back({slot.slug, ""});
+    provs.push_back({"custom", ""});
+    std::string out(nimbus::orch::usageModelsJsonCap(empty, provs), '\0');
+    out.resize(nimbus::orch::writeUsageModelsJson(empty, provs, &out[0], out.size()));
     return okJson(out);
   }
 

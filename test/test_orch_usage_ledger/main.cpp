@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -659,8 +660,10 @@ static void test_other_row_priced_at_highest_known_price() {
 }
 
 // Model rows and the provider counters are stored apart on the device: at load, rows
-// the counters no longer cover lose their period spend (all-time totals kept), so a
-// stale row can never claim new spend at its own price.
+// of another period or of a provider with no entry lose their period spend (all-time
+// totals kept: never counted), and when a provider's rows do not add up to its
+// counters a store failed, so its rows lose their attribution and that spend is
+// priced at the provider's highest known price (gate G1), never a cheaper one.
 static void test_rebase_drops_rows_the_counters_do_not_cover() {
   UsageLedger L;
   L.recordTokens("openai", 1000000, 0, 24300);                       // NVS counters
@@ -670,20 +673,537 @@ static void test_rebase_drops_rows_the_counters_do_not_cover() {
   L.recordTokens("anthropic", 10, 0, 24301);
   L.models().record("anthropic", "claude-opus-5", td(10), 24300, 9);  // another period
   L.rebaseModelRows();
-  for (const auto& r : L.models().rows()) {
-    TEST_ASSERT_EQUAL_UINT64(0, r.tokIn);
-    TEST_ASSERT_TRUE(r.totIn > 0);
-  }
+  for (const auto& r : L.models().rows()) TEST_ASSERT_EQUAL_UINT64(0, r.tokIn);
+  TEST_ASSERT_EQUAL_UINT64(7, L.models().findRow("zai", "glm-5.3")->totIn);
+  TEST_ASSERT_EQUAL_UINT64(10, L.models().findRow("anthropic", "claude-opus-5")->totIn);
+  // openai's rows left with their period spend (totals too): its model is unknown.
+  TEST_ASSERT_EQUAL_UINT64(0, L.models().findRow("openai", "gpt-5.6-luna")->totIn);
   PriceSummary s;
-  // The whole 1M is the residual now, at openai's '*' $2.50/M.
-  TEST_ASSERT_EQUAL_UINT64(250, L.priceProvider("openai", &s));
-  TEST_ASSERT_EQUAL_UINT64(1000000, s.resIn);
+  // The whole 1M is lost spend now, at openai's highest price (gpt-6-astra's ~$10/M),
+  // never the cheaper '*' $2.50/M (250c) round 1 charged.
+  TEST_ASSERT_EQUAL_UINT64(1000, L.priceProvider("openai", &s));
+  TEST_ASSERT_EQUAL_UINT64(1000000, s.othIn);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(1000000, L.models().track("openai")->lost.in);
   // Rows the counters do cover are untouched.
   UsageLedger K;
   turn(K, "openai", "gpt-6-astra", 1000000, 0);
   K.rebaseModelRows();
   TEST_ASSERT_EQUAL_UINT64(1000000, K.models().findRow("openai", "gpt-6-astra")->tokIn);
   TEST_ASSERT_EQUAL_UINT64(1000, K.estCents("openai"));
+}
+
+// The pieces of one restart: the usgLedger blob, the spend file and the price files
+// as they last landed, loaded and rebased the way the device does it.
+static UsageLedger restart(const std::string& nvs, const std::string& spend,
+                           const std::string& owner, const std::string& router = "",
+                           bool* orphaned = nullptr) {
+  UsageLedger R;
+  R.deserialize(nvs);
+  R.models().deserializeSpend(spend);
+  R.models().deserializeOwnerRates(owner);
+  R.models().deserializeRouterRates(router);
+  const bool o = R.rebaseModelRows();
+  if (orphaned) *orphaned = o;
+  return R;
+}
+
+// Gate G1: a failed usgLedger write leaves the spend file AHEAD of the NVS counters.
+// After a restart that spend is never repriced at the owner's cheaper default.
+static void test_gate_g1_failed_nvs_write_never_reprices_cheaper() {
+  UsageLedger L;
+  L.setRates("openai", 20, 20, 0);                                 // a $0.20/M default
+  L.models().setOwnerRate("openai", "gpt-6-astra", 10000000, 50000000);
+  turn(L, "openai", "gpt-6-astra", 1000000, 100000);               // $10 + $5
+  const std::string nvs = L.serialize();                            // the last good blob
+  turn(L, "openai", "gpt-6-astra", 1000000, 100000);               // its NVS write fails
+  L.models().setCountersBehind(true);                               // as the device marks it
+  const std::string owner = L.models().serializeOwnerRates();
+  UsageLedger R = restart(nvs, L.models().serializeSpend(), owner);
+  // The counters hold one turn, all gpt-6-astra: 1500c. Round 1 repriced it at the
+  // $0.20 default (22c).
+  TEST_ASSERT_EQUAL_UINT64(1500, R.estCents("openai"));
+  R.setLimits("openai", 0, 0, 1, 1500);
+  TEST_ASSERT_TRUE(R.overCostBudget("openai"));
+  // The rebase is kept with the rows: the next restart finds nothing new to drop, and
+  // new turns are attributed again and survive restarts at their own price.
+  UsageLedger R2 = restart(nvs, R.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(1500, R2.estCents("openai"));
+  turn(R2, "openai", "gpt-6-astra", 1000000, 0);
+  R2.models().setCountersBehind(false);                             // this NVS write lands
+  UsageLedger R3 = restart(R2.serialize(), R2.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(2500, R3.estCents("openai"));
+  TEST_ASSERT_EQUAL_UINT64(1000000, R3.models().findRow("openai", "gpt-6-astra")->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(1000000, R3.models().track("openai")->lost.in);   // counted once
+}
+
+// A row the load clears for another period follows its provider's period, so a turn
+// recorded before the clock syncs lands in the period the provider counts in (at the
+// row's own price), not in a stale one where it would read as lost spend.
+static void test_rebased_row_follows_its_provider_period() {
+  UsageLedger N;
+  N.setLimits("openai", 0, 0, 1, 0);                  // a provider that never synced: period 0
+  ModelLedger F;
+  F.record("openai", "gpt-5.6", td(1000), 24321, 1);  // a row of an old period
+  UsageLedger R = restart(N.serialize(), F.serializeSpend(), "");
+  TEST_ASSERT_EQUAL_UINT32(0, R.models().findRow("openai", "gpt-5.6")->periodKey);
+  turn(R, "openai", "gpt-5.6", 500000, 50000, 0);     // before SNTP
+  PriceSummary s;
+  TEST_ASSERT_EQUAL_UINT64(250 + 150, R.priceProvider("openai", &s));   // gpt-5.6's ~$5/$30
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+}
+
+// Gate G2: all 32 rows hold spend this period and a provider with no row records:
+// it gets a row (another provider's smallest row folds into its own ~other), so the
+// spend is priced at its model's own price, never the cheaper provider default.
+static void test_gate_g2_full_ledger_new_provider_still_gets_a_row() {
+  UsageLedger L;
+  for (const char* p : {"openai", "mistral", "zai", "cumulo"})
+    for (int i = 0; i < 8; ++i) turn(L, p, mk(i).c_str(), 1000, 0);
+  TEST_ASSERT_EQUAL(ModelLedger::kMaxRows, L.models().rows().size());
+  uint64_t before[4];
+  const char* others[] = {"openai", "mistral", "zai", "cumulo"};
+  for (int k = 0; k < 4; ++k) before[k] = L.estCents(others[k]);
+  turn(L, "anthropic", "claude-opus-5", 1000000, 1000000);
+  TEST_ASSERT_NOT_NULL(L.models().findRow("anthropic", "claude-opus-5"));
+  // claude-opus-5's own ~$5/$25: 3000c (round 1: the residual at '*' $3/$15, 1800c).
+  TEST_ASSERT_EQUAL_UINT64(3000, L.estCents("anthropic"));
+  PriceSummary s;
+  L.priceProvider("anthropic", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn + s.resIn);
+  for (int k = 0; k < 4; ++k) TEST_ASSERT_TRUE(L.estCents(others[k]) >= before[k]);
+}
+
+// Gate G3: a failed spend-file write leaves the file BEHIND the counters. After a
+// restart the period is never repriced at the owner's cheaper default; with no file
+// at all but a history that shows tracking started (the device checks), neither.
+static void test_gate_g3_failed_model_file_write_never_reprices_cheaper() {
+  UsageLedger L;
+  L.setRates("openai", 20, 20, 0);                                  // a $0.20/M default
+  L.models().setOwnerRate("openai", "gpt-5.6", 5000000, 30000000);
+  turn(L, "openai", "gpt-5.6", 1000000, 100000);                    // 500 + 300
+  const std::string file = L.models().serializeSpend();              // last file that landed
+  turn(L, "openai", "gpt-5.6", 1000000, 100000);                    // its file write fails
+  const std::string owner = L.models().serializeOwnerRates();
+  TEST_ASSERT_EQUAL_UINT64(1600, L.estCents("openai"));
+  UsageLedger R = restart(L.serialize(), file, owner);
+  // Round 1: 800 + the second turn at the $0.20 default = 822c, and a 1600c cap lifted.
+  // The file is only behind the counters (their latest store landed): its row is
+  // still true and stays, and the turn it misses is lost spend at openai's highest
+  // price (gpt-6-astra's ~$10/$50): 800 + 1000 + 500.
+  TEST_ASSERT_EQUAL_UINT64(2300, R.estCents("openai"));
+  TEST_ASSERT_EQUAL_UINT64(1000000, R.models().findRow("openai", "gpt-5.6")->tokIn);
+  R.setLimits("openai", 0, 0, 1, 1600);
+  TEST_ASSERT_TRUE(R.overCostBudget("openai"));
+  // ...and the next restart sees the same thing (the gap is kept as lost spend).
+  UsageLedger R2 = restart(R.serialize(), R.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(2300, R2.estCents("openai"));
+  // With the counters' latest store marked as not landed, rows that match still stay;
+  // rows that are behind may hide rows that are ahead, so none is kept: all of the
+  // provider's spend at the highest price.
+  L.models().setCountersBehind(true);
+  UsageLedger B = restart(L.serialize(), L.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(1600, B.estCents("openai"));
+  ModelLedger stale;
+  stale.deserializeSpend(file);
+  stale.setCountersBehind(true);
+  UsageLedger X = restart(L.serialize(), stale.serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(0, X.models().findRow("openai", "gpt-5.6")->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(3000, X.estCents("openai"));   // 2M + 200K at ~$10/$50
+  // No spend file at all, and the device saw a model bucket in the history.
+  UsageLedger N;
+  N.deserialize(L.serialize());
+  N.models().deserializeOwnerRates(owner);
+  N.models().markTracking();
+  N.rebaseModelRows();
+  TEST_ASSERT_TRUE(N.estCents("openai") >= 1600);
+}
+
+// Back to an earlier release and updated again: the earlier release keeps counting
+// in usgLedger but never touches the spend file, so after the update the rows are
+// only behind. They stay (each model at its own price) and the earlier release's
+// spend, whose model is unknown, is priced at the provider's highest price.
+static void test_downgrade_and_back_keeps_the_rows() {
+  UsageLedger L;
+  L.models().setOwnerRate("openai", "gpt-5.6-luna", 200000, 1200000);
+  turn(L, "openai", "gpt-5.6-luna", 1000000, 100000);               // 20 + 12
+  turn(L, "openai", "gpt-6-astra", 1000000, 0);                     // 1000
+  const std::string file = L.models().serializeSpend();
+  const std::string owner = L.models().serializeOwnerRates();
+  UsageLedger old;                                                   // v4.5.12 boots
+  old.deserialize(L.serialize());
+  old.recordTokens("openai", 1000, 0, 24300);
+  UsageLedger R = restart(old.serialize(), file, owner);             // updated again
+  TEST_ASSERT_EQUAL_UINT64(1000000, R.models().findRow("openai", "gpt-5.6-luna")->tokIn);
+  TEST_ASSERT_EQUAL_UINT64(1000000, R.models().findRow("openai", "gpt-6-astra")->tokIn);
+  PriceSummary s;
+  TEST_ASSERT_EQUAL_UINT64(1032 + 1, R.priceProvider("openai", &s));   // 1000 tokens at ~$10/M
+  TEST_ASSERT_EQUAL_UINT64(1000, s.othIn);
+}
+
+// A spend file can keep more earlier usage than the stored counters hold: spend
+// recorded with no model before tracking started whose usgLedger write did not land,
+// or a track that outlived a settings-only reset while new spend was counted. Such a
+// track is not trusted: its earlier usage is dropped at load, so later spend is never
+// taken for earlier usage (it is priced as lost spend: fail-closed).
+static void test_stale_earlier_usage_is_dropped_at_load() {
+  UsageLedger L;
+  L.recordTokens("openai", 1000000, 0, 24300);                      // stored
+  const std::string nvs = L.serialize();
+  L.recordTokens("openai", 9000000, 0, 24300);                      // its write fails
+  turn(L, "openai", "gpt-6-astra", 1000, 0);                        // tracking: pre = 10M
+  L.models().setCountersBehind(true);
+  TEST_ASSERT_EQUAL_UINT64(10000000, L.models().track("openai")->pre.in);
+  UsageLedger R = restart(nvs, L.models().serializeSpend(), "");
+  TEST_ASSERT_EQUAL_UINT64(0, R.models().track("openai")->pre.in);
+  TEST_ASSERT_EQUAL_UINT64(0, R.models().track("openai")->preTotIn);
+  turn(R, "openai", "gpt-6-astra", 5000000, 0);                     // new spend at its own price
+  PriceSummary s;
+  R.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(1000 + 5000, s.cents);                   // 6M at ~$10/M
+  // The settings-only reset: the provider is gone at the first load (its track goes,
+  // and the device stores that at once); were the old track ever loaded beside new
+  // counters of the same period, its earlier usage above them is dropped the same way.
+  UsageLedger T;
+  T.recordTokens("openai", 1400000, 180000, 24300);
+  turn(T, "openai", "gpt-5.6", 1000, 0);                            // pre = 1.4M / 180K
+  const std::string stale = T.models().serializeSpend();
+  bool orphaned = false;
+  UsageLedger A = restart("", stale, "", "", &orphaned);           // NVS erased
+  TEST_ASSERT_TRUE(orphaned);
+  TEST_ASSERT_NULL(A.models().track("openai"));
+  UsageLedger N;                                                    // new spend after the reset
+  N.setLimits("openai", 0, 0, 1, 1500);
+  N.recordTokens("openai", 1200000, 150000, 24300);
+  UsageLedger B = restart(N.serialize(), stale, "", "", &orphaned);
+  TEST_ASSERT_FALSE(orphaned);
+  B.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);                             // never earlier usage
+  TEST_ASSERT_TRUE(B.overCostBudget("openai"));                     // 1.2M/150K at ~$10/$50
+}
+
+// Earlier usage (spend from before tracking started on this device) keeps the
+// residual price, across restarts, until its period ends; spend with no model after
+// tracking started files under ~other (so the rows keep adding up to the counters).
+static void test_earlier_usage_keeps_the_residual_price() {
+  UsageLedger L;
+  L.setRates("openai", 20, 20, 0);
+  L.recordTokens("openai", 2000000, 0, 24300);                     // v4.5.12's spend
+  L.models().setOwnerRate("openai", "gpt-5.6", 5000000, 30000000);
+  turn(L, "openai", "gpt-5.6", 1000000, 100000);                   // 800c
+  PriceSummary s;
+  TEST_ASSERT_EQUAL_UINT64(800 + 40, L.priceProvider("openai", &s));   // 2M at $0.20
+  TEST_ASSERT_EQUAL_UINT64(2000000, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+  TEST_ASSERT_EQUAL_UINT64(2000000, L.models().track("openai")->pre.in);
+  const std::string owner = L.models().serializeOwnerRates();
+  UsageLedger R = restart(L.serialize(), L.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(840, R.estCents("openai"));
+  // No model after tracking started: ~other, at the provider's highest price.
+  R.recordTokens("openai", td(1000), 24300, "turn", "", 20650);
+  TEST_ASSERT_NOT_NULL(R.models().findRow("openai", nimbus::orch::kOtherModel));
+  UsageLedger R2 = restart(R.serialize(), R.models().serializeSpend(), owner);
+  TEST_ASSERT_EQUAL_UINT64(R.estCents("openai"), R2.estCents("openai"));
+  TEST_ASSERT_NOT_NULL(R2.models().findRow("openai", nimbus::orch::kOtherModel));
+  TEST_ASSERT_EQUAL_UINT64(1000, R2.models().findRow("openai", nimbus::orch::kOtherModel)->tokIn);
+  // The next period has no earlier usage.
+  turn(R2, "openai", "gpt-5.6", 1000000, 0, 24301);
+  R2.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(500, R2.estCents("openai"));
+  // Not even when the provider rolled outside the model path (its track still names
+  // the old period): the new period's spend is never taken for earlier usage.
+  UsageLedger K;
+  K.recordTokens("openai", 2000000, 0, 24300);
+  turn(K, "openai", "gpt-5.6", 1000, 0);
+  K.recordTokens("openai", 1000000, 0, 24301);   // provider level: the track is not synced
+  K.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(1000000, s.othIn);
+  // Tracking that starts before the clock syncs: the earlier usage carries into the
+  // first real period with its provider, like the counters and the rows do.
+  UsageLedger P;
+  P.recordTokens("openai", 2000000, 0, 0);        // before SNTP, before the upgrade
+  turn(P, "openai", "gpt-5.6", 1000, 0, 0);       // tracking starts, clock unsynced
+  turn(P, "openai", "gpt-5.6", 1000, 0, 24300);   // first sync: everything carries
+  P.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(2000000, s.resIn);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn);
+}
+
+// The pieces of the class test below.
+struct TrueRec {
+  std::string prov, model;   // model "" = earlier usage (priced at the residual rate)
+  TokenDelta  d;
+  uint32_t    period;
+};
+
+// Each counted token at its own model's price (earlier usage at the residual price),
+// the same cache multipliers and floors as the estimate.
+static uint64_t trueCents(const UsageLedger& L, const std::vector<TrueRec>& live, const char* p) {
+  const nimbus::orch::ProviderBudget* e = L.find(p);
+  if (!e) return 0;
+  std::vector<std::pair<std::string, TokenDelta>> agg;
+  for (const TrueRec& r : live) {
+    if (r.prov != p || r.period != e->periodKey) continue;
+    auto it = agg.begin();
+    while (it != agg.end() && it->first != r.model) ++it;
+    if (it == agg.end()) { agg.push_back({r.model, TokenDelta{}}); it = agg.end() - 1; }
+    it->second.in += r.d.in;
+    it->second.out += r.d.out;
+    it->second.cacheR += r.d.cacheR;
+    it->second.cacheW += r.d.cacheW;
+  }
+  uint64_t micro = 0;
+  for (const auto& a : agg) {
+    const EffRate rt = a.first.empty() ? L.residualRate(p) : L.effectiveRate(p, a.first.c_str());
+    micro += nimbus::orch::costMicro(a.second.in, rt.in) + nimbus::orch::costMicro(a.second.out, rt.out) +
+             nimbus::orch::costMicro(a.second.cacheR, rt.in) / 10 +
+             nimbus::orch::costMicro(a.second.cacheW * 5, rt.in) / 4;
+  }
+  return micro / 10000;
+}
+
+// Class (gate G1-G3): for ANY sequence of turns (named models, spend with no model,
+// more models than rows, each provider on its own reset day, records before the clock
+// syncs, price edits), restarts after store failures (a usgLedger write or spend-file
+// writes that did not land, in any mix), settings-only resets, Erase Storage on a
+// device with no SD card, and trips to an earlier release and back, estCents is never
+// below pricing every counted token at its true model's own price (earlier usage at
+// the residual price). The load is the device's (store.cpp loadModelsLocked: the
+// history check, then the rebase, stored or the file removed when it dropped an
+// orphaned track). One modeled assumption: a write onto an absent spend file lands
+// (ClassSim::fileLands; the documented narrow hole).
+// One simulated device for the class test: the ledger in RAM, what its stores last
+// took (the usgLedger blob, the spend file, the price files, the history), and the
+// true record of every counted spend.
+struct ClassSim {
+  static constexpr int kProvs = 5;
+  const char* provs[kProvs] = {"openai", "anthropic", "mistral", "zai", "cumulo"};
+  const std::vector<std::vector<std::string>> models = {
+      {"gpt-5.6", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.6-terra", "o-1", "o-2", "o-3", "o-4", "o-5", "o-6"},
+      {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "a-1", "a-2", "a-3", "a-4", "a-5", "a-6", "a-7"},
+      {"mistral-large", "mistral-small", "mistral-medium", "m-1", "m-2", "m-3", "m-4", "m-5", "m-6", "m-7"},
+      {"glm-5.3", "glm-5.2", "glm-5.3-flash", "z-1", "z-2", "z-3", "z-4", "z-5", "z-6", "z-7"},
+      {"openai/gpt-5.6", "anthropic/claude-opus-5", "zai/glm-5.3", "openai/c-1", "openai/c-2",
+       "openai/c-3", "openai/c-4", "openai/c-5", "openai/c-6", "openai/c-7"}};
+  uint64_t seed;
+  UsageLedger L;
+  std::vector<TrueRec> live;
+  std::string nvs, file, owner, router;
+  size_t nvsLive = 0;
+  bool histAny = false, histModel = false;   // the history holds a bucket / a model bucket
+  uint32_t per[kProvs] = {24300, 24300, 24300, 24300, 24300};   // each provider's period
+  uint32_t day = 20650;
+  int restarts = 0, drops = 0, downgrades = 0, resets = 0;
+  uint64_t nvsOk = 85, fileOk = 75;   // percent of writes that land, per simulated device
+
+  explicit ClassSim(uint64_t s) : seed(s) {
+    nvsOk = 50 + rnd(46);    // from a flaky settings store to a healthy one
+    fileOk = 40 + rnd(56);   // the same for /data
+  }
+  uint64_t rnd(uint64_t mod) {
+    seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    return (seed >> 33) % mod;
+  }
+  TokenDelta spend(int p, uint64_t scale) {   // cache traffic only for anthropic
+    return td(rnd(scale), rnd(scale / 10), p == 1 ? rnd(scale * 3 / 10) : 0, p == 1 ? rnd(scale / 30) : 0);
+  }
+  // A record's period: the provider's own, or 0 (the clock has not synced yet).
+  uint32_t recPeriod(int p) { return rnd(10) ? per[p] : 0; }
+  // Record d for provider p in ledger R and keep its truth: counted in the period the
+  // provider holds after it; a first sync carries the pre-sync records along.
+  void count(UsageLedger& R, int p, const std::string& trueModel, const TokenDelta& d,
+             const char* model) {
+    const nimbus::orch::ProviderBudget* e = R.find(provs[p]);
+    const uint32_t before = e ? e->periodKey : 0;
+    if (model) R.recordTokens(provs[p], d, recPeriod(p), "turn", model, day);
+    else R.recordTokens(provs[p], d.in, d.out, d.cacheR, d.cacheW, recPeriod(p), "turn");
+    e = R.find(provs[p]);
+    const uint32_t after = e ? e->periodKey : 0;
+    if (before == 0 && after != 0)
+      for (TrueRec& r : live)
+        if (r.prov == provs[p] && r.period == 0) r.period = after;
+    live.push_back({provs[p], trueModel, d, after});
+  }
+  void storeNvs() {   // a usgLedger write that lands (the device clears the marker)
+    nvs = L.serialize();
+    nvsLive = live.size();
+    L.models().setCountersBehind(false);
+  }
+  // The previous firmware's spend: earlier usage, all of it stored.
+  void earlier() {
+    for (int p = 0; p < kProvs; ++p) {
+      if (rnd(3)) L.setRates(provs[p], (uint32_t)rnd(400), (uint32_t)rnd(2000), 0);
+      if (!rnd(2)) continue;
+      count(L, p, "", spend(p, 3000000), nullptr);
+      histAny = histAny || rnd(2);   // that release's history may have landed
+    }
+    storeNvs();
+  }
+  // One turn: a named model, or none (filed under ~other once tracking started; its
+  // true model is still one of the provider's). Each store may fail to take it.
+  void turnStep() {
+    const int p = (int)rnd(kProvs);
+    const std::string& m = models[p][rnd(10)];
+    const bool named = rnd(6) != 0, tracked = L.models().tracking();
+    count(L, p, named || tracked ? m : std::string(), spend(p, 2000000), named ? m.c_str() : "");
+    if (rnd(100) < nvsOk) storeNvs();
+    else L.models().setCountersBehind(true);   // the write did not land
+    if (rnd(100) < fileOk) {                    // the history write
+      histAny = true;
+      histModel = histModel || named || tracked;
+    }
+    if (!named && !tracked) return;   // nothing for the spend file
+    if (fileLands()) file = L.models().serializeSpend();
+  }
+  // Whether a spend-file write lands. The modeled assumption: a write onto an absent
+  // file always does (a device whose /data takes no write while that file is absent
+  // cannot be told from a fresh upgrade: the documented narrow hole).
+  bool fileLands() { return file.empty() || rnd(100) < fileOk; }
+  void priceStep() {
+    const int p = (int)rnd(kProvs);
+    const uint64_t kind = rnd(4);
+    if (kind < 2) {
+      L.models().setOwnerRate(provs[p], models[p][rnd(10)].c_str(), (uint32_t)rnd(12000000),
+                              (uint32_t)rnd(60000000));
+      owner = L.models().serializeOwnerRates();
+    } else if (kind == 2) {
+      L.setRates(provs[p], (uint32_t)rnd(400), (uint32_t)rnd(2000), 0);   // an owner save
+      storeNvs();
+    } else {
+      std::vector<nimbus::orch::ModelRate> rr(1);
+      std::strcpy(rr[0].prov, "cumulo");
+      std::strcpy(rr[0].model, models[4][rnd(10)].c_str());
+      rr[0].microIn = (uint32_t)rnd(15000000);
+      rr[0].microOut = (uint32_t)rnd(70000000);
+      L.models().replaceRouterRates(rr);
+      router = L.models().serializeRouterRates();
+    }
+  }
+  // The device's history check (store.cpp historyShowsTracking).
+  bool historyShowsTracking(const UsageLedger& R) const {
+    if (histModel) return true;
+    if (histAny) return false;
+    for (const auto& e : R.entries())
+      if (e.tokensIn || e.tokensOut || e.cacheRead || e.cacheWrite) return true;
+    return false;
+  }
+  // A restart, loaded the way the device loads (store.cpp loadModelsLocked).
+  void restartStep() {
+    UsageLedger R;
+    R.deserialize(nvs);
+    R.models().deserializeSpend(file);
+    R.models().deserializeOwnerRates(owner);
+    R.models().deserializeRouterRates(router);
+    const bool inferred = !R.models().tracking() && historyShowsTracking(R);
+    if (inferred) R.models().markTracking();
+    const bool orphaned = R.rebaseModelRows();
+    if ((inferred || orphaned) && fileLands()) file = R.models().serializeSpend();
+    else if (orphaned) file.clear();   // the write failed: the device removes the file
+    L = R;
+    live.resize(nvsLive);
+    ++restarts;
+    for (const auto& t : L.models().tracks()) drops += (t.lost.in || t.lost.out) ? 1 : 0;
+  }
+  // A downgrade and back: the earlier release reads only usgLedger, records a few
+  // turns provider level (their model unknown to the ledger, true model one of the
+  // provider's, or earlier usage when tracking never started) and stores them; the
+  // spend file stays as it was. Then update again.
+  void downgradeStep() {
+    UsageLedger old;
+    old.deserialize(nvs);
+    live.resize(nvsLive);
+    const size_t first = live.size();
+    for (uint64_t n = 1 + rnd(3); n > 0; --n) {
+      const int p = (int)rnd(kProvs);
+      count(old, p, models[p][rnd(10)], spend(p, 1000000), nullptr);
+      histAny = histAny || rnd(100) < fileOk;   // its 5-field history lines
+    }
+    nvs = old.serialize();
+    nvsLive = live.size();
+    ++downgrades;
+    restartStep();
+    if (L.models().tracking()) return;
+    for (size_t i = first; i < live.size(); ++i) live[i].model.clear();   // earlier usage
+  }
+  // A settings-only reset: NVS erased (the counters and provider rates with it),
+  // /data kept. Nothing is counted any more.
+  void settingsResetStep() {
+    nvs.clear();
+    nvsLive = 0;
+    ++resets;
+    restartStep();
+  }
+  // Erase Storage on a device with no SD card: /data (spend file, prices, history)
+  // erased, NVS kept.
+  void eraseStorageStep() {
+    file.clear();
+    owner.clear();
+    router.clear();
+    histAny = histModel = false;
+    restartStep();
+  }
+  void rollStep() {   // some providers reach their reset day
+    for (int p = 0; p < kProvs; ++p)
+      if (rnd(2)) ++per[p];
+    day += 30;
+  }
+  void step() {
+    const uint64_t op = rnd(100);
+    if (op < 68) {
+      turnStep();
+    } else if (op < 76) {
+      rollStep();
+    } else if (op < 82) {
+      priceStep();
+    } else if (op < 86) {
+      downgradeStep();
+    } else if (op < 88) {
+      settingsResetStep();
+    } else if (op < 89) {
+      eraseStorageStep();
+    } else {
+      restartStep();
+    }
+  }
+  // Every provider: the estimate is never below the true price of what it counts.
+  void check(int iter, int at) {
+    for (const char* p : provs) {
+      const uint64_t want = trueCents(L, live, p);
+      PriceSummary s;
+      const uint64_t got = L.priceProvider(p, &s);
+      // The bit-exact legacy formula (earlier usage only, the owner's provider rates
+      // complete) floors each of its four token terms to a cent, by design.
+      if (s.fastPath) TEST_ASSERT_EQUAL_UINT64(L.find(p)->estCents(), got);
+      if (got + (s.fastPath ? 4 : 0) >= want) continue;
+      char msg[160];
+      std::snprintf(msg, sizeof(msg), "iter %d step %d %s: est %llu < true %llu", iter, at, p,
+                    (unsigned long long)got, (unsigned long long)want);
+      TEST_FAIL_MESSAGE(msg);
+    }
+  }
+};
+
+static void test_class_estimate_never_below_true_model_prices() {
+  int restarts = 0, drops = 0, downgrades = 0, resets = 0;
+  for (int iter = 0; iter < 1000; ++iter) {
+    ClassSim sim(4242 + (uint64_t)iter * 7919);
+    sim.earlier();
+    for (int at = 0; at < 40; ++at) {
+      sim.step();
+      sim.check(iter, at);
+    }
+    restarts += sim.restarts;
+    drops += sim.drops;
+    downgrades += sim.downgrades;
+    resets += sim.resets;
+  }
+  TEST_ASSERT_TRUE(restarts > 1000);   // the sequences really restart...
+  TEST_ASSERT_TRUE(drops > 100);       // ...really hit store failures...
+  TEST_ASSERT_TRUE(downgrades > 500);  // ...really go back to an earlier release...
+  TEST_ASSERT_TRUE(resets > 200);      // ...and really reset their settings
 }
 
 // Leaving the fast path never lowers the estimate: the same counters filed under a
@@ -751,11 +1271,13 @@ static void test_breakdown_parts_add_up_exactly() {
     if (rnd(2)) L.recordTokens("openai", rnd(3000000), rnd(300000), 24300);   // residual
     for (int k = 0; k < 5; ++k)
       if (rnd(2)) turn(L, "openai", models[k], rnd(4000000), rnd(400000));
+    // Spend no row accounts for after tracking started (its model was lost).
+    if (rnd(2)) L.recordTokens("openai", rnd(1000000), rnd(100000), 24300);
     if (rnd(2)) L.models().setOwnerRate("openai", "x-1", (uint32_t)rnd(9000000) + 1, (uint32_t)rnd(9000000));
     PriceSummary s;
     RowPrice rows[ModelLedger::kMaxRows];
     const uint64_t total = L.priceProvider("openai", &s, rows);
-    uint64_t sum = s.resCents + s.callCents;
+    uint64_t sum = s.resCents + s.othCents + s.callCents;
     for (size_t r = 0; r < ModelLedger::kMaxRows; ++r) sum += rows[r].cents;
     TEST_ASSERT_EQUAL_UINT64(total, sum);
     TEST_ASSERT_EQUAL_UINT64(total, L.estCents("openai"));
@@ -1005,49 +1527,69 @@ static void test_usage_models_json_worst_case_fits_and_parses() {
   TEST_ASSERT_EQUAL(0, (int)nimbus::orch::writeUsageModelsJson(L, ed, small.data(), small.size()));
 }
 
-// The page's parts add up to the provider tile: per provider, the models' est + the
-// residual est + callEst == provRate.est == UsageLedger::estCents (byProvider.estCents).
-static void test_usage_models_json_parts_add_up_to_the_estimate() {
-  UsageLedger L;
+// The body for this ledger and these editable lists, parsed.
+static void usageModelsDoc(const UsageLedger& L, const std::vector<EditableModels>& ed,
+                           JsonDocument& d) {
+  const size_t cap = nimbus::orch::usageModelsJsonCap(L, ed);
+  std::vector<char> buf(cap);
+  const size_t n = nimbus::orch::writeUsageModelsJson(L, ed, buf.data(), cap);
+  TEST_ASSERT_TRUE(deserializeJson(d, buf.data(), n) == DeserializationError::Ok);
+}
+
+// One provider's parts in the body: its models' est + its residual est + callEst.
+// `others` counts its "~other" entries; `other` receives the last one.
+static uint64_t partsOf(JsonDocument& d, const char* p, int* others = nullptr,
+                        JsonObjectConst* other = nullptr) {
+  uint64_t sum = d["provRate"][p]["callEst"] | 0ULL;
+  for (JsonObjectConst r : d["residual"].as<JsonArrayConst>())
+    if (std::strcmp(r["prov"] | "", p) == 0) sum += r["est"] | 0ULL;
+  for (JsonObjectConst m : d["models"].as<JsonArrayConst>()) {
+    if (std::strcmp(m["prov"] | "", p) != 0) continue;
+    sum += m["est"] | 0ULL;
+    if (std::strcmp(m["m"] | "", "~other") != 0) continue;
+    if (others) ++*others;
+    if (other) *other = m;
+  }
+  return sum;
+}
+
+// One month of spend for the body tests: earlier usage and two models for anthropic,
+// an owner-priced model for openai, Tavily searches.
+static void bodyLedger(UsageLedger& L, std::vector<EditableModels>& ed) {
   L.recordTokens("anthropic", 3000000, 100000, 24300);                    // pre-upgrade spend
   turn(L, "anthropic", "claude-opus-5", 1000000, 200000);
   turn(L, "anthropic", "claude-haiku-4-5", 5000000, 100000);
   L.models().setOwnerRate("openai", "gpt-5.6-luna", 210000, 0);
   turn(L, "openai", "gpt-5.6-luna", 7000000, 900000);
   for (int i = 0; i < 37; ++i) L.recordCall("tavily", 24300);
-  std::vector<EditableModels> ed;
   EditableModels e;
   e.prov = "openai";
   e.csv = "gpt-5.6,gpt-5.6-luna";
   ed.push_back(e);
-  const size_t cap = nimbus::orch::usageModelsJsonCap(L, ed);
-  std::vector<char> buf(cap);
-  const size_t n = nimbus::orch::writeUsageModelsJson(L, ed, buf.data(), cap);
+}
+
+// The page's parts add up to the provider tile: per provider, the models' est + the
+// residual est + callEst == provRate.est == UsageLedger::estCents (byProvider.estCents).
+static void test_usage_models_json_parts_add_up_to_the_estimate() {
+  UsageLedger L;
+  std::vector<EditableModels> ed;
+  bodyLedger(L, ed);
   JsonDocument d;
-  TEST_ASSERT_TRUE(deserializeJson(d, buf.data(), n) == DeserializationError::Ok);
+  usageModelsDoc(L, ed, d);
   TEST_ASSERT_EQUAL_STRING("2026-10", d["asOf"] | "");
   for (const char* p : {"anthropic", "openai", "tavily"}) {
-    uint64_t sum = d["provRate"][p]["callEst"] | 0ULL;
-    for (JsonObjectConst m : d["models"].as<JsonArrayConst>())
-      if (std::strcmp(m["prov"] | "", p) == 0) sum += m["est"] | 0ULL;
-    for (JsonObjectConst r : d["residual"].as<JsonArrayConst>())
-      if (std::strcmp(r["prov"] | "", p) == 0) sum += r["est"] | 0ULL;
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(L.estCents(p), d["provRate"][p]["est"] | 0ULL, p);
-    TEST_ASSERT_EQUAL_UINT64_MESSAGE(L.estCents(p), sum, p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(L.estCents(p), partsOf(d, p), p);
     // One month, no cache traffic: the all-time estimate is this period's.
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(L.estCents(p), d["provRate"][p]["allEst"] | 0ULL, p);
+    // G4: every provider publishes its fold price (otherRate) beside the residual's.
+    const EffRate o = L.otherRate(p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(o.in, d["provRate"][p]["oIn"] | 0ULL, p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(o.out, d["provRate"][p]["oOut"] | 0ULL, p);
   }
-  // A month later the all-time estimate keeps last month at today's prices.
-  L.recordTokens("openai", 1000000, 0, 24301);
-  const size_t cap2 = nimbus::orch::usageModelsJsonCap(L, ed);
-  std::vector<char> b2(cap2);
-  const size_t n2 = nimbus::orch::writeUsageModelsJson(L, ed, b2.data(), cap2);
-  JsonDocument d2;
-  TEST_ASSERT_TRUE(deserializeJson(d2, b2.data(), n2) == DeserializationError::Ok);
-  // 1M new unattributed input tokens at the residual price (the owner's $0.21/M, the
-  // highest openai price set): the period is just that; the all-time estimate grows.
-  TEST_ASSERT_TRUE((d2["provRate"]["openai"]["allEst"] | 0ULL) > (d["provRate"]["openai"]["allEst"] | 0ULL));
-  TEST_ASSERT_EQUAL_UINT64(21, L.estCents("openai"));   // this period: just the new 1M
+  TEST_ASSERT_EQUAL_UINT64(10000000, d["provRate"]["openai"]["oIn"] | 0ULL);
+  TEST_ASSERT_EQUAL_STRING("est", d["provRate"]["openai"]["oSrc"] | "");
+  TEST_ASSERT_EQUAL_UINT64(210000, d["provRate"]["openai"]["rIn"] | 0ULL);   // residual: owner's
   // The editable rows carry the resolved price, its source and the owner's own.
   JsonArrayConst oa = d["editable"]["openai"].as<JsonArrayConst>();
   TEST_ASSERT_EQUAL_STRING("est", oa[0]["src"] | "");
@@ -1059,6 +1601,42 @@ static void test_usage_models_json_parts_add_up_to_the_estimate() {
   TEST_ASSERT_EQUAL_UINT32(1200000, oa[1]["rOut"] | 0u);
   TEST_ASSERT_TRUE(d["provRate"]["anthropic"]["approx"] | false);
   TEST_ASSERT_EQUAL_STRING("est", d["provRate"]["tavily"]["srcCall"] | "");
+}
+
+// Spend whose model was lost (here: provider-level spend after tracking started) is
+// shown in the provider's "~other" entry at the fold price - made when the provider
+// has no ~other row, merged into it when it has one - so the parts still add up, and
+// the all-time estimate adds it at the same price.
+static void test_usage_models_json_shows_lost_spend_at_the_fold_price() {
+  UsageLedger L;
+  std::vector<EditableModels> ed;
+  bodyLedger(L, ed);
+  JsonDocument d;
+  usageModelsDoc(L, ed, d);
+  for (int i = 0; i < 9; ++i) turn(L, "mistral", mk(i).c_str(), 1000000, 0);   // the 9th: ~other
+  L.recordTokens("mistral", 500000, 0, 24300);
+  L.recordTokens("openai", 1000000, 0, 24301);   // a month later
+  JsonDocument d2;
+  usageModelsDoc(L, ed, d2);
+  // openai: 1M lost input tokens at its fold price (gpt-6-astra's ~$10/M), as a made
+  // "~other" entry; the period is just that, and the all-time estimate adds it.
+  TEST_ASSERT_EQUAL_UINT64(1000, L.estCents("openai"));
+  int others = 0;
+  JsonObjectConst o;
+  TEST_ASSERT_EQUAL_UINT64(1000, partsOf(d2, "openai", &others, &o));
+  TEST_ASSERT_EQUAL(1, others);
+  TEST_ASSERT_EQUAL_UINT64(1000000, o["pIn"] | 0ULL);
+  TEST_ASSERT_EQUAL_UINT64(1000, o["est"] | 0ULL);
+  TEST_ASSERT_EQUAL_UINT64(10000000, o["rIn"] | 0ULL);
+  TEST_ASSERT_EQUAL_UINT64((d["provRate"]["openai"]["allEst"] | 0ULL) + 1000,
+                           d2["provRate"]["openai"]["allEst"] | 0ULL);
+  // mistral: one ~other entry holds the 9th model and the lost spend.
+  others = 0;
+  TEST_ASSERT_EQUAL_UINT64(1900, partsOf(d2, "mistral", &others, &o));   // 9.5M at ~$2/M
+  TEST_ASSERT_EQUAL_UINT64(1900, L.estCents("mistral"));
+  TEST_ASSERT_EQUAL(1, others);
+  TEST_ASSERT_EQUAL_UINT64(1500000, o["pIn"] | 0ULL);
+  TEST_ASSERT_EQUAL_UINT64(300, o["est"] | 0ULL);
 }
 
 int main() {
@@ -1097,6 +1675,14 @@ int main() {
   RUN_TEST(test_eviction_respects_each_providers_period);
   RUN_TEST(test_other_row_priced_at_highest_known_price);
   RUN_TEST(test_rebase_drops_rows_the_counters_do_not_cover);
+  RUN_TEST(test_gate_g1_failed_nvs_write_never_reprices_cheaper);
+  RUN_TEST(test_rebased_row_follows_its_provider_period);
+  RUN_TEST(test_gate_g2_full_ledger_new_provider_still_gets_a_row);
+  RUN_TEST(test_gate_g3_failed_model_file_write_never_reprices_cheaper);
+  RUN_TEST(test_downgrade_and_back_keeps_the_rows);
+  RUN_TEST(test_stale_earlier_usage_is_dropped_at_load);
+  RUN_TEST(test_earlier_usage_keeps_the_residual_price);
+  RUN_TEST(test_class_estimate_never_below_true_model_prices);
   RUN_TEST(test_first_model_row_never_lowers_the_provider_formula);
   RUN_TEST(test_breakdown_parts_add_up_exactly);
   RUN_TEST(test_d1_arming_none_saturation_and_dated_ungate);
@@ -1106,5 +1692,6 @@ int main() {
   RUN_TEST(test_history_json_worst_case_fits);
   RUN_TEST(test_usage_models_json_worst_case_fits_and_parses);
   RUN_TEST(test_usage_models_json_parts_add_up_to_the_estimate);
+  RUN_TEST(test_usage_models_json_shows_lost_spend_at_the_fold_price);
   return UNITY_END();
 }

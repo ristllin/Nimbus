@@ -20,15 +20,25 @@
 //     provider's named row with the oldest lastDay and no spend this period (its
 //     all-time totals fold into "<prov>|~other"); with all 8 busy it goes to ~other.
 //     When every row is taken, the row with the oldest lastDay and no spend this
-//     period is folded into its provider's ~other row. Spend is never dropped: what
-//     no row can hold stays in the provider counter, where the residual rule prices
-//     it, and ~other is priced at the provider's highest known price (fail-closed).
+//     period is folded into its provider's ~other row; when every row has spend
+//     this period, a provider with no row at all takes the room of another
+//     provider's smallest row, which folds into that provider's ~other (gate G2).
+//     Spend is never dropped and lands in a row (the one exception: a hand-made file
+//     whose 32 rows are fold rows of 32 providers), and ~other is priced at the
+//     provider's highest known price (fail-closed).
+//   - once tracking has started, spend recorded with no model files under ~other,
+//     so the rows of a provider add up to its period counters minus its earlier
+//     usage and its lost spend (ProvTrack). A mismatch at load means the two stores
+//     diverged: a usgLedger or spend-file write that did not land, a settings-only
+//     reset, or spend an earlier release recorded after a downgrade (no rows).
 //   - 32 owner price rows (only an owner edit writes them), 24 router price rows
 //     (only the Cumulo verify harvest writes them).
 // Persisted by the device to three LittleFS files (never NVS), one text form each:
 // a "!v|1" header group, then ';'-separated rows of '|'-separated fields. Fields are
 // append-only (a missing tail field reads 0), garbage and over-cap rows are skipped,
-// parsing stops at the cap.
+// parsing stops at the cap. The spend file also carries "!t" (tracking started) and
+// one "!p|..." group per provider track; '!' groups are skipped by a reader that does
+// not know them.
 
 namespace nimbus {
 namespace orch {
@@ -59,6 +69,20 @@ struct ModelRate {
   uint32_t microOut = 0;   // micro-USD per 1M output tokens; 0 = unset
 };
 
+// What model tracking needs beside the rows, per provider (gate G1-G3): the spend
+// from before tracking started on this device (earlier usage: no model was ever
+// known for it) and the spend whose model attribution a load-time rebase had to drop
+// (a storage failure; it may have been any model, so it is priced at the provider's
+// highest known price). `pre` and `lost` belong to `periodKey` and roll with the
+// provider's period like a row; the all-time part never rolls.
+struct ProvTrack {
+  char       prov[kProvKeyCap] = {0};
+  uint32_t   periodKey = 0;
+  TokenDelta pre;
+  TokenDelta lost;
+  uint64_t   preTotIn = 0, preTotOut = 0;   // all-time totals before tracking started
+};
+
 // The answer to an owner price edit.
 enum class RateEdit {
   Ok,            // stored (or cleared)
@@ -73,23 +97,59 @@ class ModelLedger {
   static constexpr size_t kMaxNamedPerProv = 8;
   static constexpr size_t kMaxOwnerRates = 32;
   static constexpr size_t kMaxRouterRates = 24;
+  static constexpr size_t kMaxTracks = 12;   // one per provider (UsageLedger::kMaxProviders)
 
   // ---- spend ----
   // Add spend to (prov, model) for `periodKey`, rolling the row first when its
   // period differs (the UsageLedger rules: an incoming 0 keeps the stored period, a
   // stored 0 carries into the first real one). `dayKey` (UTC days, 0 = unknown)
   // stamps lastDay. model may be kOtherModel; any other key must be modelKeySafe.
+  // A recorded row starts tracking. The device records through
+  // UsageLedger::recordTokens, which first keeps every provider's earlier usage; a
+  // direct call keeps none, so all spend no row holds then reads as lost spend
+  // (priced at the provider's highest price: fail-closed).
   void record(const char* prov, const char* model, const TokenDelta& d, uint32_t periodKey,
               uint32_t dayKey);
-  // Roll every row to its provider's current period (periodOf(ctx, prov); 0 = keep),
-  // so a row's period counters always belong to the period its provider counts in.
+  // Roll every row and track to its provider's current period (periodOf(ctx, prov);
+  // 0 = keep), so their period counters always belong to the period the provider
+  // counts in.
   using PeriodOf = uint32_t (*)(const void* ctx, const char* prov);
   void syncPeriods(PeriodOf periodOf, const void* ctx);
-  // Zero row i's period counters (all-time totals kept): its period spend reads as
-  // the provider's residual.
+  // Zero row i's period counters (all-time totals kept).
   void clearPeriodSpend(size_t i);
+  // Row i now counts in `periodKey` (load time: a row follows its provider's period).
+  void setRowPeriod(size_t i, uint32_t periodKey) {
+    if (i < rows_.size()) rows_[i].periodKey = periodKey;
+  }
+  // Row i's period spend leaves the row entirely (its period counters, and the same
+  // amounts off its all-time totals): a load-time rebase found the rows and the
+  // provider counters disagree, so that spend's model is no longer known.
+  void dropAttribution(size_t i);
   const std::vector<ModelSpend>& rows() const { return rows_; }
   const ModelSpend* findRow(const char* prov, const char* model) const;
+
+  // ---- tracking (gate G1-G3) ----
+  // Whether per-model tracking ever started on this device (a model record, or a
+  // spend file that shows one). Before it, every period counter is earlier usage.
+  bool tracking() const { return tracking_; }
+  void markTracking() { tracking_ = true; }
+  // Whether the provider counters' latest store did not land (a usgLedger write that
+  // failed with no later one that landed): the rows may then hold spend the stored
+  // counters lack. The device sets it after every usgLedger write; it rides the spend
+  // file ("!n"), so a load can tell a spend file that is only BEHIND the counters
+  // (rows kept) from one that may be ahead of them (attribution dropped).
+  bool countersBehind() const { return countersBehind_; }
+  void setCountersBehind(bool behind) { countersBehind_ = behind; }
+  // The key a record files its spend under: `model` when set; once tracking has
+  // started, spend with no model goes to ~other (priced at the provider's highest
+  // known price); before that, "" (provider level only, earlier usage).
+  const char* spendKey(const char* model) const;
+  const ProvTrack* track(const char* prov) const;
+  // The provider's track, created when absent (nullptr past kMaxTracks or for a
+  // provider id the ledger cannot carry).
+  ProvTrack* trackFor(const char* prov);
+  void dropTrack(const char* prov);
+  const std::vector<ProvTrack>& tracks() const { return tracks_; }
 
   // ---- owner prices ----
   // 0:0 clears the row. A new row past the cap answers Full and changes nothing.
@@ -126,14 +186,20 @@ class ModelLedger {
   ModelSpend* pushRow(const char* prov, const char* model);
   ModelSpend* recycleStale(const char* prov, const char* model, uint32_t periodKey);
   bool        evictOne(const char* prov, uint32_t periodKey);
+  bool        foldSmallestElsewhere(const char* prov);
   ModelSpend* relabelSmallest(const char* prov);
   size_t      namedCount(const char* prov) const;
+  bool        hasRow(const char* prov) const;
   static std::string serializeRates(const std::vector<ModelRate>& v);
   static void deserializeRates(const std::string& s, std::vector<ModelRate>& v, size_t cap);
+  void        parseTrack(const std::string& group);
 
   std::vector<ModelSpend> rows_;
   std::vector<ModelRate>  owner_;
   std::vector<ModelRate>  router_;
+  std::vector<ProvTrack>  tracks_;
+  bool                    tracking_ = false;
+  bool                    countersBehind_ = false;
 };
 
 // The models an owner may price for `prov` (the web field's allowlist and the Prices

@@ -57,5 +57,51 @@ struct DeferralRetry {
   }
 };
 
+// Router prices after an upgrade (per-model prices, 2026-10 bench): the Cumulo
+// router's per-model prices are harvested only by a Cumulo verify, so a device that
+// upgraded with a verified Cumulo key priced every Cumulo model at a built-in
+// estimate until someone pressed Verify. Boot arms ONE Cumulo verify, deferred like
+// the other boot checks; the main-loop pump fires it through the same request path
+// (the self-deleting verify task, no new task) when the device is online and no turn
+// runs, and only while it is still wanted. A start the device could not make is
+// tried again on a slow clock, a few times at most. RAM-only: every boot asks again
+// while the prices are missing.
+struct RouterPriceRefill {
+  static const uint8_t  kMaxTries = 3;
+  static const uint32_t kRetryMs  = 120000u;   // 2 min between starts that failed
+
+  bool     armed = false;
+  uint8_t  tries = 0;
+  uint32_t atMs  = 0;
+
+  // What to do once due. `priceState`: 1 = no router price stored, 0 = stored,
+  // -1 = flash storage not loaded yet (cannot tell). Start the verify for a verified
+  // Cumulo key with no stored price; Later when it cannot tell yet; else Done.
+  enum class Next : uint8_t { Start, Done, Later };
+  static Next decide(bool hasKey, bool verified, int8_t priceState) {
+    if (!hasKey || !verified || priceState == 0) return Next::Done;
+    return priceState < 0 ? Next::Later : Next::Start;
+  }
+  void arm(uint32_t now, uint32_t delayMs) {
+    armed = true;
+    tries = 0;
+    atMs  = now + delayMs;
+  }
+  // Due now: armed, past its time, online, no turn in flight (the pump checks the
+  // verify slot itself before it asks).
+  bool due(uint32_t now, bool inTurn, bool online) const {
+    if (!armed || inTurn || !online) return false;
+    return (int32_t)(now - atMs) >= 0;
+  }
+  // The verify started, or it is no longer wanted: done for this boot.
+  void done() { armed = false; }
+  // The verify could not start (or storage could not tell yet): try again later, or
+  // give up after kMaxTries.
+  void startFailed(uint32_t now) {
+    if (++tries >= kMaxTries) { armed = false; return; }
+    atMs = now + kRetryMs;
+  }
+};
+
 }  // namespace provider_verify
 }  // namespace agent

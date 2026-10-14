@@ -83,7 +83,9 @@ export const ORCH = {
     // provider as "undefined". These rows (and USAGE_MODELS below) were produced by the
     // REAL lib/core ledger (UsageLedger + writeUsageModelsJson) for one multi-model
     // month, so estCents is the server's own per-model figure and the By model list
-    // adds up to it exactly. totIn/totOut include an earlier month (All time > period).
+    // adds up to it exactly. totIn/totOut include an earlier month (All time > period):
+    // the device upgraded this month, so that month and openai's first 300K/40K this
+    // month are earlier usage (no model recorded, priced at the residual price).
     byProvider: [
       { prov: 'openai', tokens: 4128000, calls: 0, tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
         tokIn: 3660000, tokOut: 468000, totIn: 5200000, totOut: 640000, totCalls: 0,
@@ -298,7 +300,9 @@ export const USAGE_HISTORY = { today: _dayKey, days: _histDays };
 // GET /api/usage/models (store.cpp usageModelsJsonPs -> lib/core writeUsageModelsJson),
 // produced by the real core for the same month as ORCH.usage.byProvider above: per-model
 // rows (period p*, all-time t*, resolved micro-USD prices, source, cents), the residual
-// (openai spend from before model tracking), the Prices table rows and provider rates.
+// (openai spend from before model tracking), the Prices table rows and provider rates
+// (r* the residual price, f* the provider default, o* the fold price for a model with
+// no row of its own).
 // The body lives in usage_models.json (one document, so a regeneration replaces it whole).
 export const USAGE_MODELS = JSON.parse(readFileSync(new URL('./usage_models.json', import.meta.url), 'utf8'));
 export const TELEGRAM = { enabled: false, allowlist: [], pending: [], public: false };
