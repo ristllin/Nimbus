@@ -1,11 +1,14 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/command.h"
 #include "nimbus/orch/msg_batch.h"
 
 // CUM-398 rapid-message batcher (nimbus::orch::MessageBatcher). These assert the
@@ -478,6 +481,225 @@ static void test_drain_no_side_effect_past_cap_stop() {
     TEST_ASSERT_TRUE(idx < afterIdx);
 }
 
+
+// ---- command boundary ------------------------------------------------------------
+// A slash command never shares a turn: inside a "Message 1 of N" block it no longer
+// starts with '/', so it reached the model as conversation instead of running (the
+// 14 Oct "/skill approve meal-photo-science" that never ran). These pin the class
+// over EVERY verb in the lifted table (nimbus/orch/command.h), plus unknown verbs.
+
+using nimbus::orch::kCommandVerbs;
+
+// The owner's burst "one", "two", "/<verb> ...", "four" for EVERY verb in the table:
+// three turns in order - the batch, the command byte for byte, then "four".
+static void test_burst_splits_at_every_verb() {
+  for (const auto& cv : kCommandVerbs) {
+    MessageBatcher b;
+    const std::string cmd = std::string("/") + cv.verb + " arg1";
+    TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("9", "Ann", "one"));
+    TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("9", "Ann", "two"));
+    TEST_ASSERT_TRUE_MESSAGE(BatchAdd::CommandBoundary == b.add("9", "Ann", cmd), cv.verb);
+    TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("9", "Ann", "four"));
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(3, b.chatCount(), cv.verb);
+    const std::string t0 = b.render(0).c_str();
+    TEST_ASSERT_TRUE(has(t0, "Message 1 of 2") && has(t0, "one") && has(t0, "two"));
+    TEST_ASSERT_FALSE(has(t0, cmd.c_str()));
+    TEST_ASSERT_TRUE(b.commandAt(1));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cmd.c_str(), b.render(1).c_str(), cv.verb);
+    const nimbus::orch::Command parsed = nimbus::orch::parseCommand(b.render(1).c_str());
+    TEST_ASSERT_TRUE(parsed.isCommand);
+    TEST_ASSERT_EQUAL_STRING(cv.verb, parsed.verb.c_str());
+    TEST_ASSERT_EQUAL_STRING("four", b.render(2).c_str());
+    for (size_t i = 0; i < 3; ++i) TEST_ASSERT_EQUAL_STRING("9", b.chatIdAt(i));
+  }
+}
+
+// Every command form parseCommand accepts is a boundary: unknown verbs (they get the
+// deterministic "try /help"), a leading space, Telegram's "@botname" form, upper case.
+static void test_every_command_form_is_a_boundary() {
+  for (const char* cmd : {"/zzz", " /help", "/loops@Example_bot", "/HELP", "/skill approve x"}) {
+    MessageBatcher b;
+    b.add("1", "u", "hello");
+    TEST_ASSERT_TRUE_MESSAGE(BatchAdd::CommandBoundary == b.add("1", "u", cmd), cmd);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cmd, b.render(1).c_str(), cmd);
+  }
+  // Not commands: a mid-sentence slash and a bare slash stay in the batch.
+  MessageBatcher b;
+  b.add("1", "u", "hello");
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("1", "u", "please run /update for me"));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("1", "u", "/"));
+  TEST_ASSERT_EQUAL_UINT(1, b.chatCount());
+}
+
+// A lone command, two commands in a row, and a command per chat: each its own turn.
+static void test_commands_alone_and_in_a_row() {
+  MessageBatcher b;
+  TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("1", "u", "/loops"));
+  TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("1", "u", "/help"));
+  TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("2", "v", "/help"));
+  TEST_ASSERT_EQUAL_UINT(3, b.chatCount());
+  TEST_ASSERT_EQUAL_STRING("/loops", b.render(0).c_str());
+  TEST_ASSERT_EQUAL_STRING("/help", b.render(1).c_str());
+  TEST_ASSERT_EQUAL_STRING("/help", b.render(2).c_str());
+  TEST_ASSERT_EQUAL_STRING("2", b.chatIdAt(2));
+}
+
+// Caps around a command: when the bucket cap stops a command, the chat's open batch
+// says more are waiting; a command's own turn is never marked, so it stays byte for
+// byte even when the message after it is deferred.
+static void test_caps_never_mark_a_command_turn() {
+  MessageBatcher b;
+  for (size_t i = 0; i + 1 < cap::kBatchMaxChats; ++i)
+    b.add("c" + std::to_string(i), "u", "x");
+  TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("last", "u", "/help"));
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.chatCount());
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.add("last", "u", "after"));   // no bucket left
+  TEST_ASSERT_FALSE(b.cappedAt(cap::kBatchMaxChats - 1));
+  TEST_ASSERT_EQUAL_STRING("/help", b.render(cap::kBatchMaxChats - 1).c_str());
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.add("c0", "u", "/loops"));   // command deferred
+  TEST_ASSERT_TRUE(b.cappedAt(0));                                       // its batch says so
+  TEST_ASSERT_TRUE(has(b.render(0).c_str(), "waiting"));
+}
+
+// ---- the burst property --------------------------------------------------------------
+// Random sequences of plain texts and commands (every table verb, unknown verbs, the
+// other accepted forms) from 1-3 chats, drained through the real poll cycle
+// (drainCycle over the offset cursor) until Telegram is empty. For every sequence:
+//   - every command is a turn of its own, rendered byte for byte as it was sent;
+//   - no other turn carries a command;
+//   - each chat's messages come out in the order they were sent;
+//   - every update is dispatched exactly once;
+//   - the extra poll cycles against the same sequence with the commands sent as plain
+//     text are at most the number of commands.
+
+struct Rng {
+  uint32_t s;
+  uint32_t next() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+  uint32_t below(uint32_t n) { return next() % n; }
+};
+
+struct Sent {
+  int32_t     id;
+  std::string chat;
+  std::string text;
+  std::string token;   // unique, appears in the rendered turn
+  bool        command;
+};
+
+static std::vector<Sent> randomBurst(Rng& r, bool commandsAsText) {
+  std::vector<Sent> out;
+  const int chats = 1 + (int)r.below(3);
+  const int n = 1 + (int)r.below(24);
+  for (int i = 0; i < n; ++i) {
+    Sent m;
+    m.id = 500 + i;
+    m.chat = std::to_string(1 + r.below((uint32_t)chats));
+    m.token = "k" + std::to_string(i) + "q";
+    m.command = r.below(3) == 0;
+    if (m.command) {
+      static const char* kForms[] = {"/%s %s", " /%s %s", "/%s@Example_bot %s", "/%s %s"};
+      const uint32_t pick = r.below((uint32_t)nimbus::orch::kCommandVerbCount + 1);
+      std::string verb = pick < nimbus::orch::kCommandVerbCount ? kCommandVerbs[pick].verb : "zzz";
+      if (r.below(5) == 0) for (char& ch : verb) ch = (char)toupper((unsigned char)ch);
+      char buf[96];
+      std::snprintf(buf, sizeof buf, kForms[r.below(4)], verb.c_str(), m.token.c_str());
+      m.text = buf;
+      if (commandsAsText) { m.text = "say " + m.token; m.command = false; }
+    } else {
+      m.text = "msg " + m.token;
+    }
+    out.push_back(m);
+  }
+  return out;
+}
+
+struct Turn {
+  std::string chat;
+  std::string text;
+  bool        command;
+};
+
+// Drain `msgs` to empty through drainCycle; returns the poll cycles it took.
+static int drainAll(const std::vector<Sent>& msgs, std::vector<Turn>& turns) {
+  OffsetServer srv;
+  srv.limit = 10;
+  for (const Sent& m : msgs) srv.all.push_back(txt(m.id, m.chat.c_str(), "u", m.text.c_str()));
+  nimbus::core::TgOffsetCursor cursor;
+  cursor.seed(500);
+  MessageBatcher b;
+  int cycles = 0;
+  for (; cycles < 100; ++cycles) {
+    bool any = false;
+    nimbus::orch::drainCycle(
+        b, cursor, [&](int32_t o) { return srv.fetch(o); }, [&](int i) { return srv.handle(i); },
+        [&](size_t i) {
+          any = true;
+          turns.push_back({b.chatIdAt(i), b.render(i).c_str(), b.commandAt(i)});
+        });
+    if (!any) break;
+  }
+  return cycles;
+}
+
+static std::vector<std::string> tokensIn(const std::string& t) {
+  std::vector<std::string> out;
+  for (size_t p = t.find('k'); p != std::string::npos; p = t.find('k', p + 1)) {
+    size_t q = p + 1;
+    while (q < t.size() && isdigit((unsigned char)t[q])) ++q;
+    if (q > p + 1 && q < t.size() && t[q] == 'q') out.push_back(t.substr(p, q - p + 1));
+  }
+  return out;
+}
+
+static void test_burst_property_commands_are_their_own_turns() {
+  Rng rng{0x5eed1234u};
+  int withCommands = 0;
+  for (int trial = 0; trial < 3000; ++trial) {
+    const uint32_t seed = rng.next();
+    Rng r1{seed}, r2{seed};
+    const std::vector<Sent> msgs = randomBurst(r1, false);
+    const std::vector<Sent> plain = randomBurst(r2, true);
+    std::vector<Turn> turns, plainTurns;
+    const int cycles = drainAll(msgs, turns);
+    const int baseline = drainAll(plain, plainTurns);
+    int commands = 0;
+    std::map<std::string, const Sent*> byToken;
+    std::map<std::string, std::vector<std::string>> sentOrder, gotOrder;
+    for (const Sent& m : msgs) {
+      byToken[m.token] = &m;
+      sentOrder[m.chat].push_back(m.token);
+      commands += m.command ? 1 : 0;
+    }
+    withCommands += commands ? 1 : 0;
+    char ctx[64];
+    std::snprintf(ctx, sizeof ctx, "trial %d seed 0x%08x", trial, (unsigned)seed);
+    std::map<std::string, int> seen;
+    for (const Turn& t : turns) {
+      const std::vector<std::string> toks = tokensIn(t.text);
+      TEST_ASSERT_FALSE_MESSAGE(toks.empty(), ctx);
+      for (const std::string& k : toks) {
+        const Sent* m = byToken.at(k);
+        seen[k]++;
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(m->chat.c_str(), t.chat.c_str(), ctx);
+        gotOrder[t.chat].push_back(k);
+        if (m->command) {   // its own turn, byte for byte
+          TEST_ASSERT_TRUE_MESSAGE(t.command, ctx);
+          TEST_ASSERT_EQUAL_UINT_MESSAGE(1, toks.size(), ctx);
+          TEST_ASSERT_EQUAL_STRING_MESSAGE(m->text.c_str(), t.text.c_str(), ctx);
+        } else {
+          TEST_ASSERT_FALSE_MESSAGE(t.command, ctx);
+        }
+      }
+    }
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(msgs.size(), seen.size(), ctx);   // none lost
+    for (const auto& kv : seen) TEST_ASSERT_EQUAL_INT_MESSAGE(1, kv.second, ctx);   // once
+    for (const auto& kv : sentOrder)                                                // order
+      TEST_ASSERT_TRUE_MESSAGE(gotOrder[kv.first] == kv.second, ctx);
+    TEST_ASSERT_TRUE_MESSAGE(cycles <= baseline + commands, ctx);
+  }
+  TEST_ASSERT_TRUE(withCommands > 1500);   // the generator really exercised commands
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_message_is_raw_text);
@@ -502,5 +724,10 @@ int main(int, char**) {
   RUN_TEST(test_drain_multi_chat_one_turn_each);
   RUN_TEST(test_drain_ackonly_advances_without_turn);
   RUN_TEST(test_drain_no_side_effect_past_cap_stop);
+  RUN_TEST(test_burst_splits_at_every_verb);
+  RUN_TEST(test_every_command_form_is_a_boundary);
+  RUN_TEST(test_commands_alone_and_in_a_row);
+  RUN_TEST(test_caps_never_mark_a_command_turn);
+  RUN_TEST(test_burst_property_commands_are_their_own_turns);
   return UNITY_END();
 }

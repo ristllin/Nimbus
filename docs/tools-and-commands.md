@@ -51,8 +51,16 @@ confused.
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
 | `/clear` | Forget the current conversation and its active task and start fresh: the next reply sees none of this chat's earlier messages, summary, or working notes. Long-term memory, files, and the chat history are kept. A bare `/clear` explains what will happen and asks; `/clear yes` does it. The web page has the same action for the web chat (Memory, then "Clear conversation"). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
+| `/fetch approve\|deny <id>` | Approve or deny a download the assistant queued (the same list as Memory & Files on the web page). |
 | `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 | `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |
+
+A command always runs on its own, even inside a burst. When several messages arrive
+together, the device answers them as one turn, but a command is never folded into
+that turn: "one", "two", "/help", "four" sent quickly gets one reply to "one" and
+"two", then the `/help` answer, then a reply to "four", in that order. Any message
+that starts with `/` counts, including a command the device does not know (it gets
+the "try /help" answer).
 
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time

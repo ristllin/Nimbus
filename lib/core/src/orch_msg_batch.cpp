@@ -2,58 +2,80 @@
 
 #include <cstdio>
 
-// CUM-398 rapid-message batcher. See msg_batch.h. Pure logic, host-tested; the
-// device seam (src/agent/telegram.cpp) fills it on the tg_poll task and emits one
-// turn per bucket. No concurrency, no I/O.
+// CUM-398 rapid-message batcher, with the command boundary. See msg_batch.h. Pure
+// logic, host-tested; the device seam (src/agent/telegram.cpp) fills it on the tg_poll
+// task and emits one turn per bucket. No concurrency, no I/O.
 namespace nimbus {
 namespace orch {
 
-MessageBatcher::Bucket* MessageBatcher::find(const std::string& chatId) {
-  for (auto& b : chats_)
+MessageBatcher::Bucket* MessageBatcher::lastBucket(const std::string& chatId) {
+  for (size_t i = chats_.size(); i-- > 0;) {
+    Bucket& b = chats_[i];
     if (b.chatId.size() == chatId.size() &&
         std::char_traits<char>::compare(b.chatId.c_str(), chatId.data(), chatId.size()) == 0)
       return &b;
+  }
   return nullptr;
+}
+
+void MessageBatcher::append(Bucket& b, const std::string& from, const std::string& text) {
+  b.msgs.emplace_back();
+  Msg& m = b.msgs.back();
+  m.chatFrom.assign(from.data(), from.size());
+  m.text.assign(text.data(), text.size());
+  b.bytes += text.size();
+  totalBytes_ += text.size();
+}
+
+// Another message for a chat whose newest bucket is still open: enforce the per-turn
+// count and byte caps and the shared total-bytes cap. A trip marks the bucket capped
+// (its render says more are waiting) and defers this message; the caller re-serves it
+// next drain.
+BatchAdd MessageBatcher::addToOpen(Bucket& b, const std::string& from, const std::string& text) {
+  const size_t n = text.size();
+  if (b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes + n > kBatchMaxBytesPerChat ||
+      totalBytes_ + n > kBatchMaxTotalBytes) {
+    b.capped = true;
+    return BatchAdd::Deferred;
+  }
+  append(b, from, text);
+  if (b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes >= kBatchMaxBytesPerChat)
+    return BatchAdd::ChatFull;
+  return BatchAdd::Accepted;
+}
+
+// A new turn: the chat's first message in this drain, a slash command, or the first
+// message after one. Two ceilings gate it; either means "re-serve this message, it did
+// not fit this drain", never a silent drop. A lone message always fits a fresh
+// accumulator (one Telegram or injected message is smaller than the total cap), so a
+// message can never be stuck. When the chat already has an open bucket, that bucket is
+// marked capped so its render says more are waiting; a command's own bucket is never
+// marked, so a command always renders byte for byte.
+BatchAdd MessageBatcher::addNewBucket(Bucket* last, const std::string& chatId,
+                                      const std::string& from, const std::string& text,
+                                      bool command) {
+  if (chats_.size() >= kBatchMaxChats || totalBytes_ + text.size() > kBatchMaxTotalBytes) {
+    if (last && !last->command) last->capped = true;
+    return BatchAdd::Deferred;
+  }
+  chats_.emplace_back();   // may move the buckets: `last` is not used past this point
+  Bucket& b = chats_.back();
+  b.chatId.assign(chatId.data(), chatId.size());
+  b.turnFrom.assign(from.data(), from.size());
+  b.command = command;
+  append(b, from, text);
+  if (command) return BatchAdd::CommandBoundary;
+  if (b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes >= kBatchMaxBytesPerChat)
+    return BatchAdd::ChatFull;
+  return BatchAdd::Accepted;
 }
 
 BatchAdd MessageBatcher::add(const std::string& chatId, const std::string& from,
                              const std::string& text) {
-  const size_t n = text.size();
-  Bucket* b = find(chatId);
-
-  if (!b) {
-    // A new chat. Two ceilings gate creation; either one means "re-serve this
-    // message, it did not fit this drain" - never a silent drop. A lone message is
-    // always accepted onto a fresh accumulator (a single Telegram/inject message is
-    // smaller than the total cap), so a message can never be permanently stuck.
-    if (chats_.size() >= kBatchMaxChats) return BatchAdd::Deferred;
-    if (totalBytes_ + n > kBatchMaxTotalBytes) return BatchAdd::Deferred;
-    chats_.emplace_back();
-    b = &chats_.back();
-    b->chatId.assign(chatId.data(), chatId.size());
-    b->turnFrom.assign(from.data(), from.size());
-  } else {
-    // An existing chat: enforce the per-chat count and byte caps and the shared
-    // total-bytes cap. A trip marks the bucket capped (its render says more are
-    // waiting) and defers this message; the caller re-serves it next drain.
-    if (b->msgs.size() >= kBatchMaxMsgsPerChat ||
-        b->bytes + n > kBatchMaxBytesPerChat ||
-        totalBytes_ + n > kBatchMaxTotalBytes) {
-      b->capped = true;
-      return BatchAdd::Deferred;
-    }
-  }
-
-  b->msgs.emplace_back();
-  Msg& m = b->msgs.back();
-  m.chatFrom.assign(from.data(), from.size());
-  m.text.assign(text.data(), text.size());
-  b->bytes  += n;
-  totalBytes_ += n;
-
-  if (b->msgs.size() >= kBatchMaxMsgsPerChat || b->bytes >= kBatchMaxBytesPerChat)
-    return BatchAdd::ChatFull;
-  return BatchAdd::Accepted;
+  const bool command = isCommandText(text);
+  Bucket* last = lastBucket(chatId);
+  if (last && !last->command && !command) return addToOpen(*last, from, text);
+  return addNewBucket(last, chatId, from, text, command);
 }
 
 PsString MessageBatcher::render(size_t i) const {

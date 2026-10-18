@@ -5,6 +5,7 @@
 
 #include "nimbus/profile.h"
 #include "nimbus/store/persist.h"   // PersistLedger + NvsUsage (CUM-479, host-tested)
+#include "nimbus/store/nvs_diag.h"  // RecentFails + the failure log line (host-tested)
 
 // config_nvs - device persistence glue for the portable Config and the active
 // operating Mode (plan §3.1 profiles, §3.6 mode_manager: "NVS-persisted,
@@ -91,9 +92,10 @@ struct NvsKv {
 
 // Every NVS write made through the store (agent::store setters) and the NVS saves
 // above (mode, profile mirror, BLE, device name) reports its verdict here. A failure
-// is recorded against the calling FreeRTOS task and logged ("nvs: write FAILED
-// key=<k> ...", one line per failing key per minute), and the verdict is returned
-// unchanged so a setter can `return notePersist(ok, key);`.
+// is recorded against the calling FreeRTOS task and in the recent-failure ring, it
+// raises the once-per-boot owner notice, and it is logged ("nvs: write FAILED [<k>]
+// ...", one line per failing key per minute). The verdict is returned unchanged so a
+// setter can `return notePersist(ok, key);`.
 bool notePersist(bool ok, const char* key);
 
 // A save route opens one of these BEFORE its first write and asks failed() before
@@ -117,5 +119,11 @@ bool nvsUsage(nimbus::store::NvsUsage& out);
 // Writes that did not land since boot, and the most recent failing key ("" none).
 uint32_t persistFailures();
 String   lastPersistFailKey();
+// The newest failed writes (key, sequence number, time), newest first, for /api/state
+// nvs.recentFails. Returns how many entries were copied (at most `max`).
+size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max);
+// The once-per-boot "settings storage is almost full" owner notice. A failed write
+// raises it; the Telegram poll task takes it (true exactly once) and sends the notice.
+bool takeStorageNotice();
 
 }  // namespace nimbus::sys

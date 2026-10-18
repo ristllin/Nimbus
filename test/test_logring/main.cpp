@@ -1,10 +1,15 @@
 #include <unity.h>
 
+#include <cstdio>
+#include <regex>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "nimbus/logring.h"
 #include "nimbus/log_sinks.h"
+#include "nimbus/orch/provider_slots.h"
+#include "nimbus/store/nvs_diag.h"
 
 using core::LogRing;
 
@@ -113,6 +118,68 @@ static void test_emit_serial_masks_unregistered_secret() {
   TEST_ASSERT_TRUE(serialGot.find("Bearer ***") != std::string::npos);
 }
 
+
+// ---- the NVS failure line keeps its key ------------------------------------------
+// On 14 Oct every "nvs: write FAILED key=<k>" line reached the log as "key=***": the
+// key= heuristic above masked the failing NVS key, so nobody could tell which write
+// failed. The line now carries the key in brackets (nimbus::store::kNvsWriteFailedFmt,
+// the format src/sys/config_nvs.cpp logs with). The class: EVERY NVS key the firmware
+// writes survives redaction in that line - every AKEY_* setting, the Wi-Fi keys, the
+// system keys, and the per-provider families - so a new key with a credential-looking
+// name cannot silently go dark again.
+
+static std::string readFile(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static void collect(const char* path, const char* pattern, std::set<std::string>& out) {
+  const std::string src = readFile(path);
+  const std::regex re(pattern);
+  for (auto it = std::sregex_iterator(src.begin(), src.end(), re); it != std::sregex_iterator(); ++it)
+    out.insert((*it)[1]);
+}
+
+static std::string failLine(const char* fmt, const std::string& key) {
+  char buf[256];
+  std::snprintf(buf, sizeof buf, fmt, key.c_str(), 288u, 20160u);
+  return buf;
+}
+
+static void test_nvs_fail_line_names_every_key_after_redaction() {
+  std::set<std::string> keys;
+  collect("src/agent/agent_config.h", R"re(#define\s+AKEY_\w+\s+"([^"]+)")re", keys);
+  collect("include/nimbus_config.h", R"re(#define\s+NIMBUS_KEY_\w+\s+"([^"]+)")re", keys);
+  collect("src/sys/config_nvs.cpp", R"re(constexpr char k\w+Key\[\]\s*=\s*"([^"]+)")re", keys);
+  TEST_ASSERT_TRUE(keys.size() > 100);   // the parse really found the settings
+  TEST_ASSERT_TRUE(keys.count("tgOffset") == 1);
+  for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; ++i) {
+    const std::string slug = nimbus::orch::kProviderSlots[i].slug;
+    for (const char* pre : {"vfy_", "mch_", "orchM_", "subM_"}) keys.insert(pre + slug);
+  }
+  for (const char* odd : {"key", "token", "pass", "secret", "apikey"}) keys.insert(odd);
+  const std::vector<std::string> none;
+  for (const std::string& k : keys) {
+    const std::string out = LogRing::redact(failLine(nimbus::store::kNvsWriteFailedFmt, k), none);
+    TEST_ASSERT_TRUE_MESSAGE(out.find("[" + k + "]") != std::string::npos, k.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("***") == std::string::npos, k.c_str());
+  }
+  // Counter-test: the old form loses the key, so the test above can see the class.
+  const std::string old = LogRing::redact(
+      failLine("nvs: write FAILED key=%s - storage full? (%u B free of %u B)", "tgOffset"), none);
+  TEST_ASSERT_TRUE(old.find("tgOffset") == std::string::npos);
+  // The device logs with the shared format, never a key= form.
+  const std::string cfg = readFile("src/sys/config_nvs.cpp");
+  TEST_ASSERT_TRUE(cfg.find("nimbus::store::kNvsWriteFailedFmt, k,") != std::string::npos);
+  TEST_ASSERT_TRUE(cfg.find("FAILED key=") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_registered_secret_masked);
@@ -123,5 +190,6 @@ int main(int, char**) {
   RUN_TEST(test_ring_push_redacts_and_bounds);
   RUN_TEST(test_emit_feeds_both_sinks_one_redaction);
   RUN_TEST(test_emit_serial_masks_unregistered_secret);
+  RUN_TEST(test_nvs_fail_line_names_every_key_after_redaction);
   return UNITY_END();
 }

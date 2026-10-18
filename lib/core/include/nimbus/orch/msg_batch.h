@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/command.h"
 #include "nimbus/orch/psram_alloc.h"
 #include "nimbus/telegram_offset.h"
 
@@ -15,6 +16,13 @@
 // the hard bounds (per-chat bytes/count, chat count, total bytes) so it can never
 // overflow, and render each chat's messages into a single model-facing turn text
 // with preserved per-message boundaries.
+//
+// A slash command never shares a turn (CommandBoundary): inside a "Message 1 of N"
+// block it would reach the model as conversation instead of running as a command.
+// So a command gets a bucket of its own, and a chat's messages after it start
+// another. A chat can therefore own several buckets in one drain; each bucket is one
+// turn, emitted in creation order, so the chat's order is kept. The bucket count is
+// bounded by kBatchMaxChats (turns per drain).
 //
 // It adds NO concurrency: the caller (the tg_poll task) fills it serially and
 // emits one turn per bucket, still single-task, single-TLS (AGENTS.md 4).
@@ -34,31 +42,41 @@ using PsString = std::basic_string<char, std::char_traits<char>, WorkingAllocato
 
 // Outcome of add(): whether the message was buffered, and whether a cap fired.
 enum class BatchAdd : uint8_t {
-  Accepted,    // buffered into its chat bucket; more of this chat still fits
-  ChatFull,    // buffered, but this chat has now reached a cap; the next add for it
-               // will be Deferred. (The caller may keep draining OTHER chats.)
-  Deferred,    // NOT buffered: a cap prevented it (this chat is full, the chat-count
-               // cap is hit for a new chat, or the total-bytes cap is hit). The
-               // caller must stop advancing its ack point and re-serve this message.
+  Accepted,         // buffered into its chat bucket; more of this chat still fits
+  ChatFull,         // buffered, but this chat's bucket has now reached a cap; the next
+                    // add for it will be Deferred. (The caller may keep draining OTHER
+                    // chats.)
+  CommandBoundary,  // buffered as a turn of its own: a slash command never shares a
+                    // turn. The chat's earlier messages stay one turn, the command is
+                    // the next, and the chat's next message starts another.
+  Deferred,         // NOT buffered: a cap prevented it (this chat's bucket is full, the
+                    // bucket-count cap is hit for a new turn, or the total-bytes cap is
+                    // hit). The caller must stop advancing its ack point and re-serve
+                    // this message.
 };
 
 class MessageBatcher {
  public:
-  // Add one message to chatId's bucket, in arrival order. `from` may be empty.
-  // Byte accounting counts the payload (text) only, not render scaffolding.
+  // Add one message to chatId's newest bucket, in arrival order (a command, or the
+  // first message after one, opens a new bucket). `from` may be empty. Byte
+  // accounting counts the payload (text) only, not render scaffolding.
   BatchAdd add(const std::string& chatId, const std::string& from, const std::string& text);
 
+  // Buckets (one turn each) in this drain. A chat owns more than one when a command
+  // split it.
   size_t chatCount() const { return chats_.size(); }
   bool   empty()     const { return chats_.empty(); }
 
-  // Chats are addressed by first-seen (insertion) index, so the caller emits turns
-  // in the order the chats first appeared in the drain. The accessors return
-  // NUL-terminated C strings (the device wraps them in an Arduino String).
+  // Buckets are addressed by creation index, so the caller emits turns in arrival
+  // order per chat. The accessors return NUL-terminated C strings (the device wraps
+  // them in an Arduino String).
   const char* chatIdAt(size_t i)   const { return chats_[i].chatId.c_str(); }
   // The sender to attribute the turn to (the FIRST message's `from` for this chat).
   const char* turnFromAt(size_t i) const { return chats_[i].turnFrom.c_str(); }
   size_t messageCountAt(size_t i)  const { return chats_[i].msgs.size(); }
   bool   cappedAt(size_t i)        const { return chats_[i].capped; }
+  // The bucket holds one slash command (its render is the command, byte for byte).
+  bool   commandAt(size_t i)       const { return chats_[i].command; }
 
   // Render chat i's buffered messages into ONE model-facing turn text:
   //   - exactly one message and not capped -> its raw text, unchanged (byte-for-byte
@@ -81,11 +99,16 @@ class MessageBatcher {
     PsString chatId;
     PsString turnFrom;
     std::vector<Msg, WorkingAllocator<Msg>> msgs;
-    size_t   bytes  = 0;      // running payload bytes (text only)
-    bool     capped = false;  // a message for this chat was shed (more waiting)
+    size_t   bytes   = 0;      // running payload bytes (text only)
+    bool     capped  = false;  // a message for this chat was shed (more waiting)
+    bool     command = false;  // sealed: one slash command, a turn of its own
   };
 
-  Bucket* find(const std::string& chatId);
+  Bucket* lastBucket(const std::string& chatId);   // this chat's newest bucket
+  void    append(Bucket& b, const std::string& from, const std::string& text);
+  BatchAdd addToOpen(Bucket& b, const std::string& from, const std::string& text);
+  BatchAdd addNewBucket(Bucket* last, const std::string& chatId, const std::string& from,
+                        const std::string& text, bool command);
 
   std::vector<Bucket, WorkingAllocator<Bucket>> chats_;
   size_t totalBytes_ = 0;
@@ -126,8 +149,8 @@ struct RawPage {
 };
 
 struct DrainResult {
-  int32_t ackOffset       = 0;  // commit this AFTER the turns run (per-page crash-safety)
-  int     turnsEmitted    = 0;  // == chat buckets left in the batcher (one turn each)
+  int32_t ackOffset       = 0;  // advance the offset cursor to this AFTER the turns run
+  int     turnsEmitted    = 0;  // == buckets left in the batcher (one turn each)
   int     messagesBatched = 0;
   bool    stopped         = false;  // stopped on a cap / busy slot (rest re-served)
   bool    fetchError      = false;  // the fetch failed: nothing accumulated (caller backs off)
@@ -140,14 +163,17 @@ struct DrainResult {
 //     inline side effect (queue a voice note, push a pending sender, ...).
 //
 // ONE page per call is deliberate and load-bearing for crash-safety. getUpdates
-// confirms a page server-side only when the NEXT page is fetched, so the caller must
-// run this page's turns AND durably commit DrainResult::ackOffset BEFORE the next
-// drain fetches the next page. Then each page is at-least-once with NO loss: a reset
-// (brownout / WDT / panic / OTA) mid-drain leaves the offset unmoved, so the whole
-// current page is re-served; a committed page is never re-run. Draining several pages
-// in one call (committing once at the end) would make earlier pages at-most-once - the
-// data-loss bug this shape exists to avoid. A rapid burst still fits one page = one
-// turn; a multi-page backlog drains one page per cycle.
+// confirms a page server-side only when the NEXT poll carries a higher offset, so the
+// caller runs this page's turns and only then advances its offset cursor to
+// DrainResult::ackOffset (drainCycle below), before the next drain fetches the next
+// page. Then each page is at-least-once with NO loss: a reset (brownout / WDT / panic /
+// OTA) mid-drain leaves the page unconfirmed, so the whole current page is re-served,
+// and a page the next poll confirmed is never re-run. The cursor lives in RAM; its
+// stored copy only seeds the cursor after a restart, so a failed write costs at most a
+// replay of the one page drained just before the restart, never a loop (see
+// TgOffsetCursor). Draining several pages in one call would make earlier pages
+// at-most-once - the data-loss bug this shape exists to avoid. A rapid burst still fits
+// one page; a multi-page backlog drains one page per cycle.
 //
 // handle(i) is called LAZILY and IN ORDER, and ONLY for updates the drain reaches: the
 // moment a text update trips a cap or a deferred slot is busy, the loop stops and never
@@ -155,7 +181,7 @@ struct DrainResult {
 // un-acked and is re-served (which would run it twice). Side effect and ack advance
 // together, update by update.
 //
-// On return the batcher holds one bucket per chat (the caller emits one turn each,
+// On return the batcher holds one bucket per turn (the caller emits one turn each,
 // reading render(i) one at a time so a single rendered text is alive at once, in PSRAM,
 // never a vector of them on internal SRAM). The batcher is cleared on ENTRY and left
 // populated on exit (the caller clears it after emitting).
@@ -187,6 +213,25 @@ DrainResult drainOnePage(MessageBatcher& batch, int32_t startOffset, FetchFn fet
   }
 
   r.turnsEmitted = static_cast<int>(batch.chatCount());
+  return r;
+}
+
+// One poll cycle's drain over the RAM offset cursor (TgOffsetCursor): fetch the page at
+// cursor.offset(), run one turn per bucket through emit(i) (i in [0, chatCount())),
+// then advance the cursor to the page's ack offset. The next getUpdates carries that
+// offset and so confirms this page server-side, whether or not the stored copy could
+// be written: the caller persists the cursor separately (cursor.persist), and a
+// failed write no longer replays anything while the device runs. On a fetch error
+// nothing runs and the cursor stays. The batcher is cleared on return.
+template <class FetchFn, class HandleFn, class EmitFn>
+DrainResult drainCycle(MessageBatcher& batch, nimbus::core::TgOffsetCursor& cursor,
+                       FetchFn fetchPage, HandleFn handle, EmitFn emit) {
+  DrainResult r = drainOnePage(batch, cursor.offset(), fetchPage, handle);
+  if (!r.fetchError) {
+    for (size_t i = 0; i < batch.chatCount(); ++i) emit(i);
+    cursor.advance(r.ackOffset);
+  }
+  batch.clear();
   return r;
 }
 

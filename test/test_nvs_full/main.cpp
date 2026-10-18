@@ -14,6 +14,7 @@
 
 #include "nimbus/orch/model_ledger.h"
 #include "nimbus/orch/provider_slots.h"
+#include "nimbus/store/nvs_diag.h"
 #include "nimbus/store/persist.h"
 
 // ============================================================================
@@ -753,6 +754,133 @@ static void test_model_price_store_reports_lfs_mrates() {
   TEST_ASSERT_TRUE(src.find("\"/data/usage_rprices.txt\"") != std::string::npos);
 }
 
+
+// ---- 6. the Telegram offset and the full-NVS visibility (lane A, 14 Oct loop) -----
+// The fifth recurrence of the class above: the Telegram poll loop threw away the
+// offset write's result and then RE-READ the stored offset after every drain, so a
+// full NVS replayed the same page forever. The RAM cursor (nimbus/telegram_offset.h,
+// property-tested in test_telegram_offset) is the truth while the device runs: the
+// stored offset is read exactly once, when the poll loop starts, and the only write
+// hands its verdict to the cursor (which retries and counts it).
+static void test_telegram_offset_read_once_and_checked() {
+  const std::string tg = readFile("src/agent/telegram.cpp");
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(1, countOf(tg, "store::telegramOffset()"),
+                                   "the stored Telegram offset is read once, at poll start");
+  TEST_ASSERT_TRUE(tg.find("g_cursor.seed(store::telegramOffset());") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(1, countOf(tg, "store::setTelegramOffset("));
+  TEST_ASSERT_TRUE(tg.find("g_cursor.persist(millis(), [](int32_t v) { return store::setTelegramOffset(v); });") !=
+                   std::string::npos);
+  // No other firmware file reads the stored offset to drive a poll.
+  for (const auto& e : std::filesystem::recursive_directory_iterator("src")) {
+    const std::string path = e.path().generic_string();
+    if (!e.is_regular_file() || path == "src/agent/telegram.cpp" || path == "src/agent/store.cpp" ||
+        path == "src/agent/store.h")
+      continue;
+    if (e.path().extension() != ".cpp" && e.path().extension() != ".h") continue;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(readFile(path.c_str()), "telegramOffset()"),
+                                     path.c_str());
+  }
+}
+
+// nvs.recentFails: every failure is kept (the log line is rate limited, this is not),
+// newest first, with a monotonic number so a reader can count failures between reads.
+static void test_recent_fails_ring() {
+  RecentFails rf;
+  RecentFails::Entry out[RecentFails::kRing];
+  TEST_ASSERT_EQUAL_size_t(0, rf.snapshot(out, RecentFails::kRing));
+  rf.note("tgOffset", 1000);
+  rf.note("usgLedger", 2000);
+  TEST_ASSERT_EQUAL_size_t(2, rf.snapshot(out, RecentFails::kRing));
+  TEST_ASSERT_EQUAL_STRING("usgLedger", out[0].key);
+  TEST_ASSERT_EQUAL_UINT32(2, out[0].seq);
+  TEST_ASSERT_EQUAL_STRING("tgOffset", out[1].key);
+  TEST_ASSERT_EQUAL_UINT32(1000, out[1].ms);
+  for (uint32_t i = 0; i < 20; ++i) rf.note(i % 2 ? "a_very_long_key_name_over_15" : "tgOffset", 3000 + i);
+  TEST_ASSERT_EQUAL_size_t(RecentFails::kRing, rf.snapshot(out, RecentFails::kRing));
+  TEST_ASSERT_EQUAL_UINT32(22, rf.total());
+  for (size_t i = 0; i < RecentFails::kRing; ++i) {
+    TEST_ASSERT_EQUAL_UINT32(22 - i, out[i].seq);   // newest first, contiguous
+    TEST_ASSERT_TRUE(std::strlen(out[i].key) <= 15);
+  }
+  TEST_ASSERT_EQUAL_size_t(3, rf.snapshot(out, 3));
+  rf.note(nullptr, 1);
+  rf.snapshot(out, 1);
+  TEST_ASSERT_EQUAL_STRING("?", out[0].key);
+}
+
+// The owner notice: nothing before a failure, exactly once after any number of them.
+static void test_storage_notice_once_per_boot() {
+  OnceNotice n;
+  TEST_ASSERT_FALSE(n.take());   // a healthy boot sends nothing
+  TEST_ASSERT_FALSE(n.pending());
+  for (int i = 0; i < 50; ++i) n.raise();
+  TEST_ASSERT_TRUE(n.pending());
+  TEST_ASSERT_TRUE(n.take());
+  for (int i = 0; i < 50; ++i) { n.raise(); TEST_ASSERT_FALSE(n.take()); }
+  TEST_ASSERT_TRUE(n.sent());
+  // Copy rules (AGENTS.md section 6): plain words, no em dash, no I/me, a next step.
+  const std::string t = kStorageNoticeText;
+  TEST_ASSERT_TRUE(t.find("\xE2\x80\x94") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find(" I ") == std::string::npos && t.find(" me ") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("remove connectors or provider keys") != std::string::npos);
+}
+
+// The wiring the notice and the ring depend on: notePersist records every failure and
+// raises the notice (atomic, any task); only the Telegram poll task takes it, on its
+// own outbound path (critique D1: never a send from the failing writer's task).
+static void test_failures_feed_the_ring_and_the_notice() {
+  const std::string cfg = readFile("src/sys/config_nvs.cpp");
+  const size_t fn = cfg.find("bool notePersist(bool ok, const char* key) {");
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  const std::string body = cfg.substr(fn, cfg.find("\n}\n", fn) - fn);
+  TEST_ASSERT_TRUE(body.find("s_recentFails.note(k, now);") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("s_storageNotice.raise();") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("send(") == std::string::npos);
+  size_t takers = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator("src")) {
+    if (!e.is_regular_file()) continue;
+    const std::string path = e.path().generic_string();
+    const size_t n = countOf(readFile(path.c_str()), "takeStorageNotice()");
+    if (path == "src/agent/telegram.cpp") TEST_ASSERT_EQUAL_size_t(1, n);
+    takers += n;
+  }
+  TEST_ASSERT_EQUAL_size_t(3, takers);   // the declaration, the definition, the poll task
+  const std::string tg = readFile("src/agent/telegram.cpp");
+  TEST_ASSERT_TRUE(tg.find("if (haveToken) sendStorageNotice();") != std::string::npos);
+}
+
+// GET /api/nvs/stats counts entries the way the partition does: the listing's string
+// arithmetic agrees with the full-partition fake above for every size up to the
+// connectors cap, and an int is one entry.
+static void test_listing_entry_math_matches_the_partition_model() {
+  for (size_t n = 0; n <= 3600; ++n)
+    TEST_ASSERT_EQUAL_size_t(FakeNvs::strEntries(n), nvsEntriesFor(NvsKind::Str, n + 1));
+  TEST_ASSERT_EQUAL_size_t(1, nvsEntriesFor(NvsKind::Int, 0));
+  TEST_ASSERT_EQUAL_size_t(2 + 4, nvsEntriesFor(NvsKind::Blob, 100));
+  TEST_ASSERT_EQUAL_STRING("str", nvsKindName(NvsKind::Str));
+}
+
+// The listing names keys and sizes, never values: the route is owner-only, the
+// inventory opens namespaces read-only, asks NVS for sizes with a NULL buffer only,
+// and writes nothing.
+static void test_nvs_stats_names_never_values() {
+  const std::string web = readFile("src/net/webui.cpp");
+  const size_t r = web.find("s_server.on(\"/api/nvs/stats\", HTTP_GET");
+  TEST_ASSERT_TRUE(r != std::string::npos);
+  const size_t body = web.find('{', r);
+  const size_t gate = web.find("if (authBlocked(r)) return;", r);
+  TEST_ASSERT_TRUE(gate != std::string::npos && gate - body < 16);   // the first statement
+  const std::string inv = readFile("src/sys/nvs_inventory.cpp");
+  TEST_ASSERT_EQUAL_size_t(1, countOf(inv, "nvs_get_str("));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(inv, "nvs_get_blob("));
+  TEST_ASSERT_TRUE(inv.find("nvs_get_str(h, key, nullptr, &len)") != std::string::npos);
+  TEST_ASSERT_TRUE(inv.find("nvs_get_blob(h, key, nullptr, &len)") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(0, countOf(inv, "nvs_get_i") + countOf(inv, "nvs_get_u"));
+  TEST_ASSERT_TRUE(inv.find("NVS_READWRITE") == std::string::npos);
+  TEST_ASSERT_TRUE(inv.find("NVS_READONLY") != std::string::npos);
+  TEST_ASSERT_TRUE(inv.find("nvs_set_") == std::string::npos && inv.find("nvs_erase_") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_reply_is_507_storage_full_never_ok);
@@ -777,5 +905,11 @@ int main(int, char**) {
   RUN_TEST(test_web_ui_shows_the_storage_full_text);
   RUN_TEST(test_model_price_write_failure_is_507_with_ram_reverted);
   RUN_TEST(test_model_price_store_reports_lfs_mrates);
+  RUN_TEST(test_telegram_offset_read_once_and_checked);
+  RUN_TEST(test_recent_fails_ring);
+  RUN_TEST(test_storage_notice_once_per_boot);
+  RUN_TEST(test_failures_feed_the_ring_and_the_notice);
+  RUN_TEST(test_listing_entry_math_matches_the_partition_model);
+  RUN_TEST(test_nvs_stats_names_never_values);
   return UNITY_END();
 }

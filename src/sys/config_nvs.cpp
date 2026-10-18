@@ -78,6 +78,12 @@ static bool putIntNoted(const char* key, int32_t v) {
   return notePersist(nvsReady() && solide::memory::setInt(key, v), key);
 }
 
+// Every failure, for /api/state nvs.recentFails (under s_ledgerMux), and the owner
+// notice it raises (atomic; the Telegram poll task sends it on its own outbound path,
+// never the failing writer's task).
+static nimbus::store::RecentFails s_recentFails;
+static nimbus::store::OnceNotice  s_storageNotice;
+
 bool notePersist(bool ok, const char* key) {
   if (ok) return true;
   const char* k = key ? key : "?";
@@ -85,17 +91,28 @@ bool notePersist(bool ok, const char* key) {
   const uintptr_t task = currentTask();   // no FreeRTOS call inside the critical section
   portENTER_CRITICAL(&s_ledgerMux);
   s_ledger.noteFailure(task, k);
+  s_recentFails.note(k, now);
   const bool log = shouldLogLocked(k, now);
   portEXIT_CRITICAL(&s_ledgerMux);
+  s_storageNotice.raise();
   if (log) {
     nimbus::store::NvsUsage u;
     nvsUsage(u);
-    agent::alogcf(nimbus::errlog::cat::kNvs,
-                  "nvs: write FAILED key=%s - storage full? (%u B free of %u B)", k,
+    // The key in brackets, not after "key=": the log redactor masks a key= value.
+    agent::alogcf(nimbus::errlog::cat::kNvs, nimbus::store::kNvsWriteFailedFmt, k,
                   (unsigned)u.freeBytes, (unsigned)u.totalBytes);
   }
   return false;
 }
+
+size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max) {
+  portENTER_CRITICAL(&s_ledgerMux);
+  const size_t n = s_recentFails.snapshot(out, max);
+  portEXIT_CRITICAL(&s_ledgerMux);
+  return n;
+}
+
+bool takeStorageNotice() { return s_storageNotice.take(); }
 
 SaveScope::SaveScope() : since_(0), task_(currentTask()) {
   portENTER_CRITICAL(&s_ledgerMux);

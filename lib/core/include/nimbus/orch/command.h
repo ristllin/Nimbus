@@ -12,6 +12,7 @@
 //   - isCommand is true only when the trimmed text begins with '/'.
 
 #include <cctype>
+#include <cstddef>
 #include <string>
 
 namespace nimbus {
@@ -47,6 +48,45 @@ inline Command parseCommand(const std::string& raw) {
   c.args = raw.substr(as, ae - as);
   return c;
 }
+
+// ---- the verb table ------------------------------------------------------------
+// Every verb the device answers deterministically (agent::orchestrator::handleMessage
+// dispatches each one, before any model turn), and whether only the owner may run
+// it. Lifted out of an inline boolean so one list drives the owner gate and the tests
+// that cover every command: the batch rule below (test_orch_msg_batch) and the
+// dispatcher and docs guards (test_orch_command_parse). A verb added here without a
+// handler, or a handler without an entry here, fails those guards.
+struct CommandVerb {
+  const char* verb;       // lowercase, no leading '/'
+  bool        ownerOnly;  // an allow-listed member may converse but not run it
+};
+
+inline constexpr CommandVerb kCommandVerbs[] = {
+    {"help", false},   {"start", false},  {"update", true}, {"loops", true},
+    {"loop", true},    {"compact", true}, {"skill", true},  {"fetch", true},
+    {"remind", true},  {"clear", true},   {"mcp", true},    {"play", true},
+};
+inline constexpr size_t kCommandVerbCount = sizeof(kCommandVerbs) / sizeof(kCommandVerbs[0]);
+
+// The table entry for a parsed verb, or nullptr for a verb the device does not know
+// (it still answers those deterministically: "try /help").
+inline const CommandVerb* findCommandVerb(const std::string& verb) {
+  for (const CommandVerb& v : kCommandVerbs)
+    if (verb == v.verb) return &v;
+  return nullptr;
+}
+
+inline bool isOwnerVerb(const std::string& verb) {
+  const CommandVerb* v = findCommandVerb(verb);
+  return v && v->ownerOnly;
+}
+
+// A message that must run as its own turn and never share one with other messages:
+// any slash command, known verb or not. Inside a "Message 1 of N" batch the text no
+// longer starts with '/', so the command would reach the model as conversation
+// instead of running (the 14 Oct "/skill approve" that never ran). An unknown verb is
+// included: its deterministic "try /help" answer must not be swallowed either.
+inline bool isCommandText(const std::string& text) { return parseCommand(text).isCommand; }
 
 }  // namespace orch
 }  // namespace nimbus

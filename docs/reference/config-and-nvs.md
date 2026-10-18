@@ -102,8 +102,12 @@ fallback is not power-atomic: a power cut inside that one write can lose the val
 | `GET /api/state` | `nvs.used`, `nvs.free`, `nvs.total` | Bytes, from `nvs_get_stats` over the whole partition. `free` excludes the garbage-collection page, so it is the room left for new data |
 | `GET /api/state` | `nvs.low` | `free` is below the 4 KB headroom guide |
 | `GET /api/state` | `nvs.fails`, `nvs.lastFail` | Writes that did not land since boot, and the most recent failing key |
+| `GET /api/state` | `nvs.recentFails` | The newest 8 failed writes, newest first: `key`, `n` (the failure's number since boot, so a gap between two reads counts the failures in between) and `ageS` (seconds ago). Every failure is recorded, unlike the log line |
+| `GET /api/state` | `tgOffsetSaved`, `tgPoll` | Whether the stored Telegram offset matches the one in use (see `tgOffset` below), plus `tgPoll.offsetWrites`, `offsetWriteFails`, `staleDrops` (updates dropped below the offset, expected 0), `backoffMs` and `fails` (the getUpdates backoff) |
+| `GET /api/nvs/stats` (sign-in required) | `entries`, `keys[]` | What fills the partition: totals in 32-byte entries (`used`, `free`, `total`, `namespaces`), and every key in every namespace with `ns`, `key`, `type` (`int`, `str`, `blob`), `bytes` and `entries`. Names and sizes only, never a value. At most 512 keys (`truncated` says when more exist) |
 | Test console `STATUS` | `nvs=<used>/<total> nvsfree=<free> nvsfail=<n>` | The same numbers, in bytes, at the end of the line |
-| Device log (`GET /api/log`, durable `nvs` class) | `nvs: write FAILED key=<k> - storage full? (<free> B free of <total> B)` | One line per failing key per minute |
+| Device log (`GET /api/log`, durable `nvs` class) | `nvs: write FAILED [<k>] - storage full? (<free> B free of <total> B)` | One line per failing key per minute. The key sits in brackets so the log's secret masking (which hides any `key=` value) leaves it readable |
+| Telegram, to the owner | "settings storage is almost full, so some changes may not be saved..." | Sent once per boot, after the first write that did not land, by the Telegram task on its own send path. Needs a bot token and an owner chat |
 
 ## NVS keys
 
@@ -186,7 +190,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.6`, `ANT_MODEL` =
 | `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). | Yes |
 | `tgBotName` | string | `""` | The connected bot's `@username` (from getMe), display only. | Yes |
 | `tgPublic` | bool | `false` | Open access: accept anyone who messages the bot. Default off. | Yes |
-| `tgOffset` | int | `0` | Telegram long-poll offset | Yes (internal) |
+| `tgOffset` | int | `0` | Telegram long-poll offset: a copy of the one in use, read once when the Telegram task starts. While the device runs, the offset in RAM is the truth and only moves forward, so a write that does not land (a full NVS) never makes Telegram serve a page again; a restart right after a page can repeat that one page. Written once per new page; while a write is owed and failing, retried at most once a minute (`tgOffsetSaved` in `/api/state` reads `false` meanwhile). A token change resets it to `0`, stored as an erase, which lands on a full NVS too | Yes (internal) |
 
 ### Cloud access / relay (`src/agent/store.cpp`)
 

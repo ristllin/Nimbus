@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "nimbus/tg_updates.h"   // nimbus::tg::Update - what the inbound observer sees
+
 // telegram - Telegram Bot API long-poll client for Nimbus, ported from
 // Nuage-Solide src/telegram_client.{h,cpp} (Head Orchestrator v2).
 //
@@ -47,10 +49,36 @@ using AttachmentSink = bool (*)(const String& chatId, const String& from,
                                 const String& mime, uint32_t fileSize,
                                 int kind, const String& caption);
 
+// ---- observer seams (the Telegram archive attaches here) ----------------------
+// Inbound: called on the poll task for EVERY getUpdates update the drain reaches,
+// first, before the replay guard, the allowlist, classification, moderation and
+// batching, so a refused, stale or deferred update is still seen. An update past a
+// stop point (a busy voice or file slot, a batch cap) is seen again when Telegram
+// re-serves it next cycle, and a restart can re-serve one page: dedupe by update_id.
+// It runs inside the poll cycle, so keep it short.
+using InboundObserver = void (*)(const nimbus::tg::Update& u);
+
+// Outbound: called once for EVERY message the device sends to Telegram: a text
+// before it is split into numbered parts (send(), on the CALLER's task, any task), a
+// notice the poll task sends directly, and a media file just before its upload (poll
+// task). It is called when the send is attempted, not after Telegram confirms it.
+// Keep it non-blocking; queue any heavy work.
+struct OutboundItem {
+  const char* chatId;
+  const char* kind;   // "text" | "document" | "photo" | "voice" | "audio"
+  const char* text;   // the whole text, or the media caption ("" for none)
+  const char* path;   // media source file ("" for text)
+  bool        sd;     // path is on the SD card (memory::dataFs), not LittleFS
+};
+using OutboundObserver = void (*)(const OutboundItem& item);
+
 void begin(const String& token, const String& allowlist, MessageCallback cb);
 void setTick(TickCallback cb);
 void setSttSink(SttSink cb);   // optional; voice is unverified here
 void setAttachmentSink(AttachmentSink cb);   // optional; files lane plugs in here
+// Optional, set once at boot before begin(); nullptr (the default) observes nothing.
+void setInboundObserver(InboundObserver cb);
+void setOutboundObserver(OutboundObserver cb);
 
 // Inject a message as if it arrived from Telegram - enqueued + dispatched by the
 // poll task (correct stack + TLS context). Used by the web test endpoint.
@@ -120,6 +148,19 @@ void setStagedWork(bool (*pending)(), void (*run)());
 // self-heal hooks (a future net-recovery ladder can read these).
 uint32_t consecutiveFails();
 int      activeJobCount();
+
+// Poll health for /api/state, published by the poll task each cycle: the getUpdates
+// offset cursor (nimbus::core::TgOffsetCursor: RAM is the truth while the device
+// runs, NVS keeps a copy for restarts) and the getUpdates backoff.
+struct PollStatus {
+  bool     offsetSaved;        // the stored offset matches RAM (false while a write is owed)
+  uint32_t offsetWrites;       // offset write attempts since boot: one per new page,
+                               // and at most one retry a minute while a write is owed
+  uint32_t offsetWriteFails;   // of those, the ones that did not land
+  uint32_t staleDrops;         // updates below the cursor that were dropped (expected 0)
+  uint32_t backoffMs;          // time left before the next getUpdates may go out
+};
+PollStatus pollStatus();
 
 // CUM-308: the debounced "the bot token was rejected" verdict. A token verified
 // once (getMe) can be revoked later while the poll loop keeps running - Telegram

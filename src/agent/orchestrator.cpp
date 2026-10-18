@@ -1580,11 +1580,9 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       const std::string& v = cmd.verb;
       // Owner-only verbs: they schedule unattended turns, install firmware, or
       // approve the owner's downloads - an allow-listed MEMBER may converse but
-      // not run these. (`fetch` was missing here - a member could approve/deny
-      // the owner's queued URL downloads; closed alongside adding `remind`.)
-      const bool ownerCmd = (v == "loops" || v == "loop" || v == "update" || v == "compact" ||
-                             v == "skill" || v == "fetch" || v == "remind" || v == "clear" ||
-                             v == "mcp" || v == "play");
+      // not run these. One table (nimbus::orch::kCommandVerbs) says which; the
+      // batcher's command boundary and the dispatcher guard iterate the same table.
+      const bool ownerCmd = nimbus::orch::isOwnerVerb(v);
       const bool owner = pseudo || agent::telegram::isOwner(chatId);
       // Every deterministic command reply SELF-IDENTIFIES (device name + fw).
       // Live confusion 2026-07-24: two devices sharing one bot token take turns

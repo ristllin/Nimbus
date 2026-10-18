@@ -61,6 +61,7 @@
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
 #include "../sys/config_nvs.h"          // device identity (devName, P2)
+#include "../sys/nvs_inventory.h"       // GET /api/nvs/stats - key names + entry counts
 #include "../hw/tft_out.h"                     // /api/screenshot - the bytes on the glass
 #include <solide/display_tft.h>                 // ...and the panel geometry it advertises
 #include <solide/board.h>                       // board identity + panel-fixed capability
@@ -520,6 +521,8 @@ static void buildState(String& out) {
   // total from nvs_get_stats (free excludes the page NVS holds back for garbage
   // collection), `low` below the 4 KB owner-config headroom, plus the writes that did
   // not land since boot and the last failing key - the "why did my save 507" evidence.
+  // recentFails: the newest failed writes, newest first, each with its sequence number
+  // (n, 1-based since boot) and age, so a reader can count which keys fail and how often.
   {
     nimbus::store::NvsUsage u;
     JsonObject nvs = d["nvs"].to<JsonObject>();
@@ -530,6 +533,29 @@ static void buildState(String& out) {
     nvs["low"]      = u.low;
     nvs["fails"]    = sys::persistFailures();
     nvs["lastFail"] = sys::lastPersistFailKey();
+    nimbus::store::RecentFails::Entry rf[nimbus::store::RecentFails::kRing];
+    const size_t nrf = sys::recentPersistFails(rf, nimbus::store::RecentFails::kRing);
+    JsonArray rfa = nvs["recentFails"].to<JsonArray>();
+    const uint32_t nowMs = millis();
+    for (size_t i = 0; i < nrf; ++i) {
+      JsonObject e = rfa.add<JsonObject>();
+      e["key"]  = (const char*)rf[i].key;
+      e["n"]    = rf[i].seq;
+      e["ageS"] = (uint32_t)(nowMs - rf[i].ms) / 1000;
+    }
+  }
+  // The Telegram getUpdates offset cursor and backoff (telegram::pollStatus). RAM is the
+  // offset's truth while the device runs; tgOffsetSaved is false while its stored copy
+  // (only read at the next start) is behind, for example on a full NVS.
+  {
+    const agent::telegram::PollStatus ps = agent::telegram::pollStatus();
+    d["tgOffsetSaved"] = ps.offsetSaved;
+    JsonObject tp = d["tgPoll"].to<JsonObject>();
+    tp["offsetWrites"]     = ps.offsetWrites;
+    tp["offsetWriteFails"] = ps.offsetWriteFails;
+    tp["staleDrops"]       = ps.staleDrops;
+    tp["backoffMs"]        = ps.backoffMs;
+    tp["fails"]            = agent::telegram::consecutiveFails();
   }
 
   // HAL health (solide::begin per-subsystem) - which peripherals came up at boot.
@@ -1740,6 +1766,40 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;  // strict gate: NO data before identification (owner R2)
     String s; buildState(s);
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
+  // What fills the settings storage (NVS): every key in every namespace with its type,
+  // size and entry count, plus the partition totals in entries. Names and sizes only,
+  // never a value (nvs_inventory reads sizes with a NULL buffer). Owner sign-in only.
+  s_server.on("/api/nvs/stats", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    JsonDocument d(&agent::PsramJsonAllocator::instance());
+    sys::NvsEntryTotals t;
+    d["ok"] = sys::nvsEntryTotals(t);
+    JsonObject part = d["entries"].to<JsonObject>();
+    part["used"] = t.used;
+    part["free"] = t.free;
+    part["total"] = t.total;
+    part["namespaces"] = t.namespaces;
+    JsonArray keys = d["keys"].to<JsonArray>();
+    bool truncated = false;
+    const size_t listed = sys::nvsForEachKey(
+        [&](const sys::NvsItem& it) {
+          JsonObject k = keys.add<JsonObject>();
+          k["ns"] = it.ns;   // copied: the iterator's buffers are reused
+          k["key"] = it.key;
+          k["type"] = nimbus::store::nvsKindName(it.kind);
+          k["bytes"] = it.bytes;
+          k["entries"] = it.entries;
+        },
+        nimbus::store::kNvsListMaxKeys, &truncated);
+    d["count"] = (uint32_t)listed;
+    d["truncated"] = truncated;
+    String out;
+    serializeJson(d, out);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", out);
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
   });
