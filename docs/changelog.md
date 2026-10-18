@@ -11,9 +11,9 @@ installs it when you approve ([how updates work](ota.md)).
 Found on a desk device whose settings storage filled up on 14 Oct: Telegram served the same messages again every few seconds, a photo was taken in 17 times and one batch of messages was answered 11 times. Reproduced on a bench device before the fix.
 
 - **Messages are never handled twice because storage is full.** The device remembers which Telegram messages it has handled in memory while it runs and only keeps a copy in its settings storage for restarts. When that storage is full, Telegram still learns the messages were handled, so nothing repeats. A restart right after a message can repeat that last batch once.
-- **Commands in a burst run as commands.** Several messages sent quickly are still answered together, but a command among them (such as `/skill approve`) now runs on its own, in order, instead of being read as part of the conversation.
+- **Commands in a burst run as commands.** Several messages sent quickly are still answered together, but a command among them (such as `/skill approve`) now runs on its own, in order, instead of being read as part of the conversation. If the device restarts in the middle, it repeats at most the message it was handling at that moment, never a command it had already finished, and a forwarded message that starts with `/` is read as a message, never run.
 - **See what fills the settings storage.** The device tells the owner once on Telegram when a setting could not be saved, the device log names the setting that failed, and the web API lists every stored setting with its size (never its value).
-- **Telegram errors slow the device down instead of speeding it up.** When Telegram answers with an error, including "too many requests", the device waits as long as Telegram asks before it checks for messages again.
+- **The device backs off when Telegram answers with an error.** Any error answer, including "too many requests", now makes the device wait before it checks for messages again, for at least as long as Telegram asks, instead of asking again every second.
 
 ## v4.5.13 - Prices and usage per model
 

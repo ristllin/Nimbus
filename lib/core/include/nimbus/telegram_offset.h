@@ -34,8 +34,9 @@ inline int32_t nextTelegramOffset(int32_t currentOffset, int32_t updateId) {
 // re-serves that one page (at-least-once, as before), and every earlier page was
 // already confirmed server-side by a later poll, so at most one page ever replays.
 //
-// Persisting: one write attempt per newly acked page and, while a write is owed and
-// failing, at most one retry per kRetryQuietMs. The cap keeps the persist-failure
+// Persisting: one write attempt per new ack (a page, or each bucket of a page that
+// holds a command, while writes land) and, while a write is owed and failing, at most
+// one retry per kRetryQuietMs. The cap keeps the persist-failure
 // count and the device log readable on a full NVS (one failure per page instead of
 // one per poll cycle). It is not about flash wear: a refused one-entry int write
 // cannot force a page erase at 0 free entries.
@@ -52,17 +53,18 @@ class TgOffsetCursor {
     offset_ = stored > 0 ? stored : 0;
     stored_ = offset_;
     newAck_ = false;
-    tried_ = false;
+    pageFailed_ = false;
   }
 
   int32_t offset() const { return offset_; }
 
-  // Move forward to a drain's ack offset. Never backward. True when it moved (a new
-  // page was acked, so a write is owed and attempted on the next persist()).
+  // Move forward to an ack offset (a page's, or a bucket's inside a page). Never
+  // backward. True when it moved: a write is owed, and attempted on the next persist().
   bool advance(int32_t ackOffset) {
     if (ackOffset <= offset_) return false;
     offset_ = ackOffset;
-    newAck_ = true;
+    if (!pageFailed_) newAck_ = true;   // a page that already failed a write waits
+    ++acks_;
     return true;
   }
 
@@ -72,32 +74,57 @@ class TgOffsetCursor {
   void reset() {
     offset_ = 0;
     newAck_ = true;
+    pageFailed_ = false;
+    ++acks_;
   }
 
   // The stored copy matches RAM (false while a write is owed).
   bool saved() const { return offset_ == stored_; }
 
+  // A new page is about to run (drainCycle calls this after a good fetch). A page gets
+  // at most one failed write: once a write failed inside it (a checkpoint on a full
+  // NVS), its later acks owe no immediate write and wait for the once-a-minute retry.
+  void pageStart() { pageFailed_ = false; }
+
   // Called after every drain and on every idle cycle. When a write is owed and due,
   // calls write(offset) -> bool (true when it landed) and returns true. A write is due
-  // at once for a newly acked page, otherwise at most once per kRetryQuietMs.
+  // at once for a new ack, otherwise at most once per kRetryQuietMs. (Whenever a write
+  // is owed without a new ack, an attempt already happened, so lastTryMs_ is valid.)
   template <class WriteFn>
   bool persist(uint32_t nowMs, WriteFn write) {
     if (offset_ == stored_) {
       newAck_ = false;
       return false;
     }
-    const bool due = newAck_ || !tried_ || (uint32_t)(nowMs - lastTryMs_) >= kRetryQuietMs;
-    if (!due) return false;
-    newAck_ = false;
-    tried_ = true;
-    lastTryMs_ = nowMs;
-    ++writes_;
-    if (write(offset_)) {
-      stored_ = offset_;
-    } else {
-      ++writeFails_;
-    }
+    if (!newAck_ && (uint32_t)(nowMs - lastTryMs_) < kRetryQuietMs) return false;
+    attempt(nowMs, write);
     return true;
+  }
+
+  // Inside a page with a command: store the offset after each bucket, so a restart
+  // re-runs at most the bucket in flight (a command whose turn finished, and whose
+  // checkpoint landed, is not run again). Every
+  // command page tries, even after an earlier failure (room may have come back); once
+  // a write failed inside this page (a full NVS) it stops, so the page costs at most
+  // one failed write and the retry falls back to persist()'s once-a-minute pace.
+  template <class WriteFn>
+  bool checkpoint(uint32_t nowMs, WriteFn write) {
+    if (offset_ == stored_ || pageFailed_) return false;
+    attempt(nowMs, write);
+    return true;
+  }
+
+  // The long-poll timeout (seconds) for the next cycle. While a write is owed, it is
+  // cut so the cycle comes round when the retry is due: an owed write then lands
+  // within kRetryQuietMs of room appearing even on an idle bot (a 30 s long-poll would
+  // otherwise add up to 30 s), for at most one extra getUpdates a minute.
+  int longPollS(int wantS, uint32_t nowMs) const {
+    if (offset_ == stored_ || newAck_) return wantS;
+    const uint32_t since = nowMs - lastTryMs_;
+    const uint32_t left = since >= kRetryQuietMs ? 0 : kRetryQuietMs - since;
+    const int s = (int)((left + 999) / 1000);
+    if (s < 1) return 1;
+    return s < wantS ? s : wantS;
   }
 
   // Drop guard: false (and counted) for an update id below the cursor, which Telegram
@@ -109,16 +136,31 @@ class TgOffsetCursor {
     return false;
   }
 
+  uint32_t acks() const { return acks_; }   // times the offset moved (or was reset)
   uint32_t writeAttempts() const { return writes_; }
   uint32_t writeFails() const { return writeFails_; }
   uint32_t staleDropped() const { return staleDropped_; }
 
  private:
-  int32_t  offset_ = 0;        // RAM truth: the offset the next getUpdates carries
-  int32_t  stored_ = 0;        // the last value known to be in NVS
-  bool     newAck_ = false;    // a newly acked page owes a write now
-  bool     tried_ = false;     // lastTryMs_ is valid
+  template <class WriteFn>
+  void attempt(uint32_t nowMs, WriteFn write) {
+    newAck_ = false;
+    lastTryMs_ = nowMs;
+    ++writes_;
+    if (write(offset_)) {
+      stored_ = offset_;
+    } else {
+      ++writeFails_;
+      pageFailed_ = true;
+    }
+  }
+
+  int32_t  offset_ = 0;          // RAM truth: the offset the next getUpdates carries
+  int32_t  stored_ = 0;          // the last value known to be in NVS
+  bool     newAck_ = false;      // a new ack owes a write now
+  bool     pageFailed_ = false;  // a write failed inside the current page
   uint32_t lastTryMs_ = 0;
+  uint32_t acks_ = 0;
   uint32_t writes_ = 0;
   uint32_t writeFails_ = 0;
   uint32_t staleDropped_ = 0;

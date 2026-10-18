@@ -60,7 +60,11 @@ together, the device answers them as one turn, but a command is never folded int
 that turn: "one", "two", "/help", "four" sent quickly gets one reply to "one" and
 "two", then the `/help` answer, then a reply to "four", in that order. Any message
 that starts with `/` counts, including a command the device does not know (it gets
-the "try /help" answer).
+the "try /help" answer). A forwarded message never runs as a command, even when it
+starts with `/`: the assistant reads it as a forwarded message. If the device
+restarts in the middle of a burst that holds a command, it picks up where it
+stopped: it repeats at most the message it was handling when it restarted, never a
+command it had already finished.
 
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time

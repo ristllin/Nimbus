@@ -441,6 +441,35 @@ static void sendConfigPage(AsyncWebServerRequest* r) {
   r->send(res);
 }
 
+// nvs.recentFails: the newest failed NVS writes, newest first, each with its number
+// since boot (n) and age, so a reader can count which keys fail and how often.
+static void addRecentFails(JsonObject nvs) {
+  nimbus::store::RecentFails::Entry rf[nimbus::store::RecentFails::kRing];
+  const size_t nrf = sys::recentPersistFails(rf, nimbus::store::RecentFails::kRing);
+  JsonArray rfa = nvs["recentFails"].to<JsonArray>();
+  const uint32_t nowMs = millis();
+  for (size_t i = 0; i < nrf; ++i) {
+    JsonObject e = rfa.add<JsonObject>();
+    e["key"]  = (const char*)rf[i].key;   // copied by ArduinoJson (not a literal)
+    e["n"]    = rf[i].seq;
+    e["ageS"] = (uint32_t)(nowMs - rf[i].ms) / 1000;
+  }
+}
+
+// The Telegram getUpdates offset cursor and backoff (telegram::pollStatus). RAM is the
+// offset's truth while the device runs; tgOffsetSaved is false while its stored copy
+// (only read at the next start) is behind, for example on a full NVS.
+static void addTgPollState(JsonDocument& d) {
+  const agent::telegram::PollStatus ps = agent::telegram::pollStatus();
+  d["tgOffsetSaved"] = ps.offsetSaved;
+  JsonObject tp = d["tgPoll"].to<JsonObject>();
+  tp["offsetWrites"]     = ps.offsetWrites;
+  tp["offsetWriteFails"] = ps.offsetWriteFails;
+  tp["staleDrops"]       = ps.staleDrops;
+  tp["backoffMs"]        = ps.backoffMs;
+  tp["fails"]            = agent::telegram::consecutiveFails();
+}
+
 static void buildState(String& out) {
   JsonDocument d;
   const int mode = s_wc.currentMode ? s_wc.currentMode()
@@ -521,8 +550,7 @@ static void buildState(String& out) {
   // total from nvs_get_stats (free excludes the page NVS holds back for garbage
   // collection), `low` below the 4 KB owner-config headroom, plus the writes that did
   // not land since boot and the last failing key - the "why did my save 507" evidence.
-  // recentFails: the newest failed writes, newest first, each with its sequence number
-  // (n, 1-based since boot) and age, so a reader can count which keys fail and how often.
+  // recentFails (addRecentFails) and the Telegram offset state (addTgPollState) follow.
   {
     nimbus::store::NvsUsage u;
     JsonObject nvs = d["nvs"].to<JsonObject>();
@@ -533,30 +561,9 @@ static void buildState(String& out) {
     nvs["low"]      = u.low;
     nvs["fails"]    = sys::persistFailures();
     nvs["lastFail"] = sys::lastPersistFailKey();
-    nimbus::store::RecentFails::Entry rf[nimbus::store::RecentFails::kRing];
-    const size_t nrf = sys::recentPersistFails(rf, nimbus::store::RecentFails::kRing);
-    JsonArray rfa = nvs["recentFails"].to<JsonArray>();
-    const uint32_t nowMs = millis();
-    for (size_t i = 0; i < nrf; ++i) {
-      JsonObject e = rfa.add<JsonObject>();
-      e["key"]  = (const char*)rf[i].key;
-      e["n"]    = rf[i].seq;
-      e["ageS"] = (uint32_t)(nowMs - rf[i].ms) / 1000;
-    }
+    addRecentFails(nvs);
   }
-  // The Telegram getUpdates offset cursor and backoff (telegram::pollStatus). RAM is the
-  // offset's truth while the device runs; tgOffsetSaved is false while its stored copy
-  // (only read at the next start) is behind, for example on a full NVS.
-  {
-    const agent::telegram::PollStatus ps = agent::telegram::pollStatus();
-    d["tgOffsetSaved"] = ps.offsetSaved;
-    JsonObject tp = d["tgPoll"].to<JsonObject>();
-    tp["offsetWrites"]     = ps.offsetWrites;
-    tp["offsetWriteFails"] = ps.offsetWriteFails;
-    tp["staleDrops"]       = ps.staleDrops;
-    tp["backoffMs"]        = ps.backoffMs;
-    tp["fails"]            = agent::telegram::consecutiveFails();
-  }
+  addTgPollState(d);
 
   // HAL health (solide::begin per-subsystem) - which peripherals came up at boot.
   // Null accessor => reported all-up (can't tell). Lets STATUS/dashboards flag a

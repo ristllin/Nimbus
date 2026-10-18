@@ -25,14 +25,19 @@ namespace nimbus::net {
 // The longest retry_after honored, in seconds.
 constexpr uint32_t kTgRetryAfterMaxS = 3600;
 
-// Digits after `p` (skipping spaces), as a non-negative int, or -1 when none.
+// Digits after `p` (skipping spaces), as a non-negative int, or -1 when none. A value
+// over kTgSecondsMax is nonsense and reads as absent. 32-bit unsigned arithmetic with
+// the bound checked BEFORE each multiply, so host and device (where long is 32 bits)
+// agree and nothing overflows.
+constexpr uint32_t kTgSecondsMax = 1000000000u;
 inline int tgParseSeconds(const char* p, const char* end) {
   while (p < end && (*p == ' ' || *p == '\t')) ++p;
-  long v = -1;
-  while (p < end && *p >= '0' && *p <= '9') {
-    v = (v < 0 ? 0 : v) * 10 + (*p - '0');
-    if (v > 1000000000L) return -1;   // nonsense: treat as absent, never overflow
-    ++p;
+  if (p >= end || *p < '0' || *p > '9') return -1;
+  uint32_t v = 0;
+  for (; p < end && *p >= '0' && *p <= '9'; ++p) {
+    const uint32_t d = (uint32_t)(*p - '0');
+    if (v > (kTgSecondsMax - d) / 10u) return -1;
+    v = v * 10u + d;
   }
   return (int)v;
 }

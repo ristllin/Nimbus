@@ -8,14 +8,21 @@
 namespace nimbus {
 namespace orch {
 
+static bool sameChat(const PsString& a, const std::string& b) {
+  return a.size() == b.size() && std::char_traits<char>::compare(a.c_str(), b.data(), b.size()) == 0;
+}
+
 MessageBatcher::Bucket* MessageBatcher::lastBucket(const std::string& chatId) {
-  for (size_t i = chats_.size(); i-- > 0;) {
-    Bucket& b = chats_[i];
-    if (b.chatId.size() == chatId.size() &&
-        std::char_traits<char>::compare(b.chatId.c_str(), chatId.data(), chatId.size()) == 0)
-      return &b;
-  }
+  if (contiguous_)   // only the drain's newest bucket, and only if it is this chat's
+    return (!buckets_.empty() && sameChat(buckets_.back().chatId, chatId)) ? &buckets_.back()
+                                                                           : nullptr;
+  for (size_t i = buckets_.size(); i-- > 0;)
+    if (sameChat(buckets_[i].chatId, chatId)) return &buckets_[i];
   return nullptr;
+}
+
+bool MessageBatcher::full(const Bucket& b) {
+  return b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes >= kBatchMaxBytesPerChat;
 }
 
 void MessageBatcher::append(Bucket& b, const std::string& from, const std::string& text) {
@@ -39,9 +46,7 @@ BatchAdd MessageBatcher::addToOpen(Bucket& b, const std::string& from, const std
     return BatchAdd::Deferred;
   }
   append(b, from, text);
-  if (b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes >= kBatchMaxBytesPerChat)
-    return BatchAdd::ChatFull;
-  return BatchAdd::Accepted;
+  return full(b) ? BatchAdd::TurnFull : BatchAdd::Accepted;
 }
 
 // A new turn: the chat's first message in this drain, a slash command, or the first
@@ -53,33 +58,32 @@ BatchAdd MessageBatcher::addToOpen(Bucket& b, const std::string& from, const std
 // marked, so a command always renders byte for byte.
 BatchAdd MessageBatcher::addNewBucket(Bucket* last, const std::string& chatId,
                                       const std::string& from, const std::string& text,
-                                      bool command) {
-  if (chats_.size() >= kBatchMaxChats || totalBytes_ + text.size() > kBatchMaxTotalBytes) {
+                                      bool command, int32_t updateId) {
+  if (buckets_.size() >= kBatchMaxChats || totalBytes_ + text.size() > kBatchMaxTotalBytes) {
     if (last && !last->command) last->capped = true;
     return BatchAdd::Deferred;
   }
-  chats_.emplace_back();   // may move the buckets: `last` is not used past this point
-  Bucket& b = chats_.back();
+  buckets_.emplace_back();   // may move the buckets: `last` is not used past this point
+  Bucket& b = buckets_.back();
   b.chatId.assign(chatId.data(), chatId.size());
   b.turnFrom.assign(from.data(), from.size());
   b.command = command;
+  b.firstId = updateId;
   append(b, from, text);
   if (command) return BatchAdd::CommandBoundary;
-  if (b.msgs.size() >= kBatchMaxMsgsPerChat || b.bytes >= kBatchMaxBytesPerChat)
-    return BatchAdd::ChatFull;
-  return BatchAdd::Accepted;
+  return full(b) ? BatchAdd::TurnFull : BatchAdd::Accepted;
 }
 
 BatchAdd MessageBatcher::add(const std::string& chatId, const std::string& from,
-                             const std::string& text) {
+                             const std::string& text, int32_t updateId) {
   const bool command = isCommandText(text);
   Bucket* last = lastBucket(chatId);
   if (last && !last->command && !command) return addToOpen(*last, from, text);
-  return addNewBucket(last, chatId, from, text, command);
+  return addNewBucket(last, chatId, from, text, command, updateId);
 }
 
 PsString MessageBatcher::render(size_t i) const {
-  const Bucket& b = chats_[i];
+  const Bucket& b = buckets_[i];
   const size_t nmsg = b.msgs.size();
   PsString out;
 
@@ -110,8 +114,9 @@ PsString MessageBatcher::render(size_t i) const {
 }
 
 void MessageBatcher::clear() {
-  chats_.clear();
+  buckets_.clear();
   totalBytes_ = 0;
+  contiguous_ = false;
 }
 
 }  // namespace orch

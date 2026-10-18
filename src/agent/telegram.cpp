@@ -34,6 +34,7 @@
 #include "nimbus/net/tg_backoff.h"    // getUpdates backoff + retry_after (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
+#include <algorithm>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Esp.h>
@@ -153,7 +154,6 @@ bool            g_polledOk = false;
 // Telegram's retry_after; no poll goes out before the deadline, even when a local
 // turn ends the pause early (nimbus/net/tg_backoff.h). Poll-task-owned.
 nimbus::net::TgPollBackoff g_backoff(TG_BACKOFF_STEP_MS, TG_BACKOFF_MAX_STEPS);
-int             g_retryAfterS = -1;   // the last failed fetch's retry_after (-1 none)
 // The getUpdates offset: RAM is the truth while the device runs, seeded once from
 // NVS when the poll loop starts; the stored copy only matters across a restart
 // (nimbus/telegram_offset.h). Poll-task-owned; /api/state reads the published copy.
@@ -162,8 +162,8 @@ volatile bool     g_pubOffsetSaved = true;
 volatile uint32_t g_pubOffsetWrites = 0;
 volatile uint32_t g_pubOffsetWriteFails = 0;
 volatile uint32_t g_pubStaleDrops = 0;
-volatile uint32_t g_pubBackoffEnd = 0;     // millis() when the backoff ends
-volatile bool     g_pubBackoffOn = false;
+volatile uint32_t g_pubBackoffEnd = 0;     // millis() when the backoff ends (in the
+                                           // past when none: one word, never torn)
 // The archive's observer seams (telegram.h). Set once at boot, before begin().
 InboundObserver  g_inboundObs  = nullptr;
 OutboundObserver g_outboundObs = nullptr;
@@ -371,17 +371,31 @@ bool allowed(const String& chatId) {
   return false;
 }
 
-// The chat that device notices go to: the first explicit owner, else the first
-// allow-list entry (the default owner, as in isOwner). "" when none is set.
-// Poll-task-owned reads (g_owners/g_allowlist), same as allowed().
-static String ownerChat() {
-  String list = g_owners;
-  list.trim();
-  if (list.length() == 0) list = g_allowlist;
+// The first entry of a comma-separated id list, trimmed ("" for an empty list).
+static String firstListEntry(const String& list) {
   const int e = list.indexOf(',');
   String first = (e < 0) ? list : list.substring(0, e);
   first.trim();
   return first;
+}
+
+// The chat that device notices go to, by the same rule as isOwner: the first explicit
+// owner that is also allow-listed, else (no owners set) the first allow-list entry.
+// "" when there is none. Poll-task-owned reads (g_owners/g_allowlist), as allowed().
+static String ownerChat() {
+  String owners = g_owners;
+  owners.trim();
+  if (owners.length() == 0) return firstListEntry(g_allowlist);
+  int start = 0;
+  while (start < (int)owners.length()) {
+    int end = owners.indexOf(',', start);
+    if (end < 0) end = (int)owners.length();
+    String entry = owners.substring(start, end);
+    entry.trim();
+    if (entry.length() && allowed(entry)) return entry;
+    start = end + 1;
+  }
+  return String();
 }
 
 // The observer seams (telegram.h): every inbound update, every outbound send.
@@ -535,11 +549,12 @@ static void queueAttachment(const nimbus::tg::Update& u, const String& chatId,
 
 // Route a text field into cu as a batched turn segment (grouped into one turn per
 // chat by the drain driver). Model sees the full length.
+// A forwarded "/command" is someone else's words: it enters labeled and never runs.
 static void batchTextInto(const nimbus::tg::Update& u, nimbus::orch::ClassifiedUpdate& cu) {
   cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;
   cu.chatId = u.chatId;
   cu.from   = u.from;
-  cu.text   = u.text;
+  cu.text   = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;
 }
 
 // Voice note: queue for STT (one slot per cycle). A busy slot returns true
@@ -620,7 +635,9 @@ static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::
 // for updates it actually reaches - so a side effect never runs for an update that is
 // then left un-acked and re-served (which would run it twice). Text from an allowed
 // chat is batched into one turn per chat; a busy voice/file slot yields StopNoAck.
-static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u) {
+// `polled` is false for an injected test page, whose ids are not Telegram's: the
+// replay guard (which compares ids with the getUpdates offset) does not apply to it.
+static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, bool polled) {
   using Kind = nimbus::tg::Attachment::Kind;
   nimbus::orch::ClassifiedUpdate cu;
   cu.updateId = u.updateId;
@@ -629,7 +646,7 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u) 
   if (u.updateId <= 0) return cu;   // defensive: never side-effect on a bogus id
   // Replay guard: an update below the offset cursor was already confirmed, so it must
   // not run again. Never expected (the cursor only moves forward); counted, not handled.
-  if (!g_cursor.admit(u.updateId)) {
+  if (polled && !g_cursor.admit(u.updateId)) {
     alogf("telegram: dropped update %ld below the offset cursor %ld", (long)u.updateId,
           (long)g_cursor.offset());
     return cu;
@@ -709,18 +726,18 @@ static void classifyPollStatus(int status, nimbus::net::TgPollOutcome* outcome) 
   }
 }
 
-// Read the response header block: Content-Length, a Connection: close hint, and a
-// Retry-After header (seconds; -1 when absent).
+// Read the response header block: Content-Length, a Connection: close hint, and,
+// when `retryAfterS` is given, a Retry-After header (seconds; left at -1 when absent).
 static void readPollHeaders(uint32_t deadline, long& contentLen, bool& serverClose,
-                            int& retryAfterS) {
+                            int* retryAfterS = nullptr) {
   char line[MAX_LINE];
   for (int i = 0; i < 64; i++) {
     int n = readLine(g_pollSc, line, sizeof(line), deadline);
     if (n == 0) break;
     if (!strncasecmp(line, "Content-Length:", 15)) contentLen = atol(line + 15);
     else if (!strncasecmp(line, "Connection:", 11) && strstr(line, "close")) serverClose = true;
-    else if (!strncasecmp(line, "Retry-After:", 12))
-      retryAfterS = nimbus::net::tgRetryAfterHeaderS(line + 12);
+    else if (retryAfterS && !strncasecmp(line, "Retry-After:", 12))
+      *retryAfterS = nimbus::net::tgRetryAfterHeaderS(line + 12);
   }
 }
 
@@ -735,7 +752,7 @@ static void failPollStatus(int status, uint32_t deadline, nimbus::orch::RawPage&
   long contentLen = -1;
   bool serverClose = false;
   int retryAfter = -1;
-  readPollHeaders(deadline, contentLen, serverClose, retryAfter);
+  readPollHeaders(deadline, contentLen, serverClose, &retryAfter);
   char* body = ensurePollBody();
   if (retryAfter < 0 && body && contentLen > 0) {
     const long want = contentLen < kErrBodyCap ? contentLen : kErrBodyCap;
@@ -743,7 +760,7 @@ static void failPollStatus(int status, uint32_t deadline, nimbus::orch::RawPage&
     if (n > 0) retryAfter = nimbus::net::tgRetryAfterS(body, (size_t)n);
   }
   closePollSocket();
-  g_retryAfterS = retryAfter;
+  rp.retryAfterS = retryAfter;
   rp.fetchError = true;
   alogf("telegram: getUpdates HTTP %d (retry_after %d)", status, retryAfter);
 }
@@ -810,7 +827,7 @@ static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
 // CUM-308 debounce: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
 // Transient for a connect/socket/parse hiccup or any other status. rp.fetchError marks
 // a poll error that drives the backoff: any non-200 status (its retry_after lands in
-// g_retryAfterS), a connect or socket failure, or a 200 body that does not parse. An
+// rp.retryAfterS), a connect or socket failure, or a 200 body that does not parse. An
 // oversized batch leaves rp.count 0 (re-polled limit=1 next).
 // `yielded` is set when the idle wait was given up for a waiting local turn (CUM-462).
 static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::Update>& out,
@@ -818,7 +835,6 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
                          nimbus::net::TgPollOutcome* outcome = nullptr) {
   auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
   setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
-  g_retryAfterS = -1;
   const int usedLimit = g_limitOne ? 1 : 10;   // the getUpdates limit for THIS fetch
   rp.limit = usedLimit;
   if (!g_pollScOpen) {
@@ -855,8 +871,8 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   // is (CUM-308 keeps them apart); classifyPollStatus sets the outcome.
   if (status != 200) { failPollStatus(status, deadline, rp, outcome); return; }
 
-  long contentLen = -1; bool serverClose = false; int retryAfterS = -1;
-  readPollHeaders(deadline, contentLen, serverClose, retryAfterS);
+  long contentLen = -1; bool serverClose = false;
+  readPollHeaders(deadline, contentLen, serverClose);
 
   char* body = nullptr;
   int stored = 0;
@@ -879,6 +895,36 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
 }
 
+// A page holds a command when some update can become a command turn: a plain text
+// message (no attachment, so not a caption) from an allowed chat, not a forward,
+// starting with '/'. An unlisted sender's "/start" or a captioned photo never reaches
+// the batcher as a command, so neither switches the page to per-bucket commits.
+static bool pageHasCommand(const std::vector<nimbus::tg::Update>& page) {
+  return std::any_of(page.begin(), page.end(), [](const nimbus::tg::Update& u) {
+    return u.attachment.kind == nimbus::tg::Attachment::Kind::None && !u.forwarded &&
+           nimbus::orch::isCommandText(u.text) && allowed(String(u.chatId.c_str()));
+  });
+}
+
+// The one write of the stored offset (the cursor checks its verdict and counts it).
+static bool writeOffset(int32_t v) { return store::setTelegramOffset(v); }
+
+// After each bucket of a page that holds a command: store the offset now, while writes
+// land (TgOffsetCursor::checkpoint), so a restart re-runs at most the next bucket.
+static void checkpointOffset() { g_cursor.checkpoint(millis(), writeOffset); }
+
+// One turn per bucket of g_batch. Closes the poll socket before the first so only one
+// TLS session is ever resident (an empty/partial page can leave it open). Each render()
+// is materialized one at a time (in PSRAM), so a burst never holds a pile of rendered
+// turns on the scarce internal heap; the turn then runs the whole tool loop
+// synchronously on this task.
+static void emitTurn(size_t i) {
+  if (i == 0) closePollSocket();
+  if (g_cb)
+    g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
+         String(g_batch.render(i).c_str()));
+}
+
 // CUM-398: drain ONE getUpdates page of rapidly-arriving messages into one turn per
 // chat (a slash command is a turn of its own). The page is fetched at the RAM offset
 // cursor; once its turns have run, the cursor advances past it, so the NEXT poll
@@ -887,36 +933,71 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
 // device runs - the 14 Oct loop). A reset mid-drain re-serves the whole page
 // (at-least-once per page, no loss). A rapid burst fits one page; a backlog drains a
 // page per cycle. Still fully serial on tg_poll - no new task, one TLS session at a
-// time. Returns the message count handled this cycle, or -1 on a poll error (backoff).
-// `yielded`: the poll was given up for a waiting local turn (CUM-462; returns 0,
-// nothing acked).
-static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded) {
+// time. Returns the message count handled this cycle, or -1 on a poll error (backoff,
+// with Telegram's retry_after in `retryAfterS`). `yielded`: the poll was given up for a
+// waiting local turn (CUM-462; returns 0, nothing acked). A page that holds a command
+// is committed bucket by bucket (drainCycle + checkpointOffset), so a restart re-runs
+// at most the bucket in flight and never a command that already ran.
+static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
+                            int& retryAfterS) {
   // This page's parsed updates; fetch (below) fills it and handle reads it. Exactly
   // one page is fetched per call, so this holds at most one getUpdates page.
   std::vector<nimbus::tg::Update> pageUpdates;
   auto fetch = [&](int32_t off) -> nimbus::orch::RawPage {
     nimbus::orch::RawPage rp;
     fetchOnePage(off, longPollS, pageUpdates, rp, yielded, outcome);
+    rp.hasCommand = pageHasCommand(pageUpdates);
     return rp;
   };
   auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
-    return handleUpdate(pageUpdates[(size_t)i]);
-  };
-  // One turn per bucket. Close the poll socket before the first so only one TLS
-  // session is ever resident (an empty/partial page can leave it open). Each render()
-  // is materialized one at a time (in PSRAM), so a burst never holds a pile of rendered
-  // turns on the scarce internal heap; the turn then runs the whole tool loop
-  // synchronously on this task.
-  auto emit = [&](size_t i) {
-    if (i == 0) closePollSocket();
-    if (g_cb)
-      g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
-           String(g_batch.render(i).c_str()));
+    return handleUpdate(pageUpdates[(size_t)i], /*polled=*/true);
   };
   const nimbus::orch::DrainResult r =
-      nimbus::orch::drainCycle(g_batch, g_cursor, fetch, handle, emit);
+      nimbus::orch::drainCycle(g_batch, g_cursor, fetch, handle, emitTurn, checkpointOffset);
+  retryAfterS = r.retryAfterS;
   return r.fetchError ? -1 : r.messagesBatched;
 }
+
+#if defined(NIMBUS_TEST)
+// The test seam's page (injectRawUpdates): one raw getUpdates body in PSRAM, handed to
+// the poll task under the spinlock and freed there after it ran. Test builds only: an
+// injected page can name any chat, the owner's included.
+static constexpr size_t kRawInjectMax = 64 * 1024;
+static char*        s_rawInject = nullptr;
+static size_t       s_rawInjectLen = 0;
+static portMUX_TYPE s_rawMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Run an injected page through the same receive path as a polled one (handleUpdate,
+// the batcher, emitTurn), without fetching and without touching the offset cursor. An
+// update past a stop point (a busy voice or file slot, a cap) is not re-served: the
+// log says how many ran.
+static void drainInjectedPage() {
+  portENTER_CRITICAL(&s_rawMux);
+  char* body = s_rawInject;
+  const size_t len = s_rawInjectLen;
+  s_rawInject = nullptr;
+  portEXIT_CRITICAL(&s_rawMux);
+  if (!body) return;
+  std::vector<nimbus::tg::Update> ups;
+  const bool ok = parsePageBody(body, len, ups);
+  heap_caps_free(body);
+  if (!ok) return;   // parsePageBody logged it
+  auto fetch = [&](int32_t) {
+    nimbus::orch::RawPage rp;
+    rp.count = (int)ups.size();
+    rp.limit = rp.count + 1;   // one page, nothing more to fetch
+    rp.hasCommand = pageHasCommand(ups);
+    return rp;
+  };
+  auto handle = [&](int i) { return handleUpdate(ups[(size_t)i], /*polled=*/false); };
+  const nimbus::orch::DrainResult r = nimbus::orch::drainOnePage(g_batch, 0, fetch, handle);
+  for (size_t i = 0; i < g_batch.turnCount(); ++i) emitTurn(i);
+  g_batch.clear();
+  alogf("telegram: injected page: %d message%s batched into %d turn%s%s", r.messagesBatched,
+        r.messagesBatched == 1 ? "" : "s", r.turnsEmitted, r.turnsEmitted == 1 ? "" : "s",
+        r.stopped ? " (stopped early: busy slot or cap)" : "");
+}
+#endif  // NIMBUS_TEST
 
 // Publish the poll health /api/state reads (telegram::pollStatus) from the poll task.
 static void publishPollStatus() {
@@ -925,8 +1006,24 @@ static void publishPollStatus() {
   g_pubOffsetWriteFails = g_cursor.writeFails();
   g_pubStaleDrops = g_cursor.staleDropped();
   const uint32_t now = millis();
-  g_pubBackoffEnd = now + g_backoff.remainingMs(now);
-  g_pubBackoffOn = !g_backoff.mayPoll(now);
+  g_pubBackoffEnd = now + g_backoff.remainingMs(now);   // == now (already past) when none
+}
+
+// Fold one drain's result into the getUpdates backoff. A poll error backs off: the
+// cycle plan skips every poll until the deadline (tgPlanWithBackoff), so the loop itself
+// keeps cycling at its normal pace - jobs advance, replies and local turns go out -
+// even through a long retry_after; only getUpdates waits. A yielded poll proves
+// nothing either way; any other answer clears the backoff.
+static void noteDrainResult(int n, bool yielded, int retryAfterS) {
+  if (n < 0) {
+    const uint32_t backoff = g_backoff.onError(millis(), retryAfterS);
+    alogf("telegram: poll error (%u), next poll in %ums", (unsigned)g_backoff.fails(),
+          (unsigned)backoff);
+    publishPollStatus();
+  } else if (!yielded) {
+    g_backoff.onOk();
+    if (!g_polledOk) { g_polledOk = true; alog("telegram: poll ok"); }
+  }
 }
 
 // Keep the stored offset in step with the RAM cursor: one write per newly acked page,
@@ -934,7 +1031,7 @@ static void publishPollStatus() {
 // result is checked here; a failure is already recorded by name in the persist ledger
 // (nvs.recentFails, the device log) and leaves tgOffsetSaved false in /api/state.
 static void persistOffset() {
-  g_cursor.persist(millis(), [](int32_t v) { return store::setTelegramOffset(v); });
+  g_cursor.persist(millis(), writeOffset);
   publishPollStatus();
 }
 
@@ -1491,16 +1588,18 @@ void pollTask(void*) {
     // Inside a getUpdates backoff the cycle does not poll (a local turn still runs).
     if (haveToken) plan = nimbus::net::tgPlanWithBackoff(plan, g_backoff.mayPoll(millis()));
     if (haveToken && plan == nimbus::net::TgPoll::Skip) {
-      closePollSocket();   // the local turn needs the single TLS session
+      closePollSocket();   // a skipped poll (a local turn, or a backoff) frees the TLS session
     } else if (haveToken) {
       // Shorten the long-poll while jobs run so the loop cycles + delivers results,
       // but not too short (each cycle's TLS churn drains heap on the no-PSRAM board).
-      // A Check asks for timeout 0.
+      // While an offset write is owed (a full NVS) it ends when the retry is due. A
+      // Check asks for timeout 0.
       int longPollS = nimbus::net::tgPollTimeoutS(
-          plan, (activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S);
+          plan, g_cursor.longPollS((activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S, millis()));
       nimbus::net::TgPollOutcome outcome = nimbus::net::TgPollOutcome::Transient;
       bool yielded = false;   // CUM-462: the wait was given up for a waiting local turn
-      int n = drainAndDispatch(longPollS, &outcome, yielded);
+      int retryAfterS = -1;
+      int n = drainAndDispatch(longPollS, &outcome, yielded, retryAfterS);
       // CUM-308: fold this cycle's auth classification into the debounce and
       // publish the honest verdict. A revoked token (repeated 401/403) flips
       // g_authRejected within a few cycles; a 409 conflict or a transient network
@@ -1510,18 +1609,7 @@ void pollTask(void*) {
       if (g_authRejected != wasRejected)
         alogf("telegram: token %s", g_authRejected ? "REJECTED (auth failing) - set a new bot token"
                                                    : "auth recovered - token accepted again");
-      if (n < 0) {
-        // No poll before the deadline, even when a waiting local turn ends this pause
-        // early (CUM-462): the cycle plan above skips the poll until it passes.
-        const uint32_t backoff = g_backoff.onError(millis(), g_retryAfterS);
-        alogf("telegram: poll error (%u), backoff %ums", (unsigned)g_backoff.fails(),
-              (unsigned)backoff);
-        publishPollStatus();
-        idlePause(backoff);
-      } else if (!yielded) {  // a yielded poll proves nothing either way
-        g_backoff.onOk();
-        if (!g_polledOk) { g_polledOk = true; alog("telegram: poll ok"); }
-      }
+      noteDrainResult(n, yielded, retryAfterS);
 
       // Free the single arena before ANY non-poll TLS this cycle: a voice note,
       // active-job polling, a queued reply, or an injected message.
@@ -1540,6 +1628,10 @@ void pollTask(void*) {
     // the factory reset discards it with the restart. Without this the reset's own
     // quiesce could start a turn and then time out on it.
     if (!g_running) break;
+
+#if defined(NIMBUS_TEST)
+    drainInjectedPage();   // a test build's TGINJECT page, if one is waiting
+#endif
 
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
     // CUM-398: batch them the same way as Telegram - a burst of injects for one chat
@@ -1571,7 +1663,7 @@ void pollTask(void*) {
           alogif("telegram: local turn from %s waited %lu ms", from,
                  (unsigned long)(millis() - im->queuedAt));
         }
-        for (size_t i = 0; i < g_batch.chatCount(); ++i)
+        for (size_t i = 0; i < g_batch.turnCount(); ++i)
           g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
                String(g_batch.render(i).c_str()));
         g_batch.clear();
@@ -1710,6 +1802,25 @@ bool sendMediaSd(const String& chatId, const char* kind, const char* filePath,
   return publishMedia(chatId, kind, filePath, caption, /*sd=*/true, /*refuseIfBusy=*/true);
 }
 
+#if defined(NIMBUS_TEST)
+bool injectRawUpdates(const char* body, size_t len) {
+  if (!body || len == 0 || len > kRawInjectMax) return false;
+  char* copy = (char*)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM);
+  if (!copy) return false;
+  memcpy(copy, body, len);
+  copy[len] = 0;
+  portENTER_CRITICAL(&s_rawMux);
+  const bool busy = s_rawInject != nullptr;
+  if (!busy) {
+    s_rawInject = copy;
+    s_rawInjectLen = len;
+  }
+  portEXIT_CRITICAL(&s_rawMux);
+  if (busy) heap_caps_free(copy);
+  return !busy;
+}
+#endif  // NIMBUS_TEST
+
 bool injectMessage(const String& chatId, const String& text) {
   if (!g_inboundQ) return false;
   InboundMsg im{};
@@ -1784,9 +1895,7 @@ bool isOwner(const String& chatId) {
   if (!allowed(chatId)) return false;          // must be allow-listed at all
   String owners = g_owners; owners.trim();
   if (owners.length() == 0) {                  // default: first allow entry is owner
-    int e = g_allowlist.indexOf(',');
-    String firstId = (e < 0) ? g_allowlist : g_allowlist.substring(0, e);
-    firstId.trim();
+    const String firstId = firstListEntry(g_allowlist);
     return firstId.length() > 0 && firstId == chatId;
   }
   int start = 0;                               // walk the explicit owners list
@@ -1912,9 +2021,8 @@ PollStatus pollStatus() {
   st.offsetWrites = g_pubOffsetWrites;
   st.offsetWriteFails = g_pubOffsetWriteFails;
   st.staleDrops = g_pubStaleDrops;
-  const uint32_t end = g_pubBackoffEnd;
-  const int32_t left = (int32_t)(end - millis());
-  st.backoffMs = (g_pubBackoffOn && left > 0) ? (uint32_t)left : 0;
+  const int32_t left = (int32_t)(g_pubBackoffEnd - millis());
+  st.backoffMs = left > 0 ? (uint32_t)left : 0;
   return st;
 }
 

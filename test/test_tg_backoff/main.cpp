@@ -17,6 +17,8 @@
 // with local turns arriving at random (they end the pause early):
 //   - after any non-200, no poll goes out inside the backoff;
 //   - a retry_after is honored (capped at kTgRetryAfterMaxS);
+//   - the loop itself keeps its normal pace during a backoff (jobs, replies and local
+//     turns are not held up by a long retry_after; only getUpdates waits);
 //   - counter-test: a stream of 200s polls every cycle, exactly as before;
 //   - counter-test: without the gate, a local turn lets a poll in early.
 
@@ -53,6 +55,12 @@ static void test_retry_after_from_telegram_bodies() {
   TEST_ASSERT_EQUAL_INT(-1, nimbus::net::tgRetryAfterS(junk, strlen(junk)));
   const char* huge = "{\"retry_after\":99999999999999}";
   TEST_ASSERT_EQUAL_INT(-1, nimbus::net::tgRetryAfterS(huge, strlen(huge)));   // nonsense
+  // The bound, digit by digit, with 32-bit wrap values that a check-after-multiply on a
+  // 32-bit long would have read as small numbers (4294967300 -> 4).
+  const char* edge[] = {" 999999999", " 1000000000", " 1000000001", " 4294967300", " 4294969896", " 0"};
+  const int want[] = {999999999, 1000000000, -1, -1, -1, 0};
+  for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); ++i)
+    TEST_ASSERT_EQUAL_INT_MESSAGE(want[i], nimbus::net::tgRetryAfterHeaderS(edge[i]), edge[i]);
   TEST_ASSERT_EQUAL_INT(-1, nimbus::net::tgRetryAfterS(nullptr, 0));
   // A truncated body never reads past its length.
   TEST_ASSERT_EQUAL_INT(-1, nimbus::net::tgRetryAfterS(flood, 20));
@@ -95,12 +103,15 @@ struct SimResult {
   bool earlyPoll = false;       // a poll inside a backoff window
   bool retryIgnored = false;    // a poll before a retry_after elapsed
   int skips = 0;
+  uint32_t maxIdleGapMs = 0;    // longest stretch without a loop cycle, local turns aside
 };
 
 // A millisecond model of the poll loop's backoff path, in pollTask's order: plan the
-// cycle (local turn waiting?), gate it on the backoff, poll (or skip), run a waiting
-// local turn, then pause - a 1 s inter-cycle pause or the backoff - in 50 ms slices
-// that a newly arrived local turn ends at once (tgIdleSleepMs).
+// cycle (local turn waiting?), gate it on the backoff, poll (or skip), note the result
+// in the backoff (noteDrainResult: no pause of its own), run a waiting local turn, then
+// the 1 s inter-cycle pause in 50 ms slices that a newly arrived local turn ends at once
+// (tgIdleSleepMs). Jobs and replies run once per cycle, so the gap between cycles is
+// how long they could be held up.
 static SimResult simulate(const std::vector<Answer>& answers, const std::vector<uint32_t>& locals,
                           bool gate, uint32_t untilMs) {
   SimResult r;
@@ -110,10 +121,12 @@ static SimResult simulate(const std::vector<Answer>& answers, const std::vector<
   size_t ai = 0, li = 0;
   uint32_t windowEnd = 0, retryEnd = 0;
   auto localWaiting = [&] { return li < locals.size() && locals[li] <= now; };
+  uint32_t lastCycle = 0;
   while (now < untilMs) {
+    if (now - lastCycle > r.maxIdleGapMs) r.maxIdleGapMs = now - lastCycle;
     TgPoll plan = sched.plan(localWaiting());
     if (gate) plan = nimbus::net::tgPlanWithBackoff(plan, backoff.mayPoll(now));
-    uint32_t pause = 1000;
+    const uint32_t pause = 1000;
     if (plan == TgPoll::Skip) {
       ++r.skips;
     } else {
@@ -123,14 +136,14 @@ static SimResult simulate(const std::vector<Answer>& answers, const std::vector<
       const Answer a = answers[ai++ % answers.size()];
       now += 150;   // round trip
       if (a.status != 200) {
-        pause = backoff.onError(now, a.retryAfterS);
-        windowEnd = now + pause;
+        windowEnd = now + backoff.onError(now, a.retryAfterS);
         if (a.retryAfterS > 0) retryEnd = now + (uint32_t)a.retryAfterS * 1000u;
       } else {
         backoff.onOk();
       }
     }
     if (localWaiting()) { ++li; now += 3000; }   // the local turn runs
+    lastCycle = now;
     for (uint32_t start = now;;) {
       const uint32_t ms = nimbus::net::tgIdleSleepMs(localWaiting(), now - start, pause);
       if (ms == 0) break;
@@ -174,6 +187,15 @@ static void test_no_poll_inside_any_backoff() {
 
 // Every status but 200 backs off: a stream of any one of them never polls faster than
 // the first backoff step.
+// A long retry_after (a 429 asking for 30 minutes) holds getUpdates for that long, but
+// the loop keeps cycling about once a second, so jobs advance and replies go out.
+static void test_long_retry_after_never_stalls_the_loop() {
+  const SimResult r = simulate({{429, 1800}}, {}, true, 3 * 3600 * 1000u);
+  TEST_ASSERT_FALSE(r.retryIgnored);
+  TEST_ASSERT_TRUE(r.polls.size() >= 2 && r.polls[1] - r.polls[0] >= 1800000u);
+  TEST_ASSERT_TRUE(r.maxIdleGapMs <= 1150);
+}
+
 static void test_every_non_200_status_backs_off() {
   for (int status = 100; status < 600; ++status) {
     if (status == 200) continue;
@@ -221,7 +243,14 @@ static void test_device_wiring_uses_the_rule() {
   TEST_ASSERT_TRUE(tg.find("rp.fetchError = !parsedOk;") != std::string::npos);
   TEST_ASSERT_TRUE(tg.find("plan = nimbus::net::tgPlanWithBackoff(plan, g_backoff.mayPoll(millis()));") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(tg.find("g_backoff.onError(millis(), g_retryAfterS)") != std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("g_backoff.onError(millis(), retryAfterS)") != std::string::npos);
+  // noteDrainResult sleeps no backoff of its own: the plan gate holds the poll, and the
+  // loop's only pause is the normal inter-cycle one.
+  const size_t nd = tg.find("static void noteDrainResult(");
+  TEST_ASSERT_TRUE(nd != std::string::npos);
+  const std::string ndBody = tg.substr(nd, tg.find("\n}\n", nd) - nd);
+  TEST_ASSERT_TRUE(ndBody.find("idlePause(") == std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("rp.retryAfterS = retryAfter;") != std::string::npos);
   TEST_ASSERT_TRUE(tg.find("retryAfter = nimbus::net::tgRetryAfterS(body, (size_t)n);") != std::string::npos);
   // The old shape (only 401/403/409 backed off) is gone.
   TEST_ASSERT_TRUE(tg.find("pollStatusIsError") == std::string::npos);
@@ -234,6 +263,7 @@ int main(int, char**) {
   RUN_TEST(test_backoff_grows_caps_and_clears);
   RUN_TEST(test_no_poll_inside_any_backoff);
   RUN_TEST(test_every_non_200_status_backs_off);
+  RUN_TEST(test_long_retry_after_never_stalls_the_loop);
   RUN_TEST(test_200_stream_polls_as_before);
   RUN_TEST(test_without_the_gate_a_local_turn_polls_early);
   RUN_TEST(test_device_wiring_uses_the_rule);

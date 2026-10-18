@@ -65,6 +65,12 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
   m["video"]["file_id"] = true;
   m["video"]["file_size"] = true;
   m["sticker"]["file_id"] = true;
+  // Forward markers: presence only (Bot API 7 forward_origin, and the older fields).
+  m["forward_origin"]["type"] = true;
+  m["forward_from"]["id"] = true;
+  m["forward_from_chat"]["id"] = true;
+  m["forward_sender_name"] = true;
+  m["forward_date"] = true;
 
   JsonDocument doc;
   DeserializationError err =
@@ -90,6 +96,9 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
       const char* fn = msg["from"]["first_name"] | "";
       const char* un = msg["from"]["username"] | "";
       up.from = fn[0] ? std::string(fn) : std::string(un);
+      up.forwarded = !msg["forward_origin"].isNull() || !msg["forward_from"].isNull() ||
+                     !msg["forward_from_chat"].isNull() || !msg["forward_sender_name"].isNull() ||
+                     !msg["forward_date"].isNull();
       if (msg["text"].is<const char*>()) {
         up.text = msg["text"].as<const char*>();
       } else if (msg["caption"].is<const char*>()) {

@@ -88,5 +88,14 @@ inline bool isOwnerVerb(const std::string& verb) {
 // included: its deterministic "try /help" answer must not be swallowed either.
 inline bool isCommandText(const std::string& text) { return parseCommand(text).isCommand; }
 
+// The text a FORWARDED message enters a turn with. A forward carries someone else's
+// words, so a forwarded "/update" must never run as the owner's command: a
+// command-looking forward is labeled (the label does not start with '/', so neither
+// the batcher nor the dispatcher reads it as a command); any other forward is unchanged.
+inline constexpr char kForwardedCommandLabel[] = "Forwarded message (not run as a command):\n";
+inline std::string forwardedText(const std::string& text) {
+  return isCommandText(text) ? kForwardedCommandLabel + text : text;
+}
+
 }  // namespace orch
 }  // namespace nimbus

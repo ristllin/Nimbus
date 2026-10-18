@@ -214,6 +214,27 @@ static void test_truncated_tail_flagged() {
   TEST_ASSERT_TRUE(trunc);
 }
 
+// A forwarded message is marked whichever forward field Telegram sent (Bot API 7's
+// forward_origin, or the older ones), so a forwarded "/command" can be kept from
+// running; the sender's own message is not marked.
+static void test_forwarded_is_marked_for_every_forward_field() {
+  const char* fields[] = {"\"forward_origin\":{\"type\":\"user\",\"date\":1}",
+                          "\"forward_from\":{\"id\":5}", "\"forward_from_chat\":{\"id\":-100}",
+                          "\"forward_sender_name\":\"Someone\"", "\"forward_date\":1760000000"};
+  for (const char* f : fields) {
+    std::string body = std::string("{\"ok\":true,\"result\":[{\"update_id\":7,\"message\":{"
+                                   "\"chat\":{\"id\":10},") + f + ",\"text\":\"/update\"}}]}";
+    std::vector<Update> u;
+    TEST_ASSERT_TRUE_MESSAGE(parse(body, u), f);
+    TEST_ASSERT_TRUE_MESSAGE(u[0].forwarded, f);
+    TEST_ASSERT_EQUAL_STRING("/update", u[0].text.c_str());
+  }
+  std::vector<Update> own;
+  TEST_ASSERT_TRUE(parse("{\"ok\":true,\"result\":[{\"update_id\":8,\"message\":{"
+                         "\"chat\":{\"id\":10},\"text\":\"/update\"}}]}", own));
+  TEST_ASSERT_FALSE(own[0].forwarded);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_long_message_not_truncated);
@@ -231,5 +252,6 @@ int main(int, char**) {
   RUN_TEST(test_from_username_fallback);
   RUN_TEST(test_not_ok_and_empty);
   RUN_TEST(test_truncated_tail_flagged);
+  RUN_TEST(test_forwarded_is_marked_for_every_forward_field);
   return UNITY_END();
 }

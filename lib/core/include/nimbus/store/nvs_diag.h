@@ -76,22 +76,24 @@ class RecentFails {
 // ---- the owner notice -----------------------------------------------------------
 // Raised by any failed write (any task), taken once by the task that sends it. take()
 // is true exactly once per boot and only after a raise(); every later raise is a no-op.
+// A 32-bit word, so the compare-and-swap is a native lock-free instruction on the
+// ESP32-S3 (no library lock behind a sub-word atomic).
 class OnceNotice {
  public:
   void raise() {
-    uint8_t idle = kIdle;
+    uint32_t idle = kIdle;
     state_.compare_exchange_strong(idle, kRaised);
   }
   bool take() {
-    uint8_t raised = kRaised;
+    uint32_t raised = kRaised;
     return state_.compare_exchange_strong(raised, kSent);
   }
   bool pending() const { return state_.load() == kRaised; }
   bool sent() const { return state_.load() == kSent; }
 
  private:
-  static constexpr uint8_t kIdle = 0, kRaised = 1, kSent = 2;
-  std::atomic<uint8_t> state_{kIdle};
+  static constexpr uint32_t kIdle = 0, kRaised = 1, kSent = 2;
+  std::atomic<uint32_t> state_{kIdle};
 };
 
 // What the owner reads (AGENTS.md section 6: what happened, then the one next step;

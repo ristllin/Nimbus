@@ -44,6 +44,10 @@ struct Update {
   std::string from;       // first_name, else username
   std::string text;       // text OR caption, fully unescaped UTF-8 ("" if neither)
   bool        textIsCaption = false;
+  bool        forwarded = false;   // forwarded from someone else (forward_origin, or the
+                                   // older forward_from / forward_from_chat / forward_date):
+                                   // its words are not the sender's own, so a forwarded
+                                   // "/command" never runs as one
   Attachment  attachment;
 };
 

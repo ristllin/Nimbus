@@ -32,7 +32,7 @@ static bool has(const std::string& hay, const char* needle) {
 static void test_single_message_is_raw_text() {
   MessageBatcher b;
   TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("100", "Alice", "hello world"));
-  TEST_ASSERT_EQUAL_UINT(1, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
   TEST_ASSERT_EQUAL_STRING("100", b.chatIdAt(0));
   TEST_ASSERT_EQUAL_STRING("Alice", b.turnFromAt(0));
   TEST_ASSERT_EQUAL_UINT(1, b.messageCountAt(0));
@@ -48,7 +48,7 @@ static void test_burst_same_chat_one_ordered_turn() {
     std::string t = "seg" + std::to_string(i);
     TEST_ASSERT_TRUE(BatchAdd::Deferred != b.add("77", "Bob", t));
   }
-  TEST_ASSERT_EQUAL_UINT(1, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
   TEST_ASSERT_EQUAL_UINT(5, b.messageCountAt(0));
   std::string r = b.render(0).c_str();
   size_t p1 = r.find("seg1"), p2 = r.find("seg2"), p3 = r.find("seg3"),
@@ -69,7 +69,7 @@ static void test_mixed_chats_partitioned_no_contamination() {
   b.add("B", "ub", "bravo1");
   b.add("A", "ua", "alpha2");
   b.add("B", "ub", "bravo2");
-  TEST_ASSERT_EQUAL_UINT(2, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(2, b.turnCount());
   TEST_ASSERT_EQUAL_STRING("A", b.chatIdAt(0));
   TEST_ASSERT_EQUAL_STRING("B", b.chatIdAt(1));
   std::string ra = b.render(0).c_str(), rb = b.render(1).c_str();
@@ -128,7 +128,7 @@ static void test_total_bytes_cap_across_chats() {
     ++created;
   }
   TEST_ASSERT_TRUE(sawDefer);
-  TEST_ASSERT_EQUAL_UINT(created, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(created, b.turnCount());
   // Every buffered chat's payload is bounded; the total never exceeded the ceiling.
   TEST_ASSERT_TRUE(created * big.size() <= cap::kBatchMaxTotalBytes);
 }
@@ -141,9 +141,9 @@ static void test_chat_count_cap() {
     std::string chat = "c" + std::to_string(i);
     TEST_ASSERT_TRUE(BatchAdd::Deferred != b.add(chat, "u", "x"));
   }
-  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.turnCount());
   TEST_ASSERT_TRUE(BatchAdd::Deferred == b.add("one-too-many", "u", "x"));
-  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.chatCount());  // unchanged
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.turnCount());  // unchanged
 }
 
 // A Deferred add must not partially mutate state (nothing half-added).
@@ -185,10 +185,10 @@ static void test_clear_resets_budget() {
   b.add("X", "u", big);
   b.clear();
   TEST_ASSERT_TRUE(b.empty());
-  TEST_ASSERT_EQUAL_UINT(0, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(0, b.turnCount());
   // The freed budget lets a fresh large message land again (no stale total).
   TEST_ASSERT_TRUE(BatchAdd::Deferred != b.add("Y", "u", big));
-  TEST_ASSERT_EQUAL_UINT(1, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
 }
 
 // Property: a fresh accumulator ALWAYS accepts the first message for any chat, at
@@ -296,6 +296,8 @@ struct OffsetServer {
       }
     }
     rp.count = static_cast<int>(current.size());
+    // As the device does: a page holding a slash command drains contiguously.
+    for (const auto& u : current) rp.hasCommand = rp.hasCommand || nimbus::orch::isCommandText(u.text);
     return rp;
   }
   ClassifiedUpdate handle(int i) { return current[static_cast<size_t>(i)]; }
@@ -500,7 +502,7 @@ static void test_burst_splits_at_every_verb() {
     TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("9", "Ann", "two"));
     TEST_ASSERT_TRUE_MESSAGE(BatchAdd::CommandBoundary == b.add("9", "Ann", cmd), cv.verb);
     TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("9", "Ann", "four"));
-    TEST_ASSERT_EQUAL_UINT_MESSAGE(3, b.chatCount(), cv.verb);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(3, b.turnCount(), cv.verb);
     const std::string t0 = b.render(0).c_str();
     TEST_ASSERT_TRUE(has(t0, "Message 1 of 2") && has(t0, "one") && has(t0, "two"));
     TEST_ASSERT_FALSE(has(t0, cmd.c_str()));
@@ -528,7 +530,7 @@ static void test_every_command_form_is_a_boundary() {
   b.add("1", "u", "hello");
   TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("1", "u", "please run /update for me"));
   TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("1", "u", "/"));
-  TEST_ASSERT_EQUAL_UINT(1, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
 }
 
 // A lone command, two commands in a row, and a command per chat: each its own turn.
@@ -537,7 +539,7 @@ static void test_commands_alone_and_in_a_row() {
   TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("1", "u", "/loops"));
   TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("1", "u", "/help"));
   TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("2", "v", "/help"));
-  TEST_ASSERT_EQUAL_UINT(3, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(3, b.turnCount());
   TEST_ASSERT_EQUAL_STRING("/loops", b.render(0).c_str());
   TEST_ASSERT_EQUAL_STRING("/help", b.render(1).c_str());
   TEST_ASSERT_EQUAL_STRING("/help", b.render(2).c_str());
@@ -552,13 +554,35 @@ static void test_caps_never_mark_a_command_turn() {
   for (size_t i = 0; i + 1 < cap::kBatchMaxChats; ++i)
     b.add("c" + std::to_string(i), "u", "x");
   TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("last", "u", "/help"));
-  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.chatCount());
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxChats, b.turnCount());
   TEST_ASSERT_TRUE(BatchAdd::Deferred == b.add("last", "u", "after"));   // no bucket left
   TEST_ASSERT_FALSE(b.cappedAt(cap::kBatchMaxChats - 1));
   TEST_ASSERT_EQUAL_STRING("/help", b.render(cap::kBatchMaxChats - 1).c_str());
   TEST_ASSERT_TRUE(BatchAdd::Deferred == b.add("c0", "u", "/loops"));   // command deferred
   TEST_ASSERT_TRUE(b.cappedAt(0));                                       // its batch says so
   TEST_ASSERT_TRUE(has(b.render(0).c_str(), "waiting"));
+}
+
+// Contiguous mode (a page that holds a command): a message joins only the drain's
+// newest bucket, so every bucket is one contiguous run of update ids and the drain can
+// commit after each. Off (no command on the page), chats still fold into one turn each.
+static void test_contiguous_mode_keeps_id_runs() {
+  MessageBatcher b;
+  b.setContiguous(true);
+  b.add("A", "u", "a1", 11);
+  b.add("B", "u", "b1", 12);
+  b.add("A", "u", "a2", 13);
+  b.add("A", "u", "a3", 14);
+  TEST_ASSERT_EQUAL_UINT(3, b.turnCount());
+  TEST_ASSERT_EQUAL_INT32(11, b.firstIdAt(0));
+  TEST_ASSERT_EQUAL_INT32(12, b.firstIdAt(1));
+  TEST_ASSERT_EQUAL_INT32(13, b.firstIdAt(2));
+  TEST_ASSERT_EQUAL_UINT(2, b.messageCountAt(2));
+  b.clear();   // clear() turns contiguous mode off again
+  b.add("A", "u", "a1", 11);
+  b.add("B", "u", "b1", 12);
+  b.add("A", "u", "a2", 13);
+  TEST_ASSERT_EQUAL_UINT(2, b.turnCount());
 }
 
 // ---- the burst property --------------------------------------------------------------
@@ -635,7 +659,8 @@ static int drainAll(const std::vector<Sent>& msgs, std::vector<Turn>& turns) {
         [&](size_t i) {
           any = true;
           turns.push_back({b.chatIdAt(i), b.render(i).c_str(), b.commandAt(i)});
-        });
+        },
+        [] {});
     if (!any) break;
   }
   return cycles;
@@ -700,6 +725,24 @@ static void test_burst_property_commands_are_their_own_turns() {
   TEST_ASSERT_TRUE(withCommands > 1500);   // the generator really exercised commands
 }
 
+// The design choice the property above pins (orchestrator ruling, 18 Oct): a command
+// gets a sealed turn INSIDE the same drain. "text, /cmd, text" from one chat drains in
+// ONE poll cycle as three turns. The rejected design (stop the drain before the
+// command, re-serve it next cycle, then stop again after it) needs three cycles here
+// and fails this test as well as the extra-cycles bound of the property.
+static void test_command_mid_burst_costs_no_extra_cycle() {
+  std::vector<Sent> msgs = {{700, "5", "msg k0q", "k0q", false},
+                            {701, "5", "/skill approve k1q", "k1q", true},
+                            {702, "5", "msg k2q", "k2q", false}};
+  std::vector<Turn> turns;
+  TEST_ASSERT_EQUAL_INT(1, drainAll(msgs, turns));
+  TEST_ASSERT_EQUAL_UINT(3, turns.size());
+  TEST_ASSERT_EQUAL_STRING("msg k0q", turns[0].text.c_str());
+  TEST_ASSERT_TRUE(turns[1].command);
+  TEST_ASSERT_EQUAL_STRING("/skill approve k1q", turns[1].text.c_str());
+  TEST_ASSERT_EQUAL_STRING("msg k2q", turns[2].text.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_message_is_raw_text);
@@ -728,6 +771,8 @@ int main(int, char**) {
   RUN_TEST(test_every_command_form_is_a_boundary);
   RUN_TEST(test_commands_alone_and_in_a_row);
   RUN_TEST(test_caps_never_mark_a_command_turn);
+  RUN_TEST(test_contiguous_mode_keeps_id_runs);
   RUN_TEST(test_burst_property_commands_are_their_own_turns);
+  RUN_TEST(test_command_mid_burst_costs_no_extra_cycle);
   return UNITY_END();
 }

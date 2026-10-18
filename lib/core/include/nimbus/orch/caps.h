@@ -89,21 +89,21 @@ constexpr int    kRecentTurnsMax  = 12;
 // PSRAM via the WorkingAllocator, like the poll body and the inbound queue). This
 // only GROUPS already-fetched updates; it adds no task and no second TLS session
 // (the frozen no-concurrency invariant, AGENTS.md 4).
-//  - per-chat message count: mirrors the getUpdates limit (one full page of one
+//  - per-turn message count (one bucket; a chat has one bucket per drain unless a
+//    slash command splits it): mirrors the getUpdates limit (one full page of one
 //    chat) so a normal burst fits in a single turn.
 constexpr size_t kBatchMaxMsgsPerChat  = 10;
-//  - per-chat payload bytes: holds one full 4096-char message plus real headroom
+//  - per-turn payload bytes: holds one full 4096-char message plus real headroom
 //    for several short ones; the concatenated text becomes ONE turn's user message,
 //    well within the kContextBudgetMax assembly budget above.
 constexpr size_t kBatchMaxBytesPerChat = 8192;
-//  - distinct chats buffered in one drain: a single getUpdates batch can carry
-//    many principals (the multi-principal path); bound the bucket count too.
+//  - buckets (turns) buffered in one drain: a single getUpdates batch can carry
+//    many principals (the multi-principal path) and commands that split a chat.
 constexpr size_t kBatchMaxChats        = 8;
 //  - total accumulator payload across all chats in one drain (PSRAM ceiling).
 constexpr size_t kBatchMaxTotalBytes   = 32768;
-// One getUpdates page is drained per cycle (the offset for that page is committed
-// before the next page is fetched, so no page can be lost on a mid-drain reset - see
-// drainOnePage). A rapid burst fits one page = one turn; a backlog drains a page per
+// One getUpdates page is drained per cycle (its turns run before the offset moves past
+// it, so no page can be lost on a mid-drain reset - see drainOnePage and drainCycle). A rapid burst fits one page = one turn; a backlog drains a page per
 // cycle. There is deliberately no multi-page-per-drain accumulation.
 constexpr int kSpawnProviderMax = 16;   // usable 15 + NUL device-side
 constexpr int kSpawnModelMax = 40;      // usable 39

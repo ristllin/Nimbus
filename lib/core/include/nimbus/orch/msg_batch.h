@@ -24,6 +24,12 @@
 // turn, emitted in creation order, so the chat's order is kept. The bucket count is
 // bounded by kBatchMaxChats (turns per drain).
 //
+// Contiguous mode (setContiguous, set by the drain for a page that holds a command):
+// a message joins only the newest bucket of the whole drain, and only when that bucket
+// is its chat's and still open. Each bucket is then one contiguous run of update ids,
+// so the drain can store the offset after every bucket and a restart re-runs at most
+// the bucket in flight; a command whose turn finished is never run again.
+//
 // It adds NO concurrency: the caller (the tg_poll task) fills it serially and
 // emits one turn per bucket, still single-task, single-TLS (AGENTS.md 4).
 //
@@ -43,7 +49,7 @@ using PsString = std::basic_string<char, std::char_traits<char>, WorkingAllocato
 // Outcome of add(): whether the message was buffered, and whether a cap fired.
 enum class BatchAdd : uint8_t {
   Accepted,         // buffered into its chat bucket; more of this chat still fits
-  ChatFull,         // buffered, but this chat's bucket has now reached a cap; the next
+  TurnFull,         // buffered, but this chat's bucket has now reached a cap; the next
                     // add for it will be Deferred. (The caller may keep draining OTHER
                     // chats.)
   CommandBoundary,  // buffered as a turn of its own: a slash command never shares a
@@ -60,25 +66,33 @@ class MessageBatcher {
   // Add one message to chatId's newest bucket, in arrival order (a command, or the
   // first message after one, opens a new bucket). `from` may be empty. Byte
   // accounting counts the payload (text) only, not render scaffolding.
-  BatchAdd add(const std::string& chatId, const std::string& from, const std::string& text);
+  // `updateId` (0 when there is none, as for web/serial/voice injects) is kept as the
+  // bucket's first id when the message opens a bucket.
+  BatchAdd add(const std::string& chatId, const std::string& from, const std::string& text,
+               int32_t updateId = 0);
+
+  // Contiguous mode (see the header comment). Reset to off by clear().
+  void setContiguous(bool on) { contiguous_ = on; }
 
   // Buckets (one turn each) in this drain. A chat owns more than one when a command
   // split it.
-  size_t chatCount() const { return chats_.size(); }
-  bool   empty()     const { return chats_.empty(); }
+  size_t turnCount() const { return buckets_.size(); }
+  bool   empty()     const { return buckets_.empty(); }
 
   // Buckets are addressed by creation index, so the caller emits turns in arrival
   // order per chat. The accessors return NUL-terminated C strings (the device wraps
   // them in an Arduino String).
-  const char* chatIdAt(size_t i)   const { return chats_[i].chatId.c_str(); }
+  const char* chatIdAt(size_t i)   const { return buckets_[i].chatId.c_str(); }
   // The sender to attribute the turn to (the FIRST message's `from` for this chat).
-  const char* turnFromAt(size_t i) const { return chats_[i].turnFrom.c_str(); }
-  size_t messageCountAt(size_t i)  const { return chats_[i].msgs.size(); }
-  bool   cappedAt(size_t i)        const { return chats_[i].capped; }
+  const char* turnFromAt(size_t i) const { return buckets_[i].turnFrom.c_str(); }
+  size_t messageCountAt(size_t i)  const { return buckets_[i].msgs.size(); }
+  bool   cappedAt(size_t i)        const { return buckets_[i].capped; }
   // The bucket holds one slash command (its render is the command, byte for byte).
-  bool   commandAt(size_t i)       const { return chats_[i].command; }
+  bool   commandAt(size_t i)       const { return buckets_[i].command; }
+  // The update id of the bucket's first message (its lowest: buckets open in order).
+  int32_t firstIdAt(size_t i)      const { return buckets_[i].firstId; }
 
-  // Render chat i's buffered messages into ONE model-facing turn text:
+  // Render bucket i's buffered messages into ONE model-facing turn text:
   //   - exactly one message and not capped -> its raw text, unchanged (byte-for-byte
   //     identical to the pre-batching one-turn-per-message behavior);
   //   - two or more -> each message as a delimited block in arrival order, so the
@@ -102,24 +116,30 @@ class MessageBatcher {
     size_t   bytes   = 0;      // running payload bytes (text only)
     bool     capped  = false;  // a message for this chat was shed (more waiting)
     bool     command = false;  // sealed: one slash command, a turn of its own
+    int32_t  firstId = 0;      // update id of the first message (0: none)
   };
 
-  Bucket* lastBucket(const std::string& chatId);   // this chat's newest bucket
+  // The bucket a new message of `chatId` may join or close: the chat's newest bucket,
+  // or in contiguous mode the drain's newest bucket if it is this chat's (else none).
+  Bucket* lastBucket(const std::string& chatId);
+  static bool full(const Bucket& b);
   void    append(Bucket& b, const std::string& from, const std::string& text);
   BatchAdd addToOpen(Bucket& b, const std::string& from, const std::string& text);
   BatchAdd addNewBucket(Bucket* last, const std::string& chatId, const std::string& from,
-                        const std::string& text, bool command);
+                        const std::string& text, bool command, int32_t updateId);
 
-  std::vector<Bucket, WorkingAllocator<Bucket>> chats_;
+  std::vector<Bucket, WorkingAllocator<Bucket>> buckets_;
   size_t totalBytes_ = 0;
+  bool   contiguous_ = false;
 };
 
 // ---- Drain driver -----------------------------------------------------------
 // The pagination + offset/ack loop, factored out of the device so it is host-
 // tested (pagination past a full page, offset re-serve on a busy slot or a cap,
 // and drain-to-empty are the acceptance criteria that most need proving). The
-// device provides fetchPage (real getUpdates + per-update classification with its
-// inline side effects) and then emits the returned turns and commits ackOffset.
+// device provides fetchPage (real getUpdates) and handle (per-update classification
+// with its inline side effects); drainCycle emits the turns and advances the offset
+// cursor in RAM (the stored copy is written by the cursor's persist/checkpoint).
 
 // One update after the device has classified it (and performed any inline side
 // effect: queueing a voice note, calling the files sink, pushing a pending sender).
@@ -143,9 +163,12 @@ struct ClassifiedUpdate {
 // update contents: the driver reads each update lazily through handle(i), so update
 // bodies (and their inline side effects) never need to exist all at once.
 struct RawPage {
-  int  count      = 0;      // whole updates the page holds (count < limit => drained)
-  int  limit      = 10;     // the getUpdates limit used for THIS fetch (1 in fallback)
-  bool fetchError = false;  // an HTTP/parse error on this page
+  int  count       = 0;      // whole updates the page holds (count < limit => drained)
+  int  limit       = 10;     // the getUpdates limit used for THIS fetch (1 in fallback)
+  bool fetchError  = false;  // an HTTP/parse error on this page
+  int  retryAfterS = -1;     // with fetchError: Telegram's retry_after (-1 when none)
+  bool hasCommand  = false;  // some update's text is a (non-forwarded) slash command:
+                             // the drain batches contiguously and commits per bucket
 };
 
 struct DrainResult {
@@ -154,6 +177,8 @@ struct DrainResult {
   int     messagesBatched = 0;
   bool    stopped         = false;  // stopped on a cap / busy slot (rest re-served)
   bool    fetchError      = false;  // the fetch failed: nothing accumulated (caller backs off)
+  int     retryAfterS     = -1;     // with fetchError: Telegram's retry_after (-1 when none)
+  bool    hasCommand      = false;  // the page held a command (contiguous, per-bucket commit)
 };
 
 // Drain ONE getUpdates page into the batcher.
@@ -194,14 +219,20 @@ DrainResult drainOnePage(MessageBatcher& batch, int32_t startOffset, FetchFn fet
   int32_t offset = startOffset;
 
   RawPage p = fetchPage(offset);
-  if (p.fetchError) { r.fetchError = true; return r; }   // nothing accumulated; back off
+  if (p.fetchError) {   // nothing accumulated; back off
+    r.fetchError = true;
+    r.retryAfterS = p.retryAfterS;
+    return r;
+  }
+  r.hasCommand = p.hasCommand;
+  batch.setContiguous(p.hasCommand);
 
   for (int i = 0; i < p.count; ++i) {
     ClassifiedUpdate u = handle(i);   // side effect (if any) runs HERE, in order
     if (u.updateId <= 0) continue;
     if (u.action == ClassifiedUpdate::Action::StopNoAck) { r.stopped = true; break; }
     if (u.action == ClassifiedUpdate::Action::BatchText) {
-      if (batch.add(u.chatId, u.from, u.text) == BatchAdd::Deferred) {
+      if (batch.add(u.chatId, u.from, u.text, u.updateId) == BatchAdd::Deferred) {
         r.stopped = true;   // a cap fired: do NOT ack this update, re-serve it next drain
         break;
       }
@@ -212,23 +243,38 @@ DrainResult drainOnePage(MessageBatcher& batch, int32_t startOffset, FetchFn fet
     r.ackOffset = offset;
   }
 
-  r.turnsEmitted = static_cast<int>(batch.chatCount());
+  r.turnsEmitted = static_cast<int>(batch.turnCount());
   return r;
 }
 
 // One poll cycle's drain over the RAM offset cursor (TgOffsetCursor): fetch the page at
-// cursor.offset(), run one turn per bucket through emit(i) (i in [0, chatCount())),
+// cursor.offset(), run one turn per bucket through emit(i) (i in [0, turnCount())),
 // then advance the cursor to the page's ack offset. The next getUpdates carries that
 // offset and so confirms this page server-side, whether or not the stored copy could
-// be written: the caller persists the cursor separately (cursor.persist), and a
-// failed write no longer replays anything while the device runs. On a fetch error
+// be written: the caller persists the cursor (cursor.persist), and a failed write no
+// longer replays anything while the device runs.
+//
+// A page that holds a command is committed bucket by bucket: its buckets are
+// contiguous id runs (setContiguous), and after each bucket but the last the cursor
+// advances to the next bucket's first id and checkpoint() stores it (the device calls
+// cursor.checkpoint). A restart then re-runs at most the bucket in flight, so a command
+// whose turn finished (a reminder, an approval, an install) is not run twice. On a fetch error
 // nothing runs and the cursor stays. The batcher is cleared on return.
-template <class FetchFn, class HandleFn, class EmitFn>
+template <class FetchFn, class HandleFn, class EmitFn, class CheckpointFn>
 DrainResult drainCycle(MessageBatcher& batch, nimbus::core::TgOffsetCursor& cursor,
-                       FetchFn fetchPage, HandleFn handle, EmitFn emit) {
+                       FetchFn fetchPage, HandleFn handle, EmitFn emit,
+                       CheckpointFn checkpoint) {
   DrainResult r = drainOnePage(batch, cursor.offset(), fetchPage, handle);
   if (!r.fetchError) {
-    for (size_t i = 0; i < batch.chatCount(); ++i) emit(i);
+    cursor.pageStart();
+    const size_t n = batch.turnCount();
+    for (size_t i = 0; i < n; ++i) {
+      emit(i);
+      if (!r.hasCommand || i + 1 == n) continue;
+      const int32_t next = batch.firstIdAt(i + 1);
+      cursor.advance(next < r.ackOffset ? next : r.ackOffset);
+      checkpoint();
+    }
     cursor.advance(r.ackOffset);
   }
   batch.clear();

@@ -80,6 +80,17 @@ void setAttachmentSink(AttachmentSink cb);   // optional; files lane plugs in he
 void setInboundObserver(InboundObserver cb);
 void setOutboundObserver(OutboundObserver cb);
 
+#if defined(NIMBUS_TEST)
+// Test seam (the test build's TGINJECT console verb): queue ONE raw getUpdates
+// response body to run through the normal receive path on the poll task - the same
+// parser, the inbound observer, the allowlist, classification, the batcher with its
+// command boundary, and one turn per bucket - exactly as a polled page, except that it
+// never moves the getUpdates offset (its ids are not Telegram's). Returns false when a
+// page is already waiting, the body is empty or over 64 KB, or PSRAM is short.
+// Test builds only: an injected page can name any chat, the owner's included.
+bool injectRawUpdates(const char* body, size_t len);
+#endif
+
 // Inject a message as if it arrived from Telegram - enqueued + dispatched by the
 // poll task (correct stack + TLS context). Used by the web test endpoint.
 // Queue a message as if it arrived on `chatId` (the web/serial/voice pseudo-

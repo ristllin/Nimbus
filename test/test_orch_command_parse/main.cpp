@@ -184,6 +184,21 @@ static void test_sealed_render_parses_as_the_command() {
   TEST_ASSERT_FALSE(nimbus::orch::isCommandText("Message 1 of 2 from u:\n/skill approve x"));
 }
 
+// A forwarded command never runs: for every verb and form, the forwarded text no
+// longer parses as a command; a forward that is not a command is unchanged.
+static void test_forwarded_commands_never_run() {
+  for (const auto& v : nimbus::orch::kCommandVerbs) {
+    for (const char* form : {"/%s", " /%s now", "/%s@Example_bot x"}) {
+      char buf[64];
+      std::snprintf(buf, sizeof buf, form, v.verb);
+      const std::string fwd = nimbus::orch::forwardedText(buf);
+      TEST_ASSERT_FALSE_MESSAGE(nimbus::orch::isCommandText(fwd), buf);
+      TEST_ASSERT_TRUE(fwd.find(buf) != std::string::npos);   // the words are kept
+    }
+  }
+  TEST_ASSERT_EQUAL_STRING("see you at 5", nimbus::orch::forwardedText("see you at 5").c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_bare_command);
@@ -200,5 +215,6 @@ int main(int, char**) {
   RUN_TEST(test_dispatcher_matches_the_table);
   RUN_TEST(test_every_verb_is_documented);
   RUN_TEST(test_sealed_render_parses_as_the_command);
+  RUN_TEST(test_forwarded_commands_never_run);
   return UNITY_END();
 }

@@ -97,9 +97,37 @@ static void test_inbound_observed_first() {
     const size_t at = h.find(later);
     TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos && obs < at, later);
   }
-  // handleUpdate is the only path from a getUpdates page to a classifier.
-  TEST_ASSERT_EQUAL_size_t(2, findAll(code(), "handleUpdate(").size());   // definition + drain
+  // handleUpdate is the only path from a getUpdates page to a classifier: its
+  // definition, the polled drain, and the injected test page.
+  TEST_ASSERT_EQUAL_size_t(3, findAll(code(), "handleUpdate(").size());
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "observeInbound(u);").size());
+}
+
+// The test seam's page (injectRawUpdates, the console's TGINJECT) runs the same
+// receive path - handleUpdate, so the observer sees it - and never moves the offset.
+static void test_injected_page_uses_the_receive_path() {
+  const std::string inj = bodyOf(code(), "static void drainInjectedPage() {");
+  TEST_ASSERT_TRUE(inj.find("handleUpdate(ups[(size_t)i], false)") != std::string::npos);
+  TEST_ASSERT_TRUE(inj.find("emitTurn(i)") != std::string::npos);
+  TEST_ASSERT_TRUE(inj.find("g_cursor") == std::string::npos);
+  TEST_ASSERT_TRUE(code().find("handleUpdate(pageUpdates[(size_t)i], true)") != std::string::npos);
+  TEST_ASSERT_TRUE(code().find("if (polled && !g_cursor.admit(u.updateId)) {") != std::string::npos);
+  // Test builds only: an injected page can name any chat, so production never has it.
+  const std::string raw = readFile("src/agent/telegram.cpp");
+  for (const char* sym : {"bool injectRawUpdates(const char* body, size_t len) {",
+                          "static void drainInjectedPage() {", "    drainInjectedPage();"}) {
+    const size_t at = raw.find(sym);
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, sym);
+    const size_t open = raw.rfind("#if defined(NIMBUS_TEST)", at);
+    const size_t close = raw.rfind("#endif", at);
+    TEST_ASSERT_TRUE_MESSAGE(open != std::string::npos && (close == std::string::npos || close < open), sym);
+  }
+  const std::string h = readFile("src/agent/telegram.h");
+  const size_t decl = h.find("bool injectRawUpdates(");
+  TEST_ASSERT_TRUE(decl != std::string::npos);
+  const size_t hOpen = h.rfind("#if defined(NIMBUS_TEST)", decl);
+  const size_t hClose = h.rfind("#endif", decl);
+  TEST_ASSERT_TRUE(hOpen != std::string::npos && (hClose == std::string::npos || hClose < hOpen));
 }
 
 static void test_every_text_send_is_observed() {
@@ -131,10 +159,29 @@ static void test_every_media_send_is_observed() {
   TEST_ASSERT_TRUE(obs < media.find("httpmp::post("));
 }
 
+// A forwarded "/command" is someone else's words: it enters the batch labeled
+// (orch::forwardedText, host-tested in test_orch_command_parse), and it does not make
+// the page a command page.
+static void test_forwarded_commands_never_reach_the_command_path() {
+  const std::string bt = bodyOf(code(), "static void batchTextInto(");
+  TEST_ASSERT_TRUE(bt.find("cu.text   = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;") !=
+                   std::string::npos);
+  // A page is a command page only for an update that can become a command turn: plain
+  // text (not a caption), allowed chat, not a forward.
+  const std::string pc = bodyOf(code(), "static bool pageHasCommand(");
+  for (const char* cond : {"u.attachment.kind == nimbus::tg::Attachment::Kind::None", "!u.forwarded",
+                           "nimbus::orch::isCommandText(u.text)", "allowed(String(u.chatId.c_str()))"})
+    TEST_ASSERT_TRUE_MESSAGE(pc.find(cond) != std::string::npos, cond);
+  // Every text that reaches the batcher goes through batchTextInto.
+  TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;").size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_inbound_observed_first);
+  RUN_TEST(test_injected_page_uses_the_receive_path);
   RUN_TEST(test_every_text_send_is_observed);
   RUN_TEST(test_every_media_send_is_observed);
+  RUN_TEST(test_forwarded_commands_never_reach_the_command_path);
   return UNITY_END();
 }

@@ -768,8 +768,10 @@ static void test_telegram_offset_read_once_and_checked() {
                                    "the stored Telegram offset is read once, at poll start");
   TEST_ASSERT_TRUE(tg.find("g_cursor.seed(store::telegramOffset());") != std::string::npos);
   TEST_ASSERT_EQUAL_size_t(1, countOf(tg, "store::setTelegramOffset("));
-  TEST_ASSERT_TRUE(tg.find("g_cursor.persist(millis(), [](int32_t v) { return store::setTelegramOffset(v); });") !=
+  TEST_ASSERT_TRUE(tg.find("static bool writeOffset(int32_t v) { return store::setTelegramOffset(v); }") !=
                    std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("g_cursor.persist(millis(), writeOffset);") != std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("g_cursor.checkpoint(millis(), writeOffset);") != std::string::npos);
   // No other firmware file reads the stored offset to drive a poll.
   for (const auto& e : std::filesystem::recursive_directory_iterator("src")) {
     const std::string path = e.path().generic_string();
