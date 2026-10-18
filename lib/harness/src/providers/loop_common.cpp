@@ -273,7 +273,7 @@ bool testStatusOverride(const std::string& host, int& status, std::string& body)
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
                    std::string& outJson, std::string& err, const HeadTools& ht,
-                   nimbus::orch::TokenUsage* usage, const FabricNotify& notify) {
+                   nimbus::orch::TurnSpend* spend, const FabricNotify& notify) {
   if (hostList.empty()) { err = "no runnable host"; return false; }
 
   // ONE canonical transcript for the whole turn, whichever provider serves a
@@ -282,8 +282,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   orch::Transcript tr;
   tr.addUser(inputs);
 
-  // Per-host usage split (logged); `usage` still receives the summed total -
-  // every factory adds into the same counter.
+  // Per-host usage (lane T): each host's step adds into its OWN counter (hostUse),
+  // and every host that billed is filed into `spend` once when the loop ends, with
+  // the model configured for it - a switched turn never books one host's rounds (or
+  // its cache writes) under another, and a failed turn still files what it billed.
   // ⚠ Keep in sync with fabricSupports() below - a host listed here but not
   // there is silently excluded from fabric turns; the reverse fails the turn
   // with "unknown host" before any HTTP (the 2026-08-12 custom-head regression).
@@ -301,6 +303,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     hlog::logf("fabric: %u hosts offered, the first %u are used", (unsigned)hostList.size(), (unsigned)kMaxHosts);
   std::array<orch::HeadStepFn, kMaxHosts> inner;
   std::array<ResendCtx, kMaxHosts> resend{};
+  std::array<orch::TokenUsage, kMaxHosts> hostUse{};   // fixed: nothing allocated for them
   auto wrap = [&](size_t i, orch::HeadStepFn step, const char* who) -> orch::HeadStepFn {
     inner[i] = std::move(step);
     resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
@@ -308,9 +311,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   };
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
-    if (h == "anthropic") return wrap(i, antLoopStep(pd, instructions, ht, usage, tr), "orchTurn(ant-loop)");
-    if (h == "openai")    return wrap(i, oaiLoopStep(pd, instructions, ht, usage, tr), "orchTurn(oai-loop)");
-    if (h == "mistral")   return wrap(i, misLoopStep(pd, instructions, ht, usage, tr), "orchTurn(mistral-loop)");
+    orch::TokenUsage* use = &hostUse[i];
+    if (h == "anthropic") return wrap(i, antLoopStep(pd, instructions, ht, use, tr), "orchTurn(ant-loop)");
+    if (h == "openai")    return wrap(i, oaiLoopStep(pd, instructions, ht, use, tr), "orchTurn(oai-loop)");
+    if (h == "mistral")   return wrap(i, misLoopStep(pd, instructions, ht, use, tr), "orchTurn(mistral-loop)");
     return nullptr;
   };
 
@@ -340,6 +344,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
 
   // The wrapper IS the controller's step: retry/failover happens INSIDE one
   // logical round, so runHeadLoop's caps and recording are provider-agnostic.
+  // Every failed attempt reaches the engine's failure chain with its host (lane T).
+  auto noteFailed = [&](const orch::HeadStep& r) {
+    if (ht.onStepError) ht.onStepError(hostList[hostIdx], r.error);
+  };
   orch::HeadStepFn step = [&](bool allowTools,
                               const std::vector<orch::HeadToolResult>& prior,
                               uint32_t budgetMs,
@@ -348,6 +356,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       orch::HeadStep sr = cur(allowTools, prior, budgetMs, capReason);
       if (sr.ok) { unparkHost(hostList[hostIdx]); return sr; }
       typeStep(sr);
+      noteFailed(sr);   // every failed attempt, the no-retry exits below included (lane T)
       // The typed rule (fabricRuleFor): a request unreadable anywhere (BadRequest:
       // an invalid body, a schema or size refused before the send) and a device
       // short of memory (CUM-404, CUM-477) fail the same way on every host, so no
@@ -368,10 +377,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                    hostList[hostIdx].c_str(), sr.error.c_str());
         // Gate G5: the failed step may have captured a served-model echo on its HTTP
         // 200; only the attempt that serves the round may name the model.
-        if (usage) usage->servedModel.clear();
+        hostUse[hostIdx].servedModel.clear();
         sr2 = cur(allowTools, prior, budgetMs, capReason);
         if (sr2.ok) { unparkHost(hostList[hostIdx]); return sr2; }
         typeStep(sr2);
+        noteFailed(sr2);
       } else if (!orch::fabricRuleFor(sr.kind).retrySameHost) {
         hlog::logf("fabric: %s step failed (%s: %s) - no same-host retry",
                    hostList[hostIdx].c_str(), orch::stepErrSlug(sr.kind), sr.error.c_str());
@@ -393,7 +403,6 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                  from.c_str(), to.c_str(), orch::stepErrSlug(sr2.kind), (unsigned)tr.toolBytes());
       g_lastSwitch = FabricSwitch{from, to, sr2.kind, sr2.httpStatus, false};
       if (notify) notify(from, to);
-      if (usage) usage->servedModel.clear();   // G5: the new host names its own model
       cur = next;
       inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
       // loop: the SAME round re-runs on the new host. The transcript already
@@ -417,6 +426,15 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
              res.rounds, res.capReason.c_str(), (int)res.ok,
              hostList[hostIdx].c_str(), switches,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  // Every exit files what each host billed, once (nothing bills before the loop).
+  if (spend) {
+    for (size_t i = 0; i < hostCount; ++i)
+      spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
+                 hostUse[i]);
+    char line[256];
+    orch::spendLine(*spend, line, sizeof(line));
+    hlog::logf("fabric-spend: %s", line);
+  }
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));

@@ -3,8 +3,10 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/orch/failure_chain.h"   // FailureChain - why a turn failed
 #include "nimbus/orch/head_loop.h"       // HeadToolCall / HeadToolResult
 #include "nimbus/orch/token_usage.h"
+#include "nimbus/orch/turn_spend.h"      // TurnSpend - who billed a turn
 
 // Hooks - the harness lifecycle observer contract (v1: observers ONLY; no hook
 // may mutate the turn). The device wires SFX cues, the /api/lastturn debug
@@ -18,25 +20,48 @@ namespace agent {
 
 enum class TurnSource : uint8_t { Owner = 0, Synthesis = 1, Loop = 2, Serial = 3 };
 
+// The machine slug of a turn's source for rows and logs: "owner" | "serial" |
+// "synthesis" | "loop", and "dream" for the reserved nightly loop (attribution
+// "loop:dream").
+inline const char* turnSourceSlug(TurnSource s, const std::string& attribution) {
+  switch (s) {
+    case TurnSource::Owner:     return "owner";
+    case TurnSource::Serial:    return "serial";
+    case TurnSource::Synthesis: return "synthesis";
+    case TurnSource::Loop:      return attribution == "loop:dream" ? "dream" : "loop";
+  }
+  return "owner";
+}
+
 struct TurnStartEv { TurnSource source; std::string chatId; };
 struct TurnEndEv {
   bool ok = false;
   std::string host;
-  nimbus::orch::TokenUsage usage;
+  nimbus::orch::TokenUsage usage;   // the turn's billed total (every host) - spend->total()
   int rounds = 0;            // executed mid-turn tool calls (0 = single-shot; the
                              // per-provider ROUND count lives inside the loop and
                              // isn't surfaced - v1 proxy, rename when it is)
   size_t replyBytes = 0;
   std::string chatId;        // the turn's routing chat (v3.6.0 fold accounting)
-  std::string error;         // provider/parse error text when !ok ("" on success) -
+  std::string error;         // the LAST provider/parse error when !ok ("" on success) -
                              // the device classifies context-overflow here (reactive fold)
   // Served-by disclosure (CUM-236): what actually answered vs what was asked for.
   // `host` above is the failover-final (served) provider; these carry the model
   // detail and the requested head so a display can say "served by <p> <m>" honestly.
   std::string requestedHost;   // the head chosen before any failover
   std::string requestedModel;  // orchModel(requestedHost) (may be empty)
-  std::string servedModel;     // the "model" echoed in the provider response ("" if unknown)
+  std::string servedModel;     // the model key `host` billed under ("" when it billed nothing)
   bool fallback = false;        // served host != requested, or served model differs from requested
+  // Lane T (frozen at turn end, so the hook never reads a store that the turn's own
+  // device actions may already have changed):
+  std::string model;           // the model key of the last host that billed ("" = none)
+  TurnSource  source = TurnSource::Owner;
+  std::string attribution;     // spend tag: "turn" | "synthesis" | "loop:<id>"
+  // Borrowed, valid only during the hook call: the per-host spend (every host that
+  // billed, filed under the model it billed with) and, when !ok, why it failed (the
+  // first cause first; never empty on a failed turn).
+  const nimbus::orch::TurnSpend*    spend = nullptr;
+  const nimbus::orch::FailureChain* chain = nullptr;
 };
 struct SpawnEv  {
   std::string tag, backend, category, model;
@@ -55,7 +80,8 @@ struct DreamEndEv {
   bool turnOk = false;     // the reflection turn's FireOutcome.ok
   int prunedVectors = 0;   // removed by pruneExpired in the maintenance phase
   int dedupedVectors = 0;  // removed by deduplicate in the maintenance phase
-  uint32_t tokens = 0;     // real billed spend of the reflection turn
+  uint32_t tokens = 0;     // real billed spend of the reflection turn (this turn's own)
+  std::string cause;       // FireOutcome.error: the first cause when the turn failed
 };
 // Mid-turn round prose ("thinking") from the head loop (Glass Box A4). Fired
 // once per round whose provider step produced non-tool text; the device
@@ -78,6 +104,8 @@ struct TurnDebugEv {
   // empty for a single-shot turn that never entered a loop.
   const std::string* transcriptBrief = nullptr;
   bool ok = false;
+  // Why the turn failed (borrowed like the others; null or empty on success).
+  const nimbus::orch::FailureChain* failure = nullptr;
 };
 
 struct Hooks {

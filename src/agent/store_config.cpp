@@ -99,6 +99,10 @@ HarnessConfig harnessConfigFromStore() {
     d.cacheW = cacheW;
     store::recordProviderTokens(h.c_str(), d, tag.c_str(), model.c_str());
   };
+  // A turn's whole spend, once per turn (lane T): one NVS ledger write per turn.
+  c.budget.recordSpend = [](const nimbus::orch::TurnSpend& spend, const std::string& tag) {
+    store::recordProviderSpend(spend, tag.c_str());
+  };
 
   c.ttsEnabled = [] { return store::ttsEnabled(); };
   c.deviceName = [] {

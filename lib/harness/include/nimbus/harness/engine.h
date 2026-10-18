@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,8 +14,11 @@
 #include "nimbus/harness/hooks.h"       // Hooks / TurnDebugEv
 #include "nimbus/harness/jobs.h"        // JobEngine (fresh results + keyFromTag)
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
+#include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
+#include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class
 #include "nimbus/orch/loops.h"          // FireOutcome (scheduled-turn result)
 #include "nimbus/orch/token_usage.h"
+#include "nimbus/orch/turn_spend.h"     // TurnSpend - the turn's per-host spend
 #include "nimbus/orch/tool_registry.h"  // ToolRegistry::Spec (toolSpecs closure)
 
 // engine - the TURN ORCHESTRATION, lifted from src/agent/orchestrator.cpp
@@ -46,11 +50,13 @@ using ProviderTurnFn = std::function<bool(
 // The engine-owned multi-provider fabric loop (Stage 2 phase 5): the device
 // registers providers::runFabricLoop bound to its ProviderDeps. hostList is the
 // priority-ordered, pre-filtered (keyed + in-budget) host set; notify fires once
-// per mid-turn provider switch (from, to) for the owner notice.
+// per mid-turn provider switch (from, to) for the owner notice. `spend` (lane T)
+// receives what EACH host billed, filed under its own model - a TurnSpend, not a
+// summed TokenUsage, so a caller that still passes a sum does not compile.
 using FabricLoopFn = std::function<bool(
     const std::vector<std::string>& hostList, const std::string& instructions,
     const std::string& inputs, std::string& outJson, std::string& err,
-    const HeadTools& ht, nimbus::orch::TokenUsage* usage,
+    const HeadTools& ht, nimbus::orch::TurnSpend* spend,
     const std::function<void(const std::string& fromHost,
                              const std::string& toHost)>& notify)>;
 
@@ -316,6 +322,8 @@ class TurnEngine {
   // reports it here).
   void noteToolReplied() { toolReplied_ = true; }
 
+  // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
+  // scheduled fire and the dream report their own spend, never a previous turn's.
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
   uint32_t turnCount() const { return turnCount_; }
@@ -408,8 +416,29 @@ class TurnEngine {
   // inputs (deferred-result pattern).
   std::string pendingMemResults_;
   // A fallback switch recorded on the previous turn, surfaced to the model as a
-  // one-line context note on the next turn (CUM-41). Consumed by buildDynamicContext.
-  std::string pendingFallbackNote_;
+  // one-line context note on the next turn (CUM-41). Consumed by buildDynamicContext,
+  // which labels it with whose turn it was and how long ago (lane T): the 18 Oct
+  // dream's unlabelled note was read by the next owner turn as about itself.
+  std::string pendingFallbackPath_;    // "anthropic -> openai -> mistral" ("" = none)
+  nimbus::orch::ErrorClass pendingFallbackReason_ = nimbus::orch::ErrorClass::None;
+  std::string pendingFallbackWhose_;   // "nightly dream", "routine 'X'", ...
+  uint32_t    pendingFallbackMs_ = 0;  // nowMs() when it was recorded
+  std::string loopName_;               // the scheduled turn in flight (its routine name)
+
+  // Lane T: the turn's spend per host and its failure chain - one allocation per
+  // boot (large enough to land in PSRAM on the device), reset at every turn start.
+  struct TurnFacts {
+    nimbus::orch::TurnSpend    spend;
+    nimbus::orch::FailureChain chain;
+    bool                       metered = false;   // the spend reached the ledger
+  };
+  std::unique_ptr<TurnFacts> facts_;
+  TurnFacts& facts();
+  // Meter `spend` under `tag` through BudgetConfig::recordSpend (or, unwired, each
+  // slot through recordTokens) - the one way spend reaches a ledger.
+  void meterSpend(const nimbus::orch::TurnSpend& spend, const std::string& tag);
+  // The model-facing label of the turn in flight ("nightly dream", ...).
+  std::string turnLabel() const;
 };
 
 }  // namespace agent

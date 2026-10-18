@@ -138,11 +138,16 @@ static void test_size_class_word_and_note() {
   TEST_ASSERT_EQUAL_STRING("small", sizeClassWord('S').c_str());
   TEST_ASSERT_EQUAL_STRING("large", sizeClassWord('L').c_str());
   TEST_ASSERT_EQUAL_STRING("", sizeClassWord(0).c_str());
-  std::string note = fallbackNote("openai", "gpt-5.5", "anthropic", "", ErrorClass::RateLimited);
-  TEST_ASSERT_TRUE(has(note, "[FALLBACK]"));
-  TEST_ASSERT_TRUE(has(note, "openai/gpt-5.5"));
-  TEST_ASSERT_TRUE(has(note, "anthropic"));
-  TEST_ASSERT_TRUE(has(note, "rate_limited"));
+  std::string note = fallbackNote("nightly dream", 12, "openai -> anthropic", ErrorClass::RateLimited);
+  TEST_ASSERT_EQUAL_STRING(
+      "[FALLBACK - previous turn (nightly dream, 12 min ago)] openai -> anthropic (rate_limited)",
+      note.c_str());
+  // Never a bare "[FALLBACK] switched": whose turn it was is always named.
+  TEST_ASSERT_EQUAL_STRING("[FALLBACK - previous turn (a background turn)] a -> b -> c",
+                           fallbackNote("", -1, "a -> b -> c", ErrorClass::None).c_str());
+  TEST_ASSERT_TRUE(has(fallbackNote("owner message", 0, "a -> b", ErrorClass::None),
+                       "under a minute ago"));
+  TEST_ASSERT_FALSE(has(note, "[FALLBACK] switched"));
 }
 
 static void test_json_round_trip() {

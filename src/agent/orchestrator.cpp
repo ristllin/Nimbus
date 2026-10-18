@@ -58,6 +58,7 @@
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
+#include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/memory.h"
 #include "nimbus/orch/journal.h"
@@ -468,8 +469,13 @@ static void captureTurnDebug(const TurnDebugEv& ev) {
   const std::string& inputs = *ev.inputs;
   const std::string& outJson = *ev.rawOut;
   const std::string& brief = ev.transcriptBrief ? *ev.transcriptBrief : kNoBrief;
+  // Lane T: a failed turn's header names its causes, first cause first.
+  const std::string result =
+      ev.ok ? std::string("ok")
+            : ev.failure && !ev.failure->empty() ? "FAILED - " + ev.failure->render(240)
+                                                 : std::string("FAILED");
   const size_t need =
-      instructions.size() + inputs.size() + outJson.size() + brief.size() + 1024;
+      instructions.size() + inputs.size() + outJson.size() + brief.size() + result.size() + 1024;
   char* b = (char*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
   if (!b) return;   // no PSRAM -> skip capture, never the turn
   size_t off = (size_t)snprintf(b, need,
@@ -485,7 +491,7 @@ static void captureTurnDebug(const TurnDebugEv& ev) {
       ev.host.c_str(),
       ev.convContinued ? "CONTINUED - the provider held history from prior turns"
                        : "FRESH - no prior history visible to the model",
-      ev.ok ? "ok" : "FAILED");
+      result.c_str());
   auto app = [&](const char* s, size_t n) {
     if (off + n >= need - 1) n = need - 1 - off;
     memcpy(b + off, s, n);
@@ -524,6 +530,63 @@ char* lastTurnDebugPs(size_t& outLen) {
   memcpy(copy, g_dbgBuf, g_dbgLen);
   outLen = g_dbgLen;
   return copy;
+}
+
+// ---- the last failed turn (device.status.lastFail, lane T) --------------------
+// RAM only, reset at boot: the turn id, its source, when, and the first cause first -
+// so the head can answer "why did that fail" from the tool it already calls first.
+// Written on the turn task, read by device.status on the turn task or over /mcp.
+static std::mutex  g_lastFailMx;
+static std::string g_lastFailTurn, g_lastFailSrc, g_lastFailCause;
+static uint32_t    g_lastFailMs = 0;
+
+static void noteLastFail(const char* src, const TurnEndEv& ev) {
+  std::string cause = ev.chain && !ev.chain->empty()
+                          ? ev.chain->render(nimbus::orch::FailureChain::kTextMax)
+                          : nimbus::orch::sanitizeFailText(ev.error.data(), ev.error.size(),
+                                                           nimbus::orch::FailureChain::kTextMax);
+  std::lock_guard<std::mutex> lk(g_lastFailMx);
+  g_lastFailTurn = g_turnTag[0] ? std::string(g_turnTag + 5) : std::string();   // skip "turn:"
+  g_lastFailSrc = src ? src : "";
+  g_lastFailCause = std::move(cause);
+  g_lastFailMs = millis();
+}
+
+String lastFailJson() {
+  std::lock_guard<std::mutex> lk(g_lastFailMx);
+  if (!g_lastFailMs && g_lastFailCause.empty()) return "null";
+  JsonDocument d;
+  d["turn"] = g_lastFailTurn;
+  d["src"] = g_lastFailSrc;
+  d["agoS"] = (uint32_t)((millis() - g_lastFailMs) / 1000u);
+  d["cause"] = g_lastFailCause;
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+// The ev:error row of a failed turn, tagged with the turn's id so the "system" row
+// joins the turn's own rows (before the clock syncs it is held untagged by
+// captureEvent, which stamps it at first sync).
+static void captureTurnError(const String& text) {
+  if (!g_turnTag[0] || !memory::clockSynced()) {
+    memory::captureEvent("error", text);
+    return;
+  }
+  memory::flushPendingEvents();   // older held rows first, preserving order
+  memory::captureSession("system", "device", "Device timeline");
+  memory::captureMessage("system", "system", orch::MsgKind::Log, text, "",
+                         String("ev:error,") + g_turnTag);
+}
+
+// A context overflow anywhere in the chain (the first host may have overflowed and a
+// later one failed for another reason): the next fold must still run.
+static bool anyContextOverflow(const TurnEndEv& ev) {
+  if (nimbus::orch::isContextOverflowError(ev.error)) return true;
+  if (!ev.chain) return false;
+  for (size_t i = 0; i < ev.chain->size(); ++i)
+    if (nimbus::orch::isContextOverflowError(ev.chain->at(i).text)) return true;
+  return false;
 }
 
 // ---- the JobEngine wiring (spawn/dispatch/poll logic lives in lib/harness) --
@@ -1304,46 +1367,60 @@ static TurnEngine::Deps buildTurnDeps() {
     // in the text field so the UI parses it without a schema change.
     // NB `ev.rounds` counts EXECUTED TOOL CALLS, not provider rounds (see
     // TurnEndEv) - it ships as "tools" so no surface can misreport it as rounds.
+    // Lane T: the portable renderer SHRINKS the row to ORCH_TRACE_END_MAX instead of
+    // the old silent drop; err is the failure chain (first cause first), "via" the
+    // per-host split when more than one host billed, and the model comes from the
+    // event (frozen when the spend was filed), never a store read that this turn's
+    // own device action may already have changed.
+    static_assert(ORCH_TRACE_END_MAX >= nimbus::orch::kTurnEndRowMin,
+                  "the turn-end row is always produced only within kTurnEndRowMin");
+    const char* src = agent::turnSourceSlug(ev.source, ev.attribution);
     if (memory::traceActive() && g_turnTag[0] && !ev.chatId.empty()) {
-      std::string err = ev.error;
-      if (err.size()) {
-        int keep = nimbus::utf8CapLen(err.c_str(), (int)err.size(), ORCH_TRACE_ENDERR_MAX);
-        if (keep < (int)err.size()) err = err.substr(0, (size_t)keep);
-      }
-      JsonDocument doc;
-      doc["host"]  = ev.host;
       // Served-by disclosure (CUM-236 device leg): the turn view (_turnChip) reads
-      // model+fallback off this row. On a provider/model substitution show the model
-      // that actually answered and flag the fallback; a plain turn is unchanged. The
-      // shared servedByDisclosure rule decides it, so a new fallback path discloses
-      // here without a device-side re-implementation.
+      // model+fallback off this row. The shared rule decides it; it never names a
+      // model that billed nothing.
       const nimbus::orch::TurnChipDisclosure disc = nimbus::orch::turnChipDisclosure(
-          ev.requestedHost, ev.requestedModel, ev.host, ev.servedModel,
-          std::string(agent::store::orchModel(String(ev.host.c_str())).c_str()));
-      doc["model"] = disc.model;
-      if (disc.fallback) doc["fallback"] = true;
-      doc["tools"] = ev.rounds;
-      doc["ok"]    = ev.ok;
-      doc["in"]    = (unsigned)ev.usage.promptTokens;
-      doc["out"]   = (unsigned)ev.usage.completionTokens;
-      doc["reply"] = (unsigned)ev.replyBytes;
-      if (err.size()) doc["err"] = err;
-      String js;
-      serializeJson(doc, js);
+          ev.requestedHost, ev.requestedModel, ev.host, ev.servedModel, ev.model);
+      nimbus::orch::TurnEndRowIn row;
+      row.ok = ev.ok;
+      row.src = src;
+      row.host = ev.host;
+      row.model = disc.model;
+      row.fallback = disc.fallback;
+      row.tools = ev.rounds;
+      row.in = ev.usage.promptTokens;
+      row.out = ev.usage.completionTokens;
+      row.cacheR = ev.usage.cacheReadTokens;
+      row.cacheW = ev.usage.cacheWriteTokens;
+      row.reply = ev.replyBytes;
+      row.spend = ev.spend;
+      row.chain = ev.chain;
+      row.error = ev.error;
+      const std::string js = nimbus::orch::turnEndRowJson(row, ORCH_TRACE_END_MAX);
       // blobPath -> this turn's dossier, so the chat can offer "turn anatomy"
       // without probing for a file that may have been evicted by the ring.
       String dossier = g_turnDossier
                            ? String("/mem/trace/") + (g_turnTag + 5) + ".txt"
                            : String();
-      if (js.length() <= ORCH_TRACE_END_MAX)
-        memory::captureMessage(ev.chatId.c_str(), "system", orch::MsgKind::Log, js, dossier,
-                               String("ev:turnend,") + g_turnTag);
+      memory::captureMessage(ev.chatId.c_str(), "system", orch::MsgKind::Log, String(js.c_str()),
+                             dossier, String("ev:turnend,") + g_turnTag);
+    }
+    // Timeline row for FAILED turns only (Glass Box A3) - successes are already
+    // visible as chat history; failures previously left no queryable trace. Lane T:
+    // it names the turn's source, where it started and ended, the first cause first
+    // and the tool CALLS that ran, and carries this turn's id (written before the
+    // tag is cleared) so it joins the turn's own rows.
+    if (!ev.ok) {
+      const std::string txt = nimbus::orch::errorEventText(src, ev.requestedHost, ev.host, ev.chain,
+                                                           ev.error, ev.rounds);
+      captureTurnError(String(txt.c_str()));
+      noteLastFail(src, ev);
     }
     g_turnTag[0] = 0;   // same reason: no async row may inherit this turn's id
     g_turnDossier = false;
-    alogf("turn end: %s host=%s tokens in=%u out=%u tools=%d reply=%uB",
+    alogf("turn end: %s host=%s tokens in=%u out=%u tools=%d reply=%uB src=%s",
           ev.ok ? "ok" : "FAIL", ev.host.c_str(), (unsigned)ev.usage.promptTokens,
-          (unsigned)ev.usage.completionTokens, ev.rounds, (unsigned)ev.replyBytes);
+          (unsigned)ev.usage.completionTokens, ev.rounds, (unsigned)ev.replyBytes, src);
     // W3b passive validation: a SUCCESSFUL real turn is the strongest proof a
     // provider key works - refresh the verify cache from it, so "verified"
     // doesn't depend on the manual Verify button (the UI hint promises this).
@@ -1352,11 +1429,6 @@ static TurnEngine::Deps buildTurnDeps() {
     if (ev.ok && (ev.host == "openai" || ev.host == "anthropic" || ev.host == "mistral") &&
         store::verifyResult(ev.host.c_str()) != 1)
       store::setVerify(ev.host.c_str(), 1, millis());
-    // Timeline row for FAILED turns only (Glass Box A3) - successes are already
-    // visible as chat history; failures previously left no queryable trace.
-    if (!ev.ok)
-      memory::captureEvent("error", String("Turn FAILED on ") + ev.host.c_str() +
-                                    " after " + ev.rounds + " tool round(s)");
     dream::noteTurnEnd(millis());   // DREAMING idle gate: quiet clock
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
@@ -1364,7 +1436,7 @@ static TurnEngine::Deps buildTurnDeps() {
       g_lastTurnChat[sizeof(g_lastTurnChat) - 1] = 0;
       g_folds.noteTurn(ev.chatId);
       publishFoldStatus(ev.chatId);
-      if (!ev.ok && nimbus::orch::isContextOverflowError(ev.error)) {
+      if (!ev.ok && anyContextOverflow(ev)) {
         g_folds.markOverflow(ev.chatId);   // next compactTick() folds this chat
         alogf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
       }
@@ -1394,10 +1466,10 @@ static TurnEngine::Deps buildTurnDeps() {
   // switches provider and re-runs against the shared canonical transcript.
   d.hosts.fabric = [](const std::vector<std::string>& hostList, const std::string& ins,
                       const std::string& inp, std::string& out, std::string& err,
-                      const agent::HeadTools& ht, nimbus::orch::TokenUsage* usage,
+                      const agent::HeadTools& ht, nimbus::orch::TurnSpend* spend,
                       const std::function<void(const std::string&, const std::string&)>& notify) {
     return providers::runFabricLoop(deviceProviderDeps(), hostList, ins, inp, out, err,
-                                    ht, usage, notify);
+                                    ht, spend, notify);
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
   // Head on the custom/LAN endpoint (Stage H): a single-shot chat-completions

@@ -46,6 +46,12 @@ struct HeadTools {
   // here on the way out, so the engine can put the tool-loop's actual middle
   // into the turn dossier instead of only its entry and exit.
   std::function<void(const std::string& brief)> onBrief;
+
+  // Optional failed-attempt observer (lane T): the fabric calls it after EVERY failed
+  // provider attempt (a same-host retry included) and on its early exits, with the
+  // host and that attempt's error, so the engine's FailureChain keeps the first cause
+  // of every host - the fabric itself still returns only the last error.
+  std::function<void(const std::string& host, const std::string& err)> onStepError;
 };
 
 }  // namespace agent

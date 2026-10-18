@@ -198,13 +198,12 @@ FallbackRuleSet defaultRuleSet(const std::vector<std::string>& priority) {
   return rs;
 }
 
-std::string fallbackNote(const std::string& fromProvider, const std::string& fromModel,
-                         const std::string& toProvider, const std::string& toModel,
+std::string fallbackNote(const std::string& whose, long agoMin, const std::string& path,
                          ErrorClass reason) {
-  std::string note = "[FALLBACK] switched " + fromProvider;
-  if (!fromModel.empty()) note += "/" + fromModel;
-  note += " -> " + toProvider;
-  if (!toModel.empty()) note += "/" + toModel;
+  std::string note = "[FALLBACK - previous turn (" + (whose.empty() ? std::string("a background turn") : whose);
+  if (agoMin == 0) note += ", under a minute ago";
+  else if (agoMin > 0) note += ", " + std::to_string(agoMin) + " min ago";
+  note += ")] " + path;
   const char* r = errorClassToken(reason);
   if (r && *r) note += " (" + std::string(r) + ")";
   return note;

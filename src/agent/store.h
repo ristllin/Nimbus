@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/orch/model_ledger.h"   // TokenDelta, ModelRate, RateEdit (per-model prices)
+#include "nimbus/orch/turn_spend.h"     // TurnSpend - recordProviderSpend
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
 
 // store - device configuration accessors for the Orchestrator subsystem, backed
@@ -386,6 +387,10 @@ void   recordProviderTokens(const String& provider, uint32_t tokensIn,
 // Bounded: O(32 + 720) per call, no allocation that outlives it, no new task.
 void   recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta& d,
                             const char* tag, const char* model);
+// One turn's spend (lane T): every host that billed, each under the model it billed
+// with, through nimbus::orch::ledgerDelta (the R4 cache split), then ONE persist of
+// each store - the NVS usgLedger once per turn, whatever the number of hosts.
+void   recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag);
 void   recordProviderCall(const String& provider);                     // per search call
 bool   providerOverBudget(const String& provider);                     // gate before spend
 bool   setProviderBudget(const String& provider, uint64_t tokenLimit,

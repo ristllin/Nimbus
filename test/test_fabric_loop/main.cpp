@@ -9,6 +9,8 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/failure_chain.h"
+#include "nimbus/orch/turn_spend.h"
 
 // runFabricLoop (Stage 2 phase 5) - the engine-owned multi-provider loop.
 // The scenario that IS the feature: anthropic serves round 0 and a tool
@@ -74,9 +76,9 @@ static void test_midturn_failover_carries_results_no_redispatch() {
   int notifies = 0;
   std::string nFrom, nTo;
   std::string out, err;
-  orch::TokenUsage u;
+  orch::TurnSpend sp;
   bool ok = providers::runFabricLoop(
-      pd, {"anthropic", "openai"}, "SYS", "USER", out, err, rig.ht, &u,
+      pd, {"anthropic", "openai"}, "SYS", "USER", out, err, rig.ht, &sp,
       [&](const std::string& f, const std::string& t) { notifies++; nFrom = f; nTo = t; });
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
   TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
@@ -97,9 +99,20 @@ static void test_midturn_failover_carries_results_no_redispatch() {
   TEST_ASSERT_TRUE(bodyHas(d, 3, "\"store\":false"));
   // The turn completed on the fallback host.
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
-  // Usage summed across BOTH hosts (50+60 / 10+15).
-  TEST_ASSERT_EQUAL(110, (int)u.promptTokens);
-  TEST_ASSERT_EQUAL(25, (int)u.completionTokens);
+  // Each host's spend on its own slot (lane T): anthropic billed round 0, openai the
+  // re-run round - never one sum filed under the host that finished.
+  TEST_ASSERT_EQUAL(2, (int)sp.n);
+  TEST_ASSERT_EQUAL_STRING("anthropic", sp.slot[0].host);
+  TEST_ASSERT_EQUAL(50, (int)sp.slot[0].in);
+  TEST_ASSERT_EQUAL(10, (int)sp.slot[0].out);
+  TEST_ASSERT_EQUAL(1, (int)sp.slot[0].billed);
+  TEST_ASSERT_EQUAL_STRING("openai", sp.slot[1].host);
+  TEST_ASSERT_EQUAL(60, (int)sp.slot[1].in);
+  TEST_ASSERT_EQUAL(15, (int)sp.slot[1].out);
+  TEST_ASSERT_EQUAL(1, (int)sp.slot[1].billed);
+  TEST_ASSERT_EQUAL(110, (int)sp.total().promptTokens);   // the display total
+  TEST_ASSERT_EQUAL(25, (int)sp.total().completionTokens);
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains("fabric-spend: anthropic/"));
 }
 
 // Glass Box P3: the loop hands its canonical transcript to HeadTools::onBrief on
@@ -120,9 +133,9 @@ static void test_brief_reaches_onbrief_with_calls_and_results() {
   int briefCalls = 0;
   rig.ht.onBrief = [&](const std::string& b) { brief = b; briefCalls++; };
   std::string out, err;
-  orch::TokenUsage u;
+  orch::TurnSpend sp;
   bool ok = providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err,
-                                     rig.ht, &u, nullptr);
+                                     rig.ht, &sp, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
   TEST_ASSERT_EQUAL(1, briefCalls);              // exactly once per turn
   TEST_ASSERT_TRUE(brief.find("[user] USER") != std::string::npos);
@@ -143,12 +156,15 @@ static void test_brief_delivered_even_when_the_turn_fails() {
   std::string brief;
   rig.ht.onBrief = [&](const std::string& b) { brief = b; };
   std::string out, err;
-  orch::TokenUsage u;
+  orch::TurnSpend sp;
   bool ok = providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err,
-                                     rig.ht, &u, nullptr);
+                                     rig.ht, &sp, nullptr);
   TEST_ASSERT_FALSE(ok);
   // The work that DID happen before the failure is still recoverable.
   TEST_ASSERT_TRUE(brief.find("[tool] memory_search") != std::string::npos);
+  // ... and so is what it billed: a failed turn files its billed round (lane T).
+  TEST_ASSERT_EQUAL(1, (int)sp.n);
+  TEST_ASSERT_EQUAL(50, (int)sp.slot[0].in);
 }
 
 static void test_all_hosts_down_fails_soft_with_error() {
@@ -158,15 +174,83 @@ static void test_all_hosts_down_fails_soft_with_error() {
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
+  std::vector<std::string> failedHosts;
+  rig.ht.onStepError = [&](const std::string& h, const std::string&) { failedHosts.push_back(h); };
   int notifies = 0;
   std::string out, err;
+  orch::TurnSpend sp;
   bool ok = providers::runFabricLoop(
-      pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, nullptr,
+      pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, &sp,
       [&](const std::string&, const std::string&) { notifies++; });
   TEST_ASSERT_FALSE(ok);
-  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());   // still the LAST error
   TEST_ASSERT_EQUAL(1, notifies);          // switched once, then B exhausted too
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
+  // Every failed attempt reported, in order, with its host (lane T).
+  const std::vector<std::string> want = {"anthropic", "anthropic", "openai", "openai"};
+  TEST_ASSERT_TRUE(failedHosts == want);
+  TEST_ASSERT_TRUE(sp.empty());   // nothing billed: nothing filed
+}
+
+// Lane T, H2: three hosts fail in turn; the engine's chain (fed by onStepError)
+// keeps every host's FIRST cause in order, while `err` stays the last error. The
+// failure kinds switch hosts under every fabric rule (a server error, a dead
+// connection), so this pins the reporting, not the switching policy.
+static void test_fabric_reports_every_failed_host_in_order() {
+  FakeProviderDeps d;
+  const std::string overloaded =
+      "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}";
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 529, overloaded});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 529, overloaded});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 0, ""});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 0, ""});
+  d.http.script.push_back({"api.mistral.ai", "", 503, "{\"message\":\"unavailable\"}"});
+  d.http.script.push_back({"api.mistral.ai", "", 503, "{\"message\":\"unavailable\"}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  orch::FailureChain chain;
+  int reports = 0;
+  rig.ht.onStepError = [&](const std::string& h, const std::string& e) {
+    reports++;
+    chain.note(h, e);
+  };
+  std::string out, err;
+  orch::TurnSpend sp;
+  const bool ok = providers::runFabricLoop(pd, {"anthropic", "openai", "mistral"}, "S", "U", out,
+                                           err, rig.ht, &sp, nullptr);
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL(6, reports);
+  TEST_ASSERT_EQUAL_STRING("anthropic -> openai -> mistral", chain.path().c_str());
+  TEST_ASSERT_NOT_NULL(std::strstr(chain.first()->text.c_str(), "529"));
+  TEST_ASSERT_EQUAL(2, (int)chain.first()->attempts);
+  TEST_ASSERT_EQUAL_STRING(chain.last()->text.c_str(), err.c_str());   // err: the last
+}
+
+// The 18 Oct dream's billing shape: rounds billed on the first host, then every host
+// fails. The turn fails AND its spend holds exactly the billed rounds, under the
+// host that billed them - no slot for the hosts that billed nothing.
+static void test_failure_after_billed_rounds_files_them() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 503, "{}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 503, "{}"});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 0, ""});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 0, ""});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  orch::TurnSpend sp;
+  const bool ok = providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err,
+                                           rig.ht, &sp, nullptr);
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL(1, (int)sp.n);
+  TEST_ASSERT_EQUAL_STRING("anthropic", sp.slot[0].host);
+  TEST_ASSERT_EQUAL(100, (int)sp.slot[0].in);
+  TEST_ASSERT_EQUAL(20, (int)sp.slot[0].out);
+  TEST_ASSERT_EQUAL(2, (int)sp.slot[0].billed);
 }
 
 // Gate G5 inside the fabric: a step that captured a served-model echo on its HTTP 200
@@ -189,11 +273,14 @@ static void test_failed_step_echo_never_names_the_serving_model() {
     FakeProviderDeps::ToolRig rig;
     d.fillTools(rig);
     std::string out, err;
-    orch::TokenUsage u;
+    orch::TurnSpend sp;
     TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err,
-                                              rig.ht, &u, nullptr));
-    TEST_ASSERT_EQUAL_STRING("", u.servedModel.c_str());
-    TEST_ASSERT_EQUAL(17, (int)u.promptTokens);   // the failed step's tokens still count
+                                              rig.ht, &sp, nullptr));
+    // The serving retry echoed nothing: the spend files under the configured model,
+    // never the failed attempt's echo; the failed step's tokens still count.
+    TEST_ASSERT_EQUAL(1, (int)sp.n);
+    TEST_ASSERT_EQUAL_STRING("model-anthropic", sp.slot[0].model);
+    TEST_ASSERT_EQUAL(17, (int)sp.slot[0].in);
   }
   {   // both anthropic attempts echo and fail; openai serves the round, with no echo
     FakeProviderDeps d;
@@ -204,11 +291,17 @@ static void test_failed_step_echo_never_names_the_serving_model() {
     FakeProviderDeps::ToolRig rig;
     d.fillTools(rig);
     std::string out, err;
-    orch::TokenUsage u;
+    orch::TurnSpend sp;
     TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err,
-                                              rig.ht, &u, nullptr));
-    TEST_ASSERT_EQUAL_STRING("", u.servedModel.c_str());
-    TEST_ASSERT_EQUAL(7 + 7 + 60, (int)u.promptTokens);
+                                              rig.ht, &sp, nullptr));
+    // Each host on its own slot: anthropic's two billed attempts under the model they
+    // echoed (a real substitution), openai's serving round under its configured model.
+    TEST_ASSERT_EQUAL(2, (int)sp.n);
+    TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5", sp.slot[0].model);
+    TEST_ASSERT_EQUAL(7 + 7, (int)sp.slot[0].in);
+    TEST_ASSERT_EQUAL_STRING("model-openai", sp.slot[1].model);
+    TEST_ASSERT_EQUAL(60, (int)sp.slot[1].in);
+    TEST_ASSERT_EQUAL_STRING("model-openai", sp.total().servedModel.c_str());
   }
 }
 
@@ -283,6 +376,8 @@ static void test_cum477_fabric_resends_once_after_the_heap_recovers() {
 static void test_cum477_fabric_low_memory_does_not_switch() {
   LowHeapFabric f(/*recovers=*/false);   // an anthropic request would be unscripted: loud
   int notifies = 0;
+  std::vector<std::string> reported;   // the early exit reports its cause too (lane T)
+  f.rig.ht.onStepError = [&](const std::string& h, const std::string& e) { reported.push_back(h + "|" + e); };
   std::string out, err;
   const bool ok = providers::runFabricLoop(f.pd, {"openai", "anthropic"}, "SYS", "USER", out, err, f.rig.ht,
                                            nullptr, [&](const std::string&, const std::string&) { notifies++; });
@@ -292,6 +387,9 @@ static void test_cum477_fabric_low_memory_does_not_switch() {
   TEST_ASSERT_EQUAL(0, notifies);
   TEST_ASSERT_TRUE(f.delays >= 1);
   TEST_ASSERT_TRUE(f.delays <= 31);   // bounded: 3 s of 100 ms polls
+  TEST_ASSERT_EQUAL(1, (int)reported.size());
+  TEST_ASSERT_EQUAL_STRING("openai|low memory: the device could not send the request",
+                           reported[0].c_str());
 }
 
 // Review: the heap came back but the one resend failed anyway (it was sent; no
@@ -384,6 +482,8 @@ int main(int, char**) {
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
+  RUN_TEST(test_fabric_reports_every_failed_host_in_order);
+  RUN_TEST(test_failure_after_billed_rounds_files_them);
   RUN_TEST(test_single_host_list_never_switches);
   RUN_TEST(test_failed_step_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);

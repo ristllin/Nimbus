@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "nimbus/orch/failure_chain.h"   // sanitizeFailText - the stored cause is clean UTF-8
+
 // Local Loops pure core - see loops.h. Every function here is host-tested and
 // Arduino-free; the device subsystem drives it (tick, persistence, tz/epoch).
 
@@ -296,6 +298,15 @@ void onFireResult(LoopRecord& l, bool ok, const TokenUsage& used, uint64_t reply
   }
 }
 
+void noteFireError(LoopRecord& l, bool ok, const std::string& error) {
+  if (ok) {
+    l.lastErr.clear();
+    return;
+  }
+  l.lastErr = sanitizeFailText(error.data(), error.size(), kLoopErrMax);
+  if (l.lastErr.empty()) l.lastErr = "cause not recorded";
+}
+
 void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec) {
   // Not a fire: firesToday / lastRun / repeat state stay untouched - only the
   // schedule slips. A 0 defer still moves strictly after now (isDue is <=).
@@ -348,6 +359,7 @@ std::string dumpLoops(const std::vector<LoopRecord>& loops) {
     o["consecFails"]   = l.consecFails;
     o["lastReplyHash"] = l.lastReplyHash;
     o["repeatRun"]     = l.repeatRun;
+    if (!l.lastErr.empty()) o["lastErr"] = l.lastErr;
   }
   std::string out;
   ArduinoJson::serializeJson(d, out);
@@ -418,6 +430,9 @@ bool loadLoops(const std::string& json, std::vector<LoopRecord>& out) {
     l.consecFails   = o["consecFails"]   | 0;
     l.lastReplyHash = o["lastReplyHash"] | 0ULL;
     l.repeatRun     = o["repeatRun"]     | 0;
+    // Capped on load too: a hand-edited file never feeds an unbounded cause anywhere.
+    const char* le  = o["lastErr"] | "";
+    l.lastErr       = sanitizeFailText(le, std::strlen(le), kLoopErrMax);
     if (!l.id.empty()) out.push_back(l);
   }
   return true;

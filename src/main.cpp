@@ -124,6 +124,7 @@
 #include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
+#include "nimbus/orch/failure_rows.h"  // dreamRowText - the dream timeline row (lane T)
 #include "sys/config_nvs.h"
 #include "test_console.h"  // no-op inline stubs unless -DNIMBUS_TEST (env:test)
 #include <WiFi.h>  // WiFi.status()/localIP() radio reads + the F8/F9 event echo (test)
@@ -2671,11 +2672,12 @@ static void orchestratorBegin() {
       agent::alogf("dream: end %s pruned=%d deduped=%d tokens=%u",
                    e.turnOk ? "ok" : "FAIL", e.prunedVectors, e.dedupedVectors,
                    (unsigned)e.tokens);
-      // Timeline row - dream outcomes used to vanish into the 1280 B RAM log.
-      agent::memory::captureEvent("dream",
-          String("Nightly dream ") + (e.turnOk ? "ok" : "FAILED") +
-          " pruned=" + e.prunedVectors + " deduped=" + e.dedupedVectors +
-          " tokens=" + (unsigned)e.tokens);
+      // Timeline row - dream outcomes used to vanish into the 1280 B RAM log. It
+      // carries the first cause of a failure and the reflection turn's own spend,
+      // labelled; the counters are the maintenance phase's (they ran before the turn).
+      const std::string row = nimbus::orch::dreamRowText(e.turnOk, e.cause, e.tokens,
+                                                         e.prunedVectors, e.dedupedVectors);
+      agent::memory::captureEvent("dream", String(row.c_str()));
     };
     agent::dream::begin(dh);
   }
@@ -2746,7 +2748,9 @@ static void registerDeviceTools() {
           "approx=true when part of it is a built-in estimate) vs the owner's $ "
           "and token ceilings + the reset day - use it to plan or answer any "
           "cost/budget question, "
-          "and cfg{} = the current value of every knob the config action sets. "
+          "cfg{} = the current value of every knob the config action sets, and "
+          "lastFail = the most recent failed turn since boot with its causes, first "
+          "cause first (null when none) - quote it when asked why something failed. "
           "Silent - never makes a sound.",
           [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
             // W11: the hw snapshot PLUS the agent-layer live state (composed here,
@@ -2816,6 +2820,9 @@ static void registerDeviceTools() {
               s += ",\"sessOut\":"; s += su.completionTokens;
               s += ",\"budget\":"; s += agent::store::providerBudgetJson(); s += "}";
             }
+            // The last failed turn since boot (RAM only): its id, source, age and the
+            // first cause first - read this before explaining any failure.
+            s += ",\"lastFail\":"; s += agent::orchestrator::lastFailJson();
             s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
             s += ",\"otaSlot\":\""; s += otaupd::runningSlot(); s += "\"";
             s += ",\"autoUpdate\":"; s += agent::store::otaAutoUpdate() ? "true" : "false";

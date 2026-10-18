@@ -10,12 +10,13 @@
 #include <memory>
 #include <set>
 
+#include "nimbus/mem_cap.h"              // utf8CapLen - the owner notice's cause cap
 #include "nimbus/orch/billing_refusal.h"  // billingNoticeDue / billingNotice - one notice per episode
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
-#include "nimbus/orch/model_key.h"       // usageModelKey - the per-model spend key
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
+#include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
 
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
@@ -348,10 +349,15 @@ std::string TurnEngine::syncCapacityText() const {
 std::string TurnEngine::buildDynamicContext() {
   std::string ctx;
   // A provider fallback from the previous turn, surfaced once (mention only if
-  // relevant/asked). Cleared after it is handed to the model.
-  if (!pendingFallbackNote_.empty()) {
-    ctx += pendingFallbackNote_ + "\n";
-    pendingFallbackNote_.clear();
+  // relevant/asked), labelled with whose turn it was and how long ago so this turn
+  // never reads it as its own switch. Cleared after it is handed to the model.
+  if (!pendingFallbackPath_.empty()) {
+    const long ago =
+        d_.platform.nowMs ? (long)((nowMs() - pendingFallbackMs_) / 60000u) : -1L;
+    ctx += orch::fallbackNote(pendingFallbackWhose_, ago, pendingFallbackPath_,
+                              pendingFallbackReason_) +
+           "\n";
+    pendingFallbackPath_.clear();
   }
   ctx += "[ACTIVE SESSIONS]\n";
   ctx += jobsSummaryText();
@@ -471,6 +477,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Lane L: sub-agent results folded into this turn are external content (the
   // leak-repair gate reads it); a tool that returns external content sets it too.
   externalContentSeen_ = freshInTurn_;
+  // Lane T: this turn's spend and causes start empty (filled per attempt, metered and
+  // reported once in fireTurnEnd on whichever exit the turn takes).
+  TurnFacts& tf = facts();
+  tf.spend.clear();
+  tf.chain.clear();
+  tf.metered = false;
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
@@ -685,6 +697,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // over on the way out (success OR failure) so the turn dossier can carry the
     // tool loop's actual middle, not just the turn's entry and exit.
     headTools.onBrief = [this](const std::string& brief) { lastBrief_ = brief; };
+    // Every failed fabric attempt, with its host (lane T): the chain keeps each
+    // host's FIRST cause, which the fabric's own `err` (the last one) cannot.
+    headTools.onStepError = [this](const std::string& h, const std::string& e) {
+      facts().chain.note(h, e);
+    };
     headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho](const orch::HeadToolCall& call)
         -> orch::HeadToolResult {
       if (d_.hooks.onToolCall) d_.hooks.onToolCall(call);   // observer-only
@@ -791,29 +808,55 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
 
   std::string outJson, err;
-  orch::TokenUsage turnUsage;   // real provider token usage, summed across
-                                // tool-loop rounds AND failover attempts (Phase 0)
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
   // (budget refusal, provider failure, parse fail, success), observer-only.
   // `rounds` carries the executed tool-call count (v1 proxy; see hooks.h).
+  // Lane T: the one place a turn's spend is metered - once, on every exit, under
+  // the hosts and models that billed it (a failed turn's billed rounds included) -
+  // and where lastTurnUsage_ is set, so a scheduled fire reports its own spend. A
+  // failed exit always carries a cause (the guard below names the host and error for
+  // an exit that noted none; test_harness_turn counts every exit).
   auto fireTurnEnd = [&](bool okFlag, size_t replyBytes) {
+    if (!okFlag && tf.chain.empty())
+      tf.chain.note(host, err.empty() ? std::string("failed with no error text") : err);
+    if (!tf.metered) {
+      tf.metered = true;
+      meterSpend(tf.spend, attribution_);
+    }
+    const orch::TokenUsage total = tf.spend.total();
+    lastTurnUsage_ = total;
+    if (!total.empty()) sessionUsage_ += total;
+    {
+      char line[256];
+      orch::spendLine(tf.spend, line, sizeof(line));
+      hlog::logf("turn spend: %s %s | %s", okFlag ? "ok" : "FAIL",
+                 turnSourceSlug(turnSource_, attribution_), line);
+    }
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;
     ev.host = host;
-    ev.usage = turnUsage;
+    ev.usage = total;
     ev.rounds = *loopDispatched;
     ev.replyBytes = replyBytes;
     ev.chatId = chatId;
     if (!okFlag) ev.error = err;   // last provider/parse error (reactive-fold seam)
     // Served-by disclosure (CUM-236): ev.host is the failover-final (served) head;
-    // turnUsage.servedModel is the model the provider echoed. Compare to the head
-    // requested before failover so a display can say "served by <p> <m>" honestly.
+    // servedModel is the model key it billed under (none when it billed nothing).
+    // Compare to the head requested before failover so a display can say "served by
+    // <p> <m>" honestly - and never name a model that billed nothing.
     ev.requestedHost = requestedHost;
     ev.requestedModel = requestedModel;
-    ev.servedModel = turnUsage.servedModel;
+    for (size_t i = tf.spend.n; i-- > 0;)
+      if (host == tf.spend.slot[i].host) { ev.servedModel = tf.spend.slot[i].model; break; }
     ev.fallback = orch::servedByDisclosure(requestedHost, requestedModel, host,
-                                           turnUsage.servedModel).fallback;
+                                           ev.servedModel).fallback;
+    const orch::SpendSlot* last = tf.spend.lastBilled();
+    ev.model = last ? last->model : "";
+    ev.source = turnSource_;
+    ev.attribution = attribution_;
+    ev.spend = &tf.spend;
+    ev.chain = okFlag ? nullptr : &tf.chain;
     d_.hooks.onTurnEnd(ev);
   };
   // runTurnHost: OpenAI / Anthropic / Mistral through the ProviderHosts registry.
@@ -822,12 +865,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // With headToolsPtr set, every host runs the bounded multi-turn tool-use loop
   // instead of the single shot.
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
-    // Only the attempt that serves the turn may name its model (gate G5): an adapter
-    // captures the echo on its HTTP 200, before it knows the turn parsed, so a failed
-    // attempt's echo must not file the next host's spend under that model. Token
-    // counts keep summing across attempts.
-    turnUsage.servedModel.clear();
-    return d_.hosts.run(h, cv, instructions, inputs, outJson, err, headToolsPtr, &turnUsage);
+    // Each attempt bills into its own counter and is filed under its own host and
+    // the model configured for it now (lane T): a retry or a failover never books
+    // one attempt's spend under another host, and a failed attempt's billed rounds
+    // are still filed. Only this attempt's echo can name its model (gate G5).
+    orch::TokenUsage attempt;
+    const bool r = d_.hosts.run(h, cv, instructions, inputs, outJson, err, headToolsPtr, &attempt);
+    tf.spend.add(h.c_str(),
+                 d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
+    if (!r) tf.chain.note(h, err);
+    return r;
   };
   // Keyed AND runnable: the device registered exactly the three orchTurn* hosts,
   // so registry membership mirrors the pre-lift openai/anthropic/mistral check.
@@ -927,6 +974,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     } else {
       deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host +
               " has hit its monthly token budget. Raise the limit in Usage & Budget or wait for the reset.");
+      tf.chain.noteDevice(("budget: " + host + " and every keyed alternate are over their monthly "
+                           "token budget").c_str());
       fireTurnEnd(false, 0);
       return false;
     }
@@ -946,6 +995,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                         d_.cfg.loop.midTurnFailover && d_.cfg.loop.midTurnFailover() &&
                         fabricCanHost(host);
   bool ok;
+  // The hosts this turn ran on, in order, for the next turn's [FALLBACK] note.
+  std::string switchPath = host;
+  auto noteSwitch = [&](orch::ErrorClass reason) {
+    pendingFallbackPath_ = switchPath;
+    pendingFallbackReason_ = reason;
+    pendingFallbackWhose_ = turnLabel();
+    pendingFallbackMs_ = nowMs();
+  };
   if (fabricOn) {
     std::vector<std::string> hostList{host};
     // Alternates chosen by the unified fallback engine (CUM-41). The error is not
@@ -955,7 +1012,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hostList.push_back(alt);
     }
     ok = d_.hosts.fabric(
-        hostList, instructions, inputs, outJson, err, *headToolsPtr, &turnUsage,
+        hostList, instructions, inputs, outJson, err, *headToolsPtr, &tf.spend,
         [&](const std::string& from, const std::string& to) {
           // The notice carries the cause and its HTTP status (lastFabricSwitch).
           // A billing refusal is told once per episode (shared with the embedding
@@ -969,9 +1026,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
             deliver(chatId, warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) +
                                 " - switching to " + to + ". Your progress this turn carries over.");
           }
-          pendingFallbackNote_ = orch::fallbackNote(from, "", to, "", errorClassOf(sw.kind));
+          // The next turn's [FALLBACK] note (lane T) names whose turn this was, the
+          // whole path and the typed reason the host it left failed (a parked start
+          // included: the path then shows the head it started past).
+          switchPath += " -> " + to;
+          noteSwitch(errorClassOf(sw.kind));
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
-          turnUsage.servedModel.clear();   // the echo names the final host's model (G5)
         });
     convId = "";   // stateless loops keep no provider-side conversation
   } else {
@@ -1035,7 +1095,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) + fb +
               " (your recent messages carry over; the provider-side thread restarts).");
       // Record the switch as a model-facing context note for the next turn.
-      pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", classifyErr(err));
+      switchPath += " -> " + fb;
+      noteSwitch(classifyErr(err));
       turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry above)
       convId = ""; host = fb; ok = runTurnHost(host, convId);
     }
@@ -1051,6 +1112,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.rawOut = &outJson;
     ev.transcriptBrief = &lastBrief_;
     ev.ok = ok && !outJson.empty();
+    ev.failure = ev.ok ? nullptr : &tf.chain;
     d_.hooks.onTurnDebug(ev);
   }
   if (!ok || outJson.empty()) {
@@ -1082,6 +1144,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       deliver(chatId, "That didn't finish - the device ran out of working memory for this "
                       "request. Nothing is still running; try a shorter question or wait a "
                       "minute.");
+      if (tf.chain.empty()) tf.chain.noteDevice(("low memory: " + err).c_str());
       fireTurnEnd(false, 0);
       return false;
     }
@@ -1102,22 +1165,35 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       fireTurnEnd(false, 0);
       return false;
     }
-    if (err.empty())                              cause = "the provider gave no response";
-    else if (has("timeout"))                      cause = "the provider did not answer in time";
-    else if (has("key"))                          cause = "no working provider key (check Assistant > Models on the web page)";
-    else if (has("network"))                      cause = "the provider could not be reached (check the connection)";
-    else if (has("HTTP 401") || has("HTTP 403")) cause = "the provider rejected this device's key";
-    else if (has("HTTP 5"))                       cause = "the provider had a server error";
-    else if (has("budget"))                       cause = "this turn hit its limits before a final answer";
-    else if (has("cut at the output limit"))      cause = "the answer was cut off at the output limit";
+    // Lane T: the owner hears the FIRST cause, not the last host's (the 18 Oct dream
+    // died on an Anthropic 400 and was reported as Mistral's bare "chat HTTP 400"),
+    // and which other hosts failed after it.
+    const orch::FailStep* first = tf.chain.first();
+    const std::string why = first ? first->text : err;
+    auto hasWhy = [&](const char* s) { return why.find(s) != std::string::npos; };
+    if (why.empty())                                    cause = "the provider gave no response";
+    else if (hasWhy("timeout"))                         cause = "the provider did not answer in time";
+    else if (hasWhy("key"))                             cause = "no working provider key (check Assistant > Models on the web page)";
+    else if (hasWhy("network"))                         cause = "the provider could not be reached (check the connection)";
+    else if (hasWhy("HTTP 401") || hasWhy("HTTP 403")) cause = "the provider rejected this device's key";
+    else if (hasWhy("HTTP 5"))                          cause = "the provider had a server error";
+    else if (hasWhy("budget"))                          cause = "this turn hit its limits before a final answer";
+    else if (hasWhy("cut at the output limit"))         cause = "the answer was cut off at the output limit";
     else {
-      cause = err;  // short adapter tokens ("schema parse", "loop failed", …)
-      for (char& c : cause) if (c == '\n' || c == '\r') c = ' ';
-      if (cause.size() > router_refusal::kEngineCauseMax) {
-        cause.resize(router_refusal::kEngineCauseMax);
-        cause += "…";
-      }
+      cause = (first ? first->host + ": " : std::string()) + why;   // already one clean line
+      const int keep = nimbus::utf8CapLen(cause.c_str(), (int)cause.size(),
+                                          (int)router_refusal::kEngineCauseMax);
+      if (keep < (int)cause.size()) cause = cause.substr(0, (size_t)keep) + "…";
     }
+    std::vector<std::string> alsoFailed;
+    for (size_t i = 1; i < tf.chain.size(); ++i)
+      if (tf.chain.at(i).host != orch::FailureChain::kDeviceHost &&
+          (!first || tf.chain.at(i).host != first->host))
+        alsoFailed.push_back(tf.chain.at(i).host);
+    std::string also;
+    for (size_t i = 0; i < alsoFailed.size(); ++i)
+      also += (i == 0 ? "" : (i + 1 == alsoFailed.size() ? " and " : ", ")) + alsoFailed[i];
+    if (!also.empty()) cause += " (" + also + " also failed)";
     deliver(chatId, "That didn't finish - " + cause +
                     ". Nothing is still running; ask again to retry.");
     fireTurnEnd(false, 0);
@@ -1129,40 +1205,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     std::string raw = d_.cfg.provider.convId ? d_.cfg.provider.convId() : std::string();
     d_.cfg.provider.setConvId(convMapSet(raw, chatId, host, convId));
   }
-  lastTurnUsage_ = turnUsage;   // real spend for this turn (Local Loops cost caps read this)
   // A real turn completed here (the early-return above already rejected failures), so
   // COUNT it unconditionally - a provider that returns no parseable `usage` object
   // must not leave the turn counter stuck at 0 (owner: 'used chat, count stayed 0').
-  // Only the token SUM is gated on real usage data, so in/out totals stay honest.
+  // The spend itself (per host, cache reads and writes included) is metered once in
+  // fireTurnEnd on every exit, with its "turn spend:" log line (lane T).
   turnCount_++;
-  if (!turnUsage.empty()) sessionUsage_ += turnUsage;
-  // Per-provider monthly usage ledger (owner: budget per provider). Token spend for
-  // LLM hosts, in/out split (output bills ~5x input - the $ estimates need it); a
-  // Tavily/search call is recorded at its own call site. Rolls month + enforces
-  // limits in the portable core; also feeds the daily graph buckets.
-  if (d_.cfg.budget.recordTokens) {
-    // Cache counters ride ONLY for hosts whose usage EXCLUDES them from the
-    // prompt count (Anthropic). OpenAI includes cached tokens in input_tokens -
-    // passing its cacheRead would double-meter the $ estimate.
-    const bool excludesCache = host == "anthropic";
-    // Per-model prices (2026-10): file the spend under the model that served it -
-    // the host's configured model, or the served echo on a real substitution.
-    char modelKey[orch::kModelKeyCap];
-    orch::usageModelKey(host.c_str(),
-                        d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host).c_str() : "",
-                        turnUsage.servedModel.c_str(), modelKey);
-    d_.cfg.budget.recordTokens(host, turnUsage.promptTokens, turnUsage.completionTokens,
-                               excludesCache ? turnUsage.cacheReadTokens : 0,
-                               excludesCache ? turnUsage.cacheWriteTokens : 0,
-                               attribution_,   // spend attribution: turn/synthesis/loop:<id>
-                               modelKey);
-  }
-  // cacheR/cacheW (v4.1.1): prompt-cache hits/writes this turn - the proof the
-  // caching breakpoints are actually landing, visible in /api/log.
-  hlog::logf("orchestrator: turn -> %.80s [tokens in=%u out=%u cacheR=%u cacheW=%u]",
-             outJson.c_str(), (unsigned)turnUsage.promptTokens,
-             (unsigned)turnUsage.completionTokens,
-             (unsigned)turnUsage.cacheReadTokens, (unsigned)turnUsage.cacheWriteTokens);
+  hlog::logf("orchestrator: turn -> %.80s", outJson.c_str());
 
   // Parse + validate via the PORTABLE contract. On parse failure SALVAGE the reply
   // - never deliver raw wire JSON to a human (owner field bug 2026-07-16: a strict-
@@ -1196,6 +1245,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     deliver(chatId, so.text);
     if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
+    // Lane T: the parse exit notes its synthetic device cause, so the chain and every
+    // row name it (the provider answered; the device could not use the answer).
+    tf.chain.noteDevice(((so.cut ? std::string("cut: the reply was cut off before it finished (")
+                                 : std::string("parse: the reply could not be read as a turn (")) +
+                         perr.detail + ")").c_str());
     fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
     return false;
   }
@@ -1429,6 +1483,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = quietOk;
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
+  loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
   const std::string target =
       chatId.length() ? chatId : (d_.firstAllowedChat ? d_.firstAllowedChat() : std::string());
   // Mirror maybeConsolidate but with a [SCHEDULED LOOP] preamble; do NOT consume
@@ -1469,8 +1524,10 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
-  o.tokens  = lastTurnUsage_;
+  loopName_.clear();
+  o.tokens  = lastTurnUsage_;   // this fire's own spend, set on every exit (lane T)
   o.detail  = lastReply_;
+  if (!o.ok) o.error = facts().chain.render(nimbus::orch::FailureChain::kTextMax);
   return o;
 }
 
@@ -1602,25 +1659,22 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   orch::TokenUsage usage;
   const std::string inputs = orch::buildCompactInputs(prevSummary, digest);
   bool ok = false;
+  // Every attempt's spend, failed ones included, filed under its own host and model and
+  // metered once as "compact" (lane T: the same per-host rule and R4 cache split as a
+  // turn). The turn's spend table is free here: a fold never runs while a turn does.
+  orch::TurnSpend& foldSpend = facts().spend;
+  foldSpend.clear();
   for (const auto& h : hostsToTry) {
     std::string convId;
     outJson.clear(); err.clear();
     orch::TokenUsage u;
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
-    if (d_.cfg.budget.recordTokens && !u.empty()) {
-      char modelKey[orch::kModelKeyCap];
-      orch::usageModelKey(h.c_str(),
-                          d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "",
-                          u.servedModel.c_str(), modelKey);
-      d_.cfg.budget.recordTokens(h, u.promptTokens, u.completionTokens,
-                                 h == "anthropic" ? u.cacheReadTokens : 0,
-                                 h == "anthropic" ? u.cacheWriteTokens : 0,
-                                 "compact", modelKey);
-    }
+    foldSpend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
     if (ok) { host = h; usage = u; break; }
     hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
   }
+  meterSpend(foldSpend, "compact");
   if (!ok) return FoldResult::Failed;
   orch::Turn t;
   orch::ParseError perr;
@@ -1644,6 +1698,38 @@ void TurnEngine::clearChatConv(const std::string& chatId) {
   std::string raw = d_.cfg.provider.convId ? d_.cfg.provider.convId() : std::string();
   // convMapSet with an empty convId removes exactly this chat's record.
   d_.cfg.provider.setConvId(convMapSet(raw, chatId, "", ""));
+}
+
+TurnEngine::TurnFacts& TurnEngine::facts() {
+  if (!facts_) facts_.reset(new TurnFacts());   // once per boot (PSRAM-sized on the device)
+  return *facts_;
+}
+
+void TurnEngine::meterSpend(const orch::TurnSpend& spend, const std::string& tag) {
+  if (spend.empty()) return;
+  if (d_.cfg.budget.recordSpend) {
+    d_.cfg.budget.recordSpend(spend, tag);
+    return;
+  }
+  if (!d_.cfg.budget.recordTokens) return;
+  for (size_t i = 0; i < spend.n; ++i) {
+    const orch::SpendSlot& sl = spend.slot[i];
+    const orch::TokenDelta dt = orch::ledgerDelta(sl);
+    d_.cfg.budget.recordTokens(sl.host, (uint32_t)dt.in, (uint32_t)dt.out, (uint32_t)dt.cacheR,
+                               (uint32_t)dt.cacheW, tag, sl.model);
+  }
+}
+
+std::string TurnEngine::turnLabel() const {
+  switch (turnSource_) {
+    case TurnSource::Owner:     return "owner message";
+    case TurnSource::Serial:    return "serial console message";
+    case TurnSource::Synthesis: return "sub-agent results synthesis";
+    case TurnSource::Loop:
+      if (attribution_ == "loop:dream") return "nightly dream";
+      return loopName_.empty() ? std::string("routine") : "routine '" + loopName_ + "'";
+  }
+  return "owner message";
 }
 
 bool TurnEngine::reapStuckTurn(uint32_t nowMs) {

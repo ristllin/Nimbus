@@ -172,7 +172,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
     store::setDreamScratchHash(hex);
   }
   if (g_hooks.onDreamEnd)
-    g_hooks.onDreamEnd(agent::DreamEndEv{o.ok, pruned, deduped, o.tokens.total()});
+    g_hooks.onDreamEnd(agent::DreamEndEv{o.ok, pruned, deduped, o.tokens.total(), o.error});
   return o;
 }
 

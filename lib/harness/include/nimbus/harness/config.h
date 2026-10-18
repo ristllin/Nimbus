@@ -4,6 +4,7 @@
 #include <string>
 
 #include "nimbus/orch/loop_delivery.h"   // deliveryChannelOf - the one chat id -> channel rule
+#include "nimbus/orch/turn_spend.h"      // TurnSpend - BudgetConfig::recordSpend
 
 // HarnessConfig - the harness's read-mostly view of device configuration,
 // clustered by consumer. This replaces direct agent::store:: (NVS) access in
@@ -90,6 +91,13 @@ struct BudgetConfig {
                      uint32_t cacheRead, uint32_t cacheWrite, const std::string& tag,
                      const std::string& model)>
       recordTokens;
+  // Lane T: one turn's whole spend, ONCE per turn, on every exit (success, failure,
+  // budget refusal with nothing billed excepted): every host that billed, each under
+  // the model it billed with. The consumer files each slot through
+  // nimbus::orch::ledgerDelta and persists once (device: store::recordProviderSpend,
+  // one NVS write per turn whatever the number of hosts). Unset = the engine files each
+  // slot through recordTokens instead (host rigs keep their per-call ledger).
+  std::function<void(const nimbus::orch::TurnSpend& spend, const std::string& tag)> recordSpend;
 };
 
 // CUM-542: true when `chatId` is a web page chat: the device's "web" or a hosted

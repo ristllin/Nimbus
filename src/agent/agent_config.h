@@ -298,10 +298,10 @@ static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLarge
 #define ORCH_TRACE_OUT_MAX    1024
 #define ORCH_TRACE_THINK_MAX  1024
 // Per-turn metadata row (Glass Box P2): one compact JSON row per completed turn
-// (host/model/tools/tokens). Bounded so the turn summary can never rival the
-// content rows it describes; the error text inside it is clipped to fit.
+// (host/model/tools/tokens, the failure chain, the per-host split). Bounded so the
+// turn summary can never rival the content rows it describes; the row shrinks to fit
+// and is never dropped (nimbus::orch::turnEndRowJson, kTurnEndRowMax).
 #define ORCH_TRACE_END_MAX     256
-#define ORCH_TRACE_ENDERR_MAX   96
 // Per-turn dossier file (/mem/trace/<turnId>.txt): the full turn anatomy. Capped
 // per file; the directory itself is ring-bounded (kTraceFilesMax/kTraceBytesMax).
 #define ORCH_TRACE_FILE_MAX  (48 * 1024)

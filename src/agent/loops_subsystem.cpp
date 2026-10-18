@@ -478,6 +478,7 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     // with loopId, roll usage on completion). Until then the FIRE-COUNT caps
     // (kLoopMaxFiresPerDay + the device rate window) bound the fan-out blast radius.
     orch::onFireResult(*l, o.ok, o.tokens, orch::fnv64(o.detail), nowEpoch);
+    orch::noteFireError(*l, o.ok, o.error);   // why it failed, on the record (lane T)
     g_dev.tokensToday += o.tokens.total();
     // W20: a one-shot wakeup fires ONCE then retires. Exception: if the TURN
     // failed (provider outage), one short retry - a silently lost wakeup would
@@ -711,6 +712,7 @@ String loopsJson() {
     o["firesToday"]  = l.firesToday;
     o["tokensToday"] = l.tokensToday;
     o["consecFails"] = l.consecFails;
+    if (!l.lastErr.empty()) o["lastErr"] = l.lastErr;   // why the last fire failed
     // Why it is / isn't firing right now (empty text = firing or simply scheduled;
     // the pane shows the next-run countdown for those). whyCode is the stable slug.
     const char* rslug; const char* rtext;

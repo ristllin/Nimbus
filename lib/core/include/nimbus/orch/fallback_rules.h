@@ -116,9 +116,15 @@ ErrorClass errorClassFromFabric(int fabricErr);
 // Full-word size class ('S'|'M'|'L' -> "small"|"medium"|"large"; 0 -> "").
 std::string sizeClassWord(char sizeClass);
 
-// The model-facing context note recorded on a fallback (mention only if relevant).
-std::string fallbackNote(const std::string& fromProvider, const std::string& fromModel,
-                         const std::string& toProvider, const std::string& toModel,
+// The model-facing context note a provider switch leaves for the NEXT turn (mention
+// only if relevant). It always says whose turn it was and when, and the whole path,
+// so the next turn never reads it as about itself (the 18 Oct dream's bare
+// "[FALLBACK] switched openai -> mistral" was taken by the owner's next turn as its
+// own switch):
+//   "[FALLBACK - previous turn (nightly dream, 12 min ago)] anthropic -> openai -> mistral (bad_request)"
+// `whose` names the turn ("" = "a background turn"); `agoMin` < 0 = time unknown;
+// `path` is the hosts in order ("a -> b"); `reason` None adds no class.
+std::string fallbackNote(const std::string& whose, long agoMin, const std::string& path,
                          ErrorClass reason);
 
 }  // namespace orch

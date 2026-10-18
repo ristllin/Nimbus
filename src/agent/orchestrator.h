@@ -86,6 +86,9 @@ void clearAsk();
 // seam). Local Loops meters this against its cost caps.
 nimbus::orch::TokenUsage lastTurnUsage();
 nimbus::orch::TokenUsage sessionUsage();   // running sum of billed tokens since boot
+// The last failed turn since boot as JSON ({"turn","src","agoS","cause"}), or "null"
+// (device.status.lastFail; RAM only, lane T).
+String lastFailJson();
 uint32_t                 turnCount();      // non-empty turns since boot
 
 // Hold-to-talk message lifecycle (CUM-456): how many on-device voice messages

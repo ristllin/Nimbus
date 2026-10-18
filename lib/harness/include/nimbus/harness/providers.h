@@ -10,6 +10,7 @@
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/token_usage.h"
+#include "nimbus/orch/turn_spend.h"     // TurnSpend - per-host spend of a fabric turn
 #include "nimbus/orch/wire_limits.h"    // kJsonStrGuard, foldDigestCap - the string ceilings
 
 // providers - the PORTABLE provider wire layer (Stage H of the harness
@@ -253,10 +254,18 @@ void setTestStatusOverride(const std::string& host, int status, const std::strin
 void clearTestStatusOverride();
 bool testStatusOverride(const std::string& host, int& status, std::string& body);
 
+// Spend (lane T): each host bills into its own counter, and on EVERY exit each host
+// that billed is filed into `spend` once, under the model configured for it then and
+// its own served echo - never one sum filed under the last host. No default on
+// purpose: a caller still passing a TokenUsage* fails to compile. Every failed
+// attempt is reported to ht.onStepError with its host, including the early exits for
+// a kind that is neither retried nor switched (BadRequest, LowMemory); a parked head
+// the turn starts past was not asked, so it reports nothing. `err` stays the LAST
+// error, as the classifiers expect.
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
                    std::string& outJson, std::string& err, const HeadTools& ht,
-                   nimbus::orch::TokenUsage* usage,
+                   nimbus::orch::TurnSpend* spend,
                    const std::function<void(const std::string& fromHost,
                                             const std::string& toHost)>& notify);
 // Normalize a tool_call id to chat-completions' required 9-alphanumeric shape.

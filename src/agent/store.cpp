@@ -986,6 +986,10 @@ nimbus::orch::UsageLedger& ledgerLocked() {  // caller holds g_ledgerMx
   if (!g_ledgerLoaded) {
     String blob = getStrQuiet(AKEY_USAGE_LEDGER, "");
     g_ledger.deserialize(std::string(blob.c_str()));
+    // The ledger lives in NVS: no new (provider, tag) audit row may grow it (lane T;
+    // per-host filing creates pairs a single-host turn never did). Spend is still
+    // counted; turn this back on when usgLedger moves to LittleFS.
+    g_ledger.setAllowNewTags(false);
     g_ledgerLoaded = true;
   }
   loadModelsLocked();
@@ -1125,6 +1129,40 @@ void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta
     auto& H = histLocked();
     H.record(prov, L.models().historyKey(key), day, d, 0);
     H.prune(day, 60);
+    persistHistLocked();
+  }
+}
+
+void recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
+  if (spend.empty()) return;
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  const uint32_t day = currentDayKey();
+  const std::string t(tag ? tag : "");
+  bool anyKey = false;
+  // Each host's slot under its own provider and model, its cache traffic split the way
+  // that provider bills it (ledgerDelta, owner ruling R4). Same three stores and gates
+  // as recordProviderTokens, but each persisted ONCE for the whole turn.
+  for (size_t i = 0; i < spend.n; ++i) {
+    const nimbus::orch::SpendSlot& sl = spend.slot[i];
+    const nimbus::orch::TokenDelta d = nimbus::orch::ledgerDelta(sl);
+    if (d.empty()) continue;
+    const std::string prov(sl.host);
+    const auto* e = L.find(prov);
+    const uint8_t rd = e ? e->resetDay : 1;
+    const char* key = g_modelsLoaded ? L.models().spendKey(sl.model) : "";
+    L.recordTokens(prov, d, currentPeriodKey(rd), t, key, day);
+    if (*key) anyKey = true;
+    if (day) histLocked().record(prov, L.models().historyKey(key), day, d, 0);
+  }
+  if (anyKey && L.models().spendFileFirst()) {   // gate M1, M2 (see recordProviderTokens)
+    L.models().setCountersBehind(true);
+    persistModelsLocked();
+  }
+  persistLedgerLocked();
+  if (anyKey) persistModelsLocked();
+  if (day) {
+    histLocked().prune(day, 60);
     persistHistLocked();
   }
 }

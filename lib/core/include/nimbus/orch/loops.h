@@ -98,7 +98,11 @@ struct LoopRecord {
   uint8_t     consecFails = 0;     // circuit breaker
   uint64_t    lastReplyHash = 0;   // FNV-64 of last reply (semantic-repeat guard)
   uint8_t     repeatRun   = 0;     // consecutive identical replies
+  std::string lastErr;             // why the last fire failed (<= kLoopErrMax; "" after an ok fire)
 };
+
+// The longest routine failure cause kept on the record (/data/loops.json, loop.list).
+inline constexpr size_t kLoopErrMax = 120;
 
 // --- caps (runtime; seeded from caps.h. Owner may only TIGHTEN.) ------------
 struct LoopCaps {
@@ -199,8 +203,9 @@ struct FireOutcome {
                                  // defer is NOT a failure: the tick must not count it
                                  // as a fire, roll the consec-fail breaker, or burn a
                                  // daily fire; it retries on the next tick.
-  TokenUsage  tokens;    // real provider spend for the fire (Phase 0)
+  TokenUsage  tokens;    // real provider spend for the fire - THIS fire's, on every exit
   std::string detail;    // reply text / error - feeds the semantic-repeat hash
+  std::string error;     // why the fire's turn failed: the first cause first ("" when ok)
 };
 // A fire was ATTEMPTED (reached a provider) unless it was deferred for memory. Only
 // an attempt rolls the outcome (consecFails / daily fire / semantic-repeat); a memory
@@ -258,6 +263,9 @@ void rollDeviceDayIfNeeded(DeviceCounters& dev, const LoopCaps& caps,
 // consecFails (reset on ok / ++ on fail), and the semantic-repeat run. The tick
 // bumps firesToday + device counters PRE-fire (at-most-once); this handles the result.
 void onFireResult(LoopRecord& l, bool ok, const TokenUsage& used, uint64_t replyHash, uint64_t nowEpoch);
+// Keep a fire's failure cause on the record (lane T): `error` (FireOutcome.error, the
+// first cause first) cut to kLoopErrMax on a character boundary; an ok fire clears it.
+void noteFireError(LoopRecord& l, bool ok, const std::string& error);
 // Reschedule a due loop WITHOUT counting a fire (the pre-fire idle gate's defer,
 // e.g. the dream loop while the device is busy): nextRun moves strictly after
 // now; firesToday / lastRun / device counters are deliberately untouched, so a
