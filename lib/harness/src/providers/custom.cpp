@@ -129,7 +129,9 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
     doc["model"] = model;
     doc["max_tokens"] = 1024;
     JsonArray msgs = doc["messages"].to<JsonArray>();
-    JsonObject u = msgs.add<JsonObject>(); u["role"] = "user"; u["content"] = d.instruction;
+    JsonObject u = msgs.add<JsonObject>(); u["role"] = "user";
+    wire::putFieldStr(u["content"], d.instruction ? std::string(d.instruction) : std::string(),
+                      "the sub-agent task");
     body = serializeBody(doc);
     JsonObject ci = filter["content"].add<JsonObject>(); ci["type"] = true; ci["text"] = true;
     filter["error"]["message"] = true;
@@ -141,7 +143,9 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
     JsonObject sys = msgs.add<JsonObject>(); sys["role"] = "system";
     sys["content"] = std::string("You are an autonomous ") + (d.category ? d.category : "ops") +
                      " agent. Complete the task and reply with the final result only.";
-    JsonObject u = msgs.add<JsonObject>(); u["role"] = "user"; u["content"] = d.instruction;
+    JsonObject u = msgs.add<JsonObject>(); u["role"] = "user";
+    wire::putFieldStr(u["content"], d.instruction ? std::string(d.instruction) : std::string(),
+                      "the sub-agent task");
     body = serializeBody(doc);
     JsonObject ch = filter["choices"].add<JsonObject>(); ch["message"]["content"] = true;
     filter["error"]["message"] = true;
@@ -176,8 +180,8 @@ FabricErr customPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& 
   strncpy(env.backend, "custom", sizeof(env.backend) - 1); env.backend[sizeof(env.backend) - 1] = 0;
   if (strcmp(s_cache.id, colon + 1) == 0) {
     env.state = JobState::Done;
-    // Explicit NUL-terminate: strncpy won't if the provider reply fills the buffer.
-    strncpy(env.reply, s_cache.reply.c_str(), sizeof(env.reply) - 1); env.reply[sizeof(env.reply) - 1] = 0;
+    // Cut UTF-8-safe with the visible 16 KB marker (a raw strncpy split characters).
+    wire::ReplyWriter(env.reply, sizeof(env.reply)).append(s_cache.reply);
     s_cache.used = true; s_cache.reply.clear(); s_cache.id[0] = 0;
     return FabricErr::Ok;
   }
@@ -200,21 +204,29 @@ enum class HeadFormat { Schema, Object, None };
 // json_schema (strict) carrying the canonical orch schema; Object =
 // response_format json_object; None = no response_format. Every format but
 // Schema asks for the bare JSON object in words (json_object mode also requires
-// the word "JSON" in the messages). False only if the schema will not parse.
+// the word "JSON" in the messages). False when the schema will not parse or the
+// checked serializer refuses the body; `out.err` says which.
+struct HeadBody {
+  std::string body;
+  std::string err;
+};
 static bool customHeadBody(const ProviderDeps& pd, const std::string& instructions,
-                           const std::string& inputs, HeadFormat fmt, std::string& body,
+                           const std::string& inputs, HeadFormat fmt, HeadBody& out,
                            bool withEffort = true) {
   JsonDocument d;
   d["model"] = s(pd.customModel);
   JsonArray msgs = d["messages"].to<JsonArray>();
   JsonObject sys = msgs.add<JsonObject>();
   sys["role"] = "system";
-  sys["content"] = fmt == HeadFormat::Schema
-      ? instructions
-      : instructions + "\nRespond with ONLY the JSON object for your orch_turn "
-                       "- no prose, no code fences.";
+  wire::putFieldStr(sys["content"],
+                    fmt == HeadFormat::Schema
+                        ? instructions
+                        : instructions + "\nRespond with ONLY the JSON object for your "
+                                         "orch_turn - no prose, no code fences.",
+                    "the system prompt");
   JsonObject u = msgs.add<JsonObject>();
-  u["role"] = "user"; u["content"] = inputs;
+  u["role"] = "user";
+  wire::putFieldStr(u["content"], inputs, "the user message");
   // CUM-544: a bounded reasoning effort rides EVERY attempt (the 400 retry too:
   // dropping it would put an always-reasoning model back on the slow path).
   const std::string effort = withEffort ? s(pd.customReasoningEffort) : std::string();
@@ -227,12 +239,13 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
     rf["json_schema"]["strict"] = true;
     JsonDocument sd;
     if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
-                        DeserializationOption::NestingLimit(16)))  // schema depth > the default 10
+                        DeserializationOption::NestingLimit(16))) {  // schema depth > the default 10
+      out.err = "schema parse";
       return false;
+    }
     rf["json_schema"]["schema"] = sd;
   }
-  body = serializeBody(d);
-  return true;
+  return wire::serializeChecked(d, out.body, out.err);
 }
 // CUM-544: why a head request got no HTTP answer. "no response" = the request went
 // out and nothing came back - when that silence used (nearly) the whole budget it
@@ -274,14 +287,14 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
   for (; h.attempt < 2; ++h.attempt) {
     sentAt = pd.nowMs ? pd.nowMs() : 0;
     const bool withFormat = (h.attempt == 0);
-    std::string body;
-    if (!customHeadBody(pd, *h.instructions, *h.inputs, withFormat ? h.first : HeadFormat::None, body,
+    HeadBody hb;
+    if (!customHeadBody(pd, *h.instructions, *h.inputs, withFormat ? h.first : HeadFormat::None, hb,
                         h.withEffort)) {
       st.ok = false;
-      st.error = "schema parse";
+      st.error = hb.err;
       return st;
     }
-    h.code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
+    h.code = custRequest(pd, "POST", "/v1/chat/completions", std::move(hb.body),
                          /*anthropicAuth=*/false, *h.doc, *h.filter, h.timeoutMs);
     if (h.code != 400 || !withFormat) break;
     // Schema-incapable backend: drop response_format and lean on the nudge + the

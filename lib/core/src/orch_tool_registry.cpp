@@ -1,6 +1,8 @@
 #include "nimbus/orch/tool_registry.h"
 
 #include "nimbus/orch/provider_slots.h"   // findProviderSlot - the provider label (CUM-538)
+#include "nimbus/orch/wire_limits.h"     // kToolTextMax - the provider-bound text ceiling
+#include "nimbus/utf8.h"                 // utf8Repair / utf8ClipNoted - the tool-result boundary
 
 using ArduinoJson::DeserializationError;
 using ArduinoJson::JsonArray;
@@ -391,7 +393,16 @@ std::string ToolRegistry::handleRpc(const std::string& requestJson,
     JsonArray content = d["content"].to<JsonArray>();
     JsonObject block = content.add<JsonObject>();
     block["type"] = "text";
-    block["text"] = r.success ? r.output : r.error;
+    // The tool-result boundary: EVERY registry tool's text leaves here valid UTF-8
+    // and under the provider string ceiling, whatever the tool did inside. One
+    // torn character (a byte-offset snippet) used to ride every later request of
+    // the turn and fail it on all three providers with a 400; a result over 64 KB
+    // used to serialize as null and read as an empty success. Repair, then clip
+    // with a visible note.
+    std::string text = r.success ? r.output : r.error;
+    utf8Repair(text);
+    utf8ClipNoted(text, kToolTextMax);
+    block["text"] = text;
     d["isError"] = !r.success;
     serializeJson(d, result);
   } else {

@@ -195,14 +195,14 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
   {
     JsonObject s = msgs.add<JsonObject>();
     s["role"] = "system";
-    s["content"] = sysText;
+    wire::putFieldStr(s["content"], sysText, "the system prompt");
   }
   const auto& e = tr.entries();
   for (const auto& it : e) {
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
-    u["content"] = it.text;
+    wire::putFieldStr(u["content"], it.text, "the user message");
     break;
   }
   size_t i = 0;
@@ -225,7 +225,7 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
     if (calls.empty()) continue;
     JsonObject a = msgs.add<JsonObject>();
     a["role"] = "assistant";
-    a["content"] = prose;   // "" is valid alongside tool_calls
+    wire::putModelStr(a["content"], prose, "replayed prose");   // "" is valid alongside tool_calls
     JsonArray tc = a["tool_calls"].to<JsonArray>();
     for (size_t ci : calls) {
       JsonObject t = tc.add<JsonObject>();
@@ -233,15 +233,16 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
       t["type"] = "function";
       JsonObject fn = t["function"].to<JsonObject>();
       fn["name"]      = mistralSafeName(e[ci].name);
-      fn["arguments"] = e[ci].text;
+      wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
     }
     for (size_t ri : results) {
       JsonObject m = msgs.add<JsonObject>();
       m["role"]         = "tool";
       m["tool_call_id"] = mistralCallId(e[ri].id);
       m["name"]         = mistralSafeName(e[ri].name);
-      m["content"]      = e[ri].isError ? (std::string("ERROR: ") + e[ri].text)
-                                        : e[ri].text;
+      wire::putModelStr(m["content"],
+                        e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
+                        e[ri].name.c_str());
     }
   }
 }
@@ -339,9 +340,11 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     filter["usage"] = true;   // whole usage object -> per-round token accounting
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+    std::string body;
+    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
     JsonDocument resp = makeDoc(pd);
     HeaderList quota;
-    int code = mistralRequest(pd, "POST", "/v1/chat/completions", serializeBody(req),
+    int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
                               resp, filter, roundMs, &quota);
     if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
@@ -564,28 +567,32 @@ static bool mistralPinTurnSchema(JsonDocument& d) {
 
 // The single-shot head request body. `studio` reports the shape: with a Studio
 // connector attached there is no response_format (it is what hangs, above).
+struct MistralHeadBody {
+  std::string body;
+  bool studio = false;
+  std::string err;   // set when false is returned
+};
 static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
                             const std::string& instructions, const std::string& inputs,
-                            std::string& body, bool& studio) {
+                            MistralHeadBody& out) {
   JsonDocument d;
   d["store"]  = true;
-  d["inputs"] = inputs;
+  wire::putFieldStr(d["inputs"], inputs, "the user message");
   if (convId.empty()) {                // new conversation: pins model + instructions
     d["model"]        = pd.orchModel ? pd.orchModel("mistral") : std::string();
-    d["instructions"] = instructions;
+    wire::putFieldStr(d["instructions"], instructions, "the system prompt");
     // Studio-authenticated built-in connectors (web_search, code_interpreter,
     // ...) pin on conversation creation and run server-side on every turn.
     if (pd.attachMistral) pd.attachMistral(d);
   }
-  studio = mistralHeadCarriesStudio(pd, convId, d);
-  if (studio && convId.empty()) {
+  out.studio = mistralHeadCarriesStudio(pd, convId, d);
+  if (out.studio && convId.empty()) {
     const std::string note = mistralSchemaLessNote();
-    if (note.empty()) return false;
-    d["instructions"] = instructions + note;
+    if (note.empty()) { out.err = "schema parse"; return false; }
+    wire::putFieldStr(d["instructions"], instructions + note, "the system prompt");
   }
-  if (!studio && !mistralPinTurnSchema(d)) return false;
-  body = serializeBody(d);
-  return true;
+  if (!out.studio && !mistralPinTurnSchema(d)) { out.err = "schema parse"; return false; }
+  return wire::serializeChecked(d, out.body, out.err);
 }
 
 bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
@@ -600,12 +607,8 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   if (tools && tools->dispatch && pd.toolLoopOn && pd.toolLoopOn())
     return runMistralLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
-  std::string body;
-  bool studio = false;   // a Studio connector rides this turn: the schema-less shape
-  if (!mistralHeadBody(pd, convId, instructions, inputs, body, studio)) {
-    err = "schema parse";
-    return false;
-  }
+  MistralHeadBody hb;   // hb.studio: a Studio connector rides this turn (the schema-less shape)
+  if (!mistralHeadBody(pd, convId, instructions, inputs, hb)) { err = hb.err; return false; }
 
   JsonDocument filter;
   filter["conversation_id"] = true;
@@ -621,7 +624,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
       : std::string("/v1/conversations");
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   HeaderList quota;
-  int code = mistralRequest(pd, "POST", path, std::move(body), doc, filter,
+  int code = mistralRequest(pd, "POST", path, std::move(hb.body), doc, filter,
                             MISTRAL_TIMEOUT_MS, &quota);
   if (code <= 0)   { err = wire::transportError(pd); return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
@@ -639,7 +642,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
     if (strcmp(o["type"] | "", "message.output") != 0) continue;
     outJson = mistralOutputContent(o);   // string OR array-of-text-chunks
   }
-  if (studio) outJson = mistralLenientTurn(pd, outJson);   // no schema pinned it
+  if (hb.studio) outJson = mistralLenientTurn(pd, outJson);   // no schema pinned it
   if (outJson.length() == 0) { err = "no message.output"; return false; }
   return true;
 }
@@ -751,7 +754,8 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   {
     JsonDocument doc;
     doc["store"]        = true;
-    doc["inputs"]       = d.instruction ? d.instruction : "";
+    wire::putFieldStr(doc["inputs"], d.instruction ? std::string(d.instruction) : std::string(),
+                      "the sub-agent task");
     doc["model"]        = (d.model && d.model[0]) ? d.model : model.c_str();
     doc["instructions"] = MISTRAL_AGENT_SYS;
     // Studio connectors ride the conversation and run server-side (auto tool_choice
@@ -830,32 +834,16 @@ FabricErr mistralPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope&
   if (slot < 0) return FabricErr::NotFound;   // reboot lost the cache: expired
 
   env.state = JobState::Done;
-  // The cached reply may carry a trailing "[note: ... NOT captured]" that the
-  // strncpy would clip away on a full buffer - the one channel reporting
-  // uncaptured files must survive, so keep the TAIL when it doesn't fit (prism).
+  // The cached reply may carry a trailing "[note: ... NOT captured]": the one
+  // channel reporting uncaptured files must survive a full buffer, so the reply
+  // text gives way before it (cut UTF-8-safe, with the visible 16 KB marker).
   {
     const std::string& r = s_cache[slot].reply;
-    const size_t cap = sizeof(env.reply) - 1;
-    if (r.size() <= cap) {
-      memcpy(env.reply, r.data(), r.size());
-      env.reply[r.size()] = 0;
-    } else {
-      const size_t noteAt = r.rfind("\n[note:");
-      size_t from = r.size() - cap;                    // default: keep the tail
-      if (noteAt != std::string::npos && r.size() - noteAt <= cap) {
-        // Keep as much head as fits, then the whole note.
-        const size_t noteLen = r.size() - noteAt;
-        const size_t head = cap - noteLen;
-        memcpy(env.reply, r.data(), head);
-        memcpy(env.reply + head, r.data() + noteAt, noteLen);
-        env.reply[cap] = 0;
-        from = std::string::npos;                      // done
-      }
-      if (from != std::string::npos) {
-        memcpy(env.reply, r.data() + from, cap);
-        env.reply[cap] = 0;
-      }
-    }
+    const size_t noteAt = r.rfind("\n[note:");
+    const bool hasNote = noteAt != std::string::npos && r.size() - noteAt < sizeof(env.reply) / 2;
+    wire::ReplyWriter w(env.reply, sizeof(env.reply));
+    w.append(r.data(), hasNote ? noteAt : r.size());
+    if (hasNote) w.appendTail(r.substr(noteAt));
   }
   // v4.1: hand any captured file references to the JobEngine as artifacts[]. It
   // fetches each (stream to SD + FileStore register) on tg_poll, one TLS at a

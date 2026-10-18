@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +12,8 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
+#include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
 // wire.h - INTERNAL helpers shared by the four portable provider files. Not part
 // of the public harness surface (lives under src/, not include/).
@@ -216,6 +219,244 @@ inline std::string serializeBody(const JsonDocument& d) {
   return out;
 }
 
+// ---- the provider-bound string class (UTF-8 + the 64 KB ceiling) -------------
+// A provider rejects a body that is not valid UTF-8, or one where a string went
+// missing, with a 400 that is decided before any output: free, deterministic, and
+// identical on every other host. Two layers keep a request clean:
+//   1. putModelStr / putFieldStr at every renderer: repair invalid UTF-8 and (for
+//      clippable data) clip under kJsonStrGuard with a visible note;
+//   2. serializeChecked over the whole document: the last line of defence. It
+//      refuses a request with a dropped string, a string over kJsonStrGuard, or
+//      invalid UTF-8, and names the tool (or field) the bad text came from, so a
+//      renderer that skipped layer 1 fails closed and loudly, before the send.
+
+// Tool results, call arguments and replayed prose: repaired, then clipped
+// UTF-8-safe to kJsonStrGuard with a "[cut: kept K of N bytes]" note inside the
+// cap. `what` names the source in the one log line a repair or clip writes.
+// `dst` is the member or element proxy being written (c["text"]): a proxy is
+// assigned, never converted to a JsonVariant first - a converted proxy for a
+// member that does not exist yet is a null variant that ignores the write.
+template <typename Dst>
+inline void putModelStr(Dst&& dst, const std::string& v, const char* what) {
+  if (v.size() <= nimbus::orch::kJsonStrGuard && nimbus::utf8Valid(v)) {
+    dst = v;
+    return;
+  }
+  std::string t = v;
+  const size_t fixed = nimbus::utf8Repair(t);
+  const bool clipped = nimbus::utf8ClipNoted(t, nimbus::orch::kJsonStrGuard);
+  if (fixed) hlog::logf("utf8: repaired %u sequence(s) in %s", (unsigned)fixed, what);
+  if (clipped) hlog::logf("wire: clipped %s from %u B", what, (unsigned)v.size());
+  dst = t;
+}
+
+// The system prompt and the user seed: repaired, never clipped - a longer one is
+// refused whole by serializeChecked ("request field over 60 KB") rather than sent
+// with its tail silently gone.
+template <typename Dst>
+inline void putFieldStr(Dst&& dst, const std::string& v, const char* what) {
+  if (nimbus::utf8Valid(v)) {
+    dst = v;
+    return;
+  }
+  std::string t = v;
+  const size_t fixed = nimbus::utf8Repair(t);
+  hlog::logf("utf8: repaired %u sequence(s) in %s", (unsigned)fixed, what);
+  dst = t;
+}
+
+namespace detail {
+// Bounded id -> tool-name pairs: a tool_use/function_call/tool_calls entry names
+// the tool, its result names only the id.
+struct ToolIds {
+  static constexpr size_t kMax = 48;
+  const char* id[kMax];
+  const char* name[kMax];
+  size_t n = 0;
+  const char* find(const char* want) const {
+    for (size_t i = 0; want && i < n; i++)
+      if (!strcmp(id[i], want)) return name[i];
+    return nullptr;
+  }
+};
+inline const char* objName(JsonObjectConst o) {
+  const char* nm = o["name"] | (const char*)nullptr;
+  return nm ? nm : (o["function"]["name"] | (const char*)nullptr);
+}
+inline void collectToolIds(JsonVariantConst v, ToolIds& ids) {
+  if (v.is<JsonArrayConst>()) {
+    for (JsonVariantConst e : v.as<JsonArrayConst>()) collectToolIds(e, ids);
+    return;
+  }
+  if (!v.is<JsonObjectConst>()) return;
+  JsonObjectConst o = v.as<JsonObjectConst>();
+  const char* nm = objName(o);
+  const char* id = o["id"] | (const char*)nullptr;
+  if (!id) id = o["call_id"] | (const char*)nullptr;
+  if (nm && id && ids.n < ToolIds::kMax) {
+    ids.id[ids.n] = id;
+    ids.name[ids.n] = nm;
+    ids.n++;
+  }
+  for (JsonPairConst kv : o) collectToolIds(kv.value(), ids);
+}
+// The first string that would make the body bad; `top` is the request field it
+// sits under, `tool` the tool it belongs to (nullptr = none).
+struct BadText {
+  bool found = false;
+  bool tooLong = false;
+  size_t size = 0;
+  std::string where;
+};
+// Where a bad string sits, for the error: the tool it belongs to, else the field.
+struct TextPlace {
+  const char* top;    // the request field (system, messages, input, ...)
+  const char* key;    // the string's own key
+  const char* tool;   // the tool it belongs to; nullptr = none
+};
+inline void checkText(JsonVariantConst v, const TextPlace& at, BadText& bad) {
+  const JsonString s = v.as<JsonString>();
+  const bool tooLong = s.size() > nimbus::orch::kJsonStrGuard;
+  if (!tooLong && nimbus::utf8Valid(s.c_str(), s.size())) return;
+  bad.found = true;
+  bad.tooLong = tooLong;
+  bad.size = s.size();
+  bad.where = at.tool ? std::string("tool ") + at.tool : std::string(at.top);
+  if (at.key && *at.key && strcmp(at.key, at.top) != 0) bad.where += std::string(" (") + at.key + ")";
+}
+// The tool an object belongs to: a result names it by id, a call or a tool message
+// by name; otherwise it inherits its parent's.
+inline const char* toolOf(JsonObjectConst o, const ToolIds& ids, const char* parent) {
+  for (const char* idKey : {"tool_use_id", "call_id", "tool_call_id"}) {
+    const char* nm = ids.find(o[idKey] | (const char*)nullptr);
+    if (nm) return nm;
+  }
+  const char* nm = objName(o);
+  return nm ? nm : parent;
+}
+inline void findBadText(JsonVariantConst v, const TextPlace& at, const ToolIds& ids, BadText& bad) {
+  if (bad.found) return;
+  if (v.is<const char*>()) {
+    checkText(v, at, bad);
+  } else if (v.is<JsonArrayConst>()) {
+    for (JsonVariantConst e : v.as<JsonArrayConst>()) findBadText(e, at, ids, bad);
+  } else if (v.is<JsonObjectConst>()) {
+    JsonObjectConst o = v.as<JsonObjectConst>();
+    const char* tool = toolOf(o, ids, at.tool);
+    for (JsonPairConst kv : o)
+      findBadText(kv.value(), TextPlace{at.top, kv.key().c_str(), tool}, ids, bad);
+  }
+}
+}  // namespace detail
+
+// Serialize `d` into `out` only when every string in it is whole, at most
+// kJsonStrGuard bytes and valid UTF-8. Otherwise `out` is left empty, `err` names
+// what is wrong and where ("request text is not valid UTF-8: tool files_search
+// (content)"), and the caller fails the step as a bad request (no
+// same-host retry and no switch: the same body is just as bad on every host).
+inline bool serializeChecked(const JsonDocument& d, std::string& out, std::string& err) {
+  out.clear();
+  if (d.overflowed()) {
+    err = "request field over 64 KB (dropped while the request was built)";
+    hlog::logf("wire: %s", err.c_str());
+    return false;
+  }
+  detail::ToolIds ids;
+  detail::collectToolIds(d.as<JsonVariantConst>(), ids);
+  detail::BadText bad;
+  if (d.is<JsonObjectConst>()) {
+    for (JsonPairConst kv : d.as<JsonObjectConst>()) {
+      const char* top = kv.key().c_str();
+      detail::findBadText(kv.value(), detail::TextPlace{top, top, nullptr}, ids, bad);
+    }
+  } else {
+    detail::findBadText(d.as<JsonVariantConst>(), detail::TextPlace{"body", "", nullptr}, ids, bad);
+  }
+  if (bad.found) {
+    err = bad.tooLong ? "request field over 60 KB: " + bad.where + " (" +
+                            std::to_string((unsigned)bad.size) + " B)"
+                      : "request text is not valid UTF-8: " + bad.where;
+    hlog::logf("wire: %s", err.c_str());
+    return false;
+  }
+  out.reserve(measureJson(d));
+  serializeJson(d, out);
+  return true;
+}
+
+// A sub-agent's result into the fixed ResultEnvelope.reply buffer: whole when it
+// fits, else cut on a character boundary with a visible "[cut at 16 KB]" marker
+// inside the buffer, and repaired when the provider text was not valid UTF-8. A
+// raw byte cut used to split a character that then rode the next head prompt.
+// Appends in pieces (several agent messages, a closing note) and stops cleanly at
+// the first piece that does not fit.
+inline constexpr const char* kReplyCutMarker = "\n[cut at 16 KB]";
+struct ReplyWriter {
+  char* out;
+  size_t cap;        // sizeof the buffer, NUL included
+  size_t used = 0;
+  bool cut = false;
+  ReplyWriter(char* o, size_t c) : out(o), cap(c) { if (cap) out[0] = 0; }
+  // Append `n` bytes of `s`; false once the buffer is full (the marker is in).
+  bool append(const char* s, size_t n) {
+    if (cut || cap == 0) return false;
+    std::string fixed;
+    if (!nimbus::utf8Valid(s, n)) {
+      fixed.assign(s, n);
+      nimbus::utf8Repair(fixed);
+      s = fixed.data();
+      n = fixed.size();
+    }
+    if (used + n <= cap - 1) {
+      memcpy(out + used, s, n);
+      used += n;
+      out[used] = 0;
+      return true;
+    }
+    const size_t mk = strlen(kReplyCutMarker);
+    size_t room = cap - 1 > used + mk ? cap - 1 - used - mk : 0;
+    if (room == 0) {   // no room left after what is in: back the text up for the marker
+      used = cap - 1 > mk ? (size_t)nimbus::utf8CapLen(out, (int)used, (int)(cap - 1 - mk)) : 0;
+    } else {
+      const size_t keep = (size_t)nimbus::utf8CapLen(s, (int)n, (int)room);
+      memcpy(out + used, s, keep);
+      used += keep;
+    }
+    const size_t m = mk < cap - 1 - used ? mk : cap - 1 - used;
+    memcpy(out + used, kReplyCutMarker, m);
+    used += m;
+    out[used] = 0;
+    cut = true;
+    return false;
+  }
+  bool append(const std::string& s) { return append(s.data(), s.size()); }
+  // Append `tail` WHOLE (a note that is the only channel for what it reports, so it
+  // must never be the thing that gets dropped): when text and tail do not both fit,
+  // the text before it is cut on a character boundary, marker included.
+  void appendTail(const std::string& tail) {
+    if (cap == 0 || tail.size() >= cap) return;
+    const size_t target = cap - 1 - tail.size();
+    if (!cut && used <= target) {
+      memcpy(out + used, tail.data(), tail.size());
+      used += tail.size();
+      out[used] = 0;
+      return;
+    }
+    const size_t mk = strlen(kReplyCutMarker);
+    const size_t text = cut ? used - mk : used;   // the marker sits at the end of a cut text
+    const size_t room = target > mk ? target - mk : 0;
+    used = (size_t)nimbus::utf8CapLen(out, (int)text, (int)(text < room ? text : room));
+    if (used + mk <= target) {
+      memcpy(out + used, kReplyCutMarker, mk);
+      used += mk;
+    }
+    memcpy(out + used, tail.data(), tail.size());
+    used += tail.size();
+    out[used] = 0;
+    cut = true;
+  }
+};
+
 // JsonDocument bound to the deps allocator (device: PSRAM) or the default.
 inline JsonDocument makeDoc(const ProviderDeps& pd) {
   return pd.alloc ? JsonDocument(pd.alloc) : JsonDocument();
@@ -239,6 +480,14 @@ inline std::string roundInstructions(const std::string& instructions,
   std::string notice = nimbus::orch::kFinalRoundNotice;
   const size_t at = notice.find("%s");
   if (at != std::string::npos) notice.replace(at, 2, why);
+  // The notice is the load-bearing part of the final round, so it always fits:
+  // when the prompt plus the notice would pass the string ceiling, the prompt's
+  // tail gives way (on a character boundary) instead of the whole field going null.
+  if (instructions.size() + notice.size() > nimbus::orch::kJsonStrGuard) {
+    const int keep = nimbus::utf8CapLen(instructions.data(), (int)instructions.size(),
+                                        (int)(nimbus::orch::kJsonStrGuard - notice.size()));
+    return instructions.substr(0, (size_t)keep) + notice;
+  }
   return instructions + notice;
 }
 

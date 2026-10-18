@@ -235,7 +235,9 @@ always-on web search, not on a dedicated deep-research model.
 
 The device polls round-robin every ~15 s on the `tg_poll` task. The result
 envelope carries up to **16 KB** of reply (PSRAM-backed, v4.0.0 -
-large enough for a sub-agent to return a whole document); token usage is filled only by
+large enough for a sub-agent to return a whole document); a longer reply is cut on
+a character boundary and ends with a visible `[cut at 16 KB]` marker (a note
+about uncaptured files is kept whole). Token usage is filled only by
 OpenAI (the Anthropic events poll returns no usage object - honest zeros).
 An Anthropic sub-agent's working notes ("I'll start with...", said before each
 tool call) arrive as their own short messages, so the reply - and the file it is

@@ -259,8 +259,8 @@ static void test_loop_gradient_folds_old_rounds_over_trigger() {
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
-  // Each result: 60 KB of filler (UNDER ArduinoJson's 65535-byte string ceiling -
-  // a longer string stores as null) plus a per-round TAIL marker. The fold keeps
+  // Each result: 59 KB of filler (UNDER the 60,000-byte provider string guard -
+  // a longer result is clipped with a note) plus a per-round TAIL marker. The fold keeps
   // only a ~160-char head gist, so a folded round LOSES its tail marker while a
   // verbatim round keeps it: that asymmetry is what this test asserts.
   int calls = 0;
@@ -268,7 +268,7 @@ static void test_loop_gradient_folds_old_rounds_over_trigger() {
     nimbus::orch::HeadToolResult r;
     r.id = c.id;
     r.name = c.name;
-    r.output = std::string(60000, 'z') + "TAILMARK" + std::to_string(calls++);
+    r.output = std::string(59000, 'z') + "TAILMARK" + std::to_string(calls++);
     rig.dispatched.push_back(c);
     return r;
   };

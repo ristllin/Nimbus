@@ -102,7 +102,8 @@ FabricErr oaiDispatch(const ProviderDeps& pd, const char* host, const std::strin
     doc["background"]   = true;
     doc["store"]        = true;
     doc["instructions"] = instr;
-    doc["input"]        = d.instruction;
+    wire::putFieldStr(doc["input"], d.instruction ? std::string(d.instruction) : std::string(),
+                      "the sub-agent task");
     // Give every OpenAI sub-agent the hosted web_search tool by default (matches
     // Anthropic's always-on sandbox) - a spawned research/ops agent with no web
     // access was the surprise in Roy's session ("I don't have live web access").
@@ -179,7 +180,7 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
     env.completionTokens = u.completionTokens;
   }
   if (env.state == JobState::Done) {
-    size_t used = 0;
+    wire::ReplyWriter w(env.reply, sizeof(env.reply));
     // Over-cap file ids, remembered so REPEAT citations of the same uncaptured
     // file don't inflate the count (the model cites one file many times - the
     // note claimed "3 more files" when one was missed). Bounded, ids only.
@@ -215,11 +216,7 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
         }
         if (strcmp(c["type"] | "", "output_text") != 0) continue;
         const char* t = c["text"] | "";
-        size_t len = strlen(t);
-        if (used + len >= sizeof(env.reply)) len = sizeof(env.reply) - 1 - used;
-        memcpy(env.reply + used, t, len);
-        used += len;
-        env.reply[used] = 0;
+        w.append(t, strlen(t));   // cut UTF-8-safe with a visible marker at 16 KB
       }
     }
     if (dropped > 0) {
@@ -227,18 +224,9 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
       snprintf(note, sizeof(note),
                "\n[note: %d more generated file(s) beyond the %d-file capture "
                "limit were NOT captured]", dropped, nimbus::orch::kMaxArtifacts);
-      const size_t nl = strlen(note);
       // The note is the ONLY channel that reports uncaptured files, so it must
-      // never be the thing that gets dropped: if the reply filled the buffer,
-      // TRIM the tail (UTF-8-safe) to make room rather than stay silent.
-      if (used + nl >= sizeof(env.reply)) {
-        size_t keep = sizeof(env.reply) - 1 - nl;
-        while (keep > 0 && (env.reply[keep] & 0xC0) == 0x80) keep--;   // no split codepoint
-        used = keep;
-        env.reply[used] = 0;
-      }
-      memcpy(env.reply + used, note, nl + 1);
-      used += nl;
+      // never be the thing that gets dropped: the reply gives way instead.
+      w.appendTail(note);
     }
     if (!env.reply[0]) strncpy(env.reply, "(completed, no text output)", sizeof(env.reply) - 1);
   } else if (env.state == JobState::Error) {
@@ -284,7 +272,7 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
     if (it.kind != Kind::User) continue;
     JsonObject m = in.add<JsonObject>();
     m["type"] = "message"; m["role"] = "user";
-    m["content"] = it.text;
+    wire::putFieldStr(m["content"], it.text, "the user message");
     break;
   }
   size_t i = 0;
@@ -314,14 +302,16 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
       fc["type"]      = "function_call";
       fc["call_id"]   = e[ci].id;
       fc["name"]      = e[ci].name;
-      fc["arguments"] = e[ci].text;
+      wire::putModelStr(fc["arguments"], e[ci].text, e[ci].name.c_str());
     }
     for (size_t ri : results) {
       JsonObject o = in.add<JsonObject>();
       o["type"]    = "function_call_output";
       o["call_id"] = e[ri].id;
       // No is_error field on function_call_output - encode failure in the text.
-      o["output"]  = e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text;
+      wire::putModelStr(o["output"],
+                        e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
+                        e[ri].name.c_str());
     }
   }
 }
@@ -362,7 +352,8 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // roundInstructions() appends the final-round notice when a cap forced this
     // tool-less round, so the model says what it could not finish instead of
     // promising work that will never run.
-    req["instructions"] = wire::roundInstructions(instructions, capReason);
+    wire::putFieldStr(req["instructions"], wire::roundInstructions(instructions, capReason),
+                      "the system prompt");
     req["store"]        = false;   // stateless: the device owns the turn's state
     // Glass Box A4: ask reasoning models for a summary of their thinking so it
     // can be captured into HeadStep.text (gated - a chat model would 400 on the
@@ -455,8 +446,10 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     filter["usage"] = true;   // whole usage object -> per-round token accounting
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+    std::string body;
+    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
     JsonDocument resp = makeDoc(pd);
-    int code = oaiResponses(pd, key, serializeBody(req), roundMs, resp, filter);
+    int code = oaiResponses(pd, key, std::move(body), roundMs, resp, filter);
     if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
       std::string e = "resp HTTP " + std::to_string(code);
@@ -572,8 +565,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   {
     JsonDocument d;
     d["model"]        = pd.orchModel ? pd.orchModel("openai") : std::string();  // per-provider orchestrator model
-    d["instructions"] = instructions;
-    d["input"]        = inputs;
+    wire::putFieldStr(d["instructions"], instructions, "the system prompt");
+    wire::putFieldStr(d["input"], inputs, "the user message");
     d["store"]        = true;
     if (convId.length()) d["previous_response_id"] = convId;   // stateful chain
     // STRICT structured output: the orch_turn schema (single source, now a
@@ -592,7 +585,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     // Hosted connectors/MCP run SERVER-SIDE within the one response, so the head
     // turn can use them mid-turn even with a strict json_schema text format.
     if (pd.attachOpenAI) pd.attachOpenAI(d);
-    body = serializeBody(d);
+    if (!wire::serializeChecked(d, body, err)) return false;
   }
 
   JsonDocument filter;

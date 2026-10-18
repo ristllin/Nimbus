@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "nimbus/harness/providers.h"
-#include "nimbus/mem_cap.h"           // utf8CapLen - the ArduinoJson 64 KB string guard
 #include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - the fold trigger scale
 #include "nimbus/orch/compact.h"      // modelCtxTokens - the model's window
 #include "nimbus/orch/gradient.h"     // foldLine - the shared one-line folder
@@ -347,7 +346,8 @@ static int sendTurn(const ProviderDeps& pd, const char* sessionId, const char* t
     JsonObject ev = evs.add<JsonObject>();
     ev["type"] = "user.message";
     JsonObject c = ev["content"].add<JsonObject>();
-    c["type"] = "text"; c["text"] = text;
+    c["type"] = "text";
+    wire::putFieldStr(c["text"], text ? std::string(text) : std::string(), "the sub-agent task");
     body = serializeBody(d);
   }
   JsonDocument filter; keepErrorEnvelope(filter);   // the success body is not read
@@ -435,22 +435,16 @@ static size_t antMessageLen(JsonObjectConst ev) {
   return n;
 }
 
-// Append one agent.message's text blocks to out[used..cap), NUL-terminated;
-// returns the new length. Messages after the first are separated by a blank line.
-static size_t antAppendMessage(JsonObjectConst ev, char* out, size_t cap, size_t used) {
-  if (used && antMessageLen(ev)) {
-    for (const char* sep = "\n\n"; *sep && used < cap - 1; ++sep) out[used++] = *sep;
-  }
+// Append one agent.message's text blocks to the reply. Messages after the first
+// are separated by a blank line. The writer cuts on a character boundary with a
+// visible marker when the 16 KB envelope is full (a raw byte cut split characters).
+static void antAppendMessage(JsonObjectConst ev, wire::ReplyWriter& w) {
+  if (w.used && antMessageLen(ev)) w.append("\n\n", 2);
   for (JsonObjectConst c : ev["content"].as<JsonArrayConst>()) {
     if (strcmp(c["type"] | "", "text") != 0) continue;
     const char* t = c["text"] | "";
-    size_t len = strlen(t);
-    if (used + len >= cap) len = cap - 1 - used;
-    memcpy(out + used, t, len);
-    used += len;
+    if (!w.append(t, strlen(t))) return;
   }
-  out[used] = 0;
-  return used;
 }
 
 // CUM-514: the artifact a sub-agent's run produced, without its narration.
@@ -479,15 +473,14 @@ static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
   }
   const size_t quarter = best / 4 > kAntNarrationMin ? best / 4 : kAntNarrationMin;
   const size_t narration = quarter < kAntNarrationMax ? quarter : kAntNarrationMax;
-  size_t used = 0;
-  out[0] = 0;
+  wire::ReplyWriter w(out, cap);
   idx = 0;
   for (JsonObjectConst ev : events) {
     const bool before = idx++ < at;
     if (strcmp(ev["type"] | "", "agent.message") != 0) continue;
     if (before && antMessageLen(ev) < narration) continue;   // short working note
-    used = antAppendMessage(ev, out, cap, used);
-    if (used >= cap - 1) return;
+    antAppendMessage(ev, w);
+    if (w.cut) return;
   }
 }
 
@@ -703,7 +696,7 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
-    u["content"] = it.text;
+    wire::putFieldStr(u["content"], it.text, "the user message");
     break;
   }
   // Walk rounds in order. Entries are appended in round order by construction.
@@ -733,7 +726,7 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
     if (!prose.empty()) {
       JsonObject t = ac.add<JsonObject>();
       t["type"] = "text";
-      t["text"] = prose;
+      wire::putModelStr(t["text"], prose, "replayed prose");
     }
     for (size_t ci : calls) {
       JsonObject tu = ac.add<JsonObject>();
@@ -754,13 +747,7 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
         JsonObject trr = uc.add<JsonObject>();
         trr["type"]        = "tool_result";
         trr["tool_use_id"] = e[ri].id;
-        const std::string& outp = e[ri].text;
-        if (outp.size() > 65500) {
-          int keep = nimbus::utf8CapLen(outp.c_str(), (int)outp.size(), 65500);
-          trr["content"] = outp.substr(0, (size_t)keep) + "\xE2\x80\xA6";
-        } else {
-          trr["content"] = outp;
-        }
+        wire::putModelStr(trr["content"], e[ri].text, e[ri].name.c_str());
         if (e[ri].isError) trr["is_error"] = true;
       }
     }
@@ -846,7 +833,8 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     {
       JsonObject sysBlock = req["system"].add<JsonObject>();
       sysBlock["type"] = "text";
-      sysBlock["text"] = wire::roundInstructions(instructions, capReason);
+      wire::putFieldStr(sysBlock["text"], wire::roundInstructions(instructions, capReason),
+                        "the system prompt");
       sysBlock["cache_control"]["type"] = "ephemeral";
     }
     req["messages"]   = msgs;   // deep-copy within the doc's allocator
@@ -901,8 +889,19 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+    // A string dropped while the conversation was rendered (conv is its own
+    // document, copied into req as a null) or anything serializeChecked refuses:
+    // the request is not sent - the same body would fail on every host.
+    std::string body;
+    if (conv.overflowed()) {
+      out.ok = false;
+      out.error = "request field over 64 KB (dropped while the request was built)";
+      hlog::logf("wire: %s", out.error.c_str());
+      return out;
+    }
+    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
     JsonDocument resp = makeDoc(pd);
-    int code = antRequest(pd, "POST", "/v1/messages", serializeBody(req), resp, filter,
+    int code = antRequest(pd, "POST", "/v1/messages", std::move(body), resp, filter,
                           clampRoundMs(budgetMs, ANT_TIMEOUT_MS));
     if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
@@ -1077,12 +1076,12 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
     {
       JsonObject sysBlock = d["system"].add<JsonObject>();
       sysBlock["type"] = "text";
-      sysBlock["text"] = instructions;
+      wire::putFieldStr(sysBlock["text"], instructions, "the system prompt");
       sysBlock["cache_control"]["type"] = "ephemeral";
     }
     JsonObject m = d["messages"].add<JsonObject>();
     m["role"] = "user";
-    m["content"] = inputs;
+    wire::putFieldStr(m["content"], inputs, "the user message");
     JsonObject tool = d["tools"].add<JsonObject>();
     tool["name"]        = "orch_turn";
     tool["description"] = "Return your complete orchestrator turn.";
@@ -1106,7 +1105,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
     d["tool_choice"]["name"] = "orch_turn";
     // Cache breakpoint on the (single) tool - caches the tools prefix segment.
     tool["cache_control"]["type"] = "ephemeral";
-    body = serializeBody(d);
+    if (!wire::serializeChecked(d, body, err)) return false;
   }
 
   // Keep the tool_use input UNFILTERED (it is the whole turn object); filter the

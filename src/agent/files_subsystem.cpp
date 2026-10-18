@@ -21,7 +21,7 @@
 #include "orchestrator.h"                // firstAllowedChat - the owner notice target
 #include "agent/orchestrator.h"          // turnInFlight, isChatAllowed, firstAllowedChat
 #include "agent/telegram.h"              // sendMedia (files.send)
-#include "nimbus/mem_cap.h"           // utf8CapLen - files.read paging
+#include "nimbus/utf8.h"              // utf8CapLen (files.read paging), utf8Window (snippets)
 #include "nimbus/orch/blob_store.h"      // BlobHasher (streamed content hash)
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_store.h"
@@ -932,8 +932,8 @@ void registerTools() {
                 // query's first word may not occur in the doc at all - anchoring on
                 // it snipped the doc's head instead of the hit.
                 size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
-                size_t s0 = at == std::string::npos ? 0 : (at > 40 ? at - 40 : 0);
-                std::string snip = body.substr(s0, 160);
+                // Both ends on a character boundary: a byte-offset cut tore a character.
+                std::string snip = nimbus::utf8Window(body, at, 40, 160);
                 for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
                 hits.push_back(Hit{e->project, e->name, snip, sc});
               }

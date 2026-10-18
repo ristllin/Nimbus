@@ -130,6 +130,16 @@ serves:
 - **Serialization**: never `serializeJson` straight into the TLS client -
   per-chunk TLS records fragment the internal heap. Every request body is
   serialized into one PSRAM buffer and written once.
+- **Valid UTF-8, whole strings**: every provider answers a body that is not
+  valid UTF-8 with a 400 that is the same on every host, and ArduinoJson stores a
+  string of 64 KB or more as null. So every registry tool's text is repaired
+  (invalid sequences become U+FFFD) and clipped to 60,000 bytes with a visible
+  `[cut: kept K of N bytes]` note where it leaves the registry; each renderer
+  repairs what it adds, and clips tool results, call arguments and replayed prose
+  under the same 60,000-byte guard; and the checked serializer refuses, before
+  the send, any body with a dropped string, a string over the guard, or invalid
+  UTF-8, naming the tool the text came from. The system prompt and the user seed
+  are never clipped silently - the caps that build them sit below the guard.
 - **Tool choice per round**: OpenAI and Mistral FORCE a tool on tool-allowed
   rounds - OpenAI `tool_choice:"required"`, Mistral chat/completions
   `tool_choice:"any"` - so the model always calls a registry tool or the

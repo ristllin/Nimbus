@@ -66,7 +66,7 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
     doc["system"] = sysText;
     JsonObject u = doc["messages"].to<JsonArray>().add<JsonObject>();
     u["role"] = "user";
-    u["content"] = instr;
+    wire::putFieldStr(u["content"], instr, "the sub-agent task");
     JsonObject blk = filter["content"].add<JsonObject>();   // every block: type + text
     blk["type"] = true;
     blk["text"] = true;
@@ -78,7 +78,7 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
     sys["content"] = sysText;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
-    u["content"] = instr;
+    wire::putFieldStr(u["content"], instr, "the sub-agent task");
     // CUM-544: a Z.ai sub-agent carries the same bounded reasoning effort as the
     // Z.ai head - glm-5.x always reasons and otherwise outruns its 50 s dispatch.
     if (!ep.reasoningEffort.empty()) doc["reasoning_effort"] = ep.reasoningEffort;
@@ -172,8 +172,8 @@ FabricErr openaiCompatPoll(const ProviderDeps& pd, const char* backendTag, const
   CompatSlot* slot = findSlot(jobId);
   if (!slot) return FabricErr::NotFound;
   env.state = JobState::Done;
-  strncpy(env.reply, slot->reply.c_str(), sizeof(env.reply) - 1);
-  env.reply[sizeof(env.reply) - 1] = 0;
+  // Cut UTF-8-safe with the visible 16 KB marker (a raw strncpy split characters).
+  wire::ReplyWriter(env.reply, sizeof(env.reply)).append(slot->reply);
   slot->used = true;
   slot->reply.clear();
   slot->jobId[0] = 0;
