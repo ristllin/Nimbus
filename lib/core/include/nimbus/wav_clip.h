@@ -35,7 +35,7 @@ inline const char* wavErrName(WavErr e) {
     case WavErr::NotWave:  return "RIFF but not WAVE";
     case WavErr::NoFmt:    return "no fmt chunk before the data";
     case WavErr::NotPcm:   return "not uncompressed PCM";
-    case WavErr::NoData:   return "no data chunk in the header window";
+    case WavErr::NoData:   return "no data chunk in the clip";
   }
   return "unknown";
 }
@@ -50,39 +50,64 @@ inline bool tag(const uint8_t* p, const char* t) {
 }
 }  // namespace wav_detail
 
-// Parse the header from the first `len` bytes of a clip. The data chunk must
-// start inside that window (a few hundred bytes covers any real header).
-inline WavErr parseWavHeader(const uint8_t* buf, size_t len, WavInfo& out) {
+// Read `len` bytes at byte `offset` of the clip into `dst`; return the bytes read
+// (fewer at end of file). The device passes a seek+read over the card file.
+using WavReadFn = size_t (*)(void* ctx, uint64_t offset, uint8_t* dst, size_t len);
+
+// Walk the clip's chunks by OFFSET, reading only each 8-byte chunk header and the
+// 16-byte fmt body, so a padding chunk of any size before the samples is skipped
+// without buffering it. macOS `say` writes a 4008-byte FLLR chunk, which puts the
+// samples at byte 4096 - past any fixed header window. Stops at `maxChunks` so a
+// hostile file cannot keep the walker spinning.
+inline WavErr parseWavStream(WavReadFn read, void* ctx, WavInfo& out, int maxChunks = 64) {
   using namespace wav_detail;
   out = WavInfo{};
-  if (!buf || len < 12) return WavErr::TooShort;
-  if (!tag(buf, "RIFF")) return WavErr::NotRiff;
-  if (!tag(buf + 8, "WAVE")) return WavErr::NotWave;
+  uint8_t h[24];
+  if (!read || read(ctx, 0, h, 12) < 12) return WavErr::TooShort;
+  if (!tag(h, "RIFF")) return WavErr::NotRiff;
+  if (!tag(h + 8, "WAVE")) return WavErr::NotWave;
   bool haveFmt = false;
-  size_t pos = 12;
-  while (pos + 8 <= len) {
-    const uint8_t* ch = buf + pos;
-    const uint32_t size = le32(ch + 4);
-    if (tag(ch, "fmt ")) {
-      if (size < 16 || pos + 8 + 16 > len) return WavErr::TooShort;
-      out.format = le16(ch + 8);
-      out.channels = le16(ch + 10);
-      out.sampleRate = le32(ch + 12);
-      out.bitsPerSample = le16(ch + 22);
-      if (out.format != 1) return WavErr::NotPcm;
-      haveFmt = true;
-    } else if (tag(ch, "data")) {
+  uint64_t pos = 12;
+  for (int i = 0; i < maxChunks && read(ctx, pos, h, 8) == 8; i++) {
+    const uint32_t size = le32(h + 4);
+    if (tag(h, "data")) {
       if (!haveFmt) return WavErr::NoFmt;
+      if (pos + 8 > 0xFFFFFFFFull) return WavErr::NoData;
       out.dataOffset = uint32_t(pos + 8);
       out.dataBytes = size;
       return WavErr::Ok;
     }
-    // Next chunk; RIFF pads an odd-sized chunk with one byte.
-    const uint64_t next = uint64_t(pos) + 8u + size + (size & 1u);
-    if (next > len) break;
-    pos = size_t(next);
+    if (tag(h, "fmt ")) {
+      if (size < 16 || read(ctx, pos + 8, h + 8, 16) < 16) return WavErr::TooShort;
+      out.format = le16(h + 8);
+      out.channels = le16(h + 10);
+      out.sampleRate = le32(h + 12);
+      out.bitsPerSample = le16(h + 22);
+      if (out.format != 1) return WavErr::NotPcm;
+      haveFmt = true;
+    }
+    pos += 8u + uint64_t(size) + (size & 1u);   // RIFF pads an odd-sized chunk with one byte
   }
   return haveFmt ? WavErr::NoData : WavErr::NoFmt;
+}
+
+namespace wav_detail {
+struct MemClip { const uint8_t* buf; size_t len; };
+inline size_t memRead(void* ctx, uint64_t off, uint8_t* dst, size_t n) {
+  const MemClip* m = static_cast<const MemClip*>(ctx);
+  if (off >= m->len) return 0;
+  const size_t avail = size_t(m->len - off);
+  const size_t take = n < avail ? n : avail;
+  for (size_t i = 0; i < take; i++) dst[i] = m->buf[off + i];
+  return take;
+}
+}  // namespace wav_detail
+
+// The same walk over a clip already in memory (`len` bytes of it).
+inline WavErr parseWavHeader(const uint8_t* buf, size_t len, WavInfo& out) {
+  if (!buf) { out = WavInfo{}; return WavErr::TooShort; }
+  wav_detail::MemClip m{buf, len};
+  return parseWavStream(&wav_detail::memRead, &m, out);
 }
 
 // The hold-to-talk path takes exactly what the mic records: 16 kHz mono 16-bit.

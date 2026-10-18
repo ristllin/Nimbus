@@ -1561,15 +1561,22 @@ static void captureVoiceTurn() {
 // nimbus::voice::afterRelease() shows processing, runs the real STT call and sends
 // the transcript as the voice turn. Only the microphone capture is replaced.
 
+// Seek + read over the card file, for the chunk walker (padding chunks of any size,
+// such as the 4 KB FLLR macOS `say` writes, are skipped by offset, never buffered).
+static size_t clipRead(void* ctx, uint64_t off, uint8_t* dst, size_t n) {
+  File* f = static_cast<File*>(ctx);
+  if (off > f->size() || !f->seek((uint32_t)off)) return 0;
+  return f->read(dst, n);
+}
+
 // Copy the clip's sample data (16 kHz mono 16-bit, the mic's format) from the card
 // into LittleFS /voice.pcm. Returns the bytes copied, or 0 with `why` set.
 static size_t copyClipPcm(const String& path, String& why) {
   File in = solide::storage::activeFs().open(path.c_str(), FILE_READ);
   if (!in) { why = "cannot open " + path + " on the card (FSPUT it first)"; return 0; }
   uint8_t head[512];
-  const size_t got = in.read(head, sizeof(head));
   nimbus::voice::WavInfo w;
-  const nimbus::voice::WavErr e = nimbus::voice::parseWavHeader(head, got, w);
+  const nimbus::voice::WavErr e = nimbus::voice::parseWavStream(&clipRead, &in, w);
   if (e != nimbus::voice::WavErr::Ok) { in.close(); why = nimbus::voice::wavErrName(e); return 0; }
   if (!nimbus::voice::wavMatchesMic(w)) {
     in.close();

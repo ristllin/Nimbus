@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -120,6 +121,56 @@ static void test_refusals_name_the_reason() {
     TEST_ASSERT_TRUE(std::strlen(nimbus::voice::wavErrName(WavErr(e))) > 0);
 }
 
+// The clip the bench makes with macOS `say` (JUNK, fmt, a 4008-byte FLLR pad):
+// its samples start at byte 4096, past any fixed header window. The walker must
+// find them by offset. This is the regression that made a 512-byte window refuse
+// the very clip the bench steps produce.
+static void test_macos_say_layout_with_a_4k_pad_chunk() {
+  std::vector<uint8_t> b;
+  tag(b, "RIFF"); put32(b, 0); tag(b, "WAVE");
+  auto junk = chunk("JUNK", 28);
+  b.insert(b.end(), junk.begin(), junk.end());
+  tag(b, "fmt "); put32(b, 16); put16(b, 1); put16(b, 1); put32(b, 16000); put32(b, 32000);
+  put16(b, 2); put16(b, 16);
+  auto fllr = chunk("FLLR", 4008);
+  b.insert(b.end(), fllr.begin(), fllr.end());
+  tag(b, "data"); put32(b, 3200);
+  b.insert(b.end(), 3200, 0x22);
+  WavInfo w;
+  TEST_ASSERT_EQUAL(int(WavErr::Ok), int(parseWavHeader(b.data(), b.size(), w)));
+  TEST_ASSERT_EQUAL_UINT32(4096, w.dataOffset);
+  TEST_ASSERT_EQUAL_UINT8(0x22, b[w.dataOffset]);
+  TEST_ASSERT_TRUE(wavMatchesMic(w));
+}
+
+// The streaming walker reads only what it needs: count the bytes it asks for on
+// that same 4 KB-padded clip (headers + the fmt body, never the pad).
+static size_t g_bytesAsked = 0;
+static size_t countingRead(void* ctx, uint64_t off, uint8_t* dst, size_t n) {
+  g_bytesAsked += n;
+  const auto* v = static_cast<const std::vector<uint8_t>*>(ctx);
+  if (off >= v->size()) return 0;
+  const size_t take = std::min(n, size_t(v->size() - off));
+  memcpy(dst, v->data() + off, take);
+  return take;
+}
+static void test_stream_walker_never_buffers_the_pad() {
+  auto b = wav(1, 1, 16000, 16, {chunk("FLLR", 4008)}, 64);
+  g_bytesAsked = 0;
+  WavInfo w;
+  TEST_ASSERT_EQUAL(int(WavErr::Ok), int(nimbus::voice::parseWavStream(&countingRead, &b, w)));
+  TEST_ASSERT_TRUE_MESSAGE(g_bytesAsked < 128, "the walker read the padding chunk's body");
+}
+
+// A file of endless tiny chunks stops at the chunk limit instead of spinning.
+static void test_chunk_count_is_bounded() {
+  std::vector<uint8_t> b;
+  tag(b, "RIFF"); put32(b, 0); tag(b, "WAVE");
+  for (int i = 0; i < 500; i++) { auto c = chunk("JUNK", 0); b.insert(b.end(), c.begin(), c.end()); }
+  WavInfo w;
+  TEST_ASSERT_EQUAL(int(WavErr::NoFmt), int(parseWavHeader(b.data(), b.size(), w)));
+}
+
 // A hostile chunk size must not walk past the buffer or wrap the offset.
 static void test_hostile_chunk_size_stays_in_bounds() {
   std::vector<uint8_t> b;
@@ -137,5 +188,8 @@ int main(int, char**) {
   RUN_TEST(test_every_non_mic_format_is_refused);
   RUN_TEST(test_refusals_name_the_reason);
   RUN_TEST(test_hostile_chunk_size_stays_in_bounds);
+  RUN_TEST(test_macos_say_layout_with_a_4k_pad_chunk);
+  RUN_TEST(test_stream_walker_never_buffers_the_pad);
+  RUN_TEST(test_chunk_count_is_bounded);
   return UNITY_END();
 }

@@ -34,7 +34,13 @@ HDR = REPO / "src/test_console.h"
 MAIN = REPO / "src/main.cpp"
 
 # main.cpp symbols that exist only for the test console and must be guarded.
-MAIN_TEST_ONLY = ("static size_t copyClipPcm(", "static String audioInjectTurn(", "h.audioInject =", "tc::Hooks h;")
+MAIN_TEST_ONLY = (
+    "static size_t clipRead(",
+    "static size_t copyClipPcm(",
+    "static String audioInjectTurn(",
+    "h.audioInject =",
+    "tc::Hooks h;",
+)
 # Public tc:: functions whose production side must be a no-op inline.
 HEADER_STUBS = ("inline void pumpOrch() {}", "inline bool ttsMuted() { return false; }")
 

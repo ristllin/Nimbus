@@ -39,6 +39,7 @@ void setup() {
 #endif
 }
 #if defined(NIMBUS_TEST)
+static size_t clipRead(void* ctx, uint64_t off, uint8_t* dst, size_t n) { return 0; }
 static size_t copyClipPcm(const String& path, String& why) { return 0; }
 static String audioInjectTurn(const String& path) { return path; }
 #endif
@@ -84,7 +85,7 @@ def test_header_without_production_stub_fails():
 
 
 def test_main_helper_outside_a_test_region_fails():
-    unguarded = MAIN.replace("#if defined(NIMBUS_TEST)\nstatic size_t", "static size_t", 1)
+    unguarded = MAIN.replace("#if defined(NIMBUS_TEST)\nstatic size_t clipRead", "static size_t clipRead", 1)
     unguarded = unguarded.replace("{ return path; }\n#endif\n", "{ return path; }\n", 1)
     ok, problems = g.judge(GUARDED_CPP, HEADER, unguarded)
     assert not ok
