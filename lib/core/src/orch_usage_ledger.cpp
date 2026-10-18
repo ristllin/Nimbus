@@ -20,6 +20,8 @@ uint32_t usagePeriodKey(int year, int month, int day, uint8_t resetDay) {
   return (uint32_t)m0;
 }
 
+static uint64_t satAddU(uint64_t a, uint64_t b) { return UINT64_MAX - a < b ? UINT64_MAX : a + b; }
+
 ProviderBudget* UsageLedger::findMut(const std::string& name) {
   for (auto& e : entries_)
     if (e.name == name) return &e;
@@ -85,14 +87,43 @@ void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t
   e->totalOut  += tokOut;
 }
 
+TokenDelta ledgerDelta(const SpendSlot& s) {
+  TokenDelta d;
+  d.out = s.out;
+  if (std::strcmp(s.host, "anthropic") == 0) {
+    d.in = s.in;
+    d.cacheR = s.cacheR;
+    d.cacheW = s.cacheW;
+  } else if (std::strcmp(s.host, "openai") == 0) {
+    // Both cache counts are PART of input_tokens: never more than it (a malformed
+    // usage object must not wrap the remainder).
+    d.cacheR = s.cacheR < s.in ? s.cacheR : s.in;
+    const uint64_t left = s.in - d.cacheR;
+    d.cacheW = s.cacheW < left ? s.cacheW : left;
+    d.in = left - d.cacheW;
+  } else {
+    d.in = s.in;   // cache traffic not split: billed at the input rate (fail-closed)
+  }
+  return d;
+}
+
+bool cacheFoldedInNvs(const std::string& prov) { return prov == "openai"; }
+
 void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                                uint64_t cacheRead, uint64_t cacheWrite,
                                uint32_t periodKey, const std::string& tag) {
-  recordTokens(name, tokIn, tokOut, periodKey, tag);
+  // A folded provider's input count includes its cache tokens natively: the budget-limit
+  // counter and the attribution tag keep that count (cached tokens still count toward a
+  // token ceiling, as before R4); only the period split below takes them out of tokensIn.
+  const bool folded = cacheFoldedInNvs(name);
+  uint64_t native = tokIn;
+  if (folded) native = satAddU(satAddU(native, cacheRead), cacheWrite);
+  recordTokens(name, native, tokOut, periodKey, tag);
   if (cacheRead == 0 && cacheWrite == 0) return;
   ProviderBudget* e = ensure(name);
   if (!e) return;
   // No rollTo here: the call above already rolled to this periodKey.
+  if (folded) e->tokensIn -= native - tokIn;   // added just above, so this never wraps
   e->cacheRead += cacheRead;
   e->cacheWrite += cacheWrite;
 }
@@ -114,7 +145,7 @@ void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
   // under that same period, so the two never disagree about "this period".
   const ProviderBudget* e = find(name);
   if (!e) return;   // the provider ledger is full: nothing to attribute against
-  models_.record(name.c_str(), key, d, e->periodKey, dayKey);
+  models_.record(name.c_str(), key, d, e->periodKey, dayKey, cacheFoldedInNvs(name));
 }
 
 void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
@@ -128,6 +159,7 @@ void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t
       return;
     }
   }
+  if (!allowNewTags_) return;                     // no new audit row while it costs NVS
   if (tags_.size() >= kMaxTags) return;           // bounded audit trail, never a crash
   TagUsage t;
   t.prov = name;
@@ -240,12 +272,19 @@ void raiseField(uint64_t& v, RateSrc& src, uint64_t cand, RateSrc candSrc) {
 struct MicroSum {
   uint64_t micro = 0, cents = 0;
   bool     sat = false;
-  // Tokens at a rate; cache reads at 0.1x and writes at 1.25x of the input rate.
+  // Tokens at a rate; cache reads and writes at the rate's own cached and write
+  // prices when it has them (R4), else 0.1x and 1.25x of the input rate.
   void addTokens(const TokenDelta& t, const EffRate& r) {
     micro = addSat(micro, costMicroSat(t.in, r.in, sat), sat);
     micro = addSat(micro, costMicroSat(t.out, r.out, sat), sat);
-    micro = addSat(micro, costMicroSat(t.cacheR, r.in, sat) / 10, sat);
-    micro = addSat(micro, costMicroSat(mulSat(t.cacheW, 5, sat), r.in, sat) / 4, sat);
+    if (r.cacheR)
+      micro = addSat(micro, costMicroSat(t.cacheR, r.cacheR, sat), sat);
+    else
+      micro = addSat(micro, costMicroSat(t.cacheR, r.in, sat) / 10, sat);
+    if (r.cacheW)
+      micro = addSat(micro, costMicroSat(t.cacheW, r.cacheW, sat), sat);
+    else
+      micro = addSat(micro, costMicroSat(mulSat(t.cacheW, 5, sat), r.in, sat) / 4, sat);
   }
   void addCalls(uint64_t calls, uint64_t microPerK) {
     micro = addSat(micro, mulSat(calls, microPerK, sat) / 1000ULL, sat);
@@ -367,9 +406,25 @@ EffRate UsageLedger::effectiveRate(const std::string& prov, const char* model) c
     pickField(r.in, r.srcIn, (uint64_t)e->centsPerMIn * 10000ULL, RateSrc::Provider);
     pickField(r.out, r.srcOut, (uint64_t)e->centsPerMOut * 10000ULL, RateSrc::Provider);
   }
-  if (const BuiltinPrice* b = builtinModelPrice(p, model)) {
-    pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinModel);
-    pickField(r.out, r.srcOut, b->microOut, RateSrc::BuiltinModel);
+  const BuiltinPrice* row = builtinModelPrice(p, model);
+  if (row) {
+    pickField(r.in, r.srcIn, row->microIn, RateSrc::BuiltinModel);
+    pickField(r.out, r.srcOut, row->microOut, RateSrc::BuiltinModel);
+    // The row's cache rates belong to its input price: they apply only when that
+    // price is the one in use (an owner input price keeps the 0.1x / 1.25x shares).
+    if (r.srcIn == RateSrc::BuiltinModel) {
+      r.cacheR = row->microCacheR;
+      r.cacheW = row->microCacheW;
+    }
+  }
+  if (*model && !row) {
+    // A model with no row of its own (fail-closed money, owner ruling R4): the
+    // provider's HIGHEST built-in price, shown as an estimate - never the cheaper
+    // provider default it may well cost more than.
+    uint32_t hiIn = 0, hiOut = 0;
+    builtinUnknownPrice(p, model, hiIn, hiOut);
+    pickField(r.in, r.srcIn, hiIn, RateSrc::BuiltinProv);
+    pickField(r.out, r.srcOut, hiOut, RateSrc::BuiltinProv);
   }
   if (const BuiltinPrice* b = builtinDefaultPrice(p, model)) {
     pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinProv);
@@ -637,6 +692,14 @@ uint64_t leastAllTime(const StoredFloor& f, uint64_t total, uint64_t period) {
 
 // Whether the stored counters cannot be the ones the spend file describes (gate M1: a
 // settings-only reset, on this release or an earlier one, re-created them).
+// The period input in the all-time total's own meaning: a folded provider's all-time
+// input counts its cache tokens (its native input), split out of tokensIn or not.
+uint64_t periodInLikeTotal(const ProviderBudget& e) {
+  if (!cacheFoldedInNvs(e.name)) return e.tokensIn;
+  bool sat = false;
+  return addSat(addSat(e.tokensIn, e.cacheRead, sat), e.cacheWrite, sat);
+}
+
 bool countersRecreated(const UsageLedger& L, const ProviderBudget& e) {
   const ProvTrack* t = L.models().track(e.name.c_str());
   if (!t) return false;
@@ -644,7 +707,7 @@ bool countersRecreated(const UsageLedger& L, const ProviderBudget& e) {
                        t->storedBeforeIn};
   const StoredFloor out{t->storedTotOut > t->preTotOut ? t->storedTotOut : t->preTotOut,
                         t->storedBeforeOut};
-  return e.totalIn < leastAllTime(in, e.totalIn, e.tokensIn) ||
+  return e.totalIn < leastAllTime(in, e.totalIn, periodInLikeTotal(e)) ||
          e.totalOut < leastAllTime(out, e.totalOut, e.tokensOut);
 }
 
@@ -737,6 +800,36 @@ void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
   t->lost.cacheW = addSat(t->lost.cacheW, gap.cacheW, sat);
 }
 
+// The usgLedger blob carries a folded provider's period input with its cache tokens
+// folded back in (cacheFoldedInNvs); the split is put back from what the model rows and
+// the track hold of this period's cache (every record files its cache under a row once
+// tracking has started, so they add up to it). When they hold more than the stored input
+// the stores diverged: the folded form stays (cache billed at the input rate, never
+// lower) and the row check below decides the rest. A provider whose blob already carries
+// cache fields was not folded and is left alone.
+void UsageLedger::resplitFoldedCache() {
+  for (auto& e : entries_) {
+    if (!cacheFoldedInNvs(e.name) || e.cacheRead || e.cacheWrite) continue;
+    bool sat = false;
+    uint64_t cr = 0, cw = 0;
+    for (const auto& r : models_.rows()) {
+      if (!rowOf(r, e)) continue;
+      cr = addSat(cr, r.cacheR, sat);
+      cw = addSat(cw, r.cacheW, sat);
+    }
+    const ProvTrack* t = models_.track(e.name.c_str());
+    if (t && t->periodKey == e.periodKey) {
+      cr = addSat(addSat(cr, t->pre.cacheR, sat), t->lost.cacheR, sat);
+      cw = addSat(addSat(cw, t->pre.cacheW, sat), t->lost.cacheW, sat);
+    }
+    const uint64_t cache = addSat(cr, cw, sat);
+    if (sat || cache == 0 || cache > e.tokensIn) continue;
+    e.tokensIn -= cache;
+    e.cacheRead = cr;
+    e.cacheWrite = cw;
+  }
+}
+
 bool UsageLedger::rebaseModelRows(const UsageHistory* history) {
   const auto& rows = models_.rows();
   for (size_t i = 0; i < rows.size(); ++i) {
@@ -749,6 +842,7 @@ bool UsageLedger::rebaseModelRows(const UsageHistory* history) {
   }
   bool forgot = dropOrphanTracks(*this);
   if (!models_.tracking()) return forgot;
+  resplitFoldedCache();
   const bool earlierRelease = earlierReleaseRecorded(history);
   for (const auto& e : entries_) {
     if (countersRecreated(*this, e)) {
@@ -783,7 +877,7 @@ void UsageLedger::noteCountersStored() {
     if (!t) continue;
     t->storedTotIn = e.totalIn;
     t->storedTotOut = e.totalOut;
-    t->storedBeforeIn = subSat(e.totalIn, e.tokensIn);
+    t->storedBeforeIn = subSat(e.totalIn, periodInLikeTotal(e));
     t->storedBeforeOut = subSat(e.totalOut, e.tokensOut);
   }
 }
@@ -856,8 +950,13 @@ std::string UsageLedger::serialize() const {
     out.push_back('|'); appendU64(out, e.tokenLimit);
     out.push_back('|'); appendU64(out, e.callLimit);
     out.push_back('|'); appendU64(out, (uint64_t)e.resetDay);
+    // R4 / critique D2: a folded provider's period cache split stays out of the blob
+    // (it would grow it); its input goes back in its native, cache-included form.
+    const bool folded = cacheFoldedInNvs(e.name);
+    uint64_t nvsIn = e.tokensIn;
+    if (folded) nvsIn = satAddU(satAddU(nvsIn, e.cacheRead), e.cacheWrite);
     // Cost-extension tail (2026-07-16): absent in old blobs, reads as 0.
-    out.push_back('|'); appendU64(out, e.tokensIn);
+    out.push_back('|'); appendU64(out, nvsIn);
     out.push_back('|'); appendU64(out, e.tokensOut);
     out.push_back('|'); appendU64(out, e.totalIn);
     out.push_back('|'); appendU64(out, e.totalOut);
@@ -869,8 +968,8 @@ std::string UsageLedger::serialize() const {
     // limit); an OLDER deserializer's fixed parts[] simply ignores it.
     out.push_back('|'); appendU64(out, e.centsLimit);
     // v4.1.3 tail: period prompt-cache counters (same append-only compat rules).
-    out.push_back('|'); appendU64(out, e.cacheRead);
-    out.push_back('|'); appendU64(out, e.cacheWrite);
+    out.push_back('|'); appendU64(out, folded ? 0 : e.cacheRead);
+    out.push_back('|'); appendU64(out, folded ? 0 : e.cacheWrite);
   }
   // Attribution tail: '#'-prefixed 4-field groups. tag is [a-z0-9_:-] by
   // construction ("turn"/"synthesis"/"loop:<id>"/"spawn:<backend>") - no '|'/';'.

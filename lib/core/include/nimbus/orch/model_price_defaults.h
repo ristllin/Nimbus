@@ -22,27 +22,59 @@ namespace orch {
 
 inline constexpr const char* kBuiltinPricesAsOf = "2026-10";
 
+// A model row's request-size tier (claude-haiku-5-5 bills a request whose prompt is
+// over 100K tokens at its own, higher rates): the spend of such a request files under
+// "<model>:long", a row of its own (TurnSpend::add).
+inline constexpr const char* kLongTierSuffix = ":long";
+
 struct BuiltinPrice {
   const char* slot;        // provider slot ("openai", ..., "tavily")
   const char* family;      // model family, or "*" for the provider default
   uint32_t    microIn;     // micro-USD per 1M input tokens
   uint32_t    microOut;    // micro-USD per 1M output tokens
   uint32_t    microPerKCalls;   // micro-USD per 1000 calls (search providers)
+  // Prompt-cache rates (owner ruling R4, 16 Oct 2026): micro-USD per 1M cached
+  // (read) and cache-written input tokens. 0 = the default share of the input rate
+  // (reads 0.1x, writes 1.25x, the 5-minute write).
+  uint32_t    microCacheR = 0;
+  uint32_t    microCacheW = 0;
+  // A request whose prompt is OVER this many tokens bills at the "<family>:long" row
+  // (0 = no size tier).
+  uint32_t    longOver = 0;
+  const char* note = nullptr;   // shown beside the estimate (a promotional price, ...)
 };
+
+// Prices are list prices as of kBuiltinPricesAsOf. Where a provider runs a time-
+// limited promotion, the row keeps the regular price (fail-closed money: an estimate
+// never reads cheaper than the bill once the promotion ends) and says so in `note`.
+inline constexpr const char* kGpt56PromoNote = "promo $4 / $20 until at least 21 Nov 2026";
 
 inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"openai", "gpt-6-astra", 10000000, 50000000, 0},
-    {"openai", "gpt-5.6", 5000000, 30000000, 0},
+    {"openai", "gpt-6-sol", 2000000, 10000000, 0},
+    {"openai", "gpt-6.1-sol", 2000000, 10000000, 0},
+    {"openai", "gpt-6-luna", 100000, 500000, 0},
+    // The gpt-5.6 alias routes to gpt-5.6-sol: one price, cache read $0.50, write $6.25.
+    {"openai", "gpt-5.6", 5000000, 30000000, 0, 500000, 6250000, 0, kGpt56PromoNote},
+    {"openai", "gpt-5.6-sol", 5000000, 30000000, 0, 500000, 6250000, 0, kGpt56PromoNote},
     {"openai", "gpt-5.6-terra", 2000000, 12000000, 0},
     {"openai", "gpt-5.6-luna", 200000, 1200000, 0},
+    {"openai", "o4-mini-deep-research", 2000000, 8000000, 0},
     {"openai", "gpt-4o-mini", 150000, 600000, 0},
     {"openai", "text-embedding-3-small", 20000, 0, 0},
     {"openai", "*", 2500000, 10000000, 0},
+    {"anthropic", "claude-fable-5-1", 10000000, 50000000, 0},
+    {"anthropic", "claude-opus-5-5", 4000000, 20000000, 0},
     {"anthropic", "claude-opus-5", 5000000, 25000000, 0},
+    {"anthropic", "claude-sonnet-5-5", 2000000, 10000000, 0},
     {"anthropic", "claude-sonnet-5", 2000000, 10000000, 0},
+    // Cache read $0.01, 5-minute write $0.125; a prompt over 100K tokens: $0.50 / $2.50.
+    {"anthropic", "claude-haiku-5-5", 100000, 500000, 0, 10000, 125000, 100000},
+    {"anthropic", "claude-haiku-5-5:long", 500000, 2500000, 0},
     {"anthropic", "claude-haiku-4-5", 1000000, 5000000, 0},
     {"anthropic", "*", 3000000, 15000000, 0},
     {"mistral", "mistral-large", 2000000, 6000000, 0},
+    {"mistral", "mistral-medium", 1500000, 7500000, 0},
     {"mistral", "mistral-small", 200000, 600000, 0},
     {"mistral", "*", 2000000, 6000000, 0},
     {"zai", "glm-5.3", 1400000, 4400000, 0},
@@ -123,6 +155,34 @@ inline void builtinHighestPrice(const char* prov, uint32_t& microIn, uint32_t& m
     if (p.microIn > microIn) microIn = p.microIn;
     if (p.microOut > microOut) microOut = p.microOut;
   }
+}
+
+// The price of a model with NO row of its own (owner ruling R4, fail-closed money):
+// per field, the highest built-in price of the slot it is priced from - a Cumulo key
+// "<upstream>/<bare>" reads its upstream's rows, any other Cumulo key every slot. 0 when
+// the slot has no rows (custom).
+inline void builtinUnknownPrice(const char* prov, const char* key, uint32_t& microIn,
+                                uint32_t& microOut) {
+  char up[kModelKeyCap];
+  const char* bare;
+  const char* slot = builtinSlotFor(prov, key, &bare, up);
+  const bool upstreamKnown = slot && prov && std::strcmp(prov, "cumulo") == 0 &&
+                             key && std::strchr(key, '/') && builtinSlotDefault(slot);
+  builtinHighestPrice(upstreamKnown ? slot : prov, microIn, microOut);
+}
+
+// The row a request-size tier files under: "<key>:long" when `key`'s built-in row has
+// a tier and the request's prompt was over it (out: kModelKeyCap bytes). False (out
+// untouched) when there is no tier, the prompt was within it, or the key cannot grow.
+inline bool builtinLongTierKey(const char* prov, const char* key, uint32_t promptTokens,
+                               char* out) {
+  const BuiltinPrice* row = builtinModelPrice(prov, key);
+  if (!row || !row->longOver || promptTokens <= row->longOver) return false;
+  const size_t kl = std::strlen(key), sl = std::strlen(kLongTierSuffix);
+  if (kl + sl >= kModelKeyCap) return false;
+  std::memcpy(out, key, kl);
+  std::memcpy(out + kl, kLongTierSuffix, sl + 1);
+  return true;
 }
 
 }  // namespace orch

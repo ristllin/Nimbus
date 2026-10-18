@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "nimbus/orch/model_ledger.h"
+#include "nimbus/orch/turn_spend.h"
 
 // Per-provider monthly usage + budget ledger (owner ask: "limit budget, and see
 // budget per provider - Tavily monthly calls, providers monthly tokens, and set the
@@ -58,9 +59,9 @@ struct ProviderBudget {
   // Prompt-cache period counters (v4.1.3 prism): Anthropic bills cache WRITES at
   // 1.25x and READS at 0.1x of the input rate, and EXCLUDES both from
   // input_tokens - without these the $ gate under-metered every cached turn.
-  // Recorded ONLY for providers that exclude them from the prompt count (the
-  // record site knows the host); OpenAI includes cached tokens in its prompt
-  // count, so recording them there would double-meter.
+  // Since R4 (2026-10) OpenAI's cached and written tokens are split out of its
+  // input count too (ledgerDelta), so tokensIn never holds them; for OpenAI the
+  // split is RAM-only and the NVS blob carries the folded form (cacheFoldedInNvs).
   uint64_t    cacheRead  = 0;
   uint64_t    cacheWrite = 0;
 
@@ -112,9 +113,12 @@ inline bool rateSrcIsEstimate(RateSrc s) {
 }
 
 // A resolved price: micro-USD per 1M tokens (Cumulo's unit; u64 so the provider
-// tier's cents x 10000 never wraps).
+// tier's cents x 10000 never wraps). cacheR / cacheW (owner ruling R4): the model's
+// own cached and cache-write rates, set only when a built-in model row priced the
+// input side and names them; 0 = 0.1x and 1.25x of `in`.
 struct EffRate {
   uint64_t in = 0, out = 0;
+  uint64_t cacheR = 0, cacheW = 0;
   RateSrc  srcIn = RateSrc::None, srcOut = RateSrc::None;
   bool approx() const { return rateSrcIsEstimate(srcIn) || rateSrcIsEstimate(srcOut); }
   // One badge for the pair: the weakest tier that priced a field (an estimate in
@@ -165,6 +169,22 @@ struct RowPrice {
 
 class UsageHistory;   // below
 
+// ---- one turn's spend in ledger tokens (owner ruling R4) ---------------------------
+// The ONE place that knows what each provider's usage counts mean. It takes a
+// SpendSlot (one provider's billed responses), never a bare TokenUsage, so a sum of
+// two providers' usage cannot reach it.
+//   anthropic: input_tokens EXCLUDES cache reads and writes -> (in, cacheR, cacheW);
+//   openai:    input_tokens INCLUDES cached and cache-write tokens ->
+//              (in - cached - written, cached, written), clamped so it never wraps;
+//   any other: its cache counts are not split (billed at the input rate) -> (in, 0, 0).
+TokenDelta ledgerDelta(const SpendSlot& s);
+// Providers whose input count includes their cache tokens and whose cache split the
+// usgLedger NVS blob does not carry (critique D2: the blob must not grow while it
+// lives in NVS). Their period split lives in RAM and in the LittleFS model rows and
+// history; serialize() writes the period input with the cache folded back in and the
+// cache fields 0, and the load splits it again from the model rows (settleModels).
+bool cacheFoldedInNvs(const std::string& prov);
+
 class UsageLedger {
  public:
   static constexpr size_t kMaxProviders = 12;
@@ -181,7 +201,9 @@ class UsageLedger {
                     uint32_t periodKey);
   void recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                     uint32_t periodKey, const std::string& tag);
-  // + prompt-cache counters (see the field note: excluded-from-input providers only).
+  // + prompt-cache counters, as ledgerDelta returns them (tokIn never holds them). For a
+  // cacheFoldedInNvs provider the budget-limit counter, the all-time-in-NVS form and the
+  // attribution tag keep its native count (cache included), so they read as before.
   void recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                     uint64_t cacheRead, uint64_t cacheWrite,
                     uint32_t periodKey, const std::string& tag);
@@ -196,6 +218,12 @@ class UsageLedger {
   void recordTokens(const std::string& name, const TokenDelta& d, uint32_t periodKey,
                     const std::string& tag, const char* model, uint32_t dayKey);
   const std::vector<TagUsage>& tagEntries() const { return tags_; }
+  // Whether a record may add a NEW (provider, tag) attribution row. The device turns it
+  // off while the ledger lives in NVS (the rows ride the usgLedger blob, and per-host
+  // filing creates pairs a single-host turn never did); spend of a new pair is still
+  // counted in the provider entry and the model rows, only the audit row is not made.
+  void setAllowNewTags(bool allow) { allowNewTags_ = allow; }
+  bool allowNewTags() const { return allowNewTags_; }
 
   // The per-model spend rows and prices. NOT part of serialize()/deserialize(): the
   // usgLedger NVS blob is byte-identical with or without model activity; the device
@@ -285,8 +313,9 @@ class UsageLedger {
   // THE one formula (UI, device.status, the $ gate): the provider's period estimate in
   // cents = each in-period model row at its own rowRate + spend since tracking began
   // that no row accounts for at otherRate + earlier usage at residualRate + calls at
-  // callRate; cache reads at 0.1x and writes at 1.25x of the input rate; one floor to
-  // cents; saturating (a saturated total reads UINT64_MAX).
+  // callRate; cache reads and writes at the row's own cached and write rates when it
+  // has them, else 0.1x and 1.25x of the input rate; one floor to cents; saturating (a
+  // saturated total reads UINT64_MAX).
   // `sum` (optional) receives the breakdown; `rows` (optional, ModelLedger::kMaxRows
   // entries, indexed like models().rows()) receives each row's part.
   uint64_t priceProvider(const std::string& name, PriceSummary* sum = nullptr,
@@ -367,10 +396,12 @@ class UsageLedger {
   void            addLost(const ProviderBudget& e, const TokenDelta& gap);
   void            resetProvider(const ProviderBudget& e);
   void            alignTrack(const ProviderBudget& e);
+  void            resplitFoldedCache();
   static uint32_t periodOf(const void* self, const char* prov);   // ModelLedger::PeriodOf
   std::vector<ProviderBudget> entries_;
   std::vector<TagUsage>       tags_;
   ModelLedger                 models_;
+  bool                        allowNewTags_ = true;
 };
 static_assert(ModelLedger::kMaxTracks >= UsageLedger::kMaxProviders,
               "every provider entry needs room for its model-tracking record");

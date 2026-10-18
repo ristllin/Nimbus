@@ -25,14 +25,27 @@ inline TokenUsage tokenUsageFromJson(ArduinoJson::JsonObjectConst usage) {
   if (completion == 0) completion = usage["completion_tokens"] | 0u;
   t.promptTokens     = prompt;
   t.completionTokens = completion;
-  // Prompt-cache counters (v4.1.1). Anthropic reports them as siblings of
-  // input_tokens; OpenAI nests the read side under prompt_tokens_details.
+  // Prompt-cache counters, in each provider's NATIVE meaning (ledgerDelta is the one
+  // place that knows how each provider bills them). Anthropic reports reads and writes
+  // as siblings of input_tokens and EXCLUDES both from it; OpenAI nests them under
+  // input_tokens_details (cached_tokens, and cache_write_tokens on GPT-5.6, recorded
+  // 18 Oct 2026) and INCLUDES both in input_tokens; Mistral and Chat Completions
+  // shapes nest the read side under prompt_tokens_details.
   t.cacheReadTokens  = usage["cache_read_input_tokens"] | 0u;
   if (t.cacheReadTokens == 0)   // OpenAI Responses API shape (the one our adapter uses)
     t.cacheReadTokens = usage["input_tokens_details"]["cached_tokens"] | 0u;
-  if (t.cacheReadTokens == 0)   // OpenAI Chat Completions shape (defensive)
+  if (t.cacheReadTokens == 0)   // OpenAI Chat Completions / Mistral shape
     t.cacheReadTokens = usage["prompt_tokens_details"]["cached_tokens"] | 0u;
   t.cacheWriteTokens = usage["cache_creation_input_tokens"] | 0u;
+  if (t.cacheWriteTokens == 0)  // OpenAI Responses API (GPT-5.6 and later)
+    t.cacheWriteTokens = usage["input_tokens_details"]["cache_write_tokens"] | 0u;
+  t.responses = 1;   // one billed response (a missing usage object returned above)
+  // The request's whole prompt: Anthropic's siblings are outside input_tokens.
+  const bool excluded = !usage["cache_read_input_tokens"].isNull() ||
+                        !usage["cache_creation_input_tokens"].isNull();
+  uint64_t whole = prompt;
+  if (excluded) whole += (uint64_t)t.cacheReadTokens + t.cacheWriteTokens;
+  t.maxRequestIn = whole > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)whole;
   return t;
 }
 

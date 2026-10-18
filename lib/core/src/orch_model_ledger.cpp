@@ -352,7 +352,7 @@ ModelSpend* ModelLedger::rowFor(const char* prov, const char* model, uint32_t pe
 }
 
 void ModelLedger::record(const char* prov, const char* model, const TokenDelta& d,
-                         uint32_t periodKey, uint32_t dayKey) {
+                         uint32_t periodKey, uint32_t dayKey, bool cacheInTotal) {
   if (!provKeySafe(prov) || !acceptModel(model) || d.empty()) return;
   reserveAll();
   ModelSpend* r = rowFor(prov, model, periodKey);
@@ -366,6 +366,7 @@ void ModelLedger::record(const char* prov, const char* model, const TokenDelta& 
   r->cacheR = satAdd(r->cacheR, d.cacheR);
   r->cacheW = satAdd(r->cacheW, d.cacheW);
   r->totIn = satAdd(r->totIn, d.in);
+  if (cacheInTotal) r->totIn = satAdd(satAdd(r->totIn, d.cacheR), d.cacheW);
   r->totOut = satAdd(r->totOut, d.out);
   if (dayKey) r->lastDay = dayKey;
 }

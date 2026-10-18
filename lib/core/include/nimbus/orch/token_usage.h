@@ -30,6 +30,14 @@ struct TokenUsage {
   // a count - merged as "last non-empty wins" so the FINAL served host's model
   // survives an accumulation across tool-loop rounds and failover attempts.
   std::string servedModel;
+  // Billed responses (2026-10, per-host spend): how many provider usage objects
+  // were added in - tokenUsageFromJson sets 1 per parsed response, += sums them, so
+  // a host's TurnSpend slot can say how many HTTP 200s it billed. Saturates.
+  uint16_t responses = 0;
+  // The largest single request's whole prompt (input plus, where the provider leaves
+  // them out of input, cache reads and writes): what a request-size price tier is
+  // decided on (claude-haiku-5-5 over 100K). += keeps the max.
+  uint32_t maxRequestIn = 0;
 
   uint32_t total() const { return promptTokens + completionTokens; }
   bool     empty() const { return promptTokens == 0 && completionTokens == 0; }
@@ -43,6 +51,9 @@ struct TokenUsage {
     completionTokens += o.completionTokens;
     cacheReadTokens  += o.cacheReadTokens;
     cacheWriteTokens += o.cacheWriteTokens;
+    responses = (uint16_t)((uint32_t)responses + o.responses > 0xFFFFu ? 0xFFFFu
+                                                                        : responses + o.responses);
+    if (o.maxRequestIn > maxRequestIn) maxRequestIn = o.maxRequestIn;
     if (!o.servedModel.empty()) servedModel = o.servedModel;
     return *this;
   }

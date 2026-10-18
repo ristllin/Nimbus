@@ -114,8 +114,11 @@ class ModelLedger {
   // UsageLedger::recordTokens, which first keeps every provider's earlier usage; a
   // direct call keeps none, so all spend no row holds then reads as lost spend
   // (priced at the provider's highest price: fail-closed).
+  // `cacheInTotal` (owner ruling R4): the provider counts its cache tokens inside its
+  // input (cacheFoldedInNvs), so the row's all-time input keeps that native count,
+  // like the provider's all-time total does; the period counters keep the split.
   void record(const char* prov, const char* model, const TokenDelta& d, uint32_t periodKey,
-              uint32_t dayKey);
+              uint32_t dayKey, bool cacheInTotal = false);
   // Roll every row and track to its provider's current period (periodOf(ctx, prov);
   // 0 = keep), so their period counters always belong to the period the provider
   // counts in.

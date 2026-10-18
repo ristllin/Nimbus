@@ -8,6 +8,8 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/orch/model_price_defaults.h"
+#include "nimbus/orch/turn_spend.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h"
 
@@ -495,7 +497,9 @@ static void test_owner_case_two_models_one_provider_sum_correctly() {
 }
 
 // Per-field resolution: owner model > router (cumulo) > provider fallback > built-in
-// model (~) > built-in provider default (~) > none; 0 = unset, per field.
+// model (~) > built-in provider estimate (~) > none; 0 = unset, per field. A model with
+// no row of its own is estimated at the provider's HIGHEST built-in price (owner ruling
+// R4, fail-closed money), not the cheaper '*' default.
 static void test_rate_resolution_is_per_field() {
   UsageLedger L;
   EffRate r = L.effectiveRate("openai", "gpt-5.6");
@@ -503,7 +507,8 @@ static void test_rate_resolution_is_per_field() {
   TEST_ASSERT_EQUAL_UINT64(5000000, r.in);
   r = L.effectiveRate("openai", "some-new-model");
   TEST_ASSERT_EQUAL((int)RateSrc::BuiltinProv, (int)r.srcIn);
-  TEST_ASSERT_EQUAL_UINT64(2500000, r.in);
+  TEST_ASSERT_EQUAL_UINT64(10000000, r.in);    // gpt-6-astra's $10, the top built-in
+  TEST_ASSERT_EQUAL_UINT64(50000000, r.out);
   L.setRates("openai", 300, 0, 0);                     // provider fallback, input only
   r = L.effectiveRate("openai", "gpt-5.6");
   TEST_ASSERT_EQUAL((int)RateSrc::Provider, (int)r.srcIn);
@@ -645,8 +650,9 @@ static void test_other_row_priced_at_highest_known_price() {
   const EffRate o = L.rowRate("openai", nimbus::orch::kOtherModel);
   TEST_ASSERT_EQUAL_UINT64(10000000, o.in);    // gpt-6-astra's built-in, not '*' 2.5
   TEST_ASSERT_EQUAL_UINT64(50000000, o.out);
-  // 8 x 1000 tokens of unknown models at '*' $2.50/M (2 cents) + astra 1M/1M at $10/$50.
-  TEST_ASSERT_EQUAL_UINT64(2 + 1000 + 5000, L.estCents("openai"));
+  // 8 x 1000 tokens of unknown models at the top built-in $10/M (8 cents, R4) + astra
+  // 1M/1M at $10/$50.
+  TEST_ASSERT_EQUAL_UINT64(8 + 1000 + 5000, L.estCents("openai"));
   // An owner model price above every built-in one raises it; an owner default below
   // them does not lower it.
   L.models().setOwnerRate("openai", mk(1).c_str(), 20000000, 0);
@@ -2242,6 +2248,221 @@ static void test_usage_models_json_shows_lost_spend_at_the_fold_price() {
   TEST_ASSERT_EQUAL_UINT64(300, o["est"] | 0ULL);
 }
 
+
+// ---- owner ruling R4: the cache calculation and price rows (lane T) ---------------
+
+using nimbus::orch::SpendSlot;
+using nimbus::orch::TurnSpend;
+using nimbus::orch::ledgerDelta;
+
+static SpendSlot slotOf(const char* host, uint32_t in, uint32_t out, uint32_t cr, uint32_t cw) {
+  SpendSlot s;
+  std::snprintf(s.host, sizeof(s.host), "%s", host);
+  s.in = in;
+  s.out = out;
+  s.cacheR = cr;
+  s.cacheW = cw;
+  s.billed = 1;
+  return s;
+}
+
+// The fields of one provider group in a serialized blob ("" when absent).
+static std::vector<std::string> nvsGroup(const std::string& blob, const char* prov) {
+  std::vector<std::string> f;
+  size_t p = 0;
+  while (p <= blob.size()) {
+    size_t semi = blob.find(';', p);
+    if (semi == std::string::npos) semi = blob.size();
+    const std::string g = blob.substr(p, semi - p);
+    if (g.compare(0, std::strlen(prov) + 1, std::string(prov) + "|") == 0) {
+      size_t q = 0;
+      while (q <= g.size()) {
+        size_t bar = g.find('|', q);
+        if (bar == std::string::npos) bar = g.size();
+        f.push_back(g.substr(q, bar - q));
+        q = bar + 1;
+      }
+      return f;
+    }
+    p = semi + 1;
+  }
+  return f;
+}
+
+// OpenAI's input_tokens INCLUDES its cached and cache-write tokens: the ledger files
+// (in - cached - written, cached, written) and prices each at the row's own rate.
+// gpt-5.6-sol: $5 in, $30 out, cache read $0.50, write $6.25.
+static void test_r4_openai_cache_split_priced_at_row_rates() {
+  const TokenDelta d = ledgerDelta(slotOf("openai", 3000000, 100000, 2000000, 400000));
+  TEST_ASSERT_EQUAL_UINT64(600000, d.in);
+  TEST_ASSERT_EQUAL_UINT64(2000000, d.cacheR);
+  TEST_ASSERT_EQUAL_UINT64(400000, d.cacheW);
+  UsageLedger L;
+  turn(L, "openai", "gpt-5.6-sol", d);
+  // 0.6M x $5 = $3.00, 0.1M x $30 = $3.00, 2M x $0.50 = $1.00, 0.4M x $6.25 = $2.50.
+  TEST_ASSERT_EQUAL_UINT64(950, L.estCents("openai"));
+  // Counter-test: the pre-R4 record (cache billed as input) costs $18.00.
+  UsageLedger Old;
+  turn(Old, "openai", "gpt-5.6-sol", td(3000000, 100000));
+  TEST_ASSERT_EQUAL_UINT64(1800, Old.estCents("openai"));
+  // The budget-limit counter keeps the native count (cached tokens still count).
+  TEST_ASSERT_EQUAL_UINT64(3100000, L.find("openai")->tokens);
+  TEST_ASSERT_EQUAL_UINT64(600000, L.find("openai")->tokensIn);
+  // A row with no cache rate of its own uses 0.1x / 1.25x of its input rate.
+  UsageLedger T;
+  turn(T, "openai", "gpt-5.6-terra", ledgerDelta(slotOf("openai", 3000000, 0, 2000000, 400000)));
+  // 0.6M x $2 + 2M x $0.20 + 0.4M x $2.50 = 1.20 + 0.40 + 1.00
+  TEST_ASSERT_EQUAL_UINT64(260, T.estCents("openai"));
+}
+
+// claude-haiku-5-5: $0.10 / $0.50, cache read $0.01, 5-minute write $0.125.
+static void test_r4_haiku_5_5_row_and_cache_rates() {
+  UsageLedger L;
+  turn(L, "anthropic", "claude-haiku-5-5",
+       ledgerDelta(slotOf("anthropic", 10000000, 1000000, 20000000, 4000000)));
+  // 10M x 0.10 + 1M x 0.50 + 20M x 0.01 + 4M x 0.125 = 1.00 + 0.50 + 0.20 + 0.50
+  TEST_ASSERT_EQUAL_UINT64(220, L.estCents("anthropic"));
+  const EffRate r = L.effectiveRate("anthropic", "claude-haiku-5-5");
+  TEST_ASSERT_EQUAL_UINT64(10000, r.cacheR);
+  TEST_ASSERT_EQUAL_UINT64(125000, r.cacheW);
+  // An owner input price drops the row's cache rates (they belong to its input price).
+  L.models().setOwnerRate("anthropic", "claude-haiku-5-5", 1000000, 0);
+  TEST_ASSERT_EQUAL_UINT64(0, L.effectiveRate("anthropic", "claude-haiku-5-5").cacheR);
+  // The price rows the program runs on (TASK R4), each its own row.
+  struct Row { const char* prov; const char* m; uint64_t in, out; } rows[] = {
+      {"anthropic", "claude-opus-5-5", 4000000, 20000000},
+      {"anthropic", "claude-sonnet-5-5", 2000000, 10000000},
+      {"anthropic", "claude-fable-5-1", 10000000, 50000000},
+      {"openai", "gpt-5.6-sol", 5000000, 30000000},
+      {"openai", "gpt-5.6", 5000000, 30000000},
+      {"openai", "gpt-6-luna", 100000, 500000},
+      {"openai", "gpt-6-sol", 2000000, 10000000},
+      {"openai", "gpt-6.1-sol", 2000000, 10000000},
+      {"mistral", "mistral-small-latest", 200000, 600000},
+  };
+  for (const Row& x : rows) {
+    const EffRate e = UsageLedger().effectiveRate(x.prov, x.m);
+    TEST_ASSERT_EQUAL((int)RateSrc::BuiltinModel, (int)e.srcIn);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(x.in, e.in, x.m);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(x.out, e.out, x.m);
+  }
+  // gpt-5.6 is labelled with its promotion; the price stays the regular one.
+  const nimbus::orch::BuiltinPrice* sol = nimbus::orch::builtinModelPrice("openai", "gpt-5.6-sol");
+  TEST_ASSERT_NOT_NULL(sol);
+  TEST_ASSERT_NOT_NULL(sol->note);
+  TEST_ASSERT_NOT_NULL(std::strstr(sol->note, "promo $4 / $20"));
+}
+
+// A request whose prompt is over claude-haiku-5-5's 100K tier bills at $0.50 / $2.50:
+// its spend files under the tier's own row.
+static void test_r4_haiku_long_prompt_tier() {
+  nimbus::orch::TokenUsage big;
+  big.promptTokens = 1000;
+  big.cacheReadTokens = 120000;
+  big.completionTokens = 1000000;
+  big.responses = 1;
+  big.maxRequestIn = 121000;
+  TurnSpend sp;
+  sp.add("anthropic", "claude-haiku-5-5", big);
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5:long", sp.slot[0].model);
+  UsageLedger L;
+  turn(L, "anthropic", sp.slot[0].model, ledgerDelta(sp.slot[0]));
+  // 1000 x 0.50 + 1M x 2.50 + 120K x 0.05 (0.1x of 0.50) = 0.0005 + 2.50 + 0.006
+  TEST_ASSERT_EQUAL_UINT64(250, L.estCents("anthropic"));
+  nimbus::orch::TokenUsage small = big;
+  small.maxRequestIn = 100000;   // AT the tier is still the base price
+  TurnSpend sp2;
+  sp2.add("anthropic", "claude-haiku-5-5", small);
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", sp2.slot[0].model);
+}
+
+// The unknown-id price is never below the provider's top built-in price, for every
+// slot and any id with no row (and a Cumulo key reads its upstream's top price).
+static void test_r4_unknown_id_never_below_top_builtin_price() {
+  const char* slots[] = {"openai", "anthropic", "mistral", "zai"};
+  const char* ids[] = {"zz-new-1", "gpt-9-nova", "claude-quill-6", "mistral-tiny-3", "glm-7"};
+  for (const char* slot : slots) {
+    uint32_t hiIn = 0, hiOut = 0;
+    nimbus::orch::builtinHighestPrice(slot, hiIn, hiOut);
+    TEST_ASSERT_TRUE(hiIn > 0 && hiOut > 0);
+    for (const char* id : ids) {
+      if (nimbus::orch::builtinModelPrice(slot, id)) continue;
+      const EffRate r = UsageLedger().effectiveRate(slot, id);
+      TEST_ASSERT_TRUE_MESSAGE(r.in >= hiIn && r.out >= hiOut, id);
+      TEST_ASSERT_TRUE_MESSAGE(r.approx(), id);   // shown as an estimate
+    }
+  }
+  uint32_t aIn = 0, aOut = 0;
+  nimbus::orch::builtinHighestPrice("anthropic", aIn, aOut);
+  const EffRate c = UsageLedger().effectiveRate("cumulo", "anthropic/claude-quill-6");
+  TEST_ASSERT_TRUE(c.in >= aIn && c.out >= aOut);
+}
+
+// Critique D2: OpenAI's cache split never reaches the usgLedger NVS blob while it lives
+// in NVS. The blob is byte-identical to the pre-R4 record of the same usage (cache folded
+// into the input, cache fields 0); the load puts the split back from the model rows.
+static void test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload() {
+  UsageLedger L;
+  turn(L, "openai", "gpt-5.6-sol", ledgerDelta(slotOf("openai", 3000000, 100000, 2000000, 400000)));
+  turn(L, "anthropic", "claude-haiku-5-5",
+       ledgerDelta(slotOf("anthropic", 1000, 100, 9743, 9703)));
+  UsageLedger Old;   // what v4.5.13 recorded for the same responses
+  turn(Old, "openai", "gpt-5.6-sol", td(3000000, 100000));
+  turn(Old, "anthropic", "claude-haiku-5-5", td(1000, 100, 9743, 9703));
+  const std::string nvs = L.serialize();
+  TEST_ASSERT_EQUAL_STRING(Old.serialize().c_str(), nvs.c_str());
+  const std::vector<std::string> g = nvsGroup(nvs, "openai");
+  TEST_ASSERT_EQUAL(18, (int)g.size());
+  TEST_ASSERT_EQUAL_STRING("0", g[16].c_str());
+  TEST_ASSERT_EQUAL_STRING("0", g[17].c_str());
+  // Anthropic's own split still rides the blob (it always has).
+  TEST_ASSERT_EQUAL_STRING("9743", nvsGroup(nvs, "anthropic")[16].c_str());
+  // Restart: the split comes back from the rows, the estimate is unchanged, nothing lost.
+  UsageHistory h;
+  h.record("openai", "gpt-5.6-sol", 20650, td(600000, 100000, 2000000, 400000), 0);
+  h.record("anthropic", "claude-haiku-5-5", 20650, td(1000, 100, 9743, 9703), 0);
+  UsageLedger R = load(nvs, L.models().serializeSpend(), "", h);
+  TEST_ASSERT_EQUAL_UINT64(600000, R.find("openai")->tokensIn);
+  TEST_ASSERT_EQUAL_UINT64(2000000, R.find("openai")->cacheRead);
+  TEST_ASSERT_EQUAL_UINT64(400000, R.find("openai")->cacheWrite);
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("openai"), R.estCents("openai"));
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("anthropic"), R.estCents("anthropic"));
+  PriceSummary s;
+  R.priceProvider("openai", &s);
+  TEST_ASSERT_EQUAL_UINT64(0, s.othIn + s.othCr + s.othCw);
+  // And again (the reloaded ledger stores and reloads the same).
+  TEST_ASSERT_EQUAL_STRING(nvs.c_str(), R.serialize().c_str());
+  UsageLedger R2 = load(R.serialize(), R.models().serializeSpend(), "", h);
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("openai"), R2.estCents("openai"));
+}
+
+// The split cannot be put back when the rows do not hold it (a spend file that did not
+// land): the folded form stays, its cache billed at the input rate - never lower.
+static void test_r4_resplit_fails_closed_without_rows() {
+  UsageLedger L;
+  turn(L, "openai", "gpt-5.6-sol", ledgerDelta(slotOf("openai", 3000000, 100000, 2000000, 400000)));
+  UsageHistory h;
+  h.record("openai", "gpt-5.6-sol", 20650, td(600000, 100000, 2000000, 400000), 0);
+  UsageLedger R = load(L.serialize(), "", "", h);
+  TEST_ASSERT_EQUAL_UINT64(0, R.find("openai")->cacheRead);
+  TEST_ASSERT_TRUE(R.estCents("openai") >= L.estCents("openai"));
+}
+
+// While the ledger lives in NVS, per-host filing must not create (provider, tag) rows a
+// single-host turn never did: spend is counted, the audit row is not made.
+static void test_r4_no_new_tag_rows_while_in_nvs() {
+  UsageLedger L;
+  L.recordTokens("openai", td(100, 10), 24300, "loop:lp1", "gpt-5.6", 20650);
+  L.setAllowNewTags(false);
+  L.recordTokens("openai", td(100, 10), 24300, "loop:lp1", "gpt-5.6", 20650);   // existing pair
+  L.recordTokens("anthropic", td(500, 50), 24300, "loop:lp1", "claude-haiku-5-5", 20650);
+  TEST_ASSERT_EQUAL(1, (int)L.tagEntries().size());
+  TEST_ASSERT_EQUAL_UINT64(200, L.tagEntries()[0].tokIn);
+  TEST_ASSERT_EQUAL_UINT64(500, L.find("anthropic")->tokensIn);
+  TEST_ASSERT_NOT_NULL(L.models().findRow("anthropic", "claude-haiku-5-5"));
+  TEST_ASSERT_NULL(std::strstr(L.serialize().c_str(), "#anthropic|loop:lp1"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -2303,5 +2524,12 @@ int main() {
   RUN_TEST(test_usage_models_json_worst_case_fits_and_parses);
   RUN_TEST(test_usage_models_json_parts_add_up_to_the_estimate);
   RUN_TEST(test_usage_models_json_shows_lost_spend_at_the_fold_price);
+  RUN_TEST(test_r4_openai_cache_split_priced_at_row_rates);
+  RUN_TEST(test_r4_haiku_5_5_row_and_cache_rates);
+  RUN_TEST(test_r4_haiku_long_prompt_tier);
+  RUN_TEST(test_r4_unknown_id_never_below_top_builtin_price);
+  RUN_TEST(test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload);
+  RUN_TEST(test_r4_resplit_fails_closed_without_rows);
+  RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
   return UNITY_END();
 }
