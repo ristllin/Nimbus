@@ -89,6 +89,12 @@ void setOutboundObserver(OutboundObserver cb);
 // page is already waiting, the body is empty or over 64 KB, or PSRAM is short.
 // Test builds only: an injected page can name any chat, the owner's included.
 bool injectRawUpdates(const char* body, size_t len);
+// TGINJECT (the console verb): the same seam, returning the console's one-line
+// summary. The page also passes the Telegram archive hook once (archive, parse,
+// classify, batch, dispatch, attachment slots); a page that stops on a busy slot (an
+// album) resumes where it stopped on the next cycle. Media whose file_id is
+// "LOCAL_<path>" is read from that file on the card instead of fetched.
+String injectRawPage(const String& body);
 #endif
 
 // Inject a message as if it arrived from Telegram - enqueued + dispatched by the

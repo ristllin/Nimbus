@@ -8,6 +8,7 @@
 #include "../sfx/music.h"                 // CUM-40: /music player control + listing
 #include "../sfx/music_store.h"           // CUM-40: streaming write into SD /music
 #include "webui.h"                        // webAuthOk() - token gate
+#include "web_tg_archive.h"               // the Telegram archive's read-only folders
 
 namespace nimbus::net {
 
@@ -20,6 +21,11 @@ void sendJson(AsyncWebServerRequest* r, int code, const String& body) {
   res->addHeader("Cache-Control", "no-store");
   r->send(res);
 }
+
+// The Telegram archive keeps everything; only the storage-pressure policy and the
+// factory reset remove from it.
+const char* const kArchiveReadOnly =
+    "{\"error\":\"Saved Telegram messages and files can't be deleted here.\"}";
 
 bool authBlocked(AsyncWebServerRequest* r) {
   if (webAuthOk(r)) return false;
@@ -117,8 +123,10 @@ void registerFileRoutes(AsyncWebServer& server) {
                   ",\"cardTotal\":" + String((unsigned long long)t.cardTotal) +
                   ",\"cardFree\":" + String((unsigned long long)t.cardFree) +
                   ",\"freeBytes\":" + String((unsigned long long)headroom) +
-                  ",\"files\":" + files::listJson(qparam(r, "project")) + "}";
-    sendJson(r, 200, body);
+                  ",\"files\":";
+    String list = files::listJson(qparam(r, "project"));
+    tgArchiveAppendFiles(list, qparam(r, "project"));   // saved Telegram media, read-only
+    sendJson(r, 200, body + list + "}");
   });
 
   // ---- POST /api/files/upload?project=&name= - multipart streamed to SD ----------
@@ -191,6 +199,7 @@ void registerFileRoutes(AsyncWebServer& server) {
     const std::string project(qparam(r, "project").c_str());
     const String nameQ = qparam(r, "name");
     const std::string name(nameQ.c_str());
+    if (tgArchiveServeFile(r, project, name)) return;   // a "telegram-<chat>" folder
     const std::string path = files::absPath(project, name);
     if (path.empty()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
 
@@ -246,6 +255,7 @@ void registerFileRoutes(AsyncWebServer& server) {
     if (authBlocked(r)) return;
     const std::string project(qparam(r, "project").c_str());
     const std::string name(qparam(r, "name").c_str());
+    if (tgArchiveIsItem(project, name)) { sendJson(r, 403, kArchiveReadOnly); return; }
     if (!files::removeFile(project, name)) {
       sendJson(r, 404, "{\"error\":\"not found\"}");
       return;

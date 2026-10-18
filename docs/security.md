@@ -162,6 +162,51 @@ server - findings are weighted by real reachability.
 
 Each item states what changed, where it lives in the code, and what is still open.
 
+### Telegram archive on the SD card (v4.5.14, bench verification pending)
+
+The device keeps every Telegram message and file it receives or sends under `/mem/tg`
+on the SD card ([memory.md, section 4](memory.md#4-the-telegram-archive-sd-card)).
+That is the owner's full conversation history, photos and voice notes included, so it
+gets the same care as the rest of `/mem`:
+
+- **No secrets on the card.** The raw update JSON never carries the bot token (it is
+  only in the request line). Every record the archive writes (inbound updates,
+  outbound text and captions, index lines) is still scrubbed of the exact values the
+  log ring masks (the provider keys and the bot token registered at boot) plus the
+  bot token in use, so a key pasted into a chat lands on the card as `[redacted]`.
+  Media files are stored as received. File downloads use the token in the request
+  only.
+- **Owner token on every route.** `GET /api/tg/archive`, `GET /api/tg/archive/item`
+  and `POST /api/tg/archive/import` need the device sign-in token. Chat, day and file
+  names are validated against a strict pattern before any path is built, so a request
+  cannot leave `/mem/tg`. Files are served as downloads unless they are bitmaps or
+  plain text, with `nosniff` and a sandboxing content security policy, the same rule
+  as Memory & Files.
+- **Strangers cannot spend the card.** A chat that is not on the allowlist (anyone
+  who found the bot, or a group or channel it was added to) is saved as text only,
+  and its media is never downloaded. Its updates are bounded, and a spent budget
+  denies (nothing is evicted to make room):
+  - at most 50 updates per stranger chat per day;
+  - at most 200 updates and 2 MB per day across all stranger chats together;
+  - at most 32 stranger chat folders on the card; a further stranger's updates are
+    recorded as one `not archived: stranger limit` line each in the `0` folder,
+    inside the daily budget;
+  - at most 64 stranger chats counted per day; past that, only a counter moves.
+
+  Under storage pressure every stranger day is deleted before any day of an
+  allowlisted chat, and the newest allowlisted day is never deleted, so stranger
+  data can never push the owner's history out.
+- **Read-only from the web.** Memory & Files lists saved media as read-only
+  `telegram-<chat>` folders; delete requests for them are refused. Only the
+  storage-pressure policy (oldest days first, owner told once) and the factory reset
+  remove archive files.
+- **Import is bounded.** The restore upload accepts only `r<16 hex>.<ext>` names under
+  a valid chat and day, at most 20 MB per file, one upload at a time, and never
+  overwrites an existing file.
+- **Erase.** A factory reset with storage erase deletes the whole `/mem` tree,
+  archive included. As everywhere on the card, files are deleted, not overwritten; a
+  computer format of the card is the way to make them unrecoverable.
+
 ### Outbound TLS certificate validation (done, default on)
 
 Every outbound HTTPS client goes through the

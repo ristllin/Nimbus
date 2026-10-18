@@ -23,6 +23,7 @@
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #include "adapters/image_vision.h"   // a photo enters the conversation as words
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
+#include "tg_archive.h"             // lane R: every update and every send is archived on SD
 #include "orchestrator.h"           // roleOfChat / tenantQuotaOf - who is sending
 #include "nimbus/mem_cap.h"         // utf8CapLen - never sever a character
 
@@ -884,6 +885,10 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   // or honor a server close. Idle keeps the socket open (zero re-handshake churn).
   bool hasUpdate = strstr(body, "\"update_id\"") != nullptr;
   if (serverClose || hasUpdate) closePollSocket();
+  // Archive hook (inbound): the raw page as read, before the turn path parses,
+  // classifies, batches or deduplicates it (whole updates are kept even when the
+  // rest of the page will not parse). A replay is deduplicated by update_id inside.
+  agent::tgarchive::onInboundPage(body, (size_t)stored, g_token);
   const bool parsedOk = parsePageBody(body, (size_t)stored, out);
   rp.count = (int)out.size();
   // A 200 whose body is not an ok:true page backs off like any failed fetch, instead
@@ -959,29 +964,36 @@ static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, 
 }
 
 #if defined(NIMBUS_TEST)
-// The test seam's page (injectRawUpdates): one raw getUpdates body in PSRAM, handed to
-// the poll task under the spinlock and freed there after it ran. Test builds only: an
-// injected page can name any chat, the owner's included.
+// The test seam's page (injectRawUpdates; the console's TGINJECT via injectRawPage):
+// one raw getUpdates body in PSRAM, handed to the poll task under the spinlock. From
+// then on the poll task owns it (and the two cursors below) until the page has run,
+// and frees it there. Test builds only: an injected page can name any chat, the
+// owner's included.
 static constexpr size_t kRawInjectMax = 64 * 1024;
 static char*        s_rawInject = nullptr;
 static size_t       s_rawInjectLen = 0;
 static portMUX_TYPE s_rawMux = portMUX_INITIALIZER_UNLOCKED;
+static size_t       s_injNext = 0;           // poll task: first update not yet taken
+static bool         s_injArchived = false;   // poll task: the page passed the archive hook
 
-// Run an injected page through the same receive path as a polled one (handleUpdate,
-// the batcher, emitTurn), without fetching and without touching the offset cursor. An
-// update past a stop point (a busy voice or file slot, a cap) is not re-served: the
-// log says how many ran.
+// Run an injected page through the same receive path as a polled one (the archive
+// hook, handleUpdate, the batcher, emitTurn), without fetching and without touching
+// the offset cursor (its ids are not Telegram's). A page that stops on a busy slot (an
+// album: one attachment slot per cycle) resumes at the update that was not taken on
+// the next cycle, as Telegram would re-serve it; the archive sees the page once.
 static void drainInjectedPage() {
   portENTER_CRITICAL(&s_rawMux);
   char* body = s_rawInject;
   const size_t len = s_rawInjectLen;
-  s_rawInject = nullptr;
   portEXIT_CRITICAL(&s_rawMux);
   if (!body) return;
+  if (!s_injArchived) agent::tgarchive::onInboundPage(body, len, g_token);   // archive hook
+  s_injArchived = true;
   std::vector<nimbus::tg::Update> ups;
-  const bool ok = parsePageBody(body, len, ups);
-  heap_caps_free(body);
-  if (!ok) return;   // parsePageBody logged it
+  const bool ok = parsePageBody(body, len, ups);   // parsePageBody logs a failure
+  const size_t first = std::min(s_injNext, ups.size());
+  ups.erase(ups.begin(), ups.begin() + (std::ptrdiff_t)first);
+  size_t last = 0;
   auto fetch = [&](int32_t) {
     nimbus::orch::RawPage rp;
     rp.count = (int)ups.size();
@@ -989,13 +1001,29 @@ static void drainInjectedPage() {
     rp.hasCommand = pageHasCommand(ups);
     return rp;
   };
-  auto handle = [&](int i) { return handleUpdate(ups[(size_t)i], /*polled=*/false); };
-  const nimbus::orch::DrainResult r = nimbus::orch::drainOnePage(g_batch, 0, fetch, handle);
-  for (size_t i = 0; i < g_batch.turnCount(); ++i) emitTurn(i);
-  g_batch.clear();
-  alogf("telegram: injected page: %d message%s batched into %d turn%s%s", r.messagesBatched,
-        r.messagesBatched == 1 ? "" : "s", r.turnsEmitted, r.turnsEmitted == 1 ? "" : "s",
-        r.stopped ? " (stopped early: busy slot or cap)" : "");
+  auto handle = [&](int i) {
+    last = (size_t)i;
+    return handleUpdate(ups[(size_t)i], /*polled=*/false);
+  };
+  nimbus::orch::DrainResult r{};
+  if (ok) {
+    r = nimbus::orch::drainOnePage(g_batch, 0, fetch, handle);
+    for (size_t i = 0; i < g_batch.turnCount(); ++i) emitTurn(i);
+    g_batch.clear();
+    alogf("telegram: injected page: %d message%s batched into %d turn%s%s", r.messagesBatched,
+          r.messagesBatched == 1 ? "" : "s", r.turnsEmitted, r.turnsEmitted == 1 ? "" : "s",
+          r.stopped ? " (stopped on a busy slot or cap: resumes next cycle)" : "");
+  }
+  if (ok && r.stopped) {
+    s_injNext = first + last;   // the update that was not taken runs again next cycle
+    return;
+  }
+  s_injNext = 0;
+  s_injArchived = false;
+  portENTER_CRITICAL(&s_rawMux);
+  s_rawInject = nullptr;
+  portEXIT_CRITICAL(&s_rawMux);
+  heap_caps_free(body);
 }
 #endif  // NIMBUS_TEST
 
@@ -1090,6 +1118,8 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
 // links and escapes everything else) - previously every reply reached the owner
 // with literal asterisks. FALLBACK: if Telegram rejects the entities, the
 // ORIGINAL text is resent plain. Formatting may degrade; a reply is never lost.
+// Delivery only: the reply-queue drain calls this for parts send() already observed
+// and archived whole; every other text goes through sendNow.
 bool doSendMessage(const char* chatId, const char* text) {
   const std::string html = nimbus::tgHtml(text ? text : "");
   bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true);
@@ -1102,9 +1132,10 @@ bool doSendMessage(const char* chatId, const char* text) {
 }
 
 // A short notice the poll task sends at once, bypassing the reply queue (the voice
-// note and attachment paths). Observed like every outbound send.
+// note and attachment paths). Observed and archived like every outbound send.
 static bool sendNow(const char* chatId, const char* text) {
   observeOutbound(chatId, "text", text);
+  agent::tgarchive::onOutboundText(String(chatId), String(text ? text : ""), "direct");   // archive hook
   return doSendMessage(chatId, text);
 }
 
@@ -1118,6 +1149,185 @@ static bool tgPathSafe(const char* s) {
     if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
           (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' || ch == '/'))
       return false;
+  }
+  return true;
+}
+
+// TGINJECT media (test builds only): a "LOCAL_<path>" file id names a file already on
+// the card, copied to the LittleFS staging file instead of downloaded. In a
+// production build this is always false and the prefix means nothing.
+static bool injectedLocal(const char* fileId, const char* lfsPath, size_t& total, size_t cap) {
+#ifdef NIMBUS_TEST
+  return agent::tgarchive::copyLocalInject(fileId, lfsPath, total, cap);
+#else
+  (void)fileId; (void)lfsPath; (void)total; (void)cap;
+  return false;
+#endif
+}
+
+// Step 1 of a voice note or file: resolve its download path via getFile (one retry
+// on an empty answer). Connect: no TLS session (the caller stays silent, as before);
+// NoPath: Telegram gave no usable path (the caller tells the sender).
+enum class TgPath : uint8_t { Ok, Connect, NoPath };
+static TgPath resolveFilePath(const char* fileId, char* filePath, size_t cap, const char* what) {
+  filePath[0] = 0;
+  for (int t = 0; t < 2; t++) {
+    WiFiClientSecure sc;
+    if (!tlsConnect(sc)) {
+      alogf("telegram: %s getFile connect fail", what);
+      return TgPath::Connect;
+    }
+    char req[256];
+    snprintf(req, sizeof(req),
+      "GET /bot%s/getFile?file_id=%s HTTP/1.0\r\n"
+      "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), fileId);
+    sc.print(req);
+    uint32_t deadline = millis() + 12000;
+    char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
+    skipHeaders(sc, deadline);
+    char* resp = ensureApiResp();
+    if (!resp) { tlsClose(sc); break; }
+    readBody(sc, resp, (int)kTgApiRespCap, deadline);
+    tlsClose(sc);
+    jsonStr(resp, "file_path", filePath, (int)cap);
+    if (filePath[0] == 0) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
+    break;
+  }
+  if (tgPathSafe(filePath)) return TgPath::Ok;
+  alogf("telegram: %s file_path missing/unsafe - rejected", what);
+  return TgPath::NoPath;
+}
+
+// Step 2: stream the file at `filePath` to `localPath` on LittleFS, up to `cap`
+// bytes within `timeoutMs`. `total` counts what LANDED (a short write on a full or
+// failing FS stops the copy rather than keeping a silently truncated file).
+enum class TgDl : uint8_t { Done, Connect, Open, Write };
+static TgDl downloadToLfs(const char* filePath, const char* localPath, size_t cap,
+                          uint32_t timeoutMs, size_t& total) {
+  total = 0;
+  WiFiClientSecure sc;
+  if (!tlsConnect(sc)) return TgDl::Connect;
+  char req[320];
+  snprintf(req, sizeof(req),
+    "GET /file/bot%s/%s HTTP/1.0\r\n"
+    "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), filePath);
+  sc.print(req);
+  uint32_t deadline = millis() + timeoutMs;
+  char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
+  skipHeaders(sc, deadline);
+  File f = LittleFS.open(localPath, FILE_WRITE);
+  if (!f) { tlsClose(sc); return TgDl::Open; }
+  uint8_t buf[512];
+  bool writeFail = false;
+  while ((int32_t)(millis() - deadline) < 0 && total < cap) {
+    if (sc.available()) {
+      int r = sc.read(buf, sizeof(buf));
+      if (r > 0) {
+        if ((int)f.write(buf, r) != r) { writeFail = true; break; }
+        total += r;
+      }
+    } else if (!sc.connected()) break;
+    else delay(2);
+  }
+  f.close();
+  tlsClose(sc);
+  return writeFail ? TgDl::Write : TgDl::Done;
+}
+
+// Steps 1-2 of a voice note: resolve and download it to `localPath` (LittleFS).
+// Returns false when it already told the sender why it could not.
+static bool fetchVoiceNote(const PendingVoice& v, const char* localPath, size_t& total) {
+  // LittleFS refuses to open a file for write in a nonexistent directory, and
+  // nothing else creates /audio - on a fresh filesystem EVERY voice note died
+  // here with a silent "voice fs open fail" (field bug, Board 3 2026-07-21;
+  // Board 1 only worked because legacy firmware had left the dir behind).
+  if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
+  if (injectedLocal(v.fileId, localPath, total, 1048576)) {
+    if (total > 0 && total < 1048576) return true;
+    LittleFS.remove(localPath);
+    sendNow(v.chatId, "Couldn't receive that voice note. Send a text message instead.");
+    return false;
+  }
+  char filePath[160];
+  const TgPath fp = resolveFilePath(v.fileId, filePath, sizeof(filePath), "voice");
+  if (fp == TgPath::Connect) return false;
+  if (fp == TgPath::NoPath) {
+    sendNow(v.chatId, "Couldn't receive that voice note. Send a text message instead.");
+    return false;
+  }
+  // 45 s window + a 1 MB cap, one retry on a short download. The old 64 KB cap
+  // silently kept only the FIRST ~8-30 s of opus audio (bitrate-dependent), so long
+  // voice notes came back as short partial transcripts with no error anywhere
+  // (owner-hit 2026-07-22). 1 MB covers ~2 min even at high-bitrate opus; the file
+  // is deleted right after STT, and LittleFS keeps a comfortable margin.
+  for (int t = 0; t < 2; t++) {
+    const TgDl d = downloadToLfs(filePath, localPath, 1048576, 45000, total);
+    if (d == TgDl::Connect) {
+      alog("telegram: voice dl connect fail");
+      sendNow(v.chatId, "Couldn't download your voice note - please try again.");
+      return false;
+    }
+    if (d == TgDl::Open) {
+      alog("telegram: voice fs open fail");
+      // Never a silent drop: the owner is waiting on a reply to their voice note.
+      sendNow(v.chatId, "I couldn't save your voice note (storage hiccup) - please try again or send text.");
+      return false;
+    }
+    if (d == TgDl::Write) {
+      LittleFS.remove(localPath);
+      alog("telegram: voice fs write fail (storage full?)");
+      sendNow(v.chatId, "I couldn't save your voice note (storage full) - please try again or send text.");
+      return false;
+    }
+    if (total >= 512) break;
+    vTaskDelay(pdMS_TO_TICKS(400));
+  }
+  return true;
+}
+
+// The reply for a photo or document that did not land within kPhotoBudget.
+static void attachRefused(const PendingAttach& a, const char* localPath, size_t total) {
+  LittleFS.remove(localPath);
+  sendNow(a.chatId, total >= nimbus::tg::kPhotoBudget
+      ? "That file is too large for me to take. Send a smaller one."
+      : "I couldn't save that file - please try again.");
+}
+
+// Steps 1-2 of a photo or document: resolve and download it to `localPath` (a
+// LittleFS staging file, deleted as soon as the durable copy is on the card), within
+// kPhotoBudget. Returns false when it already told the sender why.
+static bool fetchAttachment(const PendingAttach& a, const char* localPath, size_t& total) {
+  if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
+  if (injectedLocal(a.fileId, localPath, total, nimbus::tg::kPhotoBudget)) {
+    if (total > 0 && total < nimbus::tg::kPhotoBudget) return true;
+    attachRefused(a, localPath, total);
+    return false;
+  }
+  char filePath[160];
+  const TgPath fp = resolveFilePath(a.fileId, filePath, sizeof(filePath), "attach");
+  if (fp == TgPath::Connect) return false;
+  if (fp == TgPath::NoPath) {
+    sendNow(a.chatId, "Couldn't fetch that file. Try sending it again.");
+    return false;
+  }
+  const TgDl d = downloadToLfs(filePath, localPath, nimbus::tg::kPhotoBudget, 60000, total);
+  if (d == TgDl::Connect) {
+    alog("telegram: attach dl connect fail");
+    sendNow(a.chatId, "Couldn't download that file - please try again.");
+    return false;
+  }
+  if (d == TgDl::Open) {
+    alog("telegram: attach fs open fail");
+    sendNow(a.chatId, "I couldn't save that file (storage hiccup) - please try again.");
+    return false;
+  }
+  // Hitting the cap means the file was TRUNCATED, not finished. Telegram may omit
+  // file_size, so the pre-check cannot always catch an oversized file - and storing
+  // a torn JPEG durably, then failing to describe it, is the worst of both outcomes.
+  if (d == TgDl::Write || total == 0 || total >= nimbus::tg::kPhotoBudget) {
+    alogf("telegram: attach download failed (%u bytes)", (unsigned)total);
+    attachRefused(a, localPath, total);
+    return false;
   }
   return true;
 }
@@ -1136,96 +1346,9 @@ static void handleVoice() {
     return;
   }
 
-  // 1) Resolve file_path via getFile (one retry on empty).
-  char filePath[160] = {};
-  for (int t = 0; t < 2; t++) {
-    WiFiClientSecure sc;
-    if (!tlsConnect(sc)) { alog("telegram: voice getFile connect fail"); return; }
-    char req[256];
-    snprintf(req, sizeof(req),
-      "GET /bot%s/getFile?file_id=%s HTTP/1.0\r\n"
-      "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), v.fileId);
-    sc.print(req);
-    uint32_t deadline = millis() + 12000;
-    char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
-    skipHeaders(sc, deadline);
-    char* resp = ensureApiResp();
-    if (!resp) { tlsClose(sc); break; }
-    readBody(sc, resp, (int)kTgApiRespCap, deadline);
-    tlsClose(sc);
-    jsonStr(resp, "file_path", filePath, sizeof(filePath));
-    if (filePath[0] == 0) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
-    break;
-  }
-  if (!tgPathSafe(filePath)) {
-    alog("telegram: voice file_path missing/unsafe - rejected");
-    sendNow(v.chatId, "Couldn't receive that voice note. Send a text message instead.");
-    return;
-  }
-
-  // 2) Download the audio to LittleFS (cap 64 KB; one retry on short download).
   const char* localPath = "/audio/tgvoice.ogg";
-  // LittleFS refuses to open a file for write in a nonexistent directory, and
-  // nothing else creates /audio - on a fresh filesystem EVERY voice note died
-  // here with a silent "voice fs open fail" (field bug, Board 3 2026-07-21;
-  // Board 1 only worked because legacy firmware had left the dir behind).
-  if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
   size_t total = 0;
-  for (int t = 0; t < 2; t++) {
-    total = 0;
-    WiFiClientSecure sc;
-    if (!tlsConnect(sc)) {
-      alog("telegram: voice dl connect fail");
-      sendNow(v.chatId, "Couldn't download your voice note - please try again.");
-      return;
-    }
-    char req[320];
-    snprintf(req, sizeof(req),
-      "GET /file/bot%s/%s HTTP/1.0\r\n"
-      "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), filePath);
-    sc.print(req);
-    // 45 s window + a 1 MB cap. The old 64 KB cap silently kept only the FIRST
-    // ~8-30 s of opus audio (bitrate-dependent), so long voice notes came back
-    // as short partial transcripts with no error anywhere (owner-hit 2026-07-22).
-    // 1 MB covers ~2 min even at high-bitrate opus; the file is deleted right
-    // after STT, and LittleFS keeps a comfortable margin (~3 MB free in practice).
-    uint32_t deadline = millis() + 45000;
-    char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
-    skipHeaders(sc, deadline);
-    File f = LittleFS.open(localPath, FILE_WRITE);
-    if (!f) {
-      tlsClose(sc);
-      alog("telegram: voice fs open fail");
-      // Never a silent drop: the owner is waiting on a reply to their voice note.
-      sendNow(v.chatId, "I couldn't save your voice note (storage hiccup) - please try again or send text.");
-      return;
-    }
-    uint8_t buf[512];
-    bool writeFail = false;
-    while ((int32_t)(millis() - deadline) < 0 && total < 1048576) {
-      if (sc.available()) {
-        int r = sc.read(buf, sizeof(buf));
-        if (r > 0) {
-          // f.write on a full/failing FS returns short - count what LANDED, and
-          // stop instead of silently transcribing a truncated file.
-          if ((int)f.write(buf, r) != r) { writeFail = true; break; }
-          total += r;
-        }
-      }
-      else if (!sc.connected()) break;
-      else delay(2);
-    }
-    f.close();
-    tlsClose(sc);
-    if (writeFail) {
-      LittleFS.remove(localPath);
-      alog("telegram: voice fs write fail (storage full?)");
-      sendNow(v.chatId, "I couldn't save your voice note (storage full) - please try again or send text.");
-      return;
-    }
-    if (total < 512) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
-    break;
-  }
+  if (!fetchVoiceNote(v, localPath, total)) return;
   alogf("telegram: voice downloaded %u bytes", (unsigned)total);
   if (total == 0) { sendNow(v.chatId, "Voice note was empty."); return; }
 
@@ -1301,87 +1424,9 @@ static void handleAttachment() {
     return;
   }
 
-  // 1) Resolve file_path via getFile (one retry on empty) - same shape as voice.
-  char filePath[160] = {};
-  for (int t = 0; t < 2; t++) {
-    WiFiClientSecure sc;
-    if (!tlsConnect(sc)) { alog("telegram: attach getFile connect fail"); return; }
-    char req[256];
-    snprintf(req, sizeof(req),
-      "GET /bot%s/getFile?file_id=%s HTTP/1.0\r\n"
-      "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), a.fileId);
-    sc.print(req);
-    uint32_t deadline = millis() + 12000;
-    char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
-    skipHeaders(sc, deadline);
-    char* resp = ensureApiResp();
-    if (!resp) { tlsClose(sc); break; }
-    readBody(sc, resp, (int)kTgApiRespCap, deadline);
-    tlsClose(sc);
-    jsonStr(resp, "file_path", filePath, sizeof(filePath));
-    if (filePath[0] == 0) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
-    break;
-  }
-  if (!tgPathSafe(filePath)) {
-    alog("telegram: attach file_path missing/unsafe - rejected");
-    sendNow(a.chatId, "Couldn't fetch that file. Try sending it again.");
-    return;
-  }
-
-  // 2) Download to a LittleFS staging file. It is deleted as soon as the durable
-  //    copy is on the card, so a big photo never occupies flash for long.
   const char* localPath = "/audio/tgattach.bin";
-  if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
   size_t total = 0;
-  {
-    WiFiClientSecure sc;
-    if (!tlsConnect(sc)) {
-      alog("telegram: attach dl connect fail");
-      sendNow(a.chatId, "Couldn't download that file - please try again.");
-      return;
-    }
-    char req[320];
-    snprintf(req, sizeof(req),
-      "GET /file/bot%s/%s HTTP/1.0\r\n"
-      "Host: " TG_HOST "\r\nConnection: close\r\n\r\n", g_token.c_str(), filePath);
-    sc.print(req);
-    uint32_t deadline = millis() + 60000;
-    char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
-    skipHeaders(sc, deadline);
-    File f = LittleFS.open(localPath, FILE_WRITE);
-    if (!f) {
-      tlsClose(sc);
-      alog("telegram: attach fs open fail");
-      sendNow(a.chatId, "I couldn't save that file (storage hiccup) - please try again.");
-      return;
-    }
-    uint8_t buf[512];
-    bool writeFail = false;
-    while ((int32_t)(millis() - deadline) < 0 && total < nimbus::tg::kPhotoBudget) {
-      if (sc.available()) {
-        int r = sc.read(buf, sizeof(buf));
-        if (r > 0) {
-          if ((int)f.write(buf, r) != r) { writeFail = true; break; }
-          total += r;
-        }
-      } else if (!sc.connected()) break;
-      else delay(2);
-    }
-    f.close();
-    tlsClose(sc);
-    // Hitting the cap means the file was TRUNCATED, not finished. Telegram may
-    // omit file_size, so the pre-check above cannot always catch an oversized
-    // file - and storing a torn JPEG durably, then failing to describe it, is
-    // the worst of both outcomes.
-    if (writeFail || total == 0 || total >= nimbus::tg::kPhotoBudget) {
-      LittleFS.remove(localPath);
-      alogf("telegram: attach download failed (%u bytes)", (unsigned)total);
-      sendNow(a.chatId, total >= nimbus::tg::kPhotoBudget
-          ? "That file is too large for me to take. Send a smaller one."
-          : "I couldn't save that file - please try again.");
-      return;
-    }
-  }
+  if (!fetchAttachment(a, localPath, total)) return;
   alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   // Telegram's size hint can read low; the real size is authoritative.
   if (files::wouldExceedQuota(who, (uint32_t)total)) {
@@ -1479,6 +1524,7 @@ static void drainMedia() {
   snprintf(path, sizeof(path), "/bot%s/%s", g_token.c_str(), method);
   std::vector<httpmp::Field> fields = {{"chat_id", m.chatId}};
   if (m.caption[0]) fields.push_back({"caption", m.caption});
+  agent::tgarchive::onOutboundMedia(String(m.chatId), m.kind, m.path, m.sd, String(m.caption));   // archive hook
   String resp, err;
   httpmp::Options opt;
   opt.srcFs = m.sd ? &agent::memory::dataFs() : nullptr;   // E1: SD artifacts
@@ -1715,6 +1761,10 @@ void pollTask(void*) {
       }
     }
 
+    // Telegram archive: queued outbound items, unfinished media downloads (on this
+    // task's single TLS session, after the replies above went out), storage pressure.
+    agent::tgarchive::tick(g_token, &idleWaitEnds, &closePollSocket);
+
     // Quiesce tighten (verifier round 2): a stop that ended the long-poll above
     // should not run another drain/turn cycle before the exit check - the
     // factory reset is waiting on this task.
@@ -1807,7 +1857,7 @@ bool injectRawUpdates(const char* body, size_t len) {
   if (!body || len == 0 || len > kRawInjectMax) return false;
   char* copy = (char*)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM);
   if (!copy) return false;
-  memcpy(copy, body, len);
+  memcpy(copy, body, len);   // outside the lock: a 64 KB copy must not run with interrupts off
   copy[len] = 0;
   portENTER_CRITICAL(&s_rawMux);
   const bool busy = s_rawInject != nullptr;
@@ -1818,6 +1868,24 @@ bool injectRawUpdates(const char* body, size_t len) {
   portEXIT_CRITICAL(&s_rawMux);
   if (busy) heap_caps_free(copy);
   return !busy;
+}
+
+// TGINJECT (the console verb): the same seam, with the counts read here by the same
+// parser so the console line says what was staged.
+String injectRawPage(const String& body) {
+  std::vector<nimbus::tg::Update> ups;
+  bool ok = false, trunc = false;
+  if (!nimbus::tg::parseUpdates(body.c_str(), body.length(), ups, ok, trunc) || !ok)
+    return String("TGINJECT parse FAILED ok=") + (ok ? 1 : 0) + " trunc=" + (trunc ? 1 : 0);
+  if (body.length() > kRawInjectMax) return "TGINJECT refused: page larger than 64 KB";
+  if (!injectRawUpdates(body.c_str(), body.length()))
+    return "TGINJECT busy: the previous page is still running (or no PSRAM)";
+  int media = 0, text = 0;
+  for (const auto& u : ups) {
+    if (u.attachment.kind != nimbus::tg::Attachment::Kind::None) media++;
+    else if (u.text.size()) text++;
+  }
+  return String("TGINJECT queued parsed=") + (unsigned)ups.size() + " text=" + text + " media=" + media;
 }
 #endif  // NIMBUS_TEST
 
@@ -1947,6 +2015,8 @@ void denyPending(const String& chatId) { pendingRemove(chatId.c_str()); }   // s
 bool send(const String& chatId, const String& text, bool block) {
   if (!g_replyQ) return false;
   observeOutbound(chatId.c_str(), "text", text.c_str());   // the whole text, before any split
+  // Archive hook (outbound): the whole text, before it is split into parts.
+  if (enabled()) agent::tgarchive::onOutboundText(chatId, text, "send");
   // block=true: wait up to 100 ms so a turn's reply isn't dropped on a full
   // queue. block=false: never wait - best-effort for the main render loop.
   const TickType_t wait = block ? pdMS_TO_TICKS(100) : 0;

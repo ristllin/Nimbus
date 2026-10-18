@@ -402,3 +402,73 @@ turn and at every clip site:
 - **Context assembly**: the anchored summary **clips** (floor 1024 B) before it
   is dropped, and anything omitted is named in a bounded `## OMITTED (budget)`
   trailer so the model knows a category was withheld rather than empty.
+
+## 4. The Telegram archive (SD card)
+
+Everything exchanged with the device over Telegram is kept on the SD card, at full
+fidelity, separate from the conversation memory above. The conversation keeps its own
+bounded copy of a photo (the 512 KB rendition the vision step reads); the archive is
+the record.
+
+**What is saved, and when.**
+
+- **Inbound.** Every update in a `getUpdates` page is written as it arrived (the raw
+  update JSON) as soon as the page is read, before the turn path parses, classifies,
+  batches or replays it. A message the turn path ignores is still on the card, and
+  the whole updates of a page that will not parse are kept.
+- **Media.** Photos at the largest size Telegram offers, documents, voice notes, audio,
+  video, video notes, stickers and animations are downloaded with their own streamed
+  path, up to the 20 MB bot download limit. A type with no file to fetch (a location,
+  a poll) is complete in the raw JSON. A type that cannot be fetched (a story, paid
+  media, a game, an invoice, an unknown type, a file over 20 MB) gets an explicit
+  `not archived: <type>` row.
+- **Outbound.** Every message the device sends: the whole text as written, before it
+  is split into Telegram-size parts, and a copy of every file it sends. The record is
+  what the device asked to send; delivery is not tracked there.
+- **Chats not on the allowlist** are saved as text only, within daily budgets (50
+  updates per chat, 200 updates and 2 MB across all of them, at most 32 such chats
+  on the card), and their media is never downloaded
+  ([security.md](security.md#telegram-archive-on-the-sd-card-v4514-bench-verification-pending)).
+
+**Layout.** One folder per chat and per day; the day of an inbound item is
+Telegram's own message date (UTC), so names never depend on uptime or the device
+clock, and a replay of the same update lands on the same name and adds nothing.
+
+```text
+/mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.json    raw inbound update
+/mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.<ext>   its media file
+/mem/tg/<chat>/<yyyy-mm-dd>/o<seq>.json         outbound message (o<seq>.<ext> for a file)
+/mem/tg/<chat>/<yyyy-mm-dd>/index.jsonl         one line per item, plus media status lines
+```
+
+The outbound sequence continues from the names already in the day folder, so a
+restart or a clock jump never reuses one.
+
+**RAM and the radio.** A download never holds a file in RAM: it is written to the card
+in 8 KB slices from one PSRAM buffer, as `<name>.part`, renamed when complete. It runs
+on the Telegram task with the single TLS session (after replies have gone out), for at
+most 8 s per poll cycle, and resumes from the bytes already on the card. A local turn
+or a factory reset cuts a transfer short; it resumes later. A card write error leaves
+the `.part` file and an `incomplete` line; a network error is retried up to four times.
+An outbound message from another task is queued in PSRAM and written by the Telegram
+task, so no caller waits on the card.
+
+**Retention.** The archive is not part of the episodic retention window or the blob
+clean-up: those passes never touch `/mem/tg`. It is removed only by:
+
+- the storage-pressure policy: when free space falls below 5% of the card (at least
+  512 MB on a card that can spare it), day folders are deleted until free space is
+  back above one and a half times that mark: every day of the chats not on the
+  allowlist first, then the allowlisted chats' oldest days. The newest allowlisted
+  day is always kept, and the owner is told once per low-space episode.
+- the factory reset with storage erase, which deletes the whole `/mem` tree.
+
+**Reading it.** `GET /api/tg/archive` lists chats, then a chat's days, then a day's
+index lines (paged with `from` and `limit`); `GET /api/tg/archive/item` streams one
+record or file. Both need the device sign-in token. Saved media also appears in
+Memory & Files as read-only `telegram-<chat>` folders.
+
+**Restoring a backup.** `tools/tg_archive_import.py` uploads a folder of backed-up
+media sidecars into the archive (each under the chat and day of the memory row that
+referenced it), through `POST /api/tg/archive/import`. It is a dry run unless asked to
+write, and a rerun skips what is already there.

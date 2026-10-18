@@ -4039,6 +4039,7 @@ void setup() {
       active = g_highLoadActive; deep = g_drainDeep; restMv = g_hlRestingMv; };
     h.voiceState = [] () -> String { return voiceStateLine(); };       // VOICE? (CUM-456)
     h.audioInject = [](const String& p) { return audioInjectTurn(p); };  // AUDIOINJECT (OA-030)
+    h.tgInjectRaw = [](const String& p) { return agent::telegram::injectRawPage(p); };  // TGINJECT (full receive path)
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),
