@@ -235,6 +235,64 @@ static void test_forwarded_is_marked_for_every_forward_field() {
   TEST_ASSERT_FALSE(own[0].forwarded);
 }
 
+// Lane R: the parser keeps the ids, the server date and the album group the archive
+// and the album work need, without changing what the turn path receives.
+static void test_keeps_message_id_date_and_media_group() {
+  std::string body =
+      "{\"ok\":true,\"result\":[{\"update_id\":31,\"message\":{\"message_id\":904,"
+      "\"date\":1792330000,\"media_group_id\":\"13871452\",\"chat\":{\"id\":5},"
+      "\"photo\":[{\"file_id\":\"p\",\"file_size\":100}],\"caption\":\"dinner\"}}]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(body, u));
+  TEST_ASSERT_EQUAL_INT64(904, u[0].messageId);
+  TEST_ASSERT_EQUAL_INT64(1792330000, u[0].date);
+  TEST_ASSERT_EQUAL_STRING("13871452", u[0].mediaGroupId.c_str());
+  TEST_ASSERT_FALSE(u[0].edited);
+  TEST_ASSERT_EQUAL_STRING("dinner", u[0].text.c_str());
+}
+
+// An edit keeps its ids and edit time, but no text: the dispatch path must never
+// take an edit for a new message.
+static void test_edited_message_carries_ids_only() {
+  std::string body =
+      "{\"ok\":true,\"result\":[{\"update_id\":32,\"edited_message\":{\"message_id\":7,"
+      "\"date\":100,\"edit_date\":1792330500,\"chat\":{\"id\":5},\"text\":\"fixed\"}}]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(body, u));
+  TEST_ASSERT_EQUAL_INT(1, (int)u.size());
+  TEST_ASSERT_TRUE(u[0].edited);
+  TEST_ASSERT_EQUAL_STRING("5", u[0].chatId.c_str());
+  TEST_ASSERT_EQUAL_INT64(7, u[0].messageId);
+  TEST_ASSERT_EQUAL_INT64(1792330500, u[0].date);
+  TEST_ASSERT_EQUAL_INT(0, (int)u[0].text.size());
+  TEST_ASSERT_EQUAL_INT((int)Attachment::Kind::None, (int)u[0].attachment.kind);
+}
+
+// Audio, video notes and animations get their own kinds; the caption still reaches
+// the turn as text, exactly as before they had a kind.
+static void test_more_media_kinds() {
+  const char* keys[] = {"audio", "video_note", "animation"};
+  const Attachment::Kind kinds[] = {Attachment::Kind::Audio, Attachment::Kind::VideoNote,
+                                    Attachment::Kind::Animation};
+  for (int i = 0; i < 3; ++i) {
+    std::string body = std::string("{\"ok\":true,\"result\":[{\"update_id\":40,\"message\":{"
+                                   "\"chat\":{\"id\":5},\"caption\":\"look\",\"") +
+                       keys[i] + "\":{\"file_id\":\"f\",\"file_size\":12}}}]}";
+    std::vector<Update> u;
+    TEST_ASSERT_TRUE(parse(body, u));
+    TEST_ASSERT_EQUAL_INT((int)kinds[i], (int)u[0].attachment.kind);
+    TEST_ASSERT_EQUAL_STRING("f", u[0].attachment.fileId.c_str());
+    TEST_ASSERT_EQUAL_UINT32(12, u[0].attachment.fileSize);
+    TEST_ASSERT_EQUAL_STRING("look", u[0].text.c_str());
+  }
+  // A GIF carries both animation and document: it stays a document for the turn path.
+  std::string gif = "{\"ok\":true,\"result\":[{\"update_id\":41,\"message\":{\"chat\":{\"id\":5},"
+                    "\"animation\":{\"file_id\":\"g\"},\"document\":{\"file_id\":\"g\"}}}]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(gif, u));
+  TEST_ASSERT_EQUAL_INT((int)Attachment::Kind::Document, (int)u[0].attachment.kind);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_long_message_not_truncated);
@@ -253,5 +311,8 @@ int main(int, char**) {
   RUN_TEST(test_not_ok_and_empty);
   RUN_TEST(test_truncated_tail_flagged);
   RUN_TEST(test_forwarded_is_marked_for_every_forward_field);
+  RUN_TEST(test_keeps_message_id_date_and_media_group);
+  RUN_TEST(test_edited_message_carries_ids_only);
+  RUN_TEST(test_more_media_kinds);
   return UNITY_END();
 }

@@ -46,7 +46,15 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
   filter["ok"] = true;
   JsonObject r = filter["result"][0].to<JsonObject>();
   r["update_id"] = true;
+  JsonObject ed = r["edited_message"].to<JsonObject>();
+  ed["message_id"] = true;
+  ed["date"] = true;
+  ed["edit_date"] = true;
+  ed["chat"]["id"] = true;
   JsonObject m = r["message"].to<JsonObject>();
+  m["message_id"] = true;
+  m["date"] = true;
+  m["media_group_id"] = true;
   m["text"] = true;
   m["caption"] = true;
   m["chat"]["id"] = true;
@@ -71,6 +79,12 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
   m["forward_from_chat"]["id"] = true;
   m["forward_sender_name"] = true;
   m["forward_date"] = true;
+  m["audio"]["file_id"] = true;
+  m["audio"]["file_size"] = true;
+  m["video_note"]["file_id"] = true;
+  m["video_note"]["file_size"] = true;
+  m["animation"]["file_id"] = true;
+  m["animation"]["file_size"] = true;
 
   JsonDocument doc;
   DeserializationError err =
@@ -90,8 +104,18 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
     JsonObjectConst msg = u["message"];
     // Non-message updates (edited_message, channel_post, callback_query, ...) have
     // no "message"; keep the update (so the caller can still advance the offset)
-    // but with empty content.
+    // but with empty content. An edit keeps its ids and edit time only.
+    JsonObjectConst edit = u["edited_message"];
+    if (msg.isNull() && !edit.isNull()) {
+      up.edited = true;
+      up.chatId = idToStr(edit["chat"]["id"]);
+      up.messageId = edit["message_id"] | 0ll;
+      up.date = edit["edit_date"] | (edit["date"] | 0ll);
+    }
     if (!msg.isNull()) {
+      up.messageId = msg["message_id"] | 0ll;
+      up.date = msg["date"] | 0ll;
+      up.mediaGroupId = idToStr(msg["media_group_id"]);
       up.chatId = idToStr(msg["chat"]["id"]);
       const char* fn = msg["from"]["first_name"] | "";
       const char* un = msg["from"]["username"] | "";
@@ -158,6 +182,21 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
       } else if (msg["sticker"]["file_id"].is<const char*>()) {
         a.kind = Attachment::Kind::Sticker;
         a.fileId = msg["sticker"]["file_id"].as<const char*>();
+      } else {
+        // Kinds the turn path does not take (it reads only their caption), kept so
+        // the archive's class test sees every kind the parser can name.
+        static const struct { const char* key; Attachment::Kind kind; } kMore[] = {
+            {"audio", Attachment::Kind::Audio},
+            {"video_note", Attachment::Kind::VideoNote},
+            {"animation", Attachment::Kind::Animation},
+        };
+        for (const auto& km : kMore) {
+          if (!msg[km.key]["file_id"].is<const char*>()) continue;
+          a.kind = km.kind;
+          a.fileId = msg[km.key]["file_id"].as<const char*>();
+          a.fileSize = msg[km.key]["file_size"] | 0u;
+          break;
+        }
       }
     }
     out.push_back(std::move(up));

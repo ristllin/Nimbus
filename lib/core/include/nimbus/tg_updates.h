@@ -30,7 +30,14 @@ namespace tg {
 constexpr uint32_t kPhotoBudget = 512u * 1024;
 
 struct Attachment {
-  enum class Kind : uint8_t { None, Document, Photo, Voice, Video, Sticker, Other };
+  // Append new kinds before Count, never reorder: the Telegram archive maps every
+  // kind to a decision (nimbus/tg_archive.h contentForKind), and its class test
+  // walks every value below Count, so a kind with no decision fails the build's tests.
+  enum class Kind : uint8_t {
+    None, Document, Photo, Voice, Video, Sticker, Other,
+    Audio, VideoNote, Animation,
+    Count
+  };
   Kind        kind = Kind::None;
   std::string fileId;
   std::string fileName;   // documents only ("" otherwise)
@@ -49,6 +56,12 @@ struct Update {
                                    // its words are not the sender's own, so a forwarded
                                    // "/command" never runs as one
   Attachment  attachment;
+  int64_t     messageId = 0;    // message.message_id (0 when absent)
+  int64_t     date = 0;         // message.date, Telegram server time (edit_date for an edit)
+  std::string mediaGroupId;     // message.media_group_id: the items of one album share it
+  // An edited_message update. It carries ids and the edit time only (no text, no
+  // attachment), so the dispatch path treats it as handled, never as a new message.
+  bool        edited = false;
 };
 
 // Parse a getUpdates response body. Returns true when the JSON parsed cleanly.
