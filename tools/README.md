@@ -36,6 +36,7 @@ a generated file.
 | **⚠ `gen_docs_pack.py`** | `lib/core/include/nimbus/docs_pack_data.h` - the on-device docs pack (ships in firmware.bin). |
 | `gen_nsn_vectors.py` | `tools/nsn_vectors.json` + embedded header - nsn codec test vectors, byte-locked to `nsnotify`. |
 | `gen_qr_vectors.py` | QR known-answer vectors from Project Nayuki's `qrcodegen` (needs `pip install qrcodegen`). |
+| `gen_turn_shape_fixtures.py` | Shared turn-shape fixtures from episodic exports: the conversation shape only, synthetic text (`--verify` checks it). |
 | `sounds/` | The sound-pack pipeline → `dist/` + manifest + `src/sfx/sfx_basic_data.h` + `docs/sfx-map.md` (see its README). |
 | `logo/gen_logo.py` | The Nimbus logo and every derived artifact (`assets/logo*.svg`, website logo/favicon/social card, `include/web/ui_logo.h`). |
 
@@ -46,6 +47,7 @@ a generated file.
 | **⚠ `check_param_consumers.py`** | Fails the build if a settings parameter has no functional consumer (a knob that changes nothing). |
 | **⚠ `check_status_doc.py`** | Fails when `docs/notifier-status-language.md` drifts from `status_style.cpp`. |
 | **⚠ `webui_concat_check.py`** | Asserts the `include/web/ui_*.h` fragments re-concatenate into a well-formed page (byte-compares the blessed snapshot). |
+| `model_id_lint.py` | Fails when a compiled-in model id is missing from the recorded provider model lists or has no built-in price (allowlist: `model_id_allowlist.json`). |
 
 ## Build & release
 

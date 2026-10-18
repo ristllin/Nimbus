@@ -59,6 +59,7 @@
 #include "nimbus/theme.h"                     // themeAccent - LED colour personality
 #include "nimbus/status_style.h"              // status -> {theme role, anim} single source
 #include "nimbus/voice_flow.h"                // hold-to-talk state machine + error taxonomy (CUM-456)
+#include "nimbus/wav_clip.h"                  // AUDIOINJECT (test build): read an injected clip's WAV header
 #include <LittleFS.h>
 #include <SD.h>                 // SD card FS (mounted via solide::storage) for orch data
 #include <solide/storage.h>     // microSD mount helper
@@ -873,6 +874,9 @@ static bool orchSendSink(const String& chatId, const String& text) {
 // (single-TLS: the Telegram socket is closed), so the TTS synth + upload are safe.
 static void orchSpeakSink(const String& text) {
   if (text.length() == 0) return;
+  // Test build only: AUDIOINJECT keeps text-to-speech off for its voice turn. The
+  // production stub is a constant false, so this line compiles to nothing there.
+  if (tc::ttsMuted()) return;
   // capture=false: the tts device action records the spoken text to history itself
   // (apply.cpp captureAssistant), so speakOnDevice must not also capture it.
   if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
@@ -1547,6 +1551,79 @@ static void captureVoiceTurn() {
   Serial.printf("VOICE: release path done outcome=%s phase=%s\n",
                 nimbus::voice::outcomeName(o), nimbus::voice::phaseName(g_voice.phase()));
 }
+
+#if defined(NIMBUS_TEST)
+// ---- AUDIOINJECT (test build only; program-2026-10-18, owner ask OA-030) ----
+// The online voice leg was never run because hold-to-talk needs a finger on the
+// button and a spoken clip. AUDIOINJECT <path> feeds a recorded clip from the card
+// (FSPUT it first) through the SAME release path a real hold takes: its samples
+// land in /voice.pcm - the file the speech-to-text step reads - and then
+// nimbus::voice::afterRelease() shows processing, runs the real STT call and sends
+// the transcript as the voice turn. Only the microphone capture is replaced.
+
+// Copy the clip's sample data (16 kHz mono 16-bit, the mic's format) from the card
+// into LittleFS /voice.pcm. Returns the bytes copied, or 0 with `why` set.
+static size_t copyClipPcm(const String& path, String& why) {
+  File in = solide::storage::activeFs().open(path.c_str(), FILE_READ);
+  if (!in) { why = "cannot open " + path + " on the card (FSPUT it first)"; return 0; }
+  uint8_t head[512];
+  const size_t got = in.read(head, sizeof(head));
+  nimbus::voice::WavInfo w;
+  const nimbus::voice::WavErr e = nimbus::voice::parseWavHeader(head, got, w);
+  if (e != nimbus::voice::WavErr::Ok) { in.close(); why = nimbus::voice::wavErrName(e); return 0; }
+  if (!nimbus::voice::wavMatchesMic(w)) {
+    in.close();
+    why = String("clip is ") + w.sampleRate + " Hz, " + w.channels + " ch, " + w.bitsPerSample +
+          "-bit; the mic path takes 16000 Hz mono 16-bit";
+    return 0;
+  }
+  in.seek(w.dataOffset);
+  LittleFS.remove("/voice.pcm");
+  File out = LittleFS.open("/voice.pcm", FILE_WRITE);
+  if (!out) { in.close(); why = "cannot write /voice.pcm"; return 0; }
+  size_t total = 0;
+  while (total < w.dataBytes) {
+    const size_t want = std::min(sizeof(head), size_t(w.dataBytes - total));
+    const size_t n = in.read(head, want);
+    if (n == 0) break;   // a clip shorter than its declared data chunk: keep what is there
+    out.write(head, n);
+    total += n;
+  }
+  out.close();
+  in.close();
+  if (total == 0) why = "the clip has no samples";
+  return total;
+}
+
+// Run one injected hold-to-talk turn. Text-to-speech stays off for it: the SPEAKER
+// fault holds the device speaker path off and the console's speech mute holds off
+// the spoken-reply fallback (both until `AUDIOINJECT off` or `FAULT clear`).
+static String audioInjectTurn(const String& path) {
+  if (!g_voice.canPress()) return "AUDIOINJECT busy: a voice turn is already in progress";
+  if (!agent::stt::available()) return "AUDIOINJECT no speech-to-text key configured";
+  String why;
+  const size_t bytes = copyClipPcm(path, why);
+  if (!bytes) return "AUDIOINJECT refused: " + why;
+  nimbus::fault::set(nimbus::fault::SPEAKER, true);
+  tc::setTtsMuted(true);
+  g_voiceActive = true;
+  g_voice.press(millis());
+  voiceShow();
+  g_voiceDone = true;
+  g_voiceShownMs = 0;
+  g_voiceSttMs = 0;
+  g_voiceReleaseMs = millis();   // the "release": everything after it is the real path
+  g_voiceActive = false;
+  Serial.printf("VOICE: injected clip %s bytes=%u (~%.2fs audio)\n", path.c_str(),
+                (unsigned)bytes, bytes / 32000.0f);
+  VoicePort port(String(""));
+  esp_task_wdt_delete(nullptr);   // the STT call may take seconds, as on a real release
+  const nimbus::voice::Outcome o = nimbus::voice::afterRelease(g_voice, port);
+  esp_task_wdt_add(nullptr);
+  return String("AUDIOINJECT ") + path + " pcm=" + (unsigned)bytes + " stt_ms=" +
+         (unsigned long)g_voiceSttMs + " outcome=" + nimbus::voice::outcomeName(o) + " tts=off";
+}
+#endif  // NIMBUS_TEST
 
 // Hold-to-talk after the release path returned (CUM-456), once per loop pass: show
 // a voice reply, end processing on the voice turn's OWN end (a mid-turn fallback
@@ -3954,6 +4031,7 @@ void setup() {
     h.drainState = [](bool& active, bool& deep, uint16_t& restMv) {     // STATUS surfacing
       active = g_highLoadActive; deep = g_drainDeep; restMv = g_hlRestingMv; };
     h.voiceState = [] () -> String { return voiceStateLine(); };       // VOICE? (CUM-456)
+    h.audioInject = [](const String& p) { return audioInjectTurn(p); };  // AUDIOINJECT (OA-030)
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),

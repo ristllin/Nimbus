@@ -16,13 +16,19 @@ Exit 0 = host-checkable gates passed; exit 1 = a host gate failed (release block
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+# model_id_lint lives one level up in tools/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import check_config_mapping
 import check_driver_pin
 import check_elf_symbols
 import check_ota_preserves_nvs
 import check_sram_staging
+import check_test_console_guard
+import model_id_lint
 
 HARDWARE_BATTERY = """\
 HARDWARE (bench, --allow-hardware; paste the real output):
@@ -43,6 +49,26 @@ HARDWARE (bench, --allow-hardware; paste the real output):
   # The fixture re-provisions Wi-Fi and clears the adversarial cal/flip, but the board is left
   # factory-fresh (re-onboard after):
   pytest tests/hil -m destructive --allow-hardware
+"""
+
+# program-2026-10-18 (v4.5.14) legs: each lands as a skeleton with lane N's
+# console verbs (PANIC / TGINJECT / AUDIOINJECT / NVSFILL) and is completed by its
+# owner lane; the leg SKIPS with a reason until its owner's fix is in the image, so
+# the gate never reads a stale pass. The wave-1 gate runs these on both units.
+PROGRAM_2026_10_18_BATTERY = """\
+PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real output):
+  # Crash forensics, one merged panic + forensics suite (lane N verb + lane O1 fix):
+  pytest tests/hil/test_l39_crash_forensics.py -m hil --allow-hardware
+  # Full inbound Telegram path with no phone, driven by TGINJECT (lane N verb + lane R hook):
+  #   albums (media_group_id), commands, photo PhotoSize array, voice, document, video, sticker,
+  #   location, edited message, a reply from another chat - acked only after processing.
+  pytest tests/hil/test_l56_tg_inject.py -m hil --allow-hardware
+  # Online hold-to-talk, driven by AUDIOINJECT on a recorded 16 kHz mono WAV (lane N; TTS off):
+  pytest tests/hil/test_l57_audio_inject.py -m "hil and agent" --allow-hardware
+  # T7 end-to-end spawn (lane N skeleton + lane L normalizer): fresh device, full NVS (NVSFILL),
+  #   router-only key, reboot mid-run, a malformed session_ops shape -> spawned equals claimed,
+  #   no phantom jobs, an honest refusal when a spawn cannot run.
+  pytest tests/hil/test_l55_spawn_e2e.py -m "hil and agent" --allow-hardware
 """
 
 CLOUD_BATTERY = """\
@@ -67,6 +93,8 @@ def run_host_checks() -> bool:
         ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
         ("config-mapping (CUM-388)", check_config_mapping.main),
+        ("test-console guard (p18-N)", check_test_console_guard.main),
+        ("model-id lint (p18-N)", model_id_lint.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))
@@ -89,6 +117,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if not args.host_only:
         print()
         print(HARDWARE_BATTERY)
+        print(PROGRAM_2026_10_18_BATTERY)
         print(CLOUD_BATTERY)
         print(
             "BLOCK CONDITION: do not cut a release tag or flash clients until every\n"

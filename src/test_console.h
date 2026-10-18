@@ -21,6 +21,7 @@
 
 #include <Arduino.h>
 #include <functional>
+#include <string>
 
 #include "nimbus/display/panel_controller.h"  // Scrok tri-state for the STATUS scrok field
 
@@ -186,6 +187,37 @@ struct Hooks {
   // the on-device check asserts - release -> first repaint and release -> the
   // speech-to-text call (0 = never started, the offline fast-fail).
   std::function<String()> voiceState;
+
+  // ---- program-2026-10-18 hook points (lane N lands these; a consuming lane
+  //      fills each in its OWN files, so the verb reports "not wired" until then).
+  // TGINJECT <json>: feed a complete raw getUpdates page through the normal
+  // receive path, so a wave gate drives the full inbound Telegram path (text,
+  // command, photo with the real PhotoSize array, album with media_group_id,
+  // voice, document, video, sticker, location, edited message, a reply from
+  // another chat) with no phone. Lane R (the Telegram archive, at the receive
+  // boundary; lane D extends it for albums) wires this to a function that runs the raw body through
+  // parsePageBody -> handleUpdate -> the batcher -> dispatch and commits the
+  // offset, deduplicating a repeated update_id by id. Returns a one-line summary
+  // the HIL leg asserts on (parsed count, per-type counts, turns dispatched).
+  // Until it is wired, TGINJECT still runs text and command updates through the
+  // public inject queue and reports the rest, so the leg is never a silent pass.
+  std::function<String(const String& rawPage)> tgInjectRaw;
+  // AUDIOINJECT <path>: run the hold-to-talk release path on a recorded clip
+  // already on the card (put there with FSPUT), so the online voice leg (owner
+  // ask OA-030) runs without the physical mic. TTS stays off. Wired by lane N in
+  // main.cpp (audioInjectTurn: the clip's samples replace the mic capture in
+  // /voice.pcm, then the real afterRelease() path runs). Returns the outcome line.
+  std::function<String(const String& path)> audioInject;
+  // FAULT embed_fail <on|off>: an embedding-only outage (the head still answers)
+  // so the memory-write queue and its honest "stored/queued/refused" reply run on
+  // demand. Lane P wires it to make ONLY the embedder fail (FAULT provider already
+  // covers "every LLM host unreachable"). Returns a short status line.
+  std::function<String(bool on)> embedFail;
+  // PANIC ... arm=turn: arm a panic to fire INSIDE the next turn, deep on the
+  // tg_poll task at the transport write (the worst-case dump the 64 KB coredump
+  // partition must hold, study T7/B4). Lane O1 wires it. The immediate PANIC
+  // forms run inline on the console task and need no hook.
+  std::function<String(const String& kind)> panicArmTurn;
 };
 
 #if defined(NIMBUS_TEST)
@@ -226,6 +258,35 @@ void onWifiGotIp(const String& ip);
 bool errorBadgePending(int& reasonOut);
 void clearErrorBadge();
 
+}  // namespace nimbus::tc
+
+// ---- provider-wire test hooks (lane K fills them; lane N declares them) -------
+// CAPTEST and PROVFAULT call these. test_console.cpp gives each a WEAK default
+// that returns false, so the console replies "not wired" and this build does not
+// depend on lane K's branch. Lane K provides the STRONG definitions, with exactly
+// these signatures, in a provider translation unit the firmware already links
+// (e.g. lib/harness/src/providers/loop_common.cpp): a strong definition in a new
+// file that nothing else references is never pulled from the library archive,
+// and the weak default would silently win. Return true when the override is set.
+namespace agent::providers {
+// Cap the FIRST attempt of the next provider request at `tokens` output tokens, so
+// a live turn is cut on demand and the retry-with-headroom path runs (lane K).
+bool setTestFirstAttemptCap(uint32_t tokens);
+// Answer requests to `host` with HTTP `status` and `body` instead of the network,
+// until cleared (lane K's typed-error legs: credit balance, overload, rate limit).
+bool setTestStatusOverride(const std::string& host, int status, const std::string& body);
+bool clearTestStatusOverride();
+}  // namespace agent::providers
+
+namespace nimbus::tc {
+
+// AUDIOINJECT keeps text-to-speech OFF for the injected voice turn: while muted,
+// main.cpp's speak sink drops the reply instead of synthesizing it (the device
+// speaker path is held off by the SPEAKER fault). Cleared by `AUDIOINJECT off`,
+// `FAULT clear` or a restart.
+bool ttsMuted();
+void setTtsMuted(bool on);
+
 #else  // !NIMBUS_TEST - production: every symbol is a no-op inline, so callers
        // stay unguarded and the calls optimize away to nothing.
 
@@ -238,6 +299,8 @@ inline void onWifiReason(int) {}
 inline void onWifiGotIp(const String&) {}
 inline bool errorBadgePending(int&) { return false; }
 inline void clearErrorBadge() {}
+inline bool ttsMuted() { return false; }
+inline void setTtsMuted(bool) {}
 
 #endif  // NIMBUS_TEST
 

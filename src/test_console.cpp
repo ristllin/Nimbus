@@ -51,6 +51,9 @@
 
 #include <esp_system.h>
 #include <sys/time.h>                  // settimeofday - REBOOT cold (CUM-504)
+#include <time.h>                      // TZCHK - setenv(TZ)/tzset/localtime_r
+#include <nvs.h>                       // NVSFILL - raw scratch-namespace writes (bypass the reserve)
+#include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
@@ -59,6 +62,16 @@
 #include <solide/storage.h>            // activeFs(): the mounted card (SD_MMC on Freenove)
 #include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
+
+// Lane K's provider-wire hooks (declared in test_console.h): WEAK defaults that
+// report "not wired" until lane K links its strong definitions.
+namespace agent::providers {
+__attribute__((weak)) bool setTestFirstAttemptCap(uint32_t) { return false; }
+__attribute__((weak)) bool setTestStatusOverride(const std::string&, int, const std::string&) {
+  return false;
+}
+__attribute__((weak)) bool clearTestStatusOverride() { return false; }
+}  // namespace agent::providers
 
 namespace nimbus::tc {
 namespace {
@@ -226,6 +239,195 @@ void fstat(String path) {
   Serial.flush();
 }
 
+// ---- program-2026-10-18 fault/crash/clock seams ---------------------------
+// Internal-SRAM ballast (FAULT sram_ballast <bytes>): one MALLOC_CAP_INTERNAL
+// block held until released, so the real turn/loop heap gates fire at a chosen
+// free level without touching hardware (study T6). Not a fault cap - just RAM
+// the test pins down.
+void* s_sramBallast = nullptr;
+size_t s_sramBallastN = 0;
+volatile uint32_t s_stackSink = 0;   // keeps overflowStack's writes observable
+bool s_ttsMuted = false;             // AUDIOINJECT: no text-to-speech for the injected turn
+void faultSramBallast(size_t bytes) {
+  if (s_sramBallast) { heap_caps_free(s_sramBallast); s_sramBallast = nullptr; s_sramBallastN = 0; }
+  if (bytes) {
+    s_sramBallast = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_sramBallastN = s_sramBallast ? bytes : 0;
+  }
+  Serial.printf("FAULT sram_ballast=%u held=%u intFree=%u intLargest=%u\n",
+                (unsigned)bytes, (unsigned)s_sramBallastN,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  Serial.flush();
+}
+
+// Unbounded recursion with a live per-frame buffer: grows the task stack until it
+// crosses the FreeRTOS canary, the "Stack canary watchpoint triggered" reset the
+// study names. `volatile` + the sink keep the compiler from eliding the frames or
+// turning the tail call into a loop. Marked no-inline/no-optimize for the same reason.
+__attribute__((noinline, optimize("O0"))) void overflowStack(uint32_t depth) {
+  volatile uint8_t frame[256];
+  for (size_t i = 0; i < sizeof(frame); i++) frame[i] = (uint8_t)(depth + i);
+  s_stackSink += frame[depth % sizeof(frame)];
+  overflowStack(depth + 1);
+}
+
+// PANIC <abort|nullptr|canary|twdt|oom>: crash the device the chosen way so the
+// boot-time crash forensics (lane O1) is exercised per kind. These run on the
+// console/loop task; the tg_poll-deep variant is PANIC ... arm=turn (a hook O1
+// wires). The union of the two studies' verb sets (verdict 2).
+void panicNow(const String& kind) {
+  Serial.printf("PANIC %s - crashing now\n", kind.c_str());
+  Serial.flush();
+  delay(30);   // let the line reach the host before the device dies
+  if (kind == "abort") {
+    abort();
+  } else if (kind == "nullptr") {
+    volatile int* p = nullptr;
+    *p = 1;                                  // LoadProhibited/StoreProhibited
+  } else if (kind == "canary") {
+    overflowStack(0);                        // unbounded recursion -> FreeRTOS stack-canary reset
+  } else if (kind == "twdt") {
+    esp_task_wdt_add(nullptr);
+    for (;;) {}                              // starve the task watchdog -> TASK_WDT reset
+  } else if (kind == "oom") {
+    for (;;) { void* q = heap_caps_malloc(8192, MALLOC_CAP_INTERNAL); if (!q) break; }
+    volatile int* p = nullptr; *p = 1;       // after internal heap is gone, an alloc-fail site aborts
+  } else {
+    Serial.println("PANIC: kind must be abort|nullptr|canary|twdt|oom");
+    Serial.flush();
+    return;
+  }
+  esp_restart();   // defensive: never reached
+}
+
+// NVSFILL <entries>: write <entries> small keys to a SCRATCH nvs namespace with
+// the raw IDF API, bypassing the app's config path and its reserve (critique
+// E1), so the NVS-full class (the Telegram replay loop, the usage-ledger loss)
+// reproduces in seconds. NVSFILL 0 erases the scratch namespace. Reports the
+// partition's free entries before and after.
+void nvsFill(int entries) {
+  nimbus::store::NvsUsage before;
+  nimbus::sys::nvsUsage(before);
+  nvs_handle_t h;
+  esp_err_t e = nvs_open("nfill_scratch", NVS_READWRITE, &h);
+  if (e != ESP_OK) { Serial.printf("NVSFILL ERR open %d\n", (int)e); Serial.flush(); return; }
+  if (entries <= 0) {
+    nvs_erase_all(h);
+    nvs_commit(h);
+    nvs_close(h);
+    nimbus::store::NvsUsage after;
+    nimbus::sys::nvsUsage(after);
+    Serial.printf("NVSFILL cleared freeEntries %u->%u\n",
+                  (unsigned)before.freeBytes, (unsigned)after.freeBytes);
+    Serial.flush();
+    return;
+  }
+  int wrote = 0;
+  for (int i = 0; i < entries; i++) {
+    char key[16];
+    snprintf(key, sizeof(key), "k%d", i);
+    if (nvs_set_u32(h, key, (uint32_t)i) != ESP_OK) break;   // partition full
+    wrote++;
+  }
+  esp_err_t ce = nvs_commit(h);
+  nvs_close(h);
+  nimbus::store::NvsUsage after;
+  nimbus::sys::nvsUsage(after);
+  Serial.printf("NVSFILL wrote=%d commit=%d freeEntries %u->%u full=%d\n",
+                wrote, (int)ce, (unsigned)before.freeBytes, (unsigned)after.freeBytes,
+                int(wrote < entries));
+  Serial.flush();
+}
+
+// TGINJECT <json>: feed a raw getUpdates page through the receive path. The full
+// path (media, albums, the offset commit) is the telegram.cpp owner's hook; until
+// that is wired, parse the page here (the host-tested parser) and run text and
+// command updates through the public inject queue, reporting the per-type shape
+// so the leg is never a silent pass.
+void tgInject(const String& json) {
+  if (s_h.tgInjectRaw) { reply(s_h.tgInjectRaw(json)); return; }
+  std::vector<nimbus::tg::Update> ups;
+  bool ok = false, trunc = false;
+  if (!nimbus::tg::parseUpdates(json.c_str(), json.length(), ups, ok, trunc) || !ok) {
+    Serial.printf("TGINJECT parse FAILED ok=%d trunc=%d\n", int(ok), int(trunc));
+    Serial.flush();
+    return;
+  }
+  int text = 0, media = 0, injected = 0;
+  using Kind = nimbus::tg::Attachment::Kind;
+  for (const auto& u : ups) {
+    if (u.attachment.kind != Kind::None) { media++; continue; }
+    if (u.text.size()) {
+      text++;
+      if (agent::telegram::injectMessage(String(u.chatId.c_str()), String(u.text.c_str()))) injected++;
+    }
+  }
+  Serial.printf("TGINJECT parsed=%u text=%d media=%d injected=%d trunc=%d "
+                "(media/albums need the telegram receive hook - lane R)\n",
+                (unsigned)ups.size(), text, media, injected, int(trunc));
+  Serial.flush();
+}
+
+// CAPTEST <tokens>: cap the first attempt of the next provider request (lane K
+// hook), so a live turn is cut on demand and the retry-with-headroom path runs.
+void capTest(const String& arg) {
+  const long n = arg.toInt();
+  if (n <= 0) { reply("CAPTEST usage: CAPTEST <tokens>"); return; }
+  if (agent::providers::setTestFirstAttemptCap((uint32_t)n)) Serial.printf("CAPTEST %ld\n", n);
+  else Serial.println("CAPTEST not wired in this build (lane K)");
+  Serial.flush();
+}
+
+// PROVFAULT <api-host> <status> <json body> | PROVFAULT off: answer a provider
+// host with a canned HTTP status + body (lane K hook: typed errors - credit
+// balance, overload, rate limit) instead of the network, until cleared.
+void provFault(String arg) {
+  arg.trim();
+  if (arg == "off") {
+    reply(agent::providers::clearTestStatusOverride() ? String("PROVFAULT off")
+                                                      : String("PROVFAULT not wired in this build (lane K)"));
+    return;
+  }
+  const int a = arg.indexOf(' ');
+  const int b = a < 0 ? -1 : arg.indexOf(' ', a + 1);
+  if (a <= 0 || b < 0) { reply("PROVFAULT usage: PROVFAULT <api-host> <status> <json body> | off"); return; }
+  const String host = arg.substring(0, a);
+  const int status = arg.substring(a + 1, b).toInt();
+  const String body = arg.substring(b + 1);
+  if (status < 100 || status > 599) { reply("PROVFAULT status must be 100..599"); return; }
+  if (agent::providers::setTestStatusOverride(std::string(host.c_str()), status, std::string(body.c_str())))
+    Serial.printf("PROVFAULT %s %d armed (%u B body)\n", host.c_str(), status, (unsigned)body.length());
+  else
+    Serial.println("PROVFAULT not wired in this build (lane K)");
+  Serial.flush();
+}
+
+// TZCHK <posix-tz> <epoch>: apply a POSIX TZ string (the same form the device's
+// configTzTime sets) and print the local broken-down time for <epoch>, so a
+// timezone leg (lane V) can assert the device's zone math - DST edges included -
+// over serial without waiting for a routine to fire. Restores TZ afterward.
+void tzCheck(const String& tz, long long epoch) {
+  char saved[128] = {0};
+  if (const char* cur = getenv("TZ")) strncpy(saved, cur, sizeof(saved) - 1);
+  setenv("TZ", tz.c_str(), 1);
+  tzset();
+  time_t t = (time_t)epoch;
+  struct tm lt, ut;
+  localtime_r(&t, &lt);
+  gmtime_r(&t, &ut);
+  char buf[48];
+  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &lt);
+  // UTC offset without tm_gmtoff (absent in the ESP32 newlib): local - UTC of the
+  // same instant, via mktime on a UTC-interpreted copy. tzset() above set TZ.
+  const long offSec = (long)(mktime(&lt) - mktime(&ut));
+  Serial.printf("TZCHK tz=%s epoch=%lld local=%s wday=%d isdst=%d off=%lds\n",
+                tz.c_str(), epoch, buf, lt.tm_wday, lt.tm_isdst, offSec);
+  Serial.flush();
+  if (saved[0]) setenv("TZ", saved, 1); else unsetenv("TZ");
+  tzset();
+}
+
 // Dispatch one complete command line (no trailing newline). Trims leading ws.
 void dispatch(String line) {
   line.trim();
@@ -360,9 +562,28 @@ void dispatch(String line) {
   if (line.startsWith("FAULT ")) {
     // FAULT <sd|memory|mic|speaker|led|screen> <on|off>  |  FAULT clear
     // Marks a capability simulated-absent so its degraded path runs on demand.
+    // Two program-2026-10-18 extensions precede the capability parse:
+    //   FAULT sram_ballast <bytes>  (0 = release) pins internal SRAM down so the
+    //     turn/loop heap gates run without unplugging RAM (study T6). Self-held
+    //     here: a single heap_caps internal allocation, never a fault cap.
+    //   FAULT embed_fail <on|off>  an embedding-only outage (lane P wires it).
     String rest = line.substring(6); rest.trim();
+    if (rest.startsWith("sram_ballast")) {
+      String a = rest.substring(12); a.trim();
+      faultSramBallast((size_t)a.toInt());
+      return;
+    }
+    if (rest.startsWith("embed_fail")) {
+      String a = rest.substring(10); a.trim();
+      const bool on = !(a == "off" || a == "0" || a == "false");
+      if (s_h.embedFail) reply(s_h.embedFail(on));
+      else reply("FAULT embed_fail: not wired in this build (lane P)");
+      return;
+    }
     if (rest == "clear" || rest == "none" || rest == "off") {
       nimbus::fault::clearAll();
+      faultSramBallast(0);   // release any ballast too
+      s_ttsMuted = false;    // and the AUDIOINJECT speech mute
       agent::memory::applyConfig();
       Serial.println("FAULT cleared mask=0x00");
       Serial.flush();
@@ -1610,6 +1831,80 @@ void dispatch(String line) {
     return;
   }
 
+  if (line.startsWith("PANIC ")) {
+    String a = line.substring(6); a.trim();
+    if (a.startsWith("arm=turn") || a.endsWith("arm=turn")) {
+      // Arm a mid-turn panic (tg_poll deep in the transport). Kind before/after the flag.
+      String kind = a; kind.replace("arm=turn", ""); kind.trim();
+      if (kind.length() == 0) kind = "nullptr";
+      reply(s_h.panicArmTurn ? s_h.panicArmTurn(kind)
+                             : String("PANIC arm=turn: not wired in this build (lane O1)"));
+      return;
+    }
+    panicNow(a);
+    return;
+  }
+  if (line.startsWith("NVSFILL ")) {
+    nvsFill(line.substring(8).toInt());
+    return;
+  }
+  if (line == "EPIPRUNE" || line.startsWith("EPIPRUNE ")) {
+    // Force the 6-hourly retention pass NOW (study: before/after blob counts; and,
+    // once lane U gates it, the "deferred" line while a turn runs). Default window
+    // matches the loop's pruneRetention(30).
+    String a = line.length() > 8 ? line.substring(9) : String(""); a.trim();
+    const int days = a.length() ? a.toInt() : 30;
+    int n = agent::memory::pruneRetention(days);
+    Serial.printf("EPIPRUNE days=%d pruned=%d\n", days, n);
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("CLOCK ")) {
+    // Set the wall clock to <epoch> (seconds). Lets a timezone/routine leg place
+    // the device at a chosen instant without waiting or NTP (study: CLOCK + TZCHK).
+    const long long epoch = atoll(line.substring(6).c_str());
+    struct timeval tv = { (time_t)epoch, 0 };
+    settimeofday(&tv, nullptr);
+    Serial.printf("CLOCK set epoch=%lld\n", epoch);
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("TZCHK ")) {
+    String rest = line.substring(6); rest.trim();
+    int sp = rest.lastIndexOf(' ');   // "<posix tz> <epoch>" - tz may contain no space, epoch is last
+    if (sp <= 0) { reply("TZCHK usage: TZCHK <posix-tz> <epoch>"); return; }
+    String tz = rest.substring(0, sp); tz.trim();
+    tzCheck(tz, atoll(rest.substring(sp + 1).c_str()));
+    return;
+  }
+  if (line.startsWith("CAPTEST ")) {
+    capTest(line.substring(8));
+    return;
+  }
+  if (line.startsWith("PROVFAULT ")) {
+    provFault(line.substring(10));
+    return;
+  }
+  if (line.startsWith("TGINJECT ")) {
+    tgInject(line.substring(9));
+    return;
+  }
+  if (line.startsWith("AUDIOINJECT ")) {
+    // AUDIOINJECT <path>: run the hold-to-talk release path on a 16 kHz mono 16-bit
+    // WAV already on the card (FSPUT it first). Text-to-speech stays off: the
+    // speaker fault and the speech mute are armed until `AUDIOINJECT off`.
+    String path = line.substring(12); path.trim();
+    if (path == "off") {
+      s_ttsMuted = false;
+      nimbus::fault::set(nimbus::fault::SPEAKER, false);
+      reply("AUDIOINJECT off: speech mute and speaker fault cleared");
+      return;
+    }
+    reply(s_h.audioInject ? s_h.audioInject(path)
+                          : String("AUDIOINJECT: not wired in this build (voice owner)"));
+    return;
+  }
+
   // Unknown: echo the first token so the harness can see what was rejected.
   int sp = line.indexOf(' ');
   String verb = sp < 0 ? line : line.substring(0, sp);
@@ -1694,6 +1989,9 @@ bool errorBadgePending(int& reasonOut) {
 }
 
 void clearErrorBadge() { s_badge = false; }
+
+bool ttsMuted() { return s_ttsMuted; }
+void setTtsMuted(bool on) { s_ttsMuted = on; }
 
 }  // namespace nimbus::tc
 

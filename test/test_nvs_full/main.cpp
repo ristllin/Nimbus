@@ -637,6 +637,11 @@ static void test_raw_nvs_writers_are_a_reviewed_set() {
       "src/main.cpp",                   // factory-reset identity restore over raw handles
       "src/bringup/provision.cpp",      // bring-up sketch, not in the product image
       "src/net/webui.h",                // a comment naming solide::memory::setInt
+      "src/test_console.cpp",           // NIMBUS_TEST-only: NVSFILL writes a SCRATCH namespace
+                                        // ("nfill_scratch") with the raw IDF API ON PURPOSE, to
+                                        // fill the partition past any reserve for the full-NVS legs
+                                        // (critique E1). Never in a production image (whole TU is
+                                        // #if NIMBUS_TEST; the test-console source guard enforces it).
   };
   std::regex raw(R"(solide::memory::(set[A-Z]\w*|eraseKey|clear)\(|nvs_set_|nvs_erase_|\bPreferences\b)");
   for (const char* root : {"src", "include"}) {

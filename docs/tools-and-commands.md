@@ -100,6 +100,8 @@ serial console. Everyday use of a device needs none of it.
 | `check_param_consumers.py` | Fails the build if any editable settings parameter has no functional consumer in the code - a knob that appears in the menu and web UI but changes nothing. | Runs in CI. Run locally after adding or removing a parameter. |
 | `check_status_doc.py` | Fails the build when the status→animation table in `docs/notifier-status-language.md` drifts from the code single-source (`lib/core/src/status_style.cpp`). | Runs in CI. Run locally after touching either side; edit the code first, then fix the doc. |
 | `webui_concat_check.py` | Asserts the web UI fragment set (`include/web/ui_*.h`) re-concatenates into a well-formed page, and optionally byte-compares against a blessed snapshot (`--bless` after an intentional page change). | After any web UI fragment edit. |
+| `model_id_lint.py` | Fails when a model id compiled into the firmware, the hosted daemon, or the lab is missing from the recorded provider model lists or has no built-in price, unless `model_id_allowlist.json` names the lane that removes it. `--record-fixtures` re-records the lists. | Runs in `make -C tools/harness-lab check` and the release gate. Run after adding or changing a model id. |
+| `gen_turn_shape_fixtures.py` | Turns episodic exports into test fixtures that keep only the conversation shape, with synthetic text in place of every message. `--verify` checks a fixture folder holds synthetic text only. | Regenerating the shared turn-shape fixtures. |
 
 ### Hardware validation & QA
 
@@ -195,6 +197,12 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
+| `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Reports internal free and largest block. |
+| `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers), to exercise the memory-write queue. Reports "not wired" until the memory lane binds it. |
+| `PANIC <abort\|nullptr\|canary\|twdt\|oom>` | Crash the device the chosen way so the crash summary at the next boot can be checked per kind. `PANIC <kind> arm=turn` arms the crash inside the next turn instead (reports "not wired" until bound). |
+| `NVSFILL <entries>` / `NVSFILL 0` | Fill a scratch settings namespace to exercise the storage-full paths in seconds; `0` erases the scratch namespace. Reports free space before and after. |
+| `CAPTEST <tokens>` | Cap the first attempt of the next provider request at that many output tokens, so a cut reply and its retry run on demand. Reports "not wired" until the provider lane binds it. |
+| `PROVFAULT <host> <status> <json>` / `PROVFAULT off` | Answer one provider host with a set HTTP status and error body instead of the network (for example a credit or overload error), until `off`. Reports "not wired" until the provider lane binds it. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
 | `REBOOT` | Software restart - the only sanctioned way to restart from the host. |
@@ -216,6 +224,11 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
 | `EPIQ [@<cursor>] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. |
 | `DREAM` | Fire the reserved maintenance-and-reflection loop immediately. |
+| `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days) and report how much it removed. |
+| `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
+| `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
+| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text and commands run today; photos, albums, voice, and files run once the Telegram lane binds the full path. |
+| `AUDIOINJECT <path>` / `AUDIOINJECT off` | Run the hold-to-talk path on a recorded 16 kHz mono 16-bit WAV already on the card (put it there with `FSPUT`): the clip replaces the microphone, then the real speech-to-text call and the voice turn run. Spoken replies stay off until `AUDIOINJECT off`. |
 | `MODE <0\|1>` | Switch operating mode (0 = Notifier, 1 = Orchestrator); persists and restarts. |
 
 #### Display & screen
