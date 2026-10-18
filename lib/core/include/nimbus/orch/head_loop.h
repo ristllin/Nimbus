@@ -125,7 +125,8 @@ struct HeadStep {
   // Completeness gate: why the answer was cut ("max_tokens", "length",
   // "incomplete:max_output_tokens"); empty = complete. A cut step is never
   // finished and never dispatches its calls (kind Cut, ok false); finalTurn then
-  // holds the cut orch_turn arguments, if any, for the reply salvage.
+  // holds the cut orch_turn arguments, if any, for the reply salvage. A cut
+  // answer is never sent back for a correction.
   std::string cut;
   // finished with a prose answer: finalTurn is the model's text, not an orch_turn
   // object (the engine delivers it as the reply only).
@@ -187,7 +188,27 @@ struct HeadLoopConfig {
                                      // alloc). Needs the largestBlock hook set; 0 => skip.
   size_t   maxToolResultBytes = 2048;   // clamp each tool result fed back (0 => no clamp)
   size_t   maxTotalToolBytes = 12288;   // cumulative tool-output budget; exceeded => force the final round (0 => no limit)
+  // The final-answer check (the CUM-506 pattern, generalized): called with a
+  // terminal orch_turn while a correction round is still possible - not on the
+  // forced final round, at most once per turn. A non-empty return is the
+  // correction text: that answer is discarded (nothing in it runs or reaches
+  // the owner) and the model gets ONE more round, with the text as the result
+  // of its orch_turn call. Build it with chainFinalChecks so several checks
+  // (the turn-shape check, the claim check) share the one round.
+  // It lives on the CONFIG rather than the hooks because every adapter hands
+  // its HeadTools cfg to runHeadLoop verbatim, so no provider can forget to
+  // forward it. Null => no check, byte-identical to before.
+  std::function<std::string(const std::string& finalTurn)> validateFinal;
 };
+
+// One final-answer check: "" when the turn is fine, else the correction text.
+using FinalCheck = std::function<std::string(const std::string& finalTurn)>;
+// Run every check in order and join the corrections (one round fixes them all).
+// Null entries are skipped; the result is null when no entry is set.
+FinalCheck chainFinalChecks(std::vector<FinalCheck> checks);
+// The call id the correction round answers. Nine alphanumerics: Mistral's
+// tool-call id rule, and valid on every other wire.
+extern const char kFinalCheckCallId[];
 
 // Forward decl: transcript.h includes THIS header (it uses HeadToolCall/Result),
 // so the dependency runs one way only - hooks hold a pointer, never a value.
@@ -235,6 +256,7 @@ struct HeadOutcome {
   std::string cut;             // the failing step was cut: why (HeadStep::cut)
   std::string partialTurn;     // ...and the cut orch_turn arguments it carried, if any
   bool        prose = false;   // ok, and finalTurn is a prose answer (HeadStep::prose)
+  int         corrections = 0; // final-answer correction rounds run (validateFinal; 0 or 1)
 };
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never

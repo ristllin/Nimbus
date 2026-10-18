@@ -107,6 +107,16 @@ struct ApplyState {
   // and the refusal lands in the next turn's feedback, so a guess never becomes a
   // stored fact.
   bool unverifiedConnector = false;
+  // Lane L, spawn honesty. Every spawn intent either reaches the job engine or
+  // is reported: to the head through this hook (the job engine's [SPAWN
+  // REFUSED] lines for the chat), and to the owner as one correction line on
+  // this reply. Null => logged only.
+  std::function<void(const std::string& name, const std::string& task,
+                     const std::string& reason)> noteSpawnRefused;
+  // The head called the spawn field as a tool this turn (its items, if any,
+  // were merged into the turn already).
+  bool spawnAttempted = false;
+  int spawnsEnqueued = 0;   // out: spawn intents handed to the job engine
   // v3.7.0: may THIS turn's chat read/write the shared namespace? The device
   // sets it for the owner's chats and the token-authenticated local surfaces;
   // a Telegram member never gets it. Combined with the turn's chatId it forms

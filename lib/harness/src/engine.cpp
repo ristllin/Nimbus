@@ -21,6 +21,9 @@
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
 #include "nimbus/harness/router_refusal.h"   // a router refusal is not an outage (failover notice)
+#include "nimbus/harness/turn_contract.h"    // lane L: pseudo-tool salvage, final check, salvage
+#include "nimbus/orch/reply_markup.h"        // lane L: cleanReplyMarkup at every reply seam
+#include "nimbus/orch/tool_taint.h"          // lane L: the per-turn external-content flag
 #include "nimbus/orch/turn.h"
 
 // Lifted from src/agent/orchestrator.cpp (Stage G - the final lift: runTurn /
@@ -235,7 +238,14 @@ static std::string unverifiedStoreRefusal(const std::string& regName) {
 std::string TurnEngine::takeSpawnNotes(const std::string& chatId) {
   bool mayHaveRun = false;
   const std::string notes = d_.jobs ? d_.jobs->takeSpawnNotes(chatId, &mayHaveRun) : std::string();
-  if (notes.empty()) return "";
+  // Lane L: this chat's spawn ledger rides with its refusals - the device's own
+  // record of what it started, so the head never tracks it in free-text notes.
+  const std::string ledger = d_.jobs ? d_.jobs->spawnLedgerText(chatId) : std::string();
+  if (notes.empty()) return ledger.empty() ? "" : "\n" + ledger;
+  return refusedBlock(notes, mayHaveRun) + ledger;
+}
+
+std::string TurnEngine::refusedBlock(const std::string& notes, bool mayHaveRun) {
   // Same background framing as [MEMORY RESULTS]: the owner was already told each
   // of these; the model needs the REAL reason (not a guessed "capacity 0") and the
   // fact that nothing is running for them. Live room is in [SPAWN CAPACITY].
@@ -301,6 +311,40 @@ std::string TurnEngine::jobsSummaryText() const {
   return s;
 }
 
+// Lane L (subagents F6.2): which keyed sub-agent providers hold the device for
+// the whole run and which run remotely, from the one backend table
+// (kDeviceBackendSync) - the old line named only mistral, so a cumulo, zai or
+// custom sub that blocked the device and lost its result on a timeout was a
+// surprise. No wait times here: each adapter owns its own.
+std::string TurnEngine::syncCapacityText() const {
+  std::vector<std::string> sync, async;
+  for (int i = 0; i < kDeviceBackendCount; i++) {
+    const std::string b = kDeviceBackends[i];
+    const bool keyed = !d_.cfg.provider.hasKey || d_.cfg.provider.hasKey(b) ||
+                       (b == "custom" && d_.hosts.has("custom"));
+    if (!keyed) continue;
+    (kDeviceBackendSync[i] ? sync : async).push_back(b);
+  }
+  auto list = [](const std::vector<std::string>& v, const char* last) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); i++)
+      out += (i == 0 ? "" : (i + 1 == v.size() ? std::string(" ") + last + " " : ", ")) + v[i];
+    return out;
+  };
+  std::string out;
+  if (!sync.empty())
+    out += list(sync, "and") + " sub-agents run one at a time INSIDE the device: each holds it "
+           "for its whole run and must finish within the device's wait (about one to two "
+           "minutes), or its work is lost. ";
+  if (!async.empty())
+    out += list(async, "and") + " sub-agents run in parallel on the provider while the device "
+           "collects them one by one" + (sync.empty() ? "." : std::string("; use ") +
+           list(async, "or") + " for research, long work or anything that needs the web.");
+  else if (!sync.empty())
+    out += "Keep each sub-agent to one focused step.";
+  return out;
+}
+
 std::string TurnEngine::buildDynamicContext() {
   std::string ctx;
   // A provider fallback from the previous turn, surfaced once (mention only if
@@ -345,9 +389,7 @@ std::string TurnEngine::buildDynamicContext() {
            " in flight), draining as each finishes. This is NOT a hard total "
            "limit - a big fan-out runs over successive waves: start a wave now, "
            "and when they finish you get an automatic turn to spawn the next, so "
-           "you can work through dozens over a run. mistral sub-agents run strictly "
-           "one-at-a-time; openai/anthropic ones run in parallel on the provider "
-           "while the device collects them one by one.\n";
+           "you can work through dozens over a run. " + syncCapacityText() + "\n";
   }
   ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
          (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
@@ -426,6 +468,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnFileSend_ = telegram && (!isTelegramChat(chatId) || telegramOn(std::string()));
   toolReplied_ = false;
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
+  // Lane L: sub-agent results folded into this turn are external content (the
+  // leak-repair gate reads it); a tool that returns external content sets it too.
+  externalContentSeen_ = freshInTurn_;
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
@@ -597,6 +642,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // below: replaying a whole tool loop would re-run its side effects (mem writes,
   // spawns), so once any tool ran we fail soft instead of retrying.
   auto loopDispatched = std::make_shared<int>(0);
+  // Lane L (subagents F2): spawn items the head sends by calling the session_ops
+  // FIELD as a tool are read and carried into this turn, deduped against its
+  // final orch_turn, instead of being answered "not a tool" and lost.
+  auto pseudo = std::make_shared<PseudoSpawns>();
   // P6: the loop is the default turn path, but it needs headroom above the
   // single-TLS + per-round floor. Under memory pressure at turn start, fall back
   // to a single-shot turn (still fully functional - no tools mid-turn) and tell
@@ -690,6 +739,37 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         r.output = std::string(content[0]["text"] | "");
       return done(r);
     };
+    // Lane L: the per-turn taint flag (one table, orch::toolTaint) and the
+    // pseudo-tool salvage wrap the dispatch above; every other call goes
+    // through it untouched.
+    {
+      auto inner = std::move(headTools.dispatch);
+      headTools.dispatch = [this, inner, nameMap, loopDispatched, pseudo](
+                               const orch::HeadToolCall& call) -> orch::HeadToolResult {
+        if (orch::ToolRegistry::isSpawnFieldName(call.name)) {
+          orch::HeadToolResult r = takePseudoSpawns(call, *pseudo);
+          if (r.output.empty()) return inner(call);   // nothing usable: the recovery text
+          if (d_.hooks.onToolCall) d_.hooks.onToolCall(call);
+          ++(*loopDispatched);   // a tool ran: the turn is never replayed
+          hlog::logf("orchestrator: %s called as a tool - its spawn item(s) join this turn",
+                     call.name.c_str());
+          if (d_.hooks.onToolResult) d_.hooks.onToolResult(r);
+          return r;
+        }
+        auto it = nameMap->find(call.name);
+        const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
+        if (!orch::ToolRegistry::isTurnFieldName(regName) &&
+            orch::toolTaint(regName) == orch::Taint::External)
+          externalContentSeen_ = true;
+        return inner(call);
+      };
+    }
+    // Lane L: the final-answer check - one correction round for an orch_turn
+    // whose spawn list cannot be read or whose reply promises sub-agents it does
+    // not start. Further checks (lane S's claim check) join this chain.
+    headTools.cfg.validateFinal = orch::chainFinalChecks({[pseudo](const std::string& finalTurn) {
+      return turnShapeCorrection(finalTurn, pseudo.get());
+    }});
     headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
@@ -975,6 +1055,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   if (!ok || outJson.empty()) {
     hlog::logf("orchestrator: turn failed (%s)", err.c_str());
+    // Lane L (parsing P3): an answer the provider cut at its output limit is not
+    // a provider fault. Salvage what it wrote (when the adapter kept the partial
+    // turn) with the honest marker, capture it, and record the cut.
+    if (orch::isCutError(err)) {
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
+      deliver(chatId, so.text);
+      if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+      err = "cut: " + err;
+      fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
+      return false;
+    }
     // Honest failure reply (owner, 2026-08-05): the old fixed "trouble reaching
     // the orchestrator" line was itself a falsehood in most failures - the
     // provider often DID answer (4xx / schema refusal), tools may already have
@@ -1087,30 +1178,50 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // is delivered as the reply - and only the reply (no device actions, memory
   // writes or spawns ride prose); a fenced JSON turn is the turn.
   const orch::ReplyShape shape = orch::parseHeadReply(outJson, turn, perr);
+  // One line per field the parse boundary repaired or could not use - the
+  // count the live checks grep for (lane L).
+  for (const std::string& note : turn.parseNotes)
+    hlog::logf("orchestrator: turn field %s", note.c_str());
   if (shape == orch::ReplyShape::Prose)
     hlog::logf("orchestrator: head reply was prose (%u B), delivered as the reply only",
                (unsigned)turn.reply.size());
   if (shape == orch::ReplyShape::Unusable) {
     hlog::logf("orchestrator: turn parse fail (%s) json=%.200s", perr.detail.c_str(),
                outJson.c_str());
-    std::string salvaged;
-    {
-      // Only the reply's leading JSON object (bare or fenced) is read - never the
-      // text after it and never the raw reply (CUM-495).
-      const std::string lead = orch::leadingJsonObject(outJson);
-      JsonDocument sd;   // loose second parse just for the human-facing text
-      if (!lead.empty() && deserializeJson(sd, lead) == ArduinoJson::DeserializationError::Ok) {
-        const char* rep = sd["reply"] | (const char*)nullptr;
-        const char* ask = sd["ask"]   | (const char*)nullptr;
-        if (rep && *rep) salvaged = rep;
-        if (ask && *ask) { if (salvaged.length()) salvaged += "\n"; salvaged += ask; }
-      }
-    }
-    deliver(chatId, salvaged.length()
-                        ? salvaged
-                        : std::string("I hit a formatting error composing that reply - please resend."));
-    fireTurnEnd(false, salvaged.length());
+    // Lane L (parsing P3): only the reply's leading JSON object is read (bare or
+    // fenced, possibly cut short), and only its top-level reply/ask - never the
+    // raw text and never a nested field. A cut answer gets the honest marker; the
+    // delivered text is captured so the next turn sees what the owner saw.
+    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
+    deliver(chatId, so.text);
+    if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+    err = (so.cut ? "cut: " : "parse: ") + perr.detail;
+    fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
     return false;
+  }
+  // Lane L (formatting F4): the reply seam - no channel (Telegram, web, voice,
+  // the screen) ever gets reasoning, tool-call markup or a wrapper tag.
+  turn.reply = orch::cleanReplyMarkup(turn.reply);
+  turn.ask = orch::cleanReplyMarkup(turn.ask);
+  // Lane L (formatting F1): fields recovered from leaked tool markup carry
+  // actions, and quoted external content (a mail body, a web page) can carry
+  // the same markers - so they apply only on an attended owner turn that read
+  // no external content. On any other turn only the cut reply stays.
+  if (turn.repair.recoveredMask) {
+    const bool attended = !scheduledTurn_ && turnSource_ != TurnSource::Synthesis &&
+                          turnSource_ != TurnSource::Loop;
+    if (!attended || !d_.apply.whoFor(chatId).owner || externalContentSeen_ || unverifiedTurn_) {
+      dropRecoveredContainers(turn);
+      hlog::log("orchestrator: leaked-markup actions dropped (unattended turn or external content)");
+    } else {
+      hlog::log("orchestrator: leaked tool markup repaired, recovered actions kept");
+    }
+  }
+  // Lane L (subagents F2): spawn items sent through the pseudo-tool join the turn.
+  if (pseudo->calls) {
+    const int added = mergePseudoSpawns(turn, *pseudo);
+    hlog::logf("orchestrator: %d spawn item(s) from %d spawn-field tool call(s) joined the turn",
+               added, pseudo->calls);
   }
   d_.apply.ttsEnabled = d_.cfg.ttsEnabled ? d_.cfg.ttsEnabled() : false;   // live per-turn (owner toggle)
   ApplyState st;
@@ -1120,10 +1231,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.riskNote            = riskNote_;
   st.pendingMemResults   = &pendingMemResults_;
   st.unverifiedConnector = unverifiedTurn_;
+  st.spawnAttempted      = pseudo->calls > 0;
+  // Every spawn that does not start reaches the head's next turn as a
+  // [SPAWN REFUSED] line for this chat (and the owner line rides this reply).
+  st.noteSpawnRefused = [this, chatId](const std::string& name, const std::string& task,
+                                       const std::string& reason) {
+    if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);
+  };
   bool spawned = false;
   agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
+  // Lane L: whether this turn put anything in front of the owner (the
+  // synthesis fallback reads it - a result must never vanish into a silent turn).
+  lastTurnSpoke_ = !turn.reply.empty() || !turn.ask.empty() || toolReplied_;
   fireTurnEnd(true, lastReply_.size());
   return true;
 }
@@ -1174,6 +1295,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
   const std::string ownerRaw = d_.jobs->ownerResultsText();
   std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_);
+  freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
     "running - see [ACTIVE SESSIONS]). There is no new user message. "
@@ -1187,11 +1309,20 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
               "plainly that the connector did not run, never present that text as their "
               "real data, and do not store it (memory writes are refused this turn).";
   hlog::log("orchestrator: auto-synthesis turn (batch complete)");
+  lastTurnSpoke_ = false;
   const bool ok = runTurn(inputs, chatId, "");
   unverifiedTurn_ = false;
+  freshInTurn_ = false;
   if (!ok && fresh.length()) {
     hlog::log("orchestrator: synthesis turn failed - delivering raw results (never lost)");
     d_.jobs->deliverResults(chatId, ownerRaw);   // the job engine's sink, like the stuck fallback
+  } else if (ok && fresh.length() && !lastTurnSpoke_) {
+    // Lane L (the spawn conservation law): a synthesis turn that "succeeds" with
+    // an empty reply would drop the results it was handed - seen live on a
+    // mistral-small head that stored a memory and said nothing. The owner gets
+    // them raw instead, exactly like a failed synthesis.
+    hlog::log("orchestrator: synthesis turn said nothing - delivering raw results (never lost)");
+    d_.jobs->deliverResults(chatId, ownerRaw);
   }
   if (d_.journalGc) d_.journalGc();
 }
@@ -1247,6 +1378,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
   const std::string fresh = d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_) : std::string();
+  freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   // reply.speak / reply.telegram hints ride only a loop turn; the Telegram one only
   // when this turn can deliver over Telegram (CUM-523) - the SAME sample the
   // turn's tool list follows, taken once here.
@@ -1266,6 +1398,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     "\n\n[USER]\n" + text;
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall
   unverifiedTurn_ = false;
+  freshInTurn_ = false;
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
@@ -1498,7 +1631,9 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   }
   // The reply IS the summary; every other field of the turn is deliberately
   // ignored (no applyTurn - device actions, mem writes, spawns are all inert).
-  outSummary = orch::capSummary(t.reply);
+  // The summary feeds every later prompt: a leaked tag here would come back in
+  // later replies, so it passes the same reply seam (lane L, formatting F4).
+  outSummary = orch::capSummary(orch::cleanReplyMarkup(t.reply));
   hlog::logf("fold(%s): ok on %s (%u in / %u out)", chatId.c_str(), host.c_str(),
              (unsigned)usage.promptTokens, (unsigned)usage.completionTokens);
   return FoldResult::Ok;

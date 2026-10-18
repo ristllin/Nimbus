@@ -54,9 +54,21 @@ running, how many are queued, how many it can start this turn
 `kMaxActiveInflight` = 4 in flight, draining as each finishes), and that this is
 not a hard total limit. A big fan-out runs over successive waves: start a wave
 now, and when it finishes an automatic synthesis turn lets the head spawn the
-next, so it can work through dozens over a run. Mistral sub-agents run strictly
-one at a time; OpenAI and Anthropic ones run in parallel on the provider while
-the device collects them one by one.
+next, so it can work through dozens over a run. The line then says how each
+keyed provider runs a sub, from one table (`kDeviceBackendSync`,
+`lib/harness/include/nimbus/harness/fabric.h`): Mistral, the custom endpoint,
+Z.ai and the Cumulo router run one at a time inside the device and must finish
+within its wait or their work is lost; OpenAI and Anthropic run in parallel on
+the provider while the device collects them one by one, so research and long
+work belong there. A new backend without a mode fails to build.
+
+**The spawn ledger.** Each chat's next turn also reads a `[SPAWN LEDGER]` block
+(`JobEngine::spawnLedgerText`): that chat's sub-agents from the last two hours,
+newest first, from the job engine's own records - queued, running (with its job
+tag and provider/model), finished, failed with its reason, did not start with
+its reason, or stopped. The head never has to keep this in its notes or re-check
+it with file or session tools (on 17-18 Oct a note to "verify files_list" made
+every later turn poll a dead project). It is RAM only, at most 12 entries.
 
 **The pending queue is decoupled from concurrency.** `kMaxPendingSpawns`
 (12, `caps.h`) is the depth one turn may enqueue; `kAgentMaxJobs` (6) is the
@@ -71,8 +83,12 @@ once it drains (a `std::vector().swap` back to the baseline reserve), so a deep
 fan-out costs that memory only transiently.
 
 **The head hears the real reason a spawn did not start.** Every refusal (queue
-full, no keyed provider, a provider that refused the dispatch, including a 429
-with its quota window) is told to the owner at once and also leaves one line in
+full, no keyed provider, a provider that refused the dispatch with its reason -
+the key refused, the provider unreachable, a model it does not offer, a provider
+error, a 429 with its quota window - and every spawn the turn itself could not
+hand over: no task, a spawn list that could not be read, over the per-turn cap,
+or a reply that promised sub-agents the turn never started) is told to the
+owner at once and also leaves one line in
 the job engine, kept per spawning chat with its own 640-byte budget (past it,
 that chat gets one `(more refusals not listed)` line; no other chat is
 affected). At most 16 chats (the chat registry size, `kFoldMaxChats`) hold
@@ -92,10 +108,17 @@ spawned again, and `[SPAWN CAPACITY]` in every chat counts it as possibly runnin
 for 10 minutes (`JobEngine::maybeRunningCount`; the "do not spawn it again"
 instruction stays with the spawning chat), so the head does not pay for the same
 work twice. A head that calls a spawn field as a tool
-(`session_ops`, `spawn`) gets the live `[SPAWN CAPACITY]` number in the recovery
-text ([turn-contract.md](reference/turn-contract.md)): a Mistral head once
-claimed "spawn capacity is 0 this turn" while the prompt offered 6, right after
-a bare `unknown tool: session_ops`.
+(`session_ops`, `spawn`) has the call's usable spawn items carried into its turn
+(started once, deduped against its final reply); a call with nothing usable gets
+the live `[SPAWN CAPACITY]` number in the recovery text
+([turn-contract.md](reference/turn-contract.md)).
+
+**The model a spawn runs is one its provider lists.** A spawn that names a model
+the provider does not list runs the provider's sub-agent default when that is
+listed, else the first model the list holds; when the list holds nothing usable
+the spawn is refused with that reason. A provider with no list at all (the
+custom endpoint) runs the model as asked. The spawn ledger names the model that
+ran and the one that was asked for.
 
 ## The brief - the exact prompt a sub-agent receives
 

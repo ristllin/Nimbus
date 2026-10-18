@@ -107,6 +107,12 @@ class JobEngine {
     std::function<bool(const std::string& provider)> providerHasKey;
     std::function<std::string(const std::string& provider)> subModel;
     std::function<bool(const std::string& provider, const std::string& model)> modelIsValid;
+    // The provider's model choice list as CSV - the same derivation modelIsValid
+    // reads (device: effectiveModelChoices). Lets a spawn whose model the provider
+    // does not list fall back to a model that IS listed (validated coercion);
+    // "" means the provider has no list to check against (custom). Nullable =>
+    // the old fallback to the provider's sub-agent default.
+    std::function<std::string(const std::string& provider)> modelChoices;
 
     // Connector-aware routing: given a spawn's skill/connector id, return the
     // provider that HOSTS that connector (e.g. "mistral" for a Studio Notion
@@ -276,6 +282,19 @@ class JobEngine {
   // lost, so a re-spawn would pay for the same work twice. `mayHaveRun`
   // (optional) reports whether the taken notes carry such a line.
   std::string takeSpawnNotes(const std::string& chatId, bool* mayHaveRun = nullptr);
+  // Lane L: a spawn intent the turn could not hand to the queue (no task, an
+  // unreadable spawn list, over the per-turn cap, a reply that promised one)
+  // - noted for the chat's next turn exactly like a refusal, and kept in the
+  // spawn ledger. The owner line rides the turn's own reply (apply).
+  void noteSpawnIntentRefused(const std::string& chatId, const std::string& name,
+                              const std::string& task, const std::string& reason);
+  // The spawn ledger (UNIFIED 3.17): the device's own record of the sub-agents a
+  // chat started recently - queued, running, finished, failed or refused - from
+  // the job table, so the head never has to keep that in its free-text notes
+  // and re-check it with file or session tools. "" when the chat has none.
+  std::string spawnLedgerText(const std::string& chatId) const;
+  static constexpr size_t kLedgerMax = 12;              // entries kept (all chats)
+  static constexpr uint32_t kLedgerWindowMs = 2u * 60 * 60 * 1000;   // shown for 2 h
   // Sub-agents whose dispatch timed out recently (within kMaybeRunningMs): they
   // may still be running on their provider with no job here to wait for. The
   // [SPAWN CAPACITY] line counts them as possibly running.
@@ -331,7 +350,10 @@ class JobEngine {
                   ManagedAgentAdapter*& adapter);
   std::string spawnProvider(const PendingSpawn& p) const;
   bool keylessToRouter(std::string& provider, std::string& model) const;
-  void coerceSpawnModel(const std::string& provider, std::string& model) const;
+  // Validated coercion (subagents F5): the asked model when the provider lists
+  // it, else the provider's sub default when listed, else the first listed
+  // model. False when nothing validates (the owner and the head are told why).
+  bool coerceSpawnModel(const PendingSpawn& p, const std::string& provider, std::string& model);
   std::string routerOffer(const std::string& provider, const std::string& model) const;
   void refuseKeyless(const PendingSpawn& p, const std::string& provider, const std::string& model);
   std::string connectorHost(const PendingSpawn& p) const;
@@ -354,6 +376,22 @@ class JobEngine {
     bool mayHaveRun = false;   // a timed-out dispatch is among the lines
   };
   std::vector<SpawnNotes> spawnNotes_;
+  // The spawn ledger (lane L). PSRAM-backed (WorkingAllocator): it is RAM-only
+  // and bounded, and the JobEngine lives in internal SRAM on the device.
+  enum class LedgerState : uint8_t { Queued, Running, Done, Failed, Refused, Cancelled };
+  struct LedgerEntry {
+    std::string chatId, name, task, tag, provider, model, asked, reason;
+    LedgerState state = LedgerState::Queued;
+    uint32_t atMs = 0;
+  };
+  std::vector<LedgerEntry, nimbus::orch::WorkingAllocator<LedgerEntry>> ledger_;
+  void ledgerQueued(const PendingSpawn& p);
+  void ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
+                     const std::string& model);
+  void ledgerRefused(const std::string& chatId, const std::string& name, const std::string& task,
+                     const std::string& reason);
+  void ledgerFinished(const char* tag, LedgerState st, const std::string& reason = std::string());
+  static std::string ledgerLine(const LedgerEntry& e, uint32_t now);
   // Found or added (bounded); nullptr when there is no room for a plain refusal.
   SpawnNotes* spawnNotesFor(const std::string& chatId, bool mayHaveRun);
   // Dispatch-timeout times, <= kAgentMaxJobs, none older than kMaybeRunningMs

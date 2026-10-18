@@ -342,6 +342,32 @@ static void test_reply_and_ask_deliver_as_one_message() {
   TEST_ASSERT_EQUAL_STRING("Here's the status.", st.lastReply.c_str());
 }
 
+// Row 52: a question written into both fields is delivered once; the ask is
+// still emitted (the client offers a reply). Counter-test: an ask that is not
+// the reply's ending, or only appears mid-reply, is still appended.
+static void test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated() {
+  struct Case { const char* reply; const char* ask; const char* want; };
+  const Case cases[] = {
+      {"Here's the status. Want details?", "Want details?", "Here's the status. Want details?"},
+      {"Here's the status. Want details?\n", "  Want details?", "Here's the status. Want details?\n"},
+      {"Want details? Here's the status.", "Want details?", "Want details? Here's the status.\n\nWant details?"},
+      {"Here's the status.", "Want details?", "Here's the status.\n\nWant details?"},
+  };
+  for (const Case& c : cases) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    Turn t;
+    t.reply = c.reply;
+    t.ask = c.ask;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.want, r.delivered[0].second.c_str(), c.reply);
+    TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, c.reply);
+  }
+}
+
 static void test_empty_turn_signals_completion_not_done() {
   // The hardcoded "Done." ack was removed: an empty reply delivers NO message at the
   // harness level (async channels stay silent). Instead it signals turnComplete, and
@@ -538,6 +564,7 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
   RUN_TEST(test_reply_and_ask_deliver_as_one_message);
+  RUN_TEST(test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated);
   RUN_TEST(test_mem_write_is_stored_before_the_reply_is_delivered);
   RUN_TEST(test_tell_poll_nudge_does_not_mention_await);
   RUN_TEST(test_empty_turn_signals_completion_not_done);

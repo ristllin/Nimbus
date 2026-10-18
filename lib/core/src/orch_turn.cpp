@@ -7,11 +7,13 @@
 
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/mem_ttl.h"
+#include "nimbus/orch/reply_markup.h"
 #include "nimbus/mem_cap.h"
 
 #include <ArduinoJson.h>
 
 #include <cctype>
+#include <cstring>
 
 namespace nimbus {
 namespace orch {
@@ -54,7 +56,328 @@ bool fail(Turn& out, ParseError& err, ParseError::Code code, std::string detail)
   return false;
 }
 
+// ---- the field table (single source; pinned to ORCH_SCHEMA_BODY by a test) ----
+struct FieldRow {
+  const char* name;
+  FieldKind   kind;
+};
+const FieldRow kFieldRows[] = {
+    {"reply", FieldKind::String},
+    {"memory", FieldKind::String},
+    {"ask", FieldKind::String},
+    {"device", FieldKind::ArrayOfObjects},
+    {"mem_write", FieldKind::ArrayOfObjects},
+    {"mem_query", FieldKind::ArrayOfStrings},
+    {"session_ops", FieldKind::ArrayOfObjects},
+    {"scratchpad", FieldKind::Object},
+    {"spawn", FieldKind::ArrayOfObjects},
+    {"await", FieldKind::ArrayOfStrings},
+};
+static_assert(sizeof(kFieldRows) / sizeof(kFieldRows[0]) == (size_t)TurnField::Count,
+              "every TurnField needs a row");
+
+// ---- the parse-boundary normalizer (subagents F1, formatting F2, parsing P4) ----
+// A JSON string bigger than this is never re-parsed (bounded work on the turn
+// task); the field is reported instead. Six full spawn tasks fit with room.
+constexpr size_t kCoerceMaxBytes = (size_t)kAgentMaxJobs * kSpawnTaskMax + 4096;
+// Nesting accepted inside a field that arrived as a JSON string.
+constexpr uint8_t kCoerceNesting = 8;
+// Bytes of a dropped spawn's task kept for its report line.
+constexpr int kDropTaskMax = 200;
+
+const char kWs[] = " \t\r\n";
+
+std::string trimCopy(const std::string& s) {
+  const size_t b = s.find_first_not_of(kWs);
+  if (b == std::string::npos) return std::string();
+  const size_t e = s.find_last_not_of(kWs);
+  return s.substr(b, e - b + 1);
+}
+
+// Trailing whitespace off; the start is kept, so a salvaged prefix stays a
+// prefix of the original reply.
+std::string rtrimCopy(const std::string& s) {
+  const size_t e = s.find_last_not_of(kWs);
+  return e == std::string::npos ? std::string() : s.substr(0, e + 1);
+}
+
+bool isSpawnList(TurnField f) { return f == TurnField::SessionOps || f == TurnField::Spawn; }
+
+void addDrop(Turn& t, const std::string& name, const std::string& task, std::string reason) {
+  SpawnDrop d;
+  d.name = capUtf8(name, kSpawnNameMax - 1);
+  d.task = capUtf8(task, kDropTaskMax);
+  d.reason = std::move(reason);
+  t.spawnDrops.push_back(std::move(d));
+}
+
+const char* jsonTypeName(JsonVariantConst v) {
+  if (v.isNull()) return "null";
+  if (v.is<bool>()) return "a true/false value";
+  if (v.is<long long>() || v.is<double>()) return "a number";
+  if (v.is<const char*>()) return "text";
+  if (v.is<JsonArrayConst>()) return "a list";
+  if (v.is<JsonObjectConst>()) return "an object";
+  return "an unknown value";
+}
+
+bool kindOk(FieldKind k, JsonVariantConst v) {
+  switch (k) {
+    case FieldKind::String:         return v.is<const char*>();
+    case FieldKind::ArrayOfObjects:
+    case FieldKind::ArrayOfStrings: return v.is<JsonArrayConst>();
+    case FieldKind::Object:         return v.is<JsonObjectConst>();
+  }
+  return false;
+}
+
+// Replace root[key] with a copy of `v` (v may live in another document).
+void setField(JsonObject root, const char* key, JsonVariantConst v) {
+  JsonDocument copy;
+  copy.set(v);
+  root[key] = copy.as<JsonVariantConst>();
+}
+
+// Wrap a value as a one-item list in root[key].
+void wrapField(JsonObject root, const char* key, JsonVariantConst v) {
+  JsonDocument copy;
+  copy.set(v);
+  JsonArray a = root[key].to<JsonArray>();
+  a.add(copy.as<JsonVariantConst>());
+}
+
+// Report a container field the normalizer could not use. A spawn list that is
+// lost this way is a spawn intent that did not start: it is reported as one.
+void unusable(Turn& rep, TurnField f, const std::string& why) {
+  const std::string name = turnFieldName(f);
+  rep.parseNotes.push_back(name + " " + why + "; not used");
+  if (isSpawnList(f))
+    addDrop(rep, "", "", "the " + name + " field " + why + ", so no sub-agent in it could be read");
+}
+
+// A repair recorded once: the note, the count.
+bool repaired(Turn& rep, const std::string& name, const char* how) {
+  rep.parseNotes.push_back(name + " " + how + "; repaired");
+  rep.coercedFields++;
+  return true;
+}
+
+// A container field that arrived as JSON text: parsed and used when it holds the
+// expected type (or one object where a list of objects belongs).
+bool coerceJsonText(JsonObject root, TurnField f, const std::string& s, Turn& rep) {
+  const char* key = turnFieldName(f);
+  const FieldKind kind = turnFieldKind(f);
+  if (s.size() > kCoerceMaxBytes) {
+    unusable(rep, f, "arrived as JSON text too large to read");
+    return false;
+  }
+  JsonDocument d;
+  if (deserializeJson(d, s, DeserializationOption::NestingLimit(kCoerceNesting))) {
+    unusable(rep, f, "arrived as JSON text that does not parse");
+    return false;
+  }
+  if (kindOk(kind, d.as<JsonVariantConst>())) {
+    setField(root, key, d.as<JsonVariantConst>());
+    return repaired(rep, key, "arrived as a JSON string");
+  }
+  if (kind == FieldKind::ArrayOfObjects && d.is<JsonObjectConst>()) {
+    wrapField(root, key, d.as<JsonVariantConst>());
+    return repaired(rep, key, "arrived as a JSON string holding one object");
+  }
+  unusable(rep, f, std::string("arrived as JSON text holding ") + jsonTypeName(d.as<JsonVariantConst>()));
+  return false;
+}
+
+// A container field that arrived as a string.
+bool coerceString(JsonObject root, TurnField f, const std::string& s, Turn& rep) {
+  if (s.empty() || s == "null") return false;   // carries no item: nothing was meant
+  if (s[0] == '[' || s[0] == '{') return coerceJsonText(root, f, s, rep);
+  if (turnFieldKind(f) == FieldKind::ArrayOfStrings) {   // one search string: a list of one
+    JsonDocument d;
+    d.set(s);
+    wrapField(root, turnFieldName(f), d.as<JsonVariantConst>());
+    return repaired(rep, turnFieldName(f), "arrived as one string");
+  }
+  unusable(rep, f, "arrived as plain text, not a list");
+  return false;
+}
+
+// One container field brought to its contract shape. Returns true on a repair.
+bool coerceContainer(JsonObject root, TurnField f, Turn& rep) {
+  const char* key = turnFieldName(f);
+  const FieldKind kind = turnFieldKind(f);
+  JsonVariant v = root[key];
+  if (v.isNull() || kindOk(kind, v)) return false;
+  if (v.is<const char*>()) return coerceString(root, f, trimCopy(v.as<const char*>()), rep);
+  if (kind == FieldKind::ArrayOfObjects && v.is<JsonObjectConst>()) {
+    wrapField(root, key, v);
+    return repaired(rep, key, "arrived as a single object");
+  }
+  unusable(rep, f, std::string("arrived as ") + jsonTypeName(v));
+  return false;
+}
+
+// Names the head uses for "start a sub-agent" besides spawn.
+bool spawnSynonym(const std::string& op) {
+  static const char* kSyn[] = {"start", "run", "launch", "create", "new", "spawn_agent",
+                               "session_spawn", "spawn_session", "start_agent", "subagent",
+                               "sub_agent", "agent", "delegate"};
+  for (const char* k : kSyn)
+    if (op == k) return true;
+  return false;
+}
+
+// Other names the head gives a spawn's brief (task, then message, are the wire's).
+const char* const kTaskAliases[] = {"prompt", "instructions", "instruction", "brief",
+                                    "description", "query", "request", "goal"};
+
+bool nonEmptyStr(JsonVariantConst v) {
+  return v.is<const char*>() && !trimCopy(v.as<const char*>()).empty();
+}
+
+// One session_ops item made usable: op spliced/defaulted, brief under its name.
+// Appends the result(s) to `out`. Returns true when the item changed.
+bool fixOpItem(JsonVariantConst item, JsonArray out, Turn& rep, int depth);
+
+// A JSON string holding session_ops items (a list or one object): parsed and
+// each item made usable into `out`, with `note` recorded. False when `s` holds
+// no such JSON (left for the caller).
+bool spliceEmbedded(const std::string& raw, JsonArray out, Turn& rep, int depth, const char* note) {
+  const std::string s = trimCopy(raw);
+  if (s.empty() || (s[0] != '[' && s[0] != '{') || s.size() > kCoerceMaxBytes) return false;
+  JsonDocument d;
+  if (deserializeJson(d, s, DeserializationOption::NestingLimit(kCoerceNesting))) return false;
+  rep.parseNotes.push_back(note);
+  if (d.is<JsonArrayConst>()) {
+    for (JsonVariantConst e : d.as<JsonArrayConst>()) fixOpItem(e, out, rep, depth + 1);
+  } else {
+    fixOpItem(d.as<JsonVariantConst>(), out, rep, depth + 1);
+  }
+  return true;
+}
+
+// The op slot holding the list itself ({"op":"[{\"op\":\"spawn\"...}]"}).
+bool spliceOpList(JsonVariantConst opv, JsonArray out, Turn& rep, int depth) {
+  if (!opv.is<const char*>() || depth != 0) return false;
+  return spliceEmbedded(opv.as<const char*>(), out, rep, depth,
+                        "session_ops item carried its list inside op; repaired");
+}
+
+// A brief under another name becomes the task. True when one was taken.
+bool aliasTask(JsonObjectConst o, JsonDocument& fixed, Turn& rep) {
+  for (const char* alias : kTaskAliases) {
+    if (!nonEmptyStr(o[alias])) continue;
+    fixed["task"] = o[alias];
+    rep.parseNotes.push_back(std::string("session_ops spawn brief arrived as ") + alias +
+                             "; read as task");
+    return true;
+  }
+  return false;
+}
+
+// A missing op on an item with a task, a mis-cased op, or a synonym of spawn.
+bool fixOpName(JsonVariantConst opv, bool hasTask, JsonDocument& fixed, Turn& rep) {
+  if (opv.isNull()) {
+    if (!hasTask) return false;
+    fixed["op"] = "spawn";
+    rep.parseNotes.push_back("session_ops item had no op; read as spawn");
+    return true;
+  }
+  if (!opv.is<const char*>()) return false;
+  const std::string op = toLowerAscii(trimCopy(opv.as<const char*>()));
+  if (op != opv.as<const char*>() && (op == "spawn" || op == "terminate")) {
+    fixed["op"] = op;
+    rep.parseNotes.push_back("session_ops op '" + capUtf8(opv.as<const char*>(), 32) +
+                             "' read as " + op);
+    return true;
+  }
+  if (!spawnSynonym(op)) return false;
+  fixed["op"] = "spawn";
+  rep.parseNotes.push_back("session_ops op '" + op + "' read as spawn");
+  return true;
+}
+
+bool fixOpObject(JsonObjectConst o, JsonArray out, Turn& rep, int depth) {
+  JsonVariantConst opv = o["op"];
+  if (spliceOpList(opv, out, rep, depth)) return true;
+  JsonDocument fixed;
+  fixed.set(o);
+  bool hasTask = nonEmptyStr(o["task"]) || nonEmptyStr(o["message"]);
+  bool changed = false;
+  if (!hasTask && aliasTask(o, fixed, rep)) hasTask = changed = true;
+  if (fixOpName(opv, hasTask, fixed, rep)) changed = true;
+  out.add(fixed.as<JsonVariantConst>());
+  return changed;
+}
+
+bool fixOpItem(JsonVariantConst item, JsonArray out, Turn& rep, int depth) {
+  if (item.is<JsonObjectConst>()) return fixOpObject(item.as<JsonObjectConst>(), out, rep, depth);
+  if (item.is<const char*>() && depth < 2 &&
+      spliceEmbedded(item.as<const char*>(), out, rep, depth,
+                     "session_ops item arrived as a JSON string; repaired"))
+    return true;
+  out.add(item);   // left for parseTurn to report
+  return false;
+}
+
+// Every session_ops item made usable where it can be. The list is rebuilt only
+// when something changed, so a well-formed list is untouched.
+bool normalizeSessionOps(JsonObject root, Turn& rep) {
+  JsonArrayConst ops = root["session_ops"].as<JsonArrayConst>();
+  if (ops.isNull()) return false;
+  JsonDocument rebuilt;
+  JsonArray out = rebuilt.to<JsonArray>();
+  bool changed = false;
+  for (JsonVariantConst item : ops)
+    if (fixOpItem(item, out, rep, 0)) changed = true;
+  if (changed) setField(root, "session_ops", rebuilt.as<JsonVariantConst>());
+  return changed;
+}
+
 }  // namespace
+
+const char* turnFieldName(TurnField f) {
+  const size_t i = (size_t)f;
+  return i < (size_t)TurnField::Count ? kFieldRows[i].name : "";
+}
+
+FieldKind turnFieldKind(TurnField f) {
+  const size_t i = (size_t)f;
+  return i < (size_t)TurnField::Count ? kFieldRows[i].kind : FieldKind::String;
+}
+
+bool turnFieldFromName(const char* s, size_t n, TurnField& out) {
+  if (!s) return false;
+  for (size_t i = 0; i < (size_t)TurnField::Count; i++) {
+    if (std::strlen(kFieldRows[i].name) == n && std::memcmp(kFieldRows[i].name, s, n) == 0) {
+      out = (TurnField)i;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool normalizeTurnDoc(JsonObject root, Turn& rep) {
+  bool changed = false;
+  repairLeakedTop(root, rep.repair);
+  if (rep.repair.repaired) {
+    changed = true;
+    rep.parseNotes.push_back("reply carried leaked tool markup; cut");
+    if (rep.repair.droppedBlocks)
+      rep.parseNotes.push_back(std::to_string((unsigned)rep.repair.droppedBlocks) +
+                               " leaked field value(s) did not parse; not used");
+  }
+  for (size_t i = (size_t)TurnField::Device; i < (size_t)TurnField::Count; i++)
+    if (coerceContainer(root, (TurnField)i, rep)) changed = true;
+  if (normalizeSessionOps(root, rep)) changed = true;
+  const uint8_t cutsBefore = rep.repair.nestedCuts;
+  repairLeakedNested(root, rep.repair);
+  if (rep.repair.nestedCuts != cutsBefore) {
+    changed = true;
+    rep.parseNotes.push_back("a nested field carried leaked tool markup; cut");
+  }
+  return changed;
+}
 
 bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   out = Turn{};
@@ -88,10 +411,14 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   // wire schema is ADVISORY - its strict grammar budget rejects a contract this
   // size - so the parser is the ONLY enforcement layer, and a single slightly-off
   // array item was failing the whole turn, which leaked the raw JSON to the user
-  // via the caller's fallback). Policy: a present-but-not-array field reads as
-  // empty (as<JsonArrayConst>() on a non-array iterates zero times below), and a
-  // malformed ITEM is dropped, never a whole-turn error. The optional strings
-  // follow the same rule; only `reply` can fail a turn.
+  // via the caller's fallback). Policy: REPAIR OR REPORT. The normalizer first
+  // cuts a leaked tool-markup tail and recovers the fields it carried, then
+  // brings every container to its contract shape (a JSON string, a bare object,
+  // a list hidden in an item's op); what it cannot repair it names in
+  // out.parseNotes, and every spawn intent that cannot start lands in
+  // out.spawnDrops with its reason. A malformed ITEM is still never a whole-turn
+  // error, and only `reply` can fail a turn.
+  normalizeTurnDoc(doc.as<JsonObject>(), out);
 
   // 3. String fields. reply/ask are user-facing and uncapped here (the device
   //    budgets them elsewhere). memory is clamped to kMemModelMax UTF-8-safe so the
@@ -113,17 +440,33 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   //    provider-lowercasing, and per-field byte caps are applied on copy. The
   //    accepted vector is truncated to kAgentMaxJobs (6) - extra intents are
   //    unusable (the journal ceiling refuses them device-side) and bound the heap.
+  // Every drop below is REPORTED (out.spawnDrops): the item was a spawn intent.
+  const std::string kNoTask = "it was sent without a task";
+  const std::string kOverCap = spawnOverCapReason();
   for (JsonVariantConst s : root["spawn"].as<JsonArrayConst>()) {
-    if (!s.is<JsonObjectConst>()) continue;                 // malformed item -> drop
-    if (!s["task"].is<const char*>()) continue;             // no usable task -> drop
+    const std::string sname = s["name"].is<const char*>() ? s["name"].as<const char*>() : "";
+    if (!s.is<JsonObjectConst>()) {                         // malformed item -> drop
+      addDrop(out, "", "", "a spawn item was not an object");
+      continue;
+    }
+    if (!s["task"].is<const char*>()) {                     // no usable task -> drop
+      addDrop(out, sname, "", kNoTask);
+      continue;
+    }
     // task is the only semantically-required field: empty -> drop this item. Cap at
     // kSpawnTaskMax-1 like every sibling field: the device buffer is task[420] but it
     // copies with strncpy(..., sizeof(task)-1)=419 bytes, so a full-420-byte task would
     // be silently re-truncated device-side by a non-UTF-8-safe copy - splitting a
     // multi-byte char at the boundary, the exact corruption capUtf8 exists to prevent.
     std::string task = capUtf8(std::string(s["task"].as<const char*>()), kSpawnTaskMax - 1);
-    if (task.empty()) continue;
-    if (static_cast<int>(out.spawn.size()) >= kAgentMaxJobs) break;  // cap the vector
+    if (trimCopy(task).empty()) {
+      addDrop(out, sname, "", kNoTask);
+      continue;
+    }
+    if (static_cast<int>(out.spawn.size()) >= kAgentMaxJobs) {   // cap the vector
+      addDrop(out, sname, task, kOverCap);
+      continue;
+    }
 
     Spawn item;
     item.provider = toLowerAscii(spawnStr(s["provider"], nullptr,      kSpawnProviderMax - 1));
@@ -206,14 +549,45 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   // 9. session_ops[] - {op (required, in the known set), id/message/task/provider/
   //    model per op}. Unknown op or non-object dropped.
   static const char* kOps[] = {"spawn", "tell", "poll", "terminate", "list"};
+  int spawnsKept = 0;
   for (JsonVariantConst o : root["session_ops"].as<JsonArrayConst>()) {
-    if (!o.is<JsonObjectConst>()) continue;
+    if (!o.is<JsonObjectConst>()) {
+      addDrop(out, "", "", std::string("a session_ops item arrived as ") + jsonTypeName(o) +
+                               ", not an object");
+      continue;
+    }
+    // The task the item carries, whatever its op - an item with a brief was meant
+    // to start something, so losing it is reported as a spawn that did not start.
+    const std::string itemTask =
+        nonEmptyStr(o["task"]) ? o["task"].as<const char*>()
+                               : (nonEmptyStr(o["message"]) ? o["message"].as<const char*>() : "");
+    const std::string itemName = o["name"].is<const char*>() ? o["name"].as<const char*>() : "";
     JsonVariantConst opv = o["op"];
-    if (!opv.is<const char*>()) continue;
+    if (!opv.is<const char*>()) {
+      if (!itemTask.empty()) addDrop(out, itemName, itemTask, "it had no op");
+      else out.parseNotes.push_back("a session_ops item had no op; not used");
+      continue;
+    }
     std::string op = opv.as<const char*>();
     bool known = false;
     for (const char* k : kOps) if (op == k) { known = true; break; }
-    if (!known) continue;
+    if (!known) {
+      if (!itemTask.empty()) addDrop(out, itemName, itemTask, "its op '" + op + "' is unknown");
+      else out.parseNotes.push_back("a session_ops item had the unknown op '" + op + "'; not used");
+      continue;
+    }
+    if (op == "spawn") {
+      if (itemTask.empty()) {
+        addDrop(out, itemName, "", kNoTask);
+        continue;
+      }
+      if (spawnsKept >= kAgentMaxJobs ||
+          static_cast<int>(out.session_ops.size()) >= kAgentMaxJobs) {
+        addDrop(out, itemName, itemTask, kOverCap);
+        continue;
+      }
+      spawnsKept++;
+    }
     SessionOp so;
     so.op       = std::move(op);
     so.id       = spawnStr(o["id"],       "", kSpawnCategoryMax - 1);
@@ -230,7 +604,10 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
       std::string ref = spawnStr(av, "", 73);   // "<project 24>/<name 48>"
       if (!ref.empty()) so.attach.push_back(std::move(ref));
     }
-    if (static_cast<int>(out.session_ops.size()) < kAgentMaxJobs) out.session_ops.push_back(std::move(so));
+    if (static_cast<int>(out.session_ops.size()) < kAgentMaxJobs)
+      out.session_ops.push_back(std::move(so));
+    else
+      out.parseNotes.push_back("a session_ops '" + so.op + "' item was over the per-turn limit; not used");
   }
 
   // 10. scratchpad - inline persistent working-memory update.
@@ -379,8 +756,8 @@ std::string leadingJsonObject(const std::string& text, bool* wholeReply) {
   return text.substr(ob, oe - ob + 1);
 }
 
-ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
-  err = ParseError{};
+namespace {
+ReplyShape parseHeadReplyText(const std::string& text, Turn& out, ParseError& err) {
   if (text.find_first_not_of(kSpace) == std::string::npos)
     return unusable(out, err, "empty reply");
   bool fenced = false;
@@ -388,6 +765,12 @@ ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
   if (ob == std::string::npos || text[ob] != '{') {
     if (wholeJsonArray(text)) return unusable(out, err, "a JSON array, not a turn");
     if (truncatedJsonArray(text)) return unusable(out, err, "truncated JSON array");
+    // A reply cut right after its opening fence ("```json" and nothing after
+    // it) is wire output that never arrived, not prose to show the owner.
+    if (fenced && ob == std::string::npos && text.find("```", text.find("```") + 3) == std::string::npos)
+      return unusable(out, err, "truncated JSON fence");
+    if (trimCopy(text).find_first_not_of('`') == std::string::npos)   // "`" or "``": the same
+      return unusable(out, err, "truncated JSON fence");
     return prose(text, out, err);
   }
   bool whole = false;
@@ -399,6 +782,289 @@ ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
   // salvaged (reply/ask only); a JSON example that opens a prose answer is prose.
   if (turnShaped(obj)) return unusable(out, err, "text after the turn object");
   return prose(text, out, err);
+}
+}  // namespace
+
+ReplyShape parseHeadReply(const std::string& rawText, Turn& out, ParseError& err) {
+  err = ParseError{};
+  // Formatting F3: a leading reasoning block and a whole-reply wrapper are not
+  // the answer. "<think>...</think>{json}" is a turn (its side effects apply),
+  // never prose that shows the owner the reasoning AND the raw JSON.
+  size_t stripped = 0;
+  const std::string text = unwrapWholeReply(stripReasoningPreamble(rawText, &stripped));
+  const ReplyShape shape = parseHeadReplyText(text, out, err);
+  if (stripped)
+    out.parseNotes.push_back("reasoning preamble stripped (" + std::to_string(stripped) + " B)");
+  if (text.size() + stripped != rawText.size() && shape != ReplyShape::Unusable)
+    out.parseNotes.push_back("whole-reply wrapper removed");
+  return shape;
+}
+
+// ---- pseudo-tool spawns (subagents F2) -------------------------------------------
+
+int spawnsFromToolArgs(const std::string& argsJson, Turn& out) {
+  out = Turn{};
+  JsonDocument d;
+  if (deserializeJson(d, argsJson, DeserializationOption::NestingLimit(kCoerceNesting))) {
+    addDrop(out, "", "", "the call's arguments were not valid JSON");
+    return 0;
+  }
+  // Where the spawn list sits in this call's arguments.
+  JsonDocument root;
+  root["reply"] = "";
+  JsonVariantConst list;
+  if (d.is<JsonObjectConst>()) {
+    JsonObjectConst o = d.as<JsonObjectConst>();
+    if (!o["session_ops"].isNull()) list = o["session_ops"];
+    else if (!o["spawn"].isNull()) list = o["spawn"];
+    else if (!o["op"].isNull() || nonEmptyStr(o["task"]) || nonEmptyStr(o["message"])) list = o;
+    else for (const char* alias : kTaskAliases)
+      if (nonEmptyStr(o[alias])) { list = o; break; }
+  } else if (!d.isNull()) {
+    list = d.as<JsonVariantConst>();
+  }
+  if (list.isNull()) {
+    addDrop(out, "", "", "the call carried no spawn item");
+    return 0;
+  }
+  root["session_ops"] = list;
+  std::string json;
+  serializeJson(root, json);
+  Turn parsed;
+  ParseError err;
+  if (!parseTurn(json, parsed, err)) {
+    addDrop(out, "", "", "the call's spawn list could not be read");
+    return 0;
+  }
+  out.parseNotes = std::move(parsed.parseNotes);
+  out.spawnDrops = std::move(parsed.spawnDrops);
+  for (SessionOp& op : parsed.session_ops) {
+    if (op.op == "spawn") out.session_ops.push_back(std::move(op));
+    else out.parseNotes.push_back("a '" + op.op + "' op sent as a tool call was not run");
+  }
+  return (int)out.session_ops.size();
+}
+
+// ---- salvage of a cut or unreadable reply (parsing P3) ---------------------------
+
+const char kSalvageCutMarker[] =
+    "(My answer was cut off before I finished, and nothing else in it was carried out. "
+    "Ask me to continue.)";
+
+namespace {
+
+// Append the UTF-8 encoding of code point cp.
+void putUtf8(std::string& o, uint32_t cp) {
+  if (cp < 0x80) {
+    o += (char)cp;
+  } else if (cp < 0x800) {
+    o += (char)(0xC0 | (cp >> 6));
+    o += (char)(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    o += (char)(0xE0 | (cp >> 12));
+    o += (char)(0x80 | ((cp >> 6) & 0x3F));
+    o += (char)(0x80 | (cp & 0x3F));
+  } else {
+    o += (char)(0xF0 | (cp >> 18));
+    o += (char)(0x80 | ((cp >> 12) & 0x3F));
+    o += (char)(0x80 | ((cp >> 6) & 0x3F));
+    o += (char)(0x80 | (cp & 0x3F));
+  }
+}
+
+bool hex4(const std::string& s, size_t i, uint32_t& v) {
+  if (i + 4 > s.size()) return false;
+  v = 0;
+  for (size_t k = i; k < i + 4; k++) {
+    const char c = s[k];
+    v <<= 4;
+    if (c >= '0' && c <= '9') v |= (uint32_t)(c - '0');
+    else if (c >= 'a' && c <= 'f') v |= (uint32_t)(c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F') v |= (uint32_t)(c - 'A' + 10);
+    else return false;
+  }
+  return true;
+}
+
+constexpr uint32_t kReplacement = 0xFFFD;
+
+// The low half after a high surrogate `hi`, at s[i]. Advances i. Returns false
+// when the pair is cut between its halves - a cut, never a replacement
+// character the original did not have.
+bool decodeLowHalf(const std::string& s, size_t& i, uint32_t hi, std::string& out) {
+  if (i >= s.size()) return false;
+  if (s[i] == '\\' && (i + 1 >= s.size() || (s[i + 1] == 'u' && i + 6 > s.size()))) return false;
+  uint32_t lo = 0;
+  const bool pair = i + 1 < s.size() && s[i] == '\\' && s[i + 1] == 'u' && hex4(s, i + 2, lo) &&
+                    lo >= 0xDC00 && lo <= 0xDFFF;
+  if (!pair) {
+    putUtf8(out, kReplacement);   // a lone high surrogate
+    return true;
+  }
+  putUtf8(out, 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+  i += 6;
+  return true;
+}
+
+// One \uXXXX escape at s[i] ('\\' at i), surrogate pairs combined. Advances i.
+// Returns false when the text ends inside the escape (a cut).
+bool decodeUnicode(const std::string& s, size_t& i, std::string& out) {
+  uint32_t hi = 0;
+  if (!hex4(s, i + 2, hi)) {
+    if (i + 6 > s.size()) return false;   // cut inside the escape
+    putUtf8(out, kReplacement);
+    i += 2;
+    return true;
+  }
+  i += 6;
+  if (hi >= 0xD800 && hi <= 0xDBFF) return decodeLowHalf(s, i, hi, out);
+  putUtf8(out, (hi >= 0xDC00 && hi <= 0xDFFF) ? kReplacement : hi);   // a lone low half: U+FFFD
+  return true;
+}
+
+// The byte one simple escape (\n, \", ...) stands for.
+char simpleEscape(char e) {
+  switch (e) {
+    case 'b': return '\b';
+    case 'f': return '\f';
+    case 'n': return '\n';
+    case 'r': return '\r';
+    case 't': return '\t';
+    default:  return e;   // \" \\ \/ and anything else: the byte itself
+  }
+}
+
+// Decode the JSON string whose opening quote is at s[q]. Returns the index
+// after the closing quote, or npos when the text ends first (cut).
+size_t decodeJsonString(const std::string& s, size_t q, std::string& out) {
+  size_t i = q + 1;
+  while (i < s.size()) {
+    const char c = s[i];
+    if (c == '"') return i + 1;
+    if (c != '\\') {
+      out += c;
+      i++;
+      continue;
+    }
+    if (i + 1 >= s.size()) return std::string::npos;
+    if (s[i + 1] == 'u') {
+      if (!decodeUnicode(s, i, out)) return std::string::npos;
+      continue;
+    }
+    out += simpleEscape(s[i + 1]);
+    i += 2;
+  }
+  return std::string::npos;
+}
+
+// Drop a UTF-8 sequence the cut split (its lead byte without all its
+// continuation bytes).
+void dropSplitSequence(std::string& s) {
+  const size_t n = s.size();
+  size_t k = n;
+  while (k > 0 && ((unsigned char)s[k - 1] & 0xC0) == 0x80) k--;
+  if (k == 0) return;
+  const unsigned char lead = (unsigned char)s[k - 1];
+  const size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  if (need > 1 && n - (k - 1) < need) s.resize(k - 1);
+}
+
+bool sentenceEnd(const std::string& s, size_t i) {   // s[i-1] ends a sentence
+  const char c = s[i - 1];
+  const bool stop = c == '.' || c == '!' || c == '?' || c == '\n';
+  return stop && (i == s.size() || s[i] == ' ' || s[i] == '\n');
+}
+
+// A cut string's decoded prefix, made presentable: no split sequence at the
+// end, then back to the last sentence end (or, failing that, the last word
+// break) when one sits in the second half.
+std::string trimCutPrefix(std::string s) {
+  dropSplitSequence(s);
+  const size_t n = s.size();
+  for (size_t i = n; i > n / 2; i--)
+    if (sentenceEnd(s, i)) return rtrimCopy(s.substr(0, i));
+  for (size_t i = n; i > n / 2; i--)
+    if (s[i - 1] == ' ' || s[i - 1] == '\n') return rtrimCopy(s.substr(0, i - 1));
+  return rtrimCopy(s);
+}
+
+// The single pass over the leading object: depth, string state, and whether
+// the next string at depth 1 is a key or a value.
+struct SalvageLexer {
+  SalvageLexer(const std::string& t, Salvage& o) : text(t), out(o) {}
+  const std::string& text;
+  Salvage& out;
+  int depth = 1;
+  bool expectKey = true;
+  bool inValue = false;
+  std::string key;
+
+  // One string at text[i]; returns the index after it, npos when it was cut.
+  size_t string(size_t i) {
+    std::string str;
+    const size_t next = decodeJsonString(text, i, str);
+    const bool complete = next != std::string::npos;
+    if (depth == 1 && expectKey) {
+      key = str;
+      expectKey = false;
+    } else if (depth == 1 && inValue) {
+      inValue = false;
+      take(str, complete);
+    }
+    return next;
+  }
+
+  void take(const std::string& str, bool complete) {
+    if (key != "reply" && key != "ask") return;
+    std::string& dst = key == "reply" ? out.reply : out.ask;
+    bool& done = key == "reply" ? out.replyComplete : out.askComplete;
+    dst = complete ? str : trimCutPrefix(str);
+    done = complete;
+  }
+
+  void punct(char c) {
+    if (depth == 1 && c == ':') inValue = true;
+    else if (depth == 1 && c == ',') { expectKey = true; inValue = false; }
+    else if (c == '{' || c == '[') { depth++; inValue = false; }
+    else if (c == '}' || c == ']') depth--;
+    else if (depth == 1) inValue = false;   // a number / true / false / null value
+  }
+};
+
+}  // namespace
+
+bool salvageTurnText(const std::string& text, Salvage& out) {
+  out = Salvage{};
+  bool fenced = false;
+  const size_t ob = leadingObjectStart(text, fenced);
+  if (ob == std::string::npos || text[ob] != '{') return false;
+  SalvageLexer lex(text, out);
+  size_t i = ob + 1;
+  while (i < text.size() && lex.depth > 0) {
+    const char c = text[i];
+    if (c == '"') {
+      i = lex.string(i);
+      if (i == std::string::npos) break;
+      continue;
+    }
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n') lex.punct(c);
+    i++;
+  }
+  return out.found();
+}
+
+std::string spawnOverCapReason() {
+  return "it was over the limit of " + std::to_string(kAgentMaxJobs) +
+         " sub-agents one turn can start; start it in the next wave";
+}
+
+bool isCutError(const std::string& err) {
+  std::string e = toLowerAscii(err);
+  return e.rfind("cut", 0) == 0 || e.find("max_tokens") != std::string::npos ||
+         e.find("max_output_tokens") != std::string::npos ||
+         e.find("output limit") != std::string::npos ||
+         e.find("finish_reason=length") != std::string::npos ||
+         e.find("finish_reason length") != std::string::npos;
 }
 
 }  // namespace orch

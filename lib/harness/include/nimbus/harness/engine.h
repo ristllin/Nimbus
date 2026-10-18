@@ -337,6 +337,10 @@ class TurnEngine {
   std::string takePendingMemResults();
   // CUM-538: this chat's "[SPAWN REFUSED]" block ("" when none).
   std::string takeSpawnNotes(const std::string& chatId);
+  // The [SPAWN REFUSED] block around a chat's refusal lines.
+  static std::string refusedBlock(const std::string& notes, bool mayHaveRun);
+  // Lane L: the [SPAWN CAPACITY] sentence on how keyed providers run subs.
+  std::string syncCapacityText() const;
   std::string buildDynamicContext();
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
@@ -373,6 +377,13 @@ class TurnEngine {
   // ran. Set by the entry wrappers from takeFreshResults; while set, the turn's
   // memory writes (mem_write[] and the loop's memory.write tool) are refused.
   bool unverifiedTurn_ = false;
+  // Lane L: the entry wrappers fold sub-agent results into this turn (external
+  // content); runTurn seeds externalContentSeen_ from it, and a tool whose
+  // output is external (orch::toolTaint) sets it mid-turn. The leak-repair gate
+  // keeps recovered actions only while it is false.
+  bool freshInTurn_ = false;
+  bool externalContentSeen_ = false;
+  bool lastTurnSpoke_ = false;   // the last applied turn delivered a reply, an ask or a tool reply
   // Spend-attribution tag + hook source for the CURRENT turn, set by the entry
   // wrappers (handleMessage "turn"/Owner, maybeConsolidate "synthesis",
   // injectScheduledTurn "loop:<id>") and reset to the owner default after.

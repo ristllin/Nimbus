@@ -9,8 +9,9 @@ adapter, a prompt, or a test that feeds `parseTurn()`. The portable, Arduino-fre
 
 - Authoritative doc-comment: `lib/core/include/nimbus/orch/turn.h`
 - Wire schema advertised to providers: `lib/core/include/nimbus/orch/orch_schema.h` (`ORCH_SCHEMA_BODY`)
-- Parser: `lib/core/src/orch_turn.cpp` (`parseTurn`)
-- Behavior pinned by tests: `test/test_orch_turn/main.cpp`
+- Parser: `lib/core/src/orch_turn.cpp` (`parseTurn`, `normalizeTurnDoc`, `salvageTurnText`)
+- Leaked-markup repair and the reply cleaner: `lib/core/src/orch_reply_markup.cpp`
+- Behavior pinned by tests: `test/test_orch_turn`, `test/test_turn_shape`, `test/test_reply_markup`
 - Byte/concurrency caps: `lib/core/include/nimbus/orch/caps.h`, `lib/core/include/nimbus/mem_cap.h`
 
 Related: the tools these fields drive - [tool-catalog.md](tool-catalog.md) -
@@ -38,12 +39,75 @@ The split that matters at the parser is between `reply` and everything else:
   happens in the field) keeps the turn and its side effects: scratchpad,
   `mem_write`, device actions, and `session_ops` still apply.
 - **Every array** (`device`, `spawn`, `await`, `mem_write`, `mem_query`,
-  `session_ops`) is **tolerant**: a present-but-not-array value reads as
-  **empty**, and a malformed *item* is **dropped silently**, never a whole-turn
-  error.
+  `session_ops`) and the `scratchpad` object is **repair-or-report**: a value
+  in another shape is repaired when it can be (see "The parse-boundary
+  normalizer" below), and what cannot be repaired is named in
+  `Turn::parseNotes`, never read as empty in silence. A malformed *item* is
+  still never a whole-turn error, and every spawn intent the parser cannot
+  carry lands in `Turn::spawnDrops` with its reason.
 
 The wire schema still lists `memory` and `ask` under `required`: OpenAI strict
 mode demands every property be listed there. Only the parser is lenient.
+
+## The parse-boundary normalizer
+
+`normalizeTurnDoc()` runs inside `parseTurn()` before the field reads. It exists
+because a non-strict wire (Anthropic, the Mistral loop) sends fields in shapes
+the old parser read as "nothing there": on 16-18 Oct six turns promised 34
+sub-agents and the parser read zero spawns, with no trace.
+
+1. **Leaked tool markup** (`repairLeakedParams`). A model that slips from JSON
+   tool input into its XML tool-call format ends `reply` with `</reply>` or
+   `</parameter>` and writes the later fields as `<parameter name="memory">`
+   blocks inside that string. When the tail holds nothing but such markers,
+   whitespace and parameter blocks, it is cut, and each field it carried is
+   recovered where the document had none (a present value always wins; a
+   container value that does not parse to its type is dropped and counted).
+   Prose that mentions a tag and goes on, and markers inside code, are left
+   alone. The fields recovered this way are flagged (`Turn::repair`) so the
+   engine can refuse their actions on an unattended or tainted turn; a spawn
+   refused this way is reported to the owner and the head like any other.
+2. **Container shapes.** For every container field (the list comes from the
+   same table a test pins to `ORCH_SCHEMA_BODY`): a JSON string that parses to
+   the expected type is used; one object where a list of objects belongs is
+   wrapped; one search string becomes a list of one. Anything else is reported.
+3. **`session_ops` items.** A list hidden in an item's `op`, an item sent as a
+   JSON string, a missing `op` on an item with a task, an op synonym (`start`,
+   `launch`, `run`, ...) and a brief under another name (`prompt`,
+   `instructions`, `brief`, ...) are all read as spawns.
+
+A well-formed turn is untouched and byte-identical (a counter-test pins it).
+
+## Reasoning, wrappers and markup in the reply
+
+`parseHeadReply()` drops a leading `<think>` / `<thinking>` / `<reasoning>`
+block and a whole-reply wrapper (`<orch_turn>`, `<reply>`, ...) before it reads
+the shape, so `<think>...</think>{json}` is a turn, never prose with raw JSON in
+it. The engine then runs `cleanReplyMarkup()` on the reply and the ask, the
+salvaged text and the fold summary, and Telegram runs it again before sending:
+reasoning, tool-call markup and wrapper tags never reach a channel, while
+unknown `<word>` content and code stay byte-exact.
+
+## Cut and unreadable answers
+
+When the head's answer cannot be applied, `salvageTurnText()` reads only the
+top-level `reply` and `ask` of its leading object (bare or fenced, possibly cut
+short; escapes and surrogate pairs decoded). Nothing nested is ever salvaged.
+The owner gets that text, plus one fixed line exactly when the answer was cut:
+"(My answer was cut off before I finished, and nothing else in it was carried
+out. Ask me to continue.)". With nothing to salvage, one plain line says the
+answer was cut off or could not be read and that nothing in it was carried
+out. The delivered text is captured to the chat history, and the turn-end row
+carries `err` `cut: ...` or `parse: ...`.
+
+## The final check
+
+On a tool-loop turn, a terminal `orch_turn` passes `validateFinal` before it is
+accepted (`HeadLoopConfig::validateFinal`, built with `chainFinalChecks`). An
+answer whose spawn list cannot be read, whose spawn items cannot start, or whose
+reply says sub-agents started while no spawn item is present is sent back once,
+with the problems named and the array form shown. At most one correction round
+runs per turn, never on the forced final round and never for a cut answer.
 
 ## Contract shape
 
@@ -98,9 +162,9 @@ does, and only its success result lets the reply claim it happened.
 
 ## Optional arrays
 
-Every array key is optional and tolerant: absent reads as an empty vector, and
-present-but-not-an-array also reads as empty (`as<JsonArrayConst>()` on a
-non-array iterates zero times; it is not an error). A bare `{"reply":"hi"}` is
+Every array key is optional and tolerant: absent reads as an empty vector, and a
+value in another shape is repaired or reported by the normalizer (never an
+error). A bare `{"reply":"hi"}` is
 therefore a fully valid turn (all arrays empty, `memory`/`ask` `""`), and a new
 turn can omit `spawn`/`await`/`device` and drive the run through the
 live-integration arrays instead.
@@ -121,8 +185,8 @@ Retired from the wire schema (spawning moved to `session_ops`) but kept fully
 parseable, so an old client still works. Per item:
 
 - A **non-object** element, or one whose `task` is **missing / non-string /
-  empty**, is **dropped** silently - `task` is the only semantically-required
-  field (matches the device `enqueueSpawn` `if (!task[0]) return;`). Every other
+  empty**, is **dropped and reported** (`Turn::spawnDrops`) - `task` is the only
+  semantically-required field. Every other
   field falls back to a default on copy, so a provider that omits `note` or
   sends a numeric `model` loses that item at worst, never the whole turn.
 - Defaults, provider-lowercasing, and per-field UTF-8-safe byte caps are applied
@@ -195,8 +259,11 @@ The advertised way to start and stop sub-agents (superseding the retired
   only**. The fabric is fire-and-forget: there is no live back-and-forth with a
   running sub-agent, so `tell`, `poll`, and `list` were retired from the wire.
   The parser's known set still accepts those three names for old clients, but
-  they are **no-ops** on this fabric. A non-object item, a non-string `op`, or an
-  **unknown `op` is dropped** (turn stays valid).
+  they are **no-ops** on this fabric. An item the normalizer cannot make usable
+  (not an object, no `op`, an unknown `op`, a spawn with no task, a spawn past
+  the per-turn cap of six) is dropped - and when it carried a task it is
+  **reported** as a spawn that did not start: the owner gets one correction line
+  on the turn's reply and the head a `[SPAWN REFUSED]` line on its next turn.
 - Every other field is used per-op, defaulted-empty, and byte-capped. All nine
   keys are `required` in the strict wire schema. `op` is a non-nullable enum
   (`spawn` | `terminate`); the other eight (`id`, `task`, `provider`, `model`,
@@ -230,8 +297,15 @@ and carries a larger fan-out across waves rather than silently dropping work.
 
 ## When a model calls a field as a tool
 
-Some heads (seen on Mistral) call a reply field such as `session_ops`, or a
-connector such as `gcal`, as if it were a live tool. The registry
+Some heads (seen on Anthropic and Mistral) call a reply field such as
+`session_ops`, or a connector such as `gcal`, as if it were a live tool. A call
+to a spawn field (`session_ops`, `spawn`, `session_spawn`, `spawn_agent`) is
+read with the normalizer above: its usable spawn items are carried into the
+turn as its `session_ops` and start when the turn ends, deduped against the
+final `orch_turn` (provider plus the task's first 200 characters, case and
+spacing folded), and the model is told they were taken. A call with nothing
+usable gets the recovery text below, and if the turn then starts no sub-agent
+the owner and the head are told. For every other unknown name the registry
 (`ToolRegistry::unknownToolText`, `lib/core/src/orch_tool_registry.cpp`) answers
 an unknown name with recovery text instead of a bare error, in this order:
 
@@ -310,9 +384,10 @@ the reason; `err.detail` names the offending field/reason for logs + tests.
 
 `MissingField`/`WrongType` fire **only** for `reply`. `memory`/`ask` never fail a
 turn (an off value reads as `""`), and no array - `device`, `spawn`, `await`, `mem_write`, `mem_query`, or `session_ops` -
-can produce a parse error: a present-but-not-array value reads as empty, and a
-malformed item is dropped. The `scratchpad` object is equally tolerant: a
-present-but-non-object value reads as **no change**, never an error.
+can produce a parse error: a value the normalizer cannot repair reads as empty
+and is named in `parseNotes`, and a malformed item is dropped. The `scratchpad`
+object is equally tolerant: a value that is not an object (or a JSON string of
+one) reads as **no change**, never an error.
 
 ## Backward-compatibility guarantee
 
@@ -328,21 +403,22 @@ or present-but-mistyped - array parses to an **empty vector**, and an absent
 
 1. Deserialize → `JsonError`; not an object → `NotObject`.
 2. `reply` required string (`MissingField` / `WrongType`); `memory`/`ask`
-   optional strings (absent / `null` / mistyped ⇒ `""`); every array key
-   optional and tolerant (absent OR present-but-not-array ⇒ empty).
+   optional strings (absent / `null` / mistyped ⇒ `""`).
+2a. The normalizer: leaked-markup repair, container shapes, `session_ops` item
+   shapes; what it cannot repair goes to `parseNotes` / `spawnDrops`.
 3. Copy string fields: `reply`/`ask` uncapped; `memory` capped to `kMemModelMax`.
 4. `spawn[]` tolerant per-item: non-object / missing-or-empty-`task` items
-   dropped; other fields defaulted + provider lowercased + per-field byte caps;
-   vector truncated to `kAgentMaxJobs` (6).
+   dropped and reported; other fields defaulted + provider lowercased + per-field
+   byte caps; items past `kAgentMaxJobs` (6) reported.
 5. `await[]` tolerant: non-string items dropped; blank/whitespace-only trimmed
    away.
 6. `device[]` tolerant: non-object items dropped; each kept item carried raw.
 7. `mem_write[]` tolerant; `importance` int-or-float clamped `[0,1]`; `ttl`
    accepted only when it names a known class; capped to `kAgentMaxJobs`.
 8. `mem_query[]` tolerant; trimmed; capped to `kAgentMaxJobs`.
-9. `session_ops[]` tolerant; `op` in the known set; spawn fields
-   (`skill`/`name`/`project`/`attach`) defaulted + capped; capped to
-   `kAgentMaxJobs`.
+9. `session_ops[]` tolerant; `op` in the known set; a spawn needs a task;
+   spawn fields (`skill`/`name`/`project`/`attach`) defaulted + capped; capped to
+   `kAgentMaxJobs`; every dropped spawn intent reported.
 10. `scratchpad` tolerant: whole field null / absent / non-object ⇒ no change;
     non-null `active` capped to `kScratchActiveMax`; each non-null tier
     (`short`/`mid`/`long`) REPLACES it - blank items dropped, ≤ `kScratchTierItems`

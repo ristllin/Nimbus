@@ -17,10 +17,18 @@
 // there is no usable turn. `memory` and `ask` are OPTIONAL strings (CUM-483):
 // absent, null, or mistyped read as "" ("memory unchanged" / "no question"), so a
 // model that leaves one out (the Anthropic wire schema is advisory) keeps its
-// side effects. EVERY array key is OPTIONAL and TOLERANT: absent or
-// present-but-not-an-array => empty, and a malformed item is dropped, never a
-// whole-turn error. Defaults / lowercasing / byte-caps are applied on copy.
+// side effects. EVERY array key is OPTIONAL and REPAIR-OR-REPORT: a field that
+// arrives in another shape (a JSON string, a bare object) is repaired by the
+// normalizer, and whatever cannot be repaired is named in Turn::parseNotes /
+// Turn::spawnDrops - never zero items with no trace (the 16-18 Oct spawn loss:
+// six turns promised 34 spawns and parseTurn read zero, silently). A malformed
+// item is still never a whole-turn error. Defaults / lowercasing / byte-caps are
+// applied on copy.
 
+#include <ArduinoJson.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -98,6 +106,40 @@ struct ScratchUpdate {
   bool hasLong = false;   std::vector<std::string> longItems;
 };
 
+// The orch_turn fields the parse boundary knows, in wire-schema order
+// (ORCH_SCHEMA_BODY), then the two retired arrays the parser still tolerates.
+// One table serves the leak repair (which fields may hide in a leaked tail) and
+// the container normalizer (what shape each field must have); a host test pins it
+// to the schema's own property list, so a field added there fails until listed.
+enum class TurnField : uint8_t {
+  Reply = 0, Memory, Ask, Device, MemWrite, MemQuery, SessionOps, Scratchpad,
+  Spawn, Await, Count
+};
+enum class FieldKind : uint8_t { String, ArrayOfObjects, ArrayOfStrings, Object };
+const char* turnFieldName(TurnField f);
+FieldKind   turnFieldKind(TurnField f);
+// Exact, case-sensitive match on a field name of length n; false when unknown.
+bool turnFieldFromName(const char* s, size_t n, TurnField& out);
+
+// What the leak repair did to one turn (formatting F1). Masks are bit
+// (1 << TurnField). RAM only, never persisted.
+struct LeakRepair {
+  bool     repaired = false;     // a leaked tool-markup tail was cut from a top-level string
+  uint16_t recoveredMask = 0;    // fields recovered from that tail (absent or null before)
+  uint16_t containerMask = 0;    // the recovered fields that carry actions (arrays, scratchpad)
+  uint8_t  nestedCuts = 0;       // nested strings (a spawn task, a memory) cut at a leak
+  uint8_t  droppedBlocks = 0;    // leaked container values that did not parse to their type
+};
+
+// One spawn intent the parse boundary saw but could not carry to the job
+// engine, with the plain reason. Every entry is reported to the owner and to
+// the head (apply), never dropped in silence.
+struct SpawnDrop {
+  std::string name;     // the item's display name ("" when it had none)
+  std::string task;     // the item's task text, capped ("" when it had none)
+  std::string reason;   // why it did not start, for the head's [SPAWN REFUSED] note
+};
+
 struct Turn {
   std::string reply;                  // user-facing text ("" if none)
   std::string memory;                 // updated model memory ("" if unchanged)
@@ -110,7 +152,59 @@ struct Turn {
   std::vector<MemWrite>    mem_write;    // store facts in the VDB (memory.write)
   std::vector<std::string> mem_query;    // searches; results echoed into the NEXT turn
   std::vector<SessionOp>   session_ops;  // spawn/terminate (tell/poll/list parsed for compat)
+  // ---- parse-boundary report (RAM only; empty on a well-formed turn) ----
+  // One line per field the normalizer repaired or dropped, for the log and the
+  // in-turn correction ("session_ops arrived as a JSON string; repaired").
+  std::vector<std::string> parseNotes;
+  std::vector<SpawnDrop>   spawnDrops;   // spawn intents that cannot start (reported, never silent)
+  LeakRepair               repair;       // leaked tool markup cut from reply/memory/ask
+  int                      coercedFields = 0;   // container fields repaired from a JSON string
 };
+
+// The parse-boundary normalizer on its own (also run by parseTurn): repairs a
+// leaked tool-markup tail (repairLeakedParams), then brings every container
+// field to the shape the contract expects - a JSON string that parses to it, a
+// bare object where a list of objects belongs, a spawn list hidden in an item's
+// `op`, a task under another name, an op that is missing or a synonym of spawn.
+// What cannot be repaired is reported in `report` (parseNotes / spawnDrops),
+// never dropped in silence. Returns true when the document changed; a
+// well-formed turn is left byte-identical and returns false with no notes.
+bool normalizeTurnDoc(ArduinoJson::JsonObject root, Turn& report);
+
+// Spawn items carried by a call to a turn field used as a tool (the head calls
+// session_ops(...) as a function): the same normalizer over the call's
+// arguments, whatever their shape ({"session_ops":[...]}, {"session_ops":"[...]"},
+// a bare spawn object, {"op":"[...]"}, {}). Accepted items land in `out`
+// (op "spawn" only); unusable ones in out.spawnDrops. Returns the accepted count.
+int spawnsFromToolArgs(const std::string& argsJson, Turn& out);
+
+// Length-aware salvage of a cut or unreadable head reply (parsing P3): a bounded
+// single pass over the reply's leading JSON object (bare or fenced), which may be
+// cut short. It reads only the TOP-LEVEL "reply" and "ask" strings - nested
+// values (device, mem_write, session_ops, scratchpad) can never be salvaged -
+// decoding JSON escapes (a lone surrogate becomes U+FFFD). A string cut before
+// its closing quote keeps its decoded prefix, trimmed UTF-8-safe to the last
+// sentence or word boundary, with *Complete = false.
+struct Salvage {
+  std::string reply, ask;
+  bool replyComplete = false, askComplete = false;
+  bool found() const { return !reply.empty() || !ask.empty(); }
+};
+bool salvageTurnText(const std::string& text, Salvage& out);
+
+// The fixed line appended to a salvaged reply that was cut (by the provider's
+// output cap) or that came from a turn the provider reported cut. Shared so the
+// engine and the tests say the same thing.
+extern const char kSalvageCutMarker[];
+
+// True when a head-turn error names an output-cap cut (Anthropic max_tokens, an
+// OpenAI incomplete response, a chat-completions finish_reason of length) - the
+// one predicate the engine and the adapters share.
+bool isCutError(const std::string& err);
+
+// The reason a spawn past the per-turn cap did not start (one wording for the
+// parser and the pseudo-tool merge).
+std::string spawnOverCapReason();
 
 // Structured parse outcome. `detail` names the offending field/reason for logs+tests.
 struct ParseError {

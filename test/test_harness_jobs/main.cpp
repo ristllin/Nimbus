@@ -79,6 +79,8 @@ struct Rig {
   // CUM-541: the models each provider accepts (modelIsValid). Unset = the good-*
   // rule below; the Cumulo router's list is "<upstream>/<model>" selectors.
   std::function<bool(const std::string&, const std::string&)> modelValid;
+  // Lane L: the provider choice list (validated coercion); null = the old rule.
+  std::function<std::string(const std::string&)> modelChoices;
   // Context Fabric: recent-results spill recorder (nullable - legacy shape when unset).
   std::function<std::string(const char*, const char*, const std::string&, const std::string&)> spill;
 
@@ -118,6 +120,7 @@ struct Rig {
       return m.rfind("good-", 0) == 0;   // models named good-* validate
     };
     if (modelValid) d.modelIsValid = modelValid;
+    if (modelChoices) d.modelChoices = modelChoices;
     if (chatContext) d.chatContext = chatContext;   // B4: sub-brief [CONTEXT]
     if (spill) d.spillResult = spill;               // Context Fabric: results ring
     d.connectorProvider = [this](const std::string& skill) -> std::string {
@@ -331,8 +334,9 @@ static void test_spawn_refusals_reach_the_head_with_the_real_reason() {
   f.eng->pump();
   notes = f.eng->takeSpawnNotes("chat1");
   TEST_ASSERT_TRUE(notes.find("'summarize the thread' did not start: Couldn't start that agent "
-                              "on anthropic.") != std::string::npos);
-  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on anthropic.", f.delivered[0].second.c_str());
+                              "on anthropic: anthropic had an error.") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on anthropic: anthropic had an error. Try "
+                           "again, or use another provider.", f.delivered[0].second.c_str());
 
   // 3. no keyed provider
   Rig k;
@@ -409,7 +413,7 @@ static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
     f.eng->pump();
     const std::string n = f.eng->takeSpawnNotes("chat1", &maybe);
     TEST_ASSERT_FALSE(maybe);
-    TEST_ASSERT_TRUE(n.find("did not start: Couldn't start that agent on anthropic.") != std::string::npos);
+    TEST_ASSERT_TRUE(n.find("did not start: Couldn't start that agent on anthropic") != std::string::npos);
     TEST_ASSERT_EQUAL(0, f.eng->maybeRunningCount());
   }
 }
@@ -472,7 +476,8 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
                                "it into steps.", r.delivered[0].second.c_str());
     } else {
       TEST_ASSERT_FALSE(maybe);
-      TEST_ASSERT_EQUAL_STRING("- 'glm-notes' did not start: Couldn't start that agent on zai.\n",
+      TEST_ASSERT_EQUAL_STRING("- 'glm-notes' did not start: Couldn't start that agent on zai: zai "
+                               "could not be reached. Check the connection and try again.\n",
                                notes.c_str());
       TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
     }
@@ -1295,12 +1300,18 @@ static void test_spawn_refusal_copy_every_window() {
   const std::string unnamed = refused + " " + agent::rateLimitReply(agent::RateLimit::Unknown);
   TEST_ASSERT_EQUAL_STRING(unnamed.c_str(),
                            refuse(agent::FabricErr::RateLimited, std::nullopt).c_str());
+  // Lane L (subagents F3): every other error class names its reason and the next
+  // step - never the bare "Couldn't start" the head and the owner could not act on.
+  std::set<std::string> lines;
   for (int e = (int)agent::FabricErr::Network; e <= (int)agent::FabricErr::ParseFail; e++) {
     const agent::FabricErr err = agent::FabricErr(e);
     if (err == agent::FabricErr::RateLimited || err == agent::FabricErr::Timeout ||
         err == agent::FabricErr::ParseFail)
       continue;   // each has its own line (asserted below and in the may-have-run tests)
-    TEST_ASSERT_EQUAL_STRING(refused.c_str(), refuse(err, agent::RateLimit::DailyUtc).c_str());
+    const std::string line = refuse(err, agent::RateLimit::DailyUtc);
+    TEST_ASSERT_TRUE_MESSAGE(line.rfind("Couldn't start that agent on anthropic: ", 0) == 0, line.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(line.size() > refused.size() + 20, line.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(lines.insert(line).second, line.c_str());   // one reason per class
   }
   TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond in time - it may have "
                            "run without me getting its result. Try a smaller task or split "
@@ -1694,7 +1705,7 @@ static void test_every_job_delivery_is_captured_to_history() {
     }
   }
   TEST_ASSERT_TRUE(r.captured.front().second.rfind("On it.", 0) == 0);
-  TEST_ASSERT_TRUE(k.captured.back().second.rfind("Couldn't start that agent on anthropic.", 0) == 0);
+  TEST_ASSERT_TRUE(k.captured.back().second.rfind("Couldn't start that agent on anthropic", 0) == 0);
   TEST_ASSERT_TRUE(e.captured.back().second.find("expired") != std::string::npos);
   TEST_ASSERT_TRUE(f.captured[0].second.rfind("Here are the raw findings", 0) == 0);
 
@@ -1719,8 +1730,111 @@ static void test_job_delivery_tag_matches_whole_item() {
     TEST_ASSERT_FALSE_MESSAGE(agent::isJobDelivery(t), t);
 }
 
+
+// ---- (lane L) validated coercion, the spawn ledger, the conservation law --------
+
+// A spawn model the provider does not list runs a model it DOES list - its sub
+// default when listed, else the list's first - never an unchecked default; and
+// with nothing listed the spawn is refused with the reason (subagents F5).
+static void test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model() {
+  struct Case { std::string list, sub, asked, want; bool refused; };
+  const Case cases[] = {
+      {"good-a,good-b", "sub-anthropic", "bad-x", "good-a", false},   // sub not listed: first listed
+      {"good-a,sub-anthropic", "sub-anthropic", "bad-x", "sub-anthropic", false},   // sub listed
+      {"", "sub-anthropic", "custom-model", "custom-model", false},   // no list: as asked
+      {" , ", "sub-anthropic", "bad-x", "", true},                     // nothing usable: refused
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    r.modelValid = [&c](const std::string&, const std::string& m) {
+      return !m.empty() && ("," + c.list + ",").find("," + m + ",") != std::string::npos;
+    };
+    r.modelChoices = [&c](const std::string&) { return c.list; };
+    r.build();
+    orch::Spawn s = sp("research it");
+    s.model = c.asked;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    if (c.refused) {
+      TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
+      TEST_ASSERT_TRUE(r.delivered.back().second.find("does not offer bad-x") != std::string::npos);
+      TEST_ASSERT_TRUE(r.eng->takeSpawnNotes("chat1").find("does not offer bad-x") != std::string::npos);
+      continue;
+    }
+    TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
+    TEST_ASSERT_EQUAL_STRING(c.want.c_str(), r.adapter.dispatched[0].model.c_str());
+  }
+  // Counter-test: a listed model is never adjusted.
+  LogCapture::install();   // fresh log: the cases above logged their coercions
+  Rig ok;
+  ok.modelChoices = [](const std::string&) { return std::string("good-m,good-n"); };
+  ok.build();
+  ok.eng->enqueueSpawn(sp(), "chat1");
+  ok.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("good-m", ok.adapter.dispatched[0].model.c_str());
+  TEST_ASSERT_FALSE(LogCapture::contains("spawn model coerced"));
+}
+
+// The ledger follows each spawn through queued, running, finished and refused,
+// per chat, inside its window.
+static void test_lane_l_the_spawn_ledger_tracks_each_spawn_per_chat() {
+  Rig r;
+  TEST_ASSERT_EQUAL_STRING("", r.eng->spawnLedgerText("chat1").c_str());
+  orch::Spawn a = sp("first task");
+  a.name = "alpha";
+  r.eng->enqueueSpawn(a, "chat1");
+  TEST_ASSERT_TRUE(r.eng->spawnLedgerText("chat1").find("- alpha: queued") != std::string::npos);
+  r.eng->pump();
+  std::string led = r.eng->spawnLedgerText("chat1");
+  TEST_ASSERT_TRUE(led.find("- alpha (job0000, anthropic/good-m): running") != std::string::npos);
+  for (int i = 0; i < 4; i++) { r.plat.ms += 20000; r.eng->pump(); }   // Running, then Done
+  led = r.eng->spawnLedgerText("chat1");
+  TEST_ASSERT_TRUE_MESSAGE(led.find("- alpha (job0000, anthropic/good-m): finished") != std::string::npos,
+                           led.c_str());
+  r.eng->noteSpawnIntentRefused("chat1", "beta", "second task", "it was sent without a task");
+  TEST_ASSERT_TRUE(r.eng->spawnLedgerText("chat1").find("- beta: did not start") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", r.eng->spawnLedgerText("chat2").c_str());   // never another chat's
+  r.plat.ms += JobEngine::kLedgerWindowMs + 1000;
+  TEST_ASSERT_EQUAL_STRING("", r.eng->spawnLedgerText("chat1").c_str());   // the window closes
+}
+
+// The spawn conservation law (subagents T2): over every FabricErr a dispatch can
+// return, one spawn ends in exactly one outcome - a parked result carrying its
+// nonce, or one owner message AND one head note that both carry a reason.
+static void test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal() {
+  for (int e = (int)agent::FabricErr::Ok; e <= (int)agent::FabricErr::ParseFail; e++) {
+    Rig r;
+    r.synthConsumes = false;
+    r.adapter.dispatchErr = agent::FabricErr(e);
+    r.adapter.doneReply = "NIMBUS-NONCE-" + std::to_string(e);
+    r.eng->enqueueSpawn(sp("Reply with the nonce"), "chat1");
+    for (int i = 0; i < 6 && !r.eng->hasFreshResults(); i++) { r.eng->pump(); r.plat.ms += 16000; }
+    const bool result = r.eng->hasFreshResults();
+    const std::string notes = r.eng->takeSpawnNotes("chat1");
+    char msg[32];
+    snprintf(msg, sizeof msg, "FabricErr %d", e);
+    if (e == (int)agent::FabricErr::Ok) {
+      TEST_ASSERT_TRUE_MESSAGE(result, msg);
+      TEST_ASSERT_TRUE_MESSAGE(r.eng->takeFreshResults().find("NIMBUS-NONCE-0") != std::string::npos, msg);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", notes.c_str(), msg);
+      continue;
+    }
+    TEST_ASSERT_FALSE_MESSAGE(result, msg);   // exactly one outcome, never both
+    int owner = 0;
+    for (const auto& d : r.delivered) owner += d.second.find("agent on anthropic") != std::string::npos ||
+                                               d.second.find("that agent on anthropic") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(1, owner, msg);
+    TEST_ASSERT_TRUE_MESSAGE(notes.find("'Reply with the nonce'") != std::string::npos, msg);
+    // The reason is more than the bare refusal.
+    TEST_ASSERT_TRUE_MESSAGE(notes.size() > std::string("- 'Reply with the nonce' did not start: \n").size() + 30, msg);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
+  RUN_TEST(test_lane_l_the_spawn_ledger_tracks_each_spawn_per_chat);
+  RUN_TEST(test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal);
   RUN_TEST(test_spawn_brief_carries_chat_context);
   RUN_TEST(test_spawn_brief_no_context_when_empty);
   RUN_TEST(test_dispatch_one_per_cycle_with_2500ms_gate);

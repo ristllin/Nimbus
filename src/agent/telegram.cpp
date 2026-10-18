@@ -45,6 +45,7 @@
 #include <freertos/queue.h>
 #include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - queue storage on PSRAM (docs/memory-model.md)
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
+#include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
 
 #define TG_HOST "api.telegram.org"
 static const int TG_PORT = 443;
@@ -1122,11 +1123,16 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
 // Delivery only: the reply-queue drain calls this for parts send() already observed
 // and archived whole; every other text goes through sendNow.
 bool doSendMessage(const char* chatId, const char* text) {
-  const std::string html = nimbus::tgHtml(text ? text : "");
+  // Defense in depth (lane L, formatting F4): every Telegram send - turn replies,
+  // reply.telegram, loop deliveries, notices - passes the reply seam, so no
+  // reasoning, tool-call markup or wrapper tag reaches the chat even from a path
+  // the engine did not clean. Idempotent: an engine-cleaned reply is unchanged.
+  const std::string clean = nimbus::orch::cleanReplyMarkup(text ? text : "");
+  const std::string html = nimbus::tgHtml(clean);
   bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true);
   if (!ok) {
     alogf("telegram: html send rejected - resending plain to %s", chatId);
-    ok = doSendMessageRaw(chatId, text, /*htmlMode=*/false);
+    ok = doSendMessageRaw(chatId, clean.c_str(), /*htmlMode=*/false);
   }
   alogf("telegram: send %s to %s", ok ? "ok" : "FAIL", chatId);
   return ok;

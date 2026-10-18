@@ -190,7 +190,9 @@ struct TurnFieldHint {
 
 const char kSpawnHow[] =
     "add {\"op\":\"spawn\",\"provider\":\"<provider>\",\"task\":\"<the request>\"} "
-    "to it and finish the turn with orch_turn; the sub-agent starts right after";
+    "to its JSON list (a list of objects, never a string; every item needs a "
+    "non-empty task) and finish the turn with orch_turn; the sub-agent starts "
+    "right after";
 const char kResultsHow[] =
     "sub-agent results arrive by themselves in [FRESH RESULTS] on an automatic "
     "turn, so there is nothing to wait for or poll";
@@ -200,6 +202,8 @@ const TurnFieldHint kTurnFields[] = {
     {"spawn", "session_ops", kSpawnHow, nullptr, true},
     {"session_spawn", "session_ops", kSpawnHow, nullptr, true},
     {"spawn_agent", "session_ops", kSpawnHow, nullptr, true},
+    {"spawn_session", "session_ops", kSpawnHow, nullptr, true},
+    {"start_agent", "session_ops", kSpawnHow, nullptr, true},
     {"session_tell", "session_ops",
      "a running sub-agent cannot be messaged, so spawn a new one with the follow-up",
      nullptr, true},
@@ -257,6 +261,11 @@ bool ToolRegistry::isTurnFieldName(const std::string& name) {
 const char* ToolRegistry::turnFieldTool(const std::string& name) {
   const TurnFieldHint* h = turnFieldFor(name);
   return h ? h->tool : nullptr;
+}
+
+bool ToolRegistry::isSpawnFieldName(const std::string& name) {
+  const TurnFieldHint* h = turnFieldFor(name);
+  return h && h->how == kSpawnHow;
 }
 
 std::string ToolRegistry::callableNamesText(const std::string& name, const Principal& who) const {

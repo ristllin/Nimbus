@@ -638,8 +638,128 @@ static void test_cum506_forced_round_siblings_are_not_run() {
   TEST_ASSERT_FALSE(f.allowToolsSeen[0]);
 }
 
+
+// ---- the final-answer check (validateFinal): one correction round, no thrash ----
+
+// A check that rejects the first answer runs exactly ONE extra round; that round
+// carries the correction as the result of the orch_turn call, the rejected
+// answer is never the outcome, and the transcript keeps the call/result pair
+// every provider's replay needs.
+static void test_final_check_runs_one_correction_round() {
+  Fake f;
+  f.script = {stepFinished("{\"reply\":\"first\"}"), stepFinished("{\"reply\":\"second\"}")};
+  Transcript tr;
+  tr.addUser("go");
+  HeadLoopConfig cfg;
+  int calls = 0;
+  cfg.validateFinal = [&](const std::string& turn) {
+    calls++;
+    return has(turn, "first") ? std::string("session_ops must be a JSON array") : std::string();
+  };
+  HeadLoopHooks h = f.hooks();
+  h.transcript = &tr;
+  HeadOutcome o = runHeadLoop(cfg, h);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"second\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(1, calls);   // checked only while a correction is still possible
+  TEST_ASSERT_EQUAL(2u, f.priorSeen.size());
+  TEST_ASSERT_EQUAL(1u, f.priorSeen[1].size());
+  TEST_ASSERT_EQUAL_STRING(kFinalCheckCallId, f.priorSeen[1][0].id.c_str());
+  TEST_ASSERT_TRUE(f.priorSeen[1][0].isError);
+  TEST_ASSERT_TRUE(has(f.priorSeen[1][0].output, "JSON array"));
+  TEST_ASSERT_TRUE(f.allowToolsSeen[1]);   // tools stay available for the fix
+  int uses = 0, results = 0;
+  for (const auto& it : tr.entries()) {
+    uses += it.kind == TranscriptItem::Kind::ToolUse && it.name == "orch_turn";
+    results += it.kind == TranscriptItem::Kind::ToolResult && it.name == "orch_turn";
+  }
+  TEST_ASSERT_EQUAL(1, uses);
+  TEST_ASSERT_EQUAL(1, results);
+}
+
+// Thrash guard: a model that never fixes its answer gets one correction round,
+// then the normal path delivers - two model calls, never more.
+static void test_final_check_never_thrashes() {
+  Fake f;
+  f.script = {stepFinished("{\"reply\":\"a\"}"), stepFinished("{\"reply\":\"b\"}"),
+              stepFinished("{\"reply\":\"c\"}")};
+  HeadLoopConfig cfg;
+  cfg.validateFinal = [](const std::string&) { return std::string("still wrong"); };
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(2u, f.stepIdx);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"b\"}", o.finalTurn.c_str());
+}
+
+// Counter-test: an answer the check accepts costs zero extra rounds, and the
+// forced final round (no correction possible) is never checked at all.
+static void test_final_check_costs_nothing_when_the_answer_is_fine() {
+  Fake f;
+  f.script = {stepFinished("{\"reply\":\"ok\"}")};
+  HeadLoopConfig cfg;
+  int calls = 0;
+  cfg.validateFinal = [&](const std::string&) { calls++; return std::string(); };
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(0, o.corrections);
+  TEST_ASSERT_EQUAL(1u, f.stepIdx);
+  TEST_ASSERT_EQUAL(1, calls);
+
+  Fake g;
+  g.script = {stepCall("memory.search"), stepFinished("{\"reply\":\"forced\"}")};
+  HeadLoopConfig one;
+  one.maxRounds = 1;   // round 1 is the forced, tool-less round
+  int checked = 0;
+  one.validateFinal = [&](const std::string&) { checked++; return std::string("fix it"); };
+  HeadOutcome o2 = runHeadLoop(one, g.hooks());
+  TEST_ASSERT_TRUE(o2.ok);
+  TEST_ASSERT_EQUAL(0, checked);
+  TEST_ASSERT_EQUAL(0, o2.corrections);
+}
+
+// A final turn cut at the output limit is never "corrected" (nothing in it can
+// be trusted) - the cut travels on to the engine's salvage.
+static void test_cut_final_turn_is_handed_on_not_corrected() {
+  Fake f;
+  HeadStep cut = stepFinished("{\"reply\":\"half a sen");
+  cut.cut = "max_tokens";
+  f.script = {cut};
+  HeadLoopConfig cfg;
+  int calls = 0;
+  cfg.validateFinal = [&](const std::string&) { calls++; return std::string("fix"); };
+  runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_EQUAL(0, calls);
+  // A cut round that fails keeps its partial text for the salvage too.
+  Fake g;
+  HeadStep failed = stepFail("cut at the output limit");
+  failed.cut = "max_tokens";
+  failed.finalTurn = "{\"reply\":\"partial";
+  g.script = {failed};
+  HeadOutcome o2 = runHeadLoop(HeadLoopConfig(), g.hooks());
+  TEST_ASSERT_FALSE(o2.ok);
+  TEST_ASSERT_EQUAL_STRING("max_tokens", o2.cut.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"partial", o2.partialTurn.c_str());
+}
+
+static void test_final_checks_chain_into_one_correction() {
+  FinalCheck a = [](const std::string&) { return std::string("shape"); };
+  FinalCheck none;
+  FinalCheck b = [](const std::string& t) { return has(t, "claim") ? std::string("claims") : std::string(); };
+  FinalCheck chained = chainFinalChecks({a, none, b});
+  TEST_ASSERT_EQUAL_STRING("shape\nclaims", chained("claim").c_str());
+  TEST_ASSERT_EQUAL_STRING("shape", chained("x").c_str());
+  TEST_ASSERT_FALSE((bool)chainFinalChecks({none, none}));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_final_check_runs_one_correction_round);
+  RUN_TEST(test_final_check_never_thrashes);
+  RUN_TEST(test_final_check_costs_nothing_when_the_answer_is_fine);
+  RUN_TEST(test_cut_final_turn_is_handed_on_not_corrected);
+  RUN_TEST(test_final_checks_chain_into_one_correction);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_cum506_a_failed_sibling_discards_the_premature_reply);
   RUN_TEST(test_cum506_siblings_on_the_last_round_reach_the_forced_final);

@@ -565,6 +565,9 @@ static JobEngine::Deps buildJobDeps() {
   d.modelIsValid = [](const std::string& p, const std::string& m) {
     return modelIsValid(String(p.c_str()), m.c_str());
   };
+  // Lane L (validated coercion): the same list, so an unlisted spawn model falls
+  // back to a listed one, never to an unchecked default.
+  d.modelChoices = [](const std::string& p) { return modelChoicesFor(p); };
   // Dynamic-skill capsule resolver (roadmap P2): SD capsules with
   // inject: spawn|both are prepended to the sub-agent instruction at dispatch;
   // built-ins / unknown ids return "" and keep the provider-hint passthrough.

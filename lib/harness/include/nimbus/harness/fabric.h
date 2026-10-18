@@ -127,6 +127,27 @@ inline constexpr const char* kDeviceBackends[] = {"anthropic", "openai", "mistra
 inline constexpr int kDeviceBackendCount = (int)(sizeof(kDeviceBackends) / sizeof(kDeviceBackends[0]));
 static_assert(kDeviceBackendCount <= HeavyFabric::MAX_ADAPTERS,
               "every device backend must fit the adapter table");
+// How each device backend runs a sub-agent, one entry per kDeviceBackends slot
+// in the same order (subagents F6.2, the honest [SPAWN CAPACITY] line). A
+// SYNCHRONOUS backend runs the whole sub inside one blocking request on the
+// device's only network task, so the device does nothing else meanwhile and the
+// sub must finish within that request's wait; an asynchronous one creates a
+// remote job and returns at once, and the device polls it.
+inline constexpr bool kDeviceBackendSync[] = {false, false, true, true, true, true};
+static_assert(sizeof(kDeviceBackendSync) / sizeof(kDeviceBackendSync[0]) ==
+                  (unsigned)kDeviceBackendCount,
+              "every device backend needs its dispatch mode");
+// True when the named device backend runs its sub-agents synchronously.
+inline bool backendRunsSync(const char* backend) {
+  for (int i = 0; i < kDeviceBackendCount; i++) {
+    const char* a = kDeviceBackends[i];
+    const char* b = backend;
+    while (*a && *a == *b) { a++; b++; }
+    if (!*a && !*b) return kDeviceBackendSync[i];
+  }
+  return false;
+}
+
 // Registers one adapter per kDeviceBackends entry, in that order, then checks each
 // id resolves to its adapter. Returns the first id that does not (a wrong adapter in
 // a slot, a null, or a full table), or nullptr when every backend is reachable.

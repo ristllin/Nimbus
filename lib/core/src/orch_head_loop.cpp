@@ -16,6 +16,25 @@ const char* const kFinalRoundNotice =
     "search, look into it, report back, continue in the background, or finish next "
     "turn - none of that will happen.";
 
+const char kFinalCheckCallId[] = "orchcheck";
+
+FinalCheck chainFinalChecks(std::vector<FinalCheck> checks) {
+  std::vector<FinalCheck> live;
+  for (auto& c : checks)
+    if (c) live.push_back(std::move(c));
+  if (live.empty()) return FinalCheck();
+  return [live](const std::string& finalTurn) {
+    std::string out;
+    for (const FinalCheck& c : live) {
+      const std::string fix = c(finalTurn);
+      if (fix.empty()) continue;
+      if (!out.empty()) out += "\n";
+      out += fix;
+    }
+    return out;
+  };
+}
+
 const char* capReasonText(const std::string& reason) {
   if (reason == "heap")     return "the device is low on memory";
   if (reason == "rounds")   return "this turn ran out of its tool-call budget";
@@ -271,6 +290,8 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       out.rounds = round;
       out.kind = sr.kind != StepErr::None ? sr.kind : classifyStepError(out.error, &out.httpStatus);
       if (sr.httpStatus) out.httpStatus = sr.httpStatus;
+      // A round cut at the output limit keeps what it wrote, so the engine can
+      // salvage the reply's prefix with the honest marker (parsing P3).
       out.cut = sr.cut;
       if (!sr.cut.empty()) out.partialTurn = sr.finalTurn;
       // Carry the cap through even though the round FAILED. This path used to
@@ -295,7 +316,7 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       // Opaque provider payload for this round (e.g. OpenAI reasoning items with
       // encrypted_content) - attached to the round's first item; the writing
       // provider's renderer replays it, everyone else ignores it.
-      if (!sr.meta.empty()) hooks.transcript->attachMeta(round, std::move(sr.meta));
+      if (!sr.meta.empty()) hooks.transcript->attachMeta(round, sr.meta);
     }
     if (sr.finished) {  // terminal orch_turn - the ONLY success exit
       // CUM-506: tool calls the model batched WITH its final orch_turn (five
@@ -319,6 +340,37 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       if (!sr.toolCalls.empty() && hooks.log)
         hooks.log("headloop: dropped " + std::to_string(sr.toolCalls.size()) +
                   " tool call(s) sent with the final answer on the forced round");
+      // The final-answer check (validateFinal): a turn whose shape lost work the
+      // reply promises (a spawn list the device cannot read, a reply that says
+      // sub-agents started while none is in session_ops) gets ONE correction
+      // round, never more, and never on the forced round or for a cut answer
+      // (the engine salvages that one). The rejected answer is recorded as the
+      // orch_turn call the correction answers, so every provider's replay stays
+      // well-formed (an unanswered tool_use 400s on Anthropic).
+      if (cfg.validateFinal && !lastChance && out.corrections == 0 && sr.cut.empty()) {
+        const std::string fix = cfg.validateFinal(sr.finalTurn);
+        if (!fix.empty()) {
+          out.corrections++;
+          HeadToolCall call;
+          call.id = kFinalCheckCallId;
+          call.name = "orch_turn";
+          call.argsJson = sr.finalTurn.empty() ? "{}" : sr.finalTurn;
+          HeadToolResult res;
+          res.id = kFinalCheckCallId;
+          res.name = "orch_turn";
+          res.output = fix;
+          res.isError = true;
+          prior.clear();
+          if (hooks.transcript) {
+            hooks.transcript->addToolCall(call, round, "");
+            hooks.transcript->addToolResult(res, round);
+            if (!sr.meta.empty()) hooks.transcript->attachMeta(round, sr.meta);
+          }
+          prior.push_back(std::move(res));
+          if (hooks.log) hooks.log("headloop: final answer sent back for one correction - " + fix.substr(0, 120));
+          continue;
+        }
+      }
       out.ok = true;
       out.finalTurn = sr.finalTurn;
       out.prose = sr.prose;

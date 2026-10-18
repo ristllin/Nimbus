@@ -58,9 +58,11 @@ static const KnownConnector kKnown[] = {
      "Hosted web search with citations, on your own turns.", "mistral-builtins", ""},
     {"code_interpreter", "Code Interpreter (hosted Python)", "mistral,openai", "builtin", "",
      "None - Mistral: enable in Studio; OpenAI: no setup",
-     "Hosted sandboxed Python; can produce files. To deliver one, SPAWN a "
-     "sub-agent WITH A PROJECT (session_ops spawn: project=<name>) - the file it "
-     "writes is captured to the file store, then you deliver it to the owner.",
+     "Hosted sandboxed Python; can produce files. To deliver one, start a "
+     "sub-agent with a project: add a spawn item (op spawn, a task, a project "
+     "name) to the session_ops list of your orch_turn reply - session_ops is a "
+     "reply field, never a tool to call. The file it writes is captured to the "
+     "file store, then you deliver it to the owner.",
      "mistral-builtins",
      "Mistral: images/text output only - its sandbox ERRORS on PDF/CSV files. "
      "OpenAI: full file output INCLUDING PDF. For a PDF, spawn the sub-agent on "

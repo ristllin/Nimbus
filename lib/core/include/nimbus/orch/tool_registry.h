@@ -204,6 +204,11 @@ class ToolRegistry {
   // the field has no tool twin. The engine uses it to refuse a mem_write call
   // on a turn that stores nothing, instead of offering the twin.
   static const char* turnFieldTool(const std::string& name);
+  // True when `name` is a reply-field alias that STARTS sub-agents (session_ops,
+  // spawn, session_spawn, spawn_agent in any spelling): the head called the
+  // spawn field as a tool. The engine reads such a call's items as the turn's
+  // session_ops (subagents F2) instead of losing them.
+  static bool isSpawnFieldName(const std::string& name);
 
   // Remove a tool by exact name; also clears any static policy entry for it.
   // Returns true if a tool was removed. Used to retract dynamically-registered

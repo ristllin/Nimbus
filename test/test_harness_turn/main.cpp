@@ -12,6 +12,8 @@
 #include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/turn_contract.h"
+#include "nimbus/orch/spawn_claim.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/journal.h"
@@ -59,6 +61,9 @@ struct Rig {
     std::string toolName = "memory_search";   // the tool a dispatchTools call names
     std::string served;                       // the model the provider echoes ("" = none)
     bool usageOnFail = false;                 // a failed attempt still bills its tokens
+    std::string toolArgs = "{\"query\":\"x\"}";   // the arguments a dispatchTools call sends
+    bool partialOnFail = false;               // a failed attempt still hands back outJson (a cut turn)
+    bool checkFinal = false;                  // run HeadTools' final-answer check on outJson
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -70,6 +75,8 @@ struct Rig {
   };
   std::vector<Attempt> attempts;
   std::vector<orch::HeadToolResult> toolResults;
+  std::vector<std::string> finalChecks;   // what HeadTools.cfg.validateFinal said (checkFinal)
+  std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
 
   std::vector<std::pair<std::string, std::string>> delivered;  // chat, text
@@ -208,14 +215,14 @@ struct Rig {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
+    wireLaneL(d, withSubFabric);
     d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); };
     d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst,
                                  const orch::Principal&) {
       memCalls.push_back(name);
       return orch::ToolResult::ok("stored");
     };
-    // Default = the harness's own deny-all principal (byte-identical to an unset
-    // hook); a test opts into an admin chat with adminChats = true.
+    // Default = the harness's deny-all principal; adminChats = true opts into admin.
     d.apply.principalFor = [this](const std::string& chat) {
       if (adminChats) return orch::principalForRole(chat, orch::Role::Admin);
       orch::Principal p;
@@ -253,6 +260,31 @@ struct Rig {
     eng.reset(new TurnEngine(std::move(d)));
   }
 
+  // Lane L: the delivered text is captured, and the sub-agent rig queues spawns
+  // into its job engine, like the device.
+  void wireLaneL(TurnEngine::Deps& d, bool withSubFabric) {
+    d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
+      assistantRows.push_back({c, t});
+    };
+    if (!withSubFabric) return;
+    d.apply.enqueueSpawn = [this](const orch::Spawn& sp, const std::string& chat, bool quiet) {
+      jobs->enqueueSpawn(sp, chat, quiet);
+    };
+    d.apply.noteSpawned = [this] { jobs->noteSpawned(); };
+  }
+
+  // Lane L: what HeadTools' final-answer check says about this script's answer.
+  void recordFinalCheck(const agent::HeadTools* tools, const Script& s) {
+    if (!tools || !s.checkFinal) return;
+    finalChecks.push_back(tools->cfg.validateFinal ? tools->cfg.validateFinal(s.outJson)
+                                                   : std::string("<no check>"));
+  }
+
+  // Lane L: a failed attempt that still hands back its (cut) turn.
+  static void keepPartial(const Script& s, std::string& out) {
+    if (s.partialOnFail) out = s.outJson;
+  }
+
   agent::ProviderTurnFn providerFor(const std::string& host) {
     return [this, host](std::string& convId, const std::string& ins, const std::string& inp,
                         std::string& out, std::string& err, const agent::HeadTools* tools,
@@ -279,10 +311,11 @@ struct Rig {
           orch::HeadToolCall c;
           c.id = "t1";
           c.name = s.toolName;
-          c.argsJson = "{\"query\":\"x\"}";
+          c.argsJson = s.toolArgs;
           toolResults.push_back(tools->dispatch(c));
         }
       }
+      recordFinalCheck(tools, s);
       if (onProviderCall) onProviderCall();
       // Like the adapters: the echo is captured on the HTTP 200, before the turn is
       // known to parse, so a failed attempt can carry one too.
@@ -293,6 +326,7 @@ struct Rig {
         if (usage) usage->add(s.usageIn, s.usageOut);
       } else {
         err = s.err.empty() ? "scripted failure" : s.err;
+        keepPartial(s, out);
         if (usage && s.usageOnFail) usage->add(s.usageIn, s.usageOut);
       }
       return s.ok;
@@ -998,9 +1032,8 @@ static void test_salvage_never_delivers_raw_json() {
   Rig r2;
   r2.scripts["anthropic"] = {{true, "{\"nothing\":true}", "", 0}};
   r2.eng->runTurn("inputs", "1001", "");
-  TEST_ASSERT_EQUAL_STRING(
-      "I hit a formatting error composing that reply - please resend.",
-      r2.lastText().c_str());
+  // Lane L: a plain cause line, not a "formatting error" that reads as a device bug.
+  TEST_ASSERT_EQUAL_STRING(agent::kUnreadableNothingSalvaged, r2.lastText().c_str());
 }
 
 // CUM-483: the EXACT orch_turn claude-sonnet-5 returned on bench unit B (no
@@ -1710,8 +1743,7 @@ static void test_cum495_json_array_reply_is_never_shown_raw() {
   r.eng->handleMessage("hi", "Omar", "web");
   TEST_ASSERT_FALSE(r.anyDelivered("["));
   TEST_ASSERT_EQUAL(0, (int)r.staged.size());
-  TEST_ASSERT_EQUAL_STRING("I hit a formatting error composing that reply - please resend.",
-                           r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING(agent::kUnreadableNothingSalvaged, r.lastText().c_str());
 }
 
 // Gate W2 #19: the same array cut by the head's output cap (Z.ai json_object mode
@@ -1724,8 +1756,7 @@ static void test_truncated_json_array_reply_is_never_shown_raw() {
   r.eng->handleMessage("hi", "Omar", "web");
   TEST_ASSERT_FALSE(r.anyDelivered("["));
   TEST_ASSERT_EQUAL(0, (int)r.staged.size());
-  TEST_ASSERT_EQUAL_STRING("I hit a formatting error composing that reply - please resend.",
-                           r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING(agent::kCutNothingSalvaged, r.lastText().c_str());   // it was cut
 }
 
 // prism (logic lens): a ladder of LIVE attempts (Z.ai head request up to 120 s,
@@ -2376,8 +2407,396 @@ static void test_convmap_legacy_discarded_and_lru() {
   TEST_ASSERT_EQUAL_STRING("c7", convMapGet(raw, "chat7", "openai").c_str());
 }
 
+
+// ---- (lane L) the turn contract and spawn honesty --------------------------------
+// The class: a turn field the head filled is either applied or reported, a cut
+// answer is salvaged with the honest marker exactly when it was cut, markup never
+// reaches a channel, and every spawn the head expresses either starts or is
+// reported to the owner and the head - never silence.
+
+static std::string jsonOf(const std::function<void(ArduinoJson::JsonDocument&)>& fill) {
+  ArduinoJson::JsonDocument d;
+  fill(d);
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+static void test_lane_l_a_cut_answer_is_salvaged_marked_and_captured() {
+  Rig r;
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"First part of a long answer is complete. Second part was cut mi";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  const std::string want =
+      std::string("First part of a long answer is complete.") + "\n\n" + orch::kSalvageCutMarker;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  // The owner's text is what the next turn sees (the old salvage was never captured).
+  TEST_ASSERT_EQUAL(1, (int)r.assistantRows.size());
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.assistantRows[0].second.c_str());
+  TEST_ASSERT_FALSE(r.hookEnds.back().ok);
+  TEST_ASSERT_TRUE(r.hookEnds.back().error.rfind("cut: ", 0) == 0);
+  TEST_ASSERT_EQUAL(0, (int)r.staged.size());
+
+  // Counter-test: a complete answer followed by stray text is NOT cut - no marker.
+  Rig c;
+  c.cfg.toolLoop = false;
+  s.outJson = "{\"reply\":\"All done.\"} and then some chatter";
+  c.scripts["anthropic"] = {s};
+  c.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("All done.", c.lastText().c_str());
+  TEST_ASSERT_TRUE(c.hookEnds.back().error.rfind("parse: ", 0) == 0);
+}
+
+// The marker appears exactly when the answer was cut: over every byte cut of a
+// real-shaped turn, never on the whole turn, always when salvaged text exists.
+static void test_lane_l_the_salvage_marker_appears_exactly_when_cut() {
+  const std::string full =
+      "{\"reply\":\"Two facts. First, the lineup changed. Second, prices fell.\","
+      "\"device\":[{\"type\":\"lights\",\"value\":\"off\"}],\"ask\":\"\"}";
+  for (size_t L = 1; L <= full.size(); L++) {
+    Rig r;
+    r.cfg.toolLoop = false;
+    Rig::Script s;
+    s.outJson = full.substr(0, L);
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("hi", "Roy", "1001");
+    const std::string got = r.lastText();
+    const bool marked = got.find(orch::kSalvageCutMarker) != std::string::npos;
+    char msg[48];
+    snprintf(msg, sizeof msg, "cut %u of %u", (unsigned)L, (unsigned)full.size());
+    if (L == full.size()) {
+      TEST_ASSERT_FALSE_MESSAGE(marked, msg);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.staged.size(), msg);   // the whole turn applies
+      continue;
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.staged.size(), msg);      // a cut turn never acts
+    TEST_ASSERT_TRUE_MESSAGE(got.find("{\"") == std::string::npos, msg);   // never raw wire JSON
+    const bool salvaged = got != agent::kCutNothingSalvaged;
+    TEST_ASSERT_EQUAL_MESSAGE(salvaged, marked, msg);
+    TEST_ASSERT_TRUE_MESSAGE(r.hookEnds.back().error.rfind("cut: ", 0) == 0, msg);
+  }
+}
+
+// A provider-reported cut (the adapter error) salvages the partial turn it kept.
+static void test_lane_l_a_reported_cut_salvages_the_partial_turn() {
+  Rig r;
+  r.cfg.toolLoop = false;
+  r.cfg.keyed = {"anthropic"};   // no alternate host to fail over to
+  Rig::Script s;
+  s.ok = false;
+  s.err = "cut at the output limit (12000 tokens)";
+  s.partialOnFail = true;
+  s.outJson = "{\"reply\":\"The summary is ready. Details follow in the next";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.lastText().rfind("The summary is ready.", 0) == 0);
+  TEST_ASSERT_TRUE(r.lastText().find(orch::kSalvageCutMarker) != std::string::npos);
+  TEST_ASSERT_TRUE(r.hookEnds.back().error.rfind("cut: cut at the output limit", 0) == 0);
+  TEST_ASSERT_EQUAL(1, (int)r.assistantRows.size());
+  Rig e;   // nothing kept: the plain cut line, never "formatting error"
+  e.cfg.toolLoop = false;
+  e.cfg.keyed = {"anthropic"};
+  s.outJson = "";
+  e.scripts["anthropic"] = {s};
+  e.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING(agent::kCutNothingSalvaged, e.lastText().c_str());
+}
+
+// A stringified session_ops (the Anthropic head's shape) starts exactly one sub.
+static void test_lane_l_a_stringified_spawn_list_starts_its_sub() {
+  Rig r(true);
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = jsonOf([](ArduinoJson::JsonDocument& d) {
+    d["reply"] = "Starting it now.";
+    d["session_ops"] =
+        "[{\"op\":\"spawn\",\"provider\":\"anthropic\",\"name\":\"e2e\",\"task\":\"Reply NIMBUS-1\"}]";
+  });
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.jobs->pendingCount());
+  r.jobs->pump();
+  TEST_ASSERT_EQUAL(1, (int)r.subAdapter.dispatched.size());
+  TEST_ASSERT_TRUE(r.subAdapter.dispatched[0].task.find("Reply NIMBUS-1") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Starting it now.", r.delivered.front().second.c_str());   // no correction
+  TEST_ASSERT_TRUE(LogCapture::contains("turn field session_ops arrived as a JSON string; repaired"));
+}
+
+// An empty-task spawn is reported to the owner (one line) and to the head.
+static void test_lane_l_an_empty_task_spawn_is_reported_not_skipped() {
+  Rig r(true);
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"Starting a research agent now.\",\"session_ops\":[{\"op\":\"spawn\",\"name\":\"lineup\"}]}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("go", "Roy", "1001");
+  const std::string want = std::string("Starting a research agent now.\n\n") + orch::kSpawnNotStartedLine;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
+  r.eng->handleMessage("and?", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("'lineup' did not start: it was sent without a task") !=
+                   std::string::npos);
+}
+
+// The promise-without-spawn class: a reply that says sub-agents started while
+// the turn started none gets the correction line and a head note.
+static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
+  Rig r(true);
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"I've started three sub-agents on the comparison.\"}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.lastText().find(orch::kSpawnNotStartedLine) != std::string::npos);
+  r.eng->handleMessage("and?", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started") != std::string::npos);
+  // Counter-test: a TRUE claim (the spawn is in the turn) gets no correction.
+  Rig t(true);
+  t.cfg.toolLoop = false;
+  s.outJson = "{\"reply\":\"I've started a sub-agent on it.\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"Do it\"}]}";
+  t.scripts["anthropic"] = {s};
+  t.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("I've started a sub-agent on it.", t.delivered.front().second.c_str());
+  TEST_ASSERT_FALSE(t.anyDelivered("Correction"));
+}
+
+// Pseudo-tool salvage (subagents F2): session_ops called as a tool joins the turn
+// once; a final orch_turn repeating it (re-spaced, re-cased) adds nothing, and a
+// different task adds one (no over-deduping).
+static void test_lane_l_pseudo_tool_spawns_join_the_turn_exactly_once() {
+  for (int variant = 0; variant < 2; variant++) {
+    Rig r(true);
+    Rig::Script s;
+    s.dispatchTools = 1;
+    s.toolName = "session_ops";
+    s.toolArgs =
+        "{\"session_ops\":\"[{\\\"op\\\":\\\"spawn\\\",\\\"provider\\\":\\\"anthropic\\\","
+        "\\\"task\\\":\\\"List   the lineup.\\\"}]\"}";
+    s.outJson = variant == 0
+        ? "{\"reply\":\"Started.\",\"session_ops\":[{\"op\":\"spawn\",\"provider\":\"Anthropic\",\"task\":\"list the lineup.\"}]}"
+        : "{\"reply\":\"Started.\",\"session_ops\":[{\"op\":\"spawn\",\"provider\":\"anthropic\",\"task\":\"Check the prices.\"}]}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("go", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.toolResults.size());
+    TEST_ASSERT_FALSE(r.toolResults[0].isError);
+    TEST_ASSERT_TRUE(r.toolResults[0].output.find("taken as your orch_turn session_ops") != std::string::npos);
+    TEST_ASSERT_EQUAL(0, (int)r.mcpRequests.size());   // never reached the registry
+    TEST_ASSERT_EQUAL(variant == 0 ? 1 : 2, r.jobs->pendingCount());
+    TEST_ASSERT_FALSE(r.anyDelivered("Correction"));
+  }
+}
+
+// A pseudo-tool call that carried nothing usable is a reported attempt.
+static void test_lane_l_an_empty_pseudo_tool_call_is_reported() {
+  Rig r(true);
+  Rig::Script s;
+  s.dispatchTools = 1;
+  s.toolName = "session_ops";
+  s.toolArgs = "{}";
+  s.outJson = "{\"reply\":\"Here is where things stand.\"}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.mcpRequests.size());   // the registry's recovery text answered
+  TEST_ASSERT_TRUE(r.lastText().find(orch::kSpawnNotStartedLine) != std::string::npos);
+  r.eng->handleMessage("and?", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("the call carried no spawn item") != std::string::npos);
+}
+
+// The leak-repair gate (taint x repair): fields recovered from leaked tool markup
+// apply only on an attended owner turn that read no external content.
+static void test_lane_l_recovered_actions_apply_only_on_clean_owner_turns() {
+  const std::string leaked = jsonOf([](ArduinoJson::JsonDocument& d) {
+    d["reply"] = std::string("Done for today.\n</reply>\n") +
+                 "<parameter name=\"device\">[{\"type\":\"lights\",\"value\":\"off\"}]</parameter>\n" +
+                 "<parameter name=\"mem_write\">[{\"content\":\"Owner likes tea\",\"importance\":0.6}]</parameter>\n" +
+                 "<parameter name=\"ask\">Which room?</parameter>";
+  });
+  enum Case { Owner, Scheduled, Synthesis, Member, ExternalTool, InternalTool };
+  for (int c = Owner; c <= InternalTool; c++) {
+    Rig r;
+    r.adminChats = c != Member;
+    Rig::Script s;
+    s.outJson = leaked;
+    if (c == ExternalTool || c == InternalTool) {
+      const char* reg = c == ExternalTool ? "web.search" : "memory.search";
+      r.specs.push_back(orch::ToolRegistry::Spec{reg, "tool", "{}"});
+      s.dispatchTools = 1;
+      s.toolName = c == ExternalTool ? "web_search" : "memory_search";
+    }
+    r.scripts["anthropic"] = {s};
+    if (c == Scheduled) {
+      r.eng->injectScheduledTurn("1001", "daily brief", "brief");
+    } else if (c == Synthesis) {
+      r.jobs->addFreshResult("job0001", "researcher", "findings");
+      r.eng->maybeConsolidate("1001");
+    } else {
+      r.eng->handleMessage("hi", "Roy", "1001");
+    }
+    const bool applies = c == Owner || c == InternalTool;
+    char msg[32];
+    snprintf(msg, sizeof msg, "case %d", c);
+    TEST_ASSERT_EQUAL_MESSAGE(applies ? 1 : 0, (int)r.staged.size(), msg);
+    int writes = 0;
+    for (const auto& m : r.memCalls) writes += m == "memory.write";
+    TEST_ASSERT_EQUAL_MESSAGE(applies ? 1 : 0, writes, msg);
+    TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("Done for today."), msg);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("parameter"), msg);   // markup never delivered
+    TEST_ASSERT_EQUAL_MESSAGE(applies, r.anyDelivered("Which room?"), msg);   // a recovered ask too
+  }
+}
+
+// A spawn recovered from leaked markup obeys the same gate, and when the gate
+// drops it the owner and the head are told (the conservation law): it starts on
+// a clean owner turn, and after a web search it is reported, never lost.
+static void test_lane_l_a_gated_recovered_spawn_is_reported() {
+  const std::string leaked = jsonOf([](ArduinoJson::JsonDocument& d) {
+    d["reply"] = std::string("Looking into it.\n</reply>\n") +
+                 "<parameter name=\"session_ops\">[{\"op\":\"spawn\",\"name\":\"kettles\","
+                 "\"task\":\"Compare two kettles\"}]</parameter>";
+  });
+  for (const bool external : {false, true}) {
+    LogCapture::install();
+    Rig r(true);
+    r.adminChats = true;
+    Rig::Script s;
+    s.outJson = leaked;
+    if (external) {
+      r.specs.push_back(orch::ToolRegistry::Spec{"web.search", "tool", "{}"});
+      s.dispatchTools = 1;
+      s.toolName = "web_search";
+    }
+    Rig::Script next;
+    next.outJson = "{\"reply\":\"ok\"}";
+    r.scripts["anthropic"] = {s, next};
+    r.eng->handleMessage("compare kettles", "Roy", "1001");
+    const char* msg = external ? "after a web search" : "clean owner turn";
+    TEST_ASSERT_EQUAL_MESSAGE(external ? 0 : 1, r.jobs->pendingCount(), msg);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("parameter"), msg);
+    TEST_ASSERT_EQUAL_MESSAGE(external, r.anyDelivered(orch::kSpawnNotStartedLine), msg);
+    TEST_ASSERT_EQUAL_MESSAGE(external, LogCapture::contains("spawn ledger spawned=0 claimed=1"), msg);
+    r.eng->handleMessage("and?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(external,
+                              r.attempts.back().inputs.find("'kettles' did not start: it came from tool markup") !=
+                                  std::string::npos,
+                              msg);
+  }
+}
+
+// The final-answer check is wired into every loop turn's HeadTools.
+static void test_lane_l_the_final_check_rides_every_loop_turn() {
+  Rig r;
+  Rig::Script s;
+  s.checkFinal = true;
+  s.outJson = "{\"reply\":\"I've started two sub-agents.\",\"session_ops\":\"not json\"}";
+  Rig::Script good = s;
+  good.outJson = "{\"reply\":\"Plain answer.\"}";
+  r.scripts["anthropic"] = {s, good};
+  r.eng->handleMessage("go", "Roy", "1001");
+  r.eng->handleMessage("again", "Roy", "1001");
+  TEST_ASSERT_EQUAL(2, (int)r.finalChecks.size());
+  TEST_ASSERT_TRUE(r.finalChecks[0].rfind("[TURN CHECK]", 0) == 0);
+  TEST_ASSERT_TRUE(r.finalChecks[0].find("session_ops") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", r.finalChecks[1].c_str());   // a good turn costs no round
+}
+
+// Formatting F3/F4 at the engine: reasoning, wrappers and tool markup never reach
+// the owner, on the turn path and the prose path; unknown <word> content stays.
+static void test_lane_l_markup_never_reaches_the_owner() {
+  Rig r;
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"<think>plan it</think>Hello <provider> fan.\",\"ask\":\"<reply>Which one?</reply>\"}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("Hello <provider> fan.\n\nWhich one?", r.lastText().c_str());
+  Rig p;
+  p.cfg.toolLoop = false;
+  s.outJson = "<thinking>private</thinking>Plain answer.";
+  p.scripts["anthropic"] = {s};
+  p.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("Plain answer.", p.lastText().c_str());
+}
+
+// The spawn ledger (UNIFIED 3.17): the next turn reads what the device started.
+static void test_lane_l_the_spawn_ledger_rides_the_next_turn() {
+  Rig r(true);
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"On it.\",\"session_ops\":[{\"op\":\"spawn\",\"provider\":\"anthropic\",\"name\":\"lineup\",\"task\":\"List the lineup\"}]}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("go", "Roy", "1001");
+  r.jobs->pump();
+  r.eng->handleMessage("status?", "Roy", "1001");
+  const std::string& in = r.attempts.back().inputs;
+  TEST_ASSERT_TRUE(in.find("[SPAWN LEDGER]") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("- lineup (job0000, anthropic/") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("running, started") != std::string::npos);
+  r.eng->handleMessage("other chat", "Roy", "2002");   // never another chat's
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[SPAWN LEDGER]") == std::string::npos);
+}
+
+// Honest capacity (subagents F6.2): every keyed backend is named with the way it
+// really runs, from the one table - a new backend without a mode fails to build.
+static void test_lane_l_capacity_names_every_keyed_provider_by_its_mode() {
+  Rig r;
+  r.cfg.keyed = {"anthropic", "openai", "mistral", "custom", "zai", "cumulo"};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  const std::string& in = r.attempts.back().inputs;
+  const size_t cap = in.find("[SPAWN CAPACITY]");
+  const size_t syncAt = in.find("sub-agents run one at a time INSIDE the device", cap);
+  const size_t asyncAt = in.find("sub-agents run in parallel on the provider", cap);
+  TEST_ASSERT_TRUE(cap != std::string::npos && syncAt != std::string::npos && asyncAt != std::string::npos);
+  const std::string syncClause = in.substr(cap, syncAt - cap);
+  const std::string asyncClause = in.substr(syncAt, asyncAt - syncAt);
+  for (int i = 0; i < agent::kDeviceBackendCount; i++) {
+    const std::string b = agent::kDeviceBackends[i];
+    const std::string& clause = agent::kDeviceBackendSync[i] ? syncClause : asyncClause;
+    TEST_ASSERT_TRUE_MESSAGE(clause.find(b) != std::string::npos, b.c_str());
+  }
+}
+
+
+// The conservation law at synthesis: a turn that succeeds with nothing to say
+// must not swallow the results it was handed (seen live on a mistral-small head).
+static void test_lane_l_a_silent_synthesis_never_drops_the_results() {
+  Rig r;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\",\"mem_write\":[{\"content\":\"noted\"}]}";
+  r.scripts["anthropic"] = {s};
+  r.jobs->addFreshResult("job0001", "researcher", "NIMBUS-4242 is the answer");
+  r.eng->maybeConsolidate("1001");
+  TEST_ASSERT_TRUE(r.anyDelivered("NIMBUS-4242"));
+  TEST_ASSERT_TRUE(LogCapture::contains("synthesis turn said nothing"));
+  // Counter-test: a synthesis that reports gets no raw duplicate.
+  Rig c;
+  s.outJson = "{\"reply\":\"The answer is NIMBUS-4242.\"}";
+  c.scripts["anthropic"] = {s};
+  c.jobs->addFreshResult("job0001", "researcher", "NIMBUS-4242 is the answer");
+  c.eng->maybeConsolidate("1001");
+  int n = 0;
+  for (const auto& d : c.delivered) n += d.second.find("NIMBUS-4242") != std::string::npos;
+  TEST_ASSERT_EQUAL(1, n);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
+  RUN_TEST(test_lane_l_a_cut_answer_is_salvaged_marked_and_captured);
+  RUN_TEST(test_lane_l_the_salvage_marker_appears_exactly_when_cut);
+  RUN_TEST(test_lane_l_a_reported_cut_salvages_the_partial_turn);
+  RUN_TEST(test_lane_l_a_stringified_spawn_list_starts_its_sub);
+  RUN_TEST(test_lane_l_an_empty_task_spawn_is_reported_not_skipped);
+  RUN_TEST(test_lane_l_a_promise_without_a_spawn_is_corrected);
+  RUN_TEST(test_lane_l_pseudo_tool_spawns_join_the_turn_exactly_once);
+  RUN_TEST(test_lane_l_an_empty_pseudo_tool_call_is_reported);
+  RUN_TEST(test_lane_l_recovered_actions_apply_only_on_clean_owner_turns);
+  RUN_TEST(test_lane_l_a_gated_recovered_spawn_is_reported);
+  RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
+  RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
+  RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
+  RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);
   RUN_TEST(test_convmap_roundtrip_and_isolation);
   RUN_TEST(test_convmap_legacy_discarded_and_lru);
   RUN_TEST(test_no_provider_gives_honest_local_reply_not_silence);

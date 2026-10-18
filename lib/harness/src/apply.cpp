@@ -1,6 +1,7 @@
 #include "nimbus/harness/apply.h"
 
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/spawn_claim.h"
 
 // Lifted from src/agent/orchestrator.cpp applyTurn (Stage E). Every summary
 // token, refusal string, and risk note moved BYTE-IDENTICAL - grep-diff the
@@ -18,6 +19,17 @@ const char kUnverifiedMemoryRefusal[] =
     "Not stored: this turn carries a sub-agent result whose connector was NOT "
     "called, so its contents are the model's guess, not the owner's data. Store a "
     "fact only from a result where the connector ran.";
+
+// True when `reply` already ends with `ask` (whitespace-insensitive at the
+// edges): the question was written into both fields.
+static bool replyEndsWith(const std::string& reply, const std::string& ask) {
+  const char* ws = " \t\r\n";
+  const size_t ae = ask.find_last_not_of(ws), ab = ask.find_first_not_of(ws);
+  const size_t re = reply.find_last_not_of(ws);
+  if (ae == std::string::npos || re == std::string::npos) return false;
+  const size_t n = ae - ab + 1;
+  return re + 1 >= n && reply.compare(re + 1 - n, n, ask, ab, n) == 0;
+}
 
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
@@ -224,9 +236,27 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   }
 
   // spawn[] - ENQUEUE only (the poll loop dispatches one per cycle).
+  // Every spawn intent either reaches the job engine or is REPORTED (lane L):
+  // the parser already named the intents it could not carry (t.spawnDrops), and
+  // an item that arrives here with no task joins them - it used to be skipped
+  // in silence while the reply said "spawning..." (16-18 Oct: six turns, 34
+  // promised sub-agents, none started, no trace).
   spawnedOut = false;
-  if (d.enqueueSpawn)
-    for (const auto& s : t.spawn) { d.enqueueSpawn(s, chatId, st.scheduledTurn); spawnedOut = true; }
+  std::vector<nimbus::orch::SpawnDrop> drops = t.spawnDrops;
+  auto enqueue = [&](const nimbus::orch::Spawn& s) {
+    if (s.task.find_first_not_of(" \t\r\n") == std::string::npos) {
+      nimbus::orch::SpawnDrop dr;
+      dr.name = s.name;
+      dr.reason = "it was sent without a task";
+      drops.push_back(std::move(dr));
+      return;
+    }
+    if (!d.enqueueSpawn) return;   // host rig with no job engine
+    d.enqueueSpawn(s, chatId, st.scheduledTurn);
+    spawnedOut = true;
+    st.spawnsEnqueued++;
+  };
+  for (const auto& s : t.spawn) enqueue(s);
 
   // session_ops[] (Phase 3) - manage sub-agents. spawn maps to the same enqueue
   // path as spawn[]; terminate stops a running job; list is a no-op (the running-
@@ -248,7 +278,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       s.attach   = op.attach;
       s.category = "research";
       s.note     = "On it.";
-      if (s.task.length() && d.enqueueSpawn) { d.enqueueSpawn(s, chatId, st.scheduledTurn); spawnedOut = true; }
+      enqueue(s);
     } else if (op.op == "terminate") {
       bool ok = d.cancelSession && d.cancelSession(op.id);
       hlog::logf("orchestrator: session terminate %s -> %s", op.id.c_str(),
@@ -269,28 +299,64 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   }
   if (spawnedOut && d.noteSpawned) d.noteSpawned();
 
+  // Report what did not start: one head note per intent, one owner line per turn.
+  // A reply that says sub-agents started while none did (the promise-without-
+  // spawn class, also checked in-turn by the final check) gets the same line.
+  std::string spawnLine;
+  for (const auto& dr : drops) {
+    hlog::logf("orchestrator: spawn not started ('%s') - %s",
+               (dr.name.empty() ? dr.task.substr(0, 40) : dr.name).c_str(), dr.reason.c_str());
+    if (st.noteSpawnRefused) st.noteSpawnRefused(dr.name, dr.task, dr.reason);
+  }
+  if (!drops.empty()) {
+    spawnLine = st.spawnsEnqueued > 0 ? nimbus::orch::kSpawnSomeNotStartedLine
+                                      : nimbus::orch::kSpawnNotStartedLine;
+  } else if (st.spawnsEnqueued == 0 &&
+             (st.spawnAttempted || nimbus::orch::replyClaimsSpawn(t.reply))) {
+    spawnLine = nimbus::orch::kSpawnNotStartedLine;
+    hlog::log("orchestrator: reply claims sub-agents but none was started - correction added");
+    if (st.noteSpawnRefused)
+      st.noteSpawnRefused("", "", "your reply said sub-agents were started, but the turn carried "
+                                  "no spawn item, so nothing is running for them");
+  }
+
+  // One countable line per turn that meant to start sub-agents: spawned (handed
+  // to the job engine) against claimed (every spawn intent, or 1 for a reply that
+  // promised some without an item). The bench and HIL legs read it.
+  const int intents = st.spawnsEnqueued + (int)drops.size();
+  const int claimed = intents > 0 ? intents : (spawnLine.empty() ? 0 : 1);
+  if (claimed > 0)
+    hlog::logf("orchestrator: spawn ledger spawned=%d claimed=%d", st.spawnsEnqueued, claimed);
+
   // await[] - aim the round-robin at the first awaited tag, poll now.
   if (!t.await_.empty() && d.awaitTag) d.awaitTag(t.await_[0]);
 
   // reply / ask
   // reply + ask arrive as ONE message (owner-flagged: two consecutive bot messages
   // read as a glitch in human conversation). The ask still drives the needs-you
-  // attention state via emitAsk().
+  // attention state via emitAsk(). An ask the reply already ends with is not
+  // repeated (the head often writes its question into both fields).
   if ((t.reply.length() || t.ask.length()) && d.fire) d.fire("reply");
   st.lastReply = t.reply;   // captured for the Local Loops semantic-repeat hash
-  const std::string riskTail = st.riskNote;   // owner-visible override note (never silent)
+  // Owner-visible notes that ride the reply and are never silent: the risk
+  // override note, then the spawn correction.
+  const std::string riskNote = st.riskNote;
+  const std::string riskTail = riskNote + (spawnLine.empty() ? "" : "\n\n" + spawnLine);
   st.riskNote.clear();
-  if (t.reply.length() && t.ask.length()) {
+  const bool askRepeated = t.ask.length() && t.reply.length() && replyEndsWith(t.reply, t.ask);
+  if (t.reply.length() && t.ask.length() && !askRepeated) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail + "\n\n" + t.ask);
     if (d.emitAsk) d.emitAsk();
   } else if (t.reply.length()) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail);
+    if (askRepeated && d.emitAsk) d.emitAsk();
   } else if (t.ask.length()) {
     if (d.deliver) d.deliver(chatId, t.ask + riskTail);
     if (d.emitAsk) d.emitAsk();
   } else if (riskTail.length()) {
-    // No reply/ask, but a risk switch flipped - the note must still land (never silent).
-    if (d.deliver) d.deliver(chatId, riskTail);
+    // No reply/ask, but a risk switch flipped or a spawn did not start - the
+    // note must still land (never silent).
+    if (d.deliver) d.deliver(chatId, riskNote.empty() ? spawnLine : riskTail);
   } else if (!spawnedOut && !st.toolRepliedThisTurn) {
     // No user-visible output this turn. There is NO fabricated "Done." on async
     // channels (the owner's complaint: scheduled loops pinging "Done." to Telegram).

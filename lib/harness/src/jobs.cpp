@@ -12,6 +12,8 @@
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
 #include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
+#include "nimbus/orch/model_choices.h"  // modelInChoices - validated spawn-model coercion
+#include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
 
@@ -95,29 +97,49 @@ static std::string jobLabel(const orch::JobRecord& rec) {
   return rec.category[0] ? (mdl + " (" + rec.category + ")") : mdl;
 }
 
-// The owner's reply when a spawn's dispatch fails.
+// The owner's reply when a spawn's dispatch fails: what happened, then the one
+// next step (subagents F3). The switch names every FabricErr with no default,
+// so a new error class fails the build's -Wswitch until it has its own words.
 static std::string spawnRefusal(FabricErr err, const std::string& provider, RateLimit window) {
-  // A Timeout usually means the sub STARTED and outran the dispatch wait (the old
-  // "couldn't start" was a lie the owner caught) - but the same signal can be
-  // a very slow connection that never delivered the request, so the honest
-  // wording claims neither outcome as certain (prism v4.1 #4). The wait is the
-  // adapter's own (120 s OpenAI, Anthropic and Cumulo, 60 s Mistral, 50 s Z.ai,
-  // 30 s custom), so no number.
-  if (err == FabricErr::Timeout)
-    return "The agent on " + provider +
-           " didn't respond in time - it may have run without me getting "
-           "its result. Try a smaller task or split it into steps.";
-  // The provider answered 200 but its result could not be read: it ran (and
-  // charged), so "couldn't start" would be the same lie.
-  if (err == FabricErr::ParseFail)
-    return "The agent on " + provider +
-           " answered, but I couldn't read its result - it may have run. Try a smaller "
-           "task or split it into steps.";
-  const std::string refused = "Couldn't start that agent on " + provider + ".";
-  // CUM-465: a 429 names the quota window that refused, in the head turn's own
-  // copy (rateLimitReply), so "wait a minute" is never promised for a spent day.
-  if (err == FabricErr::RateLimited) return refused + " " + rateLimitReply(window);
-  return refused;
+  const std::string refused = "Couldn't start that agent on " + provider;
+  switch (err) {
+    // A Timeout usually means the sub STARTED and outran the dispatch wait (the old
+    // "couldn't start" was a lie the owner caught) - but the same signal can be
+    // a very slow connection that never delivered the request, so the honest
+    // wording claims neither outcome as certain (prism v4.1 #4). The wait is the
+    // adapter's own (120 s OpenAI, Anthropic and Cumulo, 60 s Mistral, 50 s Z.ai,
+    // 30 s custom), so no number.
+    case FabricErr::Timeout:
+      return "The agent on " + provider +
+             " didn't respond in time - it may have run without me getting "
+             "its result. Try a smaller task or split it into steps.";
+    // The provider answered 200 but its result could not be read: it ran (and
+    // charged), so "couldn't start" would be the same lie.
+    case FabricErr::ParseFail:
+      return "The agent on " + provider +
+             " answered, but I couldn't read its result - it may have run. Try a smaller "
+             "task or split it into steps.";
+    // CUM-465: a 429 names the quota window that refused, in the head turn's own
+    // copy (rateLimitReply), so "wait a minute" is never promised for a spent day.
+    case FabricErr::RateLimited: return refused + ". " + rateLimitReply(window);
+    case FabricErr::Auth:
+      return refused + ": the " + provider +
+             " key was refused. Check it under Providers & models.";
+    case FabricErr::Network:
+      return refused + ": " + provider + " could not be reached. Check the connection and try again.";
+    case FabricErr::NotFound:
+      return refused + ": " + provider + " does not offer that model or agent. Try another model.";
+    case FabricErr::BadRequest:
+      return refused + ": " + provider +
+             " rejected the request (often a model it does not offer). Try another model or provider.";
+    case FabricErr::Unsupported:
+      return refused + ": " + provider + " cannot run sub-agents here. Try another provider.";
+    case FabricErr::RemoteFail:
+      return refused + ": " + provider + " had an error. Try again, or use another provider.";
+    case FabricErr::Ok:
+      break;
+  }
+  return refused + ".";
 }
 
 // ---- JobEngine --------------------------------------------------------------
@@ -129,6 +151,7 @@ JobEngine::JobEngine(Deps d, Tuning t)
   // the device - the replacement for the old malloc-while-pending tactic.
   pending_.reserve(orch::kAgentMaxJobs);
   fresh_.reserve(orch::kAgentMaxJobs);
+  ledger_.reserve(kLedgerMax);
   nextPollAt_ = nowMs();   // was begin(): g_nextPollAt = millis()
 }
 
@@ -411,7 +434,9 @@ std::string JobEngine::ownerResultsText() const {
     // Decided by the out-of-band flag, never by the text: a sub-agent's own reply
     // that starts with "FAILED: " keeps its title (it cannot pose as the device).
     const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
-    const std::string body = prefixed ? f.text.substr(kFailed.size()) : f.text;
+    // The raw fallback is a reply seam too: a sub-agent's markup never reaches the owner.
+    const std::string body =
+        nimbus::orch::cleanReplyMarkup(prefixed ? f.text.substr(kFailed.size()) : f.text);
     const std::string title = f.failed ? std::string() : (f.model.empty() ? "Result" : f.model);
     std::string block = title.empty() ? body : title + "\n" + body;
     if (b.size() + block.size() + 2 > kBudget) {
@@ -429,6 +454,122 @@ void JobEngine::deliverOwnerFallback() {
   const std::string text = ownerResultsText();
   (void)takeFreshResults();   // consumed: the clock resets, nothing is delivered twice
   deliver(chatId, text);
+}
+
+// ---- the spawn ledger (lane L, UNIFIED 3.17) ------------------------------------
+// The head kept "6 subs placed ... VERIFY files_list" in its cross-turn notes on
+// 17-18 Oct, so every later turn (the dream too) polled a dead project. The truth
+// lives here instead: each chat's recent spawns from the job table, rendered into
+// that chat's next turn.
+
+namespace {
+constexpr size_t kLedgerTaskMax = 120;
+constexpr size_t kLedgerReasonMax = 160;
+
+std::string capText(const std::string& s, size_t n) {
+  if (s.size() <= n) return s;
+  const int keep = nimbus::utf8CapLen(s.c_str(), (int)s.size(), (int)n);
+  return s.substr(0, (size_t)keep) + "\xE2\x80\xA6";
+}
+}  // namespace
+
+void JobEngine::ledgerQueued(const PendingSpawn& p) {
+  if (ledger_.size() >= kLedgerMax) ledger_.erase(ledger_.begin());
+  LedgerEntry e;
+  e.chatId = p.chatId;
+  e.name = p.name;
+  e.task = capText(p.task, kLedgerTaskMax);
+  e.provider = p.provider;
+  e.asked = p.model;
+  e.state = LedgerState::Queued;
+  e.atMs = nowMs();
+  ledger_.push_back(std::move(e));
+}
+
+void JobEngine::ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
+                              const std::string& model) {
+  const std::string task = capText(p.task, kLedgerTaskMax);
+  for (auto& e : ledger_) {
+    if (e.state != LedgerState::Queued || e.chatId != p.chatId || e.name != p.name || e.task != task)
+      continue;
+    e.state = LedgerState::Running;
+    e.tag = tag;
+    e.provider = provider;
+    e.model = model;
+    e.atMs = nowMs();
+    return;
+  }
+}
+
+void JobEngine::ledgerRefused(const std::string& chatId, const std::string& name,
+                              const std::string& task, const std::string& reason) {
+  const std::string t = capText(task, kLedgerTaskMax);
+  for (auto& e : ledger_) {   // a queued spawn that failed at dispatch
+    if (e.state != LedgerState::Queued || e.chatId != chatId || e.name != name || e.task != t) continue;
+    e.state = LedgerState::Refused;
+    e.reason = capText(reason, kLedgerReasonMax);
+    e.atMs = nowMs();
+    return;
+  }
+  if (ledger_.size() >= kLedgerMax) ledger_.erase(ledger_.begin());
+  LedgerEntry e;
+  e.chatId = chatId;
+  e.name = name;
+  e.task = t;
+  e.reason = capText(reason, kLedgerReasonMax);
+  e.state = LedgerState::Refused;
+  e.atMs = nowMs();
+  ledger_.push_back(std::move(e));
+}
+
+void JobEngine::ledgerFinished(const char* tag, LedgerState st, const std::string& reason) {
+  for (auto& e : ledger_) {
+    if (e.tag != tag) continue;
+    e.state = st;
+    e.reason = capText(reason, kLedgerReasonMax);
+    e.atMs = nowMs();
+    return;
+  }
+}
+
+void JobEngine::noteSpawnIntentRefused(const std::string& chatId, const std::string& name,
+                                       const std::string& task, const std::string& reason) {
+  noteSpawnRefused(chatId, name.c_str(), task, reason);
+}
+
+// One ledger line: who, then what became of it.
+std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
+  const unsigned mins = (unsigned)((now - e.atMs) / 60000u);
+  const std::string ago = mins == 0 ? "just now" : std::to_string(mins) + " min ago";
+  std::string who = !e.name.empty() ? e.name : nimbus::orch::foldLine("", e.task, 40);
+  if (!e.tag.empty()) who += " (" + e.tag + ", " + e.provider + "/" + e.model + ")";
+  std::string line = "- " + who + ": ";
+  switch (e.state) {
+    case LedgerState::Queued:    line += "queued, not started yet; it starts when a slot frees"; break;
+    case LedgerState::Running:   line += "running, started " + ago; break;
+    case LedgerState::Done:      line += "finished " + ago + "; its result came back as a fresh result"; break;
+    case LedgerState::Failed:    line += "failed " + ago + (e.reason.empty() ? "" : " - " + e.reason); break;
+    case LedgerState::Refused:   line += "did not start (" + ago + ") - " + e.reason; break;
+    case LedgerState::Cancelled: line += "stopped " + ago; break;
+  }
+  if (!e.asked.empty() && !e.model.empty() && e.asked != e.model)
+    line += " (asked for " + e.asked + ", which " + e.provider + " does not list)";
+  return line + "\n";
+}
+
+std::string JobEngine::spawnLedgerText(const std::string& chatId) const {
+  const uint32_t now = nowMs();
+  std::string lines;
+  int shown = 0;
+  for (auto it = ledger_.rbegin(); it != ledger_.rend() && shown < 8; ++it) {
+    if (it->chatId != chatId || now - it->atMs > kLedgerWindowMs) continue;
+    lines += ledgerLine(*it, now);
+    shown++;
+  }
+  if (lines.empty()) return "";
+  return "[SPAWN LEDGER] (this chat's sub-agents from the device's own job table, newest first. "
+         "It is the truth about them: never re-check it with file or session tools, and never "
+         "copy it into your notes.)\n" + lines;
 }
 
 // ---- spawn enqueue + dispatch -----------------------------------------------
@@ -474,6 +615,8 @@ JobEngine::SpawnNotes* JobEngine::spawnNotesFor(const std::string& chatId, bool 
 void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
                                  const std::string& task, const std::string& reason,
                                  bool mayHaveRun) {
+  ledgerRefused(chatId, name ? name : "", task,
+                (mayHaveRun ? "may have run, but its result will not arrive: " : "") + reason);
   SpawnNotes* np = spawnNotesFor(chatId, mayHaveRun);
   if (!np) return;
   SpawnNotes& n = *np;
@@ -541,7 +684,10 @@ std::string JobEngine::deliveredReply(const orch::JobRecord& rec, bool& unverifi
 }
 
 void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {
-  if (s.task.length() == 0) return;
+  if (s.task.length() == 0) {   // never silent (lane L): the head hears why
+    noteSpawnRefused(chatId, s.name.c_str(), s.task, "it was sent without a task");
+    return;
+  }
   if ((int)s.task.length() > orch::kSpawnTaskMax - 1)   // was a SILENT strncpy clip
     hlog::logf("orchestrator: spawn task truncated %d -> %d chars",
                (int)s.task.length(), orch::kSpawnTaskMax - 1);
@@ -576,6 +722,7 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
   pp->attach = s.attach;
   strncpy(pp->chatId,   chatId.c_str(),     sizeof(pp->chatId)   - 1);
   pp->quiet = quiet;
+  ledgerQueued(*pp);
 }
 
 // Provider resolution: explicit hint wins; else connector-aware routing (a
@@ -608,13 +755,49 @@ bool JobEngine::keylessToRouter(std::string& provider, std::string& model) const
   return true;
 }
 
-// A model the provider does not list runs its sub-model default.
-void JobEngine::coerceSpawnModel(const std::string& provider, std::string& model) const {
-  if (d_.modelIsValid && d_.modelIsValid(provider, model)) return;
-  std::string coerced = subModelOf(provider);
+// Validated coercion (subagents F5): a model the provider does not list never
+// runs as an unchecked default. The asked model when listed, else the
+// provider's sub default when listed, else the first model the list holds; when
+// nothing validates the spawn is refused with the reason. A provider with no
+// list at all (custom: "" from modelChoices) runs as asked. Without the
+// modelChoices dep the old fallback to the sub default stands.
+bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provider,
+                                 std::string& model) {
+  if (d_.modelIsValid && d_.modelIsValid(provider, model)) return true;
+  const std::string asked = model;
+  const std::string sub = subModelOf(provider);
+  if (!d_.modelChoices) {
+    model = sub;
+  } else {
+    const std::string list = d_.modelChoices(provider);
+    if (list.empty()) {   // nothing to check against
+      if (model.empty()) model = sub;
+      return true;
+    }
+    if (!sub.empty() && nimbus::orch::modelInChoices(list, sub)) {
+      model = sub;
+    } else {
+      const size_t comma = list.find(',');
+      std::string first = list.substr(0, comma);
+      while (!first.empty() && first.back() == ' ') first.pop_back();
+      while (!first.empty() && first.front() == ' ') first.erase(first.begin());
+      if (first.empty()) {
+        const std::string what = asked.empty() ? std::string("a model") : asked;
+        hlog::logf("orchestrator: spawn refused (%s lists no usable model for %s)",
+                   provider.c_str(), what.c_str());
+        deliver(p.chatId, "Couldn't start that agent on " + provider + ": it does not offer " +
+                              what + ". Pick a model from its list under Providers & models.");
+        noteSpawnRefused(p.chatId, p.name, p.task,
+                         provider + " does not offer " + what +
+                             "; spawn it with a model from that provider's [AVAILABLE MODELS] entry");
+        return false;
+      }
+      model = first;
+    }
+  }
   hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)",
-             model.length() ? model.c_str() : "(none)", coerced.c_str(), provider.c_str());
-  model = coerced;
+             asked.length() ? asked.c_str() : "(none)", model.c_str(), provider.c_str());
+  return true;
 }
 
 bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
@@ -646,8 +829,7 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
     refuseKeyless(p, provider, model);
     return false;
   }
-  coerceSpawnModel(provider, model);
-  return true;
+  return coerceSpawnModel(p, provider, model);
 }
 
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
@@ -760,6 +942,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (d_.journal) d_.journal->write(rec);
 
   hlog::logf("orchestrator: spawned %s -> %s (%s/%s)", tag, jobId, rec.backend, rec.model);
+  ledgerStarted(p, tag, rec.backend, rec.model);
   if (d_.hooks.onSpawn) {   // lifecycle observer (after the journal write - the job is real)
     SpawnEv ev;
     ev.tag = tag;
@@ -885,6 +1068,7 @@ int JobEngine::pump() {
     if (err == FabricErr::NotFound) {   // expired / unknown remote job: terminal
       d_.journal->update(rec.tag, orch::JobState::Error);
       deliver(rec.chatId, std::string("Job [") + jobLabel(rec) + "] expired or was not found.");
+      ledgerFinished(rec.tag, LedgerState::Failed, "it expired or was not found on its provider");
       fireResult(rec.tag, orch::JobState::Error, rec.chatId, "expired");
       emitJobState(rec.tag, rec.backend, orch::JobState::Error);
       d_.journal->markSeen(rec.tag);
@@ -920,6 +1104,7 @@ int JobEngine::pump() {
           deliver(rec.chatId, failText);
         }
         fireResult(rec.tag, orch::JobState::Error, rec.chatId, "lost contact");
+        ledgerFinished(rec.tag, LedgerState::Failed, "its provider stopped answering about it");
         emitJobState(rec.tag, rec.backend, orch::JobState::Error);
         d_.journal->markSeen(rec.tag);
         watchClear(rec.tag);
@@ -971,6 +1156,7 @@ int JobEngine::pump() {
       // owner actually sees. If the synthesis can't run (heap/provider down), the
       // fallback (60 s after the batch drains) delivers the raw results - never lost.
       emitJobState(rec.tag, rec.backend, orch::JobState::Done);
+      ledgerFinished(rec.tag, LedgerState::Done);
       d_.journal->markSeen(rec.tag);
       watchClear(rec.tag);
       scheduleReap(rec.tag);   // collapse the Done arc off the ring after a short grace
@@ -1011,6 +1197,7 @@ int JobEngine::pump() {
       // A failure with nothing else live IS the final report: deliver as before.
       const std::string failText = std::string("Job [") + jobLabel(rec) + "] failed: " +
               (env_ref().error[0] ? env_ref().error : "unknown error");
+      ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error");
       if (activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
         addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
                        nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
@@ -1046,6 +1233,7 @@ bool JobEngine::cancel(const char* tagOrJobId) {
     if (strcmp(rec.tag, tagOrJobId) == 0 || strcmp(rec.jobId, tagOrJobId) == 0) {
       d_.fabric->cancel(rec.jobId);
       d_.journal->update(rec.tag, orch::JobState::Cancelled);
+      ledgerFinished(rec.tag, LedgerState::Cancelled);
       emitJobState(rec.tag, rec.backend, orch::JobState::Cancelled);
       d_.journal->markSeen(rec.tag);
       watchClear(rec.tag);
