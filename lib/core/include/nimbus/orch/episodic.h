@@ -219,6 +219,10 @@ class EpisodicStore {
     return query(q);
   }
   virtual int  messageCount() const = 0;
+  // True when messageCount() covers every row the store holds. The SD append-log
+  // reports false while the older rows on its card are still being indexed after
+  // a restart (or past its index cap); a count shown to anyone is then a floor.
+  virtual bool indexComplete() const { return true; }
 };
 
 // Portable reference impl (also the device's fallback when no SD is present).

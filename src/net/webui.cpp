@@ -578,6 +578,9 @@ static void buildState(String& out) {
   d["memSd"]        = agent::memory::haveSd();
   d["memFlashFull"] = agent::memory::flashFull();
   d["sdLost"]       = agent::memory::sdLost();   // demoted mid-run (card was present at boot)
+  // The episodic index covers every row on the card (false while it is still being
+  // indexed after a restart, or when it stopped at its cap). Lock-free flag read.
+  d["epiIndexComplete"] = agent::memory::episodicIndexComplete();
   // Injected resilience faults (nimbus::fault). Always 0 in production (only the
   // NIMBUS_TEST console / POST /api/fault can set them); surfaced so the HIL suite
   // can confirm an injection took and the degraded path is the one under test.
@@ -3659,8 +3662,20 @@ void beginWeb(const WebConfig& wc) {
     if (kind == "epi")      added = agent::memory::testFillEpisodic(n, bytes,
                                         text.length() ? text.c_str() : nullptr);
     else if (kind == "vec") added = agent::memory::testFillVectors(n);
-    if (added < 0) { r->send(400, "application/json", "{\"error\":\"kind: epi|vec\"}"); return; }
+    else if (kind == "epiday") {   // dated rows + sidecars: the field-shaped bench corpus
+      const long day = r->hasParam("day", true) ? r->getParam("day", true)->value().toInt() : 0;
+      const int blobEvery = r->hasParam("blob", true) ? r->getParam("blob", true)->value().toInt() : 0;
+      added = agent::memory::testSeedEpisodicDay(day > 0 ? (uint32_t)day : 0, n, bytes, blobEvery);
+    }
+    if (added < 0) { r->send(400, "application/json", "{\"error\":\"kind: epi|vec|epiday\"}"); return; }
     r->send(200, "application/json", String("{\"added\":") + added + "}");
+  });
+  // A retention pass now (bench B2): queued for the main loop, which runs it
+  // through the turn gate; the outcome is in the log.
+  s_server.on("/api/test/epiprune", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    agent::memory::requestRetentionPass();
+    r->send(202, "application/json", "{\"ok\":true,\"queued\":true}");
   });
   s_server.on("/api/test/compact", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;

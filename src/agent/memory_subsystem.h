@@ -6,6 +6,7 @@
 
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
+#include "nimbus/orch/retention.h"   // RetentionStatus (pruneRetention's outcome)
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_archive.h"
@@ -241,9 +242,31 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
                       const String& text, const char* srcPath, const char* ext);
 
 // Retention maintenance (§4): on the SD append-log, prune day-streams older than
-// `retentionDays` and reference-count-scan away unreferenced blob sidecars. Returns
-// the number of messages pruned (0 with no SD append-log). Safe to call periodically.
-int pruneRetention(int retentionDays = 30);
+// `retentionDays` and, once the episodic index covers the whole card,
+// reference-count-scan away unreferenced blob sidecars. Never runs while a turn is
+// in flight, and never waits on a busy card lock: it then returns DeferredTurn /
+// DeferredBusy having touched nothing, and the caller retries on its next loop
+// pass (main.cpp drives it through a RetentionSchedule).
+// Nothing under the Telegram archive root is ever removed.
+nimbus::orch::RetentionStatus pruneRetention(int retentionDays = 30);
+
+// Index backfill (§3a): after a boot scan that stopped at its budget, index one
+// more bounded slice of the history still on the card. Called from the main loop
+// every pass; it paces itself (one slice per 250 ms) and runs only while no turn
+// is in flight and the TLS work slot is free. Logs once when the index completes.
+void episodicBackfillTick(uint32_t nowMs);
+
+// True when the episodic index covers every row on the card (or there is no SD
+// append-log). Lock-free, for /api/state.
+bool episodicIndexComplete();
+
+// Ask for a retention pass now, out of schedule (test builds, POST
+// /api/test/epiprune). The main loop runs it through the same schedule and turn
+// gate as the 6-hourly pass, so during a turn it is deferred and logged once,
+// then runs when the turn ends. consumeRetentionRequest() is the loop's side:
+// true once per request.
+void requestRetentionPass();
+bool consumeRetentionRequest();
 
 // ---- CUM-406: memory restore write path -------------------------------------
 // Parse ONE backup artifact's JSON body (the shapes backup_device.py writes; a
@@ -282,6 +305,12 @@ struct Stats {
   // "where did my old history go" has an answer instead of looking like loss.
   bool epiHydrateTruncated = false;
   int  epiIndexFloorDay = 0;
+  // Index backfill: rows the boot scan indexed, rows the backfill added since,
+  // and whether the index now covers the whole card (false while it is still
+  // being indexed, or when the backfill stopped at its cap or on read errors).
+  int  epiBootIndexed = 0;
+  int  epiBackfillRows = 0;
+  bool epiIndexComplete = true;
 };
 Stats stats();
 
@@ -298,6 +327,9 @@ uint32_t nowHours();
 // cap-eviction order is assertable. Returns rows added this call.
 int testFillEpisodic(int n, int bytesPerRow, const char* exactText = nullptr);
 int testFillVectors(int n, const char* ns = "", float importance = 0.0f);
+// Bench seam: `n` (<=200) rows dated epoch-day `dayNum`, ~bytesPerRow each, every
+// `blobEvery`-th one referencing a fresh /mem/blobs sidecar (0 = none). SD only.
+int testSeedEpisodicDay(uint32_t dayNum, int n, int bytesPerRow, int blobEvery);
 #endif
 
 }  // namespace memory

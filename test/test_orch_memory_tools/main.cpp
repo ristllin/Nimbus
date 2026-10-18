@@ -998,6 +998,40 @@ static void test_cum515_episodic_says_when_more_rows_matched() {
   TEST_ASSERT_FALSE(has(one.output, "more matching rows"));
 }
 
+// While the episodic index is still catching up with the card (after a restart,
+// or past its cap) the count in the answer is a floor, and the answer says so;
+// once the index is complete the plain form returns (counter-test).
+struct PartialIndexStore : InMemoryEpisodicStore {
+  bool complete = false;
+  bool indexComplete() const override { return complete; }
+};
+static PartialIndexStore g_partial;
+static void test_episodic_count_is_honest_while_indexing() {
+  buildServer();
+  g_partial = PartialIndexStore();
+  MemoryContext ctx;
+  ctx.vec = &g_vec; ctx.scratch = &g_scratch; ctx.cfg = &g_cfg;
+  ctx.episodic = &g_partial;
+  ctx.embed = fakeEmbed;
+  ctx.nowHours = [] { return g_now; };
+  ToolRegistry reg;
+  registerMemoryTools(reg, ctx);
+  for (int i = 0; i < 3; i++) {
+    EpisodicMessage m; m.id = std::to_string(i + 1); m.sessionId = "chat"; m.tsHours = 10;
+    m.role = "user"; m.text = "pump check number " + std::to_string(i);
+    g_partial.addMessage(m);
+  }
+  ToolResult r = call(reg, "memory.episodic", R"({"text":"pump"})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE(has(r.output, "Episodic (3 of 3 indexed; older history on the card is not in this count):"));
+  ToolResult ranked = call(reg, "memory.episodic", R"({"text":"bilge pump"})");
+  TEST_ASSERT_TRUE(has(ranked.output, "indexed, best match first; older history on the card is not in this count):"));
+  g_partial.complete = true;
+  ToolResult done = call(reg, "memory.episodic", R"({"text":"pump"})");
+  TEST_ASSERT_TRUE(has(done.output, "Episodic (3 of 3 indexed):"));
+  TEST_ASSERT_FALSE(has(done.output, "not in this count"));
+}
+
 // The keyword fallback of memory.search and memory.archive runs the same rule:
 // 1 of 3 words finds the memory, case-insensitively; common words do not count.
 static void test_cum515_keyword_fallbacks_use_the_shared_rule() {
@@ -1044,6 +1078,7 @@ int main(int, char**) {
   RUN_TEST(test_episodic_tool_queries);
   RUN_TEST(test_episodic_time_window_args);
   RUN_TEST(test_episodic_row_excerpt_600);
+  RUN_TEST(test_episodic_count_is_honest_while_indexing);
   RUN_TEST(test_search_hides_expired_and_update_keeps_ttl);
   RUN_TEST(test_write_then_search_recall);
   RUN_TEST(test_write_missing_content_and_dup);

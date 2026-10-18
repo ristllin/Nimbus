@@ -26,6 +26,7 @@
 #include "agent_config.h"
 #include "../sys/agent_log.h"
 #include "epi_fs_arduino.h"
+#include "../sys/tls_arbiter.h"           // the index backfill yields to any open TLS session
 #include "orchestrator.h"
 #include "loops_subsystem.h"   // loop.create/list/cancel tools -> Local Loops
 #include "nimbus/harness/dream.h"  // DREAMING: reserved-loop cancel refusal
@@ -554,8 +555,8 @@ void begin() {
                                 nimbus::orch::kHydrateMaxBytes,
                                 [] { vTaskDelay(1); });
     if (epiLog.hydrateTruncated())
-      alogf("memory: episodic boot scan hit its budget - older rows are on the card "
-            "but not indexed (%d indexed)", loaded);
+      alogf("memory: episodic boot scan hit its budget (%d indexed) - indexing the "
+            "older rows on the card in the background", loaded);
     // One-time migration: if the day-streams are empty but a legacy whole-blob
     // exists (LittleFS /data or the pre-append-log /mem/episodic.bin), replay it
     // into the append-log. hydrate()==0 is the first-mount signal (once day-streams
@@ -1833,45 +1834,237 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
   return true;
 }
 
-int pruneRetention(int retentionDays) {
-  if (!g_epiLog || retentionDays <= 0) return 0;
-  uint32_t nowDay = nowHours() / 24;
-  if (nowDay < (uint32_t)retentionDays) return 0;  // clock not advanced past the window
-  Lock g;   // prune scans + mutates the episodic store shared with the turn task
-  int before = g_epiLog->messageCount();
-  EpiPruneReport rep = g_epiLog->prune(nowDay - (uint32_t)retentionDays, kBlobDir);
-  // Battery telemetry day-files (audit 2026-07-24: the ONE unbounded SD writer -
-  // ~300 KB/day worst case, never deleted). Same day-numbered naming, same
-  // retention window. Best-effort: a failed remove retries next 6 h tick.
-  {
-    const uint32_t cutoff = nowDay - (uint32_t)retentionDays;
-    fs::FS& sd = dataFs();
-    File dir = sd.open("/mem/battery");
-    if (dir && dir.isDirectory()) {
-      int removed = 0;
-      for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        String name = f.name();   // "d<N>.jsonl"
-        f.close();
-        if (!name.startsWith("d")) continue;
-        long day = name.substring(1).toInt();
-        if (day > 0 && (uint32_t)day < cutoff &&
-            sd.remove(String("/mem/battery/") + name))
-          removed++;
-      }
-      if (removed) alogf("memory: retention pruned %d battery day-files", removed);
-    }
+// Battery telemetry day-files (audit 2026-07-24: the ONE unbounded SD writer -
+// ~300 KB/day worst case, never deleted). Same day-numbered naming, same
+// retention window. Best-effort: a failed remove retries next pass. Names are
+// read with the directory walk (no file is opened per entry).
+static void pruneBatteryDays(uint32_t cutoffDay) {
+  fs::FS& sd = dataFs();
+  File dir = sd.open("/mem/battery");
+  if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
+    return;
   }
+  int removed = 0;
+  for (;;) {
+    bool isDir = false;
+    const String path = dir.getNextFileName(&isDir);
+    if (path.length() == 0) break;
+    if (isDir) continue;
+    const int slash = path.lastIndexOf('/');
+    const String name = slash >= 0 ? path.substring(slash + 1) : path;   // "d<N>.jsonl"
+    if (!name.startsWith("d")) continue;
+    const long day = name.substring(1).toInt();
+    const String full = String("/mem/battery/") + name;
+    if (day > 0 && (uint32_t)day < cutoffDay &&
+        !nimbus::orch::isRetentionExempt(full.c_str()) && sd.remove(full))
+      removed++;
+  }
+  dir.close();
+  if (removed) alogf("memory: retention pruned %d battery day-files", removed);
+}
+
+nimbus::orch::RetentionStatus pruneRetention(int retentionDays) {
+  using nimbus::orch::RetentionStatus;
+  // Cheap gate before the lock: a turn in flight owns the card and the heap.
+  if (orchestrator::turnInFlight()) return RetentionStatus::DeferredTurn;
+  const uint32_t nowDay = nowHours() / 24;
+  // prune scans + mutates the episodic store shared with the turn and web tasks.
+  // Only TRIED: this runs on the watchdog-fed loop task, and the lock can be held
+  // across a memory tool's embedding round-trip; a busy lock defers the pass to
+  // the next loop pass instead of stalling the loop behind it.
+  if (!tryLock(50)) return RetentionStatus::DeferredBusy;
+  // Checked again under the lock (a turn can start while we waited for it); the
+  // portable gate also refuses with no store or a clock short of the window.
+  const nimbus::orch::RetentionResult res = nimbus::orch::runEpisodicRetention(
+      g_epiLog, nowDay, retentionDays, kBlobDir, orchestrator::turnInFlight());
+  if (res.status != RetentionStatus::Ran) {
+    unlock();
+    return res.status;
+  }
+  const nimbus::orch::EpiPruneReport& rep = res.report;
+  pruneBatteryDays(res.cutoffDay);
   // Glass Box P3 turn dossiers: the ring bounds SIZE on every write; this bounds
   // AGE, so a quiet device doesn't keep month-old turn anatomy after its episodic
   // rows are gone. Ids are opaque here, so age comes from the ring, not the name:
   // simply re-run the ring prune, then drop anything left if the whole directory
   // predates the window (cheap - the ring keeps this to <=16 files).
   traceRingPrune();
-  alogf("memory: retention pruned %d day-files + %d blobs (kept %d msgs)",
-        (int)rep.removedDayFiles.size(), (int)rep.removedBlobs.size(), rep.keptMessages);
-  return before - rep.keptMessages;
+  unlock();
+  if (rep.blobGcSkipped) {
+    alogf("memory: retention pruned %d day-files (kept %d msgs); blob GC deferred: index incomplete",
+          (int)rep.removedDayFiles.size(), rep.keptMessages);
+  } else {
+    alogf("memory: retention pruned %d day-files + %d of %d blobs (kept %d msgs)",
+          (int)rep.removedDayFiles.size(), (int)rep.removedBlobs.size(), rep.blobsPresent,
+          rep.keptMessages);
+  }
+  return RetentionStatus::Ran;
 }
+
+// ---- episodic index backfill (docs/orchestrator-storage.md §3a) -------------
+// After a boot scan that stopped at its budget, the main loop indexes the rest of
+// the card in small slices. No task of its own (the loop task already runs
+// retention), no slice beside a turn or an open TLS session, and the card lock is
+// only tried, never waited on, so the loop never stalls behind a web query.
+namespace {
+constexpr uint32_t kBackfillPeriodMs = 250;   // one slice per period at most
+constexpr uint32_t kBackfillRetryMs = 5UL * 60UL * 1000UL;   // pause after card read errors
+uint32_t g_bfLastMs = 0;
+uint32_t g_bfRetryAtMs = 0;
+bool     g_bfPaused = false;     // stopped on card read errors; retried at g_bfRetryAtMs
+bool     g_bfPauseLogged = false;
+uint32_t g_bfFirstMs = 0;
+uint32_t g_bfWorkUs = 0;
+uint32_t g_bfMaxSliceUs = 0;
+int      g_bfRuns = 0;
+bool     g_bfDone = false;   // outcome logged; nothing more to do this boot
+}  // namespace
+
+// What one slice reported, captured under the lock.
+struct BackfillSlice {
+  bool more = true;         // call again later
+  bool readErrors = false;  // stopped because a file kept failing to read
+  int  rows = 0;            // index rows after the slice
+  nimbus::orch::EpiBackfillStats st;
+};
+
+// May a slice run now? Paced, card healthy, no turn, and the TLS work slot free.
+// On true the caller holds the work slot and must release it.
+static bool backfillSliceAllowed(uint32_t nowMs) {
+  if (g_bfDone || !g_epiLog) return false;
+  if (g_bfPaused && (int32_t)(nowMs - g_bfRetryAtMs) < 0) return false;
+  if ((uint32_t)(nowMs - g_bfLastMs) < kBackfillPeriodMs) return false;
+  g_bfLastMs = nowMs;
+  // The card must be present and taking writes: a demoted or failing card is not
+  // read in the background.
+  if (!effHaveSd() || g_epiLog->unpersistedCount() > 0) return false;
+  if (orchestrator::turnInFlight()) return false;
+  // Zero wait: if any TLS session holds the work slot, its handshake may need the
+  // internal heap now, so the slice waits for a later pass.
+  return arbiter::acquireWork(0);
+}
+
+// One slice under the card lock (tried, never waited on), with its timing.
+static BackfillSlice runBackfillSlice(uint32_t nowMs) {
+  BackfillSlice out;
+  if (!tryLock(20)) return out;   // busy: try again next period
+  if (g_bfPaused) {   // the pause is over: retry from where the reads failed
+    g_epiLog->resumeAfterReadErrors();
+    g_bfPaused = false;
+  }
+  const uint32_t t0 = micros();
+  out.more = g_epiLog->backfillStep();
+  const uint32_t us = micros() - t0;
+  out.rows = g_epiLog->messageCount();
+  out.st = g_epiLog->backfillStats();
+  out.readErrors = g_epiLog->stalledOnReadErrors();
+  unlock();
+  if (g_bfRuns++ == 0) g_bfFirstMs = nowMs;
+  g_bfWorkUs += us;
+  if (us > g_bfMaxSliceUs) g_bfMaxSliceUs = us;
+  return out;
+}
+
+// The backfill stopped: log how, once.
+static void reportBackfillOutcome(const BackfillSlice& sl, uint32_t nowMs) {
+  if (sl.st.slices == 0) return;   // the boot scan had already indexed everything
+  const unsigned workMs = (unsigned)(g_bfWorkUs / 1000);
+  const unsigned maxMs = (unsigned)((g_bfMaxSliceUs + 999) / 1000);
+  const unsigned wallMs = (unsigned)(nowMs - g_bfFirstMs);
+  if (sl.st.complete) {
+    alogf("memory: episodic index complete (%d rows, %d added in %d slices, %u ms work, "
+          "longest slice %u ms, %u ms elapsed)", sl.rows, sl.st.rows, sl.st.slices, workMs, maxMs,
+          wallMs);
+  } else if (sl.st.capped) {
+    alogf("memory: episodic index stopped at its cap (%d rows) - older rows stay on the card, "
+          "searched on demand; old attachments are kept", sl.rows);
+  } else {
+    alogf("memory: episodic index incomplete (%d rows; a row too long to index) - older rows "
+          "stay on the card, searched on demand; old attachments are kept", sl.rows);
+  }
+}
+
+void episodicBackfillTick(uint32_t nowMs) {
+  if (!backfillSliceAllowed(nowMs)) return;
+  const BackfillSlice sl = runBackfillSlice(nowMs);
+  arbiter::releaseWork();
+  if (sl.more) return;
+  if (sl.readErrors) {
+    // A card that misread for a moment may read again: pause, then retry from
+    // where it stopped. The index stays incomplete (and the blob sweep
+    // deferred) meanwhile.
+    g_bfPaused = true;
+    g_bfRetryAtMs = nowMs + kBackfillRetryMs;
+    if (!g_bfPauseLogged) {
+      g_bfPauseLogged = true;
+      alogf("memory: episodic index paused after card read errors (%d rows) - retrying "
+            "every 5 minutes; old attachments are kept", sl.rows);
+    }
+    return;
+  }
+  g_bfDone = true;
+  reportBackfillOutcome(sl, nowMs);
+}
+
+bool episodicIndexComplete() { return !g_epiLog || g_epiLog->indexComplete(); }
+
+// A retention pass asked for out of schedule (test builds, bench B2).
+// The loop runs it through the same schedule and turn gate as the 6-hourly pass.
+namespace {
+volatile bool g_retentionRequested = false;
+}  // namespace
+void requestRetentionPass() { g_retentionRequested = true; }
+bool consumeRetentionRequest() {
+  if (!g_retentionRequested) return false;
+  g_retentionRequested = false;
+  return true;
+}
+
+#ifdef NIMBUS_TEST
+// Bench seam (B1/B2: the field-shaped corpus). Writes `n` rows dated `dayNum`
+// straight into that day's stream, each about `bytesPerRow` long; every
+// `blobEvery`-th row (0 = none) is a tool output that references a small sidecar
+// written to /mem/blobs. Ids continue the device counter. At most 200 rows per
+// call, like testFillEpisodic.
+int testSeedEpisodicDay(uint32_t dayNum, int n, int bytesPerRow, int blobEvery) {
+  if (!g_epiLog || !effHaveSd() || dayNum == 0) return 0;
+  if (n > 200) n = 200;
+  if (n <= 0) return 0;
+  if (bytesPerRow < 64) bytesPerRow = 64;
+  if (bytesPerRow > 4096) bytesPerRow = 4096;
+  Lock g;
+  int added = 0;
+  for (int i = 0; i < n; i++) {
+    char id[16];
+    snprintf(id, sizeof(id), "m%08x", (unsigned)(++g_epiSeq));
+    nimbus::orch::EpisodicMessage m;
+    m.id = id;
+    m.sessionId = "hiltest-epi";
+    m.role = "user";
+    m.kind = nimbus::orch::MsgKind::Message;
+    m.tsHours = dayNum * 24 + (uint32_t)(i * 24 / n);
+    if (blobEvery > 0 && i % blobEvery == 0) {
+      char path[64];
+      snprintf(path, sizeof(path), "%s/5eed%04x%08x.txt", kBlobDir, (unsigned)(dayNum & 0xFFFF),
+               (unsigned)g_epiSeq);
+      File f = g_fs->open(path, FILE_WRITE);
+      if (!f) continue;
+      f.print("seeded sidecar for ");
+      f.print(id);
+      f.close();
+      m.kind = nimbus::orch::MsgKind::ToolOutput;
+      m.blobPath = path;
+    }
+    std::string text = std::string("SEED-") + id + " day " + std::to_string(dayNum) + " ";
+    while ((int)text.size() < bytesPerRow) text += "hiltest-pad ";
+    m.text = text;
+    g_epiLog->addMessage(m);
+    added++;
+  }
+  return added;
+}
+#endif
 
 // Which tool CALLS mutate durable state (so a read-only memory.search/view doesn't
 // trigger a full-blob rewrite - the write-amplification the audit flagged). `action`
@@ -1942,6 +2135,9 @@ Stats stats() {
   if (g_epiLog) {
     s.epiHydrateTruncated = g_epiLog->hydrateTruncated();
     s.epiIndexFloorDay = (int)g_epiLog->indexFloorDay();
+    s.epiBootIndexed = g_epiLog->bootIndexed();
+    s.epiBackfillRows = g_epiLog->backfillStats().rows;
+    s.epiIndexComplete = g_epiLog->indexComplete();
   }
   return s;
 }

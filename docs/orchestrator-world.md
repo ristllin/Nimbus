@@ -99,10 +99,11 @@ prompt-injection channel aimed at the owner (`orch_memory_tools.cpp`).
 > an in-RAM offset index** (`AppendLogEpisodicStore`) - the system of record.
 > History is uncapped on SD and **reaches months back**: the boot scan is
 > deliberately budget-bounded (so a busy month cannot make the device unbootable),
-> which leaves older rows on the card *below* the index; a deep query
-> (`memory.episodic` cold-scan) pages down to them with a resume cursor and reports
-> an honest floor. The storage tiers, the boot-scan bound, and the deep-history
-> search are the canonical record in
+> and the rest of the card is indexed in the background right after boot. Until
+> that finishes (and past a 20,000-row index cap) a deep query (`memory.episodic`
+> cold-scan) pages down to the older rows with a resume cursor and reports an
+> honest floor. The storage tiers, the boot-scan bound, the background indexing and
+> the deep-history search are the canonical record in
 > [`orchestrator-storage.md`](orchestrator-storage.md) §3a. The original
 > design below is kept for reference.
 

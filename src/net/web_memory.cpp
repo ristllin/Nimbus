@@ -193,6 +193,9 @@ void handleStats(AsyncWebServerRequest* r) {
   d["scratchItems"]   = s.scratchItems;
   d["episodicMsgs"]   = s.episodicMsgs;
   d["epiTruncated"]   = s.epiHydrateTruncated;
+  d["epiIndexComplete"] = s.epiIndexComplete;   // the index covers every row on the card
+  d["epiBootIndexed"]   = s.epiBootIndexed;     // rows the boot scan indexed
+  d["epiBackfillRows"]  = s.epiBackfillRows;    // rows indexed after boot, in the background
   d["epiFloor"]       = s.epiIndexFloorDay
                             ? nimbus::orch::AppendLogEpisodicStore::civilDate(
                                   (uint32_t)s.epiIndexFloorDay)
@@ -482,6 +485,9 @@ void handleEpisodicGet(AsyncWebServerRequest* r) {
                                              : "telegram";
   }
   d["total"] = mem::episodic().messageCount();
+  // false while older rows on the card are still being indexed after a restart
+  // (or the index stopped at its cap): `total` is then a lower bound, not the store.
+  d["indexComplete"] = mem::episodicIndexComplete();
   // Say how far back this answer actually looked - "no results" from a bounded
   // read is not the same claim as "it never happened".
   d["searchedTo"]  = nimbus::orch::AppendLogEpisodicStore::civilDate(qinfo.searchedToDay);

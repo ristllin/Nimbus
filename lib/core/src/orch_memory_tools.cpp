@@ -783,9 +783,15 @@ ToolResult doEpisodic(const MemoryContext& ctx, JsonObjectConst a, const Princip
     out += "\n";
   }
   if (ranked) out += unshownNote(qi.matched, (int)rows.size());
+  // While the index is still catching up with the card after a restart, the
+  // count is a floor, not the size of the history: say so rather than present
+  // the boot window as everything that was ever said.
+  const bool complete = ctx.episodic->indexComplete();
   return ToolResult::ok("Episodic (" + std::to_string(rows.size()) + " of " +
                         std::to_string(ctx.episodic->messageCount()) + " indexed" +
-                        (ranked ? ", best match first" : "") + "):\n" + out + floorNote);
+                        (ranked ? ", best match first" : "") +
+                        (complete ? "" : "; older history on the card is not in this count") +
+                        "):\n" + out + floorNote);
 }
 
 // ---- memory.scratchpad ------------------------------------------------------

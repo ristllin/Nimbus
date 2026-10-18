@@ -3,6 +3,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "nimbus/orch/episodic.h"
@@ -70,17 +71,59 @@ class EpiFs {
   // from remove() alone conflates them, and dropping index records for a file that
   // is still on disk would let hydrate() replay the "pruned" rows on reboot.
   virtual bool exists(const std::string& path) const = 0;
+
+  // Visit the basename of every regular file directly under `dir` (no recursion,
+  // no dirs) without building a list. Retention and the index backfill walk
+  // directories that hold hundreds of entries; a materialized list of short
+  // strings is hundreds of small allocations, which on the device land on the
+  // scarce internal heap. The default delegates to list(); the device overrides
+  // it with a directory read that neither opens each entry nor keeps its name.
+  virtual void forEachName(const std::string& dir,
+                           const std::function<void(const char* name)>& fn) const {
+    for (const auto& n : list(dir)) fn(n.c_str());
+  }
 };
 
+// PSRAM-routed string and vector types (host: malloc). Every container the
+// retention pass and the index backfill build uses these, so a pass over
+// thousands of rows or blobs never drains the internal heap in small pieces.
+using EpiPsString = std::basic_string<char, std::char_traits<char>, WorkingAllocator<char>>;
+template <class T>
+using EpiPsVec = std::vector<T, WorkingAllocator<T>>;
+
 // Boot-scan budget. Sized so the worst case stays well inside one watchdog period
-// on the S3 while still covering far more history than the recent window needs:
-// the index exists to make older rows reachable, and the newest are the ones any
-// query actually wants first.
+// on the S3. The BYTE budget is the one that binds: real rows average ~600 B on
+// the card (trace rows run near 1 KB), so 256 KB indexes roughly 400 rows and the
+// row cap is a backstop for tiny rows only. What the boot scan leaves out is
+// indexed after boot by backfillStep() in small slices, so the boot budget sets
+// how fast the device starts, not how much history the index ends up holding.
 inline constexpr int    kHydrateMaxRows  = 4000;
 inline constexpr size_t kHydrateMaxBytes = 256u * 1024;
 // Most this scan will read from any ONE day-stream. A single file can be
 // megabytes on a busy device, so the per-file bound matters as much as the total.
 inline constexpr size_t kHydrateFileWindow = 128u * 1024;
+// The walk stops once less than this is left of the byte budget: a tail read
+// that small holds a row or two and only costs another file open.
+inline constexpr size_t kHydrateMinTail = 4u * 1024;
+
+// INDEX BACKFILL. After a truncated boot scan the index converges to the whole
+// card in bounded slices driven from the device's loop task, so the index is a
+// function of what is on the card, not of when the device last restarted.
+// One slice reads one backward window and decodes a bounded number of rows.
+inline constexpr size_t kBackfillSliceBytes = 8u * 1024;
+inline constexpr int    kBackfillSliceRows  = 32;
+// A window grows (reading the earlier bytes once, never re-reading) up to this
+// for a single long record. A record longer than this cannot be indexed whole;
+// it is skipped and the index stays marked incomplete, so retention keeps
+// deferring the blob sweep rather than trusting a partial index.
+inline constexpr size_t kBackfillWindowMax = 128u * 1024;
+// Hard cap on index rows (PSRAM, about 100 B each: ~2 MB at the cap). The
+// backfill stops there and the index stays marked incomplete: cold queries
+// still reach the rest and retention still defers the blob sweep.
+inline constexpr int    kIndexMaxRows = 20000;
+// Consecutive failed reads of a file that still exists before the backfill
+// gives up for this boot (the index stays marked incomplete).
+inline constexpr int    kBackfillMaxReadErrors = 8;
 
 // COLD-QUERY budget (v4.0.0). What the boot scan leaves unindexed is still on
 // the card; an opt-in cold pass reads it back on demand. The budget is the
@@ -114,11 +157,34 @@ inline constexpr int    kIndexReadsPerCall = 120;
 // "2026-07-16.jsonl" -> epoch-day number (0 when the name is not a day-stream).
 uint32_t dayNumFromName(const std::string& name);
 
-// Report from a retention pass.
+// True when `name` is a day-stream in its canonical form ("YYYY-MM-DD.jsonl",
+// the exact name dayFile() writes) and sets `day` (1970-01-01 is day 0, the file
+// rows land in before the clock is set). Every walk of the episodic directory
+// (boot scan, cold query, backfill, retention) uses this one rule, so a stray
+// file is never indexed by one path and deleted by another.
+bool parseDayStreamName(const char* name, uint32_t& day);
+
+// Report from a retention pass. The name lists live in PSRAM: a first pass on a
+// busy card removes hundreds of sidecars.
 struct EpiPruneReport {
-  std::vector<std::string> removedDayFiles;  // absolute paths of pruned day-streams
-  std::vector<std::string> removedBlobs;     // basenames of pruned blob sidecars
-  int                      keptMessages = 0; // messages surviving in the index
+  EpiPsVec<EpiPsString> removedDayFiles;  // absolute paths of pruned day-streams
+  EpiPsVec<EpiPsString> removedBlobs;     // basenames of pruned blob sidecars
+  int  keptMessages = 0;                  // messages surviving in the index
+  // The blob sweep did not run because the index does not yet cover every row
+  // on the card: a blob referenced only by an unindexed row would read as an
+  // orphan. It runs on a later pass once the index is complete.
+  bool blobGcSkipped = false;
+  int  blobsPresent = 0;                  // sidecars seen by the sweep (0 when skipped)
+};
+
+// Progress of the index backfill since the last hydrate().
+struct EpiBackfillStats {
+  int    rows = 0;          // rows added to the index
+  int    slices = 0;        // steps that read the card
+  size_t bytes = 0;         // bytes read off the card
+  bool   complete = false;  // the index covers every row on the card
+  bool   capped = false;    // stopped at the index cap (index stays incomplete)
+  bool   stalled = false;   // stopped on repeated read errors or an over-long record
 };
 
 class AppendLogEpisodicStore : public EpisodicStore {
@@ -144,12 +210,53 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // cannot start from.
   //
   // So: newest day FIRST, stop at `maxRows` / `maxBytes`, and call `yield` between
-  // files so the caller can feed the watchdog. Older rows stay on disk and are
-  // still readable by an explicit dated query - they are simply not indexed at
-  // boot. Passing 0 for a budget means "no limit" (host tests, where there is no
-  // watchdog and determinism matters more).
+  // files so the caller can feed the watchdog. The walk also stops after the first
+  // file it could read only part of (and when less than kHydrateMinTail of the
+  // budget is left), so the boot index is always a CONTIGUOUS suffix of history:
+  // no isolated older rows, no hole that a floor or a cursor would paper over.
+  // Older rows stay on disk; backfillStep() indexes them after boot and the cold
+  // query reaches them meanwhile. Passing 0 for a budget means "no limit" (host
+  // tests, where there is no watchdog and determinism matters more).
   int hydrate(int maxRows = kHydrateMaxRows, size_t maxBytes = kHydrateMaxBytes,
               const std::function<void()>& yield = nullptr);
+
+  // Index one more bounded slice of the history the boot scan left out: the
+  // newest unindexed region first, one backward window (sliceBytes, growing
+  // only for a single long record) and at most sliceRows rows. Returns true
+  // while there is more to do; false once the index is complete (and then
+  // hydrateTruncated() reads false), capped at the index cap, or stalled.
+  // Safe to interleave with addMessage() and prune(). The device calls it from
+  // its loop task, only while no turn is in flight.
+  bool backfillStep(size_t sliceBytes = kBackfillSliceBytes,
+                    int sliceRows = kBackfillSliceRows);
+  const EpiBackfillStats& backfillStats() const { return bfStats_; }
+  // Rows the last hydrate() indexed (the boot scan's share of the index).
+  int bootIndexed() const { return bootIndexed_; }
+  // The index holds every row on the card (the boot scan read everything, or the
+  // backfill finished). Retention only sweeps blobs when this is true.
+  bool indexComplete() const override { return !hydrateTruncated_; }
+  // The backfill stopped because a file kept failing to read (not because of the
+  // cap or an over-long record). resumeAfterReadErrors() clears that stop so a
+  // later step retries where it left off; the device does so after a pause, as
+  // a card that misread for a moment may read again. False when there was no
+  // such stop.
+  bool stalledOnReadErrors() const {
+    return bfStats_.stalled && bfReadErrors_ >= kBackfillMaxReadErrors;
+  }
+  bool resumeAfterReadErrors() {
+    if (!stalledOnReadErrors()) return false;
+    bfStats_.stalled = false;
+    bfReadErrors_ = 0;
+    return true;
+  }
+  // Override the index cap (tests; the device keeps kIndexMaxRows).
+  void setIndexCap(int rows) { indexCap_ = rows > 0 ? rows : kIndexMaxRows; }
+  // Read-only walk of the index, oldest first: each row's day, byte offset,
+  // length and id suffix. For diagnostics and the convergence tests.
+  void forEachIndexed(const std::function<void(uint32_t day, uint32_t offset, uint32_t len,
+                                               uint32_t idSfx)>& fn) const {
+    for (const auto& r : index_) fn(r.dayNum, r.offset, r.len, r.idSfx);
+  }
 
   // ---- EpisodicStore ----
   void addSession(const EpisodicSession& s) override;
@@ -176,9 +283,12 @@ class AppendLogEpisodicStore : public EpisodicStore {
   uint32_t nextIdHint() const { return maxIdSuffix_ + (index_.empty() ? 0 : 1); }
 
   // Retention (§4): drop day-streams whose day is strictly older than
-  // `cutoffDayNum` (days since the Unix epoch, i.e. tsHours/24), then
-  // reference-count-scan `blobDir` and delete blob sidecars no surviving row
-  // references. Returns what was removed.
+  // `cutoffDayNum` (days since the Unix epoch, i.e. tsHours/24), chosen by FILE
+  // NAME so a day the index never saw still ages out; then, only when the index
+  // is complete, reference-count-scan `blobDir` and delete blob sidecars no row
+  // references. With an incomplete index the sweep is skipped and reported
+  // (blobGcSkipped). Nothing under the Telegram archive root is ever removed
+  // (isRetentionExempt). Every container it builds is PSRAM-routed.
   EpiPruneReport prune(uint32_t cutoffDayNum, const std::string& blobDir);
 
   // Path of the day-stream for a given epoch-day number ("/mem/episodic/Y-M-D.jsonl").
@@ -235,6 +345,32 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // Read + decode a single record by its index entry; false if the line is
   // missing/garbage (tolerant - a torn last line just drops out of results).
   bool readRec(const IdxRec& r, EpisodicMessage& out) const;
+
+  // One backward window over [.., end) of a day-stream: whole records only (the
+  // torn head record is dropped and left for the next, older window). The read
+  // grows backward without re-reading while a single record spans it, up to
+  // `maxWindow`. Shared by the cold query and the backfill so both apply one
+  // torn-head rule.
+  enum class WinRead : uint8_t { Ok, Empty, Stubborn };
+  struct BackWindow {
+    std::string buf;        // whole records, newline-separated
+    long        start = 0;  // file offset the read began at
+    long        first = 0;  // file offset of buf[0] (the oldest whole record)
+    size_t      bytesRead = 0;
+  };
+  WinRead readBackWindow(const std::string& path, long end, size_t window, size_t maxWindow,
+                         BackWindow& w) const;
+
+  // Sorted day numbers of every day-stream in dir_ (PSRAM vector).
+  EpiPsVec<uint32_t> dayStreams() const;
+  // Oldest indexed offset in `day`'s file, or -1 when no row of that day is indexed.
+  long indexFloorOf(uint32_t day) const;
+  // Backfill: forget the cursor (hydrate() starts over).
+  void resetBackfill();
+  // Backfill: index one window of `day`'s unindexed region below bfEnd_.
+  bool backfillWindow(uint32_t day, const std::string& path, size_t sliceBytes, int sliceRows);
+  // Retention: the reference-count sweep of `blobDir` (index must be complete).
+  void sweepBlobs(const std::string& blobDir, EpiPruneReport& rep);
   // Append one session row to sessions.jsonl (append-only; hydrate replays LWW).
   void appendSessionRow(const EpisodicSession& s);
   // True when the whole history is resident in the recent ring, so query can be
@@ -265,7 +401,20 @@ class AppendLogEpisodicStore : public EpisodicStore {
   std::vector<EpisodicSession> sessions_;  // LWW-by-id session table (small, internal ok)
   uint32_t maxIdSuffix_ = 0;               // high-water for nextIdHint()
   int unpersisted_ = 0;                    // recent_ entries the FS refused (SD loss)
-  bool hydrateTruncated_ = false;          // boot scan hit its budget (older rows unindexed)
+  bool hydrateTruncated_ = false;          // index does not hold every row on the card
+
+  // Backfill cursor. The walk goes newest day first; inside a day it moves the
+  // exclusive upper bound of the unindexed region (bfEnd_) down to 0. Days newer
+  // than the current one are complete (wholly indexed at boot, or appended live).
+  int  indexCap_ = kIndexMaxRows;
+  int  bootIndexed_ = 0;
+  bool bfInit_ = false;
+  EpiPsVec<uint32_t> bfDays_;              // day-streams captured at the first step, newest first
+  size_t bfPos_ = 0;                       // bfDays_ index of the day being walked
+  long   bfEnd_ = -1;                      // unindexed region of that day is [0, bfEnd_); -1 = not computed
+  int    bfReadErrors_ = 0;                // consecutive failed reads of a file that still exists
+  bool   bfSkipped_ = false;               // a record too long to index was skipped
+  EpiBackfillStats bfStats_;
 };
 
 // JSONL codec for one EpisodicMessage (shared with the device seam + tests). encode
@@ -273,6 +422,10 @@ class AppendLogEpisodicStore : public EpisodicStore {
 // torn/garbage line). Exposed for direct testing.
 std::string encodeEpisodicLine(const EpisodicMessage& m);
 bool        decodeEpisodicLine(const std::string& line, EpisodicMessage& out);
+// Same, over a span (no copy of the line). The JSON document behind every
+// decode uses the PSRAM working allocator, so reading history back (boot scan,
+// cold query, backfill) does not churn the internal heap.
+bool        decodeEpisodicLine(const char* data, size_t len, EpisodicMessage& out);
 
 }  // namespace orch
 }  // namespace nimbus

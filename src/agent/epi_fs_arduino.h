@@ -1,6 +1,9 @@
 #pragma once
 #include <FS.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -12,9 +15,7 @@
 // card). Kept tiny and dependency-free so the portable AppendLogEpisodicStore
 // stays host-testable while the device does the real SD read/write/list/delete.
 //
-// ⚠ SD-gated: on a board with no detected card the whole append-log path is dead
-// (memory_subsystem constructs this only when g_haveSd), so it is compile-verified
-// but not yet exercised on hardware (bench board reads cardType=0).
+// SD-gated: memory_subsystem constructs this only when a card is mounted.
 namespace agent {
 namespace memory {
 
@@ -46,12 +47,14 @@ class ArduinoEpiFs : public nimbus::orch::EpiFs {
     return out;
   }
 
+  // size() and exists() stat the file instead of opening it: every open
+  // allocates a stdio stream and its lock on the internal heap, and the boot
+  // scan, the index backfill and retention ask these once per day-stream.
   long size(const std::string& path) const override {
-    File f = fs_.open(path.c_str(), FILE_READ);
-    if (!f) return 0;
-    const long n = (long)f.size();
-    f.close();
-    return n;
+    char vp[kVfsPathMax];
+    struct stat st;
+    if (!vfsPath(path, vp) || stat(vp, &st) != 0 || S_ISDIR(st.st_mode)) return 0;
+    return (long)st.st_size;
   }
 
   std::string readRange(const std::string& path, long offset, long len) const override {
@@ -69,25 +72,49 @@ class ArduinoEpiFs : public nimbus::orch::EpiFs {
 
   std::vector<std::string> list(const std::string& dir) const override {
     std::vector<std::string> out;
-    File d = fs_.open(dir.c_str());
-    if (!d || !d.isDirectory()) { if (d) d.close(); return out; }
-    for (File f = d.openNextFile(); f; f = d.openNextFile()) {
-      if (!f.isDirectory()) {
-        std::string name = f.name();
-        size_t slash = name.find_last_of('/');  // some cores return a full path
-        out.push_back(slash == std::string::npos ? name : name.substr(slash + 1));
-      }
-      f.close();
-    }
-    d.close();
+    forEachName(dir, [&](const char* name) { out.emplace_back(name); });
     return out;
+  }
+
+  // Streams the directory with readdir() on the mounted path: no File object,
+  // no open per entry and no name kept, so walking a directory of hundreds of
+  // blobs costs one directory handle instead of hundreds of small internal-heap
+  // allocations. Entries whose type is unknown are passed on as files (the
+  // callers parse the name, and a delete of a directory simply fails).
+  void forEachName(const std::string& dir,
+                   const std::function<void(const char* name)>& fn) const override {
+    char vp[kVfsPathMax];
+    if (!vfsPath(dir, vp)) return;
+    DIR* d = opendir(vp);
+    if (!d) return;
+    while (struct dirent* e = readdir(d)) {
+      if (e->d_type == DT_DIR) continue;
+      if (e->d_name[0] == '.' && (e->d_name[1] == '\0' ||
+                                  (e->d_name[1] == '.' && e->d_name[2] == '\0')))
+        continue;
+      fn(e->d_name);
+    }
+    closedir(d);
   }
 
   bool remove(const std::string& path) override { return fs_.remove(path.c_str()); }
 
-  bool exists(const std::string& path) const override { return fs_.exists(path.c_str()); }
+  bool exists(const std::string& path) const override {
+    char vp[kVfsPathMax];
+    struct stat st;
+    return vfsPath(path, vp) && stat(vp, &st) == 0;
+  }
 
  private:
+  static constexpr size_t kVfsPathMax = 128;
+  // The POSIX path of `path` on this file system ("/sd" + "/mem/blobs").
+  bool vfsPath(const std::string& path, char (&out)[kVfsPathMax]) const {
+    const char* mp = fs_.mountpoint();
+    if (!mp) return false;
+    const int n = snprintf(out, sizeof(out), "%s%s", mp, path.c_str());
+    return n > 0 && n < (int)sizeof(out);
+  }
+
   fs::FS& fs_;
 };
 

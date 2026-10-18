@@ -6335,14 +6335,21 @@ void loop() {
     // own end, and run the flow's backstops (replaces the fixed 30 s "no reply").
     voiceLoopStep(now);
     // Retention maintenance (docs/orchestrator-storage.md §4): every ~6 h prune SD
-    // episodic day-streams + unreferenced blob sidecars older than 30 days. No-op
-    // without an SD append-log or before the clock advances past the window; runs off
-    // the loop so it never blocks a turn.
-    static uint32_t s_lastRetention = 0;
-    if (millis() - s_lastRetention > 6UL * 3600UL * 1000UL) {
-      s_lastRetention = millis();
-      agent::memory::pruneRetention(30);
+    // episodic day-streams older than 30 days, and unreferenced blob sidecars once
+    // the episodic index covers the whole card. No-op without an SD append-log or
+    // before the clock advances past the window. Never while a turn is in flight:
+    // the pass is deferred, stays due, and runs on the first loop pass after the
+    // turn ends (logged once per deferred pass).
+    static nimbus::orch::RetentionSchedule s_retention(6UL * 3600UL * 1000UL);
+    if (agent::memory::consumeRetentionRequest() || s_retention.due(millis())) {
+      const nimbus::orch::RetentionStatus st = agent::memory::pruneRetention(30);
+      if (s_retention.record(st, millis()))
+        agent::alog("memory: retention deferred: a turn or a card read is in progress "
+                    "(runs when it ends)");
     }
+    // Episodic index backfill (§3a): after a truncated boot scan, index the rest of
+    // the card one bounded slice at a time. Self-paced; yields to turns and TLS.
+    agent::memory::episodicBackfillTick(millis());
 #ifdef NIMBUS_TEST
     // Under test the console is the sole Serial reader in Orchestrator mode; it
     // supersedes the debug TURN/IP mini-console (which is #if'd out below so the

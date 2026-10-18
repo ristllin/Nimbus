@@ -349,7 +349,7 @@ don't spill to PSRAM), which is why the ring deliberately stays at 512.
 | fold prompt + trigger core | `lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}` |
 | engine call | `TurnEngine::runFold` / `clearChatConv` (lib/harness) |
 | device pump | `compactTick()` in `src/agent/orchestrator.cpp` |
-| test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `MEMFILL` console + `/api/test/{ctx,compact,memfill}` |
+| test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `MEMFILL` console + `/api/test/{ctx,compact,memfill,epiprune}` (`memfill` `kind=epiday` writes dated rows with sidecars) |
 
 **Assert on the `ev:compact` row, not on `CTX?`.** The diagnostic reads a
 cross-task echo buffer that is republished on every fold outcome, success or

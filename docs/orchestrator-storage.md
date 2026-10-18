@@ -184,16 +184,44 @@ resolves the long-standing **F10 "SQLite-on-SD unbuilt"** item without the lib.
   answers from RAM with zero SD I/O.
   Same semantics the in-memory store is host-tested against ⇒ tests transfer.
 
-### 3a. Deep history - reaching below the boot index (v4.0.0)
+### 3a. Deep history - the boot index, the backfill, and the cold query
 
 The boot scan is deliberately **budget-bounded** (`kHydrateMaxRows` 4000 /
 `kHydrateMaxBytes` 256 KB): an unbounded scan of a busy month's history took long
 enough to trip the boot watchdog, leaving a device that could no longer start. The
-cost of that bound is that after a restart the older rows are **on the card but not
-in the index** - a plain query cannot see them, and for a while nothing said so.
+byte budget is the one that binds - real rows average about 600 B on the card
+(trace rows run near 1 KB), so the boot scan indexes roughly 400 rows. Two rules
+keep that partial index honest:
 
-Deep history closes that gap without moving the cliff (raising the budget just
-delays it and costs RAM + boot time):
+- **The boot index is a contiguous suffix of history.** The scan walks the newest
+  day first and stops after the first file it could read only in part, or when
+  less than `kHydrateMinTail` (4 KB) of the budget is left. It never indexes an
+  isolated older row below a hole, so the index floor, the cold cursor and "newest
+  first" ordering all describe the rows the index really holds.
+- **The index converges to the whole card after boot.** `backfillStep()` indexes
+  what the boot scan left out, newest region first, one backward window at a time
+  (8 KB and at most 32 rows per slice; a window grows only for a single long
+  record, up to 128 KB). The main loop drives it (`memory::episodicBackfillTick`):
+  at most one slice per 250 ms, only while no turn is in flight, only when the TLS
+  work slot is free (`acquireWork(0)`), and only if the card lock is free within
+  20 ms. No task of its own, no TLS, no NVS and no new on-card format: the index
+  is still rebuilt from the day-streams on every boot. The SD log records
+  `memory: episodic index complete (N rows, M added in K slices, ...)` when it is
+  done. The index is capped at `kIndexMaxRows` (20,000 rows, about 2 MB of PSRAM);
+  past the cap, or with a record too long to read whole, the index stays marked
+  incomplete and says so. A file that keeps failing to read pauses the backfill,
+  which retries every 5 minutes from where it stopped; the index stays marked
+  incomplete meanwhile.
+
+`indexComplete()` is the store's honest answer to "does the index hold every row on
+the card". It is false while the backfill runs (or after it stopped short), and
+everything that consumes the index reads it: retention defers the blob sweep (§4),
+the `memory.episodic` count says "older history on the card is not in this count",
+`GET /api/mem/episodic` returns `indexComplete`, and `/api/state` returns
+`epiIndexComplete`.
+
+While the index is incomplete, the older rows are on the card but not in the index,
+and the cold query reaches them:
 
 - **Text search** (`nimbus/orch/lexical.h`) - the `text` filter splits the
   query into words (whitespace and punctuation), drops common words ("the", "my",
@@ -234,8 +262,9 @@ Surfaces: `memory.episodic` cold-scans by default and takes `before`; its result
 ends with a "searched back to `<date>`; older history exists … `before=<token>`"
 line when there is more. `GET /api/mem/episodic` gains `cold` / `before` params and
 returns `searchedTo` / `olderExists` / `nextBefore` (and `matched`, the rows the `text`
-filter matched in the range searched); `GET /api/mem/stats` exposes
-`epiTruncated` + `epiFloor`. The `[HOW YOU RUN]` prompt tells the model the log
+filter matched in the range searched) and `indexComplete`; `GET /api/mem/stats`
+exposes `epiTruncated` + `epiFloor`, plus `epiIndexComplete`, `epiBootIndexed` (rows
+the boot scan indexed) and `epiBackfillRows` (rows indexed after boot). The `[HOW YOU RUN]` prompt tells the model the log
 reaches months back and to search it before claiming not to remember. Hot per-turn
 windows never set `coldScan`, so they stay zero-read.
 
@@ -253,8 +282,33 @@ image/doc), hash the bytes → `/mem/blobs/<hash>.<ext>`, then
 the file is the payload; identical bytes dedup for free. Ephemeral in-flight files
 (`/voice.pcm`, `/reply.mp3`, `/audio/tgvoice.ogg`) stay transient LittleFS scratch
 (privacy-deleted per turn); the **durable copy** is the SD sidecar (erase the card
-to purge). Retention: a maintenance pass archives/prunes day-streams + unreferenced
-blobs older than 30 days (reference-count scan).
+to purge).
+
+**Retention.** Every ~6 h the main loop runs `memory::pruneRetention(30)`
+(`nimbus/orch/retention.h` holds the portable rules, host-tested):
+
+- **Day-streams** older than 30 days are removed. They are chosen by **file name**,
+  not from the index, so a day the index never saw still ages out.
+- **Blob sidecars** no row references are removed by a reference-count sweep, but
+  **only when the index is complete**. With rows on the card that the index has not
+  reached yet, "referenced by no indexed row" would include blobs those rows still
+  point at (this deleted a field device's attachments after a restart). The sweep
+  is then skipped, the report says `blobGcSkipped`, and the log reads
+  `blob GC deferred: index incomplete`; a later pass sweeps once the backfill is done.
+- **Never during a turn, never waiting on the card lock.** While
+  `orchestrator::turnInFlight()`, or when the card lock stays busy for 50 ms (a web
+  query or a memory tool holds it), the pass touches nothing and is deferred; it
+  stays due and runs on the first loop pass after that ends (`RetentionSchedule`),
+  logged once as `retention deferred`.
+- **The Telegram archive is exempt.** Nothing under `/mem/tg/` is ever deleted by
+  retention (`isRetentionExempt`, the one predicate every retention delete passes).
+- **Internal heap.** Every container the pass builds (the day list, the reference
+  set, the orphan list, the report) uses the PSRAM working allocator, and
+  directories are read with `readdir` (no file opened per entry), so a pass over
+  thousands of rows or blobs does not hold hundreds of small internal-heap blocks.
+
+Test builds can ask for a pass out of schedule with `POST /api/test/epiprune`; it
+goes through the same schedule and gate.
 
 ## 5. Migration and no-SD degraded mode
 
@@ -298,8 +352,9 @@ recover the device either. The scan now walks the newest day first and stops at
 a row budget, a total-byte budget, and a per-FILE window read as the file's tail
 (a single oversized file defeats a per-scan-only budget). Older rows stay on the
 card and remain reachable by a dated query; they are simply not indexed at boot,
-which `hydrateTruncated()` reports. **Any future work here keeps that property:
-a device must be able to start regardless of how much it has written.**
+which `hydrateTruncated()` reports, and the backfill (§3a) indexes them after boot
+from the main loop. **Any future work here keeps that property: a device must be
+able to start regardless of how much it has written.**
 
 **LittleFS overflow guard:** the degraded VDB persist checks free space
 (`totalBytes-usedBytes`) before each write; below a floor it stops accepting new vectors
@@ -331,7 +386,8 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   in-memory store, out-of-window skip, zero-read fast path, >500 history, hydrate/migration,
   torn-line tolerance, id-counter resume, retention prune, civil-date).
 - **30-day retention prune** (§4): `AppendLogEpisodicStore::prune` drops old day-streams
-  + reference-count-scans away unreferenced blob sidecars; wired to `memory::pruneRetention()`.
+  by name and, on a complete index, reference-count-scans away unreferenced blob
+  sidecars; wired to `memory::pruneRetention()` behind the turn gate.
 - **Durable media sidecars, WIRED + ON-DEVICE VERIFIED** (§4): `memory::captureMediaFile`
   STREAMS a LittleFS file → content-addressed `/mem/blobs/<hash>.<ext>` in a 512 B buffer
   (a streaming `BlobHasher`, so the ~480 KB mic PCM never loads whole into RAM), dedup +
@@ -343,8 +399,10 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   appears in `/api/mem/episodic` as `{"kind":"audio","blob":"/mem/blobs/<hash>.<ext>"}`.
   Privacy note: raw inbound voice-note audio is retained on the card by design; erase the
   card to purge it.
-- **Retention tick**: `main.cpp` loop calls `pruneRetention(30)` every ~6 h (no-op without
-  an SD append-log or before the clock advances past the window).
+- **Retention tick**: `main.cpp` loop calls `pruneRetention(30)` every ~6 h through a
+  `RetentionSchedule` (no-op without an SD append-log or before the clock advances past
+  the window; a pass deferred by a turn runs when the turn ends), and
+  `episodicBackfillTick()` on every pass.
 - **Device seam**: `ArduinoEpiFs` (fs::FS backing for the portable `EpiFs`);
   `memory_subsystem::begin()` routes episodic through the append-log when `g_haveSd`,
   with one-time whole-blob→day-stream migration; the card-less path is byte-identical to
