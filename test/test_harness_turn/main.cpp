@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <string>
@@ -85,6 +87,15 @@ struct Rig {
   // the round moves to the next host in the list, which bills 100/20 and echoes nothing.
   bool fabricSwitch = false;
   std::string fabricFirstEcho;
+  // Lane T: a scripted fabric run. Each entry is one host the fabric visits in list
+  // order with what it bills; every host but the last fails (reported through
+  // onStepError, then a switch), and the last ends the turn with fabricOk / fabricErr.
+  struct FabricVisit { uint32_t in = 0, out = 0; std::string err = "network"; };
+  std::vector<FabricVisit> fabricVisits;
+  bool fabricOk = true;
+  std::string fabricErr = "network";
+  std::function<void()> onDeliver;   // runs inside every delivery (apply-time effects)
+  std::string fabricOut = kGoodTurn;  // what a scripted fabric run answers
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -139,7 +150,10 @@ struct Rig {
   std::unique_ptr<TurnEngine> eng;
   orch::Hardware hw;   // the manifest the device closure would report (default: struct defaults)
 
-  explicit Rig(bool withSubFabric = false) {
+  // spendBatch (lane T): wire BudgetConfig::recordSpend, the device's one call per turn
+  // (the default keeps the per-slot recordTokens fallback the host rigs use).
+  explicit Rig(bool withSubFabric = false, bool spendBatch = false) {
+    cfg.spendBatch = spendBatch;
     JobEngine::Deps jd;
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string& c, const std::string& t) {
@@ -160,6 +174,7 @@ struct Rig {
     d.jobs = jobs.get();
     d.deliver = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
+      if (onDeliver) onDeliver();
     };
     d.event = [this](const attn::Event& e) { events.push_back(e); };
     d.fire = [this](const char* c) { cues.push_back(c); };
@@ -237,21 +252,41 @@ struct Rig {
     // cfg.midFail = true - the rig default keeps every legacy test on the
     // scripted single-shot path. Mirrors the device: fabricSupports knows the
     // three cloud hosts, so a custom head must fall back to hosts.run.
+    // Like providers::runFabricLoop: each host bills into its own counter, filed into
+    // the spend table once at the end under the model configured for it.
     d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string&,
-                            const std::string&, std::string& out, std::string&,
-                            const agent::HeadTools&, orch::TokenUsage* usage,
+                            const std::string&, std::string& out, std::string& err,
+                            const agent::HeadTools& ht, orch::TurnSpend* spend,
                             const std::function<void(const std::string&,
                                                      const std::string&)>& notify) {
       fabricCalls.push_back(hl);
-      out = kGoodTurn;
-      if (fabricSwitch && hl.size() > 1 && usage) {
-        usage->add(50, 10);
-        usage->servedModel = fabricFirstEcho;
+      out = fabricOut;
+      auto file = [&](size_t i, uint32_t in, uint32_t o, const std::string& echo) {
+        orch::TokenUsage u;
+        u.add(in, o);
+        u.servedModel = echo;
+        if (spend) spend->add(hl[i].c_str(), modelOf(hl[i]).c_str(), u);
+      };
+      if (!fabricVisits.empty()) {
+        const size_t n = std::min(fabricVisits.size(), hl.size());
+        for (size_t i = 0; i < n; ++i) {
+          file(i, fabricVisits[i].in, fabricVisits[i].out, "");
+          const bool last = i + 1 == n;
+          if (last && fabricOk) break;
+          if (ht.onStepError) ht.onStepError(hl[i], last ? fabricErr : fabricVisits[i].err);
+          if (!last && notify) notify(hl[i], hl[i + 1]);
+        }
+        if (!fabricOk) { out.clear(); err = fabricErr; }
+        return fabricOk;
+      }
+      if (fabricSwitch && hl.size() > 1) {
+        file(0, 50, 10, fabricFirstEcho);
+        if (ht.onStepError) ht.onStepError(hl[0], "network");
         if (notify) notify(hl[0], hl[1]);
-        usage->add(100, 20);
+        file(1, 100, 20, "");
         return true;
       }
-      if (usage) { usage->promptTokens = 100; usage->completionTokens = 20; }
+      file(0, 100, 20, "");
       return true;
     };
     d.hosts.fabricSupports = [](const std::string& h) {
@@ -283,6 +318,11 @@ struct Rig {
   // Lane L: a failed attempt that still hands back its (cut) turn.
   static void keepPartial(const Script& s, std::string& out) {
     if (s.partialOnFail) out = s.outJson;
+  }
+
+  std::string modelOf(const std::string& h) const {
+    auto it = cfg.orchModels.find(h);
+    return it == cfg.orchModels.end() ? std::string("model-" + h) : it->second;
   }
 
   agent::ProviderTurnFn providerFor(const std::string& host) {
@@ -647,10 +687,11 @@ static void test_turn_spend_files_under_the_serving_model() {
 
 // Gate G5: only the attempt that served the turn names its model. A failed attempt
 // that echoed a model (captured on its HTTP 200, before the turn failed to parse) and
-// a host that then serves the turn WITHOUT an echo: the spend is filed under the
-// serving host's configured model, never the failed attempt's echo - on the
-// failover ladder, on the same-host retry and across a fabric switch. Token counts
-// keep summing across the attempts.
+// a host that then serves the turn WITHOUT an echo: the serving host's spend is filed
+// under its configured model, never the failed attempt's echo - on the failover
+// ladder, on the same-host retry and across a fabric switch. Lane T: each attempt's
+// spend is filed under ITS host and model (the usage RCA: switched turns used to book
+// every earlier host's rounds under the host that finished).
 static void test_failed_attempt_echo_never_names_the_serving_model() {
   {   // failover ladder: anthropic echoes and fails, openai serves with no echo
     Rig r;
@@ -664,12 +705,16 @@ static void test_failed_attempt_echo_never_names_the_serving_model() {
     r.scripts["anthropic"] = {bad};
     r.scripts["openai"] = {Rig::Script{}};
     TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
-    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
-    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
-    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[0].model.c_str());
     TEST_ASSERT_TRUE(r.attempts.size() >= 2);
-    // The failed attempts' tokens still count (filed under the final host, CUM-559).
-    TEST_ASSERT_EQUAL((int)(100 * (r.attempts.size() - 1) + 100), (int)r.cfg.recorded[0].in);
+    // The failed attempts' tokens still count - under the host and model that billed
+    // them (the echoed substitution), and the serving host's under its own model.
+    TEST_ASSERT_EQUAL(2, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("anthropic", r.cfg.recorded[0].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5", r.cfg.recorded[0].model.c_str());
+    TEST_ASSERT_EQUAL((int)(100 * (r.attempts.size() - 1)), (int)r.cfg.recorded[0].in);
+    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[1].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[1].model.c_str());
+    TEST_ASSERT_EQUAL(100, (int)r.cfg.recorded[1].in);
   }
   {   // same-host retry: the first attempt echoes a cheaper model and fails
     Rig r;
@@ -696,11 +741,16 @@ static void test_failed_attempt_echo_never_names_the_serving_model() {
     r.fabricFirstEcho = "claude-haiku-4-5";
     TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
     TEST_ASSERT_EQUAL(1, (int)r.fabricCalls.size());
-    TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
-    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
-    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[0].model.c_str());
-    TEST_ASSERT_EQUAL(150, (int)r.cfg.recorded[0].in);
-    TEST_ASSERT_EQUAL(30, (int)r.cfg.recorded[0].out);
+    TEST_ASSERT_EQUAL(2, (int)r.cfg.recorded.size());
+    TEST_ASSERT_EQUAL_STRING("anthropic", r.cfg.recorded[0].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5", r.cfg.recorded[0].model.c_str());
+    TEST_ASSERT_EQUAL(50, (int)r.cfg.recorded[0].in);
+    TEST_ASSERT_EQUAL(10, (int)r.cfg.recorded[0].out);
+    TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[1].host.c_str());
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6", r.cfg.recorded[1].model.c_str());
+    TEST_ASSERT_EQUAL(100, (int)r.cfg.recorded[1].in);
+    TEST_ASSERT_EQUAL(20, (int)r.cfg.recorded[1].out);
+    TEST_ASSERT_EQUAL(150, (int)r.eng->lastTurnUsage().promptTokens);   // the display total
   }
 }
 
@@ -863,9 +913,10 @@ static void test_cum544_all_timeouts_say_no_answer_in_time() {
   r.scripts["openai"] = {slow};
   TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
   TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
+  // Lane T: the first cause, and the other host that failed after it.
   TEST_ASSERT_EQUAL_STRING(
-      "That didn't finish - the provider did not answer in time. Nothing is still running; "
-      "ask again to retry.",
+      "That didn't finish - the provider did not answer in time (openai also failed). "
+      "Nothing is still running; ask again to retry.",
       r.lastText().c_str());
   TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
 
@@ -931,7 +982,8 @@ static void test_no_retry_after_tool_dispatched() {
   // fixed "trouble reaching the orchestrator" line was flagged dishonest by the
   // QA judge when tools HAD run.
   TEST_ASSERT_EQUAL_STRING(
-      "That didn't finish - mid-loop death. Nothing is still running; ask again to retry.",
+      "That didn't finish - anthropic: mid-loop death. Nothing is still running; ask again to "
+      "retry.",
       r.lastText().c_str());
   // The head arc is still freed on the error path (TurnGuard dtor).
   TEST_ASSERT_EQUAL(1, r.headEventsWith(Status::Offline));
@@ -2780,6 +2832,268 @@ static void test_lane_l_a_silent_synthesis_never_drops_the_results() {
   TEST_ASSERT_EQUAL(1, n);
 }
 
+// ---- lane T: every failed exit carries a cause; spend metered once per turn -------
+
+static std::string readSource(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static size_t countOf(const std::string& hay, const std::string& needle) {
+  size_t n = 0;
+  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) ++n;
+  return n;
+}
+
+// One failed-exit scenario: how to reach it, and the cause it must report first.
+struct ExitCase {
+  const char* exitName;    // the engine exit it reaches
+  const char* firstHost;   // the host the chain must start with
+  const char* firstHas;    // text the first cause must contain
+  std::function<void(Rig&)> setup;
+  bool scheduled = false;  // run as a scheduled fire (FireOutcome.error checked too)
+};
+
+static std::vector<ExitCase> exitCases() {
+  std::vector<ExitCase> v;
+  auto failAll = [](const char* err) {
+    return [err](Rig& r) {
+      for (const char* h : {"anthropic", "openai", "mistral"})
+        r.scripts[h] = {{false, "", err, 0, "", 0, 0}};
+    };
+  };
+  v.push_back({"budget", "device", "budget", [](Rig& r) {
+                 r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
+               }});
+  v.push_back({"low memory", "anthropic", "low memory", [](Rig& r) {
+                 r.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request",
+                                            0, "", 0, 0}};
+               }});
+  v.push_back({"429", "anthropic", "HTTP 429", failAll("messages HTTP 429: rate limited")});
+  v.push_back({"generic (ladder exhausted)", "anthropic", "HTTP 400",
+               failAll("messages HTTP 400: the request body is not valid JSON")});
+  v.push_back({"generic (timeout)", "anthropic", "timeout",
+               failAll("timeout: the provider did not answer in time")});
+  v.push_back({"generic (fabric exhausted)", "anthropic", "network", [](Rig& r) {
+                 r.cfg.midFail = true;
+                 r.fabricVisits = {{100, 20, "network"}, {0, 0, "network"}, {0, 0, "network"}};
+                 r.fabricOk = false;
+                 r.fabricErr = "chat HTTP 400";
+               }});
+  v.push_back({"parse", "device", "parse", [](Rig& r) {
+                 Rig::Script bad;
+                 bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
+                 r.scripts["anthropic"] = {bad};
+               }});
+  ExitCase sched = v[3];   // the same exit reached by a scheduled fire
+  sched.exitName = "generic (scheduled fire)";
+  sched.scheduled = true;
+  v.push_back(sched);
+  return v;
+}
+
+// H3: every `!ok` exit of a turn carries a non-empty failure chain that starts where
+// the turn first went wrong; a successful turn carries none. A new exit added to the
+// engine without a row here fails the source count below.
+static void test_every_failed_turn_exit_carries_a_cause() {
+  const std::vector<ExitCase> cases = exitCases();
+  for (const ExitCase& c : cases) {
+    Rig r;
+    c.setup(r);
+    std::string fireErr;
+    if (c.scheduled) {
+      const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "p", "Morning", "lp9");
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, c.exitName);
+      fireErr = o.error;
+    } else {
+      TEST_ASSERT_FALSE_MESSAGE(r.eng->runTurn("inputs", "1001", "hi"), c.exitName);
+    }
+    TEST_ASSERT_FALSE_MESSAGE(r.hookEnds.empty(), c.exitName);
+    const agent::TurnEndEv& ev = r.hookEnds.back();
+    TEST_ASSERT_FALSE_MESSAGE(ev.ok, c.exitName);
+    TEST_ASSERT_NOT_NULL_MESSAGE(ev.chain, c.exitName);
+    TEST_ASSERT_FALSE_MESSAGE(ev.chain->empty(), c.exitName);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.firstHost, ev.chain->first()->host.c_str(), c.exitName);
+    TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(ev.chain->first()->text.c_str(), c.firstHas), c.exitName);
+    if (c.scheduled) {
+      TEST_ASSERT_EQUAL_INT_MESSAGE(0, fireErr.compare(0, std::strlen(c.firstHost), c.firstHost),
+                                    fireErr.c_str());
+    }
+  }
+  Rig ok;
+  TEST_ASSERT_TRUE(ok.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_NULL(ok.hookEnds.back().chain);
+  // The class guard: one table row per distinct failed exit in the engine.
+  const std::string src = readSource("lib/harness/src/engine.cpp");
+  const size_t exits = countOf(src, "fireTurnEnd(false");
+  const char* names[] = {"budget", "low memory", "429", "generic", "parse"};
+  for (const char* n : names) {
+    bool covered = false;
+    for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
+    TEST_ASSERT_TRUE_MESSAGE(covered, n);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(sizeof(names) / sizeof(names[0]), exits,
+                            "a fireTurnEnd(false, ...) exit was added or removed: give it a row in "
+                            "exitCases() and in names[] above");
+}
+
+// The owner hears the FIRST cause and which hosts failed after it (the 18 Oct dream
+// was reported as Mistral's bare "chat HTTP 400").
+static void test_owner_notice_names_the_first_cause() {
+  Rig r;
+  r.scripts["anthropic"] = {{false, "", "messages HTTP 400: The request body is not valid JSON", 0, "", 0, 0}};
+  r.scripts["openai"] = {{false, "", "resp HTTP 400: Invalid body", 0, "", 0, 0}};
+  r.scripts["mistral"] = {{false, "", "chat HTTP 400", 0, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL_STRING(
+      "That didn't finish - anthropic: messages HTTP 400: The request body is not valid JSON "
+      "(openai and mistral also failed). Nothing is still running; ask again to retry.",
+      r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING("chat HTTP 400", r.hookEnds.back().error.c_str());   // still the last
+}
+
+// The 37,771-for-15,438 class: a failing scheduled fire reports ITS OWN spend, never
+// the previous turn's, and its cause.
+static void test_scheduled_failure_reports_cause_and_own_spend() {
+  Rig r;
+  TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "hi"));   // an owner turn: 100/20
+  TEST_ASSERT_EQUAL(120, (int)r.eng->lastTurnUsage().total());
+  Rig::Script billedThenDead;
+  billedThenDead.ok = false;
+  billedThenDead.err = "messages HTTP 400: invalid unicode code point";
+  billedThenDead.usageIn = 7000;
+  billedThenDead.usageOut = 300;
+  billedThenDead.usageOnFail = true;
+  for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {billedThenDead};
+  r.scripts["openai"][0].usageOnFail = false;   // the alternates billed nothing
+  r.scripts["mistral"][0].usageOnFail = false;
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  TEST_ASSERT_FALSE(o.ok);
+  // anthropic billed its initial attempt and the same-host retry; nothing else.
+  TEST_ASSERT_EQUAL(2 * 7300, (int)o.tokens.total());
+  TEST_ASSERT_EQUAL(2 * 7300, (int)r.eng->lastTurnUsage().total());
+  TEST_ASSERT_NOT_NULL(std::strstr(o.error.c_str(), "anthropic"));
+  TEST_ASSERT_NOT_NULL(std::strstr(o.error.c_str(), "invalid unicode"));
+  // The failed turn's spend reached the ledger, under the host that billed it.
+  const auto& rec = r.cfg.recorded.back();
+  TEST_ASSERT_EQUAL_STRING("anthropic", rec.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("loop:dream", rec.tag.c_str());
+  TEST_ASSERT_EQUAL(14000, (int)rec.in);
+  TEST_ASSERT_EQUAL_STRING("dream", agent::turnSourceSlug(r.hookEnds.back().source,
+                                                          r.hookEnds.back().attribution));
+}
+
+// The [FALLBACK] note says whose turn switched, when, the whole path and why; the
+// turn that switched never sees a note about itself, and it is consumed once.
+static void test_fallback_note_names_previous_turn_and_reason() {
+  Rig r;
+  r.cfg.midFail = true;
+  r.fabricVisits = {{50, 10, "messages HTTP 503: overloaded"}, {100, 20, ""}};
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  TEST_ASSERT_TRUE(o.ok);
+  const size_t dreamFabric = r.fabricCalls.size();
+  TEST_ASSERT_EQUAL(1, (int)dreamFabric);
+  r.fabricVisits.clear();
+  r.cfg.midFail = false;
+  TEST_ASSERT_TRUE(r.eng->runTurn("", "1001", "next"));   // consumes nothing yet: runTurn
+  r.eng->handleMessage("did the dream work?", "Roy", "1001");
+  const std::string& in = r.attempts.back().inputs;
+  TEST_ASSERT_NOT_NULL_MESSAGE(
+      std::strstr(in.c_str(), "[FALLBACK - previous turn (nightly dream"), in.c_str());
+  TEST_ASSERT_NOT_NULL(std::strstr(in.c_str(), "anthropic -> openai (server_error)"));
+  TEST_ASSERT_NULL(std::strstr(in.c_str(), "[FALLBACK] switched"));
+  r.eng->handleMessage("and now?", "Roy", "1001");
+  TEST_ASSERT_NULL(std::strstr(r.attempts.back().inputs.c_str(), "[FALLBACK"));   // once
+}
+
+// The per-turn metering matrix (usage RCA T4): every exit x {legacy ladder, fabric} x
+// 0-2 switches meters ONCE (none when nothing billed), per host exactly what that host
+// billed, and lastTurnUsage is this turn's total. TurnEndEv.model is a model that
+// billed, or empty.
+static void test_metering_matrix_once_per_turn_per_host() {
+  enum Exit { Success, Parse, FailAfterBilled, Budget };
+  const char* hosts[3] = {"anthropic", "openai", "mistral"};
+  for (int ex = Success; ex <= Budget; ++ex)
+    for (int fabric = 0; fabric <= 1; ++fabric)
+      for (int sw = 0; sw <= 2; ++sw) {
+        Rig r(false, /*spendBatch=*/true);
+        r.cfg.midFail = fabric == 1;
+        uint32_t want[3] = {0, 0, 0};   // tokens in per host this turn
+        if (ex == Budget) {
+          r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
+        } else if (fabric) {
+          for (int i = 0; i <= sw; ++i) {
+            r.fabricVisits.push_back({(uint32_t)(10 * (i + 1)), 1, "network"});
+            want[i] = 10 * (i + 1);
+          }
+          r.fabricOk = ex != FailAfterBilled;
+          r.fabricErr = "chat HTTP 503";
+          if (ex == Parse) r.fabricOut = "{\"nothing\":true}";
+        } else {
+          // Legacy: each failing host bills on both of its attempts (the first host)
+          // or its one attempt (alternates); the last host decides the exit.
+          for (int i = 0; i <= sw; ++i) {
+            Rig::Script s;
+            s.usageIn = (uint32_t)(10 * (i + 1));
+            s.usageOut = 1;
+            const bool last = i == sw;
+            if (!last || ex == FailAfterBilled) {
+              s.ok = false;
+              s.err = "chat HTTP 503";
+              s.usageOnFail = true;
+              want[i] = s.usageIn * (i == 0 ? 2u : 1u);
+            } else {
+              want[i] = s.usageIn;
+              if (ex == Parse) s.outJson = "{\"nothing\":true}";
+            }
+            r.scripts[hosts[i]] = {s};
+          }
+          for (int i = sw + 1; i < 3; ++i) r.scripts[hosts[i]] = {{false, "", "down", 0, "", 0, 0}};
+        }
+        const bool ok = r.eng->runTurn("inputs", "1001", "hi");
+        char tag[64];
+        std::snprintf(tag, sizeof tag, "exit=%d fabric=%d switches=%d", ex, fabric, sw);
+        TEST_ASSERT_EQUAL_MESSAGE(ex == Success, ok, tag);
+        const uint32_t billed = want[0] + want[1] + want[2];
+        TEST_ASSERT_EQUAL_MESSAGE(billed ? 1 : 0, (int)r.cfg.spendCalls.size(), tag);
+        TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.cfg.recorded.size(), tag);   // the batch, only
+        if (billed) {
+          const orch::TurnSpend& sp = r.cfg.spendCalls[0].spend;
+          for (int i = 0; i < 3; ++i)
+            TEST_ASSERT_EQUAL_MESSAGE(want[i], sp.hostTotal(hosts[i]).in, tag);
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("turn", r.cfg.spendCalls[0].tag.c_str(), tag);
+        }
+        TEST_ASSERT_EQUAL_MESSAGE(billed, r.eng->lastTurnUsage().promptTokens, tag);
+        const agent::TurnEndEv& ev = r.hookEnds.back();
+        if (billed == 0) {
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("", ev.model.c_str(), tag);
+        } else {
+          TEST_ASSERT_NOT_NULL_MESSAGE(ev.spend, tag);
+          bool found = false;
+          for (size_t k = 0; k < ev.spend->n; ++k) found = found || ev.model == ev.spend->slot[k].model;
+          TEST_ASSERT_TRUE_MESSAGE(found, tag);
+        }
+      }
+}
+
+// Variant 3 of the usage RCA: a model changed by the turn's own device action (applied
+// before the turn ends) never relabels the spend or the turn-end event.
+static void test_model_change_during_the_turn_never_relabels_it() {
+  Rig r(false, /*spendBatch=*/true);
+  r.cfg.orchModels["anthropic"] = "claude-sonnet-5";
+  r.onDeliver = [&] { r.cfg.orchModels["anthropic"] = "claude-opus-5"; };   // apply-time
+  TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, (int)r.cfg.spendCalls.size());
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", r.cfg.spendCalls[0].spend.slot[0].model);
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", r.hookEnds.back().model.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
@@ -2797,6 +3111,12 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
   RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);
+  RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
+  RUN_TEST(test_owner_notice_names_the_first_cause);
+  RUN_TEST(test_scheduled_failure_reports_cause_and_own_spend);
+  RUN_TEST(test_fallback_note_names_previous_turn_and_reason);
+  RUN_TEST(test_metering_matrix_once_per_turn_per_host);
+  RUN_TEST(test_model_change_during_the_turn_never_relabels_it);
   RUN_TEST(test_convmap_roundtrip_and_isolation);
   RUN_TEST(test_convmap_legacy_discarded_and_lru);
   RUN_TEST(test_no_provider_gives_honest_local_reply_not_silence);

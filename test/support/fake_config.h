@@ -31,8 +31,16 @@ struct FakeConfig {
   int rounds = 12, deadlineS = 600, resultCap = 4096, totalCap = 24576;
 
   std::set<std::string> overBudgetHosts;
-  struct Recorded { std::string host; uint32_t in, out; std::string tag; std::string model; };
+  struct Recorded {
+    std::string host; uint32_t in, out; std::string tag; std::string model;
+    uint32_t cacheR = 0, cacheW = 0;
+  };
   std::vector<Recorded> recorded;
+  // Lane T: wire BudgetConfig::recordSpend (the device's one-call-per-turn batch)
+  // instead of the per-slot recordTokens fallback; each call is kept whole.
+  bool spendBatch = false;
+  struct SpendCall { nimbus::orch::TurnSpend spend; std::string tag; };
+  std::vector<SpendCall> spendCalls;
 
   bool tts = false;
   // CUM-523: the device facts telegramDeliverableFor() reads. Default: the bot
@@ -95,10 +103,14 @@ struct FakeConfig {
       return overBudgetHosts.count(h) > 0;
     };
     c.budget.recordTokens = [this](const std::string& h, uint32_t in, uint32_t out,
-                                   uint32_t, uint32_t, const std::string& tag,
+                                   uint32_t cr, uint32_t cw, const std::string& tag,
                                    const std::string& model) {
-      recorded.push_back({h, in, out, tag, model});
+      recorded.push_back({h, in, out, tag, model, cr, cw});
     };
+    if (spendBatch)
+      c.budget.recordSpend = [this](const nimbus::orch::TurnSpend& sp, const std::string& tag) {
+        spendCalls.push_back({sp, tag});
+      };
 
     c.ttsEnabled = [this] { return tts; };
     c.telegramDeliverable = [this](const std::string& chat) {
