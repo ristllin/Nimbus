@@ -6,6 +6,8 @@
 //   nimbus-lab chat [host]            interactive REPL against the real harness
 //   nimbus-lab scenarios [names...]   the scenario suite (see scenarios.cpp)
 //   nimbus-lab sub <task>             one Anthropic sub-agent end to end (sub_cmd.cpp)
+//   nimbus-lab reply-markup           turn-contract live suite L-L1 (lane_l_live.cpp)
+//   nimbus-lab spawn-e2e              turn-contract live suite L-L2 (lane_l_live.cpp)
 //
 // Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
 // (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
@@ -19,6 +21,7 @@
 
 #include "lab_options.h"
 #include "lab_rig.h"
+#include "lane_l_live.h"
 #include "scenarios.h"
 #include "selftest.h"
 #include "sub_cmd.h"
@@ -41,6 +44,13 @@ void usage() {
       "                            every cache write (a full NVS partition), --runs=<n>\n"
       "                            repeats it, --timeout=<s> bounds each run,\n"
       "                            --record=<dir> saves every response body\n"
+      "  reply-markup              stray tags and lost side effects on real turns;\n"
+      "                            --head-model=<id> --reps=<n> --prompts=1,2,3 --out=<json>\n"
+      "  spawn-e2e                 a sub-agent end to end (legs A-D); --legs=A,B,C,D\n"
+      "                            --sub=<provider:model> --head-model=<id> --reps=<n>\n"
+      "                            (leg C) --timeout=<s> --out=<json>\n"
+      "                            both: --effort=<low|...|none> pins Anthropic effort\n"
+      "                            (none = adapter: no effort field)\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
@@ -71,6 +81,35 @@ void usage() {
       "  NIMBUS_LAB_MODEL=[host/]model[,...] pin models (host inferred from the id)\n");
 }
 
+// The turn-contract live suites' flags (lane_l_live.h). True when `a` was one.
+bool laneLFlag(const std::string& a, lab::LaneLOptions& o) {
+  auto val = [&a](const char* flag) { return a.substr(std::strlen(flag)); };
+  if (a.rfind("--head-host=", 0) == 0)       o.headHost = val("--head-host=");
+  else if (a.rfind("--head-model=", 0) == 0) o.headModel = val("--head-model=");
+  else if (a.rfind("--effort=", 0) == 0) {
+    const std::string e = val("--effort=");
+    o.effort = (e == "none" || e == "adapter") ? "" : e;   // "" = send no effort field
+  }
+  else if (a.rfind("--sub=", 0) == 0)        o.sub = val("--sub=");
+  else if (a.rfind("--legs=", 0) == 0)       o.legs = val("--legs=");
+  else if (a.rfind("--prompts=", 0) == 0)    o.prompts = val("--prompts=");
+  else if (a.rfind("--reps=", 0) == 0)       o.reps = std::stoi(val("--reps="));
+  else if (a.rfind("--out=", 0) == 0)        o.out = val("--out=");
+  else return false;
+  return true;
+}
+
+int runLaneL(const std::string& cmd, const lab::Env& env, lab::LaneLOptions o, bool verbose,
+             int timeoutS) {
+  o.verbose = verbose;
+  if (timeoutS > 0) o.timeoutS = timeoutS;
+  if (o.reps < 1 || o.sub.find(':') == std::string::npos) {
+    std::fprintf(stderr, "--reps must be at least 1 and --sub must read provider:model\n");
+    return 2;
+  }
+  return cmd == "reply-markup" ? lab::cmdReplyMarkup(env, o) : lab::cmdSpawnE2e(env, o);
+}
+
 }  // namespace
 
 // A pin flag's value, applied after the environment so the flag wins.
@@ -97,6 +136,7 @@ int main(int argc, char** argv) {
   std::string envPath = lab::Env::defaultDotenvPath();
   std::string forceHost, forceModel;
   lab::SubOptions sub;
+  lab::LaneLOptions laneL;
 
   // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
   for (int i = 1; i < argc; i++)
@@ -125,6 +165,15 @@ int main(int argc, char** argv) {
     else if (a.rfind("--runs=", 0) == 0)     sub.runs = std::stoi(a.substr(7));
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
+    else if (laneLFlag(a, laneL)) {
+      // --effort is also a run pin (chat, scenarios): both read it, and the
+      // suites' "none" is the pin's "adapter".
+      if (a.rfind("--effort=", 0) == 0 &&
+          !lab::applyEffort(laneL.effort.empty() ? "adapter" : laneL.effort, opt, pinErr)) {
+        std::fprintf(stderr, "%s\n", pinErr.c_str());
+        return 2;
+      }
+    }
     else if (isPinFlag(a)) {
       if (!applyPinFlag(a, opt, pinErr)) { std::fprintf(stderr, "%s\n", pinErr.c_str()); return 2; }
     }
@@ -214,6 +263,9 @@ int main(int argc, char** argv) {
     }
     return lab::cmdSub(env, sub);
   }
+
+  if (cmd == "reply-markup" || cmd == "spawn-e2e")
+    return runLaneL(cmd, env, laneL, opt.verboseHttp, sub.timeoutS);
 
   if (cmd == "scenarios") {
     std::vector<std::string> names(args.begin() + 1, args.end());

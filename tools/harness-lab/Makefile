@@ -55,6 +55,7 @@ SRCS      := $(wildcard $(CURDIR)/src/*.cpp) \
              $(REPO)/lib/core/src/docs_pack.cpp \
              $(REPO)/lib/core/src/fallback_rules.cpp \
              $(REPO)/lib/core/src/model_catalog.cpp \
+             $(REPO)/lib/core/src/tg_html.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 OBJS      := $(patsubst %,$(BUILD)/%.o,$(notdir $(basename $(SRCS))))
