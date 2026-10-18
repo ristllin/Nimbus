@@ -1,0 +1,22 @@
+{
+ "provider": "openai",
+ "endpoint": "/v1/responses",
+ "requested": "gpt-5.6",
+ "served": "gpt-5.6-sol",
+ "recorded_utc": "2026-10-18",
+ "source": "nimbus-lab --record, tools/harness-lab/record_to_fixtures.py",
+ "usage": [
+  {
+   "input_tokens": 13,
+   "input_tokens_details": {
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "output_tokens": 5,
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "total_tokens": 18
+  }
+ ]
+}

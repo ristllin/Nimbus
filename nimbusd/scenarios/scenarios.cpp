@@ -16,6 +16,10 @@
 //   nimbusd-scenarios                 run all applicable scenarios
 //   nimbusd-scenarios web-search mem  run only the named ones
 //   nimbusd-scenarios --env /path     use a specific dotenv file
+//
+// The head model is a parameter: NIMBUS_LAB_MODEL=[host/]model (the host is
+// inferred from the id when omitted) pins it and makes its host the head, the
+// same pin tools/harness-lab reads. Without it each host runs the daemon default.
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -25,6 +29,7 @@
 
 #include "daemon_config.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/model_key.h"
 #include "daemon_http.h"
 #include "rig.h"
 
@@ -58,6 +63,24 @@ void showTurn(const TurnRecord& t) {
   std::printf("    < %s\n", t.reply.empty() ? "(no reply)" : t.reply.substr(0, 300).c_str());
 }
 
+// NIMBUS_LAB_MODEL=[host/]model: pin the head model and put its host first.
+// Returns the pinned host ("" when unset or unusable).
+std::string applyModelPin(const Config& cfg, NimbusdRig::Options& o) {
+  const std::string pin = cfg.get("NIMBUS_LAB_MODEL");
+  if (pin.empty() || pin.find(',') != std::string::npos) return std::string();
+  const size_t sl = pin.find('/');
+  const std::string model = sl == std::string::npos ? pin : pin.substr(sl + 1);
+  const std::string host = sl == std::string::npos ? nimbus::orch::inferUpstream(model.c_str())
+                                                   : pin.substr(0, sl);
+  if (model.empty() || !NimbusdRig::validSelector(model)) return std::string();
+  o.models[host] = model;
+  std::string prio = host;
+  for (const char* h : {"anthropic", "mistral", "openai"})
+    if (host != h) prio += std::string(",") + h;
+  o.priority = prio;
+  return host;
+}
+
 // Fresh data dir per scenario so memory from one does not mask another.
 NimbusdRig::Options baseOpt(const Config& cfg, const std::string& tag) {
   NimbusdRig::Options o;
@@ -68,6 +91,7 @@ NimbusdRig::Options baseOpt(const Config& cfg, const std::string& tag) {
   if (!o.embeddings && !cfg.providerKey("openai").empty()) { o.embedHost = "openai"; o.embeddings = true; }
   o.embedModel = o.embedHost == "mistral" ? "mistral-embed" : "text-embedding-3-small";
   o.embedDims = o.embedHost == "mistral" ? 1024 : 1536;
+  applyModelPin(cfg, o);
   return o;
 }
 void wipe(const std::string& dir) { std::string c = "rm -rf '" + dir + "'"; (void)std::system(c.c_str()); }
@@ -179,8 +203,10 @@ bool selected(const std::vector<std::string>& names, const char* name) {
 
 void printBanner(Config& cfg, const Keys& keys) {
   auto mark = [&](const char* h) { return cfg.providerKey(h).empty() ? "-" : "y"; };
-  std::printf("nimbusd scenarios - providers[mistral:%s openai:%s anthropic:%s] tavily:%s\n\n",
+  std::printf("nimbusd scenarios - providers[mistral:%s openai:%s anthropic:%s] tavily:%s\n",
               mark("mistral"), mark("openai"), mark("anthropic"), keys.search ? "y" : "-");
+  const std::string pin = cfg.get("NIMBUS_LAB_MODEL");
+  std::printf("head model pin: %s\n\n", pin.empty() ? "(none - daemon defaults)" : pin.c_str());
 }
 
 // Run one scenario (or record it as SKIPPED), updating the totals.

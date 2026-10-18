@@ -298,6 +298,34 @@ void scGithubSetupAudience(LabRig& rig, Ctx& c) {
           "routes setup to the device web page (Assistant > Connectors)");
 }
 
+// 0. The cheapest end-to-end proof a live leg is wired: a plain reply, then a
+//    memory write checked by its EFFECT (the vector store grew), whichever way
+//    the head did it (a loop tool call, or the structured turn's memory field on
+//    a single-shot head such as Z.ai). Pin the head with NIMBUS_LAB_MODEL or
+//    --host; run with --record=<dir> and price it with spend_ledger.py.
+void scSmoke(LabRig& rig, Ctx& c) {
+  auto plain = rig.say("smoke", "Reply with exactly the word: pong");
+  showTurn(plain);
+  c.check(!plain.reply.empty(), "a plain turn got a reply");
+  c.check(has(plain.reply, "pong"), "the reply says pong");
+  const size_t before = rig.vectors().size();
+  auto tool = rig.say("smoke", "Save a note to memory that the smoke check ran, then confirm in one short sentence.");
+  showTurn(tool);
+  c.check(!tool.reply.empty(), "the memory turn got a reply");
+  const bool stored = rig.vectors().size() > before;
+  const bool calledWrite = calledTool(tool, "memory_write") || calledTool(tool, "memory.write");
+  // A tool-loop head (anthropic/openai/mistral) must actually store the memory.
+  // A single-shot head (Z.ai GLM: orchTurnCustom has no tool loop v1) cannot call
+  // a tool mid-turn, so for it the wiring check is just that the turn completed.
+  if (agent::providers::fabricSupports(tool.host))
+    c.check(stored || calledWrite, "a memory was actually stored (the store grew / memory.write ran)");
+  else
+    c.note("single-shot head (no tool loop): memory tool not exercised");
+  c.note(std::string("tool call used: ") + (calledWrite ? "yes" : (stored ? "structured turn" : "no")));
+  c.note("served by " + (rig.turns().empty() ? std::string("?") : rig.turns().back().host) + ", " +
+         std::to_string(rig.totalIn()) + " in / " + std::to_string(rig.totalOut()) + " out tokens");
+}
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -310,6 +338,7 @@ struct Scenario {
 };
 
 const Scenario kScenarios[] = {
+    {"smoke",         "a plain reply and one tool round trip (the live-leg wiring check)", scSmoke, false},
     {"web-search",    "live web.search end to end, and the model uses the result", scWebSearch, true},
     {"search-errors", "a failing search names its cause instead of lying",         scSearchErrorHonesty, false},
     {"multi-tool",    "several tool calls inside one turn",                        scMultiToolSingleTurn, false},
@@ -333,10 +362,19 @@ void listScenarios() {
                 s.needsSearch ? "  [needs TAVILY_API_KEY]" : "");
 }
 
+// True when the rig's last provider exchange (not search or embeddings) was a 2xx.
+static bool lastProviderCallOk(LabRig& rig) {
+  for (auto it = rig.http().calls.rbegin(); it != rig.http().calls.rend(); ++it) {
+    if (!isProviderHost(it->host) || it->path.find("/embeddings") != std::string::npos) continue;
+    return it->status >= 200 && it->status < 300;
+  }
+  return false;
+}
+
 int cmdProviders(const Env& env, const LabRig::Options& opt) {
   std::puts("provider check - one minimal real turn each\n");
   int failures = 0;
-  for (const char* host : {"mistral", "openai", "anthropic"}) {
+  for (const char* host : {"anthropic", "mistral", "zai", "openai"}) {
     if (env.providerKey(host).empty()) {
       std::printf("  %-10s no key configured - skipped\n", host);
       continue;
@@ -345,7 +383,9 @@ int cmdProviders(const Env& env, const LabRig::Options& opt) {
     o.priority = host;      // pin it: no failover, so a failure is attributable
     LabRig rig(env, o);
     auto t = rig.say("probe", "Reply with exactly the word: pong");
-    const bool ok = !t.reply.empty();
+    // A reply alone proves nothing: the engine answers a failed turn with an
+    // error sentence. The provider's own last answer must be a success.
+    const bool ok = !t.reply.empty() && lastProviderCallOk(rig);
     std::printf("  %-10s %-4s %-6.1fs  %5u in /%5u out  %s\n", host, ok ? "OK" : "FAIL",
                 t.seconds, t.tokensIn, t.tokensOut,
                 t.reply.empty() ? "(no reply)" : t.reply.substr(0, 60).c_str());
@@ -386,7 +426,7 @@ int cmdSearch(const Env& env, const LabRig::Options& opt, const std::string& que
 static int runParity(const Env& env, const LabRig::Options& opt) {
   std::puts("\n=== parity: every keyed provider, plain turn + tool turn ===");
   int failures = 0;
-  for (const char* host : {"mistral", "openai", "anthropic"}) {
+  for (const char* host : {"anthropic", "mistral", "zai", "openai"}) {
     if (env.providerKey(host).empty()) {
       std::printf("  %-10s no key - skipped\n", host);
       continue;
@@ -401,8 +441,11 @@ static int runParity(const Env& env, const LabRig::Options& opt) {
     auto tool = rig.say("parity",
                         "Save a note to memory that the parity check ran, then tell me "
                         "you did it.");
+    // A single-shot head (Z.ai) runs no tool loop, so "tool turn" means the turn
+    // completed; a loop head must actually call the memory tool.
     const bool toolOk = !tool.reply.empty() &&
-                        (calledTool(tool, "memory_write") || calledTool(tool, "memory.write"));
+                        (!agent::providers::fabricSupports(tool.host) ||
+                         calledTool(tool, "memory_write") || calledTool(tool, "memory.write"));
 
     std::printf("  %-10s plain:%-4s tool:%-4s  (%u+%u tokens)\n", host,
                 plainOk ? "OK" : "FAIL", toolOk ? "OK" : "FAIL",

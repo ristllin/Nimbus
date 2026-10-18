@@ -864,7 +864,7 @@ class NimbusdRig {
       if (it != opt_.models.end()) return it->second;
     }
     if (h == "openai")    return "gpt-5.6";
-    if (h == "anthropic") return "claude-sonnet-4-6";
+    if (h == "anthropic") return "claude-haiku-5-5";
     if (h == "mistral")   return "mistral-large-latest";
     // CUM-288: the Cumulo router head resolves to the router default model, not ""
     // - an empty model made budgeting fall to the conservative default window and

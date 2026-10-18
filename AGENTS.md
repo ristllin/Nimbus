@@ -116,9 +116,12 @@ Notes:
   row above. That row is the anti-rot gate for the host agent harness
   (`tools/harness-lab`): it links the same `lib/core` + `lib/harness` the firmware
   does, so a `lib/core` refactor that drops a source it needs fails the link here
-  instead of rotting silently until the next live run. It is build-only (no keys,
-  no network) and needs the native ArduinoJson libdeps that `pio test -e native`
-  populates.
+  instead of rotting silently until the next live run. It needs no keys and no
+  network: besides the link it runs the lab's offline self-test and the
+  model-id lint (`tools/model_id_lint.py`: every compiled-in model id must be in
+  the recorded provider model lists and have a price row, or sit on its
+  allowlist naming the lane that removes it). It needs the native ArduinoJson
+  libdeps that `pio test -e native` populates.
 
 **"It compiles" is NOT "it works."** A clean build and a boot in the other mode
 prove nothing about the touch input, the radio, the ring, or a live turn. Device behavior

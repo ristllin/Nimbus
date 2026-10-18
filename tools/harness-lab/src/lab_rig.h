@@ -11,7 +11,9 @@
 #include "curl_transport.h"
 #include "lab_env.h"
 #include "lab_files.h"
+#include "lab_wire.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/fault_transport.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/websearch.h"
@@ -19,6 +21,7 @@
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
+#include "nimbus/orch/model_choices.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/session_tools.h"
@@ -37,7 +40,26 @@
 // the ~46 KB internal heap. `freeHeap` reports a large value so the device's
 // memory gates never fire - the lab is for exercising harness LOGIC, and a
 // scenario that depends on heap pressure belongs on hardware.
+//
+// Every request goes through the lab's transport chain (lab_wire.h): the run's
+// pins (effort, output cap, per-request ceiling), then any injected faults
+// (--fault), then the recorder (--record), then libcurl.
 namespace lab {
+
+// The model a host runs when nothing overrides it. Cheapest current model per
+// provider (live tests run Anthropic first, on claude-haiku-5-5).
+inline std::string labDefaultModel(const std::string& h) {
+  if (h == "anthropic") return "claude-haiku-5-5";
+  if (h == "openai")    return "gpt-5.6-luna";
+  if (h == "mistral")   return "mistral-small-latest";
+  if (h == "zai")       return "glm-5.3-flash";
+  return std::string();
+}
+
+// Z.ai's OpenAI-compatible head endpoint (the device's ZAI_HOST_PRIMARY /
+// ZAI_BASE_PATH, mirrored as nimbusd does).
+inline constexpr const char* kLabZaiHost = "api.z.ai";
+inline constexpr const char* kLabZaiPath = "/api/paas/v4";
 
 namespace orch = nimbus::orch;
 
@@ -56,7 +78,7 @@ struct TurnRecord {
 class LabRig {
  public:
   struct Options {
-    std::string priority = "mistral,openai,anthropic";  // cheapest first by default
+    std::string priority = "anthropic,mistral,zai,openai";  // Anthropic first (owner rule)
     std::string devName  = "Nimbus-Lab";
     // W14: the ROLE the lab's chats run as, so the principal-scoped tool
     // advertisement can be exercised against a real provider ("admin" is the
@@ -83,9 +105,18 @@ class LabRig {
     std::string embedHost  = "mistral";
     int         embedDims  = 1024;
     std::map<std::string, std::string> models;  // host -> model override
+    // NIMBUS_LAB_EFFORT (default "low"), NIMBUS_LAB_MAXTOK, NIMBUS_LAB_CEILING_MS.
+    WirePins    pins = WirePins{"low", 0, 0};
+    int         rounds = 12;            // --rounds=<n>: head tool-loop rounds per turn
+    bool        midTurnFailover = true; // the fabric loop, as on the device
+    std::vector<agent::FaultRule> faults;  // --fault=<spec>, already parsed
+    std::string recordDir;              // --record=<dir>: usage + error bodies
   };
 
-  LabRig(Env env, Options opt) : env_(std::move(env)), opt_(std::move(opt)) {
+  LabRig(Env env, Options opt)
+      : env_(std::move(env)), opt_(std::move(opt)), rec_(&http_, opt_.recordDir),
+        fault_(&rec_, &faultPlan_), wire_(&fault_, &opt_.pins) {
+    for (const auto& f : opt_.faults) faultPlan_.add(f);
     http_.verbose = opt_.verboseHttp;
     // The harness's own log lines (headloop rounds, cap reasons, provider
     // failures) are the single most useful diagnostic there is - on the device
@@ -108,6 +139,7 @@ class LabRig {
     cur_.seconds = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - t0).count();
     cur_.systemPrompt = eng_->lastInstructions();
+    cur_.host = lastHost_;
     cur_.tokensIn = eng_->lastTurnUsage().promptTokens;
     cur_.tokensOut = eng_->lastTurnUsage().completionTokens;
     cur_.ok = !cur_.deliveries.empty();
@@ -142,6 +174,10 @@ class LabRig {
   orch::VectorMemory& vectors() { return vec_; }
   orch::EpisodicStore& episodic() { return *epi_; }
   CurlHttpTransport& http() { return http_; }
+  // The top of the transport chain: what every lab request goes through.
+  agent::HttpTransport& net() { return wire_; }
+  const agent::FaultPlan& faults() const { return faultPlan_; }
+  const RecordingTransport& recorder() const { return rec_; }
   LabFiles& files() { return files_; }
   const std::vector<TurnRecord>& turns() const { return turns_; }
   const std::vector<std::string>& toolNames() const { return toolNames_; }
@@ -155,6 +191,16 @@ class LabRig {
 
   bool hostAvailable(const std::string& h) const { return !env_.providerKey(h).empty(); }
   const Options& options() const { return opt_; }
+
+  // The model a host's head and subs request: an override, else the lab default.
+  std::string modelFor(const std::string& h) const {
+    auto it = opt_.models.find(h);
+    if (it != opt_.models.end()) return it->second;
+    return labDefaultModel(h);
+  }
+
+  // One line that makes a run self-documenting: what it actually ran with.
+  std::string banner() const;
 
   // ⚠ prism: roleFromName leaves the out-param UNTOUCHED on an unrecognized
   // string, so discarding its result made "--role=Guest" (or any typo) run as
@@ -241,7 +287,7 @@ class LabRig {
     tavilyKey_ = env_.get("TAVILY_API_KEY");
     agent::websearch::WebSearchToolDeps wd;
     wd.search = [this](const std::string& q, int k) {
-      return agent::websearch::search(http_, tavilyKey_, q, k);
+      return agent::websearch::search(net(), tavilyKey_, q, k);
     };
     agent::websearch::registerWebSearchTool(reg_, wd);
     orch::applyToolGates(reg_, [this](orch::ToolGate g) {
@@ -333,7 +379,7 @@ class LabRig {
 
     agent::HttpResponse resp;
     std::string err;
-    if (!http_.exec(req, resp, err) || resp.status < 200 || resp.status >= 300) {
+    if (!net().exec(req, resp, err) || resp.status < 200 || resp.status >= 300) {
       std::fprintf(stderr, "[embed] failed: %s (status %d)\n", err.c_str(), resp.status);
       return {};
     }
@@ -388,11 +434,9 @@ class LabRig {
     p.subPriority = [this] { return opt_.priority; };
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
     p.subModel = [this](const std::string& h) { return modelFor(h); };
+    // The device's own cold-start lists (one source: model_choices.h).
     p.modelChoices = [](const std::string& h) {
-      if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
-      if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
-      if (h == "mistral")   return std::string("mistral-large-latest,mistral-medium-latest,mistral-small-latest");
-      return std::string();
+      return std::string(nimbus::orch::staticModelChoices(h.c_str()));
     };
     p.convId = [this] { return convId_; };
     p.setConvId = [this](const std::string& v) { convId_ = v; };
@@ -402,7 +446,8 @@ class LabRig {
     p.customModel = [] { return std::string(); };
 
     c.loop.toolLoopOn = [this] { return opt_.toolLoop; };
-    c.loop.rounds = [] { return 12; };
+    c.loop.rounds = [this] { return opt_.rounds; };
+    c.loop.midTurnFailover = [this] { return opt_.midTurnFailover; };
     c.loop.deadlineS = [] { return 600; };
     c.loop.resultCap = [] { return 4096; };
     c.loop.totalCap = [] { return 24576; };
@@ -418,18 +463,9 @@ class LabRig {
     return c;
   }
 
-  std::string modelFor(const std::string& h) const {
-    auto it = opt_.models.find(h);
-    if (it != opt_.models.end()) return it->second;
-    if (h == "openai")    return "gpt-5.6";
-    if (h == "anthropic") return "claude-sonnet-4-6";
-    if (h == "mistral")   return "mistral-large-latest";
-    return std::string();
-  }
-
   agent::providers::ProviderDeps providerDeps() {
     agent::providers::ProviderDeps pd;
-    pd.http = &http_;
+    pd.http = &wire_;
     pd.key = [this](const char* h) { return env_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
@@ -446,6 +482,19 @@ class LabRig {
                  std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     pd.freeHeap = [this] { return simHeap(); };
+    return pd;
+  }
+
+  // The Z.ai head: the custom/OpenAI-compatible single-shot turn pointed at
+  // Z.ai, with the same head policy the device and nimbusd apply.
+  agent::providers::ProviderDeps zaiProviderDeps() {
+    auto pd = providerDeps();
+    pd.customBase = [] { return std::string(kLabZaiHost); };
+    pd.customPathPrefix = [] { return std::string(kLabZaiPath); };
+    pd.customKey = [this] { return env_.providerKey("zai"); };
+    pd.customConv = [] { return std::string("openai"); };
+    pd.customModel = [this] { return modelFor("zai"); };
+    agent::providers::applyZaiHeadPolicy(pd);
     return pd;
   }
 
@@ -517,6 +566,25 @@ class LabRig {
     };
     d.apply.setModelMemory = [this](const std::string&, const std::string& m) { memory_ = m; return true; };
 
+    // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
+    // the same deps (a failed round re-runs on the next host against the shared
+    // transcript). Z.ai is single-shot only, as on the device.
+    d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
+                            const std::string& inp, std::string& out, std::string& err,
+                            const agent::HeadTools& ht, orch::TokenUsage* usage,
+                            const std::function<void(const std::string&, const std::string&)>& notify) {
+      return agent::providers::runFabricLoop(providerDeps(), hostList, ins, inp, out, err, ht,
+                                             usage, notify);
+    };
+    d.hosts.fabricSupports = [](const std::string& h) { return agent::providers::fabricSupports(h); };
+    if (!env_.providerKey("zai").empty()) {
+      d.hosts.add("zai", [this](std::string& conv, const std::string& ins, const std::string& inp,
+                                std::string& out, std::string& err, const agent::HeadTools* tools,
+                                orch::TokenUsage* usage) -> bool {
+        return agent::providers::orchTurnCustom(zaiProviderDeps(), conv, ins, inp, out, err, tools,
+                                                usage);
+      });
+    }
     for (const char* h : {"openai", "anthropic", "mistral"}) {
       if (env_.providerKey(h).empty()) continue;
       const std::string host = h;
@@ -573,7 +641,12 @@ class LabRig {
 
   Env  env_;
   Options opt_;
+  // The transport chain, declared in construction order (each wraps the one above).
   CurlHttpTransport http_;
+  agent::FaultPlan faultPlan_;
+  RecordingTransport rec_;
+  agent::FaultInjectingTransport fault_;
+  WireOverrideTransport wire_;
 
   orch::VectorMemory vec_;
   orch::Scratchpad   scratch_;
@@ -597,5 +670,25 @@ class LabRig {
   TurnRecord cur_;
   std::vector<TurnRecord> turns_;
 };
+
+// The run banner: what a live run actually used (models, pins, faults).
+inline std::string labBanner(const Env& env, const LabRig::Options& opt) {
+  std::string m;
+  for (const char* h : {"anthropic", "mistral", "zai", "openai"}) {
+    if (env.providerKey(h).empty()) continue;
+    auto it = opt.models.find(h);
+    m += std::string(m.empty() ? "" : " ") + h + "=" +
+         (it != opt.models.end() ? it->second : labDefaultModel(h));
+  }
+  const auto num = [](uint32_t v) { return v ? std::to_string(v) : std::string("adapter"); };
+  return "lab: priority=" + opt.priority + " models[" + m + "] effort=" +
+         (opt.pins.effort.empty() ? std::string("adapter") : opt.pins.effort) +
+         " maxtok=" + num(opt.pins.maxTokens) + " ceiling_ms=" + num(opt.pins.ceilingMs) +
+         " rounds=" + std::to_string(opt.rounds) + " failover=" + (opt.midTurnFailover ? "on" : "off") +
+         " faults=" + std::to_string(opt.faults.size()) +
+         " record=" + (opt.recordDir.empty() ? std::string("off") : opt.recordDir);
+}
+
+inline std::string LabRig::banner() const { return labBanner(env_, opt_); }
 
 }  // namespace lab

@@ -45,11 +45,12 @@ class Env {
 
   bool has(const char* name) const { return !get(name).empty(); }
 
-  // Provider host ("openai"|"anthropic"|"mistral") -> key.
+  // Provider host ("openai"|"anthropic"|"mistral"|"zai") -> key.
   std::string providerKey(const std::string& host) const {
     if (host == "openai")    return get("OPENAI_API_KEY");
     if (host == "anthropic") return get("ANTHROPIC_API_KEY");
     if (host == "mistral")   return get("MISTRAL_API_KEY");
+    if (host == "zai")       return get("Z_AI_TOKEN");
     return std::string();
   }
 

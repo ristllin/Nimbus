@@ -1,0 +1,7 @@
+{
+  "about": "Model ids a provider serves but does not list in /v1/models. Each was proved by one real request on the date shown; `served` is the model the response echoed. Recorded by lane N, program-2026-10-18.",
+  "probed": [
+    {"provider": "openai", "id": "gpt-5.6", "served": "gpt-5.6-sol", "endpoint": "POST /v1/responses", "probed_utc": "2026-10-18T18:31Z"},
+    {"provider": "mistral", "id": "mistral-moderation-latest", "served": "mistral-moderation-2603", "endpoint": "POST /v1/moderations", "probed_utc": "2026-10-18T18:31Z"}
+  ]
+}

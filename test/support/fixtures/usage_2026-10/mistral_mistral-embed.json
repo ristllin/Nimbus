@@ -1,0 +1,21 @@
+{
+ "provider": "mistral",
+ "endpoint": "/v1/embeddings",
+ "requested": "mistral-embed",
+ "served": "mistral-embed",
+ "recorded_utc": "2026-10-18",
+ "source": "nimbus-lab --record, tools/harness-lab/record_to_fixtures.py",
+ "usage": [
+  {
+   "prompt_audio_seconds": null,
+   "prompt_tokens": 11,
+   "total_tokens": 11,
+   "completion_tokens": 0,
+   "request_count": null,
+   "prompt_tokens_details": null,
+   "completion_tokens_details": null,
+   "service_tier": null,
+   "prompt_token_details": null
+  }
+ ]
+}

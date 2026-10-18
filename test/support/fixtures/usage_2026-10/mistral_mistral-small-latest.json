@@ -1,0 +1,34 @@
+{
+ "provider": "mistral",
+ "endpoint": "/v1/chat/completions",
+ "requested": "mistral-small-latest",
+ "served": "mistral-small-latest",
+ "recorded_utc": "2026-10-18",
+ "source": "nimbus-lab --record, tools/harness-lab/record_to_fixtures.py",
+ "usage": [
+  {
+   "prompt_tokens": 8748,
+   "total_tokens": 8795,
+   "completion_tokens": 47,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "service_tier": "standard"
+  },
+  {
+   "prompt_tokens": 8827,
+   "total_tokens": 8876,
+   "completion_tokens": 49,
+   "prompt_tokens_details": {
+    "cached_tokens": 8752
+   },
+   "completion_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "service_tier": "standard"
+  }
+ ]
+}

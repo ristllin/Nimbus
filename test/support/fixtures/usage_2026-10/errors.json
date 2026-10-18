@@ -1,0 +1,33 @@
+{
+ "recorded_utc": "2026-10-18",
+ "errors": [
+  {
+   "provider": "anthropic",
+   "endpoint": "/v1/messages",
+   "status": 404,
+   "requested": "claude-haiku-0-0",
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: claude-haiku-0-0\"},\"request_id\":\"scrubbed\"}"
+  },
+  {
+   "provider": "mistral",
+   "endpoint": "/v1/chat/completions",
+   "status": 400,
+   "requested": "mistral-nope-latest",
+   "body": "{\"object\":\"error\",\"message\":\"Invalid model: mistral-nope-latest\",\"type\":\"invalid_model\",\"param\":null,\"code\":\"1500\",\"raw_status_code\":400}"
+  },
+  {
+   "provider": "openai",
+   "endpoint": "/v1/responses",
+   "status": 404,
+   "requested": "gpt-0.0-nope",
+   "body": "{\n  \"error\": {\n    \"message\": \"The model `gpt-0.0-nope` does not exist or you do not have access to it.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": null,\n    \"code\": \"model_not_found\"\n  }\n}"
+  },
+  {
+   "provider": "zai",
+   "endpoint": "/api/paas/v4/chat/completions",
+   "status": 400,
+   "requested": "glm-0.0-nope",
+   "body": "{\"error\":{\"code\":\"1211\",\"message\":\"Unknown Model, please check the model code.\"}}"
+  }
+ ]
+}

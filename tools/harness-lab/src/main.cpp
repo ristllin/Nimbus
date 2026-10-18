@@ -7,15 +7,20 @@
 //   nimbus-lab scenarios [names...]   the scenario suite (see scenarios.cpp)
 //   nimbus-lab sub <task>             one Anthropic sub-agent end to end (sub_cmd.cpp)
 //
-// Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed
+// Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
+// (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
+// for the NIMBUS_LAB_* environment they override).
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include "lab_options.h"
 #include "lab_rig.h"
 #include "scenarios.h"
+#include "selftest.h"
 #include "sub_cmd.h"
 
 namespace {
@@ -30,6 +35,7 @@ void usage() {
       "  chat                      interactive REPL against the real turn engine\n"
       "  scenarios [name...]       run the scenario suite (no names = all)\n"
       "  list-scenarios            show what the suite covers\n"
+      "  selftest                  offline checks of the lab's own seams (no keys)\n"
       "  sub <task>                one Anthropic sub-agent end to end (dispatch + polls);\n"
       "                            --model=<id> picks the agent model, --nvs-full drops\n"
       "                            every cache write (a full NVS partition), --runs=<n>\n"
@@ -50,10 +56,40 @@ void usage() {
       "                                      real turn/loop heap gates fire (e.g. 30000)\n"
       "  --heap-decay=<bytes>                subtract this per heap read, so the value\n"
       "                                      FALLS mid-loop like it does on the board\n"
-      "  --env=<path>                        dotenv file (default: NIMBUS_ENV_FILE or ~/.env)\n");
+      "  --env=<path>                        dotenv file (default: NIMBUS_ENV_FILE or ~/.env)\n"
+      "\n"
+      "Run pins (each also read from the environment, see lab_options.h):\n"
+      "  --effort=<low|medium|high|xhigh|max|adapter>   Anthropic effort (NIMBUS_LAB_EFFORT, default low)\n"
+      "  --max-tokens=<n>                    output cap per request (NIMBUS_LAB_MAXTOK)\n"
+      "  --ceiling-ms=<n>                    per-request timeout ceiling (NIMBUS_LAB_CEILING_MS)\n"
+      "  --rounds=<n>                        head tool-loop rounds per turn (1..32, default 12)\n"
+      "  --no-failover                       turn the mid-turn fabric failover off\n"
+      "  --fault=<host:range:status[:detail]>  fail chosen requests (repeatable), e.g.\n"
+      "                                      anthropic:2:529:overloaded, mistral:1-3:0:noresp\n"
+      "  --record=<dir>                      append usage objects and error bodies to <dir>\n"
+      "                                      (price them with spend_ledger.py)\n"
+      "  NIMBUS_LAB_MODEL=[host/]model[,...] pin models (host inferred from the id)\n");
 }
 
 }  // namespace
+
+// A pin flag's value, applied after the environment so the flag wins.
+static bool applyPinFlag(const std::string& a, lab::LabRig::Options& opt, std::string& err) {
+  if (a.rfind("--effort=", 0) == 0)     return lab::applyEffort(a.substr(9), opt, err);
+  if (a.rfind("--max-tokens=", 0) == 0) return lab::applyMaxTokens(a.substr(13), opt, err);
+  if (a.rfind("--ceiling-ms=", 0) == 0) return lab::applyCeiling(a.substr(13), opt, err);
+  if (a.rfind("--rounds=", 0) == 0)     return lab::applyRounds(a.substr(9), opt, err);
+  if (a.rfind("--fault=", 0) == 0)      return lab::applyFault(a.substr(8), opt, err);
+  if (a == "--no-failover") { opt.midTurnFailover = false; return true; }
+  err = "unknown pin flag " + a;
+  return false;
+}
+
+static bool isPinFlag(const std::string& a) {
+  for (const char* p : {"--effort=", "--max-tokens=", "--ceiling-ms=", "--rounds=", "--fault="})
+    if (a.rfind(p, 0) == 0) return true;
+  return a == "--no-failover";
+}
 
 int main(int argc, char** argv) {
   std::vector<std::string> args;
@@ -62,12 +98,23 @@ int main(int argc, char** argv) {
   std::string forceHost, forceModel;
   lab::SubOptions sub;
 
+  // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
+  for (int i = 1; i < argc; i++)
+    if (std::strncmp(argv[i], "--env=", 6) == 0) envPath = argv[i] + 6;
+  lab::Env env;
+  env.loadDotenv(envPath);
+  std::string pinErr;
+  if (!lab::applyLabEnv(env, opt, pinErr)) {
+    std::fprintf(stderr, "%s\n", pinErr.c_str());
+    return 2;
+  }
+
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a.rfind("--host=", 0) == 0)          forceHost = a.substr(7);
     else if (a.rfind("--model=", 0) == 0)    forceModel = a.substr(8);
     else if (a.rfind("--priority=", 0) == 0) opt.priority = a.substr(11);
-    else if (a.rfind("--env=", 0) == 0)      envPath = a.substr(6);
+    else if (a.rfind("--env=", 0) == 0)      {}   // consumed before this loop (env loads first)
     else if (a == "--verbose")               opt.verboseHttp = true;
     else if (a == "--no-tools")              opt.toolLoop = false;
     else if (a == "--no-embed")              opt.embeddings = false;
@@ -77,7 +124,10 @@ int main(int argc, char** argv) {
     else if (a == "--nvs-full")              sub.nvsFull = true;
     else if (a.rfind("--runs=", 0) == 0)     sub.runs = std::stoi(a.substr(7));
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
-    else if (a.rfind("--record=", 0) == 0)   sub.recordDir = a.substr(9);
+    else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
+    else if (isPinFlag(a)) {
+      if (!applyPinFlag(a, opt, pinErr)) { std::fprintf(stderr, "%s\n", pinErr.c_str()); return 2; }
+    }
     else if (a == "-h" || a == "--help")   { usage(); return 0; }
     else args.push_back(a);
   }
@@ -101,12 +151,17 @@ int main(int argc, char** argv) {
     opt.models[forceHost] = forceModel;
   }
 
-  lab::Env env;
-  env.loadDotenv(envPath);
-
   const std::string cmd = args[0];
+  if (!opt.recordDir.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(opt.recordDir, ec);
+    if (ec) { std::fprintf(stderr, "--record: cannot create %s\n", opt.recordDir.c_str()); return 2; }
+  }
+  if (cmd == "chat" || cmd == "scenarios" || cmd == "providers")
+    std::printf("%s\n", lab::labBanner(env, opt).c_str());
 
   if (cmd == "list-scenarios") { lab::listScenarios(); return 0; }
+  if (cmd == "selftest") return lab::cmdSelftest();
 
   if (cmd == "providers") return lab::cmdProviders(env, opt);
 

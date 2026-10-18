@@ -1,0 +1,12 @@
+{
+  "recorded_utc": "2026-10-18T18:25Z",
+  "recorded_by": "lane N, program-2026-10-18 (python3 tools/model_id_lint.py --record-fixtures)",
+  "files": {
+    "anthropic.json": "GET https://api.anthropic.com/v1/models?limit=1000",
+    "openai.json": "GET https://api.openai.com/v1/models",
+    "mistral.json": "GET https://api.mistral.ai/v1/models",
+    "zai.json": "GET https://api.z.ai/api/paas/v4/models",
+    "aliases_probed.json": "served-but-unlisted aliases, one real request each"
+  },
+  "consumers": ["tools/model_id_lint.py"]
+}

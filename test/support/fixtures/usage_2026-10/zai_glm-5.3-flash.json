@@ -1,0 +1,21 @@
+{
+ "provider": "zai",
+ "endpoint": "/api/paas/v4/chat/completions",
+ "requested": "glm-5.3-flash",
+ "served": "glm-5.3-flash",
+ "recorded_utc": "2026-10-18",
+ "source": "nimbus-lab --record, tools/harness-lab/record_to_fixtures.py",
+ "usage": [
+  {
+   "completion_tokens": 8,
+   "completion_tokens_details": {
+    "reasoning_tokens": 0
+   },
+   "prompt_tokens": 3871,
+   "prompt_tokens_details": {
+    "cached_tokens": 3840
+   },
+   "total_tokens": 3879
+  }
+ ]
+}

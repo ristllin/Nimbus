@@ -1,0 +1,15 @@
+{
+ "provider": "mistral",
+ "endpoint": "/v1/moderations",
+ "requested": "mistral-moderation-latest",
+ "served": "mistral-moderation-2603",
+ "recorded_utc": "2026-10-18",
+ "source": "nimbus-lab --record, tools/harness-lab/record_to_fixtures.py",
+ "usage": [
+  {
+   "prompt_tokens": 69,
+   "total_tokens": 69,
+   "completion_tokens": 0
+  }
+ ]
+}

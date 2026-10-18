@@ -7,7 +7,8 @@
 #
 #   make            build ./build/nimbus-lab
 #   make run        build, then run the default scenario set
-#   make check      compile only (no network, no keys) - the anti-rot target
+#   make check      the anti-rot target (no network, no keys): build, the lab's
+#                   offline self-test, its Python tests, and the model-id lint
 #   make clean
 
 REPO      := $(abspath $(CURDIR)/../..)
@@ -77,9 +78,17 @@ $(BUILD):
 run: $(BIN)
 	$(BIN) scenarios
 
-# Compile-only gate: proves the lab still builds against the current harness
-# without needing keys or a network. Cheap enough to run in any sweep.
+# The anti-rot gate, offline and keyless, cheap enough for every battery: the lab
+# still builds against the current harness, its own seams work (selftest), its
+# Python tools pass their tests, and no compiled-in model id has drifted from the
+# recorded provider lists or lost its price row (tools/model_id_lint.py). The
+# lint runs here so every lane's battery holds the class, not just CI.
+PY_TESTS  := $(wildcard $(CURDIR)/test_*.py)
+
 check: $(BIN)
+	@$(BIN) selftest
+	@python3 -m unittest -q $(PY_TESTS)
+	@python3 $(REPO)/tools/model_id_lint.py
 	@echo "harness-lab compiles against the current harness"
 
 clean:
