@@ -252,7 +252,12 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ip", help="device address (or a full http:// URL)")
     ap.add_argument("--backup", required=True, help="folder of <16 hex>.<ext> sidecars")
-    ap.add_argument("--rows", help="episodic rows that reference the sidecars (JSON or JSON lines)")
+    ap.add_argument(
+        "--rows",
+        action="append",
+        default=[],
+        help="episodic rows that reference the sidecars (JSON or JSON lines); repeat to merge several",
+    )
     ap.add_argument("--token-file", help="file holding the device sign-in token (else NIMBUS_TOKEN)")
     ap.add_argument("--note", default="", help="where the files came from (default: the backup folder name)")
     ap.add_argument("--write", action="store_true", help="upload (default: plan only)")
@@ -292,7 +297,7 @@ def main(argv=None) -> int:
     if not backup.is_dir():
         print(f"backup folder not found: {backup}", file=sys.stderr)
         return 2
-    items, skipped = plan(backup, load_rows(args.rows))
+    items, skipped = plan(backup, [r for path in args.rows for r in load_rows(path)])
     mapped = sum(1 for it in items if it.chat != RESTORED_CHAT)
     print(f"plan: {len(items)} file(s), {mapped} placed by their memory row, {len(skipped)} not sidecars")
     print(summarize(items))

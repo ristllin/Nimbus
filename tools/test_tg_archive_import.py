@@ -191,6 +191,24 @@ def test_dry_run_and_the_owner_gate():
         with contextlib.redirect_stdout(out):
             assert M.main(["--ip", url, "--backup", str(b), "--rows", str(rp)]) == 0
         assert dev.uploads == 0 and "plan: 4 file(s)" in out.getvalue()
+        # Several row files merge: the second one places the sidecar the first does not name.
+        extra = pathlib.Path(d) / "more.json"
+        extra.write_text(
+            json.dumps(
+                [
+                    {
+                        "session": "6098532481",
+                        "ts": "497801",
+                        "kind": "tool_output",
+                        "blob": "/mem/blobs/aaaaaaaaaaaaaaaa.txt",
+                    }
+                ]
+            )
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert M.main(["--backup", str(b), "--rows", str(rp), "--rows", str(extra)]) == 0
+        assert "3 placed by their memory row" in out.getvalue()
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             assert M.main(["--ip", url, "--backup", str(b), "--write"]) == 2
