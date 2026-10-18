@@ -1,0 +1,17 @@
+{
+ "generated_by": "tools/gen_turn_shape_fixtures.py",
+ "sources": [
+  "lumi15/epi_today.json",
+  "lumi-data/epi_new.json"
+ ],
+ "files": {
+  "lumi15_epi_today.jsonl": {
+   "rows": 297,
+   "chats": 2
+  },
+  "lumi-data_epi_new.jsonl": {
+   "rows": 308,
+   "chats": 2
+  }
+ }
+}
