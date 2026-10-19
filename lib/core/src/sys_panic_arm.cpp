@@ -56,6 +56,16 @@ bool panicArmFires(const PanicArm& arm, bool turnActive, int turnRound) {
   return arm.kind != PanicKind::None && turnActive && turnRound >= arm.round;
 }
 
+void firePanic(PanicKind k, const PanicActions& act) {
+  switch (k) {
+    case PanicKind::Abort:     act.abortNow(); break;
+    case PanicKind::NullStore: act.nullStore(); break;
+    case PanicKind::Canary:    act.overflowStack(); break;
+    case PanicKind::None:      break;
+  }
+  act.didNotFault(k);   // reached only when no fault reset the chip
+}
+
 std::string panicArmReply(const PanicArm& arm) {
   return std::string("PANIC armed: ") + panicKindName(arm.kind) + " at round " +
          std::to_string(arm.round) + " of the next turn";

@@ -772,6 +772,46 @@ static void test_panic_arm_fires_only_in_the_armed_round() {
   TEST_ASSERT_FALSE(panicArmFires(PanicArm(), true, 9));
 }
 
+// Every kind value reaches its own fault exactly once, and a fault that comes back (the
+// armed nullptr store the compiler deleted, the canary recursion it turned into a loop)
+// or a kind with no fault always ends in didNotFault: the armed path never returns
+// quietly. The fakes return, which is exactly the failure being guarded.
+namespace {
+std::vector<std::string> g_fired;
+void fakeAbort() { g_fired.push_back("abort"); }
+void fakeNull() { g_fired.push_back("nullptr"); }
+void fakeCanary() { g_fired.push_back("canary"); }
+void fakeDidNotFault(PanicKind k) { g_fired.push_back(std::string("did-not-fault:") + panicKindName(k)); }
+}  // namespace
+static void test_panic_fire_every_kind_never_returns_quietly() {
+  const PanicActions act{fakeAbort, fakeNull, fakeCanary, fakeDidNotFault};
+  int known = 0;
+  for (int v = 0; v < 256; ++v) {
+    const PanicKind k = (PanicKind)(char)v;
+    g_fired.clear();
+    firePanic(k, act);
+    const std::string name = panicKindName(k);
+    if (k == PanicKind::NullStore || k == PanicKind::Abort || k == PanicKind::Canary) {
+      ++known;
+      TEST_ASSERT_EQUAL_UINT(2, (unsigned)g_fired.size());
+      TEST_ASSERT_EQUAL_STRING(name.c_str(), g_fired[0].c_str());   // its own fault, once
+      TEST_ASSERT_EQUAL_STRING(("did-not-fault:" + name).c_str(), g_fired[1].c_str());
+    } else {
+      TEST_ASSERT_EQUAL_UINT(1, (unsigned)g_fired.size());   // no fault to run: reported, never silent
+      TEST_ASSERT_EQUAL_STRING("did-not-fault:none", g_fired[0].c_str());
+    }
+  }
+  TEST_ASSERT_EQUAL_INT(3, known);
+  // Every kind the console accepts reaches a fault of its own (parse -> fire).
+  for (const char* spec : {"nullptr", "abort", "canary"}) {
+    PanicArm a;
+    TEST_ASSERT_TRUE(parsePanicArm(spec, a));
+    g_fired.clear();
+    firePanic(a.kind, act);
+    TEST_ASSERT_EQUAL_STRING(spec, g_fired[0].c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reset_table_rows_are_positional);
@@ -804,5 +844,6 @@ int main(int, char**) {
   RUN_TEST(test_breadcrumb_round_trip_and_single_byte_damage);
   RUN_TEST(test_panic_arm_spec_grammar);
   RUN_TEST(test_panic_arm_fires_only_in_the_armed_round);
+  RUN_TEST(test_panic_fire_every_kind_never_returns_quietly);
   return UNITY_END();
 }

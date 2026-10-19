@@ -15,7 +15,10 @@ import os
 import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SWITCH = re.compile(r"\b(armTurnPanic|testPanicPoint|dropUnfiredArm|parsePanicArm|panicArmFires|PanicArm)\b")
+SWITCH = re.compile(
+    r"\b(armTurnPanic|testPanicPoint|dropUnfiredArm|parsePanicArm|panicArmFires|PanicArm|PanicActions|firePanic|"
+    r"faultNullStore|faultDeepen|faultDidNotTrigger)\b"
+)
 TEST_IF = re.compile(r"^\s*#\s*(ifdef\s+NIMBUS_TEST\b|if\s+defined\s*\(\s*NIMBUS_TEST\s*\))")
 
 

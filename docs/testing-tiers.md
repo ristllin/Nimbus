@@ -145,8 +145,13 @@ Every crash leaves a durable, readable cause, read on the next boot from the cor
   number: on the S3's native USB a host serial reopen resets the chip, so the newest boot
   can be one the harness caused (`reason=usb`), and a window in which nothing crashed is
   reported as such instead of being reopened into a reboot. Its parsers and verdicts are
-  host-tested in `tests/hil/test_l39_crash_forensics_host.py`, over every `PANIC` kind; `tools/release_gate/test_panic_guard.py`
-  and the release gate's ELF check keep the armed panic out of every shipped image.
+  host-tested in `tests/hil/test_l39_crash_forensics_host.py`, over every `PANIC` kind;
+  `tools/release_gate/test_panic_guard.py` and the release gate's ELF check keep the armed
+  panic out of every shipped image. Every armed kind reaches its own fault, and a fault that
+  comes back ends in an abort that says so (`test_crash_forensics`, over every kind value).
+  Before the armed legs, `tools/release_gate/check_panic_actions.py --elf <test firmware.elf>`
+  checks the built test image: the compiler once deleted the null store and turned the stack
+  recursion into a loop, so those two kinds armed nothing.
 
 ## The release gate
 

@@ -34,4 +34,19 @@ bool panicArmFires(const PanicArm& arm, bool turnActive, int turnRound);
 std::string panicArmReply(const PanicArm& arm);
 const char* panicKindName(PanicKind k);
 
+// The device's fault for each kind, and what to do if a fault comes back. Each fault
+// must reset the chip. One that returns has not done its job: the armed nullptr store
+// was once deleted by the compiler (a store through a constant null pointer is
+// undefined behavior) and the canary recursion compiled into a loop, so both kinds
+// silently armed nothing. firePanic() therefore never returns quietly.
+struct PanicActions {
+  void (*abortNow)();
+  void (*nullStore)();
+  void (*overflowStack)();
+  void (*didNotFault)(PanicKind k);   // device: abort with "the fault did not trigger in <task>"
+};
+// Run the fault for `k`. If it returns, or `k` names no fault, call didNotFault(k)
+// exactly once.
+void firePanic(PanicKind k, const PanicActions& act);
+
 }  // namespace nimbus::sys

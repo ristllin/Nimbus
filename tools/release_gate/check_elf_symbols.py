@@ -43,7 +43,15 @@ EPAPER_MARKERS = ("GxEPD2", "SSD1680")
 REQUIRED_TFT = "solide11display_tft5begin"  # mangled solide::display_tft::begin
 # Test-build crash switches (the console's PANIC ... arm=turn): a shipped image that
 # linked them could be made to crash on demand. Source guard: test_panic_guard.py.
-TEST_ONLY_MARKERS = ("armTurnPanic", "testPanicPoint", "parsePanicArm", "panicArmFires")
+TEST_ONLY_MARKERS = (
+    "armTurnPanic",
+    "testPanicPoint",
+    "parsePanicArm",
+    "panicArmFires",
+    "firePanic",
+    "faultNullStore",
+    "faultDeepen",
+)
 
 # ESP-IDF app image layout (esp_image_format.h / esp_app_desc.h): a 24-byte image
 # header, an 8-byte first-segment header, then esp_app_desc_t, whose app_elf_sha256

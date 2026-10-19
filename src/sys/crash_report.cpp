@@ -404,18 +404,47 @@ namespace {
 nimbus::sys::PanicArm g_arm;
 portMUX_TYPE g_armMux = portMUX_INITIALIZER_UNLOCKED;
 
-// Each frame keeps a live 512 B buffer, so the recursion walks tg_poll's stack down
-// into the canary without the optimizer folding it away.
-[[gnu::noinline]] uint32_t deepen(uint32_t depth) {
-  volatile uint8_t pad[512];
-  for (size_t i = 0; i < sizeof pad; ++i) pad[i] = (uint8_t)(depth + i);
-  return pad[depth % sizeof pad] + deepen(depth + 1);
+// The faults behind PANIC <kind> arm=turn. Both used to be undone by the optimizer: a
+// store through a constant null pointer is undefined behavior, so GCC deleted the call
+// (the armed nullptr armed nothing), and `return pad[..] + deepen(depth + 1)` became a
+// loop through tail-recursion elimination (the armed canary spun tg_poll forever,
+// never touching the end of its stack). tools/release_gate/check_panic_actions.py
+// checks the built test image for both.
+
+// The fault address comes from a volatile load, so the compiler cannot prove it null:
+// a real store to 0x00000000, a StoreProhibited exception like the console's form.
+volatile uintptr_t g_faultAddr = 0;
+__attribute__((noinline, used)) void faultNullStore() {
+  *reinterpret_cast<volatile uint32_t*>(g_faultAddr) = 0x0badc0de;
 }
 
-[[gnu::noinline]] void nullStore() {
-  volatile uint32_t* p = nullptr;
-  *p = 0x0badc0de;
+// Each frame keeps a live 512 B buffer and does work after the recursive call, and the
+// function is built without optimization, so every call takes a new frame: the
+// recursion walks the task's stack down into the end-of-stack watchpoint (or the
+// FreeRTOS overflow check) whatever stack the task has.
+volatile uint32_t g_deepSink = 0;
+__attribute__((noinline, used, optimize("O0"))) void faultDeepen(uint32_t depth) {
+  volatile uint8_t pad[512];
+  for (size_t i = 0; i < sizeof pad; ++i) pad[i] = (uint8_t)(depth + i);
+  faultDeepen(depth + 1);
+  g_deepSink = g_deepSink + pad[depth % sizeof pad];   // after the call: never a tail call
 }
+void faultCanary() { faultDeepen(0); }
+
+void faultAbort() { abort(); }
+
+// A fault came back without resetting the chip: say so, and still crash, with this as
+// the crash reason (crash-why), so the bench reads why the asked-for kind did not fire.
+[[noreturn]] void faultDidNotTrigger(nimbus::sys::PanicKind k) {
+  char why[96];
+  snprintf(why, sizeof why, "PANIC %s arm=turn: the fault did not trigger in %s",
+           nimbus::sys::panicKindName(k), pcTaskGetName(nullptr));
+  Serial.println(why);
+  Serial.flush();
+  esp_system_abort(why);
+}
+
+const nimbus::sys::PanicActions kFaults{faultAbort, faultNullStore, faultCanary, faultDidNotTrigger};
 
 nimbus::sys::PanicArm takeArm() {
   portENTER_CRITICAL(&g_armMux);
@@ -446,9 +475,7 @@ void testPanicPoint() {
   Serial.printf("PANIC %s firing at round %d of the turn\n", nimbus::sys::panicKindName(a.kind),
                 g_journal.round);
   Serial.flush();
-  if (a.kind == nimbus::sys::PanicKind::Abort) abort();
-  if (a.kind == nimbus::sys::PanicKind::Canary) deepen(0);
-  nullStore();
+  nimbus::sys::firePanic(a.kind, kFaults);   // never returns: the fault, or an honest abort
 }
 
 // The armed turn ended before its round: drop the arm so it never fires in a later,
