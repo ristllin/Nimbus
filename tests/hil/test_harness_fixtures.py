@@ -730,6 +730,20 @@ def test_live_output_under_dash_s_is_scrubbed(tmp_path):
 
 
 @pytest.mark.host
+def test_the_scrubbing_stream_keeps_the_write_contract():
+    import io
+
+    token, _ = _fake_values()
+    Secret(token)
+    sink = io.StringIO()
+    stream = conftest._ScrubbedStream(sink)
+    text = f"bot {token} ready\n"
+    assert stream.write(text) == len(text)  # counts the caller's text, not the scrubbed one
+    assert sink.getvalue() == "bot <secret ...wxyz> ready\n"
+    assert stream.getvalue() == sink.getvalue()  # everything else is the wrapped stream's
+
+
+@pytest.mark.host
 @pytest.mark.parametrize(
     "name",
     [
@@ -807,9 +821,14 @@ def test_scrub_report_cleans_text_skips_and_sections(monkeypatch):
 @pytest.mark.host
 def test_public_env_keys_stay_plain_and_are_never_scrubbed(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("NIMBUS_BOARD1_IP=192.0.2.123\nTESTING_WIFI_SSID=BenchNetwork\n", encoding="utf-8")
+    env.write_text(
+        "NIMBUS_BOARD1_IP=192.0.2.123\nTESTING_WIFI_SSID=BenchNetwork\nNIMBUS_TEST_STA_SSID2=OtherNet\n",
+        encoding="utf-8",
+    )
     s = Secrets(env_path=env)
-    assert type(s.get("NIMBUS_BOARD1_IP")) is str and type(s.get("TESTING_WIFI_SSID")) is str
+    for key in ("NIMBUS_BOARD1_IP", "TESTING_WIFI_SSID", "NIMBUS_TEST_STA_SSID2"):
+        assert type(s.get(key)) is str, key
+    assert isinstance(s.get("MISSING_TOKEN", "fallback-credential"), Secret)  # a default is wrapped too
     assert (
         scrub("ORCH alive sta=1 ip=192.0.2.123 ssid=BenchNetwork")
         == "ORCH alive sta=1 ip=192.0.2.123 ssid=BenchNetwork"

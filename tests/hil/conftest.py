@@ -62,7 +62,8 @@ class _ScrubbedStream:
         self._stream = stream
 
     def write(self, text):
-        return self._stream.write(scrub(text, env_secrets()))
+        self._stream.write(scrub(text, env_secrets()))
+        return len(text)  # the caller's text counts as written, whatever scrub replaced
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -307,7 +308,9 @@ def net(device, secrets) -> Net:
     never provisions, the console's own IP wins over a disagreeing seed), then
     waits, best effort, for the address to answer before the first test fires.
     Without the variable or a console, ``ip`` comes from wait_got_ip() or
-    ensure_station() as before."""
+    ensure_station() as before. The settle reads (and so consumes) the boot lines
+    of the session reset: a test that asserts on the READY beacon restarts the
+    board itself first, as every current one does."""
     n = Net.from_env(device, secrets)
     seen = None if device.lan_only else n.settle_after_reset()
     notifier = seen is not None and seen.mode == 0  # no Wi-Fi and no web server to wait for

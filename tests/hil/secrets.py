@@ -24,6 +24,7 @@ keys (``*_IP``, ``*_SSID``, ``*_NAME``) stay plain strings.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, NamedTuple, Optional
 
@@ -33,10 +34,11 @@ from redact import Secret, redact
 # (gitignored, never committed).
 DEFAULT_ENV_PATH = Path(os.environ.get("NIMBUS_ENV_FILE") or str(Path(__file__).resolve().parents[2] / ".env"))
 
-# .env keys that name an address or a label, not a credential: kept as plain strings,
-# so a board IP or an SSID in a device log line is never scrubbed from a test report.
+# .env keys that name an address or a label, not a credential (NIMBUS_BOARD1_IP,
+# TESTING_WIFI_SSID, NIMBUS_TEST_STA_SSID2, ..._NAME): kept as plain strings, so a
+# board IP or an SSID in a device log line is never scrubbed from a test report.
 # Every other value is a Secret.
-PUBLIC_KEY_SUFFIXES = ("_IP", "_SSID", "_NAME")
+PUBLIC_KEY = re.compile(r"_(?:IP|SSID|NAME)\d*$", re.IGNORECASE)
 
 
 class SecretsUnavailable(RuntimeError):
@@ -47,7 +49,7 @@ class SecretsUnavailable(RuntimeError):
 def _parse_env_file(path: Path) -> Dict[str, str]:
     """Parse a simple ``KEY=VALUE`` .env file. Ignores blank lines and ``#``
     comments, strips surrounding quotes. Never logs values: each one is a Secret,
-    except the address and label keys (PUBLIC_KEY_SUFFIXES)."""
+    except the address and label keys (PUBLIC_KEY)."""
     out: Dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
@@ -61,7 +63,7 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
         key = key.strip()
         val = val.strip().strip('"').strip("'")
         if key:
-            out[key] = val if key.upper().endswith(PUBLIC_KEY_SUFFIXES) else Secret(val)
+            out[key] = val if PUBLIC_KEY.search(key) else Secret(val)
     return out
 
 
@@ -108,7 +110,8 @@ class Secrets:
         """Lookup from the .env (does not fall back to os.environ). A credential
         comes back as a Secret: it works as a plain string, only its repr is
         redacted."""
-        return self._load().get(key, default)
+        value = self._load().get(key)
+        return Secret(default) if value is None else value
 
     # -- provider keys (pushed to device, never used host-side) --------------
     @property
