@@ -108,8 +108,8 @@ void textAsBlocks(ArduinoJson::JsonArray messages) {
   for (ArduinoJson::JsonObject m : messages) {
     if (!m["content"].is<const char*>()) continue;
     const std::string text = m["content"].as<const char*>();
-    ArduinoJson::JsonArray blocks = m["content"].to<ArduinoJson::JsonArray>();
-    if (!text.empty()) addText(blocks, text, false);
+    if (text.empty()) continue;   // an empty array (or empty block) is refused by the API
+    addText(m["content"].to<ArduinoJson::JsonArray>(), text, false);
   }
 }
 

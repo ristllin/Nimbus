@@ -18,12 +18,12 @@ AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) 
     p.err = "need 'text': one or more rows to add";
     return p;
   }
-  if (body.size() > kAppendMaxBytes) {
+  if (body.back() != '\n') body += '\n';
+  if (body.size() > kAppendMaxBytes) {   // counted as written, final line end included
     p.err = "text too large for one append (max " + std::to_string((unsigned)kAppendMaxBytes) +
             " B) - add fewer rows per call";
     return p;
   }
-  if (body.back() != '\n') body += '\n';
   if (fileBytes > 0 && lastByte != '\n') {
     body.insert(body.begin(), '\n');
     p.repairedCut = true;

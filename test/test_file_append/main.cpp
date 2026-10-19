@@ -56,6 +56,12 @@ static void test_append_refuses_empty_and_oversize() {
   TEST_ASSERT_TRUE(p.err.find("need 'text'") == 0);
   TEST_ASSERT_FALSE(appendTo(file, std::string(kAppendMaxBytes + 1, 'z'), &p));
   TEST_ASSERT_TRUE(p.err.find("too large") != std::string::npos);
+  // The cap counts the bytes as written, the added final line end included.
+  TEST_ASSERT_FALSE(appendTo(file, std::string(kAppendMaxBytes, 'z'), &p));
+  TEST_ASSERT_TRUE(appendTo(file, std::string(kAppendMaxBytes - 1, 'z'), &p));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kAppendMaxBytes, (uint32_t)p.bytes.size());
+  file = "a\n";
+  TEST_ASSERT_FALSE(appendTo(file, "", &p));
   TEST_ASSERT_EQUAL_STRING("a\n", file.c_str());   // a refused append writes nothing
 }
 

@@ -425,6 +425,15 @@ static void test_anthropic_breakpoints_never_exceed_four() {
       }
     }
   }
+  // An empty string message is left alone: an empty content array is refused.
+  JsonDocument m;
+  JsonArray msgs = m.to<JsonArray>();
+  msgs.add<JsonObject>()["content"] = "";
+  msgs.add<JsonObject>()["content"] = "hi";
+  layout::textAsBlocks(msgs);
+  TEST_ASSERT_TRUE(msgs[0]["content"].is<const char*>());
+  TEST_ASSERT_EQUAL_STRING("hi", msgs[1]["content"][0]["text"] | "");
+  TEST_ASSERT_EQUAL_INT(1, layout::cacheLastMessage(msgs));
   // A legacy single string keeps its one system cache point.
   JsonDocument d;
   TEST_ASSERT_EQUAL_INT(1, layout::putAnthropicSystem(d["system"].to<JsonArray>(),

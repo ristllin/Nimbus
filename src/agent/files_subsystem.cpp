@@ -526,14 +526,25 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
   return nimbus::orch::ToolResult::ok(nimbus::orch::renderTail(v, name, size, header));
 }
 
-// files.append helpers (caller holds memory::Lock). Why an append may not run,
-// or "" when it may: the same ownership and quota rules as artifact.save.
-static std::string appendRefusal(const std::string& project, const std::string& name,
-                                 size_t addBytes, size_t newSize, const nimbus::orch::Principal& who) {
+// files.append helpers (caller holds memory::Lock). Why an append may not touch
+// the file at all, or "" when it may: checked BEFORE anything on the card is
+// opened, so a hostile segment or another person's file is never even probed.
+static std::string appendGate(const std::string& project, const std::string& name,
+                              const nimbus::orch::Principal& who) {
   if (!available()) return "no SD card - artifact store absent";
   if (g_w.active) return "an upload is in progress - try again";
+  if (!nimbus::orch::FileStore::validSegment(project, g_store.limits().maxProjectLen) ||
+      !nimbus::orch::FileStore::validSegment(name, g_store.limits().maxNameLen))
+    return "invalid project or name";
   if (!g_store.writeAllowed(project, name, who.ns, who.owner))
     return "that project/name belongs to someone else - choose another name";
+  return std::string();
+}
+
+// Why this append's bytes may not land, or "": the same quota rules as
+// artifact.save.
+static std::string appendRefusal(const std::string& project, const std::string& name,
+                                 size_t addBytes, size_t newSize, const nimbus::orch::Principal& who) {
   const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
   if (q.maxBytes && g_store.bytesFor(who.ns) + addBytes > q.maxBytes)
     return "this conversation has reached its file-storage limit - ask the device's admin to "
@@ -589,10 +600,12 @@ static nimbus::orch::ToolResult appendRows(const std::string& project, const std
   if (!textDocName(name))
     return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
   memory::Lock g;
+  const std::string gate = appendGate(project, name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
   const std::string path = pathOf(project, name);
   size_t size = 0;
   char last = '\0';
-  if (available()) fileEnd(path, size, last);
+  fileEnd(path, size, last);
   const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
   if (!plan.ok) return ToolResult::fail(plan.err);
   const std::string refusal = appendRefusal(project, name, plan.bytes.size(), size + plan.bytes.size(), who);
