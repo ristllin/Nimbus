@@ -72,3 +72,14 @@ def test_every_use_under_src_is_test_only():
             offenders += [f"{os.path.relpath(path, REPO)}:{n}" for n in unguarded_uses(text)]
     assert seen >= 2, "the guard found no uses at all: the switch moved, update the guard"
     assert not offenders, f"test-build crash switch used outside #ifdef NIMBUS_TEST: {offenders}"
+
+
+def test_console_hook_is_bound_inside_the_test_block():
+    """The console's ``PANIC <kind> arm=turn`` reaches the arm only through main.cpp's
+    ``h.panicArmTurn`` binding; without it the verb answers "not wired" and the armed L39
+    legs skip. Pin the binding (the guard above already keeps it test-only)."""
+    with open(os.path.join(REPO, "src", "main.cpp"), encoding="utf-8") as f:
+        main = f.read()
+    hits = len(re.findall(r"\bh\.panicArmTurn\s*=[^\n]*\barmTurnPanic\b", main))
+    assert hits == 1, f"main.cpp binds h.panicArmTurn to armTurnPanic {hits} times, want once"
+    assert unguarded_uses(main) == [], "the binding sits outside #ifdef NIMBUS_TEST"

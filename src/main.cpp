@@ -4071,6 +4071,7 @@ void setup() {
     h.voiceState = [] () -> String { return voiceStateLine(); };       // VOICE? (CUM-456)
     h.audioInject = [](const String& p) { return audioInjectTurn(p); };  // AUDIOINJECT (OA-030)
     h.tgInjectRaw = [](const String& p) { return agent::telegram::injectRawPage(p); };  // TGINJECT (full receive path)
+    h.panicArmTurn = [](const String& k) { return nimbus::crash::armTurnPanic(k); };  // PANIC <kind> arm=turn [round=N]
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),

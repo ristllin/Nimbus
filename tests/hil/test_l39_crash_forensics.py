@@ -16,7 +16,8 @@ The boot record and crash lines (src/sys/crash_report.cpp; formats in lib/core
     crash-why: abort() was called at PC 0x... on core 0
 
 Legs (``hil`` + ``net``: serial for the console verbs, the LAN for ``GET /api/errlog``
-and ``/api/state``):
+and ``/api/state``; the two destructive legs carry only ``destructive``, so ``-m hil`` and
+``-m "net and not manual"`` never factory-reset the board or roll back its firmware):
 
 * each PANIC kind: the boot line has the crash slug and the raw ROM code; ``crash:`` has
   ``new=1 this-reset=1`` and the expected task; ``crash-why`` is not empty; the image
@@ -244,9 +245,13 @@ def _arm_turn_panic(device, kind: str, round_: int) -> None:
 
 
 # ---- HIL legs ----------------------------------------------------------------------
-pytestmark = [pytest.mark.hil, pytest.mark.net]
+# Marks sit on each leg, not on the module: the destructive legs carry only
+# `destructive` (the L33 convention), so the gate's `-m hil` and the LAN suite's
+# `-m "net and not manual"` never select a factory reset or a firmware rollback.
 
 
+@pytest.mark.hil
+@pytest.mark.net
 @pytest.mark.parametrize("kind", IMMEDIATE_KINDS)
 def test_panic_kind_leaves_a_crash_report(device, net, kind):
     _require_panic_verb(device)
@@ -267,6 +272,8 @@ def test_panic_kind_leaves_a_crash_report(device, net, kind):
     assert stale["crash"]["fp"] == rep["crash"]["fp"], "the dump changed without a crash (or was erased)"
 
 
+@pytest.mark.hil
+@pytest.mark.net
 def test_seq0_exists_in_every_boot(device, net):
     """No pre-mount hole: every boot section of the current log file starts with its
     boot record at seq 0."""
@@ -277,6 +284,8 @@ def test_seq0_exists_in_every_boot(device, net):
     assert ok, why
 
 
+@pytest.mark.hil
+@pytest.mark.net
 def test_usb_cdc_reset_reads_usb(device, net):
     """The host's USB-serial chip reset (esptool --after hard-reset) is ESP_RST_USB with
     ROM code 0x15 on the S3: it used to read "unknown". Also on the WAKE? seam."""
@@ -289,6 +298,8 @@ def test_usb_cdc_reset_reads_usb(device, net):
     assert m.group(1) == "usb"
 
 
+@pytest.mark.hil
+@pytest.mark.net
 @pytest.mark.agent
 @pytest.mark.parametrize("kind", ARMED_KINDS)
 def test_live_turn_panic_in_the_transport(device, net, kind):
@@ -311,6 +322,8 @@ def test_live_turn_panic_in_the_transport(device, net, kind):
         assert int(rep["bt"]["depth"]) >= 3, "the backtrace is too shallow to name the transport frame"
 
 
+@pytest.mark.hil
+@pytest.mark.net
 @pytest.mark.agent
 def test_panic_armed_at_a_later_round(device, net):
     """``round=1`` lands in the turn's second exchange: the first one (a tool call the
@@ -333,6 +346,8 @@ def test_panic_armed_at_a_later_round(device, net):
     assert "turn-message/r1" in rep["boot"]["prev"], f"prev={rep['boot']['prev']!r}, want turn-message/r1"
 
 
+@pytest.mark.hil
+@pytest.mark.net
 def test_offline_boots_keep_their_rows(device, net, secrets):
     """Pre-sync device events survive resets: two boots that never get a clock (Wi-Fi
     pointed at an absent network, REBOOT cold clears the RTC clock) still reach the
@@ -402,6 +417,8 @@ def test_early_boot_abort_is_explained(device, net):
     assert "ota-guard" in rep["boot"]["prev"], f"prev={rep['boot']['prev']!r}, want the ota-guard stage"
 
 
+@pytest.mark.hil
+@pytest.mark.net
 def test_breadcrumb_names_the_turn_step_after_a_mid_turn_panic(device, net):
     """After a panic in a turn, the boot line's prev= says the run was in a turn (the
     RTC breadcrumb survives the panic reset). Runs after the live legs; skips if the

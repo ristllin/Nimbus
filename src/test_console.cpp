@@ -1833,8 +1833,9 @@ void dispatch(String line) {
 
   if (line.startsWith("PANIC ")) {
     String a = line.substring(6); a.trim();
-    if (a.startsWith("arm=turn") || a.endsWith("arm=turn")) {
-      // Arm a mid-turn panic (tg_poll deep in the transport). Kind before/after the flag.
+    if ((String(" ") + a + " ").indexOf(" arm=turn ") >= 0) {
+      // Arm a mid-turn panic (tg_poll deep in the transport). The flag is a word anywhere
+      // in `PANIC <kind> arm=turn [round=N]`; the rest (kind, round) goes to the hook.
       String kind = a; kind.replace("arm=turn", ""); kind.trim();
       if (kind.length() == 0) kind = "nullptr";
       reply(s_h.panicArmTurn ? s_h.panicArmTurn(kind)

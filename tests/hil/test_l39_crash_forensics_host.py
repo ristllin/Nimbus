@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+import test_l39_crash_forensics as l39
 from test_l39_crash_forensics import (
     boot_report,
     crash_verdict,
@@ -134,3 +135,26 @@ def test_boot_record_with_unknown_number_parses():
 def test_not_a_boot_record_is_loud():
     with pytest.raises(ValueError):
         boot_report([{"seq": 0, "ms": 0, "cat": "boot", "msg": "boot: garbage"}])
+
+
+def _mark_names(obj) -> set:
+    marks = getattr(obj, "pytestmark", [])
+    return {m.name for m in (marks if isinstance(marks, list) else [marks])}
+
+
+def test_destructive_legs_stay_out_of_the_hil_and_net_selections():
+    """The gate runs L39 with ``-m hil`` and the LAN suite with ``-m "net and not manual"``:
+    neither may pick a leg that factory-resets the board or rolls back its firmware. Every
+    leg is classified, so a new leg without its marks fails here."""
+    module = _mark_names(l39)
+    legs = {n: f for n, f in vars(l39).items() if n.startswith("test_") and callable(f)}
+    assert len(legs) >= 9, f"expected the L39 legs, found {sorted(legs)}"
+    destructive = []
+    for name, fn in legs.items():
+        marks = module | _mark_names(fn)
+        if "destructive" in marks:
+            destructive.append(name)
+            assert not marks & {"hil", "net"}, f"{name}: a destructive leg also carries {marks & {'hil', 'net'}}"
+        else:
+            assert {"hil", "net"} <= marks, f"{name}: a non-destructive leg needs hil and net, has {marks}"
+    assert sorted(destructive) == ["test_early_boot_abort_is_explained", "test_factory_reset_erases_the_dump"]
