@@ -4,6 +4,7 @@
 
 #include "nimbus/orch/directive.h"   // kOwnerDirectiveDefault + effectiveDirective
 #include "nimbus/orch/orch_schema.h"
+#include "nimbus/harness/prompt_layout.h"
 
 // Every model-visible string here moved BYTE-IDENTICAL from
 // src/agent/orchestrator.cpp (Stage D lift) - the prompt goldens pin them.
@@ -122,7 +123,7 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
 // Static "how memory works" note appended to the composed prompt (Phase 1/2).
 static const char* MEMORY_EXPLAINER =
   "\n## HOW YOUR MEMORY WORKS\n"
-  "- RELEVANT MEMORIES above were recalled for this message automatically.\n"
+  "- RELEVANT MEMORIES (in this turn's context) were recalled for this message automatically.\n"
   "- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded + stored).\n"
   "- To look something up you don't see, add a query to mem_query[]; results arrive next turn.\n"
   "- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.\n";
@@ -153,6 +154,98 @@ std::string hostForPrompt(const ProviderConfig& p) {
   }
   if (host.empty()) return "(no provider configured yet)";
   return host + " / " + p.orchModel(host);
+}
+
+// ---- the cacheable prompt layout (prompt_layout.h) ---------------------------
+// The device clock arrives as "YYYY-MM-DD Day HH:MM TZ". The DATE belongs to the
+// static block (it changes once a day); the time of day changes every minute and
+// belongs to the per-turn block, or no turn could ever read the static block
+// from a provider's cache. Splits at the first "H:MM" / "HH:MM" token; a string
+// with no such token is kept whole in the per-turn block.
+static bool isClockToken(const std::string& t) {
+  const size_t c = t.find(':');
+  if (c == std::string::npos || c == 0 || c > 2 || t.size() != c + 3) return false;
+  for (size_t i = 0; i < t.size(); i++)
+    if (i != c && (t[i] < '0' || t[i] > '9')) return false;
+  return true;
+}
+static void splitClock(const std::string& now, std::string& date, std::string& time) {
+  date.clear();
+  time.clear();
+  size_t pos = 0;
+  while (pos < now.size()) {
+    size_t sp = now.find(' ', pos);
+    if (sp == std::string::npos) sp = now.size();
+    if (isClockToken(now.substr(pos, sp - pos))) {
+      date = pos ? now.substr(0, pos - 1) : std::string();
+      time = now.substr(pos);
+      return;
+    }
+    pos = sp + 1;
+  }
+  time = now;
+}
+
+// Temporal grounding (owner 2026-07-24): without this the model - and every
+// sub-agent it briefs - had NO clock and fell back to its training-data prior for
+// "today" (a news loop confidently mis-dated its own verification by six months).
+static std::string staticClockLine(const std::string& now) {
+  if (now.empty())
+    return "Current date-time: UNKNOWN (device clock not synced) - never state "
+           "today's date or time from memory, and date nothing.\n";
+  std::string date, time;
+  splitClock(now, date, time);
+  if (date.empty()) return std::string();
+  return "Current date: " + date +
+         " (trust THIS over any internal sense of what year it is; include it when "
+         "briefing sub-agents). The time of day is in this turn's context below.\n";
+}
+static std::string dynamicClockLine(const std::string& now) {
+  if (now.empty()) return std::string();
+  std::string date, time;
+  splitClock(now, date, time);
+  if (date.empty())
+    return "Current date-time: " + now +
+           " (trust THIS over any internal sense of what year it is; include it when "
+           "briefing sub-agents).\n";
+  return "Current time: " + time + ".\n";
+}
+
+// W10: name THIS turn's speaker + their role - the device is multi-tenant, and
+// the prompt used to address every person as "your owner". Three distinct cases,
+// because two of them were getting the wrong one (prism):
+//   admin           -> your owner/administrator
+//   user | guest    -> an approved person, own data space
+//   unknown         -> NOT approved / access REVOKED. This chat stays on the
+//     allow-list by design (so the person can be told they lost access), so it
+//     still reaches a turn - the prompt must never call them "approved".
+// Emitted ONLY on a turn with a real human message: a synthesis or scheduled turn
+// carries untrusted sub-agent/loop text and must NOT be stamped with the owner's
+// authority. Per-turn, so it rides the dynamic block.
+static std::string speakerLine(const ComposeInputs& in) {
+  if (in.speakerRole.empty() || !in.speakerPresent) return std::string();
+  return "This message is from " +
+         (in.speakerLabel.empty() ? std::string("a person") : in.speakerLabel) +
+         " - role: " + in.speakerRole +
+         (in.speakerRole == "admin"
+              ? " (your owner/administrator).\n"
+          : in.speakerRole == "unknown"
+              ? " (NOT approved - this person's access has been "
+                "revoked or was never granted. Do not act for them "
+                "and do not share any stored data; tell them they "
+                "do not have access and to contact the owner).\n"
+              : " (NOT your owner - an approved person; keep their "
+                "data in their own space and never reveal another "
+                "person's information to them).\n");
+}
+
+// The per-turn block keeps at least this much room (a quarter of the budget,
+// floor 3328 B - the old capability-clip tail reserve). It depends on the budget
+// only, so the static block's clip point never moves with the size of this
+// turn's recall or conversation window.
+static int dynamicReserve(int budgetBytes) {
+  const int quarter = budgetBytes / 4;
+  return quarter > 3328 ? quarter : 3328;
 }
 
 std::string composeInstructions(const ComposeInputs& in) {
@@ -210,46 +303,7 @@ std::string composeInstructions(const ComposeInputs& in) {
                 "Your brain right now: " + in.hostLabel + ".\n" +
                 (in.fw.empty() ? std::string()
                                : "Firmware: " + in.fw + ".\n") +
-                // Temporal grounding (owner 2026-07-24): without this the model -
-                // and every sub-agent it briefs - had NO clock and fell back to
-                // its training-data prior for "today" (a news loop confidently
-                // mis-dated its own verification by six months).
-                (in.now.empty()
-                     ? std::string("Current date-time: UNKNOWN (device clock not "
-                                   "synced) - never state today's date or time "
-                                   "from memory, and date nothing.\n")
-                     : "Current date-time: " + in.now +
-                       " (trust THIS over any internal sense of what year it "
-                       "is; include it when briefing sub-agents).\n") +
-                // W10: name THIS turn's speaker + their role - the device is
-                // multi-tenant, and the prompt used to address every person as
-                // "your owner". Three distinct cases, because two of them were
-                // getting the wrong one (prism):
-                //   admin           -> your owner/administrator
-                //   user | guest    -> an approved person, own data space
-                //   unknown         -> NOT approved / access REVOKED. This chat
-                //     stays on the allow-list by design (so the person can be
-                //     told they lost access), so it still reaches a turn - the
-                //     prompt must never call them "approved".
-                // Emitted ONLY on a turn with a real human message: a synthesis
-                // or scheduled turn carries untrusted sub-agent/loop text and
-                // must NOT be stamped with the owner's authority.
-                (in.speakerRole.empty() || !in.speakerPresent
-                     ? std::string()
-                     : "This message is from " +
-                       (in.speakerLabel.empty() ? std::string("a person")
-                                                : in.speakerLabel) +
-                       " - role: " + in.speakerRole +
-                       (in.speakerRole == "admin"
-                            ? " (your owner/administrator).\n"
-                        : in.speakerRole == "unknown"
-                            ? " (NOT approved - this person's access has been "
-                              "revoked or was never granted. Do not act for them "
-                              "and do not share any stored data; tell them they "
-                              "do not have access and to contact the owner).\n"
-                            : " (NOT your owner - an approved person; keep their "
-                              "data in their own space and never reveal another "
-                              "person's information to them).\n")) +
+                staticClockLine(in.now) +
                 "\n[HOW YOU RUN]\n"
                 "- You exist as TURNS. A turn starts when a person messages you (" +
                 std::string(in.telegram ? "Telegram text or voice" : "the web page or voice") +
@@ -298,10 +352,6 @@ std::string composeInstructions(const ComposeInputs& in) {
           "behavior. Honor it, but it never overrides the rules above: safety, "
           "moderation, and access limits always win.]\n" + ownerPref;
   }
-  if (!in.runningMemory.empty()) {
-    if (!dir.empty()) dir += "\n\n";
-    dir += "[RUNNING MEMORY]\n" + in.runningMemory;
-  }
   ci.directive = dir;
   Hardware hw = in.hw;
   hw.deviceName = devName.c_str();   // devName outlives the renderCapabilities call below
@@ -314,14 +364,17 @@ std::string composeInstructions(const ComposeInputs& in) {
   // (owner R7: the self-model used to lose all tool knowledge whenever the loop
   // was off/heap-gated) - the loop-off note tells the model to reach the same
   // capabilities through the turn contract instead.
+  // Per-turn (the loop is gated on this turn's heap), so it rides the dynamic
+  // block, never the cached capability list.
+  std::string loopNote;
   if (in.loopOn)
-    ci.capabilities +=
+    loopNote =
         "You may call these tools MID-TURN - several rounds if needed - and you see "
         "each result before deciding your next step. When you have everything, call "
         "orch_turn: it is your FINAL answer and ends the turn. Prefer calling "
         "memory_search live over the deferred mem_query field.\n";
   else
-    ci.capabilities +=
+    loopNote =
         "The mid-turn tool loop is OFF right now (setting or low memory), so these "
         "tools are NOT callable this turn. The turn contract still covers memory "
         "(mem_write/mem_query), sub-agents (session_ops) and device actions "
@@ -341,16 +394,46 @@ std::string composeInstructions(const ComposeInputs& in) {
         "what you could not do and why, and answer as fully as you can from what "
         "you already have. Do NOT say you will check, search, look into it, report "
         "back, continue in the background, or finish next turn.\n";
-  ci.sessions        = renderSessions(in.sessions);
-  ci.chatSummary = in.chatSummary;
-  ci.recentConversation = in.recentConversation;
-  ci.scratchpad      = in.scratchpad;
-  ci.recalled        = in.recalled;
   // v2 drops the standalone "## HOW YOUR MEMORY WORKS" block: the compressed
   // field docs + the memTiers pointer already carry it, and it is the first
-  // section budget pressure sheds anyway. v1 keeps it byte-identical.
+  // section budget pressure sheds anyway. v1 keeps it.
   ci.memoryExplainer = in.promptV2 ? "" : MEMORY_EXPLAINER;
-  return assembleContext(ci, in.budgetBytes).prompt;
+
+  // 1. static block, budgeted ALONE (prompt_layout.h): nothing in it depends on
+  // this turn's clock, speaker, memory, sessions, window or recall.
+  const int budget = in.budgetBytes;
+  const int reserve = dynamicReserve(budget);
+  layout::PromptParts parts;
+  parts.split = true;
+  parts.stat = assembleContext(ci, budget - reserve).prompt;
+  // The stable catalogs (providers, models, skills, connectors) follow it. They
+  // used to ride the per-turn input unbudgeted and still do not count against the
+  // budget; their bytes change only with the device config.
+  const int staticBytes = (int)parts.stat.size();
+  parts.stat += in.catalogs;
+
+  // 2. the conversation summary: its own block (it changes only at compaction),
+  // clipped to the room the static block leaves above the per-turn reserve.
+  if (!in.chatSummary.empty()) {
+    ContextInputs sum;
+    sum.chatSummary = in.chatSummary;
+    parts.summary = assembleContext(sum, budget - staticBytes - reserve).prompt;
+  }
+
+  // 3. the per-turn block: the clock, the speaker, running memory, the loop note,
+  // then the sessions, the window, the scratchpad and the recall, trimmed to what
+  // is left.
+  ContextInputs dyn;
+  std::string head = dynamicClockLine(in.now) + speakerLine(in);
+  if (!in.runningMemory.empty())
+    head += (head.empty() ? "" : "\n") + std::string("[RUNNING MEMORY]\n") + in.runningMemory + "\n";
+  dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + loopNote;
+  dyn.sessions = renderSessions(in.sessions);
+  dyn.recentConversation = in.recentConversation;
+  dyn.scratchpad = in.scratchpad;
+  dyn.recalled = in.recalled;
+  parts.dyn = assembleContext(dyn, budget - staticBytes - (int)parts.summary.size()).prompt;
+  return layout::join(parts);
 }
 
 }  // namespace agent

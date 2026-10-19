@@ -418,7 +418,7 @@ static const char* const kTelegramOnlyNames[] = {"files.send", "reply.telegram",
 // with no Telegram, names neither Telegram-only tool. The Telegram side keeps the
 // delivery steps (the variant is a different recipe, not deleted text).
 static void test_cum523_builtin_capsules_follow_the_turn() {
-  TEST_ASSERT_EQUAL(5, (int)agent::builtinSkillCount());
+  TEST_ASSERT_EQUAL(6, (int)agent::builtinSkillCount());
   for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
     const agent::BuiltinSkill& b = agent::builtinSkill(i);
     TEST_ASSERT_TRUE_MESSAGE(agent::isBuiltinSkill(b.id), b.id);
@@ -440,6 +440,12 @@ static void test_cum523_builtin_capsules_follow_the_turn() {
                    std::string::npos);
   TEST_ASSERT_TRUE(agent::builtinSkillBody("deep-research", true).find("files.send for Telegram") !=
                    std::string::npos);
+  // The logging playbook teaches the append and the tail, never a whole-file
+  // rewrite to add a row; deliver-pdf reads a log's end, not the whole file.
+  const std::string rows = agent::builtinSkillBody("log-rows", true);
+  TEST_ASSERT_TRUE(rows.find("files.append {project, name, text}") != std::string::npos);
+  TEST_ASSERT_TRUE(rows.find("files.read {project, name, tail: 5}") != std::string::npos);
+  TEST_ASSERT_TRUE(webPdf.find("files.read {project, name, tail: N}") != std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("no-such-skill", true).c_str());
   TEST_ASSERT_FALSE(agent::isBuiltinSkill("no-such-skill"));
 }

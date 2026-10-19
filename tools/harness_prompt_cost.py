@@ -59,6 +59,9 @@ HEADERS = [
     ("scratchpad", "\n## SCRATCHPAD"),
     ("relevant_memories", "\n## RELEVANT MEMORIES"),
     ("memory_howto", "\n## HOW YOUR MEMORY WORKS"),
+    # The goldens show the cacheable split (prompt_layout.h) as labelled lines.
+    ("summary_block", "\n[----- static block ends; conversation summary block -----]"),
+    ("per_turn_block", "\n[----- cached blocks end; per-turn block -----]"),
 ]
 IDENTITY_ANCHOR = ", an always-on personal assistant"
 FIELD_DOCS_START = "Fill the orch_turn fields:\n"

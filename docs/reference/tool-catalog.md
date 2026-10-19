@@ -175,8 +175,8 @@ Notes:
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
 `src/agent/skills.cpp`, built-in text in `lib/harness/src/builtin_skills.cpp`).
-On-device markdown playbooks: five built-ins (`architecture`, `deep-research`,
-`hardware`, `tools-guide`, `deliver-pdf`) plus owner- or agent-authored capsules
+On-device markdown playbooks: six built-ins (`architecture`, `deep-research`,
+`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`) plus owner- or agent-authored capsules
 on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
 that was offered both; on any other turn it points at the Files list on the
 device web page.
@@ -236,8 +236,9 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 |---|---|---|---|
 | `files.list` | List the device's durable artifact store: projects and files. | `project` (string, optional filter) | live |
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
-| `files.read` | Read a stored TEXT document's content, paged. | `project` (**required**), `name` (**required**), `offset` (number) | live |
+| `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
+| `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
@@ -250,6 +251,13 @@ Notes:
   It is **allowed in scheduled turns**.
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
+- `files.append` never reads back or rewrites stored bytes: it writes only the
+  new rows (line ends normalized, a final line end added). When the file's last
+  row was cut mid-write, the new rows start on a fresh line and the result says
+  so. It follows the same ownership and quota rules as `artifact.save`.
+- `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
+  returns the last complete rows, oldest first, plus a CSV's header row when it
+  is not among them; an incomplete last row is reported, not hidden.
 - `files.share` is owner-controlled and read-only; guests cannot share.
 - `files.send` is a turn-output tool - refused from the LAN `/mcp` path. A file
   another person owns is invisible: the refusal deliberately matches "not found"

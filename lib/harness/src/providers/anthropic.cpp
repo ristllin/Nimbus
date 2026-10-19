@@ -6,10 +6,10 @@
 #include <vector>
 
 #include "nimbus/harness/output_caps.h"   // the output-cap table (max_tokens, effort, retry)
+#include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts, cache points
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - the fold trigger scale
 #include "nimbus/orch/compact.h"      // modelCtxTokens, ORCH_COMPACT_PROMPT (the fold round)
-#include "nimbus/orch/gradient.h"     // foldLine - the shared one-line folder
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
@@ -586,103 +586,6 @@ static void stripDescriptions(ArduinoJson::JsonVariant v) {
 // The portable runHeadLoop owns all the bounds (rounds/deadline/heap/bytes) +
 // fail-soft; this closure is just "build request -> send -> parse -> accumulate"
 // per round.
-// Gradient fold of the replayed conversation (Context Fabric Stage 1, site 1 of
-// the compaction research: keep the LATEST rounds verbatim, fold older ones to
-// one line - never dumb-trim). Anthropic is the ONLY provider whose request body
-// grows round over round (OpenAI/Mistral keep state server-side), so this is
-// where the in-turn gradient belongs.
-//
-// Structure of msgs: [0] = the seeded user turn (PINNED), then repeating PAIRS
-// of (assistant with tool_use blocks, user with tool_result blocks). A pair is
-// folded WHOLE into one user text line, which is what keeps the API's pairing
-// invariant intact (an unanswered tool_use 400s).
-//
-// ⚠ Stage 2 replaces this JSON-level walk with gradientTrim() over the canonical
-// transcript; foldLine() is already the shared line renderer, so the WORDING
-// stays identical across that refactor.
-static bool antFoldOldRounds(const ProviderDeps& pd, JsonDocument& conv, JsonArray& msgs,
-                             size_t triggerBytes, int keepRounds) {
-  if (msgs.size() < 4) return false;   // nothing older than the newest pair
-  size_t approx = 0;
-  for (JsonObject m : msgs) approx += measureJson(m);
-  if (triggerBytes && approx <= triggerBytes) return false;
-
-  // Find pairs STRUCTURALLY (assistant-with-tool_use immediately answered by a
-  // user-with-tool_result), never by index parity: a previous fold replaces two
-  // messages with ONE, so parity arithmetic silently mis-pairs after the first
-  // fold. Already-folded lines are plain user text and are simply carried over.
-  auto isToolUseAsst = [](JsonObjectConst m) {
-    if (strcmp(m["role"] | "", "assistant")) return false;
-    for (JsonObjectConst b : m["content"].as<JsonArrayConst>())
-      if (!strcmp(b["type"] | "", "tool_use")) return true;
-    return false;
-  };
-  auto isToolResultUser = [](JsonObjectConst m) {
-    if (strcmp(m["role"] | "", "user")) return false;
-    for (JsonObjectConst b : m["content"].as<JsonArrayConst>())
-      if (!strcmp(b["type"] | "", "tool_result")) return true;
-    return false;
-  };
-
-  std::vector<size_t> pairStart;
-  for (size_t i = 1; i + 1 < msgs.size(); i++)
-    if (isToolUseAsst(msgs[i]) && isToolResultUser(msgs[i + 1])) { pairStart.push_back(i); i++; }
-  const int foldPairs = (int)pairStart.size() - keepRounds;
-  if (foldPairs <= 0) return false;
-
-  JsonDocument next = makeDoc(pd);
-  JsonArray out = next.to<JsonArray>();
-  out.add(msgs[0]);   // the pinned user turn, verbatim
-
-  size_t pi = 0;      // next pair index
-  int folded = 0;     // how many pairs folded THIS pass
-  // Label continues from the folds already present, so a second pass does not
-  // emit another "[earlier round 0]" (prism 2026-08-05: duplicate labels are
-  // ambiguous to the model).
-  int labelBase = 0;
-  for (JsonObjectConst m : msgs)
-    if (!strcmp(m["role"] | "", "user") && m["content"].is<const char*>() &&
-        std::string(m["content"] | "").rfind("[earlier round ", 0) == 0)
-      labelBase++;
-  for (size_t i = 1; i < msgs.size();) {
-    const bool startsPair = pi < pairStart.size() && pairStart[pi] == i;
-    if (!startsPair) { out.add(msgs[i]); i++; continue; }
-    pi++;
-    if (folded >= foldPairs) {   // newest keepRounds pairs: verbatim
-      out.add(msgs[i]);
-      out.add(msgs[i + 1]);
-      i += 2;
-      continue;
-    }
-    // Fold: tool name(s) from the assistant turn, gist from its results.
-    std::string names, gist;
-    for (JsonObjectConst b : msgs[i]["content"].as<JsonArrayConst>()) {
-      if (strcmp(b["type"] | "", "tool_use")) continue;
-      if (!names.empty()) names += ",";
-      names += (b["name"] | "");
-    }
-    size_t gistBytes = 0;
-    for (JsonObjectConst b : msgs[i + 1]["content"].as<JsonArrayConst>()) {
-      if (strcmp(b["type"] | "", "tool_result")) continue;
-      const char* c = b["content"] | "";
-      gistBytes += strlen(c);
-      if (gist.size() < 200) gist += (gist.empty() ? "" : " | ") + std::string(c);
-    }
-    JsonObject u = out.add<JsonObject>();
-    u["role"] = "user";
-    u["content"] =
-        nimbus::orch::foldLine("[earlier round " + std::to_string(labelBase + folded) + "] " + names, gist,
-                               160) +
-        " (" + std::to_string((unsigned)gistBytes) + " B)";
-    folded++;
-    i += 2;
-  }
-
-  conv = next;                 // replace the document…
-  msgs = conv.as<JsonArray>(); // …and re-seat the caller's handle
-  return true;
-}
-
 // Render the Anthropic messages[] array from the CANONICAL transcript (Context
 // Fabric Stage 2 phase 2). The transcript is the device-owned record the
 // controller fills (user seed + per-round prose/calls/results); each round's
@@ -798,7 +701,7 @@ static void antEchoStall(const nimbus::orch::Transcript& tr, JsonArray msgs) {
 // effort for this attempt.
 struct AntLoopReq {
   const std::string* model;
-  const std::string* instructions;
+  const layout::PromptParts* parts;   // the turn's prompt, split once (prompt_layout.h)
   const std::string* capReason;
   const HeadTools* ht;
   bool allowTools;
@@ -813,17 +716,22 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   if (a.effort && *a.effort) req["output_config"]["effort"] = a.effort;
   // roundInstructions() appends the final-round notice when a cap forced this
   // tool-less round, so the model reports what it could not finish rather than
-  // promising work that will never run. Prompt caching (v4.1.1): system rides as
-  // a content-block array so the block can carry cache_control; inside a tool
-  // loop the rounds are seconds apart, so the 5-minute ephemeral cache hits on
-  // every round after the first. The final round's notice misses the SYSTEM
-  // breakpoint but still hits the TOOLS one below.
-  JsonObject sysBlock = req["system"].add<JsonObject>();
-  sysBlock["type"] = "text";
-  wire::putFieldStr(sysBlock["text"], wire::roundInstructions(*a.instructions, *a.capReason),
-                    "the system prompt");
-  sysBlock["cache_control"]["type"] = "ephemeral";
+  // promising work that will never run. Prompt caching (prompt_layout.h): system
+  // rides as content blocks, one per part, so the static and summary blocks carry
+  // cache points; inside a tool loop the rounds are seconds apart, so the
+  // 5-minute ephemeral cache hits on every round after the first. The notice
+  // rides the per-turn block (the only block of an unsplit prompt), so a final
+  // round still hits the static and summary blocks.
+  // Cache points (at most 4): the last tool, the static block, the summary block,
+  // and the last message.
+  {
+    layout::PromptParts round = *a.parts;
+    std::string& tail = round.split ? round.dyn : round.stat;
+    tail = wire::roundInstructions(tail, *a.capReason);
+    layout::putAnthropicSystem(req["system"].to<JsonArray>(), round);
+  }
   req["messages"] = msgs;   // deep-copy within the doc's allocator
+  layout::cacheLastMessage(req["messages"].as<JsonArray>());
   JsonArray toolsArr = req["tools"].to<JsonArray>();
   JsonObject ot = toolsArr.add<JsonObject>();
   ot["name"]        = "orch_turn";
@@ -887,10 +795,10 @@ static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep
 }
 
 // STEP FACTORY (Stage 2 phase 5): one Anthropic model turn against the shared
-// canonical transcript. ⚠ Lifetime contract: `instructions`, `ht`, `usage` and
-// `tr` are captured BY REFERENCE - the caller's frame must outlive every call of
-// the returned step (true for runAntLoop and for the engine's fabric loop, both
-// of which hold them across runHeadLoop). `pd` is copied.
+// canonical transcript. ⚠ Lifetime contract: `ht`, `usage` and `tr` are captured
+// BY REFERENCE - the caller's frame must outlive every call of the returned step
+// (true for runAntLoop and for the engine's fabric loop, both of which hold them
+// across runHeadLoop). `pd` and the split `instructions` are copied.
 nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                      const std::string& instructions,
                                      const HeadTools& ht,
@@ -898,17 +806,24 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                      nimbus::orch::Transcript& tr) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
-  // Fold trigger - NOT the token window. The old window/4 (=200 KB) never fired:
-  // the request body breaks LONG before that, at the DEVICE's contiguous-heap
-  // ceiling for the TLS send. MEASURED on Board 1 (2026-08-05): a 6-way fan-out
-  // synthesis grew its replay to body=65672 over 12 rounds and failed at
-  // intLargest~19 K ("no response"→network), while bodies <=52 KB sent fine. So
-  // the transcript must fold well under that - keep the replayed history bounded
-  // so system + transcript + tools stays in the ~48 K working range regardless of
-  // how many rounds (or sub-agents) a turn involves.
-  const size_t foldTriggerBytes = 24576;
+  // Replay budget - NOT the token window. The request body breaks long before the
+  // window, at the DEVICE's contiguous-heap ceiling for the TLS send. MEASURED on
+  // Board 1 (2026-08-05): a 6-way fan-out synthesis grew its replay to body=65672
+  // over 12 rounds and failed at intLargest~19 K ("no response"->network), while
+  // bodies <=52 KB sent fine. The tool results ride the transcript under this
+  // budget (Transcript::trimToolOutputs, append-only), so system + transcript +
+  // tools stays in the ~48 K working range however many rounds a turn takes.
+  // Smaller than the OpenAI/Mistral 24 KB: the old fold counted the user seed
+  // against its 24 KB trigger, this budget counts tool results only.
+  const size_t kReplayToolBytes = 16384;
+  // The static, summary and dynamic parts, split once per turn (prompt_layout.h)
+  // from the prompt repaired to valid UTF-8 (wire.h: the system prompt is
+  // repaired, never clipped; serializeChecked still guards every body).
+  std::string sys;
+  wire::putFieldStr(sys, instructions, "the system prompt");
+  const layout::PromptParts parts = layout::split(sys);
 
-  return [&instructions, &ht, usage, &tr, pd, model, foldTriggerBytes](
+  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -922,16 +837,15 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                        allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
 
     // 1) render messages[] from the canonical transcript (fresh doc per round -
-    //    no cross-round accumulator to leak or drift).
+    //    no cross-round accumulator to leak or drift). Append-only replay
+    //    (prompt_layout.h): every message already sent keeps its bytes, so each
+    //    round reads the previous round's request from the cache. The newest
+    //    results are clipped to the room left under the replay budget instead of
+    //    folding older rounds (which rewrote them every round).
+    if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
     JsonDocument conv = makeDoc(pd);
     JsonArray msgs = conv.to<JsonArray>();
     renderAntMessages(tr, msgs);
-    // 1b) gradient fold: once the rendered conversation passes the trigger,
-    //     collapse everything older than the newest round to one line each.
-    //     Below the trigger this is a no-op and the body stays byte-identical
-    //     to the pre-Context-Fabric wire (pinned by the wire tests).
-    if (antFoldOldRounds(pd, conv, msgs, foldTriggerBytes, /*keepRounds=*/1))
-      hlog::logf("orchTurn(ant-loop): gradient fold -> %u msgs", (unsigned)msgs.size());
     if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
     if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
       // A trailing assistant message is a prefill, which current models reject.
@@ -941,6 +855,10 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       u["role"] = "user";
       u["content"] = "Now call orch_turn with your final complete turn.";
     }
+    // 1b) every string content as one text block, so a message has the same bytes
+    //     whether or not it is the last one (the one antLoopBody gives the moving
+    //     cache point).
+    layout::textAsBlocks(msgs);
     // A string dropped while the conversation was rendered (conv is its own
     // document, copied into req as a null) is refused before the send.
     if (conv.overflowed()) {
@@ -969,7 +887,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
-      const AntLoopReq a{&model, &instructions, &capReason, &ht, allowTools, maxTokens,
+      const AntLoopReq a{&model, &parts, &capReason, &ht, allowTools, maxTokens,
                          attempt ? cap.retryEffort : cap.effort};
       std::string body;
       if (!antLoopBody(pd, a, msgs, body, out.error)) {
@@ -1115,13 +1033,16 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
   d["model"] = *a.model;
   d["max_tokens"] = a.maxTokens;
   if (a.effort && *a.effort) d["output_config"]["effort"] = a.effort;
-  // Prompt caching (v4.1.1) - same block-array shape as the loop path. A
-  // single-shot turn caches for the NEXT turn (hits when the owner replies within
-  // the 5-minute TTL; refreshed on every hit).
-  JsonObject sysBlock = d["system"].add<JsonObject>();
-  sysBlock["type"] = "text";
-  wire::putFieldStr(sysBlock["text"], *a.instructions, "the system prompt");
-  sysBlock["cache_control"]["type"] = "ephemeral";
+  // Prompt caching (prompt_layout.h) - same block shape as the loop path. A
+  // single-shot turn caches the static and summary blocks for the NEXT turn
+  // (hits when the owner replies within the 5-minute TTL; refreshed on every
+  // hit); the per-turn block does not. The compaction prompt is unsplit: one
+  // block with its own cache point.
+  {
+    std::string sys;
+    wire::putFieldStr(sys, *a.instructions, "the system prompt");
+    layout::putAnthropicSystem(d["system"].to<JsonArray>(), layout::split(sys));
+  }
   JsonObject m = d["messages"].add<JsonObject>();
   m["role"] = "user";
   wire::putFieldStr(m["content"], *a.inputs, "the user message");

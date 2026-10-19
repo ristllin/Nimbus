@@ -77,12 +77,26 @@ struct ComposeInputs {
   // from the NVS `promptV2` flag via HarnessConfig::promptV2; adoption is gated
   // by the eval suite. See docs/proposals/harness-prompt-audit.md.
   bool promptV2 = false;
+  // The stable catalogs ([AVAILABLE PROVIDERS], [YOUR MODEL], [AVAILABLE MODELS],
+  // the skills index, [PROVIDERS & CONNECTORS]) - the engine's
+  // buildStableCatalogs(). They change only with the device config, so they ride
+  // the end of the static block (prompt_layout.h); not counted in budgetBytes.
+  std::string catalogs;
 };
 
-// Compose the full World system prompt in the assembler's priority order under
-// the byte budget: ORCH_ROLE (rules + output contract) + identity + directive
-// (+ running-memory) + capability manifest (live tool list) + running-sessions
-// digest + scratchpad + recalled memories + the memory explainer.
+// Compose the World system prompt as the three cacheable parts of
+// prompt_layout.h, joined with layout::kPartSplit:
+//   static  - ORCH_ROLE (rules + output contract), identity (the date, never the
+//             minute), HOW YOU RUN, owner preferences, the capability manifest,
+//             the memory explainer, then in.catalogs;
+//   summary - the conversation summary block;
+//   dynamic - the clock, the speaker line, [RUNNING MEMORY], the tool-loop note,
+//             running sessions, the recent conversation, the scratchpad and the
+//             recalled memories.
+// The static block is budgeted alone (budgetBytes minus a per-turn reserve that
+// depends on budgetBytes only), so two turns that differ only in per-turn
+// content share it byte for byte. Providers split the string again
+// (layout::split) or send it flat (layout::flat).
 std::string composeInstructions(const ComposeInputs& in);
 
 }  // namespace agent

@@ -1,10 +1,13 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <ctime>
 #include <string>
 
+#include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/tool_registry.h"
 #include "posix_fs.h"
@@ -78,16 +81,38 @@ class PosixFiles {
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name"]})");
 
-    addOwnerOnly(reg, "files.read", "Read a stored file's contents.",
+    addOwnerOnly(reg, "files.read",
+            "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
+            "last rows of a log or CSV.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name");
               std::string body;
               if (!read(p, n, body))
                 return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
+                return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
               return nimbus::orch::ToolResult::ok(body);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"}},"required":["project","name"]})");
+
+    // The device's files.append (file_append.h): the new rows go on the end of the
+    // file; nothing stored is rewritten.
+    addOwnerOnly(reg, "files.append",
+            "Add rows to the END of a text file (a log, a CSV): only the new rows are "
+            "written. Creates the file when missing (put a CSV's header row first). Up to "
+            "4 KB per call. Use it to log a row instead of re-saving the whole file.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
+              if (p.empty() || n.empty())
+                return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+              std::string err, note;
+              if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
+              return nimbus::orch::ToolResult::ok(note);
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"},"text":{"type":"string"}},)"
+            R"("required":["project","name","text"]})");
   }
 
   // ---- direct access (scenario seeding + assertions) ----
@@ -181,6 +206,67 @@ class PosixFiles {
     }
     fsutil::writeFileAtomic(indexPath(), store_.dump());
     return true;
+  }
+
+  bool append(const std::string& p, const std::string& n, const std::string& text,
+              std::string& err, std::string& note) {
+    if (!nimbus::orch::FileStore::validSegment(p, 24) ||
+        !nimbus::orch::FileStore::validSegment(n, 48)) {
+      err = "invalid project or name";
+      return false;
+    }
+    std::string cur;
+    const nimbus::orch::FileEntry* old = store_.find(p, n);
+    if (old) read(p, n, cur);
+    const nimbus::orch::AppendPlan plan =
+        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back());
+    if (!plan.ok) {
+      err = plan.err;
+      return false;
+    }
+    if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) return false;
+    ::mkdir((root_ + "/" + p).c_str(), 0755);
+    FILE* f = std::fopen(bytesPath(p, n).c_str(), "ab");
+    if (!f) {
+      err = "write failed";
+      return false;
+    }
+    const size_t wrote = std::fwrite(plan.bytes.data(), 1, plan.bytes.size(), f);
+    std::fclose(f);
+    nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
+    if (!old) {
+      e.project = p;
+      e.name = n;
+      e.createdAt = (uint32_t)time(nullptr);
+      e.kind = nimbus::orch::fileKindForName(n);
+    }
+    e.bytes = (uint32_t)(cur.size() + wrote);
+    e.hash = 0;
+    if (!store_.add(e, err)) return false;
+    fsutil::writeFileAtomic(indexPath(), store_.dump());
+    if (wrote != plan.bytes.size()) {
+      err = "short write - read the tail before adding the rows again";
+      return false;
+    }
+    note = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
+           p + "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
+           (plan.repairedCut ? "; its last row was incomplete and is left as it was" : "");
+    return true;
+  }
+
+  // The tail view over a whole body (the device reads only the window; on disk the
+  // daemon can afford the whole read, and the result is the same text).
+  static std::string tailOf(const std::string& name, const std::string& body, size_t rows) {
+    const size_t win = nimbus::orch::kTailWindowBytes;
+    const size_t start = body.size() > win ? body.size() - win - 1 : 0;
+    std::string header;
+    const bool csv = name.size() > 4 && name.compare(name.size() - 4, 4, ".csv") == 0;
+    if (start > 0 && csv) {
+      const size_t nl = body.find('\n');
+      if (nl != std::string::npos && nl < 512) header = body.substr(0, nl);
+    }
+    const nimbus::orch::TailView v = nimbus::orch::tailRows(body.substr(start), start, rows);
+    return nimbus::orch::renderTail(v, name, body.size(), header);
   }
 
   bool read(const std::string& p, const std::string& n, std::string& out) const {

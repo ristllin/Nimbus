@@ -69,7 +69,9 @@ static void testEveryHeadGetsTheHostedTruth(ndtest::Ctx& c) {
     const std::string body = firstHeadBody(e[0], std::string("hp-") + e[1]);
     const std::string who = std::string(e[1]) + " head: ";
     c.ok(!body.empty(), who + "dispatched");
-    c.ok(has(body, "Current date-time: 20"), who + "the prompt carries the real date-time");
+    // The date rides the cached static block, the time of day the per-turn one.
+    c.ok(has(body, "Current date: 20"), who + "the prompt carries the real date");
+    c.ok(has(body, "Current time: "), who + "the prompt carries the time of day");
     c.ok(!has(body, "date-time: UNKNOWN"), who + "never the unsynced-clock line");
     c.ok(has(body, "Firmware: " NIMBUS_FW_VERSION), who + "the engine version");
     c.ok(has(body, "hosted cloud instance that is always online"), who + "the hosted identity");
@@ -98,7 +100,7 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
     eng.stop();
   }
   rig.say("owner", "what time is it?");
-  c.ok(!tx.seen.empty() && has(tx.seen[0].body, " QQT (trust THIS"), "the next turn's date-time is in the owner's zone");
+  c.ok(!tx.seen.empty() && has(tx.seen[0].body, " QQT."), "the next turn's time of day is in the owner's zone");
   {
     EngineThread eng(&rig);
     eng.start();

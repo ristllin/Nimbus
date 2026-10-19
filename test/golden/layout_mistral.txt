@@ -1,0 +1,11 @@
+# mistral loop: round 0 then round 1
+## round 0
+tools: orch_turn memory_search
+messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... er intent: the cat is Waffles|"
+messages[1] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+## round 1
+tools: orch_turn memory_search
+messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... er intent: the cat is Waffles|"
+messages[1] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+messages[2] assistant: text ""
+messages[3] tool: text "tool-ok"

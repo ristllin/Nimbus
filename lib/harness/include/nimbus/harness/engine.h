@@ -352,6 +352,7 @@ class TurnEngine {
   // Lane L: the [SPAWN CAPACITY] sentence on how keyed providers run subs.
   std::string syncCapacityText() const;
   std::string buildDynamicContext();
+  std::string buildStableCatalogs();
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
   // [YOUR MODEL] line use (explicit orchHost, else the first keyed priority

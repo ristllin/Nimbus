@@ -1,5 +1,7 @@
 #include "nimbus/harness/engine.h"
 
+#include "nimbus/harness/prompt_layout.h"
+
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 
@@ -449,19 +451,12 @@ std::string TurnEngine::buildDynamicContext() {
            "and when they finish you get an automatic turn to spawn the next, so "
            "you can work through dozens over a run. " + syncCapacityText() + "\n";
   }
-  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
-         (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
-  // Name the CURRENT model so the agent knows its own identity (owner: "asking the
-  // orchestrator which model it is, it has no idea"). The host is the SAME
-  // resolution the turn core dispatches on (resolveTurnHost) - naming the raw
-  // priority head here made an anthropic-only instance introduce itself as
-  // mistral, because the model parrots this line (CUM-374 e2e).
-  {
-    const std::string host = resolveTurnHost(d_);
-    if (!host.empty())
-      ctx += "[YOUR MODEL] you are currently running on " + host + " / " +
-             (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string()) + "\n";
-  }
+  return ctx;
+}
+
+// [AVAILABLE MODELS]: one line, part of the stable catalogs.
+static std::string availableModelsLine(const TurnEngine::Deps& d_) {
+  std::string ctx;
   ctx += "[AVAILABLE MODELS] (yours + sub-agents')";
   bool any = false;
   // CUM-486: walk the canonical provider registry (kProviderSlots), never a hand
@@ -495,6 +490,30 @@ std::string TurnEngine::buildDynamicContext() {
   }
   if (!any) ctx += " (none configured)";
   ctx += "\n";
+  return ctx;
+}
+
+// The catalogs that change only with the device config. They ride the END of the
+// static prompt block (ComposeInputs::catalogs, prompt_layout.h), where a
+// provider reads them from its cache, instead of the per-turn input after the
+// volatile session counters.
+std::string TurnEngine::buildStableCatalogs() {
+  std::string ctx = "\n";
+  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
+         (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
+  // Name the CURRENT model so the agent knows its own identity (owner: "asking the
+  // orchestrator which model it is, it has no idea"). The host is the SAME
+  // resolution the turn core dispatches on (resolveTurnHost) - naming the raw
+  // priority head here made an anthropic-only instance introduce itself as
+  // mistral, because the model parrots this line (CUM-374 e2e).
+  {
+    const std::string host = resolveTurnHost(d_);
+    if (!host.empty())
+      ctx += "[YOUR MODEL] you are currently running on " + host + " / " +
+             (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string()) + "\n";
+  }
+  ctx += availableModelsLine(d_);
+
   // W15: the skills index BEFORE the connector catalog - playbooks frame HOW to
   // use the capabilities the catalog then lists.
   if (d_.skillsIndex) ctx += d_.skillsIndex();
@@ -690,6 +709,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ci.tools.push_back(orch::ToolInfo{loopToolName(s.name), s.description});
   }
   ci.recalled = recalled;
+  ci.catalogs = buildStableCatalogs();
   std::string instructions = agent::composeInstructions(ci);
   // ONE line, only when the loop was actually withheld - the interesting case,
   // and it keeps a healthy device's log clean. entry -> recall -> compose shows
@@ -698,7 +718,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     hlog::logf("turn heap: entry=%u afterRecall=%u afterCompose=%u floor=%u prompt=%uB",
                (unsigned)heapAtEntry, (unsigned)heapAfterRecall, (unsigned)freeHeap(),
                (unsigned)t_.loopMinHeap, (unsigned)instructions.size());
-  lastInstructions_ = instructions;   // captured for the PROMPT? console command / diagnostics
+  // Diagnostics show the cacheable parts as labelled lines (layout::display).
+  lastInstructions_ = layout::display(instructions);   // the PROMPT? console command
 
   // (host was picked above, before compose - the budget derivation needs it.)
   // Conversation state is per-CHAT + per-host (Release B2): the map
@@ -1200,7 +1221,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     TurnDebugEv ev;
     ev.host = host;
     ev.convContinued = convContinued;
-    ev.instructions = &instructions;
+    ev.instructions = &lastInstructions_;   // the labelled form (layout::display)
     ev.inputs = &inputs;
     ev.rawOut = &outJson;
     ev.transcriptBrief = &lastBrief_;

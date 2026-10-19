@@ -24,6 +24,7 @@
 #include "nimbus/utf8.h"              // utf8CapLen (files.read paging), utf8Window (snippets)
 #include "nimbus/orch/blob_store.h"      // BlobHasher (streamed content hash)
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
+#include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/tool_registry.h"
 
@@ -473,6 +474,10 @@ static bool textDocName(const std::string& name) {
   return ends(".md") || ends(".txt") || ends(".json") || ends(".csv") || ends(".log");
 }
 
+static bool fileKindIsCsv(const std::string& name) {
+  return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".csv") == 0;
+}
+
 // Bounded SD read of one doc through a PSRAM buffer (never internal SRAM).
 static std::string readWhole(const std::string& project, const std::string& name,
                              size_t cap) {
@@ -489,6 +494,127 @@ static std::string readWhole(const std::string& project, const std::string& name
   std::string out(buf, got);
   heap_caps_free(buf);
   return out;
+}
+
+// files.read {tail}: the last rows of a text document, read from the END of the
+// file - never the whole file (file_append.h). The window starts one byte early so
+// tailRows can tell a row that starts exactly at the window from a partial one.
+// A CSV's first line rides along as the header when it is not in the window.
+static nimbus::orch::ToolResult readTail(const std::string& project, const std::string& name,
+                                         size_t rows) {
+  memory::Lock g;
+  if (!available() || !g_store.find(project, name))
+    return nimbus::orch::ToolResult::fail("not found");
+  File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
+  if (!f) return nimbus::orch::ToolResult::fail("SD open failed");
+  const size_t size = f.size();
+  const size_t start = size > nimbus::orch::kTailWindowBytes ? size - nimbus::orch::kTailWindowBytes - 1 : 0;
+  std::string window(size - start, '\0');
+  f.seek(start);
+  window.resize(f.read((uint8_t*)&window[0], window.size()));
+  std::string header;
+  if (start > 0 && fileKindIsCsv(name)) {
+    char head[512];
+    f.seek(0);
+    const int got = f.read((uint8_t*)head, sizeof head);
+    const std::string first(head, got > 0 ? (size_t)got : 0);
+    const size_t nl = first.find('\n');
+    if (nl != std::string::npos) header = first.substr(0, nl > 0 && first[nl - 1] == '\r' ? nl - 1 : nl);
+  }
+  f.close();
+  const nimbus::orch::TailView v = nimbus::orch::tailRows(window, start, rows);
+  return nimbus::orch::ToolResult::ok(nimbus::orch::renderTail(v, name, size, header));
+}
+
+// files.append helpers (caller holds memory::Lock). Why an append may not run,
+// or "" when it may: the same ownership and quota rules as artifact.save.
+static std::string appendRefusal(const std::string& project, const std::string& name,
+                                 size_t addBytes, size_t newSize, const nimbus::orch::Principal& who) {
+  if (!available()) return "no SD card - artifact store absent";
+  if (g_w.active) return "an upload is in progress - try again";
+  if (!g_store.writeAllowed(project, name, who.ns, who.owner))
+    return "that project/name belongs to someone else - choose another name";
+  const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
+  if (q.maxBytes && g_store.bytesFor(who.ns) + addBytes > q.maxBytes)
+    return "this conversation has reached its file-storage limit - ask the device's admin to "
+           "raise it, or delete something first";
+  std::string err;
+  if (g_store.wouldExceed(project, name, newSize, err)) return err;
+  return std::string();
+}
+
+// The file's size and last byte - all an append needs to know about what is stored.
+static void fileEnd(const std::string& path, size_t& size, char& last) {
+  size = 0;
+  last = '\0';
+  File r = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!r) return;
+  size = r.size();
+  if (size && r.seek(size - 1)) {
+    const int c = r.read();
+    last = c < 0 ? '\0' : (char)c;
+  }
+  r.close();
+}
+
+// The index entry after `added` bytes landed at the end of a `size`-byte file.
+static bool commitAppend(const std::string& project, const std::string& name, size_t size,
+                         size_t added, const std::string& ownerNs, std::string& err) {
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
+  if (!old) {
+    e.owner = ownerNs;
+    e.project = project;
+    e.name = name;
+    e.createdAt = nowEpoch();
+    e.kind = nimbus::orch::fileKindForName(name);
+  }
+  e.bytes = uint32_t(size + added);
+  e.hash = 0;                 // content changed: unknown until the next whole write
+  e.providerTag.clear();      // an uploaded provider copy is stale now
+  e.providerFileId.clear();
+  if (!g_store.add(e, err)) return false;
+  persistIndex();
+  return true;
+}
+
+// files.append: the new rows go on the END of a text document (created when
+// missing); nothing already stored is read back or rewritten (file_append.h).
+static nimbus::orch::ToolResult appendRows(const std::string& project, const std::string& name,
+                                           const std::string& text,
+                                           const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (project.empty() || name.empty() || text.empty())
+    return ToolResult::fail("need 'project', 'name' and 'text'");
+  if (!textDocName(name))
+    return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
+  memory::Lock g;
+  const std::string path = pathOf(project, name);
+  size_t size = 0;
+  char last = '\0';
+  if (available()) fileEnd(path, size, last);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
+  if (!plan.ok) return ToolResult::fail(plan.err);
+  const std::string refusal = appendRefusal(project, name, plan.bytes.size(), size + plan.bytes.size(), who);
+  if (!refusal.empty()) return ToolResult::fail(refusal);
+  fs::FS& fs = memory::dataFs();
+  fs.mkdir(dirOf(project).c_str());
+  File f = fs.open(path.c_str(), FILE_APPEND);
+  if (!f) return ToolResult::fail("SD open failed");
+  const size_t n = f.write(reinterpret_cast<const uint8_t*>(plan.bytes.data()), plan.bytes.size());
+  f.close();
+  std::string err;
+  if (!commitAppend(project, name, size, n, who.ns, err)) return ToolResult::fail(err);
+  if (n != plan.bytes.size())
+    return ToolResult::fail("SD short write: " + std::to_string((unsigned)n) + " of " +
+                            std::to_string((unsigned)plan.bytes.size()) +
+                            " B landed - read the tail before adding the rows again");
+  alogf("files: appended %d row(s) to %s/%s (%u B)", plan.rows, project.c_str(), name.c_str(),
+        unsigned(size + n));
+  return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") +
+                        " to " + project + "/" + name + " (now " + std::to_string((unsigned)(size + n)) +
+                        " bytes)" +
+                        (plan.repairedCut ? "; its last row was incomplete and is left as it was" : ""));
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -856,7 +982,8 @@ void registerTools() {
   // paginated view mirroring results.get; text documents only.
   reg.add("files.read",
           "Read a stored TEXT document's content (md/txt/json/csv/log). Large files "
-          "are paged: pass 'offset' to continue from where the previous view ended.",
+          "are paged: pass 'offset' to continue from where the previous view ended. "
+          "Pass 'tail' (a row count) to read only the last rows of a log or CSV.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             if (project.empty() || name.empty())
@@ -874,6 +1001,8 @@ void registerTools() {
             if (!textDocName(name))
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
+            if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
+              return readTail(project, name, (size_t)a["tail"].as<double>());
             const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
             // Whole-file read through PSRAM, then a bounded UTF-8-safe window -
             // page size leaves header room inside the loop's per-result clamp
@@ -897,7 +1026,7 @@ void registerTools() {
                                std::to_string((unsigned)total) + "\n";
             return nimbus::orch::ToolResult::ok(head + text.substr(off, (size_t)keep));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"}},"required":["project","name"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -982,6 +1111,16 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail(err);
             return nimbus::orch::ToolResult::ok("saved " + project + "/" + name + " (" +
                                                 std::to_string(text.size()) + " bytes)");
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
+
+  reg.add("files.append",
+          "Add rows to the END of a TEXT document (a log, a CSV): only the new rows are "
+          "written, nothing stored is read or rewritten. Creates the file when missing "
+          "(put a CSV's header row first). Up to 4 KB per call. Use it to log a row "
+          "instead of reading and re-saving the whole file.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            return appendRows(argStr(a, "project"), argStr(a, "name"), argStr(a, "text"), who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 

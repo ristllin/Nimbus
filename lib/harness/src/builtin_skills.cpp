@@ -144,6 +144,8 @@ const Part kDeliverPdf[] = {
      "   session_ops: {op:\"spawn\", provider:\"openai\", project:\"<short-slug>\",\n"
      "   task:\"...\"}. The project field is what routes the captured file into\n"
      "   the device file store - no project, no capture.\n"
+     "   To put a log or CSV from the file store in the task, read only its end\n"
+     "   with files.read {project, name, tail: N} - never the whole file.\n"
      "2. In the task, tell the sub EXPLICITLY to gather/prepare the content, then\n"
      "   'use Python code_interpreter to render <name>.pdf, save it as a file,\n"
      "   and output the file'. A sub not told to output a file returns prose.\n"
@@ -161,6 +163,30 @@ const Part kDeliverPdf[] = {
      "an anthropic sub can build files in its sandbox but nothing can capture\n"
      "them back - openai is the only delivery path. Do not silently downgrade\n"
      "the owner to markdown: if PDF is unavailable, say exactly why.\n"},
+};
+
+// Logging a row (the meal-photo addendum, and any tracker): files.append writes
+// only the new rows and files.read {tail} reads only the end, so a logged meal is
+// one tool call instead of a whole-file read plus a whole-file rewrite (on 15 Oct
+// a typical meal turn read three CSVs whole and re-saved all three).
+const Part kLogRows[] = {
+    {Side::Both,
+     "# Logging rows (food log, ledger, any tracker)\n"
+     "A log is a text file that grows by rows: a CSV (date,meal,kcal,...) or a .log.\n"
+     "1. Add rows with files.append {project, name, text}: only the new rows are\n"
+     "   written. NEVER files.read a whole log and artifact.save it back to add a\n"
+     "   row - that reads and rewrites the whole file, and every byte rides your turn.\n"
+     "2. You do not need to read the log first when you know its columns. To see\n"
+     "   the columns or the latest rows, read only the end:\n"
+     "   files.read {project, name, tail: 5} (a CSV's header row comes with it).\n"
+     "3. A new log: the first files.append carries the header row, then the row.\n"
+     "4. A running total (a daily ledger): append a NEW row with the updated totals;\n"
+     "   the latest row for a date is the current one. Never rewrite earlier rows.\n"
+     "5. A meal photo: estimate it, then one files.append to the food log (and one\n"
+     "   to the ledger if you keep one), then reply with the row you added. Several\n"
+     "   rows for one meal go in ONE call, one row per line.\n"
+     "6. If files.append says the last row was incomplete, the file was cut\n"
+     "   mid-write: say so, and check the tail before adding that row again.\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.
@@ -190,6 +216,10 @@ const Entry kEntries[] = {
       "Build a PDF via an openai sub's code_interpreter and deliver it to the owner - read "
       "BEFORE promising, refusing, or downgrading a PDF/document request."},
      NIMBUS_PARTS(kDeliverPdf)},
+    {{"log-rows", "Log a row to a CSV or log file (food log, ledger)",
+      "Add rows to a log with files.append and read its end with files.read tail - read "
+      "BEFORE logging a meal, a weight, a ledger total or any tracker row."},
+     NIMBUS_PARTS(kLogRows)},
 };
 #undef NIMBUS_PARTS
 constexpr size_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);

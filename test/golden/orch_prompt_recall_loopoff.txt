@@ -43,6 +43,15 @@ Tools you can call:
 - memory_write: Store a durable fact.
 - web_search: Search the web (Tavily).
 Also callable (same call syntax; ask docs.search for their arguments): skill_save, loop_create
+
+## HOW YOUR MEMORY WORKS
+- RELEVANT MEMORIES (in this turn's context) were recalled for this message automatically.
+- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded + stored).
+- To look something up you don't see, add a query to mem_query[]; results arrive next turn.
+- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.
+
+[----- cached blocks end; per-turn block -----]
+
 The mid-turn tool loop is OFF right now (setting or low memory), so these tools are NOT callable this turn. The turn contract still covers memory (mem_write/mem_query), sub-agents (session_ops) and device actions (device) - a mem_query you issue now returns its results on your NEXT turn. The remaining tools (files, loops, web search, speech, self-tests) are unavailable this turn.
 Your reply this turn is the ONLY reply the owner receives for this message. There is no queue and no background work: anything you cannot do now will simply not happen unless the owner asks again. So say plainly what you could not do and why, and answer as fully as you can from what you already have. Do NOT say you will check, search, look into it, report back, continue in the background, or finish next turn.
 
@@ -60,9 +69,3 @@ To update it, return the `scratchpad` field in orch_turn (active/short/mid/long)
 ## RELEVANT MEMORIES
 - [87%] the owner prefers terse replies
 - [71%] board 1 is the bench unit
-
-## HOW YOUR MEMORY WORKS
-- RELEVANT MEMORIES above were recalled for this message automatically.
-- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded + stored).
-- To look something up you don't see, add a query to mem_query[]; results arrive next turn.
-- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.

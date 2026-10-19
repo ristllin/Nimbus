@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
@@ -331,7 +332,8 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
 
 // STEP FACTORY (Stage 2 phase 5): one OpenAI Responses model turn against the
 // shared canonical transcript. Same lifetime contract as antLoopStep -
-// `instructions`/`ht`/`usage`/`tr` by reference, caller outlives the loop.
+// `ht`/`usage`/`tr` by reference, caller outlives the loop; the split
+// `instructions` are copied.
 nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
                                      const std::string& instructions,
                                      const HeadTools& ht,
@@ -340,13 +342,19 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("openai") : std::string();
   const std::string key   = pd.key ? pd.key("openai") : std::string();
-  // Same wire-ceiling bound as the Anthropic fold trigger: the replayed tool
-  // outputs must stay under the measured ~52 KB body ceiling. trimToolOutputs
-  // stubs the OLDEST results in place ("[trimmed N B]") - the pairing invariant
-  // holds and the full text is already in the results ring.
+  // The wire-ceiling bound: the replayed tool outputs must stay under the
+  // measured ~52 KB body ceiling. trimToolOutputs clips only the NEWEST results
+  // (never a round already sent, so each round extends the cached prefix) - the
+  // pairing invariant holds and the full text is already in the results ring.
   const size_t kReplayToolBytes = 24576;
 
-  return [&instructions, &ht, usage, &tr, pd, model, key, kReplayToolBytes](
+  // The static, summary and dynamic parts, split once per turn (prompt_layout.h)
+  // from the prompt repaired to valid UTF-8 (wire.h: repaired, never clipped).
+  std::string sys;
+  wire::putFieldStr(sys, instructions, "the system prompt");
+  const layout::PromptParts parts = layout::split(sys);
+
+  return [&ht, usage, &tr, pd, model, key, kReplayToolBytes, parts](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -362,9 +370,13 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     req["model"]        = model;
     // roundInstructions() appends the final-round notice when a cap forced this
     // tool-less round, so the model says what it could not finish instead of
-    // promising work that will never run.
-    wire::putFieldStr(req["instructions"], wire::roundInstructions(instructions, capReason),
-                      "the system prompt");
+    // promising work that will never run. It rides the per-turn part, so the
+    // static developer message still reads from the cache. An unsplit prompt
+    // keeps the top-level instructions field.
+    layout::PromptParts round = parts;
+    std::string& tail = round.split ? round.dyn : round.stat;
+    tail = wire::roundInstructions(tail, capReason);
+    if (!round.split) wire::putFieldStr(req["instructions"], round.stat, "the system prompt");
     req["store"]        = false;   // stateless: the device owns the turn's state
     // Glass Box A4: ask reasoning models for a summary of their thinking so it
     // can be captured into HeadStep.text (gated - a chat model would 400 on the
@@ -377,7 +389,18 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     }
     {
       JsonArray in = req["input"].to<JsonArray>();
+      // A split prompt (prompt_layout.h): the static block (and the summary) as
+      // developer messages, then the user seed led by the per-turn block. The
+      // request then starts with the same bytes on every turn of a day.
+      if (round.split) layout::putOpenAIDeveloper(in, round);
       renderOaiInput(tr, in);
+      if (round.split)
+        for (JsonObject m : in)
+          if (!strcmp(m["role"] | "", "user")) {
+            wire::putFieldStr(m["content"], layout::userWithDynamic(round, m["content"] | ""),
+                              "the user message");
+            break;
+          }
       // Forced final after a STALL: if the newest round carried no tool calls
       // (prose-only - not rendered), this request would be byte-identical to the
       // one the model just stalled on; nudge with a user message so it answers
@@ -597,8 +620,22 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   {
     JsonDocument d;
     d["model"]        = pd.orchModel ? pd.orchModel("openai") : std::string();  // per-provider orchestrator model
-    wire::putFieldStr(d["instructions"], instructions, "the system prompt");
-    wire::putFieldStr(d["input"], inputs, "the user message");
+    // A split prompt (prompt_layout.h): developer messages for the static block
+    // and the summary, then the per-turn block leading the user message.
+    std::string sys;
+    wire::putFieldStr(sys, instructions, "the system prompt");
+    const layout::PromptParts parts = layout::split(sys);
+    if (parts.split) {
+      JsonArray in = d["input"].to<JsonArray>();
+      layout::putOpenAIDeveloper(in, parts);
+      JsonObject u = in.add<JsonObject>();
+      u["type"] = "message";
+      u["role"] = "user";
+      wire::putFieldStr(u["content"], layout::userWithDynamic(parts, inputs), "the user message");
+    } else {
+      d["instructions"] = sys;
+      wire::putFieldStr(d["input"], inputs, "the user message");
+    }
     d["store"]        = true;
     if (convId.length()) d["previous_response_id"] = convId;   // stateful chain
     // STRICT structured output: the orch_turn schema (single source, now a

@@ -1,5 +1,7 @@
 #include "nimbus/orch/transcript.h"
 
+#include <algorithm>
+
 #include "nimbus/mem_cap.h"  // utf8CapLen - every clip is UTF-8-safe
 
 namespace nimbus {
@@ -66,22 +68,52 @@ void Transcript::attachMeta(int round, std::string meta) {
   }
 }
 
+namespace {
+// The newest result clipped to `room` bytes: its head plus a visible "[cut: ...]"
+// marker, or a "[not shown: ...]" note when too little room is left for a useful
+// head. The whole replacement fits `room` whenever a head is kept.
+std::string clipToRoom(const std::string& text, size_t room) {
+  const std::string cut = "\n[cut: this turn's tool-output budget is spent - showing the first ";
+  const std::string tail = " of " + std::to_string((unsigned)text.size()) +
+                           " B. Ask for a smaller slice, or finish with what you have.]";
+  const size_t overhead = cut.size() + tail.size() + 6;   // 6 = the count's digits
+  if (room > overhead + 256) {
+    const int keep = utf8CapLen(text.c_str(), (int)text.size(), (int)(room - overhead));
+    return text.substr(0, (size_t)keep) + cut + std::to_string(keep) + tail;
+  }
+  return "[not shown: this turn's tool-output budget is spent (" + std::to_string((unsigned)text.size()) +
+         " B). Ask for a smaller slice, or finish with what you have.]";
+}
+}  // namespace
+
 size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
   if (!maxTotalToolBytes || toolBytes_ <= maxTotalToolBytes) return 0;
+  // Append-only (prompt_layout.h): a result an earlier round already SENT keeps
+  // its bytes, so every round's request starts with the previous round's request
+  // and reads it from the provider cache. Only the newest round's results - not
+  // on any wire yet - are clipped, to the room the older ones leave. The entry is
+  // never removed, so every ToolUse stays answered by its ToolResult.
+  int newest = -1;
+  for (const auto& it : e_)
+    if (it.kind == TranscriptItem::Kind::ToolResult && it.round > newest) newest = it.round;
+  size_t older = 0;
+  for (const auto& it : e_)
+    if (it.kind == TranscriptItem::Kind::ToolResult && it.round != newest) older += it.text.size();
+  size_t room = maxTotalToolBytes > older ? maxTotalToolBytes - older : 0;
   size_t freed = 0;
-  // Oldest-first: stub the payload but KEEP the entry, so every ToolUse stays
-  // answered by its ToolResult (the pairing invariant).
   for (auto& it : e_) {
-    if (toolBytes_ <= maxTotalToolBytes) break;
-    if (it.kind != TranscriptItem::Kind::ToolResult) continue;
-    if (it.text.empty()) continue;
+    if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
     const size_t was = it.text.size();
-    std::string stub = "[trimmed " + std::to_string((unsigned)was) + " B]";
-    if (stub.size() >= was) continue;   // already tiny - trimming would not help
-    it.text = stub;
-    toolBytes_ -= (was - stub.size());
-    freed += was - stub.size();
+    if (was > room) {
+      std::string next = clipToRoom(it.text, room);
+      if (next.size() < was) {
+        freed += was - next.size();
+        it.text = std::move(next);
+      }
+    }
+    room -= std::min(room, it.text.size());
   }
+  toolBytes_ -= freed;
   return freed;
 }
 

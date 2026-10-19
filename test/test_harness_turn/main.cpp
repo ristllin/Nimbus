@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include "nimbus/harness/prompt_layout.h"   // the static/summary/per-turn split
+
 #include <map>
 #include <memory>
 #include <string>
@@ -564,6 +566,29 @@ static void test_network_error_still_fails_over_not_misclassified_oom() {
 
 // ---- (1) happy turn ---------------------------------------------------------
 
+// The engine end of the prefix-stability class (test_prompt_layout pins the
+// composer): two turns of one chat that differ in user text, recall and the
+// conversation window hand the provider the SAME static and summary parts.
+static void test_two_turns_share_the_static_prompt_block() {
+  Rig r;
+  r.recentConversation = "\n## RECENT CONVERSATION\n- user: earlier\n";
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  r.recentConversation += "- assistant: hello\n- user: hi there\n";
+  r.recallResult = {"[80%] the owner likes tea"};
+  r.eng->handleMessage("log my lunch please", "Roy", "1001");
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
+  const agent::layout::PromptParts a = agent::layout::split(r.attempts[0].instructions);
+  const agent::layout::PromptParts b = agent::layout::split(r.attempts[1].instructions);
+  TEST_ASSERT_TRUE(a.split && b.split);
+  TEST_ASSERT_TRUE_MESSAGE(a.stat == b.stat, "the static block changed between two turns");
+  TEST_ASSERT_TRUE(a.summary == b.summary);
+  TEST_ASSERT_TRUE(a.dyn != b.dyn);
+  TEST_ASSERT_TRUE(b.dyn.find("the owner likes tea") != std::string::npos);
+  // The per-turn input keeps only the per-turn context.
+  TEST_ASSERT_TRUE(r.attempts[1].inputs.find("[ACTIVE SESSIONS]") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[1].inputs.find("[AVAILABLE MODELS]") == std::string::npos);
+}
+
 static void test_happy_turn_delivers_and_accounts() {
   Rig r;
   r.eng->handleMessage("hi there", "Roy", "1001");
@@ -584,14 +609,18 @@ static void test_happy_turn_delivers_and_accounts() {
                    std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("NOT a hard total limit") != std::string::npos);
   // W15: the ambient skills index rides every turn - the model must SEE the
-  // playbooks (id + desc) to have a thread to pull with skill.get.
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("[SKILLS]") != std::string::npos);
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("- deliver-pdf: Build a PDF") !=
-                   std::string::npos);
+  // playbooks (id + desc) to have a thread to pull with skill.get. The stable
+  // catalogs ride the END of the static prompt block (prompt_layout.h), where a
+  // provider reads them from its cache, not the per-turn input.
+  const agent::layout::PromptParts parts = agent::layout::split(r.attempts[0].instructions);
+  TEST_ASSERT_TRUE(parts.split);
+  TEST_ASSERT_TRUE(parts.stat.find("[SKILLS]") != std::string::npos);
+  TEST_ASSERT_TRUE(parts.stat.find("- deliver-pdf: Build a PDF") != std::string::npos);
+  TEST_ASSERT_TRUE(parts.stat.find("## PROVIDERS & CONNECTORS") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("[SKILLS]") == std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("## PROVIDERS & CONNECTORS") == std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find(
                        "[CHANNEL] This message arrived via Telegram") != std::string::npos);
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("## PROVIDERS & CONNECTORS") !=
-                   std::string::npos);
   // Reply delivered; conv stored in the per-chat map (B2); usage recorded; counter++.
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("c1", agent::convMapGet(r.cfg.convId, "1001", "anthropic").c_str());
@@ -1184,7 +1213,7 @@ static void test_cum486_advertised_models_equal_spawnable_for_every_slot() {
     r.modelChoicesFn = derive;
     r.eng->handleMessage("which models can you use?", "Owner", "1001");
     TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
-    const auto adv = advertisedModels(r.attempts[0].inputs);
+    const auto adv = advertisedModels(r.attempts[0].instructions);
     for (const orch::ProviderSlot& slot : orch::kProviderSlots) {
       auto it = adv.find(slot.slug);
       TEST_ASSERT_TRUE_MESSAGE(it != adv.end(), slot.slug);   // every keyed slot is listed
@@ -1215,10 +1244,10 @@ static void test_cum486_router_only_devices_advertise_their_models() {
     r.modelChoicesFn = [](const std::string& p) { return orch::effectiveModelChoices(p.c_str(), ""); };
     r.eng->handleMessage("hi", "Owner", "1001");
     TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
-    const auto adv = advertisedModels(r.attempts[0].inputs);
+    const auto adv = advertisedModels(r.attempts[0].instructions);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)adv.size(), only);
     TEST_ASSERT_EQUAL_STRING(orch::staticModelChoices(only), adv.at(only).c_str());
-    TEST_ASSERT_TRUE(r.attempts[0].inputs.find(std::string(" ") + only + ": ;") == std::string::npos);
+    TEST_ASSERT_TRUE(r.attempts[0].instructions.find(std::string(" ") + only + ": ;") == std::string::npos);
   }
   // Belt and braces: a keyed provider whose list source is empty is shown with
   // its sub default (what a spawn there runs after coercion), never "zai: ;".
@@ -1227,8 +1256,8 @@ static void test_cum486_router_only_devices_advertise_their_models() {
   r.cfg.routerHost = "zai";
   r.modelChoicesFn = [](const std::string&) { return std::string(); };
   r.eng->handleMessage("hi", "Owner", "1001");
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: sub-zai;") != std::string::npos);
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: ;") == std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].instructions.find("zai: sub-zai;") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].instructions.find("zai: ;") == std::string::npos);
 }
 
 // ---- CUM-485: the previous reply reaches the next stateless tool-loop turn ---
@@ -3318,6 +3347,7 @@ int main(int, char**) {
   RUN_TEST(test_chat_gate_admits_fragmented_cyd_is_not_deferred);
   RUN_TEST(test_oom_transport_error_yields_low_memory_reply_no_failover);
   RUN_TEST(test_network_error_still_fails_over_not_misclassified_oom);
+  RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);

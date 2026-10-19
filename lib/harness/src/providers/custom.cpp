@@ -5,6 +5,7 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/orch_schema.h"       // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - usage extraction
@@ -353,7 +354,10 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   const HeadFormat first = (pd.customJsonMode && pd.customJsonMode() == "object")
                                ? HeadFormat::Object : HeadFormat::Schema;
   const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
-  CustomHead h{&pd, &instructions, &inputs, &doc, &filter, first, timeoutMs};
+  // One system message: the layout flat (prompt_layout.h). Its order (static,
+  // summary, per-turn) still gives a prefix-caching backend a stable prefix.
+  const std::string sys = layout::flat(instructions);
+  CustomHead h{&pd, &sys, &inputs, &doc, &filter, first, timeoutMs};
   auto run = [&h](bool, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t, const std::string&) {
     return runCustomHead(h);
   };

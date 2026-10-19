@@ -60,7 +60,6 @@ src/net/web_files.cpp:nimbus::net::registerFileRoutes
 lib/harness/src/providers/openai.cpp:agent::providers::oaiPoll
 src/hw/selftest.cpp:nimbus::hw::runSelfTest
 lib/core/src/orch_vector_memory.cpp:nimbus::orch::VectorMemory::recall
-lib/harness/src/providers/anthropic.cpp:agent::providers::antFoldOldRounds
 tests/hil/analyze_corpus.py:main
 src/net/webui.cpp:nimbus::net::buildState
 src/net/webui.cpp:nimbus::net::buildOrchState
@@ -123,7 +122,6 @@ lib/harness/src/providers/anthropic.cpp:agent::providers::antPoll
 lib/harness/src/providers/anthropic.cpp:agent::providers::agentForModel
 src/agent/memory_subsystem.cpp:agent::memory::registerTenantTools
 tests/hil/mock_llm.py:do_POST
-lib/harness/src/engine.cpp:agent::TurnEngine::buildDynamicContext
 lib/core/src/orch_vector_memory.cpp:nimbus::orch::VectorMemory::deserialize
 lib/core/src/power_battery_model.cpp:nimbus::power::BatteryModel::estimate
 src/agent/memory_subsystem.cpp:agent::memory::captureMediaFile

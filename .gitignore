@@ -37,6 +37,8 @@ tests/hil/qa_runs/
 
 # harness-lab compiled outputs (host runner build dir)
 tools/harness-lab/build/
+# prompt-cache-live host build dir (real-API cache legs)
+tools/prompt-cache-live/build/
 
 # Local agent/session state + private run artifacts (public-release hygiene)
 .claude/

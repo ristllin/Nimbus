@@ -51,10 +51,13 @@ class Transcript {
     return e_;
   }
 
-  // Replace the OLDEST ToolResult payloads with a "[trimmed N B]" stub until the
-  // cumulative tool bytes fit. ⚠ Entries are never REMOVED - the ToolCall <->
-  // ToolResult pairing is an invariant (an unanswered tool_use 400s on
-  // Anthropic). Returns the bytes reclaimed.
+  // Fit the cumulative tool bytes under the cap WITHOUT rewriting a sent round:
+  // only the NEWEST round's results are clipped (with a visible "[cut: ...]"
+  // marker) or, when no room is left, replaced by a "[not shown: ...]" note.
+  // Older rounds keep their bytes, so the replayed request is append-only and
+  // each round reads the last one from the provider cache. ⚠ Entries are never
+  // REMOVED - the ToolCall <-> ToolResult pairing is an invariant (an unanswered
+  // tool_use 400s on Anthropic). Returns the bytes reclaimed.
   size_t trimToolOutputs(size_t maxTotalToolBytes);
 
   // Provider-neutral compact render (spawn-with-history, /api/lastturn debug).

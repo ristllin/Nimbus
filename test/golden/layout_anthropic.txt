@@ -1,0 +1,17 @@
+# anthropic loop: round 0 then round 1
+## round 0
+tools: orch_turn memory_search[cache]
+system[0][cache] "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+system[1][cache] "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
+system[2] "|Current time: 18:10 BST.|This message is from Roy - role: u ... current multi-step plan here.|"
+messages[0] user: text[cache] "[CHANNEL] This message arrived via Telegram|[USER]|log my lunch 10"
+cache points: 4
+## round 1
+tools: orch_turn memory_search[cache]
+system[0][cache] "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+system[1][cache] "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
+system[2] "|Current time: 18:10 BST.|This message is from Roy - role: u ... current multi-step plan here.|"
+messages[0] user: text "[CHANNEL] This message arrived via Telegram|[USER]|log my lunch 10"
+messages[1] assistant: tool_use
+messages[2] user: tool_result[cache]
+cache points: 4

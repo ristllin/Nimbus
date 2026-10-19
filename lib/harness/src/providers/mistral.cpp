@@ -4,6 +4,7 @@
 #include <string>
 
 #include "nimbus/harness/output_caps.h"   // max_tokens per round from the output-cap table
+#include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
@@ -287,7 +288,7 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
 // covers it. max_tokens comes from the output-cap table: an unbounded round's
 // latency had no ceiling but the socket clock.
 struct MisLoopReq {
-  const std::string* sysText;
+  const layout::PromptParts* round;   // this round's prompt parts (prompt_layout.h)
   const HeadTools* ht;
   bool allowTools;
   uint32_t maxTokens;
@@ -299,7 +300,17 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
   if (a.maxTokens) req["max_tokens"] = a.maxTokens;
   {
     JsonArray msgs = req["messages"].to<JsonArray>();
-    renderMistralMessages(tr, msgs, *a.sysText);
+    // A split prompt (prompt_layout.h): the system message is the static block
+    // plus the summary (a prefix Mistral reads from its cache), and the per-turn
+    // block leads the user seed.
+    const layout::PromptParts& p = *a.round;
+    renderMistralMessages(tr, msgs, p.stat + p.summary);
+    if (p.split)
+      for (JsonObject m : msgs)
+        if (!strcmp(m["role"] | "", "user")) {
+          wire::putFieldStr(m["content"], layout::userWithDynamic(p, m["content"] | ""), "the user message");
+          break;
+        }
   }
   JsonArray tools = req["tools"].to<JsonArray>();
   {
@@ -389,7 +400,7 @@ static bool misReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, 
 
 // STEP FACTORY (Stage 2 phase 5): one Mistral chat-completions model turn
 // against the shared canonical transcript. Same lifetime contract as
-// antLoopStep - `instructions`/`ht`/`usage`/`tr` by reference.
+// antLoopStep - `ht`/`usage`/`tr` by reference, the split `instructions` copied.
 nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
                                      const std::string& instructions,
                                      const HeadTools& ht,
@@ -398,7 +409,13 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
   namespace orch = nimbus::orch;
   const size_t kReplayToolBytes = 24576;   // the measured wire-ceiling bound
 
-  return [&instructions, &ht, usage, &tr, pd, kReplayToolBytes](
+  // The static, summary and dynamic parts, split once per turn (prompt_layout.h)
+  // from the prompt repaired to valid UTF-8 (wire.h: repaired, never clipped).
+  std::string sys;
+  wire::putFieldStr(sys, instructions, "the system prompt");
+  const layout::PromptParts parts = layout::split(sys);
+
+  return [&ht, usage, &tr, pd, kReplayToolBytes, parts](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -413,8 +430,11 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
     const OutputCap cap = outputCapFor("mistral", model,
                                        allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
-    // Final-round notice when a cap forced this tool-less round (wire.h).
-    const std::string sysText = wire::roundInstructions(instructions, capReason);
+    // Final-round notice when a cap forced this tool-less round (wire.h). It
+    // rides the per-turn part, so the system message stays a cached prefix.
+    layout::PromptParts round = parts;
+    std::string& tail = round.split ? round.dyn : round.stat;
+    tail = wire::roundInstructions(tail, capReason);
 
     JsonDocument filter;
     JsonObject ch = filter["choices"].add<JsonObject>();
@@ -433,7 +453,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
       std::string body;
-      if (!misLoopBody(pd, tr, MisLoopReq{&sysText, &ht, allowTools, maxTokens}, body, out.error)) {
+      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens}, body, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -687,7 +707,8 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
     return runMistralLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
   MistralHeadBody hb;   // hb.studio: a Studio connector rides this turn (the schema-less shape)
-  if (!mistralHeadBody(pd, convId, instructions, inputs, hb)) { err = hb.err; return false; }
+  // The Conversations API takes one instructions string: send the layout flat.
+  if (!mistralHeadBody(pd, convId, layout::flat(instructions), inputs, hb)) { err = hb.err; return false; }
 
   JsonDocument filter;
   filter["conversation_id"] = true;

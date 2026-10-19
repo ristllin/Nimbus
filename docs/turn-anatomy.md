@@ -49,7 +49,8 @@ Tools → Tool use, `otrace`, default on). With either missing the chat says so
 rather than showing an empty panel; the dossier ring keeps the most recent 16
 turns (≤768 KB), and older ones report `evicted`.
 
-A byte-pinned copy of the full system-prompt template lives in the goldens:
+A byte-pinned copy of the full system-prompt template (with the part splits
+shown as labelled lines) lives in the goldens:
 `test/golden/orch_prompt_default.txt` (tool-loop ON) and
 `test/golden/orch_prompt_recall_loopoff.txt`, plus
 `test/golden/orch_prompt_v2_default.txt` (the simplified v2 prompt, behind the
@@ -66,24 +67,70 @@ watchdogs) see [harness.md](harness.md); for the sub-agent side see
 ### 1. INSTRUCTIONS - the system prompt (rebuilt every turn)
 
 Assembled by `composeInstructions()` (`lib/harness/src/compose.cpp`; section
-emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`). Blocks
-in emission order; the budget (`maxContextBytes`: auto by default, derived from
-the head model's window, 32 KB at a 200K head; an owner override is clamped to
-4 KB to 64 KB) drops whole optional blocks from the bottom of this table first,
-then recall bullets one at a time:
+emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`) in three
+parts, in this order (see "The cacheable prefix" below for why):
 
-| # | block | source | what it is |
-|---|---|---|---|
-| 1 | role + field docs | `ORCH_ROLE` + `ORCH_FIELD_DOCS` | the orch_turn contract, generated from the same `ORCH_D_*` macros as the wire schema - prompt and wire cannot drift |
-| 2 | identity + `[HOW YOU RUN]` | `compose.cpp` | device name, "Your brain right now: host/model", firmware version, **current date-time (temporal grounding - says UNKNOWN and forbids dating anything until SNTP syncs)**, then how turns/rounds/memory tiers/sub-agents work |
-| 3 | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Delimited inside as `[OWNER PREFERENCES ...]` and framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. The model's `[RUNNING MEMORY]` (its own `memory` field from last turn) is appended inside this block |
-| 4 | `## CAPABILITIES` | `orch_world.cpp` | what is live right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
-| 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is clipped or dropped BEFORE the window below and the scratchpad's room |
-| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of this chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below. Added in v3.3.0; survives a restart via the SD rehydrate |
-| 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
-| 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
-| 8 | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (first block dropped under budget pressure) |
+- the **static** part, which changes only with the device config, the tool list
+  or the date;
+- the **summary** part, which changes only when the chat is compacted;
+- the **per-turn** part, which changes every turn.
+
+The budget (`maxContextBytes`: auto by default, derived from the head model's
+window, 32 KB at a 200K head; an owner override is clamped to 4 KB to 64 KB) is
+split by size alone: the per-turn part keeps a quarter of it (at least 3328 B),
+the static part is fitted to the rest (its capability list clips first), and the
+summary takes what the static part leaves above that reserve. Inside the per-turn
+part optional blocks drop from the bottom of the table first, then recall bullets
+one at a time:
+
+| # | part | block | source | what it is |
+|---|---|---|---|---|
+| 1 | static | role + field docs | `ORCH_ROLE` + `ORCH_FIELD_DOCS` | the orch_turn contract, generated from the same `ORCH_D_*` macros as the wire schema - prompt and wire cannot drift |
+| 2 | static | identity + `[HOW YOU RUN]` | `compose.cpp` | device name, "Your brain right now: host/model", firmware version, **the current date (temporal grounding - says UNKNOWN and forbids dating anything until SNTP syncs)**, then how turns/rounds/memory tiers/sub-agents work |
+| 3 | static | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Delimited inside as `[OWNER PREFERENCES ...]` and framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules |
+| 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty |
+| 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
+| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[YOUR MODEL]` (the host/model serving this turn), `[AVAILABLE MODELS]` (per-provider model lists, from the same list the spawn validator checks, so an advertised model always spawns as named), the skills index, `[PROVIDERS & CONNECTORS]`. Not counted in the budget |
+| 7 | summary | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Clipped (floor 1024 B) or dropped when the static part leaves too little room |
+| 8 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
+| 9 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
+| 10 | per-turn | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of this chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below |
+| 11 | per-turn | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
+| 12 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
+
+#### The cacheable prefix
+
+Providers bill a repeated request prefix at a fraction of the input price (a
+cache read), so the prompt is laid out to keep its front identical from turn to
+turn:
+
+- **Order.** The static part comes first and carries the date only, never the
+  minute clock; everything that changes per turn comes after it. The tools array
+  is built in registry order with fixed descriptions, so it is byte-identical
+  across turns.
+- **On the wire.** `lib/harness/src/prompt_layout.cpp` splits the composed string
+  again for each provider:
+  - Anthropic: one system block per part, a cache point on the static block and
+    on the summary block, one on the last tool and one on the last message
+    (four in all, the API maximum, counted by a test);
+  - OpenAI: the static part (and the summary) as developer messages, then the
+    user message led by the per-turn part;
+  - Mistral: one system message (static plus summary), then the user message led
+    by the per-turn part;
+  - the custom, Z.ai and Cumulo heads and the Mistral single shot send the parts
+    flat, in the same order.
+- **Within a turn.** Each tool round's request starts with the previous round's
+  request: tool results already sent are never rewritten, so a round reads the
+  last one from the cache. Over the replay budget (16 KB on Anthropic, 24 KB on
+  OpenAI and Mistral) the newest result is cut with a visible `[cut: ...]` note,
+  or withheld with a `[not shown: ...]` note when no room is left.
+- **Checked by tests.** `test/test_prompt_layout` composes many turns that differ
+  only in per-turn content and asserts the static and summary parts, and each
+  provider's cached request segments, are byte-identical; a counter-test puts a
+  timestamp in the static part and must fail. The goldens
+  `test/golden/layout_{anthropic,openai,mistral}.txt` pin each provider's layout.
+- **Inspecting it.** `/api/lastturn`, `/api/trace` and the `PROMPT?` console show
+  the split as labelled lines (`[----- cached blocks end; per-turn block -----]`).
 
 ### 2. INPUT - the per-turn message block
 
@@ -95,10 +142,7 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | `[MEMORY RESULTS]` | the model ran `mem_query` **last** turn | results are deferred one turn; explicitly framed *background - answer the [USER] message on its topic* |
 | `[FRESH RESULTS]` | sub-agents just finished | drives the automatic synthesis turn; past the 6-slot cap a result parks as a one-line stub carrying `results.get("sub:<tag>")` - nothing is ever silently dropped |
 | `[ACTIVE SESSIONS]` | always | live sub-agent digest - authoritative ("if it lists none, nothing is running") |
-| `[AVAILABLE PROVIDERS]` | always | the sub-session provider priority order |
-| `[YOUR MODEL]` | always | the host/model serving THIS turn |
-| `[AVAILABLE MODELS]` | always | per-provider model choice lists (yours + sub-agents'), filtered to keyed providers. Built from the same list the spawn validator checks (live harvest, else the cold-start list), so an advertised model always spawns as named |
-| `[PROVIDERS & CONNECTORS]` | connectors configured | which cloud connectors each provider carries |
+| `[SPAWN CAPACITY]` | always | how many sub-agents this turn can start, and that a big fan-out runs over waves |
 | `[CHANNEL]` | owner turns | which channel the message arrived on (the web UI for the device's own page and a Virtual Nimbus page, Telegram for a Telegram chat) + reply-routing rules |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |
 | `[SYSTEM]` | synthesis turns | "sub-agents finished, no new user message - synthesize" |
@@ -133,7 +177,8 @@ exactly **five** sources:
    replaces it), and (OpenAI only) whenever the last response carried
    unanswered tool calls. `/api/lastturn` prints whether the chain was CONTINUED
    or FRESH.
-3. **`[RUNNING MEMORY]`** - the model's own running notes, per-chat since v3.3.0.
+3. **`[RUNNING MEMORY]`** - the model's own running notes, per-chat since v3.3.0
+   (in the per-turn part of the prompt).
 4. **Long-term memory recall** - only what's semantically similar to the new text.
 
 The episodic store (`memory.episodic`, the web Chat pane) additionally records

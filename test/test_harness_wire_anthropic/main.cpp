@@ -201,7 +201,7 @@ static void test_loop_round2_body_rendered_from_transcript() {
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
   TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
   // Parse round 2's body and assert the exact message sequence:
-  //   [0] user seed (string content)
+  //   [0] user seed (one text block, the same bytes on every round)
   //   [1] assistant: [text prose, tool_use tu_1] - prose PRESERVED in the render
   //   [2] user: [tool_result for tu_1]
   JsonDocument body;
@@ -213,7 +213,8 @@ static void test_loop_round2_body_rendered_from_transcript() {
   JsonArrayConst msgs = body["messages"].as<JsonArrayConst>();
   TEST_ASSERT_EQUAL(3, (int)msgs.size());
   TEST_ASSERT_EQUAL_STRING("user", msgs[0]["role"] | "");
-  TEST_ASSERT_EQUAL_STRING("USER", msgs[0]["content"] | "");
+  TEST_ASSERT_EQUAL_STRING("text", msgs[0]["content"][0]["type"] | "");
+  TEST_ASSERT_EQUAL_STRING("USER", msgs[0]["content"][0]["text"] | "");
   TEST_ASSERT_EQUAL_STRING("assistant", msgs[1]["role"] | "");
   JsonArrayConst ac = msgs[1]["content"].as<JsonArrayConst>();
   TEST_ASSERT_EQUAL(2, (int)ac.size());
@@ -266,15 +267,24 @@ static void test_loop_echoes_assistant_with_tool_use() {
   TEST_ASSERT_EQUAL_STRING("messages", conv.c_str());
 }
 
-// Context Fabric: once the replayed conversation passes the fold trigger (a
-// quarter of the model's window), rounds older than the newest 2 collapse to one
-// "[earlier round N]" line each - the newest stay verbatim, and every surviving
-// tool_use is still answered (the API's pairing invariant). Below the trigger the
-// body is byte-identical, which the tests above pin.
-static void test_loop_gradient_folds_old_rounds_over_trigger() {
+// Append-only replay (prompt_layout.h): every round's messages[] starts with the
+// previous round's messages[] byte for byte (the moving cache point aside), so
+// each round reads the last one from the provider cache. Over the replay budget
+// the NEWEST result is clipped or withheld with a visible marker - an older round
+// is never rewritten - and every tool_use stays answered.
+static std::string messagesWithoutCachePoints(const std::string& body) {
+  JsonDocument doc;
+  deserializeJson(doc, body, DeserializationOption::NestingLimit(16));
+  JsonArray msgs = doc["messages"].as<JsonArray>();
+  for (JsonObject m : msgs)
+    if (m["content"].is<JsonArray>())
+      for (JsonObject b : m["content"].as<JsonArray>()) b.remove("cache_control");
+  std::string out;
+  serializeJson(msgs, out);
+  return out;
+}
+static void test_loop_replay_is_append_only_over_budget() {
   FakeProviderDeps d;
-  // 5 tool rounds then the terminal. Distinct tool_use ids so the fold's pairing
-  // can be checked precisely.
   for (int i = 1; i <= 5; i++) {
     std::string body = "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_" + std::to_string(i) +
                        "\",\"name\":\"memory_search\",\"input\":{\"q\":\"r" + std::to_string(i) +
@@ -285,42 +295,45 @@ static void test_loop_gradient_folds_old_rounds_over_trigger() {
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
-  // Each result: 59 KB of filler (UNDER the 60,000-byte provider string guard -
-  // a longer result is clipped with a note) plus a per-round TAIL marker. The fold keeps
-  // only a ~160-char head gist, so a folded round LOSES its tail marker while a
-  // verbatim round keeps it: that asymmetry is what this test asserts.
+  // Each result: 7 KB of filler (well under the 60,000-byte provider string guard)
+  // plus a per-round TAIL marker, so the third result passes the 16 KB replay budget.
   int calls = 0;
   rig.ht.dispatch = [&rig, &calls](const nimbus::orch::HeadToolCall& c) {
     nimbus::orch::HeadToolResult r;
     r.id = c.id;
     r.name = c.name;
-    r.output = std::string(59000, 'z') + "TAILMARK" + std::to_string(calls++);
+    r.output = std::string(7000, 'z') + "TAILMARK" + std::to_string(calls++);
     rig.dispatched.push_back(c);
     return r;
   };
-  rig.ht.cfg.maxToolResultBytes = 0;   // isolate the fold from the clamp
+  rig.ht.cfg.maxToolResultBytes = 0;   // isolate the replay budget from the clamp
   rig.ht.cfg.maxTotalToolBytes = 0;
   rig.ht.cfg.maxRounds = 8;
   std::string conv, out, err;
   bool ok = providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
-  TEST_ASSERT_TRUE(d.http.seen.size() >= 5);
-  const int last = (int)d.http.seen.size() - 1;
-  const std::string& b = d.http.seen[last].body;
-  // The oldest rounds collapsed to one line each...
-  TEST_ASSERT_TRUE(bodyHas(d, last, "[earlier round 0] memory_search"));
-  // ...losing their tails (the 60 KB payload is no longer replayed)...
-  TEST_ASSERT_TRUE(b.find("TAILMARK0") == std::string::npos);
-  // ...while the newest round is still there VERBATIM, tail and all.
-  TEST_ASSERT_TRUE(b.find("TAILMARK4") != std::string::npos);
-  // The seeded user turn is pinned (never folded).
-  TEST_ASSERT_TRUE(bodyHas(d, last, "USER"));
-  // Pairing invariant: every tool_use still in the body has its tool_result.
+  TEST_ASSERT_EQUAL(6, (int)d.http.seen.size());
+  for (size_t k = 1; k < d.http.seen.size(); k++) {
+    std::string prev = messagesWithoutCachePoints(d.http.seen[k - 1].body);
+    std::string next = messagesWithoutCachePoints(d.http.seen[k].body);
+    prev.pop_back();   // drop the closing ']' - the next request continues the array
+    TEST_ASSERT_TRUE_MESSAGE(next.compare(0, prev.size(), prev) == 0,
+                             ("round " + std::to_string(k) + " rewrote an earlier round").c_str());
+  }
+  const std::string& b = d.http.seen.back().body;
+  // The first two results fit the 16 KB budget verbatim, tail and all...
+  TEST_ASSERT_TRUE(b.find("TAILMARK0") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("TAILMARK1") != std::string::npos);
+  // ...the third is clipped with a marker, the later ones withheld with a note.
+  TEST_ASSERT_TRUE(b.find("TAILMARK2") == std::string::npos);
+  TEST_ASSERT_TRUE(b.find("[cut: this turn's tool-output budget is spent") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("[not shown: this turn's tool-output budget is spent") != std::string::npos);
+  TEST_ASSERT_TRUE(bodyHas(d, 5, "USER"));
   for (int i = 1; i <= 5; i++) {
     const std::string id = "tu_" + std::to_string(i);
     const bool hasUse = b.find("\"id\":\"" + id + "\"") != std::string::npos;
     const bool hasRes = b.find("\"tool_use_id\":\"" + id + "\"") != std::string::npos;
-    TEST_ASSERT_TRUE_MESSAGE(hasUse == hasRes, ("orphan tool_use/result for " + id).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(hasUse && hasRes, ("orphan tool_use/result for " + id).c_str());
   }
 }
 
@@ -343,10 +356,12 @@ static void test_loop_stall_echoed_on_the_unforced_final_round() {
   std::string conv, out, err;
   bool ok = providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  // The nudge is the last message: one text block carrying the moving cache
+  // point (prompt_layout.h); the echoed answer before it carries none.
   TEST_ASSERT_TRUE(bodyHas(d, 1,
       "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"just prose\"}]},"
-      "{\"role\":\"user\",\"content\":\"Now call orch_turn with your final complete turn, keeping "
-      "the answer you gave above.\"}]"));
+      "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Now call orch_turn with your "
+      "final complete turn, keeping the answer you gave above.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}]"));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"auto\"}"));
   TEST_ASSERT_FALSE(bodyHas(d, 1, "\"type\":\"tool\""));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "FINAL turn"));   // the final-round notice rides the system text
@@ -833,7 +848,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_round2_body_rendered_from_transcript);
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
-  RUN_TEST(test_loop_gradient_folds_old_rounds_over_trigger);
+  RUN_TEST(test_loop_replay_is_append_only_over_budget);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);
   RUN_TEST(test_loop_max_tokens_cut_retries_then_fails_loud);

@@ -1,0 +1,143 @@
+"""§L60 - the cacheable head prompt on real hardware (prompt_layout.h).
+
+Two bench legs for the rules the host suites pin (test_prompt_layout,
+test_file_append, test_orch_transcript):
+
+1. Two head turns about a minute apart that differ only in per-turn content: the
+   second turn's round 0 reads at least 90% of the cached prefix (the tools, the
+   static block and the summary block) from the provider cache. Both turns are
+   one-round ("no tools"), so the turn line's usage IS round 0. The prefix size
+   is the turn's provider-reported input minus the per-turn text (the per-turn
+   block plus the user message, read back from /api/lastturn and counted with
+   Anthropic's free count_tokens endpoint).
+2. A food-log turn: "log my lunch" ends in at most 3 requests (headloop rounds)
+   and appends the row with files.append, never a whole-file artifact.save.
+
+Markers: ``net`` + ``agent`` (real provider calls on the head, about $0.03 on
+claude-haiku-5-5). Needs --allow-hardware, NIMBUS_TEST_IP and NIMBUS_TEST_TOKEN,
+an Anthropic head on claude-haiku-5-5, an SD card, and ANTHROPIC_API_KEY in the
+environment of the bench host (count_tokens only; it never reaches the device).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+
+import pytest
+
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
+
+pytestmark = [pytest.mark.net, pytest.mark.agent]
+
+_S = None
+TURN_LINE = re.compile(r"orchestrator: turn -> .*\[tokens in=(\d+) out=(\d+) cacheR=(\d+) cacheW=(\d+)\]")
+SPLIT = "[----- cached blocks end; per-turn block -----]\n"
+
+
+def _chat(ip: str, text: str, timeout_s: int = 150) -> str:
+    url = f"http://{ip}/api/chat"
+    r = _S.post(url, data={"text": text}, timeout=10)
+    assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(3)
+        j = _S.get(url, timeout=10).json()
+        if not j.get("pending", True) and j.get("reply"):
+            return j["reply"]
+    pytest.fail(f"no chat reply within {timeout_s}s for: {text[:60]}")
+
+
+def _log(ip: str) -> str:
+    return _S.get(f"http://{ip}/api/log", timeout=10).text
+
+
+def _log_since(ip: str, before: str) -> str:
+    now = _log(ip)
+    tail = before.strip().splitlines()[-1] if before.strip() else ""
+    at = now.rfind(tail) if tail else -1
+    return now[at + len(tail) :] if at >= 0 else now
+
+
+def _turn_usage(log: str) -> dict:
+    hits = TURN_LINE.findall(log)
+    assert hits, "no 'orchestrator: turn ->' usage line in /api/log for the turn"
+    i, o, r, w = (int(x) for x in hits[-1])
+    return {"in": i, "out": o, "cacheR": r, "cacheW": w, "total": i + r + w}
+
+
+def _per_turn_text(ip: str) -> str:
+    """The per-turn block plus the per-turn input of the last turn (/api/lastturn)."""
+    page = _S.get(f"http://{ip}/api/lastturn", timeout=10).text
+    assert SPLIT in page, "/api/lastturn shows no layout split - is this build older than the layout?"
+    dyn = page.split(SPLIT, 1)[1].split("===== 2.", 1)[0]
+    inp = page.split("===== 2.", 1)[1].split("===== 3.", 1)[0]
+    return dyn + "\n\n" + inp
+
+
+def _count_tokens(model: str, text: str) -> int:
+    import requests
+
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        pytest.skip("set ANTHROPIC_API_KEY on the bench host (count_tokens only)")
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages/count_tokens",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        data=json.dumps({"model": model, "messages": [{"role": "user", "content": text}]}),
+        timeout=30,
+    )
+    assert r.status_code == 200, f"count_tokens {r.status_code}: {r.text[:200]}"
+    return int(r.json()["input_tokens"])
+
+
+@pytest.fixture(scope="module")
+def board():
+    global _S
+    ip, tok = ip_tok_or_skip("L60")
+    _S = make_session(tok)
+    require_orchestrator(_S, ip, "L60")
+    orch = _S.get(f"http://{ip}/api/orch", timeout=10).json()
+    host = orch.get("orchHost") or (orch.get("provPrio") or "").split(",")[0].strip()
+    model = ((orch.get("providers") or {}).get(host) or {}).get("orchModel") or ""
+    if host != "anthropic" or "haiku" not in model:
+        pytest.skip(f"L60 needs an Anthropic haiku head (found {host!r} / {model!r})")
+    return ip, model
+
+
+def test_l60_second_turn_reads_the_static_prefix(board):
+    ip, model = board
+    before = _log(ip)
+    _chat(ip, "In one short line and without tools: name a light lunch.")
+    first = _turn_usage(_log_since(ip, before))
+    time.sleep(60)  # a minute apart: the minute clock changed, the static block did not
+    before = _log(ip)
+    _chat(ip, "Thanks. One more one-line idea, again without tools.")
+    second = _turn_usage(_log_since(ip, before))
+    per_turn = _count_tokens(model, _per_turn_text(ip))
+    prefix = second["total"] - per_turn
+    print(f"L60 turn1={first} turn2={second} perTurnTokens={per_turn} prefixTokens={prefix}")
+    assert prefix > 1024, f"implausible cached prefix size {prefix}"
+    assert second["cacheR"] >= 0.9 * prefix, (
+        f"turn 2 round 0 read {second['cacheR']} of a {prefix}-token static prefix (< 90%)"
+    )
+
+
+def test_l60_food_log_turn_appends_in_three_requests(board):
+    ip, _ = board
+    before = _log(ip)
+    reply = _chat(
+        ip,
+        "Log my lunch to l60-bench/food-log.csv (columns date,meal,kcal,protein_g): "
+        "lentil soup with bread, about 520 kcal and 24 g protein.",
+        timeout_s=200,
+    )
+    log = _log_since(ip, before)
+    rounds = re.findall(r"headloop round=(\d+)", log)
+    print(f"L60 food-log rounds={rounds} reply={reply[:160]!r}")
+    assert rounds, "no headloop rounds in /api/log (is the tool loop on?)"
+    assert len(rounds) <= 3, f"the food-log turn took {len(rounds)} requests (> 3)"
+    assert "files: appended" in log, "files.append never ran (no 'files: appended' line)"
+    assert "files: artifact l60-bench/food-log.csv" not in log, "the log was re-saved whole"

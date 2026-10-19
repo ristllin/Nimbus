@@ -7,13 +7,15 @@
 
 #include "../support/fake_config.h"
 #include "nimbus/harness/compose.h"
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/scratchpad.h"
 
 // Prompt composition suite (Stage D): pins the World system prompt as text
 // goldens over a fully canned world state, plus the tool-name sanitizers and
 // the hostForPrompt identity line. Golden workflow identical to
 // test_harness_goldens (GOLDEN_UPDATE=1 blesses; missing golden = FAIL; drift
-// dumps to test/golden/out).
+// dumps to test/golden/out). The goldens hold layout::display(), so the
+// static / summary / per-turn split shows as labelled lines.
 
 using agent::ComposeInputs;
 using harness_test::FakeConfig;
@@ -156,7 +158,7 @@ static void test_prompt_states_the_real_round_cap_and_write_timing() {
 
 static void test_prompt_golden_default() {
   checkTextGolden("orch_prompt_default.txt",
-                  agent::composeInstructions(cannedInputs()));
+                  agent::layout::display(agent::composeInstructions(cannedInputs())));
 }
 
 static void test_prompt_golden_with_recall_loop_off() {
@@ -166,14 +168,15 @@ static void test_prompt_golden_with_recall_loop_off() {
   in.recalled.push_back("[87%] the owner prefers terse replies");
   in.recalled.push_back("[71%] board 1 is the bench unit");
   checkTextGolden("orch_prompt_recall_loopoff.txt",
-                  agent::composeInstructions(in));
+                  agent::layout::display(agent::composeInstructions(in)));
 }
 
 // N11: the simplified v2 prompt (behind the promptV2 flag) - byte-pinned golden.
 static void test_prompt_golden_v2_default() {
   ComposeInputs in = cannedInputs();
   in.promptV2 = true;
-  checkTextGolden("orch_prompt_v2_default.txt", agent::composeInstructions(in));
+  checkTextGolden("orch_prompt_v2_default.txt",
+                  agent::layout::display(agent::composeInstructions(in)));
 }
 
 // N11: v1 must stay byte-identical when the flag is off (a default fleet is
@@ -188,7 +191,7 @@ static void test_prompt_v2_flag_off_is_v1() {
   // and v1-with-flag-off equals the pinned v1 default golden (same fixture)
   std::string blessed;
   if (readFile(std::string(kGoldenDir) + "/orch_prompt_default.txt", blessed))
-    TEST_ASSERT_TRUE(v1 == blessed);
+    TEST_ASSERT_TRUE(agent::layout::display(v1) == blessed);
 }
 
 // N11: v2 must be materially smaller than v1 (the whole point) - the field-docs

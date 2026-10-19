@@ -446,10 +446,12 @@ turn logs one line: `budget: ctx=200K sys=32768 res=8192 tot=65536 (auto|owner)`
 The research principle (summary + verbatim tail) also applies **inside** a
 turn and at every clip site:
 
-- **In-turn replay** (the Anthropic loop only):
-  once the replayed conversation passes a quarter of the window, rounds older
-  than the newest two collapse to one `[earlier round N] tool: gist… (N B)` line.
-  Pairs fold whole, so every `tool_use` keeps its `tool_result`.
+- **In-turn replay** (every loop provider): append-only. A tool result already
+  sent keeps its bytes, so each round reads the previous round's request from the
+  provider cache. Once the replayed results pass the replay budget, the newest
+  result is cut with a visible `[cut: ...]` note (or withheld with `[not shown:
+  ...]`), and every `tool_use` keeps its `tool_result`. See the cacheable prefix
+  in [turn-anatomy.md](turn-anatomy.md).
 - **Tool results**: a clamped result keeps its full text in the recent-results
   ring and the marker says how to get it -
   `…[truncated 8192 of 51234 B - fetch the rest with results.get("r3")]`.

@@ -1,0 +1,15 @@
+# openai loop: round 0 then round 1
+## round 0
+tools: orch_turn memory_search mcp
+instructions: (none)
+input[0] message developer: text "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+input[1] message developer: text "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
+input[2] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+## round 1
+tools: orch_turn memory_search mcp
+instructions: (none)
+input[0] message developer: text "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+input[1] message developer: text "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
+input[2] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+input[3] function_call
+input[4] function_call_output
