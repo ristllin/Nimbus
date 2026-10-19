@@ -70,6 +70,7 @@
 #include "agent/telegram.h"
 #include "agent/adapters/audio_tts.h"  // orchSpeakSink - tts device action -> Telegram audio
 #include "sys/tls_arbiter.h"
+#include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
 #include "hw/hal_status.h"
 #include "hw/tft_out.h"      // colour touch panel (screenModel=tft)
 #include "hw/touch_input.h"  // taps -> the same gestures the encoder makes
@@ -2656,9 +2657,11 @@ static void orchestratorBegin() {
   {
     agent::Hooks dh;
     dh.onDreamStart = [](const agent::DreamStartEv& e) {
+      nimbus::heapwatch::enter(nimbus::heapwatch::kDream);   // low-water attribution
       agent::alogf("dream: start (epoch=%llu)", (unsigned long long)e.epoch);
     };
     dh.onDreamEnd = [](const agent::DreamEndEv& e) {
+      nimbus::heapwatch::leave(nimbus::heapwatch::kDream);
       agent::alogf("dream: end %s pruned=%d deduped=%d tokens=%u",
                    e.turnOk ? "ok" : "FAIL", e.prunedVectors, e.dedupedVectors,
                    (unsigned)e.tokens);
@@ -3288,6 +3291,10 @@ void setup() {
     // stops reading near-empty. See docs/memory-model.md.
     heap_caps_malloc_extmem_enable(128);
   }
+  // Internal-SRAM evidence: the failed-allocation hook (any task, any reason) and the
+  // previous run's records from RTC memory. Registered here, as early as the heap
+  // routing it watches, so boot-time failures are recorded too.
+  nimbus::heapwatch::install();
   sramSnap("boot-hal");   // CUM-185: internal-SRAM baseline once PSRAM routing is armed
 
   // Task watchdog on the MAIN LOOP only (F12): a hung loop panics + reboots in
@@ -5317,6 +5324,7 @@ static bool runFactoryResetStep(nimbus::orch::ResetStep step) {
 
 void loop() {
   esp_task_wdt_reset();
+  nimbus::heapwatch::pump(millis());   // alloc-failure lines + the 1 Hz low-water ladder
 #ifdef NIMBUS_NOTIFIER_DEBUG
   // CUM-185: steady-state contiguous-SRAM sampler (test/debug builds only, so the
   // production nsn serial stream stays clean). Emits the same line as the boot

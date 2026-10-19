@@ -18,6 +18,7 @@
 #include "net_util.h"              // tlsSetup (CA bundle / setInsecure) + tlsClose
 #include "../agent/store.h"
 #include "agent_log.h"             // alogf - poll-task hand-over + stack high-water lines
+#include "heap_watch.h"            // activity tag: update check / install
 #include "tls_arbiter.h"
 #include "nimbus/ota/ota_headroom.h"   // dedicated task or poll task (host-tested)
 #include "nimbus/ota/ota_logic.h"
@@ -608,6 +609,7 @@ static void finishCheck() {
 // The check itself. Runs on the dedicated otacheck task or inline on the Telegram
 // poll task (runOnPoll); the caller releases the claim when it returns.
 static void checkRun() {
+  nimbus::heapwatch::Scope updating(nimbus::heapwatch::kOta);
   g_state = State::Checking;
   g_lastCheckReached = false;   // set true iff fetchManifest reaches the server
   const char* err = "arbiter";
@@ -732,6 +734,7 @@ static void failInstall(const char* why) {
 // Telegram poll task (runOnPoll); the caller releases the claim when it returns. A
 // committed install never returns: it restarts the device holding the claim.
 static void installRun() {
+  nimbus::heapwatch::Scope updating(nimbus::heapwatch::kOta);
   fireEvent(EvInstallStart, g_installDry ? "dry" : "real", "");
   g_state = State::Checking;
 

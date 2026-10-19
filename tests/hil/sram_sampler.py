@@ -58,6 +58,15 @@ FIELDS = [
     ("sfxStackMin", ["mem", "sfxStackMin"]),  # CUM-222: sfx task (reduced 20K->12K)
     ("musicStackMin", ["mem", "musicStackMin"]),  # CUM-222: music task (now safe at 8K)
     ("psramFree", ["psramFree"]),
+    # O2 (v4.5.14): the internal-SRAM evidence the device keeps itself.
+    ("uptimeMs", ["uptimeMs"]),
+    ("lowWater", ["mem", "lowWater"]),
+    ("allocFails", ["mem", "allocFails"]),
+    ("restingLargest", ["mem", "restingLargest"]),
+    ("tlsOverlaps", ["mem", "tlsOverlaps"]),
+    ("loopStackMin", ["mem", "loopStackMin"]),
+    ("panelStackMin", ["mem", "panelStackMin"]),
+    ("vrelStackMin", ["mem", "vrelStackMin"]),
 ]
 # The headroom metrics whose FLOOR (min over the run) is the acceptance number.
 FLOOR_METRICS = [
@@ -68,7 +77,89 @@ FLOOR_METRICS = [
     "asyncStackMin",
     "sfxStackMin",
     "musicStackMin",
+    "lowWater",
+    "restingLargest",
+    "loopStackMin",
+    "panelStackMin",
+    "vrelStackMin",
 ]
+
+# The O2 24 h soak pass (lane O2 DoD): no reboot, the resting largest block at 24 h
+# within one heap size class of its 1 h value with a flat trend, no new low-water
+# under 8 KB, no failed allocation, no concurrent work-TLS.
+SOAK_MIN_LOW_WATER = 8 * 1024
+SOAK_MAX_DRIFT_24H = 512  # bytes the fitted resting-block trend may lose over 24 h
+
+
+def _hour_median(rows, t_from, t_to, name):
+    vals = [r[name] for r in rows if t_from <= r.get("t", 0) < t_to and isinstance(r.get(name), (int, float))]
+    return round(statistics.median(vals)) if vals else None
+
+
+def _vals(rows, name):
+    return [r[name] for r in rows if isinstance(r.get(name), (int, float))]
+
+
+def _slope_per_hour(rows, name):
+    """Least-squares slope of `name` over time, in units per hour."""
+    t0 = rows[0]["t"]
+    pts = [((r["t"] - t0) / 3600.0, r[name]) for r in rows if isinstance(r.get(name), (int, float))]
+    if len(pts) < 2:
+        return 0.0
+    mx = statistics.mean(p[0] for p in pts)
+    my = statistics.mean(p[1] for p in pts)
+    den = sum((p[0] - mx) ** 2 for p in pts)
+    return sum((p[0] - mx) * (p[1] - my) for p in pts) / den if den else 0.0
+
+
+def _resting_reasons(at1h, last, slope):
+    from l41_evidence import within_one_class
+
+    if at1h is None or last is None:
+        return ["no resting-block samples at 1 h or in the last hour"]
+    out = []
+    if not within_one_class(last, at1h):
+        out.append(f"resting largest block drifted a size class or more: {at1h} at 1 h, {last} at the end")
+    if slope * 24 < -SOAK_MAX_DRIFT_24H:
+        out.append(f"resting-block trend {slope:.1f} B/h loses more than {SOAK_MAX_DRIFT_24H} B a day")
+    return out
+
+
+def _evidence_reasons(rows):
+    out = []
+    ups = _vals(rows, "uptimeMs")
+    if any(b < a for a, b in zip(ups, ups[1:])):
+        out.append("the device rebooted (uptime went back)")
+    lows, afs, tls = _vals(rows, "lowWater"), _vals(rows, "allocFails"), _vals(rows, "tlsOverlaps")
+    if lows and min(lows) < SOAK_MIN_LOW_WATER:
+        out.append(f"a low-water under 8 KB: {min(lows)}")
+    if afs and max(afs) > 0:
+        out.append(f"failed allocations: {max(afs)}")
+    if tls and max(tls) > 0:
+        out.append(f"concurrent work-TLS seen: {max(tls)}")
+    return out
+
+
+def soak_verdict(rows):
+    """The O2 soak verdict over a sampled run: (ok, reasons, numbers)."""
+    rows = [r for r in rows if isinstance(r.get("uptimeMs"), (int, float))]
+    if len(rows) < 3:
+        return False, ["too few samples"], {}
+    t0, end = rows[0]["t"], rows[-1]["t"]
+    at1h = _hour_median(rows, t0 + 3600, t0 + 7200, "restingLargest")
+    last = _hour_median(rows, end - 3600, end + 1, "restingLargest")
+    slope = _slope_per_hour(rows, "restingLargest")
+    reasons = _evidence_reasons(rows) + _resting_reasons(at1h, last, slope)
+    lows, afs = _vals(rows, "lowWater"), _vals(rows, "allocFails")
+    nums = {
+        "restingAt1h": at1h,
+        "restingAtEnd": last,
+        "slopeBph": round(slope, 1),
+        "minLowWater": min(lows) if lows else None,
+        "allocFails": max(afs) if afs else None,
+        "hours": round((end - t0) / 3600.0, 2),
+    }
+    return not reasons, reasons, nums
 
 
 def _dig(obj, path):
@@ -190,6 +281,25 @@ def selftest():
     print_diff(synth, after)
     da = summarize(after)["fields"]["intLargest"]["min"] - s["fields"]["intLargest"]["min"]
     assert da == 16000, da
+    # The soak verdict: a flat run passes, a drifting one and a reboot fail.
+    flat = [
+        {
+            "t": h * 600.0,
+            "uptimeMs": 1000 + h * 600000,
+            "restingLargest": 11764,
+            "lowWater": 9000,
+            "allocFails": 0,
+            "tlsOverlaps": 0,
+        }
+        for h in range(150)
+    ]
+    ok, why, _ = soak_verdict(flat)
+    assert ok, why
+    drift = [dict(r, restingLargest=15860 - int(r["t"] / 600) * 40) for r in flat]
+    assert not soak_verdict(drift)[0]
+    reboot = [dict(r) for r in flat]
+    reboot[100]["uptimeMs"] = 5
+    assert not soak_verdict(reboot)[0]
     print("\nselftest OK")
     return 0
 
@@ -207,10 +317,15 @@ def main(argv=None):
     p.add_argument("--summarize", metavar="JSONL", help="summarize a run and exit")
     p.add_argument("--diff", nargs=2, metavar=("BEFORE", "AFTER"), help="diff two runs")
     p.add_argument("--selftest", action="store_true", help="host self-test, no hardware")
+    p.add_argument("--soak-verdict", metavar="JSONL", help="the O2 24 h soak pass/fail over a run")
     args = p.parse_args(argv)
 
     if args.selftest:
         return selftest()
+    if args.soak_verdict:
+        ok, why, nums = soak_verdict(load_jsonl(args.soak_verdict))
+        print(json.dumps({"pass": ok, "reasons": why, **nums}))
+        return 0 if ok else 1
     if args.summarize:
         print_summary(summarize(load_jsonl(args.summarize), args.summarize))
         return 0

@@ -11,6 +11,7 @@
 #include "../agent_config.h"           // CUMULO_HOST_DEFAULT
 #include "../store.h"
 #include "../../sys/agent_log.h"
+#include "../../sys/heap_watch.h"   // activity tag: speech-to-text
 
 // STT diagnostics: log the full transcription path (provider, file size, HTTP
 // outcome, raw response, parsed text) through alogf so a silent "Didn't catch that"
@@ -101,6 +102,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
                                                  const char* mime, const uint8_t* prefix,
                                                  size_t prefixLen, uint32_t connectBudgetMs) {
   using Kind = nimbus::voice::SttResult::Kind;
+  nimbus::heapwatch::Scope transcribing(nimbus::heapwatch::kStt);
   nimbus::voice::SttResult out;
   if (!localPath || !localPath[0]) { out.kind = Kind::NoAudio; return out; }
   SttProvider prov = resolve();

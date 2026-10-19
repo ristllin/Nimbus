@@ -7,6 +7,7 @@
 #include <esp_heap_caps.h>
 
 #include "../../sys/agent_log.h"
+#include "../../sys/heap_watch.h"   // activity tag: vision
 #include "../../sys/net_util.h"      // tlsClose, tlsSetup
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "nimbus/orch/reply_text.h"
@@ -149,6 +150,7 @@ bool available() {
 
 String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
                      const String& caption) {
+  nimbus::heapwatch::Scope describing(nimbus::heapwatch::kVision);
   Provider prov;
   if (!path || !*path || !resolve(prov)) return String();
 
