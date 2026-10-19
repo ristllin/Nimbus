@@ -11,17 +11,62 @@ inside ``net``-marked tests, which are hardware-gated.
 from __future__ import annotations
 
 import os
-from typing import Optional
+import time
+from typing import List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 try:
     import requests
 except ImportError:  # pragma: no cover - collection must still succeed
     requests = None  # net tests raise a clear error before use
 
-from device import Device
+from device import STATUS_PATTERN, Device, ExpectTimeout
+from redact import Secret
 
 IP_RE = r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
 AP_IP = "192.168.4.1"  # NIMBUS_AP_SSID "Nimbus-setup" default softAP address
+
+# How long ensure_station waits for the station to rejoin on its own after a restart
+# before it decides whether provisioning is needed. The bench board rejoins in 5-7 s.
+REJOIN_WAIT_S = 20.0
+# How long the `net` fixture waits for NIMBUS_TEST_IP to answer after the session
+# reset (boot, SD scan, Wi-Fi rejoin). Best effort: a test still fails loudly on its
+# own if the IP never answers.
+IP_READY_WAIT_S = 60.0
+STATUS_REPLY_S = 3.0  # one STATUS round trip; longer means the console is busy booting
+JOIN_TIMEOUT_S = 25.0  # WIFI_GOT_IP after a provisioning command
+
+# Wi-Fi disconnect reasons by class, mirrored from classifyReason() in
+# lib/core/src/wifi_policy.cpp (a host test pins the two tables together).
+AUTH_REASONS = frozenset({2, 15, 202, 204, 205})  # credentials rejected: retrying cannot fix it
+NOT_FOUND_REASONS = frozenset({201})  # NO_AP_FOUND: the stored network is not in range
+SELF_REASONS = frozenset({8})  # ASSOC_LEAVE: the device's own disconnect, never a failure
+
+_GOT_IP = rf"WIFI_GOT_IP\s+(?P<got>{IP_RE})"
+_DISCONNECTED = r"WIFI_DISCONNECTED\s+reason=(?P<reason>\d+)"
+_STATION_EVENT = rf"{_GOT_IP}|{_DISCONNECTED}|{STATUS_PATTERN}"
+
+
+def classify_reason(reason: int) -> str:
+    """The firmware's class for a disconnect reason: ``auth``, ``not-found``,
+    ``self`` or ``transient``."""
+    if reason in AUTH_REASONS:
+        return "auth"
+    if reason in NOT_FOUND_REASONS:
+        return "not-found"
+    if reason in SELF_REASONS:
+        return "self"
+    return "transient"
+
+
+def needs_provisioning(known: Optional[int], reasons: Sequence[int]) -> bool:
+    """Whether the harness may push Wi-Fi credentials to a station that did not
+    rejoin: only when the device reports no stored network (``known == 0``) or its
+    stored credentials were rejected (an ``auth`` reason during the wait). A
+    transient, self-initiated or not-found disconnect, or an unknown count, never
+    does: provisioning makes the device drop the join it is making."""
+    if known == 0:
+        return True
+    return any(classify_reason(r) == "auth" for r in reasons)
 
 
 class NetError(RuntimeError):
@@ -36,12 +81,38 @@ class WifiAuthFailure(NetError):
         super().__init__(f"WiFi disconnected reason={reason}")
 
 
+class StationDown(NetError):
+    """The station did not rejoin and nothing says provisioning would help."""
+
+
+class Join(NamedTuple):
+    """What ensure_station / wait_station saw: the LAN IP (None if the station is
+    still down), whether the harness provisioned, and the disconnect reasons."""
+
+    ip: Optional[str]
+    provisioned: bool
+    reasons: Tuple[int, ...]
+
+
 class Net:
     def __init__(self, device: Device, secrets=None):
         self.device = device
         self.secrets = secrets
         self.ip: Optional[str] = None  # cached LAN IP once GOT_IP arrives
         self._token: Optional[str] = None  # per-device web auth token (see _auth)
+
+    def __repr__(self) -> str:
+        return f"<Net ip={self.ip}>"
+
+    @classmethod
+    def from_env(cls, device: Device, secrets=None, environ: Optional[Mapping[str, str]] = None) -> "Net":
+        """A Net seeded with ``NIMBUS_TEST_IP`` when it is set, so a plain ``net``
+        leg runs standalone. Without it ``ip`` stays None until wait_got_ip(),
+        ensure_station() or the test sets it."""
+        net = cls(device, secrets)
+        env = os.environ if environ is None else environ
+        net.ip = env.get("NIMBUS_TEST_IP", "").strip() or None
+        return net
 
     def _require_requests(self):
         if requests is None:
@@ -52,13 +123,13 @@ class Net:
     # Since owner-batch-2 ALL /api GETs are token-gated (401 without it), so the
     # harness attaches X-Nimbus-Token to every request. Sources, in order:
     # env NIMBUS_TEST_TOKEN (no serial churn - pairs with NIMBUS_TEST_IP), else
-    # the serial `WEBTOK?` console command. Cached for the session.
+    # the serial `WEBTOK?` console command. Cached for the session, as a Secret.
     def token(self) -> Optional[str]:
         if self._token:
             return self._token
         env = os.environ.get("NIMBUS_TEST_TOKEN", "").strip()
         if env:
-            self._token = env
+            self._token = Secret(env)
             return self._token
         try:
             self._token = self.device.webtok()
@@ -79,37 +150,104 @@ class Net:
 
     def provision_legacy(self, ssid: str, password: str) -> None:
         """The standalone ``provision`` env's protocol (provision.cpp)."""
-        self.device.send(f"CONNECT {ssid}|{password}")
+        self.device.send(Secret(f"CONNECT {ssid}|{password}"))
 
-    def wait_got_ip(self, timeout: float = 25.0) -> str:
+    def _next_reason(self, pattern: str, deadline: float):
+        """The next line matching ``pattern`` that is not the device's own
+        disconnect (reason 8). Provisioning over serial disconnects first
+        (``saveAndConnect``), so that line precedes every join and is never the
+        answer. Raises ExpectTimeout at ``deadline`` (monotonic)."""
+        while True:
+            m = self.device.expect_re(pattern, timeout=max(0.0, deadline - time.monotonic()))
+            reason = m.group("reason")
+            if reason is None or classify_reason(int(reason)) != "self":
+                return m
+
+    def wait_got_ip(self, timeout: float = JOIN_TIMEOUT_S) -> str:
         """Wait for ``WIFI_GOT_IP <ip>``. If a ``WIFI_DISCONNECTED reason=<n>``
-        arrives first, raise WifiAuthFailure(reason) (feeds F9). On success caches
-        + returns the LAN IP."""
-        deadline_pat = (
-            rf"WIFI_GOT_IP\s+{IP_RE}"
-            r"|WIFI_DISCONNECTED\s+reason=(\d+)"
-        )
-        m = self.device.expect_re(deadline_pat, timeout=timeout)
-        if m.group(1):  # GOT_IP
-            self.ip = m.group(1)
+        arrives first, raise WifiAuthFailure(reason) (feeds F9) - except the
+        device's own disconnect (reason 8), which only means a join is starting.
+        On success caches + returns the LAN IP."""
+        m = self._next_reason(rf"{_GOT_IP}|{_DISCONNECTED}", time.monotonic() + timeout)
+        if m.group("got"):
+            self.ip = m.group("got")
             return self.ip
-        raise WifiAuthFailure(int(m.group(2)))
+        raise WifiAuthFailure(int(m.group("reason")))
 
     def wait_disconnect_reason(self, timeout: float = 25.0) -> int:
         """Wait for ``WIFI_DISCONNECTED reason=<n>`` and return the int reason
-        (15/2/201/...). Asserts the device did NOT hang by confirming a subsequent
-        PING->PONG still answers (F9)."""
-        m = self.device.expect_re(r"WIFI_DISCONNECTED\s+reason=(\d+)", timeout=timeout)
-        reason = int(m.group(1))
+        (15/2/201/...), past the device's own disconnect (reason 8) that a
+        provisioning command prints first. Asserts the device did NOT hang by
+        confirming a subsequent PING->PONG still answers (F9)."""
+        m = self._next_reason(_DISCONNECTED, time.monotonic() + timeout)
+        reason = int(m.group("reason"))
         if not self.device.ping():
             raise NetError(f"device stopped responding after reason={reason} (hung - the exact F9 failure)")
         return reason
+
+    # -- joining without racing the device's own rejoin ------------------------
+    def _status_poll(self, window: float, reasons: List[int]) -> Optional[str]:
+        """Send one STATUS and read until its reply (at most ``window`` s), keeping
+        every disconnect reason on the way. The LAN IP once the station is up, else
+        None (still down, or the console is busy booting)."""
+        self.device.send("STATUS")
+        end = time.monotonic() + window
+        while True:
+            try:
+                m = self.device.expect_re(_STATION_EVENT, timeout=max(0.0, end - time.monotonic()))
+            except ExpectTimeout:
+                return None
+            if m.group("got"):
+                return m.group("got")
+            if m.group("reason"):
+                reasons.append(int(m.group("reason")))
+                continue
+            up = m.group("wifi") == "1" and m.group("ip") != "0.0.0.0"
+            return m.group("ip") if up else None
+
+    def wait_station(self, timeout: float = REJOIN_WAIT_S, every: float = 1.0) -> Join:
+        """Poll STATUS until the station is up (``wifi=1``, or a ``WIFI_GOT_IP``
+        line), at most ``timeout`` s. Never provisions. Caches the IP when up."""
+        reasons: List[int] = []
+        deadline = time.monotonic() + timeout
+        while True:
+            ip = self._status_poll(min(STATUS_REPLY_S, max(0.1, deadline - time.monotonic())), reasons)
+            if ip:
+                self.ip = ip
+                return Join(ip, False, tuple(reasons))
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return Join(None, False, tuple(reasons))
+            time.sleep(min(every, left))
+
+    def ensure_station(self, ssid: str, password: str, wait: float = REJOIN_WAIT_S) -> Join:
+        """Get the station on the LAN without fighting the device's own rejoin.
+
+        After a restart the board rejoins from its stored networks within seconds.
+        A fixture that read ``wifi=0`` in that window and provisioned made the
+        device drop the join it was making, and setup failed (bench, 19 Oct 2026).
+        So this waits up to ``wait`` s for the rejoin and provisions only when
+        needs_provisioning() says the device cannot rejoin by itself; otherwise it
+        raises StationDown with what it saw. Returns a Join; caches the IP."""
+        seen = self.wait_station(wait)
+        if seen.ip:
+            return seen
+        known = self.device.wifi_known_count()
+        if not needs_provisioning(known, seen.reasons):
+            stored = "unknown" if known is None else known
+            raise StationDown(
+                f"Wi-Fi did not rejoin within {wait:.0f} s and nothing says provisioning would help "
+                f"(stored networks: {stored}, disconnect reasons: {list(seen.reasons) or 'none'}). "
+                "Not re-provisioning: check the access point, or provision the device by hand."
+            )
+        self.provision(ssid, password)
+        return Join(self.wait_got_ip(timeout=JOIN_TIMEOUT_S), True, seen.reasons)
 
     # -- HTTP ---------------------------------------------------------------
     def _base(self, ip: Optional[str]) -> str:
         target = ip or self.ip
         if not target:
-            raise NetError("no IP known; call wait_got_ip() or pass ip=")
+            raise NetError("no IP known; set NIMBUS_TEST_IP, call wait_got_ip() or ensure_station(), or pass ip=")
         return f"http://{target}"
 
     def get(self, path: str, ip: Optional[str] = None, timeout: float = 5.0, auth: bool = True):
@@ -124,9 +262,20 @@ class Net:
         req = self._require_requests()
         return req.post(self._base(ip) + path, data=data, timeout=timeout, headers=self._auth() if auth else {})
 
-    def reachable(self, ip: Optional[str] = None, timeout: float = 3.0) -> bool:
+    def reachable(self, ip: Optional[str] = None, timeout: float = 3.0, auth: bool = True) -> bool:
         """Quick ``GET /`` with a short timeout (ap_up / web_get_root)."""
         try:
-            return self.get("/", ip=ip, timeout=timeout).status_code == 200
+            return self.get("/", ip=ip, timeout=timeout, auth=auth).status_code == 200
         except Exception:  # noqa: BLE001 - any transport error == unreachable
             return False
+
+    def wait_reachable(self, timeout: float = IP_READY_WAIT_S, every: float = 2.0) -> bool:
+        """Poll ``GET /`` (served without the token) until the known IP answers,
+        at most ``timeout`` s. False on the deadline."""
+        deadline = time.monotonic() + timeout
+        while not self.reachable(auth=False):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(every, left))
+        return True

@@ -26,12 +26,16 @@ module (and collecting the suite) never contacts hardware.
 from __future__ import annotations
 
 import glob
+import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from typing import List, Optional, Pattern
+
+from redact import Secret
 
 try:
     import serial  # pyserial
@@ -48,6 +52,17 @@ except ImportError:  # pragma: no cover - collection must still succeed
 PORT_GLOBS = ("/dev/cu.usbmodem*", "/dev/cu.usbserial-*", "/dev/cu.SLAB_USBtoUART*", "/dev/cu.wchusbserial*")
 PORT_GLOB = " | ".join(PORT_GLOBS)  # for messages only
 BAUD = 115200
+
+# The STATUS reply, as status() parses it. The line grew extra fields (minheap/psram/
+# sd/vec/flashfull/...) between heap and uptime, so it matches heap then skips to
+# uptime tolerantly. Shared with net.py's rejoin wait, which reads it among the
+# Wi-Fi event lines.
+STATUS_PATTERN = (
+    r"STATUS\s+(?:fw=\S+\s+)?(?:build=\S+\s+)?"
+    r"mode=(?P<mode>\d+)\s+wifi=(?P<wifi>\d+)\s+"
+    r"ip=(?P<ip>\S+)\s+rssi=(?P<rssi>-?\d+)\s+heap=(?P<heap>\d+)"
+    r".*?uptime=(?P<up>\d+)"
+)
 
 # Boot-log strings that mean the firmware crashed / is looping - a boot_ok FAIL.
 PANIC_MARKERS = ("Guru Meditation", "abort()", "assert failed", "CORRUPT HEAP", "Backtrace:")
@@ -155,6 +170,39 @@ class ExpectTimeout(DeviceError):
 
 class BootError(DeviceError):
     """A panic / reboot-loop was seen in the boot capture (F11/F14)."""
+
+
+def esptool_commands(path: Optional[str] = None, home: Optional[str] = None) -> List[List[str]]:
+    """Every way to run esptool on this host, in the order esptool_hard_reset tries
+    them: ``esptool.py`` then ``esptool`` on PATH, this interpreter's ``esptool``
+    module, then PlatformIO's own copies, which is all a bench that only builds
+    with PlatformIO has (the bench run on 19 Oct 2026 failed for that reason):
+    the penv scripts, then the ``tool-esptoolpy`` package run by the penv Python.
+    ``path`` and ``home`` default to ``$PATH`` and the user's home (host tests
+    pass fakes). A command found twice is listed once."""
+    cmds: List[List[str]] = []
+
+    def add(*argv: str) -> None:
+        if list(argv) not in cmds:
+            cmds.append(list(argv))
+
+    for name in ("esptool.py", "esptool"):
+        found = shutil.which(name, path=path)
+        if found:
+            add(os.path.realpath(found))
+    if importlib.util.find_spec("esptool") is not None:
+        add(sys.executable, "-m", "esptool")
+    pio = os.path.join(home or os.path.expanduser("~"), ".platformio")
+    penv = os.path.join(pio, "penv", "bin")
+    for name in ("esptool.py", "esptool"):
+        script = os.path.join(penv, name)
+        if os.path.isfile(script) and os.access(script, os.X_OK):
+            add(os.path.realpath(script))
+    package = os.path.join(pio, "packages", "tool-esptoolpy", "esptool.py")
+    if os.path.isfile(package):
+        penv_python = os.path.join(penv, "python")
+        add(penv_python if os.path.isfile(penv_python) else sys.executable, package)
+    return cmds
 
 
 def list_ports() -> List[str]:
@@ -599,12 +647,13 @@ class Device:
         return self.expect_re(pattern, timeout=timeout)
 
     # -- high-level affordances ---------------------------------------------
-    def webtok(self) -> str:
+    def webtok(self) -> Secret:
         """``WEBTOK?`` -> the per-device 96-bit web auth token (hex). Raises on
-        timeout. Used by Net to token-gate every /api request (owner-batch-2)."""
+        timeout. Used by Net to token-gate every /api request (owner-batch-2).
+        Returned as a Secret, so a traceback never prints it."""
         self.send("WEBTOK?")
         m = self.expect_re(r"WEBTOK\s+([0-9a-fA-F]+)", timeout=8.0)
-        return m.group(1)
+        return Secret(m.group(1))
 
     def ping(self, timeout: float = 3.0) -> bool:
         """``PING`` -> ``PONG``. Proves the firmware loop is alive (not hung)."""
@@ -616,17 +665,17 @@ class Device:
 
     def status(self, timeout: float = 3.0) -> "re.Match[str]":
         """``STATUS`` -> parsed ``STATUS mode=.. wifi=.. ip=.. rssi=.. heap=..
-        [minheap.. psram.. sd.. vec.. flashfull..] uptime=..``. The line grew
-        extra fields (minheap/psram/sd/vec/flashfull) between heap and uptime, so
-        we match heap then skip to uptime tolerantly."""
-        return self.cmd_re(
-            "STATUS",
-            r"STATUS\s+(?:fw=\S+\s+)?(?:build=\S+\s+)?"
-            r"mode=(?P<mode>\d+)\s+wifi=(?P<wifi>\d+)\s+"
-            r"ip=(?P<ip>\S+)\s+rssi=(?P<rssi>-?\d+)\s+heap=(?P<heap>\d+)"
-            r".*?uptime=(?P<up>\d+)",
-            timeout=timeout,
-        )
+        [minheap.. psram.. sd.. vec.. flashfull..] uptime=..`` (STATUS_PATTERN)."""
+        return self.cmd_re("STATUS", STATUS_PATTERN, timeout=timeout)
+
+    def wifi_known_count(self, timeout: float = 4.0) -> Optional[int]:
+        """``WIFIKNOWN?`` -> how many Wi-Fi networks the device has stored (names
+        only ever cross the console, never a password). None when the image has no
+        such verb or the console does not answer in time."""
+        try:
+            return int(self.cmd_re("WIFIKNOWN?", r"WIFIKNOWN\s+n=(\d+)", timeout=timeout).group(1))
+        except ExpectTimeout:
+            return None
 
     def ensure_mode(self, mode: int, timeout: float = 30.0) -> "Device":
         """Put the device in operating ``mode`` (0=Notifier, 1=Orchestrator).
@@ -771,8 +820,9 @@ class Device:
         self.send(f"TURN {text}")
 
     def wifi(self, ssid: str, password: str) -> None:
-        """``WIFI <ssid>|<pass>`` (NIMBUS_TEST). Provision creds over serial."""
-        self.send(f"WIFI {ssid}|{password}")
+        """``WIFI <ssid>|<pass>`` (NIMBUS_TEST). Provision creds over serial. The
+        line carries the password, so it travels as a Secret (redacted repr)."""
+        self.send(Secret(f"WIFI {ssid}|{password}"))
 
     # -- fresh-device / first-run helpers (CUM-245, F5) ---------------------
     def factory_reset(self, timeout: float = 45.0):
@@ -949,7 +999,9 @@ class Device:
         instead. ``chip_id`` just drives a connect + the reset sequence (--before
         default-reset to enter, --after hard-reset to leave). Targets THIS device's
         own port (never the other board when two are attached), closes it first
-        (esptool needs it), and reports whether any invocation succeeded.
+        (esptool needs it), and reports whether any invocation succeeded. The
+        invocations come from esptool_commands(): PATH first, then PlatformIO's
+        penv and tool-esptoolpy copies.
 
         ALWAYS reopens the console afterwards - success OR failure. esptool holds
         the port exclusively (so this closes it first) and, on success, drives a
@@ -964,7 +1016,7 @@ class Device:
         base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
         ok = False
         try:
-            for prefix in (["esptool.py"], [sys.executable, "-m", "esptool"], ["esptool"]):
+            for prefix in esptool_commands():
                 try:
                     r = subprocess.run(prefix + base, capture_output=True, text=True, timeout=40)
                 except (OSError, subprocess.SubprocessError):

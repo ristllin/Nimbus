@@ -13,13 +13,19 @@ Telegram: the harness deliberately does NOT read a production ``TELEGRAM_BOT_TOK
 Using the production bot would collide on Telegram long-poll (getUpdates is single-owner
 per token - F18). A DEDICATED test bot token/chat must be supplied via the
 environment: ``NIMBUS_TEST_TG_TOKEN`` / ``NIMBUS_TEST_TG_CHAT``.
+
+Every value this reader hands out is a ``redact.Secret``: it works as a plain string
+but its ``repr`` shows at most the last 4 characters, so a traceback that prints a
+fixture or an argument never prints a key, password, token or chat id.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, NamedTuple, Optional
+
+from redact import Secret, redact
 
 # The secrets env file. NIMBUS_ENV_FILE overrides; default is the repo-root .env
 # (gitignored, never committed).
@@ -31,10 +37,10 @@ class SecretsUnavailable(RuntimeError):
     LOUD pytest.skip with a reason - never a silent pass."""
 
 
-def _parse_env_file(path: Path) -> Dict[str, str]:
+def _parse_env_file(path: Path) -> Dict[str, Secret]:
     """Parse a simple ``KEY=VALUE`` .env file. Ignores blank lines and ``#``
-    comments, strips surrounding quotes. Never logs values."""
-    out: Dict[str, str] = {}
+    comments, strips surrounding quotes. Never logs values: each one is a Secret."""
+    out: Dict[str, Secret] = {}
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -47,8 +53,23 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
         key = key.strip()
         val = val.strip().strip('"').strip("'")
         if key:
-            out[key] = val
+            out[key] = Secret(val)
     return out
+
+
+def _env_secret(name: str) -> Secret:
+    return Secret(os.environ.get(name, ""))
+
+
+class BenchBot(NamedTuple):
+    """The dedicated test bot (token, chat id). Unpacks like the old
+    ``(token, chat)`` tuple; its repr never shows either value."""
+
+    token: str
+    chat: str
+
+    def __repr__(self) -> str:
+        return f"BenchBot(token={redact(self.token)}, chat={redact(self.chat)})"
 
 
 class Secrets:
@@ -60,10 +81,13 @@ class Secrets:
 
     def __init__(self, env_path: Path = DEFAULT_ENV_PATH):
         self._env_path = Path(env_path)
-        self._env: Optional[Dict[str, str]] = None
+        self._env: Optional[Dict[str, Secret]] = None
+
+    def __repr__(self) -> str:
+        return f"<Secrets env={self._env_path} (values hidden)>"
 
     # -- lazy loader ---------------------------------------------------------
-    def _load(self) -> Dict[str, str]:
+    def _load(self) -> Dict[str, Secret]:
         if self._env is None:
             if not self._env_path.exists():
                 raise SecretsUnavailable(
@@ -72,17 +96,18 @@ class Secrets:
             self._env = _parse_env_file(self._env_path)
         return self._env
 
-    def get(self, key: str, default: str = "") -> str:
-        """Raw lookup from the .env (does not fall back to os.environ)."""
-        return self._load().get(key, default)
+    def get(self, key: str, default: str = "") -> Secret:
+        """Lookup from the .env (does not fall back to os.environ). The value
+        works as a plain string; only its repr is redacted."""
+        return Secret(self._load().get(key, default))
 
     # -- provider keys (pushed to device, never used host-side) --------------
     @property
-    def openai_key(self) -> str:
+    def openai_key(self) -> Secret:
         return self.get("OPENAI_API_KEY")
 
     @property
-    def anthropic_key(self) -> str:
+    def anthropic_key(self) -> Secret:
         return self.get("ANTHROPIC_API_KEY")
 
     def require_provider_keys(self) -> None:
@@ -102,8 +127,8 @@ class Secrets:
         return os.environ.get("NIMBUS_TEST_STA_SSID", "")
 
     @property
-    def sta_pass(self) -> str:
-        return os.environ.get("NIMBUS_TEST_STA_PASS", "")
+    def sta_pass(self) -> Secret:
+        return _env_secret("NIMBUS_TEST_STA_PASS")
 
     def require_sta(self) -> None:
         if not self.sta_ssid:
@@ -119,8 +144,8 @@ class Secrets:
         return os.environ.get("NIMBUS_TEST_STA_SSID2", "")
 
     @property
-    def sta_pass2(self) -> str:
-        return os.environ.get("NIMBUS_TEST_STA_PASS2", "")
+    def sta_pass2(self) -> Secret:
+        return _env_secret("NIMBUS_TEST_STA_PASS2")
 
     def require_sta2(self) -> None:
         self.require_sta()
@@ -134,12 +159,17 @@ class Secrets:
     # Read from the environment, NOT from a production bot's token - sharing a
     # production bot's token collides on getUpdates long-poll (F18).
     @property
-    def tg_test_token(self) -> str:
-        return os.environ.get("NIMBUS_TEST_TG_TOKEN", "")
+    def tg_test_token(self) -> Secret:
+        return _env_secret("NIMBUS_TEST_TG_TOKEN")
 
     @property
-    def tg_test_chat(self) -> str:
-        return os.environ.get("NIMBUS_TEST_TG_CHAT", "")
+    def tg_test_chat(self) -> Secret:
+        return _env_secret("NIMBUS_TEST_TG_CHAT")
+
+    def bench_bot(self) -> BenchBot:
+        """The dedicated test bot as one redacted value (call
+        ``require_test_telegram`` first for a loud skip when it is missing)."""
+        return BenchBot(self.tg_test_token, self.tg_test_chat)
 
     def require_test_telegram(self) -> None:
         if not self.tg_test_token or not self.tg_test_chat:

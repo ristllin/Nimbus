@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from device import Device, DeviceError  # noqa: E402
 from manual import ManualStep  # noqa: E402
-from net import Net  # noqa: E402
+from net import IP_READY_WAIT_S, Net  # noqa: E402
 from nsn import BrokerUnavailable, NsnInjector  # noqa: E402
 from secrets import Secrets, SecretsUnavailable  # noqa: E402
 
@@ -170,7 +170,8 @@ def port(request) -> "str | None":
 def secrets() -> Secrets:
     """Value-hiding view over the secrets .env + test env vars. Construction does no IO;
     individual property accesses raise SecretsUnavailable (which tests convert to a
-    loud skip) when a required source is missing."""
+    loud skip) when a required source is missing. Every value it returns is a
+    redact.Secret, so a traceback never prints one."""
     return Secrets()
 
 
@@ -232,8 +233,37 @@ def device(request, allow_hardware, port):
 @pytest.fixture(scope="session")
 def net(device, secrets) -> Net:
     """LAN helper over the serial device. Depends on ``device`` so it inherits the
-    same hardware gate."""
-    return Net(device, secrets)
+    same hardware gate.
+
+    Seeded with ``NIMBUS_TEST_IP`` when it is set, so a plain ``net`` leg runs
+    standalone (the bench run on 19 Oct 2026 failed every such leg with "no IP
+    known"). The ``device`` fixture has just restarted the board, so the fixture
+    then waits, best effort and bounded, for that IP to answer before the first
+    test fires. Without the variable, ``ip`` comes from wait_got_ip() or
+    ensure_station() as before."""
+    n = Net.from_env(device, secrets)
+    if n.ip and not n.wait_reachable(IP_READY_WAIT_S):
+        print(f"\n[conftest] NIMBUS_TEST_IP={n.ip} did not answer within {IP_READY_WAIT_S:.0f} s - continuing")
+    return n
+
+
+@pytest.fixture()
+def bench(device, net, secrets, require_secret):
+    """Orchestrator mode on Wi-Fi with the DEDICATED test bot, the test chat as the
+    only (owner) chat; the bot token is cleared afterwards.
+
+    Joins through Net.ensure_station, which waits out the rejoin after a restart and
+    provisions only when the device cannot rejoin by itself. Yields a BenchBot: it
+    unpacks as ``token, chat`` and its repr never shows either value."""
+    require_secret(secrets.require_test_telegram)
+    require_secret(secrets.require_sta)
+    device.ensure_mode(1)
+    net.ensure_station(secrets.sta_ssid, secrets.sta_pass)
+    bot = secrets.bench_bot()
+    r = net.post("/api/orch", {"tgToken": bot.token, "tgAllow": bot.chat}, timeout=8.0)
+    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
+    yield bot
+    net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
 
 
 @pytest.fixture()
