@@ -76,6 +76,8 @@
 #include "web_admission.h"              // big responses trickle or answer busy (internal SRAM)
 #include "../sys/crash_report.h"        // /api/state boot object (reset reason, crash summary)
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
+#include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
+#include "../agent/dream_subsystem.h"   // the last night - /api/state dream
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
 #include "nimbus/theme.h"
@@ -552,6 +554,24 @@ static void buildState(String& out) {
   const uint32_t fsUsed  = fsUp ? (uint32_t)LittleFS.usedBytes() : 0;
   d["fsTotal"]    = fsTotal;   // internal flash (firmware/config)
   d["fsUsed"]     = fsUsed;
+  // Whether that file area is mounted at all (settings, routines and the dream state
+  // live there): a bench run reads it before and after a DREAM drill.
+  d["fsMounted"]  = fsUp && agent::flashMounted();
+  {
+    const agent::dream::Status ds = agent::dream::status();   // the last night this boot
+    JsonObject dj = d["dream"].to<JsonObject>();
+    dj["known"] = ds.known;
+    if (ds.known) {
+      // const char* (copied): a const char[N] member would be kept by address as if
+      // it were a literal, and ds is gone before the document is serialized.
+      dj["last"] = ds.last;
+      dj["cause"] = (const char*)ds.cause;
+      dj["stateSaved"] = ds.stateSaved;
+      dj["stateWhy"] = (const char*)ds.stateWhy;
+      dj["attempts"] = ds.attempts;
+      dj["streak"] = ds.streak;
+    }
+  }
   const bool sd = solide::storage::available();
   d["storeSD"]    = sd;
   d["storeLabel"] = sd ? "SD card" : "internal flash";

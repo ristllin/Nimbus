@@ -15,6 +15,13 @@
 
 namespace agent {
 
+// Is the internal file area (LittleFS) mounted? It is not in Notifier mode, while a
+// factory reset scrubs it, or if the mount failed at boot. Cheap (no file-system walk);
+// safe from any task.
+bool flashMounted();
+
+// Refused at once (false, one log line) when the file area is not mounted, so a caller
+// on an unmounted store fails fast instead of logging a file-system error per call.
 // `tag` names the file in the log line. `logFailure` = false keeps a refusal silent
 // (a per-turn writer rate-limits its own log line instead of one per turn).
 bool writeFileAtomic(const char* path, const std::string& blob, const char* tag,

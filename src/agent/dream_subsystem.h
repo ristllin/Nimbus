@@ -44,5 +44,26 @@ uint32_t gateDefer(const nimbus::orch::LoopRecord& l);
 nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& r,
                                bool force = false);
 
+// The console DREAM drill (test builds). requestDrill only queues a forced night (any
+// task); pumpDrill runs it on tg_poll between turns (orchestrator::pollJobs) and logs
+// "DREAM fired ok=<0|1> detail=<...>". A night is a full turn, and the loop task that
+// reads the console has an 8 KB stack: the drill used to run there and panic the
+// device (stack canary), so it never runs on the caller's task.
+// requestDrill returns false when a drill is already waiting (the two coalesce).
+bool requestDrill(const std::string& chatId);
+void pumpDrill();
+
+// The last night of this boot, for /api/state and the health report (any task).
+struct Status {
+  bool known = false;          // a night has run since boot
+  const char* last = "";       // outcome slug
+  char cause[33] = {};
+  bool stateSaved = true;      // /data/dream.json landed
+  char stateWhy[24] = {};      // why not ("storage not mounted", "storage write failed")
+  uint8_t attempts = 0;        // reflections tonight
+  uint8_t streak = 0;          // failed or degraded nights in a row
+};
+Status status();
+
 }  // namespace dream
 }  // namespace agent

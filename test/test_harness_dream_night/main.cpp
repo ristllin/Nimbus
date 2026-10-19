@@ -379,6 +379,10 @@ struct Night {
   bool haveSaved = false;
   int saves = 0, nvsWrites = 0;
   bool saveRefused = false;
+  bool mounted = true;             // the store's mount state (storeReady)
+  int failAfter = -1;              // >= 0: the store takes this many writes, then refuses
+  bool useMemo = true;             // the device keeps a working copy for the boot
+  dream::DreamMemo memo;
   std::string legacyHex;           // the NVS key (read only)
   uint64_t scratch = 0xABCDEF;
   bool quietDay = false;
@@ -401,7 +405,7 @@ struct Night {
     };
     d.saveState = [this](const dream::DreamState& s) {
       saves++;
-      if (saveRefused) return false;
+      if (saveRefused || (failAfter >= 0 && saves > failAfter)) return false;
       // Round-trip through the file format, as the device does.
       dream::DreamState back;
       TEST_ASSERT_TRUE(dream::loadDreamState(dream::dumpDreamState(s), back));
@@ -409,6 +413,8 @@ struct Night {
       haveSaved = true;
       return true;
     };
+    d.storeReady = [this] { return mounted; };
+    d.memo = useMemo ? &memo : nullptr;
     d.maintain = [this] {
       maintRuns++;
       dream::MaintResult m;
@@ -811,6 +817,131 @@ static void test_dream_state_store_fresh_legacy_and_full_nvs() {
   TEST_ASSERT_TRUE(dream::stateFromLegacyHash("").scrHash == 0);
 }
 
+// ---- (6b) a store that is not mounted, or fails after N writes -------------------
+
+// One night as the scheduler drives it: fire at the slot, then again at every retry
+// the night asks for, until it asks for none. Returns the fires it took.
+static int driveNight(Night& n, uint32_t day, dream::NightResult* last = nullptr) {
+  uint16_t minute = dream::kDefaultMinuteOfDay;
+  int fires = 0;
+  dream::NightResult r;
+  do {
+    r = dream::runNight(n.deps(), clockAt(day, minute), false);
+    fires++;
+    minute = (uint16_t)(minute + r.report.retryAfterSec / 60u);
+  } while (r.report.retryAfterSec && fires < 40);
+  if (last) *last = r;
+  return fires;
+}
+
+static void test_unmounted_store_is_never_written_and_the_night_stays_bounded() {
+  // Internal storage is not mounted all boot (the unit L bench suspicion): no write is
+  // ever tried (fail fast, no file-system error per fire), the row says why, and the
+  // boot's working copy still bounds the night.
+  Night n;
+  n.mounted = false;
+  n.turn = [] { return failWith("chat HTTP 503: overloaded"); };   // transient: retries
+  dream::NightResult last;
+  TEST_ASSERT_EQUAL(dream::kMaxAttempts, driveNight(n, 80, &last));
+  TEST_ASSERT_EQUAL(dream::kMaxAttempts, n.turns);
+  TEST_ASSERT_EQUAL(1, n.maintRuns);   // decay once that day, not once per retry
+  TEST_ASSERT_EQUAL(0, n.saves);
+  TEST_ASSERT_FALSE(last.report.stateSaved);
+  TEST_ASSERT_EQUAL_STRING("storage not mounted", last.report.stateWhy.c_str());
+  const std::string row = dream::renderDreamRow(last.report);
+  TEST_ASSERT_TRUE_MESSAGE(row.find("; state not saved (storage not mounted)") != std::string::npos,
+                           row.c_str());
+  // Three failed nights in a row still reach the owner alert, exactly once.
+  n.turn = [] { return failWith("messages HTTP 401: invalid x-api-key"); };
+  int alerts = 0;
+  for (uint32_t day = 81; day <= 82; ++day) {
+    driveNight(n, day, &last);
+    alerts += last.report.alert ? 1 : 0;
+  }
+  TEST_ASSERT_EQUAL(3, last.report.streak);
+  TEST_ASSERT_EQUAL(1, alerts);
+  TEST_ASSERT_EQUAL(0, n.saves);
+  // Counter-test: without the working copy every fire re-reads a file that never
+  // landed, so the attempt count never moves and the night runs to the window end.
+  Night bare;
+  bare.mounted = false;
+  bare.useMemo = false;
+  bare.turn = [] { return failWith("chat HTTP 503: overloaded"); };
+  TEST_ASSERT_TRUE(driveNight(bare, 80) > dream::kMaxAttempts);
+  TEST_ASSERT_TRUE(bare.maintRuns > 1);
+}
+
+static void test_store_failing_after_n_writes_keeps_counts_and_says_so() {
+  // The store takes two writes (night 1: the attempt mark and the result), then
+  // refuses every write (worn or full flash).
+  Night n;
+  n.failAfter = 2;
+  dream::NightResult last;
+  TEST_ASSERT_EQUAL(1, driveNight(n, 90, &last));
+  TEST_ASSERT_TRUE(last.report.stateSaved);
+  TEST_ASSERT_TRUE(last.report.stateWhy.empty());
+  TEST_ASSERT_TRUE(dream::renderDreamRow(last.report).find("state not saved") == std::string::npos);
+  n.turn = [] { return failWith("timed out after 90000 ms"); };   // transient: retries
+  TEST_ASSERT_EQUAL(dream::kMaxAttempts, driveNight(n, 91, &last));
+  TEST_ASSERT_EQUAL(2, n.maintRuns);   // one per day
+  TEST_ASSERT_FALSE(last.report.stateSaved);
+  TEST_ASSERT_EQUAL_STRING("storage write failed", last.report.stateWhy.c_str());
+  TEST_ASSERT_TRUE(dream::renderDreamRow(last.report).find("; state not saved (storage write failed)") !=
+                   std::string::npos);
+  // The file still holds night 1; this boot's copy holds tonight.
+  TEST_ASSERT_EQUAL(90, (int)n.saved.attemptDay);
+  TEST_ASSERT_EQUAL(91, (int)n.memo.st.attemptDay);
+  TEST_ASSERT_EQUAL(dream::kMaxAttempts, n.memo.st.attemptsTonight);
+  // A store that recovers lands the next save, and the row stops saying "not saved".
+  n.failAfter = -1;
+  n.turn = [] {
+    orch::FireOutcome o;
+    o.ok = true;
+    return o;
+  };
+  TEST_ASSERT_EQUAL(1, driveNight(n, 92, &last));
+  TEST_ASSERT_TRUE(last.report.stateSaved);
+  TEST_ASSERT_EQUAL(92, (int)n.saved.attemptDay);
+}
+
+// One generated store and night sequence for the bounded-retry property.
+static void runBoundedSequence() {
+  Night n;
+  const uint32_t mode = rnd() % 3;   // 0 healthy, 1 not mounted, 2 fails after K writes
+  n.mounted = mode != 1;
+  if (mode == 2) n.failAfter = (int)(rnd() % 6);
+  uint8_t streakBefore = 0;
+  for (uint32_t day = 100; day < 110; ++day) {
+    const uint32_t kind = rnd() % 4;   // 0 ok, 1 transient, 2 final failure, 3 low memory
+    n.turn = [kind] {
+      if (kind == 0) { orch::FireOutcome o; o.ok = true; return o; }
+      if (kind == 3) { orch::FireOutcome o; o.deferred = true; return o; }
+      return failWith(kind == 1 ? "chat HTTP 503: overloaded" : "messages HTTP 401: bad key");
+    };
+    const int maintBefore = n.maintRuns;
+    dream::NightResult last;
+    const int fires = driveNight(n, day, &last);
+    TEST_ASSERT_TRUE(fires >= 1 && fires <= dream::kMaxAttempts);
+    TEST_ASSERT_TRUE(n.maintRuns - maintBefore <= 1);
+    if (mode == 1) TEST_ASSERT_EQUAL(0, n.saves);
+    if (!last.report.stateSaved)
+      TEST_ASSERT_TRUE(dream::renderDreamRow(last.report).find("state not saved (storage") != std::string::npos);
+    const bool ok = last.report.outcome == dream::DreamOutcome::Ran;
+    TEST_ASSERT_EQUAL(ok ? 0 : streakBefore + 1, last.report.streak);
+    streakBefore = last.report.streak;
+  }
+}
+
+static void test_bounded_retries_whatever_the_store_does() {
+  // Property: 300 generated sequences of ten nights, each over a healthy store, a store
+  // that is not mounted, or one that fails after a random number of writes, with a
+  // random turn result per night. Every night takes 1 to 3 fires, maintenance runs at
+  // most once a day, an unmounted store is never written, the streak moves exactly once
+  // per night, and a night that could not save says so in its row.
+  g_seed = 4242;
+  for (int i = 0; i < 300; ++i) runBoundedSequence();
+}
+
 static void test_unsynced_clock_skips_maintenance_honestly() {
   Night n;
   dream::NightClock c = clockAt(5, 210);
@@ -879,6 +1010,9 @@ int main(int, char**) {
   RUN_TEST(test_streak_alerts_and_breaker_exemption);
   RUN_TEST(test_gate_starvation_bound);
   RUN_TEST(test_dream_state_store_fresh_legacy_and_full_nvs);
+  RUN_TEST(test_unmounted_store_is_never_written_and_the_night_stays_bounded);
+  RUN_TEST(test_store_failing_after_n_writes_keeps_counts_and_says_so);
+  RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);
   return UNITY_END();

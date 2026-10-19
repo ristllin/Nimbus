@@ -215,8 +215,16 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     are capped at 12 per night; the heap floor is not.
   - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night
     baseline, tonight's attempts and the failing-night streak. The legacy NVS key
-    `dreamScrHash` is read once to migrate and never written.
-  - `DREAM` console forces it, including through the quiet-night skip.
+    `dreamScrHash` is read once to migrate and never written. The file is read once
+    per boot; after that RAM holds the state and each save is for the next boot, so a
+    file area that is not mounted or refuses writes cannot reset the attempt count,
+    rerun maintenance or hide the streak. Such a night is not written at all when the
+    file area is not mounted, and its row ends `state not saved (storage not mounted)`
+    or `(storage write failed)`. `/api/state` reports `fsMounted` and the last night
+    (`dream`), and the health report has an internal-storage row.
+  - `DREAM` console forces it, including through the quiet-night skip. The console
+    replies `DREAM queued`; the night runs on the turn task and logs
+    `DREAM fired ok=<0|1> detail=<...>` when it ends.
 - **Quiet background turns** (the dream, the post-update awareness turn): every
   engine notice - failure replies, provider-switch and budget notices - is held
   back and logged instead of sent; the outcome is recorded where the owner reads

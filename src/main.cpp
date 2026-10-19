@@ -4037,15 +4037,12 @@ void setup() {
     };
     h.dreamNow = [] () -> String {                                           // DREAM
       if (!g_orchMode) return String("ERR dream: Orchestrator mode only");
-      nimbus::orch::LoopRecord rec = agent::dream::reservedLoopRecord();
-      nimbus::orch::LoopFireRequest r;
-      r.id     = rec.id;
-      r.name   = rec.name;
-      r.prompt = rec.prompt;
-      r.chatId = std::string(agent::orchestrator::firstAllowedChat().c_str());
-      nimbus::orch::FireOutcome o = agent::dream::fire(r, /*force=*/true);
-      return String("DREAM fired ok=") + (o.ok ? "1" : "0") +
-             " detail=" + o.detail.c_str();
+      // Queued for the turn task (tg_poll), which logs "DREAM fired ok=..." when the
+      // night ends. Never run here: this is the loop task, whose 8 KB stack cannot
+      // hold a turn (the drill panicked the device when it ran inline).
+      if (!agent::dream::requestDrill(std::string(agent::orchestrator::firstAllowedChat().c_str())))
+        return String("DREAM already queued (one night runs; its result line follows)");
+      return String("DREAM queued (the turn task runs the night; its result line follows)");
     };
     h.ctxInfo = [](const String& chat) -> String {                           // CTX?
       if (!g_orchMode) return String("ERR ctx: Orchestrator mode only");

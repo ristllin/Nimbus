@@ -501,7 +501,15 @@ namespace {
 // corrupt every age, so maintenance waits for a synced one.
 DreamState openNight(const NightDeps& d, const NightClock& c, NightReport& r) {
   DreamState st;
-  if (!d.loadState || !d.loadState(st)) st = DreamState{};
+  if (d.memo && d.memo->loaded) {
+    st = d.memo->st;   // this boot's copy: the file may lag behind it
+  } else {
+    if (!d.loadState || !d.loadState(st)) st = DreamState{};
+    if (d.memo) {
+      d.memo->loaded = true;
+      d.memo->st = st;
+    }
+  }
   if (st.attemptDay != c.localDay) {
     st.attemptDay = c.localDay;
     st.attemptsTonight = 0;
@@ -537,7 +545,21 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   NightResult res;
   NightReport& r = res.report;
   nimbus::orch::FireOutcome& o = res.fire;
-  auto save = [&](const DreamState& st) { return d.saveState ? d.saveState(st) : false; };
+  // RAM moves first, so a store that is down never rewinds the night. A store that is
+  // not mounted is not written at all (fail fast, and no file-system error per fire).
+  auto save = [&](const DreamState& st) {
+    if (d.memo) d.memo->st = st;
+    if (d.storeReady && !d.storeReady()) {
+      r.stateWhy = "storage not mounted";
+      return false;
+    }
+    if (!d.saveState || !d.saveState(st)) {
+      r.stateWhy = "storage write failed";
+      return false;
+    }
+    r.stateWhy.clear();
+    return true;
+  };
 
   DreamState st = openNight(d, c, r);
   const Yesterday y = d.yesterday ? d.yesterday() : Yesterday{};
@@ -664,7 +686,7 @@ std::string renderDreamRow(const NightReport& r, size_t cap) {
              "): " + writesText(r.ops) + "; " + maintText(r) + spent;
       break;
   }
-  if (!r.stateSaved) row += "; state not saved";
+  if (!r.stateSaved) row += "; state not saved" + (r.stateWhy.empty() ? "" : " (" + r.stateWhy + ")");
   if (row.size() > cap) {
     row.resize((size_t)nimbus::utf8CapLen(row.c_str(), (int)row.size(), (int)cap - 3));
     row += "...";

@@ -245,6 +245,10 @@ never changes what the ring or screen do.
 
 The full event → clip map is [docs/sfx-map.md](./sfx-map.md).
 
+The built-in clips always play. The larger clip set downloads to the SD card on
+boards whose card slot uses the SPI bus; on boards with an SDMMC slot (Freenove,
+CYD) the device keeps to the built-in clips for now and does not try to download.
+
 ### Action feedback - you always know a button worked
 
 Every device-menu button that *does* something - forget paired devices, rescan

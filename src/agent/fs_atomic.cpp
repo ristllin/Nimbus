@@ -2,11 +2,16 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_littlefs.h>   // esp_littlefs_mounted - no file-system walk
 
 #include "../sys/agent_log.h"
 #include "memory_subsystem.h"   // erasing() - the factory-sweep write barrier
 
 namespace agent {
+
+// memory::begin() mounts LittleFS with LittleFS.begin()'s default partition label
+// (memory_subsystem.cpp kLfsPartitionLabel).
+bool flashMounted() { return esp_littlefs_mounted("spiffs"); }
 
 // Write a whole small blob so that a power loss can never leave a TRUNCATED one.
 //
@@ -23,6 +28,10 @@ bool writeFileAtomic(const char* path, const std::string& blob, const char* tag,
   // the device restarts into an empty store, and on the refusal path the caller's
   // in-RAM state persists again on the next normal mutation.
   if (agent::memory::erasing()) return false;
+  if (!flashMounted()) {
+    if (logFailure) alogf("%s: not saved - internal storage is not mounted", tag);
+    return false;
+  }
   std::string tmp = std::string(path) + ".tmp";
   {
     File f = LittleFS.open(tmp.c_str(), FILE_WRITE);

@@ -7,7 +7,18 @@ Telegram at about 04:30 (canonical rows 27 and 28). This leg drives the console
 ``ev:dream`` timeline row (``EPIQ Nightly dream``) and the absence of any Telegram
 send while the quiet turn failed.
 
+The drill is queued: the console replies ``DREAM queued`` and the turn task logs
+``DREAM fired ok=<0|1> detail=<...>`` when the night ends. (It used to run the night
+on the loop task, whose 8 KB stack cannot hold a turn: the device panicked and
+rebooted, so ``DREAM fired`` never came.) Every drill below also checks that the
+device did not restart (STATUS uptime only grows, no panic banner) and that no
+"File system is not mounted" line appeared while it ran.
+
 Legs:
+  0. Mount state over HTTP: ``/api/state`` says ``fsMounted`` before and after a
+     drill, the last night (``dream``) is reported with its state saved, the
+     device did not restart (``uptimeMs`` grows), and the ``/api/health``
+     internal-storage row is ok.
   1. Every provider unreachable (``FAULT provider on``): the row says FAILED with
      its cause and the write counts, a retry is scheduled for the same night, and
      the device sends NOTHING to Telegram (the failure notice is held).
@@ -18,9 +29,9 @@ Legs:
      writes are the same before and after the drill; run it on the NVSFILL'd unit).
 
 Conditions: unit L (the fill unit), Orchestrator mode, a cheap head
-(claude-haiku-5-5), the owner's Telegram chat allowlisted. Leg 1 costs nothing
-(the requests never leave the device); leg 2 costs one owner turn and one
-reflection turn on the cheap head (well under $0.01).
+(claude-haiku-5-5), the owner's Telegram chat allowlisted, the unit on the LAN.
+Legs 0, 1 and 3 cost nothing (the requests never leave the device); leg 2 costs one
+owner turn and one reflection turn on the cheap head (well under $0.01).
 """
 
 from __future__ import annotations
@@ -35,6 +46,8 @@ from device import Device, ExpectTimeout
 pytestmark = [pytest.mark.hil, pytest.mark.agent]
 
 _DREAM_ROW = re.compile(r"Nightly dream [^\"]*")
+_PANIC = ("Guru Meditation", "Rebooting...", "Backtrace:")
+_FS_DOWN = "File system is not mounted"
 
 
 def _dream_rows(dev: Device) -> list[str]:
@@ -55,24 +68,53 @@ def _dream_rows(dev: Device) -> list[str]:
     return rows
 
 
+def _status(dev: Device) -> dict:
+    """STATUS fields this leg reads (read only): uptime, NVS use, the LAN IP."""
+    line = dev.cmd("STATUS", "STATUS fw=", timeout=8.0)
+
+    def field(pattern: str) -> str:
+        m = re.search(pattern, line)
+        assert m, f"STATUS has no {pattern!r}: {line}"
+        return m.group(1)
+
+    return {
+        "uptime": int(field(r"uptime=(\d+)")),
+        "nvs": int(field(r"nvs=(\d+)/\d+")),
+        "nvsfail": int(field(r"nvsfail=(\d+)")),
+        "ip": field(r"\bip=(\d+\.\d+\.\d+\.\d+)"),
+    }
+
+
 def _drill(dev: Device, timeout: float = 240.0) -> str:
-    """Run the DREAM drill; return the transcript lines it produced."""
+    """Run the DREAM drill; return the transcript lines it produced. Fails on a
+    restart, a panic banner or a file-system-not-mounted line in the window."""
+    before = _status(dev)
+    t0 = time.time()
     dev.drain(quiet=0.5)
     start = len(dev._transcript)
     dev.send("DREAM")
+    dev.expect("DREAM queued", timeout=5.0)
     dev.expect("DREAM fired", timeout=timeout)
     # Telegram sends are queued; give a held-or-sent notice time to surface.
     try:
         dev.expect("telegram: send", timeout=6.0)
     except ExpectTimeout:
         pass
-    return "\n".join(dev._transcript[start:])
+    window = "\n".join(dev._transcript[start:])
+    for banner in _PANIC:
+        assert banner not in window, f"the device crashed during the drill ({banner!r})"
+    assert _FS_DOWN not in window, "a file-system-not-mounted error appeared during the drill"
+    # STATUS uptime is millis(): without a restart it grew by about the wall time.
+    grown = _status(dev)["uptime"] - before["uptime"]
+    assert grown >= (time.time() - t0) * 1000 - 5000, "the device restarted during the drill"
+    return window
 
 
-def _nvs(dev: Device) -> tuple[int, int]:
-    """(used bytes, failed writes) from STATUS - read only."""
-    m = dev.cmd_re("STATUS", r"nvs=(\d+)/\d+ nvsfree=\d+ nvsfail=(\d+)", timeout=8.0)
-    return int(m.group(1)), int(m.group(2))
+def _health_row(health: dict, key: str) -> dict:
+    for row in health.get("components", []):
+        if row.get("key") == key:
+            return row
+    raise AssertionError(f"/api/health has no {key!r} row: {health}")
 
 
 @pytest.fixture(scope="module")
@@ -82,6 +124,28 @@ def orch(device: Device, secrets) -> Device:
     if not device.ping():
         pytest.skip("console not answering")
     return device
+
+
+@pytest.mark.net
+def test_mount_state_is_reported_and_the_drill_does_not_restart(orch: Device, net):
+    ip = _status(orch)["ip"]
+    st0 = net.get_json("/api/state", ip=ip, timeout=8.0)
+    assert st0.get("fsMounted") is True, f"internal storage not mounted before the drill: {st0.get('fsMounted')}"
+    assert _health_row(net.get_json("/api/health", ip=ip, timeout=8.0), "flash")["state"] == "ok"
+    orch.cmd("FAULT provider on", "FAULT provider=1", timeout=5.0)
+    try:
+        _drill(orch)
+    finally:
+        orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
+    st1 = net.get_json("/api/state", ip=ip, timeout=8.0)
+    assert st1.get("fsMounted") is True
+    assert st1["uptimeMs"] > st0["uptimeMs"], "the device restarted during the drill"
+    assert st1.get("testWake") == st0.get("testWake"), "the reset reason changed: the device restarted"
+    night = st1.get("dream", {})
+    assert night.get("known") is True, night
+    assert night.get("last") == "failed", night
+    assert night.get("stateSaved") is True, night
+    assert _health_row(net.get_json("/api/health", ip=ip, timeout=8.0), "flash")["state"] == "ok"
 
 
 def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
@@ -98,6 +162,7 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
     assert newest.startswith("Nightly dream FAILED ("), newest
     assert "memories stored" in newest and "failed)" in newest, newest  # the counts
     assert "retry 2 of 3 at" in newest or "no retry tonight" in newest, newest
+    assert "state not saved" not in newest, newest
 
 
 def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
@@ -124,10 +189,13 @@ def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
 
 
 def test_dream_writes_no_nvs(orch: Device):
-    before = _nvs(orch)
+    before = _status(orch)
     orch.cmd("FAULT provider on", "FAULT provider=1", timeout=5.0)
     try:
         _drill(orch)
     finally:
         orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
-    assert _nvs(orch) == before, "the dream path wrote NVS (used bytes or failed writes moved)"
+    after = _status(orch)
+    assert (after["nvs"], after["nvsfail"]) == (before["nvs"], before["nvsfail"]), (
+        "the dream path wrote NVS (used bytes or failed writes moved)"
+    )

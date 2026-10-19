@@ -261,11 +261,25 @@ struct NightReport {
   uint8_t streak = 0;           // failed or degraded nights in a row, after tonight
   bool alert = false;           // tonight crossed an alert point (owner alert due)
   bool stateSaved = true;       // /data/dream.json landed
+  std::string stateWhy;         // why it did not ("storage not mounted", "storage write failed")
+};
+
+// The boot's working copy of the dream state. RAM is the authority between fires and
+// the file is durability across a restart: with a store that is not mounted or refuses
+// writes, the attempt count, the maintenance day and the streak still move, so the
+// night stays at kMaxAttempts reflections, decay never runs twice in a day and the
+// streak alert still comes. (Re-reading the file at every fire let a failing store
+// reset all three each time.)
+struct DreamMemo {
+  bool loaded = false;
+  DreamState st;
 };
 
 struct NightDeps {
   std::function<bool(DreamState&)> loadState;          // false = no saved state
   std::function<bool(const DreamState&)> saveState;    // false = not saved
+  std::function<bool()> storeReady;                    // false = not mounted: no write is tried
+  DreamMemo* memo = nullptr;                           // the boot's working copy (null = reload each fire)
   std::function<MaintResult()> maintain;
   std::function<Yesterday()> yesterday;
   std::function<std::string()> scratchBlock;           // Scratchpad::appendPromptBlock

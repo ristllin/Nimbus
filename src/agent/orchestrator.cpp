@@ -2386,6 +2386,7 @@ int pollJobs() {
   drainStaged();      // apply web-staged directive/memory edits between turns
   drainTerminates();  // apply web/MCP-staged session.terminate on the journal's writer task
   drainSystemTurn();  // post-OTA (etc.) unattended awareness turn - tg_poll only
+  dream::pumpDrill(); // a queued console DREAM drill - tg_poll only, never the loop task
 
   // Local Loops tick - fire at most one due scheduled loop. Internally 20 s-gated
   // and guarded on turn-in-flight / heap / WiFi; runs on THIS (tg_poll) task, so

@@ -12,6 +12,8 @@
 #include "provider_verify.h"          // anyDeferredStuck() - low-memory verify hint (CUM-447)
 #include "../sys/errlog_fs.h"         // durableSkipped()/durableBytes() - durable log row (CUM-407/409)
 #include "hw/hal_status.h"
+#include "fs_atomic.h"                // flashMounted() - internal storage row
+#include "dream_subsystem.h"          // status() - did the last night save its state
 #include "nimbus/fault.h"
 
 namespace agent::health {
@@ -56,6 +58,22 @@ Row audioRow(const char* key, const char* label, bool faulted, bool isMic) {
     return {key, label, singleOk ? kOk : kDegraded, d};
   }
   return {key, label, kUnknown, "wired; run the loopback test to verify"};
+}
+
+// Internal storage (LittleFS): settings, routines, the member table and the nightly
+// dream state live here. Not mounted means none of them can be saved; the dream's own
+// timeline row says the same ("state not saved (storage not mounted)").
+Row flashRow() {
+  const char* key = "flash";
+  const char* label = "Internal storage";
+  if (!agent::flashMounted())
+    return {key, label, kDegraded,
+            "not mounted: settings, routines and nightly memory upkeep cannot be saved"};
+  const agent::dream::Status ds = agent::dream::status();
+  if (ds.known && !ds.stateSaved)
+    return {key, label, kDegraded,
+            String("mounted; the last nightly upkeep could not save its state (") + ds.stateWhy + ")"};
+  return {key, label, kOk, "mounted"};
 }
 }  // namespace
 
@@ -145,6 +163,7 @@ std::string reportJson(const Env& env) {
       d += ", provider key check waiting on free memory";
     rows[n++] = {"memory", "Memory subsystem", st, d};
   }
+  rows[n++] = flashRow();
 
   // PSRAM (the 8 MB pool TLS + the VDB working set live in).
   {

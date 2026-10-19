@@ -50,9 +50,13 @@ void setStatus(const char* s) { strlcpy(g_status, s, sizeof(g_status)); }
 // naive `millis() < deadline` gives a zero-length window right at the wrap.
 bool before(uint32_t deadline) { return (int32_t)(millis() - deadline) < 0; }
 
+// cardIsRawSd: every file call below uses the raw `SD` global, which is not the card
+// on an SDMMC board (sound_fx.h) - there the sync stays closed instead of failing,
+// and retrying, every file call against an unmounted file system.
 bool gateOpen() {
-  return agent::memory::haveSd() && !nimbus::fault::active(nimbus::fault::SD) &&
-         WiFi.status() == WL_CONNECTED && ESP.getFreeHeap() > kHeapFloor;
+  return agent::memory::haveSd() && ::sfx::cardIsRawSd() &&
+         !nimbus::fault::active(nimbus::fault::SD) && WiFi.status() == WL_CONNECTED &&
+         ESP.getFreeHeap() > kHeapFloor;
 }
 
 // ---- HTTPS GET (HTTP/1.0 + close, arbiter-slotted) --------------------------
@@ -316,8 +320,8 @@ void tick() {
     static uint32_t s_lastWhy = 0;
     if (now - s_lastWhy > 5 * 60 * 1000) {   // rate-limited diagnostics
       s_lastWhy = now;
-      agent::alogf("sfxsync: gate closed (sd=%d fault=%d sta=%d heap=%u)",
-                   (int)agent::memory::haveSd(),
+      agent::alogf("sfxsync: gate closed (sd=%d rawsd=%d fault=%d sta=%d heap=%u)",
+                   (int)agent::memory::haveSd(), (int)::sfx::cardIsRawSd(),
                    (int)nimbus::fault::active(nimbus::fault::SD),
                    (int)(WiFi.status() == WL_CONNECTED),
                    (unsigned)ESP.getFreeHeap());

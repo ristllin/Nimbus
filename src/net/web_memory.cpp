@@ -818,8 +818,10 @@ void registerMemoryRoutes(AsyncWebServer& server) {
       agent::memory::Lock g;
       promoted = agent::memory::sdLost() && agent::memory::promoteSd();
       ok = solide::storage::begin();
-      if (ok && !agent::memory::haveSd()) agent::memory::setDataFs(SD);  // late mount
-      ct = (int)SD.cardType();
+      // Late mount onto the card begin() mounted: on an SDMMC board that is SD_MMC,
+      // never the raw SD global (never begun there, so every write would fail).
+      if (ok && !agent::memory::haveSd()) agent::memory::setDataFs(solide::storage::activeFs());
+      ct = (int)solide::storage::cardType();   // SD or SD_MMC, whichever this board mounts
       totalMB = (unsigned long long)solide::storage::cardSizeMB();
       freeMB = (unsigned long long)solide::storage::freeMB();
     }

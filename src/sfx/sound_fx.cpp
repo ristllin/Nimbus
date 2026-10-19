@@ -11,6 +11,7 @@
 #include <freertos/task.h>
 
 #include <solide/audio.h>
+#include <solide/storage.h>   // activeFs() - is the mounted card the raw SD global?
 #include <solide/ring.h>   // ring::Status - the JobState vocabulary for edge mapping
 
 #include "../sys/agent_log.h"
@@ -76,7 +77,7 @@ JobEdge g_jobs[12] = {};
 int     g_jobsNext = 0;
 
 bool sdUsable() {
-  return agent::memory::haveSd() && !nimbus::fault::active(nimbus::fault::SD);
+  return agent::memory::haveSd() && cardIsRawSd() && !nimbus::fault::active(nimbus::fault::SD);
 }
 
 bool speakerUsable() { return !nimbus::fault::active(nimbus::fault::SPEAKER); }
@@ -295,7 +296,12 @@ void scanCustomDir() {
 
 void rescan() {
   memset(g_counts, 0, sizeof(g_counts));
-  if (!sdUsable()) { agent::alogf("sfx: rescan - no SD"); return; }
+  if (!sdUsable()) {
+    agent::alogf(agent::memory::haveSd() && !cardIsRawSd()
+                     ? "sfx: rescan - SD sound tier off on this board (card is not the SPI SD)"
+                     : "sfx: rescan - no SD");
+    return;
+  }
   scanCustomDir();
   File f = SD.open("/sfx/manifest.json", FILE_READ);
   if (!f) { agent::alogf("sfx: rescan - no /sfx/manifest.json"); return; }
@@ -333,6 +339,8 @@ void rescan() {
   agent::alogf("sfx: rescan - custom=%d, theme(%s)=%d, general=%d clips",
                custN, g_theme, themeN, genN);
 }
+
+bool cardIsRawSd() { return &solide::storage::activeFs() == static_cast<fs::FS*>(&SD); }
 
 const char* tierStr() {
   if (g_level == 0) return "off";

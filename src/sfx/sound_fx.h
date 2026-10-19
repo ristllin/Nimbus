@@ -68,6 +68,13 @@ void refreshConfig();
 // sync completes or the SD tier changes).
 void rescan();
 
+// Can the SD tier reach the card? Its reads and writes go through the raw Arduino
+// `SD` (SPI) global. On an SDMMC board (Freenove/CYD) the card is mounted through
+// SD_MMC and `SD` is never begun, so every SD call fails "File system is not mounted":
+// the sync retried each missing clip 3 times (7 s a clip) on every pass, forever. The
+// SD tier (player and sync) runs only where the mounted card IS the raw `SD` global.
+bool cardIsRawSd();
+
 // One-word tier summary for STATUS / /api/state: "off" | "basic" | "sd".
 const char* tierStr();
 // The active level (0-3) for the booted mode, and the active theme slug.

@@ -1166,9 +1166,10 @@ void dispatch(String line) {
     return;
   }
   if (line == "DREAM") {
-    // Force the reserved dream loop's two-phase fire NOW (maintenance +
-    // reflection turn). Blocks while the turn runs (like TURN); reply echoes a
-    // summary. Test-only affordance for HIL verification of dreaming.
+    // Force the reserved dream loop's two-phase fire (maintenance + reflection
+    // turn). Queued for the turn task like TURN: the reply is "DREAM queued", and
+    // "DREAM fired ok=..." follows when the night ends. Test-only affordance for
+    // HIL verification of dreaming.
     if (s_h.dreamNow) {
       reply(s_h.dreamNow());
     } else {

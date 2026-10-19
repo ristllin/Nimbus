@@ -235,7 +235,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `PROMPT?` | Dump the last composed system prompt. |
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
 | `EPIQ [@<cursor>] [--full] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. Each row prints as a 48-byte preview, or whole (up to 1024 bytes) with `--full`. |
-| `DREAM` | Fire the reserved maintenance-and-reflection loop immediately. |
+| `DREAM` | Fire the reserved maintenance-and-reflection loop now. Replies `DREAM queued` (`DREAM already queued` while one is waiting); the night runs on the turn task and logs `DREAM fired ok=<0\|1> detail=<...>` when it ends. |
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days); report what it removed, or that it waited for a turn or a busy card. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |

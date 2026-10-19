@@ -70,9 +70,12 @@ static void emitStarvedRow() {
 
 // ---- dream state: /data/dream.json (LittleFS), never NVS -------------------------
 static const char* kStatePath = "/data/dream.json";
+// This boot's working copy (tg_poll only): read from the file once, then RAM is the
+// authority and every save is durability only (DreamMemo in dream.h).
+static DreamMemo g_memo;
 
 static bool loadState(DreamState& st) {
-  File f = LittleFS.open(kStatePath, FILE_READ);
+  File f = flashMounted() ? LittleFS.open(kStatePath, FILE_READ) : File();
   if (f) {
     String s = f.readString();
     f.close();
@@ -155,6 +158,31 @@ uint32_t gateDefer(const orch::LoopRecord& l) {
   return r.deferSec;
 }
 
+// ---- the last night, for /api/state and health (read from any task) --------------
+static portMUX_TYPE g_statusMux = portMUX_INITIALIZER_UNLOCKED;
+static Status g_status;
+
+static void publishStatus(const NightReport& rep) {
+  Status s;
+  s.known = true;
+  s.last = outcomeSlug(rep.outcome);
+  strlcpy(s.cause, rep.cause.c_str(), sizeof s.cause);
+  s.stateSaved = rep.stateSaved;
+  strlcpy(s.stateWhy, rep.stateWhy.c_str(), sizeof s.stateWhy);
+  s.attempts = rep.attempt;
+  s.streak = rep.streak;
+  portENTER_CRITICAL(&g_statusMux);
+  g_status = s;
+  portEXIT_CRITICAL(&g_statusMux);
+}
+
+Status status() {
+  portENTER_CRITICAL(&g_statusMux);
+  const Status s = g_status;
+  portEXIT_CRITICAL(&g_statusMux);
+  return s;
+}
+
 nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   // The reserved record's slot is fixed (03:30; loops are paused or resumed, never
   // rescheduled), so NightClock's default slot is the one the window counts from.
@@ -166,6 +194,8 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   NightDeps d;
   d.loadState = loadState;
   d.saveState = saveState;
+  d.storeReady = flashMounted;
+  d.memo = &g_memo;
   // Phase 1 under the memory Lock (recursive; shared with the web/MCP task), never
   // held across the network turn. Release C2: windowed dedup - the full O(n^2 dims)
   // scan at the 5000-entry cap blocks turns and the web under the lock.
@@ -221,7 +251,10 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   alogf("dream: %s%s%s tokens=%u attempt=%u retry=%us streak=%u", outcomeSlug(rep.outcome),
         rep.cause.empty() ? "" : " cause=", rep.cause.c_str(), (unsigned)rep.tokens,
         (unsigned)rep.attempt, (unsigned)rep.retryAfterSec, (unsigned)rep.streak);
+  if (!rep.stateSaved)
+    alogf("dream: state not saved (%s) - this boot keeps the count in RAM", rep.stateWhy.c_str());
   if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  publishStatus(rep);
   if (g_hooks.onDreamEnd) {
     agent::DreamEndEv ev;
     ev.turnOk = night.fire.ok;
@@ -233,6 +266,40 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
     g_hooks.onDreamEnd(ev);
   }
   return night.fire;
+}
+
+// ---- the console DREAM drill: queued here, run on tg_poll -------------------------
+static portMUX_TYPE g_drillMux = portMUX_INITIALIZER_UNLOCKED;
+static bool g_drillPending = false;
+static char g_drillChat[48] = {};
+
+bool requestDrill(const std::string& chatId) {
+  portENTER_CRITICAL(&g_drillMux);
+  const bool fresh = !g_drillPending;
+  if (fresh) {
+    strlcpy(g_drillChat, chatId.c_str(), sizeof g_drillChat);
+    g_drillPending = true;
+  }
+  portEXIT_CRITICAL(&g_drillMux);
+  return fresh;
+}
+
+void pumpDrill() {
+  char chat[sizeof g_drillChat];
+  portENTER_CRITICAL(&g_drillMux);
+  const bool pending = g_drillPending;
+  g_drillPending = false;
+  memcpy(chat, g_drillChat, sizeof chat);
+  portEXIT_CRITICAL(&g_drillMux);
+  if (!pending) return;
+  const orch::LoopRecord rec = reservedLoopRecord();
+  orch::LoopFireRequest req;
+  req.id = rec.id;
+  req.name = rec.name;
+  req.prompt = rec.prompt;
+  req.chatId = chat;
+  const orch::FireOutcome o = fire(req, /*force=*/true);
+  alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
 }
 
 }  // namespace dream
