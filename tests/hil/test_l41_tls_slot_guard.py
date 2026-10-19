@@ -14,7 +14,9 @@ This guard encodes the class, deterministically and with no board:
     call it);
   * the Telegram poll task (``telegram.cpp``) is the one exception by design: its
     own session is serialized with turns by task (a turn runs on that task) and it
-    closes its socket before any other TLS;
+    closes its socket before any other TLS. The Telegram archive's downloads
+    (``tg_archive.cpp``) share that exception only because they run on that task,
+    after the poll socket is closed, which is checked below;
   * the relay's big frames go through the slot: ``emitResFrame`` routes a frame
     over ``kRelayBulkBytes`` to ``writeBigFrame``, which takes the slot per chunk;
     ``wsWriteAll`` is used only for small frames (heartbeat, pong, hello, acks,
@@ -69,6 +71,7 @@ _HELD_BY_CALLER = {
 # Files whose TLS is outside the work slot by design.
 _TASK_SERIALIZED = {
     "agent/telegram.cpp": "tg_poll: turns run on this task, and it closes its session before any other TLS",
+    "agent/tg_archive.cpp": "tg_poll: the archive downloads run inside the poll task, after the poll socket closes",
 }
 
 
@@ -128,6 +131,26 @@ def test_every_tls_connect_takes_the_work_slot():
     assert not offenders, (
         "TLS connections outside the work slot (AGENTS.md 'No on-device concurrency'):\n  " + "\n  ".join(offenders)
     )
+
+
+def test_archive_tls_runs_only_on_the_poll_task():
+    """The tg_archive.cpp exception holds only while its TLS (TgFileSource, used by
+    runDownloads, reached from tick) runs inside telegram.cpp's pollTask and closes the
+    poll socket first. A second caller, or a download before the close, fails here."""
+    arc = (_SRC / "agent" / "tg_archive.cpp").read_text()
+    users = [n for n, _, b in _functions(arc) if re.search(r"\bTgFileSource\s+\w+\s*\(", b)]
+    assert users == ["runDownloads"], f"TgFileSource opened outside runDownloads: {users}"
+    run = _fn_map("agent/tg_archive.cpp")["runDownloads"][1]
+    assert 0 <= run.find("beforeTls()") < run.find("TgFileSource "), "the poll socket must close before the download"
+    callers = [
+        f"{p.relative_to(_SRC).as_posix()}:{n}"
+        for p in sorted(_SRC.rglob("*.cpp"))
+        for n, _, b in _functions(p.read_text())
+        if re.search(r"\b(tgarchive::tick|runDownloads)\s*\(", b) and n not in ("tick", "runDownloads")
+    ]
+    assert callers == ["agent/telegram.cpp:pollTask"], f"archive downloads reached from: {callers}"
+    poll = _fn_map("agent/telegram.cpp")["pollTask"][1]
+    assert re.search(r"tgarchive::tick\([^;]*&closePollSocket\)", poll), "tick must close the poll socket first"
 
 
 def test_allowlisted_helpers_are_called_by_a_slot_holder():
