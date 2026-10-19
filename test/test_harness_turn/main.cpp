@@ -2892,6 +2892,9 @@ static std::vector<ExitCase> exitCases() {
                  r.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request",
                                             0, "", 0, 0}};
                }});
+  // Lane K's billing reply (the refusal is not a rate limit): its own exit.
+  v.push_back({"billing", "anthropic", "credit balance is too low",
+               failAll("messages HTTP 400: Your credit balance is too low to access the Anthropic API.")});
   v.push_back({"429", "anthropic", "HTTP 429", failAll("messages HTTP 429: rate limited")});
   v.push_back({"generic (ladder exhausted)", "anthropic", "HTTP 400",
                failAll("messages HTTP 400: the request body is not valid JSON")});
@@ -2908,7 +2911,7 @@ static std::vector<ExitCase> exitCases() {
                  bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
                  r.scripts["anthropic"] = {bad};
                }});
-  ExitCase sched = v[3];   // the same exit reached by a scheduled fire
+  ExitCase sched = v[4];   // the same exit reached by a scheduled fire (ladder exhausted)
   sched.exitName = "generic (scheduled fire)";
   sched.scheduled = true;
   v.push_back(sched);
@@ -2949,7 +2952,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   // The class guard: one table row per distinct failed exit in the engine.
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
-  const char* names[] = {"budget", "low memory", "429", "generic", "parse"};
+  const char* names[] = {"budget", "low memory", "billing", "429", "generic", "parse"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
@@ -2992,16 +2995,17 @@ static void test_scheduled_failure_reports_cause_and_own_spend() {
   r.scripts["mistral"][0].usageOnFail = false;
   const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
   TEST_ASSERT_FALSE(o.ok);
-  // anthropic billed its initial attempt and the same-host retry; nothing else.
-  TEST_ASSERT_EQUAL(2 * 7300, (int)o.tokens.total());
-  TEST_ASSERT_EQUAL(2 * 7300, (int)r.eng->lastTurnUsage().total());
+  // anthropic billed its one attempt; nothing else. An unreadable body is never sent
+  // twice to the same host (lane K's rule), the alternates are still tried.
+  TEST_ASSERT_EQUAL(7300, (int)o.tokens.total());
+  TEST_ASSERT_EQUAL(7300, (int)r.eng->lastTurnUsage().total());
   TEST_ASSERT_NOT_NULL(std::strstr(o.error.c_str(), "anthropic"));
   TEST_ASSERT_NOT_NULL(std::strstr(o.error.c_str(), "invalid unicode"));
   // The failed turn's spend reached the ledger, under the host that billed it.
   const auto& rec = r.cfg.recorded.back();
   TEST_ASSERT_EQUAL_STRING("anthropic", rec.host.c_str());
   TEST_ASSERT_EQUAL_STRING("loop:dream", rec.tag.c_str());
-  TEST_ASSERT_EQUAL(14000, (int)rec.in);
+  TEST_ASSERT_EQUAL(7000, (int)rec.in);
   TEST_ASSERT_EQUAL_STRING("dream", agent::turnSourceSlug(r.hookEnds.back().source,
                                                           r.hookEnds.back().attribution));
 }

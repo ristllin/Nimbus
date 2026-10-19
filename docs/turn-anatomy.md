@@ -30,8 +30,8 @@ one JSON object of at most 256 bytes: `host`, `model` (the model that billed, ne
 one that did not answer), `fallback`, `src` (owner, serial, synthesis, loop or
 dream), `tools`, `ok`, `in`, `out`, `cr`/`cw` (cache reads and writes, when any),
 `reply`, `err` on a failed turn (each failing provider in order, the first cause
-first, for example `anthropic (x2): messages HTTP 400: ... > openai 400 (x2) >
-mistral 400 (x2)`) and `via` when more than one provider billed
+first, for example `anthropic (x2): messages HTTP 529: Overloaded > openai 503 (x2) >
+mistral 503 (x2)`) and `via` when more than one provider billed
 (`[[provider, model, in, out, cr, cw], ...]`). A long row shrinks to fit (model
 names in `via` first, then the later causes) and is never dropped. A failed turn
 also leaves an `ev:error` row in the `system` session, tagged with the turn id:

@@ -263,9 +263,9 @@ bool bodyHas(const Rig& rig, size_t i, const char* needle) {
 
 bool fabric(Rig& rig, const std::vector<std::string>& hosts, const std::string& user, Report& r, int* switches) {
   std::string out, err;
-  nimbus::orch::TokenUsage u;
+  nimbus::orch::TurnSpend spend;   // per-host spend (the fabric files each host once)
   int n = 0;
-  const bool ok = agent::providers::runFabricLoop(rig.pd, hosts, kSystem, user, out, err, rig.ht, &u,
+  const bool ok = agent::providers::runFabricLoop(rig.pd, hosts, kSystem, user, out, err, rig.ht, &spend,
                                                   [&](const std::string&, const std::string&) { n++; });
   r.ok = ok;
   r.out = out;

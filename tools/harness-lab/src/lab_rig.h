@@ -576,10 +576,10 @@ class LabRig {
     // transcript). Z.ai is single-shot only, as on the device.
     d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
                             const std::string& inp, std::string& out, std::string& err,
-                            const agent::HeadTools& ht, orch::TokenUsage* usage,
+                            const agent::HeadTools& ht, orch::TurnSpend* spend,
                             const std::function<void(const std::string&, const std::string&)>& notify) {
       return agent::providers::runFabricLoop(providerDeps(), hostList, ins, inp, out, err, ht,
-                                             usage, notify);
+                                             spend, notify);
     };
     d.hosts.fabricSupports = [](const std::string& h) { return agent::providers::fabricSupports(h); };
     if (!env_.providerKey("zai").empty()) {

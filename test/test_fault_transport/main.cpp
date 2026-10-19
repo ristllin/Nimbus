@@ -224,9 +224,9 @@ static void test_decorator_drives_fabric_failover() {
   d.fillTools(rig);
   std::string out, err, from, to;
   int switches = 0;
-  nimbus::orch::TokenUsage u;
+  nimbus::orch::TurnSpend spend;
   const bool ok = agent::providers::runFabricLoop(
-      pd, {"anthropic", "openai"}, "SYS", "USER", out, err, rig.ht, &u,
+      pd, {"anthropic", "openai"}, "SYS", "USER", out, err, rig.ht, &spend,
       [&](const std::string& f, const std::string& t) { switches++; from = f; to = t; });
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
   TEST_ASSERT_EQUAL_UINT32(2, plan.injected());

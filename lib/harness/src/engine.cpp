@@ -1027,10 +1027,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                 " - switching to " + to + ". Your progress this turn carries over.");
           }
           // The next turn's [FALLBACK] note (lane T) names whose turn this was, the
-          // whole path and the typed reason the host it left failed (a parked start
-          // included: the path then shows the head it started past).
+          // whole path and why the host it left failed: the fabric's typed record of
+          // THIS switch (a parked start included: the path then shows the head it
+          // started past), else the cause the chain noted for that host just before
+          // the switch (a fabric that keeps no switch record).
           switchPath += " -> " + to;
-          noteSwitch(errorClassOf(sw.kind));
+          const orch::FailStep* failed = tf.chain.last();
+          const bool typed = sw.from == from && sw.to == to && sw.kind != orch::StepErr::None;
+          noteSwitch(typed ? errorClassOf(sw.kind)
+                           : classifyErr(failed ? failed->text : std::string()));
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
         });
     convId = "";   // stateless loops keep no provider-side conversation
