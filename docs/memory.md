@@ -167,6 +167,33 @@ second time this way. A turn that starts with too little heap for the tool loop
 runs single-shot instead, and a failed send there gets the turn's ordinary
 retry, then another provider.
 
+### Admission beside a turn
+
+The floors admit a turn on one sample at round start. Other consumers of internal
+SRAM run beside it, so they yield instead of re-raising the floors:
+
+- **Worker tasks** (provider verify, cloud key mint, voice catalog, safety report)
+  start only with room for their stack plus 16 KB of internal free, and never while a
+  turn is in flight (`heapwatch::spawnGate`). A verify refused for a turn starts when
+  the turn ends; one refused for memory is recorded as deferred and retried, early
+  once the resting largest block recovers. The verify's memory gate reads the
+  **resting** largest block (the minimum of the last idle samples), taken before its
+  stack exists: a sample inside a transient read 7,156 B on a device resting at
+  15,860 B.
+- **Big web responses** (over 16 KB: the web app page, file downloads, log files,
+  stored blobs, episodic and vector pages) trickle, about two TCP segments in flight
+  per connection, or answer 503 with Retry-After when internal free is under 20 KB.
+  The cloud relay's own loopback request also gets the 503 while a turn is in flight
+  (the cloud page retries it); a LAN browser trickles. Bodies up to 16 KB are served
+  as before.
+- **The cloud relay** dials and writes responses over 8 KB through the TLS work slot
+  (see [the live turn](architecture/orchestrator-live-turn.md)).
+
+A failure is memory-caused only on evidence: an allocation failed during the
+exchange (its error says `alloc failed`). Then the turn gets its one same-provider
+resend and no switch to another provider. Without evidence the rule above holds: a
+fragmented but healthy board's outage still fails over.
+
 ### Levers to free internal SRAM (biggest first, verify on-device)
 
 1. **Route Wi-Fi/lwIP buffers to PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`,
@@ -188,6 +215,30 @@ breakdown, read the `mem` object in `/api/state` (`intFree`, `intLargest`,
 `heap_caps_get_largest_free_block()` once per pool (`MALLOC_CAP_INTERNAL`,
 `MALLOC_CAP_SPIRAM`, `MALLOC_CAP_DMA`). The caps are ANDed, so ORing two pools
 returns 0.
+
+Point samples miss the real low points (inside a TLS write, a handshake, another
+task's serve), so the device also keeps evidence of its own:
+
+- `mem.lowWater`, `mem.lowWaterTags`, `mem.lowWaterUp`: the lowest internal free
+  since boot, what was running when it was set (`turn`, `relay.dial`, `relay.bulk`,
+  `tunnel`, `tg.dl`, `vision`, `stt`, `ota`, `dream`, `verify`, `worker`, `lan.big`),
+  and the uptime in seconds. Each new low at least 1 KB down, once under 24 KB, logs
+  `heap: new low-water <n> (was <n>) free= largest= tags= up=`.
+- `mem.allocFails` and `mem.allocFailLast`: allocations that failed since boot (any
+  task), and the newest one. Each logs `heap: alloc FAILED size= caps= task= free=
+  largest= up= count=` (a few lines a minute; the count stays exact). The records live
+  in RTC memory, so after a panic, watchdog or software reset the next boot logs
+  `heap: <n> alloc failure(s) before the last reset` with the newest records.
+- `mem.restingLargest`: the largest internal block at rest (the verify gate's input).
+- `mem.tlsOverlaps`: concurrent work-TLS seen (it stays 0 under the single slot).
+- `mem.loopStackMin`, `mem.panelStackMin`, `mem.vrelStackMin`: worst free stack of
+  the main loop, the display render task and the voice-release watcher.
+- Every provider exchange logs one `transport: heaptrace` line on every path, with
+  the heap at four phases and `fail=` (where it stopped: `connect`, `head`,
+  `body@<bytes sent>`, `read`, `headers`, `parse`, `none`), `af=` (failed
+  allocations during it), `min=` (its local minimum free) and `at=`/`ms=` (when it
+  held the TLS slot). The body goes out in 4,096 B slices, so a failed write says
+  how many bytes left.
 
 ## 2. Heap under a live turn - what's movable, what isn't
 

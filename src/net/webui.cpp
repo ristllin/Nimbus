@@ -16,6 +16,8 @@
 // pre-auth surfaces are the static shell "/", "/logo.svg", and (unprovisioned
 // only) the AP token handout + first-run /savewifi.
 #include "webui.h"
+
+#include <algorithm>   // std::min (heapMin vs the low-water mark)
 #include "nimbus/orch/connectors_wire.h"   // /api/test/connwire grid seam
 
 #include "version.h"  // NIMBUS_FW_VERSION/BUILD -> /api/state fw/build
@@ -69,6 +71,8 @@
 #include "solide/touch.h"                     // live-apply a new calibration + touch::health()
 #include "nimbus/net/soak_state.h"            // CUM-257: uptime + soak counters onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
+#include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
+#include "web_admission.h"              // big responses trickle or answer busy (internal SRAM)
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
@@ -413,17 +417,22 @@ void unlockConfig() { portEXIT_CRITICAL(&s_cfgMux); }
 // Stream the config page as the ordered concatenation of its PROGMEM fragments
 // (CONFIG_HTML_PARTS, P4 split) with a chunked response: the callback copies
 // straight from flash into the TCP buffer as the socket drains - no RAM copy
-// of the ~170 KB page ever exists. Fragment lengths are measured once.
+// of the page ever exists. Fragment lengths are measured once. The page is the
+// biggest response the device sends (about 375 KB), so it goes through the
+// internal-SRAM admission (web_admission.h): it trickles, or answers a self-reloading
+// busy page when memory is short (and to the cloud relay while a turn is in flight).
 static void sendConfigPage(AsyncWebServerRequest* r) {
   static size_t s_len[CONFIG_HTML_PART_COUNT] = {0};
+  static size_t s_total = 0;
   static bool   s_measured = false;
   if (!s_measured) {
-    for (size_t p = 0; p < CONFIG_HTML_PART_COUNT; p++)
+    for (size_t p = 0; p < CONFIG_HTML_PART_COUNT; p++) {
       s_len[p] = strlen_P(CONFIG_HTML_PARTS[p]);
+      s_total += s_len[p];
+    }
     s_measured = true;
   }
-  AsyncWebServerResponse* res = r->beginChunkedResponse(
-      "text/html",
+  AwsResponseFiller fill =
       [](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
         size_t off = index;  // absolute offset into the concatenated page
         for (size_t p = 0; p < CONFIG_HTML_PART_COUNT; p++) {
@@ -436,7 +445,9 @@ static void sendConfigPage(AsyncWebServerRequest* r) {
           off -= s_len[p];
         }
         return 0;  // past the last fragment: response complete
-      });
+      };
+  if (!net::admission::admit(r, s_total, /*html=*/true, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse("text/html", fill);
   res->addHeader("Cache-Control", "no-store");
   r->send(res);
 }
@@ -484,7 +495,9 @@ static void buildState(String& out) {
   // (TLS is routed here). fs = LittleFS flash (vectors, voice clips, config blob).
   d["heap"]       = (uint32_t)ESP.getFreeHeap();
   d["heapTotal"]  = (uint32_t)ESP.getHeapSize();
-  d["heapMin"]    = (uint32_t)ESP.getMinFreeHeap();
+  // The all-time minimum, never above the low-water ladder's mark: inside a transport
+  // exchange the heap reports its local-minimum monitor window instead.
+  d["heapMin"]    = std::min((uint32_t)ESP.getMinFreeHeap(), nimbus::heapwatch::lowWater());
   d["psramFree"]  = (uint32_t)ESP.getFreePsram();
   d["psramTotal"] = (uint32_t)ESP.getPsramSize();
   // Per-capability breakdown so future agents MEASURE the internal-vs-PSRAM split
@@ -497,6 +510,9 @@ static void buildState(String& out) {
   mem["dmaFree"]    = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA);
   mem["spiFree"]    = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   mem["spiLargest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  // Internal-SRAM evidence: the low-water mark with what was running when it was set,
+  // failed allocations since boot, the resting largest block, more stack marks.
+  nimbus::heapwatch::stateInto(mem);
   // Worst free stack the tg_poll task (which runs the whole turn + tool loop) has
   // ever had, in bytes. This is the headroom over a canary overflow - the recurring
   // crash(panic). Watch it: if it approaches 0 the stack needs raising.

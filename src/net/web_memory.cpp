@@ -1,4 +1,5 @@
 #include "web_memory.h"
+#include "web_admission.h"   // big pages trickle or answer busy (internal SRAM)
 #include "../sys/ps_json.h"   // PSRAM-backed JsonDocument (episodic GET)
 #include "nimbus/orch/orch_schema.h"  // ORCH_D_DEVICE - the Tools tab device rows can't drift
 
@@ -113,15 +114,10 @@ void sendJsonPsram(AsyncWebServerRequest* r, JsonDocument& d) {
   if (!raw) { String out; serializeJson(d, out); sendJson(r, 200, out); return; }
   size_t len = serializeJson(d, raw, need);
   std::shared_ptr<char> body(raw, free);
-  AsyncWebServerResponse* res = r->beginChunkedResponse(
-      "application/json",
-      [body, len](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
-        if (index >= len) return 0;
-        size_t take = len - index;
-        if (take > maxLen) take = maxLen;
-        memcpy(buf, body.get() + index, take);
-        return take;
-      });
+  AwsResponseFiller fill = net::admission::bufferFiller(body, len);
+  // Internal-SRAM admission: a big page trickles, or waits (busy) while memory is short.
+  if (!net::admission::admit(r, len, /*html=*/false, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse("application/json", fill);
   res->addHeader("Cache-Control", "no-store");
   r->send(res);
 }
@@ -764,15 +760,9 @@ void registerMemoryRoutes(AsyncWebServer& server) {
     f.close();
     if (got != n) { free(raw); r->send(500, "text/plain", "read failed"); return; }
     std::shared_ptr<char> body(raw, free);
-    AsyncWebServerResponse* res = r->beginChunkedResponse(
-        "text/plain; charset=utf-8",
-        [body, n](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
-          if (index >= n) return 0;
-          size_t take = n - index;
-          if (take > maxLen) take = maxLen;
-          memcpy(buf, body.get() + index, take);
-          return take;
-        });
+    AwsResponseFiller fill = net::admission::bufferFiller(body, n);
+    if (!net::admission::admit(r, n, /*html=*/false, fill)) return;   // internal-SRAM admission
+    AsyncWebServerResponse* res = r->beginChunkedResponse("text/plain; charset=utf-8", fill);
     res->addHeader("Cache-Control", "no-store");
     res->addHeader("X-Content-Type-Options", "nosniff");
     r->send(res);

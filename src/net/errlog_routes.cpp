@@ -6,6 +6,7 @@
 #include <string>
 
 #include "webui.h"                       // nimbus::net::webAuthOk (token gate)
+#include "web_admission.h"               // big log files trickle or answer busy (internal SRAM)
 #include "../sys/errlog.h"               // portable policy: planRetrieval, pathFor, names
 #include "../sys/errlog_fs.h"            // activeFs()/readRecent()/listJson()
 #include "../agent/memory_subsystem.h"   // agent::memory::Lock (serializes card I/O)
@@ -49,14 +50,10 @@ void streamFile(AsyncWebServerRequest* r, const std::string& name) {
     if (!*f) { r->send(404, "application/json", "{\"error\":\"no such log file\"}"); return; }
     size = f->size();
   }
-  AsyncWebServerResponse* res = r->beginChunkedResponse(
-      "text/plain", [f](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-        agent::memory::Lock g;
-        if (!*f) return 0;
-        const int n = f->read(buf, maxLen);
-        if (n <= 0) { f->close(); return 0; }
-        return size_t(n);
-      });
+  AwsResponseFiller fill = net::admission::cardFileFiller(f);
+  // Internal-SRAM admission: a big log file trickles, or waits (busy) while memory is short.
+  if (!net::admission::admit(r, size, /*html=*/false, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse("text/plain", fill);
   res->addHeader("Content-Disposition",
                  String("attachment; filename=\"") + name.c_str() + "\"");
   res->addHeader("X-Content-Type-Options", "nosniff");

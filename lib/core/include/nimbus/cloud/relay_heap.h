@@ -56,12 +56,11 @@
 // TODO(CUM-387): the on-device before/after internal low-water during a real cloud
 // sync on v4.5.0 is still OUTSTANDING (the target unit has been off Wi-Fi since the
 // release), so this floor is unvalidated on hardware. That measurement is what turns
-// it from conservative to justified. While measuring, also check that a dial at
-// 8-16 KB does not overlap a concurrent turn or Telegram TLS session: runSession
-// takes no TLS arbiter, so the two can coexist. And note the user-visible
-// consequence of moving the refusal off the memory path: a memory-caused dial
-// failure now surfaces as "Couldn't reach the cloud. Retrying." rather than the
-// memory copy, which hides the real cause from the owner.
+// it from conservative to justified. (The dial itself no longer overlaps a turn or
+// another work-TLS session: it takes the TLS work slot, see relay_slot.h.) Note the
+// user-visible consequence of moving the refusal off the memory path: a
+// memory-caused dial failure surfaces as "Couldn't reach the cloud. Retrying."
+// rather than the memory copy, which hides the real cause from the owner.
 
 namespace nimbus {
 namespace cloud {
@@ -71,6 +70,44 @@ constexpr size_t kRelayHeapFloorLargest = 5000;   // largest internal contiguous
 
 // May the relay dial, given the current internal free total and largest free block?
 bool relayCanDial(size_t freeInternal, size_t largestInternalBlock);
+
+// ---- admission for big responses (panic F2) ----------------------------------------
+//
+// Internal SRAM had no admission control across tasks: a turn was admitted on one
+// sample at round start, then a tunneled page, a LAN page or a file download started
+// beside it with no reservation (each served connection holds up to a socket send
+// buffer, 5,744 B, of internal packet buffers, and a browser opens several). The rule
+// shared by the relay and the web server:
+//
+//   - a body up to kServeSmallMax (16 KB) is served as today: the dashboard's polls
+//     are 20 B to 6.6 KB and must never wait;
+//   - a larger body trickles (about two segments in flight per connection, at most
+//     kTrickleChunk per fill) or, while a turn is in flight or internal free is under
+//     kServeFloorFree, gets a 503 with Retry-After instead (Busy).
+//
+// The web server softens Busy for its own LAN clients (lanServeDecision): during a
+// turn a big LAN page trickles rather than refusing (owner default Q6); only genuine
+// starvation answers 503. The relay keeps Busy (the cloud retries it on its own).
+enum class ServeDecision : unsigned char { Serve, Trickle, Busy };
+
+constexpr size_t kServeSmallMax = 16 * 1024;
+// Bench-calibrated (B3); start value from the study: the room a turn's next exchange
+// needs (about 8 KB of transients) above the CUM-404 round floor (12 KB).
+constexpr size_t kServeFloorFree = 20 * 1024;
+constexpr size_t kTrickleChunk = 1436;   // one TCP segment (CONFIG_LWIP_TCP_MSS)
+
+ServeDecision tunnelServeDecision(size_t bodyHint, bool turnInFlight, size_t intFree);
+ServeDecision lanServeDecision(size_t bodyHint, bool turnInFlight, size_t intFree);
+const char* serveDecisionName(ServeDecision d);
+
+// The fill size a trickled response may write now. `maxLen` is what the web server
+// offers; it shrinks with the socket's free send buffer. `fullOffer` is what it would
+// offer with nothing in flight (two segments, less the chunk framing; for a body of
+// known length never more than the bytes left), so an offer below it means about two
+// segments are already in flight. Returns 0 to mean "try again on the next
+// acknowledgement" (the caller maps it to the server's try-again value); with nothing
+// in flight it always grants, so a trickle cannot stall.
+size_t trickleGrant(size_t maxLen, size_t fullOffer);
 
 }  // namespace cloud
 }  // namespace nimbus

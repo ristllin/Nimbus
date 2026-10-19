@@ -1,4 +1,5 @@
 #include "web_files.h"
+#include "web_admission.h"   // big downloads trickle or answer busy (internal SRAM)
 
 #include <memory>
 #include <string>
@@ -222,15 +223,10 @@ void registerFileRoutes(AsyncWebServer& server) {
       size = f->size();
     }
     const char* ctype = contentTypeFor(nameQ);
-    AsyncWebServerResponse* res = r->beginChunkedResponse(
-        ctype,
-        [f](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-          agent::memory::Lock g;
-          if (!*f) return 0;
-          const int n = f->read(buf, maxLen);
-          if (n <= 0) { f->close(); return 0; }   // EOF/error ends the stream
-          return size_t(n);
-        });
+    AwsResponseFiller fill = net::admission::cardFileFiller(f);
+    // Internal-SRAM admission: a big file trickles, or waits (busy) while memory is short.
+    if (!net::admission::admit(r, size, /*html=*/false, fill)) return;
+    AsyncWebServerResponse* res = r->beginChunkedResponse(ctype, fill);
     // ?inline=1 asks the browser to SHOW it rather than save it - the file
     // explorer's preview. Honored only for types that cannot execute (see
     // inlineViewable); anything else keeps the attachment disposition however
