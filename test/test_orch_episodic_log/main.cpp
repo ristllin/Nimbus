@@ -189,8 +189,57 @@ static void test_index_skips_out_of_window_days() {
   MsgQuery mid; mid.sinceHours = dayTs(101); mid.beforeHours = dayTs(102); mid.limit = 100;
   auto r = st.query(mid);
   TEST_ASSERT_EQUAL_INT(2, (int)r.size());       // only day 101's two rows
-  TEST_ASSERT_EQUAL_INT(2, fs.readRanges);        // exactly the 2 survivors read
+  // The two survivors are neighbours in day 101's file: one block read, of
+  // exactly their bytes (both lines and the newline between them).
+  TEST_ASSERT_EQUAL_INT(1, fs.readRanges);
+  TEST_ASSERT_EQUAL_INT((long)fs.size(st.dayFile(101)) - 1, fs.bytesRead);
   TEST_ASSERT_EQUAL_INT(0, fs.readAlls);          // day 100 + 102 files never opened
+}
+
+// ---- honest floor on the ring paths ----------------------------------------------
+// A page that fills from the newest rows of the RAM ring reports the day it
+// reached, not the ring's oldest day: both ring paths (whole history resident,
+// and resident with an opted-in cold scan on a truncated boot index).
+static void test_ring_page_reports_the_day_it_reached() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 64);
+  for (uint32_t d = 100; d <= 104; d++)
+    for (int i = 0; i < 3; i++)
+      st.addMessage(msg("m" + std::to_string(d) + std::to_string(i), "s1", dayTs(d, i), "user",
+                        MsgKind::Message, "x"));
+  MsgQuery q; q.limit = 2;
+  EpiQueryInfo info;
+  TEST_ASSERT_EQUAL_INT(2, (int)st.query(q, &info).size());
+  TEST_ASSERT_EQUAL_UINT32(104, info.searchedToDay);
+  q.limit = 100;   // the whole ring examined: its oldest day
+  TEST_ASSERT_EQUAL_INT(15, (int)st.query(q, &info).size());
+  TEST_ASSERT_EQUAL_UINT32(100, info.searchedToDay);
+}
+
+// ---- a sparse match reads only itself ------------------------------------------
+// The index pass batches neighbouring rows into one read, but only rows the
+// in-RAM filters keep: a survivor whose nearest older survivor is more than a
+// window away is read alone, so a narrow search never pays for the rows between.
+static void test_index_sparse_match_reads_only_itself() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 2);  // tiny ring -> index path
+  char id[16];
+  long wantBytes = 0;
+  int wanted = 0;
+  for (int i = 1; i <= 603; i++) {   // the ring's two newest rows are not rare
+    snprintf(id, sizeof(id), "m%08x", i);
+    const bool rare = (i % 200) == 0;
+    const EpisodicMessage m = msg(id, rare ? "rare" : "busy", dayTs(100, 1), "user", MsgKind::Message,
+                                  std::string(80, rare ? 'r' : 'b'));
+    st.addMessage(m);
+    if (rare) { wantBytes += (long)encodeEpisodicLine(m).size(); wanted++; }
+  }
+  fs.reset();
+  MsgQuery q; q.sessionId = "rare"; q.limit = 100;
+  const auto got = st.query(q);
+  TEST_ASSERT_EQUAL_INT(wanted, (int)got.size());
+  TEST_ASSERT_EQUAL_INT(wanted, fs.readRanges);
+  TEST_ASSERT_EQUAL_INT(wantBytes, fs.bytesRead);
 }
 
 // ---- recent-window fast path: a resident history answers with zero FS reads --
@@ -680,7 +729,7 @@ static void test_day_number_comes_from_the_file_name() {
 // ⚠ REGRESSION (shipped bug, found on hardware): when the boot scan reads a day
 // file's TAIL, the offsets it indexes must be FILE offsets. They were buffer
 // offsets, so every row indexed from a file bigger than the scan window pointed
-// at the wrong bytes - readRec decoded garbage and dropped the row, and
+// at the wrong bytes - the index read decoded garbage and dropped the row, and
 // episodic search silently returned nothing for the entire indexed range while
 // the RAM ring quietly carried the feature. Every host test predating this used
 // files smaller than the window, so nothing noticed.
@@ -1509,6 +1558,96 @@ static void test_cold_cursor_out_of_range_is_bounded() {
   }
 }
 
+// The unit A bench shape (leg F of the deep-history HIL suite, which failed on
+// hardware): the field-shaped corpus on older days, then 2,000 rows of 256 B
+// written today with a needle as the OLDEST of them; restart, converge, then
+// search for the needle with a plain query and with cold=1.
+// Root cause: once the backfill indexed the whole card, a text search walked
+// the index reading ONE row per card read, capped at kIndexReadsPerCall (120)
+// rows past the RAM ring - about 30 KB of a 512 KB day - while the same search
+// on v4.5.13's unindexed card read 128 KB windows. And the reply said "searched
+// back to <index floor>", so neither the bench nor the model had a reason to
+// follow the cursor. Fixed: ring rows come from RAM, older rows off the card in
+// blocks (RecBlock) under a byte budget, and a stopped walk reports the day it
+// reached. The needle is then reached by paging, through the index alone.
+static void test_converged_index_reaches_an_old_row_by_paging() {
+  FakeFs fs;
+  const lu::LumiFixture fx = lu::writeLumi(fs);
+  const uint32_t today = fx.days.back() + 1;
+  const int kToday = 2000;
+  {
+    AppendLogEpisodicStore w(fs, lu::kDir, 512);
+    w.hydrate(0, 0);
+    uint32_t id = 0x1000;
+    EpisodicMessage needle = lu::sizedRow(id++, "hiltest-epi", today * 24, MsgKind::Message, "", 256);
+    needle.text.replace(0, 32, "bilge pump serial is BP-0042    ");
+    w.addMessage(needle);
+    for (int i = 0; i < kToday; i++)
+      w.addMessage(lu::sizedRow(id++, "hiltest-epi", today * 24 + (uint32_t)(i / 100), MsgKind::Message,
+                                "", 256));
+  }
+  AppendLogEpisodicStore st(fs, lu::kDir, 512);
+  const long todayBytes = fs.size(st.dayFile(today));
+  st.hydrate(kHydrateMaxRows, kHydrateMaxBytes);
+  TEST_ASSERT_TRUE(st.hydrateTruncated());
+  lu::runBackfill(st);
+  TEST_ASSERT_TRUE(st.indexComplete());
+  TEST_ASSERT_EQUAL_INT(lu::kLumiRows + kToday + 1, st.messageCount());
+  TEST_ASSERT_TRUE(todayBytes > (long)kIndexBytesPerCall);   // one call cannot cover the day
+
+  // Recent history is answered from the RAM ring even though the converged
+  // index is far bigger than it: a page the ring fills costs no card read.
+  {
+    MsgQuery recentQ;
+    recentQ.textContains = lu::idOf(0x1000 + kToday);   // the newest row
+    recentQ.limit = 1;
+    fs.reset();
+    const auto got = st.query(recentQ, nullptr);
+    TEST_ASSERT_EQUAL_INT(1, (int)got.size());
+    TEST_ASSERT_EQUAL_INT(0, fs.readRanges);
+  }
+
+  for (bool cold : {false, true}) {
+    MsgQuery q;
+    q.textContains = "bilge pump";
+    q.limit = 50;
+    q.coldScan = cold;
+    EpiQueryInfo first;
+    fs.reset();
+    const auto page1 = st.query(q, &first);
+    // Bounded: within the read count and the byte budget (plus the one block
+    // that crossed it).
+    TEST_ASSERT_TRUE(fs.readRanges <= kIndexReadsPerCall);
+    TEST_ASSERT_TRUE(fs.bytesRead <= (long)(kIndexBytesPerCall + kColdWindow));
+    // Reach: the ring for free plus far more than the old 120 single-row reads.
+    TEST_ASSERT_FALSE(first.nextBefore.empty());
+    const uint32_t examined = 0x1000 + kToday + 1 - epiIdSuffix(first.nextBefore);
+    TEST_ASSERT_TRUE_MESSAGE(examined > 512 + 2 * kIndexReadsPerCall, std::to_string(examined).c_str());
+    // Honest floor: the call stopped inside today, so it says today - not the
+    // index floor 16 days back.
+    TEST_ASSERT_TRUE(first.olderExists);
+    TEST_ASSERT_EQUAL_UINT32(today, first.searchedToDay);
+    bool found = false;
+    for (const auto& m : page1) found = found || m.text.find("BP-0042") != std::string::npos;
+    // Paging reaches it through the index (the row is indexed: no cold read),
+    // in about todayBytes / kIndexBytesPerCall calls.
+    std::string before = first.nextBefore;
+    int pages = 1;
+    while (!found && !before.empty() && pages < 100) {
+      q.before = before;
+      EpiQueryInfo info;
+      for (const auto& m : st.query(q, &info)) found = found || m.text.find("BP-0042") != std::string::npos;
+      TEST_ASSERT_EQUAL_INT(0, info.coldFiles);
+      TEST_ASSERT_TRUE(info.nextBefore.empty() || info.nextBefore != before);
+      before = info.nextBefore;
+      pages++;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, cold ? "cold=1" : "cold=0");
+    TEST_ASSERT_TRUE_MESSAGE(pages <= (int)(todayBytes / (long)kIndexBytesPerCall) + 2,
+                             std::to_string(pages).c_str());
+  }
+}
+
 // T1 - convergence property over generated histories: hydrate under the device
 // budgets, then backfill to the end, must reproduce the writer's live index
 // exactly (rows, days, offsets, lengths, order), its count and its id hint.
@@ -2179,6 +2318,8 @@ int main(int, char**) {
   RUN_TEST(test_query_parity_ring_path);
   RUN_TEST(test_query_parity_index_path);
   RUN_TEST(test_index_skips_out_of_window_days);
+  RUN_TEST(test_index_sparse_match_reads_only_itself);
+  RUN_TEST(test_ring_page_reports_the_day_it_reached);
   RUN_TEST(test_recent_window_zero_reads);
   RUN_TEST(test_uncapped_history_beyond_500);
   RUN_TEST(test_hydrate_rebuilds_state);
@@ -2210,6 +2351,7 @@ int main(int, char**) {
   RUN_TEST(test_cum515_ranked_page_stays_inside_the_read_boundary);
   RUN_TEST(test_hydrate_ring_never_outgrows_the_index);
   RUN_TEST(test_cold_cursor_out_of_range_is_bounded);
+  RUN_TEST(test_converged_index_reaches_an_old_row_by_paging);
   RUN_TEST(test_reboot_converges_to_pre_reboot_index_property);
   RUN_TEST(test_boot_index_is_a_contiguous_suffix_and_bounded);
   RUN_TEST(test_lumi_shaped_fixture_reproduces_and_fixes_399);

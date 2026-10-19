@@ -304,13 +304,97 @@ void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
     recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
 }
 
-bool AppendLogEpisodicStore::readRec(const IdxRec& r, EpisodicMessage& out) const {
-  std::string line = fs_.readRange(dayFile(r.dayNum), (long)r.offset, (long)r.len);
-  return decodeEpisodicLine(line, out);
+bool AppendLogEpisodicStore::indexRowPasses(const MsgQuery& q, const IdxRec& r,
+                                            uint32_t beforeSfx) const {
+  if (beforeSfx && r.idSfx >= beforeSfx) return false;   // paging cursor
+  if (!q.sessionId.empty() && q.sessionId != r.sessionId.c_str()) return false;
+  if (!q.sessionVisible(st(r.sessionId))) return false;   // v3.7.0 read boundary
+  if (!q.kindVisible(r.kind)) return false;
+  if (q.sinceHours && r.tsHours < q.sinceHours) return false;
+  if (q.beforeHours && r.tsHours >= q.beforeHours) return false;
+  return true;
 }
 
-void AppendLogEpisodicStore::queryRing(const MsgQuery& q, EpiCollector& col) const {
+size_t AppendLogEpisodicStore::loadRecBlock(const MsgQuery& q, IdxRevIt it, uint32_t beforeSfx,
+                                            RecBlock& blk) const {
+  const IdxRec& r = *it;
+  const long end = (long)r.offset + (long)r.len;
+  long start = (long)r.offset;
+  // Extend down over the older rows of the same day-stream while they stay
+  // inside one window, but only as far as the oldest one the filters keep: a
+  // sparse match never drags in a window of rows nobody asked for. A row out of
+  // file order (a clock that jumped back appends an older day at the END of the
+  // index) ends the run.
+  for (auto j = std::next(it); j != index_.rend(); ++j) {
+    if (j->dayNum != r.dayNum || (long)j->offset + (long)j->len > start) break;
+    if (end - (long)j->offset > (long)kColdWindow) break;
+    if (indexRowPasses(q, *j, beforeSfx)) start = (long)j->offset;
+  }
+  blk.day = r.dayNum;
+  blk.start = start;
+  blk.buf = fs_.readRange(dayFile(r.dayNum), start, end - start);
+  blk.end = start + (long)blk.buf.size();
+  return (size_t)(end - start);
+}
+
+bool AppendLogEpisodicStore::decodeFromBlock(const RecBlock& blk, const IdxRec& r,
+                                             EpisodicMessage& out) {
+  if (!blk.covers(r)) return false;
+  return decodeEpisodicLine(blk.buf.data() + ((long)r.offset - blk.start), r.len, out);
+}
+
+bool AppendLogEpisodicStore::queryIndex(const MsgQuery& q, EpiCollector& col, EpiQueryInfo& info,
+                                        uint32_t& examinedDay) const {
   const uint32_t beforeSfx = epiIdSuffix(q.before);
+  int reads = 0;
+  size_t bytes = 0;
+  RecBlock blk;
+  // The ring holds the index's newest rows, in the same order (unpersisted_ is
+  // 0 on this path): serve those from RAM and spend the card-read budget only
+  // on older rows. Once the backfill makes the index bigger than the ring this
+  // is what keeps a search of recent history free of card reads. Each ring row
+  // is matched to its index row (id and hour) before it is trusted; a mismatch
+  // falls back to the card.
+  const size_t ringN = recent_.size();
+  size_t fromNewest = 0;
+  for (auto it = index_.rbegin(); it != index_.rend(); ++it, ++fromNewest) {
+    const IdxRec& r = *it;
+    if (!indexRowPasses(q, r, beforeSfx)) continue;
+    const CachedMsg* c = fromNewest < ringN ? &recent_[ringN - 1 - fromNewest] : nullptr;
+    if (c && c->tsHours == r.tsHours && epiIdSuffix(st(c->id)) == r.idSfx) {
+      examinedDay = r.dayNum;
+      const int sc = col.consider(c->id.data(), c->id.size(), c->text.data(), c->text.size());
+      if (!col.wants(sc)) continue;
+      col.add(msgOf(*c), sc);
+      if (col.done()) return false;
+      continue;
+    }
+    if (!blk.covers(r)) {
+      if (reads >= kIndexReadsPerCall || bytes >= kIndexBytesPerCall) {  // bounded, then paged
+        // Resume in the INDEXED range, not the cold one: a byte cursor would
+        // send the next call straight to the cold pass, which is bounded BELOW
+        // each day's index floor - the rows in between would vanish. +1 so the
+        // record we stopped at is included next time (the filter is exclusive).
+        char idbuf[16];
+        snprintf(idbuf, sizeof(idbuf), "m%08x", (unsigned)(r.idSfx + 1));
+        info.nextBefore = idbuf;
+        info.olderExists = true;
+        return true;
+      }
+      bytes += loadRecBlock(q, it, beforeSfx, blk);
+      reads++;
+    }
+    examinedDay = r.dayNum;
+    EpisodicMessage m;
+    if (!decodeFromBlock(blk, r, m)) continue;  // tolerant: torn line drops out
+    if (col.offer(std::move(m))) return false;
+  }
+  return false;
+}
+
+uint32_t AppendLogEpisodicStore::queryRing(const MsgQuery& q, EpiCollector& col) const {
+  const uint32_t beforeSfx = epiIdSuffix(q.before);
+  uint32_t examinedDay = 0;
   for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
     // Run the pre-filters first (only the id/session bridges below allocate a small
     // transient std::string; the kind/time checks are alloc-free), then score the
@@ -322,11 +406,13 @@ void AppendLogEpisodicStore::queryRing(const MsgQuery& q, EpiCollector& col) con
     if (!q.kindVisible(it->kind)) continue;
     if (q.sinceHours && it->tsHours < q.sinceHours) continue;
     if (q.beforeHours && it->tsHours >= q.beforeHours) continue;
+    examinedDay = it->tsHours / 24;
     const int sc = col.consider(it->id.data(), it->id.size(), it->text.data(), it->text.size());
     if (!col.wants(sc)) continue;
     col.add(msgOf(*it), sc);
     if (col.done()) break;
   }
+  return examinedDay;
 }
 
 uint32_t AppendLogEpisodicStore::indexFloorDay() const {
@@ -369,8 +455,10 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
   const bool byteCursor = q.before.find(':') != std::string::npos;
   const bool coldWanted = q.coldScan && hydrateTruncated_;
   if (unpersisted_ > 0 || (ringResident() && !coldWanted && !byteCursor)) {
-    queryRing(q, col);
-    if (!recent_.empty()) local.searchedToDay = recent_.front().tsHours / 24;
+    const uint32_t ringDay = queryRing(q, col);
+    // A full page stopped inside the ring: report the day it reached.
+    if (col.full() && ringDay) local.searchedToDay = ringDay;
+    else if (!recent_.empty()) local.searchedToDay = recent_.front().tsHours / 24;
     local.olderExists = hydrateTruncated_;
     local.matched = col.matched();
     if (info) *info = local;
@@ -380,44 +468,23 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
   // Index-first: cheap filters off the in-RAM index (out-of-window day files are
   // never opened); read + text-filter only the survivors, newest-first, until the
   // collector is done (unranked: `limit` rows) or the read budget runs out.
-  const uint32_t beforeSfx = epiIdSuffix(q.before);
   bool indexCapped = false;
+  uint32_t examinedDay = 0;
   if (ringResident() && !byteCursor) {
     // Every indexed row is ALSO in the RAM ring: reading them back off the card
     // would be ~100 ms per row for data already in memory. (Measured: a
     // 490-row index took ~60 s of SD opens and wedged the web task.) A byte
     // cursor has paged past the ring already, so skip it and fall to the cold
     // pass below.
-    queryRing(q, col);
+    examinedDay = queryRing(q, col);
   } else if (!byteCursor) {
-    int reads = 0;
-    for (auto it = index_.rbegin(); it != index_.rend(); ++it) {
-      const IdxRec& r = *it;
-      if (beforeSfx && r.idSfx >= beforeSfx) continue;   // paging cursor
-      if (!q.sessionId.empty() && q.sessionId != r.sessionId.c_str()) continue;
-      if (!q.sessionVisible(st(r.sessionId))) continue;   // v3.7.0 read boundary
-      if (!q.kindVisible(r.kind)) continue;
-      if (q.sinceHours && r.tsHours < q.sinceHours) continue;
-      if (q.beforeHours && r.tsHours >= q.beforeHours) continue;
-      if (reads >= kIndexReadsPerCall) {                 // bounded, then paged
-        // Resume in the INDEXED range, not the cold one: a byte cursor would
-        // send the next call straight to the cold pass, which is bounded BELOW
-        // each day's index floor - the rows in between would vanish. +1 so the
-        // record we stopped at is included next time (the filter is exclusive).
-        char idbuf[16];
-        snprintf(idbuf, sizeof(idbuf), "m%08x", (unsigned)(r.idSfx + 1));
-        indexCapped = true;
-        local.nextBefore = idbuf;
-        local.olderExists = true;
-        break;
-      }
-      EpisodicMessage m;
-      reads++;
-      if (!readRec(r, m)) continue;  // tolerant: torn line drops out
-      if (col.offer(std::move(m))) break;
-    }
+    indexCapped = queryIndex(q, col, local, examinedDay);
   }
-  local.searchedToDay = indexFloorDay();
+  // How far back this call looked. A walk that stopped early (budget or a full
+  // page) reports the day it reached, not the index floor: "searched back to
+  // <floor>" on a call that read one day of a deep index told the model there
+  // was nothing more to find, when the rest was one cursor away.
+  local.searchedToDay = (indexCapped || col.full()) && examinedDay ? examinedDay : indexFloorDay();
 
   // The index floor is not the history floor: everything the boot scan could not
   // afford is still on the card. Walk it only when the caller opted in AND the
@@ -719,7 +786,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
       const size_t nl = buf.find('\n');
       // ⚠ The index stores FILE offsets; forEachLine reports offsets within
       // `buf`. Without this base every row indexed from a tail-read file pointed
-      // at the wrong bytes - readRec() then decoded garbage and dropped the row,
+      // at the wrong bytes - the index read then decoded garbage and dropped the row,
       // so on any device with a day-stream over the window (~128 KB, i.e. any
       // busy month) episodic search silently returned nothing for those rows and
       // the RAM ring was quietly carrying the feature.
@@ -733,7 +800,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
     }
     // Within a day the file is append-ordered, so collect then reverse to keep
     // the newest-first accumulation consistent. The row's day is its FILE's day:
-    // readRec() opens dayFile(dayNum), so the two must agree.
+    // The index pass reads dayFile(dayNum), so the two must agree.
     std::vector<IdxRec> dayIdx;
     std::vector<EpisodicMessage> dayMsgs;
     forEachLine(buf, [&](long off, const std::string& line) {

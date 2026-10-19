@@ -146,13 +146,21 @@ inline constexpr size_t kColdWindow    = 8u * 1024;     // one backward read
 // A single record longer than the window would otherwise strand the rest of the
 // file; the read escalates up to this before giving up on that window alone.
 inline constexpr size_t kColdWindowMax = 32u * 1024;
-// Records the INDEX pass will pull off the card in one call. Each read is an
-// open + seek + read + close; measured ~1 ms on the bench card (the 4000-row
+// Card reads the INDEX pass will make in one call (a read is one row, or a block
+// of neighbouring rows - see RecBlock). Each read is an open + seek + read + close; measured ~1 ms on the bench card (the 4000-row
 // unbounded walk that this cap replaced was the real hazard - it wedged the web
 // task). This loop runs UNDER the shared `memory::Lock`, so the cap also bounds
 // how long a large-history search stalls the other task; past it the query
 // stops and reports the cursor, exactly like the cold pass.
 inline constexpr int    kIndexReadsPerCall = 120;
+// Bytes the INDEX pass will pull off the card in one call. The index pass reads
+// rows in blocks of up to kColdWindow (see RecBlock), so the read count alone no
+// longer bounds the work; this keeps one call to the same order as the cold
+// pass, whose 128 KB is the measured sub-second bound on the bench card (this
+// runs under the shared memory::Lock). A single row bigger than this is still
+// read (the first read of a call is always allowed), so a call always makes
+// progress.
+inline constexpr size_t kIndexBytesPerCall = kColdMaxBytes;
 
 // "2026-07-16.jsonl" -> epoch-day number (0 when the name is not a day-stream).
 uint32_t dayNumFromName(const std::string& name);
@@ -342,9 +350,36 @@ class AppendLogEpisodicStore : public EpisodicStore {
   static CachedMsg        cacheOf(const EpisodicMessage& m);
   static EpisodicMessage  msgOf(const CachedMsg& c);
 
-  // Read + decode a single record by its index entry; false if the line is
-  // missing/garbage (tolerant - a torn last line just drops out of results).
-  bool readRec(const IdxRec& r, EpisodicMessage& out) const;
+  // The index pass reads rows off the card in blocks: one read covers the row
+  // being examined plus the older rows of the same day-stream directly below it
+  // that the in-RAM filters keep, up to kColdWindow bytes. Dense matches cost
+  // one read per window, not one open + seek per row; a lone survivor still
+  // reads only itself. `buf` holds bytes [start, end) of day-stream `day`.
+  struct RecBlock {
+    std::string buf;
+    uint32_t day = 0;
+    long start = 0;
+    long end = 0;
+    bool covers(const IdxRec& r) const {
+      return !buf.empty() && r.dayNum == day && (long)r.offset >= start &&
+             (long)r.offset + (long)r.len <= end;
+    }
+  };
+  using IdxRevIt = std::vector<IdxRec, WorkingAllocator<IdxRec>>::const_reverse_iterator;
+  // Is `r` a candidate for `q` on the index fields alone (cursor, session, read
+  // boundary, kind, time window)? No card read.
+  bool indexRowPasses(const MsgQuery& q, const IdxRec& r, uint32_t beforeSfx) const;
+  // Fill `blk` for the row at `it` (see RecBlock); returns the bytes requested.
+  size_t loadRecBlock(const MsgQuery& q, IdxRevIt it, uint32_t beforeSfx, RecBlock& blk) const;
+  // Decode the row `r` out of `blk`; false if the line is missing or garbage
+  // (tolerant - a torn last line just drops out of results).
+  static bool decodeFromBlock(const RecBlock& blk, const IdxRec& r, EpisodicMessage& out);
+  // The index tier of query(): ring rows from RAM, older rows off the card in
+  // blocks, inside the per-call budget. Sets `info.nextBefore` and returns true
+  // when the budget stopped it; `examinedDay` is the day of the oldest row it
+  // looked at (0 = none).
+  bool queryIndex(const MsgQuery& q, EpiCollector& col, EpiQueryInfo& info,
+                  uint32_t& examinedDay) const;
 
   // One backward window over [.., end) of a day-stream: whole records only (the
   // torn head record is dropped and left for the next, older window). The read
@@ -383,8 +418,9 @@ class AppendLogEpisodicStore : public EpisodicStore {
   bool hydrateTruncated() const { return hydrateTruncated_; }
 
  private:
-  // Offer every ring row (newest-first) to `col` until it says done.
-  void queryRing(const MsgQuery& q, EpiCollector& col) const;
+  // Offer every ring row (newest-first) to `col` until it says done. Returns the
+  // day of the oldest row it examined (0 = none), for an honest searchedTo.
+  uint32_t queryRing(const MsgQuery& q, EpiCollector& col) const;
 
   // Walk the day-streams BELOW the index (or below `cur`), newest record first,
   // offering matches to `col` until it is done (unranked: `limit` reached) or

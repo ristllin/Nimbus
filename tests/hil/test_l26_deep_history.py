@@ -205,10 +205,28 @@ def test_index_converges_after_restart(filled):
     assert int(page.get("total", 0)) >= pre_total, (
         f"index total {page.get('total')} is below the pre-restart total {pre_total}"
     )
-    hot = _epi(b, text="bilge pump", limit=50, cold=0)
-    assert any(NEEDLE in m.get("text", "") for m in hot.get("messages", [])), (
-        "the oldest needle is on the card but a plain query did not find it after the index completed"
-    )
+    page_floor = _stats(b).get("epiFloor", "")
+    # A plain query reaches it through the index alone. One call is bounded (the
+    # needle sits about 2,000 rows deep), so it pages with the cursor the device
+    # hands back, like the model does; every page must be honest about how far
+    # back it looked and must not need the cold pass.
+    before, found, pages = "", False, 0
+    while pages < 20 and not found:
+        pages += 1
+        hot = _epi(b, text="bilge pump", limit=50, cold=0, before=before)
+        found = any(NEEDLE in m.get("text", "") for m in hot.get("messages", []))
+        assert int(hot.get("coldFiles", 0)) == 0, f"page {pages} fell to the cold pass on a complete index"
+        nxt = hot.get("nextBefore") or ""
+        if not found and nxt:
+            assert hot.get("olderExists") is True, f"page {pages} hands back a cursor but denies older history"
+            assert hot.get("searchedTo", "") >= page_floor, (
+                f"page {pages} claims it searched below the index floor ({hot.get('searchedTo')} < {page_floor})"
+            )
+        assert nxt != before or not nxt, f"cursor did not advance on page {pages}"
+        if not nxt:
+            break
+        before = nxt
+    assert found, f"the oldest needle is on the card but {pages} plain pages did not reach it after the index completed"
     st = _stats(b)
     assert st.get("epiIndexComplete") is True
     assert int(st.get("epiBootIndexed", 0)) + int(st.get("epiBackfillRows", 0)) <= int(st.get("episodicMsgs", 0))

@@ -252,11 +252,17 @@ and the cold query reaches them:
   it reports the exact cursor to resume from.
 - **Cursor** (`MsgQuery::before`) - a row id for the indexed range, a
   `"<day>:<offset>"` byte cursor for the cold range. The store emits the next token;
-  no caller (and no model) computes one. The indexed range is itself read-budgeted
-  (each row is a real card read), so even a query that never leaves the index pages.
+  no caller (and no model) computes one. The indexed range is itself budgeted, so
+  even a query that never leaves the index pages: rows still in the RAM ring are
+  matched from memory, older rows come off the card in blocks (one read covers a run
+  of neighbouring rows of one day-stream that the in-RAM filters keep, up to the
+  8 KB window; a lone match reads only itself), at most 120 reads and 128 KB per
+  call.
 - **Honest floor** (`EpiQueryInfo`) - every answer carries how far back it looked,
-  whether older history remains, and the resume token. "No results" from a bounded
-  read is reported as exactly that, never as "it never happened".
+  whether older history remains, and the resume token. A call that stopped early
+  (budget or a full page) reports the day it reached, not the index floor.
+  "No results" from a bounded read is reported as exactly that, never as "it never
+  happened".
 
 Surfaces: `memory.episodic` cold-scans by default and takes `before`; its result
 ends with a "searched back to `<date>`; older history exists … `before=<token>`"
