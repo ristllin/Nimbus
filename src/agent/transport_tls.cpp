@@ -5,6 +5,9 @@
 
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"   // failed-allocation count, local-minimum monitor
+#ifdef NIMBUS_TEST
+#include "../sys/crash_report.h"   // testPanicPoint (L39 crash-forensics legs)
+#endif
 #include "../sys/net_util.h"
 #include "../sys/ps_json.h"
 #include "../sys/tls_arbiter.h"
@@ -147,6 +150,9 @@ struct TlsIo {
   // The TLS client returns 0 on any hard error after an unknown number of records,
   // so slicing is what lets the failure say how many bytes went out.
   size_t writeBody(size_t off, size_t want) {
+#ifdef NIMBUS_TEST
+    if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
+#endif
     return client->write((const uint8_t*)req.body.data() + off, want);
   }
 
@@ -326,7 +332,11 @@ class TlsTransport : public HttpTransport {
       arbiter::releaseWork();
       t.af = nimbus::heapwatch::allocFails() - afStart;
       t.done = sampleHeap();
-      alogf("%s", t.line().c_str());
+      // Forensic window (heap F1.5): a healthy exchange's trace stays in the RAM ring and
+      // serial; a failed one, one with a failed allocation, or one that took internal
+      // memory near its floor is durable evidence.
+      alogLevelf(t.abnormal() ? nimbus::errlog::Level::Warn : nimbus::errlog::Level::Info, "%s",
+                 t.line().c_str());
     });
 
     if (trace.fail != Stage::None) {

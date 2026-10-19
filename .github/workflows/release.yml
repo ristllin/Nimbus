@@ -122,6 +122,45 @@ jobs:
         working-directory: Nimbus
         run: python3 tools/release_gate/check_elf_symbols.py --elf .pio/build/esp32s3/firmware.elf
 
+      # RELEASE GATE (crash forensics): every image's archived ELF must be the ELF that
+      # built it. The build embeds sha256(firmware.elf) in the image's app descriptor
+      # (app_elf_sha256), and a field core dump records the first hex digits of the same
+      # hash ("elf=" on the device's crash line), so a dump is decoded against the exact
+      # ELF (tools/crash_decode.py). Writes elf-sha256.txt (variant -> app_elf_sha256),
+      # the release record, and stages each ELF xz-compressed for the artifact below.
+      #
+      # The artifact is a CI artifact of this source repo, never in the releases repo
+      # devices download from: only someone decoding a field core dump needs it. It
+      # carries symbols for source that is already public and no secret (no secret
+      # reaches the build step), so a signed-in GitHub user being able to fetch it is
+      # harmless. Retention is 90 days, the maximum GitHub allows a public repository.
+      # Before the publish steps, so a release never ships without the ELF its crash
+      # dumps need.
+      - name: Release gate - ELF identity per variant + stage the ELF archive (crash forensics)
+        working-directory: Nimbus
+        run: |
+          set -e
+          mkdir -p elf-archive
+          : > elf-archive/elf-sha256.txt
+          for pair in nimbus-tft:esp32s3 freenove-28:esp32s3-cyd freenove-35:esp32s3-cyd-35 freenove-40:esp32s3-cyd-40; do
+            v="${pair%%:*}"; env="${pair#*:}"
+            python3 tools/release_gate/check_elf_symbols.py --identity-only \
+              --elf ".pio/build/$env/firmware.elf" --bin ".pio/build/$env/firmware.bin" \
+              --variant "$v" --sha-out elf-archive/elf-sha256.txt
+            xz -9 -c ".pio/build/$env/firmware.elf" > "elf-archive/firmware-$v.elf.xz"
+          done
+          cat elf-archive/elf-sha256.txt
+          ls -l elf-archive
+
+      - name: Archive the ELFs (CI artifact, 90 days)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2 (pinned SHA)
+        with:
+          name: firmware-elf-${{ github.ref_name }}
+          path: Nimbus/elf-archive/
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Sign + build typed OTA manifest (schema 2)
         working-directory: Nimbus
         env:

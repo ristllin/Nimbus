@@ -42,6 +42,7 @@
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
+#include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
 
 namespace agent {
 namespace memory {
@@ -77,6 +78,7 @@ bool                  g_begun = false;
 fs::FS*               g_fs = &LittleFS;   // data store: SD when mounted, else LittleFS
 SemaphoreHandle_t     g_memMux = nullptr; // recursive: guards g_vec/g_epi/g_scratch across tasks
 bool                  g_haveSd = false;   // resolved in begin(): is the store the SD card?
+bool                  g_tierResolved = false;  // begin() has resolved g_haveSd
 // CUM-405: no card mounted this boot, yet evidence (a card seen last boot, or a
 // non-empty /mem/vectors.bin still readable off the card) says memories are on the
 // card. Resolved once in begin() and surfaced as the loud Memory-panel banner so a
@@ -366,9 +368,22 @@ bool eraseAllPrivateData() {
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
 
-// Timed, non-blocking acquire (CUM-401): before begin() the mutex does not exist yet
-// and boot is single-task, so mirror lock()'s null-handle contract and report success
-// (unlock() is then a matching no-op). Otherwise wait at most timeoutMs.
+// The card lock exists from the top of setup(), in BOTH modes (crash forensics F1):
+// the durable log attaches to the SD card at its mount, long before begin(), and a
+// Notifier unit never runs begin() at all. Without the mutex, lock()/tryLock()
+// "succeed" as no-ops, so an early SD writer would open a two-writer window on the
+// card. Idempotent; begin() calls it too. No task is created.
+void lockInit() {
+  if (!g_memMux) g_memMux = xSemaphoreCreateRecursiveMutex();
+}
+
+// True once begin() has resolved the storage tier (haveSd() means something).
+bool storageResolved() { return g_tierResolved; }
+
+// Timed, non-blocking acquire (CUM-401). lockInit() runs first thing in setup(), so the
+// mutex normally exists for the very first log line; a call before that (static init)
+// mirrors lock()'s null-handle contract and reports success, with unlock() a matching
+// no-op. Otherwise wait at most timeoutMs.
 bool tryLock(uint32_t timeoutMs) {
   if (!g_memMux) return true;
   return xSemaphoreTakeRecursive(g_memMux, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
@@ -409,7 +424,7 @@ static bool cardHoldsVectorData() {
 void begin() {
   if (g_begun) return;
   g_begun = true;
-  g_memMux = xSemaphoreCreateRecursiveMutex();  // guard shared engines before any use
+  lockInit();            // normally already made at the top of setup(); idempotent
   LittleFS.begin(true);  // ALWAYS mount internal flash: it holds config and is the
                          // migration source if we just switched to the SD card. When
                          // g_fs is the SD card, solide::storage::begin() mounted it.
@@ -417,6 +432,10 @@ void begin() {
   // mounted) makes g_fs the SD card. On SD, bulk blobs live under /mem; with no
   // card they stay on the legacy LittleFS /data paths (also the migration source).
   g_haveSd = (g_fs != &LittleFS);
+  g_tierResolved = true;
+  // No card: the durable log's storage is LittleFS, ready now (with a card, main.cpp
+  // attached it at the SD mount). Flushes the boot's early backlog.
+  if (!g_haveSd) nimbus::errlog::attachStorage(LittleFS, false);
   g_vecPath = g_haveSd ? kVecSdPath : kVecLfsPath;
   g_epiPath = g_haveSd ? kEpiSdPath : kEpiLfsPath;
   LittleFS.mkdir("/data");   // routines, chat state, member table: LittleFS on every tier
@@ -1258,6 +1277,7 @@ bool promoteSd() {
   // the driver's idempotent "already mounted" latch so begin() actually re-probes
   // the bus - without it a re-seated card is never re-detected (begin() no-ops).
   if (sdLost()) {
+    nimbus::errlog::releaseHandle();   // never keep the log file open across a remount
     solide::storage::end();
     solide::storage::begin();
   }
@@ -1740,11 +1760,64 @@ bool traceActive() {
 // clock syncs (the BOOT row on a power-on/brownout - RTC time doesn't survive
 // those) would stamp tsHours≈0, land in day-file d0, be invisible to every
 // since_hours window, and be DELETED by the first retention prune once the clock
-// jumps (~day 20 000 vs cutoff day-30). So unsynced-clock events are held in a
-// small RAM list and flushed with real timestamps at first sync - the exact
-// "did you lose power?" record the timeline exists for survives.
+// jumps (~day 20 000 vs cutoff day-30). So unsynced-clock events are held and
+// flushed with real timestamps at first sync - the exact "did you lose power?"
+// record the timeline exists for survives.
+//
+// Crash forensics F3: the hold is a small file on the data store (pending_events.h:
+// /mem/pending_ev.txt on SD, /data/pending_ev.txt on flash, 16 rows / 4 KB, never
+// NVS), so it survives a reset before sync - offline boots and early crash loops used
+// to lose their boot rows with the RAM list. The first sync on any later boot stamps
+// the leftovers (labelled with the boot that captured them) and then this boot's rows.
+// The RAM list below is only the fallback when the file cannot be written.
 static std::vector<std::pair<std::string, std::string>> s_pendingEv;   // (ev, text)
 bool clockSynced() { return time(nullptr) >= 1600000000; }             // ~2020-09
+
+static const char* pendingEvPath() {
+  return g_haveSd ? "/mem/pending_ev.txt" : "/data/pending_ev.txt";
+}
+// Whether the file may hold rows: unknown until the first flush looks (rows from an
+// earlier boot), then tracked here so a synced device does not probe the card for a
+// file that is not there on every event.
+static bool s_pendingFileMaybe = true;
+// One flush owns the file at a time: captureEvent runs on the loop and on tg_poll, and
+// at first sync both can flush. The owner claims it under the Lock, writes the rows
+// without it, then deletes the file; anyone else skips the file meanwhile, so no row
+// is written twice. (Delete-after-write keeps a reset mid-flush from losing rows.)
+static bool s_pendingFlushOwned = false;
+
+// Caller holds the Lock.
+static std::string readPendingEvFile() {
+  File f = g_fs->open(pendingEvPath(), FILE_READ);
+  if (!f) return {};
+  std::string out;
+  uint8_t buf[256];
+  while (out.size() <= nimbus::orch::kPendingEvMaxBytes) {
+    const int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    out.append((const char*)buf, (size_t)n);
+  }
+  f.close();
+  return out;
+}
+
+// Append one held event to the file. Caller holds the Lock. False when the store
+// is not writable (the caller then keeps the event in RAM).
+static bool holdPendingEvent(const char* ev, const String& text) {
+  if (g_erasing || (g_haveSd && !effHaveSd())) return false;
+  nimbus::orch::PendingEvent e;
+  e.bootNo = nimbus::errlog::bootNumber();
+  e.upMs = millis();
+  e.ev = ev ? ev : "misc";
+  e.text = std::string(text.c_str());
+  const std::string body = nimbus::orch::appendPendingEvent(readPendingEvFile(), e);
+  File f = g_fs->open(pendingEvPath(), FILE_WRITE);
+  if (!f) return false;
+  const size_t n = f.write((const uint8_t*)body.data(), body.size());
+  f.close();
+  s_pendingFileMaybe = true;
+  return n == body.size();
+}
 
 void flushPendingEvents() {
   if (!g_begun || !clockSynced()) return;
@@ -1766,23 +1839,42 @@ void flushPendingEvents() {
     }
   }
   std::vector<std::pair<std::string, std::string>> pend;
+  nimbus::orch::PendingFile held;
+  bool own = false;
   {
     Lock g;
-    if (s_pendingEv.empty()) return;
+    if (s_pendingFileMaybe && !s_pendingFlushOwned) {
+      held = nimbus::orch::parsePendingFile(readPendingEvFile());
+      own = !held.rows.empty() || held.dropped;
+      s_pendingFlushOwned = own;
+      if (!own) s_pendingFileMaybe = false;
+    }
     pend.swap(s_pendingEv);
   }
+  if (held.rows.empty() && !held.dropped && pend.empty()) return;
   captureSession("system", "device", "Device timeline");
+  for (const auto& r : nimbus::orch::planPendingFlush(held, nimbus::errlog::bootNumber()))
+    captureMessage("system", "system", nimbus::orch::MsgKind::Log, String(r.text.c_str()), "",
+                   String("ev:") + r.ev.c_str());
   for (auto& e : pend)
     captureMessage("system", "system", nimbus::orch::MsgKind::Log,
                    String(e.second.c_str()) + " [pre-sync, stamped at first clock sync]",
                    "", String("ev:") + e.first.c_str());
+  // Truncate only after the rows were written: a reset mid-flush re-flushes them
+  // (a duplicate row) rather than losing them.
+  if (own) {
+    Lock g;
+    g_fs->remove(pendingEvPath());
+    s_pendingFileMaybe = false;
+    s_pendingFlushOwned = false;
+  }
 }
 
 void captureEvent(const char* ev, const String& text) {
   if (!g_begun) return;
   if (!clockSynced()) {
     Lock g;
-    if (s_pendingEv.size() < 8)
+    if (!holdPendingEvent(ev, text) && s_pendingEv.size() < 8)
       s_pendingEv.emplace_back(ev ? ev : "misc", std::string(text.c_str()));
     return;
   }

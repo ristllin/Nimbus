@@ -185,6 +185,19 @@ inline void alogef(const char* fmt, ...) {
                      [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Error); });
 }
 
+// Level chosen at the call site: one call that is durable only when the line is
+// evidence (the forensic window - a routine trace stays in the RAM ring + Serial,
+// an abnormal one also reaches the durable log). Same three sinks as alogf.
+inline void alogLevelf(nimbus::errlog::Level lvl, const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  core::emitRedacted(buf, logring::g_secrets, logSerial,
+                     [lvl](const std::string& red) { logPersist(red, nullptr, lvl); });
+}
+
 // Category-tagged variants: same three sinks, but the durable log line carries a short
 // class tag (nimbus::errlog::cat::*) so a retrieval reader can grep the failure classes
 // CUM-401 targets (mem/provider/relay/ota/panel/nvs/storage/net). The RAM ring + Serial

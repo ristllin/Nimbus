@@ -65,6 +65,15 @@ server - findings are weighted by real reachability.
     instruction and MARKS it untrusted so the model treats it as data; it never
     blocks. The decision policy is the pure `nimbus::orch` moderation core; the
     device classifier is `src/agent/adapters/moderation`.
+- **Crash reports never carry stack bytes or registers.** A panic writes a core dump
+  (every task's stack) to the coredump flash partition. The boot that reads it logs
+  only the crashing task's name, program counters, the fault cause and address, the
+  panic text and the image's ELF hash; a stack or register can hold a provider key
+  or the bot token in transit, so neither is ever printed (host-tested with a planted
+  pattern, `test_crash_forensics`). There is no route that downloads the raw dump:
+  it leaves the device only over USB on a bench, and a factory reset erases it. The
+  release ELF files needed to decode a dump are kept as CI artifacts of the source
+  repository, never next to the published images; they contain no secret.
 - **Safety activity log and scoped allowlist (privacy-first).** Every verdict the
   scanner reaches (a blocked guest message, a suspected injection in fetched
   content) is recorded to a bounded, newest-first local log the owner reviews under

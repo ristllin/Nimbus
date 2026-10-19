@@ -1,0 +1,70 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// pending_events - device-timeline events captured before the clock synced, kept in a
+// small file so they survive a reset (crash forensics F3).
+//
+// A timeline row needs a real timestamp: one stamped from the boot-relative clock would
+// land in day 0 and be deleted by the first retention prune once the clock jumps. So an
+// event captured before SNTP sync (the boot row of a power-on or brownout boot, which
+// loses the RTC time) is held until the first sync. It used to be held in RAM only, so
+// every reset before sync lost it: offline boots, and early crash loops, left no boot
+// row at all. Now each held event is also appended to /mem/pending_ev.txt (SD) or
+// /data/pending_ev.txt (flash), and the first sync on ANY later boot stamps and writes
+// them, then truncates the file. Never NVS.
+//
+// File format (one event per line; a header line only when rows were dropped):
+//   # dropped=<n>
+//   <bootNo> <uptimeMs> <ev> <text>
+// Bounded to kMaxRows rows and kMaxBytes bytes: the oldest rows go first and are
+// counted, so the flush can say how many were lost.
+namespace nimbus::orch {
+
+inline constexpr size_t kPendingEvMaxRows = 16;
+inline constexpr size_t kPendingEvMaxBytes = 4096;
+inline constexpr size_t kPendingEvMaxText = 300;
+
+struct PendingEvent {
+  uint32_t bootNo = 0;   // the boot that captured it (0 = unknown)
+  uint32_t upMs = 0;     // uptime at capture
+  std::string ev;        // event class ("boot", "ota", ...)
+  std::string text;
+};
+
+struct PendingFile {
+  std::vector<PendingEvent> rows;   // oldest first
+  uint32_t dropped = 0;             // rows dropped to stay within the bounds
+};
+
+// One line, '\n' terminated. The event class and text are sanitized (no control
+// bytes, no line breaks) and the text is capped at kPendingEvMaxText.
+std::string encodePendingEvent(const PendingEvent& e);
+// False for a malformed line (it is skipped, never fatal).
+bool decodePendingEvent(const std::string& line, PendingEvent& out);
+
+PendingFile parsePendingFile(const std::string& content);
+std::string renderPendingFile(const PendingFile& f);
+
+// Append one event and enforce the bounds; returns the new file content.
+std::string appendPendingEvent(const std::string& content, const PendingEvent& e);
+
+// The row text written at sync. This boot's rows keep the existing suffix
+// " [pre-sync, stamped at first clock sync]"; rows from an earlier boot say which boot
+// and that its clock never synced.
+std::string stampedPendingText(const PendingEvent& e, uint32_t currentBoot);
+
+// The extra row written when rows were dropped ("" when none were).
+std::string droppedPendingText(uint32_t dropped);
+
+// The timeline rows the first sync writes, in order: the dropped-count row (if any),
+// then every held row oldest first, each with its stamped text.
+struct StampedRow {
+  std::string ev;
+  std::string text;
+};
+std::vector<StampedRow> planPendingFlush(const PendingFile& f, uint32_t currentBoot);
+
+}  // namespace nimbus::orch

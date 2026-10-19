@@ -76,6 +76,18 @@ def test_bootscan_panic():
     assert _BootScan().feed("Guru Meditation Error: Core 0 panic'ed") == "panic"
 
 
+def test_bootscan_crash_report_of_a_past_panic_is_not_a_panic():
+    """The boot after a crash quotes that crash ("crash-why: abort() was called ...");
+    it is a record, not a live panic, so the scanner keeps reading toward READY."""
+    scan = _BootScan()
+    assert scan.feed("[agent] crash: fp=1a2b3c4d new=1 this-reset=1 task=loopTask pc=0x40375a2b") == "progress"
+    assert scan.feed("[agent] crash-bt: depth=3 corrupt=0 0x40375a2b,0x4200f00d,0x4200beef") == "progress"
+    assert scan.feed("[agent] crash-why: abort() was called at PC 0x40375a2b on core 0") == "progress"
+    assert scan.feed("READY mode=1 ip=192.168.50.120") == ("ready", 1, "192.168.50.120")
+    # A live panic print is still a panic.
+    assert _BootScan().feed("abort() was called at PC 0x40375a2b on core 0") == "panic"
+
+
 def test_bootscan_does_not_flag_a_slow_boot_with_one_reset():
     """A slow boot has exactly one rst: then a long progress tail - never a loop."""
     verdicts = _run(

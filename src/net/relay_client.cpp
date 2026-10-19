@@ -37,6 +37,7 @@
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "nimbus/cloud/upload_reassembly.h"   // chunked tunnel upload state machine (host-tested)
 #include "nimbus/fault.h"                     // RELAY_NOSLOT: the bench counter-leg (test builds)
+#include "nimbus/sys/log_window.h"   // forensic window: fold the per-serve lines (rows 44/57)
 #include "version.h"
 
 namespace nimbus {
@@ -47,6 +48,8 @@ using namespace nimbus::cloud;
 namespace {
 
 constexpr uint16_t kTlsPort = 443;
+// Folds the per-serve log lines into one durable summary per window (relay task).
+nimbus::sys::RelayFold g_serveFold;
 constexpr char kWsPath[] = "/device";
 constexpr uint32_t kConnectTimeoutMs = 12000;
 constexpr uint32_t kWelcomeDeadlineMs = 10000;
@@ -220,6 +223,36 @@ int readSome(Client& c, uint8_t* buf, size_t max, uint32_t waitMs) {
   return 0;
 }
 
+// Permanent instrumentation for one loopback serve (device evidence; the CUM-174
+// release gate asserts on the loopback line): which target served, connect latency,
+// status, body size, and the internal-SRAM low-water during the serve (intMin,
+// CUM-387). Every serve's lines are in the RAM ring + serial (GET /api/log); only an
+// abnormal serve (no response, a 5xx, internal memory under the floor) also goes to
+// the durable log, and the rest are folded into one durable summary per window -
+// these lines were 83-98% of every rotated SD log, which pushed whatever preceded a
+// crash out within hours (rows 44, 57).
+void logServe(const char* via, uint32_t connMs, http_replay::ResponseParser& rp, size_t intMin) {
+  const nimbus::sys::RelayFold::Serve serve{rp.status(), (uint32_t)rp.body().size(),
+                                            (uint32_t)intMin};
+  agent::alogLevelf(nimbus::sys::RelayFold::abnormal(serve) ? nimbus::errlog::Level::Warn
+                                                            : nimbus::errlog::Level::Info,
+                    "relay: loopback via=%s conn=%ums status=%d bytes=%u intMin=%u", via, connMs,
+                    rp.status(), (unsigned)rp.body().size(), (unsigned)intMin);
+  // CUM-387 bench probe: a serve is the relay/cloud-sync memory event, so emit a line in
+  // the same `[sram]` family as the boot snapshots (main.cpp sramSnap) - intFree is the
+  // internal free right after the serve, heapMin is the all-time internal low-water
+  // (ESP.getMinFreeHeap, same metric as the boot lines). The supervisor's before/after
+  // capture is then one `grep '[sram]'`. Serial/RAM ring only; heapMin rides the fold.
+  const uint32_t heapMin = (uint32_t)ESP.getMinFreeHeap();
+  agent::alogif("[sram] relay-sync intFree=%u heapMin=%u",
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heapMin);
+  // The fold belongs to the relay task (its only writer, so it needs no lock); a test
+  // console self-test serve on another task logs its own line above and stays out.
+  if (xTaskGetCurrentTaskHandle() != g_task) return;
+  const std::string folded = g_serveFold.note(serve, millis(), heapMin);
+  if (!folded.empty()) agent::alogc(nimbus::errlog::cat::kRelay, folded.c_str());
+}
+
 // --- loopback replay ---------------------------------------------------------
 // Replay one request into the device's own web server; fill `rp`. Returns false on a
 // connect/timeout failure (the caller turns that into a 502/504). Shared by the online
@@ -290,20 +323,7 @@ bool doLoopback(const std::string& method, const std::string& path,
   if (!rp.complete()) rp.endOfStream();
   heap_caps_free(buf);
   c.stop();
-  // Permanent instrumentation (device evidence; the CUM-174 release gate asserts on
-  // this line): which target served, connect latency, status, body size, and the
-  // internal-SRAM low-water during the serve (intMin, CUM-387).
-  agent::alogf("relay: loopback via=%s conn=%ums status=%d bytes=%u intMin=%u", via, connMs,
-               rp.status(), (unsigned)rp.body().size(), (unsigned)intMin);
-  // CUM-387 bench probe: a serve is the relay/cloud-sync memory event, so emit a line in
-  // the same `[sram]` family as the boot snapshots (main.cpp sramSnap) - intFree is the
-  // internal free right after the serve, heapMin is the all-time internal low-water
-  // (ESP.getMinFreeHeap, same metric as the boot lines). The supervisor's before/after
-  // capture is then one `grep '[sram]'`: boot heapMin vs post-sync heapMin should barely
-  // move now the staging rides PSRAM. Serial/log only, never the device screen.
-  agent::alogf("[sram] relay-sync intFree=%u heapMin=%u",
-               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-               (unsigned)ESP.getMinFreeHeap());
+  logServe(via, connMs, rp, intMin);
   return rp.complete();
 }
 
@@ -522,9 +542,12 @@ void emitResFrame(const char* id, int status, const http_replay::Headers& header
   heap_caps_free(frame);
   if (!settleFrame(out, id, status, obodyLen, reqAtMs)) return;
   const bool sent = out == BigFrame::Sent;
-  agent::alog((String("relay: res ") + status + " body=" + (uint32_t)obodyLen + " sent=" +
-               (sent ? 1 : 0))
-                  .c_str());
+  // Durable only when the frame did not leave or the status is a server error (the
+  // forensic window); a routine res line stays in the RAM ring + serial.
+  const String resLine = String("relay: res ") + status + " body=" + (uint32_t)obodyLen +
+                         " sent=" + (sent ? 1 : 0);
+  if (!sent || status >= 500) agent::alog(resLine.c_str());
+  else agent::alogi(resLine.c_str());
 }
 
 // Answer a tunneled request: replay into the local server, frame the response back.

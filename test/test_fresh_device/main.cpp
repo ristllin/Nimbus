@@ -18,6 +18,8 @@
 #include "nimbus/wifi/copy.h"           // setupCtaTitle/Hint - the CTA copy contract
 #include "solide/boards/board_freenove_s3.h"
 #include "solide/boards/board_solide_s3.h"
+#include "nimbus/crash_summary.h"       // blank coredump partition -> crash=none
+#include "nimbus/sys/boot_record.h"    // the fresh boot's first durable line
 
 // ============================================================================
 // test_fresh_device (CUM-245) - the DEFAULT / ABSENT-NVS device as a first-class
@@ -531,6 +533,50 @@ static void test_scrmodel_notice_only_for_explicit_legacy_value() {
   static_assert(nimbus::display::showsUnsupportedNotice("eink"), "explicit eink migrates");
 }
 
+// ---- 8. Crash forensics on a fresh device (crash forensics F5) ------------------
+//
+// A fresh or factory-reset board has a blank coredump partition (the factory reset
+// erases it). The boot must read that as crash=none: no crash line, no boot-row
+// suffix, nothing in /api/state but "crash": null. And the whole forensics path (boot
+// record, durable log, crash reporter) writes zero NVS: Lumi runs with ~2.7 KB of NVS
+// free, so state lives beside the log (/log/boot.n, /log/crash.seen), never in NVS.
+static void test_blank_coredump_partition_reads_crash_none() {
+  nimbus::crash::Report blank;   // the reader leaves a blank/absent partition at None
+  TEST_ASSERT_EQUAL(nimbus::crash::ImageState::None, blank.state);
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)nimbus::crash::reportLines(blank).size());
+  TEST_ASSERT_TRUE(nimbus::crash::oneLiner(blank).empty());
+  // The fresh boot's record: power-on, no clock, the boot number stamped later.
+  nimbus::sys::BootFacts f;
+  f.reason = 1;
+  f.raw = 1;
+  const std::string l = nimbus::sys::bootLine(f);
+  TEST_ASSERT_TRUE(l.find("boot: n=? ") == 0);
+  TEST_ASSERT_TRUE(l.find("reason=power-on(0x01)") != std::string::npos);
+  TEST_ASSERT_TRUE(l.find(" t=0 ") != std::string::npos);
+}
+
+static std::string slurp(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static void test_forensics_path_writes_no_nvs() {
+  const char* files[] = {"src/sys/crash_report.cpp", "src/sys/errlog_fs.cpp"};
+  const char* writers[] = {"Preferences", "nvs_set", "nvs_commit", "nvs_open", ".put",
+                           "solide::memory::set", "store::set", "saveConfig"};
+  for (const char* path : files) {
+    const std::string src = slurp(path);
+    for (const char* w : writers)
+      TEST_ASSERT_TRUE_MESSAGE(src.find(w) == std::string::npos, (std::string(path) + ": " + w).c_str());
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   // 1. touch defaults - the class over all board models x TouchKind
@@ -556,5 +602,8 @@ int main() {
   RUN_TEST(test_per_board_flip_base_is_explicit_and_correct);
   RUN_TEST(test_effective_flip_composes_base_with_owner_delta);
   RUN_TEST(test_scrmodel_notice_only_for_explicit_legacy_value);
+  // 8. crash forensics: blank dump partition, zero NVS writes
+  RUN_TEST(test_blank_coredump_partition_reads_crash_none);
+  RUN_TEST(test_forensics_path_writes_no_nvs);
   return UNITY_END();
 }

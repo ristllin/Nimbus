@@ -55,10 +55,90 @@ def test_clean_tft_image_passes():
     assert ok
 
 
+def test_test_build_crash_switch_fails_a_shipped_image():
+    syms = "42007eb0 T _ZN6solide11display_tft5beginEv\n42001000 T _ZN6nimbus5crash12armTurnPanicERK6String\n"
+    ok, msgs = elf.check(syms)
+    assert not ok
+    assert any("crash switches" in m for m in msgs)
+
+
 def test_empty_elf_fails_missing_plumbing():
     ok, msgs = elf.check("00000000 T some_other_symbol\n")
     assert not ok
     assert any("plumbing" in m for m in msgs)
+
+
+# --- ELF identity: the archived ELF is the image's ELF (crash forensics) -------
+def _image_with_sha(sha: bytes, magic: int = 0xABCD5432, first: int = 0xE9) -> bytes:
+    import struct
+
+    img = bytearray(0x200)
+    img[0] = first
+    struct.pack_into("<I", img, 0x20, magic)
+    img[0xB0 : 0xB0 + 32] = sha
+    return bytes(img)
+
+
+def test_identity_matching_elf_passes():
+    import hashlib
+
+    elf_bytes = b"\x7fELF fake elf body"
+    ok, msg, sha = elf.check_identity(elf_bytes, _image_with_sha(hashlib.sha256(elf_bytes).digest()))
+    assert ok, msg
+    assert sha == hashlib.sha256(elf_bytes).hexdigest()
+
+
+def test_identity_other_elf_fails():
+    import hashlib
+
+    ok, msg, _ = elf.check_identity(b"elf A", _image_with_sha(hashlib.sha256(b"elf B").digest()))
+    assert not ok and "does not match" in msg
+
+
+def test_identity_not_an_app_image_fails():
+    import hashlib
+
+    sha = hashlib.sha256(b"x").digest()
+    for img in (b"", _image_with_sha(sha, magic=0), _image_with_sha(sha, first=0x00)):
+        ok, msg, _ = elf.check_identity(b"x", img)
+        assert not ok and "app image" in msg
+
+
+def test_identity_cli_writes_the_release_record(tmp_path):
+    import hashlib
+
+    elf_path = tmp_path / "firmware.elf"
+    bin_path = tmp_path / "firmware.bin"
+    out = tmp_path / "elf-sha256.txt"
+    elf_path.write_bytes(b"\x7fELF body")
+    bin_path.write_bytes(_image_with_sha(hashlib.sha256(b"\x7fELF body").digest()))
+    rc = elf.main(
+        [
+            "--elf",
+            str(elf_path),
+            "--bin",
+            str(bin_path),
+            "--identity-only",
+            "--variant",
+            "freenove-28",
+            "--sha-out",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.read_text() == "freenove-28 " + hashlib.sha256(b"\x7fELF body").hexdigest() + "\n"
+    bin_path.write_bytes(_image_with_sha(hashlib.sha256(b"other").digest()))
+    assert elf.main(["--elf", str(elf_path), "--bin", str(bin_path), "--identity-only"]) == 1
+
+
+def test_identity_only_without_a_bin_is_refused(tmp_path):
+    import pytest
+
+    elf_path = tmp_path / "firmware.elf"
+    elf_path.write_bytes(b"x")
+    with pytest.raises(SystemExit) as e:
+        elf.main(["--elf", str(elf_path), "--identity-only"])
+    assert e.value.code == 2
 
 
 # --- OTA-preserves-NVS gate (CUM-237) ---------------------------------------

@@ -67,6 +67,8 @@
 #include "nimbus/harness/dream.h"   // buildConversationWindow (RECENT CONVERSATION) + buildEpisodicDigest
 #include "nimbus/harness/conversation.h"   // the /clear boundary + live conversation window (CUM-511)
 #include "../sfx/sound_fx.h"      // SFX hooks: spawn ack / turn start / reply / mem save
+#include "../sys/crash_report.h"  // crash UX: the in-flight turn journal
+#include "nimbus/sys/log_window.h"   // forensic window: routine headloop lines stay in RAM
 
 #include <ArduinoJson.h>
 #include <mutex>       // last-turn introspection buffer guard
@@ -1131,6 +1133,7 @@ static TurnEngine::Deps buildTurnDeps() {
                                        String(text.c_str()), "", String(fromTag.c_str()));
     strncpy(g_curUserRowId, id.c_str(), sizeof(g_curUserRowId) - 1);
     g_curUserRowId[sizeof(g_curUserRowId) - 1] = 0;
+    nimbus::crash::noteTurnText(text);   // the crash journal names a photo as a photo
     // The user row IS this turn's identity - re-key the turn tag off it (the
     // onTurnStart fallback minted a placeholder). The row does NOT carry a
     // turn: tag itself: its own `id` is the key, and appending one would
@@ -1173,6 +1176,8 @@ static TurnEngine::Deps buildTurnDeps() {
     String id = g_curUserRowId[0] ? String(g_curUserRowId) : memory::mintRowId();
     snprintf(g_turnTag, sizeof(g_turnTag), "turn:%s", id.length() ? id.c_str() : "t0");
     s_traceArgs.clear();
+    // Crash UX: the in-flight turn is journaled (/crash/turn.json) until it ends.
+    nimbus::crash::turnStarted((int)ev.source, ev.chatId, std::string());
   };
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
     if (!memory::traceActive()) return;
@@ -1282,6 +1287,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // real billed tokens + tool-call count. onSpawn/onResult stay UNWIRED here on
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
+    nimbus::crash::turnEnded();   // the turn finished: no crash notice will name it
     // Hold-to-talk (CUM-456): the voice message's own turn answered? A salvaged
     // reply (parse failed, text recovered) still answered the owner; the honest
     // failure paths deliver their own line and pass 0 bytes.
@@ -1455,7 +1461,16 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_sinks  = sinks;
   // Route the portable harness library's log seam into the device agent log
   // (alog -> RAM ring -> GET /api/log), same surface the rest of the agent uses.
-  hlog::setSink([](const char* line) { alog(line); });
+  // Forensic window (crash forensics, rows 44/57): a routine per-round headloop line
+  // stays in the RAM ring + serial; a capped or low-memory round stays durable. The
+  // round number also moves the crash journal, so a crash notice can name the step.
+  hlog::setSink([](const char* line) {
+    const std::string l(line);
+    int round = 0;
+    if (nimbus::sys::parseHeadloopRound(l, round) && turnInFlight()) nimbus::crash::turnRound(round);
+    if (nimbus::sys::headloopRoutine(l)) alogi(line);
+    else alog(line);
+  });
   g_journalStore.begin();
   g_journal.begin(&g_journalStore);
   // Construct the portable job machinery over the freshly loaded journal (the

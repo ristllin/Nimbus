@@ -66,6 +66,10 @@ STATUS_PATTERN = (
 
 # Boot-log strings that mean the firmware crashed / is looping - a boot_ok FAIL.
 PANIC_MARKERS = ("Guru Meditation", "abort()", "assert failed", "CORRUPT HEAP", "Backtrace:")
+# The boot's crash report (src/sys/crash_report.cpp) quotes the PREVIOUS run's panic
+# ("crash-why: abort() was called at ..."). It is a record of a past crash, never a
+# live one, so the boot scanner must not read it as a panic during this boot.
+CRASH_REPORT_RE = re.compile(r"\bcrash(?:-bt|-why)?: ")
 
 # ScreenId names, index == the numeric id the firmware emits (must track
 # lib/core/include/nimbus/attention.h ScreenId order).
@@ -280,7 +284,7 @@ class _BootScan:
     def feed(self, line: str):
         """Classify one line: ``("ready", mode, ip)`` / ``("legacy", None, None)``
         / ``"panic"`` / ``"loop"`` / ``"progress"``."""
-        if any(marker in line for marker in PANIC_MARKERS):
+        if any(marker in line for marker in PANIC_MARKERS) and not CRASH_REPORT_RE.search(line):
             return "panic"
         if line.startswith("rst:"):
             self.saw_reset = True

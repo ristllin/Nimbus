@@ -73,6 +73,7 @@
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
 #include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
 #include "web_admission.h"              // big responses trickle or answer busy (internal SRAM)
+#include "../sys/crash_report.h"        // /api/state boot object (reset reason, crash summary)
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
@@ -958,6 +959,9 @@ static void buildState(String& out) {
   d["autoUpd"]  = agent::store::otaAutoUpdate();
   d["usbCfm"]   = agent::store::usbUpdateConfirm();  // require an on-device confirm before a USB update (CUM-391)
   d["otaSlot"]  = otaupd::runningSlot();    // running app slot (app0/app1) - install flip proof
+  // This boot (crash forensics): boot number, reset reason + raw ROM code, the clock the
+  // RTC kept, and the core dump's summary when one is stored (crash: null otherwise).
+  nimbus::crash::fillBootState(d["boot"].to<JsonObject>());
   serializeJson(d, out);
 }
 

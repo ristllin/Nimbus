@@ -29,6 +29,8 @@ namespace agent::files {
 // registers the agent tools (files.list / files.stat / artifact.save /
 // files.send) into memory::registry(). Safe no-op without SD.
 void begin();
+// Create the fetch queue's lazily initialized mutex now (begin() calls it).
+void primeFetchLock();
 
 // True when the store is usable NOW (SD mounted and not demoted).
 bool available();

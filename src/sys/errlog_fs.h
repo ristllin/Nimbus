@@ -13,7 +13,10 @@
 //
 // Serialization: every FS op runs under agent::memory::Lock, the recursive mutex
 // that serializes ALL card I/O across every task in this firmware (main, poll,
-// AsyncTCP). No FS handle is held across a network send.
+// AsyncTCP). The lock exists from the top of setup() (memory::lockInit), in both
+// modes. The active log file is the one handle held open between calls (each line is
+// a write plus a flush; see LogWriter in errlog.h); it is only ever touched under the
+// lock, and no other FS handle is held across a network send.
 
 #include <cstddef>
 #include <string>
@@ -22,11 +25,41 @@ namespace fs { class FS; }   // fwd-decl keeps this header Arduino-light
 
 namespace nimbus::errlog {
 
-// Resolve the storage tier and record the decision to the durable log. Optional:
-// append() self-initializes lazily on first call, so wiring this into boot is a
-// convenience (it makes the tier line appear at a deterministic point) - not a
-// requirement. Idempotent.
-void begin();
+// Attach a MOUNTED filesystem as the durable log's storage. Until the first call the
+// tier is "not ready": lines queue in a bounded early backlog (24 lines / 4 KB) instead
+// of failing against an unmounted FS. Called by main.cpp right after the SD card mounts
+// (both modes), and by memory::begin() right after it mounts LittleFS when there is no
+// card. The first call reads and bumps the boot counter (/log/boot.n), stamps it into
+// the queued boot record, flushes the backlog in order, then writes the tier line.
+// Runs on the boot task under the card lock.
+void attachStorage(::fs::FS& fs, bool isSd);
+
+// Called once, on the boot task, right after the first attachStorage() finished (the
+// crash reporter reads the core dump and dedupes against /log/crash.seen there, so
+// its lines land as early as storage allows, even in a boot that dies right after).
+void onAttached(void (*fn)());
+
+// True once storage has attached.
+bool storageAttached();
+
+// End of setup(): when no storage ever attached (Notifier mode without a card) the
+// early backlog is freed; later lines stay in the RAM tail and on serial only.
+void bootComplete();
+
+// The storage under the held log file is about to be unmounted, reformatted or
+// remounted: close the handle now (the next line reopens it). Call before
+// solide::storage::end()/format() - a handle kept across a remount could write into
+// whatever file the remounted volume hands its descriptor to next.
+void releaseHandle();
+
+// This boot's number from /log/boot.n (0 until storage attaches, or when the counter
+// could not be written).
+uint32_t bootNumber();
+
+// Small state files kept beside the log in /log (the crash dedupe record). Read and
+// write under the card lock; "" / false before storage attaches.
+std::string readState(const char* name, size_t maxBytes);
+bool writeState(const char* name, const std::string& data);
 
 // Append one already-redacted line to the durable log, rotating within the tier's
 // size cap. `cat` is a short class tag from errlog::cat (nullptr / "" -> "-").
@@ -36,9 +69,10 @@ void append(const std::string& redacted, const char* cat);
 
 // Factory-erase suspension: while true, append() keeps the RAM tail (and the
 // caller's Serial print) but drops the durable flash write, so the sweep's own
-// progress lines cannot recreate the /log tree it just erased. Set from the
-// main-loop factory-reset drain; cleared again only on the refusal path (a
-// successful erase restarts the device).
+// progress lines cannot recreate the /log tree it just erased. Suspending also
+// closes the held log file so the sweep can delete it. Set from the main-loop
+// factory-reset drain; cleared again only on the refusal path (a successful erase
+// restarts the device).
 void setSuspended(bool on);
 
 // Agent-read seam: the most recent <= maxBytes of the durable log, line-aligned
@@ -48,7 +82,7 @@ void setSuspended(bool on);
 std::string readRecent(size_t maxBytes);
 
 // Retrieval support (used by src/net/errlog_routes). listJson() returns
-// {"tier":"sd|flash","files":[{"name","bytes"}...]} for the current + rotated
+// {"tier":"sd|flash|none","files":[{"name","bytes"}...]} for the current + rotated
 // files that exist. fileBytes()/streaming are done by the route directly against
 // activeFs() so a large pull never buffers the whole file in RAM.
 std::string listJson();
@@ -70,9 +104,10 @@ uint32_t durableSkipped();
 // device's logging actually incurs.
 size_t durableBytes();
 
-// The resolved active filesystem (SD card, else LittleFS). The retrieval route
-// opens and chunk-streams log files directly against this (under agent::memory::Lock)
-// so a full pull never buffers the whole file in RAM. Initializes the tier lazily.
+// The attached filesystem (SD card or LittleFS; LittleFS before anything attached, so
+// a caller's open simply fails on an unmounted FS). The retrieval route opens and
+// chunk-streams log files directly against this (under agent::memory::Lock) so a full
+// pull never buffers the whole file in RAM.
 ::fs::FS& activeFs();
 
 }  // namespace nimbus::errlog

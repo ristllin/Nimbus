@@ -27,15 +27,11 @@ namespace {
 // rather than stall the loop (best-effort durability is correct for a diagnostic log).
 constexpr uint32_t kDurableLockMs = 8;
 
-bool      g_inited    = false;
 volatile bool g_suspended = false;   // factory erase in progress: drop durable writes
-bool      g_haveSd    = false;  // tier for reporting (listJson/onSdTier); engine tracks its own
-::fs::FS* g_fs        = nullptr;
-bool      g_tierNoted = false;  // the storage-tier decision line has landed on disk
+::fs::FS* g_fs = nullptr;            // the attached filesystem (nullptr = not ready yet)
 std::atomic<uint32_t> g_seq{0};           // monotonic per-boot line sequence (any task)
 std::atomic<uint32_t> g_durableSkipped{0};// TOTAL lines dropped from the DURABLE log under lock contention (reporting)
 std::atomic<uint32_t> g_skipUnpersisted{0};// dropped lines not yet recorded to the durable log (CUM-407 marker delta)
-std::string g_pendingTier;      // tier line built once, re-attempted until it lands (no seq churn)
 
 // RAM fallback tail: a fixed byte ring so readRecent() still returns recent lines
 // when the card/flash is unavailable (the exact moment the log matters most). Not the
@@ -46,8 +42,6 @@ constexpr size_t kRamTail = 2048;
 char             g_ram[kRamTail];
 size_t           g_ramTotal = 0;
 portMUX_TYPE     g_ramMux = portMUX_INITIALIZER_UNLOCKED;
-
-TierCaps caps() { return capsFor(g_haveSd); }
 
 // Copy bytes into the RAM ring under the spinlock. Only byte copies here (no heap),
 // so it is safe inside the no-heap critical section and never blocks on the card.
@@ -102,92 +96,141 @@ size_t fileBytes(const std::string& name) {
   return n;
 }
 
-// Arduino filesystem adapter for the portable LogWriter engine. All card I/O goes
-// through g_fs (SD or LittleFS); the engine holds the rotation + self-heal logic and
-// is host-tested against a fake adapter (test_errlog).
+// Arduino filesystem adapter for the portable engine (errlog.h). The active log file
+// is the one HELD handle: opened on attach, rotation, a tier flip, a remount or after
+// a write error, and otherwise kept open across lines. Everything else (rotation
+// renames, the small state files) opens and closes its own handle. All of it runs
+// under the card lock.
 struct ArduinoLogFs {
-  long fileSize(const std::string& path) {
-    if (!g_fs) return -1;
-    ::File f = g_fs->open(path.c_str(), FILE_READ);
-    if (!f) return -1;                    // absent or FS not mounted
-    const long n = (long)f.size();
-    f.close();
-    return n;
+  ::File held;
+
+  bool openAppend(const std::string& path) {
+    if (!g_fs) return false;
+    held = g_fs->open(path.c_str(), FILE_APPEND);
+    return (bool)held;
   }
-  size_t appendFile(const std::string& path, const char* data, size_t len) {
-    if (!g_fs) return 0;
-    ::File f = g_fs->open(path.c_str(), FILE_APPEND);
-    if (!f) return 0;                     // dir missing / FS not mounted / full
-    const size_t n = f.write((const uint8_t*)data, len);
-    f.close();
-    return n;
+  long openSize() { return held ? (long)held.size() : -1; }
+  // The per-line path: one write, then one flush (fflush + fsync, so the line is on
+  // the card before a crash can take it) on the held handle. Neither may open a file
+  // (test_errlog source guard): an open per line is what made every log line an
+  // abort-capable internal allocation.
+  size_t writeOpen(const char* data, size_t len) {
+    if (!held) return 0;
+    return held.write((const uint8_t*)data, len);
+  }
+  void flushOpen() {
+    if (held) held.flush();
+  }
+  void closeOpen() {
+    if (held) held.close();
+    held = ::File();
   }
   void makeDir(const std::string& path)   { if (g_fs) g_fs->mkdir(path.c_str()); }
   void removeFile(const std::string& path){ if (g_fs) g_fs->remove(path.c_str()); }
   void renameFile(const std::string& from, const std::string& to) {
     if (g_fs) g_fs->rename(from.c_str(), to.c_str());
   }
+  std::string readSmall(const std::string& path, size_t maxBytes) {
+    if (!g_fs) return {};
+    ::File f = g_fs->open(path.c_str(), FILE_READ);
+    if (!f) return {};
+    std::string out;
+    uint8_t buf[64];
+    while (out.size() < maxBytes) {
+      const size_t want = maxBytes - out.size() < sizeof(buf) ? maxBytes - out.size() : sizeof(buf);
+      const int n = f.read(buf, want);
+      if (n <= 0) break;
+      out.append((const char*)buf, (size_t)n);
+    }
+    f.close();
+    return out;
+  }
+  bool writeSmall(const std::string& path, const std::string& data) {
+    if (!g_fs) return false;
+    ::File f = g_fs->open(path.c_str(), FILE_WRITE);
+    if (!f) return false;
+    const size_t n = f.write((const uint8_t*)data.data(), data.size());
+    f.close();
+    return n == data.size();
+  }
 };
 
-ArduinoLogFs          g_adapter;
-LogWriter<ArduinoLogFs> g_writer;
+ArduinoLogFs g_adapter;
 
-std::string tierMsg() {
-  return g_haveSd ? std::string("durable log on SD ") + kDir
-                  : std::string("no SD: durable log on flash fallback ") + kDir;
-}
+LineStamp nextStamp() { return LineStamp{g_seq.fetch_add(1), (uint32_t)millis()}; }
 
-// Ensure the storage-tier decision is the first durable line, once the FS is writable.
-// The line is built ONCE (cached) and re-attempted every append until it lands, so a
-// long not-yet-mounted window costs no sequence churn and no duplicate RAM lines.
-void noteTierIfNeeded() {
-  if (g_tierNoted) return;
-  if (g_pendingTier.empty()) {
-    g_pendingTier = formatLine(g_seq.fetch_add(1), millis(), cat::kStorage, tierMsg());
-    ramPush(g_pendingTier);   // visible in the RAM tail immediately, even before it persists
-  }
-  if (g_writer.write(g_pendingTier)) { g_tierNoted = true; g_pendingTier.clear(); }
-}
+DurableLog<ArduinoLogFs> g_log(nextStamp);
+void (*g_onAttached)() = nullptr;   // the crash reporter, run once after the first attach
 
-// Resolve the storage tier from the memory subsystem's canonical decision. Caller
-// holds the Lock. Points the engine at the tier's FS (which re-syncs size on the
-// next write and self-heals if the FS mounts later).
-void resolveTier() {
-  g_haveSd = agent::memory::haveSd();
-  g_fs     = g_haveSd ? &agent::memory::dataFs() : (::fs::FS*)&LittleFS;
-  if (g_fs) g_fs->mkdir(kDir);   // best-effort; the engine retries if the FS mounts later
-  g_writer.setTier(&g_adapter, g_haveSd);
-}
-
-void ensureInit() {
-  if (g_inited) return;
-  resolveTier();
-  g_inited = true;
-}
-
-// If the memory subsystem's tier flipped since we resolved (card mounted late, or
-// SD lost mid-run), follow it so durability tracks the live store. Caller holds Lock.
+// Follow a mid-run tier flip (card demoted / lost, or back). Only once the memory
+// subsystem has resolved its tier: before that its haveSd() reads false on every boot,
+// and following it would log a spurious "SD available" flip (the old seq 7 line).
+// Caller holds the Lock.
 void maybeRetier() {
-  if (agent::memory::haveSd() == g_haveSd) return;
-  const bool wasSd = g_haveSd;
-  resolveTier();
-  g_tierNoted = false;   // re-announce the tier on the new store
-  g_pendingTier.clear();
-  std::string line = formatLine(g_seq.fetch_add(1), millis(), cat::kStorage,
-                       wasSd ? std::string("SD lost: durable log now on flash fallback")
-                             : std::string("SD available: durable log now on SD"));
-  ramPush(line);
-  g_writer.write(line);
+  if (!g_log.attached() || !agent::memory::storageResolved()) return;
+  const bool sd = agent::memory::haveSd();
+  if (sd == g_log.onSd()) return;
+  g_fs = sd ? &agent::memory::dataFs() : (::fs::FS*)&LittleFS;
+  g_log.attach(&g_adapter, sd, millis());
+}
+
+// CUM-407: a durable write just succeeded, so record any lines that were dropped
+// under card-lock contention since the last one. Bounded: one marker per success.
+// If the marker itself does not land, put the count back so the next success
+// retries it - a contention drop is never silently lost. Caller holds the Lock.
+void recordContentionDrops() {
+  if (g_skipUnpersisted.load() == 0) return;
+  // Consume the delta and the seq number only when there is something to record, so
+  // an ordinary write never leaves a seq gap that a reader would read as a drop.
+  const uint32_t dropped = g_skipUnpersisted.exchange(0);
+  const std::string mark = dropMarkerLine(g_seq.fetch_add(1), millis(), dropped);
+  ramPush(mark);   // visible in the RAM tail too
+  if (!g_log.writer().write(mark, millis())) g_skipUnpersisted.fetch_add(dropped);
 }
 
 }  // namespace
 
-void begin() {
-  agent::memory::Lock g;
-  ensureInit();
+void attachStorage(::fs::FS& fs, bool isSd) {
+  bool first = false;
+  {
+    agent::memory::Lock g;
+    first = !g_log.attached();
+    g_fs = &fs;
+    g_log.attach(&g_adapter, isSd, millis());
+  }
+  if (first && g_onAttached) g_onAttached();
 }
 
-void setSuspended(bool on) { g_suspended = on; }
+void onAttached(void (*fn)()) { g_onAttached = fn; }
+
+bool storageAttached() { return g_log.attached(); }
+
+void bootComplete() {
+  agent::memory::Lock g;
+  g_log.releaseBacklog();
+}
+
+void releaseHandle() {
+  agent::memory::Lock g;
+  g_log.writer().release();
+}
+
+uint32_t bootNumber() { return g_log.bootNo(); }
+
+std::string readState(const char* name, size_t maxBytes) {
+  agent::memory::Lock g;
+  return g_log.readState(name, maxBytes);
+}
+
+bool writeState(const char* name, const std::string& data) {
+  agent::memory::Lock g;
+  return g_log.writeState(name, data);
+}
+
+void setSuspended(bool on) {
+  g_suspended = on;
+  if (on) releaseHandle();   // the sweep deletes /log: never hold its file open
+}
 
 void append(const std::string& redacted, const char* cat) {
   // Non-blocking phase: format + RAM tail, guarded only by a leaf spinlock. This part
@@ -209,23 +252,10 @@ void append(const std::string& redacted, const char* cat) {
     g_skipUnpersisted.fetch_add(1);   // delta, recorded to disk at the next successful write
     return;
   }
-  ensureInit();
   maybeRetier();
-  noteTierIfNeeded();   // lands the tier line first once the FS is writable
-  if (g_writer.write(line)) {   // one bounded append; degrades to RAM-only if the FS is not ready
-    // CUM-407: a durable write just succeeded, so record any lines that were dropped
-    // under card-lock contention since the last one. Bounded: one marker per success.
-    // If the marker itself does not land (FS not ready), put the count back so the next
-    // success retries it - a contention drop is never silently lost.
-    if (g_skipUnpersisted.load() != 0) {
-      // Consume the delta and the seq number only when there is something to record, so
-      // an ordinary write never leaves a seq gap that a reader would read as a drop.
-      const uint32_t dropped = g_skipUnpersisted.exchange(0);
-      const std::string mark = dropMarkerLine(g_seq.fetch_add(1), millis(), dropped);
-      ramPush(mark);                                    // visible in the RAM tail too, like the tier lines
-      if (!g_writer.write(mark)) g_skipUnpersisted.fetch_add(dropped);
-    }
-  }
+  // Before storage attaches this queues the line in the early backlog; after, it is
+  // one write + flush on the held handle (degrading to RAM only if the file is gone).
+  if (g_log.append(line, millis()) && g_log.attached()) recordContentionDrops();
   agent::memory::unlock();
 }
 
@@ -233,7 +263,6 @@ std::string readRecent(size_t maxBytes) {
   if (maxBytes == 0) return {};
   if (maxBytes > 32768) maxBytes = 32768;   // clamp: bound the PSRAM/heap scratch
   agent::memory::Lock g;
-  ensureInit();
   std::string cur = readFileTail(kBaseName, maxBytes);
   std::string out;
   if (cur.size() < maxBytes) {
@@ -248,11 +277,10 @@ std::string readRecent(size_t maxBytes) {
 
 std::string listJson() {
   agent::memory::Lock g;
-  ensureInit();
   std::string out = "{\"tier\":\"";
-  out += g_haveSd ? "sd" : "flash";
+  out += !g_log.attached() ? "none" : (g_log.onSd() ? "sd" : "flash");
   out += "\",\"files\":[";
-  const size_t maxFiles = caps().maxFiles;
+  const size_t maxFiles = capsFor(g_log.onSd()).maxFiles;
   bool first = true;
   for (size_t i = 0; i < maxFiles; ++i) {
     const std::string name = rotatedName(i);   // i==0 -> active (kBaseName)
@@ -269,7 +297,7 @@ std::string listJson() {
   out += "],\"skipped\":";
   out += std::to_string(g_durableSkipped.load());   // durable lines dropped under card contention (CUM-407)
   out += ",\"bytesWritten\":";
-  out += std::to_string(g_writer.bytesWritten());    // bytes written to durable this boot (CUM-409 wear)
+  out += std::to_string(g_log.writer().bytesWritten());   // bytes written to durable this boot (CUM-409 wear)
   out += '}';
   return out;
 }
@@ -281,18 +309,16 @@ uint32_t durableSkipped() { return g_durableSkipped.load(); }
 // Bytes written to the durable log this boot: the single source of truth is the engine's
 // own counter (host-tested), read under the card lock that serializes every write, so the
 // value reported here is exactly the value the tests pin.
-size_t   durableBytes()   { agent::memory::Lock g; ensureInit(); return g_writer.bytesWritten(); }
+size_t   durableBytes()   { agent::memory::Lock g; return g_log.writer().bytesWritten(); }
 
 bool onSdTier() {
   agent::memory::Lock g;
-  ensureInit();
-  return g_haveSd;
+  return g_log.attached() && g_log.onSd();
 }
 
 ::fs::FS& activeFs() {
   agent::memory::Lock g;
-  ensureInit();
-  return *g_fs;
+  return g_fs ? *g_fs : (::fs::FS&)LittleFS;
 }
 
 }  // namespace nimbus::errlog

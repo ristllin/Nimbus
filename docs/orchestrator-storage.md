@@ -64,7 +64,7 @@ Rule of thumb:
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
 | Provider model catalogs (rebuildable cache) | **LittleFS** | `/data/mcat_<provider>.json` (see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
-| Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Device EVENTS are also durable via the episodic `system` timeline (kind=log) | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring |
+| Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Beside it in `/log`: the boot counter (`boot.n`) and the crash dedupe record (`crash.seen`). Device EVENTS are also durable via the episodic `system` timeline (kind=log); events captured before the clock syncs wait in `/mem/pending_ev.txt` | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring; held events in `/data/pending_ev.txt` |
 
 Two things **do not move**: NVS config/keys/scratchpad/verify are already at the
 right tier and are card-independent - the "critical info" the design rule keeps off
@@ -86,11 +86,88 @@ skipped so the log call never stalls the watchdog-guarded loop. A contention ski
 never a silent loss: the RAM ring and serial still hold the line, a dropped-line count
 is recorded into the durable log itself at the next successful write, and the running
 totals (`X-Log-Durable-Skipped`, `X-Log-Durable-Bytes`) are returned as headers on
-`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. One case is
-not back-filled: a line emitted before the filesystem has mounted (early boot, before
-`memory::begin()`) is kept in the RAM ring and serial but is not written to the durable
-log retroactively. If you need every line during a heavy-churn incident, read the RAM
-ring (`GET /api/log`) continuously rather than relying on the durable log alone.
+`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. If you need
+every line during a heavy-churn incident, read the RAM ring (`GET /api/log`)
+continuously rather than relying on the durable log alone.
+
+**No line is lost before storage mounts.** The first lines of a boot (the boot record,
+the HAL and network lines, an `[sd] mount FAILED` diagnosis) are emitted about a second
+before any filesystem is mounted. They wait in a bounded early backlog (24 lines or
+4 KB) and are written, in order, when storage attaches: the SD card right after its
+mount (in both modes), or LittleFS right after `memory::begin()` mounts it when there is
+no card. If the backlog overflowed, one marker line gives the exact count. A unit with
+nowhere to write (Notifier mode with no card) frees the backlog at the end of start-up.
+The card lock exists from the top of `setup()` in both modes, so the early attach never
+opens a second writer on the card. A tier change is logged only when it really happens
+mid-run (`SD lost: ...` / `SD available: ...`), never on a normal boot.
+
+**One open file.** The active log file is held open; each line is one write plus a
+flush (an fsync, so a line written right before a crash is on the card). The file is
+reopened only on rotation, a tier change, a remount or a write error. If it cannot be
+opened, the log degrades to the RAM ring and retries at most every 10 seconds, and the
+first line after recovery is followed by a marker with the number of lines missed.
+(Opening a file per line made every log line an internal-RAM allocation that aborts on
+failure, so the log could turn a low-memory moment into a crash.) The handle is closed
+before anything unmounts or reformats the card, and during a factory erase.
+
+**The forensic window.** Routine copies of the per-request relay lines, the per-exchange
+`transport: heaptrace` line and the per-round `headloop` line stay in the RAM ring and
+on serial. The durable log keeps the abnormal ones (no response, a 5xx, a capped round,
+internal memory under 12 KB free or an 8 KB largest block) and one folded relay summary
+every 15 minutes. These lines once filled 83-98% of every rotated SD file, so whatever
+led up to a crash aged out within hours.
+
+### Boot record and crash report
+
+The first durable line of every boot is its boot record:
+
+```
+boot: n=17 fw=v4.5.14 build=v4.5.14-3-gabc1234 reason=usb(0x15) wake=none mode=orch t=0 prev=none
+```
+
+`n` is the boot number (kept in `/log/boot.n`, stamped into the line when storage
+attaches; serial shows `n=?`). `reason` names every ESP-IDF reset reason with the
+chip's raw reset code beside it (one table in `nimbus/sys/reset_reason.h`; `unknown`
+only for value 0 or an out-of-range value, always with the number). `t` is the wall
+clock the chip kept across the reset (software, panic and watchdog resets keep it),
+else 0. `prev` is where the previous run stopped, from a 48-byte record in RTC memory
+that every boot stage, turn start and turn round updates (and the main loop every
+5 seconds): for example `prev=n16/367161s/turn-r2/h1180` (boot 16, 367161 s up, round 2
+of a turn, lowest internal free heap 1180 B), or `prev=1s/storage` for a boot that
+passed the SD mount and died in the memory load. It survives software, panic, watchdog
+and USB resets and deep sleep, so it explains a brownout-like or early-boot death that
+leaves no core dump; a power cycle clears it (`prev=none`).
+
+Every panic and watchdog reset writes a core dump to the 64 KB `coredump` flash
+partition. The next boot reads it once, right after storage attaches, and writes:
+
+```
+crash: fp=1a2b3c4d new=1 this-reset=1 task=tg_poll pc=0x4201abcd cause=28(LoadProhibited) vaddr=0x00000000 size=23456/65536 elf=0badf00d1 fw-match=1
+crash-bt: depth=12 corrupt=0 0x4201abcd,0x4201b0c4,...
+crash-why: Stack canary watchpoint triggered (tg_poll)
+```
+
+- `fp` is the dump's own stored checksum, so the same dump reads the same fingerprint
+  on every boot. `/log/crash.seen` records the last one reported: a dump already
+  reported is mentioned once per boot as a single `crash:` line with `new=0`.
+- `this-reset=1` when this boot's reset was the crash; `fw-match=0` after an update,
+  because the dump belongs to the previous release (decode it with that release's ELF).
+- The report never contains stack bytes or the exception registers: a stack in transit
+  can hold a provider key or the bot token.
+- The dump is never erased by the reader, so a bench can still pull it over USB; the
+  next crash overwrites it, and a factory reset erases it.
+- The same summary is in `GET /api/state` (`boot.crash`, `null` when there is no dump)
+  and on the episodic `ev:boot` row, so the assistant can say why it restarted.
+- After a crash boot the owner gets one plain-words Telegram message naming the request
+  that was cut short (`/crash/turn.json` on LittleFS, written at turn start and cleared
+  when the turn ends; the round reached rides the RTC record below). The file is skipped
+  when internal memory is below the forensic floors, because a file open is itself an
+  allocation that aborts on failure; the RTC record still names the request then.
+
+Device events captured before the clock syncs (a power-on boot has no time until SNTP
+answers) wait in a 16-row / 4 KB file on the data store instead of RAM, so an offline
+boot or an early crash loop no longer loses its boot row: the first sync on any later
+boot writes them, labelled with the boot that captured them.
 
 ## 2. VDB - working set in PSRAM, durable on SD
 

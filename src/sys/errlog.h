@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/sys/boot_record.h"   // stampBootNo + the boot counter codec
+
 namespace nimbus::errlog {
 
 // ---- on-disk sizing / rotation policy --------------------------------------
@@ -188,79 +190,6 @@ inline RetrievalPlan planRetrieval(bool wantList, const std::string& fileParam,
   return {RetrievalKind::File, fileParam, ""};
 }
 
-// ---- self-healing rotating write engine -------------------------------------
-//
-// Templated on a filesystem adapter so the EXACT rotation + late-mount self-heal
-// logic runs unchanged on device (Arduino File) and is host-tested (test_errlog)
-// against a fake FS. This is where the boot-order trap is handled: the first log
-// line is emitted long before LittleFS/SD is mounted (mounting happens later in
-// memory::begin(), inside beginWeb), so early writes must fail soft and the engine
-// must persist automatically once the FS becomes ready, with no re-init and no lost
-// size accounting.
-//
-// FsT must provide (all take/return std::string paths, bytes):
-//   long   fileSize(const std::string& path);                 // bytes, or -1 if unreadable/unmounted
-//   size_t appendFile(const std::string& path, const char* d, size_t n);  // bytes written (0 = not writable)
-//   void   makeDir(const std::string& path);
-//   void   removeFile(const std::string& path);
-//   void   renameFile(const std::string& from, const std::string& to);
-template <class FsT>
-class LogWriter {
- public:
-  // Point the engine at a filesystem for the given tier. Forces a size re-sync so
-  // the next write reads the real on-disk size (a late mount, or a tier switch).
-  void setTier(FsT* fs, bool haveSd) { fs_ = fs; haveSd_ = haveSd; sizeSynced_ = false; }
-
-  bool haveSd() const { return haveSd_; }
-  TierCaps caps() const { return capsFor(haveSd_); }
-
-  // Append one already-formatted line (already ending in '\n'). Returns true iff it
-  // reached the filesystem. On failure the caller keeps the line in its RAM tail.
-  bool write(const std::string& line) {
-    if (!fs_) return false;
-    const TierCaps c = capsFor(haveSd_);
-    if (!sizeSynced_) {
-      const long sz = fs_->fileSize(pathFor(kBaseName));   // -1 if absent/unmounted
-      curSize_ = sz > 0 ? (size_t)sz : 0;                  // absent -> 0 (a fresh file)
-    }
-    if (shouldRotate(curSize_, line.size(), c)) rotate(c);
-    size_t w = fs_->appendFile(pathFor(kBaseName), line.data(), line.size());
-    if (w == 0) {
-      // Open/write failed: the FS may have just mounted, or /log may not exist yet
-      // (neither FS auto-creates it). Create the dir and retry ONCE.
-      fs_->makeDir(kDir);
-      w = fs_->appendFile(pathFor(kBaseName), line.data(), line.size());
-    }
-    if (w == 0) { sizeSynced_ = false; return false; }     // still not ready: re-sync next time
-    sizeSynced_ = true;                                     // a real write happened; size now tracked
-    curSize_ += w;
-    bytesWritten_ += w;                                     // flash-wear watch (CUM-409)
-    return true;
-  }
-
-  // Total bytes appended to the durable log since boot (a rotation renames, it does
-  // not re-append, so this is the true flash-write volume). Exposed as the CUM-409
-  // wear counter; host-tested against the fake FS.
-  size_t bytesWritten() const { return bytesWritten_; }
-
- private:
-  // Shift files down and clear the active file: base -> .1 -> .2 ..., dropping the
-  // oldest (index maxFiles-1). Bounds total on-disk bytes to maxFileBytes*maxFiles.
-  void rotate(const TierCaps& c) {
-    fs_->removeFile(pathFor(rotatedName(c.maxFiles - 1)));          // drop oldest (no-op if absent)
-    for (size_t i = c.maxFiles - 1; i >= 2; --i)
-      fs_->renameFile(pathFor(rotatedName(i - 1)), pathFor(rotatedName(i)));
-    fs_->renameFile(pathFor(kBaseName), pathFor(rotatedName(1)));
-    curSize_ = 0;
-  }
-
-  FsT*   fs_          = nullptr;
-  bool   haveSd_      = false;
-  size_t curSize_     = 0;
-  size_t bytesWritten_ = 0;
-  bool   sizeSynced_  = false;
-};
-
 // ---- class tags for the "classes we keep missing" ---------------------------
 //
 // Short, stable, lowercase machine tags (frozen strings: a retrieval reader/grep
@@ -289,5 +218,367 @@ inline std::string dropMarkerLine(uint32_t seq, uint32_t ms, uint32_t dropped) {
                     std::string("durable log dropped ") + std::to_string(dropped) +
                     " line(s) under card-lock contention (best-effort)");
 }
+
+// ---- the rotating write engine: one held handle -------------------------------
+//
+// Templated on a filesystem adapter so the EXACT rotation, reopen and degrade logic
+// runs unchanged on device (Arduino File) and is host-tested (test_errlog) against a
+// fake FS.
+//
+// One open handle (panic F1.1). The engine keeps the active file open and each line
+// is one write plus one flush (fflush + fsync, so a line written right before a panic
+// is on the card). It reopens only on rotation, a tier change, a remount, or a write
+// error. The old engine opened and closed the file for every line; each open makes
+// newlib create a FreeRTOS mutex from internal RAM, and IDF aborts when that fails, so
+// the log could turn an out-of-memory moment into a panic through its own line. If an
+// open fails the engine degrades to RAM only (the caller's RAM tail keeps every line)
+// and retries at most once per kReopenRetryMs - never once per line - and the lines
+// it could not write are counted so a marker can say how many were missed.
+//
+// FsT must provide (std::string paths, bytes):
+//   bool   openAppend(const std::string& path);    // open/create for append and HOLD it
+//   long   openSize();                              // bytes in the held file (-1 if none)
+//   size_t writeOpen(const char* d, size_t n);      // write to the held file; bytes written
+//   void   flushOpen();                             // flush + fsync the held file
+//   void   closeOpen();                             // close the held file (no-op if none)
+//   void   makeDir(const std::string& path);
+//   void   removeFile(const std::string& path);
+//   void   renameFile(const std::string& from, const std::string& to);
+//   std::string readSmall(const std::string& path, size_t maxBytes);   // "" if absent
+//   bool   writeSmall(const std::string& path, const std::string& data); // replace the file
+template <class FsT>
+class LogWriter {
+ public:
+  static constexpr uint32_t kReopenRetryMs = 10000;
+
+  // Point the engine at a filesystem for the given tier. Closes any held handle; the
+  // next write opens the active file there and reads its real size.
+  void setTier(FsT* fs, bool haveSd) {
+    closeHandle();
+    fs_ = fs;
+    haveSd_ = haveSd;
+    retryArmed_ = false;
+  }
+
+  // The storage under the held handle is about to go away or just came back (an
+  // unmount, a remount, a factory sweep): drop the handle. The next write reopens.
+  void release() {
+    closeHandle();
+    retryArmed_ = false;
+  }
+
+  bool haveSd() const { return haveSd_; }
+  bool isOpen() const { return open_; }
+  TierCaps caps() const { return capsFor(haveSd_); }
+
+  // Append one already-formatted line (ending in '\n'). Returns true iff it reached
+  // the file. On false the caller keeps the line in its RAM tail; the line is counted
+  // as missed unless `countMiss` is false (a caller that keeps and retries it).
+  bool write(const std::string& line, uint32_t nowMs, bool countMiss = true) {
+    if (!fs_) return false;
+    const uint32_t miss = countMiss ? 1 : 0;
+    if (!open_ && !openOrDegrade(nowMs)) { unwritten_ += miss; return false; }
+    const TierCaps c = capsFor(haveSd_);
+    if (shouldRotate(curSize_, line.size(), c) && !rotate(c, nowMs)) { unwritten_ += miss; return false; }
+    size_t w = fs_->writeOpen(line.data(), line.size());
+    if (w != line.size()) {
+      // A write error (card pulled, stale handle after a remount): one reopen, one
+      // retry. If that fails too, degrade until the retry window passes.
+      closeHandle();
+      ++errors_;
+      w = (openOrDegrade(nowMs)) ? fs_->writeOpen(line.data(), line.size()) : 0;
+      if (w != line.size()) {
+        closeHandle();
+        arm(nowMs);
+        unwritten_ += miss;
+        return false;
+      }
+    }
+    if (!batching_) fs_->flushOpen();   // on the card before the call returns
+    curSize_ += w;
+    bytesWritten_ += w;   // flash-wear watch (CUM-409)
+    return true;
+  }
+
+  // Write several lines with one flush at the end (the boot backlog: ~10 lines at the
+  // SD mount, where one fsync per line would add tens of ms to the boot).
+  void beginBatch() { batching_ = true; }
+  void endBatch() {
+    batching_ = false;
+    if (open_) fs_->flushOpen();
+  }
+
+  // Lines that could not be written since the last call (the degraded window).
+  uint32_t takeUnwritten() {
+    const uint32_t n = unwritten_;
+    unwritten_ = 0;
+    return n;
+  }
+  // Put a taken count back (its marker did not land), so the next success retries it.
+  void restoreUnwritten(uint32_t n) { unwritten_ += n; }
+
+  size_t bytesWritten() const { return bytesWritten_; }   // CUM-409 wear counter
+  uint32_t opens() const { return opens_; }               // successful openAppend calls
+  uint32_t openAttempts() const { return openAttempts_; }
+  uint32_t rotations() const { return rotations_; }
+  uint32_t errors() const { return errors_; }
+
+ private:
+  void closeHandle() {
+    if (open_ && fs_) fs_->closeOpen();
+    open_ = false;
+  }
+  void arm(uint32_t nowMs) {
+    retryArmed_ = true;
+    failedAtMs_ = nowMs;
+  }
+
+  // Open the active file unless a recent failure says to wait. The directory is made
+  // first (neither FS creates /log on its own; a fresh device has none).
+  bool openOrDegrade(uint32_t nowMs) {
+    if (retryArmed_ && (uint32_t)(nowMs - failedAtMs_) < kReopenRetryMs) return false;
+    ++openAttempts_;
+    fs_->makeDir(kDir);
+    if (!fs_->openAppend(pathFor(kBaseName))) {
+      arm(nowMs);
+      return false;
+    }
+    retryArmed_ = false;
+    open_ = true;
+    ++opens_;
+    const long sz = fs_->openSize();
+    curSize_ = sz > 0 ? (size_t)sz : 0;
+    return true;
+  }
+
+  // Shift files down and clear the active file: base -> .1 -> .2 ..., dropping the
+  // oldest (index maxFiles-1). Bounds total on-disk bytes to maxFileBytes*maxFiles.
+  bool rotate(const TierCaps& c, uint32_t nowMs) {
+    closeHandle();
+    fs_->removeFile(pathFor(rotatedName(c.maxFiles - 1)));   // drop oldest (no-op if absent)
+    for (size_t i = c.maxFiles - 1; i >= 2; --i)
+      fs_->renameFile(pathFor(rotatedName(i - 1)), pathFor(rotatedName(i)));
+    fs_->renameFile(pathFor(kBaseName), pathFor(rotatedName(1)));
+    ++rotations_;
+    retryArmed_ = false;   // a rotation is a fresh attempt
+    return openOrDegrade(nowMs);
+  }
+
+  FsT* fs_ = nullptr;
+  bool haveSd_ = false;
+  bool open_ = false;
+  bool retryArmed_ = false;
+  bool batching_ = false;
+  uint32_t failedAtMs_ = 0;
+  size_t curSize_ = 0;
+  size_t bytesWritten_ = 0;
+  uint32_t unwritten_ = 0;
+  uint32_t opens_ = 0, openAttempts_ = 0, rotations_ = 0, errors_ = 0;
+};
+
+// ---- early backlog: no pre-mount hole (crash forensics F1) ------------------
+//
+// The first log line of a boot (the boot record) is emitted at the top of setup(),
+// about a second before any filesystem is mounted. Those lines used to be dropped:
+// every boot lost its first six durable lines, including the reset reason and an
+// "[sd] mount FAILED" line. They now wait here, bounded by line count and bytes, and
+// are written in order when storage attaches. Overflow is counted and reported by
+// one marker line. The memory is freed once the backlog is flushed or released, so
+// nothing stays resident after boot.
+class EarlyBacklog {
+ public:
+  static constexpr size_t kMaxLines = 24;
+  static constexpr size_t kMaxBytes = 4096;
+
+  // Queue a line. False when it was dropped (counted) or the backlog is closed.
+  bool push(const std::string& line) {
+    if (closed_) return false;
+    if (lines_.size() >= kMaxLines || bytes_ + line.size() > kMaxBytes) {
+      ++dropped_;
+      return false;
+    }
+    bytes_ += line.size();
+    lines_.push_back(line);
+    return true;
+  }
+
+  bool closed() const { return closed_; }
+  bool empty() const { return lines_.empty() && dropped_ == 0; }
+  size_t size() const { return lines_.size(); }
+  size_t bytes() const { return bytes_; }
+  uint32_t dropped() const { return dropped_; }
+  const std::vector<std::string>& lines() const { return lines_; }
+
+  // Write the queued lines in order (each passed through `fix` first), then the drop
+  // marker. Stops at the first failed write and keeps the rest for the next attempt.
+  // Returns true when everything landed; the backlog is then freed and closed.
+  template <class WriteFn, class FixFn, class MarkerFn>
+  bool flush(WriteFn write, FixFn fix, MarkerFn marker) {
+    while (next_ < lines_.size()) {
+      std::string& l = lines_[next_];
+      fix(l);
+      if (!write(l)) return false;
+      ++next_;
+    }
+    if (dropped_ && !write(marker(dropped_))) return false;
+    release();
+    return true;
+  }
+
+  // Free and close without writing (storage never came this boot).
+  void release() {
+    std::vector<std::string>().swap(lines_);
+    bytes_ = 0;
+    next_ = 0;
+    dropped_ = 0;
+    closed_ = true;
+  }
+
+ private:
+  std::vector<std::string> lines_;
+  size_t bytes_ = 0;
+  size_t next_ = 0;
+  uint32_t dropped_ = 0;
+  bool closed_ = false;
+};
+
+// The marker written after the backlog when it overflowed.
+inline std::string earlyDropMarkerLine(uint32_t seq, uint32_t ms, uint32_t dropped) {
+  return formatLine(seq, ms, cat::kStorage,
+                    std::to_string(dropped) + " early line(s) dropped before storage was ready");
+}
+
+// The marker written when the log file came back after a failed open.
+inline std::string missedMarkerLine(uint32_t seq, uint32_t ms, uint32_t missed) {
+  return formatLine(seq, ms, cat::kStorage,
+                    std::string("durable log missed ") + std::to_string(missed) +
+                        " line(s) while the log file could not be opened");
+}
+
+// The boot counter and the crash dedupe state live beside the log.
+inline constexpr char kBootCounterName[] = "boot.n";
+
+struct LineStamp {
+  uint32_t seq;
+  uint32_t ms;
+};
+
+// ---- the durable log: backlog, attach, tier flips ----------------------------
+//
+// The tier is "not ready" until the device attaches a mounted filesystem: the SD card
+// right after its mount, or LittleFS right after memory::begin() mounts it. Before
+// that, lines queue in the EarlyBacklog (never written to an unmounted FS). The first
+// attach reads and bumps the boot counter (/log/boot.n), stamps it into the queued
+// boot line, flushes the backlog in order, then writes the tier line. A later attach
+// to the other tier is a real mid-run flip (card lost or back) and writes one flip
+// line. Following the memory subsystem's tier is the caller's job, and only once that
+// subsystem has resolved it, so a normal boot never prints a spurious flip.
+template <class FsT>
+class DurableLog {
+ public:
+  using Stamp = LineStamp (*)();
+  explicit DurableLog(Stamp stamp) : stamp_(stamp) {}
+
+  bool attached() const { return attached_; }
+  bool onSd() const { return writer_.haveSd(); }
+  uint32_t bootNo() const { return bootNo_; }
+  LogWriter<FsT>& writer() { return writer_; }
+  const EarlyBacklog& backlog() const { return backlog_; }
+
+  // Queue (before attach) or write (after). True when the line reached storage or
+  // was queued for it.
+  bool append(const std::string& line, uint32_t nowMs) {
+    if (!attached_) return backlog_.push(line);
+    if (!backlog_.closed()) flushBacklog(nowMs);
+    const bool ok = writer_.write(line, nowMs);
+    if (ok) noteMissed(nowMs);
+    return ok;
+  }
+
+  // Attach a mounted filesystem. The first call is the boot attach; a later call with
+  // the other tier is a flip. Re-attaching the same tier only releases the handle (a
+  // remount), so a normal boot never logs a flip.
+  void attach(FsT* fs, bool isSd, uint32_t nowMs) {
+    if (!fs) return;
+    if (!attached_) {
+      attached_ = true;
+      fs_ = fs;
+      writer_.setTier(fs, isSd);
+      bumpBootCounter();
+      flushBacklog(nowMs);
+      writeStamped(isSd ? std::string("durable log on SD ") + kDir
+                        : std::string("no SD: durable log on flash fallback ") + kDir,
+                   nowMs);
+      return;
+    }
+    if (fs == fs_ && isSd == writer_.haveSd()) {
+      writer_.release();
+      return;
+    }
+    const bool wasSd = writer_.haveSd();
+    fs_ = fs;
+    writer_.setTier(fs, isSd);
+    if (wasSd != isSd)
+      writeStamped(wasSd ? "SD lost: durable log now on flash fallback"
+                         : "SD available: durable log now on SD",
+                   nowMs);
+  }
+
+  // Storage never came this boot (Notifier mode with no card): free the backlog.
+  void releaseBacklog() {
+    if (!attached_) backlog_.release();
+  }
+
+  // Small state files beside the log (/log/<name>). "" / false before attach.
+  std::string readState(const std::string& name, size_t maxBytes) {
+    return fs_ ? fs_->readSmall(pathFor(name), maxBytes) : std::string();
+  }
+  bool writeState(const std::string& name, const std::string& data) {
+    if (!fs_) return false;
+    fs_->makeDir(kDir);
+    return fs_->writeSmall(pathFor(name), data);
+  }
+
+ private:
+  void bumpBootCounter() {
+    fs_->makeDir(kDir);
+    uint32_t n = nimbus::sys::parseBootCounter(fs_->readSmall(pathFor(kBootCounterName), 32)) + 1;
+    if (n == 0) n = 1;   // wrapped
+    bootNo_ = fs_->writeSmall(pathFor(kBootCounterName), nimbus::sys::renderBootCounter(n)) ? n : 0;
+  }
+
+  void flushBacklog(uint32_t nowMs) {
+    const uint32_t n = bootNo_;
+    writer_.beginBatch();
+    backlog_.flush([&](const std::string& l) { return writer_.write(l, nowMs, false); },
+                   [n](std::string& l) { nimbus::sys::stampBootNo(l, n); },
+                   [this](uint32_t dropped) {
+                     const LineStamp s = stamp_();
+                     return earlyDropMarkerLine(s.seq, s.ms, dropped);
+                   });
+    writer_.endBatch();
+  }
+
+  void writeStamped(const std::string& msg, uint32_t nowMs) {
+    const LineStamp s = stamp_();
+    writer_.write(formatLine(s.seq, s.ms, cat::kStorage, msg), nowMs);
+  }
+
+  // After a successful write: record the lines a degraded window could not write.
+  void noteMissed(uint32_t nowMs) {
+    const uint32_t missed = writer_.takeUnwritten();
+    if (!missed) return;
+    const LineStamp s = stamp_();
+    // A marker that does not land puts the count back: the miss is never silent.
+    if (!writer_.write(missedMarkerLine(s.seq, s.ms, missed), nowMs, false)) writer_.restoreUnwritten(missed);
+  }
+
+  Stamp stamp_;
+  FsT* fs_ = nullptr;
+  bool attached_ = false;
+  uint32_t bootNo_ = 0;
+  LogWriter<FsT> writer_;
+  EarlyBacklog backlog_;
+};
 
 }  // namespace nimbus::errlog

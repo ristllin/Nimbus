@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -164,110 +165,448 @@ static void test_durable_sink_never_sees_a_secret() {
   TEST_ASSERT_TRUE(durableLine.find("***") != std::string::npos);
 }
 
-// ---- the write engine: self-heal, rotation/retention, size-sync -------------
+// ---- the write engine: one held handle, rotation, degrade ---------------------
 //
-// A fake filesystem that models the two boot-order traps the device hits: it starts
-// UNMOUNTED (every op fails, like LittleFS before memory::begin()), and it refuses
-// to create files under /log until the dir exists (like LittleFS/SD, which do not
-// auto-create parent dirs). These are exactly the conditions that made the flash
-// fallback silently never persist (the review's Finding 1).
+// A fake filesystem that models what the device hits: it starts UNMOUNTED (every op
+// fails, like LittleFS before memory::begin()), it refuses to create files under /log
+// until the dir exists (neither LittleFS nor SD auto-creates parent dirs), and it
+// counts every open of the held log handle so the one-handle contract is measured.
 struct FakeFs {
   bool mounted = false;
+  bool failOpen = false;    // openAppend fails (card gone, FS full)
+  bool failWrite = false;   // writes on the held handle fail (stale handle)
   std::map<std::string, std::string> files;
   std::set<std::string> dirs;
+  bool held = false;
+  std::string heldPath;
+  int opens = 0;            // successful openAppend calls
+  int openCalls = 0;        // every openAppend call
+  int heldMisuse = 0;       // rename/remove of the file while it is held open
+  int flushes = 0;          // fsyncs of the held file
+  int writesLeft = -1;      // writes that succeed before every write fails (-1 = no limit)
 
-  long fileSize(const std::string& p) {
-    if (!mounted) return -1;
-    auto it = files.find(p);
-    return it == files.end() ? -1 : (long)it->second.size();
+  bool openAppend(const std::string& p) {
+    ++openCalls;
+    if (!mounted || failOpen || dirs.find(kDir) == dirs.end()) return false;
+    held = true;
+    heldPath = p;
+    files[p];   // create if absent
+    ++opens;
+    return true;
   }
-  size_t appendFile(const std::string& p, const char* d, size_t n) {
-    if (!mounted) return 0;
-    if (dirs.find(kDir) == dirs.end()) return 0;   // parent dir must exist first
-    files[p].append(d, n);
+  long openSize() { return held ? (long)files[heldPath].size() : -1; }
+  size_t writeOpen(const char* d, size_t n) {
+    if (!held || !mounted || failWrite || writesLeft == 0) return 0;
+    if (writesLeft > 0) --writesLeft;
+    files[heldPath].append(d, n);
     return n;
   }
-  void makeDir(const std::string& p)    { if (mounted) dirs.insert(p); }
-  void removeFile(const std::string& p) { files.erase(p); }
+  void flushOpen() { if (held) ++flushes; }
+  void closeOpen() { held = false; }
+  void makeDir(const std::string& p) { if (mounted) dirs.insert(p); }
+  void removeFile(const std::string& p) {
+    if (held && p == heldPath) ++heldMisuse;
+    files.erase(p);
+  }
   void renameFile(const std::string& a, const std::string& b) {
+    if (held && (a == heldPath || b == heldPath)) ++heldMisuse;
     auto it = files.find(a);
     if (it != files.end()) { files[b] = it->second; files.erase(it); }
   }
+  std::string readSmall(const std::string& p, size_t maxBytes) {
+    if (!mounted) return {};
+    auto it = files.find(p);
+    if (it == files.end()) return {};
+    return it->second.substr(0, maxBytes);
+  }
+  bool writeSmall(const std::string& p, const std::string& data) {
+    if (!mounted || dirs.find(kDir) == dirs.end()) return false;
+    files[p] = data;
+    return true;
+  }
+  const std::string& log() { return files[pathFor(kBaseName)]; }
 };
 
-static size_t totalBytes(const FakeFs& fs) {
+static size_t totalLogBytes(FakeFs& fs) {
   size_t t = 0;
-  for (auto& kv : fs.files) t += kv.second.size();
+  for (auto& kv : fs.files)
+    if (kv.first.find(std::string(kDir) + "/" + kBaseName) == 0) t += kv.second.size();
   return t;
 }
 
-// Finding-1 regression: on the flash tier, an FS that is not mounted at the first
-// write must NOT lose durability once it mounts. Early writes fail soft (RAM only);
-// the first write after mount self-heals (creates /log, then the file).
-static void test_selfheal_on_late_mount() {
-  FakeFs fs;                       // starts unmounted
-  LogWriter<FakeFs> w;
-  w.setTier(&fs, false);           // flash tier
-  TEST_ASSERT_FALSE(w.write("1 0 - before-mount\n"));   // FS down -> not persisted
-  TEST_ASSERT_TRUE(fs.files.empty());
-  fs.mounted = true;                                    // memory::begin() mounts LittleFS later
-  TEST_ASSERT_TRUE(w.write("2 0 - after-mount\n"));     // self-heals with no re-init
-  TEST_ASSERT_EQUAL_INT(1, (int)fs.dirs.count(kDir));   // /log was created on retry
-  TEST_ASSERT_EQUAL_STRING("2 0 - after-mount\n",
-                           fs.files[pathFor(kBaseName)].c_str());
+static std::vector<std::string> linesOf(const std::string& s) {
+  std::vector<std::string> out;
+  size_t pos = 0;
+  while (pos < s.size()) {
+    size_t nl = s.find('\n', pos);
+    if (nl == std::string::npos) nl = s.size();
+    out.push_back(s.substr(pos, nl - pos));
+    pos = nl + 1;
+  }
+  return out;
 }
 
-// Fresh mounted FS with no /log yet (first-ever boot): the mkdir-then-retry path
-// must create the dir and persist.
-static void test_fresh_fs_creates_dir_and_persists() {
-  FakeFs fs; fs.mounted = true;    // mounted, but /log absent
-  LogWriter<FakeFs> w;
-  w.setTier(&fs, false);
-  TEST_ASSERT_TRUE(w.write("1 0 - x\n"));
+// Exact matches of a formatted line (with its '\n') among the file's lines.
+static size_t countExact(const std::vector<std::string>& lines, const std::string& formatted) {
+  size_t n = 0;
+  for (const auto& l : lines)
+    if (l + "\n" == formatted) ++n;
+  return n;
+}
+
+static size_t countLinesWith(const std::string& s, const std::string& needle) {
+  size_t n = 0;
+  for (const auto& l : linesOf(s))
+    if (l.find(needle) != std::string::npos) ++n;
+  return n;
+}
+
+// The LineStamp source the durable log uses for the lines it formats itself (the tier
+// line, markers). Monotonic like the device's g_seq.
+static uint32_t g_testSeq = 0;
+static LineStamp testStamp() { return LineStamp{g_testSeq++, 0}; }
+
+static std::string numbered(uint32_t i, const char* tag = "line") {
+  return formatLine(g_testSeq++, i, "-", std::string(tag) + "-" + std::to_string(i));
+}
+
+// The inverted Finding-1 pin (crash forensics F1): a line emitted before the FS is
+// mounted is NOT lost - it waits in the early backlog and lands on disk, in order,
+// before the first after-mount line.
+static void test_selfheal_on_late_mount() {
+  FakeFs fs;                       // starts unmounted
+  DurableLog<FakeFs> d(testStamp);
+  TEST_ASSERT_TRUE(d.append("1 0 - before-mount\n", 0));   // queued, not dropped
+  TEST_ASSERT_TRUE(fs.files.empty());
+  fs.mounted = true;                                        // memory::begin() mounts LittleFS
+  d.attach(&fs, false, 0);
+  TEST_ASSERT_TRUE(d.append("2 0 - after-mount\n", 0));
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.dirs.count(kDir));       // /log was created
+  const std::string log = fs.log();
+  const size_t before = log.find("before-mount"), after = log.find("after-mount");
+  TEST_ASSERT_TRUE(before != std::string::npos);
+  TEST_ASSERT_TRUE(after != std::string::npos);
+  TEST_ASSERT_TRUE(before < after);
+}
+
+// One case of the property below: k lines before the attach, n - k after.
+static void checkNoLineLost(bool sd, uint32_t n, uint32_t k) {
+  FakeFs fs;
+  g_testSeq = 0;
+  DurableLog<FakeFs> d(testStamp);
+  std::vector<std::string> pre, post;
+  for (uint32_t i = 0; i < k; ++i) {
+    pre.push_back(numbered(i, "pre"));
+    d.append(pre.back(), 0);
+  }
+  fs.mounted = true;
+  d.attach(&fs, sd, 0);
+  for (uint32_t i = k; i < n; ++i) {
+    post.push_back(numbered(i, "post"));
+    d.append(post.back(), 0);
+  }
+  const std::vector<std::string> lines = linesOf(fs.log());
+  const size_t kept = k < EarlyBacklog::kMaxLines ? k : EarlyBacklog::kMaxLines;
+  // Exactly the first `kept` pre lines, in order, first in the file; the rest dropped.
+  TEST_ASSERT_TRUE(lines.size() >= kept);
+  for (size_t i = 0; i < pre.size(); ++i) {
+    TEST_ASSERT_EQUAL_UINT(i < kept ? 1 : 0, (unsigned)countExact(lines, pre[i]));
+    if (i < kept) TEST_ASSERT_EQUAL_STRING(pre[i].substr(0, pre[i].size() - 1).c_str(), lines[i].c_str());
+  }
+  // Past the cap: exactly one marker, right after the kept lines, with the exact count.
+  const size_t markers = countLinesWith(fs.log(), "early line(s) dropped");
+  TEST_ASSERT_EQUAL_UINT(k > EarlyBacklog::kMaxLines ? 1 : 0, (unsigned)markers);
+  if (markers) {
+    const std::string want = std::to_string(k - EarlyBacklog::kMaxLines) + " early line(s)";
+    TEST_ASSERT_TRUE(lines[kept].find(want) != std::string::npos);
+  }
+  // Every post line exactly once, after every pre line.
+  for (const auto& p : post) {
+    TEST_ASSERT_EQUAL_UINT(1, (unsigned)countExact(lines, p));
+    for (size_t i = 0; i < kept && i < lines.size(); ++i) TEST_ASSERT_TRUE(lines[i] + "\n" != p);
+  }
+  // The backlog is freed once flushed: no resident memory after boot.
+  TEST_ASSERT_TRUE(d.backlog().closed());
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)d.backlog().bytes());
+}
+
+// The class (T1): over N pre-attach lines x every attach point k x both tiers, every
+// pre-attach line lands exactly once, ascending, before any post-attach line; past the
+// cap, exactly the cap plus ONE marker carrying the exact drop count.
+static void test_no_line_lost_before_mount() {
+  for (int sd = 0; sd < 2; ++sd)
+    for (uint32_t n = 0; n <= 30; ++n)
+      for (uint32_t k = 0; k <= n; ++k) checkNoLineLost(sd == 1, n, k);
+}
+
+// The byte bound holds as well as the line bound: a few long lines fill 4 KB first.
+static void test_backlog_byte_bound() {
+  EarlyBacklog b;
+  const std::string big(1000, 'x');
+  size_t queued = 0;
+  for (int i = 0; i < 10; ++i) queued += b.push(big) ? 1 : 0;
+  TEST_ASSERT_EQUAL_UINT(4, (unsigned)queued);           // 4 x 1000 <= 4096 < 5 x 1000
+  TEST_ASSERT_EQUAL_UINT(6, b.dropped());
+  TEST_ASSERT_TRUE(b.bytes() <= EarlyBacklog::kMaxBytes);
+  b.release();
+  TEST_ASSERT_TRUE(b.closed());
+  TEST_ASSERT_FALSE(b.push("late\n"));                   // closed: refused
+}
+
+// Notifier without a card: storage never attaches, the backlog is freed at the end of
+// setup and later lines are refused (they live in the RAM tail only).
+static void test_unattached_backlog_released() {
+  DurableLog<FakeFs> d(testStamp);
+  for (int i = 0; i < 5; ++i) d.append(numbered(i), 0);
+  TEST_ASSERT_TRUE(d.backlog().bytes() > 0);
+  d.releaseBacklog();
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)d.backlog().bytes());
+  TEST_ASSERT_FALSE(d.append(numbered(9), 0));
+}
+
+// A normal boot attaches the tier once (SD at its mount, or flash at memory::begin()),
+// and a later re-attach of the SAME tier is a remount, never a flip: no spurious
+// "SD available" line (the old seq 7 line that every boot printed).
+static void test_no_spurious_retier_on_normal_boot() {
+  for (int sd = 0; sd < 2; ++sd) {
+    FakeFs fs; fs.mounted = true;
+    DurableLog<FakeFs> d(testStamp);
+    d.append(numbered(0), 0);
+    d.attach(&fs, sd == 1, 0);
+    d.attach(&fs, sd == 1, 0);   // memory::begin() resolving the same tier
+    d.append(numbered(1), 0);
+    TEST_ASSERT_EQUAL_UINT(0, (unsigned)countLinesWith(fs.log(), "SD available"));
+    TEST_ASSERT_EQUAL_UINT(0, (unsigned)countLinesWith(fs.log(), "SD lost"));
+    TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(fs.log(), sd ? "durable log on SD" : "durable log on flash"));
+  }
+}
+
+// Counter-test for the guard above: a REAL mid-run flip still logs both lines.
+static void test_real_sd_flip_logs_both_lines() {
+  FakeFs card; card.mounted = true;
+  FakeFs flash; flash.mounted = true;
+  DurableLog<FakeFs> d(testStamp);
+  d.attach(&card, true, 0);
+  d.append(numbered(0), 0);
+  d.attach(&flash, false, 0);   // card demoted
+  d.append(numbered(1), 0);
+  d.attach(&card, true, 0);     // card back
+  d.append(numbered(2), 0);
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(flash.log(), "SD lost: durable log now on flash"));
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(card.log(), "SD available: durable log now on SD"));
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(flash.log(), "line-1"));
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(card.log(), "line-2"));
+}
+
+// Fresh device (AGENTS.md section 3): no /log at all. The attach creates it, writes the
+// boot counter and persists every queued line.
+static void test_fresh_device_without_log_dir() {
+  FakeFs fs; fs.mounted = true;   // mounted, /log absent
+  DurableLog<FakeFs> d(testStamp);
+  d.append(formatLine(0, 0, "boot", "boot: n=? fw=v reason=power-on(0x01)"), 0);
+  d.attach(&fs, true, 0);
   TEST_ASSERT_EQUAL_INT(1, (int)fs.dirs.count(kDir));
-  TEST_ASSERT_EQUAL_STRING("1 0 - x\n", fs.files[pathFor(kBaseName)].c_str());
+  TEST_ASSERT_EQUAL_UINT(1, d.bootNo());
+  TEST_ASSERT_EQUAL_STRING("1\n", fs.files[pathFor(kBootCounterName)].c_str());
+  TEST_ASSERT_TRUE(fs.log().find("boot: n=1 fw=v") != std::string::npos);
+  TEST_ASSERT_TRUE(fs.log().find("n=?") == std::string::npos);
+}
+
+// The boot counter climbs one per boot, survives garbage, and is stamped only into the
+// boot record (the placeholder in any other line is left alone).
+static void test_boot_counter_per_boot() {
+  FakeFs fs; fs.mounted = true;
+  for (uint32_t boot = 1; boot <= 3; ++boot) {
+    DurableLog<FakeFs> d(testStamp);
+    d.append(formatLine(0, 0, "boot", "boot: n=? fw=v"), 0);
+    d.attach(&fs, false, 0);
+    TEST_ASSERT_EQUAL_UINT(boot, d.bootNo());
+  }
+  TEST_ASSERT_EQUAL_UINT(3, (unsigned)countLinesWith(fs.log(), "boot: n="));
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(fs.log(), "boot: n=3 "));
+  fs.files[pathFor(kBootCounterName)] = "garbage";
+  DurableLog<FakeFs> d(testStamp);
+  d.attach(&fs, false, 0);
+  TEST_ASSERT_EQUAL_UINT(1, d.bootNo());
 }
 
 // Rotation + retention on the flash tier (24 KB x 2): total on-disk bytes stay
-// bounded and no file beyond the retention count is ever created.
+// bounded, no file beyond the retention count is created, and the held file is never
+// renamed or removed while open.
 static void test_rotation_retention_flash() {
-  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  FakeFs fs; fs.mounted = true;
   LogWriter<FakeFs> w;
   w.setTier(&fs, false);
   std::string line(1000, 'x'); line.back() = '\n';
-  for (int i = 0; i < 60; ++i) w.write(line);           // 60 KB >> 24 KB cap
+  for (int i = 0; i < 60; ++i) w.write(line, 0);         // 60 KB >> 24 KB cap
   TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(kBaseName)));      // active
   TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(rotatedName(1)))); // one rotated
   TEST_ASSERT_EQUAL_INT(0, (int)fs.files.count(pathFor(rotatedName(2)))); // retention = 2 files
-  TEST_ASSERT_TRUE(totalBytes(fs) <=
-                   kFlashCaps.maxFileBytes * kFlashCaps.maxFiles + 1000);
+  TEST_ASSERT_TRUE(totalLogBytes(fs) <= kFlashCaps.maxFileBytes * kFlashCaps.maxFiles + 1000);
+  TEST_ASSERT_EQUAL_INT(0, fs.heldMisuse);
 }
 
 // SD tier keeps 4 files (active + .1 + .2 + .3); .4 is never kept.
 static void test_rotation_retention_sd() {
-  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  FakeFs fs; fs.mounted = true;
   LogWriter<FakeFs> w;
   w.setTier(&fs, true);
   std::string line(4096, 'q'); line.back() = '\n';
-  for (int i = 0; i < 64 * 5; ++i) w.write(line);       // ~1.25 MB, several rotations
+  for (int i = 0; i < 64 * 5; ++i) w.write(line, 0);     // ~1.25 MB, several rotations
   TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(rotatedName(3))));
   TEST_ASSERT_EQUAL_INT(0, (int)fs.files.count(pathFor(rotatedName(4))));
-  TEST_ASSERT_TRUE(totalBytes(fs) <=
-                   kSdCaps.maxFileBytes * kSdCaps.maxFiles + 4096);
+  TEST_ASSERT_TRUE(totalLogBytes(fs) <= kSdCaps.maxFileBytes * kSdCaps.maxFiles + 4096);
+  TEST_ASSERT_EQUAL_INT(0, fs.heldMisuse);
 }
 
-// Size-sync: a file left over from a PRIOR boot must be counted, so the first write
-// after boot rotates against the real size (not a stale 0). If size were 0, 20 KB +
-// 6 KB would not rotate on the 24 KB flash cap; it must.
+// Size-sync: a file left over from a PRIOR boot is counted (read from the held handle
+// on open), so the first write after boot rotates against the real size.
 static void test_size_sync_from_existing_file() {
   FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
   fs.files[pathFor(kBaseName)] = std::string(20000, 'y');   // prior-boot contents
   LogWriter<FakeFs> w;
   w.setTier(&fs, false);                                    // flash: 24 KB cap
   std::string line(6000, 'z'); line.back() = '\n';
-  TEST_ASSERT_TRUE(w.write(line));
+  TEST_ASSERT_TRUE(w.write(line, 0));
   TEST_ASSERT_EQUAL_UINT(20000, (unsigned)fs.files[pathFor(rotatedName(1))].size());
   TEST_ASSERT_EQUAL_UINT(6000,  (unsigned)fs.files[pathFor(kBaseName)].size());
+}
+
+// The one-handle contract (panic F1.1), measured over random runs: lines of random
+// size, random remounts (re-attach of the same tier) and the rotations they cause.
+// Opens never exceed rotations + remounts + 1 - never one per line.
+static void test_opens_bounded_by_rotations_and_remounts() {
+  uint32_t rng = 12345;
+  auto next = [&rng]() { rng = rng * 1103515245u + 12345u; return (rng >> 8) & 0xFFFFFF; };
+  for (int run = 0; run < 40; ++run) {
+    FakeFs fs; fs.mounted = true;
+    DurableLog<FakeFs> d(testStamp);
+    const bool sd = (run & 1) != 0;
+    d.attach(&fs, sd, 0);
+    const int opensAtAttach = fs.opens;   // boot attach: tier line opens the file once
+    int remounts = 0;
+    const int lines = 1 + (int)(next() % 5000);
+    for (int i = 0; i < lines; ++i) {
+      if (next() % 997 == 0) { d.attach(&fs, sd, 0); ++remounts; }
+      std::string msg((size_t)(1 + next() % 300), 'm');
+      d.append(formatLine((uint32_t)i, 0, "-", msg), (uint32_t)i);
+    }
+    const int rotations = (int)d.writer().rotations();
+    TEST_ASSERT_EQUAL_INT(1, opensAtAttach);
+    TEST_ASSERT_TRUE(fs.opens <= rotations + remounts + 1);
+    TEST_ASSERT_TRUE(fs.opens >= 1);
+    TEST_ASSERT_EQUAL_INT(fs.opens, (int)d.writer().opens());
+    TEST_ASSERT_EQUAL_INT(0, fs.heldMisuse);
+  }
+}
+
+// Degrade, not per-line retry: when the file cannot be opened the engine tries at most
+// once per kReopenRetryMs, the lines in between are counted, and the first line after
+// recovery is followed by one marker carrying the exact missed count.
+static void test_open_failure_degrades_then_recovers() {
+  FakeFs fs; fs.mounted = true; fs.failOpen = true;
+  DurableLog<FakeFs> d(testStamp);
+  d.attach(&fs, true, 0);   // the tier line's open fails
+  const uint32_t step = 100;
+  uint32_t t = 0;
+  for (int i = 0; i < 200; ++i, t += step) d.append(numbered((uint32_t)i), t);   // 20 s of lines
+  const uint32_t window = LogWriter<FakeFs>::kReopenRetryMs;
+  // One attempt at attach, then at most one per retry window.
+  TEST_ASSERT_TRUE(fs.openCalls <= 1 + (int)(t / window) + 1);
+  TEST_ASSERT_TRUE(fs.openCalls < 10);
+  fs.failOpen = false;
+  t += window;
+  d.append(numbered(999, "back"), t);
+  const std::string log = fs.log();
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(log, "back-999"));
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(log, "while the log file could not be opened"));
+  // 1 tier line + 200 lines were missed while the file could not be opened.
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(log, "missed 201 line(s)"));
+}
+
+// The missed-lines marker itself can fail (the card flakes right after a line landed):
+// the count is put back and reported by the next marker, never lost.
+static void test_missed_marker_failure_keeps_the_count() {
+  FakeFs fs; fs.mounted = true; fs.failOpen = true;
+  DurableLog<FakeFs> d(testStamp);
+  d.attach(&fs, true, 0);                                       // the tier line is missed (1)
+  for (uint32_t i = 0; i < 4; ++i) d.append(numbered(i), 0);    // 4 more missed
+  fs.failOpen = false;
+  fs.writesLeft = 1;                     // the next line lands, then every write fails
+  const uint32_t t = LogWriter<FakeFs>::kReopenRetryMs;
+  d.append(numbered(100, "lands"), t);
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(fs.log(), "lands-100"));
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)countLinesWith(fs.log(), "missed"));   // the marker failed
+  fs.writesLeft = -1;                    // the card recovers
+  d.append(numbered(101, "back"), 2 * t + 1);
+  // The five early misses survive the failed marker; nothing is double counted.
+  TEST_ASSERT_EQUAL_UINT(1, (unsigned)countLinesWith(fs.log(), "missed 5 line(s)"));
+}
+
+// A write error (a stale handle after a remount) reopens once and retries the line, so a
+// single error costs one open, not a lost line.
+static void test_write_error_reopens_once() {
+  FakeFs fs; fs.mounted = true;
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, true);
+  TEST_ASSERT_TRUE(w.write("1 0 - a\n", 0));
+  TEST_ASSERT_EQUAL_INT(1, fs.opens);
+  fs.failWrite = true;
+  TEST_ASSERT_FALSE(w.write("2 0 - b\n", 1));   // reopen + retry also fail -> degraded
+  TEST_ASSERT_EQUAL_INT(2, fs.opens);
+  fs.failWrite = false;
+  TEST_ASSERT_FALSE(w.write("3 0 - c\n", 2));   // inside the retry window: no open at all
+  TEST_ASSERT_EQUAL_INT(2, fs.openCalls);
+  TEST_ASSERT_TRUE(w.write("4 0 - d\n", 2 + LogWriter<FakeFs>::kReopenRetryMs));
+  TEST_ASSERT_EQUAL_INT(3, fs.opens);
+  TEST_ASSERT_EQUAL_UINT(2, w.takeUnwritten());
+}
+
+// The per-line path never opens a file (panic F1.1): the device adapter's writeOpen
+// body in errlog_fs.cpp must contain no open( call. Source guard, so an edit that
+// reintroduces open-per-line fails here, not as a field panic.
+static std::string readSource(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static std::string methodBody(const std::string& src, const char* signature) {
+  const size_t at = src.find(signature);
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, signature);
+  const size_t open = src.find('{', at);
+  const size_t end = src.find("\n  }", open);
+  TEST_ASSERT_TRUE(open != std::string::npos && end != std::string::npos);
+  return src.substr(open, end - open);
+}
+
+static void test_source_per_line_path_has_no_open() {
+  const std::string src = readSource("src/sys/errlog_fs.cpp");
+  const std::string write = methodBody(src, "size_t writeOpen(");
+  const std::string flush = methodBody(src, "void flushOpen(");
+  TEST_ASSERT_TRUE_MESSAGE(write.find("open(") == std::string::npos, "the per-line write opens a file");
+  TEST_ASSERT_TRUE_MESSAGE(flush.find("open(") == std::string::npos, "the per-line flush opens a file");
+  TEST_ASSERT_TRUE(flush.find("flush()") != std::string::npos);   // fsync per line stays
+  // The tier is followed only once the memory subsystem resolved it (no spurious flip).
+  TEST_ASSERT_TRUE(src.find("storageResolved()") != std::string::npos);
+}
+
+// Every line written outside a batch is fsynced (a line before a panic is on the card);
+// the boot backlog is written with ONE fsync, so the attach adds no per-line syncs.
+static void test_flush_per_line_and_one_for_the_backlog() {
+  FakeFs fs; fs.mounted = true;
+  DurableLog<FakeFs> d(testStamp);
+  for (uint32_t i = 0; i < 10; ++i) d.append(numbered(i, "early"), 0);
+  d.attach(&fs, true, 0);
+  // 10 backlog lines in one batch (1 flush) + the tier line (1 flush).
+  TEST_ASSERT_EQUAL_INT(2, fs.flushes);
+  for (uint32_t i = 0; i < 5; ++i) d.append(numbered(i, "late"), 0);
+  TEST_ASSERT_EQUAL_INT(7, fs.flushes);
 }
 
 // ---- CUM-409: durable persistence is scoped to warn/error + key events ------
@@ -291,7 +630,7 @@ static void test_info_burst_zero_durable_warn_one() {
   LogWriter<FakeFs> w; w.setTier(&fs, false);
   int durableWrites = 0;
   auto route = [&](Level lvl, const char* cat, const std::string& msg) {
-    if (persistsDurably(lvl, cat) && w.write(formatLine(0, 0, cat, msg))) ++durableWrites;
+    if (persistsDurably(lvl, cat) && w.write(formatLine(0, 0, cat, msg), 0)) ++durableWrites;
   };
   for (int i = 0; i < 64; ++i) route(Level::Info, nullptr, "routine info line");
   TEST_ASSERT_EQUAL_INT(0, durableWrites);              // burst of info -> nothing durable
@@ -310,13 +649,13 @@ static void test_wear_counter_tracks_bytes_written() {
   FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
   LogWriter<FakeFs> w; w.setTier(&fs, false);
   const std::string a = "1 0 - alpha\n", b = "2 0 - bravo\n";
-  TEST_ASSERT_TRUE(w.write(a));
-  TEST_ASSERT_TRUE(w.write(b));
+  TEST_ASSERT_TRUE(w.write(a, 0));
+  TEST_ASSERT_TRUE(w.write(b, 0));
   TEST_ASSERT_EQUAL_UINT((unsigned)(a.size() + b.size()), (unsigned)w.bytesWritten());
   // A failed write (FS down) adds nothing to the wear count.
   FakeFs down;  // unmounted
   LogWriter<FakeFs> w2; w2.setTier(&down, false);
-  TEST_ASSERT_FALSE(w2.write("3 0 - charlie\n"));
+  TEST_ASSERT_FALSE(w2.write("3 0 - charlie\n", 0));
   TEST_ASSERT_EQUAL_UINT(0, (unsigned)w2.bytesWritten());
 }
 
@@ -356,9 +695,21 @@ int main(int, char**) {
   RUN_TEST(test_plan_retrieval_respects_active_tier);
   RUN_TEST(test_durable_sink_never_sees_a_secret);
   RUN_TEST(test_selfheal_on_late_mount);
-  RUN_TEST(test_fresh_fs_creates_dir_and_persists);
+  RUN_TEST(test_no_line_lost_before_mount);
+  RUN_TEST(test_backlog_byte_bound);
+  RUN_TEST(test_unattached_backlog_released);
+  RUN_TEST(test_no_spurious_retier_on_normal_boot);
+  RUN_TEST(test_real_sd_flip_logs_both_lines);
+  RUN_TEST(test_fresh_device_without_log_dir);
+  RUN_TEST(test_boot_counter_per_boot);
   RUN_TEST(test_rotation_retention_flash);
   RUN_TEST(test_rotation_retention_sd);
   RUN_TEST(test_size_sync_from_existing_file);
+  RUN_TEST(test_opens_bounded_by_rotations_and_remounts);
+  RUN_TEST(test_open_failure_degrades_then_recovers);
+  RUN_TEST(test_write_error_reopens_once);
+  RUN_TEST(test_missed_marker_failure_keeps_the_count);
+  RUN_TEST(test_source_per_line_path_has_no_open);
+  RUN_TEST(test_flush_per_line_and_one_for_the_backlog);
   return UNITY_END();
 }

@@ -80,6 +80,11 @@ void begin();
 // ops, NEVER across a blocking network embed. Prefer the RAII `Lock` guard.
 void lock();
 void unlock();
+// Create the card lock. Called first thing in setup() (after the OTA boot guard) so
+// the lock exists for the first log line and in Notifier mode; begin() calls it too.
+void lockInit();
+// True once begin() has resolved the storage tier; haveSd() is meaningless before.
+bool storageResolved();
 struct Lock {
   Lock() { lock(); }
   ~Lock() { unlock(); }

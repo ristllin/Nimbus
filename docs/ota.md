@@ -131,6 +131,18 @@ release, and no release moves running Virtual Nimbus instances by itself.
 - The tag gate is `tools/release_gate/tag_shape.py`. `python3 -m pytest
   tools/release_gate` tests it and checks that every release job runs only on its
   channel.
+- **Every OTA release keeps its ELF files.** A device's crash report can only be
+  decoded against the exact ELF that built its image, so the release job stores each
+  variant's `firmware.elf` (compressed, with an `elf-sha256.txt` record) as a CI
+  artifact of the source repository named `firmware-elf-<tag>`, kept for 90 days (the
+  longest GitHub keeps an artifact of a public repository), and never in the releases
+  repository devices download from. The ELF holds symbols for the already-public
+  source and no secret. A gate (`tools/release_gate/check_elf_symbols.py --bin`) first
+  proves each ELF is the one its image was built from: the build embeds the ELF's
+  SHA-256 in the image, and the crash report's `elf=` field carries its first digits.
+  `tools/crash_decode.py --elf <elf> <log>` checks that hash and prints each address
+  of the crash's backtrace as a function and source line. For a dump older than 90
+  days, rebuild the tag and check the hash the same way.
 
 ## Device behavior
 

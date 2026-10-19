@@ -127,6 +127,7 @@ void begin() {
   memory::Lock g;
   if (g_begun) return;
   g_begun = true;
+  primeFetchLock();
   if (!memory::haveSd()) {
     alogf("files: no SD - artifact store absent");
     registerTools();   // tools exist but answer honestly ("no SD card")
@@ -1233,6 +1234,12 @@ void registerTools() {
 
 // ---- W18 public seams (must sit OUTSIDE the big anonymous namespace above:
 // everything between it and here has internal linkage) ----
+
+// The fetch queue's mutex creates its FreeRTOS object from internal RAM on first lock,
+// and a failed allocation there throws and aborts. begin() locks it once at boot,
+// while memory is plentiful.
+void primeFetchLock() { std::lock_guard<std::mutex> lk(g_fetchMx); }
+
 void tickFetch() {
   using nimbus::orch::FetchReq;
   using nimbus::orch::FetchState;

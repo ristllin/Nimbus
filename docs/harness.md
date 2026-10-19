@@ -39,7 +39,10 @@ Order matters; each step is in `src/main.cpp::setup()` or
    retrieval config from NVS, and the episodic **hydrate** - day-stream JSONL
    files on SD are indexed and the last 512 messages rebuilt into the PSRAM hot
    ring, so per-chat context survives a restart with zero flash reads at runtime.
-   A boot timeline row (`ev:boot` with reset reason + OTA result) is captured.
+   A boot timeline row (`ev:boot` with reset reason, OTA result, and the crash
+   summary after a crash boot) is captured. The boot record itself is the first
+   line of the durable log, written before any of this runs
+   ([orchestrator storage](orchestrator-storage.md#boot-record-and-crash-report)).
 6. **`orchestratorBegin()`**: provider fabric + adapters, sinks, the job
    **journal restore from NVS** (active sub-agents re-attach and resume
    polling), running-memory load (LittleFS), routines load

@@ -108,9 +108,10 @@ def test_parse_wake_info_deep_sleep_timer():
 
 def test_parse_wake_info_rtc_latched_fields():
     # After the host's USB-CDC reopen reset the chip (rst:0x15 on the S3) the this-boot
-    # reason is no longer deep-sleep, but the RTC-latched last-wake facts still prove it.
-    info = parse_wake_info("WAKE reset=unknown cause=none poweroff=0 deepWakes=7 lastCause=timer lastPoweroff=1")
-    assert info["reset"] == "unknown" and info["deepWakes"] == 7
+    # reason is no longer deep-sleep (the one reset table names it "usb" now, never
+    # "unknown"), but the RTC-latched last-wake facts still prove the deep-sleep wake.
+    info = parse_wake_info("WAKE reset=usb cause=none poweroff=0 deepWakes=7 lastCause=timer lastPoweroff=1")
+    assert info["reset"] == "usb" and info["deepWakes"] == 7
     assert info["lastCause"] == "timer" and info["lastPoweroff"] is True
 
 

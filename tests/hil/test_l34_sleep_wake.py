@@ -64,7 +64,8 @@ def _lan_wake_facts(timeout_s: float = 90.0, expect_deep_wakes=None):
     chip (``rst:0x15 USB_UART_CHIP_RESET``) and that reset ALSO clears the RTC-latched
     counters, so nothing read over the console can prove the wake. Proven on the bench
     2026-09-21: the same cycle read over the LAN shows ``reset=deep-sleep cause=timer
-    poweroff=1 deepWakes=+1`` while the console path reads ``unknown`` / ``0``. Needs
+    poweroff=1 deepWakes=+1`` while the console path reads ``usb`` / ``0`` (it read
+    ``unknown`` before the one reset table named the USB reset). Needs
     ``NIMBUS_TEST_IP`` + ``NIMBUS_TEST_TOKEN``; returns the parsed dict or None if the LAN
     never answered within ``timeout_s``. Raises SkipTest-style via pytest.skip when the
     env is absent (a loud skip, never a fake pass)."""

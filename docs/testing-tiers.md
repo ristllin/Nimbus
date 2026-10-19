@@ -122,6 +122,28 @@ fired before its handler existed, so a strong network meant a clock stuck at 197
   and that the dream routine got a wall-clock next run. A true power cycle is the manual
   leg. The parsers and verdict are host-tested in `tests/hil/test_l38_clock_sync_host.py`.
 
+## Crash-forensics leg
+
+Every crash leaves a durable, readable cause, read on the next boot from the core dump.
+
+- Host (T1): `test/test_crash_forensics` (the reset table over every value, the boot and
+  crash line formats over every backtrace depth with a planted register and stack
+  pattern that must never print, the dedupe state machine, the crash notice copy for
+  every request kind, the forensic window), `test/test_errlog` (no line lost before
+  mount over every attach point and both tiers, the one-handle open count over random
+  runs, degrade and recovery), `test/test_orch_pending_events` (rows from boots that
+  never synced survive until a clock exists) and `test/test_fresh_device` (a blank dump
+  partition reads as no crash; the forensics path writes no NVS).
+- Hardware (T5): `tests/hil/test_l39_crash_forensics.py` fires each `PANIC` kind over the
+  test console and reads the next boot's `boot:` and `crash:` lines over the LAN, then a
+  plain reboot (stale, `new=0`), a USB chip reset (`reason=usb(0x15)`), offline boots,
+  a panic armed into a real turn (`PANIC <kind> arm=turn [round=N]`, test builds only:
+  it fires at the transport body write of round N, so the dump fits 64 KB with the turn
+  task deep in a TLS exchange and names the frame), and the destructive factory-reset
+  and early-boot-abort legs. Its parsers and verdicts are host-tested in
+  `tests/hil/test_l39_crash_forensics_host.py`; `tools/release_gate/test_panic_guard.py`
+  and the release gate's ELF check keep the armed panic out of every shipped image.
+
 ## The release gate
 
 A cross-cutting battery that must be green before any firmware tag or client flash.

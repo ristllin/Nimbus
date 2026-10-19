@@ -30,7 +30,9 @@
 #if __has_include(<esp_core_dump.h>)
 #include <esp_core_dump.h>   // factory reset erases any crash dump (stacks can hold secrets)
 #endif
-#include "sys/errlog_fs.h"   // setSuspended - the factory sweep's durable-log barrier
+#include "sys/errlog_fs.h"   // setSuspended - the factory sweep's durable-log barrier; attachStorage
+#include "sys/crash_report.h"   // boot record, core dump reader, crash notice (crash forensics)
+#include "nimbus/sys/reset_reason.h"   // the one reset-reason table
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
@@ -2563,11 +2565,15 @@ static void persistConfig() {
 // raw-frame lets the SOLID pattern display; the pattern layer has no staleness
 // watchdog, so the colour PERSISTS through a hang (unlike showFrame, which the
 // staleness timer would clear).
+// In EVERY build the stage is also the RTC breadcrumb (crash forensics F4): a boot
+// that dies before storage mounts is explained by the next boot's prev= field
+// ("prev=1s/storage" = it passed the SD mount and died in web/memory).
 #if defined(NIMBUS_TEST)
-#define BOOT_STAGE(r, g, b) do { solide::leds::clearFrame(); \
+#define BOOT_STAGE(r, g, b, st) do { nimbus::crash::stage(nimbus::sys::Stage::st); \
+        solide::leds::clearFrame(); \
         solide::leds::show(solide::leds::Pattern::Solid, (r), (g), (b)); } while (0)
 #else
-#define BOOT_STAGE(r, g, b) do {} while (0)
+#define BOOT_STAGE(r, g, b, st) do { nimbus::crash::stage(nimbus::sys::Stage::st); } while (0)
 #endif
 
 // Contiguous-SRAM instrumentation (CUM-185). Samples the scarce axis - internal
@@ -3037,10 +3043,22 @@ static void otaLoopUx() {
 
 
 void setup() {
+  // Where the previous run stopped (crash forensics F4): read the RTC breadcrumb
+  // before anything rewrites it, then mark this run as entering the boot guard. Pure
+  // RTC memory (no allocation, no flash, cannot fail), so the guard stays effectively
+  // first, and an image that aborts inside the guard is named by the boot after it.
+  nimbus::crash::captureBreadcrumb();
   // OTA rollback guard FIRST - before Serial and every driver, so a freshly
   // flipped image that crash-loops anywhere in bring-up still burns a boot
   // attempt and self-reverts (raw-NVS; ms-scale; no-op when nothing pending).
   otaupd::bootGuard();
+  // The card lock exists from here on, in both modes (crash forensics F1): the
+  // durable log attaches to the SD card at its mount, long before memory::begin(),
+  // and every card writer must already be serialized by then.
+  agent::memory::lockInit();
+  // Lazily created mutexes allocate a FreeRTOS object from internal RAM on first use,
+  // and a failed allocation there aborts. Create them now, while memory is plentiful.
+  { std::lock_guard<std::mutex> prime(g_webChatMx); }
   otaupd::setEventHook(otaEventHook);
   otaupd::setIdleProvider(otaIdleSnapshot);
   // A check or install whose own task does not fit (a loaded device sits just
@@ -3148,6 +3166,13 @@ void setup() {
   // memory::begin() normally runs inside solide::begin(), i.e. after this point.
   // memory::begin() is idempotent, so solide::begin()'s own call below is safe.
   solide::memory::begin();
+  // The first durable line of every boot: reset reason with its raw ROM code, the
+  // clock the RTC kept, the boot number (stamped when storage attaches). It waits in
+  // the durable log's early backlog until the SD card or LittleFS is mounted. The
+  // core dump is read right after that attach, so even a boot that dies in
+  // memory::begin() leaves its crash lines on the card.
+  nimbus::crash::bootRecord(sys::loadMode(sys::Mode::Notifier) == sys::Mode::Orchestrator);
+  nimbus::errlog::onAttached(nimbus::crash::reportOnce);
   // Only an EXPLICIT stored non-"tft" value flags unsupported; an absent / erased
   // key is a fresh device and comes up silently on the colour panel (CUM-189). The
   // raw stored value is read here so "absent" and "eink" can be told apart - the
@@ -3251,7 +3276,7 @@ void setup() {
   // and differs from the stored preference until the next restart) so the
   // onboarding wizard can tell whether a display change needs a reboot.
   agent::store::setBootScreenIsTft(g_screenIsTft);
-  BOOT_STAGE(50, 50, 50);   // WHITE: HAL (SD/mem/display/leds/input) up
+  BOOT_STAGE(50, 50, 50, Hal);   // WHITE: HAL (SD/mem/display/leds/input) up
   // Start the breathing-white boot flourish now that the LED ring is up - the
   // first refreshRing() (applyConfig, below) and the loop honor this window,
   // showing a calm breathe until the device settles into its status ring.
@@ -3381,7 +3406,7 @@ void setup() {
 
   ORCH_MARK("setup: applyConfig");
   applyConfig();
-  BOOT_STAGE(0, 0, 120);   // BLUE: config applied
+  BOOT_STAGE(0, 0, 120, Config);   // BLUE: config applied
   // WiFi AP + captive config portal. The AP is always up so the page is reachable
   // even with no saved STA creds. The save callback re-syncs the active profile
   // from the selector, re-applies timings live, and persists. Runs BEFORE the
@@ -3626,7 +3651,7 @@ void setup() {
   // LittleFS partition). Must precede beginWeb() (which calls memory::begin()).
   // Falls back to LittleFS with no card. (Voice clips stay on LittleFS: they're
   // temporary, deleted each turn, and don't need the space.)
-  BOOT_STAGE(0, 120, 120);   // CYAN: WiFi/portal up; about to mount the SD
+  BOOT_STAGE(0, 120, 120, Net);   // CYAN: WiFi/portal up; about to mount the SD
   if (solide::storage::begin()) {
     // activeFs() - NOT the SPI `SD` global directly. On an SDMMC board (Freenove)
     // the card is mounted via SD_MMC and `SD` is never begun (its pins are
@@ -3635,6 +3660,9 @@ void setup() {
     // tracker demoted the tier to "no SD" despite the card being present and
     // readable (round-4 bench report).
     agent::memory::setDataFs(solide::storage::activeFs());
+    // The durable log's storage is ready: flush the boot's early backlog to the card
+    // (both modes; memory::begin() attaches LittleFS instead when there is no card).
+    nimbus::errlog::attachStorage(solide::storage::activeFs(), true);
     agent::alogf("[sd] mounted: %llu MB total, %llu MB free",
                  (unsigned long long)solide::storage::cardSizeMB(),
                  (unsigned long long)solide::storage::freeMB());
@@ -3650,39 +3678,40 @@ void setup() {
                  ct == 0 ? "Card not seen on the bus -> reseat it / check the slot solder."
                          : "Card seen but FAT mount failed -> reformat it FAT32.");
   }
-  BOOT_STAGE(120, 0, 120);   // MAGENTA: SD stage done; entering web + memory::begin
+  BOOT_STAGE(120, 0, 120, Storage);   // MAGENTA: SD stage done; entering web + memory::begin
   sramSnap("pre-web");    // CUM-185: after SD mount, before memory::begin + web bind
   ORCH_MARK("setup: beginWeb");
   if (g_orchMode) net::beginWeb(wc);   // web server is Orchestrator-only (no Wi-Fi in Notifier)
   sramSnap("post-web");   // CUM-185: after memory::begin (episodic/vector load) + s_server.begin()
+  // Storage has attached by now if this unit has any. Report the core dump here if
+  // the attach hook never ran (no storage), and free the early backlog of a unit
+  // that has nowhere to put it (Notifier without a card).
+  nimbus::crash::reportOnce();
+  nimbus::errlog::bootComplete();
+  // The lost-turn journal lives on LittleFS, mounted only in Orchestrator mode (the
+  // only mode that runs turns). Read before the turn task can start a new one.
+  if (g_orchMode) nimbus::crash::collectTurnJournal();
   // Device-event timeline (Glass Box A3): the BOOT row - the answer to the
   // owner's live "did you manage to reboot?" that the model couldn't give
   // ("there's no reboot record available"). Reset reason distinguishes a
-  // requested restart (SW) from a crash (PANIC/WDT) or power event.
+  // requested restart (SW) from a crash (PANIC/WDT) or power event; after a crash
+  // the row carries the dump's task, PC and panic reason, so the head can answer
+  // "why did you restart?" from facts.
   {
-    const char* rr = "unknown";
-    switch (esp_reset_reason()) {
-      case ESP_RST_POWERON:  rr = "power-on"; break;
-      case ESP_RST_SW:       rr = "software-restart"; break;
-      case ESP_RST_PANIC:    rr = "crash(panic)"; break;
-      case ESP_RST_INT_WDT:
-      case ESP_RST_TASK_WDT:
-      case ESP_RST_WDT:      rr = "crash(watchdog)"; break;
-      case ESP_RST_BROWNOUT: rr = "brownout"; break;
-      case ESP_RST_DEEPSLEEP:rr = "deep-sleep wake"; break;
-      default: break;
-    }
+    const std::string rr = nimbus::sys::resetSlug(nimbus::crash::resetReason(),
+                                                  nimbus::sys::ResetVocab::BootRow);
     String ota = agent::store::otaLastResult();
     agent::memory::captureEvent("boot",
-        String("Booted ") + NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ") reason=" + rr +
+        String("Booted ") + NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ") reason=" + rr.c_str() +
         " mode=" + (g_orchMode ? "orchestrator" : "notifier") +
-        (ota.length() ? (String(" ota=") + ota) : String()));
+        (ota.length() ? (String(" ota=") + ota) : String()) +
+        nimbus::crash::bootRowSuffix().c_str());
   }
   // E1 artifact store: AFTER beginWeb (memory::begin ran inside it and resolved
   // the SD tier); loads/rebuilds the /mem/files index + registers the file tools.
   agent::files::begin();
   ORCH_MARK("setup: webdone");
-  BOOT_STAGE(0, 120, 0);     // GREEN: web server + memory subsystem up
+  BOOT_STAGE(0, 120, 0, Web);     // GREEN: web server + memory subsystem up
 
   // Self-test seam: install the live-state provider + register the device.*
   // orchestrator tools (memory::begin() ran inside beginWeb, so the registry
@@ -3752,8 +3781,11 @@ void setup() {
   // link and simply retry). Notifier mode leaves all of this dormant - the nsn
   // serial path below is unchanged.
   if (g_orchMode) orchestratorBegin();
+  // After a crash boot, tell the owner in plain words (and name the request that was
+  // cut short); the reply queue exists now.
+  if (g_orchMode) nimbus::crash::queueCrashNotice();
   sramSnap("post-orch");  // CUM-185: after tg_poll/fabric/orchestrator task stacks are up
-  BOOT_STAGE(120, 120, 0);   // YELLOW: orchestrator up (final stage before loop)
+  BOOT_STAGE(120, 120, 0, Orch);   // YELLOW: orchestrator up (final stage before loop)
 
 #ifdef NIMBUS_TEST
   // Test-affordances island (the HIL test spec): wire the console's state/action hooks
@@ -3933,18 +3965,10 @@ void setup() {
     // WAKE? - CUM-248: this-boot wake facts (captured at boot), so the soak can prove
     // a fresh boot came from deep sleep (reset=deep-sleep) and via which cause.
     h.wakeInfo = [] () -> String {
-      const char* rr = "unknown";
-      switch (s_bootResetReason) {
-        case ESP_RST_POWERON:   rr = "power-on"; break;
-        case ESP_RST_SW:        rr = "software-restart"; break;
-        case ESP_RST_PANIC:     rr = "panic"; break;
-        case ESP_RST_INT_WDT:
-        case ESP_RST_TASK_WDT:
-        case ESP_RST_WDT:       rr = "watchdog"; break;
-        case ESP_RST_BROWNOUT:  rr = "brownout"; break;
-        case ESP_RST_DEEPSLEEP: rr = "deep-sleep"; break;
-        default: break;
-      }
+      // The one reset table (lib/core reset_reason.h), WAKE? vocabulary: a host
+      // USB-CDC reopen now reads "usb", never "unknown".
+      const std::string rr = nimbus::sys::resetSlug(int(s_bootResetReason),
+                                                    nimbus::sys::ResetVocab::Wake);
       const char* cause = "none";
       switch (s_bootWakeCause) {
         case ESP_SLEEP_WAKEUP_TIMER: cause = "timer"; break;
@@ -3961,7 +3985,7 @@ void setup() {
         case ESP_SLEEP_WAKEUP_GPIO:  lastCause = "gpio"; break;
         default: break;
       }
-      return String("reset=") + rr + " cause=" + cause +
+      return String("reset=") + rr.c_str() + " cause=" + cause +
              " poweroff=" + (s_bootWasPowerOff ? "1" : "0") +
              " deepWakes=" + String(s_rtcDeepWakes) + " lastCause=" + lastCause +
              " lastPoweroff=" + (s_rtcLastWasPowerOff ? "1" : "0");
@@ -4123,6 +4147,7 @@ void setup() {
     renderScreen(attn::ScreenId::Ask, -1);
   }
 
+  nimbus::crash::stage(nimbus::sys::Stage::Idle);   // start-up done (RTC breadcrumb)
   tc::ready();  // "READY mode=<n> ip=<..>" boot beacon (no-op in production)
   ::sfx::fire(nimbus::sfx::Ev::Boot);   // "CommLink online." - boot complete chime
 }
@@ -5325,6 +5350,7 @@ static bool runFactoryResetStep(nimbus::orch::ResetStep step) {
 void loop() {
   esp_task_wdt_reset();
   nimbus::heapwatch::pump(millis());   // alloc-failure lines + the 1 Hz low-water ladder
+  nimbus::crash::breadcrumbTick();   // RTC breadcrumb: uptime + heap low-water every 5 s
 #ifdef NIMBUS_NOTIFIER_DEBUG
   // CUM-185: steady-state contiguous-SRAM sampler (test/debug builds only, so the
   // production nsn serial stream stays clean). Emits the same line as the boot
@@ -5459,6 +5485,9 @@ void loop() {
     // data. On success everything on the card is gone; reboot so the memory engines
     // reload empty (NVS config is untouched).
     using FR = solide::storage::FormatResult;
+    // The durable log holds its file open on the card: close it and stop durable
+    // writes for the format (a refusal turns them back on below).
+    nimbus::errlog::setSuspended(true);
     const FR fr = solide::storage::format();
     // Ok AND RemountFailed both mean the card is already erased (mkfs succeeded),
     // so reboot either way - boot re-probes the card and the memory engines reload
@@ -5474,6 +5503,7 @@ void loop() {
       delay(50);
       ESP.restart();
     } else {
+      nimbus::errlog::setSuspended(false);
       const char* msg =
         fr == FR::NoCard ? "Couldn't format - storage not available" : "Couldn't format - card error";
       Serial.printf("SD FORMAT refused/failed -> %s\n", solide::storage::formatResultStr(fr));
