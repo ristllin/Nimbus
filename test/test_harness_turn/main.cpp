@@ -152,8 +152,8 @@ struct Rig {
       auto it = slots.find(slot);
       return it == slots.end() ? std::string() : it->second;
     }
-    void put(int slot, const std::string& v) override { slots[slot] = v; }
-    void remove(int slot) override { slots.erase(slot); }
+    bool put(int slot, const std::string& v) override { slots[slot] = v; return true; }
+    bool remove(int slot) override { slots.erase(slot); return true; }
     void clearNs() override { slots.clear(); }
   };
   harness_test::FakeAdapter subAdapter;
