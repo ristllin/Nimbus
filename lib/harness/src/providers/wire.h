@@ -32,10 +32,11 @@ namespace wire {
 // `partial`: a 2xx whose body did not parse whole (cut mid-body by the deadline or
 // a peer close, or not JSON): a transport failure, never an empty answer.
 // `tooLarge`: the 2xx body was more than the device can hold. `allocFailed`: the
-// SEAM for memory evidence - the transport sets it when a heap allocation failed
-// during this exchange (the failed-alloc counter advanced), and only then is a
-// failure classed LowMemory on that evidence alone (CUM-404 v2: a fragmented but
-// healthy board's outage must still fail over).
+// memory EVIDENCE - the transport saw a heap allocation fail during this exchange
+// (the device's failed-allocation counter advanced; its error text says "alloc
+// failed"), and only then is a failure classed LowMemory on that evidence alone.
+// Without it the CUM-404 v2 rule below holds: a fragmented but healthy board's
+// outage must still fail over.
 struct LastExchange {
   bool unsent = false;
   bool lowMem = false;
@@ -49,14 +50,16 @@ inline LastExchange& lastExchange() {
   return s;
 }
 
-// The head/step error for a transport failure (status 0). "low memory: ..." only
-// when the transport tagged the exchange as begun starved (largest block under the
-// handshake need) AND total free heap is genuinely short now - the tag alone also
-// fires on a fragmented-but-healthy Freenove, where a real outage must still fail
-// over (CUM-404 v2). Then the engine answers with the memory reply instead of a
-// retry, a failover and "check the connection" (CUM-477); else "network".
+// The head/step error for a transport failure (status 0). "low memory: ..." on
+// allocation evidence (an allocation failed during the exchange), or when the
+// transport tagged the exchange as begun starved (largest block under the handshake
+// need) AND total free heap is genuinely short now - the tag alone also fires on a
+// fragmented-but-healthy Freenove, where a real outage must still fail over
+// (CUM-404 v2). Then the engine answers with the memory reply instead of a retry, a
+// failover and "check the connection" (CUM-477); else "network".
 inline constexpr uint32_t kStarvedTotalFree = 12000;   // == ORCH_TURN_HARD_FLOOR
 inline std::string transportError(const ProviderDeps& pd) {
+  if (lastExchange().allocFailed) return "low memory: the device could not make the request";
   const bool shortNow = !pd.freeHeap || pd.freeHeap() < kStarvedTotalFree;
   return (lastExchange().lowMem && shortNow)
              ? std::string("low memory: the device could not make the request")
@@ -127,6 +130,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
+  lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
   if (status == 0) {
     LastExchange& last = lastExchange();
     last.unsent = terr.find("body truncated") != std::string::npos ||

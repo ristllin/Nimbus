@@ -5,7 +5,9 @@
 
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
+#include "../support/fake_provider_deps.h"
 #include "nimbus/harness/fabric.h"
+#include "nimbus/harness/providers.h"
 #include "nimbus/orch/provider_slots.h"
 
 // First suite of the standalone-harness pyramid: the HeavyFabric registry -
@@ -177,6 +179,108 @@ static void test_every_provider_is_a_device_backend() {
   TEST_ASSERT_TRUE(listed("custom"));
 }
 
+
+// ---- LowMemory on evidence (heap F4) ---------------------------------------------
+// The device transport names a memory-caused failure only on direct evidence: an
+// allocation failed during the exchange (its error says "alloc failed"). Such a step
+// is low memory: the fabric keeps its one same-host resend (the collapse is usually
+// transient) and never switches hosts - the same request fails the same way on every
+// provider, and a switch blamed the provider for a device fault (the 14 Oct openai ->
+// anthropic switch after "0/71508").
+static const char* kEvidenceErr =
+    "request body truncated: write failed after 8192 of 71508 bytes: low memory (alloc failed "
+    "1600 B DMA|INTERNAL)";
+
+static std::string oaiDoneBody() {
+  return "{\"id\":\"resp_f\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_f\","
+         "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}],"
+         "\"usage\":{\"input_tokens\":60,\"output_tokens\":15}}";
+}
+static std::string antDoneBody() {
+  return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"orch_turn\","
+         "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"tool_use\","
+         "\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}";
+}
+
+struct EvidenceRig {
+  harness_test::FakeProviderDeps d;
+  harness_test::FakeProviderDeps::ToolRig rig;
+  agent::providers::ProviderDeps pd;
+  int notifies = 0;
+  EvidenceRig() {
+    pd = d.contract();
+    pd.delayMs = [this](uint32_t ms) { d.now += ms; };
+    d.fillTools(rig);
+    rig.ht.cfg.roundMinHeap = 12000;   // ORCH_LOOP_MIN_HEAP on the device
+  }
+  bool run(std::string& out, std::string& err) {
+    return agent::providers::runFabricLoop(
+        pd, {"openai", "anthropic"}, "SYS", "USER", out, err, rig.ht, nullptr,
+        [this](const std::string&, const std::string&) { notifies++; });
+  }
+};
+
+// The heap looks healthy again by the time the step returns (a transient collapse):
+// the evidence alone makes it memory. One resend on the same host serves the round.
+static void test_low_memory_with_evidence_resends_and_never_switches() {
+  EvidenceRig r;
+  r.d.http.script.push_back(harness_test::transportCut(0, kEvidenceErr));
+  r.d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiDoneBody()});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", r.d.http.seen[1].host.c_str());
+  TEST_ASSERT_EQUAL(0, r.notifies);
+}
+
+// Both attempts fail with evidence: the turn ends as low memory (the engine's
+// memory reply), with no switch - an anthropic request here would be unscripted.
+static void test_low_memory_with_evidence_ends_as_memory_without_a_switch() {
+  EvidenceRig r;
+  r.d.http.script.push_back(harness_test::transportCut(0, kEvidenceErr));
+  r.d.http.script.push_back(harness_test::transportCut(0, kEvidenceErr));
+  std::string out, err;
+  TEST_ASSERT_FALSE(r.run(out, err));
+  TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, r.notifies);
+  // Evidence on a request that DID go out (no response) is memory too: no switch,
+  // and no same-host retry of a request the provider may be running.
+  EvidenceRig s;
+  s.d.http.script.push_back(harness_test::transportCut(0, "no response: low memory (alloc failed)"));
+  TEST_ASSERT_FALSE(s.run(out, err));
+  TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)s.d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, s.notifies);
+}
+
+// CUM-404 v2 counter-test: the same write failure with NO allocation evidence, on a
+// board whose largest block sat at 5,200 B (a CYD/Freenove idles there; just above
+// the 5,000 B start floor, so no starved tag) and whose total free is healthy, is a
+// network failure: it still fails over and the next provider serves the round. The
+// largest block alone never makes a failure "low memory".
+static void test_no_evidence_still_fails_over_cum404_counter_test() {
+  EvidenceRig r;
+  r.d.largest = 5200;
+  r.d.http.script.push_back(
+      harness_test::transportCut(0, "request body truncated: write failed after 0 of 71508 bytes"));
+  r.d.http.script.push_back(
+      harness_test::transportCut(0, "request body truncated: write failed after 0 of 71508 bytes"));
+  r.d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antDoneBody()});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL(1, r.notifies);   // switched openai -> anthropic
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", r.d.http.seen.back().host.c_str());
+  // And the starved-start tag alone (": low memory", no "alloc failed") on a healthy
+  // total is still not memory: it fails over too.
+  EvidenceRig s;
+  s.d.http.script.push_back(harness_test::transportCut(0, "connect failed: low memory"));
+  s.d.http.script.push_back(harness_test::transportCut(0, "connect failed: low memory"));
+  s.d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antDoneBody()});
+  TEST_ASSERT_TRUE_MESSAGE(s.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL(1, s.notifies);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_dispatch_routes_by_category_binding);
@@ -189,6 +293,9 @@ int main(int, char**) {
   RUN_TEST(test_every_device_backend_fits_the_table);
   RUN_TEST(test_device_backend_miswired_is_named);
   RUN_TEST(test_every_provider_is_a_device_backend);
+  RUN_TEST(test_low_memory_with_evidence_resends_and_never_switches);
+  RUN_TEST(test_low_memory_with_evidence_ends_as_memory_without_a_switch);
+  RUN_TEST(test_no_evidence_still_fails_over_cum404_counter_test);
   UNITY_END();
   return 0;
 }

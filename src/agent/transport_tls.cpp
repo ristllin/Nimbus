@@ -4,10 +4,12 @@
 #include <WiFiClientSecure.h>
 
 #include "../sys/agent_log.h"
+#include "../sys/heap_watch.h"   // failed-allocation count, local-minimum monitor
 #include "../sys/net_util.h"
 #include "../sys/ps_json.h"
 #include "../sys/tls_arbiter.h"
 #include "agent_config.h"
+#include "nimbus/exchange_trace.h"   // the traced exchange: one line on every path
 #include "nimbus/fault.h"
 #include "connectors.h"
 #include "store.h"
@@ -26,12 +28,16 @@
 //     RST-close (no lingering TIME_WAIT PCBs - see net_util.h).
 //   - HTTP/1.0 + Connection: close => Content-Length framing, NO chunked
 //     encoding to decode (none of the pre-split adapters ever handled chunks).
-//   - The request body arrives as ONE contiguous string and goes out in ONE
-//     client.write() - the serialize-into-one-buffer-single-write rule (per-
-//     chunk TLS records + lwIP pbufs collapsed internal heap 30 KB -> 5 KB,
-//     measured live). The string's storage is PSRAM-backed on this firmware:
-//     main.cpp calls heap_caps_malloc_extmem_enable(128), so any malloc >=128 B
-//     (every real body) spills to PSRAM.
+//   - The request body arrives as ONE contiguous string (never chunked
+//     serialization: per-chunk TLS records + lwIP pbufs collapsed internal heap
+//     30 KB -> 5 KB, measured live) and goes out as 4,096 B slices of it - the
+//     record size the TLS client cuts one big write into anyway, so the wire is
+//     unchanged, but a failure now says how many bytes left ("after N of M"),
+//     where one write reported "0/M" after an unknown number of records. The
+//     string's storage is PSRAM-backed on this firmware: main.cpp calls
+//     heap_caps_malloc_extmem_enable(128), so any malloc >=128 B spills to PSRAM.
+//   - Every exchange that took the slot writes exactly one trace line on every
+//     path out (nimbus/exchange_trace.h): heap at four phases, fail=, af=, min=.
 //   - The response body is read whole into out.body (same PSRAM spill) and
 //     filter-parsed by the PORTABLE side - the pre-split code stream-parsed off
 //     the socket; the trade is one PSRAM-resident copy of the response for a
@@ -86,6 +92,146 @@ void keepErrHeader(const HttpRequest& req, int code, const String& line) {
                    std::string(value.c_str()));
 }
 
+using nimbus::heapwatch::ExchangeTrace;
+using nimbus::heapwatch::HeapSample;
+using nimbus::heapwatch::Stage;
+
+HeapSample sampleHeap() {
+  return HeapSample{
+      (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)};
+}
+
+// The socket phases of one exchange, driven by nimbus::heapwatch::runExchange (the
+// portable sequencer that records where an exchange stopped). Behavior per phase is
+// the pre-trace transport's, verbatim, except the body write: 4,096 B slices.
+struct TlsIo {
+  const HttpRequest& req;
+  Client* client;
+  WiFiClientSecure& tls;
+  WiFiClient& plain;
+  HttpResponse* out;
+  JsonDocument* doc;
+  const JsonDocument* filter;
+  uint32_t deadline;   // F25: the WHOLE operation (connect retries + I/O) rides one clock
+  std::string parseWhy;   // the parser's reason when readBody() fails
+  std::string tooLarge;   // set when the body parsed whole but was over the retained cap
+
+  bool expired() const { return (int32_t)(millis() - deadline) >= 0; }
+  void close() { if (req.tls) tlsClose(tls); else plain.stop(); }
+  HeapSample sample() { return sampleHeap(); }
+
+  // 3x connect with a 400 ms settle (rapid consecutive handshakes to the same host
+  // intermittently fail; a fresh socket clears it).
+  bool connect() {
+    for (int a = 0; a < 3 && !expired(); a++) {
+      if (client->connect(req.host.c_str(), req.port)) return true;
+      close();
+      if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
+    }
+    return false;
+  }
+
+  // Request head (HTTP/1.0 + close => Content-Length framing, no chunking). Both
+  // write results are CHECKED: a short write used to read as "no response" after the
+  // server waited forever for the announced Content-Length.
+  bool writeHead() {
+    String head = String(req.method.c_str()) + " " + req.path.c_str() + " HTTP/1.0\r\n" +
+                  "Host: " + req.host.c_str() + "\r\n";
+    for (const auto& h : req.headers)
+      head += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
+    head += "Content-Length: " + String((unsigned)req.body.size()) + "\r\nConnection: close\r\n\r\n";
+    return client->print(head) == head.length();
+  }
+
+  // One body slice (the sequencer passes 4,096 B: the record size the TLS client
+  // already cuts a big write into, so no small records and no chunked serialization).
+  // The TLS client returns 0 on any hard error after an unknown number of records,
+  // so slicing is what lets the failure say how many bytes went out.
+  size_t writeBody(size_t off, size_t want) {
+    return client->write((const uint8_t*)req.body.data() + off, want);
+  }
+
+  // Status line: "HTTP/1.0 200 ...".
+  int readStatus() {
+    String status;
+    while (!expired()) {
+      if (client->available()) { char c = client->read(); if (c == '\n') break; if (c != '\r') status += c; }
+      else if (!client->connected() && !client->available()) break;
+      else delay(2);
+    }
+    int code = 0;
+    int sp = status.indexOf(' ');
+    if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
+    return code;
+  }
+
+  // Skip headers up to the blank line. An error response keeps the headers the
+  // caller asked for (HttpRequest::errHeaders, e.g. a 429's x-ratelimit-* quota
+  // window); a healthy response keeps nothing.
+  bool readHeaders(int code) {
+    String line;
+    while (!expired()) {
+      if (client->available()) {
+        char c = client->read();
+        if (c == '\n') {
+          if (line.length() == 0) return true;
+          keepErrHeader(req, code, line);
+          line = "";
+        }
+        else if (c != '\r') line += c;
+      } else if (!client->connected() && !client->available()) return false;
+      else delay(2);
+    }
+    return false;
+  }
+
+  bool readBody() {
+    if (!doc) {
+      uint8_t buf[512];
+      while (!expired() && out->body.size() < kMaxResponseBody) {
+        int n = client->read(buf, sizeof(buf));
+        if (n > 0) out->body.append((const char*)buf, (size_t)n);
+        else if (!client->connected() && !client->available()) break;
+        else delay(2);
+      }
+      return true;
+    }
+    // STREAMING filter-parse off the socket. The parser pulls bytes as it goes
+    // (draining lwIP RX pbufs continuously) and stores ONLY the filter-retained
+    // fields - the fat response body never fully resides, so any response size is
+    // safe on the ~47 K internal-heap budget.
+    uint32_t heapBefore = ESP.getFreeHeap();
+    BlockingClientReader rdr(client, deadline);
+    DeserializationError derr =
+        deserializeJson(*doc, rdr, DeserializationOption::Filter(*filter),
+                        DeserializationOption::NestingLimit(kResponseNestingLimit));
+    // A parse break is NOT cosmetic: ArduinoJson keeps whatever it read before the
+    // break, so without this the caller cannot tell a truncated response from a
+    // complete one and happily uses the fragment. EmptyInput is excluded so an empty
+    // 200/204 behaves like the host path, which skips the parse entirely.
+    if (derr && derr.code() != DeserializationError::EmptyInput) {
+      parseWhy = derr.c_str();
+      alogf("transport: stream-parse %s (heap %u->%u)", derr.c_str(),
+            (unsigned)heapBefore, (unsigned)ESP.getFreeHeap());
+      return false;
+    }
+    // Guard against an unbounded retained field (hostile/buggy provider): the
+    // filter keeps only small fields, but bound it so PSRAM can't be flooded.
+    // Named, never silent: a 2xx the device could not hold used to read as an
+    // empty answer (a "stalled" round, a job polled forever); wire::exchange
+    // turns the error text into a transport failure the step can classify. The
+    // exchange itself completed, so the trace keeps fail=none.
+    if (!derr && doc->memoryUsage() > kMaxRetainedBytes) {
+      alogf("transport: retained %u B over cap -> drop", (unsigned)doc->memoryUsage());
+      tooLarge = "response too large for the device (" + std::to_string((unsigned)doc->memoryUsage()) +
+                 " B retained)";
+      doc->clear();
+    }
+    return true;
+  }
+};
+
 class TlsTransport : public HttpTransport {
  public:
   bool exec(const HttpRequest& req, HttpResponse& out, std::string& err) override {
@@ -126,31 +272,32 @@ class TlsTransport : public HttpTransport {
 
     if (!arbiter::acquireWork(10000)) { err = "tls work-slot busy"; return 0; }
 
-    // Per-phase INTERNAL-heap trace (owner ask 2026-08-05: measure, don't guess -
-    // the deep-turn degradation is unattributed while bodies/TLS live on PSRAM).
-    // free/largest sampled at 4 phase boundaries; divergence = fragmentation,
-    // a drop at `conn` = handshake/socket internal cost, a drop that survives
-    // `done` = leaked/retained internal memory per request. One log line/request.
-    struct HeapSample { uint32_t free, largest; };
-    auto sampleHeap = [] {
-      return HeapSample{
-        (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)};
-    };
-    const HeapSample hsPre = sampleHeap();
-    HeapSample hsConn{0, 0}, hsWrote{0, 0};
+    // The exchange trace (heap F1): ONE line on every path out of here, with the
+    // internal heap at four phase boundaries (free/largest; divergence =
+    // fragmentation, a drop at `conn` = the handshake's cost, a drop that survives
+    // `done` = memory kept per request), where it stopped (fail=), the failed
+    // allocations of any task during it (af=), and its local minimum free (min=,
+    // monitored only inside the slot: one global monitor, serialized by it).
+    ExchangeTrace trace;
+    trace.host = req.host.c_str();
+    trace.path = req.path.c_str();
+    trace.body = (uint32_t)req.body.size();
+    trace.pre = sampleHeap();
+    trace.atMs = millis();
+    const uint32_t afStart = nimbus::heapwatch::allocFails();
+    const bool monitored = nimbus::heapwatch::monitorStart();
+    nimbus::heapwatch::tlsIoBegin("transport");
 
-    // CUM-404 v2: classify a failure as MEMORY-pressure ONLY when this exchange BEGAN
-    // below the handshake's largest-block need (hsPre, the pre-attempt state - the same
-    // floor the chat gate uses). If there was enough contiguous internal memory to
-    // start, then a connect / write / parse failure is a genuine network or provider
-    // error and MUST still fail over (CUM-41 ladder) and be reported honestly - never
-    // relabeled OOM. The earlier version sampled largest AT the failure and tagged
-    // ANY failure below 8000 as OOM, which on the CYD/freenove (whose persistent ~5 KB
-    // DMA bounce buffer keeps largest-internal near the floor) turned every provider
-    // outage into a fake "low memory" and silently skipped the whole failover ladder.
-    // Only when the turn truly started starved does "low memory" degrade honestly.
-    const bool startedStarved = hsPre.largest < (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK;
+    // CUM-404 v2: without allocation evidence, a failure reads as MEMORY pressure only
+    // when this exchange BEGAN below the handshake's largest-block need (the same
+    // floor the chat gate uses). Enough contiguous memory to start means a connect /
+    // write / parse failure is a genuine network or provider error that MUST still
+    // fail over (CUM-41 ladder) and be reported honestly - the CYD/freenove keeps its
+    // largest internal block near the floor (a persistent ~5 KB DMA bounce buffer),
+    // and sampling at the failure turned every provider outage into a fake "low
+    // memory". With evidence (a failed allocation during the exchange) the failure is
+    // memory-caused whatever the block was at the start (heap F4).
+    const bool startedStarved = trace.pre.largest < (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK;
 
     WiFiClient plain;
     WiFiClientSecure tls;
@@ -168,163 +315,28 @@ class TlsTransport : public HttpTransport {
       plain.setConnectionTimeout(req.timeoutMs);
       client = &plain;
     }
-    auto closeConn = [&]() { if (req.tls) tlsClose(tls); else plain.stop(); };
+    TlsIo io{req, client, tls, plain, out, doc, filter, millis() + req.timeoutMs, {}, {}};
 
-    // F25: the WHOLE operation (connect retries + I/O) rides one wall clock -
-    // 3× connect could otherwise burn ~127 s BEFORE the read deadline even began.
-    const uint32_t deadline = millis() + req.timeoutMs;
-    auto expired = [&]() { return (int32_t)(millis() - deadline) >= 0; };
-
-    bool connected = false;
-    for (int a = 0; a < 3 && !connected && !expired(); a++) {
-      if (client->connect(req.host.c_str(), req.port)) { connected = true; break; }
-      closeConn();
-      if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
-    }
-    hsConn = sampleHeap();  // post-connect: handshake + socket internal cost
-    if (!connected) {
+    const int code = nimbus::heapwatch::tracedExchange(io, trace, [&](ExchangeTrace& t) {
+      io.close();
+      nimbus::heapwatch::tlsIoEnd();
+      t.minFree = nimbus::heapwatch::monitorStop(monitored);
+      t.durMs = millis() - t.atMs;
       arbiter::releaseWork();
-      alogf("transport: connect %s://%s:%u failed (3x) heap=%u largest=%u",
-            req.tls ? "https" : "http", req.host.c_str(), (unsigned)req.port,
-            ESP.getFreeHeap(),
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-      err = startedStarved ? "connect failed: low memory" : "connect failed";
-      return 0;
-    }
+      t.af = nimbus::heapwatch::allocFails() - afStart;
+      t.done = sampleHeap();
+      alogf("%s", t.line().c_str());
+    });
 
-    // Request head (HTTP/1.0 + close => Content-Length framing, no chunking).
-    String head = String(req.method.c_str()) + " " + req.path.c_str() + " HTTP/1.0\r\n" +
-                  "Host: " + req.host.c_str() + "\r\n";
-    for (const auto& h : req.headers)
-      head += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
-    head += "Content-Length: " + String((unsigned)req.body.size()) + "\r\nConnection: close\r\n\r\n";
-    // ⚠ Both write results are CHECKED. They used to be discarded, which made a
-    // short write indistinguishable from a healthy request: the head announces
-    // Content-Length: N, fewer than N body bytes go out, the server waits forever
-    // for the rest, and the read below times out and reports "no response" - the
-    // same string a genuine network failure produces. On a ~50 KB round body under
-    // memory pressure that is a real possibility, and it was invisible.
-    const size_t headLen = head.length();
-    if (client->print(head) != headLen) {
-      closeConn();
-      arbiter::releaseWork();
-      alogf("transport: short head write %s%s heap=%u", req.host.c_str(),
-            req.path.c_str(), ESP.getFreeHeap());
-      err = startedStarved ? "request head write failed: low memory" : "request head write failed";
-      return 0;
+    if (trace.fail != Stage::None) {
+      nimbus::heapwatch::FailRecord last;
+      const bool haveLast = trace.af && nimbus::heapwatch::lastFail(last);
+      err = nimbus::heapwatch::stageError(trace, io.parseWhy.c_str(), haveLast ? &last : nullptr,
+                                          startedStarved);
+    } else if (!io.tooLarge.empty()) {
+      err = io.tooLarge;   // a whole 2xx the device could not hold: wire::exchange types it
     }
-    // ONE write of the complete (PSRAM-spilled) body - never chunked serialization.
-    if (!req.body.empty()) {
-      const size_t n = client->write((const uint8_t*)req.body.data(), req.body.size());
-      hsWrote = sampleHeap();  // post-write: lwIP TX transit cost for this body size
-      if (n != req.body.size()) {
-        closeConn();
-        arbiter::releaseWork();
-        alogf("transport: short body write %u/%u to %s%s heap=%u", (unsigned)n,
-              (unsigned)req.body.size(), req.host.c_str(), req.path.c_str(),
-              ESP.getFreeHeap());
-        // Naming the truncation matters: the caller previously saw "no response"
-        // and blamed the network for a request the device never finished sending.
-        err = "request body truncated (" + std::to_string(n) + "/" +
-              std::to_string(req.body.size()) + " bytes written)" +
-              (startedStarved ? ": low memory" : "");
-        return 0;
-      }
-    }
-
-    // (deadline armed above the connect retry - F25.)
-    // Status line: "HTTP/1.0 200 ...".
-    int code = 0;
-    String status;
-    while (!expired()) {
-      if (client->available()) { char c = client->read(); if (c == '\n') break; if (c != '\r') status += c; }
-      else if (!client->connected() && !client->available()) break;
-      else delay(2);
-    }
-    int sp = status.indexOf(' ');
-    if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
-
-    // Skip headers up to the blank line. An error response keeps the headers the
-    // caller asked for (HttpRequest::errHeaders, e.g. a 429's x-ratelimit-*
-    // quota window); a healthy response keeps nothing.
-    String line;
-    bool headersDone = false;
-    while (!headersDone && !expired()) {
-      if (client->available()) {
-        char c = client->read();
-        if (c == '\n') {
-          if (line.length() == 0) headersDone = true;
-          else keepErrHeader(req, code, line);
-          line = "";
-        }
-        else if (c != '\r') line += c;
-      } else if (!client->connected() && !client->available()) break;
-      else delay(2);
-    }
-
-    // Body.
-    if (headersDone) {
-      if (doc) {
-        // STREAMING filter-parse off the socket. The parser pulls bytes as it
-        // goes (draining lwIP RX pbufs continuously) and stores ONLY the
-        // filter-retained fields - the fat response body never fully resides, so
-        // any response size is safe on the ~47 K internal-heap budget.
-        uint32_t heapBefore = ESP.getFreeHeap();
-        BlockingClientReader rdr(client, deadline);
-        DeserializationError derr =
-            deserializeJson(*doc, rdr, DeserializationOption::Filter(*filter),
-                            DeserializationOption::NestingLimit(kResponseNestingLimit));
-        // A parse break is NOT cosmetic: ArduinoJson keeps whatever it read
-        // before the break, so without this the caller cannot tell a truncated
-        // response from a complete one and happily uses the fragment. Report it
-        // through `err` (the status still returns, per the seam contract).
-        // EmptyInput is excluded so an empty 200/204 behaves like the host path,
-        // which skips the parse entirely rather than calling it an error.
-        if (derr && derr.code() != DeserializationError::EmptyInput) {
-          err = std::string("response parse failed: ") + derr.c_str() +
-                (startedStarved ? " (low memory)" : "");
-          alogf("transport: stream-parse %s (heap %u->%u)", derr.c_str(),
-                (unsigned)heapBefore, (unsigned)ESP.getFreeHeap());
-        }
-        // Guard against an unbounded retained field (hostile/buggy provider): the
-        // filter keeps only small fields, but bound it so PSRAM can't be flooded.
-        // Named, never silent: a 2xx the device could not hold used to read as an
-        // empty answer (a "stalled" round, a job polled forever); wire::exchange
-        // now turns this into a transport failure the step can classify.
-        if (!derr && doc->memoryUsage() > kMaxRetainedBytes) {
-          alogf("transport: retained %u B over cap -> drop", (unsigned)doc->memoryUsage());
-          err = "response too large for the device (" + std::to_string((unsigned)doc->memoryUsage()) +
-                " B retained)";
-          doc->clear();
-        }
-      } else {
-        uint8_t buf[512];
-        while (!expired() && out->body.size() < kMaxResponseBody) {
-          int n = client->read(buf, sizeof(buf));
-          if (n > 0) out->body.append((const char*)buf, (size_t)n);
-          else if (!client->connected() && !client->available()) break;
-          else delay(2);
-        }
-      }
-    }
-
-    closeConn();
-    arbiter::releaseWork();
-
-    {
-      // done − pre that stays negative across many requests = retained internal
-      // memory per request (TIME_WAIT PCBs / leaks); a big pre→conn drop = the
-      // handshake's true internal cost; free≫largest anywhere = fragmentation.
-      const HeapSample hsDone = sampleHeap();
-      alogf("transport: heaptrace %s%s body=%u pre=%u/%u conn=%u/%u wrote=%u/%u done=%u/%u",
-            req.host.c_str(), req.path.c_str(), (unsigned)req.body.size(),
-            (unsigned)hsPre.free, (unsigned)hsPre.largest,
-            (unsigned)hsConn.free, (unsigned)hsConn.largest,
-            (unsigned)hsWrote.free, (unsigned)hsWrote.largest,
-            (unsigned)hsDone.free, (unsigned)hsDone.largest);
-    }
-
-    if (code <= 0) { err = "no response"; return 0; }
+    if (code <= 0) return 0;
     if (out) out->status = code;
     return code;
   }
