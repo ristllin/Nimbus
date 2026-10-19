@@ -96,13 +96,14 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
     assert rows, "no ev:dream row was written"
     newest = rows[-1]
     assert newest.startswith("Nightly dream FAILED ("), newest
-    assert "memories stored" in newest and "failed)" in newest, newest   # the counts
+    assert "memories stored" in newest and "failed)" in newest, newest  # the counts
     assert "retry 2 of 3 at" in newest or "no retry tonight" in newest, newest
 
 
 def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
-    orch.turn("Please remember for later: my sister Anna's birthday is on 3 March, "
-              "and I work from home on Fridays now.")
+    orch.turn(
+        "Please remember for later: my sister Anna's birthday is on 3 March, and I work from home on Fridays now."
+    )
     orch.expect("orchestrator: turn", timeout=120.0)
     orch.drain(quiet=2.0)
     orch.cmd("FAULT memory on", "FAULT memory=1", timeout=5.0)
