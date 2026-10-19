@@ -11,6 +11,7 @@
 #include "../agent/agent_config.h"        // CUMULO_HOST_DEFAULT
 #include "../agent/store.h"
 #include "../sys/agent_log.h"
+#include "../sys/heap_watch.h"            // the worker spawn gate + activity tag
 #include "../sys/net_util.h"              // tlsSetup / tlsClose
 #include "../sys/tls_arbiter.h"           // one work-TLS slot (serialized against turns)
 
@@ -192,7 +193,10 @@ static void runOne() {
 }
 
 static void mintTask(void*) {
-  runOne();          // clears g_pending on every exit path
+  {
+    nimbus::heapwatch::Scope worker(nimbus::heapwatch::kWorker);
+    runOne();        // clears g_pending on every exit path
+  }
   g_pending = false; // belt-and-braces
   vTaskDelete(nullptr);
 }
@@ -209,8 +213,10 @@ bool request(nimbus::cloud::MintTrigger trigger, long capacity) {
   setResult(State::Pending, false, capacity, 0, "", "Minting a key.");
   // 8 KB stack, matching the proven provider_verify TLS task: one small TLS POST +
   // a bounded body read (mbedTLS RX/TX buffers ride PSRAM). Watchdog-free so the
-  // up-to-35 s acquire + handshake can't trip the F12 loop watchdog.
-  if (xTaskCreate(mintTask, "cloudmint", 8192, nullptr, 1, nullptr) != pdPASS) {
+  // up-to-35 s acquire + handshake can't trip the F12 loop watchdog. The stack is
+  // internal SRAM: never carved out beside a turn or without room to spare.
+  if (nimbus::heapwatch::spawnGate(8192, "mint") != nimbus::heapwatch::SpawnVerdict::Ok ||
+      xTaskCreate(mintTask, "cloudmint", 8192, nullptr, 1, nullptr) != pdPASS) {
     g_pending = false;
     setResult(State::Error, false, 0, 0, "", "Device is busy. Try again.");
     return false;

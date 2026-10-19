@@ -7,6 +7,7 @@
 #include <string>
 
 #include "../../sys/agent_log.h"
+#include "../../sys/heap_watch.h"   // the worker spawn gate + activity tag
 #include "../../sys/net_util.h"     // tlsClose
 #include "../store.h"
 #include "../../sys/tls_arbiter.h"
@@ -127,8 +128,11 @@ static bool fetchMistral(String& out) {
 // voicesJson so the 6 KB stack exists ONLY during the rare catalog fetch, not resident
 // for the device's whole life (SRAM reclaim: the voices catalog is fetched at most once).
 static void fetchOnce(void*) {
-  String live;
-  if (fetchMistral(live)) { g_mistralLive = live; g_have = true; alog("voices: mistral catalog cached"); }
+  {
+    nimbus::heapwatch::Scope worker(nimbus::heapwatch::kWorker);
+    String live;
+    if (fetchMistral(live)) { g_mistralLive = live; g_have = true; alog("voices: mistral catalog cached"); }
+  }
   g_want = false;   // one attempt per request; re-request re-tries
   vTaskDelete(nullptr);
 }
@@ -139,9 +143,12 @@ String voicesJson(const String& provider) {
   if (provider == "openai") return String(kOpenaiStatic);
   // mistral (default): live once cached, else fallback + spawn a one-shot fetch.
   if (g_have) return g_mistralLive;
-  if (!g_want) {          // not already fetching (single-consumer flag; low concurrency)
+  // Not already fetching (single-consumer flag; low concurrency). The 6 KB stack is
+  // internal SRAM: never beside a turn or without room; a refusal (or a failed
+  // create) leaves g_want clear, so the next catalog request tries again.
+  if (!g_want && nimbus::heapwatch::spawnGate(6144, "voices") == nimbus::heapwatch::SpawnVerdict::Ok) {
     g_want = true;
-    xTaskCreate(fetchOnce, "voices", 6144, nullptr, 1, nullptr);
+    if (xTaskCreate(fetchOnce, "voices", 6144, nullptr, 1, nullptr) != pdPASS) g_want = false;
   }
   return String(kMistralFallback);
 }

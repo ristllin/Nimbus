@@ -12,6 +12,7 @@
 #include "transport_tls.h"                // agent::deviceTransport() (TLS work-slot arbiter)
 #include "version.h"                      // NIMBUS_FW_VERSION -> meta.fw
 #include "../sys/agent_log.h"             // alogf(), agent::logring::g_secrets
+#include "../sys/heap_watch.h"            // the worker spawn gate + activity tag
 #include "../sys/errlog_fs.h"            // errlog::activeFs()/onSdTier() - the durable tier
 #include "../sys/errlog.h"               // errlog::kDir
 #include "nimbus/logring.h"              // core::LogRing::redact (portable redaction)
@@ -329,7 +330,10 @@ void reportRunOne(const std::string& id) {
 }
 
 void reportTask(void*) {
-  reportRunOne(g_reportPendingId);
+  {
+    nimbus::heapwatch::Scope worker(nimbus::heapwatch::kWorker);
+    reportRunOne(g_reportPendingId);
+  }
   g_reportPending = false;
   vTaskDelete(nullptr);
 }
@@ -350,7 +354,9 @@ ReportRequest requestReport(const std::string& id, std::string& msgOut) {
   g_reportPendingId = id;
   // 8 KB stack, matching cloud_mint's proven TLS worker (mbedTLS buffers ride PSRAM);
   // watchdog-free so the up-to-10 s slot acquire + handshake can't trip the loop watchdog.
-  if (xTaskCreate(reportTask, "safetyrep", 8192, nullptr, 1, nullptr) != pdPASS) {
+  // The stack is internal SRAM: never carved out beside a turn or without room to spare.
+  if (nimbus::heapwatch::spawnGate(8192, "safety report") != nimbus::heapwatch::SpawnVerdict::Ok ||
+      xTaskCreate(reportTask, "safetyrep", 8192, nullptr, 1, nullptr) != pdPASS) {
     g_reportPending = false;
     msgOut = "Device is busy. Try again.";
     return ReportRequest::Busy;

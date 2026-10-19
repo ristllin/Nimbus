@@ -22,6 +22,7 @@
 #include "../sys/net_util.h"      // tlsClose - RST-close on every path
 #include "store.h"
 #include "connectors.h"           // Mistral Studio connector workspace-auth probe
+#include "../sys/heap_watch.h"    // resting largest block, the worker spawn gate, activity tags
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
@@ -72,6 +73,12 @@ static const size_t VERIFY_MIN_MAX8 = 8000;
 
 uint32_t deferFloor() { return (uint32_t)VERIFY_MIN_MAX8; }
 
+// The worker's stack: internal SRAM, carved out when the task is created. The memory
+// gate therefore runs BEFORE xTaskCreate (row 43, panic F2.4): measured inside the new
+// task it read 7,156 B while the device rested at 15,860 B - the stack had taken the
+// block - and a loaded device deferred every verify for good.
+static const uint32_t kVerifyStackBytes = 8192;
+
 static void verifyTask(void*);   // spawned per request(); self-deletes
 
 // ---- verify-reason side channel (CUM-77 x1 §4) ------------------------------
@@ -111,6 +118,9 @@ static const char* const kRetryProv[] = {"openai", "anthropic", "mistral", "zai"
                                          "cumulo", "telegram", "tavily"};
 static const int kNRetry = (int)(sizeof(kRetryProv) / sizeof(kRetryProv[0]));
 static DeferralRetry g_retry[kNRetry];
+// A verify refused only because a turn was in flight: the pump starts it once the turn
+// ends (a key save during a turn kicks a verify that must not be dropped).
+static bool g_wantStart[kNRetry] = {};
 static int retryIdx(const String& provider) {
   for (int i = 0; i < kNRetry; ++i)
     if (provider == kRetryProv[i]) return i;
@@ -130,12 +140,33 @@ static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 static bool                g_wsOnly = false;
 static WorkspaceProbeQueue g_wsq;
 
+static void deferLowMemory(const String& provider, uint32_t max8);
+
 static bool startTask(const char* provider, bool wsOnly) {
   bool idle = false;
   if (!g_pending.compare_exchange_strong(idle, true)) return false;  // one verify at a time
   strncpy(g_provider, provider, sizeof(g_provider) - 1);
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = wsOnly;
+  // Memory before the stack: never while a turn is in flight, only with room for the
+  // stack plus 16 KB, and only when the RESTING largest block clears the handshake
+  // floor (a single sample inside a transient read 7,156 B on a device resting at
+  // 15,860 B). A refusal is never a silent drop: a turn queues the start for the pump,
+  // low memory records the deferral and arms the self-retry.
+  const nimbus::heapwatch::SpawnVerdict sv = nimbus::heapwatch::spawnGate(kVerifyStackBytes, "verify");
+  const uint32_t resting = nimbus::heapwatch::restingLargest();
+  const bool lowBlock = deferReason(resting, (uint32_t)VERIFY_MIN_MAX8)[0] != 0;
+  if (sv != nimbus::heapwatch::SpawnVerdict::Ok || lowBlock) {
+    g_pending = false;
+    if (wsOnly) return false;   // the probe queue re-arms itself (rearmWorkspaceProbe)
+    const int ri = retryIdx(provider);
+    if (sv == nimbus::heapwatch::SpawnVerdict::TurnInFlight) {
+      if (ri >= 0) g_wantStart[ri] = true;
+    } else {
+      deferLowMemory(provider, resting);
+    }
+    return false;
+  }
   // Spawn the worker HERE rather than keeping one resident. A verify happens
   // when a human clicks "verify" in the web UI - a handful of times in a device's
   // life - but the task's 8 KB stack is INTERNAL SRAM held for the whole uptime,
@@ -143,7 +174,7 @@ static bool startTask(const char* provider, bool wsOnly) {
   // (a multi-round tool loop caps at `cap=heap` when the turn-time heap dips
   // below ORCH_LOOP_MIN_HEAP). Reclaiming these 8 KB is what buys the tool loop
   // its rounds back. The task self-deletes when the verify completes.
-  if (xTaskCreate(verifyTask, "pverify", 8192, nullptr, 1, nullptr) != pdPASS) {
+  if (xTaskCreate(verifyTask, "pverify", kVerifyStackBytes, nullptr, 1, nullptr) != pdPASS) {
     g_pending = false;   // nothing will run it - fail the request honestly
     alog("verify: could not start worker (low memory)");
     return false;
@@ -600,14 +631,53 @@ static void runWorkspaceProbeOnly() {
   const String key = store::mistralKey();
   if (!key.length()) { g_wsq.served(gen); return; }   // nothing to probe with
   ProbeGate gate;
-  gate.lowMemory = [] {
-    return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < VERIFY_MIN_MAX8;
-  };
+  gate.lowMemory = [] { return nimbus::heapwatch::restingLargest() < VERIFY_MIN_MAX8; };
   gate.turnInFlight = [] { return orchestrator::turnInFlight(); };
   gate.acquireSlot = [] { return arbiter::acquireWork(5000); };
   gate.releaseSlot = [] { arbiter::releaseWork(); };
   const char* why = attemptProbe(gate, [&] { return syncMistralConnectors(key, true, gen); });
   if (why) rearmWorkspaceProbe(gen, why, countsAsTry(why));
+}
+
+// Record a verify result. A transient "couldn't verify" (-1) must not DEMOTE a
+// definitive VERIFIED (1): the capProbe=2 tick re-verifies unattended (WiFi still
+// rejoining, TLS slot busy behind a turn), and one blip was erasing the catalog's
+// VERIFIED marking until the next success. Definitive verdicts (1 / 0) always overwrite.
+static void recordVerify(const String& prov, int8_t result, const char* rsn = "") {
+  if (result == -1 && store::verifyResult(prov) == 1) {
+    alogf("verify: %s transient failure - keeping cached verified", prov.c_str());
+    setReason(prov, "");   // displayed state is still verified: no badge reason
+    return;
+  }
+  store::setVerify(prov, result, (uint32_t)millis());
+  // verify===1 (and a plain rejection) carry their own UI copy, so the reason
+  // token only rides a couldn't-verify (-1). Clearing it on 1/0 stops a stale
+  // "nocredits" from lingering after the account is funded.
+  setReason(prov, result == 1 ? "" : rsn);
+  // A DEFINITIVE verdict (verified=1 or rejected=0) resolves any low-memory
+  // deferral: stop the self-retry here, at the ONE place a real verdict lands.
+  // A transient (-1: tlsbusy / connectfail / timeout) must NOT clear it, or a
+  // busy slot on a memory-recovered attempt abandons the auto-retry forever and
+  // the provider is stuck "deferred" with no way back (CUM-451; the live Cumulo
+  // stuck-verify). The low-memory path passes -1 then arms onDeferred(), so the
+  // retry survives until a verdict lands or memory + the slot are both free.
+  if (result != -1) { int ri = retryIdx(prov); if (ri >= 0) g_retry[ri].clear(); }
+}
+
+// A verify the memory gate refused (startTask). recordVerify keeps a cached VERIFIED
+// as-is (a transient blip must not demote it), so the badge shows low-memory only for
+// a provider that is not verified, and only then is the measured number stored. The
+// self-retry policy (onLowMemoryDefer) decides when to re-arm (CUM-575): a verify is also
+// how a verified provider's model list and router prices are refreshed, and that refresh
+// must not be dropped.
+static void deferLowMemory(const String& provider, uint32_t max8) {
+  const LowMemoryDefer act = onLowMemoryDefer(store::verifyResult(provider) == 1);
+  recordVerify(provider, -1, "low-memory");
+  if (act.storeNumber) setDeferMax8(provider, max8);
+  const int ri = retryIdx(provider);
+  if (act.armRetry && ri >= 0) g_retry[ri].onDeferred((uint32_t)millis());
+  alogf("verify: %s deferred low-memory (resting largest %u, need %u)", provider.c_str(),
+        (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
 }
 
 static void runOne() {
@@ -661,56 +731,11 @@ static void runOne() {
     g_pending = false;
     return;
   }
-  // A transient "couldn't verify" (-1) must not DEMOTE a definitive VERIFIED (1):
-  // the capProbe=2 tick re-verifies unattended (WiFi still rejoining, TLS slot
-  // busy behind a turn), and one blip was erasing the catalog's VERIFIED marking
-  // until the next success. Definitive verdicts (1 / 0) always overwrite.
-  auto recordVerify = [&](const String& prov, int8_t result, const char* rsn = "") {
-    if (result == -1 && store::verifyResult(prov) == 1) {
-      alogf("verify: %s transient failure - keeping cached verified", prov.c_str());
-      setReason(prov, "");   // displayed state is still verified: no badge reason
-      return;
-    }
-    store::setVerify(prov, result, (uint32_t)millis());
-    // verify===1 (and a plain rejection) carry their own UI copy, so the reason
-    // token only rides a couldn't-verify (-1). Clearing it on 1/0 stops a stale
-    // "nocredits" from lingering after the account is funded.
-    setReason(prov, result == 1 ? "" : rsn);
-    // A DEFINITIVE verdict (verified=1 or rejected=0) resolves any low-memory
-    // deferral: stop the self-retry here, at the ONE place a real verdict lands.
-    // A transient (-1: tlsbusy / connectfail / timeout) must NOT clear it, or a
-    // busy slot on a memory-recovered attempt abandons the auto-retry forever and
-    // the provider is stuck "deferred" with no way back (CUM-451; the live Cumulo
-    // stuck-verify). The low-memory path passes -1 then arms onDeferred(), so the
-    // retry survives until a verdict lands or memory + the slot are both free.
-    if (result != -1) { int ri = retryIdx(prov); if (ri >= 0) g_retry[ri].clear(); }
-  };
-  // MUST include MALLOC_CAP_INTERNAL: plain MALLOC_CAP_8BIT counts PSRAM too, so on
-  // this 8 MB-PSRAM board the block is always ~megabytes and the guard never fires -
-  // defeating the intended INTERNAL-heap check (which matters more now that the
-  // 2-slot arbiter lets verify run beside another work-TLS session).
-  size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8)[0]) {   // below the gate
-    // recordVerify keeps a cached VERIFIED as-is (a transient blip must not demote
-    // it), so it only SHOWS low-memory when the provider is not already verified.
-    // Persist the measured number and arm the self-retry in exactly that case, so a
-    // number is never stored that the UI will not surface.
-    const bool wasVerified = (store::verifyResult(provider) == 1);
-    recordVerify(provider, -1, deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8));
-    if (!wasVerified) {
-      setDeferMax8(provider, (uint32_t)max8);
-      int ri = retryIdx(provider);
-      if (ri >= 0) g_retry[ri].onDeferred((uint32_t)millis());
-    }
-    alogf("verify: %s deferred low-memory (max8=%u, need %u)", provider.c_str(),
-          (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
-    g_pending = false;
-    return;
-  }
-  // Memory was sufficient this attempt. Do NOT clear the low-memory retry here:
-  // clearing before the slot is acquired means a "tls busy" (or connectfail) below
-  // abandons the auto-retry, leaving the provider stuck "deferred" (CUM-451). The
-  // retry is now cleared only on a DEFINITIVE verdict, inside recordVerify().
+  // Memory was checked before this task existed (startTask: the resting largest block
+  // against VERIFY_MIN_MAX8, and room for this stack). Do NOT clear the low-memory
+  // retry here: clearing before the slot is acquired means a "tls busy" (or
+  // connectfail) below abandons the auto-retry, leaving the provider stuck "deferred"
+  // (CUM-451). The retry is cleared only on a DEFINITIVE verdict, in recordVerify().
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
   if (!arbiter::acquireWork(35000)) {
@@ -1086,9 +1111,32 @@ static void runOne() {
 // (It used to spin here forever polling g_pending every 250 ms, holding the stack
 // for the device's whole uptime - see the note in request().)
 static void verifyTask(void*) {
-  runOne();                 // clears g_pending on every exit path
+  {
+    nimbus::heapwatch::Scope worker(nimbus::heapwatch::kWorker);
+    nimbus::heapwatch::Scope verifying(nimbus::heapwatch::kVerify);
+    runOne();               // clears g_pending on every exit path
+  }
   g_pending = false;        // belt-and-braces: never leave the slot stuck busy
   vTaskDelete(nullptr);     // self-delete; frees the stack
+}
+
+// One provider's pending start, if any (no turn, online: the caller checked). A start a
+// turn refused goes first (a refusal again re-queues or defers it); then a deferred
+// verify whose heap recovered (row 43) or whose backoff came due. True once a verify
+// started.
+static bool pumpOneRetry(int i, uint32_t now, uint32_t resting) {
+  if (g_wantStart[i]) {
+    g_wantStart[i] = false;
+    return request(kRetryProv[i]);
+  }
+  const bool recovered = g_retry[i].dueOnRecovery(now, false, true, /*busy=*/false, resting,
+                                                  (uint32_t)VERIFY_MIN_MAX8);
+  if (!recovered && !g_retry[i].due(now, false, true, /*busy=*/false)) return false;
+  if (recovered) {
+    g_retry[i].onRecoveryFired();
+    alogf("verify: %s retry - memory recovered (resting largest %u)", kRetryProv[i], (unsigned)resting);
+  }
+  return request(kRetryProv[i]);
 }
 
 // Re-arm a low-memory-deferred verify when its backoff comes due and the device is
@@ -1117,10 +1165,10 @@ void pumpRetry() {
     return;
   }
   if (pumpRouterPriceRefill(now, inTurn, online)) return;
-  for (int i = 0; i < kNRetry; ++i) {
-    if (!g_retry[i].due(now, inTurn, online, /*busy=*/false)) continue;
-    if (request(kRetryProv[i])) return;   // one retry per pass; the slot is now busy
-  }
+  if (inTurn || !online) return;
+  const uint32_t resting = nimbus::heapwatch::restingLargest();
+  for (int i = 0; i < kNRetry; ++i)
+    if (pumpOneRetry(i, now, resting)) return;   // one start per pass; the slot is now busy
 }
 
 bool anyDeferredStuck() {

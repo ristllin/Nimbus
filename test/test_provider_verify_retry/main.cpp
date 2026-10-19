@@ -375,6 +375,68 @@ static void test_probe_fetch_reads_the_body_and_stays_bounded() {
   TEST_ASSERT_EQUAL(0, down.closes);
 }
 
+
+// ---- row 43: re-arm on heap recovery, and the CUM-575 refresh retry ------------
+
+// A deferral re-arms on RECOVERY: once the resting largest block is back at the
+// floor, the retry is due on the next pump pass instead of minutes later on the
+// backoff clock - but not inside the 30 s gap after the deferral, not during a turn,
+// offline or busy, and only once per deferral.
+static void test_recovery_rearms_once_per_deferral() {
+  DeferralRetry r;
+  const uint32_t t0 = 1000;
+  TEST_ASSERT_FALSE(r.dueOnRecovery(t0, false, true, false, 20000, kFloor));   // nothing deferred
+  r.onDeferred(t0);
+  const uint32_t ok = t0 + DeferralRetry::kRecoverGapMs;
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok - 1, false, true, false, 20000, kFloor));   // inside the gap
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok, false, true, false, kFloor - 1, kFloor));  // still low
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok, true, true, false, 20000, kFloor));        // a turn
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok, false, false, false, 20000, kFloor));      // offline
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok, false, true, true, 20000, kFloor));        // busy
+  TEST_ASSERT_TRUE(r.dueOnRecovery(ok, false, true, false, kFloor, kFloor));
+  TEST_ASSERT_FALSE(r.due(ok, false, true, false));   // the backoff alone was not due yet
+  r.onRecoveryFired();
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok + 60000, false, true, false, 20000, kFloor));   // once
+  // A new low-memory deferral re-arms the recovery trigger; a verdict clears it all.
+  r.onDeferred(ok + 1000);
+  TEST_ASSERT_TRUE(r.dueOnRecovery(ok + 1000 + DeferralRetry::kRecoverGapMs, false, true, false, 20000, kFloor));
+  r.clear();
+  TEST_ASSERT_FALSE(r.dueOnRecovery(ok + 999999, false, true, false, 20000, kFloor));
+}
+
+// Absence of thrash: a resting block hovering at the floor for an hour (every pump
+// pass sees it recover, every attempt defers again at the spawn gate) gives at most
+// one attempt per 30 s gap, and the backoff never resets to its first step.
+static void test_hovering_heap_never_storms_verifies() {
+  DeferralRetry r;
+  uint32_t now = 0;
+  r.onDeferred(now);
+  int attempts = 0;
+  for (; now < 3600000u; now += 1000) {   // the pump's 1 s cadence
+    const uint32_t resting = (now / 1000) % 2 ? kFloor + 500 : kFloor - 500;
+    const bool rec = r.dueOnRecovery(now, false, true, false, resting, kFloor);
+    if (!rec && !r.due(now, false, true, false)) continue;
+    if (rec) r.onRecoveryFired();
+    ++attempts;
+    r.onDeferred(now);   // the attempt deferred again (low memory at the gate)
+  }
+  TEST_ASSERT_TRUE_MESSAGE(attempts <= 3600 / 30 + 1, "a hovering heap stormed the verify");
+  TEST_ASSERT_TRUE(attempts > 0);
+  TEST_ASSERT_EQUAL_UINT32(DeferralRetry::kMaxDelayMs, r.delayMs);   // backed off to the cap
+}
+
+// CUM-575: a low-memory deferral arms the retry for EVERY provider, a verified one
+// included (a verify is how the model list and router prices refresh, and that
+// refresh used to be dropped for good on a loaded device); the number for the badge
+// is stored only when the badge shows it (provider not verified).
+static void test_low_memory_defer_retries_verified_providers_too() {
+  using agent::provider_verify::onLowMemoryDefer;
+  TEST_ASSERT_TRUE(onLowMemoryDefer(true).armRetry);
+  TEST_ASSERT_TRUE(onLowMemoryDefer(false).armRetry);
+  TEST_ASSERT_FALSE(onLowMemoryDefer(true).storeNumber);
+  TEST_ASSERT_TRUE(onLowMemoryDefer(false).storeNumber);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_defer_reason_is_the_class_not_a_point);
@@ -390,5 +452,8 @@ int main() {
   RUN_TEST(test_probe_fetch_yields_to_a_turn_mid_body);
   RUN_TEST(test_probe_fetch_checks_right_after_the_connect);
   RUN_TEST(test_probe_fetch_reads_the_body_and_stays_bounded);
+  RUN_TEST(test_recovery_rearms_once_per_deferral);
+  RUN_TEST(test_hovering_heap_never_storms_verifies);
+  RUN_TEST(test_low_memory_defer_retries_verified_providers_too);
   return UNITY_END();
 }

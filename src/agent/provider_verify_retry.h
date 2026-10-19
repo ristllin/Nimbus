@@ -21,26 +21,38 @@ inline const char* deferReason(uint32_t max8, uint32_t floor) {
 // then hold at a 16 min cap (a few tries per hour), and a run of memory-sufficient
 // attempts clears it. RAM-only: a reboot resets the streak (the provider re-probes
 // on the next verify, harmless), the same trade the W3b capProbe timer makes.
+//
+// Row 43: a low-memory deferral also re-arms on heap RECOVERY. The gate input is the
+// resting largest block (the minimum of the last idle samples, heap_watch), so once
+// the device rests above the floor again the verify runs on the next pump pass rather
+// than up to 16 min later - at most once per kRecoverGapMs, so a block hovering at the
+// floor cannot turn into a verify storm.
 struct DeferralRetry {
-  static const uint32_t kFirstDelayMs = 120000u;   // 2 min - first retry after a defer
-  static const uint32_t kMaxDelayMs   = 960000u;   // 16 min - steady cap once backed off
+  static const uint32_t kFirstDelayMs  = 120000u;   // 2 min - first retry after a defer
+  static const uint32_t kMaxDelayMs    = 960000u;   // 16 min - steady cap once backed off
+  static const uint32_t kRecoverGapMs  = 30000u;    // at most one recovery retry per 30 s
 
   bool     armed     = false;   // a low-memory deferral is outstanding
+  bool     recovery  = false;   // the next heap recovery may fire a retry early
   uint32_t delayMs   = 0;       // current backoff step (0 until the first defer)
   uint32_t nextAtMs  = 0;       // earliest the next retry may fire
   uint32_t firstAtMs = 0;       // when this deferral streak began (drives the health line)
+  uint32_t lastAtMs  = 0;       // when the last deferral was recorded
 
-  // A verify came back low-memory-deferred at `now`: grow the backoff and re-arm.
+  // A verify came back low-memory-deferred at `now`: grow the backoff and re-arm
+  // (the backoff and the recovery trigger both).
   void onDeferred(uint32_t now) {
     if (!armed) firstAtMs = now;
     uint32_t next = delayMs ? delayMs * 2 : kFirstDelayMs;
     delayMs  = next > kMaxDelayMs ? kMaxDelayMs : next;
     nextAtMs = now + delayMs;
+    lastAtMs = now;
     armed    = true;
+    recovery = true;
   }
 
   // Memory was sufficient (or a definitive verdict landed): stop retrying.
-  void clear() { armed = false; delayMs = 0; nextAtMs = 0; firstAtMs = 0; }
+  void clear() { armed = false; recovery = false; delayMs = 0; nextAtMs = 0; firstAtMs = 0; lastAtMs = 0; }
 
   // Is a retry DUE now? Armed, past the backoff, and the device is free to run one:
   // never during a turn (the turn holds the TLS slot), never offline, never while a
@@ -50,12 +62,34 @@ struct DeferralRetry {
     return (int32_t)(now - nextAtMs) >= 0;
   }
 
+  // Due early because the heap recovered: the resting largest block is back at the
+  // gate's floor, at least kRecoverGapMs after the deferral, once per deferral.
+  bool dueOnRecovery(uint32_t now, bool inTurn, bool online, bool busy, uint32_t restingLargest,
+                     uint32_t floor) const {
+    if (!armed || !recovery || inTurn || !online || busy) return false;
+    return restingLargest >= floor && (uint32_t)(now - lastAtMs) >= kRecoverGapMs;
+  }
+  // The pump fired the recovery retry (a new deferral re-arms it).
+  void onRecoveryFired() { recovery = false; }
+
   // Has this deferral persisted past `windowMs` without clearing? (the Memory
   // health row says so once a provider is stuck this long).
   bool stuckFor(uint32_t now, uint32_t windowMs) const {
     return armed && (int32_t)(now - (firstAtMs + windowMs)) >= 0;
   }
 };
+
+// What a low-memory deferral does (CUM-575). The retry is armed for EVERY provider,
+// already-verified ones included: a verify is also how the model list and the router
+// prices are refreshed, and a refresh deferred on a loaded device used to be dropped
+// for good (the boot-time Cumulo price refill never landed). The displayed state of a
+// verified provider stays verified, so the low-memory number is stored (and shown)
+// only for a provider that is not.
+struct LowMemoryDefer {
+  bool armRetry;      // schedule the self-retry (backoff + heap recovery)
+  bool storeNumber;   // persist the measured block for the badge's hover text
+};
+inline LowMemoryDefer onLowMemoryDefer(bool wasVerified) { return {true, !wasVerified}; }
 
 // Router prices after an upgrade (per-model prices, 2026-10 bench): the Cumulo
 // router's per-model prices are harvested only by a Cumulo verify, so a device that
