@@ -13,22 +13,11 @@
 // exchange or serve, a failed allocation, or internal memory near its floor.
 namespace nimbus::sys {
 
-// Internal-SRAM floors below which a sample is forensic evidence (heap F1.5).
+// Internal-SRAM floors below which a sample is forensic evidence (heap F1.5). The
+// transport's heaptrace line is judged by nimbus::heapwatch::ExchangeTrace::abnormal()
+// (exchange_trace.h) on the same floors; test_crash_forensics asserts they agree.
 inline constexpr uint32_t kForensicMinFree = 12 * 1024;
 inline constexpr uint32_t kForensicMinLargest = 8 * 1024;
-
-// One transport exchange (the heaptrace line). Unknown samples stay at UINT32_MAX.
-struct TraceFacts {
-  bool fail = false;               // the exchange returned no response
-  uint32_t allocFails = 0;         // failed internal allocations during it (0 until counted)
-  uint32_t minFree = UINT32_MAX;   // lowest internal free sampled
-  uint32_t minLargest = UINT32_MAX;// lowest largest internal block sampled
-};
-bool traceAbnormal(const TraceFacts& t);
-// Fold one heap sample into the minimums. A (0, 0) sample is "not taken" (the
-// transport leaves the post-write sample unset when there was no body), never a real
-// reading: counting it would mark every body-less exchange abnormal.
-void noteTraceSample(TraceFacts& t, uint32_t free, uint32_t largest);
 
 // The per-round "headloop round=N tools=T heap=H intLargest=L [cap=...]" line from the
 // head loop. Routine (RAM ring only) unless the round was capped or memory was low.

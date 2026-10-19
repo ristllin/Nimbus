@@ -25,17 +25,6 @@ constexpr char kHeadloopPrefix[] = "headloop round=";
 
 }  // namespace
 
-bool traceAbnormal(const TraceFacts& t) {
-  return t.fail || t.allocFails > 0 || t.minFree < kForensicMinFree ||
-         t.minLargest < kForensicMinLargest;
-}
-
-void noteTraceSample(TraceFacts& t, uint32_t free, uint32_t largest) {
-  if (free == 0 && largest == 0) return;
-  if (free < t.minFree) t.minFree = free;
-  if (largest < t.minLargest) t.minLargest = largest;
-}
-
 bool parseHeadloopRound(const std::string& line, int& round) {
   if (line.compare(0, sizeof(kHeadloopPrefix) - 1, kHeadloopPrefix) != 0) return false;
   uint32_t r = 0;

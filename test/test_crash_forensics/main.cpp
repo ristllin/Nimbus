@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/crash_summary.h"
+#include "nimbus/exchange_trace.h"
 #include "nimbus/logring.h"
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
@@ -587,38 +588,54 @@ static void test_crash_notice_copy_for_every_kind() {
 
 // ---- the forensic window (rows 44, 57) ----------------------------------------------
 
+// The heaptrace level: the transport writes a trace to the durable log only when
+// ExchangeTrace::abnormal() says so (a failed stage, a failed allocation, or memory under
+// the forensic floors at any sampled phase or at the monitored minimum). Every stage x
+// failed-allocation count x free/largest at each of the four phases x monitored minimum.
+static_assert(nimbus::heapwatch::kTraceMinFree == kForensicMinFree, "one forensic floor (free)");
+static_assert(nimbus::heapwatch::kTraceMinLargest == kForensicMinLargest, "one forensic floor (largest)");
 static void test_trace_abnormal_grid() {
+  using nimbus::heapwatch::ExchangeTrace;
+  using nimbus::heapwatch::HeapSample;
+  using nimbus::heapwatch::Stage;
+  const Stage stages[] = {Stage::None, Stage::Connect, Stage::Head, Stage::Body,
+                          Stage::Read, Stage::Headers, Stage::Parse};
   const uint32_t frees[] = {0, kForensicMinFree - 1, kForensicMinFree, 40000, UINT32_MAX};
   const uint32_t largests[] = {0, kForensicMinLargest - 1, kForensicMinLargest, 20000, UINT32_MAX};
-  for (int fail = 0; fail < 2; ++fail)
+  const uint32_t monitored[] = {UINT32_MAX, kForensicMinFree - 1, kForensicMinFree};
+  const HeapSample healthy{40000, 20000};
+  for (Stage st : stages)
     for (uint32_t af = 0; af < 3; ++af)
-      for (uint32_t f : frees)
-        for (uint32_t l : largests) {
-          TraceFacts t;
-          t.fail = fail == 1;
-          t.allocFails = af;
-          t.minFree = f;
-          t.minLargest = l;
-          const bool want = fail || af > 0 || f < kForensicMinFree || l < kForensicMinLargest;
-          TEST_ASSERT_EQUAL(want, traceAbnormal(t));
-        }
+      for (int phase = 0; phase < 4; ++phase)
+        for (uint32_t f : frees)
+          for (uint32_t l : largests)
+            for (uint32_t mon : monitored) {
+              ExchangeTrace t;
+              t.fail = st;
+              t.af = af;
+              t.minFree = mon;
+              t.pre = t.conn = t.wrote = t.done = healthy;
+              HeapSample* at[] = {&t.pre, &t.conn, &t.wrote, &t.done};
+              *at[phase] = HeapSample{f, l};
+              const bool taken = f || l;   // (0, 0) is "not taken", never a reading
+              const bool want = st != Stage::None || af > 0 || mon < kForensicMinFree ||
+                                (taken && (f < kForensicMinFree || l < kForensicMinLargest));
+              TEST_ASSERT_EQUAL(want, t.abnormal());
+            }
 }
 
-// A body-less exchange leaves its post-write sample at (0, 0): folding the samples must
+// A body-less exchange leaves its post-write sample at (0, 0): the predicate must
 // ignore it, or every GET would read as abnormal and flood the durable log.
 static void test_trace_samples_ignore_the_unsampled_point() {
-  TraceFacts t;
-  noteTraceSample(t, 30000, 20000);   // pre
-  noteTraceSample(t, 26000, 15000);   // conn
-  noteTraceSample(t, 0, 0);           // wrote: no body
-  noteTraceSample(t, 29000, 19000);   // done
-  TEST_ASSERT_EQUAL_UINT(26000, t.minFree);
-  TEST_ASSERT_EQUAL_UINT(15000, t.minLargest);
-  TEST_ASSERT_FALSE(traceAbnormal(t));
-  noteTraceSample(t, 0, 7000);        // a real reading with nothing free is still counted
-  TEST_ASSERT_TRUE(traceAbnormal(t));
-  TraceFacts none;
-  TEST_ASSERT_FALSE(traceAbnormal(none));   // nothing sampled, not failed: not evidence
+  nimbus::heapwatch::ExchangeTrace t;
+  t.pre = {30000, 20000};
+  t.conn = {26000, 15000};
+  t.wrote = {0, 0};   // no body
+  t.done = {29000, 19000};
+  TEST_ASSERT_FALSE(t.abnormal());
+  t.done = {0, 7000};   // a real reading with nothing free is still counted
+  TEST_ASSERT_TRUE(t.abnormal());
+  TEST_ASSERT_FALSE(nimbus::heapwatch::ExchangeTrace().abnormal());   // nothing sampled, not failed
 }
 
 static void test_headloop_classification() {
