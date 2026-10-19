@@ -44,10 +44,6 @@ import pytest
 from device import Device, ExpectTimeout
 
 
-def _hil_agent(fn):
-    return pytest.mark.hil(pytest.mark.agent(fn))
-
-
 # A getUpdates page whose message asks the head to spawn, plus a directly
 # malformed session_ops shape (a non-array, the row-4 trigger) fed through the
 # normal receive path. Lane N's TGINJECT delivers it; lane L's normalizer must
@@ -128,7 +124,8 @@ def spawn_ready(device: Device, secrets) -> Device:
     return device
 
 
-@_hil_agent
+@pytest.mark.hil
+@pytest.mark.agent
 def test_malformed_session_ops_is_refused_not_dropped(spawn_ready: Device):
     dev = spawn_ready
     dev.drain(quiet=0.3)
@@ -137,7 +134,8 @@ def test_malformed_session_ops_is_refused_not_dropped(spawn_ready: Device):
     dev.expect_re(r"(session_ops|spawn).*(refus|invalid|could not|not an array)", timeout=60.0)
 
 
-@_hil_agent
+@pytest.mark.hil
+@pytest.mark.agent
 def test_claimed_equals_spawned_under_full_nvs(spawn_ready: Device):
     dev = spawn_ready
     dev.cmd_re("NVSFILL 400", r"NVSFILL\s+wrote=\d+", timeout=20.0)  # exhaust the partition
@@ -148,7 +146,8 @@ def test_claimed_equals_spawned_under_full_nvs(spawn_ready: Device):
     dev.cmd("NVSFILL 0", "NVSFILL cleared", timeout=15.0)
 
 
-@_hil_agent
+@pytest.mark.hil
+@pytest.mark.agent
 def test_reboot_mid_run_leaves_no_phantom_poll(spawn_ready: Device):
     dev = spawn_ready
     dev.drain(quiet=0.3)
