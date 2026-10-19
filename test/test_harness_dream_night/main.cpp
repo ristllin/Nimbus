@@ -353,13 +353,23 @@ static void test_memory_results_stay_with_their_chat() {
   // Consumed once.
   r.eng->handleMessage("again", "Roy", "1001");
   TEST_ASSERT_TRUE(r.inputsSeen[2].find("[MEMORY RESULTS]") == std::string::npos);
-  // Bounded: many chats parking results keep at most 8 slots, the newest included.
+  // Bounded by PARK ORDER, never by key order: 20 chats park results in turn; the
+  // 8 most recent keep theirs ("tg:10".."tg:19" sort before "tg:2".."tg:9" as
+  // strings), and a chat that parked first ("a", the smallest key) is evicted.
   r.outJson = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\",\"mem_query\":[\"q\"]}";
+  r.eng->handleMessage("x", "M", "a");
   for (int i = 0; i < 20; ++i) r.eng->handleMessage("x", "M", "tg:" + std::to_string(i));
   r.outJson = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
-  r.inputsSeen.clear();
-  r.eng->handleMessage("y", "M", "tg:19");
-  TEST_ASSERT_TRUE(r.inputsSeen[0].find("[MEMORY RESULTS]") != std::string::npos);
+  auto parked = [&r](const std::string& chat) {
+    r.inputsSeen.clear();
+    r.eng->handleMessage("y", "M", chat);
+    return r.inputsSeen[0].find("[MEMORY RESULTS]") != std::string::npos;
+  };
+  for (int i = 12; i < 20; ++i)
+    TEST_ASSERT_TRUE_MESSAGE(parked("tg:" + std::to_string(i)), ("tg:" + std::to_string(i)).c_str());
+  TEST_ASSERT_FALSE(parked("a"));
+  TEST_ASSERT_FALSE(parked("tg:3"));
+  TEST_ASSERT_FALSE(parked("tg:11"));
 }
 
 // ---- (5) the night pipeline with fake seams --------------------------------------
@@ -730,6 +740,16 @@ static void test_gate_starvation_bound() {
   dream::GateResult r = dream::evaluateGate(g, in);
   TEST_ASSERT_TRUE(r.deferSec > 0);
   TEST_ASSERT_EQUAL_STRING("low-heap", r.why);
+  // The row the device writes for a night the gate starved (it never fired).
+  dream::NightReport starved;
+  starved.outcome = dream::DreamOutcome::Starved;
+  starved.cause = "recent-turn";
+  starved.attempt = 12;
+  TEST_ASSERT_EQUAL_STRING("Nightly dream skipped tonight (device busy after 12 tries); "
+                           "maintenance not run tonight",
+                           dream::renderDreamRow(starved).c_str());
+  starved.cause = "low-heap";
+  TEST_ASSERT_TRUE(dream::renderDreamRow(starved).find("(low memory after") != std::string::npos);
   // The window and the next slot.
   TEST_ASSERT_EQUAL(420, dream::windowEndFor(210));
   TEST_ASSERT_EQUAL(1439, dream::windowEndFor(1400));

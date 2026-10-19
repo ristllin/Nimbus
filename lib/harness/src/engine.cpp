@@ -328,13 +328,33 @@ std::string TurnEngine::refusedBlock(const std::string& notes, bool mayHaveRun) 
          "have run on its provider - do NOT spawn it again unless the owner asks.)\n" + notes;
 }
 
+void TurnEngine::parkMemResults(const std::string& chatId) {
+  auto it = pendingMemResults_.find(chatId);
+  if (it == pendingMemResults_.end()) return;
+  if (it->second.body.empty()) {
+    pendingMemResults_.erase(it);
+    return;
+  }
+  it->second.seq = ++pendingMemSeq_;
+  // Bounded: a chat that never speaks again must not pin its parked results
+  // forever. The chat parked longest ago goes first (never by key order).
+  while (pendingMemResults_.size() > kPendingMemChats) {
+    auto victim = pendingMemResults_.end();
+    for (auto c = pendingMemResults_.begin(); c != pendingMemResults_.end(); ++c)
+      if (c->first != chatId && (victim == pendingMemResults_.end() || c->second.seq < victim->second.seq))
+        victim = c;
+    if (victim == pendingMemResults_.end()) break;
+    pendingMemResults_.erase(victim);
+  }
+}
+
 std::string TurnEngine::takePendingMemResults(const std::string& chatId) {
   // Per chat (lane M): the results belong to the chat (and so the principal) whose
   // turn ran the mem_query. An engine-global slot handed the owner's memory search
   // results to whichever chat spoke next - a member's or a guest's turn included.
   auto it = pendingMemResults_.find(chatId);
   if (it == pendingMemResults_.end()) return "";
-  const std::string body = std::move(it->second);
+  const std::string body = std::move(it->second.body);
   pendingMemResults_.erase(it);
   if (body.empty()) return "";
   // BACKGROUND framing (owner field bug 2026-07-16): this block used to lead the
@@ -1437,7 +1457,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.quietFallback       = quietTurn_;
   st.toolRepliedThisTurn = toolReplied_;
   st.riskNote            = riskNote_;
-  st.pendingMemResults   = &pendingMemResults_[chatId];   // this chat's next turn only
+  PendingMem& parked     = pendingMemResults_[chatId];   // this chat's next turn only
+  st.pendingMemResults   = &parked.body;
   st.unverifiedConnector = unverifiedTurn_;
   st.spawnAttempted      = pseudo->calls > 0;
   // Every spawn that does not start reaches the head's next turn as a
@@ -1453,13 +1474,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
   }
   agent::applyTurn(turn, chatId, d_.apply, st, spawned);
-  // Bounded: a chat that never speaks again must not pin its parked results forever.
-  if (pendingMemResults_[chatId].empty()) pendingMemResults_.erase(chatId);
-  while (pendingMemResults_.size() > kPendingMemChats) {
-    auto victim = pendingMemResults_.begin();
-    if (victim->first == chatId) ++victim;
-    pendingMemResults_.erase(victim);
-  }
+  parkMemResults(chatId);
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
   // Lane L: whether this turn put anything in front of the owner (the

@@ -609,6 +609,8 @@ std::string maintText(const NightReport& r) {
              r.maint.persisted ? "" : " (not saved)");
   else if (r.maintDoneToday)
     snprintf(b, sizeof b, "maintenance done earlier today");
+  else if (r.outcome == DreamOutcome::Starved)
+    snprintf(b, sizeof b, "maintenance not run tonight");   // the night never fired
   else
     snprintf(b, sizeof b, "maintenance skipped (clock not set)");
   return b;

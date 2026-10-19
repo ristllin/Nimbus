@@ -60,8 +60,9 @@ bool   setCloudPairing(const String& deviceId, const String& cred, const String&
                        const String& name);
 bool   clearCloudPairing();  // wipe id + credential + name (keeps the opt-in flag)
 
-String dreamScratchHash();   // fnv64-hex of the scratchpad after the last dream ("" = none)
-bool   setDreamScratchHash(const String& hex);
+// Legacy (read once to migrate into /data/dream.json; never written since v4.5.14):
+// fnv64-hex of the scratchpad after the last dream ("" = none).
+String dreamScratchHash();
 
 // custom / proxy endpoint (registered as backend "custom" when base non-empty)
 String customBase();

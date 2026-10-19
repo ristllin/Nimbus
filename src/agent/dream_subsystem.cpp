@@ -51,6 +51,22 @@ static uint8_t  g_defersTonight = 0;
 static uint32_t g_deferDay = 0;
 static bool     g_firing = false;        // the dream's own turn is running
 static std::string g_pendingAlert;       // sent at the next owner turn, never at night
+// A starved night's row, decided in the gate. The gate runs under the loops lock and
+// the timeline write takes the memory lock - the opposite order to loop.create (memory
+// lock, then loops lock) - so the row is written later, from tg_poll with no loops lock
+// held: at the next turn end or the next fire, whichever comes first.
+static bool        g_starvedPending = false;
+static NightReport g_starved;
+
+static void emitStarvedRow() {
+  if (!g_starvedPending) return;
+  g_starvedPending = false;
+  if (!g_hooks.onDreamEnd) return;
+  agent::DreamEndEv ev;
+  ev.cause = g_starved.cause;
+  ev.report = &g_starved;
+  g_hooks.onDreamEnd(ev);
+}
 
 // ---- dream state: /data/dream.json (LittleFS), never NVS -------------------------
 static const char* kStatePath = "/data/dream.json";
@@ -98,6 +114,7 @@ void begin(const agent::Hooks& hooks, AlertSink alert) {
 
 void noteTurnEnd(uint32_t nowMs) {
   g_lastTurnEndMs = nowMs ? nowMs : 1;
+  if (!g_firing) emitStarvedRow();
   // A failing streak is told when the owner is next around (any turn of theirs
   // ends), never by a 04:00 message.
   if (!g_firing && !g_pendingAlert.empty() && g_alert) {
@@ -122,17 +139,12 @@ uint32_t gateDefer(const orch::LoopRecord& l) {
   // The night window closed with the device still not idle: no reflection tonight,
   // said once in the timeline; the loop waits for tomorrow's slot.
   if (c.synced && c.minuteOfDay >= windowEndFor(l.sched.minuteOfDay)) {
-    NightReport rep;
-    rep.outcome = DreamOutcome::Starved;
-    rep.cause = r.why ? r.why : "busy";
-    rep.attempt = g_defersTonight;
-    if (g_hooks.onDreamEnd) {
-      agent::DreamEndEv ev;
-      ev.cause = rep.cause;
-      ev.report = &rep;
-      g_hooks.onDreamEnd(ev);
-    }
-    alogf("dream: skipped tonight (%s after %u defers)", rep.cause.c_str(),
+    g_starved = NightReport{};
+    g_starved.outcome = DreamOutcome::Starved;
+    g_starved.cause = r.why ? r.why : "busy";
+    g_starved.attempt = g_defersTonight;
+    g_starvedPending = true;   // written outside this lock (emitStarvedRow)
+    alogf("dream: skipped tonight (%s after %u defers)", g_starved.cause.c_str(),
           (unsigned)g_defersTonight);
     g_defersTonight = 0;
     return secondsToNextSlot(c, l.sched.minuteOfDay);
@@ -147,6 +159,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   // The reserved record's slot is fixed (03:30; loops are paused or resumed, never
   // rescheduled), so NightClock's default slot is the one the window counts from.
   const NightClock clock = nightClock();
+  emitStarvedRow();   // a previous night's starved row, if still unwritten
   if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
   g_defersTonight = 0;
 

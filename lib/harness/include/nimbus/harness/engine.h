@@ -348,6 +348,9 @@ class TurnEngine {
   bool telegramOn(const std::string& chatId) const;
   // This chat's parked [MEMORY RESULTS] block ("" when none), consumed.
   std::string takePendingMemResults(const std::string& chatId);
+  // After a turn: keep this chat's freshly parked results (stamped with the park
+  // order) or drop its empty slot, then evict the oldest parked chats past the cap.
+  void parkMemResults(const std::string& chatId);
   // CUM-538: this chat's "[SPAWN REFUSED]" block ("" when none).
   std::string takeSpawnNotes(const std::string& chatId);
   // The [SPAWN REFUSED] block around a chat's refusal lines.
@@ -430,7 +433,12 @@ class TurnEngine {
   // turn (deferred-result pattern). Keyed by chat id (lane M): an engine-global
   // slot leaked one principal's memory results into another chat's turn. At most
   // kPendingMemChats chats park results at once.
-  std::map<std::string, std::string> pendingMemResults_;
+  struct PendingMem {
+    std::string body;
+    uint32_t seq = 0;   // park order: the oldest parked chat is evicted first
+  };
+  std::map<std::string, PendingMem> pendingMemResults_;
+  uint32_t pendingMemSeq_ = 0;
   static constexpr size_t kPendingMemChats = 8;
   // A fallback switch recorded on the previous turn, surfaced to the model as a
   // one-line context note on the next turn (CUM-41). Consumed by buildDynamicContext,

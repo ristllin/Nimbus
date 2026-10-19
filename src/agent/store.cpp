@@ -161,7 +161,6 @@ String tavilyKey()    { return pcGet(&PSnap::tavilyKey); }
 String deviceTz()     { return getStrQuiet(AKEY_DEVICE_TZ, ""); }
 bool   setDeviceTz(const String& tz) { return putOrClear(AKEY_DEVICE_TZ, tz); }
 String dreamScratchHash() { return getStrQuiet(AKEY_DREAM_SCRATCH, ""); }
-bool   setDreamScratchHash(const String& hex) { return putOrClear(AKEY_DREAM_SCRATCH, hex); }
 bool   hasTavilyKey() { return tavilyKey().length() > 0; }
 
 // Per-device web/MCP auth token. Generated (96-bit hardware-random) on FIRST use and

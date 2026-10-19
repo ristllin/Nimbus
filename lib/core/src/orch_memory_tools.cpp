@@ -299,15 +299,21 @@ const char* applyWriteQuotas(const MemoryContext& ctx, const Principal& who,
 // memory.write did not insert: a duplicate (saying what it did about a pin,
 // so a "pinned" reply can be checked - only for the writer's own memory: another
 // namespace's pin state is not theirs to learn), or an entry of the wrong width.
+// Every duplicate answer extends one shared base sentence, and countWrite tells
+// a duplicate from a new entry by that same constant, so the reply and the
+// counter can never drift apart.
+const char kDuplicateWrite[] = "duplicate of an existing memory (importance bumped";
 ToolResult notInsertedResult(const VectorMemory& vec, bool askedPermanent) {
   if (!vec.lastAddWasDuplicate())
     return ToolResult::fail("the embedding has the wrong width for this store (memory not stored)");
+  std::string s = kDuplicateWrite;
   if (vec.lastDuplicateSameNs() && vec.lastDuplicatePinned())
-    return ToolResult::ok("duplicate of an existing memory (importance bumped; it is already pinned)");
-  if (vec.lastDuplicateSameNs() && askedPermanent)
-    return ToolResult::ok("duplicate of an existing memory (importance bumped; it is NOT pinned - "
-                          "use memory.pin to pin it)");
-  return ToolResult::ok("duplicate of an existing memory (importance bumped)");
+    s += "; it is already pinned)";
+  else if (vec.lastDuplicateSameNs() && askedPermanent)
+    s += "; it is NOT pinned - use memory.pin to pin it)";
+  else
+    s += ")";
+  return ToolResult::ok(s);
 }
 
 ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
@@ -882,7 +888,7 @@ ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
 static ToolResult countWrite(MemOpCounters* ops, ToolResult r) {
   if (!ops) return r;
   if (!r.success) ops->failed++;
-  else if (r.output.rfind("duplicate", 0) == 0) ops->dupSkipped++;
+  else if (r.output.rfind(kDuplicateWrite, 0) == 0) ops->dupSkipped++;
   else ops->added++;
   return r;
 }
