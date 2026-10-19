@@ -1155,12 +1155,14 @@ void dispatch(String line) {
     String before;
     if (rest.startsWith("@")) {            // "@<cursor> <text>"
       int sp = rest.indexOf(' ');
-      if (sp < 0) { reply("ERR usage: EPIQ [@<cursor>] <text>"); return; }
+      if (sp < 0) { reply("ERR usage: EPIQ [@<cursor>] [--full] <text>"); return; }
       before = rest.substring(1, sp);
       rest = rest.substring(sp + 1); rest.trim();
     }
-    if (!rest.length()) { reply("ERR usage: EPIQ [@<cursor>] <text>"); return; }
-    reply(s_h.epiQuery ? s_h.epiQuery(before, rest) : String("ERR epiq unavailable"));
+    const bool full = rest.startsWith("--full ");   // whole rows, not 48-byte previews
+    if (full) { rest = rest.substring(7); rest.trim(); }
+    if (!rest.length()) { reply("ERR usage: EPIQ [@<cursor>] [--full] <text>"); return; }
+    reply(s_h.epiQuery ? s_h.epiQuery(before, rest, full) : String("ERR epiq unavailable"));
     return;
   }
   if (line == "DREAM") {

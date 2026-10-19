@@ -23,6 +23,9 @@ needs a counted provider fault on the device (fail requests 2.. of one host); th
 test build has no such verb yet, so it is proven live in tools/harness-lab
 (``metering-switch``) and listed as a follow-up.
 
+Both legs read history rows with the console's ``EPIQ --full`` (whole rows; the
+default 48-character preview cannot show a cause or a turn-end row's later fields).
+
 Environment: NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (``WEBTOK?``) for the LAN reads.
 """
 
@@ -30,9 +33,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 import pytest
 
+from device import ExpectTimeout
 from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = pytest.mark.hil
@@ -61,10 +67,74 @@ def _nvs(device) -> dict:
     return {k: int(v) for k, v in m.groupdict().items()}
 
 
-def _epiq(device, text: str) -> str:
-    """EPIQ <text>: up to three matching history rows (newest first), as one reply."""
-    device.send(f"EPIQ {text}")
-    return device.expect("EPIQ", timeout=8.0)
+# ---- EPIQ replies (host-tested in test_turn_record_bench_host.py) ----------------
+# The console answers ``EPIQ rows=<n> ...`` and then one line per row,
+# ``  <id> <text>``: a 48-character preview, or the whole row with ``--full``.
+# device.expect() returns only the summary line, so the rows are read after it.
+EPIQ_PREVIEW_CHARS = 48
+_EPIQ_SUMMARY = re.compile(r"EPIQ rows=(\d+)")
+_EPIQ_ROW = re.compile(r"^(m[0-9a-fA-F]+) (.*)$")
+EPIQ_ROW_WAIT_S = 3.0  # bounded wait for the row lines after the summary
+
+
+def epiq_rows_from_lines(lines: Iterable[str]) -> List[Tuple[str, str]]:
+    """The rows of one EPIQ reply: its summary line, then as many row lines as the
+    summary counts, skipping log lines that interleave. Never reads past the last
+    row, so a live line source is not waited on for nothing."""
+    it = iter(lines)
+    count: Optional[int] = None
+    for line in it:
+        m = _EPIQ_SUMMARY.search(line)
+        if m:
+            count = int(m.group(1))
+            break
+    if count is None:
+        raise AssertionError("no 'EPIQ rows=' summary line in the reply")
+    rows: List[Tuple[str, str]] = []
+    while len(rows) < count:
+        line = next(it, None)
+        if line is None:
+            break
+        r = _EPIQ_ROW.match(line.strip())
+        if r:
+            rows.append((r.group(1), r.group(2)))
+    return rows
+
+
+def find_row(rows: List[Tuple[str, str]], needle: str) -> str:
+    """The first row text holding ``needle``; fails with the reason when none does,
+    naming a 48-character preview (an image without ``EPIQ --full``) when the text
+    sits past what the preview shows."""
+    for _, text in rows:
+        if needle in text:
+            return text
+    previews = [t for _, t in rows if len(t) == EPIQ_PREVIEW_CHARS]
+    if previews:
+        raise AssertionError(
+            f"no row holds {needle!r}: the rows are {EPIQ_PREVIEW_CHARS}-character previews "
+            f"(this image has no EPIQ --full), so the text is unreachable: {previews}"
+        )
+    raise AssertionError(f"no row holds {needle!r}: {rows}")
+
+
+def _epiq_lines(device, query: str, timeout: float) -> Iterator[str]:
+    device.drain(quiet=0.2)
+    device.send(f"EPIQ --full {query}")
+    yield device.expect("EPIQ rows=", timeout=timeout)
+    deadline = time.time() + EPIQ_ROW_WAIT_S
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            return
+        try:
+            yield device.expect_re(r"^m[0-9a-fA-F]+ ", timeout=left).string
+        except ExpectTimeout:
+            return
+
+
+def _epiq(device, query: str) -> List[Tuple[str, str]]:
+    """EPIQ --full <query>: up to three matching history rows (newest first), whole."""
+    return epiq_rows_from_lines(_epiq_lines(device, query, timeout=8.0))
 
 
 def _mcp(session, ip: str, tool: str, args: dict) -> str:
@@ -97,19 +167,17 @@ def test_b1_failure_provenance(device):
     if "ok=1" in fired:
         pytest.skip("the dream succeeded on another provider: restrict the unit to the faulted provider")
 
-    err = _epiq(device, "Turn FAILED")
+    err = find_row(_epiq(device, "Turn FAILED"), "Turn FAILED")
     assert FIRST_CAUSE in err, f"ev:error lacks the first cause: {err[:300]}"
     assert "(dream)" in err, f"ev:error does not say whose turn failed: {err[:300]}"
 
-    dream = _epiq(device, "Nightly dream FAILED")
+    dream = find_row(_epiq(device, "Nightly dream FAILED"), "Nightly dream FAILED")
     assert FIRST_CAUSE[:20] in dream or "anthropic" in dream, f"ev:dream lacks the cause: {dream[:300]}"
     assert "spent" in dream, f"ev:dream spend is not labelled: {dream[:300]}"
 
-    end = _epiq(device, '"src":"dream"')
-    rows = re.findall(r"\{[^{}]*\"src\":\"dream\"[^{}]*(?:\[[^\]]*\][^{}]*)*\}", end)
-    assert rows, f"no turn-end row for the dream: {end[:300]}"
-    assert len(rows[0].encode()) <= TURN_END_ROW_MAX, f"turn-end row over {TURN_END_ROW_MAX} B"
-    assert '"ok":false' in rows[0] and "anthropic" in rows[0], f"turn-end row lacks the cause: {rows[0]}"
+    end = find_row(_epiq(device, '"src":"dream"'), '"src":"dream"')
+    assert len(end.encode()) <= TURN_END_ROW_MAX, f"turn-end row over {TURN_END_ROW_MAX} B: {end}"
+    assert '"ok":false' in end and "anthropic" in end, f"turn-end row lacks the cause: {end}"
 
     loops = s.get(f"http://{ip}/api/loops", timeout=10).json()
     items = loops if isinstance(loops, list) else loops.get("loops", [])
@@ -143,8 +211,8 @@ def test_b2_full_nvs_turn(device):
         assert after["fail"] - filled["fail"] <= 1, (
             f"more than one failed settings write for one turn: {filled} -> {after}"
         )
-        end = _epiq(device, '"src":"serial"')
-        assert '"src":"serial"' in end, f"no turn-end row for the turn: {end[:300]}"
+        end = find_row(_epiq(device, '"src":"serial"'), '"src":"serial"')
+        assert len(end.encode()) <= TURN_END_ROW_MAX, f"turn-end row over {TURN_END_ROW_MAX} B: {end}"
     finally:
         device.send("NVSFILL 0")
         device.expect("NVSFILL cleared", timeout=60.0)

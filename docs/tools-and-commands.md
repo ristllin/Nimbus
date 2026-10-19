@@ -234,7 +234,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `STTKEY placeholder` / `STTKEY off` | Test image only: a memory-only placeholder speech-to-text key so hold-to-talk can be exercised on a board with no key. Never saved; a provider answers it with HTTP 401. |
 | `PROMPT?` | Dump the last composed system prompt. |
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
-| `EPIQ [@<cursor>] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. |
+| `EPIQ [@<cursor>] [--full] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. Each row prints as a 48-byte preview, or whole (up to 1024 bytes) with `--full`. |
 | `DREAM` | Fire the reserved maintenance-and-reflection loop immediately. |
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days); report what it removed, or that it waited for a turn or a busy card. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |

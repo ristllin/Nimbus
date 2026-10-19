@@ -4039,7 +4039,7 @@ void setup() {
       else return String("ERR memfill kind: epi|vec");
       return String("MEMFILL ") + kind + " added=" + added;
     };
-    h.epiQuery = [](const String& before, const String& text) -> String {    // EPIQ
+    h.epiQuery = [](const String& before, const String& text, bool full) -> String {    // EPIQ
       if (!g_orchMode) return String("ERR epiq: Orchestrator mode only");
       nimbus::orch::MsgQuery q;
       q.textContains = std::string(text.c_str());
@@ -4057,9 +4057,17 @@ void setup() {
                    " files=" + qi.coldFiles + " bytes=" + (unsigned long)qi.coldBytes +
                    " older=" + (qi.olderExists ? 1 : 0) +
                    " next=" + (qi.nextBefore.empty() ? "-" : qi.nextBefore.c_str());
-      for (const auto& m : rows)
-        out += String("\n  ") + m.id.c_str() + " " +
-               m.text.substr(0, 48).c_str();
+      // A 48-byte preview per row by default. `--full` prints each row whole on its
+      // own line (line breaks as spaces, at most 1024 bytes): a bench leg reads a
+      // turn-end row (at most 256 B) or a cause that sits past the preview.
+      constexpr size_t kEpiqFullMax = 1024;
+      for (const auto& m : rows) {
+        std::string t = full ? m.text.substr(0, kEpiqFullMax) : m.text.substr(0, 48);
+        for (char& c : t) if (c == '\n' || c == '\r') c = ' ';
+        if (full && m.text.size() > kEpiqFullMax)
+          t += "...[+" + std::to_string(m.text.size() - kEpiqFullMax) + " B]";
+        out += String("\n  ") + m.id.c_str() + " " + t.c_str();
+      }
       return out;
     };
     h.battReset = [] () -> String {                                          // BATTRESET

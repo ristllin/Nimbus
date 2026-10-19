@@ -179,10 +179,11 @@ struct Hooks {
   std::function<String(const String& chat)>              ctxInfo;
   std::function<String(const String& chat)>              compactNow;
   std::function<String(const String& kind, int n, int bytes)> memFill;
-  // EPIQ [before] <text> - one COLD episodic query (deep history), timed. Runs
-  // here rather than on the web task so the measurement is of the card, not of
-  // AsyncTCP, and so a HIL check of the cold path has a non-web route.
-  std::function<String(const String& before, const String& text)> epiQuery;
+  // EPIQ [before] [--full] <text> - one COLD episodic query (deep history), timed.
+  // Runs here rather than on the web task so the measurement is of the card, not of
+  // AsyncTCP, and so a HIL check of the cold path has a non-web route. `full`
+  // prints each row whole instead of its 48-byte preview (bench row checks).
+  std::function<String(const String& before, const String& text, bool full)> epiQuery;
   // VOICE? (CUM-456 bench seam): the hold-to-talk flow state + the release timings
   // the on-device check asserts - release -> first repaint and release -> the
   // speech-to-text call (0 = never started, the offline fast-fail).
