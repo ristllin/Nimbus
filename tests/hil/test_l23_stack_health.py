@@ -108,6 +108,8 @@ def test_async_stack_runtime_headroom(device, net, secrets, require_secret):
 # 41): OTA and photo turns leave pollStackMin at or above the text-turn baseline less
 # 512 B (a looser floor such as 2 KB would hide a 4.9 KB regression).
 PHOTO_STACK_SLACK = 512
+# The device's line once an inbound photo is on the card (telegram.cpp handleAttachment).
+PHOTO_DOWNLOADED = r"telegram: attachment downloaded (\d+) bytes"
 PHOTO_PROMPT = (
     "Describe this photo, then use memory_search for 'tea' and then for 'car seat', then answer in one sentence."
 )
@@ -247,8 +249,18 @@ def test_photo_turn_keeps_tg_poll_headroom(device):
         ],
     }
     line = device.cmd(f"TGINJECT {json.dumps(page, separators=(',', ':'))}", "TGINJECT", timeout=10)
-    if "not wired" in line or "injected=0" in line:
+    if "not wired" in line:
         pytest.skip(f"this build's TGINJECT does not dispatch photo updates yet: {line}")
+    # The photo turn runs only after the photo is downloaded; without that line the leg
+    # measured nothing (19 Oct, unit A: no Telegram token, so a real file id cannot be
+    # fetched), and that is a skip, never a pass.
+    try:
+        device.expect_re(PHOTO_DOWNLOADED, timeout=90)
+    except Exception:  # noqa: BLE001 - ExpectTimeout: no download, no photo turn
+        pytest.skip(
+            "the injected photo was never downloaded, so no photo turn ran: the leg needs a Telegram "
+            "token for a real file id, or a LOCAL_ file id put on the card with FSPUT (not a pass)"
+        )
     deadline = time.time() + 240
     while time.time() < deadline:
         time.sleep(5)
@@ -296,3 +308,14 @@ def test_ota_check_keeps_tg_poll_headroom(device):
         f"the update check took tg_poll {base - after} B deeper than the text-turn baseline "
         f"({after} B free vs {base} B): over the {PHOTO_STACK_SLACK} B budget (row 41)"
     )
+
+
+def test_photo_leg_waits_for_the_device_download_line():
+    """The photo leg's proof that a photo turn ran is the device's download line; the
+    line must still be logged with that text, or the leg would skip forever."""
+    src = (_REPO / "src" / "agent" / "telegram.cpp").read_text()
+    m = re.search(r'alogf\("(telegram: attachment downloaded %u bytes)"', src)
+    assert m, "telegram.cpp no longer logs the attachment download line the photo leg waits for"
+    assert re.search(PHOTO_DOWNLOADED, m.group(1).replace("%u", "48213"))
+    # Counter-check: the 19 Oct unit A transcript (no token) never shows it.
+    assert not re.search(PHOTO_DOWNLOADED, "[agent] telegram: injected page: 0 messages batched into 0 turns")
