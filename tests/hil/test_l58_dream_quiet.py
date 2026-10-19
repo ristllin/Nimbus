@@ -161,7 +161,9 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
     newest = rows[-1]
     assert newest.startswith("Nightly dream FAILED ("), newest
     assert "memories stored" in newest and "failed)" in newest, newest  # the counts
-    assert "retry 2 of 3 at" in newest or "no retry tonight" in newest, newest
+    # A retry only inside the 03:30-07:00 window and while tries remain that local day
+    # (earlier drills count); a daytime drill says "no retry tonight".
+    assert re.search(r"retry [23] of 3 at|no retry tonight", newest), newest
     assert "state not saved" not in newest, newest
 
 
