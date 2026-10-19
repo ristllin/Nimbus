@@ -62,6 +62,11 @@ this pairing, keeps cloud access on) or **Turn off** (disables cloud access).
   connect; switch modes to use it.
 - One request is served at a time over the tunnel, which is ample for a single owner
   viewing the device UI.
+- While the device is answering a message, a large page (the full web app, a file
+  download) waits for the reply's network calls, or the device asks the web app to
+  try again shortly: the page shows "Your Nimbus is busy right now" and reloads on its
+  own once the device is free. Small requests, like the app's status updates, are never
+  held back.
 - If the connection to the relay is interrupted, the device notices on its own within a
   few seconds and reconnects, so remote access recovers without a restart. While it
   reconnects, the web app shows a brief "Reaching your Nimbus" page and loads the device

@@ -29,7 +29,10 @@ namespace nimbus::fault {
 // / api.mistral.ai ONLY - Telegram and other hosts stay up, so the alerts a
 // failure path emits still deliver). This is the seam the 2026-08-11 field bug
 // class (provider outage -> fold retry/notice behavior) is tested through.
-enum Cap : uint8_t { SD = 0, MEMORY, MIC, SPEAKER, LED, SCREEN, SD_IO, PROVIDER, COUNT };
+// RELAY_NOSLOT = "the cloud relay serves like v4.5.13": no TLS work slot for its dial
+// and big frames, and no busy answer for a big tunneled page during a turn. The
+// counter-leg of the concurrent-TLS bench test (it must reproduce the overlap).
+enum Cap : uint8_t { SD = 0, MEMORY, MIC, SPEAKER, LED, SCREEN, SD_IO, PROVIDER, RELAY_NOSLOT, COUNT };
 
 bool        active(Cap c);                    // is this capability currently faulted?
 void        set(Cap c, bool faulted);         // inject (true) / clear (false) one capability

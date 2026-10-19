@@ -19,6 +19,7 @@
 #include "agent_config.h"
 #include "store.h"
 #include "../sys/agent_log.h"
+#include "../sys/heap_watch.h"   // activity tag: Telegram downloads
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #include "adapters/image_vision.h"   // a photo enters the conversation as words
@@ -1346,12 +1347,15 @@ static void handleVoice() {
     return;
   }
 
+  // 1) + 2) getFile and the download (fetchVoiceNote), tagged for the low-water ladder.
+  nimbus::heapwatch::Scope downloading(nimbus::heapwatch::kTgDownload);
   const char* localPath = "/audio/tgvoice.ogg";
   size_t total = 0;
   if (!fetchVoiceNote(v, localPath, total)) return;
   alogf("telegram: voice downloaded %u bytes", (unsigned)total);
   if (total == 0) { sendNow(v.chatId, "Voice note was empty."); return; }
 
+  downloading.end();
   // 3) STT via the injected sink, then route the transcript like a text message.
   //    BENCH-BROKEN here: no sink is installed on the bench (broken audio + no
   //    Mistral key), so this path is compile-verified only, never run live.
@@ -1424,6 +1428,8 @@ static void handleAttachment() {
     return;
   }
 
+  // 1) + 2) getFile and the download (fetchAttachment), tagged for the low-water ladder.
+  nimbus::heapwatch::Scope downloading(nimbus::heapwatch::kTgDownload);
   const char* localPath = "/audio/tgattach.bin";
   size_t total = 0;
   if (!fetchAttachment(a, localPath, total)) return;
@@ -1437,6 +1443,7 @@ static void handleAttachment() {
     return;
   }
 
+  downloading.end();
   // 3) A photo becomes a description; a document becomes a note that it arrived.
   //    Vision is best-effort: if no provider can look at it, the photo is still
   //    kept and acknowledged - the conversation just does not gain a description.
@@ -1982,6 +1989,7 @@ bool isOwner(const String& chatId) {
 // web task has written them). Applied within one poll cycle - no reboot.
 void reloadAllowlist() { s_allowReload = true; }
 uint32_t pollStackMinFree() { return g_pollStackMinFree; }
+bool pollEverOk() { return g_polledOk; }
 
 // Approve a pending sender: append to the allowlist NVS (+ display name), drop it
 // from the pending ring, and hot-reload. Idempotent.

@@ -5,9 +5,10 @@
 // relay_timing - the PURE, host-tested timing contract for the cloud relay
 // (CUM-160). No Arduino, no TLS.
 //
-// The device serializes every outbound TLS through a SINGLE work slot
+// The device serializes every outbound work TLS through a SINGLE work slot
 // (src/sys/tls_arbiter.cpp - a frozen invariant: one slot, no on-device
-// concurrency). A real relay/Cloudflare connect legitimately takes many seconds
+// concurrency); the relay's dial and its big response frames take it too
+// (relay_slot.h), only its heartbeats and small frames ride the open session. A real relay/Cloudflare connect legitimately takes many seconds
 // (12s+ observed) - that is latency, NOT a hang, and aborting it early just prevents
 // the device from ever reconnecting (a field regression). The relay task is NOT
 // watchdog-subscribed, so its blocking connect does not itself trip the 8s watchdog.

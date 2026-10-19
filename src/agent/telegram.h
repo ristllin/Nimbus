@@ -122,6 +122,7 @@ void   reloadAllowlist();                      // re-read allowlist + owners + p
 // /api/state (mem.pollStackMin) so a stack creeping toward a canary overflow (the
 // recurring crash(panic)) is visible before it happens.
 uint32_t pollStackMinFree();
+bool   pollEverOk();   // a getUpdates poll has succeeded since boot (the relay's first dial waits on it)
 bool   approvePending(const String& chatId, const String& name);  // allow + drop from pending
 void   denyPending(const String& chatId);      // drop from pending (session tombstone)
 // Enqueue a reply for the poll task to deliver. Blocks up to 100 ms when the

@@ -14,24 +14,29 @@
 #include <vector>
 
 #include "../agent/agent_config.h"
+#include "../agent/orchestrator.h"   // turnInFlight: big tunneled answers wait for the turn
 #include "../agent/store.h"
+#include "../agent/telegram.h"       // pollEverOk: the first dial waits for Telegram's first poll
 #include "../sys/agent_log.h"     // alog
 #include "../sys/config_nvs.h"    // nimbus::sys::deviceName
 #include "../sys/net_util.h"      // CA bundle symbols + tlsClose
 #include "../sys/ps_json.h"       // agent::PsramJsonAllocator
-#include "../sys/tls_arbiter.h"   // pairing HTTP takes the work slot
+#include "../sys/heap_watch.h"    // activity tags (relay dial, bulk write, tunnel serve)
+#include "../sys/tls_arbiter.h"   // pairing, the dial and big frames take the work slot
 #include "nimbus/cloud/http_replay.h"
 #include "nimbus/cloud/relay_codec.h"
 #include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
 #include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
 #include "nimbus/cloud/loopback_target.h"     // CUM-173: never dial 0.0.0.0 for the loopback fallback
-#include "nimbus/cloud/relay_heap.h"          // CUM-167: heap-floor policy (host-tested, bounce-buffer aware)
+#include "nimbus/cloud/relay_heap.h"          // CUM-167: heap-floor policy; the big-answer serve decision
+#include "nimbus/cloud/relay_slot.h"          // heap F2: the dial and big frames through the TLS work slot
 #include "nimbus/cloud/relay_liveness.h"      // CUM-191: steady-state heartbeat-ack liveness (host-tested)
 #include "nimbus/cloud/relay_presence.h"      // CUM-182: hello-ack-gated, identity-bound presence
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/ws_write.h"            // CUM-182: host-tested whole-frame write driver
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "nimbus/cloud/upload_reassembly.h"   // chunked tunnel upload state machine (host-tested)
+#include "nimbus/fault.h"                     // RELAY_NOSLOT: the bench counter-leg (test builds)
 #include "version.h"
 
 namespace nimbus {
@@ -106,6 +111,41 @@ volatile bool g_reqUnpair = false;
 // --- resident WS socket + parser (task-owned) --------------------------------
 WiFiClientSecure* g_ws = nullptr;
 uint32_t g_heartbeatMs = kDefaultHeartbeatMs;
+
+// --- the online session's pump state (task-owned) ------------------------------
+// Shared by the online loop and a big answer's wait for the TLS work slot: while a
+// big answer waits, the socket is still read, pings answered and heartbeats sent,
+// and a request that arrives meanwhile is deferred (a request is never served inside
+// another one), then served in arrival order by the online loop.
+struct OnlineSession {
+  ws::Parser* parser = nullptr;
+  const char* deviceId = nullptr;
+  bool welcomed = false;
+  bool ended = false;          // a frame, the socket or a broken write ended the session
+  uint16_t closeCode = 0;
+  nimbus::cloud::HeartbeatLiveness live;
+  bool armed = false;
+  uint32_t lastInbound = 0;
+};
+OnlineSession g_on;
+
+struct DeferredMsg {
+  ws::Message m;
+  uint32_t atMs = 0;   // when it arrived (the cloud's 30 s bound runs from then)
+};
+constexpr size_t kMaxDeferred = 8;
+DeferredMsg g_deferred[kMaxDeferred];
+size_t g_defHead = 0, g_defCount = 0;
+
+// Internal close code for "the dial could not get the TLS work slot": not a WebSocket
+// close code, never sent; the task just tries again shortly.
+constexpr uint16_t kSlotBusyClose = 1;
+
+// The bench counter-leg (FAULT relay_noslot, test builds only): serve like v4.5.13.
+bool relayNoSlot() { return nimbus::fault::active(nimbus::fault::RELAY_NOSLOT); }
+
+bool pumpWhileWaiting();
+void emitBusy(const char* id, uint32_t retryAfterS);
 
 void setState(State s) {
   bool clearedOnline = false;
@@ -274,19 +314,22 @@ bool doLoopback(const std::string& method, const std::string& path,
 // so the frame is never truncated on the wire. Loops until the whole buffer is
 // out, the socket dies, or kResWriteTimeoutMs elapses. The relay task is not
 // watchdog-subscribed, so the bounded retry-yield here cannot starve the WDT.
-bool wsWriteAll(const uint8_t* data, size_t len) {
+bool wsWriteRange(const uint8_t* data, size_t len, uint32_t deadline) {
   if (!g_ws) return false;
   // Bounded chunks: handing mbedtls a single ~370 KB buffer is exactly what
   // returned short before; 8 KB records drain reliably as the TLS/socket buffer
   // frees, and a partial return just resumes at the sent offset. The loop lives
   // in lib/core (drainAll) so it is host-tested.
-  const uint32_t deadline = millis() + kResWriteTimeoutMs;
   return nimbus::cloud::drainAll(
       len, 8192,
       [&](size_t off, size_t want) -> size_t { return g_ws->write(data + off, want); },
       [&]() -> bool { return g_ws && g_ws->connected(); },
       [&]() -> bool { return (int32_t)(deadline - millis()) <= 0; },
       []() { vTaskDelay(pdMS_TO_TICKS(5)); });  // WANT_WRITE / full buffer: yield, then retry
+}
+
+bool wsWriteAll(const uint8_t* data, size_t len) {
+  return wsWriteRange(data, len, millis() + kResWriteTimeoutMs);
 }
 
 bool wsSendSmall(ws::Opcode op, const uint8_t* payload, size_t len) {
@@ -341,12 +384,96 @@ bool replayReq(const ReqFrame& req, http_replay::ResponseParser& rp) {
   return doLoopback(req.method, req.path, hdrs, body.data(), body.size(), rp);
 }
 
+// How a frame's write ended. Busy/Ended/Broken only come from a big frame's write
+// through the TLS work slot (writeBigFrame); Failed is a small frame that did not leave.
+enum class BigFrame : uint8_t { Sent, Failed, Busy, Ended, Broken };
+
+// Write one big frame through the TLS work slot (heap F2): wait for the slot in short
+// takes with the WebSocket pumped between, bounded so the request gets a busy answer
+// kRelayBusyAfterMs after it arrived; then 8 KB chunks, each under the slot, which is
+// released between chunks so a waiting turn gets it within one chunk (tg_poll
+// outranks the relay task, so it takes the slot the moment it is given back). Never
+// called across the loopback replay: a tunneled handler can take the slot itself.
+BigFrame writeBigFrame(const uint8_t* frame, size_t len, size_t bodyLen, uint32_t reqAtMs) {
+  using namespace nimbus::cloud;
+  const uint32_t t0 = millis();
+  const SlotWait w = waitForSlot(
+      reqAtMs + kRelayBusyAfterMs, [] { return (uint32_t)millis(); },
+      [](uint32_t ms) { return agent::arbiter::acquireWork(ms); }, [] { return pumpWhileWaiting(); });
+  if (w == SlotWait::Busy) return BigFrame::Busy;
+  if (w == SlotWait::Ended) return BigFrame::Ended;
+  nimbus::heapwatch::Scope bulk(nimbus::heapwatch::kRelayBulk);
+  const uint32_t deadline = reqAtMs + kRelayResBudgetMs;
+  const uint32_t at = millis();
+  uint32_t waited = at - t0;   // before the first chunk, then between chunks
+  const BulkResult r = writeBulk(
+      len, deadline,
+      [&waited](uint32_t dl) {   // mid-frame nothing else may go out, so this wait only waits
+        const uint32_t w0 = millis();
+        bool got = false;
+        for (int32_t left = (int32_t)(dl - millis()); left > 0 && !got; left = (int32_t)(dl - millis()))
+          got = agent::arbiter::acquireWork(std::min<uint32_t>(kRelaySlotTakeMs, (uint32_t)left));
+        waited += millis() - w0;
+        return got;
+      },
+      [] { agent::arbiter::releaseWork(); },
+      [&](size_t off, size_t n) {
+        nimbus::heapwatch::tlsIoBegin("relay.bulk");
+        const bool ok = wsWriteRange(frame + off, n, deadline);
+        nimbus::heapwatch::tlsIoEnd();
+        return ok;
+      },
+      [] { vTaskDelay(1); });
+  if (r != BulkResult::Sent) return BigFrame::Broken;
+  // One line per big frame: when it went out and how long it waited for the slot
+  // (before and between chunks), so a bench run can line it up with the turn's
+  // exchanges (transport heaptrace at=/ms=).
+  agent::alogf("relay: bulk res body=%u frame=%u at=%u ms=%u waited=%u", (unsigned)bodyLen,
+               (unsigned)len, (unsigned)at, (unsigned)(millis() - at), (unsigned)waited);
+  return BigFrame::Sent;
+}
+
+// Send one built frame: a small one straight out, a big one through the TLS work slot
+// (or, on the bench counter-leg, straight out as v4.5.13 did).
+BigFrame sendFrame(const uint8_t* frame, size_t len, size_t bodyLen, uint32_t reqAtMs) {
+  if (!nimbus::cloud::frameNeedsSlot(len)) return wsWriteAll(frame, len) ? BigFrame::Sent : BigFrame::Failed;
+  if (!relayNoSlot()) return writeBigFrame(frame, len, bodyLen, reqAtMs);
+  nimbus::heapwatch::tlsIoBegin("relay.bulk");
+  const bool ok = wsWriteAll(frame, len);
+  nimbus::heapwatch::tlsIoEnd();
+  return ok ? BigFrame::Sent : BigFrame::Failed;
+}
+
+// After a frame went (or did not go) out: a busy wait gets the busy answer instead, a
+// session that ended while waiting gets nothing, a frame cut mid-write ends the
+// session (the stream is unusable; the task redials and the cloud page retries).
+// Returns false when there is nothing more to log for this answer.
+bool settleFrame(BigFrame out, const char* id, int status, size_t bodyLen, uint32_t reqAtMs) {
+  if (out == BigFrame::Busy) {
+    agent::alogf("relay: res %d body=%u waited %ums for the TLS slot -> busy", status,
+                 (unsigned)bodyLen, (unsigned)(millis() - reqAtMs));
+    emitBusy(id, nimbus::cloud::kBusyRetrySlotS);
+    return false;
+  }
+  if (out == BigFrame::Ended) return false;
+  if (out == BigFrame::Broken) {
+    agent::alogf("relay: res %d body=%u cut mid-write - ending the session", status,
+                 (unsigned)bodyLen);
+    if (g_ws) tlsClose(*g_ws);
+    g_on.ended = true;
+  }
+  return true;
+}
+
 // Frame a `res` back over the WS: a SMALL head {t,id,status,headers} built with
 // ArduinoJson (correct escaping), then the base64 body spliced directly into ONE PSRAM
 // frame buffer. This avoids handing ArduinoJson a 300 KB linked string (which it did not
-// reliably retain) and keeps the whole res in one PSRAM buffer / one write().
+// reliably retain) and keeps the whole res in one PSRAM buffer. A frame over
+// kRelayBulkBytes goes out through the TLS work slot (writeBigFrame); `reqAtMs` is when
+// the request arrived (0 = now), the start of the cloud's 30 s bound.
 void emitResFrame(const char* id, int status, const http_replay::Headers& headers,
-                  const uint8_t* obody, size_t obodyLen) {
+                  const uint8_t* obody, size_t obodyLen, uint32_t reqAtMs = 0) {
+  if (!reqAtMs) reqAtMs = millis();
   JsonDocument head;  // small: a couple of headers
   head["t"] = "res";
   head["id"] = id;
@@ -390,9 +517,11 @@ void emitResFrame(const char* id, int status, const http_replay::Headers& header
   for (size_t i = hn; i < off; i++) frame[i] ^= mask[(i - hn) & 3];  // mask the payload
   // Reliable full-frame write (CUM-182): a large page (~370 KB) is flushed in as
   // many WiFiClientSecure::write calls as it takes, never truncated into a
-  // session-killing partial frame.
-  bool sent = wsWriteAll(frame, off);
+  // session-killing partial frame. A big one takes the TLS work slot per chunk.
+  const BigFrame out = sendFrame(frame, off, obodyLen, reqAtMs);
   heap_caps_free(frame);
+  if (!settleFrame(out, id, status, obodyLen, reqAtMs)) return;
+  const bool sent = out == BigFrame::Sent;
   agent::alog((String("relay: res ") + status + " body=" + (uint32_t)obodyLen + " sent=" +
                (sent ? 1 : 0))
                   .c_str());
@@ -405,10 +534,63 @@ const char* tunnelErrReason(bool denied, int status) {
   if (denied) return "Not available over the cloud; use this device on its network.";
   if (status == 500) return "This page is too large to load over the cloud link.";
   if (status == 502) return "response too large";
+  if (status == 503) return nimbus::cloud::kBusyBody;
   return "device timeout";
 }
 
-void handleReq(const ReqFrame& req) {
+// The busy answer (lane X contract): 503 with Retry-After, which the cloud uses as
+// the floor of its next retry. Small, so it never waits for the slot.
+void emitBusy(const char* id, uint32_t retryAfterS) {
+  http_replay::Headers h;
+  h.emplace_back("content-type", "text/plain");
+  h.emplace_back("retry-after", std::to_string(retryAfterS));
+  emitResFrame(id, 503, h, reinterpret_cast<const uint8_t*>(nimbus::cloud::kBusyBody),
+               strlen(nimbus::cloud::kBusyBody));
+}
+
+// Admission for a big tunneled answer (panic F2): while a turn is in flight or
+// internal memory is short, a body over 16 KB is answered busy instead. The web
+// server already answers its own loopback 503 for the routes it gates; this is the
+// backstop for every other big body. Returns the Retry-After seconds, 0 = serve.
+uint32_t busyRetryFor(size_t bodyLen) {
+  if (relayNoSlot()) return 0;
+  const bool turn = agent::orchestrator::turnInFlight();
+  const size_t intFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  if (nimbus::cloud::tunnelServeDecision(bodyLen, turn, intFree) != nimbus::cloud::ServeDecision::Busy)
+    return 0;
+  return turn ? nimbus::cloud::kBusyRetryTurnS : nimbus::cloud::kBusyRetryLowMemS;
+}
+
+// True when the busy answer went out instead of a big body (busyRetryFor).
+bool heldBack(const char* id, size_t bodyLen) {
+  const uint32_t retryS = busyRetryFor(bodyLen);
+  if (!retryS) return false;
+  agent::alogf("relay: %u B answer held back (%s) -> busy", (unsigned)bodyLen,
+               retryS == nimbus::cloud::kBusyRetryTurnS ? "turn in flight" : "low memory");
+  emitBusy(id, retryS);
+  return true;
+}
+
+// A request that waited out the busy window in the queue (it arrived while a big
+// answer waited for the slot) is answered busy at once: a page could not follow
+// inside the cloud's 30 s bound. True when it was.
+bool staleInQueue(const char* id, uint32_t arrivedAt) {
+  if (relayNoSlot() || (uint32_t)(millis() - arrivedAt) < nimbus::cloud::kRelayBusyAfterMs) return false;
+  emitBusy(id, nimbus::cloud::kBusyRetrySlotS);
+  return true;
+}
+
+// The headers of a plain-text error answer. A loopback 5xx keeps its Retry-After (the
+// web server's own busy answer): the cloud uses it as the floor of its next retry.
+void errorHeaders(http_replay::Headers& out, bool ok, const http_replay::ResponseParser& rp) {
+  out.emplace_back("content-type", "text/plain");
+  const std::string retryAfter = ok ? headerValue(rp.headers(), "retry-after") : std::string();
+  if (!retryAfter.empty()) out.emplace_back("retry-after", retryAfter);
+}
+
+void handleReq(const ReqFrame& req, uint32_t arrivedAt) {
+  nimbus::heapwatch::Scope serving(nimbus::heapwatch::kTunnel);
+  if (staleInQueue(req.id, arrivedAt)) return;
   const bool denied = tunnel::isTunnelDenied(req.path ? req.path : "");
   http_replay::ResponseParser rp(kMaxRespBody);
   bool ok = denied ? false : replayReq(req, rp);
@@ -433,6 +615,7 @@ void handleReq(const ReqFrame& req) {
   std::string errStr;
   std::string scrubbed;  // holds a redacted copy when the JSON secret backstop fires
   if (ok && status < 500) {
+    if (heldBack(req.id, rp.body().size())) return;
     outHdrs = rp.headers();
     if (!rp.body().empty()) { obody = rp.body().data(); obodyLen = rp.body().size(); }
     // Backstop: strip the durable token / AP password from a small JSON body before it is
@@ -447,12 +630,12 @@ void handleReq(const ReqFrame& req) {
       }
     }
   } else {
-    outHdrs.emplace_back("content-type", "text/plain");
+    errorHeaders(outHdrs, ok, rp);
     errStr = tunnelErrReason(denied, status);
     obody = reinterpret_cast<const uint8_t*>(errStr.data());
     obodyLen = errStr.size();
   }
-  emitResFrame(req.id, status, outHdrs, obody, obodyLen);
+  emitResFrame(req.id, status, outHdrs, obody, obodyLen, arrivedAt);
 }
 
 // --- chunked tunnel upload (protocol 2) --------------------------------------
@@ -982,47 +1165,69 @@ bool handleWelcome(const RelayFrame& f, bool& welcomed, uint16_t& closeOut,
   return true;
 }
 
-// Handle one parsed WS message. Returns false to end the session (closeOut set).
-// `gotPong` is set true when a matched heartbeat pong arrives (CUM-191 steady-state
-// liveness) so the caller can clear its missed-ack count.
-bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
-                 const char* ourDeviceId, bool& gotPong) {
+// Handle one parsed WS message (it arrived at `atMs`). Returns false to end the
+// session (g_on.closeCode set). `gotPong` is set true when a matched heartbeat pong
+// arrives (CUM-191 steady-state liveness) so the caller can clear its missed-ack count.
+bool handleFrame(const ws::Message& m, uint32_t atMs, bool& gotPong) {
   if (m.op == ws::Opcode::Text) {
     JsonDocument doc(&agent::PsramJsonAllocator::instance());
     if (deserializeJson(doc, m.payload.data(), m.payload.size())) return true;
     RelayFrame f;
     if (!parseRelayFrame(doc, f)) return true;
     if (f.type == FrameType::Welcome) {
-      if (!handleWelcome(f, welcomed, closeOut, ourDeviceId)) return false;
+      if (!handleWelcome(f, g_on.welcomed, g_on.closeCode, g_on.deviceId)) return false;
     } else if (f.type == FrameType::Req) {
-      handleReq(f.req);
+      handleReq(f.req, atMs);
     } else if (handleUploadFrame(f)) {
       // an ubegin/uchunk/uend/uabort was dispatched
     } else if (f.type == FrameType::Pong) {
       gotPong = true;  // CUM-191: matched heartbeat ack - relay->device direction is live
     } else if (f.type == FrameType::Bye) {
       agent::alog((String("relay: bye ") + f.byeReason).c_str());
-      closeOut = byeToCloseCode(f.byeReason);
+      g_on.closeCode = byeToCloseCode(f.byeReason);
       return false;
     }
   } else if (m.op == ws::Opcode::Ping) {
     wsSendSmall(ws::Opcode::Pong, m.payload.data(), m.payload.size());
   } else if (m.op == ws::Opcode::Close) {
-    closeOut = m.closeCode ? m.closeCode : 4000;
+    g_on.closeCode = m.closeCode ? m.closeCode : 4000;
     return false;
   }
   return true;
 }
 
-// Drain all ready inbound messages. Returns false once a message ends the session.
-// Sets `gotPong` if any drained frame was a matched heartbeat pong (CUM-191).
-bool pumpInbound(ws::Parser& parser, bool& welcomed, uint16_t& closeOut,
-                 const char* ourDeviceId, bool& gotPong) {
-  ws::Message m;
-  while (parser.next(m)) {
-    if (!handleFrame(m, welcomed, closeOut, ourDeviceId, gotPong)) return false;
-  }
+// Queue a data frame that arrived while a big answer waited for the slot.
+bool deferMessage(ws::Message& m) {
+  if (g_defCount >= kMaxDeferred) return false;
+  DeferredMsg& d = g_deferred[(g_defHead + g_defCount) % kMaxDeferred];
+  d.m = std::move(m);
+  d.atMs = millis();
+  ++g_defCount;
   return true;
+}
+
+// The oldest deferred frame, if any (they are older than anything still in the parser).
+bool popDeferred(ws::Message& out, uint32_t& atMs) {
+  if (!g_defCount) return false;
+  DeferredMsg& d = g_deferred[g_defHead];
+  out = std::move(d.m);
+  d.m.payload.clear();
+  atMs = d.atMs;
+  g_defHead = (g_defHead + 1) % kMaxDeferred;
+  --g_defCount;
+  return true;
+}
+
+// Drain all ready inbound messages, deferred ones first. Returns false once a message
+// (or a broken write) ends the session. Sets `gotPong` if any drained frame was a
+// matched heartbeat pong (CUM-191).
+bool pumpInbound(ws::Parser& parser, bool& gotPong) {
+  ws::Message m;
+  for (;;) {
+    uint32_t atMs = millis();
+    if (!popDeferred(m, atMs) && !parser.next(m)) return true;
+    if (!handleFrame(m, atMs, gotPong) || g_on.ended) return false;
+  }
 }
 
 // Send a heartbeat ping carrying the current millis.
@@ -1121,48 +1326,169 @@ bool driveHeartbeat(nimbus::cloud::HeartbeatLiveness& live, bool& armed, uint32_
   return true;
 }
 
+// One message during a big answer's slot wait: control frames now, data frames
+// deferred (or, when the queue is full, a request answered busy at once). No frame is
+// in progress during the wait, so a small frame may go out. False ends the session.
+bool pumpOneWhileWaiting(ws::Message& m) {
+  if (m.op == ws::Opcode::Ping) {
+    wsSendSmall(ws::Opcode::Pong, m.payload.data(), m.payload.size());
+    return true;
+  }
+  if (m.op == ws::Opcode::Close) {
+    g_on.closeCode = m.closeCode ? m.closeCode : 4000;
+    return false;
+  }
+  if (m.op != ws::Opcode::Text) return true;
+  JsonDocument doc(&agent::PsramJsonAllocator::instance());
+  RelayFrame f;
+  if (deserializeJson(doc, m.payload.data(), m.payload.size()) || !parseRelayFrame(doc, f)) return true;
+  if (f.type == FrameType::Pong) {
+    g_on.live.notePong();
+    return true;
+  }
+  if (f.type == FrameType::Bye) {
+    agent::alog((String("relay: bye ") + f.byeReason).c_str());
+    g_on.closeCode = byeToCloseCode(f.byeReason);
+    return false;
+  }
+  if (deferMessage(m)) return true;
+  if (f.type == FrameType::Req) emitBusy(f.req.id, nimbus::cloud::kBusyRetrySlotS);
+  else if (f.upload.id && f.upload.id[0]) emitUploadError(f.upload.id, 503, nimbus::cloud::kBusyBody);
+  return true;
+}
+
+// One pass of the WebSocket while a big answer waits for the TLS work slot: read
+// what arrived, answer pings and acks, keep the heartbeat going (the relay drops a
+// socket that misses a pong for one 30 s sweep). False once the session is over.
+bool pumpWhileWaiting() {
+  if (!g_on.parser || g_on.ended || !g_ws || !g_ws->connected()) return false;
+  uint8_t buf[512];
+  const int n = readSome(*g_ws, buf, sizeof(buf), 5);
+  if (n < 0) { g_on.ended = true; return false; }
+  if (n > 0) {
+    g_on.parser->feed(buf, (size_t)n);
+    g_on.lastInbound = millis();
+  }
+  if (g_on.parser->protocolError()) g_on.closeCode = (uint16_t)CloseCode::ProtocolError;
+  ws::Message m;
+  while (!g_on.parser->protocolError() && g_on.parser->next(m))
+    if (!pumpOneWhileWaiting(m)) break;
+  if (g_on.closeCode || g_on.parser->protocolError() ||
+      (g_on.welcomed && driveHeartbeat(g_on.live, g_on.armed, millis()))) {
+    g_on.ended = true;
+    return false;
+  }
+  return true;
+}
+
 // The online read/pump/heartbeat loop, after the handshake + hello. Returns the WS close
 // code (0 = clean/local drop).
 uint16_t runOnlineLoop(ws::Parser& parser, const char* ourDeviceId) {
   uint32_t welcomeBy = millis() + kWelcomeDeadlineMs;
-  bool welcomed = false;
   g_heartbeatMs = kDefaultHeartbeatMs;
-  uint16_t closeCode = 0;
   // CUM-191: steady-state liveness. Ping cadence is 4/5 of the heartbeat window so a
   // pong has room to arrive before the next ping falls due; the ack-gated monitor
   // (armed once the Welcome lands) trips after kMaxMissedHeartbeatAcks unacked pings.
-  nimbus::cloud::HeartbeatLiveness live;
-  bool armed = false;
-  uint32_t lastInbound = millis();
+  // The state lives in g_on so a big answer's slot wait keeps it going (heap F2).
+  g_on = OnlineSession{};
+  g_on.parser = &parser;
+  g_on.deviceId = ourDeviceId;
+  g_on.lastInbound = millis();
   uint8_t buf[512];
   while (true) {
-    if (sessionShouldStop()) { closeCode = 0; break; }
+    if (sessionShouldStop()) { g_on.closeCode = 0; break; }
     int n = readSome(*g_ws, buf, sizeof(buf), 100);
     if (n > 0) {
       parser.feed(buf, (size_t)n);
-      lastInbound = millis();
+      g_on.lastInbound = millis();
     } else if (n < 0) {
-      closeCode = 0;
+      g_on.closeCode = 0;
       break;
     }
-    if (parser.protocolError()) { closeCode = (uint16_t)CloseCode::ProtocolError; break; }
+    if (parser.protocolError()) { g_on.closeCode = (uint16_t)CloseCode::ProtocolError; break; }
     bool gotPong = false;
-    if (!pumpInbound(parser, welcomed, closeCode, ourDeviceId, gotPong)) break;
-    if (gotPong) live.notePong();  // matched ack clears the missed-heartbeat count
-    if (!welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
+    if (!pumpInbound(parser, gotPong)) break;
+    if (gotPong) g_on.live.notePong();  // matched ack clears the missed-heartbeat count
+    if (!g_on.welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
     uint32_t now = millis();
     // Half-open link (too many unacked heartbeats): drop presence honestly and let the
     // task loop redial with backoff, re-registering a live session - the reboot-free
     // recovery CUM-191 requires. Not an error to the user.
-    if (welcomed && driveHeartbeat(live, armed, now)) { closeCode = 0; break; }
+    if (g_on.welcomed && driveHeartbeat(g_on.live, g_on.armed, now)) { g_on.closeCode = 0; break; }
     // Coarse backstop: no inbound bytes at all for 2 heartbeat windows (the ack path
     // above trips first on a half-open link, but this catches a wedged read).
-    if (welcomed && now - lastInbound > g_heartbeatMs * 2) { closeCode = 0; break; }
+    if (g_on.welcomed && now - g_on.lastInbound > g_heartbeatMs * 2) { g_on.closeCode = 0; break; }
   }
+  const uint16_t closeCode = g_on.closeCode;
+  // Deferred frames die with the session (the cloud fails those requests and retries).
+  ws::Message drop;
+  uint32_t at = 0;
+  while (popDeferred(drop, at)) {
+  }
+  g_on.parser = nullptr;
   return closeCode;
 }
 
-// Returns a WS close code (0 = clean/local drop) after the session ends.
+// Holds the TLS work slot for the dial's scope; released on every path out.
+struct DialSlot {
+  bool held = false;
+  ~DialSlot() { release(); }
+  void release() {
+    if (held) agent::arbiter::releaseWork();
+    held = false;
+  }
+};
+
+enum class Dial : uint8_t { Up, Failed, SlotBusy };
+
+// The dial: TLS connect, WebSocket upgrade and hello, inside the TLS work slot (heap
+// F2), like pairing. The handshake is the session's costliest internal-SRAM moment,
+// and a dial beside a turn's exchange is the second concurrent TLS session the device
+// forbids (on 14 Oct a redial ran its handshake during the next turn's round).
+Dial dialSession(const String& host, const String& deviceId, const String& cred, ws::Parser& parser) {
+  DialSlot slot;
+  if (!relayNoSlot()) {
+    if (!agent::arbiter::acquireWork(nimbus::cloud::kRelayDialSlotMs)) {
+      agent::alog("relay: dial waits (TLS work slot busy)");
+      return Dial::SlotBusy;
+    }
+    slot.held = true;
+  }
+  nimbus::heapwatch::Scope dialing(nimbus::heapwatch::kRelayDial);
+  struct TlsMark {   // the dial's TLS I/O, for the concurrent-TLS detector
+    TlsMark() { nimbus::heapwatch::tlsIoBegin("relay.dial"); }
+    ~TlsMark() { nimbus::heapwatch::tlsIoEnd(); }
+  } mark;
+  // CUM-182 instrumentation: log the resolved dial target (host:port + WS path)
+  // before every TLS connect so /api/log shows exactly WHERE the device dials
+  // (catches a stale/wrong NVS relay host). deviceId is not a secret (it rides
+  // the public tunnel URL); the credential never appears in any log.
+  agent::alogf("relay: dial host=%s:%u path=%s id=%s", host.c_str(), (unsigned)kTlsPort,
+               kWsPath, deviceId.c_str());
+  const uint32_t tlsT0 = millis();
+  const bool tlsOk = g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+  const uint32_t tlsMs = millis() - tlsT0;
+  agent::alogf("relay: tls %s in %ums", tlsOk ? "ok" : "FAIL", tlsMs);
+  if (!tlsOk) {
+    setErr("Couldn't reach the cloud. Retrying.");
+    return Dial::Failed;
+  }
+  if (!wsUpgrade(host, parser)) {
+    setErr("Cloud handshake failed.");
+    tlsClose(*g_ws);
+    return Dial::Failed;
+  }
+  if (!sendHello(deviceId, cred)) {
+    agent::alog("relay: hello write FAIL");
+    tlsClose(*g_ws);
+    return Dial::Failed;
+  }
+  agent::alogf("relay: hello sent id=%s fw=%s", deviceId.c_str(), NIMBUS_FW_VERSION);
+  return Dial::Up;
+}
+
+// Returns a WS close code (0 = clean/local drop) after the session ends, or
+// kSlotBusyClose when the dial could not get the TLS work slot.
 uint16_t runSession() {
   String host = agent::store::cloudHost();
   String deviceId = agent::store::cloudDeviceId();
@@ -1179,35 +1505,12 @@ uint16_t runSession() {
   setState(State::Connecting);
   if (!g_ws) g_ws = new WiFiClientSecure();
   relayTlsSetup(*g_ws);
-  // CUM-182 instrumentation: log the resolved dial target (host:port + WS path)
-  // before every TLS connect so /api/log shows exactly WHERE the device dials
-  // (catches a stale/wrong NVS relay host). deviceId is not a secret (it rides
-  // the public tunnel URL); the credential never appears in any log.
-  agent::alogf("relay: dial host=%s:%u path=%s id=%s", host.c_str(), (unsigned)kTlsPort,
-               kWsPath, deviceId.c_str());
-  const uint32_t tlsT0 = millis();
-  const bool tlsOk = g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
-  const uint32_t tlsMs = millis() - tlsT0;
-  agent::alogf("relay: tls %s in %ums", tlsOk ? "ok" : "FAIL", tlsMs);
-  if (!tlsOk) {
-    setErr("Couldn't reach the cloud. Retrying.");
-    return 0;
-  }
-
   // Inbound frames (relay -> device `req`) are small browser requests; cap the parser
   // buffers low so a malicious oversized frame can't OOM the scarce internal SRAM.
   ws::Parser parser(kMaxInboundFrame);
-  if (!wsUpgrade(host, parser)) {
-    setErr("Cloud handshake failed.");
-    tlsClose(*g_ws);
-    return 0;
-  }
-  if (!sendHello(deviceId, cred)) {
-    agent::alog("relay: hello write FAIL");
-    tlsClose(*g_ws);
-    return 0;
-  }
-  agent::alogf("relay: hello sent id=%s fw=%s", deviceId.c_str(), NIMBUS_FW_VERSION);
+  const Dial dial = dialSession(host, deviceId, cred, parser);
+  if (dial == Dial::SlotBusy) return kSlotBusyClose;
+  if (dial == Dial::Failed) return 0;
 
   uint16_t closeCode = runOnlineLoop(parser, deviceId.c_str());
   resetUpload();  // drop any in-flight upload's loopback socket with the session
@@ -1286,7 +1589,12 @@ void applyCloseCodePolicy(uint16_t code, uint32_t& backoff, uint32_t& badToken) 
 void relayTask(void*) {
   // Let WiFi + the association RX burst settle before the first TLS (tg_poll lesson).
   while (!wifiReady()) vTaskDelay(pdMS_TO_TICKS(500));
+  const uint32_t wifiAt = millis();
   vTaskDelay(pdMS_TO_TICKS(3000));
+  // The first dial waits for Telegram's first poll (or 20 s): the two boot handshakes
+  // started within 30 ms of each other at every boot (15 of 15 in the field logs).
+  while (!nimbus::cloud::firstDialReady(agent::telegram::pollEverOk(), millis() - wifiAt))
+    vTaskDelay(pdMS_TO_TICKS(250));
 
   uint32_t backoff = 500;
   uint32_t badToken = 0;
@@ -1326,6 +1634,10 @@ void relayTask(void*) {
     if (!maintainCredential()) continue;
 
     uint16_t code = runSession();
+    if (code == kSlotBusyClose) {   // the dial waits its turn: retry soon, no owner-visible change
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
     applyCloseCodePolicy(code, backoff, badToken);
   }
 }

@@ -16,6 +16,13 @@
 // Total concurrent TLS is now at most 3 (Telegram + 2 work slots); `tlsSlots=1`
 // restores the classic single-slot behavior.
 //
+// The cloud relay keeps its WebSocket session open between requests, but it is not
+// outside the rule: its dial (connect, upgrade, hello) takes the slot, and every
+// response frame over 8 KB takes it one 8 KB chunk at a time, released between
+// chunks so a waiting turn gets it within one chunk (nimbus/cloud/relay_slot.h).
+// Heartbeats, acks and small frames take no slot. tests/hil/test_l41_tls_slot_guard.py
+// checks every TLS connect in src/ against this rule.
+//
 // Usage:
 //   if (!arbiter::acquireWork(10000)) { /* timeout, try later */ }
 //   // ... open client, do HTTP, close client ...

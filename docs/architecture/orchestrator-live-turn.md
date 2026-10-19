@@ -177,7 +177,12 @@ own persistent session and every other TLS user (turn, dispatch, poll, STT, TTS,
 media upload) must `acquireWork` before opening a `WiFiClientSecure` and release it
 immediately after close - so the single mbedTLS arena holds at most the Telegram
 session plus one work session (two work sessions when **Concurrent connections**
-is set to 2, applied at boot).
+is set to 2, applied at boot). The cloud relay keeps its WebSocket open between
+requests, but its dial (connect, upgrade, hello) takes the slot, and so does every
+response frame over 8 KB, one 8 KB chunk at a time with the slot released between
+chunks, so a turn waiting for the slot gets it within one chunk. Heartbeats, acks
+and small responses take no slot. `tests/hil/test_l41_tls_slot_guard.py` (a source
+check, no board) fails on any new TLS connect outside the slot.
 
 ## PSRAM-backed mbedTLS - the unblock for every live turn
 
