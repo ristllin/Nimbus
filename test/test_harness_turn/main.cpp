@@ -2888,6 +2888,9 @@ static std::vector<ExitCase> exitCases() {
   v.push_back({"budget", "device", "budget", [](Rig& r) {
                  r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
                }});
+  // Lane L's cut exit: an answer cut at its output limit is salvaged, never a provider fault.
+  v.push_back({"cut", "anthropic", "cut at the output limit",
+               failAll("cut at the output limit: the answer did not finish")});
   v.push_back({"low memory", "anthropic", "low memory", [](Rig& r) {
                  r.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request",
                                             0, "", 0, 0}};
@@ -2911,7 +2914,7 @@ static std::vector<ExitCase> exitCases() {
                  bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
                  r.scripts["anthropic"] = {bad};
                }});
-  ExitCase sched = v[4];   // the same exit reached by a scheduled fire (ladder exhausted)
+  ExitCase sched = v[5];   // the same exit reached by a scheduled fire (ladder exhausted)
   sched.exitName = "generic (scheduled fire)";
   sched.scheduled = true;
   v.push_back(sched);
@@ -2952,7 +2955,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   // The class guard: one table row per distinct failed exit in the engine.
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
-  const char* names[] = {"budget", "low memory", "billing", "429", "generic", "parse"};
+  const char* names[] = {"budget", "cut", "low memory", "billing", "429", "generic", "parse"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
