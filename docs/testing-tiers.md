@@ -128,8 +128,9 @@ Every crash leaves a durable, readable cause, read on the next boot from the cor
 
 - Host (T1): `test/test_crash_forensics` (the reset table over every value, the boot and
   crash line formats over every backtrace depth with a planted register and stack
-  pattern that must never print, the dedupe state machine, the crash notice copy for
-  every request kind, the forensic window), `test/test_errlog` (no line lost before
+  pattern that must never print, a reason for every exception cause and every `PANIC`
+  kind, the dedupe state machine, the crash notice copy for every request kind and plain
+  cause, the forensic window), `test/test_errlog` (no line lost before
   mount over every attach point and both tiers, the one-handle open count over random
   runs, degrade and recovery), `test/test_orch_pending_events` (rows from boots that
   never synced survive until a clock exists) and `test/test_fresh_device` (a blank dump
@@ -140,8 +141,11 @@ Every crash leaves a durable, readable cause, read on the next boot from the cor
   a panic armed into a real turn (`PANIC <kind> arm=turn [round=N]`, test builds only:
   it fires at the transport body write of round N, so the dump fits 64 KB with the turn
   task deep in a TLS exchange and names the frame), and the destructive factory-reset
-  and early-boot-abort legs. Its parsers and verdicts are host-tested in
-  `tests/hil/test_l39_crash_forensics_host.py`; `tools/release_gate/test_panic_guard.py`
+  and early-boot-abort legs. Each leg judges the first boot after the crash, by boot
+  number: on the S3's native USB a host serial reopen resets the chip, so the newest boot
+  can be one the harness caused (`reason=usb`), and a window in which nothing crashed is
+  reported as such instead of being reopened into a reboot. Its parsers and verdicts are
+  host-tested in `tests/hil/test_l39_crash_forensics_host.py`, over every `PANIC` kind; `tools/release_gate/test_panic_guard.py`
   and the release gate's ELF check keep the armed panic out of every shipped image.
 
 ## The release gate

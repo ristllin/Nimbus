@@ -296,13 +296,133 @@ static void test_crash_line_fields() {
   const std::string bt = crashBtLine(r);
   TEST_ASSERT_EQUAL_STRING("crash-bt: depth=3 corrupt=1 0x42000000,0x42000100,0x42000200", bt.c_str());
   TEST_ASSERT_EQUAL_STRING("crash-why: Stack canary watchpoint triggered (tg_poll)", crashWhyLine(r).c_str());
-  r.why.clear();
-  TEST_ASSERT_TRUE(crashWhyLine(r).size() > strlen("crash-why: "));   // never empty
-  TEST_ASSERT_EQUAL_STRING("crash=tg_poll@0x4201abcd", oneLiner(r).c_str());
+  r.why.clear();   // a CPU exception records no panic message: the cause states it
+  TEST_ASSERT_EQUAL_STRING(
+      "crash-why: LoadProhibited in tg_poll: a read from an invalid address (0x00000000); "
+      "no panic message in the dump",
+      crashWhyLine(r).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "crash=tg_poll@0x4201abcd \"LoadProhibited in tg_poll: a read from an invalid address (0x00000000); "
+      "no panic message in the dump\"",
+      oneLiner(r).c_str());
   r.newKnown = false;
   TEST_ASSERT_TRUE(contains(crashLine(r), "new=?"));
   TEST_ASSERT_EQUAL_STRING("other", causeName(99));
   TEST_ASSERT_EQUAL_STRING("CoprocessorDisabled", causeName(33));
+  TEST_ASSERT_EQUAL_STRING("DebugException", causeName(65));
+  TEST_ASSERT_EQUAL_STRING("IntWdtCpu1", causeName(70));
+}
+
+// Every cause the summary can carry states a reason when the dump recorded no panic
+// message (IDF records one only for abort() and the task watchdog): every Xtensa
+// EXCCAUSE, every IDF pseudo cause, values beyond both, and the invalid marker 0xFFFF.
+// The placeholder "(no reason recorded)" is gone for good.
+static void test_every_cause_states_a_reason() {
+  const char* tasks[] = {"loopTask", "tg_poll", "", "a task name that is far too long"};
+  std::vector<uint32_t> causes;
+  for (uint32_t c = 0; c <= 80; ++c) causes.push_back(c);
+  causes.push_back(0xFFFF);
+  causes.push_back(UINT32_MAX);
+  for (uint32_t cause : causes) {
+    for (const char* task : tasks) {
+      Report r = validReport(4, task, "");
+      r.cause = cause;
+      r.vaddr = 0xdeadbee0u;
+      const std::string why = whyOf(r);
+      TEST_ASSERT_FALSE_MESSAGE(why.empty(), task);
+      TEST_ASSERT_TRUE(why.size() <= kMaxWhyBytes);
+      TEST_ASSERT_FALSE(contains(why, "no reason recorded"));
+      TEST_ASSERT_TRUE_MESSAGE(why.compare(0, strlen(causeName(cause)), causeName(cause)) == 0, why.c_str());
+      TEST_ASSERT_TRUE(contains(why, std::string(" in ") + fieldValue(task, 15) + ": "));
+      for (unsigned char ch : why) TEST_ASSERT_TRUE(ch >= 0x20 && ch < 0x7f);
+      TEST_ASSERT_EQUAL_STRING(("crash-why: " + why).c_str(), crashWhyLine(r).c_str());
+      TEST_ASSERT_TRUE(contains(oneLiner(r), "\""));
+      for (const std::string& l : everyLine(r))   // the redactor leaves every line whole
+        TEST_ASSERT_EQUAL_STRING(l.c_str(), core::LogRing::redact(l, kNoSecrets).c_str());
+      const std::vector<std::string> lines = reportLines(r);
+      TEST_ASSERT_EQUAL_UINT(3, (unsigned)lines.size());
+      TEST_ASSERT_EQUAL_STRING(("crash-why: " + why).c_str(), lines[2].c_str());
+    }
+  }
+  Report recorded = validReport(4, "loopTask", "abort() was called at PC 0x42001234 on core 1");
+  recorded.cause = 29;   // a recorded message wins over the cause
+  TEST_ASSERT_EQUAL_STRING("abort() was called at PC 0x42001234 on core 1", whyOf(recorded).c_str());
+}
+
+// Every PANIC kind the test console fires, as its dump presents it (cause, recorded panic
+// message or none), states a reason in crash-why and a plain cause for the owner.
+struct KindCase {
+  const char* kind;
+  const char* task;
+  uint32_t cause;
+  const char* recorded;   // the panic message IDF stores, "" when it stores none
+  int reset;              // this boot's reset reason
+  const char* whyHas;     // crash-why must contain this
+  CrashKind owner;
+};
+static void test_every_panic_kind_states_a_reason() {
+  const int panic = (int)ResetReason::Panic, twdt = (int)ResetReason::TaskWdt;
+  const KindCase cases[] = {
+      {"abort", "loopTask", 0, "abort() was called at PC 0x42001234 on core 1", panic, "abort()",
+       CrashKind::SoftwareError},
+      {"nullptr", "loopTask", 29, "", panic, "a write to an invalid address (0x00000000)", CrashKind::SoftwareError},
+      {"canary", "loopTask", 65, "", panic, "stack overflow", CrashKind::TaskOutOfMemory},
+      {"twdt", "IDLE0", 0, "Task watchdog got triggered. The following tasks did not reset the watchdog in time:",
+       twdt, "Task watchdog", CrashKind::Unresponsive},
+      {"oom", "loopTask", 29, "", panic, "a write to an invalid address", CrashKind::SoftwareError},
+      {"nullptr arm=turn", "tg_poll", 29, "", panic, "StoreProhibited in tg_poll", CrashKind::SoftwareError},
+      {"abort arm=turn", "tg_poll", 0, "abort() was called at PC 0x42005678 on core 0", panic, "abort()",
+       CrashKind::SoftwareError},
+      {"canary arm=turn", "tg_poll", 0, "***ERROR*** A stack overflow in task tg_poll has been detected.", panic,
+       "stack overflow in task tg_poll", CrashKind::TaskOutOfMemory},
+  };
+  for (const KindCase& k : cases) {
+    Report r = validReport(5, k.task, k.recorded);
+    r.cause = k.cause;
+    r.vaddr = 0;
+    const std::string line = crashWhyLine(r);
+    TEST_ASSERT_TRUE_MESSAGE(contains(line, k.whyHas), (std::string(k.kind) + ": " + line).c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)k.owner, (int)crashKind(&r, k.reset), k.kind);
+    const std::string notice = nimbus::orch::crashNotice("Lumi", nullptr, "", plainCause(crashKind(&r, k.reset)));
+    TEST_ASSERT_TRUE_MESSAGE(contains(notice, std::string("(") + plainCause(k.owner) + ")"), notice.c_str());
+  }
+}
+
+// The owner's notice names a plain cause for every crash reset, every cause, every kind
+// of recorded message, with and without this crash's dump, and never a technical term.
+static void test_crash_kind_for_every_crash_reset_and_cause() {
+  const char* recorded[] = {"", "abort() was called at PC 0x42001234 on core 1",
+                            "***ERROR*** A stack overflow in task tg_poll has been detected.",
+                            "Task watchdog got triggered.", "Failed to allocate 4096 bytes",
+                            "Stack canary watchpoint triggered (tg_poll)"};
+  const std::set<std::string> vocabulary = {plainCause(CrashKind::SoftwareError), plainCause(CrashKind::Unresponsive),
+                                            plainCause(CrashKind::OutOfMemory), plainCause(CrashKind::TaskOutOfMemory)};
+  TEST_ASSERT_EQUAL_UINT(4, (unsigned)vocabulary.size());
+  const char* jargon[] = {"panic", "watchdog", "exception", "stack", "heap", "abort", "0x", "Prohibited", "CPU",
+                          "core", "dump", "firmware"};
+  std::set<std::string> seen;
+  int crashResets = 0;
+  for (int reset = 0; reset <= kLastResetReason + 1; ++reset) {
+    if (!isCrashReset(reset)) continue;
+    ++crashResets;
+    TEST_ASSERT_TRUE(vocabulary.count(plainCause(crashKind(nullptr, reset))) == 1);   // no dump written
+    for (uint32_t cause = 0; cause <= 72; ++cause) {
+      for (const char* msg : recorded) {
+        Report r = validReport(3, "tg_poll", msg);
+        r.cause = cause;
+        const std::string plain = plainCause(crashKind(&r, reset));
+        TEST_ASSERT_TRUE_MESSAGE(vocabulary.count(plain) == 1, plain.c_str());
+        seen.insert(plain);
+        for (const char* bad : jargon) TEST_ASSERT_FALSE_MESSAGE(contains(plain, bad), plain.c_str());
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(crashResets >= 4);           // panic and the three watchdog classes, at least
+  TEST_ASSERT_EQUAL_UINT(4, (unsigned)seen.size());   // every plain cause is reachable
+  Report stale = validReport(3, "loopTask", "");
+  stale.state = ImageState::BadCrc;   // an unreadable dump names nothing
+  TEST_ASSERT_EQUAL_INT((int)CrashKind::Unresponsive, (int)crashKind(&stale, (int)ResetReason::TaskWdt));
+  TEST_ASSERT_EQUAL_INT((int)CrashKind::SoftwareError, (int)crashKind(&stale, (int)ResetReason::Panic));
 }
 
 // Which lines a boot emits, over every image state x new/stale x store known/unknown.
@@ -430,19 +550,31 @@ static void test_crash_notice_copy_for_every_kind() {
   const char* kinds[] = {"photo", "file", "voice", "message", "console", "routine", "background"};
   const char* jargon[] = {"panic", "watchdog", "coredump", "core dump", "reset", "stack", "heap",
                           "abort", "firmware", "exception", "\xE2\x80\x94"};
+  const CrashKind causes[] = {CrashKind::SoftwareError, CrashKind::Unresponsive, CrashKind::OutOfMemory,
+                              CrashKind::TaskOutOfMemory};
   for (const char* k : kinds) {
     TurnJournal j;
     j.kind = k;
     for (int withTime = 0; withTime < 2; ++withTime) {
-      const std::string m = crashNotice("Lumi", &j, withTime ? "12:30" : "");
-      TEST_ASSERT_TRUE(m.compare(0, 4, "Lumi") == 0);
-      TEST_ASSERT_TRUE(contains(m, "restarted after a crash"));
-      TEST_ASSERT_EQUAL(withTime == 1, contains(m, "from 12:30"));
-      for (const char* bad : jargon) TEST_ASSERT_FALSE_MESSAGE(contains(m, bad), m.c_str());
-      TEST_ASSERT_FALSE(contains(m, " I ") || contains(m, " me ") || contains(m, " my "));
-      TEST_ASSERT_TRUE(m.size() < 200);
+      for (int c = -1; c < 4; ++c) {   // -1: no cause given
+        const std::string cause = c < 0 ? std::string() : plainCause(causes[c]);
+        const std::string m = crashNotice("Lumi", &j, withTime ? "12:30" : "", cause);
+        TEST_ASSERT_TRUE(m.compare(0, 4, "Lumi") == 0);
+        TEST_ASSERT_TRUE(contains(m, "restarted after a crash"));
+        TEST_ASSERT_EQUAL(withTime == 1, contains(m, "from 12:30"));
+        TEST_ASSERT_EQUAL(c >= 0, contains(m, "crash (" + cause + ")"));
+        for (const char* bad : jargon) TEST_ASSERT_FALSE_MESSAGE(contains(m, bad), m.c_str());
+        TEST_ASSERT_FALSE(contains(m, " I ") || contains(m, " me ") || contains(m, " my "));
+        TEST_ASSERT_TRUE(m.size() < 200);
+      }
     }
   }
+  TurnJournal voice;
+  voice.kind = "voice";
+  TEST_ASSERT_EQUAL_STRING(
+      "Lumi restarted after a crash (one of its jobs ran out of memory) while answering your voice "
+      "message from 09:05. That reply was lost, so please send it again if you still need it.",
+      crashNotice("Lumi", &voice, "09:05", plainCause(CrashKind::TaskOutOfMemory)).c_str());
   TurnJournal photo;
   photo.kind = "photo";
   TEST_ASSERT_EQUAL_STRING(
@@ -638,6 +770,9 @@ int main(int, char**) {
   RUN_TEST(test_registers_and_stack_never_printed);
   RUN_TEST(test_summary_lines_never_redacted);
   RUN_TEST(test_crash_line_fields);
+  RUN_TEST(test_every_cause_states_a_reason);
+  RUN_TEST(test_every_panic_kind_states_a_reason);
+  RUN_TEST(test_crash_kind_for_every_crash_reset_and_cause);
   RUN_TEST(test_report_lines_by_state);
   RUN_TEST(test_dedupe_state_machine);
   RUN_TEST(test_turn_kind_classes);

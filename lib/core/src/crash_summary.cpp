@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "nimbus/sys/boot_record.h"   // fieldValue
+#include "nimbus/sys/reset_reason.h"  // ResetReason (the notice's watchdog class)
 
 namespace nimbus::crash {
 
@@ -78,6 +79,11 @@ constexpr CauseName kCauses[] = {
     {20, "InstFetchProhibited"},   {24, "LoadStoreTLBMiss"},
     {25, "LoadStoreTLBMultiHit"},  {26, "LoadStorePrivilege"},
     {28, "LoadProhibited"},        {29, "StoreProhibited"},
+    // IDF pseudo causes: XCHAL_EXCCAUSE_NUM (64) + PANIC_RSN_* (panic_reason.h).
+    {64, "UnknownReason"},         {65, "DebugException"},
+    {66, "DoubleException"},       {67, "KernelException"},
+    {68, "CoprocessorException"},  {69, "IntWdtCpu0"},
+    {70, "IntWdtCpu1"},            {71, "CacheError"},
 };
 
 const char* causeName(uint32_t cause) {
@@ -85,6 +91,85 @@ const char* causeName(uint32_t cause) {
     if (c.code == cause) return c.name;
   if (cause >= 32 && cause <= 39) return "CoprocessorDisabled";
   return "other";
+}
+
+// What a cause means when the dump recorded no panic message. `addr`: EXCVADDR is the
+// faulting address for this cause. The end-of-stack watchpoint is the only debug
+// exception this firmware raises (CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK).
+struct CauseWhy {
+  uint32_t code;
+  const char* what;
+  bool addr;
+};
+constexpr CauseWhy kCauseWhy[] = {
+    {0, "an invalid instruction (often a corrupted stack or function pointer)", false},
+    {2, "an instruction fetch error", true},
+    {3, "a load or store error", true},
+    {6, "an integer division by zero", false},
+    {9, "an unaligned load or store", true},
+    {20, "an instruction fetch from a prohibited address", true},
+    {28, "a read from an invalid address", true},
+    {29, "a write to an invalid address", true},
+    {64, "a panic with no recorded cause", false},
+    {65, "the end-of-stack watchpoint fired (a stack overflow)", false},
+    {66, "a double exception (often a stack overflow)", false},
+    {67, "an unhandled kernel exception", false},
+    {68, "a coprocessor exception", false},
+    {69, "the interrupt watchdog fired on CPU 0", false},
+    {70, "the interrupt watchdog fired on CPU 1", false},
+    {71, "a cache error (flash or PSRAM read while the cache was off)", false},
+};
+
+std::string whyOf(const Report& r) {
+  const std::string recorded = reasonText(r.why, kMaxWhyBytes);
+  if (!recorded.empty()) return recorded;
+  const CauseWhy* w = nullptr;
+  for (const CauseWhy& c : kCauseWhy) {
+    if (c.code == r.cause) {
+      w = &c;
+      break;
+    }
+  }
+  std::string l = std::string(causeName(r.cause)) + " in " + sys::fieldValue(r.task, 15) + ": ";
+  l += w ? std::string(w->what) : "exception cause " + std::to_string(r.cause);
+  if (w && w->addr) l += " (0x" + hex8(r.vaddr) + ")";
+  l += "; no panic message in the dump";
+  return reasonText(l, kMaxWhyBytes);
+}
+
+namespace {
+bool hasText(const std::string& hay, const char* needle) {
+  std::string h;
+  h.reserve(hay.size());
+  for (char c : hay) h.push_back((c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c);
+  return h.find(needle) != std::string::npos;
+}
+bool watchdogReset(int resetReason) {
+  return resetReason == (int)sys::ResetReason::TaskWdt || resetReason == (int)sys::ResetReason::IntWdt ||
+         resetReason == (int)sys::ResetReason::Wdt;
+}
+}  // namespace
+
+CrashKind crashKind(const Report* dump, int resetReason) {
+  if (dump && dump->state == ImageState::Valid) {
+    const std::string& w = dump->why;
+    if (dump->cause == 65 || hasText(w, "stack overflow") || hasText(w, "stack canary"))
+      return CrashKind::TaskOutOfMemory;
+    if (hasText(w, "alloc") || hasText(w, "out of memory") || hasText(w, "memory exhausted"))
+      return CrashKind::OutOfMemory;
+    if (dump->cause == 69 || dump->cause == 70 || hasText(w, "watchdog")) return CrashKind::Unresponsive;
+  }
+  return watchdogReset(resetReason) ? CrashKind::Unresponsive : CrashKind::SoftwareError;
+}
+
+const char* plainCause(CrashKind k) {
+  switch (k) {
+    case CrashKind::Unresponsive:    return "part of it stopped responding";
+    case CrashKind::OutOfMemory:     return "it ran out of memory";
+    case CrashKind::TaskOutOfMemory: return "one of its jobs ran out of memory";
+    case CrashKind::SoftwareError:   break;
+  }
+  return "a software error";
 }
 
 static std::string newField(const Report& r) {
@@ -122,10 +207,7 @@ std::string crashBtLine(const Report& r) {
   return l;
 }
 
-std::string crashWhyLine(const Report& r) {
-  std::string why = reasonText(r.why, kMaxWhyBytes);
-  return "crash-why: " + (why.empty() ? std::string("(no reason recorded)") : why);
-}
+std::string crashWhyLine(const Report& r) { return "crash-why: " + whyOf(r); }
 
 std::vector<std::string> reportLines(const Report& r) {
   std::vector<std::string> out;
@@ -141,8 +223,7 @@ std::vector<std::string> reportLines(const Report& r) {
 std::string oneLiner(const Report& r) {
   if (r.state != ImageState::Valid) return {};
   std::string l = "crash=" + sys::fieldValue(r.task, 15) + "@0x" + hex8(r.pc);
-  const std::string why = reasonText(r.why, kMaxWhyBytes);
-  if (why.empty()) return l;
+  const std::string why = whyOf(r);
   const size_t room = 160 - l.size() - 3;   // space + two quotes
   l += " \"" + (why.size() > room ? why.substr(0, room) : why) + "\"";
   return l;

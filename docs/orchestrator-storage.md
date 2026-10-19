@@ -152,15 +152,23 @@ crash-why: Stack canary watchpoint triggered (tg_poll)
   reported is mentioned once per boot as a single `crash:` line with `new=0`.
 - `this-reset=1` when this boot's reset was the crash; `fw-match=0` after an update,
   because the dump belongs to the previous release (decode it with that release's ELF).
+- `crash-why` is the panic message the dump recorded. ESP-IDF records one only for
+  `abort()` (the stack-overflow check aborts too) and the task watchdog. A CPU exception,
+  the end-of-stack watchpoint and the interrupt watchdog record none, so the reason is
+  then built from the exception cause, for example
+  `crash-why: StoreProhibited in loopTask: a write to an invalid address (0x00000000); no panic message in the dump`.
+  Every crash states a reason.
 - The report never contains stack bytes or the exception registers: a stack in transit
   can hold a provider key or the bot token.
 - The dump is never erased by the reader, so a bench can still pull it over USB; the
   next crash overwrites it, and a factory reset erases it.
 - The same summary is in `GET /api/state` (`boot.crash`, `null` when there is no dump)
   and on the episodic `ev:boot` row, so the assistant can say why it restarted.
-- After a crash boot the owner gets one plain-words Telegram message naming the request
-  that was cut short (`/crash/turn.json` on LittleFS, written at turn start and cleared
-  when the turn ends; the round reached rides the RTC record below). The file is skipped
+- After a crash boot the owner gets one plain-words Telegram message that says what went
+  wrong (a software error, part of it stopped responding, it ran out of memory, or one
+  of its jobs ran out of memory) and names the request that was cut short
+  (`/crash/turn.json` on LittleFS, written at turn start and cleared when the turn ends;
+  the round reached rides the RTC record above). The file is skipped
   when internal memory is below the forensic floors, because a file open is itself an
   allocation that aborts on failure; the RTC record still names the request then.
 

@@ -55,6 +55,15 @@ from typing import Dict, List, Optional
 
 import pytest
 
+from device import ExpectTimeout
+
+try:  # the LAN client's transport; a connect or read failure while the board rejoins
+    import requests
+
+    TRANSIENT_NET_ERRORS: tuple = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+except ImportError:  # pragma: no cover - requests ships with the HIL environment
+    TRANSIENT_NET_ERRORS = (OSError,)
+
 PARTITION_BYTES = 65536
 
 LINE_RE = re.compile(r"^(?P<seq>\d+) (?P<ms>\d+) (?P<cat>\S+) (?P<msg>.*)$")
@@ -185,6 +194,69 @@ def every_boot_starts_at_seq0(boots: List[List[Dict[str, str]]]) -> "tuple[bool,
     return True, f"{len(boots)} boot(s), all start at seq 0"
 
 
+def boot_number(rep: dict) -> Optional[int]:
+    """The boot record's n= (None for ``n=?``, a unit with no storage counter)."""
+    n = rep["boot"]["n"]
+    return int(n) if n.isdigit() else None
+
+
+def first_boot_after(boots: List[List[Dict[str, str]]], before_n: Optional[int]) -> "tuple[Optional[dict], List[str]]":
+    """The boot a crash produced: the FIRST boot numbered above ``before_n``, plus the
+    reset slugs of any boots after it.
+
+    On the S3's native USB a host serial reopen resets the chip (reason ``usb``). When
+    the harness has to reopen after a crash, that reset adds a boot the firmware did not
+    cause, and the newest boot then reads ``usb`` with the dump already reported
+    (``new=0``). The crash record is the first new boot, never simply the newest one.
+    With no boot number to compare (``before_n`` None) the newest boot is the answer."""
+    reps = []
+    for sec in boots:
+        try:
+            reps.append(boot_report(sec))
+        except ValueError:
+            continue  # a boot line from another firmware: not ours to judge
+    if before_n is None:
+        return (reps[-1] if reps else None), []
+    newer = [r for r in reps if (boot_number(r) or -1) > before_n]
+    if not newer:
+        return None, []
+    return newer[0], [r["boot"]["slug"] for r in newer[1:]]
+
+
+def latest_turn_crash(boots: List[List[Dict[str, str]]]) -> Optional[dict]:
+    """The newest boot whose crash line is a fresh crash on the turn task (a mid-turn
+    panic), skipping boots the harness caused after it."""
+    for sec in reversed(boots):
+        try:
+            rep = boot_report(sec)
+        except ValueError:
+            continue
+        c = rep["crash"]
+        if c and c["this"] == "1" and c["task"] in TURN_TASKS:
+            return rep
+    return None
+
+
+def poll_until(fetch, done, budget_s: float, interval_s: float = 5.0, clock=time.time, sleep=time.sleep):
+    """Call ``fetch()`` until ``done(value)`` holds or ``budget_s`` runs out; returns
+    ``(last value or None, last transient error or None)``.
+
+    A connect or read failure inside the budget is a board that is rejoining Wi-Fi or
+    rebooting, not a verdict, so it is retried; any other exception propagates."""
+    deadline = clock() + budget_s
+    last, err = None, None
+    while True:
+        try:
+            last, err = fetch(), None
+            if done(last):
+                return last, None
+        except TRANSIENT_NET_ERRORS as exc:
+            err = exc
+        if clock() >= deadline:
+            return last, err
+        sleep(interval_s)
+
+
 # ---- device helpers --------------------------------------------------------------
 def _lan_ip(ip_from_beacon: Optional[str]) -> str:
     ip = os.environ.get("NIMBUS_TEST_IP") or ip_from_beacon
@@ -193,35 +265,86 @@ def _lan_ip(ip_from_beacon: Optional[str]) -> str:
     return ip
 
 
-def _latest_report(net, ip: str) -> dict:
-    text = net.get("/api/errlog", ip=ip, timeout=15.0).text
-    boots = split_boots(parse_log(text))
+def _boots(net, ip: str) -> List[List[Dict[str, str]]]:
+    boots = split_boots(parse_log(net.get("/api/errlog", ip=ip, timeout=15.0).text))
     assert boots, "the durable log holds no boot record (is this the crash-forensics image?)"
-    return boot_report(boots[-1])
+    return boots
 
 
-def _await_crash_reboot(device, timeout: float) -> "Optional[str]":
+def _latest_report(net, ip: str) -> dict:
+    return boot_report(_boots(net, ip)[-1])
+
+
+def _boot_n(net, ip: str) -> Optional[int]:
+    """This boot's number (the n= of its boot record), read before a crash is fired."""
+    n = net.get_json("/api/state", ip=ip, timeout=10.0)["boot"]["n"]
+    return int(n) if isinstance(n, int) or str(n).isdigit() else None
+
+
+def _crash_report(net, ip: str, before_n: Optional[int]) -> dict:
+    """The record of the boot the crash produced (see first_boot_after)."""
+    rep, later = first_boot_after(_boots(net, ip), before_n)
+    assert rep is not None, f"no boot after boot n={before_n} in the durable log"
+    if later:
+        print(f"[L39] boot(s) after the crash boot, caused by the harness: {later}")
+    rep["later"] = later
+    return rep
+
+
+def _arm_log(net, ip: str) -> str:
+    """The durable log's PANIC arm=turn lines (an arm the turn dropped says so)."""
+    text = net.get("/api/errlog", ip=ip, timeout=15.0).text
+    return " | ".join(ln for ln in text.splitlines() if "PANIC arm=turn" in ln)[-400:]
+
+
+class NoCrash(Exception):
+    """The board did not reset within the window: nothing crashed."""
+
+
+def _new_boot_seen(net, ip: str, before_n: Optional[int], budget_s: float) -> bool:
+    """Over the LAN: did a boot newer than ``before_n`` start? (connection errors while
+    the board reboots are retried, see poll_until)."""
+    if before_n is None:
+        return True  # nothing to compare: assume the silent console hid a reset
+    value, _ = poll_until(lambda: _boot_n(net, ip), lambda n: n is not None and n > before_n, budget_s, interval_s=3.0)
+    return value is not None and value > before_n
+
+
+def _await_crash_reboot(device, net, ip: str, before_n: Optional[int], timeout: float) -> "Optional[str]":
     """Wait out a crash and the reboot after it; returns the READY beacon's IP.
 
     The panic handler prints its own report ("Guru Meditation", "abort()", a backtrace)
     before the reset. Those lines are the crash under test, not a boot failure, so they
     are read past here until the ROM's ``rst:`` banner; only then does the boot scanner
-    (which fails on panic markers) take over. If the USB endpoint re-enumerates instead,
-    reopen without draining so the beacon is kept."""
+    (which fails on panic markers) take over.
+
+    The serial handle is reopened only when it is really gone. On the S3's native USB a
+    reopen resets the chip (reason ``usb``), so a reopen after a window in which nothing
+    crashed used to manufacture a reboot and hide the fact that the panic never fired.
+    Now: a dropped port is reopened; a silent console with no reset banner is checked over
+    the LAN, and if no new boot started, NoCrash is raised and the board is left alone."""
     try:
         device.expect("rst:", timeout=timeout)
-    except Exception:  # noqa: BLE001 - a re-enumerated endpoint or a missed banner
+    except ExpectTimeout:
+        if not _new_boot_seen(net, ip, before_n, 45.0):
+            raise NoCrash(f"no reset within {timeout:.0f} s of the panic (boot n={before_n} still running)")
+        device.reopen_after_reenumerate(drain_boot=False)  # the handle was a dead endpoint
+    except Exception:  # noqa: BLE001 - the USB endpoint dropped (re-enumerated)
         device.reopen_after_reenumerate(drain_boot=False)
-    _, ip = device.wait_ready(timeout=60.0)
-    return ip
+    _, ip2 = device.wait_ready(timeout=60.0)
+    return ip2
 
 
-def _panic_and_reboot(device, kind: str) -> str:
-    """Fire ``PANIC <kind>`` and wait for the next boot's READY. Returns the LAN IP."""
+def _panic_and_reboot(device, net, kind: str) -> "tuple[str, Optional[int]]":
+    """Fire ``PANIC <kind>`` and wait for the next boot's READY. Returns the LAN IP and
+    the boot number that was running before the crash."""
+    ip = _lan_ip(None)
+    before = _boot_n(net, ip)
     device.drain(quiet=0.2)
     device.send(f"PANIC {kind}")
     # The task watchdog needs ~8 s to fire; the dump write takes a second or two.
-    return _lan_ip(_await_crash_reboot(device, 20.0 if kind == "twdt" else 10.0))
+    ip2 = _await_crash_reboot(device, net, ip, before, 20.0 if kind == "twdt" else 10.0)
+    return _lan_ip(ip2), before
 
 
 def _require_panic_verb(device) -> None:
@@ -255,14 +378,16 @@ def _arm_turn_panic(device, kind: str, round_: int) -> None:
 @pytest.mark.parametrize("kind", IMMEDIATE_KINDS)
 def test_panic_kind_leaves_a_crash_report(device, net, kind):
     _require_panic_verb(device)
-    ip = _panic_and_reboot(device, kind)
-    rep = _latest_report(net, ip)
+    ip, before = _panic_and_reboot(device, net, kind)
+    rep = _crash_report(net, ip, before)
     ok, why = crash_verdict(rep, kind)
     print(f"[L39] {kind}: boot={rep['boot']} crash={rep['crash']} why={rep['why']!r}")
     assert ok, f"PANIC {kind}: {why}"
     state = net.get_json("/api/state", ip=ip, timeout=10.0)["boot"]
-    assert state["crash"] and state["crash"]["new"] is True and state["crash"]["fp"] == rep["crash"]["fp"]
-    assert state["reason"] == kind_slug(kind)
+    assert state["crash"] and state["crash"]["fp"] == rep["crash"]["fp"], "/api/state names another dump"
+    assert state["crash"]["why"] and state["crash"]["why"] != "(no reason recorded)", "/api/state has no reason"
+    if not rep["later"]:  # the crash boot is still the running boot
+        assert state["crash"]["new"] is True and state["reason"] == kind_slug(kind)
     # A plain reboot right after: the same dump is stale, mentioned once, not repeated.
     device.reset()
     _, ip2 = device.wait_ready(timeout=40.0)
@@ -310,11 +435,16 @@ def test_live_turn_panic_in_the_transport(device, net, kind):
     is the turn's own."""
     _require_panic_verb(device)
     ip = _lan_ip(None)
+    before = _boot_n(net, ip)
     _arm_turn_panic(device, kind, 0)
     r = net.post("/api/chat", {"text": "L39 crash-forensics probe: reply with the word ok."}, ip=ip, timeout=10.0)
     assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:200]}"
     # The turn reaches its first exchange within seconds, panics, and the board reboots.
-    rep = _latest_report(net, _lan_ip(_await_crash_reboot(device, 90.0)))
+    try:
+        ip2 = _await_crash_reboot(device, net, ip, before, 90.0)
+    except NoCrash as exc:
+        pytest.fail(f"the armed panic did not fire: {exc}; log: {_arm_log(net, ip)!r}")
+    rep = _crash_report(net, _lan_ip(ip2), before)
     ok, why = crash_verdict(rep, kind, armed=True)
     print(f"[L39] live {kind}: crash={rep['crash']} bt={rep['bt']} why={rep['why']!r}")
     assert ok, f"live PANIC {kind} arm=turn: {why}"
@@ -332,15 +462,19 @@ def test_panic_armed_at_a_later_round(device, net):
     told which request was lost. Skips when the model answered without a tool round."""
     _require_panic_verb(device)
     ip = _lan_ip(None)
+    before = _boot_n(net, ip)
     _arm_turn_panic(device, "nullptr", 1)
     prompt = "L39 probe: call the device status tool once, then reply with the word ok."
     r = net.post("/api/chat", {"text": prompt}, ip=ip, timeout=10.0)
     assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:200]}"
     try:
-        ip2 = _await_crash_reboot(device, 120.0)
-    except Exception:  # noqa: BLE001 - no crash: the model answered in one round
-        pytest.skip("the turn ended before round 1 (no tool call), so the arm was dropped")
-    rep = _latest_report(net, _lan_ip(ip2))
+        ip2 = _await_crash_reboot(device, net, ip, before, 120.0)
+    except NoCrash as exc:
+        log = _arm_log(net, ip)
+        if "dropped" in log:  # the model answered in one round, so the arm was dropped
+            pytest.skip(f"the turn ended before round 1 (no tool call): {log!r}")
+        pytest.fail(f"the armed panic did not fire and was not dropped: {exc}; log: {log!r}")
+    rep = _crash_report(net, _lan_ip(ip2), before)
     ok, why = crash_verdict(rep, "nullptr", armed=True)
     assert ok, f"PANIC nullptr arm=turn round=1: {why}"
     assert "turn-message/r1" in rep["boot"]["prev"], f"prev={rep['boot']['prev']!r}, want turn-message/r1"
@@ -364,14 +498,16 @@ def test_offline_boots_keep_their_rows(device, net, secrets):
         device.wait_ready(timeout=60.0)
     device.wifi(ssid, pw)
     ip = _lan_ip(None)
-    deadline = time.time() + 120.0
-    rows = ""
-    while time.time() < deadline:
-        rows = net.get("/api/mem/episodic?session=system&limit=40", ip=ip, timeout=15.0).text
-        if rows.count("clock never synced") >= 2:
-            break
-        time.sleep(5.0)
-    assert rows.count("clock never synced") >= 2, "the offline boots' rows did not reach the timeline"
+    # The board is rejoining Wi-Fi: a connect timeout inside the budget is retried.
+    rows, err = poll_until(
+        lambda: net.get("/api/mem/episodic?session=system&limit=40", ip=ip, timeout=15.0).text,
+        lambda text: text.count("clock never synced") >= 2,
+        120.0,
+    )
+    rows = rows or ""
+    assert rows.count("clock never synced") >= 2, (
+        f"the offline boots' rows did not reach the timeline (last network error: {err!r})"
+    )
     assert "from boot n=" in rows
 
 
@@ -397,20 +533,23 @@ def test_early_boot_abort_is_explained(device, net):
     back. The image that boots after the rollback reads the last abort's dump. Needs the
     same crash-forensics image in BOTH app slots (flash it twice) so the rolled-back
     image is a reader too."""
+    ip0 = _lan_ip(None)
+    before = _boot_n(net, ip0)
     device.cmd("OTASIM arm app0", "OTASIM armed", timeout=5.0)
     device.cmd("OTASIM crash", "OTASIM crash", timeout=5.0)
     device.reset()
     # Each boot aborts in the guard (its panic print is expected) until the guard rolls
-    # back; the rolled-back image reaches READY.
+    # back; the rolled-back image reaches READY. The aborting boots stop before the boot
+    # record, so the first numbered boot after `before` is the rolled-back image.
     deadline = time.time() + 180.0
     ip = None
     while time.time() < deadline and ip is None:
         try:
-            ip = _await_crash_reboot(device, 30.0)
+            ip = _await_crash_reboot(device, net, ip0, before, 30.0)
         except Exception:  # noqa: BLE001 - another aborting boot before the rollback
             continue
     device.cmd("OTASIM clear", "OTASIM cleared", timeout=5.0)
-    rep = _latest_report(net, _lan_ip(ip))
+    rep = _crash_report(net, _lan_ip(ip), before)
     assert rep["crash"] is not None and rep["crash"]["new"] == "1", "the early-boot abort left no crash report"
     assert rep["why"] and "abort" in rep["why"], f"crash-why {rep['why']!r} does not name the abort"
     # The RTC breadcrumb names where the previous run stopped: inside the boot guard.
@@ -423,7 +562,7 @@ def test_breadcrumb_names_the_turn_step_after_a_mid_turn_panic(device, net):
     """After a panic in a turn, the boot line's prev= says the run was in a turn (the
     RTC breadcrumb survives the panic reset). Runs after the live legs; skips if the
     newest boot was not a turn crash."""
-    rep = _latest_report(net, _lan_ip(None))
-    if not rep["crash"] or rep["crash"]["task"] != "tg_poll" or rep["crash"]["this"] != "1":
-        pytest.skip("the newest boot is not a mid-turn crash (run the live legs first)")
+    rep = latest_turn_crash(_boots(net, _lan_ip(None)))
+    if rep is None:
+        pytest.skip("no mid-turn crash boot in the durable log (run the live legs first)")
     assert "/turn" in rep["boot"]["prev"], f"prev={rep['boot']['prev']!r}, want the turn stage"

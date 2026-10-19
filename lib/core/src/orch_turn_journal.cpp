@@ -89,9 +89,10 @@ bool parseTurnJournal(const std::string& json, TurnJournal& out) {
 }
 
 std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
-                        const std::string& hhmm) {
+                        const std::string& hhmm, const std::string& cause) {
   const std::string name = deviceName.empty() ? std::string("Nimbus") : deviceName;
   std::string msg = name + " restarted after a crash";
+  if (!cause.empty()) msg += " (" + cause + ")";
   if (!j) return msg + ". Nothing was in progress, so nothing was lost.";
   const std::string from = hhmm.empty() ? std::string() : " from " + hhmm;
   const char* noun = requestNoun(j->kind);

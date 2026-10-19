@@ -50,9 +50,10 @@ std::string turnMark(const std::string& kind, int round);
 std::string kindFromTurnMark(const std::string& mark);
 
 // The owner notice after a crash boot. `j` is the journal (nullptr when no turn was in
-// flight); `hhmm` is the local start time of that turn ("" when the clock was not set).
-// Plain words, no technical terms: the owner reads it on a phone.
+// flight); `hhmm` is the local start time of that turn ("" when the clock was not set);
+// `cause` is what went wrong in plain words (nimbus::crash::plainCause), "" to leave it
+// out. Plain words, no technical terms: the owner reads it on a phone.
 std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
-                        const std::string& hhmm);
+                        const std::string& hhmm, const std::string& cause = std::string());
 
 }  // namespace nimbus::orch

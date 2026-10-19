@@ -320,7 +320,7 @@ void fillBootState(JsonObject o) {
   c["task"] = r.task;
   c["pc"] = "0x" + hex8(r.pc);
   c["cause"] = causeName(r.cause);
-  c["why"] = redacted(r.why);   // at read time: provider keys are registered by then
+  c["why"] = redacted(whyOf(r));   // at read time: provider keys are registered by then
   c["fwMatch"] = r.fwMatch;
 }
 
@@ -385,11 +385,16 @@ void queueCrashNotice() {
   const String owner = agent::orchestrator::firstAllowedChat();
   if (!owner.length()) return;
   const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
+  // This crash's own dump names the cause; an older dump (this crash wrote none) does not.
+  const Report* dump = (g_report && g_report->thisReset && (!g_report->newKnown || g_report->isNew))
+                           ? g_report : nullptr;
+  const CrashKind kind = crashKind(dump, g_reason);
   const std::string msg = nimbus::orch::crashNotice(std::string(sys::deviceName().c_str()), j,
-                                                    j ? localHhmm(j->at) : std::string());
+                                                    j ? localHhmm(j->at) : std::string(),
+                                                    plainCause(kind));
   const bool queued = agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
-  agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s)",
-                queued ? "queued" : "not queued", j ? j->kind.c_str() : "none");
+  agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s cause=%s)",
+                queued ? "queued" : "not queued", j ? j->kind.c_str() : "none", plainCause(kind));
 }
 
 #ifdef NIMBUS_TEST

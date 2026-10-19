@@ -15,6 +15,9 @@
 //   crash-bt: depth=12 corrupt=0 0x4201abcd,0x4201b0c4,...
 //   crash-why: Stack canary watchpoint triggered (tg_poll)
 //
+// crash-why is the panic message the dump recorded, or the reason whyOf() builds from the
+// exception cause when it recorded none (a CPU exception or the end-of-stack watchpoint).
+//
 // What it never prints: stack bytes or the exception registers (a0-a15). A stack in
 // transit can hold a provider key or the bot token, and so can a register. The
 // RawSummary below mirrors the IDF summary INCLUDING exc_a, so the host test can plant
@@ -81,8 +84,32 @@ struct Report {
 // Copy the printable facts out of a raw summary (never exc_a).
 void fromRaw(const RawSummary& raw, Report& out);
 
-// Xtensa EXCCAUSE name ("LoadProhibited") or "other".
+// Xtensa EXCCAUSE name ("LoadProhibited"), the name of an IDF pseudo cause (64 plus
+// PANIC_RSN_*, for a panic with no hardware cause: "DebugException", "IntWdtCpu0", ...),
+// or "other".
 const char* causeName(uint32_t cause);
+
+// The reason every crash report states. IDF stores a panic message in the dump only for
+// abort() (the FreeRTOS stack-overflow hook aborts too) and the task watchdog. A CPU
+// exception (StoreProhibited, LoadProhibited, ...), the end-of-stack watchpoint, the
+// interrupt watchdog and a double exception store none, so the reason is then built from
+// the exception cause that every summary carries:
+//   StoreProhibited in loopTask: a write to an invalid address (0x00000000); no panic message in the dump
+// Printable ASCII, at most kMaxWhyBytes, never empty.
+std::string whyOf(const Report& r);
+
+// What the owner's crash notice says went wrong, in plain words.
+enum class CrashKind : uint8_t {
+  SoftwareError,     // a software error (a bad memory access, a failed check, anything else)
+  Unresponsive,      // part of it stopped responding (a watchdog)
+  OutOfMemory,       // it ran out of memory (an allocation failed)
+  TaskOutOfMemory,   // one of its jobs ran out of memory (a stack overflow)
+};
+// `dump` is this crash's own dump, or nullptr when the crash wrote none (an older dump
+// does not describe it); `resetReason` is this boot's esp_reset_reason value.
+CrashKind crashKind(const Report* dump, int resetReason);
+// "a software error", "part of it stopped responding", ...: no jargon, no address.
+const char* plainCause(CrashKind k);
 
 std::string crashLine(const Report& r);
 std::string crashBtLine(const Report& r);
