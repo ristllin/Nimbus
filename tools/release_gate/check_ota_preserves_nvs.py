@@ -12,7 +12,8 @@ lose-every-customer failure.
 
 This is the host-provable half of the gate: a source guard over the updater seam
 (src/sys/ota_update.cpp). It extracts every NVS WRITE the OTA glue performs
-(nvs_set_*, nvs_erase_key) and asserts each target key resolves to an
+(nvs_set_*, nvs_erase_key, and each call of a helper that forwards its key
+argument to them) and asserts each target key resolves to an
 OTA-bookkeeping key, never a user-data key. It FAILS the build if someone adds a
 write to a user key inside the OTA flow. The full end-to-end proof (provision ->
 OTA span -> power-cycle -> read NVS back) is the bench leg documented in
@@ -42,6 +43,16 @@ KEYS_HDR_REL = os.path.join("src", "agent", "agent_config.h")
 WRITE_RE = re.compile(
     r"\bnvs_(?:set_(?:i8|u8|i16|u16|i32|u32|i64|u64|str|blob)|erase_key)\s*"
     r"\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*([^,\)]+?)\s*[,\)]"
+)
+
+# A write WRAPPER: a helper taking (nvs_handle_t h, const char* key, ...) whose body
+# passes that key parameter straight to nvs_set_* / nvs_erase_key (the OTA glue reports
+# every write through notePersist this way). The forwarding call inside it is not a
+# write of its own; every CALL of the wrapper is one, and its key argument is resolved
+# exactly like a direct write's. Group 1 = the helper name, group 2 = its key parameter.
+WRAPPER_DEF_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*nvs_handle_t\s+[A-Za-z_][A-Za-z0-9_]*\s*,"
+    r"\s*const\s+char\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*[,\)][^{;]*\{"
 )
 
 # `#define AKEY_FOO  "literal"` in the key registry.
@@ -86,6 +97,41 @@ def resolve_key(token: str, defines: "dict[str, str]", locals_: "dict[str, str]"
     return None
 
 
+def body_end(src_text: str, open_brace: int) -> int:
+    """Index just past the brace that closes the one at `open_brace`."""
+    depth = 0
+    for i in range(open_brace, len(src_text)):
+        if src_text[i] == "{":
+            depth += 1
+        elif src_text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(src_text)
+
+
+def write_key_tokens(src_text: str) -> "list[str]":
+    """The key token of every NVS write: each direct nvs_set_* / nvs_erase_key call,
+    except a wrapper forwarding its own key parameter, plus each call of a wrapper."""
+    forwards: "list[tuple[int, int, str]]" = []  # (body start, body end, key parameter)
+    wrappers: "list[str]" = []
+    for m in WRAPPER_DEF_RE.finditer(src_text):
+        start = m.end() - 1
+        end = body_end(src_text, start)
+        if any(w.group(1).strip() == m.group(2) for w in WRITE_RE.finditer(src_text, start, end)):
+            forwards.append((start, end, m.group(2)))
+            wrappers.append(m.group(1))
+    tokens = [
+        w.group(1)
+        for w in WRITE_RE.finditer(src_text)
+        if not any(s <= w.start() < e and w.group(1).strip() == p for s, e, p in forwards)
+    ]
+    for name in wrappers:
+        call = re.compile(r"\b" + re.escape(name) + r"\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*([^,\)]+?)\s*[,\)]")
+        tokens.extend(c.group(1) for c in call.finditer(src_text))
+    return tokens
+
+
 def audit(src_text: str, hdr_text: str) -> "tuple[bool, list[str]]":
     """(ok, messages). ok=False if any OTA NVS write targets a non-bookkeeping key
     or an unresolvable key token."""
@@ -98,7 +144,7 @@ def audit(src_text: str, hdr_text: str) -> "tuple[bool, list[str]]":
 
     msgs: "list[str]" = []
     ok = True
-    writes = WRITE_RE.findall(src_text)
+    writes = write_key_tokens(src_text)
     if not writes:
         return False, [
             "no NVS writes found in the OTA glue - the guard's assumption "

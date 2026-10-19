@@ -196,6 +196,53 @@ def test_ota_unresolvable_key_fails_closed():
     assert any("UNRESOLVABLE" in m for m in msgs)
 
 
+# A helper that forwards its key parameter to nvs_set_* (the OTA glue reports every
+# write through notePersist this way): each call is audited as the write it is.
+_WRAPPERS = (
+    "static bool rawSetI32(nvs_handle_t h, const char* k, int32_t v) {\n"
+    "  return nimbus::sys::notePersist(nvs_set_i32(h, k, v) == ESP_OK, k);\n"
+    "}\n"
+    "static bool rawSetStr(nvs_handle_t h, const char* k, const char* v) {\n"
+    "  return nimbus::sys::notePersist(nvs_set_str(h, k, v) == ESP_OK, k);\n"
+    "}\n"
+)
+
+
+def test_ota_wrapper_writing_only_bookkeeping_passes():
+    src = _WRAPPERS + "  rawSetI32(h, AKEY_OTA_PENDING, 0);\n  rawSetStr(h, AKEY_OTA_TYPE, t);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert ok, msgs
+    assert '"otaPend"' in msgs[0] and '"otaType"' in msgs[0]
+
+
+def test_ota_wrapper_writing_a_user_key_fails():
+    src = _WRAPPERS + "  rawSetI32(h, AKEY_OTA_PENDING, 0);\n  rawSetStr(h, AKEY_TOUCH_CAL, buf);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("tchCal" in m and "USER data key" in m for m in msgs)
+
+
+def test_ota_wrapper_with_an_unresolvable_key_fails_closed():
+    src = _WRAPPERS + "  rawSetStr(h, someRuntimeKey, v);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("UNRESOLVABLE" in m and "someRuntimeKey" in m for m in msgs)
+
+
+def test_ota_helper_with_its_own_fixed_key_is_still_audited():
+    # Only a helper forwarding its OWN key parameter is a wrapper; a fixed key inside a
+    # helper is a direct write like any other.
+    src = (
+        "static bool stash(nvs_handle_t h, const char* v) {\n"
+        "  return nvs_set_str(h, AKEY_WIFI_SSID, v) == ESP_OK;\n"
+        "}\n"
+        "  stash(h, AKEY_OTA_TYPE);\n"
+    )
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("wifiSsid" in m for m in msgs)
+
+
 def test_ota_no_writes_is_a_stale_guard():
     ok, msgs = otanvs.audit("// nothing here\n", _KEYS_HDR)
     assert not ok
