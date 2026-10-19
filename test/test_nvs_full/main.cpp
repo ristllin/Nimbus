@@ -1219,6 +1219,20 @@ static void test_device_seam_asks_the_reserve() {
 // and does not count. The scan: a store::set*/clear*/replace* call is DISCARDED when
 // it starts a statement (after ; { } ) else, or at a line start whose previous line
 // ends one); a call inside an expression (return, =, &&, an argument) is used.
+static std::string trimRight(std::string s) {
+  while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+  return s;
+}
+
+static bool endsWith(const std::string& s, const std::string& suffix) {
+  return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// True when code ending in `ctx` (already right-trimmed) is followed by a new statement.
+static bool startsStatement(const std::string& ctx) {
+  return ctx.empty() || std::strchr(";{})", ctx.back()) || endsWith(ctx, "else");
+}
+
 static std::vector<int> discardedSetterLines(const std::string& text) {
   std::regex call(R"re((agent::)?store::(set|clear|replace)\w*\s*\()re");
   std::vector<int> out;
@@ -1230,21 +1244,13 @@ static std::vector<int> discardedSetterLines(const std::string& text) {
     if (end == std::string::npos) end = text.size();
     std::string line = text.substr(start, end - start);
     ++lineNo;
-    const size_t cm = line.find("//");
-    if (cm != std::string::npos) line = line.substr(0, cm);
+    line = line.substr(0, line.find("//"));
     for (auto it = std::sregex_iterator(line.begin(), line.end(), call); it != std::sregex_iterator(); ++it) {
-      std::string before = line.substr(0, (size_t)it->position());
-      while (!before.empty() && std::isspace((unsigned char)before.back())) before.pop_back();
-      if (before.size() >= 6 && before.compare(before.size() - 6, 6, "(void)") == 0) continue;
-      std::string ctx = before.empty() ? prev : before;
-      while (!ctx.empty() && std::isspace((unsigned char)ctx.back())) ctx.pop_back();
-      const bool stmt = ctx.empty() || std::strchr(";{})", ctx.back()) ||
-                        (ctx.size() >= 4 && ctx.compare(ctx.size() - 4, 4, "else") == 0);
-      if (stmt) out.push_back(lineNo);
+      const std::string before = trimRight(line.substr(0, (size_t)it->position()));
+      if (endsWith(before, "(void)")) continue;
+      if (startsStatement(before.empty() ? trimRight(prev) : before)) out.push_back(lineNo);
     }
-    bool blank = true;
-    for (char c : line) blank = blank && std::isspace((unsigned char)c);
-    if (!blank) prev = line;
+    if (!trimRight(line).empty()) prev = line;
     start = end + 1;
   }
   return out;

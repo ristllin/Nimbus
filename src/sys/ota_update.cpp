@@ -218,6 +218,11 @@ static const char* otaVariant() {
 static bool g_validAtBoot = false;
 bool imageValidAtBoot() { return g_validAtBoot; }
 
+// Stores this boot's attempt count; true only when it landed and reads back.
+static bool storeBootAttempt(nvs_handle_t h, int32_t boots) {
+  return rawSetI32(h, AKEY_OTA_BOOTS, boots) && rawGetI32(h, AKEY_OTA_BOOTS, -1) == boots;
+}
+
 void bootGuard() {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;  // no NVS: nothing to guard
@@ -273,8 +278,7 @@ void bootGuard() {
   // that cannot be stored (a full NVS) counts as over budget: otherwise a crash-looping
   // image would never use up its attempts and never roll back.
   int32_t boots = rawGetI32(h, AKEY_OTA_BOOTS, 0) + 1;
-  const bool countStored = rawSetI32(h, AKEY_OTA_BOOTS, boots) &&
-                           rawGetI32(h, AKEY_OTA_BOOTS, -1) == boots;
+  const bool countStored = storeBootAttempt(h, boots);
   nvs_commit(h);
 
   if (nimbus::ota::rollbackOnBoot(true, (uint8_t)boots, countStored)) {
@@ -773,6 +777,23 @@ static void failInstall(const char* why) {
   fireEvent(EvInstallFail, why, g_haveManifest ? g_manifest.version : "");
 }
 
+// Arms the guard, reads it back and flips, through the shared sequencer. Returns
+// nullptr once the image is flipped, else the failure to report: storage_full when the
+// guard did not read back, "commit" when the flip failed (either way the guard is
+// disarmed and the old image keeps running).
+static const char* commitAndFlip() {
+  // The release notes ride ACROSS the reboot this install causes - the RAM copy
+  // (g_latestNotes) dies with it, and post-update is exactly when the owner (and the
+  // model) ask "what changed?". Consumed + cleared at EvValidated.
+  const String result = String("installing ") + g_manifest.version;
+  const String notes = String(g_manifest.version) + "|" + g_manifest.notes;
+  const nimbus::usbfw::CommitResult cr = nimbus::usbfw::commitInstall(
+      storeCommitHooks(true), runningLabel(), result.c_str(), notes.c_str());
+  if (cr == nimbus::usbfw::CommitResult::Flipped) return nullptr;
+  return cr == nimbus::usbfw::CommitResult::StorageFull ? nimbus::ota::kStorageFullRefusal
+                                                        : "commit";
+}
+
 // The install itself. Runs on the dedicated otainstall task or inline on the
 // Telegram poll task (runOnPoll); the caller releases the claim when it returns. A
 // committed install never returns: it restarts the device holding the claim.
@@ -862,19 +883,8 @@ static void installRun() {
   // 3. restart. Power loss after (1) but before (2) is the "aborted-preflip"
   // path bootGuard disarms; after (2) the guard is already armed. A guard that did
   // not read back (a full NVS) never flips: storage_full, still on the old image.
-  // The release notes ride ACROSS the reboot this install causes - the RAM copy
-  // (g_latestNotes) dies with it, and post-update is exactly when the owner (and the
-  // model) ask "what changed?". Consumed + cleared at EvValidated.
-  const String result = String("installing ") + g_manifest.version;
-  const String notes = String(g_manifest.version) + "|" + g_manifest.notes;
-  const nimbus::usbfw::CommitResult cr = nimbus::usbfw::commitInstall(
-      storeCommitHooks(true), runningLabel(), result.c_str(), notes.c_str());
-  if (cr == nimbus::usbfw::CommitResult::StorageFull) {
-    failInstall(nimbus::ota::kStorageFullRefusal);   // aborts the open Update
-    return;
-  }
-  if (cr != nimbus::usbfw::CommitResult::Flipped) {
-    failInstall("commit");   // flip failed: the guard is disarmed, old image runs
+  if (const char* why = commitAndFlip()) {
+    failInstall(why);   // aborts the open Update; the old image keeps running
     return;
   }
 

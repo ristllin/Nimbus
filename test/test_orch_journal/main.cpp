@@ -355,6 +355,25 @@ static void test_write_verdicts_report_a_refused_store() {
   TEST_ASSERT_FALSE(j.markSeen("nope"));
 }
 
+// The RAM-active tags the store holds right now.
+static std::map<std::string, bool> activeTagsHeld(const Journal& j, const FlakyStore& st) {
+  std::map<std::string, bool> out;
+  const auto held = st.held();
+  for (int i = 0; i < j.count(); ++i) {
+    JobRecord a{};
+    j.get(i, a);
+    if (held.count(a.tag)) out[a.tag] = true;
+  }
+  return out;
+}
+
+static bool isActive(const Journal& j, const std::string& tag) {
+  JobRecord a{};
+  for (int i = 0; i < j.count(); ++i)
+    if (j.get(i, a) && tag == a.tag) return true;
+  return false;
+}
+
 // The property, over random operation sequences and failure rates: an operation never
 // takes a RAM-active record out of the store (only its own landed update changes it),
 // a reboot re-attaches every stored record exactly once, and RAM never holds a slot
@@ -374,13 +393,7 @@ static void test_no_active_record_lost_under_any_failure_pattern() {
       r = r * 1664525u + 1013904223u;
       const char* tag = tags[(r >> 8) % 10];
       // Which RAM-active tags the store holds BEFORE this operation.
-      std::map<std::string, bool> mustStay;
-      const auto before = st.held();
-      for (int i = 0; i < j.count(); ++i) {
-        JobRecord a{};
-        j.get(i, a);
-        if (before.count(a.tag)) mustStay[a.tag] = true;
-      }
+      std::map<std::string, bool> mustStay = activeTagsHeld(j, st);
       const int op = (int)((r >> 20) % 6);
       bool reboot = false;
       switch (op) {
@@ -392,11 +405,7 @@ static void test_no_active_record_lost_under_any_failure_pattern() {
       }
       const auto after = st.held();
       for (const auto& kv : mustStay) {
-        JobRecord a{};
-        bool stillActive = false;
-        for (int i = 0; i < j.count(); ++i)
-          if (j.get(i, a) && kv.first == a.tag) stillActive = true;
-        if (!stillActive) continue;   // the op itself made it seen
+        if (!isActive(j, kv.first)) continue;   // the op itself made it seen
         char msg[96];
         std::snprintf(msg, sizeof(msg), "seed %u step %d op %d lost %s", (unsigned)seed, step, op,
                       kv.first.c_str());
