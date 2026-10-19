@@ -105,17 +105,14 @@ def _spawn_ledger_present(dev: Device) -> bool:
     merges (the turn ends with no ledger line, or nothing arrives in time)."""
     dev.drain(quiet=0.3)
     dev.send("TURN " + PROBE_TURN)
-    deadline = time.time() + PROBE_TIMEOUT_S
-    while True:
-        try:
-            m = dev.expect_re(rf"{LEDGER_RE}|{TURN_END_RE}", timeout=max(0.0, deadline - time.time()))
-        except ExpectTimeout:
-            return False
-        verdict = probe_verdict(m.string)
-        if verdict is not None:
-            if verdict:
-                _settle(dev)
-            return verdict
+    try:
+        m = dev.expect_re(rf"{LEDGER_RE}|{TURN_END_RE}", timeout=PROBE_TIMEOUT_S)
+    except ExpectTimeout:
+        return False
+    present = probe_verdict(m.string) is True
+    if present:
+        _settle(dev)
+    return present
 
 
 @pytest.fixture(scope="module")

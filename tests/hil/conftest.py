@@ -26,9 +26,19 @@ from device import Device, DeviceError  # noqa: E402
 from manual import ManualStep  # noqa: E402
 from net import IP_READY_WAIT_S, Net  # noqa: E402
 from nsn import BrokerUnavailable, NsnInjector  # noqa: E402
+from redact import scrub  # noqa: E402
 from secrets import Secrets, SecretsUnavailable  # noqa: E402
 
 HARDWARE_MARKERS = ("hil", "net", "agent", "audio", "destructive")
+# Credentials some legs read straight from the environment: scrubbed from every test
+# report even when no Secret was ever built from them.
+SECRET_ENV = (
+    "NIMBUS_TEST_TG_TOKEN",
+    "NIMBUS_TEST_TG_CHAT",
+    "NIMBUS_TEST_STA_PASS",
+    "NIMBUS_TEST_STA_PASS2",
+    "NIMBUS_TEST_TOKEN",
+)
 GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered first - F11/F12 brick)"
 
 # ---- CUM-141: mid-run console-wedge detection + in-place auto-recovery ------
@@ -133,14 +143,34 @@ def pytest_runtest_setup(item: "pytest.Item") -> None:
         )
 
 
+def scrub_report(report) -> None:
+    """Replace every known secret value in a test report with its redacted form
+    before pytest prints it: the traceback text, a skip reason, and the captured
+    output sections. Repr redaction (redact.Secret) cannot reach a value an f-string
+    already copied into a URL, a library error quoting that URL, or pytest's
+    character diff of a failed string comparison; this does. A report with nothing
+    to scrub is left exactly as pytest built it."""
+    extra = [os.environ.get(name, "") for name in SECRET_ENV]
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:  # a skip: (path, line, reason)
+        report.longrepr = (longrepr[0], longrepr[1], scrub(str(longrepr[2]), extra))
+    elif longrepr is not None:
+        text = str(longrepr)
+        clean = scrub(text, extra)
+        if clean != text:
+            report.longrepr = clean
+    report.sections = [(title, scrub(body, extra)) for title, body in report.sections]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: "pytest.Item", call):
-    """Detect a console-death signature in a hardware test's failure and, on the
-    first one, attempt a single in-place recovery (CUM-141). A genuine assertion
-    failure or a firmware boot-loop (BootError) is NOT a wedge and flows through
-    untouched."""
+    """Scrub secrets from every report (scrub_report). Then detect a console-death
+    signature in a hardware test's failure and, on the first one, attempt a single
+    in-place recovery (CUM-141). A genuine assertion failure or a firmware
+    boot-loop (BootError) is NOT a wedge and flows through untouched."""
     outcome = yield
     report = outcome.get_result()
+    scrub_report(report)
     if report.when != "call" or not report.failed:
         return
     sentinel = getattr(item.config, "_nimbus_wedge", None)
@@ -263,7 +293,10 @@ def bench(device, net, secrets, require_secret):
     r = net.post("/api/orch", {"tgToken": bot.token, "tgAllow": bot.chat}, timeout=8.0)
     assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
     yield bot
-    net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
+    r = net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
+    assert r.status_code == 200, (
+        f"clearing the test bot token failed (HTTP {r.status_code}); the unit may still poll it"
+    )
 
 
 @pytest.fixture()

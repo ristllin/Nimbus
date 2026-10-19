@@ -172,6 +172,11 @@ class BootError(DeviceError):
     """A panic / reboot-loop was seen in the boot capture (F11/F14)."""
 
 
+def _esptool_module_available() -> bool:
+    """Whether this interpreter can ``import esptool`` (a seam the host tests fake)."""
+    return importlib.util.find_spec("esptool") is not None
+
+
 def esptool_commands(path: Optional[str] = None, home: Optional[str] = None) -> List[List[str]]:
     """Every way to run esptool on this host, in the order esptool_hard_reset tries
     them: ``esptool.py`` then ``esptool`` on PATH, this interpreter's ``esptool``
@@ -190,7 +195,7 @@ def esptool_commands(path: Optional[str] = None, home: Optional[str] = None) -> 
         found = shutil.which(name, path=path)
         if found:
             add(os.path.realpath(found))
-    if importlib.util.find_spec("esptool") is not None:
+    if _esptool_module_available():
         add(sys.executable, "-m", "esptool")
     pio = os.path.join(home or os.path.expanduser("~"), ".platformio")
     penv = os.path.join(pio, "penv", "bin")

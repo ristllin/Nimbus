@@ -9,16 +9,27 @@ only for values of 12 characters or more. Everything else behaves exactly like t
 plain string: ``str()``, f-strings, ``.encode()``, comparisons, form and header
 values, so HTTP, serial and URL code needs no change.
 
-Known limits, both by design (the value must stay usable): ``str()`` and
-f-strings give the real value, so never put a secret in an assertion message or a
-skip reason; and pytest's text diff for a failed ``assert secret == other`` compares
-the raw characters, so assert on a secret's presence or length, never its value.
+``str()`` and f-strings still give the real value (they must: a URL or a form needs
+it), so a string built that way, a library error that quotes such a URL, or pytest's
+character diff for a failed ``assert secret == other`` would carry the value past
+``repr``. The second layer covers those: every ``Secret`` remembers its value
+(``remember``), and the HIL conftest runs each test report through ``scrub`` before
+pytest prints it.
 """
 
 from __future__ import annotations
 
+from functools import lru_cache
+from typing import FrozenSet, Iterable, Set
+
 SHOW_TAIL = 4  # the most characters a redacted repr ever shows
 SHOW_TAIL_MIN_LEN = 12  # shorter values show no characters at all
+SCRUB_MIN_LEN = 8  # shorter values are not scrubbed from text (too likely to hit other words)
+# A run of this many characters copied from a secret is masked even when the value is
+# cut: pytest shortens a long string to "prefix...suffix" in an assertion summary.
+FRAGMENT = 6
+
+_known: Set[str] = set()  # every secret value long enough to scrub, for scrub()
 
 
 def redact(value: object) -> str:
@@ -34,11 +45,66 @@ def redact(value: object) -> str:
     return f"<secret ...{text[-SHOW_TAIL:]}>"
 
 
+def remember(value: object) -> None:
+    """Add a value to the set scrub() replaces (values under SCRUB_MIN_LEN are
+    ignored)."""
+    text = str(value)
+    if len(text) >= SCRUB_MIN_LEN:
+        _known.add(text)
+
+
+@lru_cache(maxsize=8)
+def _fragments(values: FrozenSet[str]) -> FrozenSet[str]:
+    """Every FRAGMENT-long run of the values that can be cut mid-string. A URL is
+    left out: its runs ("https:", "/api/v") would mask every URL in a report."""
+    out: Set[str] = set()
+    for v in values:
+        if "://" not in v:
+            out.update(v[i : i + FRAGMENT] for i in range(len(v) - FRAGMENT + 1))
+    return frozenset(out)
+
+
+def _mask_fragments(text: str, fragments: FrozenSet[str]) -> str:
+    """Replace each stretch of ``text`` made of overlapping secret runs with
+    ``<secret>``."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i : i + FRAGMENT] not in fragments:
+            out.append(text[i])
+            i += 1
+            continue
+        j = i + FRAGMENT
+        while j < len(text) and text[j - FRAGMENT + 1 : j + 1] in fragments:
+            j += 1
+        out.append("<secret>")
+        i = j
+    return "".join(out)
+
+
+def scrub(text: str, extra: Iterable[str] = ()) -> str:
+    """``text`` with every remembered secret value, and every value in ``extra``,
+    replaced by its redacted form (longest first, so a value containing another is
+    replaced whole), then any leftover cut piece of one (FRAGMENT characters or
+    more) masked."""
+    values = set(_known)
+    values.update(v for v in map(str, extra) if len(v) >= SCRUB_MIN_LEN)
+    for value in sorted(values, key=len, reverse=True):
+        if value in text:
+            text = text.replace(value, redact(value))
+    return _mask_fragments(text, _fragments(frozenset(values)))
+
+
 class Secret(str):
     """A string whose ``repr`` is redacted. Concatenation keeps the wrapper, so a
-    value built from a secret (``password + "_WRONG"``) stays redacted too."""
+    value built from a secret (``password + "_WRONG"``) stays redacted too. Every
+    value is remembered for scrub()."""
 
     __slots__ = ()
+
+    def __new__(cls, value: object = "") -> "Secret":
+        obj = super().__new__(cls, value)
+        remember(obj)
+        return obj
 
     def __repr__(self) -> str:
         return redact(self)

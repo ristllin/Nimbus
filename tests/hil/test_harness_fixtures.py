@@ -37,7 +37,7 @@ import device as device_mod
 import net as net_mod
 from device import Device, ExpectTimeout, esptool_commands
 from net import Join, NetError, StationDown, WifiAuthFailure, classify_reason, needs_provisioning
-from redact import SHOW_TAIL, Secret, redact
+from redact import SHOW_TAIL, Secret, redact, scrub
 from secrets import Secrets
 
 HIL_DIR = Path(__file__).resolve().parent
@@ -521,60 +521,124 @@ def test_tokens_from_the_device_or_the_env_are_redacted(monkeypatch):
     assert isinstance(dev.sent[-1], Secret)  # the WIFI line carries the password
 
 
-_LEAK_PROBE = textwrap.dedent(
+_LEAK_CONFTEST = textwrap.dedent(
     """
+    # Loads the real HIL conftest under another name and uses its report hook.
     import importlib.util
     import os
     import sys
 
+    HIL = os.environ["N2_HIL_DIR"]
+    sys.path.insert(0, HIL)
+    _spec = importlib.util.spec_from_file_location("hil_conftest", os.path.join(HIL, "conftest.py"))
+    hil_conftest = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(hil_conftest)
+    pytest_runtest_makereport = hil_conftest.pytest_runtest_makereport
+    """
+)
+
+_LEAK_PROBE = textwrap.dedent(
+    """
+    import os
+
     import pytest
 
-    sys.path.insert(0, os.environ["N2_HIL_DIR"])
     from redact import Secret
-
-    _spec = importlib.util.spec_from_file_location("hil_secrets", os.path.join(os.environ["N2_HIL_DIR"], "secrets.py"))
-    hil_secrets = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(hil_secrets)
+    from secrets import BenchBot
 
 
     @pytest.fixture
     def bench():
-        return hil_secrets.BenchBot(Secret(os.environ["N2_TOKEN"]), Secret(os.environ["N2_CHAT"]))
+        return BenchBot(Secret(os.environ["NIMBUS_TEST_TG_TOKEN"]), Secret(os.environ["NIMBUS_TEST_TG_CHAT"]))
 
 
     @pytest.fixture
     def old_bench():
-        return Secret(os.environ["N2_TOKEN"]), Secret(os.environ["N2_CHAT"])
+        return Secret(os.environ["NIMBUS_TEST_TG_TOKEN"]), Secret(os.environ["NIMBUS_TEST_TG_CHAT"])
 
 
-    def test_fails_with_the_bot_in_scope(bench, old_bench):
+    def test_repr_path(bench, old_bench):
         token, chat = bench
         assert token.startswith("nope")
+
+
+    def test_string_diff_path(bench):
+        assert bench.token == "nope" + bench.token[4:-4] + "nope"
+
+
+    def test_url_in_a_library_error(bench):
+        url = f"https://api.telegram.org/bot{bench.token}/getMe?chat_id={bench.chat}"
+        raise ConnectionError(f"Max retries exceeded with url: {url}")
+
+
+    def test_skip_reason(bench):
+        pytest.skip(f"bot {bench.token} for chat {bench.chat} is unavailable")
+
+
+    def test_captured_output(bench):
+        print("token is", str(bench.token), "chat is", str(bench.chat))
+        assert False
+
+
+    def test_raw_env_value_never_wrapped():
+        raw = os.environ["NIMBUS_TEST_TG_TOKEN"]
+        assert raw == "nope"
     """
 )
 
 
 @pytest.mark.host
-def test_a_failing_leg_never_prints_the_bot_in_its_traceback(tmp_path):
-    """End to end through pytest itself: a failing test that takes both bench shapes,
-    run with the long traceback and every local shown, prints neither value."""
+def test_a_failing_leg_never_prints_the_bot(tmp_path):
+    """End to end through pytest and the real report hook: failing legs that hold
+    the bot in every shape the harness has seen (fixture args, the old tuple, a
+    string diff, an f-string URL in a library error, a skip reason, captured
+    output, a raw env value) are run with the long traceback and every local
+    shown. Neither value may reach the output."""
     token, chat = _fake_values()
+    (tmp_path / "conftest.py").write_text(_LEAK_CONFTEST, encoding="utf-8")
     (tmp_path / "test_probe.py").write_text(_LEAK_PROBE, encoding="utf-8")
-    env = dict(os.environ, N2_HIL_DIR=str(HIL_DIR), N2_TOKEN=token, N2_CHAT=chat)
-    r = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--tb=long", "--showlocals", "-q", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=tmp_path,
-        env=env,
-    )
+    env = dict(os.environ, N2_HIL_DIR=str(HIL_DIR), NIMBUS_TEST_TG_TOKEN=token, NIMBUS_TEST_TG_CHAT=chat)
+    argv = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--tb=long", "--showlocals", "-rA", str(tmp_path)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=60, cwd=tmp_path, env=env)
     out = r.stdout + r.stderr
-    assert r.returncode == 1 and "1 failed" in out, out[-2000:]
+    assert "5 failed, 1 skipped" in out, out[-3000:]
     assert "BenchBot(token=<secret ...wxyz>" in out  # the args line was printed, redacted
     for i in range(len(token) - SHOW_TAIL):
-        assert token[i : i + SHOW_TAIL + 1] not in out, "the token reached the traceback"
-    assert chat not in out, "the chat id reached the traceback"
+        assert token[i : i + SHOW_TAIL + 1] not in out, "the token reached the test output"
+    assert chat not in out, "the chat id reached the test output"
+
+
+@pytest.mark.host
+def test_scrub_report_cleans_text_skips_and_sections(monkeypatch):
+    token, chat = _fake_values()
+    monkeypatch.setenv("NIMBUS_TEST_TG_TOKEN", token)  # known only through the env
+    secret = Secret("ZXCVBNMLKJHGFDSAPOIUYTREWQ" + "wxyz")  # known because a Secret was built
+    report = SimpleNamespace(
+        longrepr=f"E   ConnectionError: url: /bot{token}/getMe key={secret}",
+        sections=[("Captured stdout call", f"chat {chat} token {token}"), ("Captured log call", "nothing secret")],
+    )
+    conftest.scrub_report(report)
+    assert report.longrepr == "E   ConnectionError: url: /bot<secret ...wxyz>/getMe key=<secret ...wxyz>"
+    assert token not in report.sections[0][1] and report.sections[1] == ("Captured log call", "nothing secret")
+    skipped = SimpleNamespace(longrepr=("x.py", 3, f"Skipped: bot {token}"), sections=[])
+    conftest.scrub_report(skipped)
+    assert skipped.longrepr == ("x.py", 3, "Skipped: bot <secret ...wxyz>")
+    untouched = object()
+    clean = SimpleNamespace(longrepr=untouched, sections=[])
+    conftest.scrub_report(clean)
+    assert clean.longrepr is untouched  # nothing to scrub: pytest's own object stays
+
+
+@pytest.mark.host
+def test_public_env_keys_stay_plain_and_are_never_scrubbed(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("NIMBUS_BOARD1_IP=192.0.2.123\nTESTING_WIFI_SSID=BenchNetwork\n", encoding="utf-8")
+    s = Secrets(env_path=env)
+    assert type(s.get("NIMBUS_BOARD1_IP")) is str and type(s.get("TESTING_WIFI_SSID")) is str
+    assert (
+        scrub("ORCH alive sta=1 ip=192.0.2.123 ssid=BenchNetwork")
+        == "ORCH alive sta=1 ip=192.0.2.123 ssid=BenchNetwork"
+    )
 
 
 # ---- 4. esptool is found inside PlatformIO -------------------------------------------
@@ -601,7 +665,7 @@ def pio_home(tmp_path, monkeypatch):
     package.write_text("# esptool\n", encoding="utf-8")
     empty = tmp_path / "bin"
     empty.mkdir()
-    monkeypatch.setattr(device_mod.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(device_mod, "_esptool_module_available", lambda: False)
     real = os.path.realpath
     return SimpleNamespace(
         home=str(home),
@@ -626,7 +690,7 @@ def test_esptool_falls_back_to_platformio_when_path_has_none(pio_home):
 @pytest.mark.host
 def test_esptool_on_path_comes_first(pio_home, monkeypatch):
     on_path = os.path.realpath(_exe(pio_home.tmp / "bin" / "esptool.py"))
-    monkeypatch.setattr(device_mod.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(device_mod, "_esptool_module_available", lambda: True)
     cmds = esptool_commands(path=pio_home.empty, home=pio_home.home)
     assert cmds[0] == [on_path]
     assert cmds[1] == [sys.executable, "-m", "esptool"]  # this interpreter's module, still before PlatformIO
@@ -648,7 +712,7 @@ def test_esptool_found_twice_is_listed_once(pio_home):
 
 @pytest.mark.host
 def test_no_esptool_anywhere_is_an_empty_list(tmp_path, monkeypatch):
-    monkeypatch.setattr(device_mod.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(device_mod, "_esptool_module_available", lambda: False)
     assert esptool_commands(path=str(tmp_path), home=str(tmp_path)) == []
 
 

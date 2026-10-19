@@ -14,9 +14,11 @@ Using the production bot would collide on Telegram long-poll (getUpdates is sing
 per token - F18). A DEDICATED test bot token/chat must be supplied via the
 environment: ``NIMBUS_TEST_TG_TOKEN`` / ``NIMBUS_TEST_TG_CHAT``.
 
-Every value this reader hands out is a ``redact.Secret``: it works as a plain string
-but its ``repr`` shows at most the last 4 characters, so a traceback that prints a
-fixture or an argument never prints a key, password, token or chat id.
+Every credential this reader hands out is a ``redact.Secret``: it works as a plain
+string but its ``repr`` shows at most the last 4 characters, so a traceback that
+prints a fixture or an argument never prints a key, password, token or chat id (and
+the HIL conftest scrubs remembered values from every test report). Address and label
+keys (``*_IP``, ``*_SSID``, ``*_NAME``) stay plain strings.
 """
 
 from __future__ import annotations
@@ -31,16 +33,22 @@ from redact import Secret, redact
 # (gitignored, never committed).
 DEFAULT_ENV_PATH = Path(os.environ.get("NIMBUS_ENV_FILE") or str(Path(__file__).resolve().parents[2] / ".env"))
 
+# .env keys that name an address or a label, not a credential: kept as plain strings,
+# so a board IP or an SSID in a device log line is never scrubbed from a test report.
+# Every other value is a Secret.
+PUBLIC_KEY_SUFFIXES = ("_IP", "_SSID", "_NAME")
+
 
 class SecretsUnavailable(RuntimeError):
     """Raised when a required secret source is missing. Tests turn this into a
     LOUD pytest.skip with a reason - never a silent pass."""
 
 
-def _parse_env_file(path: Path) -> Dict[str, Secret]:
+def _parse_env_file(path: Path) -> Dict[str, str]:
     """Parse a simple ``KEY=VALUE`` .env file. Ignores blank lines and ``#``
-    comments, strips surrounding quotes. Never logs values: each one is a Secret."""
-    out: Dict[str, Secret] = {}
+    comments, strips surrounding quotes. Never logs values: each one is a Secret,
+    except the address and label keys (PUBLIC_KEY_SUFFIXES)."""
+    out: Dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -53,7 +61,7 @@ def _parse_env_file(path: Path) -> Dict[str, Secret]:
         key = key.strip()
         val = val.strip().strip('"').strip("'")
         if key:
-            out[key] = Secret(val)
+            out[key] = val if key.upper().endswith(PUBLIC_KEY_SUFFIXES) else Secret(val)
     return out
 
 
@@ -65,8 +73,8 @@ class BenchBot(NamedTuple):
     """The dedicated test bot (token, chat id). Unpacks like the old
     ``(token, chat)`` tuple; its repr never shows either value."""
 
-    token: str
-    chat: str
+    token: Secret
+    chat: Secret
 
     def __repr__(self) -> str:
         return f"BenchBot(token={redact(self.token)}, chat={redact(self.chat)})"
@@ -81,13 +89,13 @@ class Secrets:
 
     def __init__(self, env_path: Path = DEFAULT_ENV_PATH):
         self._env_path = Path(env_path)
-        self._env: Optional[Dict[str, Secret]] = None
+        self._env: Optional[Dict[str, str]] = None
 
     def __repr__(self) -> str:
         return f"<Secrets env={self._env_path} (values hidden)>"
 
     # -- lazy loader ---------------------------------------------------------
-    def _load(self) -> Dict[str, Secret]:
+    def _load(self) -> Dict[str, str]:
         if self._env is None:
             if not self._env_path.exists():
                 raise SecretsUnavailable(
@@ -96,10 +104,11 @@ class Secrets:
             self._env = _parse_env_file(self._env_path)
         return self._env
 
-    def get(self, key: str, default: str = "") -> Secret:
-        """Lookup from the .env (does not fall back to os.environ). The value
-        works as a plain string; only its repr is redacted."""
-        return Secret(self._load().get(key, default))
+    def get(self, key: str, default: str = "") -> str:
+        """Lookup from the .env (does not fall back to os.environ). A credential
+        comes back as a Secret: it works as a plain string, only its repr is
+        redacted."""
+        return self._load().get(key, default)
 
     # -- provider keys (pushed to device, never used host-side) --------------
     @property
