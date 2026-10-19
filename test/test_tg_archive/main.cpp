@@ -15,6 +15,7 @@
 
 #include "fakes.h"
 #include "nimbus/orch/episodic_log.h"
+#include "nimbus/orch/retention.h"
 #include "nimbus/tg_archive.h"
 #include "nimbus/tg_updates.h"
 
@@ -1090,11 +1091,22 @@ static void test_retention_pass_deletes_nothing_under_the_archive() {
   m.role = "user";
   m.text = "old";
   store.addMessage(m);
-  const uint32_t cutoff = (uint32_t)(kOct18 / 86400) - 30;
-  nimbus::orch::EpiPruneReport rep = store.prune(cutoff, "/mem/blobs");
+  // The pass the device runs (memory::pruneRetention), with no turn in flight.
+  const nimbus::orch::RetentionResult res = nimbus::orch::runEpisodicRetention(
+      &store, (uint32_t)(kOct18 / 86400), 30, "/mem/blobs", false);
+  TEST_ASSERT_TRUE(res.status == nimbus::orch::RetentionStatus::Ran);
+  const nimbus::orch::EpiPruneReport& rep = res.report;
   TEST_ASSERT_TRUE(rep.removedDayFiles.size() + rep.removedBlobs.size() > 0);   // it did run
   for (const auto& p : epi.removed) TEST_ASSERT_FALSE_MESSAGE(isArchivePath(p), p.c_str());
   TEST_ASSERT_EQUAL_size_t(before, card.countUnder("/mem/tg/"));
+  // Every path the archive wrote is one the retention policy refuses to delete.
+  size_t archived = 0;
+  for (const auto& f : card.files) {
+    if (!isArchivePath(f.first)) continue;
+    ++archived;
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::isRetentionExempt(f.first), f.first.c_str());
+  }
+  TEST_ASSERT_EQUAL_size_t(before, archived);
 }
 
 // ---- fresh device and an absent card ------------------------------------------------
@@ -1359,7 +1371,9 @@ static void test_tginject_media_is_test_build_only() {
 }
 
 // The factory sweep removes the whole durable store root on the card, and the
-// archive root is inside it; the final mop removes it again.
+// archive root is inside it; the final mop removes it again. Retention stays out:
+// the device pass and its battery-day sweep never name the archive or remove a
+// tree, and the retention exemption names the same root as the archive.
 static void test_factory_sweep_covers_the_archive_root() {
   const std::string code = src::stripComments(src::readFile("src/agent/memory_subsystem.cpp"));
   const auto erase = src::bodyOf(code, "bool eraseDurableStore() {");
@@ -1369,11 +1383,15 @@ static void test_factory_sweep_covers_the_archive_root() {
   TEST_ASSERT_TRUE(src::countIn(code, "rmTree(*g_fs, root)", erase) == 1);
   TEST_ASSERT_TRUE(src::countIn(code, "rmTreeIfPresent(*g_fs, root)", mop) == 1);
   TEST_ASSERT_EQUAL_INT(0, std::string(kRoot).compare(0, 5, "/mem/"));
-  // And the retention pass never names the archive.
-  const auto prune = src::bodyOf(code, "int pruneRetention(int retentionDays) {");
-  TEST_ASSERT_TRUE(prune.second > prune.first);
-  TEST_ASSERT_EQUAL_INT(0, src::countIn(code, "/mem/tg", prune));
-  TEST_ASSERT_EQUAL_INT(0, src::countIn(code, "rmTree", prune));
+  // Anchored on the name and first parameter only (the pass now returns a status).
+  for (const char* sig : {"pruneRetention(int retentionDays", "pruneBatteryDays(uint32_t cutoffDay"}) {
+    const auto body = src::bodyOf(code, sig);
+    TEST_ASSERT_TRUE_MESSAGE(body.second > body.first, sig);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, src::countIn(code, "/mem/tg", body), sig);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, src::countIn(code, "rmTree", body), sig);
+  }
+  TEST_ASSERT_EQUAL_STRING(kRoot, nimbus::orch::kTgArchiveRoot);
+  TEST_ASSERT_TRUE(nimbus::orch::isRetentionExempt(kRoot));
 }
 
 int main(int, char**) {
