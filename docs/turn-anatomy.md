@@ -25,6 +25,19 @@ In the web **Chat** tab neither URL is needed: every turn's disclosure has a
 result has **Show full result**. Under each reply a chip reports the host, model,
 tool-call count and the turn's real billed tokens.
 
+The chip reads the turn's `ev:turnend` row (session of the turn's chat, kind log),
+one JSON object of at most 256 bytes: `host`, `model` (the model that billed, never
+one that did not answer), `fallback`, `src` (owner, serial, synthesis, loop or
+dream), `tools`, `ok`, `in`, `out`, `cr`/`cw` (cache reads and writes, when any),
+`reply`, `err` on a failed turn (each failing provider in order, the first cause
+first, for example `anthropic (x2): messages HTTP 400: ... > openai 400 (x2) >
+mistral 400 (x2)`) and `via` when more than one provider billed
+(`[[provider, model, in, out, cr, cw], ...]`). A long row shrinks to fit (model
+names in `via` first, then the later causes) and is never dropped. A failed turn
+also leaves an `ev:error` row in the `system` session, tagged with the turn id:
+`Turn FAILED (<source>) on <first provider> -> <last provider>: <causes>; <n> tool
+calls ran`.
+
 **Turn identity.** Every row of a turn - the reply, each tool call, each thinking
 row - is tagged `turn:<user row id>` (e.g. `turn:m0000a3f2`), which is the id of
 the turn's own user message row. It is stable across restarts, so the chat groups

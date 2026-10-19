@@ -6,6 +6,15 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.14 - Why a turn failed, and what it cost
+
+Found on a desk device on 18 Oct: the nightly dream failed on Anthropic, then on the two providers it switched to, and only the last provider's bare "HTTP 400" was kept; asked why, the assistant guessed. Turns that switched provider filed every provider's spend under the last one, and a failed turn's spend was not counted at all.
+
+- **A failed turn says why.** The first thing that went wrong is kept, along with every provider that failed after it, and it now reaches every place a failure shows: the reply ("That didn't finish - anthropic: ... (openai and mistral also failed)"), the turn's summary in the chat, the device timeline, the dream's line, the routine's record and the assistant's device status, so it can answer "why did that fail" from what was recorded.
+- **Each provider's spend goes to that provider.** When a turn moves between providers, each one's tokens, cache reads and writes included, are filed under the provider and model that billed them, and the turn's summary lists each of them. A turn that fails after some rounds still counts what those rounds cost, and a routine or the dream reports its own spend, never the previous turn's.
+- **Cache pricing for OpenAI and current prices.** OpenAI's cached and cache-written tokens are now counted and priced at each model's own rates (0.1x and 1.25x of the input price where there is no rate). New built-in prices: Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.1, GPT-5.6 (at its regular price; its promotional price runs until at least 21 Nov), GPT-6 Luna and Sol, GPT-6.1 Sol, Mistral Medium. A model with no built-in price is estimated at its provider's highest price, never a cheaper one.
+- **The turn summary is always written.** A long summary used to be dropped without a trace; it now shortens to fit.
+
 ## v4.5.14 - Telegram on a full device
 
 Found on a desk device whose settings storage filled up on 14 Oct: Telegram served the same messages again every few seconds, a photo was taken in 17 times and one batch of messages was answered 11 times. Reproduced on a bench device before the fix.

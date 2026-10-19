@@ -104,8 +104,26 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
       scheduled-turn rails) → mem_write/mem_query → session_ops spawn/terminate
       → reply/ask delivery → episodic assistant rows
   → retry/failover ladder ONLY if zero tools executed (side-effect replay ban)
-  → usage summed across rounds+failovers → ledger (attribution: turn/synthesis/loop:<id>)
+  → turn end, once on EVERY exit: each host's billed usage, filed under that host and
+    the model it billed with (TurnSpend), metered in one ledger write (attribution:
+    turn/synthesis/loop:<id>); a failed turn's billed rounds included; the failure
+    chain (each failing host's first cause, in order) rides the turn-end event
 ```
+
+**Spend and causes per turn.** Every billed response is filed once, under the
+provider and model that billed it, on every exit path: the fabric gives each host
+its own counter, the legacy ladder each attempt, and the engine meters the whole
+table once at turn end (`BudgetConfig::recordSpend`; one NVS ledger write per turn
+on the device). `nimbus::orch::ledgerDelta` is the one place that knows what each
+provider's counts mean: Anthropic leaves cache reads and writes out of its input
+count, OpenAI includes them (so its input is split into uncached, cached and
+cache-written, each at the model's own rate, else 0.1x and 1.25x of the input
+rate), other providers are billed at the input rate. A failed turn keeps a bounded
+failure chain (at most three hosts, each host's first error and its attempt count,
+160 bytes each): the owner notice names the first cause, and the turn-end row, the
+error timeline row, the dream row, the routine record (`lastErr`) and
+`device.status.lastFail` all carry it. The next turn's `[FALLBACK]` note says whose
+turn switched, how long ago, the whole provider path and why.
 
 Prompt v2: the system prompt has two variants, selected by the NVS `orchPromptV2`
 flag (default off). v1 is the historical prompt. v2 compresses
