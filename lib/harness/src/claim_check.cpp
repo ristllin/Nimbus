@@ -45,32 +45,34 @@ bool hostedClass(orch::ClaimClass c) {
 }  // namespace
 
 // From the one shared tool table (orch::toolEffect, lane L), so the ledger and
-// the other rails that read the table can never disagree about a tool.
+// the other rails that read the table can never disagree about a tool. A spawn
+// called as a tool joins the turn's spawn items and apply records whether the
+// job queue took it, so the call itself vouches for nothing (Read).
 orch::FxKind fxKindForTool(const std::string& n) {
   using orch::FxKind;
-  using E = orch::ToolEffect;
-  switch (orch::toolEffect(n)) {
-    case E::MemWrite: return FxKind::MemWrite;
-    case E::MemUpdate: return FxKind::MemUpdate;
-    case E::MemPin: return FxKind::MemPin;
-    case E::MemDelete: return FxKind::MemDelete;
-    case E::Scratch: return FxKind::Scratch;
-    case E::FileWrite: return FxKind::FileWrite;
-    case E::SkillSave: return FxKind::SkillSave;
-    case E::Send:
-    case E::Share: return FxKind::Send;
-    case E::Speak: return FxKind::Speak;
-    case E::Schedule: return FxKind::Schedule;
-    case E::Config:
-    case E::Cancel:
-    case E::Admin:
-    case E::Media: return FxKind::Config;
-    // A spawn called as a tool joins the turn's spawn items; apply records
-    // whether the job queue took it, so the call itself vouches for nothing.
-    case E::Spawn:
-    case E::Read:
-    default: return FxKind::Read;
-  }
+  static const FxKind kByEffect[] = {
+      FxKind::Read,       // Read
+      FxKind::MemWrite,   // MemWrite
+      FxKind::MemUpdate,  // MemUpdate
+      FxKind::MemPin,     // MemPin
+      FxKind::MemDelete,  // MemDelete
+      FxKind::Scratch,    // Scratch
+      FxKind::FileWrite,  // FileWrite
+      FxKind::Send,       // Share
+      FxKind::SkillSave,  // SkillSave
+      FxKind::Read,       // Spawn
+      FxKind::Config,     // Cancel
+      FxKind::Send,       // Send
+      FxKind::Speak,      // Speak
+      FxKind::Schedule,   // Schedule
+      FxKind::Config,     // Config
+      FxKind::Config,     // Admin
+      FxKind::Config,     // Media
+  };
+  static_assert(sizeof(kByEffect) / sizeof(kByEffect[0]) == (size_t)orch::ToolEffect::Media + 1,
+                "every ToolEffect needs a ledger kind");
+  const size_t e = (size_t)orch::toolEffect(n);
+  return e < sizeof(kByEffect) / sizeof(kByEffect[0]) ? kByEffect[e] : FxKind::Read;
 }
 
 void ClaimCheck::beginTurn() {

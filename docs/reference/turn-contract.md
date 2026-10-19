@@ -110,9 +110,13 @@ On a tool-loop turn, a terminal `orch_turn` passes `validateFinal` before it is
 accepted (`HeadLoopConfig::validateFinal`, built with `chainFinalChecks`). An
 answer whose spawn list cannot be read, whose spawn items cannot start, or whose
 reply says sub-agents started while no spawn item is present is sent back once,
-with the problems named and the array form shown. At most one correction round
-runs per turn, never on the forced final round, never for a cut answer and never
-for a prose answer (which carries no spawn).
+with the problems named and the array form shown. The claim check joins the same
+chain: an answer whose reply claims an effect that neither this turn's tools nor
+its own items back (a file written, a memory saved, a pin, a check, a figure from
+a source) is sent back with the claims and the turn's record; sub-agent claims are
+left to the shape check. At most one correction round runs per turn, shared by both
+checks, never on the forced final round, never for a cut answer and never for a
+prose answer (which carries no spawn).
 
 ## Contract shape
 

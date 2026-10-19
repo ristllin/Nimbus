@@ -224,15 +224,20 @@ checking or changing something are not checked, because those tools run where th
 device cannot see them; everything the device does itself (memory, files, skills,
 notes, sub-agents) is always checked.
 
-When a claim has no backing, or the claimed effect failed when the turn was
-applied, the reply gets one calm line per class that says what did not happen, for
-example "(Correction: that has not been saved.)", "(Correction: nothing was pinned
-this turn.)" or "(Note: this is kept only until the next restart; saving it
-permanently failed.)". A reply that already says so itself ("it was already
-pinned, so nothing changed") gets no line. The conversation history keeps the
-delivered text, line included. `/api/state` counts the lines (`claimsTailed`, RAM
-only); `claimsCorrected` is reserved for corrections made inside the turn and stays
-0 on this version.
+When a claim has no backing, the model gets one correction round: the claim check
+is one of the final-answer checks (see [the final check](reference/turn-contract.md#the-final-check)),
+so the answer is sent back once with the claims and the turn's real record, and its
+tools are still available to do the work or rewrite the reply. The round shares the
+one-per-turn limit with the turn-shape check, which owns sub-agent claims. If the
+round cannot run (the forced final round) or the claim is still unbacked after it,
+or the claimed effect failed when the turn was applied, the reply gets one calm line
+per class that says what did not happen, for example "(Correction: that has not
+been saved.)", "(Correction: nothing was pinned this turn.)" or "(Note: this is kept
+only until the next restart; saving it permanently failed.)". A reply that already
+says so itself ("it was already pinned, so nothing changed") gets no line. The
+conversation history keeps the delivered text, lines included. `/api/state` counts
+both outcomes (`claimsCorrected` for correction rounds, `claimsTailed` for lines;
+RAM only).
 
 A sub-agent result for a live-data task (a status, the weather, prices, news) that
 ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how

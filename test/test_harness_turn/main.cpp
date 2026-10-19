@@ -13,6 +13,7 @@
 #include "../support/fake_platform.h"
 #include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
+#include "nimbus/harness/claim_check.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/orch/spawn_claim.h"
@@ -2772,6 +2773,35 @@ static void test_lane_l_the_final_check_rides_every_loop_turn() {
   TEST_ASSERT_EQUAL_STRING("", r.finalChecks[1].c_str());   // a good turn costs no round
 }
 
+// Lane S: the claim check shares the final-answer check's one round. An unbacked
+// claim gets "[CLAIM CHECK]" (and claimsCorrected moves); when the round could
+// not fix it (here the scripted answer is applied as is), the delivered reply
+// carries the owner line. A spawn promise is the shape check's alone, and a
+// consistent reply costs no round.
+static void test_lane_s_the_claim_check_joins_the_final_check() {
+  Rig r;
+  Rig::Script unbacked;
+  unbacked.checkFinal = true;
+  unbacked.outJson = "{\"reply\":\"The packing list is saved to your files as packing.md.\"}";
+  Rig::Script spawn = unbacked;
+  spawn.outJson = "{\"reply\":\"I've started two sub-agents.\",\"session_ops\":\"not json\"}";
+  Rig::Script good = unbacked;
+  good.outJson = "{\"reply\":\"Plain answer.\"}";
+  r.scripts["anthropic"] = {unbacked, spawn, good};
+  const uint32_t before = agent::ClaimCheck::correctedCount();
+  r.eng->handleMessage("save my packing list", "Roy", "1001");
+  r.eng->handleMessage("start two", "Roy", "1001");
+  r.eng->handleMessage("again", "Roy", "1001");
+  TEST_ASSERT_EQUAL(3, (int)r.finalChecks.size());
+  TEST_ASSERT_TRUE(r.finalChecks[0].find("[CLAIM CHECK]") != std::string::npos);
+  TEST_ASSERT_TRUE(r.finalChecks[0].find("packing.md") != std::string::npos);
+  TEST_ASSERT_EQUAL(before + 1, agent::ClaimCheck::correctedCount());
+  TEST_ASSERT_TRUE(r.anyDelivered("(Correction: nothing has been written for that yet.)"));
+  TEST_ASSERT_TRUE(r.finalChecks[1].rfind("[TURN CHECK]", 0) == 0);
+  TEST_ASSERT_TRUE(r.finalChecks[1].find("[CLAIM CHECK]") == std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", r.finalChecks[2].c_str());
+}
+
 // Formatting F3/F4 at the engine: reasoning, wrappers and tool markup never reach
 // the owner, on the turn path and the prose path; unknown <word> content stays.
 static void test_lane_l_markup_never_reaches_the_owner() {
@@ -3262,6 +3292,7 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_recovered_actions_apply_only_on_clean_owner_turns);
   RUN_TEST(test_lane_l_a_gated_recovered_spawn_is_reported);
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
+  RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
   RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);

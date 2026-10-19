@@ -4,11 +4,21 @@
 #include <unity.h>
 
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/claim_check.h"
+#include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/spawn_claim.h"
+#include "nimbus/orch/tool_taint.h"
 
 using agent::ClaimCheck;
 using nimbus::orch::FxKind;
+using nimbus::orch::HeadLoopConfig;
+using nimbus::orch::HeadLoopHooks;
+using nimbus::orch::HeadOutcome;
+using nimbus::orch::HeadStep;
+using nimbus::orch::HeadToolCall;
+using nimbus::orch::HeadToolResult;
 
 void setUp() {}
 void tearDown() {}
@@ -189,6 +199,165 @@ static void test_begin_turn_clears_everything() {
   TEST_ASSERT_FALSE(cc.finalCheck(turnJson("I sent it.")).empty());   // hosted flag reset
 }
 
+// Every registered tool's ledger kind comes from the shared tool table, per
+// effect (written out here independently of the lookup, so a reordered table
+// fails). Unknown names read as a lookup.
+static FxKind expectedKind(nimbus::orch::ToolEffect e) {
+  using E = nimbus::orch::ToolEffect;
+  struct Pair { E effect; FxKind kind; };
+  static const Pair kPairs[] = {
+      {E::MemWrite, FxKind::MemWrite}, {E::MemUpdate, FxKind::MemUpdate}, {E::MemPin, FxKind::MemPin},
+      {E::MemDelete, FxKind::MemDelete}, {E::Scratch, FxKind::Scratch}, {E::FileWrite, FxKind::FileWrite},
+      {E::SkillSave, FxKind::SkillSave}, {E::Send, FxKind::Send}, {E::Share, FxKind::Send},
+      {E::Speak, FxKind::Speak}, {E::Schedule, FxKind::Schedule}, {E::Config, FxKind::Config},
+      {E::Cancel, FxKind::Config}, {E::Admin, FxKind::Config}, {E::Media, FxKind::Config},
+  };
+  for (const Pair& p : kPairs)
+    if (p.effect == e) return p.kind;
+  return FxKind::Read;   // Read, and Spawn (apply records the real outcome)
+}
+
+static void test_every_tool_kind_comes_from_the_shared_table() {
+  size_t n = 0;
+  const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
+  TEST_ASSERT_GREATER_THAN(10, (int)n);
+  for (size_t i = 0; i < n; i++)
+    TEST_ASSERT_EQUAL_MESSAGE((int)expectedKind(rows[i].effect), (int)agent::fxKindForTool(rows[i].name),
+                              rows[i].name);
+  TEST_ASSERT_EQUAL((int)FxKind::Read, (int)agent::fxKindForTool("notion.search_pages"));
+}
+
+// ---- the one correction round, on the real head loop --------------------------
+// The engine's wiring in miniature: every dispatched tool joins the ledger (the
+// engine's dispatch wrapper), and validateFinal is lane L's chain with the claim
+// check in it (the turn-shape check is a stub here; it has its own suites).
+
+struct Round {
+  ClaimCheck cc;
+  std::vector<HeadStep> script;
+  size_t idx = 0;
+  std::vector<std::vector<HeadToolResult>> prior;   // what each model call was handed
+  int shapeCalls = 0;
+
+  HeadOutcome run(int maxRounds = 12) {
+    cc.beginTurn();
+    HeadLoopConfig cfg;
+    cfg.maxRounds = maxRounds;
+    cfg.validateFinal = nimbus::orch::chainFinalChecks({
+        [this](const std::string&) { shapeCalls++; return std::string(); },
+        [this](const std::string& ft) { return cc.finalCheck(ft, /*skipSpawned=*/true); },
+    });
+    HeadLoopHooks h;
+    h.step = [this](bool, const std::vector<HeadToolResult>& p, uint32_t, const std::string&) {
+      prior.push_back(p);
+      if (idx >= script.size()) {
+        HeadStep s;
+        s.finished = true;
+        s.finalTurn = "{\"reply\":\"fallback\"}";
+        return s;
+      }
+      return script[idx++];
+    };
+    h.dispatch = [this](const HeadToolCall& c) {
+      HeadToolResult r;
+      r.id = c.id;
+      r.name = c.name;
+      r.output = c.name == "artifact.save" ? "saved personal/packing.md (120 bytes)" : "ok";
+      cc.noteTool(agent::fxKindForTool(c.name), r.isError, r.output);
+      return r;
+    };
+    h.nowMs = [] { return (uint32_t)0; };
+    h.freeHeap = [] { return (uint32_t)100000; };
+    h.largestBlock = [] { return (uint32_t)100000; };
+    return nimbus::orch::runHeadLoop(cfg, h);
+  }
+};
+
+static HeadStep finalStep(const std::string& turn) {
+  HeadStep s;
+  s.finished = true;
+  s.finalTurn = turn;
+  return s;
+}
+static HeadStep toolStep(const std::string& name) {
+  HeadStep s;
+  s.toolCalls.push_back(HeadToolCall{"call_" + name, name, "{}"});
+  return s;
+}
+
+static const char* kUnbacked = "The packing list is saved to your files as packing.md.";
+
+// An unbacked claim runs exactly ONE extra round, which carries the claim
+// correction; a model that answers the same way again gets no third round, and
+// the after-apply check adds the owner line. claimsCorrected counts the round.
+static void test_round_unbacked_twice_gets_one_round_then_the_line() {
+  Round r;
+  r.script = {finalStep(turnJson(kUnbacked)), finalStep(turnJson(kUnbacked)), finalStep(turnJson("third"))};
+  const uint32_t before = ClaimCheck::correctedCount();
+  const HeadOutcome o = r.run();
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(2u, r.idx);   // two model calls, never a third
+  TEST_ASSERT_EQUAL(before + 1, ClaimCheck::correctedCount());
+  TEST_ASSERT_EQUAL(1u, r.prior[1].size());
+  TEST_ASSERT_EQUAL_STRING(nimbus::orch::kFinalCheckCallId, r.prior[1][0].id.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.prior[1][0].output.find("[CLAIM CHECK]"));
+  TEST_ASSERT_TRUE(r.prior[1][0].output.find("packing.md") != std::string::npos);
+  const std::string tail = r.cc.tailAfterApply(kUnbacked);
+  TEST_ASSERT_TRUE(tail.find("(Correction: nothing has been written for that yet.)") != std::string::npos);
+}
+
+// The correction round may do the work: a file written in that round backs the
+// claim, so the reply goes out with no line.
+static void test_round_that_writes_the_file_adds_no_line() {
+  Round r;
+  r.script = {finalStep(turnJson(kUnbacked)), toolStep("artifact.save"), finalStep(turnJson(kUnbacked))};
+  const uint32_t tailedBefore = ClaimCheck::tailedCount();
+  const HeadOutcome o = r.run();
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(3u, r.idx);
+  TEST_ASSERT_EQUAL_STRING("", r.cc.tailAfterApply(kUnbacked).c_str());
+  TEST_ASSERT_EQUAL(tailedBefore, ClaimCheck::tailedCount());
+}
+
+// On the forced final round no correction is possible: the check is not asked,
+// no extra round runs, and the owner line carries the correction instead.
+static void test_round_forced_final_gets_the_line_and_no_extra_round() {
+  Round r;
+  r.script = {toolStep("memory.search"), finalStep(turnJson(kUnbacked))};
+  const uint32_t before = ClaimCheck::correctedCount();
+  const HeadOutcome o = r.run(/*maxRounds=*/1);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(0, o.corrections);
+  TEST_ASSERT_EQUAL(0, r.shapeCalls);
+  TEST_ASSERT_EQUAL(before, ClaimCheck::correctedCount());
+  TEST_ASSERT_FALSE(r.cc.tailAfterApply(kUnbacked).empty());
+}
+
+// Counter-tests: a reply its own items or tools back costs zero extra rounds,
+// and a spawn claim is the turn-shape check's (skipSpawned): the claim check
+// never adds a second spawn correction to the same round.
+static void test_round_consistent_reply_and_spawn_claims_cost_no_claim_round() {
+  Round r;
+  r.script = {finalStep(turnJson("Saved: the dentist moved to 3pm on Thursday.",
+                                 "\"mem_write\":[{\"content\":\"dentist moved to 3pm Thursday\"}]"))};
+  const uint32_t before = ClaimCheck::correctedCount();
+  HeadOutcome o = r.run();
+  TEST_ASSERT_EQUAL(0, o.corrections);
+  TEST_ASSERT_EQUAL(1u, r.idx);
+  TEST_ASSERT_EQUAL(1, r.shapeCalls);
+
+  Round s;
+  s.script = {finalStep(turnJson("I have started three research sub-agents."))};
+  o = s.run();
+  TEST_ASSERT_EQUAL(0, o.corrections);   // the stub shape check passed it; the claim check skips spawns
+  TEST_ASSERT_EQUAL(before, ClaimCheck::correctedCount());
+  // After apply with no spawn accepted, the line is the spawn check's own wording.
+  TEST_ASSERT_TRUE(s.cc.tailAfterApply("I have started three research sub-agents.").find(
+                       nimbus::orch::kSpawnNotStartedLine) != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_consistent_replies_need_no_correction);
@@ -202,5 +371,10 @@ int main(int, char**) {
   RUN_TEST(test_device_actions_back_their_claims_only_when_allowed);
   RUN_TEST(test_scratch_outcomes_and_permanent_tool_writes);
   RUN_TEST(test_begin_turn_clears_everything);
+  RUN_TEST(test_every_tool_kind_comes_from_the_shared_table);
+  RUN_TEST(test_round_unbacked_twice_gets_one_round_then_the_line);
+  RUN_TEST(test_round_that_writes_the_file_adds_no_line);
+  RUN_TEST(test_round_forced_final_gets_the_line_and_no_extra_round);
+  RUN_TEST(test_round_consistent_reply_and_spawn_claims_cost_no_claim_round);
   return UNITY_END();
 }
