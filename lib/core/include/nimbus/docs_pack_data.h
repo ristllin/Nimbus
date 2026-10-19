@@ -3364,9 +3364,11 @@ SRAM run beside it, so they yield instead of re-raising the floors:
   (see [the live turn](architecture/orchestrator-live-turn.md)).
 
 A failure is memory-caused only on evidence: an allocation failed during the
-exchange (its error says `alloc failed`). Then the turn gets its one same-provider
-resend and no switch to another provider. Without evidence the rule above holds: a
-fragmented but healthy board's outage still fails over.)NIMBUSDOC"},
+exchange (its error says `alloc failed`). Then the turn never switches to another
+provider and gets no retry (the LowMemory row of the provider failover table),
+except the one resend above for a request the device could not finish sending.
+Without evidence the rule above holds: a fragmented but healthy board's outage
+still fails over.)NIMBUSDOC"},
   {"memory#1-the-two-pools-read-this-before-touching-heap-floors-levers-to-free-internal-sram-biggest-first-verify-on-device", "1. The two pools (read this before touching heap floors) - Levers to free internal SRAM (biggest first, verify on-device)",
    R"NIMBUSDOC(1. **Route Wi-Fi/lwIP buffers to PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`,
    Wi-Fi static-buffer counts) - potentially the largest single win; needs an

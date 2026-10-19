@@ -190,9 +190,11 @@ SRAM run beside it, so they yield instead of re-raising the floors:
   (see [the live turn](architecture/orchestrator-live-turn.md)).
 
 A failure is memory-caused only on evidence: an allocation failed during the
-exchange (its error says `alloc failed`). Then the turn gets its one same-provider
-resend and no switch to another provider. Without evidence the rule above holds: a
-fragmented but healthy board's outage still fails over.
+exchange (its error says `alloc failed`). Then the turn never switches to another
+provider and gets no retry (the LowMemory row of the provider failover table),
+except the one resend above for a request the device could not finish sending.
+Without evidence the rule above holds: a fragmented but healthy board's outage
+still fails over.
 
 ### Levers to free internal SRAM (biggest first, verify on-device)
 
