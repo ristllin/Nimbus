@@ -236,7 +236,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
 | `EPIQ [@<cursor>] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. |
 | `DREAM` | Fire the reserved maintenance-and-reflection loop immediately. |
-| `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days) and report how much it removed. |
+| `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days); report what it removed, or that it waited for a turn or a busy card. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
 | `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive); a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. |

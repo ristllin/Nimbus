@@ -247,8 +247,10 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
 // in flight, and never waits on a busy card lock: it then returns DeferredTurn /
 // DeferredBusy having touched nothing, and the caller retries on its next loop
 // pass (main.cpp drives it through a RetentionSchedule).
-// Nothing under the Telegram archive root is ever removed.
-nimbus::orch::RetentionStatus pruneRetention(int retentionDays = 30);
+// Nothing under the Telegram archive root is ever removed. On a pass that ran,
+// `report` (when given) receives what it removed (the test console prints it).
+nimbus::orch::RetentionStatus pruneRetention(int retentionDays = 30,
+                                             nimbus::orch::EpiPruneReport* report = nullptr);
 
 // Index backfill (§3a): after a boot scan that stopped at its budget, index one
 // more bounded slice of the history still on the card. Called from the main loop

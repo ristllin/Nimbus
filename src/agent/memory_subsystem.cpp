@@ -12,6 +12,7 @@
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>                  // feed the WDT during a long durable-store wipe
 #include <time.h>
+#include <utility>
 
 #include "adapters/embeddings.h"
 #include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
@@ -1864,7 +1865,7 @@ static void pruneBatteryDays(uint32_t cutoffDay) {
   if (removed) alogf("memory: retention pruned %d battery day-files", removed);
 }
 
-nimbus::orch::RetentionStatus pruneRetention(int retentionDays) {
+nimbus::orch::RetentionStatus pruneRetention(int retentionDays, nimbus::orch::EpiPruneReport* report) {
   using nimbus::orch::RetentionStatus;
   // Cheap gate before the lock: a turn in flight owns the card and the heap.
   if (orchestrator::turnInFlight()) return RetentionStatus::DeferredTurn;
@@ -1876,7 +1877,7 @@ nimbus::orch::RetentionStatus pruneRetention(int retentionDays) {
   if (!tryLock(50)) return RetentionStatus::DeferredBusy;
   // Checked again under the lock (a turn can start while we waited for it); the
   // portable gate also refuses with no store or a clock short of the window.
-  const nimbus::orch::RetentionResult res = nimbus::orch::runEpisodicRetention(
+  nimbus::orch::RetentionResult res = nimbus::orch::runEpisodicRetention(
       g_epiLog, nowDay, retentionDays, kBlobDir, orchestrator::turnInFlight());
   if (res.status != RetentionStatus::Ran) {
     unlock();
@@ -1899,6 +1900,7 @@ nimbus::orch::RetentionStatus pruneRetention(int retentionDays) {
           (int)rep.removedDayFiles.size(), (int)rep.removedBlobs.size(), rep.blobsPresent,
           rep.keptMessages);
   }
+  if (report) *report = std::move(res.report);
   return RetentionStatus::Ran;
 }
 

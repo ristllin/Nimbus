@@ -32,6 +32,11 @@ enum class RetentionStatus : uint8_t {
 };
 const char* retentionStatusName(RetentionStatus s);
 
+// One line for a forced pass (the test console's EPIPRUNE): the status name and,
+// for a pass that ran, what it removed, e.g. "status=ran dayfiles=3 blobs=5 kept=1200"
+// ("blobs=deferred" while the index is incomplete) or "status=deferred-turn".
+std::string retentionSummary(RetentionStatus st, const EpiPruneReport& rep);
+
 struct RetentionResult {
   RetentionStatus status = RetentionStatus::NoStore;
   uint32_t        cutoffDay = 0;  // days strictly older than this were eligible (Ran only)

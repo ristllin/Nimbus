@@ -224,9 +224,16 @@ def test_inbound_media_full_size_then_replay_and_retention(device, net, secrets,
     assert len(_rows(ip, tok, chat, day)) == len(rows)
     assert after["dupes"] >= before["dupes"] + len(ups) and after["in"] == before["in"]
 
-    # A forced retention pass deletes nothing under /mem/tg.
+    # A forced retention pass deletes nothing under /mem/tg. It must really run: a
+    # pass that meets a turn in flight or a busy card waits and removes nothing.
     listing = sorted(r["file"] for r in rows if r.get("file"))
-    device.cmd("EPIPRUNE", "EPIPRUNE", timeout=60.0)
+    status = ""
+    for _ in range(20):
+        status = device.cmd_re("EPIPRUNE", r"EPIPRUNE days=\d+ status=(\S+)", timeout=60.0).group(1)
+        if not status.startswith("deferred"):
+            break
+        time.sleep(3)
+    assert status == "ran", status
     for name in listing:
         assert _get(ip, tok, "/api/tg/archive/item", chat=chat, day=day, name=name).status_code == 200, name
     assert len(_rows(ip, tok, chat, day)) == len(rows)

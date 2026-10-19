@@ -49,6 +49,16 @@ const char* retentionStatusName(RetentionStatus s) {
   return "unknown";
 }
 
+std::string retentionSummary(RetentionStatus st, const EpiPruneReport& rep) {
+  std::string out = std::string("status=") + retentionStatusName(st);
+  if (st != RetentionStatus::Ran) return out;
+  out += " dayfiles=" + std::to_string(rep.removedDayFiles.size());
+  out += rep.blobGcSkipped ? std::string(" blobs=deferred")
+                           : " blobs=" + std::to_string(rep.removedBlobs.size());
+  out += " kept=" + std::to_string(rep.keptMessages);
+  return out;
+}
+
 RetentionResult runEpisodicRetention(AppendLogEpisodicStore* store, uint32_t nowDay,
                                      int retentionDays, const std::string& blobDir,
                                      bool turnInFlight) {

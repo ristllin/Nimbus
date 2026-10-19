@@ -1849,13 +1849,14 @@ void dispatch(String line) {
     return;
   }
   if (line == "EPIPRUNE" || line.startsWith("EPIPRUNE ")) {
-    // Force the 6-hourly retention pass NOW (study: before/after blob counts; and,
-    // once lane U gates it, the "deferred" line while a turn runs). Default window
-    // matches the loop's pruneRetention(30).
+    // Force the 6-hourly retention pass NOW (study: before/after blob counts). A
+    // turn in flight or a busy card defers it: the line says so and nothing is
+    // removed. Default window matches the loop's pruneRetention(30).
     String a = line.length() > 8 ? line.substring(9) : String(""); a.trim();
     const int days = a.length() ? a.toInt() : 30;
-    int n = agent::memory::pruneRetention(days);
-    Serial.printf("EPIPRUNE days=%d pruned=%d\n", days, n);
+    nimbus::orch::EpiPruneReport rep;
+    const nimbus::orch::RetentionStatus st = agent::memory::pruneRetention(days, &rep);
+    Serial.printf("EPIPRUNE days=%d %s\n", days, nimbus::orch::retentionSummary(st, rep).c_str());
     Serial.flush();
     return;
   }

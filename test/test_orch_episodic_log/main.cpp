@@ -2238,6 +2238,30 @@ static void test_retention_defers_while_a_turn_is_in_flight() {
   TEST_ASSERT_EQUAL_INT(0, fs.lists + fs.removes);
 }
 
+// The forced-pass line (the test console's EPIPRUNE; the L55 bench leg parses its
+// status): every status names itself and only a pass that ran adds counts.
+static void test_retention_summary_names_every_status() {
+  EpiPruneReport rep;
+  rep.removedDayFiles.resize(3);
+  rep.removedBlobs.resize(5);
+  rep.keptMessages = 1200;
+  TEST_ASSERT_EQUAL_STRING("status=ran dayfiles=3 blobs=5 kept=1200",
+                           retentionSummary(RetentionStatus::Ran, rep).c_str());
+  rep.blobGcSkipped = true;
+  TEST_ASSERT_EQUAL_STRING("status=ran dayfiles=3 blobs=deferred kept=1200",
+                           retentionSummary(RetentionStatus::Ran, rep).c_str());
+  std::set<std::string> names;
+  for (int i = 0; i <= (int)RetentionStatus::ClockUnset; ++i) {
+    const RetentionStatus st = (RetentionStatus)i;
+    const std::string name = retentionStatusName(st);
+    TEST_ASSERT_TRUE_MESSAGE(name != "unknown", name.c_str());
+    names.insert(name);
+    if (st != RetentionStatus::Ran)
+      TEST_ASSERT_EQUAL_STRING(("status=" + name).c_str(), retentionSummary(st, rep).c_str());
+  }
+  TEST_ASSERT_EQUAL_size_t(5, names.size());
+}
+
 // The schedule around the gate: due every period, a deferred pass stays due so
 // the very next loop pass retries it (not six hours later), "deferred" is
 // reported once per pass, and the period survives the millisecond wrap.
@@ -2299,6 +2323,9 @@ static void test_device_wiring_uses_the_gate_and_the_backfill() {
   TEST_ASSERT_TRUE(mem.find("->prune(") == std::string::npos);
   const std::string main = slurp("src/main.cpp");
   TEST_ASSERT_TRUE(main.find("RetentionSchedule") != std::string::npos);
+  // The console's forced pass prints the status line pinned above.
+  const std::string con = slurp("src/test_console.cpp");
+  TEST_ASSERT_TRUE(con.find("retentionSummary(st, rep)") != std::string::npos);
   TEST_ASSERT_TRUE(main.find("episodicBackfillTick(") != std::string::npos);
   TEST_ASSERT_TRUE(main.find("s_lastRetention") == std::string::npos);   // the old 6 h timer is gone
   const std::string fsrc = slurp("src/agent/epi_fs_arduino.h");
@@ -2370,6 +2397,7 @@ int main(int, char**) {
   RUN_TEST(test_day_stream_names_are_one_rule);
   RUN_TEST(test_archive_paths_are_exempt_from_retention);
   RUN_TEST(test_retention_defers_while_a_turn_is_in_flight);
+  RUN_TEST(test_retention_summary_names_every_status);
   RUN_TEST(test_retention_schedule_retries_next_pass);
   RUN_TEST(test_device_wiring_uses_the_gate_and_the_backfill);
   return UNITY_END();
