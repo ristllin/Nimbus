@@ -2493,6 +2493,76 @@ static void test_r4_no_new_tag_rows_while_in_nvs() {
   TEST_ASSERT_NULL(std::strstr(L.serialize().c_str(), "#anthropic|loop:lp1"));
 }
 
+// ---- the byte guard and deleted routines' rows (program 2026-10-18 lane C) ---------
+// serialize() stays under kSerializedMaxBytes whatever the attribution rows; a deleted
+// routine's rows go first, then the smallest; provider entries are never dropped.
+static void test_ledger_byte_guard_keeps_serialize_under_the_cap() {
+  nimbus::orch::UsageLedger L;
+  const char* provs[] = {"openai", "anthropic", "mistral", "zai", "cumulo", "tavily"};
+  for (const char* p : provs) {
+    L.setLimits(p, 5000000, 1000, 1, 2500);
+    L.recordTokens(p, 123456789, 98765432, 20261019, "turn");
+  }
+  // Fill the attribution rows to their cap with long routine tags.
+  for (int i = 0; L.tagEntries().size() < nimbus::orch::UsageLedger::kMaxTags; ++i) {
+    char tag[48];
+    std::snprintf(tag, sizeof(tag), "loop:routine_with_a_long_id_%04d", i);
+    L.recordTokens(provs[i % 6], 1000000u + (uint64_t)i, 2000u + (uint64_t)i, 20261019, tag);
+  }
+  const size_t before = L.serialize().size();
+  TEST_ASSERT_TRUE(before >= 3000);   // a realistic full ledger
+  // A tight cap forces drops: the size lands under it, every provider entry survives.
+  const size_t cap = before - 600;
+  const size_t dropped = L.fitSerialized(cap);
+  TEST_ASSERT_TRUE(dropped > 0);
+  TEST_ASSERT_TRUE(L.serialize().size() < cap);
+  TEST_ASSERT_EQUAL_size_t(6, L.entries().size());
+  // The smallest rows went first: every surviving routine row is at least as large as
+  // any dropped one (they were recorded in increasing size).
+  for (const auto& t : L.tagEntries())
+    if (t.tag.rfind("loop:", 0) == 0) TEST_ASSERT_TRUE(t.tokIn >= 1000000u + dropped - 1);
+  // Under the cap: nothing changes.
+  const std::string fit = L.serialize();
+  TEST_ASSERT_EQUAL_size_t(0, L.fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes));
+  TEST_ASSERT_EQUAL_STRING(fit.c_str(), L.serialize().c_str());
+  // The real cap holds after a reload of a maximal ledger.
+  nimbus::orch::UsageLedger R;
+  R.deserialize(fit);
+  R.fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes);
+  TEST_ASSERT_TRUE(R.serialize().size() < nimbus::orch::UsageLedger::kSerializedMaxBytes);
+}
+
+static void test_ledger_drops_deleted_routines_rows_first() {
+  nimbus::orch::UsageLedger L;
+  L.recordTokens("openai", 10, 10, 20261019, "turn");
+  L.recordTokens("openai", 9000000, 9000000, 20261019, "loop:gone");   // big, but deleted
+  L.recordTokens("openai", 5, 5, 20261019, "loop:alive");
+  L.recordTokens("openai", 7, 7, 20261019, "loop:dream");
+  auto keep = [](const std::string& tag) { return tag != "loop:gone"; };
+  TEST_ASSERT_EQUAL_size_t(1, L.pruneTags(keep));
+  bool gone = false, alive = false;
+  for (const auto& t : L.tagEntries()) {
+    gone = gone || t.tag == "loop:gone";
+    alive = alive || t.tag == "loop:alive";
+  }
+  TEST_ASSERT_FALSE(gone);
+  TEST_ASSERT_TRUE(alive);
+  // The provider's spend is untouched: only the audit row went.
+  TEST_ASSERT_EQUAL_UINT64(9000022u, L.find("openai")->totalIn);
+  TEST_ASSERT_EQUAL_size_t(0, L.pruneTags(nullptr));   // no predicate: nothing dropped
+  // fitSerialized with a predicate drops the rejected rows before any smallest one.
+  L.recordTokens("openai", 9000000, 9000000, 20261019, "loop:gone2");
+  const size_t cap = L.serialize().size();   // forces exactly one drop
+  L.fitSerialized(cap, [](const std::string& t) { return t != "loop:gone2"; });
+  bool gone2 = false, smallest = false;
+  for (const auto& t : L.tagEntries()) {
+    gone2 = gone2 || t.tag == "loop:gone2";
+    smallest = smallest || t.tag == "loop:alive";
+  }
+  TEST_ASSERT_FALSE(gone2);
+  TEST_ASSERT_TRUE(smallest);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -2562,5 +2632,7 @@ int main() {
   RUN_TEST(test_r4_fresh_device_switched_turn);
   RUN_TEST(test_r4_resplit_fails_closed_without_rows);
   RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
+  RUN_TEST(test_ledger_byte_guard_keeps_serialize_under_the_cap);
+  RUN_TEST(test_ledger_drops_deleted_routines_rows_first);
   return UNITY_END();
 }

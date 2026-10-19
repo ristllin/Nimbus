@@ -1998,7 +1998,9 @@ uint32_t pollStackMinFree() { return g_pollStackMinFree; }
 bool pollEverOk() { return g_polledOk; }
 
 // Approve a pending sender: append to the allowlist NVS (+ display name), drop it
-// from the pending ring, and hot-reload. Idempotent.
+// from the pending ring, and hot-reload. Idempotent. False when the allowlist did not
+// store (a full NVS): the sender stays pending, nothing is half-approved, and the
+// route's SaveScope answers 507.
 bool approvePending(const String& chatId, const String& name) {
   if (chatId.length() == 0) return false;
   String al = store::telegramAllowlist();
@@ -2007,7 +2009,7 @@ bool approvePending(const String& chatId, const String& name) {
   { int s = 0; while (s < (int)al.length()) { int e = al.indexOf(',', s); if (e < 0) e = al.length();
       String t = al.substring(s, e); t.trim(); if (t == chatId) { present = true; break; } s = e + 1; } }
   if (!present) al = al.length() ? (al + "," + chatId) : chatId;
-  store::setTelegramAllowlist(al);
+  if (!store::setTelegramAllowlist(al)) return false;
   if (name.length()) {   // display sidecar "id:name,..."
     // The name is the sender's ATTACKER-CONTROLLED Telegram display name - strip
     // the ',' and ':' delimiters so it can't corrupt/spoof the "id:name,..."
@@ -2017,7 +2019,8 @@ bool approvePending(const String& chatId, const String& name) {
     if (safe.length() > 32) safe = safe.substring(0, 32);
     // Upsert, not append: the old blind append meant a re-approve with a new name
     // never renamed (the reader matched the first entry) and the blob grew forever.
-    store::replaceTelegramName(chatId, safe);
+    // A name that did not store is display-only; the ledger reports it (507).
+    (void)store::replaceTelegramName(chatId, safe);
   }
   pendingRemove(chatId.c_str());
   reloadAllowlist();

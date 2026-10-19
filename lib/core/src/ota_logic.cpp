@@ -295,9 +295,7 @@ bool bootHealthy(uint32_t uptimeS, bool wifiEverUp) {
 bool autoInstallAllowed(const IdleSnapshot& s) {
   if (s.turnInFlight || s.voiceActive || s.audioPlaying) return false;
   if (!s.onExternalPower && s.battPct < kAutoBattFloorPct) return false;
-  // Health floor applies on battery too (gate parity with the manual path): a
-  // worn pack can sag under the write load and brick a slot mid-flash.
-  if (!s.onExternalPower && s.healthPct < kManualHealthFloorPct) return false;
+  // The health estimate is advisory and never gates (see installGate).
   return s.internalFreeB >= kAutoHeapFloorB;
 }
 
@@ -307,15 +305,17 @@ InstallGate installGate(const InstallGateInput& in) {
   if (!in.battMonEnabled) return InstallGate::Allowed;   // no pack to protect
   if (in.onExternalPower) return InstallGate::Allowed;   // wall power finishes it
   if (in.battPct < kManualBattFloorPct) return InstallGate::NeedPower;
-  if (in.healthPct < kManualHealthFloorPct) return InstallGate::NeedRecalibrate;
-  return InstallGate::Allowed;
+  return InstallGate::Allowed;   // the health estimate never blocks (healthAdvisory)
+}
+
+bool healthAdvisory(const InstallGateInput& in) {
+  return in.battMonEnabled && !in.onExternalPower && in.healthPct < kManualHealthFloorPct;
 }
 
 const char* installGateStr(InstallGate g) {
   switch (g) {
     case InstallGate::Allowed: return "allowed";
     case InstallGate::NeedPower: return "need-power";
-    case InstallGate::NeedRecalibrate: return "need-recalibrate";
   }
   return "?";
 }

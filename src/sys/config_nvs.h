@@ -6,6 +6,7 @@
 #include "nimbus/profile.h"
 #include "nimbus/store/persist.h"   // PersistLedger + NvsUsage (CUM-479, host-tested)
 #include "nimbus/store/nvs_diag.h"  // RecentFails + the failure log line (host-tested)
+#include "sys/nvs_guard.h"          // the reserve: nvsAdmit before a write that grows NVS
 
 // config_nvs - device persistence glue for the portable Config and the active
 // operating Mode (plan §3.1 profiles, §3.6 mode_manager: "NVS-persisted,
@@ -82,12 +83,23 @@ inline String nvsGetStr(const char* key, const char* def = "") {
 
 // ---- owner-config persistence honesty (CUM-479) -----------------------------
 // The solide::memory (NVS) seam the portable write primitives in nimbus/store/
-// persist.h run against - shared by agent::store and the saves in this file.
-struct NvsKv {
+// persist.h run against. NvsKvRaw writes unconditionally: its caller has already
+// asked the reserve (agent::store's helpers gate the whole write, including the
+// erase-then-write step of writeShrinkSafe). NvsKv asks the reserve on every string
+// write (nvs_guard.h), so a caller outside the store (the Wi-Fi list, the device
+// name) cannot spend the entries kept for critical writes; never pair NvsKv with
+// writeShrinkSafe, whose rewrite after its erase must not be refused.
+struct NvsKvRaw {
   bool   setString(const char* k, const String& v) { return solide::memory::setString(k, v); }
   String getString(const char* k, const char* def) { return nvsGetStr(k, def); }
   bool   has(const char* k) { return solide::memory::has(k); }
   bool   erase(const char* k) { return solide::memory::eraseKey(k); }
+};
+struct NvsKv : NvsKvRaw {
+  bool setString(const char* k, const String& v) {
+    return nvsAdmit(kNvsNsSolide, k, nimbus::store::NvsValKind::Str, v.length()) &&
+           NvsKvRaw::setString(k, v);
+  }
 };
 
 // Every NVS write made through the store (agent::store setters) and the NVS saves

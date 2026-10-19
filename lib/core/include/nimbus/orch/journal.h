@@ -41,11 +41,13 @@ struct JobRecord {
 
 // Persistence seam. Slots are 0..kAgentMaxJobs-1. Device backs this with NVS
 // Preferences (namespace "agjournal", keys "j0".."j5"); tests use a std::map.
+// put and remove report whether they LANDED (a full NVS refuses a put); the journal
+// never erases a slot it still needs because of a write that did not land.
 struct JournalStore {
   virtual ~JournalStore() = default;
   virtual std::string get(int slot) = 0;                 // "" if empty
-  virtual void        put(int slot, const std::string& v) = 0;
-  virtual void        remove(int slot) = 0;
+  virtual bool        put(int slot, const std::string& v) = 0;
+  virtual bool        remove(int slot) = 0;              // true when the slot is gone
   virtual void        clearNs() = 0;                     // wipe the whole namespace
 };
 
@@ -64,17 +66,23 @@ bool deserializeRecord(const char* buf, JobRecord& out);
 
 class Journal {
  public:
-  // Load all slots from the store. `store` is borrowed (device owns lifetime).
+  // Load all slots from the store. `store` is borrowed (device owns lifetime). Each
+  // record remembers the store slot it came from (a slot left empty by an earlier gc
+  // stays empty), and a second record with the same tag is dropped from the store.
   void begin(JournalStore* store);
 
-  // Dedupe by TAG: update in place if the tag exists, else take the next free
-  // slot. If full (count == kAgentMaxJobs), evict the OLDEST resultSeen record;
-  // if none is seen, REFUSE the write (returns false - a full journal of live
-  // jobs must not silently drop one). Persists the slot on success.
+  // Dedupe by TAG: update in place if the tag exists, else take a free slot. If full
+  // (count == kAgentMaxJobs), evict the OLDEST resultSeen record; if none is seen,
+  // REFUSE the write (a full journal of live jobs must not silently drop one).
+  // Returns true only when the record is held AND its slot landed in the store; a
+  // record whose write did not land is still kept in RAM for this run (the job keeps
+  // being polled), so false means "not durable", never "forgotten".
   bool write(const JobRecord& r);
 
-  bool markSeen(const char* tag);          // result delivered; set resultSeen, persist
-  bool update(const char* tag, JobState s);  // update in-flight state, persist
+  // Result delivered: set resultSeen, persist. Returns false when the tag is unknown
+  // or the write did not land (the RAM record is updated either way).
+  bool markSeen(const char* tag);
+  bool update(const char* tag, JobState s);  // update in-flight state, persist (same verdict)
 
   // Number of ACTIVE records (!resultSeen). This is the count the device gates
   // dispatch on (dispatch a queued spawn only while count() < kMaxActiveInflight).
@@ -83,18 +91,24 @@ class Journal {
   // Iterate the active (!resultSeen) records by index 0..count()-1.
   bool get(int idx, JobRecord& out) const;
 
-  void gc();        // compact out resultSeen records (shift down, re-persist)
+  // Drop the resultSeen records: erase their slots and forget them. Active records
+  // never move, so no active record depends on a copy landing (the old shift-down gc
+  // could erase a record whose shifted copy a full NVS had refused). A seen record
+  // whose slot could not be erased stays held, so RAM always mirrors the store.
+  void gc();
   void clearAll();  // wipe namespace + RAM (debug /clear-jobs)
 
   // Total slots occupied (active + seen), for tests / diagnostics.
   int slotsUsed() const { return count_; }
 
  private:
-  int findSlot(const char* tag) const;
-  void saveSlot(int i);
+  int  findSlot(const char* tag) const;
+  int  freeStoreSlot() const;   // lowest store slot no held record uses (-1 = none)
+  bool saveSlot(int i);         // true when record i landed in its store slot
 
   JournalStore* store_ = nullptr;
   JobRecord     records_[kAgentMaxJobs];
+  int           slot_[kAgentMaxJobs] = {};   // store slot of records_[i]
   int           count_ = 0;
   // RAM-only insertion order (NOT persisted - the durable JobRecord shape is the
   // NVS contract and must not grow a field). seq_[i] is a monotonic stamp assigned

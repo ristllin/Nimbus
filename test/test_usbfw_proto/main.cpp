@@ -4,6 +4,8 @@
 // bearing arm-before-flip commit order without a board.
 #include <unity.h>
 
+#include <cstdio>
+
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -121,27 +123,51 @@ struct Recorder {
   int  pending = -1;       // last value written to setPending
   bool flipResult = true;
   bool flipCalled = false;
+  // The store the hooks write: which keys refuse a write (a full NVS), and what each
+  // guard key reads back as.
+  bool failPrev = false, failBoots = false, failPend = false;
+  std::string prevStored;
+  int bootsStored = 7, pendStored = 0;
 };
 
 static CommitHooks recorderHooks(Recorder& r) {
   CommitHooks h;
   h.ctx = &r;
-  h.setPrevSlot = [](void* c, const char* v) {
-    ((Recorder*)c)->calls.push_back(std::string("prev:") + v);
+  h.setPrevSlot = [](void* c, const char* v) -> bool {
+    auto* r = (Recorder*)c;
+    r->calls.push_back(std::string("prev:") + v);
+    if (r->failPrev) return false;
+    r->prevStored = v;
+    return true;
   };
-  h.setBootCount = [](void* c, int v) {
-    ((Recorder*)c)->calls.push_back("boots:" + std::to_string(v));
+  h.setBootCount = [](void* c, int v) -> bool {
+    auto* r = (Recorder*)c;
+    r->calls.push_back("boots:" + std::to_string(v));
+    if (r->failBoots) return false;
+    r->bootsStored = v;
+    return true;
   };
-  h.setPending = [](void* c, int v) {
+  h.setPending = [](void* c, int v) -> bool {
     auto* r = (Recorder*)c;
     r->calls.push_back("pending:" + std::to_string(v));
     r->pending = v;
+    if (r->failPend && v == 1) return false;   // a disarm rewrites a stored int: lands
+    r->pendStored = v;
+    return true;
   };
-  h.setLastResult = [](void* c, const char* v) {
+  h.setLastResult = [](void* c, const char* v) -> bool {
     ((Recorder*)c)->calls.push_back(std::string("result:") + v);
+    return true;
   };
-  h.setPendingNotes = [](void* c, const char* v) {
+  h.setPendingNotes = [](void* c, const char* v) -> bool {
     ((Recorder*)c)->calls.push_back(std::string("notes:") + v);
+    return true;
+  };
+  h.readGuard = [](void* c, char* prev, size_t cap, int* boots, int* pend) {
+    auto* r = (Recorder*)c;
+    std::snprintf(prev, cap, "%s", r->prevStored.c_str());
+    *boots = r->bootsStored;
+    *pend = r->pendStored;
   };
   h.endFlip = [](void* c) -> bool {
     auto* r = (Recorder*)c;
@@ -161,8 +187,8 @@ static int indexOf(const std::vector<std::string>& v, const std::string& s) {
 static void test_commit_arms_guard_before_flip() {
   Recorder r;
   CommitHooks h = recorderHooks(r);
-  bool ok = commitInstall(h, "app0", "installing usb", nullptr);
-  TEST_ASSERT_TRUE(ok);
+  CommitResult res = commitInstall(h, "app0", "installing usb", nullptr);
+  TEST_ASSERT_EQUAL_INT((int)CommitResult::Flipped, (int)res);
   TEST_ASSERT_TRUE(r.flipCalled);
   // Documented order: prev, boots:0, pending:1, result, (notes), flip.
   TEST_ASSERT_EQUAL_INT(0, indexOf(r.calls, "prev:app0"));
@@ -181,8 +207,8 @@ static void test_commit_disarms_guard_on_flip_failure() {
   Recorder r;
   r.flipResult = false;   // simulate Update.end() returning false
   CommitHooks h = recorderHooks(r);
-  bool ok = commitInstall(h, "app1", "installing usb", nullptr);
-  TEST_ASSERT_FALSE(ok);
+  CommitResult res = commitInstall(h, "app1", "installing usb", nullptr);
+  TEST_ASSERT_EQUAL_INT((int)CommitResult::FlipFailed, (int)res);
   TEST_ASSERT_TRUE(r.flipCalled);
   // The final pending write must be a disarm (0), and it must come AFTER the flip.
   int iFlip = indexOf(r.calls, "flip");
@@ -199,6 +225,32 @@ static void test_commit_writes_notes_when_hook_present() {
   CommitHooks h = recorderHooks(r);
   commitInstall(h, "app0", "installing v1", "v1|fixed things");
   TEST_ASSERT_TRUE(indexOf(r.calls, "notes:v1|fixed things") >= 0);
+}
+
+// On a failing store (any guard key refused, or reading back wrong), the install never
+// flips: it disarms and answers StorageFull, so no image runs without a rollback.
+static void test_commit_refuses_storage_full_on_a_failing_store() {
+  for (int fail = 1; fail < 8; ++fail) {
+    Recorder r;
+    r.failPrev = fail & 1;
+    r.failBoots = fail & 2;
+    r.failPend = fail & 4;
+    r.prevStored = "app1";   // the stale previous value, if the write is refused
+    CommitHooks h = recorderHooks(r);
+    CommitResult res = commitInstall(h, "app0", "installing usb", nullptr);
+    TEST_ASSERT_EQUAL_INT((int)CommitResult::StorageFull, (int)res);
+    TEST_ASSERT_FALSE(r.flipCalled);
+    TEST_ASSERT_EQUAL_INT(0, r.pending);   // disarmed
+  }
+  // A setter that says "landed" while the store reads back stale is caught too.
+  Recorder lie;
+  CommitHooks h = recorderHooks(lie);
+  h.setBootCount = [](void* c, int v) -> bool {
+    ((Recorder*)c)->calls.push_back("boots:" + std::to_string(v));
+    return true;   // claims success, stores nothing
+  };
+  TEST_ASSERT_EQUAL_INT((int)CommitResult::StorageFull, (int)commitInstall(h, "app0", "x", nullptr));
+  TEST_ASSERT_FALSE(lie.flipCalled);
 }
 
 // ---- confirm gate + local-begin precheck + mark-valid guard (review fixes) --
@@ -515,6 +567,7 @@ int main(int, char**) {
   RUN_TEST(test_commit_arms_guard_before_flip);
   RUN_TEST(test_commit_disarms_guard_on_flip_failure);
   RUN_TEST(test_commit_writes_notes_when_hook_present);
+  RUN_TEST(test_commit_refuses_storage_full_on_a_failing_store);
   RUN_TEST(test_confirm_gate_default_off_never_blocks);
   RUN_TEST(test_confirm_gate_on_blocks_until_armed);
   RUN_TEST(test_usb_confirm_acceptance_cases);

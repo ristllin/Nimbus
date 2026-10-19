@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -16,6 +17,9 @@
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/store/nvs_diag.h"
 #include "nimbus/store/persist.h"
+#include "nimbus/store/moved_store.h"
+#include "nimbus/store/nvs_reserve.h"
+#include "nimbus/store/verdict_memo.h"
 
 // ============================================================================
 // test_nvs_full (CUM-479) - owner-config writes must never report ok on a full NVS,
@@ -562,15 +566,19 @@ static const Covered kCovered[] = {
     {"/api/token/regen", 1},
     {"/api/wifi", 1},             // add/forget/reorder/rename/connect, via its ok() lambda
     {"/savewifi", 1},             // the setup wizard's Wi-Fi step
+    {"/api/fallbacks", 1},        // program 2026-10-18 lane C: the 2c rows
+    {"/api/telegram/add", 1},
+    {"/api/telegram/remove", 3},  // stopped halfway + revoked-with-note + ok
+    {"/api/telegram/rename", 1},
+    {"/api/telegram/role", 1},
+    {"/api/telegram/approve", 1},
+    {"/api/telegram/public", 1},
 };
 // NVS-writing POST routes NOT yet answering through sendSaved: outside this lane's
 // handler set, tracked as Linear CUM-530. Their setters already
 // return bool, so wiring each is a SaveScope + sendSaved. Shrinking this list is the
 // goal; a NEW writing route must land covered, not here.
-static const char* kKnownGaps[] = {"/api/fallbacks",        "/api/telegram/remove",
-                                   "/api/telegram/rename",  "/api/telegram/role",
-                                   "/api/telegram/public",  "/api/telegram/add",
-                                   "/api/telegram/approve", "/api/cloud"};
+static const char* kKnownGaps[] = {"/api/cloud"};
 
 // Every covered webui route opens a SaveScope and answers success ONLY through
 // sendSaved: no raw 200 send of any shape (literal, ternary, or variable body) in
@@ -883,6 +891,639 @@ static void test_nvs_stats_names_never_values() {
   TEST_ASSERT_TRUE(inv.find("nvs_set_") == std::string::npos && inv.find("nvs_erase_") == std::string::npos);
 }
 
+// ---- 7. the reserve (program 2026-10-18 lane C) -----------------------------------
+// Every key the firmware defines has a class, so the reserve knows what may spend the
+// last free entries. The class: a NEW key with no row fails here (it would silently
+// read as owner config). Scans every place a key name is defined.
+static std::vector<std::string> definedKeys(const char* path, const std::regex& re) {
+  const std::string src = readFile(path);
+  std::vector<std::string> out;
+  for (auto it = std::sregex_iterator(src.begin(), src.end(), re); it != std::sregex_iterator(); ++it)
+    out.push_back((*it)[1]);
+  return out;
+}
+
+static void assertClassified(const char* ns, const std::string& key, const char* where) {
+  // A name ending in '_' is a family prefix: any member must be classified.
+  const std::string probe = key.back() == '_' ? key + "openai" : key;
+  const std::string msg = std::string(where) + ": " + ns + "/" + key + " has no class";
+  TEST_ASSERT_NOT_NULL_MESSAGE(findNvsKeyClass(ns, probe.c_str()), msg.c_str());
+}
+
+static void test_every_defined_key_has_a_class() {
+  size_t checked = 0;
+  for (const std::string& k : definedKeys("src/agent/agent_config.h",
+                                          std::regex(R"re(#define\s+AKEY_\w+\s+"([^"]+)")re"))) {
+    assertClassified("solide", k, "agent_config.h");
+    ++checked;
+  }
+  TEST_ASSERT_TRUE(checked >= 110);   // every AKEY_* (116 at the time of writing)
+  for (const std::string& k : definedKeys("src/sys/config_nvs.cpp",
+                                          std::regex(R"re(constexpr char k\w+Key\[\]\s*=\s*"([^"]+)")re")))
+    assertClassified("solide", k, "config_nvs.cpp");
+  for (const std::string& k : definedKeys("include/nimbus_config.h",
+                                          std::regex(R"re(#define\s+NIMBUS_KEY_\w+\s+"([^"]+)")re")))
+    assertClassified("solide", k, "nimbus_config.h");
+  for (const std::string& k : definedKeys("src/agent/memory_subsystem.cpp",
+                                          std::regex(R"re(const char\*\s+k\w+Key\s*=\s*"([^"]+)")re")))
+    assertClassified("orchmem", k, "memory_subsystem.cpp");
+  for (const std::string& k : definedKeys("src/sys/ota_update.cpp",
+                                          std::regex(R"re(const char\*\s+k\w+Key\s*=\s*"([^"]+)")re")))
+    assertClassified("solide", k, "ota_update.cpp");
+  for (const std::string& k : definedKeys("src/agent/provider_verify.cpp",
+                                          std::regex(R"re(const char\*\s+const\s+k\w+Pfx\s*=\s*"([^"]+)")re")))
+    assertClassified("solide", k, "provider_verify.cpp");
+  // Keys spelled inline in the store (a literal or a String prefix).
+  for (const std::string& k : definedKeys("src/agent/store.cpp",
+                                          std::regex(R"re((?:putInt|putStr|putStrShrinkSafe|putBool|putOrClear|putIntDef|putBoolDef|clearKey)\("(\w+)")re")))
+    assertClassified("solide", k, "store.cpp");
+  for (const std::string& k : definedKeys("src/agent/store.cpp", std::regex(R"re(String\("(\w+_)"\))re")))
+    assertClassified("solide", k, "store.cpp");
+  // The journal slots j0..j<max>.
+  for (int i = 0; i < 10; ++i)
+    assertClassified("agjournal", "j" + std::to_string(i), "orch_persist.cpp");
+  // Counter-test: an undefined key really has no row (the lookup does not match all).
+  TEST_ASSERT_NULL(findNvsKeyClass("solide", "brandNewKey"));
+  TEST_ASSERT_NULL(findNvsKeyClass("orchmem", "tgOffset"));   // namespaces are distinct
+  TEST_ASSERT_EQUAL((int)NvsClass::Owner, (int)classifyNvsKey("solide", "brandNewKey"));
+}
+
+// The critical set is exactly the device's safety; the eviction list is exactly the
+// rebuildable caches the plan names, and never the managed-agent ids or model choices.
+static void test_key_classes_and_eviction_rows() {
+  const char* critical[] = {"tgOffset", "otaPend", "otaBoots", "otaPrev", "otaLast",
+                            "webTok", "cloudDevId", "cloudCred", "cloudHost"};
+  for (const char* k : critical)
+    TEST_ASSERT_EQUAL_MESSAGE((int)NvsClass::Critical, (int)classifyNvsKey("solide", k), k);
+  const char* neverEvicted[] = {"antEnv", "antAgents", "antOrchAg", "mch_openai", "vfy_openai",
+                                "usgLedger", "connectors", "tgOffset", "cloudCred"};
+  for (const char* k : neverEvicted) {
+    const NvsKeyClass* row = findNvsKeyClass("solide", k);
+    TEST_ASSERT_NOT_NULL_MESSAGE(row, k);
+    TEST_ASSERT_EQUAL_MESSAGE(0, row->evictOrder, k);
+  }
+  size_t n = 0;
+  const NvsKeyClass* t = nvsKeyTable(&n);
+  for (size_t i = 0; i < n; ++i) {
+    if (!t[i].evictOrder) continue;
+    // Only rebuildable caches, plus fbRules (owner config, evicted only as a cloud copy).
+    const bool ok = t[i].cls == NvsClass::Rebuildable || std::string(t[i].key) == "fbRules";
+    TEST_ASSERT_TRUE_MESSAGE(ok, t[i].key);
+  }
+  TEST_ASSERT_EQUAL((int)NvsClass::Telemetry, (int)classifyNvsKey("agjournal", "j3"));
+  TEST_ASSERT_EQUAL((int)NvsClass::Telemetry, (int)classifyNvsKey("orchmem", "scratchB"));
+  TEST_ASSERT_EQUAL((int)NvsClass::Owner, (int)classifyNvsKey("orchmem", "memcfg"));
+}
+
+static void test_eviction_plan_order_and_exclusions() {
+  const char* keys[] = {"antEnv", "dreamScrHash", "vfy_openai", "mch_openai", "fbRules",
+                        "vrs_openai", "oaiKey", "mcat_zai", "vrm_anthropic", "antAgents",
+                        "tgOffset", "usgLedger"};
+  const size_t n = sizeof(keys) / sizeof(keys[0]);
+  size_t out[16];
+  const size_t m = nvsEvictionPlan(keys, n, /*fbRulesIsCloudCopy=*/false, out, 16);
+  std::vector<std::string> got;
+  for (size_t i = 0; i < m; ++i) got.push_back(keys[out[i]]);
+  const std::vector<std::string> want = {"vrs_openai", "vrm_anthropic", "mcat_zai", "dreamScrHash"};
+  TEST_ASSERT_EQUAL_size_t(want.size(), got.size());
+  for (size_t i = 0; i < want.size(); ++i) TEST_ASSERT_EQUAL_STRING(want[i].c_str(), got[i].c_str());
+  // A cloud copy of the fallback rules goes last; a local owner edit never goes.
+  const size_t m2 = nvsEvictionPlan(keys, n, true, out, 16);
+  TEST_ASSERT_EQUAL_size_t(want.size() + 1, m2);
+  TEST_ASSERT_EQUAL_STRING("fbRules", keys[out[m2 - 1]]);
+  // The output cap is respected.
+  TEST_ASSERT_EQUAL_size_t(2, nvsEvictionPlan(keys, n, true, out, 2));
+}
+
+// The arithmetic matches the fake partition's (one header + data entries with the NUL).
+static void test_value_entries_match_the_partition_model() {
+  for (size_t b = 0; b < 4000; b += 7)
+    TEST_ASSERT_EQUAL_size_t(FakeNvs::strEntries(b), nvsValueEntries(NvsValKind::Str, b));
+  TEST_ASSERT_EQUAL_size_t(1, nvsValueEntries(NvsValKind::Int, 0));
+  TEST_ASSERT_EQUAL_size_t(2, nvsValueEntries(NvsValKind::Blob, 0));
+  TEST_ASSERT_EQUAL_size_t(3, nvsValueEntries(NvsValKind::Blob, 32));
+  TEST_ASSERT_EQUAL_size_t(4, nvsValueEntries(NvsValKind::Blob, 33));
+}
+
+// The reserve property, over every class row and a spread of value sizes: a write that
+// would leave fewer than the reserve is refused unless it is critical; one more free
+// entry and it lands. Erases and non-growing rewrites always land, even at 0 free.
+static void test_reserve_property_over_every_row() {
+  size_t n = 0;
+  const NvsKeyClass* t = nvsKeyTable(&n);
+  const size_t sizes[] = {0, 1, 8, 31, 32, 100, 500, 3500};
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t b : sizes) {
+      for (int kind = 0; kind < 3; ++kind) {
+        NvsAdmitIn in;
+        in.cls = t[i].cls;
+        in.newEntries = nvsValueEntries((NvsValKind)kind, b);
+        // A new key, then a growing rewrite of a smaller stored value.
+        for (size_t old : {(size_t)0, in.newEntries > 2 ? in.newEntries - 2 : (size_t)0}) {
+          in.oldEntries = old;
+          const size_t growth = in.newEntries - old;
+          in.available = kNvsReserveEntries + growth - 1;   // one entry short
+          const bool critical = t[i].cls == NvsClass::Critical;
+          TEST_ASSERT_EQUAL_MESSAGE(critical ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
+                                    (int)nvsAdmit(in), t[i].key);
+          in.available = kNvsReserveEntries + growth;          // exactly enough
+          TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::Write, (int)nvsAdmit(in), t[i].key);
+          // Starved: owner config lands again, rebuildable and telemetry stay refused.
+          in.available = 0;
+          in.starved = true;
+          const bool lands = critical || t[i].cls == NvsClass::Owner;
+          TEST_ASSERT_EQUAL_MESSAGE(lands ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
+                                    (int)nvsAdmit(in), t[i].key);
+          in.starved = false;
+        }
+        // Erase and a same-size or smaller rewrite: always, at 0 free, any class.
+        in.available = 0;
+        in.erase = true;
+        TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(in));
+        in.erase = false;
+        in.oldEntries = in.newEntries;
+        TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(in));
+        in.oldEntries = in.newEntries + 3;
+        TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(in));
+      }
+    }
+  }
+}
+
+// The reserve covers the critical working set: a cloud credential re-mint and the OTA
+// guard rewrite, plus the Telegram offset, all on a device with no other room.
+static void test_reserve_covers_the_critical_working_set() {
+  const size_t credential = nvsValueEntries(NvsValKind::Str, 256) +   // cloudCred
+                            nvsValueEntries(NvsValKind::Str, 36) +    // cloudDevId
+                            nvsValueEntries(NvsValKind::Str, 21);     // cloudHost
+  const size_t otaGuard = 2 * nvsValueEntries(NvsValKind::Int, 0) +   // otaPend, otaBoots
+                          nvsValueEntries(NvsValKind::Str, 4) +       // otaPrev "app1"
+                          nvsValueEntries(NvsValKind::Str, 30);       // otaLast
+  const size_t offset = nvsValueEntries(NvsValKind::Int, 0);
+  TEST_ASSERT_TRUE(credential + otaGuard + offset <= kNvsReserveEntries);
+  TEST_ASSERT_TRUE(kNvsReserveEntries >= 24);   // the owner decision (Q4): at least 24
+}
+
+// The reserve in action on a full-partition fake, the way the device gates: at
+// reserve+1 free, non-critical saves are refused while tgOffset and otaPend land; a
+// removal lands; and once the pass marks the device starved, an owner save lands while
+// a telemetry write stays refused.
+struct GatedNvs {
+  FakeNvs nvs;
+  bool    starved = false;
+  explicit GatedNvs(size_t cap) : nvs(cap) {}
+  size_t stored(const char* k) const {
+    auto s = nvs.str.find(k);
+    if (s != nvs.str.end()) return FakeNvs::strEntries(s->second.size());
+    return nvs.ints.count(k) ? 1 : 0;
+  }
+  bool admitted(const char* ns, const char* k, NvsValKind kind, size_t bytes) const {
+    NvsAdmitIn in;
+    in.cls = classifyNvsKey(ns, k);
+    in.newEntries = nvsValueEntries(kind, bytes);
+    in.oldEntries = stored(k);
+    in.available = nvs.freeEntries();
+    in.starved = starved;
+    return nvsAdmit(in) == NvsAdmit::Write;
+  }
+  bool putStr(const char* k, const std::string& v) {
+    return admitted("solide", k, NvsValKind::Str, v.size()) && writeString(nvs, k, v);
+  }
+  bool putInt(const char* k, int32_t v) {
+    return admitted("solide", k, NvsValKind::Int, 0) && nvs.setInt(k, v);
+  }
+  void fillTo(size_t freeLeft) {
+    int i = 0;
+    while (nvs.freeEntries() > freeLeft) nvs.ints["own_fill" + std::to_string(i++)] = 1;
+  }
+};
+
+static void test_reserve_keeps_critical_writes_landing_on_a_filling_device() {
+  GatedNvs g(504);
+  g.nvs.ints["tgOffset"] = 100;
+  g.nvs.ints["otaPend"] = 0;
+  g.fillTo(kNvsReserveEntries + 1);
+  TEST_ASSERT_FALSE(g.putStr("orchHost", "zai"));             // owner config: refused
+  TEST_ASSERT_FALSE(g.putStr("vrs_openai", "nocredits"));     // rebuildable: refused
+  TEST_ASSERT_FALSE(g.putStr("orchConv", "openai|c_123"));    // telemetry: refused
+  // A new int takes one entry: at reserve+1 it may land, at the reserve it may not.
+  TEST_ASSERT_TRUE(g.putInt("lbPingEp", 1760000000));
+  TEST_ASSERT_FALSE(g.putInt("loopMaxCnt", 4));               // a NEW owner int: refused
+  // The writes the device's safety depends on keep landing, many times over.
+  for (int i = 0; i < 50; ++i) {
+    TEST_ASSERT_TRUE(g.putInt("tgOffset", 101 + i));
+    TEST_ASSERT_TRUE(g.putInt("otaPend", i & 1));
+  }
+  TEST_ASSERT_TRUE(g.putStr("otaPrev", "app1"));              // a new critical key lands too
+  TEST_ASSERT_TRUE(g.nvs.freeEntries() >= kNvsReserveEntries - 3);
+  // The remedy still works: removing a key is an erase.
+  g.nvs.str["zaiKey"] = std::string(49, 'z');
+  TEST_ASSERT_TRUE(eraseLanded(g.nvs, "zaiKey"));
+  // Starved (the pass could not restore the reserve): owner config is accepted again.
+  g.fillTo(4);
+  g.starved = true;
+  TEST_ASSERT_TRUE(g.putStr("orchHost", "zai"));
+  TEST_ASSERT_FALSE(g.putStr("orchConv", "openai|c_123"));
+  TEST_ASSERT_FALSE(g.putStr("vrs_openai", "nocredits"));
+  // Fresh device: nothing is refused.
+  GatedNvs fresh(504);
+  TEST_ASSERT_TRUE(fresh.putStr("orchConv", "openai|c_1"));
+  TEST_ASSERT_TRUE(fresh.putStr("vrs_openai", "nocredits"));
+  TEST_ASSERT_TRUE(fresh.putInt("lbPingEp", 1));
+}
+
+// The eviction pass, end to end on the fake: evict in plan order until the reserve is
+// back; a device whose fill is all owner config cannot get there and is starved.
+static size_t runEvictionPass(FakeNvs& nvs, bool fbCloud, bool* starved) {
+  std::vector<std::string> names;
+  for (const auto& kv : nvs.str) names.push_back(kv.first);
+  for (const auto& kv : nvs.ints) names.push_back(kv.first);
+  std::vector<const char*> keys;
+  for (const auto& k : names) keys.push_back(k.c_str());
+  std::vector<size_t> order(keys.size());
+  const size_t m = nvsEvictionPlan(keys.data(), keys.size(), fbCloud, order.data(), order.size());
+  size_t evicted = 0;
+  for (size_t i = 0; i < m && nvs.freeEntries() < kNvsReserveEntries; ++i)
+    if (eraseLanded(nvs, keys[order[i]])) ++evicted;
+  *starved = nvs.freeEntries() < kNvsReserveEntries;
+  return evicted;
+}
+
+static void test_eviction_pass_restores_the_reserve_or_reports_starved() {
+  FakeNvs nvs(504);
+  nvs.str["antAgents"] = std::string(300, 'a');
+  nvs.str["mch_openai"] = std::string(200, 'm');
+  nvs.str["vrs_openai"] = "nocredits";
+  nvs.str["vrs_zai"] = "connectfail";
+  nvs.ints["vrm_openai"] = 7156;
+  nvs.str["dreamScrHash"] = "0123456789abcdef";
+  nvs.str["fbRules"] = std::string(600, 'f');
+  int i = 0;
+  while (nvs.freeEntries() > 4) nvs.ints["own_" + std::to_string(i++)] = 1;
+  bool starved = false;
+  // Local fallback rules (an owner edit): kept; the caches go, but are not enough.
+  size_t ev = runEvictionPass(nvs, /*fbCloud=*/false, &starved);
+  TEST_ASSERT_EQUAL_size_t(4, ev);
+  TEST_ASSERT_TRUE(starved);
+  TEST_ASSERT_TRUE(nvs.has("fbRules"));
+  TEST_ASSERT_TRUE(nvs.has("antAgents"));
+  TEST_ASSERT_TRUE(nvs.has("mch_openai"));
+  // A cloud copy of the rules is rebuildable: evicting it restores the reserve.
+  ev = runEvictionPass(nvs, /*fbCloud=*/true, &starved);
+  TEST_ASSERT_EQUAL_size_t(1, ev);
+  TEST_ASSERT_FALSE(starved);
+  TEST_ASSERT_TRUE(nvs.has("antAgents"));   // never: orphans remote agents
+  TEST_ASSERT_TRUE(nvs.has("mch_openai"));  // never: no file store for it yet
+}
+
+// The device seam: every store helper asks the reserve for the whole write before it
+// writes; the gated NvsKv is what other callers get; the eviction pass runs on the main
+// loop (otaupd::tick) and no web route runs it.
+static void test_device_seam_asks_the_reserve() {
+  const std::string st = readFile("src/agent/store.cpp");
+  const size_t hb = st.find("// ---- write helpers (CUM-479)");
+  const size_t he = st.find("// ---- provider-config read cache (CUM-238)");
+  TEST_ASSERT_TRUE(hb != std::string::npos && he != std::string::npos && hb < he);
+  const std::string helpers = st.substr(hb, he - hb);
+  TEST_ASSERT_TRUE(helpers.find("nimbus::sys::NvsKvRaw g_nvs;") != std::string::npos);
+  // Every helper that can grow NVS asks admit( on the same statement as its write.
+  for (const char* w : {"nimbus::store::writeString(g_nvs", "nimbus::store::writeShrinkSafe(g_nvs",
+                        "solide::memory::setInt(", "solide::memory::setBool("}) {
+    size_t p = helpers.find(w);
+    TEST_ASSERT_TRUE_MESSAGE(p != std::string::npos, w);
+    for (; p != std::string::npos; p = helpers.find(w, p + 1)) {
+      const size_t s = helpers.rfind("return notePersist(", p);
+      TEST_ASSERT_TRUE_MESSAGE(s != std::string::npos, w);
+      TEST_ASSERT_TRUE_MESSAGE(helpers.substr(s, p - s).find("admit(") != std::string::npos, w);
+    }
+  }
+  const std::string h = readFile("src/sys/config_nvs.h");
+  TEST_ASSERT_TRUE(h.find("return nvsAdmit(kNvsNsSolide, k, nimbus::store::NvsValKind::Str, v.length()) &&") !=
+                   std::string::npos);
+  const std::string cfg = readFile("src/sys/config_nvs.cpp");
+  TEST_ASSERT_TRUE(cfg.find("nvsAdmit(kNvsNsSolide, key, nimbus::store::NvsValKind::Int, 0)") !=
+                   std::string::npos);
+  // The pass: called from the OTA main-loop tick, from nowhere in the web layer.
+  TEST_ASSERT_TRUE(readFile("src/sys/ota_update.cpp").find("agent::store::nvsMaintain(now);") !=
+                   std::string::npos);
+  for (const char* web : {"src/net/webui.cpp", "src/net/web_memory.cpp"})
+    TEST_ASSERT_TRUE_MESSAGE(readFile(web).find("nvsMaintain") == std::string::npos, web);
+}
+
+
+// ---- 7. the class guards: verdicts are never dropped (lane C) -----------------------
+// Every store setter is [[nodiscard]], but there is no -Werror, so this is the
+// enforcement: a call statement whose result is thrown away fails here unless its file
+// is in the reviewed baseline below at exactly that count (the baseline only shrinks:
+// a fixed call must lower it). An intentional, reviewed discard is written (void)...
+// and does not count. The scan: a store::set*/clear*/replace* call is DISCARDED when
+// it starts a statement (after ; { } ) else, or at a line start whose previous line
+// ends one); a call inside an expression (return, =, &&, an argument) is used.
+static std::vector<int> discardedSetterLines(const std::string& text) {
+  std::regex call(R"re((agent::)?store::(set|clear|replace)\w*\s*\()re");
+  std::vector<int> out;
+  std::string prev;
+  int lineNo = 0;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    std::string line = text.substr(start, end - start);
+    ++lineNo;
+    const size_t cm = line.find("//");
+    if (cm != std::string::npos) line = line.substr(0, cm);
+    for (auto it = std::sregex_iterator(line.begin(), line.end(), call); it != std::sregex_iterator(); ++it) {
+      std::string before = line.substr(0, (size_t)it->position());
+      while (!before.empty() && std::isspace((unsigned char)before.back())) before.pop_back();
+      if (before.size() >= 6 && before.compare(before.size() - 6, 6, "(void)") == 0) continue;
+      std::string ctx = before.empty() ? prev : before;
+      while (!ctx.empty() && std::isspace((unsigned char)ctx.back())) ctx.pop_back();
+      const bool stmt = ctx.empty() || std::strchr(";{})", ctx.back()) ||
+                        (ctx.size() >= 4 && ctx.compare(ctx.size() - 4, 4, "else") == 0);
+      if (stmt) out.push_back(lineNo);
+    }
+    bool blank = true;
+    for (char c : line) blank = blank && std::isspace((unsigned char)c);
+    if (!blank) prev = line;
+    start = end + 1;
+  }
+  return out;
+}
+
+static void test_store_setter_verdicts_are_never_silently_dropped() {
+  // The reviewed baseline (program 2026-10-18): files of other owners whose discards
+  // a SaveScope or an explicit retry already covers, frozen at their count. Lane C's
+  // files are at 0 (ota_update.cpp, store.cpp, connectors.cpp, the Telegram routes).
+  const std::map<std::string, size_t> baseline = {
+      {"src/agent/dream_subsystem.cpp", 1}, {"src/agent/memory_subsystem.cpp", 2},
+      {"src/agent/orchestrator.cpp", 16},   {"src/agent/provider_verify.cpp", 8},
+      {"src/agent/store_config.cpp", 1},    {"src/agent/telegram.cpp", 2},
+      {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 24},
+      {"src/net/cloud_mint.cpp", 2},        {"src/net/relay_client.cpp", 6},
+      {"src/net/web_memory.cpp", 1},        {"src/net/webui.cpp", 91},
+      {"src/test_console.cpp", 5},
+  };
+  for (const char* root : {"src", "lib"}) {
+    for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
+      if (!e.is_regular_file()) continue;
+      const std::string path = e.path().generic_string();
+      const std::string ext = e.path().extension().string();
+      if (ext != ".cpp" && ext != ".h") continue;
+      const std::string text = readFile(path.c_str());
+      if (text.find("store::") == std::string::npos) continue;
+      const std::vector<int> lines = discardedSetterLines(text);
+      auto it = baseline.find(path);
+      const size_t allowed = it == baseline.end() ? 0 : it->second;
+      std::string msg = path + ": " + std::to_string(lines.size()) + " discarded setter verdict(s), baseline " +
+                        std::to_string(allowed) + " (check the result, or write (void) for a reviewed discard)";
+      if (!lines.empty()) msg += "; first at line " + std::to_string(lines[0]);
+      TEST_ASSERT_EQUAL_size_t_MESSAGE(allowed, lines.size(), msg.c_str());
+    }
+  }
+  // Counter-tests: the scan sees a discard in each statement shape, and no false one.
+  TEST_ASSERT_EQUAL_size_t(1, discardedSetterLines("  store::setOtaPending(0);\n").size());
+  TEST_ASSERT_EQUAL_size_t(1, discardedSetterLines("  if (x) agent::store::setX(1);\n").size());
+  TEST_ASSERT_EQUAL_size_t(1, discardedSetterLines("  if (x)\n    store::clearKey(k);\n").size());
+  TEST_ASSERT_EQUAL_size_t(1, discardedSetterLines("  a(); store::replaceX(1);\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  return store::setX(1);\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  ok = ok && store::setX(1);\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  const bool ok =\n      store::setX(1);\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  if (!store::setX(1)) return;\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  (void)store::setX(1);   // reviewed\n").size());
+  TEST_ASSERT_EQUAL_size_t(0, discardedSetterLines("  // store::setX(1);\n").size());
+  // Every setter in the store header carries [[nodiscard]].
+  const std::string h = readFile("src/agent/store.h");
+  std::regex boolSetter(R"re(\bbool\s+((set|clear|replace)\w*)\s*\()re");
+  for (auto it = std::sregex_iterator(h.begin(), h.end(), boolSetter); it != std::sregex_iterator(); ++it) {
+    const size_t at = (size_t)it->position();
+    const size_t ls = h.rfind('\n', at) + 1;
+    const std::string head = h.substr(ls, at - ls);
+    const bool marked = head.find("[[nodiscard]]") != std::string::npos ||
+                        (at >= 14 && h.compare(at - 14, 14, "[[nodiscard]] ") == 0);
+    TEST_ASSERT_TRUE_MESSAGE(marked, (*it)[1].str().c_str());
+  }
+}
+
+// Every raw NVS writer in the reviewed set reports its verdict: each raw write call sits
+// in a statement that passes through notePersist (the "a raw writer skips the ledger"
+// class: the journal, the scratchpad, the OTA guard and the verify side channels were
+// all silent before). main.cpp writes only right after erasing the whole partition.
+static void test_raw_nvs_writers_report_through_notePersist() {
+  std::regex raw(R"re(solide::memory::(set[A-Z]\w*|eraseKey|clear)\(|nvs_set_\w+\(|nvs_erase_\w+\(|\b(p|s_prefs)\.(put[A-Z]\w*|remove|clear)\()re");
+  const char* files[] = {"src/agent/provider_verify.cpp", "src/agent/memory_subsystem.cpp",
+                         "src/agent/orch_persist.cpp", "src/sys/ota_update.cpp",
+                         "src/sys/config_nvs.cpp"};
+  for (const char* f : files) {
+    const std::string src = readFile(f);
+    size_t start = 0;
+    int n = 0;
+    while (start < src.size()) {
+      size_t end = src.find('\n', start);
+      if (end == std::string::npos) end = src.size();
+      std::string line = src.substr(start, end - start);
+      const size_t cm = line.find("//");
+      if (cm != std::string::npos) line = line.substr(0, cm);
+      if (std::regex_search(line, raw)) {
+        ++n;
+        TEST_ASSERT_TRUE_MESSAGE(line.find("notePersist(") != std::string::npos,
+                                 (std::string(f) + ": " + line).c_str());
+      }
+      start = end + 1;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, f);   // the scan found the file's writers at all
+  }
+}
+
+// ---- 8. the moved stores: the usage ledger and the scratchpad (lane C, D-2) -------
+struct FakeMovedIo {
+  bool fileExists = false, nvsExists = false;
+  std::string file, nvs;
+  bool failWrite = false, corruptWrite = false;
+  int nvsErases = 0;
+  bool readFile(std::string& out) { if (!fileExists) return false; out = file; return true; }
+  bool writeFileAtomic(const std::string& v) {
+    if (failWrite) return false;
+    fileExists = true;
+    file = corruptWrite ? v.substr(0, v.size() / 2) : v;
+    return true;
+  }
+  bool readNvs(std::string& out) { if (!nvsExists) return false; out = nvs; return true; }
+  bool eraseNvs() { ++nvsErases; nvsExists = false; nvs.clear(); return true; }
+};
+
+// The four migration legs (NVS only, file only, both, neither) and the retire rule.
+static void test_moved_store_migration_legs() {
+  using nimbus::store::MovedSource;
+  // NVS only (the first boot of v4.5.14 on a device that ran v4.5.13).
+  {
+    FakeMovedIo io; io.nvsExists = true; io.nvs = "openai|1|2";
+    const auto m = nimbus::store::loadMoved(io);
+    TEST_ASSERT_EQUAL((int)MovedSource::Nvs, (int)m.src);
+    TEST_ASSERT_EQUAL_STRING("openai|1|2", m.value.c_str());
+    // Nothing to retire yet (no file): the legacy copy stays even on a valid boot.
+    TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, true));
+    TEST_ASSERT_TRUE(io.nvsExists);
+    // The first persist writes the file, never NVS.
+    TEST_ASSERT_TRUE(nimbus::store::persistMoved(io, "openai|1|3"));
+    TEST_ASSERT_EQUAL_STRING("openai|1|2", io.nvs.c_str());
+    // An OTA trial boot never retires (a rollback still reads v4.5.13's values)...
+    TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, false));
+    TEST_ASSERT_TRUE(io.nvsExists);
+    // ...the boot after the image was marked valid does.
+    TEST_ASSERT_TRUE(nimbus::store::retireLegacy(io, true));
+    TEST_ASSERT_FALSE(io.nvsExists);
+  }
+  // File only (a device past its migration).
+  {
+    FakeMovedIo io; io.fileExists = true; io.file = "anthropic|5|6";
+    const auto m = nimbus::store::loadMoved(io);
+    TEST_ASSERT_EQUAL((int)MovedSource::File, (int)m.src);
+    TEST_ASSERT_EQUAL_STRING("anthropic|5|6", m.value.c_str());
+    TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, true));   // nothing in NVS to erase
+    TEST_ASSERT_EQUAL_INT(0, io.nvsErases);
+  }
+  // Both: the file wins, the stale NVS copy goes on a valid boot only.
+  {
+    FakeMovedIo io; io.fileExists = true; io.file = "new"; io.nvsExists = true; io.nvs = "old";
+    const auto m = nimbus::store::loadMoved(io);
+    TEST_ASSERT_EQUAL((int)MovedSource::File, (int)m.src);
+    TEST_ASSERT_EQUAL_STRING("new", m.value.c_str());
+    TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, false));
+    TEST_ASSERT_TRUE(nimbus::store::retireLegacy(io, true));
+  }
+  // Neither (a fresh device): empty, and the first persist creates the file.
+  {
+    FakeMovedIo io;
+    const auto m = nimbus::store::loadMoved(io);
+    TEST_ASSERT_EQUAL((int)MovedSource::None, (int)m.src);
+    TEST_ASSERT_TRUE(m.value.empty());
+    TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, true));
+    TEST_ASSERT_TRUE(nimbus::store::persistMoved(io, ""));
+    TEST_ASSERT_TRUE(io.fileExists);
+    TEST_ASSERT_EQUAL((int)MovedSource::File, (int)nimbus::store::loadMoved(io).src);
+  }
+  // A write that did not land, or that reads back different, is not a save.
+  {
+    FakeMovedIo io; io.failWrite = true;
+    TEST_ASSERT_FALSE(nimbus::store::persistMoved(io, "x|1"));
+    FakeMovedIo torn; torn.corruptWrite = true;
+    TEST_ASSERT_FALSE(nimbus::store::persistMoved(torn, "openai|123456"));
+  }
+  // The rule's truth table.
+  for (int m = 0; m < 8; ++m)
+    TEST_ASSERT_EQUAL((m & 7) == 7, nimbus::store::mayRetireLegacy(m & 1, m & 2, m & 4));
+}
+
+// The dirty flag: a failed persist leaves the store dirty, retried at most once a
+// minute from the main loop; a landed one clears it. A legacy load is due at once.
+static void test_moved_store_dirty_and_retry() {
+  nimbus::store::DirtyRetry d(60000);
+  TEST_ASSERT_TRUE(d.saved());
+  TEST_ASSERT_FALSE(d.retryDue(5000));
+  d.noteWrite(false, 10000);
+  TEST_ASSERT_FALSE(d.saved());
+  TEST_ASSERT_FALSE(d.retryDue(10000 + 59999));   // no retry storm
+  TEST_ASSERT_TRUE(d.retryDue(10000 + 60000));
+  d.noteWrite(false, 70000);
+  TEST_ASSERT_FALSE(d.retryDue(100000));
+  d.noteWrite(true, 130000);
+  TEST_ASSERT_TRUE(d.saved());
+  TEST_ASSERT_FALSE(d.retryDue(999999));
+  d.markDirty(200000);
+  TEST_ASSERT_FALSE(d.saved());
+  TEST_ASSERT_TRUE(d.retryDue(200000));
+  // millis() wrap: still exactly one retry per minute.
+  nimbus::store::DirtyRetry w(60000);
+  w.noteWrite(false, 0xFFFFF000u);
+  TEST_ASSERT_FALSE(w.retryDue(0xFFFFF000u + 30000u));
+  TEST_ASSERT_TRUE(w.retryDue(0xFFFFF000u + 60000u));
+}
+
+// The device seam of both moves: the ledger and the scratchpad persist through the
+// moved-store rule into their files, never NVS, and retire the legacy copy only on a
+// boot whose image was already valid.
+static void test_moved_store_device_seams() {
+  const std::string st = readFile("src/agent/store.cpp");
+  TEST_ASSERT_TRUE(st.find("constexpr const char*  kUsageLedgerPath = \"/data/usage_ledger.txt\";") !=
+                   std::string::npos);
+  const size_t pl = st.find("bool persistLedgerLocked() {");
+  TEST_ASSERT_TRUE(pl != std::string::npos);
+  const std::string persist = st.substr(pl, st.find("\n}\n", pl) - pl);
+  TEST_ASSERT_TRUE(persist.find("nimbus::store::persistMoved(io, s)") != std::string::npos);
+  TEST_ASSERT_TRUE(persist.find("fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(persist.find("notePersist(ok, \"lfs_ledger\")") != std::string::npos);
+  for (const char* nvs : {"putStr", "putOrClear", "AKEY_USAGE_LEDGER"})
+    TEST_ASSERT_TRUE_MESSAGE(persist.find(nvs) == std::string::npos, nvs);
+  TEST_ASSERT_TRUE(st.find("nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot())") != std::string::npos);
+  const std::string ms = readFile("src/agent/memory_subsystem.cpp");
+  TEST_ASSERT_TRUE(ms.find("const char* kScratchPath = \"/data/scratchpad.bin\";") != std::string::npos);
+  const size_t ps = ms.find("bool persistScratchpad() {");
+  TEST_ASSERT_TRUE(ps != std::string::npos);
+  const std::string sp = ms.substr(ps, ms.find("\n}\n", ps) - ps);
+  TEST_ASSERT_TRUE(sp.find("nimbus::store::persistMoved(io, blob)") != std::string::npos);
+  TEST_ASSERT_TRUE(sp.find("notePersist(ok, \"lfs_scratch\")") != std::string::npos);
+  TEST_ASSERT_TRUE(sp.find("putBytes") == std::string::npos);
+  TEST_ASSERT_TRUE(ms.find("nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot())") != std::string::npos);
+  // bootGuard sets the "valid at boot" latch only on the not-pending paths.
+  const std::string ota = readFile("src/sys/ota_update.cpp");
+  TEST_ASSERT_EQUAL_size_t(2, countOf(ota, "g_validAtBoot = true;"));
+}
+
+// The routes the 2c rows name answer 507 through the persist ledger: the scratchpad and
+// memory-config routes, the Telegram owner routes (owners before the allowlist, the
+// role row only after both), the OAuth refresh token, /mcp approve, and the verify
+// cache written once per verdict.
+static void test_2c_routes_report_storage_full() {
+  const std::string wm = readFile("src/net/web_memory.cpp");
+  for (const char* fn : {"void handleScratchPost(", "void handleConfigPut("}) {
+    const size_t s = wm.find(fn);
+    TEST_ASSERT_TRUE_MESSAGE(s != std::string::npos, fn);
+    const std::string body = wm.substr(s, wm.find("\n}\n", s) - s);
+    TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::sys::SaveScope save;") != std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::store::storageFullJson()") != std::string::npos, fn);
+  }
+  const std::string web = readFile("src/net/webui.cpp");
+  const std::string rm = routeRegion(web, "/api/telegram/remove");
+  const size_t owners = rm.find("agent::store::setTelegramOwners(ownOut)");
+  const size_t allow = rm.find("agent::store::setTelegramAllowlist(out)");
+  const size_t tenant = rm.find("agent::orchestrator::tenantRemove(");
+  TEST_ASSERT_TRUE(owners != std::string::npos && allow != std::string::npos && tenant != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(owners < allow && allow < tenant, "owners, then allowlist, then the role row");
+  TEST_ASSERT_TRUE(rm.find("if (!landed) { sendSaved(r, save); return; }") < tenant);
+  TEST_ASSERT_TRUE(routeRegion(web, "/api/telegram/rename").find("if (!onFreshAllowlist(id))") !=
+                   std::string::npos);
+  const std::string st = readFile("src/agent/store.cpp");
+  TEST_ASSERT_TRUE(st.find("bool    setTelegramOwners(const String& v) { return putStrShrinkSafe(AKEY_TG_OWNERS, v); }") !=
+                   std::string::npos);
+  const std::string tg = readFile("src/agent/telegram.cpp");
+  TEST_ASSERT_TRUE(tg.find("if (!store::setTelegramAllowlist(al)) return false;") != std::string::npos);
+  const std::string cn = readFile("src/agent/connectors.cpp");
+  TEST_ASSERT_TRUE(cn.find("if (!store::setConnectorsJson(out)) return RefreshWrite::StorageFull;") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(cn.find("if (w == RefreshWrite::StorageFull) { fail(nimbus::store::kStorageFullMessage); return; }") !=
+                   std::string::npos);
+  const std::string oc = readFile("src/agent/orchestrator.cpp");
+  TEST_ASSERT_TRUE(oc.find("if (!store::setConnectorsJson(out)) {") != std::string::npos);
+  TEST_ASSERT_TRUE(oc.find("s_verifyMemo.shouldWrite(ev.host.c_str(), 1)") != std::string::npos);
+}
+
+// The verify cache is written once per (host, verdict) per boot: a refused write is
+// not retried at every turn end, and a changed verdict is written again.
+static void test_verdict_memo_writes_only_on_change() {
+  nimbus::store::VerdictMemo m;
+  TEST_ASSERT_TRUE(m.shouldWrite("openai", 1));
+  for (int turn = 0; turn < 100; ++turn) TEST_ASSERT_FALSE(m.shouldWrite("openai", 1));
+  TEST_ASSERT_TRUE(m.shouldWrite("anthropic", 1));
+  TEST_ASSERT_TRUE(m.shouldWrite("openai", 0));    // the verdict moved
+  TEST_ASSERT_TRUE(m.shouldWrite("openai", 1));
+  TEST_ASSERT_FALSE(m.shouldWrite(nullptr, 1));
+  // More hosts than slots: an evicted host is re-attempted, never silently skipped.
+  nimbus::store::VerdictMemo many;
+  for (int i = 0; i < 20; ++i) TEST_ASSERT_TRUE(many.shouldWrite(("h" + std::to_string(i)).c_str(), 1));
+  TEST_ASSERT_TRUE(many.shouldWrite("h0", 1));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_reply_is_507_storage_full_never_ok);
@@ -913,5 +1554,21 @@ int main(int, char**) {
   RUN_TEST(test_failures_feed_the_ring_and_the_notice);
   RUN_TEST(test_listing_entry_math_matches_the_partition_model);
   RUN_TEST(test_nvs_stats_names_never_values);
+  RUN_TEST(test_every_defined_key_has_a_class);
+  RUN_TEST(test_key_classes_and_eviction_rows);
+  RUN_TEST(test_eviction_plan_order_and_exclusions);
+  RUN_TEST(test_value_entries_match_the_partition_model);
+  RUN_TEST(test_reserve_property_over_every_row);
+  RUN_TEST(test_reserve_covers_the_critical_working_set);
+  RUN_TEST(test_reserve_keeps_critical_writes_landing_on_a_filling_device);
+  RUN_TEST(test_eviction_pass_restores_the_reserve_or_reports_starved);
+  RUN_TEST(test_device_seam_asks_the_reserve);
+  RUN_TEST(test_store_setter_verdicts_are_never_silently_dropped);
+  RUN_TEST(test_raw_nvs_writers_report_through_notePersist);
+  RUN_TEST(test_moved_store_migration_legs);
+  RUN_TEST(test_moved_store_dirty_and_retry);
+  RUN_TEST(test_moved_store_device_seams);
+  RUN_TEST(test_2c_routes_report_storage_full);
+  RUN_TEST(test_verdict_memo_writes_only_on_change);
   return UNITY_END();
 }

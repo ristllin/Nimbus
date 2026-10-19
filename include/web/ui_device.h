@@ -185,7 +185,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <tr><td>Voltage</td><td id=battmv>-</td></tr>
 <tr><td>Estimated time left</td><td id=batttime>-</td></tr>
 <tr><td>Discharge rate</td><td id=battrate>-</td></tr>
-<tr><td>Health</td><td id=batthealth>-</td></tr>
+<tr><td>Health (estimate)</td><td id=batthealth>-</td></tr>
 <tr><td>Power source</td><td id=battsrc>-</td></tr>
 <tr><td>Calibration</td><td id=battcal>-</td></tr>
 </tbody></table>

@@ -73,9 +73,12 @@ bool shouldLogLocked(const char* key, uint32_t now) {
 }
 }  // namespace
 
-// One NVS int save, reported: never written when NVS is not open (the short-circuit).
+// One NVS int save, reported: never written when NVS is not open (the short-circuit),
+// and a new key never spends the reserve (a rewrite of a stored int never grows).
 static bool putIntNoted(const char* key, int32_t v) {
-  return notePersist(nvsReady() && solide::memory::setInt(key, v), key);
+  const bool admitted =
+      nvsReady() && nvsAdmit(kNvsNsSolide, key, nimbus::store::NvsValKind::Int, 0);
+  return notePersist(admitted && solide::memory::setInt(key, v), key);
 }
 
 // Every failure, for /api/state nvs.recentFails (under s_ledgerMux), and the owner

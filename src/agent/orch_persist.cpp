@@ -1,5 +1,6 @@
 #include "orch_persist.h"
 #include "../sys/agent_log.h"
+#include "../sys/config_nvs.h"  // notePersist + the NVS reserve (nvsAdmit)
 #include "fs_atomic.h"          // writeFileAtomic - tmp + rename, honors erasing()
 
 #include <Arduino.h>
@@ -88,21 +89,36 @@ std::string NvsJournalStore::get(int slot) {
   return std::string(v.c_str(), v.length());
 }
 
-void NvsJournalStore::put(int slot, const std::string& v) {
-  if (!s_prefsOpen) return;
-  char key[4]; slotKey(slot, key);
-  s_prefs.putString(key, v.c_str());
+// The failure label in the persist ledger and /api/state nvs.recentFails: the
+// namespace and the slot, so a refused journal write is recognisable ("agjournal.j3").
+static void failKey(int slot, char out[16]) {
+  snprintf(out, 16, "%s.j%d", kJournalNs, slot);
 }
 
-void NvsJournalStore::remove(int slot) {
-  if (!s_prefsOpen) return;
+// A record write asks the NVS reserve first (journal records are runtime state: on a
+// filling device they are refused before the Telegram offset or the OTA guard would
+// be) and reports a write that did not land, so the job stays polled from RAM and the
+// refusal is visible.
+bool NvsJournalStore::put(int slot, const std::string& v) {
   char key[4]; slotKey(slot, key);
-  s_prefs.remove(key);
+  char fk[16]; failKey(slot, fk);
+  const bool admitted =
+      s_prefsOpen && nimbus::sys::nvsAdmit(kJournalNs, key, nimbus::store::NvsValKind::Str, v.size());
+  return nimbus::sys::notePersist(admitted && s_prefs.putString(key, v.c_str()) == v.size(), fk);
+}
+
+// An erase only frees entries; an absent slot is already removed.
+bool NvsJournalStore::remove(int slot) {
+  if (!s_prefsOpen) return false;
+  char key[4]; slotKey(slot, key);
+  if (!s_prefs.isKey(key)) return true;
+  char fk[16]; failKey(slot, fk);
+  return nimbus::sys::notePersist(s_prefs.remove(key), fk);
 }
 
 void NvsJournalStore::clearNs() {
   if (!s_prefsOpen) return;
-  s_prefs.clear();   // wipe the whole agjournal namespace
+  nimbus::sys::notePersist(s_prefs.clear(), kJournalNs);   // wipe the whole agjournal namespace
 }
 
 }  // namespace agent

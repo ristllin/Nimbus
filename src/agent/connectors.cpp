@@ -19,6 +19,7 @@
 #include <WiFiClientSecure.h>
 
 #include "nimbus/orch/mcp_oauth.h"           // portable OAuth 2.1 decision layer
+#include "nimbus/store/persist.h"            // kStorageFullMessage - a refresh token that did not store
 #include <esp_system.h>   // esp_random - retry jitter source
 #include <cstring>        // strcmp - non-allocating state compare in the OAuth callback
 #include <memory>
@@ -1386,9 +1387,12 @@ void stepRegister() {
 
 // Write the minted refresh token into the connector's T3 oauth blob slot, so
 // bearerFor()/refreshAccess() mints access tokens from here on. NEVER logged.
-bool writeRefreshToBlob(const oa::TokenResponse& tok) {
+// StorageFull: the blob did not land (a full NVS), so the flow fails with the
+// storage-full sentence instead of "connected" over a token the next boot never sees.
+enum class RefreshWrite : uint8_t { Ok, NoSlot, StorageFull };
+RefreshWrite writeRefreshToBlob(const oa::TokenResponse& tok) {
   JsonDocument d;
-  if (deserializeJson(d, store::connectorsJson()) || !d.is<JsonArray>()) return false;
+  if (deserializeJson(d, store::connectorsJson()) || !d.is<JsonArray>()) return RefreshWrite::NoSlot;
   for (JsonObject o : d.as<JsonArray>()) {
     if (s_flow.connName != (const char*)(o["name"] | "")) continue;
     JsonObject oauth = o["oauth"].to<JsonObject>();
@@ -1398,12 +1402,14 @@ bool writeRefreshToBlob(const oa::TokenResponse& tok) {
     oauth["rtok"] = tok.refreshToken.c_str();
     String out;
     serializeJson(d, out);
-    if (out.length() > 3500) return false;   // blob cap (same as the save endpoint)
-    store::setConnectorsJson(out);
-    store::setOrchConvId("");                // connectors pin at conversation creation
-    return true;
+    if (out.length() > 3500) return RefreshWrite::NoSlot;   // blob cap (same as the save endpoint)
+    if (!store::setConnectorsJson(out)) return RefreshWrite::StorageFull;
+    // Connectors pin at conversation creation: drop the conversation (an erase, so it
+    // lands on a full NVS too).
+    (void)store::setOrchConvId("");
+    return RefreshWrite::Ok;
   }
-  return false;
+  return RefreshWrite::NoSlot;
 }
 
 void stepExchange() {
@@ -1420,7 +1426,9 @@ void stepExchange() {
   oa::TokenResponse tok = oa::parseTokenResponse(r.body);
   if (!tok.ok) { fail("Sign-in did not complete. Start again from the connector."); return; }
   if (tok.refreshToken.empty()) { fail("The server returned no lasting sign-in; it must allow offline access."); return; }
-  if (!writeRefreshToBlob(tok)) { fail("Signed in, but the connector set is full or unreadable. Free a slot and retry."); return; }
+  const RefreshWrite w = writeRefreshToBlob(tok);
+  if (w == RefreshWrite::StorageFull) { fail(nimbus::store::kStorageFullMessage); return; }
+  if (w != RefreshWrite::Ok) { fail("Signed in, but the connector set is full or unreadable. Free a slot and retry."); return; }
   s_flow.phase = Phase::Done;
   s_flow.error = "";
   s_flow.nextStepMs = millis() + 3600000;

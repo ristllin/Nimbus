@@ -979,7 +979,10 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   rec.state        = orch::JobState::Queued;
   rec.resultSeen   = false;
   rec.dispatchedAt = nowMs();
-  if (d_.journal) d_.journal->write(rec);
+  // A record the store refused (a full NVS) is still held in RAM, so the job is polled
+  // this run and only a restart loses it; the refusal is in nvs.recentFails.
+  if (d_.journal && !d_.journal->write(rec))
+    hlog::logf("orchestrator: journal record %s not stored", tag);
 
   hlog::logf("orchestrator: spawned %s -> %s (%s/%s)", tag, jobId, rec.backend, rec.model);
   ledgerStarted(p, tag, rec.backend, rec.model);

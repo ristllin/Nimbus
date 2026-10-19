@@ -176,10 +176,11 @@ bool persistVectors();
 // What memory.write / memory.update did since boot (RAM, monotonic; lane M).
 nimbus::orch::MemOpCounters opCounters();
 void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
-// Returns false when the save failed (the notes then live in RAM only until
-// restart); the scratchpad's prompt header and the tool result say so.
+// Returns false when the save did not land (the notes then live in RAM only until
+// restart); the failure is in the persist ledger (a route's SaveScope answers 507)
+// and the scratchpad's prompt header and the tool result say so.
 bool persistScratchpad();
-void persistMemConfig();  // retrieval knobs -> NVS (fixes silent reset-on-reboot)
+bool persistMemConfig();  // retrieval knobs -> NVS (fixes silent reset-on-reboot); same verdict
 void persistEpisodic();   // whole-blob to LittleFS /data/episodic.bin
 void applyConfig();       // push MemConfig -> engines (VDB capacity cap); call after a config change
 

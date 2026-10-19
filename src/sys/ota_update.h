@@ -55,6 +55,9 @@ void runOnPoll();
 
 // Rollback/validation guard - ms-scale, runs before the watchdog is armed.
 void bootGuard();
+// True when this boot's image was already valid when it started (set by bootGuard):
+// not an OTA trial boot. Gates the erase of legacy NVS copies of moved stores.
+bool imageValidAtBoot();
 
 // Cheap periodic driver (mark-valid, scheduled checks, auto-install). Call
 // every loop() pass; it self-limits to ~1 Hz.
@@ -109,6 +112,9 @@ void localArmConfirm();
 
 // True while the install task runs - main loop refuses voice capture / new
 // turns and paints the ring progress arc from progressPct().
+// True when an install would run on battery with a low health ESTIMATE. The estimate
+// never blocks an install; the answer then carries nimbus::ota::kHealthAdvisoryNote.
+bool healthAdvisory();
 bool installing();
 
 // One-word state for STATUS + /api/state ("idle"/"checking"/"available"/...).

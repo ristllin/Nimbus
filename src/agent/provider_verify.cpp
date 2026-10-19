@@ -89,8 +89,18 @@ static void verifyTask(void*);   // spawned per request(); self-deletes
 static String reasonKey(const String& provider) {
   return String(AKEY_VERIFY_REASON_PFX) + provider;
 }
+// A rebuildable side channel: asked of the NVS reserve and reported (lane C).
 static void setReason(const String& provider, const char* rsn) {
-  solide::memory::setString(reasonKey(provider).c_str(), rsn ? rsn : "");
+  const String k = reasonKey(provider);
+  const String v = rsn ? rsn : "";
+  if (!v.length()) {   // "no reason" reads the same as an absent key: an erase
+    if (solide::memory::has(k.c_str()))
+      nimbus::sys::notePersist(solide::memory::eraseKey(k.c_str()), k.c_str());
+    return;
+  }
+  const bool admitted = nimbus::sys::nvsAdmit(nimbus::sys::kNvsNsSolide, k.c_str(),
+                                              nimbus::store::NvsValKind::Str, v.length());
+  nimbus::sys::notePersist(admitted && solide::memory::setString(k.c_str(), v), k.c_str());
 }
 String reason(const String& provider) {
   return nimbus::sys::nvsGetStr(reasonKey(provider).c_str());   // unset until a verify
@@ -104,7 +114,10 @@ String reason(const String& provider) {
 static const char* const kVerifyMax8Pfx = "vrm_";
 static String max8Key(const String& provider) { return String(kVerifyMax8Pfx) + provider; }
 static void setDeferMax8(const String& provider, uint32_t v) {
-  solide::memory::setInt(max8Key(provider).c_str(), (int32_t)v);
+  const String k = max8Key(provider);
+  const bool admitted = nimbus::sys::nvsAdmit(nimbus::sys::kNvsNsSolide, k.c_str(),
+                                              nimbus::store::NvsValKind::Int, 0);
+  nimbus::sys::notePersist(admitted && solide::memory::setInt(k.c_str(), (int32_t)v), k.c_str());
 }
 uint32_t deferMax8(const String& provider) {
   return (uint32_t)solide::memory::getInt(max8Key(provider).c_str(), 0);

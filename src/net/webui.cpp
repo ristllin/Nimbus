@@ -485,6 +485,21 @@ static void addTgPollState(JsonDocument& d) {
   tp["fails"]            = agent::telegram::consecutiveFails();
 }
 
+// The NVS reserve and the moved stores: writes the reserve refused and keys the
+// main-loop pass evicted since boot, whether the device is starved (owner settings
+// still save, background saves do not), and whether the usage ledger file holds all
+// recorded spend (false while a failed write is being retried).
+static void addReserveState(JsonDocument& d) {
+  const sys::NvsGuardStats g = sys::nvsGuardStats();
+  JsonObject r = d["nvsReserve"].to<JsonObject>();
+  r["entries"] = (uint32_t)nimbus::store::kNvsReserveEntries;
+  r["refused"] = g.refused;
+  r["evicted"] = g.evicted;
+  r["starved"] = g.starved;
+  d["usageSaved"] = agent::store::usageLedgerSaved();
+}
+}
+
 static void buildState(String& out) {
   JsonDocument d;
   const int mode = s_wc.currentMode ? s_wc.currentMode()
@@ -603,6 +618,7 @@ static void buildState(String& out) {
     addRecentFails(nvs);
   }
   addTgPollState(d);
+  addReserveState(d);
 
   // HAL health (solide::begin per-subsystem) - which peripherals came up at boot.
   // Null accessor => reported all-up (can't tell). Lets STATUS/dashboards flag a
@@ -2361,9 +2377,10 @@ void beginWeb(const WebConfig& wc) {
       r->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid or empty rule set\"}");
       return;
     }
-    agent::store::setFallbackRulesJson(body);
-    agent::store::setFallbackSyncTs(0);   // a local edit is authoritative until the next cloud sync
-    r->send(200, "application/json", "{\"ok\":true}");
+    nimbus::sys::SaveScope save;
+    (void)agent::store::setFallbackRulesJson(body);   // verdicts: the scope answers 507
+    (void)agent::store::setFallbackSyncTs(0);   // a local edit is authoritative until the next cloud sync
+    sendSaved(r, save);
   });
   // Daily per-provider usage buckets for the Usage-pane graphs (owner: spend over
   // time + estimated price). Raw counts only - the $ math happens client-side from
@@ -3089,14 +3106,17 @@ void beginWeb(const WebConfig& wc) {
     String nm = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
     id.trim();
     if (!id.length()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
-    agent::telegram::approvePending(id, nm);   // approve == add (idempotent) + reload
-    r->send(200, "application/json", "{\"ok\":true}");
+    nimbus::sys::SaveScope save;
+    (void)agent::telegram::approvePending(id, nm);   // approve == add (idempotent) + reload
+    sendSaved(r, save);
   });
   s_server.on("/api/telegram/remove", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String id = r->hasParam("id", true) ? r->getParam("id", true)->value() : "";
     id.trim();
-    // Rebuild the allowlist without `id`, persist, reload.
+    if (!id.length()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
+    nimbus::sys::SaveScope save;
+    // Rebuild the allowlist without `id`.
     String al = agent::store::telegramAllowlist(), out;
     int s = 0;
     while (s < (int)al.length()) {
@@ -3105,11 +3125,13 @@ void beginWeb(const WebConfig& wc) {
       if (t.length() && t != id) out += (out.length() ? "," : "") + t;
       s = e + 1;
     }
-    agent::store::setTelegramAllowlist(out);
     // Keep owners ⊆ allowlist: prune `id` from tgOwners too, so a removed-then-
     // re-added chat comes back as a plain member (not a silently-resurrected owner).
     // Only rewrite when an EXPLICIT owners list exists - an empty list is the
-    // first-entry default and must stay empty.
+    // first-entry default and must stay empty. Owners FIRST, then the allowlist, and
+    // the role row only once both landed: on a full NVS a removal that stops halfway
+    // leaves the chat a plain member (507), never an owner that is not allow-listed.
+    bool landed = true;
     String ow = agent::store::telegramOwners(); ow.trim();
     if (ow.length()) {
       String ownOut; int os = 0;
@@ -3119,9 +3141,11 @@ void beginWeb(const WebConfig& wc) {
         if (t.length() && t != id) ownOut += (ownOut.length() ? "," : "") + t;
         os = e + 1;
       }
-      if (ownOut != ow) agent::store::setTelegramOwners(ownOut);
+      if (ownOut != ow) landed = agent::store::setTelegramOwners(ownOut);
     }
+    landed = landed && agent::store::setTelegramAllowlist(out);
     agent::telegram::reloadAllowlist();
+    if (!landed) { sendSaved(r, save); return; }   // 507: the role row stays
     // Drop the RBAC row too. Safe in THIS order only: they are already off the
     // allowlist, so roleOfChat's "allow-listed => User" fallback cannot re-grant
     // access to a chat with no row. Leaving the row would slowly fill a bounded
@@ -3139,10 +3163,10 @@ void beginWeb(const WebConfig& wc) {
       e["ok"] = true;
       e["note"] = terr.empty() ? "access revoked" : terr;
       String o; serializeJson(e, o);
-      r->send(200, "application/json", o);
+      sendSaved(r, save, o);
       return;
     }
-    r->send(200, "application/json", "{\"ok\":true}");
+    sendSaved(r, save);
   });
   s_server.on("/api/telegram/rename", HTTP_POST, [](AsyncWebServerRequest* r) {
     // Rename an allowlisted chat's display name (owner ask: label who sent what in
@@ -3152,10 +3176,14 @@ void beginWeb(const WebConfig& wc) {
     String nm = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
     id.trim();
     if (!id.length()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
+    // Only an allow-listed chat has a name to keep: a rename of any other id would let
+    // the sidecar grow without bound (the way a bench device was once filled).
+    if (!onFreshAllowlist(id)) { r->send(400, "application/json", "{\"error\":\"not allow-listed\"}"); return; }
     nm.replace(",", " "); nm.replace(":", " ");   // same sanitize as approvePending
     if (nm.length() > 32) nm = nm.substring(0, 32);
-    agent::store::replaceTelegramName(id, nm);
-    r->send(200, "application/json", "{\"ok\":true}");
+    nimbus::sys::SaveScope save;
+    (void)agent::store::replaceTelegramName(id, nm);   // the scope answers 507
+    sendSaved(r, save);
   });
   // Set an allow-listed chat's ROLE: owner (may change settings / install OTA) vs
   // member (conversational turns only). Rebuilds the owners list from the current
@@ -3291,17 +3319,19 @@ void beginWeb(const WebConfig& wc) {
     }
     if (owner) out += (out.length() ? "," : "") + id;
     if (out.length() == 0) { r->send(409, "application/json", "{\"error\":\"at least one owner required\"}"); return; }
-    agent::store::setTelegramOwners(out);
+    nimbus::sys::SaveScope save;
+    (void)agent::store::setTelegramOwners(out);   // the scope answers 507
     agent::telegram::reloadAllowlist();   // re-reads owners on the poll task
-    r->send(200, "application/json", "{\"ok\":true}");
+    sendSaved(r, save);
   });
   s_server.on("/api/telegram/approve", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String id = r->hasParam("id", true) ? r->getParam("id", true)->value() : "";
     String nm = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
     if (!id.length()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
-    agent::telegram::approvePending(id, nm);
-    r->send(200, "application/json", "{\"ok\":true}");
+    nimbus::sys::SaveScope save;
+    (void)agent::telegram::approvePending(id, nm);   // the scope answers 507
+    sendSaved(r, save);
   });
   s_server.on("/api/telegram/deny", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
@@ -3312,9 +3342,10 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/telegram/public", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     bool on = r->hasParam("on", true) && (r->getParam("on", true)->value().toInt() != 0);
-    agent::store::setTelegramPublic(on);
+    nimbus::sys::SaveScope save;
+    (void)agent::store::setTelegramPublic(on);   // turning it off is an erase: always lands
     agent::telegram::reloadAllowlist();
-    r->send(200, "application/json", String("{\"public\":") + (on ? "true" : "false") + "}");
+    sendSaved(r, save, String("{\"public\":") + (on ? "true" : "false") + "}");
   });
 
   // Device health (P5): the Home-tab panel. Passive snapshot; the caller (this
@@ -3541,8 +3572,12 @@ void beginWeb(const WebConfig& wc) {
     const bool force = r->hasParam("force", true) && r->getParam("force", true)->value() == "1";
     const char* why = "";
     const bool ok = otaupd::requestInstall(dry, force, &why);
-    String body = ok ? String("{\"ok\":true}")
-                     : String("{\"ok\":false,\"err\":\"") + why + "\"}";
+    // The battery health estimate never blocks an install; when it reads low on
+    // battery the accept carries a plain note instead (nimbus::ota::kHealthAdvisoryNote).
+    String body = !ok ? String("{\"ok\":false,\"err\":\"") + why + "\"}"
+                : otaupd::healthAdvisory()
+                    ? String("{\"ok\":true,\"note\":\"") + nimbus::ota::kHealthAdvisoryNote + "\"}"
+                    : String("{\"ok\":true}");
     r->send(ok ? 202 : 409, "application/json", body);
   });
   s_server.on("/api/selftest/full", HTTP_POST, [](AsyncWebServerRequest* r) {

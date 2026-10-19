@@ -24,6 +24,7 @@
 #include "nimbus/ota/ota_logic.h"
 #include "ota_pubkey.h"
 #include "usb_updater.h"          // nimbus::usbfw wire protocol + commit-order sequencer
+#include "config_nvs.h"           // notePersist: every guard write is reported
 #include "version.h"
 
 // Device glue over the portable nimbus::ota core. IO + wiring only - every
@@ -136,6 +137,15 @@ static bool rawGetStr(nvs_handle_t h, const char* k, char* buf, size_t cap) {
   if (nvs_get_str(h, k, buf, &len) != ESP_OK) { buf[0] = '\0'; return false; }
   return true;
 }
+// The guard's raw writes, each reported to the persist ledger (a full NVS refusing
+// the guard is exactly what has to be visible). The guard keys are critical: they
+// may spend the NVS reserve, so no admission check here.
+static bool rawSetI32(nvs_handle_t h, const char* k, int32_t v) {
+  return nimbus::sys::notePersist(nvs_set_i32(h, k, v) == ESP_OK, k);
+}
+static bool rawSetStr(nvs_handle_t h, const char* k, const char* v) {
+  return nimbus::sys::notePersist(nvs_set_str(h, k, v) == ESP_OK, k);
+}
 
 static const char* runningLabel() {
   const esp_partition_t* p = esp_ota_get_running_partition();
@@ -180,7 +190,7 @@ static const char* otaVariant() {
                                       strcmp(scr, "tft") == 0)) {
       nvs_handle_t h;
       if (nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, AKEY_OTA_TYPE, derived);
+        rawSetStr(h, AKEY_OTA_TYPE, derived);
         nvs_commit(h);
         nvs_close(h);
       }
@@ -201,12 +211,20 @@ static const char* otaVariant() {
   return cached;
 }
 
+// True when this boot's image was already valid as it started (nothing pending, or a
+// pre-flip abort that left the old image running): not an OTA trial boot. The moved
+// stores retire their legacy NVS copies only then (nimbus/store/moved_store.h), so a
+// rollback from a trial boot still finds the previous release's values.
+static bool g_validAtBoot = false;
+bool imageValidAtBoot() { return g_validAtBoot; }
+
 void bootGuard() {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;  // no NVS: nothing to guard
 
   if (!rawGetI32(h, AKEY_OTA_PENDING, 0)) {
     g_markedValid = true;  // nothing pending - this boot needs no validation
+    g_validAtBoot = true;
     // CUM-197: clear a stale "last result". If the record names a different
     // version than the one now running, the current image arrived by some path
     // other than the OTA that wrote it (e.g. a later dev/USB flash), so showing
@@ -226,7 +244,7 @@ void bootGuard() {
     clear = clear || nimbus::ota::isSimResult(lr);
 #endif
     if (clear) {
-      nvs_set_str(h, AKEY_OTA_LASTRES, "");
+      rawSetStr(h, AKEY_OTA_LASTRES, "");
       nvs_commit(h);
     }
     nvs_close(h);
@@ -238,42 +256,46 @@ void bootGuard() {
   if (prev[0] && strcmp(prev, runningLabel()) == 0) {
     // Still on the OLD slot: power died between the NVS-pend write and the
     // otadata flip (or the flip failed). The update never happened - disarm.
-    nvs_set_i32(h, AKEY_OTA_PENDING, 0);
-    nvs_set_i32(h, AKEY_OTA_BOOTS, 0);
-    nvs_set_str(h, AKEY_OTA_LASTRES, "aborted-preflip");
+    rawSetI32(h, AKEY_OTA_PENDING, 0);
+    rawSetI32(h, AKEY_OTA_BOOTS, 0);
+    rawSetStr(h, AKEY_OTA_LASTRES, "aborted-preflip");
 #ifdef NIMBUS_TEST
-    nvs_set_i32(h, kSimCrashKey, 0);
+    rawSetI32(h, kSimCrashKey, 0);
 #endif
     nvs_commit(h);
     nvs_close(h);
     g_markedValid = true;
+    g_validAtBoot = true;   // the old, validated image is still the one running
     return;
   }
 
-  // Fresh image, unvalidated: burn one attempt BEFORE any risky bring-up.
+  // Fresh image, unvalidated: burn one attempt BEFORE any risky bring-up. An attempt
+  // that cannot be stored (a full NVS) counts as over budget: otherwise a crash-looping
+  // image would never use up its attempts and never roll back.
   int32_t boots = rawGetI32(h, AKEY_OTA_BOOTS, 0) + 1;
-  nvs_set_i32(h, AKEY_OTA_BOOTS, boots);
+  const bool countStored = rawSetI32(h, AKEY_OTA_BOOTS, boots) &&
+                           rawGetI32(h, AKEY_OTA_BOOTS, -1) == boots;
   nvs_commit(h);
 
-  if (nimbus::ota::shouldRollback(true, (uint8_t)boots)) {
+  if (nimbus::ota::rollbackOnBoot(true, (uint8_t)boots, countStored)) {
     const esp_partition_t* p =
         prev[0] ? esp_partition_find_first(ESP_PARTITION_TYPE_APP,
                                            ESP_PARTITION_SUBTYPE_ANY, prev)
                 : nullptr;
-    nvs_set_i32(h, AKEY_OTA_PENDING, 0);
-    nvs_set_i32(h, AKEY_OTA_BOOTS, 0);
+    rawSetI32(h, AKEY_OTA_PENDING, 0);
+    rawSetI32(h, AKEY_OTA_BOOTS, 0);
 #ifdef NIMBUS_TEST
-    nvs_set_i32(h, kSimCrashKey, 0);
+    rawSetI32(h, kSimCrashKey, 0);
 #endif
     if (p && esp_ota_set_boot_partition(p) == ESP_OK) {
-      nvs_set_str(h, AKEY_OTA_LASTRES, "rollback " NIMBUS_FW_VERSION);
+      rawSetStr(h, AKEY_OTA_LASTRES, "rollback " NIMBUS_FW_VERSION);
       nvs_commit(h);
       nvs_close(h);
       esp_restart();  // boots the previous, untouched image
     }
     // Previous slot unfindable (label wiped?) - nothing to flip to; keep
     // running this image rather than reboot-looping.
-    nvs_set_str(h, AKEY_OTA_LASTRES, "rollback-lost");
+    rawSetStr(h, AKEY_OTA_LASTRES, "rollback-lost");
     nvs_commit(h);
     nvs_close(h);
     g_markedValid = true;
@@ -598,7 +620,7 @@ static void finishCheck() {
     g_state = State::Available;
     // Owner notify (Telegram in Orch mode), once per version.
     if (agent::store::otaNotifiedVersion() != g_latestVersion) {
-      agent::store::setOtaNotifiedVersion(g_latestVersion);
+      (void)agent::store::setOtaNotifiedVersion(g_latestVersion);
       fireEvent(EvAvailable, g_manifest.version, g_manifest.notes);
     }
   } else {
@@ -720,12 +742,33 @@ static bool verifySignature(const nimbus::ota::ManifestInfo& m) {
 static bool g_installDry = false;
 static bool g_installForce = false;
 
+// The store side of the arm-before-flip sequencer (nimbus::usbfw::commitInstall),
+// shared by the cloud and the USB installs. Every setter reports whether it landed and
+// readGuard reads the three guard keys back, so an install on a full NVS refuses with
+// storage_full instead of flipping to an image that could not roll back.
+static nimbus::usbfw::CommitHooks storeCommitHooks(bool withNotes) {
+  nimbus::usbfw::CommitHooks h;
+  h.setPrevSlot   = [](void*, const char* v) { return agent::store::setOtaPrevSlot(v); };
+  h.setBootCount  = [](void*, int v) { return agent::store::setOtaBootCount(v); };
+  h.setPending    = [](void*, int v) { return agent::store::setOtaPending(v); };
+  h.setLastResult = [](void*, const char* v) { return agent::store::setOtaLastResult(v); };
+  if (withNotes)
+    h.setPendingNotes = [](void*, const char* v) { return agent::store::setOtaPendingNotes(v); };
+  h.readGuard = [](void*, char* prev, size_t cap, int* boots, int* pend) {
+    snprintf(prev, cap, "%s", agent::store::otaPrevSlot().c_str());
+    *boots = agent::store::otaBootCount();
+    *pend = agent::store::otaPending();
+  };
+  h.endFlip = [](void*) -> bool { return Update.end(); };
+  return h;
+}
+
 static void failInstall(const char* why) {
   if (Update.isRunning()) Update.abort();
   g_progressPct = -1;
   setLastError(why);
   g_state = State::Error;
-  agent::store::setOtaLastResult(String(why) + " " +
+  (void)agent::store::setOtaLastResult(String(why) + " " +
                                  (g_haveManifest ? g_manifest.version : "?"));
   fireEvent(EvInstallFail, why, g_haveManifest ? g_manifest.version : "");
 }
@@ -807,29 +850,31 @@ static void installRun() {
   if (g_installDry) {
     Update.abort();
     g_progressPct = -1;
-    agent::store::setOtaLastResult(String("dryrun ok ") + g_manifest.version);
+    (void)agent::store::setOtaLastResult(String("dryrun ok ") + g_manifest.version);
     g_state = State::Available;  // verified - still installable for real
     return;
   }
 
-  // COMMIT ORDER (do not reorder - the rollback guard depends on it):
-  // 1. arm the NVS guard while still running the OLD image;
+  // COMMIT ORDER (do not reorder - the rollback guard depends on it), through the
+  // shared sequencer (nimbus::usbfw::commitInstall, host-tested):
+  // 1. arm the NVS guard while still running the OLD image, and read it back;
   // 2. Update.end(true) validates the image header and flips otadata;
   // 3. restart. Power loss after (1) but before (2) is the "aborted-preflip"
-  // path bootGuard disarms; after (2) the guard is already armed.
-  agent::store::setOtaPrevSlot(runningLabel());
-  agent::store::setOtaBootCount(0);
-  agent::store::setOtaPending(1);
-  agent::store::setOtaLastResult(String("installing ") + g_manifest.version);
-  // Persist the release notes ACROSS the reboot this install causes - the RAM
-  // copy (g_latestNotes) dies with it, and post-update is exactly when the owner
-  // (and the model) ask "what changed?". Consumed + cleared at EvValidated.
-  agent::store::setOtaPendingNotes(String(g_manifest.version) + "|" + g_manifest.notes);
-
-  if (!Update.end()) {
-    // Flip failed - disarm the guard, keep running the old image.
-    agent::store::setOtaPending(0);
-    failInstall("commit");
+  // path bootGuard disarms; after (2) the guard is already armed. A guard that did
+  // not read back (a full NVS) never flips: storage_full, still on the old image.
+  // The release notes ride ACROSS the reboot this install causes - the RAM copy
+  // (g_latestNotes) dies with it, and post-update is exactly when the owner (and the
+  // model) ask "what changed?". Consumed + cleared at EvValidated.
+  const String result = String("installing ") + g_manifest.version;
+  const String notes = String(g_manifest.version) + "|" + g_manifest.notes;
+  const nimbus::usbfw::CommitResult cr = nimbus::usbfw::commitInstall(
+      storeCommitHooks(true), runningLabel(), result.c_str(), notes.c_str());
+  if (cr == nimbus::usbfw::CommitResult::StorageFull) {
+    failInstall(nimbus::ota::kStorageFullRefusal);   // aborts the open Update
+    return;
+  }
+  if (cr != nimbus::usbfw::CommitResult::Flipped) {
+    failInstall("commit");   // flip failed: the guard is disarmed, old image runs
     return;
   }
 
@@ -874,9 +919,10 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
     if (e != Eligibility::Newer)
       return refuse((e == Eligibility::BlockedMinVersion) ? "min-version" : "not-newer");
   }
-  // Battery / health gate (manual path): an interrupted write on a dying pack
-  // can brick a slot. force bypasses it - that is the "Install anyway, I am
-  // charging" escape hatch the UI offers, since the board has no VBUS sense.
+  // Battery gate (manual path): an interrupted write on a dying pack can brick a
+  // slot. force bypasses it - that is the "Install anyway, I am charging" escape
+  // hatch the UI offers, since the board has no VBUS sense. The health ESTIMATE
+  // never blocks (healthAdvisory() only adds a note to the answer).
   if (!force && g_idleProvider) {
     nimbus::ota::IdleSnapshot snap;
     if (g_idleProvider(snap)) {
@@ -887,7 +933,7 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
       gi.healthPct       = snap.healthPct;
       nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
       if (g != nimbus::ota::InstallGate::Allowed)
-        return refuse(nimbus::ota::installGateStr(g));  // need-power / need-recalibrate
+        return refuse(nimbus::ota::installGateStr(g));  // need-power
     }
   }
   g_installDry = dryRun;
@@ -1050,7 +1096,7 @@ bool localFinish(const char* sha256hex, const char** whyOut) {
     g_taskRunning = false;
     g_state = State::Error;
     setLastError(w);
-    agent::store::setOtaLastResult(String(w) + " usb");
+    (void)agent::store::setOtaLastResult(String(w) + " usb");
     fireEvent(EvInstallFail, w, "usb");
     if (whyOut) *whyOut = w;
     return false;
@@ -1071,26 +1117,22 @@ bool localFinish(const char* sha256hex, const char** whyOut) {
   // Clear any stale "ver|notes" a prior cloud install left pending: the USB path
   // carries no manifest notes, so the post-reboot "what changed" must not show a
   // wrong version.
-  agent::store::setOtaPendingNotes("");
+  (void)agent::store::setOtaPendingNotes("");
 
-  // Commit via the portable arm-before-flip sequencer (host-tested).
-  nimbus::usbfw::CommitHooks h;
-  h.setPrevSlot     = [](void*, const char* v) { agent::store::setOtaPrevSlot(v); };
-  h.setBootCount    = [](void*, int v)         { agent::store::setOtaBootCount(v); };
-  h.setPending      = [](void*, int v)         { agent::store::setOtaPending(v); };
-  h.setLastResult   = [](void*, const char* v) { agent::store::setOtaLastResult(v); };
-  h.setPendingNotes = nullptr;   // handled above (no notes on the local path)
-  h.endFlip         = [](void*) -> bool { return Update.end(); };
-  bool flipped =
-      nimbus::usbfw::commitInstall(h, runningLabel(), "installing usb", nullptr);
+  // Commit via the portable arm-before-flip sequencer (host-tested); no notes on the
+  // local path (handled above). A guard that did not read back refuses storage_full.
+  const nimbus::usbfw::CommitResult cr = nimbus::usbfw::commitInstall(
+      storeCommitHooks(false), runningLabel(), "installing usb", nullptr);
+  if (cr == nimbus::usbfw::CommitResult::StorageFull)
+    return fail(nimbus::ota::kStorageFullRefusal);   // tears the open slot down
 
   g_localActive = false;
-  if (!flipped) {
+  if (cr != nimbus::usbfw::CommitResult::Flipped) {
     g_taskRunning = false;   // release only on failure; keep running the old image
     g_progressPct = -1;
     g_state = State::Error;
     setLastError("commit");
-    agent::store::setOtaLastResult("commit usb");
+    (void)agent::store::setOtaLastResult("commit usb");
     fireEvent(EvInstallFail, "commit", "usb");
     if (whyOut) *whyOut = "commit";
     return false;
@@ -1110,11 +1152,15 @@ bool localActive() { return g_localActive; }
 
 // ---- mark-valid + scheduling ------------------------------------------------
 
+// The latch is set only once the pending flag's clear LANDED: a clear a full NVS
+// refused would leave the image pending, and the next boot would count an attempt
+// against a validated image. tick() retries until it lands (the persist ledger logs
+// the key once a minute).
 static void markValid() {
   using namespace agent;
-  store::setOtaPending(0);
-  store::setOtaBootCount(0);
-  store::setOtaLastResult(String("ok ") + NIMBUS_FW_VERSION);
+  if (!store::setOtaPending(0) || store::otaPending() != 0) return;
+  (void)store::setOtaBootCount(0);
+  (void)store::setOtaLastResult(String("ok ") + NIMBUS_FW_VERSION);
   g_markedValid = true;
   fireEvent(EvValidated, NIMBUS_FW_VERSION, "");
 }
@@ -1144,6 +1190,10 @@ void tick() {
                                       nimbus::ota::bootHealthy(now / 1000, g_wifiEverUp))) {
     markValid();
   }
+  // The NVS reserve's eviction pass rides this main-loop tick (no task of its own;
+  // never inside a web route), beside the mark-valid step whose result decides when
+  // the legacy NVS copies of the moved stores may go.
+  agent::store::nvsMaintain(now);
 
 #ifndef NIMBUS_TEST
   // Background check cadence: first at ~2 min, then daily. Silent on failure
@@ -1181,6 +1231,17 @@ void tick() {
 void setEventHook(EventHook h) { g_hook = h; }
 void setIdleProvider(IdleProvider p) { g_idleProvider = p; }
 
+bool healthAdvisory() {
+  nimbus::ota::IdleSnapshot snap;
+  if (!g_idleProvider || !g_idleProvider(snap)) return false;
+  nimbus::ota::InstallGateInput gi;
+  gi.battMonEnabled  = snap.battMonEnabled;
+  gi.onExternalPower = snap.onExternalPower;
+  gi.battPct         = snap.battPct;
+  gi.healthPct       = snap.healthPct;
+  return nimbus::ota::healthAdvisory(gi);
+}
+
 bool installing() {
   return g_state == State::Downloading || g_state == State::Verifying ||
          g_state == State::ReadyToReboot;
@@ -1211,21 +1272,23 @@ const char* runningSlot() { return runningLabel(); }  // "app0"/"app1" - flip ob
 
 #ifdef NIMBUS_TEST
 void simArm(const String& prevLabel) {
-  agent::store::setOtaPending(1);
-  agent::store::setOtaBootCount(0);
-  agent::store::setOtaPrevSlot(prevLabel);
-  agent::store::setOtaLastResult(String(nimbus::ota::kSimResultPrefix) + "arm " + prevLabel);
+  (void)agent::store::setOtaPending(1);
+  (void)agent::store::setOtaBootCount(0);
+  (void)agent::store::setOtaPrevSlot(prevLabel);
+  (void)agent::store::setOtaLastResult(String(nimbus::ota::kSimResultPrefix) + "arm " + prevLabel);
   g_markedValid = false;  // let tick() exercise the real mark-valid path
 }
-void simCrash(bool on) { solide::memory::setInt(kSimCrashKey, on ? 1 : 0); }
+void simCrash(bool on) {
+  nimbus::sys::notePersist(solide::memory::setInt(kSimCrashKey, on ? 1 : 0), kSimCrashKey);
+}
 void simClear() {
-  agent::store::setOtaPending(0);
-  agent::store::setOtaBootCount(0);
-  agent::store::setOtaPrevSlot("");
-  solide::memory::setInt(kSimCrashKey, 0);
+  (void)agent::store::setOtaPending(0);
+  (void)agent::store::setOtaBootCount(0);
+  (void)agent::store::setOtaPrevSlot("");
+  nimbus::sys::notePersist(solide::memory::setInt(kSimCrashKey, 0), kSimCrashKey);
   // Leave the NVS clean on teardown: the "sim-arm ..." residue is a HIL artifact
   // that a later production reflash would otherwise show to an owner (CUM-264).
-  agent::store::setOtaLastResult("");
+  (void)agent::store::setOtaLastResult("");
 }
 void setManifestUrl(const String& url) { g_urlOverride = url; }
 #endif

@@ -22,6 +22,7 @@
 //                     (<mem>/journal/j<slot>.json), the hosted twin of the
 //                     device's NVS "agjournal" namespace: an unfinished job
 //                     re-attaches after a restart instead of being re-dispatched.
+#include <cerrno>
 #include <cstdio>
 #include <functional>
 #include <string>
@@ -65,7 +66,8 @@ class SubAdapter : public agent::ManagedAgentAdapter {
 };
 
 // JournalStore over one small file per slot. Writes are atomic (tmp + rename), so a
-// crash mid-write leaves the previous record, never a torn one.
+// crash mid-write leaves the previous record, never a torn one; put and remove report
+// whether they landed (the journal keeps a record it could not store or erase).
 class FileJournalStore : public nimbus::orch::JournalStore {
  public:
   explicit FileJournalStore(std::string dir) : dir_(std::move(dir)) {}
@@ -73,11 +75,13 @@ class FileJournalStore : public nimbus::orch::JournalStore {
     std::string v;
     return fsutil::readFile(path(slot), v) ? v : std::string();
   }
-  void put(int slot, const std::string& v) override {
-    fsutil::mkdirs(dir_);
-    fsutil::writeFileAtomic(path(slot), v);
+  bool put(int slot, const std::string& v) override {
+    return fsutil::mkdirs(dir_) && fsutil::writeFileAtomic(path(slot), v);
   }
-  void remove(int slot) override { std::remove(path(slot).c_str()); }
+  // Gone means gone: a slot file that never existed is as removed as a deleted one.
+  bool remove(int slot) override {
+    return std::remove(path(slot).c_str()) == 0 || errno == ENOENT;
+  }
   void clearNs() override {
     for (int i = 0; i < nimbus::orch::kAgentMaxJobs; i++) remove(i);
   }

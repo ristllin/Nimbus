@@ -63,6 +63,8 @@
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/memory.h"
 #include "nimbus/orch/journal.h"
+#include "nimbus/store/persist.h"        // kStorageFullMessage - an /mcp approval that did not store
+#include "nimbus/store/verdict_memo.h"   // vfy_ written only when the verdict changes
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/mem_cap.h"
@@ -1433,10 +1435,13 @@ static TurnEngine::Deps buildTurnDeps() {
     // provider key works - refresh the verify cache from it, so "verified"
     // doesn't depend on the manual Verify button (the UI hint promises this).
     // Write only on a state CHANGE (no steady-state NVS wear). Failures are NOT
-    // marked rejected here: most turn failures are not auth failures.
+    // marked rejected here: most turn failures are not auth failures. One attempt per
+    // host and verdict per boot: on a full NVS the stored verdict never reads back as
+    // 1, and retrying it made a failed write at every turn end.
+    static nimbus::store::VerdictMemo s_verifyMemo;   // the verdict tried per host this boot
     if (ev.ok && (ev.host == "openai" || ev.host == "anthropic" || ev.host == "mistral") &&
-        store::verifyResult(ev.host.c_str()) != 1)
-      store::setVerify(ev.host.c_str(), 1, millis());
+        store::verifyResult(ev.host.c_str()) != 1 && s_verifyMemo.shouldWrite(ev.host.c_str(), 1))
+      (void)store::setVerify(ev.host.c_str(), 1, millis());   // a failure is in the ledger
     dream::noteTurnEnd(millis());   // DREAMING idle gate: quiet clock
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
@@ -1774,7 +1779,12 @@ void handleMessage(const String& text, const String& fromName, const String& cha
           return;
         }
         String out; serializeJson(blob, out);
-        store::setConnectorsJson(out);
+        // Reply only after the change landed: an approval a full NVS refused would
+        // otherwise read as done and silently revert at the next restart.
+        if (!store::setConnectorsJson(out)) {
+          say(selfTag + nimbus::store::kStorageFullMessage);
+          return;
+        }
         say(selfTag + (action == "approve"
                   ? ("Approved MCP server \"" + name + "\". Its tools will be discovered shortly.")
                   : ("Removed approval for MCP server \"" + name + "\". Its tools are retracted.")));

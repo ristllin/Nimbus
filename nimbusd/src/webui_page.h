@@ -447,7 +447,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <tr><td>Voltage</td><td id=battmv>-</td></tr>
 <tr><td>Estimated time left</td><td id=batttime>-</td></tr>
 <tr><td>Discharge rate</td><td id=battrate>-</td></tr>
-<tr><td>Health</td><td id=batthealth>-</td></tr>
+<tr><td>Health (estimate)</td><td id=batthealth>-</td></tr>
 <tr><td>Power source</td><td id=battsrc>-</td></tr>
 <tr><td>Calibration</td><td id=battcal>-</td></tr>
 </tbody></table>
@@ -1900,20 +1900,19 @@ function applyState(d){
        if(!go)return;
        // CUM-58 battery gate expressed THROUGH the run() feedback helper (N1): doApply
        // POSTs (with force on a retry); a {ok:false} gate answer either confirms and
-       // retries with force (need-power/need-recalibrate = "install anyway, I'm charging")
-       // or throws so run() renders the error state; success resolves to the run() ok copy.
+       // retries with force (need-power = "install anyway, I'm charging") or throws so
+       // run() renders the error state; success resolves to the run() ok copy, plus the
+       // device's plain note when the battery health estimate reads low (never a stop).
        var doApply=function(force){var f=new FormData();if(force)f.append('force','1');
         return fetch('/api/ota/apply',{method:'POST',body:f}).then(r=>r.json()).then(j=>{
           if(j&&j.ok===false){
             if(j.err==='need-power'){
               return uiConfirm('Battery is low. Connect power and try again, or install anyway (I am charging)?',{ok:'Install Anyway'}).then(ok=>{if(ok)return doApply(true);throw 'need-power';});}
-            if(j.err==='need-recalibrate'){
-              return uiConfirm('Battery health reads low, so the level may be wrong. Charge to full and recalibrate to 100% (Battery, then Calibrate), or install anyway (I am charging)?',{ok:'Install Anyway'}).then(ok=>{if(ok)return doApply(true);throw 'need-recalibrate';});}
             throw (j.err||'busy');}
           return j;});};
        run({status:'fwMsg',btn:fi,pending:'Starting the update…',
         work:()=>doApply(false),
-        ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
+        ok:j=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.'+(j&&j.note?(' '+j.note):'');},
         error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});
       });};
   }

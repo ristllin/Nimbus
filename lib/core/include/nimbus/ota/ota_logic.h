@@ -138,28 +138,57 @@ inline constexpr uint8_t kOtaMaxBootAttempts = 3;
 // pending = the NVS otaPend flag; bootCount AFTER this boot's increment.
 // True => flip back to the previous slot now.
 bool shouldRollback(bool pending, uint8_t bootCount);
+// The boot guard's verdict when it also knows whether this boot's attempt was STORED.
+// An attempt counter that cannot be stored counts as over budget: a crash-looping
+// image on a full NVS would otherwise never use up its attempts and never roll back.
+inline bool rollbackOnBoot(bool pending, uint8_t bootCount, bool countStored) {
+  return pending && (!countStored || shouldRollback(true, bootCount));
+}
+
+// The install's guard read-back (before the boot pointer flips): the guard is armed
+// only when the stored previous slot, attempt count and pending flag read back as
+// written. If one did not land, the install refuses with kStorageFullRefusal instead
+// of flipping to an image that could never roll back.
+struct GuardReadback {
+  const char* prevWant   = "";   // the running slot the install recorded
+  const char* prevStored = "";   // what otaPrev reads back as
+  int         bootsStored = -1;
+  int         pendStored  = -1;
+};
+inline bool guardArmed(const GuardReadback& g) {
+  if (!g.prevWant || !g.prevStored || !g.prevWant[0]) return false;
+  for (const char *a = g.prevWant, *b = g.prevStored;; ++a, ++b) {
+    if (*a != *b) return false;
+    if (!*a) break;
+  }
+  return g.bootsStored == 0 && g.pendStored == 1;
+}
+inline constexpr char kStorageFullRefusal[] = "storage_full";
 
 // When the running (freshly-updated) image may mark itself valid. With WiFi
 // up once, 120 s crash-free suffices; a WiFi-dead site self-validates after
 // 600 s so a fine image on a moved/renamed network never false-rollbacks.
 bool bootHealthy(uint32_t uptimeS, bool wifiEverUp);
 
-// --- battery / health install gate ------------------------------------------
+// --- battery install gate ---------------------------------------------------
 // Both the manual and the auto install paths consult this gate before flashing:
 // an interrupted write on a dying pack can leave a slot unbootable. Install is
-// allowed when the pack is healthy enough to finish the write - level at or
-// above kManualBattFloorPct AND estimated health at or above kManualHealthFloorPct
-// - OR the device is on external power, OR battery monitoring is disabled (there
-// is no pack to protect). Otherwise the caller shows the matching next step. The
+// allowed when the pack level is at or above kManualBattFloorPct, OR the device is
+// on external power, OR battery monitoring is disabled (there is no pack to
+// protect). Otherwise the caller shows the one next step ("Connect power"). The
 // owner can still force past a NeedPower stop ("Install anyway, I am charging")
 // because this board has no VBUS sense line to prove the charger on its own.
+//
+// The battery HEALTH figure is an estimate learned from discharge history (a desk
+// device that rarely runs down reads low and cannot correct it), so it is advisory
+// only (owner decision, Oct 2026): it never blocks an install. healthAdvisory() says
+// when the install should carry kHealthAdvisoryNote instead.
 enum class InstallGate : uint8_t {
-  Allowed = 0,       // healthy enough, on external power, or monitoring off
-  NeedPower,         // pack below the level floor  -> "Connect power"
-  NeedRecalibrate,   // health estimate below floor -> "Recalibrate to 100%"
+  Allowed = 0,       // level fine, on external power, or monitoring off
+  NeedPower,         // pack below the level floor -> "Connect power"
 };
 inline constexpr int     kManualBattFloorPct   = 40;
-inline constexpr uint8_t kManualHealthFloorPct = 60;
+inline constexpr uint8_t kManualHealthFloorPct = 60;   // below it: the advisory note
 
 struct InstallGateInput {
   bool    battMonEnabled  = true;   // false => no pack, gate is a no-op
@@ -168,7 +197,13 @@ struct InstallGateInput {
   uint8_t healthPct       = 100;    // estimated capacity health
 };
 InstallGate installGate(const InstallGateInput& in);
-const char* installGateStr(InstallGate g);  // "allowed"/"need-power"/"need-recalibrate"
+const char* installGateStr(InstallGate g);  // "allowed"/"need-power"
+// True when an install on battery runs with a low health ESTIMATE: it goes ahead, with
+// the plain note below for the owner.
+bool healthAdvisory(const InstallGateInput& in);
+inline constexpr char kHealthAdvisoryNote[] =
+    "Battery health is an estimate and reads low. Keep the device on power while it "
+    "updates.";
 
 // --- auto-install idle window ------------------------------------------------
 struct IdleSnapshot {
@@ -178,7 +213,7 @@ struct IdleSnapshot {
   bool     onExternalPower = false;  // BatteryEstimate.onExternalPower
   bool     battMonEnabled  = true;   // battery monitoring on (false => no pack)
   int      battPct         = 0;      // calibrated SoC
-  uint8_t  healthPct       = 100;    // estimated capacity health (gate parity)
+  uint8_t  healthPct       = 100;    // estimated capacity health (advisory, never gates)
   uint32_t internalFreeB   = 0;      // free INTERNAL heap
 };
 inline constexpr int      kAutoBattFloorPct  = 50;

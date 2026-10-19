@@ -1,5 +1,6 @@
 #include "nimbus/orch/usage_ledger.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1260,6 +1261,32 @@ size_t historyEntryJson(const DayUsage& e, bool first, char* out, size_t cap) {
     return 0;
   if (!more(snprintf(out + off, cap - off, "}"))) return 0;
   return off;
+}
+
+// ---- bounded attribution (v4.5.14) -----------------------------------------------
+
+size_t UsageLedger::pruneTags(const std::function<bool(const std::string& tag)>& keep) {
+  if (!keep) return 0;
+  const size_t before = tags_.size();
+  tags_.erase(std::remove_if(tags_.begin(), tags_.end(),
+                             [&](const TagUsage& t) { return !keep(t.tag); }),
+              tags_.end());
+  return before - tags_.size();
+}
+
+size_t UsageLedger::fitSerialized(size_t maxBytes,
+                                  const std::function<bool(const std::string& tag)>& keep) {
+  if (serialize().size() < maxBytes) return 0;
+  size_t dropped = pruneTags(keep);
+  while (!tags_.empty() && serialize().size() >= maxBytes) {
+    auto smallest = std::min_element(tags_.begin(), tags_.end(),
+                                     [](const TagUsage& a, const TagUsage& b) {
+                                       return a.tokIn + a.tokOut < b.tokIn + b.tokOut;
+                                     });
+    tags_.erase(smallest);
+    ++dropped;
+  }
+  return dropped;
 }
 
 }  // namespace orch

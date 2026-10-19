@@ -27,8 +27,8 @@ class NvsJournalStore : public nimbus::orch::JournalStore {
  public:
   void begin();   // open the Preferences namespace (idempotent)
   std::string get(int slot) override;
-  void        put(int slot, const std::string& v) override;
-  void        remove(int slot) override;
+  bool        put(int slot, const std::string& v) override;
+  bool        remove(int slot) override;
   void        clearNs() override;
 };
 

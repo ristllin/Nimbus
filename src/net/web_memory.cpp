@@ -20,6 +20,7 @@
 #include "../agent/skills.h"              // skill capsules surfaced in /api/tools (P7)
 #include "../agent/store.h"
 #include "nimbus/store/persist.h"          // storageFullJson - embedcfg answers 507 on a full NVS (CUM-479)
+#include "../sys/config_nvs.h"             // SaveScope - the scratchpad and memory-config routes answer 507
 #include "webui.h"                         // webAuthOk() - /mcp token gate
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/episodic_log.h"   // civilDate + EpiQueryInfo (deep history)
@@ -383,8 +384,11 @@ void handleScratchGet(AsyncWebServerRequest* r) {
 
 // POST /api/mem/scratchpad - proxied through the memory.scratchpad tool so the
 // caps/validation are identical to the model's path. Body carries the tool args.
+// A change whose save did not land answers 507 storage_full (the SaveScope sees the
+// scratchpad file's failure in the persist ledger); the change stays until restart.
 void handleScratchPost(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  nimbus::sys::SaveScope save;
   mem::Lock lk;   // memory.scratchpad dispatch + persist mutate the shared Scratchpad
   JsonDocument args;
   args["action"]    = qparam(r, "action", "view");
@@ -396,8 +400,15 @@ void handleScratchPost(AsyncWebServerRequest* r) {
   // owner, so build it through the helper that sets a role.
   const nimbus::orch::Principal who = nimbus::orch::principalForRole(
       "web", nimbus::orch::Role::Admin);
-  // The tool saves a change itself and reports a failed save in its message.
+  // The tool saves a change itself and reports a failed save in its message; the
+  // route's SaveScope still answers 507 storage_full when that save did not land
+  // (the scratchpad file's failure is in the persist ledger) - the change stays
+  // until restart.
   ToolResult res = mem::registry().dispatch("memory.scratchpad", args.as<JsonObjectConst>(), who);
+  if (res.success && save.failed()) {
+    sendJson(r, nimbus::store::kStorageFullStatus, String(nimbus::store::storageFullJson().c_str()));
+    return;
+  }
   JsonDocument d; d["ok"] = res.success; d["msg"] = res.success ? res.output : res.error;
   String out; serializeJson(d, out); sendJson(r, res.success ? 200 : 400, out);
 }
@@ -418,6 +429,7 @@ void handleConfigGet(AsyncWebServerRequest* r) {
 }
 void handleConfigPut(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  nimbus::sys::SaveScope save;
   {
     mem::Lock lk;   // MemConfig is read by the turn task (recall); applyConfig touches the VDB
     MemConfig& c = mem::config();
@@ -430,7 +442,12 @@ void handleConfigPut(AsyncWebServerRequest* r) {
     if (r->hasParam("mmr_lambda", true))          c.setMmrLambda(qparam(r, "mmr_lambda").toFloat());
     mem::applyConfig();   // push the (possibly new) cap into the VDB engine
   }
-  mem::persistMemConfig();   // survive reboot (the knobs used to silently reset)
+  // Survive reboot (the knobs used to silently reset); a save that did not land is a
+  // 507, never the config echo that would read as saved.
+  if (!mem::persistMemConfig() || save.failed()) {
+    sendJson(r, nimbus::store::kStorageFullStatus, String(nimbus::store::storageFullJson().c_str()));
+    return;
+  }
   handleConfigGet(r);
 }
 

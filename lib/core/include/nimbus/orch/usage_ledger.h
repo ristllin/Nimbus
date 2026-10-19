@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -224,6 +225,20 @@ class UsageLedger {
   // counted in the provider entry and the model rows, only the audit row is not made.
   void setAllowNewTags(bool allow) { allowNewTags_ = allow; }
   bool allowNewTags() const { return allowNewTags_; }
+
+  // ---- bounded attribution (v4.5.14) ---------------------------------------------
+  // serialize() stays under kSerializedMaxBytes: the ledger lives in a flash file now,
+  // and its copy still has to fit the legacy NVS value a rollback reads. Only the
+  // audit rows (tags_) are ever dropped; provider entries (the budget's source of
+  // truth) never are, and at realistic counters 12 of them stay under 2 KB.
+  static constexpr size_t kSerializedMaxBytes = 3800;
+  // Drop the attribution rows `keep` rejects (a deleted routine's "loop:<id>").
+  // Returns how many went.
+  size_t pruneTags(const std::function<bool(const std::string& tag)>& keep);
+  // Keep serialize() under maxBytes: rows `keep` rejects go first (when given), then
+  // the smallest rows (fewest tokens). Returns how many rows were dropped.
+  size_t fitSerialized(size_t maxBytes,
+                       const std::function<bool(const std::string& tag)>& keep = nullptr);
 
   // The per-model spend rows and prices. NOT part of serialize()/deserialize(): the
   // usgLedger NVS blob is byte-identical with or without model activity; the device

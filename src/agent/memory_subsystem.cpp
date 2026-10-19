@@ -37,6 +37,10 @@
 #include "nimbus/fault.h"                 // resilience: simulated SD/memory faults
 #include "nimbus/sd_health.h"             // SD demote/promote debounce (graceful degradation)
 #include "storage_tier.h"                 // CUM-405: pure storage-tier decision (host-tested)
+#include "fs_atomic.h"                    // writeFileAtomic - the scratchpad file
+#include "nimbus/store/moved_store.h"     // the scratchpad's move out of NVS (load/persist/retire)
+#include "../sys/config_nvs.h"            // notePersist + the NVS reserve (nvsAdmit)
+#include "../sys/ota_update.h"            // imageValidAtBoot - when the legacy copy may go
 #include <solide/storage.h>               // re-probe the SD card on recovery
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/episodic_log.h"
@@ -122,6 +126,55 @@ const char* kScratchKey = "scratch";     // legacy string key (≤4000 B) - read
 const char* kScratchBKey = "scratchB";   // v4.1 bytes blob (no 4000 B string limit)
 const char* kMemCfgKey  = "memcfg";   // persisted MemConfig blob (same NVS namespace)
 const char* kSdSeenKey  = "sdSeen";   // CUM-405: was an SD card mounted the previous boot?
+// The scratchpad lives in this LittleFS file since v4.5.14 (it was rewritten in NVS on
+// every turn, and on a full partition every change lived in RAM only). The legacy
+// NVS keys above are read once when the file is missing and erased only on a boot
+// whose image was already valid (nimbus/store/moved_store.h).
+const char* kScratchPath = "/data/scratchpad.bin";
+
+// The scratchpad's moved-store binding: the file, and the legacy NVS bytes blob (or
+// the older string key).
+struct ScratchIo {
+  bool readFile(std::string& out) {
+    if (LittleFS.totalBytes() == 0 || !LittleFS.exists(kScratchPath)) return false;
+    File f = LittleFS.open(kScratchPath, FILE_READ);
+    if (!f) return false;
+    out.resize(f.size());
+    const size_t n = out.empty() ? 0 : f.read((uint8_t*)&out[0], out.size());
+    f.close();
+    return n == out.size();
+  }
+  bool writeFileAtomic(const std::string& v) {
+    if (LittleFS.totalBytes() == 0) return false;   // not mounted: nothing can be stored
+    LittleFS.mkdir("/data");
+    return agent::writeFileAtomic(kScratchPath, v, "scratchpad", false);
+  }
+  bool readNvs(std::string& out) {
+    Preferences p;
+    if (!p.begin(kScratchNs, true)) return false;
+    bool have = false;
+    const size_t blen = p.getBytesLength(kScratchBKey);
+    if (blen > 0) {
+      out.resize(blen);
+      have = p.getBytes(kScratchBKey, &out[0], blen) == blen;
+    } else if (p.isKey(kScratchKey)) {
+      const String legacy = p.getString(kScratchKey, "");
+      out.assign(legacy.c_str(), legacy.length());
+      have = true;
+    }
+    p.end();
+    return have;
+  }
+  bool eraseNvs() {   // erases only free entries: always lands on a full NVS
+    Preferences p;
+    if (!p.begin(kScratchNs, false)) return false;
+    if (p.isKey(kScratchBKey)) nimbus::sys::notePersist(p.remove(kScratchBKey), kScratchBKey);
+    if (p.isKey(kScratchKey)) nimbus::sys::notePersist(p.remove(kScratchKey), kScratchKey);
+    const bool gone = !p.isKey(kScratchBKey) && !p.isKey(kScratchKey);
+    p.end();
+    return gone;
+  }
+};
 
 // Degraded (no-SD) VDB cap: bound the durable LittleFS blob (~400 * ~297 B ~= 120 KB)
 // so the working set + persist can't exhaust the few-MB internal flash. The full cap
@@ -505,7 +558,11 @@ void begin() {
     g_sdMissing = decideStorageTier(ti).sdMissingWithData;
     if (g_haveSd != prevSdSeen) {   // only touch flash when the state actually flipped
       Preferences p;
-      if (p.begin(kScratchNs, false)) { p.putBool(kSdSeenKey, g_haveSd); p.end(); }
+      if (p.begin(kScratchNs, false)) {
+        const bool admitted = nimbus::sys::nvsAdmit(kScratchNs, kSdSeenKey, nimbus::store::NvsValKind::Int, 0);
+        nimbus::sys::notePersist(admitted && p.putBool(kSdSeenKey, g_haveSd) == 1, kSdSeenKey);
+        p.end();
+      }
     }
     // Storage-tier decision at boot (the existing agent_log seam; lane L owns errlog).
     alogf("memory: storage tier=%s sd_mounted=%d prev_sd_seen=%d card_has_data=%d banner=%d",
@@ -569,26 +626,21 @@ void begin() {
     g_archive.setMaxEntries(kArchiveMaxEntries);
     g_vec.setArchiveSink(&g_archive);
   }
-  // Load persisted scratchpad + retrieval config (both in the orchmem namespace).
+  // Load the scratchpad (its file, else the legacy NVS copy: the moved-store rule)
+  // and the retrieval config (NVS, orchmem namespace).
   {
+    ScratchIo io;
+    const nimbus::store::MovedLoad m = nimbus::store::loadMoved(io);
+    if (m.value.length()) g_scratch.deserialize(m.value);
+    // The legacy copy goes only on a boot whose image was already valid, and only
+    // once the file reads back (a rollback from a trial boot still finds it).
+    if (m.src == nimbus::store::MovedSource::File &&
+        nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot()))
+      alog("scratchpad: legacy settings-storage copy removed (the file is in use)");
     Preferences p;
     if (p.begin(kScratchNs, true)) {
-      // v4.1: the scratchpad moved to a BYTES blob ("scratchB") - a maxed-out
-      // scratchpad (~4.2 KB under the caps) exceeds nvs_set_str's 4000-byte
-      // value limit, which failed SILENTLY. Fall back to the legacy string key
-      // so an upgrade keeps the old contents.
-      std::string s;
-      size_t blen = p.getBytesLength(kScratchBKey);
-      if (blen > 0) {
-        s.resize(blen);
-        p.getBytes(kScratchBKey, &s[0], blen);
-      } else {
-        String legacy = p.getString(kScratchKey, "");
-        s.assign(legacy.c_str(), legacy.length());
-      }
-      String c = p.getString(kMemCfgKey, "");
+      String c = p.isKey(kMemCfgKey) ? p.getString(kMemCfgKey, "") : String();
       p.end();
-      if (s.length()) g_scratch.deserialize(s);
       // Retrieval knobs used to silently reset to defaults every reboot; now they
       // persist (loaded here, rewritten on every config change).
       if (c.length()) g_cfg.deserialize(std::string(c.c_str(), c.length()));
@@ -1736,36 +1788,36 @@ String setEmbedFault(bool on) {
 }
 #endif
 
+// The scratchpad file: written atomically and read back (the moved-store rule). A
+// save that did not land is reported to the persist ledger ("lfs_scratch"), so the
+// scratchpad route answers 507 and /api/state names it; the notes stay in RAM. The
+// result also reaches the scratchpad's own failing flag, so the tool result, the
+// turn's effect ledger and the prompt header all say when the notes are RAM only.
 bool persistScratchpad() {
   Lock g;
-  std::string blob = g_scratch.serialize();
-  Preferences p;
-  if (!p.begin(kScratchNs, false)) {
-    alog("scratchpad: persist FAILED (NVS open) - contents survive in RAM only");
-    g_scratch.setSaveFailing(true);
-    return false;
-  }
-  // Bytes blob, not putString: a maxed-out scratchpad (~4.2 KB under the caps)
-  // exceeds nvs_set_str's 4000-byte limit and the old write failed SILENTLY.
-  // The result goes back to the caller: the tool result, the turn's effect
-  // ledger and the prompt header all say when the notes are RAM only.
-  size_t wrote = p.putBytes(kScratchBKey, blob.data(), blob.size());
-  p.end();
-  const bool ok = wrote == blob.size();
+  const std::string blob = g_scratch.serialize();
+  ScratchIo io;
+  const bool ok = nimbus::store::persistMoved(io, blob);
   if (!ok)
-    alogf("scratchpad: persist FAILED (%u of %u B) - contents survive in RAM only",
-          (unsigned)wrote, (unsigned)blob.size());
+    alogf("scratchpad: persist FAILED (%u B) - contents survive in RAM only",
+          (unsigned)blob.size());
   g_scratch.setSaveFailing(!ok);
-  return ok;
+  return nimbus::sys::notePersist(ok, "lfs_scratch");
 }
 
-void persistMemConfig() {
+// The retrieval knobs stay in NVS (owner config, about 100 B): asked of the reserve
+// and reported, so the memory-config route answers 507 when they did not store.
+bool persistMemConfig() {
   Lock g;
   std::string blob = g_cfg.serialize();
   Preferences p;
-  if (!p.begin(kScratchNs, false)) return;
-  p.putString(kMemCfgKey, blob.c_str());
+  if (!p.begin(kScratchNs, false)) return nimbus::sys::notePersist(false, kMemCfgKey);
+  const bool admitted =
+      nimbus::sys::nvsAdmit(kScratchNs, kMemCfgKey, nimbus::store::NvsValKind::Str, blob.size());
+  const bool ok =
+      nimbus::sys::notePersist(admitted && p.putString(kMemCfgKey, blob.c_str()) == blob.size(), kMemCfgKey);
   p.end();
+  return ok;
 }
 
 void persistEpisodic() {

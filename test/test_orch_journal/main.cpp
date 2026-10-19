@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <string>
@@ -18,8 +19,8 @@ struct FakeStore : JournalStore {
     auto it = slots.find(slot);
     return it == slots.end() ? std::string() : it->second;
   }
-  void put(int slot, const std::string& v) override { slots[slot] = v; }
-  void remove(int slot) override { slots.erase(slot); }
+  bool put(int slot, const std::string& v) override { slots[slot] = v; return true; }
+  bool remove(int slot) override { slots.erase(slot); return true; }
   void clearNs() override { slots.clear(); }
 };
 
@@ -274,6 +275,169 @@ static void test_load_skips_empty_and_malformed_slots() {
   TEST_ASSERT_EQUAL_STRING("job0003", out.tag);
 }
 
+
+// ---- no active record lost under any store failure (program 2026-10-18 lane C) ----
+// A store that refuses puts and removes on a pattern, the way a full NVS refuses
+// writes (an erase on the device always lands, but a removal is modeled as fallible
+// too so the property covers every seam).
+struct FlakyStore : JournalStore {
+  std::map<int, std::string> slots;
+  uint32_t rng = 1;
+  int failPutPct = 0, failRemovePct = 0;
+  bool roll(int pct) {
+    rng = rng * 1103515245u + 12345u;
+    return (int)((rng >> 16) % 100) < pct;
+  }
+  std::string get(int slot) override {
+    auto it = slots.find(slot);
+    return it == slots.end() ? std::string() : it->second;
+  }
+  bool put(int slot, const std::string& v) override {
+    if (roll(failPutPct)) return false;
+    slots[slot] = v;
+    return true;
+  }
+  bool remove(int slot) override {
+    if (roll(failRemovePct)) return false;
+    slots.erase(slot);
+    return true;
+  }
+  void clearNs() override { slots.clear(); }
+  // Tags the store holds, with the record each slot holds.
+  std::map<std::string, JobRecord> held() const {
+    std::map<std::string, JobRecord> out;
+    for (const auto& kv : slots) {
+      JobRecord r{};
+      if (deserializeRecord(kv.second.c_str(), r)) out[r.tag] = r;
+    }
+    return out;
+  }
+};
+
+// The regression: a seen record below an active one, and a store that refuses every
+// put. The old gc copied the active record down (refused) and then erased its source.
+static void test_gc_never_erases_an_active_record_when_puts_fail() {
+  FlakyStore st;
+  {
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_TRUE(j.write(rec("jobA", "o:a", JobState::Done, /*seen=*/true)));
+    TEST_ASSERT_TRUE(j.write(rec("jobB", "o:b")));
+    st.failPutPct = 100;   // the partition fills
+    j.gc();
+    TEST_ASSERT_EQUAL_INT(1, j.count());
+  }
+  TEST_ASSERT_EQUAL_size_t(1, st.held().count("jobB"));   // still stored
+  TEST_ASSERT_EQUAL_size_t(0, st.held().count("jobA"));   // the delivered one went
+  Journal j2;
+  j2.begin(&st);   // reboot: the active job re-attaches
+  JobRecord out{};
+  TEST_ASSERT_TRUE(j2.get(0, out));
+  TEST_ASSERT_EQUAL_STRING("jobB", out.tag);
+  TEST_ASSERT_EQUAL_STRING("o:b", out.jobId);
+}
+
+// A write that did not land answers false but keeps the record in RAM (the job is
+// still polled); a markSeen that did not land does too.
+static void test_write_verdicts_report_a_refused_store() {
+  FlakyStore st;
+  Journal j;
+  j.begin(&st);
+  st.failPutPct = 100;
+  TEST_ASSERT_FALSE(j.write(rec("job0001", "o:1")));
+  TEST_ASSERT_EQUAL_INT(1, j.count());          // held for this run
+  TEST_ASSERT_FALSE(j.update("job0001", JobState::Done));
+  TEST_ASSERT_FALSE(j.markSeen("job0001"));
+  TEST_ASSERT_EQUAL_INT(0, j.count());          // seen in RAM
+  st.failPutPct = 0;
+  TEST_ASSERT_TRUE(j.write(rec("job0002", "o:2")));
+  TEST_ASSERT_TRUE(j.markSeen("job0002"));
+  TEST_ASSERT_FALSE(j.markSeen("nope"));
+}
+
+// The property, over random operation sequences and failure rates: an operation never
+// takes a RAM-active record out of the store (only its own landed update changes it),
+// a reboot re-attaches every stored record exactly once, and RAM never holds a slot
+// twice.
+static void test_no_active_record_lost_under_any_failure_pattern() {
+  const char* tags[] = {"job01", "job02", "job03", "job04", "job05",
+                        "job06", "job07", "job08", "job09", "job10"};
+  for (uint32_t seed = 1; seed <= 400; ++seed) {
+    FlakyStore st;
+    st.rng = seed;
+    st.failPutPct = (int)(seed % 5) * 25;        // 0, 25, 50, 75, 100 %
+    st.failRemovePct = (int)((seed / 5) % 3) * 30;   // 0, 30, 60 %
+    Journal j;
+    j.begin(&st);
+    uint32_t r = seed * 2654435761u;
+    for (int step = 0; step < 60; ++step) {
+      r = r * 1664525u + 1013904223u;
+      const char* tag = tags[(r >> 8) % 10];
+      // Which RAM-active tags the store holds BEFORE this operation.
+      std::map<std::string, bool> mustStay;
+      const auto before = st.held();
+      for (int i = 0; i < j.count(); ++i) {
+        JobRecord a{};
+        j.get(i, a);
+        if (before.count(a.tag)) mustStay[a.tag] = true;
+      }
+      const int op = (int)((r >> 20) % 6);
+      bool reboot = false;
+      switch (op) {
+        case 0: case 1: j.write(rec(tag, "o:x", JobState::Running)); break;
+        case 2: j.update(tag, JobState::NeedsInput); break;
+        case 3: j.markSeen(tag); mustStay.erase(tag); break;   // its own change
+        case 4: j.gc(); break;
+        case 5: reboot = true; break;
+      }
+      const auto after = st.held();
+      for (const auto& kv : mustStay) {
+        JobRecord a{};
+        bool stillActive = false;
+        for (int i = 0; i < j.count(); ++i)
+          if (j.get(i, a) && kv.first == a.tag) stillActive = true;
+        if (!stillActive) continue;   // the op itself made it seen
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "seed %u step %d op %d lost %s", (unsigned)seed, step, op,
+                      kv.first.c_str());
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(1, after.count(kv.first), msg);
+      }
+      if (reboot) {
+        Journal j2;
+        j2.begin(&st);
+        // Every stored tag re-attaches exactly once (as active or seen).
+        int loaded = j2.slotsUsed();
+        TEST_ASSERT_EQUAL_INT((int)st.held().size(), loaded);
+        j = j2;
+      }
+      TEST_ASSERT_TRUE(j.slotsUsed() <= kAgentMaxJobs);
+    }
+  }
+}
+
+// A duplicate left in the store (an old gc's copy whose source erase did not land)
+// re-attaches once, and the extra slot is dropped.
+static void test_begin_drops_a_duplicate_tag() {
+  FlakyStore st;
+  char buf[kJournalSerializeBuf];
+  serializeRecord(rec("job0007", "o:7"), buf, sizeof(buf));
+  st.slots[0] = buf;
+  st.slots[3] = buf;
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_EQUAL_INT(1, j.count());
+  TEST_ASSERT_EQUAL_size_t(1, st.slots.size());
+  TEST_ASSERT_EQUAL_size_t(1, st.slots.count(0));
+  // A record loaded from slot 3 keeps writing to slot 3 (no stray copy in slot 0).
+  FlakyStore st2;
+  st2.slots[3] = buf;
+  Journal k;
+  k.begin(&st2);
+  TEST_ASSERT_TRUE(k.update("job0007", JobState::Done));
+  TEST_ASSERT_EQUAL_size_t(1, st2.slots.size());
+  TEST_ASSERT_EQUAL_size_t(1, st2.slots.count(3));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_is_terminal);
@@ -289,5 +453,9 @@ int main() {
   RUN_TEST(test_serialize_refuses_over_buffer);
   RUN_TEST(test_reboot_reattach_preserves_jobid);
   RUN_TEST(test_load_skips_empty_and_malformed_slots);
+  RUN_TEST(test_gc_never_erases_an_active_record_when_puts_fail);
+  RUN_TEST(test_write_verdicts_report_a_refused_store);
+  RUN_TEST(test_no_active_record_lost_under_any_failure_pattern);
+  RUN_TEST(test_begin_drops_a_duplicate_tag);
   return UNITY_END();
 }

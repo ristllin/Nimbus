@@ -18,6 +18,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "nimbus/ota/ota_logic.h"   // GuardReadback + guardArmed: the commit read-back
+
 namespace nimbus::usbfw {
 
 // ---- wire protocol ----------------------------------------------------------
@@ -189,37 +191,57 @@ inline const char* localBeginPrecheck(bool sizeZero, bool rebootArmed,
 
 // ---- commit-order sequencer -------------------------------------------------
 // The load-bearing arm-before-flip order the rollback guard depends on
-// (CUM-389 / CUM-270), factored out of ota_update's cloud install so the local
-// (USB) path runs the SAME sequence and a host test can assert it without a
-// device. Hooks are injected so the test can record the call order.
+// (CUM-389 / CUM-270), shared by the cloud install and the local (USB) path so both
+// run the SAME sequence and a host test can assert it without a device. Hooks are
+// injected so the test can record the call order. Every setter reports whether its
+// write LANDED, and readGuard reads the three guard keys back.
 struct CommitHooks {
   void* ctx = nullptr;
-  void (*setPrevSlot)(void*, const char*)     = nullptr;
-  void (*setBootCount)(void*, int)            = nullptr;
-  void (*setPending)(void*, int)              = nullptr;
-  void (*setLastResult)(void*, const char*)   = nullptr;
-  void (*setPendingNotes)(void*, const char*) = nullptr;
+  bool (*setPrevSlot)(void*, const char*)     = nullptr;
+  bool (*setBootCount)(void*, int)            = nullptr;
+  bool (*setPending)(void*, int)              = nullptr;
+  bool (*setLastResult)(void*, const char*)   = nullptr;
+  bool (*setPendingNotes)(void*, const char*) = nullptr;
+  // Read back what the store now holds (prev slot into buf, boots, pending).
+  void (*readGuard)(void*, char* prevBuf, size_t prevCap, int* boots, int* pending) = nullptr;
   bool (*endFlip)(void*)                       = nullptr;  // Update.end(); true = flipped
 };
 
+enum class CommitResult : uint8_t {
+  Flipped = 0,   // guard armed and read back, boot pointer flipped
+  FlipFailed,    // the flip failed: guard disarmed, still on the old image
+  StorageFull,   // a guard key did not land: guard disarmed, NEVER flipped
+};
+
 // Arm the NVS rollback guard (prev / boots / pending) while STILL running the old
-// image, record the pending result, then flip the boot pointer. Power loss after
-// the arm but before the flip is the "aborted-preflip" case bootGuard disarms;
-// after the flip the guard is already armed. If the flip fails, disarm the guard
-// so a boot that never moved is not counted against the rollback budget. Returns
-// true iff the flip succeeded.
-inline bool commitInstall(const CommitHooks& h, const char* prevSlot,
-                          const char* resultBefore, const char* notes) {
-  h.setPrevSlot(h.ctx, prevSlot);
-  h.setBootCount(h.ctx, 0);
-  h.setPending(h.ctx, 1);
+// image, record the pending result, read the guard back, then flip the boot pointer.
+// Power loss after the arm but before the flip is the "aborted-preflip" case
+// bootGuard disarms; after the flip the guard is already armed. A guard that does not
+// read back as written (a full NVS refused a key) is never flipped to: the image would
+// have no working rollback (StorageFull, refusal nimbus::ota::kStorageFullRefusal). If
+// the flip fails, disarm the guard so a boot that never moved is not counted against
+// the rollback budget.
+inline CommitResult commitInstall(const CommitHooks& h, const char* prevSlot,
+                                  const char* resultBefore, const char* notes) {
+  const bool prevOk = h.setPrevSlot(h.ctx, prevSlot);
+  const bool bootsOk = h.setBootCount(h.ctx, 0);
+  const bool pendOk = h.setPending(h.ctx, 1);
   h.setLastResult(h.ctx, resultBefore);
   if (h.setPendingNotes) h.setPendingNotes(h.ctx, notes ? notes : "");
+  nimbus::ota::GuardReadback g;
+  char prevBuf[17] = {0};
+  if (h.readGuard) h.readGuard(h.ctx, prevBuf, sizeof prevBuf, &g.bootsStored, &g.pendStored);
+  g.prevWant = prevSlot;
+  g.prevStored = prevBuf;
+  if (!(prevOk && bootsOk && pendOk) || (h.readGuard && !nimbus::ota::guardArmed(g))) {
+    h.setPending(h.ctx, 0);
+    return CommitResult::StorageFull;
+  }
   if (!h.endFlip(h.ctx)) {
     h.setPending(h.ctx, 0);
-    return false;
+    return CommitResult::FlipFailed;
   }
-  return true;
+  return CommitResult::Flipped;
 }
 
 // ---- framing reader ---------------------------------------------------------

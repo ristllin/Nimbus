@@ -54,15 +54,15 @@ bool deserializeRecord(const char* buf, JobRecord& r) {
   return r.tag[0] != 0;
 }
 
-void Journal::saveSlot(int i) {
+bool Journal::saveSlot(int i) {
   char buf[kJournalSerializeBuf];  // worst-case record ~293 B with jobId[96]
   const size_t need = serializeRecord(records_[i], buf, sizeof(buf));
   if (need + 1 > sizeof(buf)) {
     // Refuse to persist a truncated (thus unparseable, silently-dropped-on-reboot)
     // record - that would orphan a billed remote job.
-    return;
+    return false;
   }
-  if (store_) store_->put(i, buf);
+  return store_ ? store_->put(slot_[i], buf) : false;
 }
 
 void Journal::begin(JournalStore* store) {
@@ -70,19 +70,35 @@ void Journal::begin(JournalStore* store) {
   count_ = 0;
   nextSeq_ = 0;
   if (!store_) return;
-  for (int i = 0; i < kAgentMaxJobs; i++) {
-    const std::string val = store_->get(i);
+  for (int s = 0; s < kAgentMaxJobs; s++) {
+    const std::string val = store_->get(s);
     if (val.empty()) continue;
-    if (deserializeRecord(val.c_str(), records_[count_])) {
-      seq_[count_] = nextSeq_++;  // load order == age order for this session
-      count_++;
+    JobRecord& r = records_[count_];
+    if (!deserializeRecord(val.c_str(), r)) continue;   // malformed: the slot is free
+    if (findSlot(r.tag) >= 0) {
+      // A duplicate of an earlier slot (an older gc's copy whose source erase did not
+      // land): keep the first, drop this one so it cannot re-attach twice.
+      store_->remove(s);
+      continue;
     }
+    slot_[count_] = s;
+    seq_[count_] = nextSeq_++;  // load order == age order for this session
+    count_++;
   }
 }
 
 int Journal::findSlot(const char* tag) const {
   for (int i = 0; i < count_; i++)
     if (std::strcmp(records_[i].tag, tag) == 0) return i;
+  return -1;
+}
+
+int Journal::freeStoreSlot() const {
+  for (int s = 0; s < kAgentMaxJobs; s++) {
+    bool used = false;
+    for (int i = 0; i < count_ && !used; i++) used = slot_[i] == s;
+    if (!used) return s;
+  }
   return -1;
 }
 
@@ -93,35 +109,36 @@ bool Journal::write(const JobRecord& r) {
       // Full: evict the OLDEST seen record - the resultSeen slot with the smallest
       // insertion seq_, NOT merely the first in slot order (a prior eviction can
       // leave a newer seen record at a lower index). Eviction only ever targets a
-      // resultSeen slot; a full journal of live jobs refuses the write.
+      // resultSeen slot; a full journal of live jobs refuses the write. The new
+      // record takes over the evicted record's store slot.
       for (int i = 0; i < count_; i++) {
         if (records_[i].resultSeen && (slot < 0 || seq_[i] < seq_[slot])) slot = i;
       }
       if (slot < 0) return false;  // "journal: full, cannot write"
     } else {
+      const int s = freeStoreSlot();
+      if (s < 0) return false;     // unreachable while count_ < kAgentMaxJobs
       slot = count_++;
+      slot_[slot] = s;
     }
     seq_[slot] = nextSeq_++;  // a NEW record (new slot or eviction) is the newest
   }
   records_[slot] = r;
-  saveSlot(slot);
-  return true;
+  return saveSlot(slot);
 }
 
 bool Journal::markSeen(const char* tag) {
   const int i = findSlot(tag);
   if (i < 0) return false;
   records_[i].resultSeen = true;
-  saveSlot(i);
-  return true;
+  return saveSlot(i);
 }
 
 bool Journal::update(const char* tag, JobState s) {
   const int i = findSlot(tag);
   if (i < 0) return false;
   records_[i].state = s;
-  saveSlot(i);
-  return true;
+  return saveSlot(i);
 }
 
 int Journal::count() const {
@@ -142,17 +159,19 @@ bool Journal::get(int idx, JobRecord& out) const {
 }
 
 void Journal::gc() {
-  // Compact: keep only the active records, shifting them down into slots 0..w-1.
+  // Keep every active record where it is; drop a seen record only once its slot is
+  // gone from the store. Nothing is copied, so nothing depends on a copy landing.
   int w = 0;
   for (int i = 0; i < count_; i++) {
-    if (!records_[i].resultSeen) {
-      if (w != i) { records_[w] = records_[i]; seq_[w] = seq_[i]; saveSlot(w); }
-      w++;
+    const bool drop = records_[i].resultSeen && (!store_ || store_->remove(slot_[i]));
+    if (drop) continue;
+    if (w != i) {
+      records_[w] = records_[i];
+      seq_[w] = seq_[i];
+      slot_[w] = slot_[i];
     }
+    w++;
   }
-  // Clear the vacated tail slots.
-  if (store_)
-    for (int i = w; i < count_; i++) store_->remove(i);
   count_ = w;
 }
 

@@ -412,13 +412,17 @@ static void test_auto_install_window() {
     TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
   { IdleSnapshot s = idle(); s.battPct = 5;  // charging/full/external => ok
     TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
-  // health floor applies on battery, is excused by external power
-  { IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 90; s.healthPct = 59;
+  // The health ESTIMATE never gates the auto path (advisory, owner decision Oct 2026),
+  // on battery or on power, at any value.
+  for (int h = 0; h <= 100; ++h) {
+    IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 90; s.healthPct = (uint8_t)h;
+    TEST_ASSERT_TRUE(autoInstallAllowed(s));
+    s.onExternalPower = true;
+    TEST_ASSERT_TRUE(autoInstallAllowed(s));
+  }
+  // Counter-test: the level floor it still enforces is not masked by the change.
+  { IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 49; s.healthPct = 100;
     TEST_ASSERT_FALSE(autoInstallAllowed(s)); }
-  { IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 90; s.healthPct = 60;
-    TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
-  { IdleSnapshot s = idle(); s.onExternalPower = true; s.healthPct = 10;  // wall power => ok
-    TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
 }
 
 // --- battery / health install gate ------------------------------------------
@@ -434,8 +438,12 @@ static void test_install_gate() {
   TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(true, false, 40, 60)));
   // below level floor -> NeedPower
   TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedPower, (int)installGate(in(true, false, 39, 100)));
-  // healthy level but worn pack -> NeedRecalibrate
-  TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedRecalibrate, (int)installGate(in(true, false, 80, 59)));
+  // healthy level but a low health ESTIMATE -> allowed, with the advisory note
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(true, false, 80, 59)));
+  TEST_ASSERT_TRUE(healthAdvisory(in(true, false, 80, 59)));
+  TEST_ASSERT_FALSE(healthAdvisory(in(true, false, 80, 60)));
+  TEST_ASSERT_FALSE(healthAdvisory(in(true, true, 80, 10)));    // on power: no note
+  TEST_ASSERT_FALSE(healthAdvisory(in(false, false, 80, 10)));  // no pack monitored
   // both low: level checked first -> NeedPower
   TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedPower, (int)installGate(in(true, false, 10, 10)));
   // external power excuses everything
@@ -444,7 +452,63 @@ static void test_install_gate() {
   TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(false, false, 5, 10)));
   TEST_ASSERT_EQUAL_STRING("allowed", installGateStr(InstallGate::Allowed));
   TEST_ASSERT_EQUAL_STRING("need-power", installGateStr(InstallGate::NeedPower));
-  TEST_ASSERT_EQUAL_STRING("need-recalibrate", installGateStr(InstallGate::NeedRecalibrate));
+  // The class: over every level and health value, health never decides the verdict -
+  // only the level floor, power and monitoring do.
+  for (int pct = 0; pct <= 100; pct += 3)
+    for (int h = 0; h <= 100; h += 7)
+      for (int ext = 0; ext < 2; ++ext)
+        for (int mon = 0; mon < 2; ++mon) {
+          const InstallGate want = (mon && !ext && pct < kManualBattFloorPct)
+                                       ? InstallGate::NeedPower : InstallGate::Allowed;
+          TEST_ASSERT_EQUAL_INT((int)want, (int)installGate(in(mon, ext, pct, (uint8_t)h)));
+        }
+  // The note's copy: plain words, says it is an estimate, one next step, no em dash.
+  const std::string note = kHealthAdvisoryNote;
+  TEST_ASSERT_TRUE(note.find("estimate") != std::string::npos);
+  TEST_ASSERT_TRUE(note.find("\xE2\x80\x94") == std::string::npos);
+  TEST_ASSERT_TRUE(note.find("recalibrate") == std::string::npos);
+}
+
+// --- the rollback guard on a failing store (program 2026-10-18 lane C) ------
+// A boot attempt that cannot be stored counts as over budget, so a crash-looping image
+// on a full NVS still rolls back; a stored one keeps the 3-attempt budget.
+static void test_rollback_counts_an_unstored_attempt_as_over_budget() {
+  for (uint8_t boots = 0; boots <= 6; ++boots) {
+    TEST_ASSERT_EQUAL(shouldRollback(true, boots), rollbackOnBoot(true, boots, true));
+    TEST_ASSERT_TRUE(rollbackOnBoot(true, boots, false));
+    TEST_ASSERT_FALSE(rollbackOnBoot(false, boots, false));   // nothing pending: never
+  }
+  // The bad-image drill on a store that refuses every attempt write: boot 1 rolls back.
+  TEST_ASSERT_TRUE(rollbackOnBoot(true, 1, false));
+  // ...and on a healthy store it rolls back within 3 boots (the OTASIM leg).
+  int boots = 0;
+  bool rolled = false;
+  while (!rolled && boots < 10) rolled = rollbackOnBoot(true, (uint8_t)++boots, true);
+  TEST_ASSERT_TRUE(rolled);
+  TEST_ASSERT_TRUE(boots <= kOtaMaxBootAttempts + 1);
+}
+
+// The install arms the guard only when every guard key reads back; a failing store
+// (any one key that did not land) refuses with storage_full before the flip.
+static void test_guard_readback_refuses_on_a_failing_store() {
+  GuardReadback ok;
+  ok.prevWant = "app0"; ok.prevStored = "app0"; ok.bootsStored = 0; ok.pendStored = 1;
+  TEST_ASSERT_TRUE(guardArmed(ok));
+  for (int fail = 0; fail < 8; ++fail) {   // every subset of the three keys failing
+    if (!fail) continue;
+    GuardReadback g = ok;
+    if (fail & 1) g.prevStored = "app1";   // the old value stayed
+    if (fail & 2) g.bootsStored = 2;
+    if (fail & 4) g.pendStored = 0;
+    TEST_ASSERT_FALSE(guardArmed(g));
+  }
+  GuardReadback empty = ok;
+  empty.prevStored = "";   // the write of a fresh key did not land
+  TEST_ASSERT_FALSE(guardArmed(empty));
+  GuardReadback prefix = ok;
+  prefix.prevStored = "app";
+  TEST_ASSERT_FALSE(guardArmed(prefix));
+  TEST_ASSERT_EQUAL_STRING("storage_full", kStorageFullRefusal);
 }
 
 // --- definitive check result ------------------------------------------------
@@ -737,6 +801,8 @@ int main(int, char**) {
   RUN_TEST(test_boot_healthy);
   RUN_TEST(test_auto_install_window);
   RUN_TEST(test_install_gate);
+  RUN_TEST(test_rollback_counts_an_unstored_attempt_as_over_budget);
+  RUN_TEST(test_guard_readback_refuses_on_a_failing_store);
   RUN_TEST(test_check_result);
   RUN_TEST(test_check_async_lifecycle);
   RUN_TEST(test_state_from_str_roundtrips);
