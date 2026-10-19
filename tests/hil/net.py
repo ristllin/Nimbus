@@ -33,6 +33,9 @@ REJOIN_WAIT_S = 20.0
 # own if the IP never answers.
 IP_READY_WAIT_S = 60.0
 STATUS_REPLY_S = 3.0  # one STATUS round trip; longer means the console is busy booting
+# A console still busy after a restart (an SD card's episodic scan blocks STATUS for
+# tens of seconds) gets this long to answer before the rejoin bound starts counting.
+CONSOLE_BUSY_CAP_S = 60.0
 JOIN_TIMEOUT_S = 25.0  # WIFI_GOT_IP after a provisioning command
 
 # Wi-Fi disconnect reasons by class, mirrored from classifyReason() in
@@ -87,11 +90,23 @@ class StationDown(NetError):
 
 class Join(NamedTuple):
     """What ensure_station / wait_station saw: the LAN IP (None if the station is
-    still down), whether the harness provisioned, and the disconnect reasons."""
+    still down), whether the harness provisioned, the disconnect reasons, and the
+    mode the last STATUS reported (None if the console never answered)."""
 
     ip: Optional[str]
     provisioned: bool
     reasons: Tuple[int, ...]
+    mode: Optional[int] = None
+
+
+def _station_ip(m) -> Optional[str]:
+    """The LAN IP a STATUS / WIFI_GOT_IP match proves, else None."""
+    if m is None:
+        return None
+    if m.group("got"):
+        return m.group("got")
+    up = m.group("wifi") == "1" and m.group("ip") != "0.0.0.0"
+    return m.group("ip") if up else None
 
 
 class Net:
@@ -186,10 +201,10 @@ class Net:
         return reason
 
     # -- joining without racing the device's own rejoin ------------------------
-    def _status_poll(self, window: float, reasons: List[int]) -> Optional[str]:
-        """Send one STATUS and read until its reply (at most ``window`` s), keeping
-        every disconnect reason on the way. The LAN IP once the station is up, else
-        None (still down, or the console is busy booting)."""
+    def _status_poll(self, window: float, reasons: List[int]):
+        """Send one STATUS and read until its reply or a ``WIFI_GOT_IP`` line (at
+        most ``window`` s), keeping every disconnect reason on the way. Returns that
+        match, or None when the console did not answer (busy booting)."""
         self.device.send("STATUS")
         end = time.monotonic() + window
         while True:
@@ -197,27 +212,32 @@ class Net:
                 m = self.device.expect_re(_STATION_EVENT, timeout=max(0.0, end - time.monotonic()))
             except ExpectTimeout:
                 return None
-            if m.group("got"):
-                return m.group("got")
-            if m.group("reason"):
-                reasons.append(int(m.group("reason")))
-                continue
-            up = m.group("wifi") == "1" and m.group("ip") != "0.0.0.0"
-            return m.group("ip") if up else None
+            if not m.group("reason"):
+                return m
+            reasons.append(int(m.group("reason")))
 
     def wait_station(self, timeout: float = REJOIN_WAIT_S, every: float = 1.0) -> Join:
         """Poll STATUS until the station is up (``wifi=1``, or a ``WIFI_GOT_IP``
-        line), at most ``timeout`` s. Never provisions. Caches the IP when up."""
+        line), at most ``timeout`` s counted from the console's first answer (a
+        console still busy booting gets up to CONSOLE_BUSY_CAP_S to answer). Stops
+        at once in Notifier mode, which keeps the radio off. Never provisions.
+        Caches the IP when up."""
         reasons: List[int] = []
-        deadline = time.monotonic() + timeout
+        mode: Optional[int] = None
+        deadline = time.monotonic() + CONSOLE_BUSY_CAP_S
         while True:
-            ip = self._status_poll(min(STATUS_REPLY_S, max(0.1, deadline - time.monotonic())), reasons)
+            m = self._status_poll(min(STATUS_REPLY_S, max(0.1, deadline - time.monotonic())), reasons)
+            ip = _station_ip(m)
             if ip:
                 self.ip = ip
-                return Join(ip, False, tuple(reasons))
+                return Join(ip, False, tuple(reasons), mode)
+            if m is not None and m.group("mode") is not None:
+                if mode is None:  # the console answered: the rejoin bound starts now
+                    deadline = time.monotonic() + timeout
+                mode = int(m.group("mode"))
             left = deadline - time.monotonic()
-            if left <= 0:
-                return Join(None, False, tuple(reasons))
+            if mode == 0 or left <= 0:
+                return Join(None, False, tuple(reasons), mode)
             time.sleep(min(every, left))
 
     def ensure_station(self, ssid: str, password: str, wait: float = REJOIN_WAIT_S) -> Join:
@@ -232,6 +252,13 @@ class Net:
         seen = self.wait_station(wait)
         if seen.ip:
             return seen
+        if seen.mode is None:
+            raise StationDown(
+                f"the console did not answer STATUS within {CONSOLE_BUSY_CAP_S:.0f} s after the restart; "
+                "not provisioning a device whose state is unknown"
+            )
+        if seen.mode == 0:
+            raise StationDown("the device is in Notifier mode, which keeps Wi-Fi off; call ensure_mode(1) first")
         known = self.device.wifi_known_count()
         if not needs_provisioning(known, seen.reasons):
             stored = "unknown" if known is None else known
@@ -241,7 +268,23 @@ class Net:
                 "Not re-provisioning: check the access point, or provision the device by hand."
             )
         self.provision(ssid, password)
-        return Join(self.wait_got_ip(timeout=JOIN_TIMEOUT_S), True, seen.reasons)
+        return Join(self.wait_got_ip(timeout=JOIN_TIMEOUT_S), True, seen.reasons, seen.mode)
+
+    def settle_after_reset(self) -> Join:
+        """Best effort, at session start: the ``device`` fixture has just
+        restarted the board, so let a station with a stored network rejoin before
+        any test reads STATUS (the bench run on 19 Oct 2026 read ``wifi=0`` in that
+        window and re-provisioned). Never provisions; a station that stays down is
+        left for the test to handle. When the console reports a joined IP that
+        differs from a seeded ``NIMBUS_TEST_IP``, the console wins: the seeded
+        address would reach some other host."""
+        seeded = self.ip
+        seen = self.wait_station(REJOIN_WAIT_S)
+        if seen.ip is None:
+            self.ip = seeded
+        elif seeded and seen.ip != seeded:
+            print(f"\n[net] the board reports {seen.ip}, not NIMBUS_TEST_IP={seeded}; using {seen.ip}")
+        return seen
 
     # -- HTTP ---------------------------------------------------------------
     def _base(self, ip: Optional[str]) -> str:

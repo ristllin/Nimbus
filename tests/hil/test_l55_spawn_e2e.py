@@ -62,6 +62,7 @@ LEDGER_RE = r"spawn(?:ed)?=(?P<spawned>\d+)\b.*?\bclaim(?:ed)?=(?P<claimed>\d+)"
 TURN_END_RE = r"turn end: (?:ok|FAIL)"
 PROBE_TURN = "Start one research sub-agent to answer in one sentence: why is the sky blue? Do not answer it yourself."
 PROBE_TIMEOUT_S = 120.0
+PROBE_TRIES = 2  # a model may answer one turn itself; two such turns mean no ledger
 SETTLE_QUIET_S = 10.0  # no turn end for this long: the probe's sub-agent wave is done
 SETTLE_CAP_S = 120.0
 
@@ -98,17 +99,19 @@ def _settle(dev: Device) -> None:
 def _spawn_ledger_present(dev: Device) -> bool:
     """True once lane L's spawn ledger is in the image: a turn that asks for a
     sub-agent prints a ledger line before its ``turn end:``. Absent before L
-    merges (the turn ends with no ledger line, or nothing arrives in time)."""
-    dev.drain(quiet=0.3)
-    dev.send("TURN " + PROBE_TURN)
-    try:
-        m = dev.expect_re(rf"{LEDGER_RE}|{TURN_END_RE}", timeout=PROBE_TIMEOUT_S)
-    except ExpectTimeout:
-        return False
-    present = probe_verdict(m.string) is True
-    if present:
-        _settle(dev)
-    return present
+    merges: PROBE_TRIES turns end with no ledger line (one retry, because a model
+    can answer such a turn itself), or a turn never ends in time."""
+    for _ in range(PROBE_TRIES):
+        dev.drain(quiet=0.3)
+        dev.send("TURN " + PROBE_TURN)
+        try:
+            m = dev.expect_re(rf"{LEDGER_RE}|{TURN_END_RE}", timeout=PROBE_TIMEOUT_S)
+        except ExpectTimeout:
+            return False
+        if probe_verdict(m.string):
+            _settle(dev)
+            return True
+    return False
 
 
 @pytest.fixture(scope="module")
@@ -117,9 +120,9 @@ def spawn_ready(device: Device, secrets) -> Device:
         pytest.skip("no ANTHROPIC_API_KEY for the spawn e2e")
     if not _spawn_ledger_present(device):
         pytest.skip(
-            "spawn ledger (lane L) not present: a turn that asked for a sub-agent ended "
-            "with no 'spawn ledger spawned=N claimed=M' line (an image without lane L, "
-            "or the head did not try to spawn)"
+            f"spawn ledger (lane L) not present: {PROBE_TRIES} turns that asked for a sub-agent "
+            "ended with no 'spawn ledger spawned=N claimed=M' line (an image without lane L, "
+            "or the head would not try to spawn)"
         )
     return device
 
@@ -243,16 +246,21 @@ def test_probe_asks_for_a_sub_agent_and_sees_the_ledger():
     assert "sub-agent" in PROBE_TURN  # a plain hello never prints the ledger
 
 
+_TURN_END = "[agent] turn end: ok host=anthropic tokens in=900 out=60 tools=0 reply=40B"
+
+
 @pytest.mark.host
-def test_probe_reports_absent_when_the_turn_ends_without_a_ledger():
-    dev = _ProbeDevice(
-        [
-            "[agent] usage: spawn:anthropic in=120 out=30",
-            "[agent] turn end: ok host=anthropic tokens in=900 out=60 tools=0 reply=40B",
-            "[agent] orchestrator: spawn ledger spawned=1 claimed=1",  # a later turn's line
-        ]
-    )
+def test_probe_reports_absent_when_every_try_ends_without_a_ledger():
+    dev = _ProbeDevice(["[agent] usage: spawn:anthropic in=120 out=30", _TURN_END, _TURN_END])
     assert _spawn_ledger_present(dev) is False
+    assert dev.sent == ["TURN " + PROBE_TURN] * PROBE_TRIES
+
+
+@pytest.mark.host
+def test_probe_retries_once_when_the_model_answers_itself():
+    dev = _ProbeDevice([_TURN_END, "[agent] orchestrator: spawn ledger spawned=1 claimed=1", _TURN_END])
+    assert _spawn_ledger_present(dev) is True
+    assert len(dev.sent) == 2
 
 
 @pytest.mark.host

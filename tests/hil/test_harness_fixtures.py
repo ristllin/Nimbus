@@ -163,38 +163,93 @@ def wifi_lines(dev):
 # ---- 1. the net fixture seeds NIMBUS_TEST_IP -----------------------------------------
 
 
+@pytest.fixture
+def reach(monkeypatch):
+    """Records every Net.wait_reachable call; ``reach.answers`` is what it returns."""
+    calls = SimpleNamespace(timeouts=[], answers=True)
+    monkeypatch.setattr(
+        net_mod.Net, "wait_reachable", lambda self, timeout, every=2.0: calls.timeouts.append(timeout) or calls.answers
+    )
+    return calls
+
+
+def lan_only_device():
+    dev = ScriptedDevice(Console([]))
+    dev.lan_only = True  # what the device fixture sets when the console is unavailable
+    return dev
+
+
 @pytest.mark.host
-def test_net_fixture_seeds_the_ip_from_the_env_and_waits_for_it(monkeypatch):
-    waits = []
-    monkeypatch.setattr(net_mod.Net, "wait_reachable", lambda self, timeout, every=2.0: waits.append(timeout) or True)
+def test_net_fixture_seeds_the_ip_from_the_env_and_waits_for_it(monkeypatch, reach):
     monkeypatch.setenv("NIMBUS_TEST_IP", f" {IP} ")
-    n = conftest.net.__wrapped__(ScriptedDevice(Console([])), None)
+    dev = lan_only_device()
+    n = conftest.net.__wrapped__(dev, None)
     assert n.ip == IP
-    assert waits == [net_mod.IP_READY_WAIT_S]
+    assert reach.timeouts == [net_mod.IP_READY_WAIT_S]
+    assert dev.sent == []  # LAN-only: the console is never touched
 
 
 @pytest.mark.host
 @pytest.mark.parametrize("value", [None, "", "   "])
-def test_net_fixture_without_the_env_leaves_the_ip_to_the_other_paths(monkeypatch, value):
-    waits = []
-    monkeypatch.setattr(net_mod.Net, "wait_reachable", lambda self, timeout, every=2.0: waits.append(timeout) or True)
+def test_net_fixture_without_the_env_leaves_the_ip_to_the_other_paths(monkeypatch, reach, value):
     if value is None:
         monkeypatch.delenv("NIMBUS_TEST_IP", raising=False)
     else:
         monkeypatch.setenv("NIMBUS_TEST_IP", value)
-    n = conftest.net.__wrapped__(ScriptedDevice(Console([])), None)
-    assert n.ip is None and waits == []
+    n = conftest.net.__wrapped__(lan_only_device(), None)
+    assert n.ip is None and reach.timeouts == []
     with pytest.raises(NetError, match="no IP known"):
         n._base(None)
 
 
 @pytest.mark.host
-def test_net_fixture_returns_even_when_the_seeded_ip_never_answers(monkeypatch, capsys):
-    monkeypatch.setattr(net_mod.Net, "wait_reachable", lambda self, timeout, every=2.0: False)
+def test_net_fixture_returns_even_when_the_seeded_ip_never_answers(monkeypatch, reach, capsys):
+    reach.answers = False
     monkeypatch.setenv("NIMBUS_TEST_IP", IP)
-    n = conftest.net.__wrapped__(ScriptedDevice(Console([])), None)
+    n = conftest.net.__wrapped__(lan_only_device(), None)
     assert n.ip == IP
     assert "did not answer" in capsys.readouterr().out
+
+
+@pytest.mark.host
+def test_net_fixture_lets_the_station_rejoin_after_the_session_reset(monkeypatch, reach, clock):
+    """With a console the fixture waits out the rejoin, so a test that reads STATUS
+    next sees wifi=1 (test_l42's own bench then never provisions)."""
+    monkeypatch.setenv("NIMBUS_TEST_IP", IP)
+    console = Console([[status_line(0)], [status_line(0)], [status_line(1)]])
+    dev = ScriptedDevice(console)
+    n = conftest.net.__wrapped__(dev, None)
+    assert n.ip == IP and console.status_calls == 3 and console.provisions == 0
+    assert dev.status().group("wifi") == "1"
+    assert reach.timeouts == [net_mod.IP_READY_WAIT_S]
+
+
+@pytest.mark.host
+def test_net_fixture_prefers_the_boards_own_ip_over_a_stale_seed(monkeypatch, reach, clock, capsys):
+    monkeypatch.setenv("NIMBUS_TEST_IP", "192.0.2.99")  # stale: another host may answer there
+    n = conftest.net.__wrapped__(ScriptedDevice(Console([[status_line(1)]])), None)
+    assert n.ip == IP
+    assert "not NIMBUS_TEST_IP=192.0.2.99" in capsys.readouterr().out
+
+
+@pytest.mark.host
+def test_net_fixture_keeps_the_seed_when_the_station_stays_down(monkeypatch, reach, clock):
+    monkeypatch.setenv("NIMBUS_TEST_IP", IP)
+    console = Console([[status_line(0)]])
+    n = conftest.net.__wrapped__(ScriptedDevice(console), None)
+    assert n.ip == IP and console.provisions == 0  # never provisions; the test decides
+
+
+@pytest.mark.host
+def test_net_fixture_in_notifier_mode_does_not_wait(monkeypatch, reach, clock):
+    """Notifier keeps the radio off and serves no web page: no rejoin wait, no
+    reachability wait."""
+    monkeypatch.setenv("NIMBUS_TEST_IP", IP)
+    console = Console([[status_line(0, mode=0)]])
+    start = clock.now
+    n = conftest.net.__wrapped__(ScriptedDevice(console), None)
+    assert n.ip == IP and console.status_calls == 1 and clock.now == start
+    assert reach.timeouts == []
 
 
 @pytest.mark.host
@@ -234,7 +289,7 @@ def test_a_rejoin_after_a_restart_is_waited_out_not_provisioned(clock):
     console = Console([[status_line(0)], ["WIFI_DISCONNECTED reason=8", status_line(0)], [status_line(1)]])
     dev, n = scripted(console)
     joined = n.ensure_station("bench", Secret("bench-pass-0001"))
-    assert joined == Join(IP, False, (8,))
+    assert joined == Join(IP, False, (8,), 1)
     assert console.provisions == 0 and wifi_lines(dev) == []
     assert n.ip == IP
     assert console.status_calls == 3
@@ -266,7 +321,7 @@ def test_rejected_stored_credentials_provision_exactly_once(clock, reason):
     console = Console([[f"WIFI_DISCONNECTED reason={reason}", status_line(0)], [status_line(0)]], known=2)
     dev, n = scripted(console)
     joined = n.ensure_station("bench", "pw")
-    assert joined == Join(IP, True, (reason,))
+    assert joined == Join(IP, True, (reason,), 1)
     assert console.provisions == 1
 
 
@@ -296,6 +351,39 @@ def test_a_busy_console_is_polled_again_within_the_bound(clock):
     dev, n = scripted(console)
     assert n.ensure_station("bench", "pw").ip == IP
     assert console.status_calls == 3 and console.provisions == 0
+
+
+@pytest.mark.host
+def test_the_rejoin_bound_counts_from_the_consoles_first_answer(clock):
+    """An SD scan can block STATUS for tens of seconds after a restart: the 20 s
+    rejoin bound starts when the console first answers, not before."""
+    console = Console([[]] * 30 + [[status_line(0)]] * 5 + [[status_line(1)]])
+    dev, n = scripted(console)
+    start = clock.now
+    assert n.ensure_station("bench", "pw").ip == IP
+    assert clock.now - start > net_mod.REJOIN_WAIT_S and console.provisions == 0
+
+
+@pytest.mark.host
+def test_a_console_that_never_answers_is_not_provisioned(clock):
+    console = Console([[]])
+    dev, n = scripted(console)
+    start = clock.now
+    with pytest.raises(StationDown, match="did not answer STATUS"):
+        n.ensure_station("bench", "pw")
+    assert clock.now - start == pytest.approx(net_mod.CONSOLE_BUSY_CAP_S, abs=1.0)
+    assert console.provisions == 0 and "WIFIKNOWN?" not in dev.sent
+
+
+@pytest.mark.host
+def test_notifier_mode_stops_the_wait_at_once(clock):
+    console = Console([[status_line(0, mode=0)]], known=0)
+    dev, n = scripted(console)
+    start = clock.now
+    assert n.wait_station() == Join(None, False, (), 0) and clock.now == start
+    with pytest.raises(StationDown, match="Notifier mode"):
+        n.ensure_station("bench", "pw")
+    assert console.provisions == 0
 
 
 @pytest.mark.host

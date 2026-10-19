@@ -267,13 +267,17 @@ def net(device, secrets) -> Net:
 
     Seeded with ``NIMBUS_TEST_IP`` when it is set, so a plain ``net`` leg runs
     standalone (the bench run on 19 Oct 2026 failed every such leg with "no IP
-    known"). The ``device`` fixture has just restarted the board, so the fixture
-    then waits, best effort and bounded, for that IP to answer before the first
-    test fires. Without the variable, ``ip`` comes from wait_got_ip() or
+    known"). With a console, the ``device`` fixture has just restarted the board,
+    so the fixture first lets the station rejoin (Net.settle_after_reset: bounded,
+    never provisions, the console's own IP wins over a disagreeing seed), then
+    waits, best effort, for the address to answer before the first test fires.
+    Without the variable or a console, ``ip`` comes from wait_got_ip() or
     ensure_station() as before."""
     n = Net.from_env(device, secrets)
-    if n.ip and not n.wait_reachable(IP_READY_WAIT_S):
-        print(f"\n[conftest] NIMBUS_TEST_IP={n.ip} did not answer within {IP_READY_WAIT_S:.0f} s - continuing")
+    seen = None if device.lan_only else n.settle_after_reset()
+    notifier = seen is not None and seen.mode == 0  # no Wi-Fi and no web server to wait for
+    if n.ip and not notifier and not n.wait_reachable(IP_READY_WAIT_S):
+        print(f"\n[conftest] {n.ip} did not answer within {IP_READY_WAIT_S:.0f} s - continuing")
     return n
 
 
