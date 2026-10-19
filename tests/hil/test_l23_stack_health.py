@@ -114,19 +114,82 @@ PHOTO_PROMPT = (
 TEXT_PROMPT = "Use memory_search for 'tea', then for 'car seat', then answer in one sentence."
 
 
+# The row 41 stack marks in /api/state.mem, per board profile (``hal`` in the same
+# state). A mark is reported only while its task exists (heapwatch::stateInto looks
+# the task up by name), so which marks are mandatory follows the board:
+#   * loopStackMin (the main loop): mandatory on every board;
+#   * panelStackMin (the display render task, started with the display): mandatory
+#     when hal.display is true, absent otherwise;
+#   * vrelStackMin (the voice-release watcher): never mandatory. The task lives only
+#     while a hold-to-talk capture runs, and hold-to-talk needs the touch panel
+#     (hal.input), so on a board without it the mark must be absent, and on a board
+#     with it the mark appears only mid-capture.
+# Every mark that is present must be above STACK_MARK_FLOOR.
+STACK_MARK_FLOOR = 512
+
+
+def stack_mark_problems(state: dict) -> list[str]:
+    hal = state.get("hal")
+    if not isinstance(hal, dict):
+        return ["/api/state has no hal profile, so the mandatory marks cannot be chosen"]
+    mem = state.get("mem", {})
+    problems = []
+    required = ["loopStackMin"] + (["panelStackMin"] if hal.get("display") else [])
+    problems += [f"/api/state.mem.{n} missing (mandatory on this board)" for n in required if n not in mem]
+    if "vrelStackMin" in mem and not hal.get("input"):
+        problems.append("vrelStackMin reported on a board without the touch panel (no hold-to-talk)")
+    for name in ("loopStackMin", "panelStackMin", "vrelStackMin"):
+        if name in mem and int(mem[name]) <= STACK_MARK_FLOOR:
+            problems.append(f"{name} {mem[name]} B: the task is about to overflow")
+    return problems
+
+
 @pytest.mark.net
 def test_more_stack_marks_surfaced(device, net, secrets, require_secret):
-    """loopTask, the display render task and the voice-release watcher report their
-    worst free stack in /api/state.mem, each above the danger floor."""
+    """The row 41 stack marks this board must report are in /api/state.mem, and every
+    reported one is above the danger floor (stack_mark_problems)."""
     from test_l4_network import lan_ip_or_skip
 
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
-    mem = net.get_json("/api/state", ip=ip, timeout=8.0).get("mem", {})
-    for name in ("loopStackMin", "vrelStackMin"):
-        assert name in mem, f"/api/state.mem.{name} missing (row 41 stack marks)"
-        assert int(mem[name]) > 512, f"{name} {mem[name]} B: the task is about to overflow"
-    if "panelStackMin" in mem:  # absent when the board runs without the colour display
-        assert int(mem["panelStackMin"]) > 512
+    state = net.get_json("/api/state", ip=ip, timeout=8.0)
+    problems = stack_mark_problems(state)
+    assert not problems, "row 41 stack marks: " + "; ".join(problems) + f" (hal={state.get('hal')})"
+
+
+# Unit A on 19 Oct 2026 (v4.5.13-28-g6f67f9e): colour display, no touch panel, no ring.
+_UNIT_A = {
+    "hal": {"display": True, "leds": True, "storage": True, "memory": True, "input": False},
+    "hasRing": False,
+    "mem": {"loopStackMin": 1012, "panelStackMin": 3292, "asyncStackMin": 8336, "pollStackMin": 16152},
+}
+
+
+def _with(hal=None, mem=None, drop=()):
+    st = {"hal": dict(_UNIT_A["hal"], **(hal or {})), "mem": dict(_UNIT_A["mem"], **(mem or {}))}
+    for name in drop:
+        st["mem"].pop(name, None)
+    return st
+
+
+def test_stack_marks_rule_per_board_profile():
+    assert stack_mark_problems(_UNIT_A) == []  # the board the leg failed on: honest now
+    assert stack_mark_problems(_with(hal={"input": True})) == []  # touch board, no capture running
+    assert stack_mark_problems(_with(hal={"input": True}, mem={"vrelStackMin": 900})) == []
+    assert stack_mark_problems(_with(hal={"display": False}, drop=["panelStackMin"])) == []
+
+
+def test_stack_marks_rule_still_catches_every_fault():
+    cases = {
+        "loop missing": _with(drop=["loopStackMin"]),
+        "panel missing on a display board": _with(drop=["panelStackMin"]),
+        "vrel without a touch panel": _with(mem={"vrelStackMin": 900}),
+        "loop near overflow": _with(mem={"loopStackMin": 512}),
+        "panel near overflow": _with(mem={"panelStackMin": 300}),
+        "vrel near overflow": _with(hal={"input": True}, mem={"vrelStackMin": 200}),
+        "no hal profile": {"mem": dict(_UNIT_A["mem"])},
+    }
+    for what, st in cases.items():
+        assert stack_mark_problems(st), f"{what}: not caught"
 
 
 def _chat_and_wait(s, ip, text, timeout_s=180):

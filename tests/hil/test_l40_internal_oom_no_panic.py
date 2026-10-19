@@ -20,20 +20,36 @@ Bench leg (``hil`` + ``net`` + ``agent``, unit A, test build): 20 two-round turn
 the head model (claude-haiku-5-5 by default, ``NIMBUS_LAB_MODEL`` overrides; the
 device must already be set to it) while 4 parallel LAN GETs, the tunneled
 ``GET /`` (console ``CLOUDLOOP /``: the relay's loopback replay) and a verify run,
-with ``FAULT sram_ballast`` holding internal free near 14 KB. Pass: zero reboots,
-every turn ends ok or with the honest low-memory reply, ``mem.allocFails`` is
-reported.
+with ``FAULT sram_ballast`` holding internal free near 14 KB. That is below the
+20 KB serve floor, so every big page answers busy, and the loaders, the turn's TLS
+and the network stack push internal free toward zero: the starvation the leg exists
+to survive. Under it the network stack drops packets (failed packet-buffer
+allocations in the TCP/IP task) and a small status request can take well over 10 s.
+
+Pass criterion (all four):
+  1. zero reboots: ``uptimeMs`` never goes back across the samples;
+  2. every turn ends, within TURN_BUDGET_S, ok or with the honest low-memory reply;
+  3. the device stays reachable: every status read (the turn poll and the state
+     sample) is answered within READ_BUDGET_S, tried READ_ATTEMPT_S at a time; a read
+     unanswered for the whole budget fails the leg as a responsiveness finding (a
+     device result, not a harness timeout), and the slowest read is printed;
+  4. ``mem.allocFails`` is reported (printed with the low-water mark and its tags).
+A turn is submitted once, with SUBMIT_TIMEOUT_S (never resent: a resend could start
+a second turn).
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import requests
 
 _REPO = Path(__file__).resolve().parents[2]
 _SRC = _REPO / "src"
@@ -120,6 +136,57 @@ def test_cum404_floors_unchanged():
     }, f"CUM-404 floors moved: {floors} (the fix is admission beside the turn, not a re-raise)"
 
 
+# ---- patient reads (the device is slow on purpose here) ------------------------
+TURN_BUDGET_S = 150.0  # one turn, submit to final reply
+READ_ATTEMPT_S = 15.0  # one GET attempt
+READ_BUDGET_S = 60.0  # one status read, all attempts together
+SUBMIT_TIMEOUT_S = 30.0  # the turn's POST, sent once
+
+
+@dataclass
+class ReadStats:
+    reads: int = 0
+    timeouts: int = 0  # attempts that got no answer within READ_ATTEMPT_S
+    slowest_s: float = 0.0
+
+    def line(self) -> str:
+        return f"reads={self.reads} timeouts={self.timeouts} slowest={self.slowest_s:.1f}s"
+
+
+@dataclass
+class ReadPolicy:
+    attempt_s: float = READ_ATTEMPT_S
+    budget_s: float = READ_BUDGET_S
+    now: object = time.monotonic  # the clock and the pause, swappable for host tests
+    sleep: object = time.sleep
+
+
+def patient_get_json(get, url, what, stats, params=None, policy=None):
+    """GET `url` and return its JSON, retrying an attempt that times out or cannot
+    connect until the policy's budget has passed. An answered error status is never
+    retried (raise_for_status). Past the budget the leg fails with a responsiveness
+    finding."""
+    p = policy or ReadPolicy()
+    start, attempts = p.now(), 0
+    while True:
+        attempts += 1
+        try:
+            r = get(url, params=params, timeout=p.attempt_s)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            stats.timeouts += 1
+            if p.now() - start >= p.budget_s:
+                pytest.fail(
+                    f"responsiveness: {what} unanswered for {p.now() - start:.0f}s under L40 pressure "
+                    f"({attempts} attempts of {p.attempt_s:.0f}s): a device finding, not a harness timeout"
+                )
+            p.sleep(1.0)
+            continue
+        r.raise_for_status()
+        stats.reads += 1
+        stats.slowest_s = max(stats.slowest_s, p.now() - start)
+        return r.json()
+
+
 # ---- bench leg ---------------------------------------------------------------
 TURNS = int(os.environ.get("NIMBUS_L40_TURNS", "20"))
 BALLAST_TARGET_FREE = int(os.environ.get("NIMBUS_L40_FREE", str(14 * 1024)))
@@ -127,26 +194,33 @@ PROMPT = "Use the files_list tool once, then the memory_search tool once for 'te
 _LOW_MEMORY_REPLY = re.compile(r"memory", re.I)
 
 
-def _state(s, ip):
-    r = s.get(f"http://{ip}/api/state", timeout=10)
-    r.raise_for_status()
-    return r.json()
+def _state(s, ip, stats):
+    return patient_get_json(s.get, f"http://{ip}/api/state", "GET /api/state", stats)
 
 
-def _chat_turn(s, ip, text, timeout_s=150):
-    r = s.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
+def _submit(s, ip, text):
+    try:
+        return s.post(f"http://{ip}/api/chat", data={"text": text}, timeout=SUBMIT_TIMEOUT_S)
+    except requests.exceptions.Timeout:
+        pytest.fail(f"responsiveness: POST /api/chat not accepted within {SUBMIT_TIMEOUT_S:.0f}s under L40 pressure")
+
+
+def _chat_turn(s, ip, text, stats):
+    r = _submit(s, ip, text)
     if r.status_code == 503:  # the previous reply is still finishing
         time.sleep(3)
-        r = s.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
+        r = _submit(s, ip, text)
     assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:160]}"
     turn = r.json().get("turn", "")
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    deadline = time.monotonic() + TURN_BUDGET_S
+    while time.monotonic() < deadline:
         time.sleep(2)
-        j = s.get(f"http://{ip}/api/chat", params={"turn": turn} if turn else None, timeout=10).json()
+        j = patient_get_json(
+            s.get, f"http://{ip}/api/chat", "the turn's status poll", stats, params={"turn": turn} if turn else None
+        )
         if not j.get("pending", True) and (j.get("reply") or j.get("error")):
             return j
-    pytest.fail(f"turn did not finish within {timeout_s}s")
+    pytest.fail(f"turn did not finish within {TURN_BUDGET_S:.0f}s")
 
 
 def _lan_load(s, ip, stop, stats):
@@ -188,7 +262,7 @@ def test_l40_internal_oom_no_panic(device):
     loaders = [threading.Thread(target=_lan_load, args=(s, ip, stop, stats), daemon=True) for _ in range(4)]
     for t in loaders:
         t.start()
-    outcomes, tunnel = [], []
+    outcomes, tunnel, reads = [], [], ReadStats()
     try:
         for i in range(TURNS):
             if i == TURNS // 2:
@@ -199,21 +273,107 @@ def test_l40_internal_oom_no_panic(device):
                 tunnel.append(int(m.group(1)))
             except Exception:  # noqa: BLE001 - recorded as a miss; the reboot check decides
                 tunnel.append(None)
-            outcomes.append(_chat_turn(s, ip, f"[l40 {i}] {PROMPT}"))
-            up.append(int(_state(s, ip)["uptimeMs"]))
+            outcomes.append(_chat_turn(s, ip, f"[l40 {i}] {PROMPT}", reads))
+            up.append(int(_state(s, ip, reads)["uptimeMs"]))
     finally:
         stop.set()
         for t in loaders:
             t.join(timeout=30)
         device.cmd("FAULT sram_ballast 0", "FAULT sram_ballast=", timeout=5)
 
-    st1 = _state(s, ip)
+    st1 = _state(s, ip, reads)
     assert all(b >= a for a, b in zip(up, up[1:])), f"the device rebooted under load (uptime samples {up})"
     bad = [o for o in outcomes if o.get("error") and not _LOW_MEMORY_REPLY.search(str(o))]
     assert not bad, f"turns that failed without the honest low-memory reply: {bad[:3]}"
     mem1 = st1["mem"]
     print(
         f"L40: turns={len(outcomes)} allocFails={mem1['allocFails']} lowWater={mem1['lowWater']} "
-        f"tags={mem1.get('lowWaterTags')} lan={stats} tunnel={tunnel}"
+        f"tags={mem1.get('lowWaterTags')} lan={stats} tunnel={tunnel} {reads.line()}"
     )
     assert isinstance(mem1["allocFails"], int)
+
+
+# ---- host tests for the patient reads (no board) -------------------------------
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+    def policy(self):
+        return ReadPolicy(now=self.now, sleep=self.sleep)
+
+
+class _Resp:
+    def __init__(self, status=200, body=None):
+        self.status_code, self._body = status, body or {}
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"{self.status_code}")
+
+
+def _scripted_get(clock, answers):
+    """A GET that walks `answers`: "timeout" costs the whole attempt, a _Resp answers
+    after 0.5 s. Records every call."""
+    calls = []
+
+    def get(url, params=None, timeout=None):
+        calls.append((url, params, timeout))
+        a = answers[min(len(calls), len(answers)) - 1]
+        if a == "timeout":
+            clock.t += timeout
+            raise requests.exceptions.ReadTimeout("read timed out")
+        clock.t += 0.5
+        return a
+
+    return get, calls
+
+
+def test_patient_read_rides_out_a_slow_device():
+    # The 19 Oct unit A shape: the first status poll got no answer in 10 s.
+    clock, stats = _Clock(), ReadStats()
+    get, calls = _scripted_get(clock, ["timeout", "timeout", _Resp(body={"pending": False, "reply": "ok"})])
+    j = patient_get_json(get, "http://dev/api/chat", "poll", stats, params={"turn": "t1"}, policy=clock.policy())
+    assert j["reply"] == "ok"
+    assert len(calls) == 3 and all(c[2] == READ_ATTEMPT_S and c[1] == {"turn": "t1"} for c in calls)
+    assert (stats.reads, stats.timeouts) == (1, 2)
+    assert stats.slowest_s == 2 * READ_ATTEMPT_S + 2 * 1.0 + 0.5
+    assert stats.slowest_s < READ_BUDGET_S
+
+
+def test_patient_read_fails_past_the_budget_as_a_responsiveness_finding():
+    clock, stats = _Clock(), ReadStats()
+    get, calls = _scripted_get(clock, ["timeout"])
+    with pytest.raises(pytest.fail.Exception, match=r"responsiveness: poll unanswered for \d+s"):
+        patient_get_json(get, "http://dev/api/chat", "poll", stats, policy=clock.policy())
+    # Bounded: it gave up once the budget had passed, never sooner, never much later.
+    assert READ_BUDGET_S <= clock.t <= READ_BUDGET_S + READ_ATTEMPT_S + 1.0
+    assert len(calls) == stats.timeouts == 4
+
+
+def test_patient_read_never_retries_an_answered_error():
+    clock, stats = _Clock(), ReadStats()
+    get, calls = _scripted_get(clock, [_Resp(status=500)])
+    with pytest.raises(requests.exceptions.HTTPError):
+        patient_get_json(get, "http://dev/api/state", "state", stats, policy=clock.policy())
+    assert len(calls) == 1 and stats.reads == 0
+
+
+def test_every_bench_read_is_patient_and_the_submit_is_sent_once():
+    """The leg reads the device only through patient_get_json, and sends a turn only
+    through _submit (one POST, no resend loop)."""
+    for fn in (_state, _chat_turn):
+        src = inspect.getsource(fn)
+        assert "patient_get_json(" in src, f"{fn.__name__} reads the device without the patient read"
+        assert not re.search(r"\bs\.get\(", src), f"{fn.__name__} has a single-shot GET"
+    assert "s.post(" not in inspect.getsource(_chat_turn)
+    leg = inspect.getsource(test_l40_internal_oom_no_panic)
+    assert "_state(s, ip, reads)" in leg and "_chat_turn(s, ip" in leg and "reads.line()" in leg

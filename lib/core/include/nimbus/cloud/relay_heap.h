@@ -91,8 +91,11 @@ bool relayCanDial(size_t freeInternal, size_t largestInternalBlock);
 enum class ServeDecision : unsigned char { Serve, Trickle, Busy };
 
 constexpr size_t kServeSmallMax = 16 * 1024;
-// Bench-calibrated (B3); start value from the study: the room a turn's next exchange
-// needs (about 8 KB of transients) above the CUM-404 round floor (12 KB).
+// Not yet bench-calibrated. Start value from the study: the room a turn's next
+// exchange needs (about 8 KB of transients) above the CUM-404 round floor (12 KB).
+// The first bench run (B3, unit A, 19 Oct 2026) recorded no busy or trickle answer
+// gated by this floor (the busy answers it recorded were turn-gated); calibration
+// needs a recorded run where internal free crosses it without a turn in flight.
 constexpr size_t kServeFloorFree = 20 * 1024;
 constexpr size_t kTrickleChunk = 1436;   // one TCP segment (CONFIG_LWIP_TCP_MSS)
 
