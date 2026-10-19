@@ -784,7 +784,7 @@ static agent::ApplyDeps buildApplyDeps() {
     return g_mem.setModel(chatId, v);   // per-chat running memory (B3)
   };
   d.syncMemEcho = [] { syncMemEcho(); };
-  d.applyScratch = [](const nimbus::orch::ScratchUpdate& u) {
+  d.applyScratch = [](const nimbus::orch::ScratchUpdate& u) -> agent::ScratchOutcome {
     // Inline scratchpad update: replace only the tiers the model
     // returned, under the memory Lock, then persist. A non-null tier REPLACES it
     // (the model returns the full desired tier each time - same model as running
@@ -792,11 +792,15 @@ static agent::ApplyDeps buildApplyDeps() {
     using nimbus::orch::Tier;
     agent::memory::Lock memg;
     auto& sp = memory::scratchpad();
+    const std::string before = sp.serialize();
     if (u.hasActive) sp.setActiveTask(u.active);
     if (u.hasShort)  sp.replace(Tier::Short, u.shortItems);
     if (u.hasMid)    sp.replace(Tier::Mid,   u.midItems);
     if (u.hasLong)   sp.replace(Tier::Long,  u.longItems);
-    memory::persistScratchpad();
+    // An update that changes nothing writes nothing and backs no claim.
+    if (sp.serialize() == before) return agent::ScratchOutcome::Skipped;
+    return memory::persistScratchpad() ? agent::ScratchOutcome::Applied
+                                       : agent::ScratchOutcome::AppliedRamOnly;
   };
   d.withMemoryLock = [](const std::function<void()>& fn) {
     // Recursive, so the nested persist* re-enter safely. (memory.write embeds via
@@ -827,7 +831,7 @@ static agent::ApplyDeps buildApplyDeps() {
   };
   d.persistMemory = [] { memory::persistVectors(); memory::persistScratchpad(); };
   d.enqueueSpawn = [](const orch::Spawn& s, const std::string& chatId, bool quiet) {
-    if (g_jobs) g_jobs->enqueueSpawn(s, chatId, quiet);
+    return g_jobs && g_jobs->enqueueSpawn(s, chatId, quiet);
   };
   d.cancelSession = [](const std::string& id) { return cancel(id.c_str()); };
   d.awaitTag = [](const std::string& firstTag) {
@@ -850,8 +854,12 @@ static agent::ApplyDeps buildApplyDeps() {
   };
   d.emitAsk = [] { emitAsk(); };
   d.captureAssistant = [](const std::string& chatId, const std::string& text) {
+    // The row carries what the turn actually did ("fx:mem,file" or "fx:none",
+    // at most 24 B on the card), so a later turn can tell a promise from a
+    // deliverable (rendered in the history by a later lane).
+    const std::string fx = g_engine ? g_engine->claimCheck().effects().fxTag() : std::string();
     memory::captureMessage(chatId.c_str(), "assistant", orch::MsgKind::Message,
-                           String(text.c_str()), "", withTurnTag(""));
+                           String(text.c_str()), "", withTurnTag(fx.c_str()));
     if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
   };
   d.fire = [](const char* cue) {

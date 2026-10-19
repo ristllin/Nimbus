@@ -110,6 +110,7 @@ struct Rig {
   std::vector<Captured> captured;
   std::vector<orch::ValidatedAction> staged;   // ApplyDeps.stageDevice recorder
   std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
+  agent::ScratchOutcome scratchOutcome = agent::ScratchOutcome::Applied;   // what the save reports
   std::vector<std::string> memCalls;   // ApplyDeps.memDispatch recorder (tool names)
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
   std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
@@ -231,7 +232,7 @@ struct Rig {
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
     wireLaneL(d, withSubFabric);
-    d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); };
+    d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); return scratchOutcome; };
     d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst,
                                  const orch::Principal&) {
       memCalls.push_back(name);
@@ -274,7 +275,7 @@ struct Rig {
     };
     if (!withSubFabric) return;
     d.apply.enqueueSpawn = [this](const orch::Spawn& sp, const std::string& chat, bool quiet) {
-      jobs->enqueueSpawn(sp, chat, quiet);
+      return jobs->enqueueSpawn(sp, chat, quiet);
     };
     d.apply.noteSpawned = [this] { jobs->noteSpawned(); };
   }

@@ -536,6 +536,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   tf.chain.clear();
   tf.metered = false;
   tf.switched = false;
+  // Lane S: a fresh effect ledger; the sub-agent results the entry wrapper
+  // folded in count as read (sourced or with no lookup behind them).
+  claims_.beginTurn();
+  claims_.noteFresh(freshSourced_, freshUnsourced_);
+  freshSourced_ = freshUnsourced_ = 0;   // consumed: never carried into a later turn
+  claims_.setHostedTools(d_.cfg.headHostedTools && d_.cfg.headHostedTools());
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
@@ -590,6 +596,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   std::vector<std::string> recalled;
   if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)
     recalled = d_.recall(userText, turnWho);
+  {
+    // The figure check's sources: the input block (the owner's text, captions,
+    // the window, fresh results) and, apart, the recalled memories. Only their
+    // numbers are kept.
+    std::string rec;
+    for (const std::string& r : recalled) rec += r + "\n";
+    claims_.setSources(inputs, rec);
+  }
   const uint32_t heapAfterRecall = freeHeap();
 
   // Gather the LIVE inputs (device closure: HAL health, faults, sessions,
@@ -809,6 +823,19 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         r.output = std::string(content[0]["text"] | "");
       return done(r);
     };
+    // Lane S: every head tool call joins this turn's effect ledger, from its
+    // effect (the shared tool table) and its own result text.
+    {
+      auto inner = std::move(headTools.dispatch);
+      headTools.dispatch = [this, inner, nameMap](const orch::HeadToolCall& call) -> orch::HeadToolResult {
+        orch::HeadToolResult r = inner(call);
+        auto it = nameMap->find(call.name);
+        const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
+        claims_.noteTool(fxKindForTool(regName), r.isError, r.output,
+                         ClaimCheck::toolCallFlags(regName, call.argsJson));
+        return r;
+      };
+    }
     // Lane L: the per-turn taint flag (one table, orch::toolTaint) and the
     // pseudo-tool salvage wrap the dispatch above; every other call goes
     // through it untouched.
@@ -834,12 +861,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         return inner(call);
       };
     }
-    // Lane L: the final-answer check - one correction round for an orch_turn
-    // whose spawn list cannot be read or whose reply promises sub-agents it does
-    // not start. Further checks (lane S's claim check) join this chain.
-    headTools.cfg.validateFinal = orch::chainFinalChecks({[pseudo](const std::string& finalTurn) {
-      return turnShapeCorrection(finalTurn, pseudo.get());
-    }});
+    // The final-answer checks share ONE correction round (orch::chainFinalChecks):
+    // lane L's turn-shape check (a spawn list that cannot be read, a reply that
+    // promises sub-agents it does not start) and lane S's claim check (a reply
+    // claim that neither the tools this turn ran nor the final turn's own items
+    // back). The spawn class is the shape check's: it also counts the spawn items
+    // salvaged from pseudo-tool calls, which the final turn's JSON does not carry.
+    headTools.cfg.validateFinal = orch::chainFinalChecks({
+        [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
+        [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
+    });
     headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
@@ -1340,6 +1371,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                        const std::string& reason) {
     if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);
   };
+  st.claims              = &claims_;
   bool spawned = false;
   agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
@@ -1396,7 +1428,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
   const std::string ownerRaw = d_.jobs->ownerResultsText();
-  std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_);
+  std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
@@ -1406,15 +1438,17 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // CUM-536: only when a result's connector never ran (the prompt is otherwise
   // byte-identical), say what that marker means and that memory is closed.
   if (unverifiedTurn_)
-    inputs += " A result above opens with a note that its connector was NOT called: "
-              "the text after that note is the sub-agent's own guess. Tell the owner "
-              "plainly that the connector did not run, never present that text as their "
-              "real data, and do not store it (memory writes are refused this turn).";
+    inputs += " A result above opens with a note that its connector was NOT called, or "
+              "with [NOT CHECKED] (no lookup ran): the text after that note is the "
+              "sub-agent's own guess. Tell the owner plainly that it was not checked, never "
+              "present that text as their real or live data, and do not store it (memory "
+              "writes are refused this turn).";
   hlog::log("orchestrator: auto-synthesis turn (batch complete)");
   lastTurnSpoke_ = false;
   const bool ok = runTurn(inputs, chatId, "");
   unverifiedTurn_ = false;
   freshInTurn_ = false;
+  freshSourced_ = freshUnsourced_ = 0;
   if (!ok && fresh.length()) {
     hlog::log("orchestrator: synthesis turn failed - delivering raw results (never lost)");
     d_.jobs->deliverResults(chatId, ownerRaw);   // the job engine's sink, like the stuck fallback
@@ -1479,7 +1513,8 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
-  const std::string fresh = d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_) : std::string();
+  const std::string fresh =
+      d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_) : std::string();
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   // reply.speak / reply.telegram hints ride only a loop turn; the Telegram one only
   // when this turn can deliver over Telegram (CUM-523) - the SAME sample the
@@ -1501,6 +1536,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall
   unverifiedTurn_ = false;
   freshInTurn_ = false;
+  freshSourced_ = freshUnsourced_ = 0;
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------

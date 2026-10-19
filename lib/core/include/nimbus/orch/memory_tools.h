@@ -97,7 +97,17 @@ struct MemoryContext {
   std::function<bool()> archiveAvailable = [] { return true; };
   Embedder       embed;                      // required for write/search
   std::function<uint32_t()> nowHours = [] { return 0u; };  // clock for TTL stamping
+  // Save the scratchpad after memory.scratchpad changed it; false = the save
+  // failed and the notes live in RAM only until restart (the tool result says
+  // so). Null => nothing to save (host rigs).
+  std::function<bool()> persistScratch;
 };
+
+// The honest effect reports the claim check reads (turn_effects.h): a pin on an
+// already pinned memory, and a scratchpad change whose save failed.
+extern const char kAlreadyPinnedPrefix[];   // "already pinned (" + id + kAlreadyPinnedTail
+extern const char kAlreadyPinnedTail[];
+extern const char kScratchRamOnlyNote[];    // appended to a scratchpad change result
 
 // Register memory.write / memory.search / memory.config / memory.scratchpad on
 // `reg`, backed by `ctx`. `ctx` is captured by value (it holds pointers +

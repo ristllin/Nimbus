@@ -33,27 +33,29 @@ namespace orch {
 
 // ---- field descriptions (the single source) ---------------------------------
 #define ORCH_D_REPLY \
-  "Text to send the owner now; empty string if none. Report ONLY what actually " \
-  "happened: never claim an action (email sent, doc shared, page/issue created, " \
-  "message spoken aloud, file sent to Telegram) succeeded unless a tool RESULT " \
-  "confirms it - quote the tool's real id/result. If a tool only drafted, or " \
-  "created-without-sharing, or returned an error, say exactly that. Delivery is " \
-  "a tool result, not something the reply text makes true: writing 'sent to your " \
-  "Telegram' or 'reading it aloud now' does NOT send or speak it - the matching " \
-  "tool (files send, tts) does, and only its result lets you claim it happened. " \
-  "Never invent ids, links, or successes."
+  "Text to send the owner now; empty string if none. Say only what actually " \
+  "happened this turn and only what you actually saw: a claim that something was " \
+  "saved, written, started, sent, spoken, scheduled, pinned or changed, that it " \
+  "survives a restart, that you checked live data, or that a figure came from a " \
+  "source (a label, a receipt, the owner's watch) needs a tool result, a field of " \
+  "this reply or a source text this turn that shows it; quote the real id. If a " \
+  "step only drafted, failed or was refused, say exactly that. Writing 'sent' or " \
+  "'saved' does not make it so. The device checks each claim against this turn's " \
+  "recorded effects and sources and corrects the reply when they disagree. Never " \
+  "invent ids, links, or successes."
 #define ORCH_D_ASK \
   "A question for the owner when you need their input; empty string if none."
 #define ORCH_D_SCRATCH \
-  "Your PERSISTENT working notes across turns (survives reboot), in tiers: " \
+  "Your working notes across turns, saved on the device, in tiers: " \
   "active (the one thing you are doing right NOW), short (this task's steps / a " \
   "checklist), mid (threads to return to over days), long (standing goals). " \
   "Return this object to UPDATE it: a non-null tier REPLACES that tier's items " \
   "(<=8 each), a non-null active sets the active line, null leaves a field " \
   "unchanged; return the WHOLE field null when nothing changed. This is a FREE " \
   "write (no tool round). Unlike memory (next turn only), the scratchpad " \
-  "persists - when you START a multi-step task or fan-out, write the plan here " \
-  "and tick items off as they finish, so you never lose the thread across turns."
+  "carries across turns; when saving fails, the SCRATCHPAD header says the notes " \
+  "last only until restart. When you START a multi-step task or fan-out, write " \
+  "the plan here and tick items off as they finish, so you never lose the thread."
 #define ORCH_D_MEMORY \
   "Your SHORT-LIVED working notes for the next turn only (active threads, " \
   "in-progress state). NOT long-term storage: any durable fact - a preference, " \
@@ -106,10 +108,9 @@ namespace orch {
   "fact should live - session|days|weeks|months|permanent (default weeks); pick " \
   "honestly: a meeting time is 'days', a stable preference is 'months', a name " \
   "is 'permanent'. permanent:true additionally pins it so it never decays. A " \
-  "write here is stored just before this reply is delivered, but you never see " \
-  "whether it succeeded, so 'I saved it' in the reply is a prediction - phrase " \
-  "it as intent ('I'll remember that') or confirm it a later turn, never as a " \
-  "completed fact this turn."
+  "write here is stored just before this reply is delivered, and the device " \
+  "confirms or corrects a save claim in the reply before the owner sees it; a " \
+  "refused or failed write is reported to you next turn."
 #define ORCH_D_MEMQ \
   "Search strings for facts NOT already shown in RELEVANT MEMORIES; results " \
   "arrive next turn as MEMORY RESULTS."

@@ -125,6 +125,10 @@ void resetMistralConnectorsProbe();
 // The pure JSON-building + catalog logic is host-tested in lib/core
 // (nimbus::orch::*Wire / catalogText); these are the thin device wrappers that
 // parse the NVS blob and supply the bearer closure.
+// Is any connector enabled (hosted tools may then run on the head's turn, out of
+// the device's sight)? The claim check reads it once per turn.
+bool anyEnabled();
+
 void attachOpenAI(JsonDocument& d);
 void attachMistral(JsonDocument& d);
 void attachAnthropic(JsonDocument& agentBody);

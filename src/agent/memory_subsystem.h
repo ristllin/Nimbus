@@ -165,7 +165,9 @@ std::vector<std::string> recall(const String& queryText, int k = 0,
 // the device's scale); called automatically after a mutating MCP call.
 void persistVectors();
 void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
-void persistScratchpad();
+// Returns false when the save failed (the notes then live in RAM only until
+// restart); the scratchpad's prompt header and the tool result say so.
+bool persistScratchpad();
 void persistMemConfig();  // retrieval knobs -> NVS (fixes silent reset-on-reboot)
 void persistEpisodic();   // whole-blob to LittleFS /data/episodic.bin
 void applyConfig();       // push MemConfig -> engines (VDB capacity cap); call after a config change

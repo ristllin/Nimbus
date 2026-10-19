@@ -618,6 +618,7 @@ void begin() {
   }
   ctx.embed = embedText;
   ctx.nowHours = [] { return nowHours(); };
+  ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
   registerMemoryTools(g_reg, ctx);
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
@@ -1432,22 +1433,27 @@ void persistArchive() {
   else alog("memory: archive persist failed");
 }
 
-void persistScratchpad() {
+bool persistScratchpad() {
   Lock g;
   std::string blob = g_scratch.serialize();
   Preferences p;
   if (!p.begin(kScratchNs, false)) {
     alog("scratchpad: persist FAILED (NVS open) - contents survive in RAM only");
-    return;
+    g_scratch.setSaveFailing(true);
+    return false;
   }
   // Bytes blob, not putString: a maxed-out scratchpad (~4.2 KB under the caps)
-  // exceeds nvs_set_str's 4000-byte limit and the old write failed SILENTLY -
-  // the contract promises "survives reboot", so a failed persist must say so.
+  // exceeds nvs_set_str's 4000-byte limit and the old write failed SILENTLY.
+  // The result goes back to the caller: the tool result, the turn's effect
+  // ledger and the prompt header all say when the notes are RAM only.
   size_t wrote = p.putBytes(kScratchBKey, blob.data(), blob.size());
   p.end();
-  if (wrote != blob.size())
+  const bool ok = wrote == blob.size();
+  if (!ok)
     alogf("scratchpad: persist FAILED (%u of %u B) - contents survive in RAM only",
           (unsigned)wrote, (unsigned)blob.size());
+  g_scratch.setSaveFailing(!ok);
+  return ok;
 }
 
 void persistMemConfig() {
@@ -2205,7 +2211,9 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   if (method == "tools/call" && isMutatingTool(name, action)) {
     applyConfig();   // memory.config may have changed max_vectors
     persistVectors();
-    persistScratchpad();
+    // memory.scratchpad saves itself (its result reports a failed save); no
+    // other memory tool changes the scratchpad.
+    if (name != "memory.scratchpad") persistScratchpad();
     if (name == "memory.config") persistMemConfig();   // survive reboot (was silently lost)
   }
   return resp;

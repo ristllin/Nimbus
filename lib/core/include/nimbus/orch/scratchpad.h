@@ -55,6 +55,12 @@ class Scratchpad {
   // if empty() so the assembler can skip a blank section cleanly.
   void appendPromptBlock(std::string& out) const;
 
+  // The live save state: set by the device after each save attempt. While saves
+  // fail, the prompt header says the notes last only until restart, so the
+  // model never promises they survive one. RAM only, never serialized.
+  void setSaveFailing(bool failing) { saveFailing_ = failing; }
+  bool saveFailing() const { return saveFailing_; }
+
   // ---- persistence seam ----
   // Compact, self-delimiting serialization for NVS. deserialize() is tolerant:
   // a malformed blob yields an empty scratchpad rather than throwing, so a
@@ -67,6 +73,7 @@ class Scratchpad {
   const std::vector<std::string>& tierC(Tier t) const;
 
   std::string active_;
+  bool saveFailing_ = false;
   std::vector<std::string> short_, mid_, long_;
 };
 

@@ -35,6 +35,8 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   // Optional scripted connector provenance (CUM-536), reported on the Done poll.
   uint16_t connectorCalls = 0;
   std::string connectorAsked;
+  // Optional scripted tool-run counts (the provider's own record), on the Done poll.
+  uint16_t toolRuns = 0, webRuns = 0;
   int pollCount = 0;
 
   const char* backendId() const override { return backend.c_str(); }
@@ -70,6 +72,8 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
     if (env.state == agent::JobState::Done) {
       strncpy(env.reply, doneReply.c_str(), sizeof(env.reply) - 1);
       env.connectorCalls = connectorCalls;
+      env.toolRuns = toolRuns;
+      env.webRuns = webRuns;
       strncpy(env.connectorAsked, connectorAsked.c_str(), sizeof(env.connectorAsked) - 1);
     }
     return agent::FabricErr::Ok;

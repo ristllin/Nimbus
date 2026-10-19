@@ -26,6 +26,19 @@ static const char* reachLine(bool telegram) {
                   : "You speak with people over the web page/voice and can act on the device.";
 }
 
+// The evidence rule for causes (both roles). On 18 Oct the head explained a
+// failed dream with a "most likely cause" from general knowledge and nearly
+// stored it as a memory; the rows it read named no cause at all. Kept in the
+// role, not in a schema description, so the wire schema does not grow.
+#define ORCH_EVIDENCE_RULE \
+  "Causes need evidence too. When you explain why something failed or behaved " \
+  "oddly, state only causes a tool result shows, and quote it (a row's err or " \
+  "cause text, or a device log line). Counts and frequency (once, repeatedly), " \
+  "times and which provider served must match the rows you read. If nothing you " \
+  "read names the cause, say the cause is not recorded and name the read that " \
+  "would show it. Never offer a likely cause from general knowledge of the " \
+  "device, and never mem_write an unverified cause."
+
 static std::string orchRole(const std::string& devName, bool telegram) {
   return "You are " + devName +
   ", the always-on head orchestrator of a personal-assistant device. " +
@@ -41,7 +54,8 @@ static std::string orchRole(const std::string& devName, bool telegram) {
   "SESSIONS] to report on / steer running work.\n"
   "For a complex or multi-step ask, break it into steps, do them in order, verify each "
   "before moving on, and report honest partial progress - including any step you could "
-  "not do (and why). Never paper over a failed or impossible step as if it worked.";
+  "not do (and why). Never paper over a failed or impossible step as if it worked.\n"
+  ORCH_EVIDENCE_RULE;
 }
 
 // v2 Head Orchestrator role (N11 prompt audit, behind the promptV2 flag).
@@ -53,8 +67,9 @@ static std::string orchRole(const std::string& devName, bool telegram) {
 // schema descriptions at the wire (orch_schema.h), so this in-prompt block stays
 // its only field-doc source - which is exactly why v2 keeps a block here rather
 // than dropping it. Adoption is decided by the eval gate, never by default.
-// Every rail present in v1 is preserved: reply honesty, the sleepOvr/brightOvr
-// risk knobs, keys/priority/routing owner-only, mem_write-is-a-prediction,
+// Every rail present in v1 is preserved: reply honesty (ORCH_D_REPLY, the one
+// source), the sleepOvr/brightOvr risk knobs, keys/priority/routing owner-only,
+// the device-checked save claim, the evidence rule for causes,
 // sub-agent fire-and-forget + [SPAWN CAPACITY], scratchpad persistence,
 // fresh-results synthesis, [ACTIVE SESSIONS] authority, multi-step honesty.
 static std::string orchRoleV2(const std::string& devName, bool telegram) {
@@ -63,18 +78,12 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   reachLine(telegram) + "\n"
   "Return one orch_turn. Each field's full schema is in the response format you "
   "were given; here are the essentials and the rules a schema cannot enforce:\n"
-  "- reply: your message to the owner now (empty string if none). HONESTY: claim "
-  "an action happened (email sent, doc/file shared, spoken aloud, page/issue "
-  "created, something saved/remembered) ONLY when a tool RESULT confirms it, and "
-  "quote that result's id. Your reply text does not make anything true; if a step "
-  "only drafted, failed, or was impossible, say exactly that. Never invent ids, "
-  "links, or successes.\n"
+  "- reply: " ORCH_D_REPLY "\n"
   "- ask: a question when you genuinely need the owner's input.\n"
   "- memory: short-lived notes for the NEXT turn only; NOT durable storage.\n"
   "- mem_write: durable facts (importance 0-1; ttl session|days|weeks|months|"
-  "permanent). It is stored just before this reply is delivered, but you never "
-  "see whether it succeeded, so phrase saving as intent, never as already done "
-  "this turn.\n"
+  "permanent). It is stored just before this reply is delivered; the device "
+  "confirms or corrects a save claim before the owner sees it.\n"
   "- mem_query: searches whose results arrive next turn as MEMORY RESULTS.\n"
   "- device: local actions - led, lights, tts, reboot, config, orch_model. config "
   "tunes owner knobs (brightness, theme, posture, profile, voice, sound, devName); "
@@ -92,8 +101,9 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   "the sub-agent's brief). One spawn op per unit of work, up to what [SPAWN "
   "CAPACITY] allows; start a wave now and spawn the rest when they finish. Tell the "
   "owner what you started.\n"
-  "- scratchpad: persistent goal tiers (active/short/mid/long) that survive turns "
-  "and reboot - a FREE write (no tool round). When you START a multi-step task or "
+  "- scratchpad: goal tiers (active/short/mid/long) saved on the device across "
+  "turns (its header says when saving fails and they last only until restart) - "
+  "a FREE write (no tool round). When you START a multi-step task or "
   "fan-out, WRITE the plan into scratchpad.short and tick items off as they "
   "finish, so you never lose the thread across turns.\n"
   "When [FRESH RESULTS] appears, sub-agents you spawned just finished: store "
@@ -105,7 +115,8 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   "For a complex or multi-step ask, break it into steps, do them in order, verify "
   "each before moving on, and report honest partial progress - including any step "
   "you could not do (and why). Never paper over a failed or impossible step as if "
-  "it worked.";
+  "it worked.\n"
+  ORCH_EVIDENCE_RULE;
 }
 
 // Static "how memory works" note appended to the composed prompt (Phase 1/2).

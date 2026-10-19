@@ -126,7 +126,7 @@ for a prose answer (which carries no spawn).
   "mem_write":   [ { "content","importance","permanent","ttl" } ],
   "mem_query":   [ "search string", ... ],
   "session_ops": [ { "op","id","task","provider","model","skill","name","project","attach" } ],
-  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; persists across turns and restarts */,
+  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; carries across turns, saved to NVS */,
 
   "spawn":   [ { "provider","model","skill","task","category","note","name" } ],
   "await":   [ "job-tag string", ... ]
@@ -339,9 +339,13 @@ every schema property so a new field without a hint fails).
 
 `scratchpad` is a top-level, **nullable object** response field - the model's own
 working memory, rewritten as it works. Unlike `memory` (which lives for the
-**next turn only**), the scratchpad **persists across turns and across restarts**
-(`memory::scratchpad()`, serialized to the `orchmem` NVS namespace via
-`persistScratchpad()`). It is a **free write**: returning it costs no tool round.
+**next turn only**), the scratchpad **carries across turns** and is saved to the
+`orchmem` NVS namespace (`memory::scratchpad()`, `persistScratchpad()`), so it
+survives a restart when the save lands. When a save fails (a full NVS partition),
+the notes live in RAM only until restart: the change result says "kept until
+restart only (saving failed)" and the SCRATCHPAD prompt header says saving is
+failing, so the model never promises otherwise. It is a **free write**: returning
+it costs no tool round.
 
 This response field is the model's normal write path. The admin-only
 `memory.scratchpad` tool remains as a read/edit path for operators; see

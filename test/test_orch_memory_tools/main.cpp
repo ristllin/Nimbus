@@ -49,7 +49,12 @@ static std::vector<int8_t> fakeEmbed(const std::string& text, std::string& err) 
   return {40, 40, 40, 40};
 }
 
+static bool g_persistOk = true;   // what the scratchpad save reports
+static int g_persistCalls = 0;
+
 static ToolRegistry buildServer(bool withArchive = true) {
+  g_persistOk = true;
+  g_persistCalls = 0;
   g_vec = VectorMemory(); g_vec.configure(4);
   g_scratch = Scratchpad();
   g_cfg = MemConfig();
@@ -65,6 +70,7 @@ static ToolRegistry buildServer(bool withArchive = true) {
   ctx.episodic = &g_epi;
   ctx.embed = fakeEmbed;
   ctx.nowHours = [] { return g_now; };
+  ctx.persistScratch = [] { g_persistCalls++; return g_persistOk; };
   // Bind the cold store like the device does only with an SD card present. The
   // prune sink routes expired live entries here; archiveAvailable simulates the
   // card staying present (a mid-run pull flips it false).
@@ -1060,6 +1066,108 @@ static void test_cum515_keyword_fallbacks_use_the_shared_rule() {
   TEST_ASSERT_TRUE(has(as.output, "common word"));
 }
 
+// ---- honest effect reports (lane S, the claim check reads them) ---------------
+
+static std::string storedId(const ToolResult& r) {
+  TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+  const std::string lead = "stored memory ";
+  TEST_ASSERT_EQUAL(0, (int)r.output.find(lead));
+  const size_t e = r.output.find_first_of(" (", lead.size());
+  return r.output.substr(lead.size(), e - lead.size());
+}
+
+// Property over every TTL a memory can carry x pin/unpin: a pin on an already
+// pinned memory says "no change" and uses no pin budget; any other pin or unpin
+// changes the entry and says ok.
+static void test_pin_reports_no_change_on_an_already_pinned_memory() {
+  // "pinned" is the permanent flag; a ttl of "permanent" only stops expiry.
+  const char* writes[] = {R"("permanent":true)", R"("ttl":"permanent")", R"("ttl":"days")",
+                          R"("ttl":"weeks")", R"("ttl":"months")", R"("ttl":"session")"};
+  for (const char* ttl : writes) {
+    for (int unpin = 0; unpin < 2; unpin++) {
+      ToolRegistry reg = buildServer();
+      const std::string args = std::string(R"({"content":"the teal color rule",)") + ttl + "}";
+      const std::string id = storedId(call(reg, "memory.write", args.c_str()));
+      const bool wasPinned = g_vec.isPermanent(id);
+      TEST_ASSERT_EQUAL_MESSAGE(ttl == writes[0], wasPinned, ttl);
+      const std::string pa = std::string(R"({"action":")") + (unpin ? "unpin" : "pin") +
+                             R"(","id":")" + id + R"("})";
+      const ToolResult r = call(reg, "memory.pin", pa.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+      if (!unpin && wasPinned) {
+        TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.output.find("already pinned (" + id + "), no change"), ttl);
+        TEST_ASSERT_TRUE(has(r.output, "does not put a memory into every prompt"));
+      } else {
+        TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.output.find(std::string(unpin ? "unpin" : "pin") + " ok (" + id + ")"),
+                                  ttl);
+        TEST_ASSERT_EQUAL_MESSAGE(!unpin, g_vec.isPermanent(id), ttl);
+      }
+    }
+  }
+  TEST_ASSERT_FALSE(g_vec.isPermanent("no-such-id"));
+}
+
+// A duplicate write says what it did about a pin: already pinned, or not pinned
+// (the permanent request was not applied) - so a "pinned" reply can be checked.
+static void test_duplicate_write_reports_its_pin_state() {
+  ToolRegistry reg = buildServer();
+  storedId(call(reg, "memory.write", R"({"content":"the teal color rule","permanent":true})"));
+  ToolResult again = call(reg, "memory.write", R"({"content":"the teal color rule","permanent":true})");
+  TEST_ASSERT_TRUE(again.success);
+  TEST_ASSERT_TRUE(has(again.output, "it is already pinned"));
+  ToolRegistry reg2 = buildServer();
+  storedId(call(reg2, "memory.write", R"({"content":"the teal color rule"})"));
+  ToolResult perm = call(reg2, "memory.write", R"({"content":"the teal color rule","permanent":true})");
+  TEST_ASSERT_TRUE(has(perm.output, "NOT pinned"));
+  ToolResult plain = call(reg2, "memory.write", R"({"content":"the teal color rule"})");
+  TEST_ASSERT_EQUAL_STRING("duplicate of an existing memory (importance bumped)", plain.output.c_str());
+  // Another namespace's pinned memory: the answer says nothing about its pin.
+  ToolRegistry reg3 = buildServer();
+  storedId(call(reg3, "memory.write", R"({"content":"the teal color rule","permanent":true})"));
+  JsonDocument a;
+  deserializeJson(a, R"({"content":"the teal color rule","permanent":true})");
+  const ToolResult other = reg3.dispatch("memory.write", a.as<JsonObjectConst>(),
+                                         nimbus::orch::principalForRole("4242", nimbus::orch::Role::User));
+  TEST_ASSERT_TRUE_MESSAGE(other.success, other.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("duplicate of an existing memory (importance bumped)", other.output.c_str());
+}
+
+static void test_pin_tool_description_says_what_pinning_does_not_do() {
+  ToolRegistry reg = buildServer();
+  const std::string l = reg.handleRpc(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})",
+                                      nimbus::orch::principalForRole("test", nimbus::orch::Role::Admin));
+  TEST_ASSERT_TRUE(has(l, "Pinning only stops decay; it does not put a memory into every prompt."));
+}
+
+// The scratchpad change result carries the save outcome: a failed save says the
+// notes last only until restart. A view never saves.
+static void test_scratchpad_change_reports_a_ram_only_save() {
+  const char* changes[] = {
+      R"({"action":"set_active","text":"wiring the ring"})",
+      R"({"action":"add","tier":"long","text":"no em dashes"})",
+      R"({"action":"replace","tier":"mid","items":["ship v1"]})",
+      R"({"action":"clear","tier":"short"})",
+      R"({"action":"clear"})",
+  };
+  for (int ok = 0; ok < 2; ok++) {
+    for (const char* c : changes) {
+      ToolRegistry reg = buildServer();
+      g_persistOk = ok != 0;
+      const ToolResult r = call(reg, "memory.scratchpad", c);
+      TEST_ASSERT_TRUE_MESSAGE(r.success, c);
+      TEST_ASSERT_EQUAL_MESSAGE(1, g_persistCalls, c);
+      TEST_ASSERT_EQUAL_MESSAGE(!ok, has(r.output, "kept until restart only (saving failed)"), c);
+    }
+  }
+  ToolRegistry reg = buildServer();
+  call(reg, "memory.scratchpad", R"({"action":"view"})");
+  TEST_ASSERT_EQUAL(0, g_persistCalls);
+  g_persistOk = false;
+  const ToolResult full = call(reg, "memory.scratchpad", R"({"action":"add","tier":"short","text":""})");
+  TEST_ASSERT_FALSE(full.success);   // a refused add saves nothing and claims nothing
+  TEST_ASSERT_EQUAL(0, g_persistCalls);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -1110,5 +1218,9 @@ int main(int, char**) {
   RUN_TEST(test_cum515_episodic_common_words_only_explains_itself);
   RUN_TEST(test_cum515_episodic_says_when_more_rows_matched);
   RUN_TEST(test_cum515_keyword_fallbacks_use_the_shared_rule);
+  RUN_TEST(test_pin_reports_no_change_on_an_already_pinned_memory);
+  RUN_TEST(test_pin_tool_description_says_what_pinning_does_not_do);
+  RUN_TEST(test_duplicate_write_reports_its_pin_state);
+  RUN_TEST(test_scratchpad_change_reports_a_ram_only_save);
   return UNITY_END();
 }

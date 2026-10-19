@@ -162,6 +162,9 @@ bool VectorMemory::isExpiredRaw(float importance, int32_t ttlHours, uint32_t cre
 }
 
 bool VectorMemory::add(const VecEntry& e, bool dedup) {
+  lastDupPinned_ = false;
+  lastAddDuplicate_ = false;
+  lastDupSameNs_ = false;
   if ((int)e.vec.size() != dims_) return false;  // enforce consistent width
 
   if (dedup && !entries_.empty()) {
@@ -171,6 +174,9 @@ bool VectorMemory::add(const VecEntry& e, bool dedup) {
       // Dedup: skip the write, bump the existing entry's importance to the max.
       if (e.importance > entries_[near].importance)
         entries_[near].importance = e.importance;
+      lastDupPinned_ = entries_[near].permanentFlag;
+      lastAddDuplicate_ = true;
+      lastDupSameNs_ = effNs(entries_[near].ns) == effNs(e.ns);
       return false;
     }
   }
@@ -435,6 +441,11 @@ bool VectorMemory::markPermanent(const std::string& id) {
   entries_[i].permanentFlag = true;
   entries_[i].ttlHours = -1;
   return true;
+}
+
+bool VectorMemory::isPermanent(const std::string& id) const {
+  const int i = indexOf(id);
+  return i >= 0 && entries_[i].permanentFlag;
 }
 
 bool VectorMemory::markTemporary(const std::string& id, int32_t defTtlHours, uint32_t nowHours) {

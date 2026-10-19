@@ -1,9 +1,11 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
+#include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
@@ -17,6 +19,9 @@
 // with no policy branches, so the security rails are host-tested
 // (test_harness_apply) and can never silently regress device-side.
 namespace agent {
+
+// What an inline scratchpad update did (ApplyDeps::applyScratch).
+enum class ScratchOutcome : uint8_t { Applied = 0, AppliedRamOnly, Skipped };
 
 struct ApplyDeps {
   // Device-action execution (no policy inside):
@@ -39,8 +44,11 @@ struct ApplyDeps {
   std::function<void()> syncMemEcho;
   // v4.1.0: apply an inline scratchpad update to the device
   // scratchpad - replace only the tiers whose has* flag is set; persist after.
+  // The outcome says whether the save landed: AppliedRamOnly means the notes
+  // changed but live in RAM only until restart (the claim check holds a
+  // "survives a reboot" reply against it). Skipped = nothing was applied.
   // Null => scratchpad updates ignored (host rigs without a scratchpad).
-  std::function<void(const nimbus::orch::ScratchUpdate&)> applyScratch;
+  std::function<ScratchOutcome(const nimbus::orch::ScratchUpdate&)> applyScratch;
 
   // Memory tools: run `fn` under the device memory Lock (tests: direct call);
   // dispatch a registry tool; persist after mutations.
@@ -79,7 +87,9 @@ struct ApplyDeps {
   std::function<void(const std::string& chatId)> turnComplete;
 
   // Sessions (spawn queue + journal stay device-side until Stage F/G).
-  std::function<void(const nimbus::orch::Spawn&, const std::string& chatId, bool quiet)> enqueueSpawn;
+  // Returns true only when the spawn joined the job queue (false: refused, and
+  // the refusal already reached the owner and the head).
+  std::function<bool(const nimbus::orch::Spawn&, const std::string& chatId, bool quiet)> enqueueSpawn;
   std::function<bool(const std::string& id)> cancelSession;
   std::function<void(const std::string& firstTag)> awaitTag;  // aim round-robin + poll now
   std::function<void()> noteSpawned;                          // dispatch-now nudge
@@ -101,6 +111,13 @@ struct ApplyState {
   bool quietFallback = false;
   std::string riskNote;              // pending owner-visible note; consumed here
   std::string lastReply;             // out: captured for loops' semantic-repeat hash
+  ScratchOutcome scratchOutcome = ScratchOutcome::Skipped;   // out: the inline scratchpad write
+  // Lane S, the claim check: apply records each real outcome in its ledger (a
+  // memory write's result, an accepted or refused spawn, the scratchpad save,
+  // the device actions), then a reply claim nothing backs gets one owner line
+  // per class, and the history keeps the delivered text. Null => no check.
+  ClaimCheck* claims = nullptr;
+  std::string delivered;            // out: the reply text as the owner received it
   std::string* pendingMemResults = nullptr;  // deferred [MEMORY RESULTS] accumulator
   // CUM-536: this turn read a sub-agent result whose connector never ran (it
   // opens with the connector-not-called marker). Its mem_write items are refused

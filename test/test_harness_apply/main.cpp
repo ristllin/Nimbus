@@ -37,6 +37,7 @@ struct Rec {
   bool memSuccess = true;
   std::string pendingMem;
   bool lastSpawnQuiet = false;   // the quiet flag passed to the last enqueueSpawn
+  bool acceptSpawns = true;      // what the job queue answers (false: refused)
   std::vector<std::string> turnCompletes;   // chatIds passed to turnComplete()
 };
 
@@ -73,6 +74,7 @@ static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
   d.enqueueSpawn = [&r](const nimbus::orch::Spawn& s, const std::string&, bool quiet) {
     r.enqueued.push_back(s.task);
     r.lastSpawnQuiet = quiet;
+    return r.acceptSpawns;
   };
   d.turnComplete = [&r](const std::string& chatId) { r.turnCompletes.push_back(chatId); };
   d.cancelSession = [&r](const std::string& id) {
@@ -550,6 +552,137 @@ static void test_mem_query_only_does_not_persist() {
   TEST_ASSERT_EQUAL(0, r.persists);
 }
 
+// ---- lane S: the claim check against the turn's real outcomes ---------------
+
+static Turn replyTurn(const char* reply) {
+  Turn t;
+  t.reply = reply;
+  return t;
+}
+
+// Apply with a claim check attached; returns the one delivered text.
+static std::string applyChecked(Rec& r, ApplyDeps& d, const Turn& t, agent::ClaimCheck& cc,
+                                bool unverified = false, bool* spawnedOut = nullptr) {
+  ApplyState st = makeState(r);
+  st.unverifiedConnector = unverified;
+  st.claims = &cc;
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  if (spawnedOut) *spawnedOut = spawned;
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  if (!t.reply.empty()) TEST_ASSERT_EQUAL_STRING(r.delivered[0].second.c_str(), st.delivered.c_str());
+  return r.delivered[0].second;
+}
+
+static void test_claims_failed_memory_write_gets_the_correction_line() {
+  for (int unverified = 0; unverified < 2; unverified++) {
+    Rec r;
+    r.memSuccess = unverified != 0;   // case 0: the store failed; case 1: refused (CUM-536)
+    ApplyDeps d = makeDeps(r);
+    Turn t = replyTurn("Logged your run.");
+    nimbus::orch::MemWrite w;
+    w.content = "ran 5 km";
+    t.mem_write.push_back(w);
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc, unverified != 0);
+    TEST_ASSERT_EQUAL_STRING("Logged your run.\n\n(Correction: that has not been saved.)", out.c_str());
+    // The history keeps what the owner saw.
+    TEST_ASSERT_EQUAL_STRING(out.c_str(), r.captured[0].c_str());
+  }
+  // Counter-case: the write stored, no line.
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  Turn t = replyTurn("Logged your run.");
+  t.mem_write.push_back(nimbus::orch::MemWrite{"ran 5 km", 0.5, false, ""});
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  TEST_ASSERT_EQUAL_STRING("Logged your run.", applyChecked(r, d, t, cc).c_str());
+}
+
+static void test_claims_refused_enqueue_is_not_a_spawn() {
+  for (int accept = 0; accept < 2; accept++) {
+    Rec r;
+    r.acceptSpawns = accept != 0;
+    ApplyDeps d = makeDeps(r);
+    Turn t = replyTurn("I have started a research sub-agent on it.");
+    nimbus::orch::SessionOp op;
+    op.op = "spawn";
+    op.task = "find car seat reviews";
+    t.session_ops.push_back(op);
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    bool spawned = true;
+    const std::string out = applyChecked(r, d, t, cc, false, &spawned);
+    TEST_ASSERT_EQUAL(accept != 0, spawned);   // spawnedOut counts accepted spawns only
+    TEST_ASSERT_EQUAL(!accept, out.find("did not start") != std::string::npos);
+    TEST_ASSERT_EQUAL(accept ? 1 : 0, cc.effects().countOk(nimbus::orch::FxKind::Spawn));
+    TEST_ASSERT_EQUAL(accept ? 0 : 1, cc.effects().countFailed(nimbus::orch::FxKind::SpawnRefused));
+  }
+}
+
+static void test_claims_ram_only_scratchpad_against_a_durability_claim() {
+  const char* reply = "Put it in my notes, loaded into every single turn, reboot or not.";
+  for (int ramOnly = 0; ramOnly < 2; ramOnly++) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.principalFor = [](const std::string& c) {
+      return nimbus::orch::principalForRole(c, nimbus::orch::Role::Admin);   // the scratchpad is admin-only
+    };
+    d.applyScratch = [ramOnly](const nimbus::orch::ScratchUpdate&) {
+      return ramOnly ? agent::ScratchOutcome::AppliedRamOnly : agent::ScratchOutcome::Applied;
+    };
+    Turn t = replyTurn(reply);
+    t.scratchpad.present = true;
+    t.scratchpad.hasLong = true;
+    t.scratchpad.longItems = {"no em dashes"};
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    TEST_ASSERT_EQUAL_MESSAGE(ramOnly != 0, out.find("until the next restart") != std::string::npos,
+                              ramOnly ? "full NVS" : "fresh device");
+  }
+}
+
+// A device action that did not run backs nothing (review finding): voice
+// replies off, so a tts action is a no-op and "read it aloud" gets its line.
+static void test_claims_noop_device_action_backs_nothing() {
+  for (int voice = 0; voice < 2; voice++) {
+    Rec r;
+    ApplyDeps d = makeDeps(r, /*tts=*/voice != 0);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+    t.reply = "I read it aloud for you.";
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    TEST_ASSERT_EQUAL_MESSAGE(!voice, out.find("has not been sent") != std::string::npos,
+                              voice ? "voice on" : "voice off");
+  }
+}
+
+// The ask rides the same message: a claim there is checked too.
+static void test_claims_ask_is_checked_with_the_reply() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  Turn t;
+  t.ask = "Logged. Want the weekly total too?";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_TRUE(out.find("(Correction: that has not been saved.)") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(out.c_str(), r.captured[0].c_str());
+}
+
+static void test_claims_no_check_attached_is_byte_identical() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(replyTurn("Logged."), "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL_STRING("Logged.", r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING("Logged.", r.captured[0].c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -576,6 +709,12 @@ int main(int, char**) {
   RUN_TEST(test_mem_write_and_query_dispatch_under_lock);
   RUN_TEST(test_unverified_connector_turn_refuses_mem_write);
   RUN_TEST(test_mem_query_only_does_not_persist);
+  RUN_TEST(test_claims_failed_memory_write_gets_the_correction_line);
+  RUN_TEST(test_claims_refused_enqueue_is_not_a_spawn);
+  RUN_TEST(test_claims_ram_only_scratchpad_against_a_durability_claim);
+  RUN_TEST(test_claims_noop_device_action_backs_nothing);
+  RUN_TEST(test_claims_ask_is_checked_with_the_reply);
+  RUN_TEST(test_claims_no_check_attached_is_byte_identical);
   UNITY_END();
   return 0;
 }

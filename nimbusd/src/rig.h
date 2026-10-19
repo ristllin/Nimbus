@@ -2124,7 +2124,7 @@ class NimbusdRig {
     // is exactly what the owner granted by approving it). The live re-check only
     // covers a chat the owner removed while its turn was running.
     d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
-      enqueueSpawnFor(s, chat, quiet);
+      return enqueueSpawnFor(s, chat, quiet);
     };
     // Stopping a sub-agent is the owner's, or its own namespace's, to do (a member
     // turn only runs while the in-flight work is its own - see turnMustWait).
@@ -2151,15 +2151,15 @@ class NimbusdRig {
   // A spawn from `chat`: refused (with the reason, never silently) when the owner has
   // not approved the chat, or while another person's sub-agent work is in flight (the
   // one-namespace rule, see turnMustWait); otherwise queued on the JobEngine.
-  void enqueueSpawnFor(const orch::Spawn& s, const std::string& chat, bool quiet) {
+  bool enqueueSpawnFor(const orch::Spawn& s, const std::string& chat, bool quiet) {
     if (!access_->mayConverse(chat)) {
       record(chat, "Sub-agents are off for this chat: the owner has not approved it.");
-      return;
+      return false;
     }
     const std::string ns = access_->principalFor(chat).ns;
     if (backgroundBusy() && ns != bgNs_) {
       record(chat, "Sub-agents are busy with another person's request. Try again in a few minutes.");
-      return;
+      return false;
     }
     bgNs_ = ns;
     // Only the owner chooses a spawn's model on the owner's keys: a member's spawn
@@ -2174,7 +2174,7 @@ class NimbusdRig {
           connectorProviderFor(spawn.skill).empty())
         spawn.provider.clear();
     }
-    if (jobs_) jobs_->enqueueSpawn(spawn, chat, quiet);
+    return jobs_ && jobs_->enqueueSpawn(spawn, chat, quiet);
   }
 
   // Register the provider heads for the current key set. Kept out of buildEngine so

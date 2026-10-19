@@ -241,8 +241,8 @@ static void test_prompt_v2_keeps_safety_rails() {
   ComposeInputs in = cannedInputs();
   in.promptV2 = true;
   std::string p = agent::composeInstructions(in);
-  // reply honesty
-  TEST_ASSERT_TRUE(p.find("ONLY when a tool RESULT confirms it") != std::string::npos);
+  // reply honesty: the one rule (ORCH_D_REPLY), checked by the device
+  TEST_ASSERT_TRUE(p.find("The device checks each claim") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("Never invent ids") != std::string::npos);
   // the two RISK knobs, named, with consent + state-the-risk
   TEST_ASSERT_TRUE(p.find("sleepOvr") != std::string::npos);
@@ -250,8 +250,9 @@ static void test_prompt_v2_keeps_safety_rails() {
   TEST_ASSERT_TRUE(p.find("explicit owner consent") != std::string::npos);
   // keys / priority / routing owner-only
   TEST_ASSERT_TRUE(p.find("owner-only") != std::string::npos);
-  // mem_write is a prediction (applies after the reply)
+  // mem_write lands before delivery and the device checks the save claim
   TEST_ASSERT_TRUE(p.find("stored just before this reply is delivered") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("confirms or corrects a save claim") != std::string::npos);
   // sub-agent fan-out governor
   TEST_ASSERT_TRUE(p.find("[SPAWN CAPACITY]") != std::string::npos);
   // the deep-history search instruction survives the memory-tier compression
@@ -574,6 +575,28 @@ static void test_directive_custom_replaces_default() {
   TEST_ASSERT_TRUE(p.find("Honest beats agreeable.") == std::string::npos);  // default gone
 }
 
+// Lane S: one honesty rule, not four, and the evidence rule for causes, in
+// BOTH roles. Counts the claim rule's sentence so a re-added duplicate fails.
+static void test_one_honesty_rule_and_the_evidence_rule_in_both_roles() {
+  for (int v2 = 0; v2 < 2; v2++) {
+    ComposeInputs in = cannedInputs();
+    in.promptV2 = v2 != 0;
+    const std::string p = agent::composeInstructions(in);
+    const char* rule = "The device checks each claim against this turn's recorded effects";
+    size_t n = 0;
+    for (size_t at = p.find(rule); at != std::string::npos; at = p.find(rule, at + 1)) n++;
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)n, v2 ? "v2" : "v1");
+    TEST_ASSERT_TRUE(p.find("Causes need evidence too.") != std::string::npos);
+    TEST_ASSERT_TRUE(p.find("say the cause is not recorded") != std::string::npos);
+    TEST_ASSERT_TRUE(p.find("never mem_write an unverified cause") != std::string::npos);
+    // The retired duplicates and contradictions stay gone.
+    TEST_ASSERT_TRUE(p.find("Only say you logged, noted, saved") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("you never see whether it succeeded") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("survives reboot") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("survive turns and reboot") == std::string::npos);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_directive_below_platform_rules);
@@ -606,6 +629,7 @@ int main(int, char**) {
   RUN_TEST(test_host_for_prompt_derivation);
   RUN_TEST(test_tool_name_sanitizers);
   RUN_TEST(test_prompt_tells_the_model_history_goes_deep);
+  RUN_TEST(test_one_honesty_rule_and_the_evidence_rule_in_both_roles);
   UNITY_END();
   return 0;
 }

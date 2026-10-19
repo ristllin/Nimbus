@@ -212,7 +212,9 @@ class JobEngine {
   explicit JobEngine(Deps d) : JobEngine(std::move(d), Tuning()) {}
 
   // Queue a spawn (job-limit refusal + sfx cue); the pump dispatches one/cycle.
-  void enqueueSpawn(const nimbus::orch::Spawn& s, const std::string& chatId, bool quiet = false);
+  // Returns true only when the spawn joined the queue: the turn's effect ledger
+  // (the claim check) and spawnedOut count accepted spawns, never intents.
+  bool enqueueSpawn(const nimbus::orch::Spawn& s, const std::string& chatId, bool quiet = false);
 
   // The JOB parts of the device's pollJobs(): reap, per-completion synthesis
   // clock, one dispatch, loop-closure synthesis, round-robin poll. Returns the
@@ -230,6 +232,9 @@ class JobEngine {
   // the connector-not-called marker, so the turn that reads them can refuse to
   // store their contents as memory.
   std::string takeFreshResults(bool* unverified = nullptr);
+  // The same, also counting the results by provenance for the claim check:
+  // `sourced` had a lookup behind them, `unsourced` are marked unverified.
+  std::string takeFreshResults(bool* unverified, int* sourced, int* unsourced);
   // The same parked results rendered for the OWNER, without consuming them: the
   // raw fallback's text when the summary step cannot run (CUM-480). A one-line
   // preamble, then each sub-agent's title and its findings - none of the
@@ -336,9 +341,13 @@ class JobEngine {
   // apart so the owner rendering can drop it while the seed stays byte-identical.
   struct FreshResult {
     std::string tag, model, text, hint, ringTag;
+    std::string provenance;    // " [tools: n, web: m]" / " [no tools ran]" ("" = engine line)
     bool failed = false;   // an engine failure line, not a sub-agent's finding
-    bool unverified = false;   // its connector never ran (CUM-536)
+    bool unverified = false;   // its connector never ran (CUM-536), or a live task ran no tool
   };
+  // Which dispatched jobs asked for live data (a status, today's figures):
+  // read when the result lands, RAM only (a reboot forgets it: no marker).
+  struct LiveTag { char tag[24]; bool live; };
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
@@ -427,6 +436,9 @@ class JobEngine {
   bool     dispatching_ = false;   // set around dispatchSpawn in pump (W6 arc gap)
 
   std::vector<FreshResult> fresh_;
+  std::vector<LiveTag> liveTags_;   // capped (kLiveTagsMax), oldest dropped
+  void noteLiveTag(const char* tag, bool live);
+  bool liveFor(const char* tag) const;
   std::string freshChatId_;
   // The batch DRAINED (fresh results parked and no live/queued/dispatching
   // work) at drainedAtMs_. The stuck-synthesis clock runs from here, never from

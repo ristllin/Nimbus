@@ -147,6 +147,29 @@ static void test_memconfig_apply_named() {
   TEST_ASSERT_FALSE(c.applyFloat("retrieval_count", 1.0f));  // wrong type bucket
 }
 
+// The prompt header carries the live save state: while saves fail it says the
+// notes last only until restart; the state is RAM only and never serialized,
+// so a fresh device (no failure seen) shows the plain header.
+static void test_header_shows_the_live_save_state() {
+  Scratchpad fresh;
+  fresh.add(Tier::Long, "no em dashes");
+  std::string out;
+  fresh.appendPromptBlock(out);
+  TEST_ASSERT_TRUE(out.find("## SCRATCHPAD (your own working notes)\n") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("RAM only") == std::string::npos);
+  fresh.setSaveFailing(true);
+  out.clear();
+  fresh.appendPromptBlock(out);
+  TEST_ASSERT_TRUE(out.find("RAM only until restart: saving is failing") != std::string::npos);
+  Scratchpad back;
+  TEST_ASSERT_TRUE(back.deserialize(fresh.serialize()));
+  TEST_ASSERT_FALSE(back.saveFailing());
+  fresh.setSaveFailing(false);
+  out.clear();
+  fresh.appendPromptBlock(out);
+  TEST_ASSERT_TRUE(out.find("RAM only") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_active_task_set_and_cap);
@@ -160,5 +183,6 @@ int main(int, char**) {
   RUN_TEST(test_memconfig_defaults);
   RUN_TEST(test_memconfig_clamps);
   RUN_TEST(test_memconfig_apply_named);
+  RUN_TEST(test_header_shows_the_live_save_state);
   return UNITY_END();
 }

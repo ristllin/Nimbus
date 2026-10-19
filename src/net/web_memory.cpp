@@ -392,8 +392,8 @@ void handleScratchPost(AsyncWebServerRequest* r) {
   // owner, so build it through the helper that sets a role.
   const nimbus::orch::Principal who = nimbus::orch::principalForRole(
       "web", nimbus::orch::Role::Admin);
+  // The tool saves a change itself and reports a failed save in its message.
   ToolResult res = mem::registry().dispatch("memory.scratchpad", args.as<JsonObjectConst>(), who);
-  mem::persistScratchpad();
   JsonDocument d; d["ok"] = res.success; d["msg"] = res.success ? res.output : res.error;
   String out; serializeJson(d, out); sendJson(r, res.success ? 200 : 400, out);
 }

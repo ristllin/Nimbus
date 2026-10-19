@@ -194,6 +194,72 @@ RESULTS]` or `[FRESH RESULTS]` block led the input, exactly which memories were
 recalled, and - in section 4 - every tool call the model made mid-turn with its
 arguments and result.
 
+## The claim check
+
+Before a reply goes out, the device compares what it says the turn did with what
+the turn actually did. Each turn keeps a small effect ledger in RAM (at most 32
+entries, never stored): every tool call and its result, the memory writes, the
+scratchpad save, the sub-agents the job queue accepted, and every sub-agent result
+it read, with how many tools that sub-agent ran. A scanner reads the reply for
+claims in eight classes:
+
+| Class | Example | Backed by |
+|---|---|---|
+| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write |
+| deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
+| spawned | "I started three research sub-agents" | that many accepted spawns |
+| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech |
+| changed | "pinned", "switched", "turned off" | a real change; a pin on an already pinned memory is not one |
+| durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
+| checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
+| figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
+
+Questions, offers, conditions, possibilities and plain futures ("want me to", "I'll",
+"it may have been lost, or saved elsewhere"), a negation within four words, a clause
+whose subject is "nothing", "none" or "no record" ("nothing in the logs shows it was
+saved"), quoted text, another person's action and references to earlier turns are not
+claims. Replies that are mostly not English are not scanned. When the head has
+provider-hosted tools on its turn (connectors, a hosted web search), claims of sending,
+checking or changing something are not checked, because those tools run where the
+device cannot see them; everything the device does itself (memory, files, skills,
+notes, sub-agents) is always checked.
+
+When a claim has no backing, or the claimed effect failed when the turn was
+applied, the reply gets one calm line per class that says what did not happen, for
+example "(Correction: that has not been saved.)", "(Correction: nothing was pinned
+this turn.)" or "(Note: this is kept only until the next restart; saving it
+permanently failed.)". A reply that already says so itself ("it was already
+pinned, so nothing changed") gets no line. The conversation history keeps the
+delivered text, line included. `/api/state` counts the lines (`claimsTailed`, RAM
+only); `claimsCorrected` is reserved for corrections made inside the turn and stays
+0 on this version.
+
+A sub-agent result for a live-data task (a status, the weather, prices, news) that
+ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how
+many tools ran (`[tools: 2, web: 1]` or `[no tools ran]`). A reply built on such a
+result must say the data was not checked, or it gets the "not checked live" line.
+
+## Diagnosing a failure
+
+The head is told to state only causes a tool result shows, and to quote them (the
+evidence rule in both roles and in the final-round notice). What a turn can read
+today:
+
+- the failure rows in session `system` (`memory.episodic` with
+  `session:"system"`): they say a turn failed and on which provider, but not
+  always why;
+- the scratchpad header, which says when saving is failing and the notes last only
+  until restart;
+- a `memory.pin` or `memory.write` result, which says when nothing changed
+  ("already pinned") and when a write was refused;
+- `[FRESH RESULTS]`, where each sub-agent result says how many tools it ran, and a
+  live-data result with none opens with `[NOT CHECKED]`.
+
+The sub-agent runtime cap (about 60 seconds for a synchronous sub-agent) applies
+to spawned sub-agents only, never to the head's own turns or the nightly dream. If
+nothing read names the cause, the right answer is that the cause is not recorded,
+and which read would show it.
+
 ## Fetching what a view left out - `results.get`
 
 Every clip in a turn is a **view**, not a loss. The full text of a clamped tool

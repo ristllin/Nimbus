@@ -330,10 +330,13 @@ invents capabilities it lacks nor refuses ones it has:
   until the owner approves it in the web UI or via Telegram `/skill approve`. So
   saving a skill is an investment for FUTURE runs, never a step of the current
   task; the model may delete only capsules it authored. Rails in §6.
-- **Honesty:** it claims to have logged, saved, or remembered something only when
-  it actually called the corresponding tool that turn; owner-only knobs (keys,
-  routing) are named as owner-only so it can explain the boundary instead of
-  silently trying and failing.
+- **Honesty:** one rule (the `reply` field description) covers every claim of an
+  effect, a durability, live data or a figure from a source, and the device checks
+  each claim against the turn's recorded effects before delivery (see the claim
+  check in [turn-anatomy.md](turn-anatomy.md)); owner-only knobs (keys, routing)
+  are named as owner-only so it can explain the boundary instead of silently
+  trying and failing. A pin on an already pinned memory answers "already pinned,
+  no change".
 
 ## 4. Sessions as conversational sub-agents
 

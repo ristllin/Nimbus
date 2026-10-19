@@ -325,6 +325,8 @@ class TurnEngine {
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
   // scheduled fire and the dream report their own spend, never a previous turn's.
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
+  // The claim check of the current (or last) turn: its effect ledger and flags.
+  const ClaimCheck& claimCheck() const { return claims_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
   uint32_t turnCount() const { return turnCount_; }
 
@@ -408,6 +410,9 @@ class TurnEngine {
 
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
+  ClaimCheck claims_;               // lane S: this turn's effect ledger and claim check
+  int freshSourced_ = 0;            // sub-agent results folded into this turn: with a lookup
+  int freshUnsourced_ = 0;          // ...and live-data ones with none (set by the entry wrappers)
   // The most recent tool-loop transcript brief (Glass Box P3) - filled by
   // HeadTools::onBrief, consumed by the TurnDebugEv snapshot. Empty for a
   // single-shot turn that never entered a loop.

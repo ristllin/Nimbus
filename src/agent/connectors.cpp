@@ -380,6 +380,12 @@ std::string currentHost() {
 
 // ---- attach -------------------------------------------------------------------
 
+bool anyEnabled() {
+  for (const auto& c : portableList())
+    if (c.enabled) return true;
+  return false;
+}
+
 void attachOpenAI(JsonDocument& d) {
   nimbus::orch::attachOpenAIWire(d, portableList(), bearerClosure());
 }

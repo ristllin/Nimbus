@@ -149,6 +149,10 @@ struct HarnessConfig {
   // Nullable = off (v1, byte-identical) so host rigs and un-wired devices are
   // unaffected. The engine reads it into ComposeInputs::promptV2 before compose.
   std::function<bool()> promptV2;
+  // Does the head's request carry provider-hosted tools this turn (connectors,
+  // hosted search)? Their runs happen where the device cannot see them, so the
+  // claim check leaves the sent / checked / changed classes alone. Nullable = no.
+  std::function<bool()> headHostedTools;
 };
 
 }  // namespace agent

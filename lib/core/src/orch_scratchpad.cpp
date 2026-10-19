@@ -72,7 +72,8 @@ void Scratchpad::clearAll() {
 
 void Scratchpad::appendPromptBlock(std::string& out) const {
   if (empty()) return;
-  out += "\n## SCRATCHPAD (your own working notes)\n";
+  out += saveFailing_ ? "\n## SCRATCHPAD (your own working notes; RAM only until restart: saving is failing)\n"
+                      : "\n## SCRATCHPAD (your own working notes)\n";
   if (!active_.empty()) out += "Now: " + active_ + "\n";
   const char* labels[3] = {"Short-term", "Mid-term", "Long-term"};
   const std::vector<std::string>* tiers[3] = {&short_, &mid_, &long_};

@@ -11,6 +11,7 @@
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
 #include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
+#include "nimbus/orch/sub_provenance.h"   // liveTask, the unverified rule, [tools: n] (lane S)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/model_choices.h"  // modelInChoices - validated spawn-model coercion
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
@@ -379,6 +380,17 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   fresh_.push_back(std::move(fr));
 }
 
+std::string JobEngine::takeFreshResults(bool* unverified, int* sourced, int* unsourced) {
+  int s = 0, u = 0;
+  for (const auto& f : fresh_) {
+    if (f.failed) continue;
+    (f.unverified ? u : s)++;
+  }
+  if (sourced) *sourced = s;
+  if (unsourced) *unsourced = u;
+  return takeFreshResults(unverified);
+}
+
 std::string JobEngine::takeFreshResults(bool* unverified) {
   if (unverified) {
     *unverified = false;
@@ -395,7 +407,9 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
   const size_t kBlockBudget = 8192;
   int stubbed = 0;
   for (const auto& f : fresh_) {
-    const std::string head = "- " + f.tag + " (" + f.model + "): ";
+    // Provenance on every result (lane S): how many tools the sub ran, so the
+    // head can tell a looked-up answer from the model's own guess.
+    const std::string head = "- " + f.tag + " (" + f.model + ")" + f.provenance + ": ";
     const std::string full = f.text + f.hint;   // the seed keeps the widen handle
     if (b.size() + head.size() + full.size() + 1 <= kBlockBudget) {
       b += head + full + "\n";
@@ -668,25 +682,49 @@ int JobEngine::maybeRunningCount() const {
   return (int)timedOutAt_.size();
 }
 
+void JobEngine::noteLiveTag(const char* tag, bool live) {
+  constexpr size_t kLiveTagsMax = 16;
+  if (liveTags_.size() >= kLiveTagsMax) liveTags_.erase(liveTags_.begin());
+  LiveTag t{};
+  strncpy(t.tag, tag ? tag : "", sizeof(t.tag) - 1);
+  t.live = live;
+  liveTags_.push_back(t);
+}
+
+bool JobEngine::liveFor(const char* tag) const {
+  for (const LiveTag& t : liveTags_)
+    if (tag && strcmp(t.tag, tag) == 0) return t.live;
+  return false;
+}
+
 std::string JobEngine::deliveredReply(const orch::JobRecord& rec, bool& unverified) {
   const orch::ResultEnvelope& e = env_ref();
   std::string reply = e.reply[0] ? std::string(e.reply) : std::string("(done, no output)");
-  // CUM-536 connector provenance: the task asked for an attached connector and no
-  // run of it was reported, so the text is the model's own guess. The marker is
-  // put on BEFORE any copy is made (the result hook's trace row, the project
+  // Provenance (CUM-536, then lane S): the result is the model's own guess when
+  // the task asked for an attached connector that never ran, or asked for live
+  // data (a status, today's figures) and the sub ran no tool at all - counted
+  // from the provider's own record (ResultEnvelope.toolRuns). The marker is put
+  // on BEFORE any copy is made (the result hook's trace row, the project
   // auto-persist, [FRESH RESULTS], the owner's raw fallback), and the flag makes
   // the turn that reads it refuse memory writes.
-  unverified = e.connectorAsked[0] && e.connectorCalls == 0;
+  const bool connectorGuess = e.connectorAsked[0] && e.connectorCalls == 0;
+  unverified = nimbus::orch::subResultUnverified(e.connectorAsked[0] != 0, e.connectorCalls,
+                                                 liveFor(rec.tag), e.toolRuns);
   if (!unverified) return reply;
-  hlog::logf("orchestrator: %s asked for %s but no connector ran - result marked unverified",
-             rec.tag, e.connectorAsked);
-  return nimbus::orch::connectorNotCalledNote(e.connectorAsked) + "\n\n" + reply;
+  if (connectorGuess) {
+    hlog::logf("orchestrator: %s asked for %s but no connector ran - result marked unverified",
+               rec.tag, e.connectorAsked);
+    return nimbus::orch::connectorNotCalledNote(e.connectorAsked) + "\n\n" + reply;
+  }
+  hlog::logf("orchestrator: %s asked for live data but ran no tool - result marked not checked",
+             rec.tag);
+  return nimbus::orch::liveDataNotCheckedNote() + "\n\n" + reply;
 }
 
-void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {
+bool JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {
   if (s.task.length() == 0) {   // never silent (lane L): the head hears why
     noteSpawnRefused(chatId, s.name.c_str(), s.task, "it was sent without a task");
-    return;
+    return false;
   }
   if ((int)s.task.length() > orch::kSpawnTaskMax - 1)   // was a SILENT strncpy clip
     hlog::logf("orchestrator: spawn task truncated %d -> %d chars",
@@ -702,7 +740,7 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
     noteSpawnRefused(chatId, s.name.c_str(), s.task,
                      "the spawn queue is full (" + std::to_string(orch::kMaxPendingSpawns) +
                          " waiting); start it again after some finish");
-    return;
+    return false;
   }
   if (d_.fire) d_.fire("spawn");   // "Right away, sir."
   pending_.emplace_back();
@@ -723,6 +761,7 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
   strncpy(pp->chatId,   chatId.c_str(),     sizeof(pp->chatId)   - 1);
   pp->quiet = quiet;
   ledgerQueued(*pp);
+  return true;
 }
 
 // Provider resolution: explicit hint wins; else connector-aware routing (a
@@ -926,6 +965,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     return;
   }
 
+  noteLiveTag(tag, nimbus::orch::liveTask(p.task));   // read when the result lands
   orch::JobRecord rec;
   memset(&rec, 0, sizeof(rec));
   strncpy(rec.tag,      tag,   sizeof(rec.tag)   - 1);
@@ -1189,6 +1229,8 @@ int JobEngine::pump() {
       addFreshResult(rec.tag, jobLabel(rec).c_str(), reply,
                      nimbus::orch::nsForChat(rec.chatId, /*admin=*/false),
                      /*failed=*/false, unverified);
+      // How many tools the sub ran, from the provider's own record (lane S).
+      fresh_.back().provenance = nimbus::orch::freshProvenanceTag(env_ref().toolRuns, env_ref().webRuns);
       freshChatId_ = rec.chatId;
     } else if (env_ref().state == orch::JobState::Error) {
       // While OTHER work is still running, a per-sub failure joins the fresh

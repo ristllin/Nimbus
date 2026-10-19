@@ -31,6 +31,15 @@ static bool replyEndsWith(const std::string& reply, const std::string& ask) {
   return re + 1 >= n && reply.compare(re + 1 - n, n, ask, ab, n) == 0;
 }
 
+// Did one device element's summary say it ran? A voice-off tts, a sink-less
+// led, a refused reboot or an invalid / keyless model switch backs no claim.
+static bool deviceElementLanded(const std::string& one) {
+  if (one == "tts " || one == "led " || one == "lights " || one == "reboot ") return true;
+  if (one.size() >= 4 && one.compare(one.size() - 4, 4, "cfg ") == 0) return true;
+  return one.rfind("orch_model(", 0) == 0 && one.find("(invalid)") == std::string::npos &&
+         one.find("(no-key)") == std::string::npos;
+}
+
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote) {
@@ -176,8 +185,17 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // memory.scratchpad tool already guards with manageTenants. Non-admin turns
   // skip the write silently (their turn is otherwise unaffected).
   if (t.scratchpad.present && d.applyScratch) {
-    if (d.whoFor(chatId).perms().manageTenants) d.applyScratch(t.scratchpad);
-    else hlog::log("orchestrator: scratchpad write skipped (not admin)");
+    if (d.whoFor(chatId).perms().manageTenants) {
+      st.scratchOutcome = d.applyScratch(t.scratchpad);
+      if (st.claims && st.scratchOutcome != ScratchOutcome::Skipped)
+        st.claims->effects().add(st.scratchOutcome == ScratchOutcome::Applied
+                                     ? nimbus::orch::FxKind::Scratch
+                                     : nimbus::orch::FxKind::ScratchRamOnly,
+                                 true);
+    } else {
+      st.scratchOutcome = ScratchOutcome::Skipped;
+      hlog::log("orchestrator: scratchpad write skipped (not admin)");
+    }
   }
 
   // device[] - validate each element and apply ONLY the allowed ones. The
@@ -185,8 +203,13 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // the per-element work is the shared applyDeviceElement (also the mid-turn
   // `device.control` tool's engine).
   std::string devSummary;
-  for (const auto& da : t.device)
-    devSummary += applyDeviceElement(da.json, st.scheduledTurn, chatId, d, &st.riskNote);
+  for (const auto& da : t.device) {
+    const std::string one = applyDeviceElement(da.json, st.scheduledTurn, chatId, d, &st.riskNote);
+    devSummary += one;
+    nimbus::orch::FxKind k;
+    if (st.claims && ClaimCheck::deviceActionEffect(da.json, k))
+      st.claims->effects().add(k, deviceElementLanded(one));
+  }
   if (!devSummary.empty()) hlog::logf("orchestrator: device[%s]", devSummary.c_str());
 
   // mem_write[] / mem_query[] (Phase 3) - dispatch through the memory ToolRegistry
@@ -205,6 +228,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       if (refuseWrites) {
         hlog::logf("orchestrator: mem_write refused (%u item(s)) - unverified connector result",
                    (unsigned)t.mem_write.size());
+        if (st.claims) st.claims->effects().add(nimbus::orch::FxKind::MemWrite, false, "",
+                                                (uint8_t)t.mem_write.size());
         if (st.pendingMemResults)
           *st.pendingMemResults += std::string("[MEMORY] ") + kUnverifiedMemoryRefusal + "\n";
       }
@@ -217,6 +242,12 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           if (!w.ttl.empty()) a["ttl"] = w.ttl;
           ToolResult r = d.memDispatch("memory.write", a.as<ArduinoJson::JsonObjectConst>(), who);
           hlog::logf("orchestrator: mem_write -> %s", (r.success ? r.output : r.error).c_str());
+          // Stored, or already held (a duplicate): both back a save claim; a
+          // refusal, a quota drop or an embedding failure backs none.
+          if (st.claims)
+            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite,
+                                           !r.success, r.output,
+                                           w.permanent ? nimbus::orch::kFxPermanent : 0);
           if (r.success && d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
           memMutated = true;
         }
@@ -240,7 +271,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // the parser already named the intents it could not carry (t.spawnDrops), and
   // an item that arrives here with no task joins them - it used to be skipped
   // in silence while the reply said "spawning..." (16-18 Oct: six turns, 34
-  // promised sub-agents, none started, no trace).
+  // promised sub-agents, none started, no trace). spawnedOut and the claim
+  // check's ledger count ACCEPTED spawns only: an enqueue the job engine refuses
+  // (a full queue) already told the owner and the head, and backs no "started".
   spawnedOut = false;
   std::vector<nimbus::orch::SpawnDrop> drops = t.spawnDrops;
   auto enqueue = [&](const nimbus::orch::Spawn& s) {
@@ -252,7 +285,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       return;
     }
     if (!d.enqueueSpawn) return;   // host rig with no job engine
-    d.enqueueSpawn(s, chatId, st.scheduledTurn);
+    const bool ok = d.enqueueSpawn(s, chatId, st.scheduledTurn);
+    if (st.claims) st.claims->effects().add(ok ? nimbus::orch::FxKind::Spawn
+                                               : nimbus::orch::FxKind::SpawnRefused, ok);
+    if (!ok) return;
     spawnedOut = true;
     st.spawnsEnqueued++;
   };
@@ -339,9 +375,17 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if ((t.reply.length() || t.ask.length()) && d.fire) d.fire("reply");
   st.lastReply = t.reply;   // captured for the Local Loops semantic-repeat hash
   // Owner-visible notes that ride the reply and are never silent: the risk
-  // override note, then the spawn correction.
+  // override note, the spawn correction, then the claim check's lines (the reply
+  // and the ask reach the owner as one message, so both are checked; the spawn
+  // class is left to the spawn correction when it was added).
   const std::string riskNote = st.riskNote;
-  const std::string riskTail = riskNote + (spawnLine.empty() ? "" : "\n\n" + spawnLine);
+  const std::string claimTail =
+      st.claims ? st.claims->tailAfterApply(t.ask.empty() ? t.reply : t.reply + "\n\n" + t.ask,
+                                            /*skipSpawned=*/!spawnLine.empty())
+                : std::string();
+  // The corrections (spawn line, claim lines) also ride the captured text.
+  const std::string correctionTail = (spawnLine.empty() ? "" : "\n\n" + spawnLine) + claimTail;
+  const std::string riskTail = riskNote + correctionTail;
   st.riskNote.clear();
   const bool askRepeated = t.ask.length() && t.reply.length() && replyEndsWith(t.reply, t.ask);
   if (t.reply.length() && t.ask.length() && !askRepeated) {
@@ -373,10 +417,14 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // moment (reply.speak / reply.telegram voice:true / the orch_turn `tts` action),
   // and every one of those paths honors the owner's "Voice replies" toggle.
 
-  // Episodic auto-capture (Q2): record the assistant's turn output.
+  // Episodic auto-capture (Q2): record the assistant's turn output AS
+  // DELIVERED - the spawn and claim corrections included - so a later turn reads
+  // the corrected text, not the model's.
+  st.delivered = t.reply.length() ? t.reply + correctionTail : std::string();
+  const std::string askCaptured = t.reply.length() ? t.ask : t.ask + correctionTail;
   if (d.captureAssistant) {
-    if (t.reply.length()) d.captureAssistant(chatId, t.reply);
-    if (t.ask.length())   d.captureAssistant(chatId, t.ask);
+    if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
+    if (t.ask.length())   d.captureAssistant(chatId, askCaptured);
   }
 }
 

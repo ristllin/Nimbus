@@ -299,6 +299,8 @@ static void test_final_round_notice_bans_promising_future_work() {
   TEST_ASSERT_TRUE(n.find("report back") != std::string::npos);
   TEST_ASSERT_TRUE(n.find("background") != std::string::npos);
   TEST_ASSERT_TRUE(n.find("next") != std::string::npos);
+  // The evidence rule for causes reaches the forced round too (lane S).
+  TEST_ASSERT_TRUE(n.find("Do not guess causes") != std::string::npos);
 }
 
 // (d2) rounds cap, misbehaving model: it keeps requesting tools even on the forced

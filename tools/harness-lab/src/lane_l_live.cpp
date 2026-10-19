@@ -422,7 +422,7 @@ class LRig {
     };
     d.apply.setModelMemory = [](const std::string&, const std::string&) { return false; };
     d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
-      jobs_->enqueueSpawn(s, chat, quiet);
+      return jobs_->enqueueSpawn(s, chat, quiet);
     };
     d.apply.noteSpawned = [this] { jobs_->noteSpawned(); };
     for (const char* h : {"anthropic", "mistral"}) {

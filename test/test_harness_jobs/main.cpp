@@ -1093,7 +1093,7 @@ static void test_poll_lifecycle_running_then_done_parks_fresh() {
   std::string block = r.eng->takeFreshResults();
   TEST_ASSERT_EQUAL_STRING(
       "[FRESH RESULTS] (sub-agents that just finished)\n"
-      "- job0000 (good-m (research)): fake result\n",
+      "- job0000 (good-m (research)) [no tools ran]: fake result\n",
       block.c_str());
   TEST_ASSERT_FALSE(r.eng->hasFreshResults());     // consumed + clock reset
 }
@@ -1133,7 +1133,7 @@ static void test_unverified_connector_result_opens_with_marker() {
   bool unverified = false;
   const std::string block = r.eng->takeFreshResults(&unverified);
   TEST_ASSERT_TRUE(unverified);
-  TEST_ASSERT_TRUE(block.find("- job0000 (gcal-fetch): " + marker) != std::string::npos);
+  TEST_ASSERT_TRUE(block.find("- job0000 (gcal-fetch) [no tools ran]: " + marker) != std::string::npos);
   TEST_ASSERT_TRUE(LogCapture::contains(
       "orchestrator: job0000 asked for Google Calendar but no connector ran - result marked unverified"));
   // The result hook (the device's episodic ev:subresult trace row) gets the marked
@@ -1158,11 +1158,45 @@ static void test_connector_that_ran_or_was_not_asked_is_not_marked() {
 
   Rig notAsked;
   notAsked.adapter.connectorCalls = 0;   // nothing ran, but nothing was asked for
-  runOneDoneJob(notAsked, sp("Compare wood-fibre board prices"));
+  runOneDoneJob(notAsked, sp("Summarize wood-fibre board pros and cons"));
   unverified = true;
   block = notAsked.eng->takeFreshResults(&unverified);
   TEST_ASSERT_FALSE(unverified);
   TEST_ASSERT_TRUE(block.find("NOT called") == std::string::npos);
+}
+
+// Lane S provenance property: over task {live, research, connector} x the
+// provider's own tool-run count {0, 1, 3}: a live task with no tool run is
+// marked [NOT CHECKED] and unverified; every result line says how many tools
+// ran; the connector case keeps its own marker.
+static void test_provenance_property_live_research_connector_by_tool_runs() {
+  struct Task { const char* text; bool live; bool connector; };
+  const Task tasks[] = {
+      {"Check the Central line status this morning", true, false},
+      {"Summarize the history of timber framing", false, false},
+      {"Fetch all Google Calendar events this week", false, true},
+  };
+  for (const Task& tk : tasks) {
+    for (uint16_t runs : {0, 1, 3}) {
+      Rig r;
+      r.adapter.toolRuns = runs;
+      r.adapter.webRuns = runs ? 1 : 0;
+      if (tk.connector) {
+        r.adapter.connectorAsked = "Google Calendar";
+        r.adapter.connectorCalls = runs ? 1 : 0;
+      }
+      r.adapter.doneReply = "Result text.";
+      runOneDoneJob(r, sp(tk.text));
+      bool unverified = false;
+      const std::string block = r.eng->takeFreshResults(&unverified);
+      const bool wantUnverified = runs == 0 && (tk.live || tk.connector);
+      TEST_ASSERT_EQUAL_MESSAGE(wantUnverified, unverified, tk.text);
+      TEST_ASSERT_EQUAL_MESSAGE(runs == 0 && tk.live, block.find("[NOT CHECKED]") != std::string::npos, tk.text);
+      TEST_ASSERT_EQUAL_MESSAGE(runs == 0 && tk.connector, block.find("NOT called") != std::string::npos, tk.text);
+      const std::string tag = runs ? " [tools: " + std::to_string(runs) + ", web: 1]: " : " [no tools ran]: ";
+      TEST_ASSERT_TRUE_MESSAGE(block.find(tag) != std::string::npos, block.c_str());
+    }
+  }
 }
 
 static void test_done_arc_cleared_after_grace() {
@@ -1869,6 +1903,7 @@ int main(int, char**) {
   RUN_TEST(test_no_spill_closure_keeps_legacy_shape);
   RUN_TEST(test_poll_lifecycle_running_then_done_parks_fresh);
   RUN_TEST(test_unverified_connector_result_opens_with_marker);
+  RUN_TEST(test_provenance_property_live_research_connector_by_tool_runs);
   RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
   RUN_TEST(test_done_arc_cleared_after_grace);
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);

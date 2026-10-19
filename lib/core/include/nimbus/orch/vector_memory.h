@@ -182,6 +182,15 @@ class VectorMemory {
   // bump that entry's importance to max(old, new); returns false (skipped).
   // Returns true when actually inserted. A wrong-width vector returns false.
   bool add(const VecEntry& e, bool dedup = true);
+  // After add() returned false as a duplicate: was the existing entry pinned?
+  // (memory.write reports it, so a "pinned" claim on a duplicate is checked.)
+  bool lastDuplicatePinned() const { return lastDupPinned_; }
+  // After add() returned false: was it a duplicate (true) or a refused entry
+  // (a vector of the wrong width)?
+  bool lastAddWasDuplicate() const { return lastAddDuplicate_; }
+  // ...and was the duplicate in the same namespace as the write? Only then may
+  // a tool say anything about it beyond "duplicate" (no cross-tenant oracle).
+  bool lastDuplicateSameNs() const { return lastDupSameNs_; }
 
   // Top-k recall by ascending cosine distance. Empty store or
   // wrong-width query -> empty. k is clamped to the store size. Legacy path,
@@ -254,6 +263,9 @@ class VectorMemory {
   bool idVisible(const std::string& id, const std::vector<std::string>& nsAllow) const;
 
   bool markPermanent(const std::string& id);
+  // True when the entry exists and is already pinned (exempt from decay and
+  // prune), so a second pin changes nothing and the tool can say so.
+  bool isPermanent(const std::string& id) const;
   // Reverse of markPermanent: clear the pin so the entry decays/expires again and
   // becomes evictable. Restores a finite TTL (defTtlHours, default 720 = 30 days)
   // and resets the TTL clock to nowHours so an old pinned entry isn't instantly
@@ -315,6 +327,9 @@ class VectorMemory {
 
   int dims_ = 256;
   int maxEntries_ = 0;   // 0 = unlimited
+  bool lastDupPinned_ = false;      // see lastDuplicatePinned()
+  bool lastAddDuplicate_ = false;   // see lastAddWasDuplicate()
+  bool lastDupSameNs_ = false;      // see lastDuplicateSameNs()
   VectorArchive* archiveSink_ = nullptr;   // CUM-225: prune moves here when set
   std::vector<Stored, WorkingAllocator<Stored>> entries_;
 };

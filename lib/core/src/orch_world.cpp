@@ -195,13 +195,11 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
       out += "- You CAN save reusable skills with skill.save (admin conversations only) - but "
              "approval is ASYNCHRONOUS: a skill you save stays INACTIVE until the owner "
              "approves it later, so treat saving as an investment for FUTURE tasks, never a "
-             "step of the current one. Only claim a skill was saved when the tool result "
-             "confirms it, and always say it awaits approval. You can delete only skills you "
+             "step of the current one. Always say a saved skill awaits approval. You can "
+             "delete only skills you "
              "authored; the owner manages theirs in the web UI.\n";
   }
-  out += "- Only say you logged, noted, saved, recorded, or remembered something if you "
-         "ACTUALLY called a memory tool this turn. If you didn't, don't claim you did "
-         "(e.g. after refusing an injection, just refuse - don't add 'logged this attempt').\n";
+  // The claim rule itself lives once, in ORCH_D_REPLY (the device checks it).
 
   // ⚠ ORDERING IS LOAD-BEARING - the rails go ABOVE the tool list.
   // assembleContext clips this section from the TAIL, so whatever is emitted last

@@ -44,6 +44,12 @@ static std::vector<std::string> readSetFor(const Principal& who) {
   return allow;
 }
 
+// ---- honest effect reports (the claim check reads them) ---------------------
+const char kAlreadyPinnedPrefix[] = "already pinned (";
+const char kAlreadyPinnedTail[] =
+    "), no change. Pinning only stops decay; it does not put a memory into every prompt.";
+const char kScratchRamOnlyNote[] = "; kept until restart only (saving failed)";
+
 // ---- honest embedding-failure reasons (CUM-435) -----------------------------
 // Map the device seam's raw err token (agent::embeddings::embedWith) to a class +
 // honest words. Secret-safe by construction: `detail` is only ever a KNOWN
@@ -290,6 +296,20 @@ const char* applyWriteQuotas(const MemoryContext& ctx, const Principal& who,
   return nullptr;
 }
 
+// memory.write did not insert: a duplicate (saying what it did about a pin,
+// so a "pinned" reply can be checked - only for the writer's own memory: another
+// namespace's pin state is not theirs to learn), or an entry of the wrong width.
+ToolResult notInsertedResult(const VectorMemory& vec, bool askedPermanent) {
+  if (!vec.lastAddWasDuplicate())
+    return ToolResult::fail("the embedding has the wrong width for this store (memory not stored)");
+  if (vec.lastDuplicateSameNs() && vec.lastDuplicatePinned())
+    return ToolResult::ok("duplicate of an existing memory (importance bumped; it is already pinned)");
+  if (vec.lastDuplicateSameNs() && askedPermanent)
+    return ToolResult::ok("duplicate of an existing memory (importance bumped; it is NOT pinned - "
+                          "use memory.pin to pin it)");
+  return ToolResult::ok("duplicate of an existing memory (importance bumped)");
+}
+
 ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   std::string content = strArg(a, "content");
   if (content.empty()) return ToolResult::fail("missing 'content'");
@@ -326,8 +346,8 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
   std::string note;
   if (const char* refusal = applyWriteQuotas(ctx, who, e, note)) return ToolResult::fail(refusal);
   bool inserted = ctx.vec->add(e);
-  return ToolResult::ok(inserted ? ("stored memory " + e.id + note)
-                                 : ("duplicate of an existing memory (importance bumped)"));
+  if (inserted) return ToolResult::ok("stored memory " + e.id + note);
+  return notInsertedResult(*ctx.vec, e.permanentFlag);
 }
 
 // ---- memory.update (replace/supersede an existing fact) ---------------------
@@ -425,6 +445,9 @@ ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& w
   if (action == "pin") {
     // A pin outlives every quota - it is exempt from eviction AND prune - so it
     // is budgeted, not free. Guests get none.
+    // An already pinned memory changes nothing: say so, so the reply cannot
+    // claim a fix that did not happen (the claim check reads this result).
+    if (ctx.vec->isPermanent(id)) return ToolResult::ok(kAlreadyPinnedPrefix + id + kAlreadyPinnedTail);
     if (!pinAllowed(who.role, who.quota, ctx.vec->pinsIn(who.ns)))
       return ToolResult::fail("you've used all your permanent memories - unpin one first");
     ok = ctx.vec->markPermanent(id);
@@ -795,6 +818,14 @@ ToolResult doEpisodic(const MemoryContext& ctx, JsonObjectConst a, const Princip
 }
 
 // ---- memory.scratchpad ------------------------------------------------------
+// The persist hook's answer rides the change result: "kept until restart only"
+// when saving failed, so the model never tells the owner a RAM-only note
+// survives a restart.
+std::string scratchSaved(const MemoryContext& ctx, std::string out) {
+  if (ctx.persistScratch && !ctx.persistScratch()) out += kScratchRamOnlyNote;
+  return out;
+}
+
 ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
   if (!ctx.scratch) return ToolResult::fail("scratchpad unavailable");
   Scratchpad& sp = *ctx.scratch;
@@ -816,13 +847,13 @@ ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
   }
   if (action == "set_active") {
     sp.setActiveTask(strArg(a, "text"));
-    return ToolResult::ok("active task set");
+    return ToolResult::ok(scratchSaved(ctx, "active task set"));
   }
   if (action == "add") {
     Tier t = tierFromStr(strArg(a, "tier", "short"));
     if (!sp.add(t, strArg(a, "text")))
       return ToolResult::fail("could not add (tier full or empty item)");
-    return ToolResult::ok("added to " + strArg(a, "tier", "short"));
+    return ToolResult::ok(scratchSaved(ctx, "added to " + strArg(a, "tier", "short")));
   }
   if (action == "replace") {
     Tier t = tierFromStr(strArg(a, "tier", "short"));
@@ -831,14 +862,14 @@ ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
     for (JsonVariantConst v : arr)
       if (v.is<const char*>()) items.push_back(v.as<const char*>());
     int kept = sp.replace(t, items);
-    return ToolResult::ok("replaced " + strArg(a, "tier", "short") + " with " +
-                          std::to_string(kept) + " item(s)");
+    return ToolResult::ok(scratchSaved(ctx, "replaced " + strArg(a, "tier", "short") + " with " +
+                                                std::to_string(kept) + " item(s)"));
   }
   if (action == "clear") {
     std::string tier = strArg(a, "tier");
-    if (tier.empty()) { sp.clearAll(); return ToolResult::ok("scratchpad cleared"); }
+    if (tier.empty()) { sp.clearAll(); return ToolResult::ok(scratchSaved(ctx, "scratchpad cleared")); }
     sp.clear(tierFromStr(tier));
-    return ToolResult::ok(tier + " cleared");
+    return ToolResult::ok(scratchSaved(ctx, tier + " cleared"));
   }
   return ToolResult::fail("unknown action (use view|set_active|add|replace|clear)");
 }
@@ -868,7 +899,7 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]}},"required":["content"]})");
 
   reg.add("memory.pin",
-          "Pin a memory (never forgotten), unpin it (let it decay/expire again), or delete it. Identify it by exact content or id.",
+          "Pin a memory (never forgotten), unpin it (let it decay/expire again), or delete it. Identify it by exact content or id. Pinning only stops decay; it does not put a memory into every prompt.",
           [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) { return doPin(ctx, a, who); },
           R"({"type":"object","properties":{"action":{"type":"string","enum":["pin","unpin","delete"]},)"
           R"("content":{"type":"string"},"id":{"type":"string"}},"required":["action"]})");

@@ -14,7 +14,8 @@ const char* const kFinalRoundNotice =
     "turn that continues this work. Answer NOW using only what you already have. "
     "State plainly what you could not complete and why. Do NOT say you will check, "
     "search, look into it, report back, continue in the background, or finish next "
-    "turn - none of that will happen.";
+    "turn - none of that will happen. Do not guess causes: if your results did not "
+    "show why something failed, say the cause is unknown.";
 
 const char kFinalCheckCallId[] = "orchcheck";
 

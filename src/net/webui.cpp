@@ -70,6 +70,7 @@
 #include "nimbus/touch_cal.h"                 // tchCal validation (shared with the console)
 #include "solide/touch.h"                     // live-apply a new calibration + touch::health()
 #include "nimbus/net/soak_state.h"            // CUM-257: uptime + soak counters onto /api/state
+#include "nimbus/harness/claim_check.h"       // claimsCorrected / claimsTailed onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
 #include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
 #include "web_admission.h"              // big responses trickle or answer busy (internal SRAM)
@@ -605,6 +606,10 @@ static void buildState(String& out) {
   JsonObject fj = d["faults"].to<JsonObject>();
   for (uint8_t i = 0; i < nimbus::fault::COUNT; i++)
     fj[nimbus::fault::name(nimbus::fault::Cap(i))] = (fmask & (1u << i)) != 0;
+  // The claim check since boot (RAM only): replies sent back for one correction
+  // round, and replies delivered with a correction line.
+  d["claimsCorrected"] = agent::ClaimCheck::correctedCount();
+  d["claimsTailed"]    = agent::ClaimCheck::tailedCount();
 
   // CUM-257: soak-observability fields (uptimeMs, ringBackstopFires, touch health)
   // in one place so the LAN-driven soak legs (CUM-243 ring backstop, CUM-248 touch
