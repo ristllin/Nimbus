@@ -61,6 +61,18 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 MOCK_REPLY = "mock says hi"
+# Lane S claim-check bench: head turns whose reply claims an effect, with the
+# turn field that should back it (the device checks the claim before delivery).
+CLAIM_TURNS = {
+    "mock-claim-saved": {
+        "reply": "Saved it to memory.",
+        "mem_write": [{"content": "bench claim check note", "importance": 0.5, "permanent": False, "ttl": "days"}],
+    },
+    "mock-claim-durable": {
+        "reply": "Put it in my notes, so it will survive a restart.",
+        "scratchpad": {"active": None, "short": ["bench claim check note"], "mid": None, "long": None},
+    },
+}
 TOOLLOOP_FINAL = "toolloop final"
 USAGE_PROMPT_TOKENS = 1234
 USAGE_COMPLETION_TOKENS = 56
@@ -242,6 +254,13 @@ class _Handler(BaseHTTPRequestHandler):
             # Round 2 (tool result echoed back) - or, on today's tool-less custom
             # wire, the one-and-only round: the final answer.
             self._send_json(200, self._completion(model, self._final_content(req, TOOLLOOP_FINAL)))
+            return
+
+        if model in CLAIM_TURNS:
+            rf = req.get("response_format") or {}
+            turn = CLAIM_TURNS[model]
+            content = json.dumps(turn) if rf.get("type") == "json_schema" else turn["reply"]
+            self._send_json(200, self._completion(model, content))
             return
 
         # mock-echo + any unknown model: the fixed deterministic reply.

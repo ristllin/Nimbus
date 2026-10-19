@@ -112,6 +112,10 @@ class LabRig {
     bool        midTurnFailover = true; // the fabric loop, as on the device
     std::vector<agent::FaultRule> faults;  // --fault=<spec>, already parsed
     std::string recordDir;              // --record=<dir>: usage + error bodies
+    // The scratchpad save fails, as on a full NVS partition: changes live in RAM
+    // only and every surface must say so (the claim check holds a "survives a
+    // restart" reply against it).
+    bool        scratchSaveFails = false;
   };
 
   LabRig(Env env, Options opt)
@@ -173,6 +177,8 @@ class LabRig {
   agent::TurnEngine& engine() { return *eng_; }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
+  orch::Scratchpad& scratchpad() { return scratch_; }
+  agent::JobEngine& jobs() { return *jobs_; }
   orch::EpisodicStore& episodic() { return *epi_; }
   // The settings-storage state the device.status stand-in reports (L19-9),
   // through the same portable builder the device uses. Fresh by default; a
@@ -275,6 +281,7 @@ class LabRig {
     // own embed errors to stderr, so clear err here (empty vector still signals
     // "unavailable" to the memory tools, which then degrade / refuse honestly).
     mc.embed = [this](const std::string& text, std::string& err) { err.clear(); return embed(text); };
+    mc.persistScratch = [this] { return saveScratch(); };
     orch::registerMemoryTools(reg_, mc);
 
     // Split by tool group so each registration (and its lambda) stays inside the
@@ -548,6 +555,7 @@ class LabRig {
       in.hostLabel = lastHost_.empty() ? std::string("(picking)") : lastHost_;
       in.recentConversation = recentWindow(chat);
       in.runningMemory = memory_;
+      in.scratchpad = &scratch_;
       return in;
     };
     d.toolSpecs = [this](const orch::Principal& who) { return reg_.toolSpecsFor(who); };
@@ -590,6 +598,7 @@ class LabRig {
       return orch::principalForRole(chat, role());
     };
     d.apply.setModelMemory = [this](const std::string&, const std::string& m) { memory_ = m; return true; };
+    wireTurnFields(d.apply);
 
     // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
     // the same deps (a failed round re-runs on the next host against the shared
@@ -626,6 +635,35 @@ class LabRig {
       });
     }
     eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // The turn's own fields run as on the device: mem_write items through the
+  // memory registry, the inline scratchpad (saved, or RAM only), spawn items
+  // into the job queue (accepted or refused).
+  void wireTurnFields(agent::ApplyDeps& a) {
+    a.withMemoryLock = [](const std::function<void()>& fn) { fn(); };
+    a.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst args,
+                           const orch::Principal& who) { return reg_.dispatch(name, args, who); };
+    a.persistMemory = [] {};
+    a.applyScratch = [this](const orch::ScratchUpdate& u) {
+      const std::string before = scratch_.serialize();
+      if (u.hasActive) scratch_.setActiveTask(u.active);
+      if (u.hasShort)  scratch_.replace(orch::Tier::Short, u.shortItems);
+      if (u.hasMid)    scratch_.replace(orch::Tier::Mid, u.midItems);
+      if (u.hasLong)   scratch_.replace(orch::Tier::Long, u.longItems);
+      if (scratch_.serialize() == before) return agent::ScratchOutcome::Skipped;   // as the device
+      return saveScratch() ? agent::ScratchOutcome::Applied : agent::ScratchOutcome::AppliedRamOnly;
+    };
+    a.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
+      return jobs_->enqueueSpawn(s, chat, quiet);
+    };
+  }
+
+  // The lab's scratchpad "save": nothing to write, but it reports what the
+  // device would (and keeps the live header in step).
+  bool saveScratch() {
+    scratch_.setSaveFailing(opt_.scratchSaveFails);
+    return !opt_.scratchSaveFails;
   }
 
   // ---- episodic helpers -----------------------------------------------------
