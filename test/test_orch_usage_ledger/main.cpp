@@ -12,6 +12,7 @@
 #include "nimbus/orch/turn_spend.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h"
+#include "nimbus/store/moved_store.h"
 
 using nimbus::orch::ProviderBudget;
 using nimbus::orch::UsageLedger;
@@ -2563,6 +2564,138 @@ static void test_ledger_drops_deleted_routines_rows_first() {
   TEST_ASSERT_TRUE(smallest);
 }
 
+// ---- dirty and retry: spend recorded while the file refuses is never lost ----------
+// The device persists the ledger through the moved-store rule (moved_store.h) and marks
+// a write that did not land with DirtyRetry (src/agent/store.cpp persistLedgerLocked,
+// retryUsageLedger; test_nvs_full pins that seam). October 2026's spend was lost because
+// failed writes left it in RAM only. The class: under every failure pattern (a refused
+// write, a torn write that does not read back) RAM keeps every token, the ledger reads
+// unsaved, the retry is paced to once a minute, and the first write that lands stores
+// ALL the spend.
+namespace {
+struct LedgerFileIo {
+  bool        haveFile = false;
+  std::string file;
+  bool        haveNvs = false;
+  std::string nvs;
+  int         refuse = 0;   // the next N writes fail outright
+  int         tear = 0;     // the next N writes land half (the read-back differs)
+  bool readFile(std::string& out) {
+    if (!haveFile) return false;
+    out = file;
+    return true;
+  }
+  bool writeFileAtomic(const std::string& v) {
+    if (refuse > 0) {
+      --refuse;
+      return false;
+    }
+    haveFile = true;
+    file = tear > 0 ? v.substr(0, v.size() / 2) : v;
+    if (tear > 0) --tear;
+    return true;
+  }
+  bool readNvs(std::string& out) {
+    if (!haveNvs) return false;
+    out = nvs;
+    return true;
+  }
+  bool eraseNvs() {
+    haveNvs = false;
+    nvs.clear();
+    return true;
+  }
+};
+
+// The device's persist step in shape: byte guard, serialize, persistMoved, noteWrite.
+bool persistLedgerFile(nimbus::orch::UsageLedger& L, LedgerFileIo& io,
+                       nimbus::store::DirtyRetry& st, uint32_t nowMs) {
+  L.fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes);
+  const bool ok = nimbus::store::persistMoved(io, L.serialize());
+  st.noteWrite(ok, nowMs);
+  return ok;
+}
+
+uint64_t storedTotalIn(const LedgerFileIo& io, const char* prov) {
+  nimbus::orch::UsageLedger R;
+  R.deserialize(io.file);
+  const nimbus::orch::ProviderBudget* e = R.find(prov);
+  return e ? e->totalIn : 0;
+}
+}  // namespace
+
+static void test_ledger_dirty_and_retry_never_loses_spend() {
+  constexpr uint32_t kMinute = 60000;
+  for (int torn = 0; torn < 2; ++torn) {
+    // Every pattern of failed writes over four turns (bit n fails turn n's write).
+    for (unsigned pattern = 0; pattern < 16; ++pattern) {
+      nimbus::orch::UsageLedger L;
+      LedgerFileIo io;
+      nimbus::store::DirtyRetry st(kMinute);
+      uint64_t spent = 0;
+      uint32_t lastWriteMs = 0;
+      for (int turn = 0; turn < 4; ++turn) {
+        const uint32_t now = 1000u + (uint32_t)turn * 5000u;
+        L.recordTokens("anthropic", 1000u + (uint64_t)turn, 10, 20261019, "turn");
+        spent += 1000u + (uint64_t)turn;
+        if (pattern & (1u << turn)) (torn ? io.tear : io.refuse) = 1;
+        const bool ok = persistLedgerFile(L, io, st, now);
+        lastWriteMs = now;
+        TEST_ASSERT_EQUAL_INT((int)ok, (int)st.saved());
+        TEST_ASSERT_EQUAL_UINT64(spent, L.find("anthropic")->totalIn);   // RAM keeps it all
+        if (ok) TEST_ASSERT_EQUAL_UINT64(spent, storedTotalIn(io, "anthropic"));
+      }
+      const bool lastFailed = (pattern & 0x8u) != 0;
+      TEST_ASSERT_EQUAL_INT((int)!lastFailed, (int)st.saved());
+      // Paced: no retry storm inside the minute, exactly due at it, never when saved.
+      TEST_ASSERT_FALSE(st.retryDue(lastWriteMs + kMinute - 1));
+      TEST_ASSERT_EQUAL_INT((int)lastFailed, (int)st.retryDue(lastWriteMs + kMinute));
+      if (st.retryDue(lastWriteMs + kMinute))
+        TEST_ASSERT_TRUE(persistLedgerFile(L, io, st, lastWriteMs + kMinute));
+      // Whatever failed on the way, the file now holds every token and reads saved.
+      TEST_ASSERT_TRUE(st.saved());
+      TEST_ASSERT_EQUAL_UINT64(spent, storedTotalIn(io, "anthropic"));
+    }
+  }
+}
+
+// The first boot after the upgrade: the spend lives only in the legacy NVS key. It is
+// loaded, marked dirty (due at once), survives a refused first write, lands on the
+// paced retry, and the NVS copy goes only on a boot whose image was already valid.
+static void test_ledger_legacy_nvs_spend_moves_to_the_file_on_retry() {
+  nimbus::orch::UsageLedger before;
+  before.recordTokens("openai", 5000, 700, 20261019, "turn");
+  LedgerFileIo io;
+  io.haveNvs = true;
+  io.nvs = before.serialize();
+
+  const nimbus::store::MovedLoad m = nimbus::store::loadMoved(io);
+  TEST_ASSERT_EQUAL_INT((int)nimbus::store::MovedSource::Nvs, (int)m.src);
+  nimbus::orch::UsageLedger L;
+  L.deserialize(m.value);
+  nimbus::store::DirtyRetry st(60000);
+  st.markDirty(2000);
+  TEST_ASSERT_FALSE(st.saved());
+  TEST_ASSERT_TRUE(st.retryDue(2000));
+
+  io.refuse = 1;
+  TEST_ASSERT_FALSE(persistLedgerFile(L, io, st, 2000));
+  TEST_ASSERT_FALSE(st.retryDue(2000 + 59999));
+  TEST_ASSERT_TRUE(st.retryDue(2000 + 60000));
+  TEST_ASSERT_TRUE(persistLedgerFile(L, io, st, 2000 + 60000));
+  TEST_ASSERT_TRUE(st.saved());
+  TEST_ASSERT_EQUAL_UINT64(5000, storedTotalIn(io, "openai"));
+
+  TEST_ASSERT_FALSE(nimbus::store::retireLegacy(io, false));   // trial boot: NVS kept
+  TEST_ASSERT_TRUE(io.haveNvs);
+  TEST_ASSERT_TRUE(nimbus::store::retireLegacy(io, true));     // valid image: erased
+  TEST_ASSERT_FALSE(io.haveNvs);
+  // The next boot reads the file, with the same spend.
+  const nimbus::store::MovedLoad again = nimbus::store::loadMoved(io);
+  TEST_ASSERT_EQUAL_INT((int)nimbus::store::MovedSource::File, (int)again.src);
+  TEST_ASSERT_EQUAL_UINT64(5000, storedTotalIn(io, "openai"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -2634,5 +2767,7 @@ int main() {
   RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
   RUN_TEST(test_ledger_byte_guard_keeps_serialize_under_the_cap);
   RUN_TEST(test_ledger_drops_deleted_routines_rows_first);
+  RUN_TEST(test_ledger_dirty_and_retry_never_loses_spend);
+  RUN_TEST(test_ledger_legacy_nvs_spend_moves_to_the_file_on_retry);
   return UNITY_END();
 }
