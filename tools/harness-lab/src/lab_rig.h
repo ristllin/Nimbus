@@ -238,6 +238,9 @@ class LabRig {
   }
 
  public:
+  // One metered ledger row (BudgetConfig::recordTokens), in ledger units.
+  struct Spend { std::string host; uint32_t in, out, cr, cw; std::string tag, model; };
+  const std::vector<Spend>& spendRows() const { return spend_; }
   // Every harness log line from this run - scenarios assert on these.
   static const std::vector<std::string>& harnessLog() { return logLines(); }
   static bool loggedContaining(const char* needle) {
@@ -453,10 +456,12 @@ class LabRig {
     c.loop.totalCap = [] { return 24576; };
 
     c.budget.overBudget = [](const std::string&) { return false; };
+    // Every row the engine meters (once per host and model that billed, per turn),
+    // in ledger units: the metering scenarios compare them with provider usage.
     c.budget.recordTokens = [this](const std::string& h, uint32_t in, uint32_t out,
-                                   uint32_t, uint32_t, const std::string& tag,
-                                   const std::string&) {
-      spend_.push_back({h, in, out, tag});
+                                   uint32_t cr, uint32_t cw, const std::string& tag,
+                                   const std::string& model) {
+      spend_.push_back({h, in, out, cr, cw, tag, model});
     };
     c.ttsEnabled = [] { return false; };
     c.deviceName = [this] { return opt_.devName; };
@@ -662,7 +667,6 @@ class LabRig {
 
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_;
   std::vector<int> deviceActions_;
-  struct Spend { std::string host; uint32_t in, out; std::string tag; };
   std::vector<Spend> spend_;
 
   mutable uint32_t heapReads_ = 0;

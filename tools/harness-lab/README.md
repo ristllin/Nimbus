@@ -180,3 +180,30 @@ wire formats, vector memory, RBAC, `web.search` - is the shipping code.
   principal and every memory call comes back *"this conversation isn't approved
   to store memories yet"*. That is the correct fail-safe, and it is what the lab
   reported before the hook was wired - not a device bug.
+
+## Turn record legs: spend per provider and failure causes
+
+Four scenarios check what a turn leaves on the record (`src/scenarios_turn_record.cpp`).
+They need the fault flags and `--record`; the switch and the failure are forced so the
+leg is repeatable, and every other request is real traffic:
+
+```bash
+E=NIMBUS_ENV_FILE=<secrets .env>; R=/tmp/rec; mkdir -p $R
+# A turn that switches provider: Anthropic round 0 is real (and writes the prompt
+# cache), its later requests fail, Mistral finishes. Each provider's spend must be
+# filed under that provider and model, once.
+env $E ./build/nimbus-lab --record=$R --no-embed '--fault=anthropic:2-:529:overloaded' \
+    '--fault=openai:*:0:connect' '--fault=zai:*:0:connect' scenarios metering-switch | tee $R/run.log
+python3 metering_check.py $R/usage.jsonl $R/run.log      # METERING MATCH per provider
+# A turn that fails after a billed round: its spend is still counted.
+#   '--fault=anthropic:2-:400:badreq' '--fault=mistral:*:400:badreq' ... scenarios metering-fail
+# The head reports the recorded first cause of a failed dream (pin the head model):
+#   NIMBUS_LAB_MODEL=claude-haiku-5-5 ... scenarios diagnose-from-evidence
+# A body with invalid UTF-8 is rejected with the provider's reason, unbilled:
+#   --host=mistral ... scenarios provider-error-reason
+```
+
+`metering_check.py` applies the device's own conversion (`ledgerDelta`): Anthropic
+reports cache reads and writes outside its input count, OpenAI inside it (split out
+as uncached, cached and written), other providers are not split. Faulted requests
+never reach the provider, so they bill nothing and are not recorded.

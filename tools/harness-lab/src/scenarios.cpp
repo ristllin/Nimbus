@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/harness/websearch.h"
+#include "scenarios_turn_record.h"
 
 namespace lab {
 namespace {
@@ -273,6 +274,16 @@ void scProviderParity(LabRig& rig, Ctx& c) {
   c.note("(driven per-provider by runScenarios; see the parity section)");
 }
 
+// The turn-record legs (scenarios_turn_record.h): spend per provider, failure causes.
+turnrec::Report report(Ctx& c) {
+  return {[&c](bool ok, const std::string& w) { c.check(ok, w); },
+          [&c](const std::string& n) { c.note(n); }};
+}
+void scMeteringSwitch(LabRig& rig, Ctx& c) { turnrec::meteringSwitch(rig, report(c)); }
+void scMeteringFail(LabRig& rig, Ctx& c) { turnrec::meteringFail(rig, report(c)); }
+void scDiagnoseFromEvidence(LabRig& rig, Ctx& c) { turnrec::diagnoseFromEvidence(rig, report(c)); }
+void scProviderErrorReason(LabRig& rig, Ctx& c) { turnrec::providerErrorReason(rig, report(c)); }
+
 // 12. The live ".env" regression (2026-08-13, Nimbus-4): asked how to set up
 //     GitHub so the assistant could create repos, the model walked a device
 //     OWNER through the firmware repo's .env + connectors_setup.py - a
@@ -351,6 +362,10 @@ const Scenario kScenarios[] = {
     {"degraded",      "a memory-degraded turn admits it, and promises nothing",   scDegradedHonesty, false, true},
     {"github-setup",  "an owner GitHub-setup answer routes to the web page, not the repo", scGithubSetupAudience, false},
     {"parity",        "every keyed provider handles plain + tool turns",           scProviderParity, false},
+    {"metering-switch", "a switched turn files each provider's spend under it, once", scMeteringSwitch, false},
+    {"metering-fail",   "a failed turn still files what its billed rounds cost",      scMeteringFail, false},
+    {"diagnose-from-evidence", "a failed dream's recorded cause is what the head reports", scDiagnoseFromEvidence, false},
+    {"provider-error-reason",  "an invalid UTF-8 body is rejected with a reason, unbilled", scProviderErrorReason, false},
 };
 
 }  // namespace
