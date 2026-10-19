@@ -102,4 +102,11 @@ std::string stageError(const ExchangeTrace& t, const char* parseWhy, const FailR
   return startedStarved ? s + ": low memory" : s;
 }
 
+std::string retainedTooLarge(size_t retained, size_t cap) {
+  if (retained <= cap) return std::string();
+  char b[80];
+  snprintf(b, sizeof(b), "response too large for the device (%u B retained)", (unsigned)retained);
+  return b;
+}
+
 }  // namespace nimbus::heapwatch

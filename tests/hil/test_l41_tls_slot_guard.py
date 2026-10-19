@@ -19,7 +19,10 @@ This guard encodes the class, deterministically and with no board:
     over ``kRelayBulkBytes`` to ``writeBigFrame``, which takes the slot per chunk;
     ``wsWriteAll`` is used only for small frames (heartbeat, pong, hello, acks,
     small answers);
-  * the transport takes the slot before its traced exchange.
+  * the transport takes the slot before its traced exchange;
+  * the transport's retained-document guard measures what the parse kept
+    (``measureJson``), never ``memoryUsage()``, which always returns 0 in
+    ArduinoJson 7 and left the 512 KB guard unable to fire.
 
 It fails on the v4.5.13 tree (the relay dial at ``relay_client.cpp:1189`` and the
 ``wsWriteAll`` write at ``:394``) and passes once both go through the slot.
@@ -182,6 +185,23 @@ def test_transport_takes_the_slot_before_the_traced_exchange():
     a, t = b.find("acquireWork("), b.find("tracedExchange(")
     assert 0 <= a < t, "the transport must take the work slot before its traced exchange"
     assert b.count("releaseWork(") == 1, "the slot is released in exactly one place (the trace finish)"
+
+
+def test_retained_guard_measures_what_was_kept():
+    text = (_SRC / "agent" / "transport_tls.cpp").read_text()
+    fn = re.search(r"bool readBody\(\)\s*\{(?P<b>.*?)\n  \}\n", text, re.S)
+    assert fn, "transport readBody moved: update this guard"
+    b = fn.group("b")
+    assert re.search(r"kept\s*=\s*measureJson\(\*doc\)", b), "the guard must measure the kept document"
+    assert "retainedTooLarge(kept)" in b, "the guard must use the host-tested rule (nimbus/exchange_trace.h)"
+    # The class: memoryUsage() is a dead measure in ArduinoJson 7, anywhere it is called.
+    callers = [
+        str(p.relative_to(_REPO))
+        for root in (_SRC, _REPO / "lib")
+        for p in sorted(root.rglob("*"))
+        if p.suffix in (".cpp", ".h") and re.search(r"(\.|->)memoryUsage\s*\(", p.read_text(errors="ignore"))
+    ]
+    assert callers == [], f"memoryUsage() always returns 0 in ArduinoJson 7: {callers}"
 
 
 def test_guard_parser_sees_the_relay_functions():

@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <ArduinoJson.h>
 #include <cstring>
 #include <regex>
 #include <string>
@@ -227,6 +228,53 @@ static void test_abnormal_predicate() {
   TEST_ASSERT_TRUE(t.abnormal());
 }
 
+// ---- the retained-document guard ------------------------------------------------
+// The device runs exactly this pair after a whole stream parse:
+// retainedTooLarge(measureJson(doc)). One string holds at most 65,535 B
+// (ARDUINOJSON_STRING_LENGTH_SIZE 2; a longer one fails the parse as NoMemory), so a
+// kept document passes the cap only through many fields, such as a content array.
+// A response body with `blocks` strings of 60,000 B under `key`, beside a small id.
+static std::string bodyWith(const char* key, int blocks) {
+  std::string b = std::string("{\"id\":\"msg_1\",\"") + key + "\":[";
+  for (int i = 0; i < blocks; i++) b += std::string(i ? ",\"" : "\"") + std::string(60000, 'x') + "\"";
+  return b + "]}";
+}
+// What the transport's streaming parse keeps: the fields the caller's filter names.
+static size_t keptBytes(const std::string& body, const char* keep) {
+  JsonDocument filter;
+  filter["id"] = true;
+  filter[keep][0] = true;   // every element of the array
+  JsonDocument doc;
+  const DeserializationError derr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  TEST_ASSERT_FALSE_MESSAGE(derr, derr.c_str());
+  return measureJson(doc);
+}
+
+// A body whose kept fields are over the cap fires, naming the retained size in the
+// text the provider layer types as a body too large to hold. The measure sees what
+// was kept, where JsonDocument::memoryUsage() reported 0 for the same document.
+static void test_retained_guard_fires_over_the_cap() {
+  const size_t kept = keptBytes(bodyWith("content", 9), "content");   // 540,000 B of text
+  TEST_ASSERT_TRUE(kept > kMaxRetainedBytes);
+  const std::string want = "response too large for the device (" + std::to_string(kept) + " B retained)";
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), retainedTooLarge(kept).c_str());
+  // The boundary: one byte over fires, exactly the cap does not.
+  TEST_ASSERT_FALSE(retainedTooLarge(kMaxRetainedBytes + 1).empty());
+  TEST_ASSERT_TRUE(retainedTooLarge(kMaxRetainedBytes).empty());
+}
+
+// Under the cap it stays quiet. And a body over the cap whose big fields the filter
+// drops is quiet too: the guard bounds what is kept, never what streamed past (any
+// response size stays safe).
+static void test_retained_guard_quiet_under_the_cap() {
+  const size_t small = keptBytes(bodyWith("content", 1), "content");
+  TEST_ASSERT_TRUE(small > 60000);
+  TEST_ASSERT_EQUAL_STRING("", retainedTooLarge(small).c_str());
+  const size_t filtered = keptBytes(bodyWith("blob", 9), "content");
+  TEST_ASSERT_TRUE(filtered < 64);
+  TEST_ASSERT_EQUAL_STRING("", retainedTooLarge(filtered).c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_every_request_stage_finishes_exactly_once);
@@ -235,5 +283,7 @@ int main() {
   RUN_TEST(test_healthy_line_keeps_the_field_order);
   RUN_TEST(test_errors_keep_the_markers_and_name_evidence);
   RUN_TEST(test_abnormal_predicate);
+  RUN_TEST(test_retained_guard_fires_over_the_cap);
+  RUN_TEST(test_retained_guard_quiet_under_the_cap);
   return UNITY_END();
 }

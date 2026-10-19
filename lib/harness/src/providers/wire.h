@@ -200,10 +200,14 @@ inline uint32_t clampRoundMs(uint32_t budgetMs, uint32_t ceilingMs) {
 // answer in time" when the request went out and the silence used (nearly) the whole
 // round, so the fabric fails over without a same-host retry and the owner hears the
 // real reason; "low memory: ..." on memory evidence; else "network" (one retry).
+// Memory evidence wins over a body too large to hold: a parse that ran out of memory
+// (NoMemory) while an allocation failure was recorded is the device out of memory,
+// LowMemory (no retry, no switch: another provider cannot give the device more
+// memory, it only spends money). Without evidence a body too large stays Cut.
 inline std::string headTransportError(const ProviderDeps& pd, uint32_t sentAtMs, uint32_t timeoutMs) {
   const LastExchange& last = lastExchange();
-  if (last.tooLarge) return "response too large for the device";
   if (last.allocFailed) return "low memory: the device could not make the request";
+  if (last.tooLarge) return "response too large for the device";
   const uint32_t waited = pd.nowMs ? pd.nowMs() - sentAtMs : timeoutMs;
   if (last.noResponse && waited >= timeoutMs - timeoutMs / 10)
     return "timeout: the provider did not answer in time";

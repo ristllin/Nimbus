@@ -3440,7 +3440,11 @@ the heavy-connector-write restart, 2026-07).
 The harness must handle any response / context / file size without crashing:
 
 1. **Responses stream** off the socket; only filter-retained fields are stored
-   (a 128 KB wire body → < 4 KB retained doc - `test_harness_streaming`).
+   (a 128 KB wire body → < 4 KB retained doc - `test_harness_streaming`). What the
+   filter keeps is capped at 512 KB (its serialized size, `kMaxRetainedBytes`): past
+   it the answer is dropped and named "response too large for the device" (Cut in
+   the provider failover table). A parse that ran out of memory while a failed
+   allocation was recorded is low memory instead: no retry and no switch.
 2. **Tool results into the model are clamped** (derived from the head model's
    context window: 8 KB per result and 64 KB total at a 200K window, see
    "Derived context budgets" below), so context stays bounded.

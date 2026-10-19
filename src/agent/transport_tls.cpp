@@ -49,11 +49,9 @@ namespace agent {
 namespace {
 
 constexpr size_t kMaxResponseBody = 256 * 1024;
-// Streaming-retained-size cap: even though only filter-retained fields are stored
-// (PSRAM), bound the retained bytes so a hostile/buggy provider can't stream an
-// unbounded field into memory (the old whole-body path had kMaxResponseBody; the
-// streaming path keeps this guard on the retained document instead).
-constexpr size_t kMaxRetainedBytes = 512 * 1024;
+// The streaming path bounds the RETAINED document instead (the old whole-body path
+// had kMaxResponseBody): nimbus::heapwatch::kMaxRetainedBytes and retainedTooLarge()
+// in nimbus/exchange_trace.h, host-tested there.
 
 // A read-only Arduino Stream over a Client whose read() BLOCKS until a byte is
 // available or the connection truly closes / the deadline passes - so ArduinoJson
@@ -216,17 +214,20 @@ struct TlsIo {
             (unsigned)heapBefore, (unsigned)ESP.getFreeHeap());
       return false;
     }
-    // Guard against an unbounded retained field (hostile/buggy provider): the
-    // filter keeps only small fields, but bound it so PSRAM can't be flooded.
+    // Guard against unbounded retained fields (hostile/buggy provider): the
+    // filter keeps only small fields, but bound what it kept. Measured as the kept
+    // document's serialized size (ArduinoJson 7's memoryUsage() always returns 0).
     // Named, never silent: a 2xx the device could not hold used to read as an
     // empty answer (a "stalled" round, a job polled forever); wire::exchange
     // turns the error text into a transport failure the step can classify. The
     // exchange itself completed, so the trace keeps fail=none.
-    if (!derr && doc->memoryUsage() > kMaxRetainedBytes) {
-      alogf("transport: retained %u B over cap -> drop", (unsigned)doc->memoryUsage());
-      tooLarge = "response too large for the device (" + std::to_string((unsigned)doc->memoryUsage()) +
-                 " B retained)";
-      doc->clear();
+    if (!derr) {
+      const size_t kept = measureJson(*doc);
+      tooLarge = nimbus::heapwatch::retainedTooLarge(kept);
+      if (!tooLarge.empty()) {
+        alogf("transport: retained %u B over cap -> drop", (unsigned)kept);
+        doc->clear();
+      }
     }
     return true;
   }

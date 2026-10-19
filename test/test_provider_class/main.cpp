@@ -18,6 +18,7 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/exchange_trace.h"   // the device transport's own error texts
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/billing_refusal.h"
@@ -560,6 +561,115 @@ static void test_partial_200_is_a_transport_failure_every_provider() {
   TEST_ASSERT_EQUAL((int)StepErr::ServerError, (int)st.kind);
 }
 
+// A 2xx that the device transport stopped: the scripted body parses, then the
+// transport reports the error text the device would have (per request; "" = none).
+struct DeviceTextHttp : harness_test::FakeHttpTransport {
+  std::vector<std::string> errText;
+  int execJson(const agent::HttpRequest& req, JsonDocument& doc, const JsonDocument& filter,
+               std::string& err) override {
+    const size_t at = idx;
+    const int status = agent::HttpTransport::execJson(req, doc, filter, err);
+    if (status != 0 && at < errText.size() && !errText[at].empty()) err = errText[at];
+    return status;
+  }
+};
+
+// The device's texts, built by the transport's own rules (nimbus/exchange_trace.h).
+static std::string noMemoryParse(bool evidence) {
+  using namespace nimbus::heapwatch;
+  ExchangeTrace t;
+  t.fail = Stage::Parse;
+  t.af = evidence ? 1 : 0;
+  FailRecord rec = {};
+  rec.size = 4096;
+  rec.caps = 1u << 10;   // MALLOC_CAP_SPIRAM: the JSON document's first try
+  return stageError(t, "NoMemory", evidence ? &rec : nullptr, false);
+}
+static std::string retainedOverCap() {
+  return nimbus::heapwatch::retainedTooLarge(nimbus::heapwatch::kMaxRetainedBytes + 4096);
+}
+
+static orch::HeadStep stepWithText(const char* host, const std::string& text) {
+  FakeProviderDeps d;
+  DeviceTextHttp http;
+  http.script.push_back({"", "", 200, !strcmp(host, "anthropic") ? antFinal()
+                                      : !strcmp(host, "openai")  ? oaiFinal() : misFinal()});
+  http.errText = {text};
+  providers::ProviderDeps pd = d.contract();
+  pd.http = &http;
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  orch::Transcript tr;
+  tr.addUser("hi");
+  const std::string instr = "SYS";
+  auto make = !strcmp(host, "anthropic") ? providers::antLoopStep
+            : !strcmp(host, "openai")    ? providers::oaiLoopStep
+                                         : providers::misLoopStep;
+  return make(pd, instr, rig.ht, nullptr, tr)(true, {}, 60000, "");
+}
+
+struct FabricRun {
+  bool ok = false;
+  int requests = 0;
+  int notifies = 0;
+  std::string err;
+};
+// anthropic answers 200 with the device text; openai would serve the round.
+static FabricRun fabricWithText(const std::string& text) {
+  FakeProviderDeps d;
+  DeviceTextHttp http;
+  http.script.push_back({"api.anthropic.com", "", 200, antFinal()});
+  http.script.push_back({"api.openai.com", "", 200, oaiFinal()});
+  http.errText = {text, ""};
+  providers::ProviderDeps pd = d.contract();
+  pd.http = &http;
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  FabricRun r;
+  std::string out;
+  r.ok = providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, r.err, rig.ht, nullptr,
+                                  [&](const std::string&, const std::string&) { r.notifies++; });
+  r.requests = (int)http.seen.size();
+  return r;
+}
+
+// Memory evidence wins over "too large": a parse that ran out of memory while a
+// failed allocation was recorded is the device out of memory. LowMemory on every
+// provider; the fabric sends nothing more (no retry, no switch).
+static void test_no_memory_parse_with_evidence_is_low_memory_every_provider() {
+  const std::string text = noMemoryParse(true);
+  TEST_ASSERT_TRUE_MESSAGE(text.find("alloc failed") != std::string::npos, text.c_str());
+  for (const char* host : {"anthropic", "openai", "mistral"}) {
+    const orch::HeadStep st = stepWithText(host, text);
+    TEST_ASSERT_FALSE_MESSAGE(st.ok, host);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("low_memory", orch::stepErrSlug(st.kind), (std::string(host) + " " + st.error).c_str());
+  }
+  const FabricRun r = fabricWithText(text);
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_TRUE_MESSAGE(r.err.rfind("low memory", 0) == 0, r.err.c_str());
+  TEST_ASSERT_EQUAL(1, r.requests);
+  TEST_ASSERT_EQUAL(0, r.notifies);
+}
+
+// Counter-test: without evidence, a body too large to hold (the parse ran out of
+// memory, or the kept document passed the retained cap) stays Cut on every provider,
+// and the fabric switches with no same-host retry.
+static void test_too_large_without_evidence_stays_cut_every_provider() {
+  for (const std::string& text : {noMemoryParse(false), retainedOverCap()}) {
+    TEST_ASSERT_TRUE_MESSAGE(text.find("alloc failed") == std::string::npos, text.c_str());
+    for (const char* host : {"anthropic", "openai", "mistral"}) {
+      const orch::HeadStep st = stepWithText(host, text);
+      TEST_ASSERT_FALSE_MESSAGE(st.ok, host);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("cut", orch::stepErrSlug(st.kind), (std::string(host) + " " + st.error).c_str());
+    }
+    const FabricRun r = fabricWithText(text);
+    TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+    TEST_ASSERT_EQUAL(2, r.requests);
+    TEST_ASSERT_EQUAL(1, r.notifies);
+    TEST_ASSERT_EQUAL((int)StepErr::Cut, (int)providers::lastFabricSwitch().kind);
+  }
+}
+
 // ---- 7. Mistral error text from every body shape, both paths --------------------------
 
 static void test_mistral_reason_text_every_shape_both_paths() {
@@ -658,6 +768,8 @@ int main(int, char**) {
   RUN_TEST(test_timeout_switches_without_retry_fast_cut_retries);
   RUN_TEST(test_every_request_deadline_comes_from_the_policy);
   RUN_TEST(test_partial_200_is_a_transport_failure_every_provider);
+  RUN_TEST(test_no_memory_parse_with_evidence_is_low_memory_every_provider);
+  RUN_TEST(test_too_large_without_evidence_stays_cut_every_provider);
   RUN_TEST(test_mistral_reason_text_every_shape_both_paths);
   RUN_TEST(test_sub_provenance_counts_per_provider);
   RUN_TEST(test_test_status_override_answers_locally);

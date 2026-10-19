@@ -129,4 +129,16 @@ int tracedExchange(Io& io, ExchangeTrace& t, Finish finish) {
 std::string stageError(const ExchangeTrace& t, const char* parseWhy, const FailRecord* last,
                        bool startedStarved);
 
+// The retained-document guard. The streaming parse keeps only the fields the caller's
+// filter names, so any response size is safe; this bounds what those fields hold (a
+// hostile or buggy provider streaming an unbounded run of kept fields into PSRAM; one
+// string holds at most 65,535 B, a longer one already fails the parse as NoMemory).
+// `retained` is the serialized size of the kept document (measureJson): ArduinoJson 7
+// keeps no memory count (JsonDocument::memoryUsage() always returns 0, which left the
+// old guard unable to fire).
+inline constexpr size_t kMaxRetainedBytes = 512 * 1024;
+// "" within `cap`, else "response too large for the device (N B retained)": the text
+// the provider layer types as a body too large to hold (wire::LastExchange::tooLarge).
+std::string retainedTooLarge(size_t retained, size_t cap = kMaxRetainedBytes);
+
 }  // namespace nimbus::heapwatch
