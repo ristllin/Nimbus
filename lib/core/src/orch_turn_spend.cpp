@@ -34,17 +34,29 @@ void TurnSpend::clear() {
   n = 0;
 }
 
-void TurnSpend::add(const char* host, const char* configuredModel, const TokenUsage& use) {
-  if (!host || !*host) return;
-  const bool billed = use.responses || use.promptTokens || use.completionTokens ||
-                      use.cacheReadTokens || use.cacheWriteTokens;
-  if (!billed) return;
-  char key[kModelKeyCap];
+namespace {
+
+bool billedAnything(const TokenUsage& u) {
+  return u.responses || u.promptTokens || u.completionTokens || u.cacheReadTokens ||
+         u.cacheWriteTokens;
+}
+
+// The model key this host's usage files under, fixed at bill time. A request over the
+// model's size tier bills at that tier's row (the whole of this host's spend goes
+// there: priced high, never low).
+void billKey(const char* host, const char* configuredModel, const TokenUsage& use,
+             char (&key)[kModelKeyCap]) {
   usageModelKey(host, configuredModel ? configuredModel : "", use.servedModel.c_str(), key);
-  // A request over the model's size tier bills at that tier's row (the whole of this
-  // host's spend goes there: priced high, never low).
   char longKey[kModelKeyCap];
   if (builtinLongTierKey(host, key, use.maxRequestIn, longKey)) std::memcpy(key, longKey, sizeof(key));
+}
+
+}  // namespace
+
+void TurnSpend::add(const char* host, const char* configuredModel, const TokenUsage& use) {
+  if (!host || !*host || !billedAnything(use)) return;
+  char key[kModelKeyCap];
+  billKey(host, configuredModel, use, key);
   char h[kProvKeyCap];
   copyBounded(h, sizeof(h), host);
   SpendSlot* sameHost = nullptr;
@@ -58,16 +70,13 @@ void TurnSpend::add(const char* host, const char* configuredModel, const TokenUs
     return;
   }
   if (n == kSlots) freeOneSlot();   // a new host: fold another host's second model
-  if (n < kSlots) {
-    SpendSlot& s = slot[n++];
-    copyBounded(s.host, sizeof(s.host), h);
-    copyBounded(s.model, sizeof(s.model), key);
-    addInto(s, use);
-    return;
-  }
   // Four hosts in one turn (the fabric and the ladder both stop at three): the last
   // slot is the guard for a caller that broke that rule - tokens are never dropped.
-  addInto(slot[kSlots - 1], use);
+  if (n == kSlots) { addInto(slot[kSlots - 1], use); return; }
+  SpendSlot& s = slot[n++];
+  copyBounded(s.host, sizeof(s.host), h);
+  copyBounded(s.model, sizeof(s.model), key);
+  addInto(s, use);
 }
 
 void TurnSpend::freeOneSlot() {

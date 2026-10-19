@@ -57,7 +57,7 @@ class FailureChain {
   bool anyTextHas(const char* needle) const;
 
   // The chain as one line of at most `cap` bytes, valid UTF-8:
-  //   "anthropic x2: messages HTTP 400: The request body ... > openai x2 400 > mistral x2 400"
+  //   "anthropic (x2): messages HTTP 400: The request body ... > openai 400 (x2) > mistral 400 (x2)"
   // The first entry keeps its text; later ones keep their host and a short cause.
   // When it does not fit, the first text shrinks to kMinHeadText, then later
   // entries are dropped from the end (" > +N more"), then the first text shrinks

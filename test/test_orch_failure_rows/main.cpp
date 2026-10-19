@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include "../support/utf8_check.h"
+
 #include <ArduinoJson.h>
 
 #include <cstdio>
@@ -31,22 +33,7 @@ static uint32_t rnd() {
   return g_seed;
 }
 
-static bool validUtf8(const std::string& s) {
-  const unsigned char* u = (const unsigned char*)s.data();
-  for (size_t i = 0; i < s.size();) {
-    const unsigned char c = u[i];
-    size_t len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
-    if (!len || i + len > s.size()) return false;
-    if (len == 2 && c < 0xC2) return false;
-    for (size_t k = 1; k < len; ++k)
-      if ((u[i + k] & 0xC0) != 0x80) return false;
-    if (len == 3 && c == 0xED && u[i + 1] > 0x9F) return false;
-    if (len == 3 && c == 0xE0 && u[i + 1] < 0xA0) return false;
-    if (len == 4 && (c > 0xF4 || (c == 0xF0 && u[i + 1] < 0x90) || (c == 0xF4 && u[i + 1] > 0x8F))) return false;
-    i += len;
-  }
-  return true;
-}
+static bool validUtf8(const std::string& s) { return testutf8::valid(s); }
 
 static std::string randText(size_t n, bool hostile) {
   static const char* kOk = "abcdefghijklmnopqrstuvwxyz0123456789-._:/\" ";
@@ -217,6 +204,19 @@ static void test_turnend_row_via_for_a_switched_turn() {
   TEST_ASSERT_NULL(std::strstr(turnEndRowJson(r).c_str(), "\"via\""));
 }
 
+
+static ErrorEventIn ev(const std::string& src, const std::string& from, const std::string& to,
+                       const FailureChain* chain, const std::string& error, int calls) {
+  ErrorEventIn e;
+  e.src = src;
+  e.requestedHost = from;
+  e.finalHost = to;
+  e.chain = chain;
+  e.error = error;
+  e.toolCalls = calls;
+  return e;
+}
+
 static void test_error_event_text() {
   FailureChain ch;
   ch.note("anthropic", "messages HTTP 400: The request body is not valid JSON: invalid unicode "
@@ -224,7 +224,7 @@ static void test_error_event_text() {
   ch.note("anthropic", "messages HTTP 400: same");
   ch.note("openai", "resp HTTP 400: Invalid body");
   ch.note("mistral", "chat HTTP 400");
-  const std::string t = errorEventText("dream", "anthropic", "mistral", &ch, "chat HTTP 400", 4);
+  const std::string t = errorEventText(ev("dream", "anthropic", "mistral", &ch, "chat HTTP 400", 4));
   TEST_ASSERT_TRUE(t.size() <= kErrorEventMax);
   TEST_ASSERT_EQUAL_INT(0, t.compare(0, 41, "Turn FAILED (dream) on anthropic -> mistr"));
   TEST_ASSERT_NOT_NULL(std::strstr(t.c_str(), ": anthropic (x2): messages HTTP 400: The request body"));
@@ -232,17 +232,17 @@ static void test_error_event_text() {
   TEST_ASSERT_NULL(std::strstr(t.c_str(), "round"));
   // No chain: the last error; nothing at all: said plainly.
   TEST_ASSERT_EQUAL_STRING("Turn FAILED (owner) on openai: resp HTTP 500; no tool ran",
-                           errorEventText("owner", "openai", "openai", nullptr, "resp HTTP 500", 0).c_str());
+                           errorEventText(ev("owner", "openai", "openai", nullptr, "resp HTTP 500", 0)).c_str());
   TEST_ASSERT_EQUAL_STRING("Turn FAILED on openai: cause not recorded; 1 tool call ran",
-                           errorEventText("", "openai", "openai", nullptr, "", 1).c_str());
+                           errorEventText(ev("", "openai", "openai", nullptr, "", 1)).c_str());
   // Hostile input stays within the cap and valid.
   g_seed = 7;
   for (int c = 0; c < 500; ++c) {
     FailureChain h;
     h.note(randText(1 + rnd() % 40, true), randText(rnd() % 2048, true));
-    const std::string x = errorEventText(randText(rnd() % 30, true), randText(rnd() % 30, true),
-                                         randText(rnd() % 30, true), &h, randText(100, true),
-                                         (int)rnd());
+    const std::string x = errorEventText(ev(randText(rnd() % 30, true), randText(rnd() % 30, true),
+                                            randText(rnd() % 30, true), &h, randText(100, true),
+                                            (int)rnd()));
     TEST_ASSERT_TRUE(x.size() <= kErrorEventMax);
     TEST_ASSERT_TRUE(validUtf8(x));
     TEST_ASSERT_EQUAL_INT(0, x.compare(0, 11, "Turn FAILED"));

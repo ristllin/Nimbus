@@ -55,10 +55,15 @@ std::string turnEndRowJson(const TurnEndRowIn& r, size_t cap = kTurnEndRowMax);
 //    The request body ... > openai 400 (x2) > mistral 400 (x2); 4 tool calls ran"
 // The prefix "Turn FAILED" is stable (the head and the web timeline search for it).
 inline constexpr size_t kErrorEventMax = 240;
-std::string errorEventText(const std::string& src, const std::string& requestedHost,
-                           const std::string& finalHost, const FailureChain* chain,
-                           const std::string& error, int toolCalls,
-                           size_t cap = kErrorEventMax);
+struct ErrorEventIn {
+  std::string src;              // whose turn: "owner" | "dream" | ... ("" = not said)
+  std::string requestedHost;    // where it started
+  std::string finalHost;        // where it ended
+  const FailureChain* chain = nullptr;   // the causes, first first
+  std::string error;            // the last error text, used when there is no chain
+  int toolCalls = 0;            // executed tool calls
+};
+std::string errorEventText(const ErrorEventIn& e, size_t cap = kErrorEventMax);
 
 // The ev:dream timeline text, at most `cap` bytes:
 //   "Nightly dream FAILED (anthropic 400: ...) - spent 15438 tokens; maintenance

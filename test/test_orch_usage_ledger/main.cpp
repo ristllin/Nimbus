@@ -2436,6 +2436,36 @@ static void test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload() {
   TEST_ASSERT_EQUAL_UINT64(L.estCents("openai"), R2.estCents("openai"));
 }
 
+// Fresh device (absent NVS, no spend file, no history - the first boot after an update
+// the owner QAs): a switched turn files each host under its own model, the stored blob
+// holds OpenAI's cache folded (fields 0) and grows no tag row, and a restart restores
+// the split from the rows with the same estimate.
+static void test_r4_fresh_device_switched_turn() {
+  UsageLedger L = load("", "", "", UsageHistory());
+  L.setAllowNewTags(false);   // what store.cpp does at load while the ledger is in NVS
+  const TokenDelta ant = ledgerDelta(slotOf("anthropic", 696, 119, 0, 9717));
+  const TokenDelta oai = ledgerDelta(slotOf("openai", 17717, 79, 8816, 0));
+  turn(L, "anthropic", "claude-haiku-5-5", ant);
+  turn(L, "openai", "gpt-5.6-luna", oai);
+  TEST_ASSERT_EQUAL_UINT64(9717, L.find("anthropic")->cacheWrite);
+  TEST_ASSERT_EQUAL_UINT64(17717 - 8816, L.find("openai")->tokensIn);
+  TEST_ASSERT_EQUAL_UINT64(8816, L.find("openai")->cacheRead);
+  TEST_ASSERT_EQUAL(0, (int)L.tagEntries().size());
+  const std::string nvs = L.serialize();
+  const std::vector<std::string> g = nvsGroup(nvs, "openai");
+  TEST_ASSERT_EQUAL(18, (int)g.size());
+  TEST_ASSERT_EQUAL_STRING("17717", g[7].c_str());   // input in its native, cache-included form
+  TEST_ASSERT_EQUAL_STRING("0", g[16].c_str());
+  TEST_ASSERT_EQUAL_STRING("0", g[17].c_str());
+  UsageHistory h;
+  h.record("anthropic", "claude-haiku-5-5", 20650, ant, 0);
+  h.record("openai", "gpt-5.6-luna", 20650, oai, 0);
+  UsageLedger R = load(nvs, L.models().serializeSpend(), "", h);
+  TEST_ASSERT_EQUAL_UINT64(8816, R.find("openai")->cacheRead);
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("openai"), R.estCents("openai"));
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("anthropic"), R.estCents("anthropic"));
+}
+
 // The split cannot be put back when the rows do not hold it (a spend file that did not
 // land): the folded form stays, its cache billed at the input rate - never lower.
 static void test_r4_resplit_fails_closed_without_rows() {
@@ -2529,6 +2559,7 @@ int main() {
   RUN_TEST(test_r4_haiku_long_prompt_tier);
   RUN_TEST(test_r4_unknown_id_never_below_top_builtin_price);
   RUN_TEST(test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload);
+  RUN_TEST(test_r4_fresh_device_switched_turn);
   RUN_TEST(test_r4_resplit_fails_closed_without_rows);
   RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
   return UNITY_END();

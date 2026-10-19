@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include "../support/utf8_check.h"
+
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -24,31 +26,7 @@ using nimbus::orch::shortFailCause;
 void setUp() {}
 void tearDown() {}
 
-// ---- an independent strict UTF-8 check (not the implementation's) -------------
-static bool validUtf8NoControls(const std::string& s) {
-  const unsigned char* u = (const unsigned char*)s.data();
-  const size_t n = s.size();
-  for (size_t i = 0; i < n;) {
-    unsigned char c = u[i];
-    uint32_t cp;
-    size_t len;
-    if (c < 0x80) { cp = c; len = 1; }
-    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
-    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
-    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
-    else return false;
-    if (i + len > n) return false;
-    for (size_t k = 1; k < len; ++k) {
-      if ((u[i + k] & 0xC0) != 0x80) return false;
-      cp = (cp << 6) | (u[i + k] & 0x3F);
-    }
-    static const uint32_t kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
-    if (cp < kMin[len] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
-    if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0)) return false;
-    i += len;
-  }
-  return true;
-}
+static bool validUtf8NoControls(const std::string& s) { return testutf8::valid(s, true); }
 
 // ---- deterministic generator ----------------------------------------------------
 static uint32_t g_seed = 0x5eed1234u;
@@ -104,35 +82,56 @@ static std::vector<Attempt> genSequence(const int order[3]) {
   return v;
 }
 
-// The class property over one sequence, for any chain type with FailureChain's API.
+// The chain's steps: sizes, valid text, no attempt lost (when nothing was evicted).
 template <typename Chain>
-static bool propertyHolds(const std::vector<Attempt>& seq, std::string* why) {
-  Chain ch;
-  for (const Attempt& a : seq) ch.note(a.host, a.err);
-  auto fail = [&](const char* w) { if (why) *why = w; return false; };
-  if (ch.size() < 1 || ch.size() > FailureChain::kMaxSteps) return fail("size out of range");
-  const std::string firstText = sanitizeFailText(seq[0].err.data(), seq[0].err.size(),
-                                                 FailureChain::kTextMax);
-  if (ch.first()->host != seq[0].host) return fail("first host wrong");
-  if (ch.first()->text != firstText) return fail("first text is not the first error");
-  if (ch.last()->host != seq.back().host) return fail("last host wrong");
+static const char* stepsProblem(const Chain& ch, const std::vector<Attempt>& seq) {
   size_t runs = 1, attempts = 0;
   for (size_t i = 1; i < seq.size(); ++i)
     if (seq[i].host != seq[i - 1].host) runs++;
   for (size_t i = 0; i < ch.size(); ++i) {
     const FailStep& st = ch.at(i);
-    if (st.text.size() > FailureChain::kTextMax) return fail("text over 160 B");
-    if (!validUtf8NoControls(st.text)) return fail("text not valid UTF-8 / has controls");
+    if (st.text.size() > FailureChain::kTextMax) return "text over 160 B";
+    if (!validUtf8NoControls(st.text)) return "text not valid UTF-8 / has controls";
     attempts += st.attempts;
   }
-  if (runs <= FailureChain::kMaxSteps && attempts != seq.size()) return fail("attempts lost");
+  if (runs <= FailureChain::kMaxSteps && attempts != seq.size()) return "attempts lost";
+  return nullptr;
+}
+
+// render() at every cap: within it, valid, and naming the first host.
+template <typename Chain>
+static const char* renderProblem(const Chain& ch, const std::string& firstHost) {
   for (size_t cap = 32; cap <= 512; cap += 16) {
     const std::string r = ch.render(cap);
-    if (r.size() > cap) return fail("render over cap");
-    if (!validUtf8NoControls(r)) return fail("render not valid UTF-8");
-    if (r.compare(0, seq[0].host.size(), seq[0].host) != 0) return fail("render lost the first host");
+    if (r.size() > cap) return "render over cap";
+    if (!validUtf8NoControls(r)) return "render not valid UTF-8";
+    if (r.compare(0, firstHost.size(), firstHost) != 0) return "render lost the first host";
   }
-  return true;
+  return nullptr;
+}
+
+// The first and last entries: the first error and host, the last host.
+template <typename Chain>
+static const char* endsProblem(const Chain& ch, const std::vector<Attempt>& seq) {
+  if (ch.size() < 1 || ch.size() > FailureChain::kMaxSteps) return "size out of range";
+  const std::string firstText = sanitizeFailText(seq[0].err.data(), seq[0].err.size(),
+                                                 FailureChain::kTextMax);
+  if (ch.first()->host != seq[0].host) return "first host wrong";
+  if (ch.first()->text != firstText) return "first text is not the first error";
+  if (ch.last()->host != seq.back().host) return "last host wrong";
+  return nullptr;
+}
+
+// The class property over one sequence, for any chain type with FailureChain's API.
+template <typename Chain>
+static bool propertyHolds(const std::vector<Attempt>& seq, std::string* why) {
+  Chain ch;
+  for (const Attempt& a : seq) ch.note(a.host, a.err);
+  const char* w = endsProblem(ch, seq);
+  if (!w) w = stepsProblem(ch, seq);
+  if (!w) w = renderProblem(ch, seq[0].host);
+  if (w && why) *why = w;
+  return w == nullptr;
 }
 
 static const int kOrders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};

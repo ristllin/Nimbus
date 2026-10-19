@@ -50,6 +50,32 @@ std::string causeAt(const TurnEndRowIn& r, int level) {
 
 bool viaShown(const TurnEndRowIn& r) { return r.spend && r.spend->billedSlots() > 1; }
 
+void addVia(JsonDocument& d, const TurnEndRowIn& r, int level) {
+  JsonArray via = d["via"].to<JsonArray>();
+  for (size_t i = 0; i < r.spend->n; ++i) {
+    const SpendSlot& s = r.spend->slot[i];
+    JsonArray e = via.add<JsonArray>();
+    e.add(clean(s.host, 15));
+    if (level < kViaNoModels) e.add(clean(s.model, 47));
+    else if (level < kViaNoCache) e.add("");
+    e.add(s.in);
+    e.add(s.out);
+    if (level < kViaNoCache) {
+      e.add(s.cacheR);
+      e.add(s.cacheW);
+    }
+  }
+}
+
+// Everything after host/ok/in/out (none of it on the bare row).
+void addDetail(JsonDocument& d, const TurnEndRowIn& r, int level) {
+  if (level < kNoCache && r.cacheR) d["cr"] = r.cacheR;
+  if (level < kNoCache && r.cacheW) d["cw"] = r.cacheW;
+  d["reply"] = (uint32_t)r.reply;
+  if (!r.ok) d["err"] = causeAt(r, level);
+  if (level < kNoVia && viaShown(r)) addVia(d, r, level);
+}
+
 std::string rowAt(const TurnEndRowIn& r, int level) {
   JsonDocument d;
   d["host"] = clean(r.host, 15);
@@ -62,28 +88,7 @@ std::string rowAt(const TurnEndRowIn& r, int level) {
   d["ok"] = r.ok;
   d["in"] = r.in;
   d["out"] = r.out;
-  if (level < kBare) {
-    if (level < kNoCache && r.cacheR) d["cr"] = r.cacheR;
-    if (level < kNoCache && r.cacheW) d["cw"] = r.cacheW;
-    d["reply"] = (uint32_t)r.reply;
-    if (!r.ok) d["err"] = causeAt(r, level);
-    if (level < kNoVia && viaShown(r)) {
-      JsonArray via = d["via"].to<JsonArray>();
-      for (size_t i = 0; i < r.spend->n; ++i) {
-        const SpendSlot& s = r.spend->slot[i];
-        JsonArray e = via.add<JsonArray>();
-        e.add(clean(s.host, 15));
-        if (level < kViaNoModels) e.add(clean(s.model, 47));
-        else if (level < kViaNoCache) e.add("");
-        e.add(s.in);
-        e.add(s.out);
-        if (level < kViaNoCache) {
-          e.add(s.cacheR);
-          e.add(s.cacheW);
-        }
-      }
-    }
-  }
+  if (level < kBare) addDetail(d, r, level);
   std::string js;
   serializeJson(d, js);
   return js;
@@ -106,21 +111,19 @@ std::string turnEndRowJson(const TurnEndRowIn& r, size_t cap) {
   return js;   // the bare row: within kTurnEndRowMin by construction
 }
 
-std::string errorEventText(const std::string& src, const std::string& requestedHost,
-                           const std::string& finalHost, const FailureChain* chain,
-                           const std::string& error, int toolCalls, size_t cap) {
-  const std::string from = clean(requestedHost, 15), to = clean(finalHost, 15);
+std::string errorEventText(const ErrorEventIn& e, size_t cap) {
+  const std::string from = clean(e.requestedHost, 15), to = clean(e.finalHost, 15);
   std::string pre = "Turn FAILED";
-  if (!src.empty()) pre += " (" + clean(src, 12) + ")";
+  if (!e.src.empty()) pre += " (" + clean(e.src, 12) + ")";
   if (!from.empty()) pre += " on " + from;
   if (!to.empty() && to != from) pre += (from.empty() ? " on " : " -> ") + to;
   pre += ": ";
-  const std::string post = "; " + toolPhrase(toolCalls);
+  const std::string post = "; " + toolPhrase(e.toolCalls);
   const size_t fixed = pre.size() + post.size();
   const size_t budget = cap > fixed ? cap - fixed : 0;
   std::string cause;
-  if (chain && !chain->empty()) cause = chain->render(budget);
-  else cause = capUtf8(clean(error, FailureChain::kTextMax), budget);
+  if (e.chain && !e.chain->empty()) cause = e.chain->render(budget);
+  else cause = capUtf8(clean(e.error, FailureChain::kTextMax), budget);
   if (cause.empty()) cause = capUtf8("cause not recorded", budget);
   return capUtf8(pre + cause + post, cap);
 }

@@ -257,37 +257,8 @@ struct Rig {
     d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string&,
                             const std::string&, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,
-                            const std::function<void(const std::string&,
-                                                     const std::string&)>& notify) {
-      fabricCalls.push_back(hl);
-      out = fabricOut;
-      auto file = [&](size_t i, uint32_t in, uint32_t o, const std::string& echo) {
-        orch::TokenUsage u;
-        u.add(in, o);
-        u.servedModel = echo;
-        if (spend) spend->add(hl[i].c_str(), modelOf(hl[i]).c_str(), u);
-      };
-      if (!fabricVisits.empty()) {
-        const size_t n = std::min(fabricVisits.size(), hl.size());
-        for (size_t i = 0; i < n; ++i) {
-          file(i, fabricVisits[i].in, fabricVisits[i].out, "");
-          const bool last = i + 1 == n;
-          if (last && fabricOk) break;
-          if (ht.onStepError) ht.onStepError(hl[i], last ? fabricErr : fabricVisits[i].err);
-          if (!last && notify) notify(hl[i], hl[i + 1]);
-        }
-        if (!fabricOk) { out.clear(); err = fabricErr; }
-        return fabricOk;
-      }
-      if (fabricSwitch && hl.size() > 1) {
-        file(0, 50, 10, fabricFirstEcho);
-        if (ht.onStepError) ht.onStepError(hl[0], "network");
-        if (notify) notify(hl[0], hl[1]);
-        file(1, 100, 20, "");
-        return true;
-      }
-      file(0, 100, 20, "");
-      return true;
+                            const FabricNotify& notify) {
+      return fabricRun(hl, out, err, ht, spend, notify);
     };
     d.hosts.fabricSupports = [](const std::string& h) {
       return h == "openai" || h == "anthropic" || h == "mistral";
@@ -318,6 +289,52 @@ struct Rig {
   // Lane L: a failed attempt that still hands back its (cut) turn.
   static void keepPartial(const Script& s, std::string& out) {
     if (s.partialOnFail) out = s.outJson;
+  }
+
+  using FabricNotify = std::function<void(const std::string&, const std::string&)>;
+
+  // One host's billed usage into the spend table, under the model configured for it.
+  void fileSpend(orch::TurnSpend* spend, const std::string& host, uint32_t in, uint32_t o,
+                 const std::string& echo) {
+    orch::TokenUsage u;
+    u.add(in, o);
+    u.servedModel = echo;
+    if (spend) spend->add(host.c_str(), modelOf(host).c_str(), u);
+  }
+
+  // The scripted fabricVisits run: every host but the last fails (onStepError, then a
+  // switch), the last ends the turn with fabricOk / fabricErr.
+  bool fabricVisitsRun(const std::vector<std::string>& hl, std::string& out, std::string& err,
+                       const agent::HeadTools& ht, orch::TurnSpend* spend,
+                       const FabricNotify& notify) {
+    const size_t n = std::min(fabricVisits.size(), hl.size());
+    for (size_t i = 0; i < n; ++i) {
+      fileSpend(spend, hl[i], fabricVisits[i].in, fabricVisits[i].out, "");
+      const bool last = i + 1 == n;
+      if (last && fabricOk) break;
+      if (ht.onStepError) ht.onStepError(hl[i], last ? fabricErr : fabricVisits[i].err);
+      if (!last && notify) notify(hl[i], hl[i + 1]);
+    }
+    if (!fabricOk) { out.clear(); err = fabricErr; }
+    return fabricOk;
+  }
+
+  // Like providers::runFabricLoop: each host bills into its own counter, filed into
+  // the spend table under the model configured for it.
+  bool fabricRun(const std::vector<std::string>& hl, std::string& out, std::string& err,
+                 const agent::HeadTools& ht, orch::TurnSpend* spend, const FabricNotify& notify) {
+    fabricCalls.push_back(hl);
+    out = fabricOut;
+    if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
+    if (fabricSwitch && hl.size() > 1) {
+      fileSpend(spend, hl[0], 50, 10, fabricFirstEcho);
+      if (ht.onStepError) ht.onStepError(hl[0], "network");
+      if (notify) notify(hl[0], hl[1]);
+      fileSpend(spend, hl[1], 100, 20, "");
+      return true;
+    }
+    fileSpend(spend, hl[0], 100, 20, "");
+    return true;
   }
 
   std::string modelOf(const std::string& h) const {
@@ -3016,69 +3033,80 @@ static void test_fallback_note_names_previous_turn_and_reason() {
 // 0-2 switches meters ONCE (none when nothing billed), per host exactly what that host
 // billed, and lastTurnUsage is this turn's total. TurnEndEv.model is a model that
 // billed, or empty.
+enum MeterExit { kMeterSuccess, kMeterParse, kMeterFailAfterBilled, kMeterBudget };
+static const char* const kMeterHosts[3] = {"anthropic", "openai", "mistral"};
+
+// Fabric: hosts 0..sw each bill 10*(i+1) in; every host but the last fails.
+static void meterFabricCase(Rig& r, int ex, int sw, uint32_t want[3]) {
+  for (int i = 0; i <= sw; ++i) {
+    r.fabricVisits.push_back({(uint32_t)(10 * (i + 1)), 1, "network"});
+    want[i] = 10 * (i + 1);
+  }
+  r.fabricOk = ex != kMeterFailAfterBilled;
+  r.fabricErr = "chat HTTP 503";
+  if (ex == kMeterParse) r.fabricOut = "{\"nothing\":true}";
+}
+
+// Legacy: each failing host bills on both of its attempts (the first host) or its one
+// attempt (alternates); the last host decides the exit.
+static void meterLegacyCase(Rig& r, int ex, int sw, uint32_t want[3]) {
+  for (int i = 0; i <= sw; ++i) {
+    Rig::Script s;
+    s.usageIn = (uint32_t)(10 * (i + 1));
+    s.usageOut = 1;
+    const bool fails = i != sw || ex == kMeterFailAfterBilled;
+    want[i] = fails ? s.usageIn * (i == 0 ? 2u : 1u) : s.usageIn;
+    if (fails) {
+      s.ok = false;
+      s.err = "chat HTTP 503";
+      s.usageOnFail = true;
+    } else if (ex == kMeterParse) {
+      s.outJson = "{\"nothing\":true}";
+    }
+    r.scripts[kMeterHosts[i]] = {s};
+  }
+  for (int i = sw + 1; i < 3; ++i) r.scripts[kMeterHosts[i]] = {{false, "", "down", 0, "", 0, 0}};
+}
+
+// One metered turn: once (none when nothing billed), per host what it billed, the
+// total in lastTurnUsage, and TurnEndEv.model a model that billed (or empty).
+static void meterCheck(Rig& r, const uint32_t want[3], const char* tag) {
+  const uint32_t billed = want[0] + want[1] + want[2];
+  TEST_ASSERT_EQUAL_MESSAGE(billed ? 1 : 0, (int)r.cfg.spendCalls.size(), tag);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.cfg.recorded.size(), tag);   // the batch, only
+  if (billed) {
+    const orch::TurnSpend& sp = r.cfg.spendCalls[0].spend;
+    for (int i = 0; i < 3; ++i)
+      TEST_ASSERT_EQUAL_MESSAGE(want[i], sp.hostTotal(kMeterHosts[i]).in, tag);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("turn", r.cfg.spendCalls[0].tag.c_str(), tag);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(billed, r.eng->lastTurnUsage().promptTokens, tag);
+  const agent::TurnEndEv& ev = r.hookEnds.back();
+  if (billed == 0) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", ev.model.c_str(), tag);
+    return;
+  }
+  TEST_ASSERT_NOT_NULL_MESSAGE(ev.spend, tag);
+  bool found = false;
+  for (size_t k = 0; k < ev.spend->n; ++k) found = found || ev.model == ev.spend->slot[k].model;
+  TEST_ASSERT_TRUE_MESSAGE(found, tag);
+}
+
 static void test_metering_matrix_once_per_turn_per_host() {
-  enum Exit { Success, Parse, FailAfterBilled, Budget };
-  const char* hosts[3] = {"anthropic", "openai", "mistral"};
-  for (int ex = Success; ex <= Budget; ++ex)
+  for (int ex = kMeterSuccess; ex <= kMeterBudget; ++ex)
     for (int fabric = 0; fabric <= 1; ++fabric)
       for (int sw = 0; sw <= 2; ++sw) {
         Rig r(false, /*spendBatch=*/true);
         r.cfg.midFail = fabric == 1;
         uint32_t want[3] = {0, 0, 0};   // tokens in per host this turn
-        if (ex == Budget) {
-          r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
-        } else if (fabric) {
-          for (int i = 0; i <= sw; ++i) {
-            r.fabricVisits.push_back({(uint32_t)(10 * (i + 1)), 1, "network"});
-            want[i] = 10 * (i + 1);
-          }
-          r.fabricOk = ex != FailAfterBilled;
-          r.fabricErr = "chat HTTP 503";
-          if (ex == Parse) r.fabricOut = "{\"nothing\":true}";
-        } else {
-          // Legacy: each failing host bills on both of its attempts (the first host)
-          // or its one attempt (alternates); the last host decides the exit.
-          for (int i = 0; i <= sw; ++i) {
-            Rig::Script s;
-            s.usageIn = (uint32_t)(10 * (i + 1));
-            s.usageOut = 1;
-            const bool last = i == sw;
-            if (!last || ex == FailAfterBilled) {
-              s.ok = false;
-              s.err = "chat HTTP 503";
-              s.usageOnFail = true;
-              want[i] = s.usageIn * (i == 0 ? 2u : 1u);
-            } else {
-              want[i] = s.usageIn;
-              if (ex == Parse) s.outJson = "{\"nothing\":true}";
-            }
-            r.scripts[hosts[i]] = {s};
-          }
-          for (int i = sw + 1; i < 3; ++i) r.scripts[hosts[i]] = {{false, "", "down", 0, "", 0, 0}};
-        }
+        if (ex == kMeterBudget) r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
+        else if (fabric) meterFabricCase(r, ex, sw, want);
+        else meterLegacyCase(r, ex, sw, want);
         const bool ok = r.eng->runTurn("inputs", "1001", "hi");
         char tag[64];
         std::snprintf(tag, sizeof tag, "exit=%d fabric=%d switches=%d", ex, fabric, sw);
-        TEST_ASSERT_EQUAL_MESSAGE(ex == Success, ok, tag);
-        const uint32_t billed = want[0] + want[1] + want[2];
-        TEST_ASSERT_EQUAL_MESSAGE(billed ? 1 : 0, (int)r.cfg.spendCalls.size(), tag);
-        TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.cfg.recorded.size(), tag);   // the batch, only
-        if (billed) {
-          const orch::TurnSpend& sp = r.cfg.spendCalls[0].spend;
-          for (int i = 0; i < 3; ++i)
-            TEST_ASSERT_EQUAL_MESSAGE(want[i], sp.hostTotal(hosts[i]).in, tag);
-          TEST_ASSERT_EQUAL_STRING_MESSAGE("turn", r.cfg.spendCalls[0].tag.c_str(), tag);
-        }
-        TEST_ASSERT_EQUAL_MESSAGE(billed, r.eng->lastTurnUsage().promptTokens, tag);
-        const agent::TurnEndEv& ev = r.hookEnds.back();
-        if (billed == 0) {
-          TEST_ASSERT_EQUAL_STRING_MESSAGE("", ev.model.c_str(), tag);
-        } else {
-          TEST_ASSERT_NOT_NULL_MESSAGE(ev.spend, tag);
-          bool found = false;
-          for (size_t k = 0; k < ev.spend->n; ++k) found = found || ev.model == ev.spend->slot[k].model;
-          TEST_ASSERT_TRUE_MESSAGE(found, tag);
-        }
+        TEST_ASSERT_EQUAL_MESSAGE(ex == kMeterSuccess, ok, tag);
+        meterCheck(r, want, tag);
       }
 }
 

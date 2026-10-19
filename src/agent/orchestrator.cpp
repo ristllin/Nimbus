@@ -1411,8 +1411,14 @@ static TurnEngine::Deps buildTurnDeps() {
     // and the tool CALLS that ran, and carries this turn's id (written before the
     // tag is cleared) so it joins the turn's own rows.
     if (!ev.ok) {
-      const std::string txt = nimbus::orch::errorEventText(src, ev.requestedHost, ev.host, ev.chain,
-                                                           ev.error, ev.rounds);
+      nimbus::orch::ErrorEventIn ein;
+      ein.src = src;
+      ein.requestedHost = ev.requestedHost;
+      ein.finalHost = ev.host;
+      ein.chain = ev.chain;
+      ein.error = ev.error;
+      ein.toolCalls = ev.rounds;
+      const std::string txt = nimbus::orch::errorEventText(ein);
       captureTurnError(String(txt.c_str()));
       noteLastFail(src, ev);
     }
