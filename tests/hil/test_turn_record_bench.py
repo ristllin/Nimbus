@@ -25,6 +25,8 @@ test build has no such verb yet, so it is proven live in tools/harness-lab
 
 Both legs read history rows with the console's ``EPIQ --full`` (whole rows; the
 default 48-character preview cannot show a cause or a turn-end row's later fields).
+B1 first checks that the unit's internal storage is mounted and fails with the reason
+and the last log lines when it is not, or when DREAM never answers.
 
 Environment: NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (``WEBTOK?``) for the LAN reads.
 """
@@ -137,6 +139,59 @@ def _epiq(device, query: str) -> List[Tuple[str, str]]:
     return epiq_rows_from_lines(_epiq_lines(device, query, timeout=8.0))
 
 
+# ---- B1 environment checks (host-tested) ------------------------------------------
+NOT_MOUNTED = "File system is not mounted"
+NOT_MOUNTED_BURST = 3  # this many in a short window: the unit's storage is down
+DREAM_STARTED = "dream: maintenance"  # the first line every dream fire logs
+PRECHECK_S = 6.0  # the burst repeats every one to two seconds
+RECENT_LINES = 40  # the device transcript spans the session: judge only its end
+
+
+def not_mounted_count(lines: Iterable[str]) -> int:
+    return sum(1 for line in lines if NOT_MOUNTED in line)
+
+
+def storage_down_reason(lines: List[str]) -> Optional[str]:
+    """Why B1 cannot run on this unit, or None: a burst of "not mounted" errors means
+    the internal storage (LittleFS /data, the dream state and the durable log) is not
+    mounted, a condition of the bench unit rather than of the code under test."""
+    n = not_mounted_count(lines)
+    if n < NOT_MOUNTED_BURST:
+        return None
+    return (
+        f"the unit's internal storage is not mounted ({n} '{NOT_MOUNTED}' errors in the log): "
+        "the dream state and the durable log live there, so the dream leg cannot run on this unit"
+    )
+
+
+def dream_never_fired_reason(tail: List[str], waited_s: float) -> str:
+    """The failure text for a DREAM that never answered: what the log shows, and the
+    last 20 lines."""
+    why = f"DREAM did not answer within {waited_s:.0f} s"
+    recent = tail[-RECENT_LINES:]
+    down = storage_down_reason(recent)
+    if down:
+        why += "; " + down
+    elif not any(DREAM_STARTED in line for line in recent):
+        why += "; no dream started (no 'dream: maintenance' line)"
+    last = "\n    ".join(tail[-20:]) if tail else "<no lines received>"
+    return f"{why}\nlast 20 lines:\n    {last}"
+
+
+def _watch(device, seconds: float) -> List[str]:
+    """Every line the device logs for ``seconds`` (bounded)."""
+    seen: List[str] = []
+    deadline = time.time() + seconds
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            return seen
+        try:
+            seen.append(device.expect_re(r".", timeout=left).string)
+        except ExpectTimeout:
+            return seen
+
+
 def _mcp(session, ip: str, tool: str, args: dict) -> str:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
     r = session.post(f"http://{ip}/mcp", data=body, headers={"Content-Type": "application/json"}, timeout=15)
@@ -157,13 +212,23 @@ def test_b1_failure_provenance(device):
     ip, tok = ip_tok_or_skip("turn record B1")
     s = make_session(tok)
     require_orchestrator(s, ip, "turn record B1")
+    # The bench unit's storage must be mounted (the dream state and the durable log
+    # live there): a "not mounted" burst fails here with the reason, not as a timeout.
+    down = storage_down_reason(_watch(device, PRECHECK_S))
+    if down:
+        pytest.fail(f"B1 cannot run: {down}")
     before = _nvs(device)
     _provfault(device, f"api.anthropic.com 400 {ANTHROPIC_400}")
+    fired, never = "", None
     try:
         device.send("DREAM")
         fired = device.expect("DREAM fired", timeout=240.0)
+    except ExpectTimeout as e:
+        never = dream_never_fired_reason(e.tail, 240.0)
     finally:
         _provfault(device, "off")
+    if never:
+        pytest.fail(never)
     if "ok=1" in fired:
         pytest.skip("the dream succeeded on another provider: restrict the unit to the faulted provider")
 
