@@ -743,6 +743,34 @@ static void test_cut_final_turn_is_handed_on_not_corrected() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"partial", o2.partialTurn.c_str());
 }
 
+// A prose final answer (HeadStep::prose, lane K) is not an orch_turn: it is never
+// checked or sent back - replaying it as orch_turn arguments would not be JSON -
+// and it reaches the engine as prose. Counter-test: the same check still
+// corrects an orch_turn answer on the same round.
+static void test_prose_final_is_never_checked() {
+  Fake f;
+  HeadStep prose = stepFinished("I started three research helpers.");
+  prose.prose = true;
+  f.script = {prose};
+  HeadLoopConfig cfg;
+  int calls = 0;
+  cfg.validateFinal = [&](const std::string&) { calls++; return std::string("fix"); };
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_TRUE(o.prose);
+  TEST_ASSERT_EQUAL(0, calls);
+  TEST_ASSERT_EQUAL(0, o.corrections);
+  TEST_ASSERT_EQUAL_STRING("I started three research helpers.", o.finalTurn.c_str());
+
+  Fake g;
+  g.script = {stepFinished("{\"reply\":\"I started three research helpers.\"}"),
+              stepFinished("{\"reply\":\"fixed\"}")};
+  HeadOutcome o2 = runHeadLoop(cfg, g.hooks());
+  TEST_ASSERT_EQUAL(1, calls);
+  TEST_ASSERT_EQUAL(1, o2.corrections);
+  TEST_ASSERT_FALSE(o2.prose);
+}
+
 static void test_final_checks_chain_into_one_correction() {
   FinalCheck a = [](const std::string&) { return std::string("shape"); };
   FinalCheck none;
@@ -759,6 +787,7 @@ int main(int, char**) {
   RUN_TEST(test_final_check_never_thrashes);
   RUN_TEST(test_final_check_costs_nothing_when_the_answer_is_fine);
   RUN_TEST(test_cut_final_turn_is_handed_on_not_corrected);
+  RUN_TEST(test_prose_final_is_never_checked);
   RUN_TEST(test_final_checks_chain_into_one_correction);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_cum506_a_failed_sibling_discards_the_premature_reply);

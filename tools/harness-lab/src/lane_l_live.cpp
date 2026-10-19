@@ -5,8 +5,9 @@
 // poll functions, the registry's memory tools and the on-device docs pack. Two
 // stand-ins only: embeddings are a local hash (the scenarios assert that a
 // memory was STORED, not how well it recalls - so no embedding spend), and the
-// effort is pinned on Anthropic request bodies at the transport (a lab-only
-// stand-in until the provider-wire lane's cap table pins it in the adapter).
+// effort the adapter's cap table sends on Anthropic request bodies is pinned
+// (default low, the cheapest) at the transport. Only an effort the adapter sent
+// is replaced: a model family the cap table sends none to refuses the field.
 #include "lane_l_live.h"
 
 #include <chrono>
@@ -127,6 +128,9 @@ void printUsage(const std::map<std::string, Usage>& acc, FILE* f) {
 }
 
 // ---- the transport: effort pin on Anthropic message bodies ---------------------
+// The adapter's cap table sends output_config.effort only to a family that takes
+// it (medium on a head round, low on the retry after a cut); the pin replaces
+// that value and never adds the field.
 class PinTransport : public agent::HttpTransport {
  public:
   CurlHttpTransport inner;
@@ -137,7 +141,7 @@ class PinTransport : public agent::HttpTransport {
       return inner.exec(req, out, err);
     agent::HttpRequest r = req;
     JsonDocument d;
-    if (!deserializeJson(d, r.body) && d["output_config"]["effort"].isNull()) {
+    if (!deserializeJson(d, r.body) && !d["output_config"]["effort"].isNull()) {
       d["output_config"]["effort"] = effort;
       r.body.clear();
       serializeJson(d, r.body);

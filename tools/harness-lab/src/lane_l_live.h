@@ -25,7 +25,7 @@ namespace lab {
 struct LaneLOptions {
   std::string headHost = "anthropic";
   std::string headModel = "claude-haiku-5-5";
-  std::string effort = "low";        // pinned on Anthropic bodies ("" = none) until the cap table lands
+  std::string effort = "low";        // replaces the adapter's Anthropic effort ("" = the adapter's own)
   std::string sub = "anthropic:claude-haiku-5-5";   // provider:model of the spawned sub-agent
   std::string legs = "A,B,C,D";
   std::string prompts = "1,2,3";

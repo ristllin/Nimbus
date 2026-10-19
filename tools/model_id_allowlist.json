@@ -13,7 +13,10 @@
     {"id": "mistral-medium-latest", "file": "lib/core/include/nimbus/orch/model_choices.h", "lane": "T", "why": "no price row; T adds the price rows"},
     {"id": "o4-mini-deep-research", "file": "src/agent/adapters/openai_adapter.cpp", "lane": "T", "why": "no price row; T adds the price rows"},
     {"id": "claude-haiku-5-5", "file": "nimbusd/src/rig.h", "lane": "T", "why": "new live-test default; T adds its price row (row 63)"},
-    {"id": "claude-haiku-5-5", "file": "tools/harness-lab/src/lab_rig.h", "lane": "T", "why": "new live-test default; T adds its price row (row 63)"}
+    {"id": "claude-haiku-5-5", "file": "tools/harness-lab/src/lab_rig.h", "lane": "T", "why": "new live-test default; T adds its price row (row 63)"},
+    {"id": "claude-haiku-5-5", "file": "tools/harness-lab/src/lane_l_live.h", "lane": "T", "why": "turn-contract live suites default; T adds its price row (row 63)"},
+    {"id": "claude-haiku-5-5", "file": "tools/harness-lab/src/lane_l_live.cpp", "lane": "T", "why": "turn-contract live suites model list; T adds its price row (row 63)"},
+    {"id": "claude-sonnet-5-5", "file": "tools/harness-lab/src/lane_l_live.cpp", "lane": "T", "why": "turn-contract live suites model list; T adds its price row (row 63)"}
   ],
   "keys": [
     {"id": "dall-e-2", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},

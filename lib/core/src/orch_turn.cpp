@@ -6,6 +6,7 @@
 #include "nimbus/orch/turn.h"
 
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/head_loop.h"   // classifyStepError - the typed cut rule (isCutError)
 #include "nimbus/orch/mem_ttl.h"
 #include "nimbus/orch/reply_markup.h"
 #include "nimbus/mem_cap.h"
@@ -1059,6 +1060,11 @@ std::string spawnOverCapReason() {
 }
 
 bool isCutError(const std::string& err) {
+  // Lane K's typed rule decides wherever it knows the line; the spellings below
+  // only read lines it cannot type (it calls those Transport).
+  const StepErr kind = classifyStepError(err);
+  if (kind == StepErr::Cut) return true;
+  if (kind != StepErr::Transport) return false;
   std::string e = toLowerAscii(err);
   return e.rfind("cut", 0) == 0 || e.find("max_tokens") != std::string::npos ||
          e.find("max_output_tokens") != std::string::npos ||

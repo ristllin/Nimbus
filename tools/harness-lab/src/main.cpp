@@ -50,7 +50,7 @@ void usage() {
       "                            --sub=<provider:model> --head-model=<id> --reps=<n>\n"
       "                            (leg C) --timeout=<s> --out=<json>\n"
       "                            both: --effort=<low|...|none> pins Anthropic effort\n"
-      "                            (none = adapter: no effort field)\n"
+      "                            (none or adapter = the adapter's own effort)\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
@@ -88,7 +88,7 @@ bool laneLFlag(const std::string& a, lab::LaneLOptions& o) {
   else if (a.rfind("--head-model=", 0) == 0) o.headModel = val("--head-model=");
   else if (a.rfind("--effort=", 0) == 0) {
     const std::string e = val("--effort=");
-    o.effort = (e == "none" || e == "adapter") ? "" : e;   // "" = send no effort field
+    o.effort = (e == "none" || e == "adapter") ? "" : e;   // "" = the adapter's own effort
   }
   else if (a.rfind("--sub=", 0) == 0)        o.sub = val("--sub=");
   else if (a.rfind("--legs=", 0) == 0)       o.legs = val("--legs=");

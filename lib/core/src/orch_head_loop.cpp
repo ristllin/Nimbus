@@ -344,10 +344,13 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       // reply promises (a spawn list the device cannot read, a reply that says
       // sub-agents started while none is in session_ops) gets ONE correction
       // round, never more, and never on the forced round or for a cut answer
-      // (the engine salvages that one). The rejected answer is recorded as the
-      // orch_turn call the correction answers, so every provider's replay stays
-      // well-formed (an unanswered tool_use 400s on Anthropic).
-      if (cfg.validateFinal && !lastChance && out.corrections == 0 && sr.cut.empty()) {
+      // (the engine salvages that one). A prose answer (HeadStep::prose) is not
+      // an orch_turn and is never checked: it carries no spawn, and replaying it
+      // as orch_turn arguments would not be JSON. The rejected answer is recorded
+      // as the orch_turn call the correction answers, so every provider's replay
+      // stays well-formed (an unanswered tool_use 400s on Anthropic).
+      if (cfg.validateFinal && !lastChance && out.corrections == 0 && sr.cut.empty() &&
+          !sr.prose) {
         const std::string fix = cfg.validateFinal(sr.finalTurn);
         if (!fix.empty()) {
           out.corrections++;

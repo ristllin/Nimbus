@@ -429,9 +429,13 @@ static void test_salvage_decodes_escapes_and_lone_surrogates() {
 
 static void test_cut_errors_are_recognized() {
   for (const char* e : {"truncated at max_tokens inside a tool call", "cut at the output limit (12000 tokens)",
-                        "cut: max_output_tokens", "finish_reason=length"})
+                        "cut: max_output_tokens", "finish_reason=length",
+                        "response too large for the device"})
     TEST_ASSERT_TRUE_MESSAGE(isCutError(e), e);
-  for (const char* e : {"messages HTTP 500", "network", "", "schema parse"})
+  for (const char* e : {"messages HTTP 500", "network", "", "schema parse",
+                        "timeout: the provider did not answer in time", "messages HTTP 400: bad",
+                        // a refused max_tokens VALUE is a bad request, not a cut answer
+                        "messages HTTP 400: max_tokens: 100000 > 64000, the maximum allowed"})
     TEST_ASSERT_FALSE_MESSAGE(isCutError(e), e);
 }
 

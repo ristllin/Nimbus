@@ -197,9 +197,13 @@ bool salvageTurnText(const std::string& text, Salvage& out);
 // engine and the tests say the same thing.
 extern const char kSalvageCutMarker[];
 
-// True when a head-turn error names an output-cap cut (Anthropic max_tokens, an
-// OpenAI incomplete response, a chat-completions finish_reason of length) - the
-// one predicate the engine and the adapters share.
+// True when a head-turn error names a cut answer: every line the typed step
+// rule (classifyStepError, head_loop.h) reads as StepErr::Cut - the output limit
+// after the one retry with more room, or an answer too large for the device -
+// plus, for a line that rule cannot type, the legacy spellings (Anthropic
+// max_tokens, an OpenAI incomplete response, a chat-completions finish_reason of
+// length). A line it types as anything else (a 400 naming max_tokens) is not a
+// cut. The engine's salvage path reads it.
 bool isCutError(const std::string& err);
 
 // The reason a spawn past the per-turn cap did not start (one wording for the

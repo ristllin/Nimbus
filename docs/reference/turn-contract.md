@@ -98,7 +98,11 @@ The owner gets that text, plus one fixed line exactly when the answer was cut:
 out. Ask me to continue.)". With nothing to salvage, one plain line says the
 answer was cut off or could not be read and that nothing in it was carried
 out. The delivered text is captured to the chat history, and the turn-end row
-carries `err` `cut: ...` or `parse: ...`.
+carries `err` `cut: ...` or `parse: ...`. A failed turn takes the cut path when
+its error is a cut by the typed step rule (`StepErr::Cut`: still cut after the
+one retry with more room, or an answer too large for the device), or an untyped
+line that names the output limit; a request refused for its `max_tokens` value
+is not a cut.
 
 ## The final check
 
@@ -107,7 +111,8 @@ accepted (`HeadLoopConfig::validateFinal`, built with `chainFinalChecks`). An
 answer whose spawn list cannot be read, whose spawn items cannot start, or whose
 reply says sub-agents started while no spawn item is present is sent back once,
 with the problems named and the array form shown. At most one correction round
-runs per turn, never on the forced final round and never for a cut answer.
+runs per turn, never on the forced final round, never for a cut answer and never
+for a prose answer (which carries no spawn).
 
 ## Contract shape
 
