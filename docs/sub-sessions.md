@@ -34,8 +34,8 @@ below).
 constraint, not a limitation to fix. Everything (head turns, dispatch, polling,
 synthesis) runs on the single `tg_poll` task with one TLS slot (`tlsSlots`
 default 1). Mistral sub-dispatch is synchronous: it blocks the `tg_poll` task
-inside `POST /v1/conversations` for up to 60 s, because Mistral has no background
-job API. OpenAI (`background:true`) and Anthropic (async sessions) parallelize on
+inside `POST /v1/conversations` for up to 120 s (the same ceiling as every other
+provider), because Mistral has no background job API. OpenAI (`background:true`) and Anthropic (async sessions) parallelize on
 the provider's compute, but the device still polls them one at a time. Adding a
 worker task or a second concurrent TLS connection collapses the head's contiguous
 internal heap and fails turns (measured in the `tlsSlots` 2 vs 1 A/B on
@@ -246,7 +246,7 @@ it are left out, while a long earlier message (part of the work) is kept.
 
 **A sub that may have started is reported as a timeout, not as a failed
 start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs inside one
-synchronous request (Mistral's `POST /v1/conversations` with a 60 s read
+synchronous request (Mistral's `POST /v1/conversations` with a 120 s read
 deadline, a Z.ai sub's chat-completions request with 50 s, a Cumulo router sub's
 chat-completions or Messages request with 120 s, or 50 s on the router's zai
 upstream, and a custom-endpoint sub's with 30 s), so a slow one outlasts the deadline; an OpenAI sub's `POST /v1/responses` and an

@@ -4,6 +4,7 @@
 
 #include "nimbus/orch/compact.h"     // kCtxDefaultTokens + the modelCtxTokens convention
 #include "nimbus/orch/mem_config.h"  // MemConfig::kContextMin/Max - the owner-override clamp
+#include "nimbus/orch/wire_limits.h" // kToolResultCapMax - the per-result ceiling
 
 namespace nimbus {
 namespace orch {
@@ -45,7 +46,9 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
   // prompt on a 1M head. assembleContext still trims the OLDEST rows when the
   // prompt has less room left than this (the 128K head case).
   b.recentConvBytes   = scaled(8192, wb, 3000, 16384);
-  b.toolResultBytes   = scaled(8192, wb, 512, 65536);
+  // Capped under the provider string guard (wire_limits.h): a clamped result plus
+  // its truncation note and an "ERROR: " prefix is still one whole string.
+  b.toolResultBytes   = scaled(8192, wb, 512, kToolResultCapMax);
   b.toolTotalBytes    = scaled(65536, wb, 8192, 1048576);
   b.briefBytes        = scaled(1200, wb, 600, 4096);
   b.foldSliceBytes    = scaled(65536, wb, 16384, 131072);
@@ -55,7 +58,7 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
   if (ov.maxContextBytes > 0)
     b.systemPromptBytes = clampI(ov.maxContextBytes, MemConfig::kContextMin, MemConfig::kContextMax);
   if (ov.toolResultCap > 0)
-    b.toolResultBytes = (size_t)clampI(ov.toolResultCap, 512, 65536);
+    b.toolResultBytes = (size_t)clampI(ov.toolResultCap, 512, (int)kToolResultCapMax);
   if (ov.toolTotalCap > 0)
     b.toolTotalBytes = (size_t)clampI(ov.toolTotalCap, 2048, 1048576);
   return b;

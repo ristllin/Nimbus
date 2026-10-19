@@ -1879,8 +1879,8 @@ below).
 constraint, not a limitation to fix. Everything (head turns, dispatch, polling,
 synthesis) runs on the single `tg_poll` task with one TLS slot (`tlsSlots`
 default 1). Mistral sub-dispatch is synchronous: it blocks the `tg_poll` task
-inside `POST /v1/conversations` for up to 60 s, because Mistral has no background
-job API. OpenAI (`background:true`) and Anthropic (async sessions) parallelize on
+inside `POST /v1/conversations` for up to 120 s (the same ceiling as every other
+provider), because Mistral has no background job API. OpenAI (`background:true`) and Anthropic (async sessions) parallelize on
 the provider's compute, but the device still polls them one at a time. Adding a
 worker task or a second concurrent TLS connection collapses the head's contiguous
 internal heap and fails turns (measured in the `tlsSlots` 2 vs 1 A/B on
@@ -2079,7 +2079,7 @@ it are left out, while a long earlier message (part of the work) is kept.)NIMBUS
   {"sub-sessions#the-wire-per-backend-2", "The wire, per backend (2/3)",
    R"NIMBUSDOC(**A sub that may have started is reported as a timeout, not as a failed
 start.** A Mistral, Z.ai, Cumulo router or custom-endpoint sub runs inside one
-synchronous request (Mistral's `POST /v1/conversations` with a 60 s read
+synchronous request (Mistral's `POST /v1/conversations` with a 120 s read
 deadline, a Z.ai sub's chat-completions request with 50 s, a Cumulo router sub's
 chat-completions or Messages request with 120 s, or 50 s on the router's zai
 upstream, and a custom-endpoint sub's with 30 s), so a slow one outlasts the deadline; an OpenAI sub's `POST /v1/responses` and an
@@ -3445,7 +3445,7 @@ flowchart LR
     A["every chat message bumps<br/>bytes/msgs counters per chat<br/>(one flash write per turn)"]
   end
   subgraph FOLD["fold - on the tg_poll pump, never blocking a reply"]
-    D["1. digest: episodic slice<br/>since the last fold (≤64 KB)"] --> L["2. one single-shot LLM call<br/>(the fold prompt): update the<br/>ANCHORED summary (≤4 KB, UTF-8-safe cap)"]
+    D["1. digest: episodic slice<br/>since the last fold (summary + digest<br/>under 60,000 B, one provider string)"] --> L["2. one single-shot LLM call<br/>(the fold prompt): update the<br/>ANCHORED summary (≤4 KB, UTF-8-safe cap)"]
     L --> W["3. write order: summary blob FIRST<br/>→ provider thread reset<br/>→ 'ev:compact' boundary row (pre/post sizes)"]
   end
   A -->|"threshold reached"| D
@@ -3459,7 +3459,11 @@ flowchart LR
 - **The fold call** (`TurnEngine::runFold`) is deliberately NOT a turn: no
   delivery, no recall, no tool loop, no conversation-map writes, no capture of
   the summary as chat history - the model's reply IS the summary and every
-  other field of its output is structurally inert. Its spend is metered under
+  other field of its output is structurally inert. It has its own output
+  budget: on Anthropic the request offers no tool (the summary comes back as
+  text), thinks at low effort, and a summary cut at the limit gets one retry
+  with more room. The digest is bounded so summary plus digest stay one whole
+  provider string (ArduinoJson stores a 64 KB string as null). Its spend is metered under
   the `compact` attribution (never a routine's budget). Gates (low heap, over
   budget, turn in flight) **defer** - only a real failed attempt counts
   against the breaker.

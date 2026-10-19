@@ -915,8 +915,6 @@ static void test_rate_limit_reply_names_the_window() {
       {"chat HTTP 429 [rl:plan]: Requests rate limit exceeded", RateLimit::NotAllowed},
       {"resp HTTP 429: Rate limit reached for gpt-4o-mini on requests per day (RPD)",
        RateLimit::Daily},
-      {"resp HTTP 429: You exceeded your current quota, please check your plan and "
-       "billing details.", RateLimit::Quota},
       {"messages HTTP 429: This request would exceed the rate limit of 50 requests per "
        "minute.", RateLimit::PerMinute},
       {"conversations HTTP 429: Custom connector rate limit reached.", RateLimit::Unknown},
@@ -935,6 +933,29 @@ static void test_rate_limit_reply_names_the_window() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::rateLimitReply(c.want), r.lastText().c_str(), c.err);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("rate-limited this device"), c.err);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("That didn't finish -"), c.err);
+  }
+}
+
+// ---- (5c) a billing refusal is not a rate limit (lane K) -------------------
+// OpenAI's "you exceeded your current quota" / "no credits remaining" comes as a
+// 429 but waiting never helps: it is a Billing refusal. No same-host retry (it is
+// deterministic until credit is added), the ladder still tries the alternates
+// with a notice that names the cause, and the reply says what to do.
+static void test_billing_refusal_is_not_a_rate_limit() {
+  for (const char* err : {"resp HTTP 429: You exceeded your current quota, please check your plan and "
+                          "billing details.",
+                          "resp HTTP 429: You have no credits remaining. Add credits to continue using the API.",
+                          "messages HTTP 400: Your credit balance is too low to access the Anthropic API."}) {
+    Rig r;
+    Rig::Script refused;
+    refused.ok = false;
+    refused.err = err;
+    for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {refused};
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_EQUAL_MESSAGE(3, (int)r.attempts.size(), err);   // no same-host retry
+    TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("says the account is out of credit"), err);
+    TEST_ASSERT_TRUE_MESSAGE(r.lastText().find("out of credit") != std::string::npos, err);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("wait"), err);
   }
 }
 
@@ -2388,6 +2409,7 @@ int main(int, char**) {
   RUN_TEST(test_cum523_no_delivery_line_without_a_real_target);
   RUN_TEST(test_no_retry_after_tool_dispatched);
   RUN_TEST(test_rate_limit_reply_names_the_window);
+  RUN_TEST(test_billing_refusal_is_not_a_rate_limit);
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
   RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);

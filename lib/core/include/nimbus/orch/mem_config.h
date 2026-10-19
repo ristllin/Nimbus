@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider string ceiling
+
 // mem_config - the retrieval/decay knobs that tune how associative memory is
 // injected each turn. The SAME config is adjustable by BOTH the model (a
 // `memory.config` tool, clamped to these ranges) and the user (the web
@@ -26,7 +28,7 @@ struct MemConfig {
                                     // per turn from the head model's context window
                                     // (nimbus::orch::deriveBudget; 32768 at the 200K
                                     // anchor, so auto == the old default on today's
-                                    // fleet). Non-zero = owner override (4096..65536).
+                                    // fleet). Non-zero = owner override (4096..56000).
   int   maxVectors       = 5000;    // VDB capacity (working set is PSRAM-resident; ~550 B/vec (measured: struct + content strings) ≈ 1.3 MB of 8 MB). At the cap, add()
                                     // evicts the lowest importance*ttl-left score.
   // Composite-recall tunables (consumed by VectorMemory::recall via RecallParams).
@@ -37,9 +39,11 @@ struct MemConfig {
   static constexpr int   kRetrievalMin = 1,   kRetrievalMax = 100;
   static constexpr float kRelevanceMin = 0.0f, kRelevanceMax = 1.0f;
   static constexpr float kDecayMin = 0.5f,    kDecayMax = 1.0f;
-  // 65536 (not 128 KB): a 128 KB internal-heap prompt string is the OOM class the
-  // device documents; 64 KB is already 2x the historical default.
-  static constexpr int   kContextMin = 4096,  kContextMax = 65536;
+  // 56000: the assembled prompt rides as ONE provider string, and with the
+  // final-round notice appended it must stay under the 60,000 B guard every
+  // provider-bound string lives under (wire_limits.h - ArduinoJson stores a
+  // 64 KB string as null). An owner value saved above this clamps on load.
+  static constexpr int   kContextMin = 4096,  kContextMax = 56000;
   static constexpr int   kMaxVectorsMin = 0,  kMaxVectorsMax = 20000;
   static constexpr int   kRecencyHlMin = 24,  kRecencyHlMax = 2160;
   static constexpr float kMmrMin = 0.0f,      kMmrMax = 1.0f;
@@ -111,6 +115,11 @@ struct MemConfig {
     char b[24]; snprintf(b, sizeof(b), "%.4g", (double)f); return std::string(b);
   }
 };
+
+// The largest system prompt plus the final-round notice (about 500 B) and the
+// assembler's block granularity stays one whole provider string.
+static_assert(MemConfig::kContextMax + 4000 <= (int)kJsonStrGuard,
+              "the system prompt cap must leave room under the provider string guard");
 
 }  // namespace orch
 }  // namespace nimbus

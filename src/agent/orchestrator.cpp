@@ -2229,8 +2229,10 @@ static void compactTick() {
     // from before a /clear would bring the cleared conversation straight back.
     rows = agent::liveConversation(rows, std::string(), 0);
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
-    // anchor - identical to the old constant on today's fleet).
-    digest = dream::buildEpisodicDigest(rows, headBudget().foldSliceBytes);   // PSRAM via the 128 B spill
+    // anchor), bounded so summary + digest stay ONE whole provider string
+    // (foldDigestCap; a 64 KB string goes null and the provider answers 400).
+    digest = dream::buildEpisodicDigest(
+        rows, std::min(headBudget().foldSliceBytes, nimbus::orch::foldDigestCap(prev.summary.size())));
   }
 
   std::string summary;

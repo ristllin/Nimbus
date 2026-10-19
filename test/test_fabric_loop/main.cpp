@@ -172,8 +172,11 @@ static void test_all_hosts_down_fails_soft_with_error() {
 // Gate G5 inside the fabric: a step that captured a served-model echo on its HTTP 200
 // and then failed (empty content) never names the model of the attempt that serves
 // the round - not on the same-host retry, not after a switch to another host.
+// (An empty answer is a server-side failure worth one same-host resend; a cut
+// one is not - it had its headroom retry in the step - so this fixture ends
+// end_turn.)
 static std::string antEchoEmptyBody() {
-  return "{\"model\":\"claude-haiku-4-5\",\"content\":[],\"stop_reason\":\"max_tokens\","
+  return "{\"model\":\"claude-haiku-4-5\",\"content\":[],\"stop_reason\":\"end_turn\","
          "\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}";
 }
 

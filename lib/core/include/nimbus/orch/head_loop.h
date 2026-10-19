@@ -47,6 +47,58 @@ struct HeadToolResult {
   bool        isError = false;
 };
 
+// ---- typed step errors --------------------------------------------------------
+// WHY a step failed, decided by the adapter that saw the answer (or by
+// classifyStepError from the error text where no adapter typed it). The fabric's
+// retry and switch rule (fabricRuleFor), the host park, the owner notice and the
+// turn record all read this kind, never the free text. The slugs are frozen:
+// they ride log lines and the turn record.
+enum class StepErr : uint8_t {
+  None = 0,
+  Transport,    // the request did not complete: connect, a short write, a fast cut, a cut body
+  Timeout,      // sent, and no answer within (nearly) the whole round ceiling
+  RateLimited,  // 429 that is not a billing refusal
+  BadRequest,   // the request CONTENT is unreadable (400/413/422 naming the body, or refused
+                // before the send): identical on every host
+  Auth,         // 401/403: the key is refused
+  Billing,      // the account is out of credit or quota (billing_refusal.h)
+  LowMemory,    // the device could not make or send the request
+  ServerError,  // 5xx, 529, an unreadable 2xx
+  Rejected,     // this host refused this request for its model (another 4xx, a refusal);
+                // another host may accept it
+  Cut,          // the answer was cut at the output limit after the in-step headroom retry
+};
+inline constexpr int kStepErrCount = 11;
+const char* stepErrSlug(StepErr k);   // "transport", "timeout", ... ("none")
+
+// What the fabric does after a failed step of this kind. A kind that neither
+// retries nor switches fails the round at once: its cause is the request or the
+// device, the same on every host.
+struct FabricRule {
+  bool retrySameHost;   // one identical resend on the same host
+  bool switchHost;      // re-run the round on the next host
+  bool parkHost;        // remember the host as refusing until its key or model changes
+};
+FabricRule fabricRuleFor(StepErr k);
+
+// The kind for a provider that ANSWERED with `status`; `text` is everything it said
+// (error message, type and code), for the billing and unreadable-body markers.
+StepErr classifyHttpStatus(int status, const std::string& text);
+
+// The kind for an error line where no adapter typed it (the legacy single-shot
+// ladder, the custom head): "low memory: ...", "timeout: ...", "network",
+// "<what> HTTP <status>: <message>", "cut at the output limit ...". Unknown text
+// is Transport (one retry, then switch: the old behavior). `httpStatus` (optional)
+// receives the status the line names, 0 when none.
+StepErr classifyStepError(const std::string& err, int* httpStatus = nullptr);
+
+// "timeout: ..." - the one timeout token every head uses (shared isTimeout).
+bool isTimeoutError(const std::string& err);
+
+// The owner-facing cause of a failed step in plain words: "anthropic says the
+// account is out of credit (HTTP 400)", "mistral did not answer in time".
+std::string stepErrCause(StepErr k, const std::string& host, int httpStatus);
+
 // The result of ONE provider model turn (one `step`).
 struct HeadStep {
   bool        ok = true;      // transport/parse succeeded
@@ -66,6 +118,18 @@ struct HeadStep {
   // its reasoning items replayed between tool calls (Stage 2 phase 3); a
   // cross-provider failover render simply ignores it.
   std::string meta;
+  // Typed failure (set when !ok): the kind and the provider's HTTP status when one
+  // answered (0 = none). See StepErr / fabricRuleFor.
+  StepErr kind = StepErr::None;
+  int httpStatus = 0;
+  // Completeness gate: why the answer was cut ("max_tokens", "length",
+  // "incomplete:max_output_tokens"); empty = complete. A cut step is never
+  // finished and never dispatches its calls (kind Cut, ok false); finalTurn then
+  // holds the cut orch_turn arguments, if any, for the reply salvage.
+  std::string cut;
+  // finished with a prose answer: finalTurn is the model's text, not an orch_turn
+  // object (the engine delivers it as the reply only).
+  bool prose = false;
 };
 
 // Perform ONE model turn. `allowTools`=false forces the "answer now" round (the
@@ -166,6 +230,11 @@ struct HeadOutcome {
   int         rounds = 0;      // tool-dispatch rounds executed (0 == single-shot)
   bool        hitCap = false;  // a cap forced the last (tool-less) round
   std::string capReason;       // "rounds"|"deadline"|"heap"|"bytes"|"stalled"|"" - why the loop was capped
+  StepErr     kind = StepErr::None;  // the failing step's kind (when !ok)
+  int         httpStatus = 0;        // its HTTP status, 0 = none
+  std::string cut;             // the failing step was cut: why (HeadStep::cut)
+  std::string partialTurn;     // ...and the cut orch_turn arguments it carried, if any
+  bool        prose = false;   // ok, and finalTurn is a prose answer (HeadStep::prose)
 };
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never

@@ -73,6 +73,14 @@ struct ResultEnvelope {
   // engine opens it with an honest marker. Zeroed by the existing memsets.
   uint16_t connectorCalls     = 0;
   char     connectorAsked[48] = {};
+  // Provenance counted from the PROVIDER'S own record of the run (never from the
+  // agent's text): toolRuns = every tool the sub-agent actually ran (Mistral
+  // tool.execution entries, OpenAI output items ending in "_call", Anthropic
+  // agent.tool_use / agent.mcp_tool_use / agent.custom_tool_use events); webRuns =
+  // those that were web searches or fetches. A sub that claims "I searched the
+  // web" with webRuns == 0 did not. Zeroed by the existing memsets (+4 B).
+  uint16_t toolRuns = 0;
+  uint16_t webRuns  = 0;
   Action   actions[kMaxActions] = {};
   int      actionCount = 0;
   Artifact artifacts[kMaxArtifacts] = {};

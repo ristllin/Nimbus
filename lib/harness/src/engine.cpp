@@ -10,6 +10,7 @@
 #include <memory>
 #include <set>
 
+#include "nimbus/orch/billing_refusal.h"  // billingNoticeDue / billingNotice - one notice per episode
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
 #include "nimbus/orch/model_key.h"       // usageModelKey - the per-model spend key
@@ -17,6 +18,7 @@
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
 #include "nimbus/harness/router_refusal.h"   // a router refusal is not an outage (failover notice)
 #include "nimbus/orch/turn.h"
@@ -31,21 +33,42 @@
 namespace agent {
 
 namespace {
-// CUM-544: a TIMEOUT is model latency, not a dead link. Only the custom head's
-// explicit token: a provider error that merely mentions "timeout" (a router 504
-// text) is not one.
-bool isTimeout(const std::string& e) { return e.rfind("timeout:", 0) == 0; }
+// CUM-544: a TIMEOUT is model latency, not a dead link. Only the shared explicit
+// token every head writes ("timeout: ..."): a provider error that merely mentions
+// "timeout" (a router 504 text) is not one.
+bool isTimeout(const std::string& e) { return nimbus::orch::isTimeoutError(e); }
 
-// The failover notice's reason for `host`, up to "switching to ": a timeout, a
-// router refusal (its cause, which carries the fix), else an outage.
+// The failover notice's reason for `host`, up to "switching to ": a router
+// refusal (its cause, which carries the fix), else the typed cause with its HTTP
+// status ("anthropic says the account is out of credit (HTTP 400)"); a failure
+// that names no cause stays "is unavailable".
 std::string failoverReason(const std::string& host, const std::string& err) {
   if (router_refusal::isRefusalCause(err)) {
     std::string why = err;
     why[0] = (char)toupper((unsigned char)why[0]);
     return why + ". Switching to ";
   }
-  if (isTimeout(err)) return host + " did not answer in time - switching to ";
-  return host + " is unavailable - switching to ";
+  int status = 0;
+  const nimbus::orch::StepErr k = nimbus::orch::classifyStepError(err, &status);
+  if (k == nimbus::orch::StepErr::Transport) return host + " is unavailable - switching to ";
+  return nimbus::orch::stepErrCause(k, host, status) + " - switching to ";
+}
+
+// The model-facing [FALLBACK] class for a typed step error.
+nimbus::orch::ErrorClass errorClassOf(nimbus::orch::StepErr k) {
+  using nimbus::orch::ErrorClass;
+  using nimbus::orch::StepErr;
+  switch (k) {
+    case StepErr::RateLimited: return ErrorClass::RateLimited;
+    case StepErr::Timeout:     return ErrorClass::Timeout;
+    case StepErr::ServerError: return ErrorClass::ServerError;
+    case StepErr::Transport:   return ErrorClass::Network;
+    case StepErr::Auth:        return ErrorClass::Auth;
+    case StepErr::Billing:     return ErrorClass::Disabled;
+    case StepErr::BadRequest:
+    case StepErr::Rejected:    return ErrorClass::BadRequest;
+    default:                   return ErrorClass::None;
+  }
 }
 }  // namespace
 
@@ -761,22 +784,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
     return out;
   };
-  // Classify a head-turn error string into a fallback error class (best-effort;
-  // the head path carries a free-text error, not a FabricErr).
+  // Classify a head-turn error line into a fallback error class through the ONE
+  // typed rule (classifyStepError reads the "HTTP <status>" token and the billing
+  // and unreadable-body markers). The old substring test read "generate" and
+  // "temperature" as rate limits and any number holding 500 as a server error.
   auto classifyErr = [&](const std::string& e) -> orch::ErrorClass {
-    std::string s = e;
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)tolower(c); });
-    if (s.find("429") != std::string::npos || s.find("rate") != std::string::npos)
-      return orch::ErrorClass::RateLimited;
-    if (s.find("401") != std::string::npos || s.find("403") != std::string::npos ||
-        s.find("auth") != std::string::npos)
-      return orch::ErrorClass::Auth;
-    if (s.find("timeout") != std::string::npos || s.find("timed out") != std::string::npos)
-      return orch::ErrorClass::Timeout;
-    if (s.find("500") != std::string::npos || s.find("502") != std::string::npos ||
-        s.find("503") != std::string::npos || s.find("server") != std::string::npos)
-      return orch::ErrorClass::ServerError;
-    return orch::ErrorClass::Network;
+    return errorClassOf(orch::classifyStepError(e));
   };
   // The unified fallback ordering (CUM-41): the admin/default rule set decides which
   // providers to try, in what order, for the head model's size class + error class.
@@ -864,10 +877,19 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ok = d_.hosts.fabric(
         hostList, instructions, inputs, outJson, err, *headToolsPtr, &turnUsage,
         [&](const std::string& from, const std::string& to) {
-          deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + from +
-                  " hit trouble mid-task - switching to " + to +
-                  ". Your progress this turn carries over.");
-          pendingFallbackNote_ = orch::fallbackNote(from, "", to, "", orch::ErrorClass::None);
+          // The notice carries the cause and its HTTP status (lastFabricSwitch).
+          // A billing refusal is told once per episode (shared with the embedding
+          // seam); a turn that merely started past a parked head says nothing new.
+          const providers::FabricSwitch& sw = providers::lastFabricSwitch();
+          const std::string warn = "\xE2\x9A\xA0\xEF\xB8\x8F ";
+          if (sw.kind == orch::StepErr::Billing) {
+            if (orch::billingNoticeDue(from.c_str()))
+              deliver(chatId, warn + orch::billingNotice(from, sw.httpStatus, to));
+          } else if (!sw.parkedStart) {
+            deliver(chatId, warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) +
+                                " - switching to " + to + ". Your progress this turn carries over.");
+          }
+          pendingFallbackNote_ = orch::fallbackNote(from, "", to, "", errorClassOf(sw.kind));
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
           turnUsage.servedModel.clear();   // the echo names the final host's model (G5)
         });
@@ -902,7 +924,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const bool timedOut = !ok && isTimeout(err);
   if (timedOut && !fabricOn && *loopDispatched == 0)
     hlog::logf("orchestrator: %s did not answer in time - failing over without a retry", host.c_str());
-  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !timedOut) {   // one same-host retry on a fresh conversation
+  // The typed rule: only a cause in transit is retried on the same host; a refusal
+  // of this request (its content, key, account or model) comes back identical.
+  const orch::StepErr errKind = ok ? orch::StepErr::None : orch::classifyStepError(err);
+  const bool noRetry = !ok && !orch::fabricRuleFor(errKind).retrySameHost;
+  if (noRetry && !timedOut && !fabricOn && *loopDispatched == 0 && !isLowMem(err))
+    hlog::logf("orchestrator: %s refused the request (%s) - no same-host retry", host.c_str(),
+               orch::stepErrSlug(errKind));
+  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !noRetry) {   // one same-host retry on a fresh conversation
     hlog::logf("orchestrator: turn err (%s) -> fresh conv retry", err.c_str());
     if (d_.platform.delayMs) d_.platform.delayMs(400);
     // Each attempt re-arms the stuck-turn reaper: it exists to spot a DEAD turn
@@ -965,6 +994,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       fireTurnEnd(false, 0);
       return false;
     }
+    // A billing refusal is not a rate limit (OpenAI's "no credits" comes as a
+    // 429): waiting never helps, credit does.
+    if (orch::classifyStepError(err) == orch::StepErr::Billing) {
+      deliver(chatId, "That didn't finish - the provider says the account is out of credit. "
+                      "Add credit on its billing page, or switch providers. Nothing is still running.");
+      fireTurnEnd(false, 0);
+      return false;
+    }
     // CUM-460: a 429 says WHICH quota window refused (the adapter's [rl:...] tag
     // from the provider's headers, else the provider's own text). "Wait a minute"
     // is only true for a per-minute window; a spent daily quota or a plan that
@@ -981,6 +1018,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     else if (has("HTTP 401") || has("HTTP 403")) cause = "the provider rejected this device's key";
     else if (has("HTTP 5"))                       cause = "the provider had a server error";
     else if (has("budget"))                       cause = "this turn hit its limits before a final answer";
+    else if (has("cut at the output limit"))      cause = "the answer was cut off at the output limit";
     else {
       cause = err;  // short adapter tokens ("schema parse", "loop failed", …)
       for (char& c : cause) if (c == '\n' || c == '\r') c = ' ';

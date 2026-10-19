@@ -282,7 +282,7 @@ flowchart LR
     A["every chat message bumps<br/>bytes/msgs counters per chat<br/>(one flash write per turn)"]
   end
   subgraph FOLD["fold - on the tg_poll pump, never blocking a reply"]
-    D["1. digest: episodic slice<br/>since the last fold (≤64 KB)"] --> L["2. one single-shot LLM call<br/>(the fold prompt): update the<br/>ANCHORED summary (≤4 KB, UTF-8-safe cap)"]
+    D["1. digest: episodic slice<br/>since the last fold (summary + digest<br/>under 60,000 B, one provider string)"] --> L["2. one single-shot LLM call<br/>(the fold prompt): update the<br/>ANCHORED summary (≤4 KB, UTF-8-safe cap)"]
     L --> W["3. write order: summary blob FIRST<br/>→ provider thread reset<br/>→ 'ev:compact' boundary row (pre/post sizes)"]
   end
   A -->|"threshold reached"| D
@@ -296,7 +296,11 @@ flowchart LR
 - **The fold call** (`TurnEngine::runFold`) is deliberately NOT a turn: no
   delivery, no recall, no tool loop, no conversation-map writes, no capture of
   the summary as chat history - the model's reply IS the summary and every
-  other field of its output is structurally inert. Its spend is metered under
+  other field of its output is structurally inert. It has its own output
+  budget: on Anthropic the request offers no tool (the summary comes back as
+  text), thinks at low effort, and a summary cut at the limit gets one retry
+  with more room. The digest is bounded so summary plus digest stay one whole
+  provider string (ArduinoJson stores a 64 KB string as null). Its spend is metered under
   the `compact` attribution (never a routine's budget). Gates (low heap, over
   budget, turn in flight) **defer** - only a real failed attempt counts
   against the breaker.

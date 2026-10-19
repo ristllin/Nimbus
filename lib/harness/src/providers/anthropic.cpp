@@ -5,9 +5,10 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/output_caps.h"   // the output-cap table (max_tokens, effort, retry)
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - the fold trigger scale
-#include "nimbus/orch/compact.h"      // modelCtxTokens - the model's window
+#include "nimbus/orch/compact.h"      // modelCtxTokens, ORCH_COMPACT_PROMPT (the fold round)
 #include "nimbus/orch/gradient.h"     // foldLine - the shared one-line folder
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
@@ -33,9 +34,6 @@
 namespace agent {
 namespace providers {
 
-// 120 s for the same reason as OAI_TIMEOUT_MS (see openai.cpp): v1/messages is
-// non-streamed, and a long completion can exceed 30 s before the first byte.
-static const uint32_t ANT_TIMEOUT_MS = 120000;
 // Mirror agent_config.h (the device stays authoritative for its own surfaces).
 static const char* kAnthropicHost = "api.anthropic.com";   // ANTHROPIC_HOST
 static const char* kAnthropicVer  = "2023-06-01";          // ANTHROPIC_VER
@@ -52,7 +50,7 @@ using wire::s;
 // head turns included - preserved).
 static int antRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                       std::string body, JsonDocument& doc, const JsonDocument& filter,
-                      uint32_t timeoutMs = ANT_TIMEOUT_MS) {
+                      uint32_t timeoutMs = kHeadRoundCeilingMs) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"x-api-key", pd.key ? pd.key("anthropic") : std::string()},
       {"anthropic-version", kAnthropicVer},
@@ -65,15 +63,6 @@ static int antRequest(const ProviderDeps& pd, const char* method, const std::str
   wire::applyRouter(pd, "anthropic", req);
   return exchange(pd, req.host.c_str(), req.port, req.tls, method, req.path,
                   std::move(req.headers), std::move(body), timeoutMs, doc, filter);
-}
-
-// F25: clamp a per-round socket timeout to the turn's remaining wall-clock budget
-// (floored so a near-exhausted final round still gets a real answer). budgetMs ==
-// UINT32_MAX (no deadline) leaves the provider default untouched.
-static inline uint32_t clampRoundMs(uint32_t budgetMs, uint32_t provDefaultMs) {
-  const uint32_t kMinRoundMs = 8000;  // a near-empty final round still gets a shot
-  if (budgetMs >= provDefaultMs) return provDefaultMs;
-  return budgetMs < kMinRoundMs ? kMinRoundMs : budgetMs;
 }
 
 // ---- Managed Agents sub-sessions --------------------------------------------
@@ -400,7 +389,7 @@ FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
   const int code = sendTurn(pd, session.id.c_str(), d.instruction, turnDoc);
   if (code <= 0) {
     logCallFail("send turn", code, turnDoc);
-    return wire::subTransportErr(pd, t0, ANT_TIMEOUT_MS);
+    return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
   }
   if (!is2xx(code)) return chainErr(d, "send turn", code, turnDoc);
 
@@ -484,6 +473,23 @@ static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
   }
 }
 
+// Provenance from the session's own event list: every agent.tool_use,
+// agent.mcp_tool_use and agent.custom_tool_use event is a tool the sub ran; a
+// web_search or web_fetch use is a web run. Counted from the full list each poll.
+static void antCountRuns(JsonArrayConst events, ResultEnvelope& env) {
+  env.toolRuns = 0;
+  env.webRuns = 0;
+  for (JsonObjectConst ev : events) {
+    const char* type = ev["type"] | "";
+    if (strcmp(type, "agent.tool_use") && strcmp(type, "agent.mcp_tool_use") &&
+        strcmp(type, "agent.custom_tool_use"))
+      continue;
+    if (env.toolRuns < 0xFFFF) env.toolRuns++;
+    const char* nm = ev["name"] | "";
+    if ((!strcmp(nm, "web_search") || !strcmp(nm, "web_fetch")) && env.webRuns < 0xFFFF) env.webRuns++;
+  }
+}
+
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {
   const char* colon = strchr(jobId, ':');
   if (!colon) return FabricErr::BadRequest;
@@ -500,11 +506,13 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   ci["type"] = true; ci["text"] = true;
   di["stop_reason"]["type"] = true;
   di["error"]["message"] = true;
+  di["name"] = true;   // agent.*tool_use: which tool ran (provenance)
   keepErrorEnvelope(filter);
 
   JsonDocument doc;
   std::string path = std::string("/v1/sessions/") + sid +
-                "/events?types[]=agent.message&types[]=session.status_idle&types[]=session.error";
+                "/events?types[]=agent.message&types[]=session.status_idle&types[]=session.error"
+                "&types[]=agent.tool_use&types[]=agent.mcp_tool_use&types[]=agent.custom_tool_use";
   int code = antRequest(pd, "GET", path, "", doc, filter);
   if (code == 404)                return FabricErr::NotFound;   // session gone/expired
   if (code == 401 || code == 403) return FabricErr::Auth;
@@ -513,6 +521,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
 
   bool done = false, errored = false;
   antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply));
+  antCountRuns(doc["data"].as<JsonArrayConst>(), env);
   for (JsonObject ev : doc["data"].as<JsonArray>()) {
     const char* type = ev["type"] | "";
     if (!strcmp(type, "session.status_idle")) {
@@ -754,6 +763,129 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
   }
 }
 
+// The stalled round, answered: a prose-only (stalled) round is never echoed on
+// tool rounds (prefill rule), but on the forced final round after a stall the
+// prose IS the answer the owner is waiting for. It rides back as an assistant
+// message followed by a user nudge (so the request still ends on a user turn), and
+// the final round keeps that answer instead of writing a different one (18 Oct: a
+// 305 kcal estimate thrown away for a 345 kcal one written blind).
+static void antEchoStall(const nimbus::orch::Transcript& tr, JsonArray msgs) {
+  using Kind = nimbus::orch::TranscriptItem::Kind;
+  int last = -1;
+  bool calls = false;
+  std::string prose;
+  for (const auto& it : tr.entries()) {
+    if (it.kind == Kind::User) continue;
+    if (it.round > last) { last = it.round; calls = false; prose.clear(); }
+    if (it.kind == Kind::ToolUse) calls = true;
+    if (it.kind == Kind::AssistantText && !it.text.empty()) prose += (prose.empty() ? "" : "\n") + it.text;
+  }
+  if (calls || prose.empty()) return;
+  JsonObject a = msgs.add<JsonObject>();
+  a["role"] = "assistant";
+  JsonObject t = a["content"].add<JsonObject>();
+  t["type"] = "text";
+  wire::putModelStr(t["text"], prose, "the stalled answer");
+  JsonObject u = msgs.add<JsonObject>();
+  u["role"] = "user";
+  u["content"] = "Now call orch_turn with your final complete turn, keeping the answer you gave above.";
+}
+
+// One loop request body: the rendered conversation, the per-round system text,
+// the tools (orch_turn always; the registry specs on tool rounds), tool_choice
+// auto on EVERY round (never forced: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a
+// forced tool_choice with HTTP 400 - verified live 18 Oct), and the output cap and
+// effort for this attempt.
+struct AntLoopReq {
+  const std::string* model;
+  const std::string* instructions;
+  const std::string* capReason;
+  const HeadTools* ht;
+  bool allowTools;
+  uint32_t maxTokens;
+  const char* effort;
+};
+static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray msgs,
+                        std::string& body, std::string& err) {
+  JsonDocument req = makeDoc(pd);
+  req["model"]      = *a.model;
+  req["max_tokens"] = a.maxTokens;
+  if (a.effort && *a.effort) req["output_config"]["effort"] = a.effort;
+  // roundInstructions() appends the final-round notice when a cap forced this
+  // tool-less round, so the model reports what it could not finish rather than
+  // promising work that will never run. Prompt caching (v4.1.1): system rides as
+  // a content-block array so the block can carry cache_control; inside a tool
+  // loop the rounds are seconds apart, so the 5-minute ephemeral cache hits on
+  // every round after the first. The final round's notice misses the SYSTEM
+  // breakpoint but still hits the TOOLS one below.
+  JsonObject sysBlock = req["system"].add<JsonObject>();
+  sysBlock["type"] = "text";
+  wire::putFieldStr(sysBlock["text"], wire::roundInstructions(*a.instructions, *a.capReason),
+                    "the system prompt");
+  sysBlock["cache_control"]["type"] = "ephemeral";
+  req["messages"] = msgs;   // deep-copy within the doc's allocator
+  JsonArray toolsArr = req["tools"].to<JsonArray>();
+  JsonObject ot = toolsArr.add<JsonObject>();
+  ot["name"]        = "orch_turn";
+  ot["description"] = "Return your COMPLETE orchestrator turn. This is your FINAL "
+                      "answer and ENDS the turn - call it once you have everything.";
+  JsonDocument sd = makeDoc(pd);
+  if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16))) {
+    err = "schema parse";
+    return false;
+  }
+  stripDescriptions(sd.as<ArduinoJson::JsonVariant>());
+  ot["input_schema"] = sd;
+  for (size_t i = 0; a.allowTools && i < a.ht->specs.size(); i++) {
+    const auto& spec = a.ht->specs[i];
+    JsonObject t = toolsArr.add<JsonObject>();
+    t["name"]        = spec.name;
+    t["description"] = spec.description;
+    JsonDocument ssd = makeDoc(pd);
+    if (deserializeJson(ssd, spec.schemaJson, DeserializationOption::NestingLimit(16)) ==
+        DeserializationError::Ok)
+      t["input_schema"] = ssd;
+    else
+      t["input_schema"].to<JsonObject>();
+  }
+  req["tool_choice"]["type"] = "auto";   // may call a tool OR finish (orch_turn) - every round
+  // Cache breakpoint on the LAST tool: caches the entire tools array as one prefix
+  // segment (Anthropic caches tools -> system -> messages in that canonical order).
+  toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
+  return wire::serializeChecked(req, body, err);
+}
+
+// Read one loop response into `out`: the FIRST orch_turn's input is the turn and
+// the scan goes on (calls after it are still tool calls - CUM-526); text blocks
+// are collected into HeadStep.text (Glass Box A4, observed only). Returns the
+// stop_reason.
+static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out) {
+  for (JsonObjectConst c : resp["content"].as<JsonArrayConst>()) {
+    const char* ty = c["type"] | "";
+    if (strcmp(ty, "text") == 0) {
+      const char* txt = c["text"] | "";
+      if (txt[0]) {
+        if (!out.text.empty()) out.text += "\n";
+        out.text += txt;
+      }
+      continue;
+    }
+    if (strcmp(ty, "tool_use") != 0) continue;
+    const char* nm = c["name"] | "";
+    std::string args; serializeJson(c["input"], args);
+    if (!strcmp(nm, "orch_turn")) {
+      if (!out.finished) { out.finished = true; out.finalTurn = args; }
+      continue;
+    }
+    nimbus::orch::HeadToolCall call;
+    call.id       = c["id"] | "";
+    call.name     = nm;
+    call.argsJson = (args.length() && args != "null") ? args : "{}";
+    out.toolCalls.push_back(call);
+  }
+  return resp["stop_reason"] | "";
+}
+
 // STEP FACTORY (Stage 2 phase 5): one Anthropic model turn against the shared
 // canonical transcript. ⚠ Lifetime contract: `instructions`, `ht`, `usage` and
 // `tr` are captured BY REFERENCE - the caller's frame must outlive every call of
@@ -785,217 +917,131 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     (void)prior;   // the transcript already carries every result (recorded by the
                    // controller after dispatch, before this step runs)
     orch::HeadStep out;
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
+    const OutputCap cap = outputCapFor("anthropic", model,
+                                       allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
 
     // 1) render messages[] from the canonical transcript (fresh doc per round -
     //    no cross-round accumulator to leak or drift).
     JsonDocument conv = makeDoc(pd);
     JsonArray msgs = conv.to<JsonArray>();
     renderAntMessages(tr, msgs);
-    if (!allowTools && msgs.size() > 0 &&
-        !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
-      // Forced-final insurance: a trailing assistant message + forced tool_choice
-      // is rejected by the API. The renderer always answers tool_use rounds with
-      // their results, so this shouldn't trigger - but if it ever does, close the
-      // turn with a user nudge so the request stays valid.
+    // 1b) gradient fold: once the rendered conversation passes the trigger,
+    //     collapse everything older than the newest round to one line each.
+    //     Below the trigger this is a no-op and the body stays byte-identical
+    //     to the pre-Context-Fabric wire (pinned by the wire tests).
+    if (antFoldOldRounds(pd, conv, msgs, foldTriggerBytes, /*keepRounds=*/1))
+      hlog::logf("orchTurn(ant-loop): gradient fold -> %u msgs", (unsigned)msgs.size());
+    if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
+    if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
+      // A trailing assistant message is a prefill, which current models reject.
+      // The renderer always answers tool_use rounds with their results, so this
+      // shouldn't trigger - but if it ever does, the request stays valid.
       JsonObject u = msgs.add<JsonObject>();
       u["role"] = "user";
       u["content"] = "Now call orch_turn with your final complete turn.";
     }
-
-    // 1b) gradient fold: once the rendered conversation passes the trigger,
-    //     collapse everything older than the newest round to one line each.
-    //     Below the trigger this is a no-op and the body stays byte-identical
-    //     to the pre-Context-Fabric wire (pinned by the wire tests). Re-rendering
-    //     + re-folding each round is deterministic on the same transcript state,
-    //     so the folded wire is stable across rounds.
-    if (antFoldOldRounds(pd, conv, msgs, foldTriggerBytes, /*keepRounds=*/1))
-      hlog::logf("orchTurn(ant-loop): gradient fold -> %u msgs", (unsigned)msgs.size());
-
-    // 2) build the request (deps allocator). orch_turn is always offered (the
-    //    terminal); the registry tools ride alongside only on tool-allowed rounds.
-    //    The forced final round gets extra output headroom - its orch_turn must
-    //    carry the FULL turn (incl. the cross-turn memory field) after the loop
-    //    consumed context.
-    JsonDocument req = makeDoc(pd);
-    req["model"]      = model;
-    req["max_tokens"] = allowTools ? 3000 : 4096;
-    // roundInstructions() appends the final-round notice when a cap forced this
-    // tool-less round, so the model reports what it could not finish rather than
-    // promising work that will never run.
-    // Prompt caching (v4.1.1): system rides as a content-block array so the
-    // block can carry cache_control. Inside a tool loop the rounds are seconds
-    // apart, so the 5-minute ephemeral cache hits on every round after the
-    // first - the ~20 KB system + tools prefix bills at ~0.1x instead of full
-    // price. ⚠ roundInstructions APPENDS a final-round notice when a cap forces
-    // the last round - that round misses the SYSTEM breakpoint (different text)
-    // but still hits the TOOLS one below. Below the provider's 1024-token
-    // minimum the marker is ignored harmlessly.
-    {
-      JsonObject sysBlock = req["system"].add<JsonObject>();
-      sysBlock["type"] = "text";
-      wire::putFieldStr(sysBlock["text"], wire::roundInstructions(instructions, capReason),
-                        "the system prompt");
-      sysBlock["cache_control"]["type"] = "ephemeral";
+    // A string dropped while the conversation was rendered (conv is its own
+    // document, copied into req as a null) is refused before the send.
+    if (conv.overflowed()) {
+      out.ok = false;
+      out.kind = orch::StepErr::BadRequest;
+      out.error = "request field over 64 KB (dropped while the request was built)";
+      hlog::logf("wire: %s", out.error.c_str());
+      return out;
     }
-    req["messages"]   = msgs;   // deep-copy within the doc's allocator
-    JsonArray toolsArr = req["tools"].to<JsonArray>();
-    {
-      JsonObject ot = toolsArr.add<JsonObject>();
-      ot["name"]        = "orch_turn";
-      ot["description"] = "Return your COMPLETE orchestrator turn. This is your FINAL "
-                          "answer and ENDS the turn - call it once you have everything.";
-      JsonDocument sd = makeDoc(pd);
-      if (deserializeJson(sd, orch::ORCH_SCHEMA_BODY,
-                          DeserializationOption::NestingLimit(16))) {
-        out.ok = false; out.error = "schema parse"; return out;
-      }
-      stripDescriptions(sd.as<ArduinoJson::JsonVariant>());
-      ot["input_schema"] = sd;
-    }
-    if (allowTools) {
-      for (const auto& s : ht.specs) {
-        JsonObject t = toolsArr.add<JsonObject>();
-        t["name"]        = s.name;
-        t["description"] = s.description;
-        JsonDocument ssd = makeDoc(pd);
-        if (deserializeJson(ssd, s.schemaJson,
-                            DeserializationOption::NestingLimit(16)) == DeserializationError::Ok)
-          t["input_schema"] = ssd;
-        else
-          t["input_schema"].to<JsonObject>();
-      }
-      req["tool_choice"]["type"] = "auto";        // may call a tool OR finish (orch_turn)
-    } else {
-      req["tool_choice"]["type"] = "tool";        // forced final round: answer now
-      req["tool_choice"]["name"] = "orch_turn";
-    }
-    // Cache breakpoint on the LAST tool: caches the entire tools array as one
-    // prefix segment (Anthropic caches tools -> system -> messages in that
-    // canonical order regardless of JSON field order).
-    if (toolsArr.size() > 0)
-      toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
 
-    // 3) send - the body is serialized ONCE into a contiguous buffer and handed
-    //    to the transport whole (single TLS write; see wire::serializeBody) -
-    //    and filter the response to the assistant content blocks we echo + read.
     JsonDocument filter;
     JsonObject ci = filter["content"].add<JsonObject>();
     ci["type"] = true; ci["id"] = true; ci["name"] = true; ci["input"] = true; ci["text"] = true;
     filter["stop_reason"] = true;
+    filter["stop_details"]["category"] = true;   // a refusal names its category
     filter["error"]["message"] = true;
+    filter["error"]["type"] = true;
     filter["usage"]["input_tokens"]  = true;   // per-round token usage (summed below)
     filter["usage"]["output_tokens"] = true;
     filter["usage"]["cache_read_input_tokens"]     = true;   // prompt-cache hits
     filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
-    // A string dropped while the conversation was rendered (conv is its own
-    // document, copied into req as a null) or anything serializeChecked refuses:
-    // the request is not sent - the same body would fail on every host.
-    std::string body;
-    if (conv.overflowed()) {
-      out.ok = false;
-      out.error = "request field over 64 KB (dropped while the request was built)";
-      hlog::logf("wire: %s", out.error.c_str());
-      return out;
-    }
-    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
-    JsonDocument resp = makeDoc(pd);
-    int code = antRequest(pd, "POST", "/v1/messages", std::move(body), resp, filter,
-                          clampRoundMs(budgetMs, ANT_TIMEOUT_MS));
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
-    if (code != 200) {
-      std::string e = "messages HTTP " + std::to_string(code);
-      const char* em = resp["error"]["message"] | "";
-      if (em[0]) e += std::string(": ") + em;
-      out.ok = false; out.error = e; hlog::logf("orchTurn(ant-loop): %s", e.c_str());
-      return out;
-    }
-    if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-    orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
-
-    JsonArrayConst content = resp["content"].as<JsonArrayConst>();
-    if (content.isNull() || content.size() == 0) {
-      out.ok = false;
-      out.error = std::string("empty content (stop_reason=") +
-                  (const char*)(resp["stop_reason"] | "?") + ")";
-      return out;
-    }
-    // Extract tool calls; the FIRST orch_turn's input IS the turn, and the scan
-    // goes on (calls after it are still tool calls - CUM-526).
-    // Text blocks are COLLECTED into HeadStep.text (Glass Box A4 - they were
-    // skipped on the floor; the content filter already requests them). Observed
-    // only: they are still never echoed into msgs beyond the verbatim
-    // tool-round echo below (the prefill-conflict rule stands).
-    bool endsInCall = false;   // the LAST block is a registry tool_use (not orch_turn)
-    for (JsonObjectConst c : content) {
-      const char* ty = c["type"] | "";
-      endsInCall = false;
-      if (strcmp(ty, "text") == 0) {
-        const char* txt = c["text"] | "";
-        if (txt[0]) {
-          if (!out.text.empty()) out.text += "\n";
-          out.text += txt;
-        }
-        continue;
-      }
-      if (strcmp(ty, "tool_use") != 0) continue;
-      const char* nm = c["name"] | "";
-      std::string args; serializeJson(c["input"], args);
-      if (!strcmp(nm, "orch_turn")) {
-        // CUM-526 (the CUM-506 class): keep scanning - tool_use blocks batched
-        // AFTER the final orch_turn are side effects too (the controller runs
-        // them before accepting a final answer); the first orch_turn wins.
-        if (!out.finished) {
-          out.finished  = true;
-          out.finalTurn = args;
-        }
-        continue;
-      }
-      orch::HeadToolCall call;
-      call.id       = c["id"] | "";
-      call.name     = nm;
-      call.argsJson = (args.length() && args != "null") ? args : "{}";
-      out.toolCalls.push_back(call);
-      endsInCall = true;
-    }
-    const char* sr = resp["stop_reason"] | "";
-    // A response cut by max_tokens can end INSIDE its last tool_use block, and that
-    // call must be retried, never run (a half-written memory_write). Since the scan
-    // no longer stops at orch_turn, such a call could ride a finished step - so the
-    // round fails with the real cause, exactly like a cut text-only round below.
-    if (endsInCall && !strcmp(sr, "max_tokens")) {
-      out.ok = false;
-      out.error = "truncated at max_tokens inside a tool call";
-      hlog::logf("orchTurn(ant-loop): stop_reason=max_tokens inside a tool call, round dropped");
-      return out;
-    }
-    // Finished: the turn (plus any siblings) goes to the controller. No echo
-    // needed - the transcript records the siblings and their results.
-    if (out.finished) return out;
-    if (out.toolCalls.empty()) {
-      // Text-only round. Distinguish a real stall from max_tokens truncation (the
-      // single-shot path surfaces this too) - a truncated round must NOT be echoed
-      // or "recovered": fail with the actual cause so it's debuggable from logs.
-      if (!strcmp(sr, "max_tokens")) {
+    // 2) one request, and at most one retry after a cut with a body that differs
+    //    (more room, one effort step down) - never the identical body.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      out = orch::HeadStep();
+      const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+      const AntLoopReq a{&model, &instructions, &capReason, &ht, allowTools, maxTokens,
+                         attempt ? cap.retryEffort : cap.effort};
+      std::string body;
+      if (!antLoopBody(pd, a, msgs, body, out.error)) {
         out.ok = false;
-        out.error = "truncated at max_tokens before a tool call";
-        hlog::logf("orchTurn(ant-loop): stop_reason=max_tokens, round truncated");
+        out.kind = orch::StepErr::BadRequest;
         return out;
       }
-      // Genuine stall (prose, no tool call). Do NOT echo the assistant message:
-      // the controller will force a tool-less final round, and a trailing assistant
-      // message + forced tool_choice is rejected by the API (prefill conflict).
-      // Dropping the prose loses nothing load-bearing - the model re-answers on the
-      // forced round from the same context.
+      // 3) send - the body is serialized ONCE into a contiguous buffer and handed
+      //    to the transport whole (single TLS write).
+      JsonDocument resp = makeDoc(pd);
+      const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+      const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), resp, filter, roundMs);
+      if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200) {
+        const std::string e = wire::httpErrLine("messages", code, resp["error"]["message"] | "");
+        wire::httpFailure(out, code, e, e + " " + (const char*)(resp["error"]["type"] | ""));
+        hlog::logf("orchTurn(ant-loop): %s", e.c_str());
+        return out;
+      }
+      if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+      orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+      JsonArrayConst content = resp["content"].as<JsonArrayConst>();
+      if ((content.isNull() || content.size() == 0) && strcmp(resp["stop_reason"] | "", "max_tokens") != 0) {
+        out.ok = false;
+        out.kind = orch::StepErr::ServerError;   // an answer with nothing in it: worth one resend
+        out.error = std::string("empty content (stop_reason=") +
+                    (const char*)(resp["stop_reason"] | "?") + ")";
+        return out;
+      }
+      const std::string sr = antReadRound(resp, out);
+      // 4) the completeness gate: a reply cut at max_tokens - wherever it stopped,
+      //    a finished orch_turn included - is never run and never delivered as
+      //    complete (a half-written memory_write, a reply cut mid-sentence).
+      if (sr == "max_tokens") {
+        if (attempt == 0 && cap.hasRetry()) {
+          hlog::logf("orchTurn(ant-loop): cut at %u tokens - one retry with %u (effort %s)",
+                     (unsigned)maxTokens, (unsigned)cap.retryTokens,
+                     *cap.retryEffort ? cap.retryEffort : "-");
+          continue;
+        }
+        wire::cutFailure(out, "max_tokens", maxTokens);
+        return out;
+      }
+      if (sr == "refusal") {
+        out.ok = false;
+        out.kind = orch::StepErr::Rejected;
+        out.error = std::string("the model declined the request (refusal: ") +
+                    (const char*)(resp["stop_details"]["category"] | "unspecified") + ")";
+        hlog::logf("orchTurn(ant-loop): %s", out.error.c_str());
+        return out;
+      }
+      if (sr == "model_context_window_exceeded") {
+        out.ok = false;
+        out.kind = orch::StepErr::Rejected;
+        out.error = "the prompt is too long for the model's context window";
+        return out;
+      }
+      if (out.finished || !out.toolCalls.empty() || out.text.empty()) return out;
+      // Text only. On a tool round it is a stall (the controller gives the model
+      // one more chance, with the stalled answer echoed back). On the forced final
+      // round it IS the answer: delivered as prose (the engine reads it as the
+      // reply only - no device action, memory write or spawn rides it).
+      if (!allowTools && (sr == "end_turn" || sr == "stop_sequence")) {
+        out.finished = true;
+        out.prose = true;
+        out.finalTurn = out.text;
+        hlog::logf("orchTurn(ant-loop): final round answered in prose (%u B)",
+                   (unsigned)out.text.size());
+      }
       return out;
     }
-    // Continuing with tool dispatches. No echo here: the controller records this
-    // round's prose + tool calls (and, after dispatch, the results) into the
-    // canonical transcript, and the next round's request is rendered from it -
-    // renderAntMessages() reproduces the assistant tool_use turn + its paired
-    // tool_result user turn.
-    return out;
+    return out;   // not reached: the second attempt always returns
   };
 }
 
@@ -1039,19 +1085,96 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   return true;
 }
 
-// One Head-Orchestrator turn on Anthropic via the MESSAGES API with a single
-// FORCED TOOL: tools=[{name:"orch_turn", input_schema:ORCH_SCHEMA_BODY}] +
-// tool_choice {type:"tool"} makes the tool input BE the structured turn - true
-// structured output, replacing the old managed-agents session that asked for
-// JSON in prose and substring-scanned the reply (indexOf('{') ... '}').
+// ---- single-shot head turn and the compaction fold ---------------------------
+// One request, no tool loop. A head turn offers the orch_turn tool with
+// tool_choice auto (NEVER forced: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a
+// forced tool_choice with HTTP 400 - verified live 18 Oct) and accepts either the
+// orch_turn input or a prose answer (the engine reads prose as the reply only: no
+// device action, memory write or spawn rides it). The compaction fold (its
+// instructions ARE ORCH_COMPACT_PROMPT) offers no tool at all: its reply IS the
+// summary, so the request carries no 10 KB schema and the summary comes back as
+// text. Both take max_tokens and effort from the output-cap table, and a reply cut
+// at the limit is retried once with more room before it fails.
 //
-// STATELESS BY DESIGN: the turn contract already carries ALL cross-turn state
-// in the `memory` field ("it is ALL you keep across turns and provider
-// failovers") + the World context re-composed each turn, so no server-side
+// STATELESS BY DESIGN: the turn contract carries all cross-turn state in the
+// `memory` field + the World context re-composed each turn, so no server-side
 // session is needed. convId is set to a marker so the caller's per-host
-// conversation bookkeeping stays consistent. The old path's agent/session
-// caching (antOrchAgent) is orch-unused now; sub-agent dispatch still uses
-// environments/sessions (envFor / agentFor) unchanged.
+// conversation bookkeeping stays consistent.
+namespace {
+struct AntShot {
+  const std::string* model;
+  const std::string* instructions;
+  const std::string* inputs;
+  bool fold;
+  uint32_t maxTokens;
+  const char* effort;
+};
+
+bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
+  JsonDocument d;
+  d["model"] = *a.model;
+  d["max_tokens"] = a.maxTokens;
+  if (a.effort && *a.effort) d["output_config"]["effort"] = a.effort;
+  // Prompt caching (v4.1.1) - same block-array shape as the loop path. A
+  // single-shot turn caches for the NEXT turn (hits when the owner replies within
+  // the 5-minute TTL; refreshed on every hit).
+  JsonObject sysBlock = d["system"].add<JsonObject>();
+  sysBlock["type"] = "text";
+  wire::putFieldStr(sysBlock["text"], *a.instructions, "the system prompt");
+  sysBlock["cache_control"]["type"] = "ephemeral";
+  JsonObject m = d["messages"].add<JsonObject>();
+  m["role"] = "user";
+  wire::putFieldStr(m["content"], *a.inputs, "the user message");
+  if (!a.fold) {
+    JsonObject tool = d["tools"].add<JsonObject>();
+    tool["name"] = "orch_turn";
+    tool["description"] = "Return your complete orchestrator turn.";
+    // NO strict:true - VERIFIED LIVE (2026-07-06): Anthropic's strict tool-use
+    // compiles the schema to a grammar with a hard size budget, and this contract
+    // exceeds it even with descriptions stripped ("compiled grammar is too
+    // large"). So the schema is ADVISORY; real enforcement is the device
+    // validator + tolerant parser.
+    JsonDocument sd;   // canonical schema (single source)
+    if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
+                        DeserializationOption::NestingLimit(16))) {   // schema depth > the default 10
+      err = "schema parse";
+      return false;
+    }
+    stripDescriptions(sd.as<ArduinoJson::JsonVariant>());   // fit the grammar budget
+    tool["input_schema"] = sd;
+    d["tool_choice"]["type"] = "auto";   // never forced (see above)
+    tool["cache_control"]["type"] = "ephemeral";   // caches the tools prefix segment
+  }
+  return wire::serializeChecked(d, body, err);
+}
+
+// What one single-shot reply holds: the orch_turn input (the turn), else the
+// prose answer, and whether it was cut at max_tokens.
+struct AntShotReply {
+  std::string turn;
+  bool cut = false;
+  std::string stop;
+};
+AntShotReply antReadShot(const JsonDocument& doc) {
+  AntShotReply r;
+  r.stop = doc["stop_reason"] | "";
+  r.cut = r.stop == "max_tokens";
+  std::string prose;
+  for (JsonObjectConst c : doc["content"].as<JsonArrayConst>()) {
+    const char* ty = c["type"] | "";
+    if (!strcmp(ty, "text")) {
+      const char* t = c["text"] | "";
+      if (*t) prose += (prose.empty() ? "" : "\n") + std::string(t);
+    } else if (!strcmp(ty, "tool_use") && !strcmp(c["name"] | "", "orch_turn") && r.turn.empty()) {
+      serializeJson(c["input"], r.turn);   // the tool input IS the turn
+    }
+  }
+  // A complete prose answer is the reply (the engine reads it as prose only).
+  if (r.turn.empty() && !r.cut && (r.stop == "end_turn" || r.stop == "stop_sequence")) r.turn = prose;
+  return r;
+}
+}  // namespace
+
 bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err,
@@ -1060,95 +1183,67 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   if (!pd.key || pd.key("anthropic").empty()) { err = "no Anthropic key"; return false; }
 
   // Multi-turn tool-use loop (opt-in): the model calls registry tools mid-turn and
-  // iterates, terminating on the orch_turn tool. Falls through to the single-shot
-  // forced-tool path below when the knob is off or no tools were supplied.
+  // iterates, terminating on the orch_turn tool. Falls through to the single shot
+  // below when the knob is off or no tools were supplied.
   if (tools && tools->dispatch && pd.toolLoopOn && pd.toolLoopOn())
     return runAntLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
-  std::string body;
-  {
-    JsonDocument d;
-    d["model"]      = pd.orchModel ? pd.orchModel("anthropic") : std::string();
-    d["max_tokens"] = 3000;              // a full orch_turn is well inside this
-    // Prompt caching (v4.1.1) - same block-array shape as the loop path. A
-    // single-shot turn caches for the NEXT turn (hits when the owner replies
-    // within the 5-minute TTL; refreshed on every hit).
-    {
-      JsonObject sysBlock = d["system"].add<JsonObject>();
-      sysBlock["type"] = "text";
-      wire::putFieldStr(sysBlock["text"], instructions, "the system prompt");
-      sysBlock["cache_control"]["type"] = "ephemeral";
-    }
-    JsonObject m = d["messages"].add<JsonObject>();
-    m["role"] = "user";
-    wire::putFieldStr(m["content"], inputs, "the user message");
-    JsonObject tool = d["tools"].add<JsonObject>();
-    tool["name"]        = "orch_turn";
-    tool["description"] = "Return your complete orchestrator turn.";
-    // NO strict:true - VERIFIED LIVE (2026-07-06): Anthropic's strict tool-use
-    // compiles the schema to a grammar with a hard size budget, and this
-    // contract (5-branch device union + enums + 9 fields) exceeds it even with
-    // descriptions stripped ("compiled grammar is too large"). So on Anthropic
-    // the schema is ADVISORY (forced tool-use still guarantees a tool_use
-    // block); real enforcement is the device validator + tolerant parser.
-    // OpenAI + Mistral DO enforce the same schema server-side. Re-try strict
-    // here if Anthropic raises the grammar budget.
-    {
-      JsonDocument sd;                   // canonical schema (single source)
-      DeserializationError se = deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
-          DeserializationOption::NestingLimit(16));  // schema depth > the default 10
-      if (se) { err = "schema parse"; return false; }
-      stripDescriptions(sd.as<ArduinoJson::JsonVariant>());  // fit the strict grammar budget
-      tool["input_schema"] = sd;
-    }
-    d["tool_choice"]["type"] = "tool";   // FORCE the orch_turn tool call
-    d["tool_choice"]["name"] = "orch_turn";
-    // Cache breakpoint on the (single) tool - caches the tools prefix segment.
-    tool["cache_control"]["type"] = "ephemeral";
-    if (!wire::serializeChecked(d, body, err)) return false;
-  }
-
+  const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
+  const bool fold = instructions == nimbus::orch::ORCH_COMPACT_PROMPT;
+  const OutputCap cap = outputCapFor("anthropic", model, fold ? RoundKind::Fold : RoundKind::SingleShot,
+                                     kHeadRoundCeilingMs);
   // Keep the tool_use input UNFILTERED (it is the whole turn object); filter the
   // rest of the response envelope down to what we read.
   JsonDocument filter;
   JsonObject ci = filter["content"].add<JsonObject>();
-  ci["type"] = true; ci["name"] = true; ci["input"] = true;
+  ci["type"] = true; ci["name"] = true; ci["input"] = true; ci["text"] = true;
   filter["stop_reason"] = true;
   filter["error"]["message"] = true;
+  filter["error"]["type"] = true;
   filter["usage"]["input_tokens"]  = true;   // token usage (single-shot turn)
   filter["usage"]["output_tokens"] = true;
   filter["usage"]["cache_read_input_tokens"]     = true;   // prompt-cache hits
   filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
-  JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
-  int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
-  if (code <= 0)   { err = wire::transportError(pd); return false; }
-  if (code != 200) {
-    err = "messages HTTP " + std::to_string(code);
-    const char* em = doc["error"]["message"] | "";
-    if (em[0]) err += std::string(": ") + em;
-    hlog::logf("orchTurn(ant): %s", err.c_str());
-    return false;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const AntShot shot{&model, &instructions, &inputs, fold,
+                       attempt ? cap.retryTokens : cap.maxTokens, attempt ? cap.retryEffort : cap.effort};
+    std::string body;
+    if (!antShotBody(shot, body, err)) return false;
+    JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
+    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+    const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
+    if (code <= 0)   { err = wire::headTransportError(pd, t0, kHeadRoundCeilingMs); return false; }
+    if (code != 200) {
+      err = wire::httpErrLine("messages", code, doc["error"]["message"] | "");
+      hlog::logf("orchTurn(ant): %s", err.c_str());
+      return false;
+    }
+    if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+    nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
+    const AntShotReply r = antReadShot(doc);
+    if (r.cut && attempt == 0 && cap.hasRetry()) {
+      hlog::logf("orchTurn(ant): %s cut at %u tokens - one retry with %u (effort %s)",
+                 fold ? "fold" : "turn", (unsigned)cap.maxTokens, (unsigned)cap.retryTokens,
+                 *cap.retryEffort ? cap.retryEffort : "-");
+      continue;
+    }
+    if (r.cut) {
+      err = "cut at the output limit (" + std::to_string(shot.maxTokens) + " tokens)";
+      return false;
+    }
+    if (r.turn.empty()) {
+      // stop_reason explains the miss (a refusal, an empty reply) - surface it
+      // instead of a blind "no tool_use".
+      err = "no orch_turn tool_use (stop_reason=" + (r.stop.empty() ? std::string("?") : r.stop) + ")";
+      return false;
+    }
+    outJson = r.turn;
+    convId = "messages";   // stateless host: marker keeps per-host conv bookkeeping happy
+    return true;
   }
-  if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
-  nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
-
-  for (JsonObjectConst c : doc["content"].as<JsonArrayConst>()) {
-    if (strcmp(c["type"] | "", "tool_use") != 0) continue;
-    if (strcmp(c["name"] | "", "orch_turn") != 0) continue;
-    serializeJson(c["input"], outJson);           // the tool input IS the turn
-    break;
-  }
-  if (outJson.length() == 0) {
-    // stop_reason explains the miss (e.g. "max_tokens": the turn got truncated
-    // before the tool call) - surface it instead of a blind "no tool_use".
-    err = std::string("no orch_turn tool_use (stop_reason=") +
-          (const char*)(doc["stop_reason"] | "?") + ")";
-    return false;
-  }
-  convId = "messages";   // stateless host: marker keeps per-host conv bookkeeping happy
-  return true;
+  return false;   // not reached: the second attempt always returns
 }
 
 }  // namespace providers

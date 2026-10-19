@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "nimbus/harness/output_caps.h"   // max_tokens per round from the output-cap table
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
@@ -25,12 +26,15 @@
 namespace agent {
 namespace providers {
 
-// The Conversations API runs any attached connector SERVER-SIDE inside the POST,
-// so a connector turn (e.g. creating a Notion page) can far exceed a plain
-// completion. 60 s keeps the streaming reader from hitting its deadline (and
-// truncating the parse) mid-connector-run; tg_poll is not watchdog-subscribed, so
-// a bounded 60 s wait is safe.
-static const uint32_t MISTRAL_TIMEOUT_MS = 60000;
+// Every Mistral request is non-streamed: nothing arrives until the model (and any
+// connector the Conversations API runs server-side inside the POST) has finished.
+// So the deadline is the whole round, and Mistral gets the same 120 s ceiling as
+// every other provider (the one time policy, providers.h). It ran at 60 s since
+// the first release, while OpenAI and Anthropic moved to 120 s after exactly this
+// failure: a slow round read as a dead network, was retried for another 60 s and
+// only then failed over. tg_poll is not watchdog-subscribed, so a bounded wait is
+// safe at either value.
+static const uint32_t MISTRAL_TIMEOUT_MS = kHeadRoundCeilingMs;
 static const char* kMistralHost = "api.mistral.ai";   // mirrors agent_config.h MISTRAL_HOST
 
 // Mistral's Conversations API reserves its built-in connector function names;
@@ -137,19 +141,49 @@ static int mistralRequest(const ProviderDeps& pd, const char* method, const std:
 // quota and a plan that allows 0 requests, so only the headers can tell the
 // engine's reply which one it was (CUM-460).
 static std::string mistralHttpErr(const char* what, int code, const HeaderList& quota,
-                                  const char* msg) {
+                                  const std::string& msg) {
   std::string e = std::string(what) + " HTTP " + std::to_string(code);
   const std::string tag = code == 429 ? rateLimitTag(rateLimitFromHeaders(quota)) : std::string();
   if (!tag.empty()) e += " " + tag;
-  if (msg && msg[0]) e += std::string(": ") + msg;
+  if (!msg.empty()) e += ": " + wire::oneLine(msg);
   return e;
 }
 
-// The provider's error text: {"message": ...}, else the connector-quota shape
-// {"detail":"Custom connector rate limit reached."}. "" when neither is a string.
-static const char* mistralErrText(const JsonDocument& doc) {
-  const char* em = doc["message"] | "";
-  return em[0] ? em : (doc["detail"] | "");
+// The provider's error text from EVERY body shape Mistral answers with (all
+// recorded live, 18 Oct): {"message":"Invalid model: ..."}; a 422's
+// {"message":{"detail":[{"msg":...}]}} (message is an OBJECT); {"detail":"There
+// was an error parsing the body"} (detail is a STRING - the invalid-UTF-8 400 that
+// logged as a bare "chat HTTP 400"); {"detail":[{"msg":...}]}; and an
+// OpenAI-style {"error":{"message":...}}. "" when none carries text.
+static std::string mistralDetailText(JsonVariantConst d) {
+  if (d.is<const char*>()) return d.as<const char*>();
+  if (d.is<JsonArrayConst>()) {
+    std::string out;
+    for (JsonVariantConst e : d.as<JsonArrayConst>()) {
+      const char* m = e["msg"] | "";
+      if (*m) out += (out.empty() ? "" : "; ") + std::string(m);
+      if (out.size() > 200) break;
+    }
+    return out;
+  }
+  return "";
+}
+static std::string mistralErrText(const JsonDocument& doc) {
+  JsonVariantConst msg = doc["message"];
+  if (msg.is<const char*>() && *msg.as<const char*>()) return msg.as<const char*>();
+  std::string t = mistralDetailText(msg["detail"]);
+  if (t.empty()) t = mistralDetailText(doc["detail"]);
+  if (t.empty()) t = doc["error"]["message"] | "";
+  if (t.empty() && doc["error"].is<const char*>()) t = doc["error"].as<const char*>();
+  return t;
+}
+// The error fields every Mistral filter keeps, whatever their shape.
+static void keepMistralError(JsonDocument& filter) {
+  filter["message"] = true;
+  filter["detail"] = true;
+  filter["error"] = true;
+  filter["type"] = true;
+  filter["code"] = true;
 }
 
 // ---- head turn (Conversations API + canonical schema) -----------------------
@@ -247,6 +281,112 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
   }
 }
 
+// One loop request body. Tools re-sent every round (stateless): orch_turn (the
+// terminal) + the registry specs. NO Studio built-ins on loop turns (they forbid
+// tool_choice forcing - verified live 2026-07-11); the registry's web.search
+// covers it. max_tokens comes from the output-cap table: an unbounded round's
+// latency had no ceiling but the socket clock.
+struct MisLoopReq {
+  const std::string* sysText;
+  const HeadTools* ht;
+  bool allowTools;
+  uint32_t maxTokens;
+};
+static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& tr, const MisLoopReq& a,
+                        std::string& body, std::string& err) {
+  JsonDocument req = makeDoc(pd);
+  req["model"] = pd.orchModel ? pd.orchModel("mistral") : std::string();
+  if (a.maxTokens) req["max_tokens"] = a.maxTokens;
+  {
+    JsonArray msgs = req["messages"].to<JsonArray>();
+    renderMistralMessages(tr, msgs, *a.sysText);
+  }
+  JsonArray tools = req["tools"].to<JsonArray>();
+  {
+    JsonObject ot = tools.add<JsonObject>();
+    ot["type"] = "function";
+    JsonObject fn = ot["function"].to<JsonObject>();
+    fn["name"]        = "orch_turn";
+    fn["description"] = "Return your COMPLETE orchestrator turn. This is your FINAL "
+                        "answer and ENDS the turn - call it once you have everything.";
+    JsonDocument sd = makeDoc(pd);
+    if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16))) {
+      err = "schema parse";
+      return false;
+    }
+    fn["parameters"] = sd;
+  }
+  for (const auto& sp : a.ht->specs) {
+    JsonObject t = tools.add<JsonObject>();
+    t["type"] = "function";
+    JsonObject fn = t["function"].to<JsonObject>();
+    // Reserved-name rename kept on chat-completions for one consistent wire
+    // (mistralUnsafeName inverts it before dispatch).
+    fn["name"] = mistralSafeName(sp.name);
+    fn["description"] = sp.description;
+    JsonDocument ssd = makeDoc(pd);
+    if (deserializeJson(ssd, sp.schemaJson, DeserializationOption::NestingLimit(16)) ==
+        DeserializationError::Ok)
+      fn["parameters"] = ssd;
+    else
+      fn["parameters"].to<JsonObject>();
+  }
+  if (a.allowTools) {
+    // "any": chat-completions' force-a-tool value (the Conversations API's
+    // "required" dialect does NOT apply here). The model must call SOME tool
+    // every round; orch_turn is the only exit.
+    req["tool_choice"] = "any";
+  } else {
+    // Forced final: chat-completions DOES accept the named-function object
+    // (the Conversations API 422'd on it - that limitation was conversations-
+    // specific). Pin the terminal directly.
+    JsonObject tc = req["tool_choice"].to<JsonObject>();
+    tc["type"] = "function";
+    tc["function"]["name"] = "orch_turn";
+  }
+  return wire::serializeChecked(req, body, err);
+}
+
+// Read one chat-completions reply into `out`. Returns false when the reply is cut
+// (finish_reason "length" / "model_length", or a tool call whose arguments do not
+// parse as JSON - a cut argument string must never be dispatched or become the turn).
+static bool misReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy) {
+  JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
+  const std::string fr = resp["choices"][0]["finish_reason"] | "";
+  if (fr == "length" || fr == "model_length") cutWhy = fr;
+  // A reasoning model's content may be a chunk list (thinking, then text).
+  const std::string prose = nimbus::orch::chatContentText(m["content"]);
+  if (!prose.empty()) out.text = prose;
+  for (JsonObjectConst t : m["tool_calls"].as<JsonArrayConst>()) {
+    const char* nm = t["function"]["name"] | "";
+    // arguments may arrive as a JSON string OR an object - normalize to string.
+    std::string args;
+    if (t["function"]["arguments"].is<const char*>())
+      args = t["function"]["arguments"].as<const char*>();
+    else
+      serializeJson(t["function"]["arguments"], args);
+    JsonDocument probe;
+    if (!args.empty() && args != "null" && deserializeJson(probe, args) != DeserializationError::Ok &&
+        cutWhy.empty())
+      cutWhy = "arguments";
+    if (!strcmp(nm, "orch_turn")) {
+      // CUM-506: keep scanning - calls batched after the final orch_turn are
+      // side effects too (the controller runs them before accepting it).
+      if (!out.finished) {
+        out.finished  = true;
+        out.finalTurn = args;
+      }
+      continue;
+    }
+    nimbus::orch::HeadToolCall call;
+    call.id       = t["id"] | "";
+    call.name     = mistralUnsafeName(nm);   // invert the reserved-name rename
+    call.argsJson = (args.length() && args != "null") ? args : "{}";
+    out.toolCalls.push_back(call);
+  }
+  return cutWhy.empty();
+}
+
 // STEP FACTORY (Stage 2 phase 5): one Mistral chat-completions model turn
 // against the shared canonical transcript. Same lifetime contract as
 // antLoopStep - `instructions`/`ht`/`usage`/`tr` by reference.
@@ -266,126 +406,65 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     namespace orch = nimbus::orch;
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
-    // F25: clamp this round's socket timeout to the turn's remaining budget so
-    // slow rounds can't stack past the deadline (no-op when budgetMs==UINT32_MAX).
-    const uint32_t kMinRoundMs = 8000;
-    const uint32_t roundMs = budgetMs >= MISTRAL_TIMEOUT_MS ? MISTRAL_TIMEOUT_MS
-                             : (budgetMs < kMinRoundMs ? kMinRoundMs : budgetMs);
+    // F25 + the one time policy: this round's socket timeout is the turn's
+    // remaining budget, at most the 120 s head ceiling.
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
     if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
-
-    JsonDocument req = makeDoc(pd);
-    req["model"] = pd.orchModel ? pd.orchModel("mistral") : std::string();
-    {
-      JsonArray msgs = req["messages"].to<JsonArray>();
-      // Final-round notice when a cap forced this tool-less round (wire.h).
-      renderMistralMessages(tr, msgs, wire::roundInstructions(instructions, capReason));
-    }
-    // Tools re-sent every round (stateless): orch_turn (the terminal) + the
-    // registry specs. NO Studio built-ins on loop turns (they forbid tool_choice
-    // forcing - verified live 2026-07-11); the registry's web.search covers it.
-    JsonArray tools = req["tools"].to<JsonArray>();
-    {
-      JsonObject ot = tools.add<JsonObject>();
-      ot["type"] = "function";
-      JsonObject fn = ot["function"].to<JsonObject>();
-      fn["name"]        = "orch_turn";
-      fn["description"] = "Return your COMPLETE orchestrator turn. This is your FINAL "
-                          "answer and ENDS the turn - call it once you have everything.";
-      JsonDocument sd = makeDoc(pd);
-      if (deserializeJson(sd, orch::ORCH_SCHEMA_BODY,
-                          DeserializationOption::NestingLimit(16))) {
-        out.ok = false; out.error = "schema parse"; return out;
-      }
-      fn["parameters"] = sd;
-    }
-    for (const auto& s : ht.specs) {
-      JsonObject t = tools.add<JsonObject>();
-      t["type"] = "function";
-      JsonObject fn = t["function"].to<JsonObject>();
-      // Reserved-name rename kept on chat-completions for one consistent wire
-      // (mistralUnsafeName inverts it before dispatch).
-      fn["name"] = mistralSafeName(s.name);
-      fn["description"] = s.description;
-      JsonDocument ssd = makeDoc(pd);
-      if (deserializeJson(ssd, s.schemaJson,
-                          DeserializationOption::NestingLimit(16)) == DeserializationError::Ok)
-        fn["parameters"] = ssd;
-      else
-        fn["parameters"].to<JsonObject>();
-    }
-    if (allowTools) {
-      // "any": chat-completions' force-a-tool value (the Conversations API's
-      // "required" dialect does NOT apply here). The model must call SOME tool
-      // every round; orch_turn is the only exit.
-      req["tool_choice"] = "any";
-    } else {
-      // Forced final: chat-completions DOES accept the named-function object
-      // (the Conversations API 422'd on it - that limitation was conversations-
-      // specific). Pin the terminal directly.
-      JsonObject tc = req["tool_choice"].to<JsonObject>();
-      tc["type"] = "function";
-      tc["function"]["name"] = "orch_turn";
-    }
+    const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
+    const OutputCap cap = outputCapFor("mistral", model,
+                                       allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
+    // Final-round notice when a cap forced this tool-less round (wire.h).
+    const std::string sysText = wire::roundInstructions(instructions, capReason);
 
     JsonDocument filter;
     JsonObject ch = filter["choices"].add<JsonObject>();
+    ch["finish_reason"] = true;                      // the completeness gate
     JsonObject msg = ch["message"].to<JsonObject>();
     msg["content"] = true;
     JsonObject tcf = msg["tool_calls"].add<JsonObject>();
     tcf["id"] = true;
     tcf["function"]["name"] = true;
     tcf["function"]["arguments"] = true;
-    filter["message"] = true;                        // error envelope (some errors)
-    filter["detail"].add<JsonObject>()["msg"] = true; // 422 validation detail
+    keepMistralError(filter);   // every error-envelope shape (message, detail, error)
     filter["usage"] = true;   // whole usage object -> per-round token accounting
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
-    std::string body;
-    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
-    JsonDocument resp = makeDoc(pd);
-    HeaderList quota;
-    int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                              resp, filter, roundMs, &quota);
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
-    if (code != 200) {
-      const char* em = resp["message"] | "";
-      if (!em[0]) em = resp["detail"][0]["msg"] | "";   // 422 validation shape
-      const std::string e = mistralHttpErr("chat", code, quota, em);
-      out.ok = false; out.error = e;
-      hlog::logf("orchTurn(mistral-loop): %s", e.c_str());
-      return out;
-    }
-    if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-    nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
-
-    JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
-    // A reasoning model's content may be a chunk list (thinking, then text).
-    const std::string prose = nimbus::orch::chatContentText(m["content"]);
-    if (!prose.empty()) out.text = prose;
-    for (JsonObjectConst t : m["tool_calls"].as<JsonArrayConst>()) {
-      const char* nm = t["function"]["name"] | "";
-      // arguments may arrive as a JSON string OR an object - normalize to string.
-      std::string args;
-      if (t["function"]["arguments"].is<const char*>())
-        args = t["function"]["arguments"].as<const char*>();
-      else
-        serializeJson(t["function"]["arguments"], args);
-      if (!strcmp(nm, "orch_turn")) {
-        // CUM-506: keep scanning - calls batched after the final orch_turn are
-        // side effects too (the controller runs them before accepting it).
-        if (!out.finished) {
-          out.finished  = true;
-          out.finalTurn = args;
-        }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      out = orch::HeadStep();
+      const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+      std::string body;
+      if (!misLoopBody(pd, tr, MisLoopReq{&sysText, &ht, allowTools, maxTokens}, body, out.error)) {
+        out.ok = false;
+        out.kind = orch::StepErr::BadRequest;
+        return out;
+      }
+      JsonDocument resp = makeDoc(pd);
+      HeaderList quota;
+      const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+      int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
+                                resp, filter, roundMs, &quota);
+      if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200) {
+        const std::string em = mistralErrText(resp);
+        const std::string e = mistralHttpErr("chat", code, quota, em);
+        wire::httpFailure(out, code, e,
+                          e + " " + (const char*)(resp["type"] | "") + " " + (const char*)(resp["code"] | ""));
+        hlog::logf("orchTurn(mistral-loop): %s", e.c_str());
+        return out;
+      }
+      if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+      orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+      std::string cutWhy;
+      if (misReadRound(resp, out, cutWhy)) return out;   // finished, a tool round, or prose (stall)
+      if (attempt == 0 && cap.hasRetry()) {
+        hlog::logf("orchTurn(mistral-loop): cut (%s) at %u tokens - one retry with %u",
+                   cutWhy.c_str(), (unsigned)maxTokens, (unsigned)cap.retryTokens);
         continue;
       }
-      orch::HeadToolCall call;
-      call.id       = t["id"] | "";
-      call.name     = mistralUnsafeName(nm);   // invert the reserved-name rename
-      call.argsJson = (args.length() && args != "null") ? args : "{}";
-      out.toolCalls.push_back(call);
+      wire::cutFailure(out, cutWhy, maxTokens);
+      return out;
     }
-    return out;   // finished (siblings ride along), a tool round, or prose (stall path)
+    return out;   // not reached: the second attempt always returns
   };
 }
 
@@ -614,8 +693,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   filter["conversation_id"] = true;
   JsonObject oi = filter["outputs"].add<JsonObject>();
   oi["type"] = true; oi["content"] = true;
-  filter["message"] = true;            // error envelope
-  filter["detail"] = true;             // error envelope, connector-quota shape
+  keepMistralError(filter);            // every error-envelope shape
   filter["usage"] = true;              // whole usage object -> token accounting
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
@@ -624,9 +702,10 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
       : std::string("/v1/conversations");
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   HeaderList quota;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = mistralRequest(pd, "POST", path, std::move(hb.body), doc, filter,
                             MISTRAL_TIMEOUT_MS, &quota);
-  if (code <= 0)   { err = wire::transportError(pd); return false; }
+  if (code <= 0)   { err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS); return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
   if (code != 200) {
     err = mistralHttpErr("conversations", code, quota, mistralErrText(doc));
@@ -668,9 +747,11 @@ struct Cached {
   std::string reply;
   std::vector<MistralFileRef> files;   // v4.1: code_interpreter-produced files
   bool used;
-  // Connector provenance (CUM-536) - copied into the ResultEnvelope at poll.
+  // Connector provenance (CUM-536) and run counts - copied into the ResultEnvelope at poll.
   uint16_t connectorCalls;
   std::string connectorAsked;
+  uint16_t toolRuns;
+  uint16_t webRuns;
 };
 static Cached s_cache[6];   // == kAgentMaxJobs; sync jobs vacate in seconds
 
@@ -690,6 +771,8 @@ void clearSlot(Cached& c) {
   c.files.clear();
   c.connectorAsked.clear();
   c.connectorCalls = 0;
+  c.toolRuns = 0;
+  c.webRuns = 0;
 }
 
 // CUM-536 connector provenance, decided from the request before the run: the
@@ -724,17 +807,30 @@ Provenance provenanceOf(const ProviderDeps& pd, const JsonDocument& req, const D
   return p;
 }
 
-// The reply text of a Conversations response (the last message.output) and how
-// many of its tool.execution entries count as runs of the asked connector.
-std::string outputsReply(const JsonDocument& doc, const Provenance& p, uint16_t& calls) {
+// The provider's own run counts for one sub (copied into the ResultEnvelope).
+struct RunCounts {
+  uint16_t connector = 0;   // runs of the asked connector (CUM-536)
+  uint16_t tools = 0;       // every tool.execution entry
+  uint16_t web = 0;         // ...that was a web search or fetch
+};
+bool isWebTool(const char* name) {
+  return strstr(name, "web_search") != nullptr || strstr(name, "web_fetch") != nullptr ||
+         strstr(name, "news_search") != nullptr;
+}
+void bump(uint16_t& n) { if (n < 0xFFFF) n++; }
+
+// The reply text of a Conversations response (the last message.output) and the
+// run counts from its tool.execution entries.
+std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts& runs) {
   std::string reply;
-  calls = 0;
+  runs = RunCounts();
   for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
     const char* type = o["type"] | "";
     if (strcmp(type, "tool.execution") == 0) {
-      if (nimbus::orch::countsAsConnectorRun(o["name"] | "", p.askedId, p.attached) &&
-          calls < 0xFFFF)
-        calls++;
+      const char* nm = o["name"] | "";
+      bump(runs.tools);
+      if (isWebTool(nm)) bump(runs.web);
+      if (nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached)) bump(runs.connector);
       continue;
     }
     if (strcmp(type, "message.output") == 0) reply = mistralOutputContent(o);   // string OR chunks
@@ -773,18 +869,18 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // widening beyond this is needed to keep {file_id,file_name,file_type}.
   oi["type"] = true; oi["content"] = true;
   oi["name"] = true;          // tool.execution: which tool ran (connector provenance)
-  filter["message"] = true;   // error envelope
-  filter["detail"] = true;    // error envelope, connector-quota shape
+  keepMistralError(filter);   // every error-envelope shape
 
   JsonDocument doc = makeDoc(pd);   // response -> PSRAM; execJson streams it off the socket
   HeaderList quota;                 // a 429's x-ratelimit-*: which window refused
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
-                            MISTRAL_TIMEOUT_MS, &quota);
-  // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts our 60 s
-  // read deadline and a peer that cuts it after the request went out may have run
-  // it: either is "may have started", never the misleading "couldn't start".
-  if (code <= 0) return wire::subTransportErr(pd, t0, MISTRAL_TIMEOUT_MS);
+                            kSyncSubCeilingMs, &quota);
+  // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts the read
+  // deadline (the 120 s sync-sub ceiling) and a peer that cuts it after the request
+  // went out may have run it: either is "may have started", never the misleading
+  // "couldn't start".
+  if (code <= 0) return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
   if (code == 401) return FabricErr::Auth;
   if (code == 429) {
     // Classified exactly like a head turn's 429 (CUM-465): the headers' window,
@@ -795,11 +891,11 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     return wire::rateLimited(d, rateLimitFromError(err));
   }
   if (code != 200) {
-    hlog::logf("mistral dispatch HTTP %d: %s", code, mistralErrText(doc));
+    hlog::logf("mistral dispatch HTTP %d: %s", code, mistralErrText(doc).c_str());
     return FabricErr::RemoteFail;
   }
-  uint16_t connectorCalls = 0;
-  std::string reply = outputsReply(doc, prov, connectorCalls);
+  RunCounts runs;
+  std::string reply = outputsReply(doc, prov, runs);
   // Capture any code_interpreter-produced files (poll -> env.artifacts[]).
   std::vector<MistralFileRef> files;
   const int droppedFiles = mistralParseFileRefs(doc, files);
@@ -816,11 +912,13 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   s_cache[slot].reply = std::move(reply);
   s_cache[slot].files = std::move(files);
   s_cache[slot].used  = false;
-  s_cache[slot].connectorCalls = connectorCalls;
+  s_cache[slot].connectorCalls = runs.connector;
   s_cache[slot].connectorAsked = prov.asked;
+  s_cache[slot].toolRuns = runs.tools;
+  s_cache[slot].webRuns = runs.web;
   if (!prov.attached.empty())
     hlog::logf("mistral sub: connectors attached=%u calls=%u asked=%s",
-               (unsigned)prov.attached.size(), (unsigned)connectorCalls,
+               (unsigned)prov.attached.size(), (unsigned)runs.connector,
                prov.asked.empty() ? "-" : prov.asked.c_str());
   snprintf(outJobId, 72, "mistral:%s", s_cache[slot].id);
   return FabricErr::Ok;
@@ -860,6 +958,8 @@ FabricErr mistralPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope&
   }
   env.artifactCount = nf;
   env.connectorCalls = s_cache[slot].connectorCalls;
+  env.toolRuns = s_cache[slot].toolRuns;
+  env.webRuns = s_cache[slot].webRuns;
   snprintf(env.connectorAsked, sizeof(env.connectorAsked), "%s",
            s_cache[slot].connectorAsked.c_str());
   clearSlot(s_cache[slot]);                   // slot freed after delivery

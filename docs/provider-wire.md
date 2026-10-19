@@ -33,7 +33,7 @@ channel:
 | provider | single-shot channel | tool-loop channel | schema enforced at the wire? |
 |---|---|---|---|
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
-| **Anthropic** (Messages API) | forced tool-use, `tool_choice:{type:"tool",name:"orch_turn"}` | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; the device parser + validator are the enforcement |
+| **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; the device parser + validator are the enforcement |
 | **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
 | **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | none (single-shot head) | **No** - Z.ai answers `json_schema` requests with plain Markdown, so the head asks for `json_object`; a reply that is still prose is delivered as the reply (nothing else rides it) |
 | **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
@@ -143,12 +143,29 @@ serves:
 - **Tool choice per round**: OpenAI and Mistral FORCE a tool on tool-allowed
   rounds - OpenAI `tool_choice:"required"`, Mistral chat/completions
   `tool_choice:"any"` - so the model always calls a registry tool or the
-  terminal `orch_turn`, and a prose-only stall round cannot occur. Anthropic uses
-  `tool_choice:auto` (the model may call a tool OR answer via `orch_turn`); a
-  genuine text-only stall there is caught by the controller's forced final round.
-  The forced FINAL round (a cap tripped) pins `orch_turn` directly on every
-  provider - OpenAI/Mistral via the named-function object, Anthropic via
-  `tool_choice:{type:"tool",name:"orch_turn"}`.
+  terminal `orch_turn`, and a prose-only stall round cannot occur. Their FINAL
+  round (a cap tripped) pins `orch_turn` through the named-function object.
+  Anthropic uses `tool_choice:auto` on EVERY round, the final round and the
+  single shot included: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced
+  `tool_choice` with a 400. A text-only reply on an Anthropic tool round is still
+  a stall; on the final round after it, the stalled answer rides back as an
+  assistant message plus a user nudge, so the final turn keeps it, and a final
+  round answered in prose is delivered as the reply only (no device action,
+  memory write or spawn rides prose).
+- **Output budget and completeness**: one table (`output_caps.h`) gives each
+  adapter and round kind (tool round, final round, single shot, fold) its
+  `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
+  `output_config.effort` pinned (medium; low for the fold) on the families that
+  accept it, clamped so a generation at the family's slowest measured rate still
+  finishes inside the round's 120 s; Mistral rounds get 4,096; OpenAI sends no
+  output cap (reasoning would starve the answer). Every adapter reads
+  completeness - Anthropic `stop_reason:"max_tokens"`, Mistral
+  `finish_reason:"length"` (or tool arguments that do not parse), OpenAI
+  `status:"incomplete"`, the custom head `finish_reason:"length"` - and a cut
+  answer is never run or delivered as complete. A cut round is retried once in
+  the same step with a body that differs (more room, effort one step lower),
+  never an identical one; still cut, it fails as a Cut. Thinking is never
+  disabled (a 400 on Opus 5.5 and Fable 5.1); effort is the lever.
 - **Mistral built-ins**: chat/completions forbids tool_choice forcing alongside
   the Studio built-in connectors, so loop rounds drop the built-ins and the
   registry's `web.search` covers the gap. (The single-shot Conversations path
@@ -181,18 +198,34 @@ host list against one shared `Transcript`, wrapping each controller step so that
 retry and failover happen INSIDE a single logical round:
 
 1. Run the round against the current host.
-2. On a transport failure, retry the SAME host once.
-3. Still failing → walk to the next keyed host and re-run the SAME round on the
-   shared transcript. Up to two switches; the host list is the current provider
-   plus up to two keyed, in-budget alternates from `providerPriority`.
+2. A failed round is typed (`StepErr`, set by the adapter that saw the answer)
+   and the fabric acts on the kind:
+
+   | kind | same-host retry | switch host | park host |
+   |---|---|---|---|
+   | Transport (connect, short write, fast cut, cut body), ServerError (5xx, 529), RateLimited | once | then yes | no |
+   | Timeout (sent, no answer within about the whole 120 s round) | no | yes | no |
+   | Rejected (another 4xx: unknown model, a parameter the model refuses, a refusal), Cut (still cut after the in-step retry) | no | yes | no |
+   | Auth (401/403), Billing (out of credit or quota) | no | yes | yes |
+   | BadRequest (the body is unreadable, or refused before the send), LowMemory | no | no | never |
+
+3. A switch walks to the next keyed host that is not parked and re-runs the SAME
+   round on the shared transcript. Up to two switches; the host list is the
+   current provider plus up to two keyed, in-budget alternates from
+   `providerPriority`.
 
 Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A
-**schema-parse failure does NOT fail over** - that is a device-side contract
-error, identical on every host, so it returns immediately rather than burning a
-switch. The owner is notified on each switch ("… hit trouble mid-task -
-switching to …; your progress this turn carries over"), and turn-end bookkeeping
-attributes to the host that finished.
+**parked** host (a billing or auth refusal, RAM only) is skipped at the start of
+later turns - no request, retry or notice spent on it - until its key or model
+changes, a request there succeeds, or 30 minutes pass (then one probe request).
+The owner notice names the cause and its HTTP status ("anthropic says the
+account is out of credit (HTTP 400)... until then, openai answers"; "mistral did
+not answer in time - switching to anthropic"); a billing refusal is told once per
+episode, shared with the embedding seam. Turn-end bookkeeping attributes to the
+host that finished. Every request's deadline comes from one policy: 120 s for
+every head round and every synchronous sub (Z.ai keeps its 50 s, under its
+gateway cut), clamped to the turn's remaining budget.
 
 Gated by NVS `midFail` (`store::midTurnFailover()`, default **ON**; web toggle
 "Switch providers mid-task if one fails"). The engine
@@ -210,10 +243,10 @@ per-host loops could not carry a turn across providers.)
 
 1. A failed turn retries ONCE on the same host with a fresh conversation
    (transient TLS/handshake flakes), then walks up to two keyed alternates from
-   `providerPriority`, notifying the owner at each switch. A provider that
-   did not answer in time is not retried: the same prompt would time out
-   again, so the turn fails over at once and the notice says it did not
-   answer in time.
+   `providerPriority`, notifying the owner at each switch with the cause. The
+   same typed rule decides the retry: a timeout, an unknown model, a refused key,
+   a billing refusal or an unreadable request is not retried on the same host
+   (the same request fails the same way again).
 2. **Both steps are skipped entirely if ANY tool executed during the failed
    attempt** - replaying a turn re-runs its side effects (a memory write, a
    spawn, a message). The owner gets an honest error instead.

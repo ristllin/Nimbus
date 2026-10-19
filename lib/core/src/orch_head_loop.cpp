@@ -1,5 +1,6 @@
 #include "nimbus/orch/head_loop.h"
 
+#include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
 
 namespace nimbus {
@@ -22,6 +23,127 @@ const char* capReasonText(const std::string& reason) {
   if (reason == "bytes")    return "the tool-output budget for this turn was reached";
   if (reason == "stalled")  return "the turn stalled without requesting anything";
   return "a limit for this turn was reached";
+}
+
+// ---- typed step errors ----------------------------------------------------------
+
+const char* stepErrSlug(StepErr k) {
+  switch (k) {
+    case StepErr::None:        return "none";
+    case StepErr::Transport:   return "transport";
+    case StepErr::Timeout:     return "timeout";
+    case StepErr::RateLimited: return "rate_limited";
+    case StepErr::BadRequest:  return "bad_request";
+    case StepErr::Auth:        return "auth";
+    case StepErr::Billing:     return "billing";
+    case StepErr::LowMemory:   return "low_memory";
+    case StepErr::ServerError: return "server_error";
+    case StepErr::Rejected:    return "rejected";
+    case StepErr::Cut:         return "cut";
+  }
+  return "none";
+}
+
+// The fabric table. Retrying the same host helps only when the cause was in
+// transit (a cut connection, an overloaded server, a short rate window); a refusal
+// of THIS request (its content, its key, its account, its model) comes back
+// identical, so it switches at once - or, when the request itself is what is
+// wrong (BadRequest) or the device is (LowMemory), fails without burning a switch.
+FabricRule fabricRuleFor(StepErr k) {
+  switch (k) {
+    case StepErr::Transport:
+    case StepErr::RateLimited:
+    case StepErr::ServerError: return {true, true, false};
+    case StepErr::Timeout:
+    case StepErr::Rejected:
+    case StepErr::Cut:         return {false, true, false};
+    case StepErr::Auth:
+    case StepErr::Billing:     return {false, true, true};
+    case StepErr::BadRequest:
+    case StepErr::LowMemory:   return {false, false, false};
+    case StepErr::None:        break;
+  }
+  return {true, true, false};   // an untyped failure: the pre-typing behavior
+}
+
+namespace {
+bool hasNoCase(const std::string& hay, const char* needle) {
+  return detail::containsNoCase(hay, needle);
+}
+// A provider saying OUR body is unreadable: the same body fails on every host.
+// Recorded 18 Oct: Anthropic "The request body is not valid JSON: invalid unicode
+// code point", OpenAI invalid_json "unicode decode error", Mistral "There was an
+// error parsing the body", Z.ai "JSON parse error: Invalid UTF-8 middle byte".
+bool unreadableBody(const std::string& text) {
+  static const char* const kMarks[] = {
+      "not valid json", "invalid unicode", "unicode decode", "invalid utf-8",
+      "error parsing the body", "json parse error", "invalid_json", "request_too_large",
+      "request too large", "invalid body", "request field over", "request text is not valid utf-8",
+  };
+  for (const char* m : kMarks)
+    if (hasNoCase(text, m)) return true;
+  return false;
+}
+// The status a "<what> HTTP <ddd>" error line names, 0 when it names none.
+int httpStatusIn(const std::string& err) {
+  const size_t at = err.find("HTTP ");
+  if (at == std::string::npos || at + 8 > err.size()) return 0;
+  int st = 0;
+  for (size_t i = at + 5; i < at + 8; i++) {
+    if (err[i] < '0' || err[i] > '9') return 0;
+    st = st * 10 + (err[i] - '0');
+  }
+  return st;
+}
+}  // namespace
+
+StepErr classifyHttpStatus(int status, const std::string& text) {
+  if (isBillingRefusal(status, text)) return StepErr::Billing;
+  if (status == 401 || status == 403) return StepErr::Auth;
+  if (status == 429) return StepErr::RateLimited;
+  if (status >= 500) return StepErr::ServerError;
+  if (status == 408) return StepErr::Transport;
+  if (status == 413 || unreadableBody(text)) return StepErr::BadRequest;
+  if (status >= 400) return StepErr::Rejected;
+  return StepErr::ServerError;   // an odd status on an answer we could not use
+}
+
+bool isTimeoutError(const std::string& err) { return err.rfind("timeout:", 0) == 0; }
+
+StepErr classifyStepError(const std::string& err, int* httpStatus) {
+  const int st = httpStatusIn(err);
+  if (httpStatus) *httpStatus = st;
+  if (err.rfind("low memory", 0) == 0 || err.find("out of memory") != std::string::npos)
+    return StepErr::LowMemory;
+  if (isTimeoutError(err)) return StepErr::Timeout;
+  if (err.rfind("network", 0) == 0) return StepErr::Transport;
+  if (err == "schema parse" || err.rfind("request field over", 0) == 0 ||
+      err.rfind("request text is not valid UTF-8", 0) == 0)
+    return StepErr::BadRequest;
+  if (err.rfind("cut at the output limit", 0) == 0 || err.find("truncated at max_tokens") == 0 ||
+      err.rfind("response too large for the device", 0) == 0)
+    return StepErr::Cut;
+  if (st) return classifyHttpStatus(st, err);
+  if (isBillingRefusal(0, err)) return StepErr::Billing;
+  return StepErr::Transport;
+}
+
+std::string stepErrCause(StepErr k, const std::string& host, int httpStatus) {
+  const std::string st = httpStatus > 0 ? " (HTTP " + std::to_string(httpStatus) + ")" : "";
+  switch (k) {
+    case StepErr::Transport:   return host + " could not be reached";
+    case StepErr::Timeout:     return host + " did not answer in time";
+    case StepErr::RateLimited: return host + " is rate limited" + st;
+    case StepErr::BadRequest:  return host + " could not read the request" + st;
+    case StepErr::Auth:        return host + " rejected the key" + st;
+    case StepErr::Billing:     return host + " says the account is out of credit" + st;
+    case StepErr::LowMemory:   return "the device ran low on memory";
+    case StepErr::ServerError: return host + " had a server error" + st;
+    case StepErr::Rejected:    return host + " refused the request" + st;
+    case StepErr::Cut:         return host + " ran out of room for its answer";
+    case StepErr::None:        break;
+  }
+  return host + " hit trouble";
 }
 
 namespace {
@@ -147,6 +269,10 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       out.ok = false;
       out.error = sr.error.empty() ? "provider step failed" : sr.error;
       out.rounds = round;
+      out.kind = sr.kind != StepErr::None ? sr.kind : classifyStepError(out.error, &out.httpStatus);
+      if (sr.httpStatus) out.httpStatus = sr.httpStatus;
+      out.cut = sr.cut;
+      if (!sr.cut.empty()) out.partialTurn = sr.finalTurn;
       // Carry the cap through even though the round FAILED. This path used to
       // drop it, so a turn that was capped and then died on transport logged
       // "rounds=2 cap=" - an empty reason next to a round that had just printed
@@ -195,6 +321,10 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
                   " tool call(s) sent with the final answer on the forced round");
       out.ok = true;
       out.finalTurn = sr.finalTurn;
+      out.prose = sr.prose;
+      if (sr.prose && hooks.log)
+        hooks.log("headloop: final answer was prose (" + std::to_string(sr.finalTurn.size()) +
+                  " B), delivered as the reply only");
       out.rounds = round;
       out.hitCap = lastChance;
       out.capReason = reason;

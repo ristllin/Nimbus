@@ -29,10 +29,20 @@ namespace wire {
 // fully left the device (short head/body write) - a resend duplicates nothing.
 // `lowMem`: the transport tagged the failure as memory pressure. `noResponse`:
 // the request went out and no status line came back (deadline or peer close).
+// `partial`: a 2xx whose body did not parse whole (cut mid-body by the deadline or
+// a peer close, or not JSON): a transport failure, never an empty answer.
+// `tooLarge`: the 2xx body was more than the device can hold. `allocFailed`: the
+// SEAM for memory evidence - the transport sets it when a heap allocation failed
+// during this exchange (the failed-alloc counter advanced), and only then is a
+// failure classed LowMemory on that evidence alone (CUM-404 v2: a fragmented but
+// healthy board's outage must still fail over).
 struct LastExchange {
   bool unsent = false;
   bool lowMem = false;
   bool noResponse = false;
+  bool partial = false;
+  bool tooLarge = false;
+  bool allocFailed = false;
 };
 inline LastExchange& lastExchange() {
   static LastExchange s;
@@ -87,6 +97,17 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   doc.clear();
   lastExchange() = LastExchange{};
   if (!pd.http) return 0;
+#if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
+  {   // test and host builds only: the bench's scripted provider answer
+    int ovStatus = 0;
+    std::string ovBody;
+    if (testStatusOverride(host, ovStatus, ovBody)) {
+      deserializeJson(doc, ovBody, DeserializationOption::Filter(filter));
+      hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
+      return ovStatus;
+    }
+  }
+#endif
   HttpRequest req;
   req.method = method;
   req.host = host;
@@ -123,8 +144,99 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     hlog::logf("provider: %s%s status %d but %s -- discarding partial response",
                host, path.c_str(), status, terr.c_str());
     doc.clear();
+    // A 2xx that did not arrive whole is a TRANSPORT failure (status 0), so every
+    // step takes its transport branch: a cut body (the deadline or a peer close
+    // mid-body) reads as no answer, a body too big for the device as such. It
+    // used to return 200 with an empty doc, which the loops read as a model that
+    // said nothing and answered with a forced "stalled" round. An error status
+    // keeps its code (a Cloudflare HTML 502 is still an HTTP 502).
+    if (status >= 200 && status < 300) {
+      LastExchange& last = lastExchange();
+      last.partial = true;
+      last.tooLarge = terr.find("NoMemory") != std::string::npos ||
+                      terr.find("too large") != std::string::npos;
+      last.noResponse = terr.find("IncompleteInput") != std::string::npos;
+      return 0;
+    }
   }
   return status;
+}
+
+// ---- typed step failures (lane K) ------------------------------------------------
+
+// A provider's error message as one log-safe line: control bytes become spaces
+// (provider text can never forge a second log line, or reach the owner's reply
+// with them), capped at 300 bytes on a character boundary.
+inline std::string oneLine(std::string s) {
+  for (char& c : s)
+    if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
+  if (s.size() > 300) s.resize((size_t)nimbus::utf8CapLen(s.data(), (int)s.size(), 300));
+  return s;
+}
+
+// "<what> HTTP <status>[: <provider message>]" - the one shape every adapter's
+// error line takes (classifyStepError reads the status back from it).
+inline std::string httpErrLine(const char* what, int code, const std::string& msg) {
+  std::string e = std::string(what) + " HTTP " + std::to_string(code);
+  if (!msg.empty()) e += ": " + oneLine(msg);
+  return e;
+}
+
+// F25 + the one time policy: a round's socket timeout is the turn's remaining
+// budget, at most `ceilingMs` (the host's head ceiling), at least kMinRoundMs so a
+// near-exhausted final round still gets a real answer. budgetMs == UINT32_MAX (no
+// deadline) gives the ceiling.
+inline uint32_t clampRoundMs(uint32_t budgetMs, uint32_t ceilingMs) {
+  if (budgetMs >= ceilingMs) return ceilingMs;
+  return budgetMs < kMinRoundMs ? kMinRoundMs : budgetMs;
+}
+
+// The error line for a request that got no usable HTTP answer, one rule for every
+// head (CUM-544 hoisted from the custom head): "timeout: the provider did not
+// answer in time" when the request went out and the silence used (nearly) the whole
+// round, so the fabric fails over without a same-host retry and the owner hears the
+// real reason; "low memory: ..." on memory evidence; else "network" (one retry).
+inline std::string headTransportError(const ProviderDeps& pd, uint32_t sentAtMs, uint32_t timeoutMs) {
+  const LastExchange& last = lastExchange();
+  if (last.tooLarge) return "response too large for the device";
+  if (last.allocFailed) return "low memory: the device could not make the request";
+  const uint32_t waited = pd.nowMs ? pd.nowMs() - sentAtMs : timeoutMs;
+  if (last.noResponse && waited >= timeoutMs - timeoutMs / 10)
+    return "timeout: the provider did not answer in time";
+  return transportError(pd);
+}
+
+// Fail a head step on a transport failure, typed (Timeout / LowMemory / Cut for a
+// body too large to hold / Transport).
+inline void transportFailure(const ProviderDeps& pd, uint32_t sentAtMs, uint32_t timeoutMs,
+                             nimbus::orch::HeadStep& out) {
+  out.ok = false;
+  out.error = headTransportError(pd, sentAtMs, timeoutMs);
+  out.kind = nimbus::orch::classifyStepError(out.error);
+}
+
+// Fail a head step on an HTTP answer that is not a 200: `error` is the log/owner
+// line ("messages HTTP 400: ..."), `providerText` everything the provider said
+// (message, type, code) for the billing and unreadable-body markers.
+inline void httpFailure(nimbus::orch::HeadStep& out, int code, const std::string& error,
+                        const std::string& providerText) {
+  out.ok = false;
+  out.error = error;
+  out.httpStatus = code;
+  out.kind = nimbus::orch::classifyHttpStatus(code, providerText);
+}
+
+// A cut that survived the in-step headroom retry: never finished, never
+// dispatched; the cut orch_turn arguments stay in finalTurn for the salvage.
+inline void cutFailure(nimbus::orch::HeadStep& out, const std::string& why, uint32_t tokens) {
+  out.ok = false;
+  out.finished = false;
+  out.toolCalls.clear();
+  out.cut = why;
+  out.kind = nimbus::orch::StepErr::Cut;
+  out.error = tokens ? "cut at the output limit (" + std::to_string(tokens) + " tokens)"
+                     : "cut at the output limit (" + why + ")";
+  hlog::logf("provider: %s", out.error.c_str());
 }
 
 // Cumulo router HEAD rewrite (CUM-242). When `pd` carries a router override
@@ -395,6 +507,7 @@ struct ReplyWriter {
   char* out;
   size_t cap;        // sizeof the buffer, NUL included
   size_t used = 0;
+  size_t textEnd = 0;   // where the reply text ends (a marker or a tail may follow)
   bool cut = false;
   ReplyWriter(char* o, size_t c) : out(o), cap(c) { if (cap) out[0] = 0; }
   // Append `n` bytes of `s`; false once the buffer is full (the marker is in).
@@ -410,6 +523,7 @@ struct ReplyWriter {
     if (used + n <= cap - 1) {
       memcpy(out + used, s, n);
       used += n;
+      textEnd = used;
       out[used] = 0;
       return true;
     }
@@ -422,6 +536,7 @@ struct ReplyWriter {
       memcpy(out + used, s, keep);
       used += keep;
     }
+    textEnd = used;
     const size_t m = mk < cap - 1 - used ? mk : cap - 1 - used;
     memcpy(out + used, kReplyCutMarker, m);
     used += m;
@@ -443,9 +558,10 @@ struct ReplyWriter {
       return;
     }
     const size_t mk = strlen(kReplyCutMarker);
-    const size_t text = cut ? used - mk : used;   // the marker sits at the end of a cut text
+    const size_t text = textEnd;   // the reply text, before any marker or earlier tail
     const size_t room = target > mk ? target - mk : 0;
     used = (size_t)nimbus::utf8CapLen(out, (int)text, (int)(text < room ? text : room));
+    textEnd = used;
     if (used + mk <= target) {
       memcpy(out + used, kReplyCutMarker, mk);
       used += mk;

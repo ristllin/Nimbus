@@ -99,7 +99,7 @@ static const Dispatcher kDispatchers[] = {
     {"cumulo-messages", cumuloMessagesSub, "/router/anthropic/v1/messages", 120000},
     {"custom", customSub, "/v1/chat/completions", 30000},
     {"custom-messages", customMessagesSub, "/v1/messages", 30000},
-    {"mistral", mistralSub, "/v1/conversations", 60000},
+    {"mistral", mistralSub, "/v1/conversations", 120000},   // the sync-sub ceiling (was 60 s)
     {"openai", openaiSub, "/v1/responses", 120000},
     {"anthropic", anthropicSub, "/v1/sessions/sess_1/events", 120000},
 };

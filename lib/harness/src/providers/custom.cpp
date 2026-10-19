@@ -41,7 +41,7 @@ static const uint32_t CUST_TIMEOUT_MS = 30000;
 // ANT_TIMEOUT_MS); the stuck-turn reaper (loop deadline + 120 s) still bounds it.
 // A head with its own budget (pd.customHeadTimeoutMs - the Z.ai heads, CUM-544)
 // uses that instead.
-static const uint32_t CUST_HEAD_TIMEOUT_MS = 120000;
+static const uint32_t CUST_HEAD_TIMEOUT_MS = kHeadRoundCeilingMs;   // the one time policy
 static const char* kAnthropicVer = "2023-06-01";   // mirrors agent_config.h ANTHROPIC_VER
 
 using wire::exchange;
@@ -247,19 +247,14 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
   }
   return wire::serializeChecked(d, out.body, out.err);
 }
-// CUM-544: why a head request got no HTTP answer. "no response" = the request went
-// out and nothing came back - when that silence used (nearly) the whole budget it
-// is model latency, not a dead link, so say so: the engine then fails over without
-// a same-host retry and the owner hears the real reason. A FAST "no response" (the
-// peer closed straight away) and connect/write failures stay "network", which keeps
-// the retry. (No digits ride the token: the engine's classifier keys on "401",
-// "503"...; Z.ai's ~60 s gateway cut lands past its 50 s budget, so a slow Z.ai
-// turn always times out on the device's clock.)
+// CUM-544: why a head request got no HTTP answer - the shared rule every head
+// uses (wire::headTransportError): "timeout: ..." when the request went out and the
+// silence used (nearly) the whole budget, so the engine fails over without a
+// same-host retry and the owner hears the real reason; else "network" (the retry).
+// (Z.ai's ~60 s gateway cut lands past its 50 s budget, so a slow Z.ai turn always
+// times out on the device's clock.)
 static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, uint32_t timeoutMs) {
-  const uint32_t waited = pd.nowMs ? pd.nowMs() - sentAt : timeoutMs;
-  if (wire::lastExchange().noResponse && waited >= timeoutMs - timeoutMs / 10)
-    return "timeout: the provider did not answer in time";
-  return wire::transportError(pd);
+  return wire::headTransportError(pd, sentAt, timeoutMs);
 }
 
 // One head request in its formats (orchTurnCustom): the first format, then once
@@ -267,6 +262,18 @@ static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, u
 // last status (0: no answer). The attempt and the effort choice carry over to a
 // resend, so a resend repeats only the request that never left, never the
 // answered one before it.
+// A 400 that refuses the MODEL (Z.ai "Unknown Model, please check the model
+// code.", "Invalid model: ...") is not a response_format problem: retrying without
+// the format would only send the same refusal again (lane N's smoke run: four
+// Z.ai requests for one wrong model id).
+static bool namesUnknownModel(const JsonDocument& doc) {
+  std::string m = doc["error"]["message"] | "";
+  if (m.empty()) m = doc["message"] | "";
+  for (char& c : m) c = (char)tolower((unsigned char)c);
+  return m.find("unknown model") != std::string::npos || m.find("invalid model") != std::string::npos ||
+         m.find("model not found") != std::string::npos || m.find("does not exist") != std::string::npos;
+}
+
 struct CustomHead {
   const ProviderDeps* pd;
   const std::string* instructions;
@@ -296,7 +303,7 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
     }
     h.code = custRequest(pd, "POST", "/v1/chat/completions", std::move(hb.body),
                          /*anthropicAuth=*/false, *h.doc, *h.filter, h.timeoutMs);
-    if (h.code != 400 || !withFormat) break;
+    if (h.code != 400 || !withFormat || namesUnknownModel(*h.doc)) break;
     // Schema-incapable backend: drop response_format and lean on the nudge + the
     // engine's tolerant parser. A model that refuses the effort field names it; the
     // retry then goes without it rather than failing the same way twice (CUM-544).
@@ -336,6 +343,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   JsonDocument filter;
   JsonObject ch = filter["choices"].add<JsonObject>();
   ch["message"]["content"] = true;
+  ch["finish_reason"] = true;          // the completeness gate
   filter["error"]["message"] = true;   // OpenAI-style error envelope
   filter["message"] = true;            // Mistral-style error envelope
   filter["usage"] = true;              // token accounting (when the backend reports it)
@@ -367,16 +375,23 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (code != 200) {
-    err = "chat HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";
     if (!em[0]) em = doc["message"] | "";
-    if (em[0]) err += std::string(": ") + em;
+    err = wire::httpErrLine("chat", code, em);
     hlog::logf("orchTurn(custom): %s", err.c_str());
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
   nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
+  // The completeness gate: a reply cut at the output limit is never the turn (a
+  // cut JSON object would read as a formatting error, a cut prose reply as whole).
+  const char* fr = doc["choices"][0]["finish_reason"] | "";
+  if (!strcmp(fr, "length") || !strcmp(fr, "model_length")) {
+    err = std::string("cut at the output limit (finish_reason=") + fr + ")";
+    hlog::logf("orchTurn(custom): %s", err.c_str());
+    return false;
+  }
   outJson = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
   if (outJson.empty()) { err = "no message content"; return false; }
   convId = "chat";   // stateless host: marker keeps per-host conv bookkeeping happy

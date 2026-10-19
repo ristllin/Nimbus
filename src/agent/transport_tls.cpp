@@ -288,8 +288,13 @@ class TlsTransport : public HttpTransport {
         }
         // Guard against an unbounded retained field (hostile/buggy provider): the
         // filter keeps only small fields, but bound it so PSRAM can't be flooded.
+        // Named, never silent: a 2xx the device could not hold used to read as an
+        // empty answer (a "stalled" round, a job polled forever); wire::exchange
+        // now turns this into a transport failure the step can classify.
         if (!derr && doc->memoryUsage() > kMaxRetainedBytes) {
           alogf("transport: retained %u B over cap -> drop", (unsigned)doc->memoryUsage());
+          err = "response too large for the device (" + std::to_string((unsigned)doc->memoryUsage()) +
+                " B retained)";
           doc->clear();
         }
       } else {

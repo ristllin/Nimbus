@@ -5,7 +5,9 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/compact.h"
 #include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/transcript.h"
 
@@ -68,7 +70,14 @@ static void test_single_shot_request_shape() {
   TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(r, "anthropic-beta").c_str());
   TEST_ASSERT_EQUAL_STRING("", headerOf(r, "Authorization").c_str());
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"model-anthropic\""));
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":3000"));
+  // The output-cap table decides max_tokens (time-clamped for an unknown id's
+  // slowest rate); no effort for an id the table does not know (the field 400s
+  // on families without it).
+  const providers::OutputCap cap =
+      providers::outputCapFor("anthropic", "model-anthropic", providers::RoundKind::SingleShot, 120000);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens)).c_str()));
+  TEST_ASSERT_TRUE(cap.maxTokens > 3000);   // the old cap that cut thinking models' turns
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "output_config"));
   // v4.1.1 prompt caching: system rides as a content-block ARRAY so the block
   // can carry cache_control, and the tools prefix gets a breakpoint too. These
   // assertions pin the caching - if the shape reverts to a bare string, the
@@ -81,8 +90,10 @@ static void test_single_shot_request_shape() {
   TEST_ASSERT_TRUE(bodyHas(d, 0,
       "\"cache_control\":{\"type\":\"ephemeral\"}}],\"tool_choice\""));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"role\":\"user\",\"content\":\"USER\""));
-  // FORCED tool use: tool_choice {type:"tool", name:"orch_turn"}.
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":{\"type\":\"tool\",\"name\":\"orch_turn\"}"));
+  // NEVER forced: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced tool_choice
+  // with HTTP 400 (verified live 18 Oct). auto + the orch_turn tool.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":{\"type\":\"auto\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"type\":\"tool\""));
   // ADVISORY schema: NO strict flag on Anthropic (grammar budget, verified live).
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"strict\":true"));
   // Descriptions are STRIPPED from the schema to fit the grammar budget (the
@@ -137,14 +148,29 @@ static void test_error_mapping() {
     TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, nullptr, nullptr));
     TEST_ASSERT_EQUAL_STRING("network", err.c_str());
   }
-  {  // truncation surfaces the stop_reason, not a blind "no tool_use"
+  {  // a cut reply is retried ONCE with more room, then fails naming the limit
+    FakeProviderDeps d;
+    for (int i = 0; i < 2; i++)
+      d.http.script.push_back({"", "", 200,
+          "{\"content\":[{\"type\":\"text\"}],\"stop_reason\":\"max_tokens\"}"});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":8192,\"output_config\":{\"effort\":\"medium\"}"));
+    // Never the identical body: more room and one effort step down.
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":12000,\"output_config\":{\"effort\":\"low\"}"));
+  }
+  {  // an empty reply still names its stop_reason, not a blind "no tool_use"
     FakeProviderDeps d;
     d.http.script.push_back({"", "", 200,
-        "{\"content\":[{\"type\":\"text\"}],\"stop_reason\":\"max_tokens\"}"});
+        "{\"content\":[],\"stop_reason\":\"refusal\"}"});
     auto pd = d.contract();
     std::string conv, out, err;
     TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, nullptr, nullptr));
-    TEST_ASSERT_EQUAL_STRING("no orch_turn tool_use (stop_reason=max_tokens)", err.c_str());
+    TEST_ASSERT_EQUAL_STRING("no orch_turn tool_use (stop_reason=refusal)", err.c_str());
   }
   {  // no key
     FakeProviderDeps d;
@@ -299,42 +325,74 @@ static void test_loop_gradient_folds_old_rounds_over_trigger() {
 }
 
 // The other half of R_ANT_echo_tool_use: a text-ONLY (stalled) round is NOT
-// echoed - a trailing assistant message + the forced tool_choice would 400 -
-// and the forced final round pins tool_choice {type:"tool"}.
-static void test_loop_stall_no_echo_forced_final() {
+// echoed on tool rounds. On the forced final round after the stall it IS: the
+// prose rides back as an assistant message followed by a user nudge (the request
+// still ends on a user turn - no prefill), so the final answer keeps it. And the
+// final round is never forced: tool_choice auto (Sonnet 5.5, Opus 5.5 and Fable
+// 5.1 answer a forced tool_choice with HTTP 400).
+static void test_loop_stall_echoed_on_the_unforced_final_round() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200,
       "{\"content\":[{\"type\":\"text\",\"text\":\"just prose\"}],"
       "\"stop_reason\":\"end_turn\"}"});
   d.http.script.push_back({"", "", 200, finalToolBody()});
   auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-sonnet-5-5"); };
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   std::string conv, out, err;
   bool ok = providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
-  // The stalled prose was NOT echoed into round 1's messages[].
-  TEST_ASSERT_FALSE(bodyHas(d, 1, "\"role\":\"assistant\""));
-  TEST_ASSERT_FALSE(bodyHas(d, 1, "just prose"));
-  // Forced final: tool_choice pins orch_turn, with the larger output headroom.
-  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"tool\",\"name\":\"orch_turn\"}"));
-  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":4096"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1,
+      "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"just prose\"}]},"
+      "{\"role\":\"user\",\"content\":\"Now call orch_turn with your final complete turn, keeping "
+      "the answer you gave above.\"}]"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"auto\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "\"type\":\"tool\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "FINAL turn"));   // the final-round notice rides the system text
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
 }
 
-// A max_tokens-truncated round must FAIL with the real cause (never echoed or
-// silently "recovered").
-static void test_loop_max_tokens_truncation_fails_loud() {
+// The final round answered in prose: delivered, never "tool budget reached
+// without a final answer". A prose round on a TOOL round is still a stall (the
+// counter-test for the loosened acceptance).
+static void test_loop_prose_final_accepted_only_on_the_final_round() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200,
-      "{\"content\":[{\"type\":\"text\",\"text\":\"trunc\"}],"
-      "\"stop_reason\":\"max_tokens\"}"});
+      "{\"content\":[{\"type\":\"text\",\"text\":\"Here is my answer.\"}],\"stop_reason\":\"end_turn\"}"});
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"Here is my answer.\"}],\"stop_reason\":\"end_turn\"}"});
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // round 0 was a stall, round 1 the final
+  TEST_ASSERT_EQUAL_STRING("Here is my answer.", out.c_str());
+  TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("final round answered in prose"));
+}
+
+// A cut round is retried ONCE in the step with a body that differs (more room,
+// effort one step down), then fails as Cut with the real cause: never echoed,
+// never "recovered", never resent identically.
+static void test_loop_max_tokens_cut_retries_then_fails_loud() {
+  FakeProviderDeps d;
+  for (int i = 0; i < 2; i++)
+    d.http.script.push_back({"", "", 200,
+        "{\"content\":[{\"type\":\"text\",\"text\":\"trunc\"}],\"stop_reason\":\"max_tokens\"}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
-  TEST_ASSERT_EQUAL_STRING("truncated at max_tokens before a tool call", err.c_str());
+  TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(reqBody(d, 0) != reqBody(d, 1));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":8192,\"output_config\":{\"effort\":\"medium\"}"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":12000,\"output_config\":{\"effort\":\"low\"}"));
 }
 
 // CUM-526 (the CUM-506 class): a tool_use block batched with the final orch_turn
@@ -418,49 +476,63 @@ static void test_loop_step_first_orch_turn_wins() {
 
 // prism (roast + logic): a response cut by max_tokens can end INSIDE its last
 // tool_use block; that call must be retried, never run (a half-written
-// memory_write). Since the scan no longer stops at orch_turn, such a call could
-// ride a finished step - the round fails with the real cause instead, nothing is
-// dispatched. A call BEFORE a complete trailing orch_turn is whole and still runs.
+// memory_write). Now ANY cut response - a call cut mid-input, or a complete call
+// beside a cut - is retried with headroom and, if still cut, fails: nothing from a
+// cut response is dispatched.
 static void test_loop_call_cut_by_max_tokens_never_runs() {
   const std::string fin = "{\"type\":\"tool_use\",\"id\":\"tu_fin\",\"name\":\"orch_turn\",\"input\":{\"reply\":\"saved\"}}";
   const std::string cut = "{\"type\":\"tool_use\",\"id\":\"tu_mw\",\"name\":\"memory_write\",\"input\":{\"content\":\"Omar's boat is the Ner\"}}";
   for (const std::string& blocks : {fin + "," + cut, cut}) {   // after a final, or a plain tool round
     FakeProviderDeps d;
-    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
-                             "{\"content\":[" + blocks + "],\"stop_reason\":\"max_tokens\"}"});
+    for (int i = 0; i < 2; i++)
+      d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+                               "{\"content\":[" + blocks + "],\"stop_reason\":\"max_tokens\"}"});
     auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
     FakeProviderDeps::ToolRig rig;
     d.fillTools(rig);
     std::string conv, out, err;
     TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
-    TEST_ASSERT_EQUAL_STRING("truncated at max_tokens inside a tool call", err.c_str());
+    TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
     TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
   }
+  // A complete call before a trailing orch_turn, in a response that says
+  // max_tokens: the step is cut (no retry left for an unknown family) - not
+  // finished, no calls, the orch_turn kept for the reply salvage.
   const nimbus::orch::HeadStep st = stepOver(
       "{\"content\":[" +
           std::string("{\"type\":\"tool_use\",\"id\":\"tu_mw\",\"name\":\"memory_write\",\"input\":{\"content\":\"x\"}},") +
           fin + "],\"stop_reason\":\"max_tokens\"}",
       "hi");
-  TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
-  TEST_ASSERT_TRUE(st.finished);
-  TEST_ASSERT_EQUAL(1, (int)st.toolCalls.size());
+  TEST_ASSERT_FALSE(st.ok);
+  TEST_ASSERT_FALSE(st.finished);
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)st.kind);
+  TEST_ASSERT_EQUAL_STRING("max_tokens", st.cut.c_str());
+  TEST_ASSERT_EQUAL(0, (int)st.toolCalls.size());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"saved\"}", st.finalTurn.c_str());
 }
 
-// A finished step is never re-read as a text-only round: an orch_turn whose
-// response says stop_reason=max_tokens is still the turn (as before CUM-526 -
-// the step now keeps scanning, so it must not fall into the truncation check).
-static void test_loop_finished_step_is_not_a_truncated_text_round() {
+// INVERTED (was "an orch_turn whose response says stop_reason=max_tokens is still
+// the turn"): a cut orch_turn is NOT the turn. Anthropic documents a tool_use cut
+// by max_tokens as incomplete - its input may be a fragment or {} (16 Oct: "turn
+// parse fail (reply) json={}"). It is retried with headroom; the complete answer
+// of the retry is the turn.
+static void test_loop_cut_orch_turn_is_retried_not_accepted() {
   FakeProviderDeps d;
   d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
       "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_f\",\"name\":\"orch_turn\","
-      "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"max_tokens\"}"});
+      "\"input\":{}}],\"stop_reason\":\"max_tokens\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
   auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-opus-5"); };
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   std::string conv, out, err;
   TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
                            err.c_str());
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(reqBody(d, 0) != reqBody(d, 1));
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
 }
 
@@ -695,8 +767,66 @@ static void test_sub_cancel_sends_interrupt() {
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"user.interrupt\""));
 }
 
+// ---- the compaction fold: its own output budget, no tool, prose summary --------
+static void test_fold_request_has_its_own_budget_and_no_tool() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"1. Owner intent: plan the trip.\"}],"
+      "\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":900,\"output_tokens\":40}}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-opus-5"); };
+  std::string conv, out, err;
+  orch::TokenUsage u;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, orch::ORCH_COMPACT_PROMPT,
+                                                        "[CONVERSATION SINCE]\nhi", out, err, nullptr, &u),
+                           err.c_str());
+  // The summary comes back as prose; the engine reads it as the reply.
+  TEST_ASSERT_EQUAL_STRING("1. Owner intent: plan the trip.", out.c_str());
+  // Its own budget from the table: Opus at its slowest rate fits 5500 tokens in
+  // the 120 s round, at low effort (a summary needs little thinking).
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":5500,\"output_config\":{\"effort\":\"low\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));        // no 10 KB schema on the fold
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tool_choice\""));
+}
+
+// The 16 Oct fold on Opus: two of three calls returned no summary and the third
+// was cut at 3000. Now a cut fold gets one retry with more room.
+static void test_fold_cut_is_retried_with_more_room() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"thinking\"}],\"stop_reason\":\"max_tokens\"}"});
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"summary\"}],\"stop_reason\":\"end_turn\"}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, orch::ORCH_COMPACT_PROMPT, "x", out,
+                                                        err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL_STRING("summary", out.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(reqBody(d, 0) != reqBody(d, 1));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":12000"));
+}
+
+// A head single shot may answer in prose: it is delivered (the engine reads it as
+// the reply only), never thrown away for a "no tool_use" error.
+static void test_single_shot_prose_answer_is_accepted() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"It is 7 pm.\"}],\"stop_reason\":\"end_turn\"}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL_STRING("It is 7 pm.", out.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_fold_request_has_its_own_budget_and_no_tool);
+  RUN_TEST(test_fold_cut_is_retried_with_more_room);
+  RUN_TEST(test_single_shot_prose_answer_is_accepted);
   RUN_TEST(test_single_shot_request_shape);
   RUN_TEST(test_nullable_enum_anyof_in_schema_source);
   RUN_TEST(test_single_shot_parse_usage_and_marker);
@@ -704,13 +834,14 @@ int main(int, char**) {
   RUN_TEST(test_loop_round2_body_rendered_from_transcript);
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
   RUN_TEST(test_loop_gradient_folds_old_rounds_over_trigger);
-  RUN_TEST(test_loop_stall_no_echo_forced_final);
-  RUN_TEST(test_loop_max_tokens_truncation_fails_loud);
+  RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
+  RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);
+  RUN_TEST(test_loop_max_tokens_cut_retries_then_fails_loud);
   RUN_TEST(test_loop_sibling_after_orch_turn_is_dispatched_once);
   RUN_TEST(test_loop_step_carries_sibling_after_orch_turn);
   RUN_TEST(test_loop_step_first_orch_turn_wins);
   RUN_TEST(test_loop_call_cut_by_max_tokens_never_runs);
-  RUN_TEST(test_loop_finished_step_is_not_a_truncated_text_round);
+  RUN_TEST(test_loop_cut_orch_turn_is_retried_not_accepted);
   RUN_TEST(test_sub_dispatch_full_chain_and_caches);
   RUN_TEST(test_sub_dispatch_stale_404_clears_caches);
   RUN_TEST(test_sub_unsafe_model_name_falls_back);

@@ -1,11 +1,13 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/mem_config.h"
+#include "nimbus/orch/wire_limits.h"
 
 using namespace nimbus::orch;
 
@@ -47,7 +49,7 @@ static void test_floors_bind_on_8k_window() {
 // ---- caps bind on a huge window ----------------------------------------------
 static void test_caps_bind_on_1m_window() {
   ContextBudget b = deriveBudget(1000000, {});
-  TEST_ASSERT_EQUAL_INT(MemConfig::kContextMax, b.systemPromptBytes);  // 65536
+  TEST_ASSERT_EQUAL_INT(MemConfig::kContextMax, b.systemPromptBytes);  // 56000, under the string guard
   TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.chatSummaryBytes);
   TEST_ASSERT_EQUAL_UINT32(16384, (uint32_t)b.recentConvBytes);
   TEST_ASSERT_EQUAL_UINT32(40960, (uint32_t)b.toolResultBytes);   // 5x anchor, under cap
@@ -72,7 +74,8 @@ static void test_overrides_win_and_clamp() {
   ov.toolTotalCap = 1 << 24;
   b = deriveBudget(200000, ov);
   TEST_ASSERT_EQUAL_INT(MemConfig::kContextMax, b.systemPromptBytes);
-  TEST_ASSERT_EQUAL_UINT32(65536, (uint32_t)b.toolResultBytes);
+  // The per-result clamp tops out under the provider string guard (wire_limits.h).
+  TEST_ASSERT_EQUAL_UINT32(kToolResultCapMax, (uint32_t)b.toolResultBytes);
   TEST_ASSERT_EQUAL_UINT32(1048576, (uint32_t)b.toolTotalBytes);
 }
 
@@ -162,6 +165,26 @@ static void test_orchestrator_sizes_off_one_head_budget() {
     TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, use), use);
 }
 
+// ---- the fold input is ONE provider string ------------------------------------
+// The fold sends summary + digest as one user string; at the 200K anchor the
+// digest budget alone (65536) passed ArduinoJson's 65,535-byte ceiling, which
+// stores the string as null (a 400). foldDigestCap bounds the digest so the whole
+// input stays under the guard for every summary size the store can hold.
+static void test_fold_input_fits_the_string_guard() {
+  for (size_t sum : {(size_t)0, (size_t)1, (size_t)2048, kChatSummaryMax}) {
+    const std::string summary(sum, 's');
+    const ContextBudget b = deriveBudget(1000000, {});   // the largest slice there is
+    const size_t cap = std::min(b.foldSliceBytes, foldDigestCap(summary.size()));
+    const std::string in = buildCompactInputs(summary, std::string(cap, 'd'));
+    TEST_ASSERT_TRUE(in.size() <= kJsonStrGuard);
+  }
+  // Counter-test: the unbounded anchor slice next to a full summary is over.
+  const ContextBudget anchor = deriveBudget(200000, {});
+  TEST_ASSERT_TRUE(buildCompactInputs(std::string(kChatSummaryMax, 's'),
+                                      std::string(anchor.foldSliceBytes, 'd')).size() > kJsonStringCeiling);
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)foldDigestCap(kJsonStrGuard));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anchor_identity_at_200k);
@@ -172,5 +195,6 @@ int main(int, char**) {
   RUN_TEST(test_monotonic_in_window);
   RUN_TEST(test_mistral_128k_derivation);
   RUN_TEST(test_orchestrator_sizes_off_one_head_budget);
+  RUN_TEST(test_fold_input_fits_the_string_guard);
   return UNITY_END();
 }

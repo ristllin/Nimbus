@@ -33,7 +33,8 @@ namespace providers {
 // At 30 s every such request died as "no response" while GET /v1/models and
 // quick turns passed, so the failure looked like a flaky network instead of a
 // deadline. The transport's wall clock covers connect+write+read in one budget.
-static const uint32_t OAI_TIMEOUT_MS = 120000;
+// The value lives in the one time policy (providers.h).
+static const uint32_t OAI_TIMEOUT_MS = kHeadRoundCeilingMs;
 static const char* kOpenAIHost = "api.openai.com";  // mirrors agent_config.h OPENAI_HOST
 
 using wire::exchange;
@@ -153,6 +154,7 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   filter["error"]["message"] = true;
   filter["usage"] = true;   // real sub-session token usage -> spawn attribution
   JsonObject outItem  = filter["output"].add<JsonObject>();    // applies to all output items
+  outItem["type"] = true;   // "*_call" items: the tools the sub actually ran (provenance)
   JsonObject contItem = outItem["content"].add<JsonObject>();  // applies to all content items
   contItem["type"] = true;
   contItem["text"] = true;
@@ -172,6 +174,17 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   if (code != 200)               { hlog::logf("%s: poll HTTP %d", backend, code); return FabricErr::RemoteFail; }
 
   env.state = mapStatus(doc["status"] | "");
+  // Provenance from OpenAI's own record: every output item whose type ends in
+  // "_call" is a tool the sub ran (web_search_call, mcp_call, code_interpreter_call,
+  // file_search_call, function_call, ...); web_search_call is a web run.
+  env.toolRuns = 0;
+  env.webRuns = 0;
+  for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
+    const std::string ty = item["type"] | "";
+    if (ty.size() < 5 || ty.compare(ty.size() - 5, 5, "_call") != 0) continue;
+    if (env.toolRuns < 0xFFFF) env.toolRuns++;
+    if (ty == "web_search_call" && env.webRuns < 0xFFFF) env.webRuns++;
+  }
   // Real billed usage of the background response (present on terminal objects).
   {
     nimbus::orch::TokenUsage u =
@@ -343,9 +356,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     orch::HeadStep out;
     // F25: clamp this round's socket timeout to the turn's remaining budget so
     // slow rounds can't stack past the deadline (no-op when budgetMs==UINT32_MAX).
-    const uint32_t kMinRoundMs = 8000;
-    const uint32_t roundMs = budgetMs >= OAI_TIMEOUT_MS ? OAI_TIMEOUT_MS
-                             : (budgetMs < kMinRoundMs ? kMinRoundMs : budgetMs);
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
     if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
     JsonDocument req = makeDoc(pd);
     req["model"]        = model;
@@ -433,6 +444,9 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     JsonDocument filter;
     filter["id"] = true; filter["status"] = true;
     filter["error"]["message"] = true;
+    filter["error"]["code"] = true;            // insufficient_quota, invalid_json, ...
+    filter["error"]["type"] = true;
+    filter["incomplete_details"]["reason"] = true;   // the completeness gate
     JsonObject oi = filter["output"].add<JsonObject>();
     oi["type"] = true; oi["call_id"] = true; oi["name"] = true; oi["arguments"] = true;
     oi["id"] = true;                    // reasoning item id - required in the replay
@@ -449,18 +463,36 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     std::string body;
     if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
     JsonDocument resp = makeDoc(pd);
+    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
     int code = oaiResponses(pd, key, std::move(body), roundMs, resp, filter);
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
+    if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
     if (code != 200) {
-      std::string e = "resp HTTP " + std::to_string(code);
-      const char* em = resp["error"]["message"] | "";
-      if (em[0]) e += std::string(": ") + em;
-      out.ok = false; out.error = e;
+      const std::string e = wire::httpErrLine("resp", code, resp["error"]["message"] | "");
+      wire::httpFailure(out, code, e,
+                        e + " " + (const char*)(resp["error"]["code"] | "") + " " +
+                            (const char*)(resp["error"]["type"] | ""));
       hlog::logf("orchTurn(oai-loop): %s", e.c_str());
       return out;
     }
     if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+    // The completeness gate: an incomplete response (the output limit, a content
+    // filter) is never run or accepted - a cut `arguments` string would be
+    // dispatched as invalid JSON, or a cut orch_turn read as the turn. There is no
+    // cap to raise here (no max_output_tokens is sent: reasoning would starve the
+    // answer), so it fails as Cut at once and the fabric may switch.
+    const char* st = resp["status"] | "";
+    if (!strcmp(st, "incomplete")) {
+      wire::cutFailure(out, std::string("incomplete:") +
+                                (const char*)(resp["incomplete_details"]["reason"] | "unknown"), 0);
+      return out;
+    }
+    if (!strcmp(st, "failed")) {
+      out.ok = false;
+      out.kind = nimbus::orch::StepErr::ServerError;
+      out.error = std::string("resp failed: ") + (const char*)(resp["error"]["message"] | "no reason given");
+      return out;
+    }
 
     // Walk EVERY function_call before deciding: the model may batch registry calls
     // WITH the terminal orch_turn in one response (tool_choice:"required" invites
@@ -591,6 +623,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   JsonDocument filter;
   filter["id"] = true; filter["status"] = true;
   filter["error"]["message"] = true;   // surface schema/param rejections verbatim
+  filter["error"]["code"] = true;
+  filter["incomplete_details"]["reason"] = true;   // the completeness gate
   JsonObject oi = filter["output"].add<JsonObject>();
   JsonObject ci = oi["content"].add<JsonObject>();
   ci["type"] = true; ci["text"] = true;
@@ -598,17 +632,24 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
   int code = oaiResponses(pd, key, std::move(body), OAI_TIMEOUT_MS, doc, filter);
-  if (code <= 0)   { err = wire::transportError(pd); return false; }
+  if (code <= 0)   { err = wire::headTransportError(pd, t0, OAI_TIMEOUT_MS); return false; }
   if (code != 200) {
-    err = "resp HTTP " + std::to_string(code);
-    const char* em = doc["error"]["message"] | "";
-    if (em[0]) err += std::string(": ") + em;
+    err = wire::httpErrLine("resp", code, doc["error"]["message"] | "");
+    const char* ec = doc["error"]["code"] | "";
+    if (ec[0] && !strstr(err.c_str(), ec)) err += std::string(" (") + ec + ")";
     hlog::logf("orchTurn(oai): %s", err.c_str());
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
   nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
+  if (!strcmp(doc["status"] | "", "incomplete")) {   // a cut answer is never the turn
+    err = std::string("cut at the output limit (incomplete:") +
+          (const char*)(doc["incomplete_details"]["reason"] | "unknown") + ")";
+    hlog::logf("orchTurn(oai): %s", err.c_str());
+    return false;
+  }
 
   // No cross-turn chain head, matching the loop path. The server-side chain is a
   // DUPLICATE of history this device already sends: the system prompt carries the

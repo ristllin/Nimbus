@@ -8,7 +8,9 @@
 #include "nimbus/harness/fabric.h"      // Directive / ResultEnvelope / FabricErr
 #include "nimbus/harness/head_tools.h"  // HeadTools - the multi-turn tool-use loop glue
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
+#include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/token_usage.h"
+#include "nimbus/orch/wire_limits.h"    // kJsonStrGuard, foldDigestCap - the string ceilings
 
 // providers - the PORTABLE provider wire layer (Stage H of the harness
 // extraction). Everything that used to live inside the device adapters except
@@ -178,7 +180,7 @@ bool fabricSupports(const std::string& host);
 // One canonical Transcript; a failed round retries same-host once, then switches
 // to the next host in `hostList` (bounded ≤2 switches), re-running the SAME
 // round - executed results ride the transcript, nothing re-dispatches. `notify`
-// fires once per switch (fromHost, toHost).
+// fires once per switch (fromHost, toHost); lastFabricSwitch() says why.
 // CUM-477: wrap a loop step with ONE same-host resend for a request the device
 // could not finish SENDING (a short head/body write - the provider never saw it,
 // so the resend duplicates nothing). Under heap pressure (free internal heap
@@ -202,6 +204,54 @@ struct ResendCtx {
   mutable bool settled = false;
 };
 nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
+
+// ---- the fabric's typed failover (lane K) --------------------------------------
+// Every failed round is classified (nimbus::orch::StepErr) and the fabric acts on
+// the kind (fabricRuleFor): one same-host resend only for a cause in transit
+// (Transport, RateLimited, ServerError); an immediate switch for a refusal of this
+// request on this host (Timeout, Rejected, Cut, Auth, Billing); neither for a
+// request that is unreadable anywhere (BadRequest) or a device short of memory
+// (LowMemory). A billing or auth refusal also PARKS the host for this boot: later
+// turns start on the next host with no request, retry or notice spent on it, until
+// its key or model changes, a request there succeeds, or kParkProbeMs passes (then
+// one probe request; a second refusal re-parks it quietly). RAM only, no NVS.
+inline constexpr uint32_t kParkProbeMs = 30u * 60u * 1000u;
+// Why a host is parked (hostParked). kind None = not parked.
+struct HostPark {
+  nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;
+  int httpStatus = 0;
+};
+// Parked now? `why` (optional) receives the refusal that parked it. A host whose
+// key or model changed since is un-parked here.
+bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why = nullptr);
+void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
+              int httpStatus);
+// A failed round there: parks on a billing or auth refusal; re-arms an existing
+// park when the failed round was its probe (whatever the failure).
+void noteHostFailed(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
+                    int httpStatus);
+void unparkHost(const std::string& host);   // a request there succeeded
+void clearHostParks();                      // tests
+
+// The last provider switch the fabric made (or a parked head it started past),
+// read by the engine's notify callback for the owner notice. Single-task by
+// design, so the record read inside notify is exact.
+struct FabricSwitch {
+  std::string from, to;
+  nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;
+  int httpStatus = 0;
+  bool parkedStart = false;   // the turn started past a parked head: nothing new to tell
+};
+const FabricSwitch& lastFabricSwitch();
+
+// Test builds (the bench billing leg): every request to API host `host`
+// ("api.anthropic.com") is answered locally with `status` and `body` - nothing is
+// sent - until cleared. The test console wires it. Defined only in test and host
+// builds (NIMBUS_TEST / NIMBUS_NATIVE): the production image has neither the
+// setter nor the check. Paired with setTestFirstAttemptCap (output_caps.h).
+void setTestStatusOverride(const std::string& host, int status, const std::string& body);
+void clearTestStatusOverride();
+bool testStatusOverride(const std::string& host, int& status, std::string& body);
 
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
@@ -233,6 +283,16 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                     const std::string& instructions, const std::string& inputs,
                     std::string& outJson, std::string& err,
                     const HeadTools* tools, nimbus::orch::TokenUsage* usage);
+
+// ---- one provider time policy (lane K) ------------------------------------------
+// Every request is non-streamed: nothing arrives until the model has finished, so
+// the socket deadline is the whole round. One table for every head and every
+// synchronous sub (a test walks every adapter against it). Mistral ran at 60 s
+// while every other provider had 120 s, and a slow Mistral round read as a dead
+// network, was retried for another 60 s, then failed over.
+inline constexpr uint32_t kHeadRoundCeilingMs = 120000;   // anthropic, openai, mistral, custom heads
+inline constexpr uint32_t kSyncSubCeilingMs   = 120000;   // a sub that runs inside its POST
+inline constexpr uint32_t kMinRoundMs         = 8000;     // a near-exhausted final round still gets a shot
 
 // ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
 // ONE place for every Z.ai request path: the direct BYOK head, the Cumulo
