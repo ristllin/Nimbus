@@ -96,11 +96,12 @@ Each renderer speaks its provider's dialect from the same record:
   of `tool_use` blocks answered by a user message of `tool_result` blocks. The
   **prefill rule**: an assistant message is emitted ONLY for rounds that carried
   a tool call - a prose-only (stalled) round is never echoed, because a trailing
-  assistant message plus forced `tool_choice` is a hard 400. Messages is the one
-  wire whose body grows round over round, so it also carries an in-turn gradient
-  fold (older rounds collapse to one line each past a byte trigger; the newest
-  round stays verbatim, and folding never breaks the `tool_use`↔`tool_result`
-  pairing an unanswered `tool_use` would 400 on).
+  assistant message plus forced `tool_choice` is a hard 400. The replay is
+  append-only on every loop wire: a round already sent keeps its bytes, so each
+  round reads the previous request from the provider cache, and past the replay
+  budget only the newest result is cut with a visible note (the
+  `tool_use`↔`tool_result` pairing an unanswered `tool_use` would 400 on is
+  never broken). See "The cacheable prefix" in [turn-anatomy.md](turn-anatomy.md).
 - **OpenAI** (`renderOaiInput`, `openai.cpp`) sends the full Responses `input[]`
   with `store:false` every round - the user seed, then per round the reasoning
   items, `function_call` items, and their `function_call_output` answers. There
