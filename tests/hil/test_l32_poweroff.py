@@ -74,7 +74,7 @@ def test_poweroff_matches_the_board_variant(device):
 
 @pytest.mark.hil
 @pytest.mark.manual
-def test_poweroff_enters_sleep_and_wakes_state_intact(device, manual):
+def test_poweroff_enters_sleep_and_wakes_state_intact(device, require_manual):
     """Human-in-the-loop: power off, confirm the panel notice, wake, verify state.
 
     Steps (the harness prints these and waits for confirmation):
@@ -91,7 +91,7 @@ def test_poweroff_enters_sleep_and_wakes_state_intact(device, manual):
     b_scr = re.search(r"scr=(\w+)", before).group(1)
     tap, _pin = _poweroff_info(device)
     wake = "tap the screen" if tap else "reconnect power"
-    manual.confirm(
+    require_manual.confirm(
         "POWER-OFF + WAKE:\n"
         "  1. The board is about to deep-sleep on POWEROFF.\n"
         f"  2. Verify the panel reads 'Powered off.' and tells you to {wake}.\n"

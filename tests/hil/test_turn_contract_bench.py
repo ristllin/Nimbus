@@ -22,6 +22,10 @@ claude-haiku-5-5):
      logs ``telegram: send ok`` for that chat, and the assistant rows stored for
      it (the text handed to the Telegram sender) pass the markup oracle.
 
+Legs 1 and 2 run over the web chat and need no Telegram bot. Leg 3 needs a bot
+token Telegram accepts; with none, or one it refuses (``tgAuthFail``), it skips
+as BLOCKED instead of failing.
+
 Serial lines are the seam for log facts (the /api/log ring holds about 1 KB,
 too little for a turn). Delivered text comes from GET /api/chat?turn=<id>.
 
@@ -136,7 +140,17 @@ def _settle(device, quiet: float = 45.0, cap: float = 180.0) -> None:
 
 
 @pytest.fixture(scope="module")
-def board(device, net, secrets, require_secret):
+def _bench_board(net):
+    """The board setup, done once per module: the IP, the head settings it
+    replaced (restored when the module ends), or why the first attempt skipped.
+    It holds no fixture of narrower scope; ``board`` fills it."""
+    state = {}
+    yield state
+    if state.get("prior"):
+        net.post("/api/orch", state["prior"], ip=state["ip"], timeout=8.0)
+
+
+def _set_bench_head(device, net, secrets, require_secret, state) -> None:
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     orch = net.get_json("/api/orch", ip=ip, timeout=8.0)
     anth = (orch.get("providers") or {}).get("anthropic") or {}
@@ -155,8 +169,54 @@ def board(device, net, secrets, require_secret):
         timeout=8.0,
     )
     assert r.status_code == 200, f"could not set the head to anthropic/{MODEL}: {r.status_code} {r.text[:200]}"
-    yield ip
-    net.post("/api/orch", {k: v for k, v in prior.items() if v}, ip=ip, timeout=8.0)
+    state["ip"] = ip
+    state["prior"] = {k: v for k, v in prior.items() if v}
+
+
+def _cached_board(state: dict, provision) -> str:
+    """Run ``provision(state)`` once per module; later legs reuse its IP, or its
+    skip at once (a missing key or LAN must not re-provision for every leg)."""
+    if "skip" in state:
+        pytest.skip(state["skip"])
+    if "ip" not in state:
+        try:
+            provision(state)
+        except pytest.skip.Exception as exc:
+            state["skip"] = exc.msg
+            raise
+    return state["ip"]
+
+
+def test_board_setup_runs_once_and_a_skip_sticks():
+    """The board cache itself, without a board."""
+    calls = []
+
+    def ok(state):
+        calls.append(1)
+        state["ip"] = "10.0.0.2"
+
+    state = {}
+    assert _cached_board(state, ok) == "10.0.0.2"
+    assert _cached_board(state, ok) == "10.0.0.2"
+    assert len(calls) == 1
+
+    def no_key(state):
+        calls.append(1)
+        pytest.skip("no Anthropic key on the device")
+
+    state, calls = {}, []
+    for _ in range(2):
+        with pytest.raises(pytest.skip.Exception, match="no Anthropic key"):
+            _cached_board(state, no_key)
+    assert len(calls) == 1
+
+
+@pytest.fixture
+def board(device, net, secrets, require_secret, _bench_board):
+    """The joined board's IP with the head on anthropic/MODEL. Function scoped,
+    because ``require_secret`` is; the provisioning runs once per module
+    (``_cached_board``) and the settings it replaced are restored at module end."""
+    return _cached_board(_bench_board, lambda st: _set_bench_head(device, net, secrets, require_secret, st))
 
 
 TOPICS = [
@@ -265,7 +325,14 @@ def _assistant_rows(net, ip, chat: str) -> dict:
 @_board_leg
 def test_no_markup_in_the_telegram_output(board, net, device):
     ip = board
+    # The only leg that needs a working bot: a token Telegram refuses (401) is a
+    # bench prerequisite, reported as BLOCKED, never a markup failure.
+    orch = net.get_json("/api/orch", ip=ip, timeout=8.0)
+    if orch.get("tgAuthFail") or orch.get("tgVerify") == 0:
+        pytest.skip("BLOCKED: Telegram rejects this device's bot token (tgAuthFail); set a working test bot token")
     tg = net.get_json("/api/telegram", ip=ip, timeout=8.0)
+    if not tg.get("hasToken"):
+        pytest.skip("BLOCKED: no Telegram bot token on the device")
     chats = [str(c.get("id", "")) for c in (tg.get("allow") or []) if c.get("owner")]
     chats = [c for c in chats if c.lstrip("-").isdigit()]
     if not chats:
