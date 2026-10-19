@@ -278,7 +278,8 @@ class VectorMemory {
   // bounds the scan to the NEWEST windowLimit entries (Release C2: the full
   // O(n²·dims) pass at the 5000 cap is ~3.2e9 int8 ops under the global memory
   // lock; older entries were deduped on previous nightly passes). 0 = full scan
-  // (the web admin op keeps it - explicit owner action).
+  // (the web admin op keeps it - explicit owner action). Pairs are compared only
+  // inside one namespace: twins owned by different principals both stay.
   int  deduplicate(int windowLimit = 0);
 
   // ---- persistence (SD file, Ph3 device seam) ----
@@ -322,7 +323,8 @@ class VectorMemory {
   static bool isExpiredRaw(float importance, int32_t ttlHours, uint32_t createdAtHours,
                            bool permanent, bool creator, uint32_t nowHours);
 
-  int findNearest(const std::vector<int8_t>& q, float& distOut) const;  // -1 if empty
+  // Nearest entry in namespace `ns` (effective namespace, "" = owner); -1 if none.
+  int findNearest(const std::vector<int8_t>& q, const std::string& ns, float& distOut) const;
   int indexOf(const std::string& id) const;
 
   int dims_ = 256;

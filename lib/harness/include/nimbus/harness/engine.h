@@ -327,6 +327,8 @@ class TurnEngine {
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
   // The claim check of the current (or last) turn: its effect ledger and flags.
   const ClaimCheck& claimCheck() const { return claims_; }
+  // Engine notices a quiet background turn held back since boot (never delivered).
+  uint32_t quietNoticesHeld() const { return quietNoticesHeld_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
   uint32_t turnCount() const { return turnCount_; }
 
@@ -344,7 +346,8 @@ class TurnEngine {
   // (HarnessConfig::telegramDeliverable; unset = true). Sampled ONCE, at turn
   // entry; everything after reads turnTelegram().
   bool telegramOn(const std::string& chatId) const;
-  std::string takePendingMemResults();
+  // This chat's parked [MEMORY RESULTS] block ("" when none), consumed.
+  std::string takePendingMemResults(const std::string& chatId);
   // CUM-538: this chat's "[SPAWN REFUSED]" block ("" when none).
   std::string takeSpawnNotes(const std::string& chatId);
   // The [SPAWN REFUSED] block around a chat's refusal lines.
@@ -384,6 +387,11 @@ class TurnEngine {
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
+  bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
+  uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
+  // True while a quiet scheduled turn runs: every engine notice is held (deliver)
+  // and the one-notice billing latch is left armed (lane M x lane K).
+  bool holdingNotices() const { return scheduledTurn_ && quietTurn_; }
   // CUM-536: this turn's [FRESH RESULTS] include a result whose connector never
   // ran. Set by the entry wrappers from takeFreshResults; while set, the turn's
   // memory writes (mem_write[] and the loop's memory.write tool) are refused.
@@ -418,9 +426,12 @@ class TurnEngine {
   // HeadTools::onBrief, consumed by the TurnDebugEv snapshot. Empty for a
   // single-shot turn that never entered a loop.
   std::string lastBrief_;
-  // mem_query[] results from the previous turn, parked for the next turn's
-  // inputs (deferred-result pattern).
-  std::string pendingMemResults_;
+  // mem_query[] results from a chat's previous turn, parked for THAT chat's next
+  // turn (deferred-result pattern). Keyed by chat id (lane M): an engine-global
+  // slot leaked one principal's memory results into another chat's turn. At most
+  // kPendingMemChats chats park results at once.
+  std::map<std::string, std::string> pendingMemResults_;
+  static constexpr size_t kPendingMemChats = 8;
   // A fallback switch recorded on the previous turn, surfaced to the model as a
   // one-line context note on the next turn (CUM-41). Consumed by buildDynamicContext,
   // which labels it with whose turn it was and how long ago (lane T): the 18 Oct

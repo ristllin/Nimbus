@@ -1,17 +1,22 @@
 #include "dream_subsystem.h"
 
+#include <LittleFS.h>
 #include <time.h>
 
 #include <string>
 
 #include "../sys/agent_log.h"
-#include "agent_config.h"       // ORCH_AUTO_TURN_MIN_HEAP (gate heap floor)
-#include "memory_subsystem.h"   // engines + Lock + stats + nowHours
+#include "adapters/embeddings.h"   // available() - can memory writes land tonight?
+#include "agent_config.h"          // ORCH_AUTO_TURN_MIN_HEAP (gate heap floor)
+#include "fs_atomic.h"             // writeFileAtomic - /data/dream.json
+#include "memory_subsystem.h"      // engines + Lock + stats + nowHours + opCounters
 #include "orchestrator.h"
-#include "store.h"       // injectScheduledTurn / activeJobCount
+#include "store.h"                 // the legacy NVS quiet-night baseline (read only)
 
 namespace agent {
 namespace dream {
+
+namespace orch = nimbus::orch;
 
 // The sessions that belong to the device's owner: the token/physically-
 // authenticated local surfaces plus every Telegram chat with the owner role,
@@ -37,143 +42,184 @@ static std::vector<std::string> ownerSessionIds() {
   return ids;
 }
 
-namespace orch = nimbus::orch;
-
 static agent::Hooks g_hooks;             // only onDreamStart/onDreamEnd used
+static AlertSink    g_alert;             // the owner message for a failing streak
 static DreamGate    g_gateCfg;
 static volatile uint32_t g_lastTurnEndMs = 0;   // 0 = no turn since boot
+// Busy defers taken this local night (RAM; reset at a fire and at the day roll).
+static uint8_t  g_defersTonight = 0;
+static uint32_t g_deferDay = 0;
+static bool     g_firing = false;        // the dream's own turn is running
+static std::string g_pendingAlert;       // sent at the next owner turn, never at night
 
-void begin(const agent::Hooks& hooks) {
+// ---- dream state: /data/dream.json (LittleFS), never NVS -------------------------
+static const char* kStatePath = "/data/dream.json";
+
+static bool loadState(DreamState& st) {
+  File f = LittleFS.open(kStatePath, FILE_READ);
+  if (f) {
+    String s = f.readString();
+    f.close();
+    if (loadDreamState(std::string(s.c_str(), s.length()), st)) return true;
+    alog("dream: state file unreadable - starting fresh");
+    st = DreamState{};
+    return false;
+  }
+  // First night on this firmware: migrate the quiet-night baseline from the legacy
+  // NVS key (read once; it is never written again - NVS is full on real devices).
+  st = stateFromLegacyHash(std::string(store::dreamScratchHash().c_str()));
+  if (st.scrHash) alog("dream: quiet-night baseline migrated from NVS");
+  return true;
+}
+
+static bool saveState(const DreamState& st) {
+  return writeFileAtomic(kStatePath, dumpDreamState(st), "dream");
+}
+
+// ---- the local clock (tz-aware; tg_poll, like the loops scheduler) ---------------
+static NightClock nightClock() {
+  NightClock c;
+  c.epoch = (uint64_t)time(nullptr);
+  c.synced = memory::clockSynced();
+  time_t t = (time_t)c.epoch;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  c.localDay = orch::daysFromCivil(lt.tm_year + 1900, (unsigned)(lt.tm_mon + 1),
+                                   (unsigned)lt.tm_mday);
+  c.minuteOfDay = (uint16_t)(lt.tm_hour * 60 + lt.tm_min);
+  return c;
+}
+
+void begin(const agent::Hooks& hooks, AlertSink alert) {
   g_hooks = hooks;
+  g_alert = std::move(alert);
   g_gateCfg.minHeap = ORCH_AUTO_TURN_MIN_HEAP;  // device-authoritative floor
 }
 
-void noteTurnEnd(uint32_t nowMs) { g_lastTurnEndMs = nowMs ? nowMs : 1; }
+void noteTurnEnd(uint32_t nowMs) {
+  g_lastTurnEndMs = nowMs ? nowMs : 1;
+  // A failing streak is told when the owner is next around (any turn of theirs
+  // ends), never by a 04:00 message.
+  if (!g_firing && !g_pendingAlert.empty() && g_alert) {
+    const std::string msg = std::move(g_pendingAlert);
+    g_pendingAlert.clear();
+    g_alert(msg);
+  }
+}
 
 uint32_t gateDefer(const orch::LoopRecord& l) {
   if (!isReserved(l.id)) return 0;   // gate applies only to the dream loop
+  const NightClock c = nightClock();
+  if (c.localDay != g_deferDay) { g_deferDay = c.localDay; g_defersTonight = 0; }
   GateInputs in;
   in.nowMs = millis();
   in.lastTurnEndMs = g_lastTurnEndMs;
   in.activeJobs = orchestrator::activeJobCount();
   in.freeHeap = ESP.getFreeHeap();
+  in.defersTonight = g_defersTonight;
   GateResult r = evaluateGate(g_gateCfg, in);
-  if (r.deferSec)
-    alogf("dream: not idle (%s) - deferring %us", r.why ? r.why : "?",
-          (unsigned)r.deferSec);
+  if (!r.deferSec) return 0;
+  // The night window closed with the device still not idle: no reflection tonight,
+  // said once in the timeline; the loop waits for tomorrow's slot.
+  if (c.synced && c.minuteOfDay >= windowEndFor(l.sched.minuteOfDay)) {
+    NightReport rep;
+    rep.outcome = DreamOutcome::Starved;
+    rep.cause = r.why ? r.why : "busy";
+    rep.attempt = g_defersTonight;
+    if (g_hooks.onDreamEnd) {
+      agent::DreamEndEv ev;
+      ev.cause = rep.cause;
+      ev.report = &rep;
+      g_hooks.onDreamEnd(ev);
+    }
+    alogf("dream: skipped tonight (%s after %u defers)", rep.cause.c_str(),
+          (unsigned)g_defersTonight);
+    g_defersTonight = 0;
+    return secondsToNextSlot(c, l.sched.minuteOfDay);
+  }
+  if (g_defersTonight < 255) g_defersTonight++;
+  alogf("dream: not idle (%s) - deferring %us (%u tonight)", r.why ? r.why : "?",
+        (unsigned)r.deferSec, (unsigned)g_defersTonight);
   return r.deferSec;
 }
 
 nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
-  const uint64_t epoch = (uint64_t)time(nullptr);
-  if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{epoch});
+  // The reserved record's slot is fixed (03:30; loops are paused or resumed, never
+  // rescheduled), so NightClock's default slot is the one the window counts from.
+  const NightClock clock = nightClock();
+  if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
+  g_defersTonight = 0;
 
-  // --- phase 1: non-LLM maintenance (runs when the clock is synced; the turn may still defer) --
-  // Under the memory Lock (recursive; shared with the web/MCP task). Never held
-  // across the network turn below.
-  int pruned = 0, deduped = 0, vecs = 0;
-  if (!memory::clockSynced()) {
-    // Release C3: with a boot-relative clock, decay ages every entry a fake
-    // amount and pruneExpired compares real epochs against ~hour-0 - both
-    // corrupt retention. The scheduled dream can't fire pre-sync (wall-clock
-    // loops need SNTP), but the manual DREAM console path could. Skip, honestly.
-    alog("dream: maintenance skipped (clock not synced)");
-  } else {
+  NightDeps d;
+  d.loadState = loadState;
+  d.saveState = saveState;
+  // Phase 1 under the memory Lock (recursive; shared with the web/MCP task), never
+  // held across the network turn. Release C2: windowed dedup - the full O(n^2 dims)
+  // scan at the 5000-entry cap blocks turns and the web under the lock.
+  d.maintain = [] {
     memory::Lock lk;
-    orch::VectorMemory& v = memory::vectors();
-    v.decayImportance(memory::config().decayFactor);   // was hardcoded 0.95 (dead knob)
-    pruned  = v.pruneExpired(memory::nowHours());
-    // Release C2: WINDOWED dedup - the full O(n²·dims) scan at the 5000-entry
-    // cap is ~3.2e9 int8 ops against PSRAM UNDER THE GLOBAL MEMORY LOCK
-    // (blocking turns + web). Older entries were deduped on previous nights;
-    // scanning the newest 1500 (≈1.1M pairs) bounds the pass without losing
-    // meaningful coverage.
-    deduped = v.deduplicate(1500);
-    vecs    = v.size();
-    memory::persistVectors();
-    alogf("dream: maintenance - decayed, pruned=%d deduped=%d (%d vectors)",
-          pruned, deduped, vecs);
-  }
-
-  // --- phase 2: reflection turn --------------------------------------------
-  // Yesterday ≈ the trailing 24 h of episodic history (wall hours). The digest
-  // + inputs are per-fire transients (stack/heap strings freed on return; the
-  // digest is byte-capped at kDigestCapBytes) - no steady-state SRAM.
-  MemStats stats;
-  std::string scratch;
-  Yesterday yesterday;
-  uint64_t scratchHash = 0;
-  {
+    MaintResult m = maintainVectors(memory::vectors(), memory::config().decayFactor,
+                                    memory::nowHours(), 1500, [] { return memory::persistVectors(); });
+    alogf("dream: maintenance - decayed, pruned=%d deduped=%d (%d vectors)%s", m.pruned,
+          m.deduped, m.vectors, m.persisted ? "" : " NOT saved");
+    return m;
+  };
+  // The owner's last 24 h of conversation, minus captured job-engine output and
+  // /clear markers. v3.7.0 (prism R2, "namespace laundering"): limited to the owner's
+  // OWN surfaces plus the device timeline - a guest's private conversation must
+  // never be absorbed into the owner's memories overnight.
+  d.yesterday = [] {
     memory::Lock lk;
-    // The owner's last 24 h of conversation, minus captured job-engine output and
-    // /clear markers (readYesterday; host-tested in test_harness_dream). v3.7.0
-    // (prism R2, "namespace laundering"): limited to the owner's OWN surfaces plus
-    // the device timeline - a guest's private conversation must never be absorbed
-    // into the owner's memories overnight.
-    yesterday = readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
-    memory::scratchpad().appendPromptBlock(scratch);
-    scratchHash = orch::fnv64(memory::scratchpad().serialize());
+    return readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
+  };
+  d.scratchBlock = [] {
+    memory::Lock lk;
+    std::string out;
+    memory::scratchpad().appendPromptBlock(out);
+    return out;
+  };
+  d.scratchHash = [] {
+    memory::Lock lk;
+    return orch::fnv64(memory::scratchpad().serialize());
+  };
+  d.stats = [] {
     memory::Stats s = memory::stats();
-    stats.vectors = s.vectorCount;
-    stats.scratchItems = s.scratchItems;
-    stats.episodicMsgs = s.episodicMsgs;
-  }
-  stats.pruned = pruned;
-  stats.deduped = deduped;
+    MemStats m;
+    m.vectors = s.vectorCount;
+    m.scratchItems = s.scratchItems;
+    m.episodicMsgs = s.episodicMsgs;
+    return m;
+  };
+  d.embeddingsUp = [] { return embeddings::available(); };
+  d.memOps = [] { return memory::opCounters(); };
+  // An ordinary scheduled turn: the same rails (reboot/loop.create refused, LoopCaps
+  // metered as "loop:dream"), memory tools only, and quiet - an empty reply and every
+  // engine notice stay off the owner's phone at night.
+  d.injectTurn = [&r](const std::string& inputs) {
+    return orchestrator::injectScheduledTurn(String(r.chatId.c_str()), String(inputs.c_str()),
+                                             String(r.name.c_str()), String(r.id.c_str()),
+                                             /*quietOk=*/true);
+  };
 
-  // Quiet-night skip: no owner conversation in 24 h AND the scratchpad is
-  // byte-identical to where the LAST dream left it -> the paid reflection turn
-  // has provably nothing to do. Stage-1 maintenance above already ran, which
-  // is the part that must never be skipped. The console DREAM drill forces
-  // through (force). o.detail varies by day so the semantic-repeat guard can't
-  // mistake consecutive quiet nights for a stuck loop and pause dreaming.
-  {
-    const uint64_t lastHash = strtoull(store::dreamScratchHash().c_str(), nullptr, 16);
-    if (skipReflection(yesterday.empty, scratchHash, lastHash, force)) {
-      orch::FireOutcome o;
-      o.ok = true;
-      char fp[128];
-      snprintf(fp, sizeof fp,
-               "(dream d%lu: reflection skipped - quiet day, scratchpad "
-               "unchanged; pruned=%d deduped=%d)",
-               (unsigned long)(epoch / 86400), pruned, deduped);
-      o.detail = fp;
-      alogf("dream: %s", fp);
-      if (g_hooks.onDreamEnd)
-        g_hooks.onDreamEnd(agent::DreamEndEv{true, pruned, deduped, 0});
-      return o;
-    }
+  g_firing = true;
+  NightResult night = runNight(d, clock, force);
+  g_firing = false;
+  const NightReport& rep = night.report;
+  alogf("dream: %s%s%s tokens=%u attempt=%u retry=%us streak=%u", outcomeSlug(rep.outcome),
+        rep.cause.empty() ? "" : " cause=", rep.cause.c_str(), (unsigned)rep.tokens,
+        (unsigned)rep.attempt, (unsigned)rep.retryAfterSec, (unsigned)rep.streak);
+  if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  if (g_hooks.onDreamEnd) {
+    agent::DreamEndEv ev;
+    ev.turnOk = night.fire.ok;
+    ev.prunedVectors = rep.maint.pruned;
+    ev.dedupedVectors = rep.maint.deduped;
+    ev.tokens = rep.tokens;
+    ev.cause = rep.error;
+    ev.report = &rep;
+    g_hooks.onDreamEnd(ev);
   }
-
-  const std::string inputs = buildDreamInputs(yesterday.digest, scratch, stats);
-
-  // Ordinary scheduled turn: same rails (reboot/loop.create refused, LoopCaps
-  // metered - attribution tag rides in as "loop:dream"). quietOk: an all-empty
-  // reply delivers NOTHING (no 03:30 "Done." ping).
-  orch::FireOutcome o = orchestrator::injectScheduledTurn(
-      String(r.chatId.c_str()), String(inputs.c_str()), String(r.name.c_str()),
-      String(r.id.c_str()), /*quietOk=*/true);
-
-  // The dream's reply is USUALLY empty by design - feed the semantic-repeat
-  // hash a per-night fingerprint instead, so kLoopMaxRepeats can't pause the
-  // loop for doing its job quietly (the guard still catches a stuck NON-empty
-  // reply, which varies... or doesn't, and then deserves the pause).
-  if (o.detail.empty()) {
-    char fp[64];
-    snprintf(fp, sizeof fp, "(dream d%lu: pruned=%d deduped=%d)",
-             (unsigned long)(epoch / 86400), pruned, deduped);
-    o.detail = fp;
-  }
-  if (o.ok) {
-    uint64_t post;
-    { memory::Lock lk; post = orch::fnv64(memory::scratchpad().serialize()); }
-    char hex[17];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)post);
-    store::setDreamScratchHash(hex);
-  }
-  if (g_hooks.onDreamEnd)
-    g_hooks.onDreamEnd(agent::DreamEndEv{o.ok, pruned, deduped, o.tokens.total(), o.error});
-  return o;
+  return night.fire;
 }
 
 }  // namespace dream

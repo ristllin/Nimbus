@@ -187,17 +187,41 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   reply nor the legacy single-slot `GET /api/chat` reply (either would hand it to
   the owner's next message). A loop turn never fabricates a "Done.".
 - **Dreaming**: a reserved, undeletable (pause-only) daily loop at 03:30 local
-  (the device timezone - Settings → Mode & identity). Stage 1 (no LLM): vector
-  decay + expiry prune + windowed dedup - skipped entirely if the clock never
-  synced. Stage 2: one unattended reflection turn over yesterday's episodic
+  (the device timezone - Settings → Mode & identity). The whole night is one pure
+  pipeline, `dream::runNight` (`lib/harness/src/dream.cpp`, host-tested); the device
+  glue only binds its seams. Stage 1 (no LLM): vector decay + expiry prune +
+  windowed dedup + persist, at most once per local day, skipped entirely if the
+  clock never synced. Stage 2: one quiet reflection turn over yesterday's episodic
   digest (the owner's conversation only: captured job-engine output and /clear
   markers are left out, as in every model-facing conversation read; the read
-  pages past them, up to 192 rows) - distill up to 7 durable facts (0 is correct on a quiet day), groom
-  the scratchpad, stay silent unless something needs the owner. On a provably
-  quiet night (empty 24 h digest AND the scratchpad unchanged since the last
-  dream, fnv64 baseline in NVS `dreamScrHash`) the paid stage-2 turn is
-  skipped; stage 1 still runs. Gated on 10 min quiet + no jobs + heap; defers
-  15 min otherwise. `DREAM` console forces it, including through the skip.
+  pages past them, up to 192 rows) - distill up to 7 durable facts (0 is correct on
+  a quiet day), groom the scratchpad, stay silent unless something needs the owner.
+  The reflection sees and can call the memory tools only (`memory.write`, `update`,
+  `search`, `pin`, `scratchpad`, `episodic`); its orch_turn `device`, `spawn`,
+  `await` and `session_ops` fields are dropped. When embeddings are unavailable the
+  turn is told so and does not try memory calls. On a provably quiet night (empty
+  24 h digest AND the scratchpad unchanged since the last dream) the paid stage-2
+  turn is skipped; stage 1 still runs.
+  - **Outcome.** The `ev:dream` row says what happened: `ok` only when the turn ran
+    and every memory write landed (with counts), `skipped`, `deferred`, `FAILED`
+    (with the cause and the write counts), `degraded` (writes failed or memory was
+    unavailable) or `skipped tonight` (deferred until the window closed).
+  - **Retries.** A deferred or transiently failed reflection (low memory, timeout,
+    network, rate limit, provider 5xx) retries 15 min later, up to 3 attempts, until
+    07:00; key, credit, budget and parse failures wait for the next night. The
+    breaker never disables the dream; after 3 failed nights in a row (then every 7)
+    the owner is told once, at their next conversation, never at night.
+  - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
+    are capped at 12 per night; the heap floor is not.
+  - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night
+    baseline, tonight's attempts and the failing-night streak. The legacy NVS key
+    `dreamScrHash` is read once to migrate and never written.
+  - `DREAM` console forces it, including through the quiet-night skip.
+- **Quiet background turns** (the dream, the post-update awareness turn): every
+  engine notice - failure replies, provider-switch and budget notices - is held
+  back and logged instead of sent; the outcome is recorded where the owner reads
+  it later (the timeline row, the routine's last error). A turn's own reply still
+  delivers if the model decides the owner must see it.
 - **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
   `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
   at both the apply layer and the tool-dispatch seam, because sub-agent results

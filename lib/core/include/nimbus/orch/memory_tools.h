@@ -81,6 +81,26 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail);
 // a tool that must refuse (write/update). Pure + host-tested.
 std::string embedFailReason(const std::string& raw);
 
+// What the long-term memory writes actually did (lane M). Monotonic RAM counters
+// bumped by the memory.write / memory.update handlers on EVERY path into them: a
+// mid-turn tool call and the orch_turn mem_write[] field both dispatch through the
+// registry, so one counter covers both. A background turn takes a snapshot before
+// and after and reports the difference, so "ok" can mean "every write landed".
+struct MemOpCounters {
+  uint32_t added = 0;       // memory.write stored a new entry
+  uint32_t dupSkipped = 0;  // memory.write matched an existing entry (importance bumped)
+  uint32_t updated = 0;     // memory.update stored the new wording
+  uint32_t failed = 0;      // a write or update was refused (nothing stored)
+  MemOpCounters operator-(const MemOpCounters& b) const {
+    MemOpCounters d;
+    d.added = added - b.added;
+    d.dupSkipped = dupSkipped - b.dupSkipped;
+    d.updated = updated - b.updated;
+    d.failed = failed - b.failed;
+    return d;
+  }
+};
+
 // Borrowed engines + seams the memory tools operate on. All pointers must
 // outlive the registry the tools are added to.
 struct MemoryContext {
@@ -101,6 +121,7 @@ struct MemoryContext {
   // failed and the notes live in RAM only until restart (the tool result says
   // so). Null => nothing to save (host rigs).
   std::function<bool()> persistScratch;
+  MemOpCounters* ops = nullptr;               // optional: write outcome counters (lane M)
 };
 
 // The honest effect reports the claim check reads (turn_effects.h): a pin on an

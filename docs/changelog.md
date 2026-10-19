@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.14 - A quiet, honest nightly dream
+
+- **No more messages at night.** When the nightly memory upkeep (the dream) failed, its error notices were sent to Telegram at about 03:30. Background turns now keep their notices to themselves; the result is recorded in the timeline instead.
+- **The dream says what it did.** The timeline row now reads ok only when every memory it saved landed, and gives the counts: how many were stored, updated and failed. A failed night names the cause; a deferred night says when it will try again.
+- **A failed night tries again, a few times.** A night that was deferred for low memory, or failed for a passing reason, retries 15 minutes later, up to three times before 07:00. Repeated failures no longer switch dreaming off; after three failed nights in a row you get one message the next time you talk to the device.
+- **Memory only.** The dream can read and save memories and tidy the scratchpad, and nothing else: no files, helpers, web searches or routines in the middle of the night.
+- **Memory search results stay in their conversation.** Results of a memory search went to whichever conversation spoke next; they now go back only to the conversation that asked. On a device shared with other people, the same fact saved by two people is kept for each of them.
+
 ## v4.5.14 - Why a turn failed, and what it cost
 
 Found on a desk device on 18 Oct: the nightly dream failed on Anthropic, then on the two providers it switched to, and only the last provider's bare "HTTP 400" was kept; asked why, the assistant guessed. Turns that switched provider filed every provider's spend under the last one, and a failed turn's spend was not counted at all.
@@ -29,6 +37,7 @@ Found on a desk device whose settings storage filled up on 14 Oct: Telegram serv
 - **Memory answers that tell the truth.** Pinning a memory that is already pinned says nothing changed. A note that could not be saved says it lasts only until the next restart, and the assistant's notes say so until saving works again.
 - **Research results say whether anything was looked up.** A helper's answer to a live question (a status, today's weather, prices) that ran no lookup is marked as not checked, and the assistant sees how many tools each helper ran.
 - **Failures explained from evidence.** The assistant is told to give only causes it can show, and to say when the cause is not recorded instead of guessing.
+
 
 ## v4.5.13 - Prices and usage per model
 

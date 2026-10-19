@@ -2673,14 +2673,21 @@ static void orchestratorBegin() {
       agent::alogf("dream: end %s pruned=%d deduped=%d tokens=%u",
                    e.turnOk ? "ok" : "FAIL", e.prunedVectors, e.dedupedVectors,
                    (unsigned)e.tokens);
-      // Timeline row - dream outcomes used to vanish into the 1280 B RAM log. It
-      // carries the first cause of a failure and the reflection turn's own spend,
-      // labelled; the counters are the maintenance phase's (they ran before the turn).
-      const std::string row = nimbus::orch::dreamRowText(e.turnOk, e.cause, e.tokens,
-                                                         e.prunedVectors, e.dedupedVectors);
+      // Timeline row - dream outcomes used to vanish into the 1280 B RAM log.
+      // The dream glue supplies the whole night (lane M): outcome, cause, write
+      // counts, retry and the reflection's own spend, labelled. A rig that fires
+      // onDreamEnd without the night gets lane T's row (the cause, the spend and
+      // the maintenance counters) - the same honest floor the row always had.
+      const std::string row =
+          e.report ? agent::dream::renderDreamRow(*e.report)
+                   : nimbus::orch::dreamRowText(e.turnOk, e.cause, e.tokens,
+                                                e.prunedVectors, e.dedupedVectors);
       agent::memory::captureEvent("dream", String(row.c_str()));
     };
-    agent::dream::begin(dh);
+    agent::dream::begin(dh, [](const std::string& msg) {
+      String owner = agent::orchestrator::firstAllowedChat();
+      if (owner.length()) agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
+    });
   }
   agent::loops::ensureLoop(agent::dream::reservedLoopRecord());
   agent::loops::setFireGate(

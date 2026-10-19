@@ -206,6 +206,11 @@ struct FireOutcome {
   TokenUsage  tokens;    // real provider spend for the fire - THIS fire's, on every exit
   std::string detail;    // reply text / error - feeds the semantic-repeat hash
   std::string error;     // why the fire's turn failed: the first cause first ("" when ok)
+  // Lane M: > 0 asks the scheduler to fire this loop again in that many seconds
+  // instead of at its next slot (RAM only). Only a fire whose pre-work is
+  // idempotent may set it - today the dream, which runs maintenance once per
+  // local day and retries a deferred or transiently failed reflection that night.
+  uint32_t    retryAfterSec = 0;
 };
 // A fire was ATTEMPTED (reached a provider) unless it was deferred for memory. Only
 // an attempt rolls the outcome (consecFails / daily fire / semantic-repeat); a memory
@@ -266,6 +271,14 @@ void onFireResult(LoopRecord& l, bool ok, const TokenUsage& used, uint64_t reply
 // Keep a fire's failure cause on the record (lane T): `error` (FireOutcome.error, the
 // first cause first) cut to kLoopErrMax on a character boundary; an ok fire clears it.
 void noteFireError(LoopRecord& l, bool ok, const std::string& error);
+// The consec-fail breaker after a failed fire (lane M). A normal loop trips at
+// maxConsecFails: the caller disables it and alerts once. A RESERVED firmware loop
+// (the dream) never trips - its failures are counted and reported by its own glue -
+// and its consecFails is clamped below the cap so evaluate() never blocks it either.
+bool breakerTrips(LoopRecord& l, int maxConsecFails, bool reserved);
+// A reserved loop the breaker paused before this rule existed is resumed (enabled,
+// counter clamped). An owner pause is never touched. Returns true when it changed.
+bool reviveReservedLoop(LoopRecord& l, int maxConsecFails);
 // Reschedule a due loop WITHOUT counting a fire (the pre-fire idle gate's defer,
 // e.g. the dream loop while the device is busy): nextRun moves strictly after
 // now; firesToday / lastRun / device counters are deliberately untouched, so a

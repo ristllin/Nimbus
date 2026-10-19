@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "dream_scenarios.h"
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 
@@ -338,6 +339,14 @@ void scSmoke(LabRig& rig, Ctx& c) {
          std::to_string(rig.totalIn()) + " in / " + std::to_string(rig.totalOut()) + " out tokens");
 }
 
+// The live dream legs (dream_scenarios.cpp), adapted to the Ctx reporter.
+Check checkOf(Ctx& c) { return [&c](bool ok, const std::string& w) { c.check(ok, w); }; }
+Note noteOf(Ctx& c) { return [&c](const std::string& w) { c.note(w); }; }
+void scDreamDistill(LabRig& rig, Ctx& c) { dreamDistill(rig, checkOf(c), noteOf(c)); }
+void scDreamQuiet(LabRig& rig, Ctx& c) { dreamQuiet(rig, checkOf(c), noteOf(c)); }
+void scDreamBadKey(LabRig& rig, Ctx& c) { dreamBadKey(rig, checkOf(c), noteOf(c)); }
+void scDreamNoEmbed(LabRig& rig, Ctx& c) { dreamNoEmbed(rig, checkOf(c), noteOf(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -360,6 +369,10 @@ const Scenario kScenarios[] = {
     {"continuity",    "the chat still remembers three turns later",                scMultiTurnContinuity, false},
     {"scheduled",     "an unattended routine turn (the news-briefing path)",       scScheduledTurn, true},
     {"dream",         "a quiet consolidation turn may say nothing",                scQuietTurn, false},
+    {"dream-distill", "the shipping night: a day becomes memories, a changed fact is updated", scDreamDistill, false},
+    {"dream-quiet",   "a quiet night skips the paid turn (zero chat calls)",       scDreamQuiet, false},
+    {"dream-badkey",  "a refused key fails the night quietly, no retry, no spend ($0)", scDreamBadKey, false},
+    {"dream-noembed", "embeddings down: degraded, and the turn skips memory calls", scDreamNoEmbed, false},
     {"degraded",      "a memory-degraded turn admits it, and promises nothing",   scDegradedHonesty, false, true},
     {"github-setup",  "an owner GitHub-setup answer routes to the web page, not the repo", scGithubSetupAudience, false},
     {"parity",        "every keyed provider handles plain + tool turns",           scProviderParity, false},

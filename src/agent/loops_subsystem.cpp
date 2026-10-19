@@ -285,7 +285,16 @@ static bool isReservedStd(const std::string& id) {
 void ensureLoop(const orch::LoopRecord& record, bool reserved) {
   Lock lk;
   if (reserved && !isReservedStd(record.id)) g_reservedIds.push_back(record.id);
-  if (findById(record.id)) return;   // persisted owner state (incl. paused) wins
+  if (LoopRecord* have = findById(record.id)) {   // persisted owner state (incl. paused) wins
+    // ... except a breaker pause of a reserved loop, which is firmware's own decision,
+    // not the owner's: the dream is never left off by repeated failures (lane M).
+    if (reserved && orch::reviveReservedLoop(*have, g_caps.maxConsecFails)) {
+      persist();
+      alogf("loops: resumed reserved loop '%s' (paused by failures, not by the owner)",
+            have->name.c_str());
+    }
+    return;
+  }
   LoopRecord l = record;             // insert fresh: compute the first nextRun
   l.name.resize(std::min(l.name.size(), (size_t)orch::kLoopNameMax));      // cap on ensure too
   l.prompt.resize(std::min(l.prompt.size(), (size_t)orch::kLoopPromptMax));
@@ -376,6 +385,7 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
           if (!due || l.nextRun < due->nextRun) due = &l;
           break;
         case orch::FireDecision::BlockedConsecFails:
+          if (!orch::breakerTrips(l, g_caps.maxConsecFails, isReservedStd(l.id))) { persist(); break; }
           if (l.enabled) { l.enabled = false; l.lastResult = orch::LastResult::Paused;
             l.pauseReason = orch::PauseReason::ConsecFails;
             if (g_alert) g_alert(AlertLevel::Warn, l.id, "loop '" + l.name + "' disabled after repeated failures");
@@ -466,9 +476,12 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       if (g_dev.firesInWindow > 0) g_dev.firesInWindow--;
       l->lastRun = prevLastRun;   // the fire did not happen; do not claim it did
       s_memDefer = true;
+      // A fire whose pre-work is idempotent (the dream runs maintenance once per local
+      // day) asks for a same-night retry instead of waiting for its next slot.
+      if (o.retryAfterSec) l->nextRun = nowEpoch + o.retryAfterSec;
       persist();
-      alogf("loops: '%s' fire deferred (low memory) - not counted, retries next slot",
-            l->name.c_str());
+      alogf("loops: '%s' fire deferred (low memory) - not counted, retries %s",
+            l->name.c_str(), o.retryAfterSec ? "tonight" : "next slot");
       return;
     }
     // NOTE (prism finding #2, partial): o.tokens is the scheduled turn's REAL
@@ -502,11 +515,13 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       }
       case orch::OnceAfterFire::NotOnce: break;
     }
+    // A transiently failed fire with idempotent pre-work retries soon (lane M).
+    if (!o.ok && o.retryAfterSec) l->nextRun = nowEpoch + o.retryAfterSec;
     if (orch::isSemanticRepeat(*l, g_caps.maxRepeats)) {
       l->enabled = false; l->lastResult = orch::LastResult::Paused;
       l->pauseReason = orch::PauseReason::Repeated;
       if (g_alert) g_alert(AlertLevel::Warn, l->id, "loop '" + l->name + "' paused: it kept returning the same result");
-    } else if (!o.ok && l->consecFails >= (uint8_t)g_caps.maxConsecFails) {
+    } else if (!o.ok && orch::breakerTrips(*l, g_caps.maxConsecFails, isReservedStd(l->id))) {
       l->enabled = false; l->lastResult = orch::LastResult::Paused;
       l->pauseReason = orch::PauseReason::ConsecFails;
       if (g_alert) g_alert(AlertLevel::Warn, l->id, "loop '" + l->name + "' disabled after repeated failures");

@@ -53,6 +53,7 @@ using namespace nimbus::orch;
 
 namespace {
 VectorMemory          g_vec;
+MemOpCounters         g_memOps;         // memory.write/update outcomes since boot (lane M; RAM only)
 // Cold store for TTL-expired memories (CUM-225). SD-only: attached as g_vec's prune
 // sink and exposed to the model ONLY when a card is present, so a card-less device
 // drops entries at TTL exactly as before. Lives in PSRAM like the live set.
@@ -619,6 +620,7 @@ void begin() {
   ctx.embed = embedText;
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
+  ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)
   registerMemoryTools(g_reg, ctx);
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
@@ -1398,7 +1400,12 @@ std::vector<std::string> recall(const String& queryText, int k,
   return out;
 }
 
-void persistVectors() {
+nimbus::orch::MemOpCounters opCounters() {
+  Lock g;
+  return g_memOps;
+}
+
+bool persistVectors() {
   Lock g;
   std::string blob = g_vec.serialize();
   // LittleFS overflow guard (degraded mode): never fill the internal partition. If
@@ -1412,7 +1419,7 @@ void persistVectors() {
         alogf("memory: vectors flash full (free=%uKB need=%uKB) - persist paused",
               (unsigned)(freeB / 1024), (unsigned)(blob.size() / 1024));
       g_flashFull = true;
-      return;
+      return false;
     }
     g_flashFull = false;
   }
@@ -1420,6 +1427,7 @@ void persistVectors() {
   if (effHaveSd()) noteSdIoResult(w);   // real SD write outcome feeds the demote watchdog
   if (!w) alog("memory: vector persist failed");
   persistArchive();   // the archive rides the same persist cadence (dirty-gated, SD-only)
+  return w;
 }
 
 // Persist the TTL-expired cold store (CUM-225). SD-only and dirty-gated: a dream that

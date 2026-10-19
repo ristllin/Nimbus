@@ -3932,7 +3932,7 @@ turn:)NIMBUSDOC"},
 
 | block | when present | gotcha |
 |---|---|---|
-| `[MEMORY RESULTS]` | the model ran `mem_query` **last** turn | results are deferred one turn; explicitly framed *background - answer the [USER] message on its topic* |
+| `[MEMORY RESULTS]` | the model ran `mem_query` on **this chat's** last turn | results are deferred one turn and go back only to the chat that asked; explicitly framed *background - answer the [USER] message on its topic* |
 | `[FRESH RESULTS]` | sub-agents just finished | drives the automatic synthesis turn; past the 6-slot cap a result parks as a one-line stub carrying `results.get("sub:<tag>")` - nothing is ever silently dropped |
 | `[ACTIVE SESSIONS]` | always | live sub-agent digest - authoritative ("if it lists none, nothing is running") |
 | `[SPAWN CAPACITY]` | always | how many sub-agents this turn can start, and that a big fan-out runs over waves |

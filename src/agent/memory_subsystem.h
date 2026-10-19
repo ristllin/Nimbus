@@ -7,6 +7,7 @@
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/retention.h"   // RetentionStatus (pruneRetention's outcome)
+#include "nimbus/orch/memory_tools.h"   // MemOpCounters (lane M)
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_archive.h"
@@ -163,7 +164,9 @@ std::vector<std::string> recall(const String& queryText, int k = 0,
 
 // Persist current state. persistVectors() writes the whole blob (O(n), cheap for
 // the device's scale); called automatically after a mutating MCP call.
-void persistVectors();
+bool persistVectors();     // false = the blob did not land (flash floor or write error)
+// What memory.write / memory.update did since boot (RAM, monotonic; lane M).
+nimbus::orch::MemOpCounters opCounters();
 void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
 // Returns false when the save failed (the notes then live in RAM only until
 // restart); the scratchpad's prompt header and the tool result say so.

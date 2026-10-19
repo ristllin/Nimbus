@@ -2026,6 +2026,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
                                               bool quietOk, bool once, bool ownerReminder) {
   if (!g_engine) {   // loops only fire after begin(); belt-and-braces
     nimbus::orch::FireOutcome o;
+    o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
     o.detail = "deferred: not running";
     return o;
   }

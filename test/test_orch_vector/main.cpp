@@ -635,6 +635,85 @@ static void test_restamp_heals_presync_lastrecall() {
     TEST_ASSERT_EQUAL_UINT32(0, e.lastRecallHours);   // reset to "never", not ~56y
 }
 
+// FM-2 (lane M): dedup never crosses a namespace. Property over 200 seeded stores
+// of 2-3 namespaces with identical vectors planted across them:
+//   - add() of a vector identical to one in ANOTHER namespace inserts, and leaves
+//     that other entry's importance untouched;
+//   - deduplicate() never removes an entry whose only twin lives elsewhere;
+//   - counter-test: twins in the SAME namespace still collapse (write time and
+//     nightly), and a legacy "" entry is the owner's ("" and "owner" collapse).
+static uint32_t g_nsSeed = 1;
+static uint32_t nsRand() { g_nsSeed = g_nsSeed * 1664525u + 1013904223u; return g_nsSeed >> 8; }
+static std::vector<int8_t> nsVec(int dims, uint32_t salt) {
+  std::vector<int8_t> v((size_t)dims);
+  uint32_t x = salt * 2654435761u + 7u;
+  for (int i = 0; i < dims; i++) { x = x * 1103515245u + 12345u; v[(size_t)i] = (int8_t)((x >> 16) % 200 - 100); }
+  v[0] = 100;   // never the zero vector
+  return v;
+}
+static VecEntry nsEntry(const std::string& id, const std::string& ns, const std::vector<int8_t>& v,
+                        float imp) {
+  VecEntry e;
+  e.id = id; e.content = id; e.ns = ns; e.importance = imp; e.ttlHours = 0; e.vec = v;
+  return e;
+}
+
+static void test_dedup_never_crosses_namespaces() {
+  const int dims = 16;
+  const char* pool[] = {"owner", "tg:111", "tg:222", "web:guest"};
+  g_nsSeed = 20261019u;
+  for (int store = 0; store < 200; ++store) {
+    VectorMemory vm;
+    vm.configure(dims);
+    const int nNs = 2 + (int)(nsRand() % 2);
+    std::vector<std::string> spaces;
+    for (int i = 0; i < nNs; ++i) spaces.push_back(pool[(nsRand() + (uint32_t)i) % 4]);
+    // De-duplicate the namespace list itself (the pool draw can repeat).
+    std::vector<std::string> uniq;
+    for (auto& n : spaces) {
+      bool seen = false;
+      for (auto& u : uniq) seen = seen || u == n;
+      if (!seen) uniq.push_back(n);
+    }
+    if (uniq.size() < 2) uniq.push_back(uniq[0] == "owner" ? "tg:111" : "owner");
+    const int planted = 1 + (int)(nsRand() % 4);
+    for (int k = 0; k < planted; ++k) {
+      const std::vector<int8_t> v = nsVec(dims, (uint32_t)(store * 31 + k));
+      for (size_t n = 0; n < uniq.size(); ++n) {
+        const float imp = 0.2f + 0.1f * (float)n;
+        const bool inserted = vm.add(nsEntry("s" + std::to_string(k) + "n" + std::to_string(n),
+                                             uniq[n], v, imp));
+        TEST_ASSERT_TRUE_MESSAGE(inserted, "an identical vector in another namespace must insert");
+      }
+      // The first namespace's entry kept its own importance (no cross-ns bump).
+      bool found = false;
+      for (const auto& e : vm.getAll())
+        if (e.id == "s" + std::to_string(k) + "n0") {
+          found = true;
+          TEST_ASSERT_EQUAL_FLOAT(0.2f, e.importance);
+        }
+      TEST_ASSERT_TRUE(found);
+    }
+    const int before = vm.size();
+    TEST_ASSERT_EQUAL(planted * (int)uniq.size(), before);
+    TEST_ASSERT_EQUAL_MESSAGE(0, vm.deduplicate(), "nightly dedup removed a cross-namespace twin");
+    TEST_ASSERT_EQUAL(before, vm.size());
+    // Counter-test: a same-namespace twin is still caught at write time ...
+    const std::vector<int8_t> v0 = nsVec(dims, (uint32_t)(store * 31));
+    TEST_ASSERT_FALSE(vm.add(nsEntry("dup", uniq[0], v0, 0.9f)));
+    // ... and by the nightly pass when it slipped in (the restore path, dedup=false).
+    TEST_ASSERT_TRUE(vm.add(nsEntry("dup2", uniq[1], v0, 0.1f), /*dedup=*/false));
+    TEST_ASSERT_EQUAL(1, vm.deduplicate());
+  }
+  // A legacy unattributed entry ("") is the owner's: it collapses with "owner".
+  VectorMemory vm;
+  vm.configure(dims);
+  const std::vector<int8_t> v = nsVec(dims, 99);
+  TEST_ASSERT_TRUE(vm.add(nsEntry("legacy", "", v, 0.3f)));
+  TEST_ASSERT_FALSE(vm.add(nsEntry("own", "owner", v, 0.8f)));
+  TEST_ASSERT_EQUAL_FLOAT(0.8f, vm.getAll()[0].importance);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_mmr_diversifies_on_tie);
@@ -674,5 +753,6 @@ int main(int, char**) {
   RUN_TEST(test_empty_store_roundtrip);
   RUN_TEST(test_working_allocator_seam_routes_vectors);
   RUN_TEST(test_deserialize_rejects_width_mismatch_no_oob);
+  RUN_TEST(test_dedup_never_crosses_namespaces);
   return UNITY_END();
 }

@@ -307,6 +307,27 @@ void noteFireError(LoopRecord& l, bool ok, const std::string& error) {
   if (l.lastErr.empty()) l.lastErr = "cause not recorded";
 }
 
+bool breakerTrips(LoopRecord& l, int maxConsecFails, bool reserved) {
+  if ((int)l.consecFails < maxConsecFails) return false;
+  if (!reserved) return true;
+  l.consecFails = (uint8_t)(maxConsecFails > 1 ? maxConsecFails - 1 : 0);
+  return false;
+}
+
+bool reviveReservedLoop(LoopRecord& l, int maxConsecFails) {
+  bool changed = false;
+  if (!l.enabled && l.pauseReason == PauseReason::ConsecFails) {
+    l.enabled = true;
+    l.pauseReason = PauseReason::None;
+    changed = true;
+  }
+  if ((int)l.consecFails >= maxConsecFails) {
+    breakerTrips(l, maxConsecFails, /*reserved=*/true);
+    changed = true;
+  }
+  return changed;
+}
+
 void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec) {
   // Not a fire: firesToday / lastRun / repeat state stay untouched - only the
   // schedule slips. A 0 defer still moves strictly after now (isDue is <=).

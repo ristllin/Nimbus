@@ -19,6 +19,8 @@
 // (P7 substrate) as an additive field.
 namespace agent {
 
+namespace dream { struct NightReport; }   // dream.h - the night's outcome (lane M)
+
 enum class TurnSource : uint8_t { Owner = 0, Synthesis = 1, Loop = 2, Serial = 3 };
 
 // The machine slug of a turn's source for rows and logs: "owner" | "serial" |
@@ -84,6 +86,9 @@ struct DreamEndEv {
   int dedupedVectors = 0;  // removed by deduplicate in the maintenance phase
   uint32_t tokens = 0;     // real billed spend of the reflection turn (this turn's own)
   std::string cause;       // FireOutcome.error: the first cause when the turn failed
+  // Lane M: the whole night (outcome, cause, write counts, retry, streak). Borrowed,
+  // valid only during the hook call; renderDreamRow(*report) is the timeline row.
+  const dream::NightReport* report = nullptr;
 };
 // Mid-turn round prose ("thinking") from the head loop (Glass Box A4). Fired
 // once per round whose provider step produced non-tool text; the device

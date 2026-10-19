@@ -26,6 +26,13 @@ std::string stripSep(const std::string& v) {
 static std::string effNs(const std::string& ns) {
   return ns.empty() ? std::string(kOwnerNs) : ns;
 }
+// effNs(a) == effNs(b) without building a string: the dedup scans compare pairs in
+// a hot O(n^2) loop under the memory lock.
+static bool sameNs(const std::string& a, const std::string& b) {
+  const char* x = a.empty() ? kOwnerNs : a.c_str();
+  const char* y = b.empty() ? kOwnerNs : b.c_str();
+  return std::strcmp(x, y) == 0;
+}
 
 // v3.7.0: may this entry be seen by a reader allowed the given namespaces?
 // An EMPTY allow-list is unscoped (maintenance passes); an empty entry ns is
@@ -125,10 +132,12 @@ int VectorMemory::indexOf(const std::string& id) const {
   return -1;
 }
 
-int VectorMemory::findNearest(const std::vector<int8_t>& q, float& distOut) const {
+int VectorMemory::findNearest(const std::vector<int8_t>& q, const std::string& ns,
+                              float& distOut) const {
   int best = -1;
   float bestD = 2.0f;
   for (size_t i = 0; i < entries_.size(); i++) {
+    if (!sameNs(entries_[i].ns, ns)) continue;   // never compare across the data boundary
     float d = cosineRaw(q.data(), entries_[i].vec.data(), (size_t)dims_);
     if (d < bestD) { bestD = d; best = (int)i; }
   }
@@ -167,9 +176,12 @@ bool VectorMemory::add(const VecEntry& e, bool dedup) {
   lastDupSameNs_ = false;
   if ((int)e.vec.size() != dims_) return false;  // enforce consistent width
 
+  // Write-time dedup is NAMESPACE-SCOPED like eviction (CUM-223): a member's fact
+  // that happens to match one of the owner's is stored in the member's namespace,
+  // never skipped as a "duplicate" of an entry the member cannot recall.
   if (dedup && !entries_.empty()) {
     float d;
-    int near = findNearest(e.vec, d);
+    int near = findNearest(e.vec, e.ns, d);
     if (near >= 0 && d < kDuplicateThreshold) {
       // Dedup: skip the write, bump the existing entry's importance to the max.
       if (e.importance > entries_[near].importance)
@@ -504,6 +516,7 @@ int VectorMemory::deduplicate(int windowLimit) {
     if (dead[i]) continue;
     for (size_t j = i + 1; j < entries_.size(); j++) {
       if (dead[j]) continue;
+      if (!sameNs(entries_[i].ns, entries_[j].ns)) continue;   // twins in different namespaces both stay
       if (cosineRaw(entries_[i].vec.data(), entries_[j].vec.data(), (size_t)dims_) < kDuplicateThreshold) {
         // keep the higher-importance twin; mark the other dead
         size_t victim = entries_[i].importance >= entries_[j].importance ? j : i;

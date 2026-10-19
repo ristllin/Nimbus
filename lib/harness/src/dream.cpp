@@ -4,7 +4,12 @@
 #include "nimbus/mem_cap.h"     // utf8CapLen - UTF-8-safe row clip (prism B)
 #include "nimbus/orch/world.h"  // kConvOmittedNote - shared with assembleContext
 
+#include <ArduinoJson.h>
+
+#include <cctype>
+#include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 
 namespace agent {
 namespace dream {
@@ -47,10 +52,12 @@ LoopRecord reservedLoopRecord() {
 GateResult evaluateGate(const DreamGate& g, const GateInputs& in) {
   // Unsigned subtraction is millis()-wraparound-safe; lastTurnEndMs==0 makes
   // the elapsed time "since boot", so a freshly booted device waits out one
-  // quiet window before dreaming.
-  if ((uint32_t)(in.nowMs - in.lastTurnEndMs) < g.minQuietMs)
+  // quiet window before dreaming. Busy defers are bounded per night (maxDefers);
+  // the heap floor is not.
+  const bool busyCapped = in.defersTonight >= g.maxDefers;
+  if (!busyCapped && (uint32_t)(in.nowMs - in.lastTurnEndMs) < g.minQuietMs)
     return {g.deferSec, "recent-turn"};
-  if (g.requireNoJobs && in.activeJobs > 0) return {g.deferSec, "active-jobs"};
+  if (!busyCapped && g.requireNoJobs && in.activeJobs > 0) return {g.deferSec, "active-jobs"};
   if (in.freeHeap < g.minHeap) return {g.deferSec, "low-heap"};
   return {};
 }
@@ -234,7 +241,7 @@ std::string buildConversationWindow(const std::vector<EpisodicMessage>& msgs,
 
 std::string buildDreamInputs(const std::string& episodicDigest,
                              const std::string& scratchpadSummary,
-                             const MemStats& s) {
+                             const MemStats& s, bool memoryWritesDown) {
   std::string digest = episodicDigest;
   if (digest.size() > kDigestCapBytes) {  // defensive re-cap (callers may bypass the builder)
     digest.resize((size_t)nimbus::utf8CapLen(digest.c_str(), (int)digest.size(), (int)kDigestCapBytes));
@@ -264,6 +271,10 @@ std::string buildDreamInputs(const std::string& episodicDigest,
       "unresolved, flag it.\n"
       "Reply with an EMPTY string unless something genuinely needs the owner's "
       "attention - never send a routine status report.\n";
+  if (memoryWritesDown)
+    out +=
+        "(long-term memory writes are unavailable tonight - do not attempt "
+        "memory.write/search; do (b) and (c) only.)\n";
   out += "\n[MEMORY STATS]\n";
   out += stats;
   out += "\n";
@@ -275,6 +286,417 @@ std::string buildDreamInputs(const std::string& episodicDigest,
   out += "\n[YESTERDAY]\n";
   out += digest;
   return out;
+}
+
+// ---- the dream turn's surface (lane M) ---------------------------------------
+
+bool toolAllowed(const std::string& n) {
+  static const char* const kAllow[] = {"memory.write",  "memory.update",     "memory.search",
+                                       "memory.pin",    "memory.scratchpad", "memory.episodic"};
+  for (const char* a : kAllow)
+    if (n == a) return true;
+  return false;
+}
+
+int restrictTurn(nimbus::orch::Turn& t) {
+  const int n = (int)(t.device.size() + t.spawn.size() + t.await_.size() + t.session_ops.size());
+  t.device.clear();
+  t.spawn.clear();
+  t.await_.clear();
+  t.session_ops.clear();
+  return n;
+}
+
+// ---- outcome ------------------------------------------------------------------
+
+const char* outcomeSlug(DreamOutcome o) {
+  switch (o) {
+    case DreamOutcome::Ran:      return "ran";
+    case DreamOutcome::Skipped:  return "skipped";
+    case DreamOutcome::Deferred: return "deferred";
+    case DreamOutcome::Failed:   return "failed";
+    case DreamOutcome::Degraded: return "degraded";
+    case DreamOutcome::Starved:  return "starved";
+  }
+  return "ran";
+}
+
+static bool outcomeFromSlug(const std::string& s, DreamOutcome& out) {
+  for (uint8_t i = 0; i <= (uint8_t)DreamOutcome::Starved; ++i)
+    if (s == outcomeSlug((DreamOutcome)i)) {
+      out = (DreamOutcome)i;
+      return true;
+    }
+  return false;
+}
+
+namespace {
+// First match wins; the order matters (billing before rate limits: OpenAI says
+// "no credits" with a 429; a key error before the generic 4xx).
+struct CauseRule {
+  const char* slug;
+  const char* needles[4];
+};
+const CauseRule kCauseRules[] = {
+    {"low-memory", {"low memory", "out of memory", nullptr, nullptr}},
+    {"budget", {"budget:", nullptr, nullptr, nullptr}},
+    {"parse", {"parse:", "schema parse", nullptr, nullptr}},
+    {"billing", {"credit", "billing", "insufficient_quota", "funding_cap"}},
+    {"key", {"http 401", "http 403", "key", nullptr}},
+    {"rate-limit", {"http 429", "rate limit", "rate_limit", nullptr}},
+    {"timeout", {"timeout", "timed out", nullptr, nullptr}},
+    {"provider-5xx", {"http 5", nullptr, nullptr, nullptr}},
+    {"bad-request", {"http 4", nullptr, nullptr, nullptr}},
+    {"network", {"network", "connect", "no response", "noresp"}},
+};
+}  // namespace
+
+std::string causeOf(const std::string& error, bool deferred) {
+  if (deferred) return "low-memory";
+  if (error.empty()) return "network";
+  std::string e = error;
+  for (char& ch : e) ch = (char)std::tolower((unsigned char)ch);
+  for (const CauseRule& rule : kCauseRules)
+    for (const char* n : rule.needles)
+      if (n && e.find(n) != std::string::npos) return rule.slug;
+  return "other";
+}
+
+bool causeRetryable(const std::string& c) {
+  return c == "low-memory" || c == "timeout" || c == "network" || c == "rate-limit" ||
+         c == "provider-5xx";
+}
+
+// ---- state ----------------------------------------------------------------------
+
+std::string dumpDreamState(const DreamState& s) {
+  JsonDocument d;
+  d["v"] = 1;
+  d["maintDay"] = s.maintDay;
+  char hex[17];
+  snprintf(hex, sizeof hex, "%016" PRIx64, s.scrHash);
+  d["scrHash"] = hex;
+  d["attemptDay"] = s.attemptDay;
+  d["attempts"] = s.attemptsTonight;
+  d["streakDay"] = s.streakDay;
+  d["streak"] = s.streak;
+  d["last"] = outcomeSlug(s.lastOutcome);
+  d["cause"] = s.lastCause;
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+bool loadDreamState(const std::string& json, DreamState& out) {
+  JsonDocument d;
+  if (deserializeJson(d, json) != DeserializationError::Ok || !d.is<JsonObject>()) return false;
+  DreamState s;
+  s.maintDay = d["maintDay"] | 0u;
+  s.scrHash = strtoull(d["scrHash"] | "0", nullptr, 16);
+  s.attemptDay = d["attemptDay"] | 0u;
+  const unsigned att = d["attempts"] | 0u;
+  s.attemptsTonight = (uint8_t)(att > 255 ? 255 : att);
+  s.streakDay = d["streakDay"] | 0u;
+  const unsigned st = d["streak"] | 0u;
+  s.streak = (uint8_t)(st > 255 ? 255 : st);
+  if (!outcomeFromSlug(d["last"] | "ran", s.lastOutcome)) s.lastOutcome = DreamOutcome::Ran;
+  s.lastCause = d["cause"] | "";
+  if (s.lastCause.size() > 32) s.lastCause.resize(32);
+  out = s;
+  return true;
+}
+
+DreamState stateFromLegacyHash(const std::string& hex) {
+  DreamState s;
+  s.scrHash = hex.empty() ? 0 : strtoull(hex.c_str(), nullptr, 16);
+  return s;
+}
+
+// ---- the night ------------------------------------------------------------------
+
+MaintResult maintainVectors(nimbus::orch::VectorMemory& v, float decayFactor, uint32_t nowHours,
+                            int dedupWindow, const std::function<bool()>& persist) {
+  MaintResult m;
+  m.ran = true;
+  v.decayImportance(decayFactor);
+  m.pruned = v.pruneExpired(nowHours);
+  m.deduped = v.deduplicate(dedupWindow);
+  m.vectors = v.size();
+  m.persisted = persist ? persist() : false;
+  return m;
+}
+
+namespace {
+
+bool alertDue(uint8_t streak) {
+  if (streak < kAlertStreak) return false;
+  return streak == kAlertStreak || (streak - kAlertStreak) % kAlertEvery == 0;
+}
+
+// A night's outcome from what the turn returned and what its writes did.
+void classify(const nimbus::orch::FireOutcome& o, NightReport& r) {
+  if (o.deferred) {
+    r.outcome = DreamOutcome::Deferred;
+    r.cause = "low-memory";
+  } else if (!o.ok) {
+    r.outcome = DreamOutcome::Failed;
+    r.cause = causeOf(o.error, false);
+  } else if (r.ops.failed > 0) {
+    r.outcome = DreamOutcome::Degraded;   // ok only when every write landed
+    r.cause = "memory-writes-failed";
+  } else if (r.memoryWritesDown) {
+    r.outcome = DreamOutcome::Degraded;
+    r.cause = "memory-unavailable";
+  } else {
+    r.outcome = DreamOutcome::Ran;
+  }
+}
+
+// Retry tonight when the cause is transient, attempts remain and the window is open;
+// a defer that cannot retry any more is a starved night.
+void scheduleRetry(const NightClock& c, const DreamState& st, NightReport& r) {
+  const bool retryable = r.outcome == DreamOutcome::Deferred ||
+                         (r.outcome == DreamOutcome::Failed && causeRetryable(r.cause));
+  const uint32_t nextMin = (uint32_t)c.minuteOfDay + kDeferSec / 60u;
+  if (retryable && st.attemptsTonight < kMaxAttempts && nextMin < windowEndFor(c.slotMinute)) {
+    r.retryAfterSec = kDeferSec;
+    r.retryAtMinute = (uint16_t)nextMin;
+  } else if (r.outcome == DreamOutcome::Deferred) {
+    r.outcome = DreamOutcome::Starved;
+  }
+}
+
+// The streak moves once per night, when the night's outcome is final.
+void settleStreak(const NightClock& c, DreamState& st, NightReport& r) {
+  if (r.retryAfterSec == 0) {
+    if (r.outcome == DreamOutcome::Ran) {
+      st.streak = 0;
+    } else if (st.streakDay != c.localDay) {
+      st.streakDay = c.localDay;
+      if (st.streak < 255) st.streak++;
+      r.alert = alertDue(st.streak);
+    }
+  }
+  r.streak = st.streak;
+}
+
+void fingerprint(const NightClock& c, const NightReport& r, nimbus::orch::FireOutcome& o) {
+  if (!o.detail.empty()) return;
+  // Varies by day so the semantic-repeat guard never pauses dreaming for doing its
+  // job quietly (the guard still catches a stuck non-empty reply).
+  char fp[96];
+  snprintf(fp, sizeof fp, "(dream d%lu: %s a%u pruned=%d deduped=%d)",
+           (unsigned long)(c.epoch / 86400), outcomeSlug(r.outcome), (unsigned)r.attempt,
+           r.maint.pruned, r.maint.deduped);
+  o.detail = fp;
+}
+
+}  // namespace
+
+namespace {
+
+// Load the state, roll the per-night attempt counter, and run maintenance at most
+// once per local day (it decays importance, so it is not idempotent - which is what
+// makes a same-night retry of the reflection safe). A boot-relative clock would
+// corrupt every age, so maintenance waits for a synced one.
+DreamState openNight(const NightDeps& d, const NightClock& c, NightReport& r) {
+  DreamState st;
+  if (!d.loadState || !d.loadState(st)) st = DreamState{};
+  if (st.attemptDay != c.localDay) {
+    st.attemptDay = c.localDay;
+    st.attemptsTonight = 0;
+  }
+  if (c.synced && st.maintDay != c.localDay) {
+    if (d.maintain) r.maint = d.maintain();
+    st.maintDay = c.localDay;
+  } else {
+    r.maintDoneToday = c.synced;
+  }
+  return st;
+}
+
+// The reflection turn and what its writes did.
+nimbus::orch::FireOutcome reflect(const NightDeps& d, const std::string& inputs, NightReport& r) {
+  const nimbus::orch::MemOpCounters before = d.memOps ? d.memOps() : nimbus::orch::MemOpCounters{};
+  nimbus::orch::FireOutcome o;
+  if (d.injectTurn) {
+    o = d.injectTurn(inputs);
+  } else {
+    o.error = "no turn executor";
+  }
+  const nimbus::orch::MemOpCounters after = d.memOps ? d.memOps() : before;
+  r.ops = after - before;
+  r.tokens = o.tokens.total();
+  r.error = o.ok ? std::string() : o.error;
+  return o;
+}
+
+}  // namespace
+
+NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
+  NightResult res;
+  NightReport& r = res.report;
+  nimbus::orch::FireOutcome& o = res.fire;
+  auto save = [&](const DreamState& st) { return d.saveState ? d.saveState(st) : false; };
+
+  DreamState st = openNight(d, c, r);
+  const Yesterday y = d.yesterday ? d.yesterday() : Yesterday{};
+  const uint64_t hashBefore = d.scratchHash ? d.scratchHash() : 0;
+  if (skipReflection(y.empty, hashBefore, st.scrHash, force)) {
+    r.outcome = DreamOutcome::Skipped;
+    st.lastOutcome = r.outcome;
+    st.lastCause.clear();
+    r.streak = st.streak;
+    r.stateSaved = save(st);
+    o.ok = true;
+    fingerprint(c, r, o);
+    return res;
+  }
+
+  st.attemptsTonight++;
+  r.attempt = st.attemptsTonight;
+  save(st);   // a reboot mid-turn still counts the attempt
+
+  MemStats stats = d.stats ? d.stats() : MemStats{};
+  stats.pruned = r.maint.pruned;
+  stats.deduped = r.maint.deduped;
+  r.memoryWritesDown = d.embeddingsUp && !d.embeddingsUp();
+  const std::string scratch = d.scratchBlock ? d.scratchBlock() : std::string();
+  o = reflect(d, buildDreamInputs(y.digest, scratch, stats, r.memoryWritesDown), r);
+
+  classify(o, r);
+  scheduleRetry(c, st, r);
+  if (r.outcome == DreamOutcome::Ran || r.outcome == DreamOutcome::Degraded) {
+    const uint64_t post = d.scratchHash ? d.scratchHash() : hashBefore;
+    r.scratchChanged = post != hashBefore;
+    st.scrHash = post;   // tomorrow's quiet-skip baseline
+  }
+  settleStreak(c, st, r);
+  st.lastOutcome = r.outcome;
+  st.lastCause = r.cause;
+  r.stateSaved = save(st);
+  o.retryAfterSec = r.retryAfterSec;
+  fingerprint(c, r, o);
+  return res;
+}
+
+// ---- the row ----------------------------------------------------------------------
+
+namespace {
+
+// One clean line of at most `cap` bytes: control bytes and line breaks become spaces.
+std::string oneLine(const std::string& t, size_t cap) {
+  std::string out = replaceBreaks(t, " ");
+  for (char& ch : out)
+    if ((unsigned char)ch < 0x20 || ch == 0x7f) ch = ' ';
+  if (out.size() > cap) {
+    out.resize((size_t)nimbus::utf8CapLen(out.c_str(), (int)out.size(), (int)cap - 3));
+    out += "...";
+  }
+  return out;
+}
+
+std::string hhmm(uint16_t minuteOfDay) {
+  char b[8];
+  snprintf(b, sizeof b, "%02u:%02u", (unsigned)((minuteOfDay / 60) % 24), (unsigned)(minuteOfDay % 60));
+  return b;
+}
+
+std::string maintText(const NightReport& r) {
+  char b[96];
+  if (r.maint.ran)
+    snprintf(b, sizeof b, "maintenance pruned=%d deduped=%d%s", r.maint.pruned, r.maint.deduped,
+             r.maint.persisted ? "" : " (not saved)");
+  else if (r.maintDoneToday)
+    snprintf(b, sizeof b, "maintenance done earlier today");
+  else
+    snprintf(b, sizeof b, "maintenance skipped (clock not set)");
+  return b;
+}
+
+std::string writesText(const nimbus::orch::MemOpCounters& w) {
+  const uint32_t stored = w.added + w.updated;
+  const uint32_t tried = stored + w.dupSkipped + w.failed;
+  char b[96];
+  snprintf(b, sizeof b, "%u of %u memories stored (%u new, %u updated, %u failed)", (unsigned)stored,
+           (unsigned)tried, (unsigned)w.added, (unsigned)w.updated, (unsigned)w.failed);
+  return b;
+}
+
+std::string retryText(const NightReport& r) {
+  if (!r.retryAfterSec) return ", no retry tonight";
+  char b[48];
+  snprintf(b, sizeof b, ", retry %u of %u at %s", (unsigned)(r.attempt + 1), (unsigned)kMaxAttempts,
+           hhmm(r.retryAtMinute).c_str());
+  return b;
+}
+
+}  // namespace
+
+std::string renderDreamRow(const NightReport& r, size_t cap) {
+  std::string row = "Nightly dream ";
+  const std::string spent = "; spent " + std::to_string(r.tokens) + " tokens";
+  switch (r.outcome) {
+    case DreamOutcome::Ran:
+      row += "ok: " + writesText(r.ops) + (r.scratchChanged ? ", scratchpad groomed" : "") + "; " +
+             maintText(r) + spent;
+      break;
+    case DreamOutcome::Skipped:
+      row += "skipped (quiet day); " + maintText(r);
+      break;
+    case DreamOutcome::Deferred:
+      row += "deferred (low memory)" + retryText(r) + "; " + maintText(r);
+      break;
+    case DreamOutcome::Starved:
+      row += std::string("skipped tonight (") +
+             (r.cause == "low-memory" || r.cause == "low-heap" ? "low memory" : "device busy") +
+             " after " + std::to_string(r.attempt) + " tries); " + maintText(r);
+      break;
+    case DreamOutcome::Failed:
+      row += "FAILED (" + r.cause + (r.error.empty() ? "" : ": " + oneLine(r.error, 72)) + ")" +
+             retryText(r) + "; " + writesText(r.ops) + spent + "; " + maintText(r);
+      break;
+    case DreamOutcome::Degraded:
+      row += std::string("degraded (") +
+             (r.cause == "memory-unavailable" ? "memory unavailable" : "memory writes failed") +
+             "): " + writesText(r.ops) + "; " + maintText(r) + spent;
+      break;
+  }
+  if (!r.stateSaved) row += "; state not saved";
+  if (row.size() > cap) {
+    row.resize((size_t)nimbus::utf8CapLen(row.c_str(), (int)row.size(), (int)cap - 3));
+    row += "...";
+  }
+  return row;
+}
+
+std::string streakAlertText(const NightReport& r) {
+  const char* why = "it could not finish";
+  if (r.cause == "low-memory") why = "the device was low on memory";
+  else if (r.cause == "timeout" || r.cause == "network" || r.cause == "provider-5xx")
+    why = "the provider could not be reached";
+  else if (r.cause == "rate-limit") why = "the provider was rate limiting";
+  else if (r.cause == "billing") why = "the provider account is out of credit";
+  else if (r.cause == "key") why = "the provider key was rejected";
+  else if (r.cause == "budget") why = "the monthly token budget is used up";
+  else if (r.cause == "memory-writes-failed" || r.cause == "memory-unavailable")
+    why = "memories could not be saved";
+  return "Nightly memory upkeep has not worked for " + std::to_string(r.streak) +
+         " nights in a row (" + why + "). It keeps trying each night. To pause it, send "
+         "/loop off dream.";
+}
+
+uint16_t windowEndFor(uint16_t slotMinute) {
+  const uint32_t end = (uint32_t)slotMinute + (kWindowEndMinute - kDefaultMinuteOfDay);
+  return (uint16_t)(end > 1439u ? 1439u : end);
+}
+
+uint32_t secondsToNextSlot(const NightClock& c, uint16_t slot) {
+  uint32_t mins = (1440u + slot - (c.minuteOfDay % 1440u)) % 1440u;
+  if (mins == 0) mins = 1440u;
+  const uint32_t secs = mins * 60u;
+  const uint32_t intoMinute = (uint32_t)(c.epoch % 60u);
+  return secs > intoMinute ? secs - intoMinute : secs;
 }
 
 }  // namespace dream

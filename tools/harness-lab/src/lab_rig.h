@@ -154,12 +154,17 @@ class LabRig {
   }
 
   // An unattended turn (a routine firing, or the nightly dream stage).
+  // loopId "dream" runs it as the reserved dream (memory-only surface).
   orch::FireOutcome scheduled(const std::string& chatId, const std::string& prompt,
-                              const std::string& name, bool quietOk = false) {
+                              const std::string& name, bool quietOk = false,
+                              const std::string& loopId = "") {
     cur_ = TurnRecord{};
     cur_.chatId = chatId;
     cur_.userText = prompt;
-    auto r = eng_->injectScheduledTurn(chatId, prompt, name, "", quietOk);
+    auto r = eng_->injectScheduledTurn(chatId, prompt, name, loopId, quietOk);
+    cur_.host = lastHost_;
+    cur_.tokensIn = r.tokens.promptTokens;
+    cur_.tokensOut = r.tokens.completionTokens;
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     cur_.ok = r.ok;
     turns_.push_back(cur_);
@@ -179,6 +184,7 @@ class LabRig {
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
   agent::JobEngine& jobs() { return *jobs_; }
+  const orch::MemOpCounters& memOps() const { return memOps_; }
   orch::EpisodicStore& episodic() { return *epi_; }
   // The settings-storage state the device.status stand-in reports (L19-9),
   // through the same portable builder the device uses. Fresh by default; a
@@ -202,6 +208,7 @@ class LabRig {
 
   bool hostAvailable(const std::string& h) const { return !env_.providerKey(h).empty(); }
   const Options& options() const { return opt_; }
+  const Env& env() const { return env_; }
 
   // The model a host's head and subs request: an override, else the lab default.
   std::string modelFor(const std::string& h) const {
@@ -272,6 +279,7 @@ class LabRig {
     mc.scratch = &scratch_;
     mc.cfg = &memCfg_;
     mc.episodic = epi_.get();
+    mc.ops = &memOps_;   // what memory writes did (the dream's honest outcome)
     mc.nowHours = [] {
       return (uint32_t)(std::chrono::duration_cast<std::chrono::hours>(
                             std::chrono::system_clock::now().time_since_epoch())
@@ -598,6 +606,9 @@ class LabRig {
       return orch::principalForRole(chat, role());
     };
     d.apply.setModelMemory = [this](const std::string&, const std::string& m) { memory_ = m; return true; };
+    // The orch_turn mem_write[] / mem_query[] fields dispatch through the same
+    // registry as the mid-turn tools, as on the device (a single-shot head, Z.ai,
+    // can store memories only this way) - wired inside wireTurnFields.
     wireTurnFields(d.apply);
 
     // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
@@ -713,6 +724,7 @@ class LabRig {
 
   orch::VectorMemory vec_;
   orch::Scratchpad   scratch_;
+  orch::MemOpCounters memOps_;
   orch::MemConfig    memCfg_;
   std::unique_ptr<orch::EpisodicStore> epi_;
   orch::ToolRegistry reg_;

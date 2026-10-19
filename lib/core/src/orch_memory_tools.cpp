@@ -876,10 +876,27 @@ ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
 
 }  // namespace
 
+// Count what a write or update did (MemoryContext::ops; no-op when unbound). The
+// result's own words say which way it went: doWrite answers "stored memory <id>" or
+// "duplicate of ..."; doUpdate succeeds only once the new wording is stored.
+static ToolResult countWrite(MemOpCounters* ops, ToolResult r) {
+  if (!ops) return r;
+  if (!r.success) ops->failed++;
+  else if (r.output.rfind("duplicate", 0) == 0) ops->dupSkipped++;
+  else ops->added++;
+  return r;
+}
+static ToolResult countUpdate(MemOpCounters* ops, ToolResult r) {
+  if (ops) (r.success ? ops->updated : ops->failed)++;
+  return r;
+}
+
 void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
   reg.add("memory.write",
           "Store a fact in long-term associative memory so you can recall it later.",
-          [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) { return doWrite(ctx, a, who); },
+          [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+            return countWrite(ctx.ops, doWrite(ctx, a, who));
+          },
           R"({"type":"object","properties":{"content":{"type":"string"},)"
           R"("importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]},)"
@@ -893,7 +910,9 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
 
   reg.add("memory.update",
           "Update a fact that CHANGED: give the new 'content' plus a short description of the 'old' fact (or its id). The closest matching memory is removed and the new one stored, so you don't leave a stale duplicate. Prefer this over memory.write when a preference/detail changes.",
-          [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) { return doUpdate(ctx, a, who); },
+          [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+            return countUpdate(ctx.ops, doUpdate(ctx, a, who));
+          },
           R"({"type":"object","properties":{"content":{"type":"string"},"old":{"type":"string"},)"
           R"("id":{"type":"string"},"importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]}},"required":["content"]})");

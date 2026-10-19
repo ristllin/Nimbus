@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+#include <functional>
+#include <string>
+
 #include "nimbus/harness/dream.h"   // the pure core: gate/prompt/reserved identity
 #include "nimbus/harness/hooks.h"   // DreamStartEv/DreamEndEv slots
 #include "nimbus/orch/loops.h"      // LoopFireRequest / FireOutcome / LoopRecord
@@ -9,20 +12,25 @@
 // (lib/harness/dream.h). Runs entirely on tg_poll via the Local Loops
 // scheduler: the reserved "dream" loop record (ensured by main.cpp with
 // loops::ensureLoop) fires through here instead of the plain scheduled-turn
-// path. Phase 1 (always): non-LLM memory maintenance under memory::Lock -
-// vector decay / TTL-prune / dedup + persist. Phase 2: one ordinary
-// injectScheduledTurn whose inputs are buildDreamInputs(yesterday's episodic
-// digest + scratchpad + memory stats) - the existing turn contract
-// (mem_write/mem_query/scratchpad ops) is the dream API, so every
-// scheduled-turn refusal rail and LoopCap applies unchanged.
+// path. The night itself is agent::dream::runNight (host-tested); this file only
+// binds its seams: maintenance under memory::Lock (once per local day), the
+// owner's day from the episodic store, the scratchpad, the memory write counters,
+// one quiet, memory-only injectScheduledTurn, and the dream state in
+// /data/dream.json (LittleFS; the legacy NVS baseline is read once, never written).
 namespace agent {
 namespace dream {
 
-// Wire the lifecycle hooks (onDreamStart/onDreamEnd; other slots ignored) and
-// device tuning. Call once from orchestratorBegin (Orchestrator mode only).
-void begin(const agent::Hooks& hooks);
+// The owner message for a failing streak (main.cpp: the first allowed Telegram chat).
+using AlertSink = std::function<void(const std::string& text)>;
 
-// Feed the idle gate's quiet clock - called from the engine's onTurnEnd hook.
+// Wire the lifecycle hooks (onDreamStart/onDreamEnd; other slots ignored), the
+// streak alert sink and device tuning. Call once from orchestratorBegin
+// (Orchestrator mode only).
+void begin(const agent::Hooks& hooks, AlertSink alert);
+
+// Feed the idle gate's quiet clock - called from the engine's onTurnEnd hook. A
+// pending streak alert goes out here, when a turn of the owner's ends (never from
+// the night itself).
 void noteTurnEnd(uint32_t nowMs);
 
 // Local Loops pre-fire gate (loops::setFireGate): 0 => idle, fire; else defer

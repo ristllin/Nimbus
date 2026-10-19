@@ -21,6 +21,7 @@
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 #include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
 
+#include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
@@ -245,6 +246,17 @@ std::string convMapSet(std::string raw, const std::string& chat,
 TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) {}
 
 void TurnEngine::deliver(const std::string& chatId, const std::string& text) {
+  // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
+  // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
+  // (the nightly dream, the post-update awareness turn) has nobody waiting for it,
+  // so its notices are held: the owner was being woken at 03:30 by "That didn't
+  // finish ... ask again to retry" for a turn nobody asked for. Its outcome is
+  // recorded where the owner reads it later (the dream row, FireOutcome.error).
+  if (holdingNotices()) {
+    ++quietNoticesHeld_;
+    hlog::logf("quiet turn: notice held, not sent (%.96s)", text.c_str());
+    return;
+  }
   if (d_.deliver) d_.deliver(chatId, text);
 }
 
@@ -316,16 +328,22 @@ std::string TurnEngine::refusedBlock(const std::string& notes, bool mayHaveRun) 
          "have run on its provider - do NOT spawn it again unless the owner asks.)\n" + notes;
 }
 
-std::string TurnEngine::takePendingMemResults() {
-  if (pendingMemResults_.empty()) return "";
+std::string TurnEngine::takePendingMemResults(const std::string& chatId) {
+  // Per chat (lane M): the results belong to the chat (and so the principal) whose
+  // turn ran the mem_query. An engine-global slot handed the owner's memory search
+  // results to whichever chat spoke next - a member's or a guest's turn included.
+  auto it = pendingMemResults_.find(chatId);
+  if (it == pendingMemResults_.end()) return "";
+  const std::string body = std::move(it->second);
+  pendingMemResults_.erase(it);
+  if (body.empty()) return "";
   // BACKGROUND framing (owner field bug 2026-07-16): this block used to lead the
   // turn input with no do-not-latch instruction - the owner sent "try now?" (about
   // Telegram) and the model answered about the injected memory results instead.
   std::string s = std::string("\n[MEMORY RESULTS] (background: outcomes of YOUR memory ops "
                               "from last turn - reference material only. The owner has NOT "
                               "seen this and is NOT asking about it; answer the [USER] "
-                              "message below on ITS topic.)\n") + pendingMemResults_;
-  pendingMemResults_.clear();
+                              "message below on ITS topic.)\n") + body;
   return s;
 }
 
@@ -648,6 +666,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                  return telegram ? s.name == "files.send" : isTelegramOnlyTool(s.name);
                                }),
                 specs.end());
+  // The nightly dream reads and writes memory, nothing else (lane M): no files,
+  // sessions, web, routines or replies at 03:30. The same `specs` feed the prompt's
+  // tool list and the loop's callable set, and the dispatch below refuses any other
+  // name the model calls anyway.
+  const bool memoryOnly = dreamTurn_;
+  if (memoryOnly)
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [](const orch::ToolRegistry::Spec& s) {
+                                 return !dream::toolAllowed(s.name);
+                               }),
+                specs.end());
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
   // allowed for the task), so the model must be known when the prompt is sized.
@@ -794,7 +823,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.onStepError = [this](const std::string& h, const std::string& e) {
       facts().chain.note(h, e);
     };
-    headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho](const orch::HeadToolCall& call)
+    headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho, memoryOnly](const orch::HeadToolCall& call)
         -> orch::HeadToolResult {
       if (d_.hooks.onToolCall) d_.hooks.onToolCall(call);   // observer-only
       orch::HeadToolResult r;
@@ -809,6 +838,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       // Resolve the advertised (sanitized) name back to the registry name.
       auto it = nameMap->find(call.name);
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
+      // A memory-only turn (the dream) never runs a tool outside its allowlist, even
+      // one the model names without it being advertised.
+      if (memoryOnly && !dream::toolAllowed(regName)) {
+        r.isError = true;
+        r.output = regName + " is not available in this background turn (memory tools only)";
+        hlog::logf("dream: refused tool %s (memory tools only)", regName.c_str());
+        return done(r);
+      }
       // CUM-536: a turn carrying an unverified connector result stores nothing in
       // long-term memory (unverifiedStoreRefusal).
       if (unverifiedTurn_) {
@@ -1135,8 +1172,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           const providers::FabricSwitch& sw = providers::lastFabricSwitch();
           const std::string warn = "\xE2\x9A\xA0\xEF\xB8\x8F ";
           if (sw.kind == orch::StepErr::Billing) {
-            if (orch::billingNoticeDue(from.c_str()))
+            // Lane M x lane K: a quiet background turn holds its notices (the
+            // deliver below), so it must not consume the one-notice latch either -
+            // the owner hears of this billing episode from the next seam that can
+            // actually say it (an attended turn, the embedding seam).
+            if (holdingNotices()) {
+              ++quietNoticesHeld_;
+              hlog::logf("quiet turn: notice held, not sent (%.96s)",
+                         (warn + orch::billingNotice(from, sw.httpStatus, to)).c_str());
+            } else if (orch::billingNoticeDue(from.c_str())) {
               deliver(chatId, warn + orch::billingNotice(from, sw.httpStatus, to));
+            }
           } else if (!sw.parkedStart) {
             deliver(chatId, warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) +
                                 " - switching to " + to + ". Your progress this turn carries over.");
@@ -1391,7 +1437,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.quietFallback       = quietTurn_;
   st.toolRepliedThisTurn = toolReplied_;
   st.riskNote            = riskNote_;
-  st.pendingMemResults   = &pendingMemResults_;
+  st.pendingMemResults   = &pendingMemResults_[chatId];   // this chat's next turn only
   st.unverifiedConnector = unverifiedTurn_;
   st.spawnAttempted      = pseudo->calls > 0;
   // Every spawn that does not start reaches the head's next turn as a
@@ -1402,7 +1448,18 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   };
   st.claims              = &claims_;
   bool spawned = false;
+  if (memoryOnly) {
+    const int dropped = dream::restrictTurn(turn);
+    if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
+  }
   agent::applyTurn(turn, chatId, d_.apply, st, spawned);
+  // Bounded: a chat that never speaks again must not pin its parked results forever.
+  if (pendingMemResults_[chatId].empty()) pendingMemResults_.erase(chatId);
+  while (pendingMemResults_.size() > kPendingMemChats) {
+    auto victim = pendingMemResults_.begin();
+    if (victim->first == chatId) ++victim;
+    pendingMemResults_.erase(victim);
+  }
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
   // Lane L: whether this turn put anything in front of the owner (the
@@ -1459,7 +1516,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   const std::string ownerRaw = d_.jobs->ownerResultsText();
   std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
-  std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
     "running - see [ACTIVE SESSIONS]). There is no new user message. "
     "Synthesize their results for the owner in reply, and fold anything worth keeping "
@@ -1556,7 +1613,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
       loopHint += " reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram"
                   " chat, never for answering this one.";
   }
-  std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
@@ -1615,6 +1672,12 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "for yourself and it has now retired (it will not fire again; set another with "
         "wakeup.set if the work needs one). There is no new owner message. Your note "
         "when you set it:\n\n"
+    : quietOk
+      // A quiet loop (the dream) succeeds by saying nothing: telling it to "reply to
+      // the owner" contradicted its own instructions (lane M).
+      ? "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
+        "There is no new owner message. Do the task now; reply ONLY if the owner must see "
+        "something - an empty reply sends nothing.\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
         "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
@@ -1629,12 +1692,18 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
           ? "\n\n(Your reply is delivered to " + std::string(deliveryPlace(target)) +
                 ". Do not send a second copy over another messaging channel.)"
           : std::string();
-  std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(target) + takeSpawnNotes(target) + buildDynamicContext() +
                        preamble + prompt + where;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
+  dreamTurn_ = dream::isReserved(loopId);
+  // This fire reports its OWN spend and cause: a turn that fails before any billed
+  // round must not carry the previous turn's tokens into the loop caps and the dream
+  // row (the 18 Oct dream reported 37,771 tokens it never spent).
+  lastTurnUsage_ = {};
   o.ok = runTurn(inputs, target, prompt, telegram);
   scheduledTurn_ = false;
   quietTurn_ = false;
+  dreamTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
   loopName_.clear();
