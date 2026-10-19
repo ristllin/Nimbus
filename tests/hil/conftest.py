@@ -15,6 +15,7 @@ modules reference them.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -30,15 +31,11 @@ from redact import scrub  # noqa: E402
 from secrets import Secrets, SecretsUnavailable  # noqa: E402
 
 HARDWARE_MARKERS = ("hil", "net", "agent", "audio", "destructive")
-# Credentials some legs read straight from the environment: scrubbed from every test
-# report even when no Secret was ever built from them.
-SECRET_ENV = (
-    "NIMBUS_TEST_TG_TOKEN",
-    "NIMBUS_TEST_TG_CHAT",
-    "NIMBUS_TEST_STA_PASS",
-    "NIMBUS_TEST_STA_PASS2",
-    "NIMBUS_TEST_TOKEN",
-)
+# Environment variables whose value is a credential (NIMBUS_TEST_TG_TOKEN,
+# NIMBUS_TEST_STA_PASS2, NIMBUS_LINEAR_MCP_TOKEN, ANTHROPIC_API_KEY, GITHUB_PAT, any
+# *_CHAT ...): some legs read them straight from os.environ, so their values are
+# scrubbed from every report even when no Secret was ever built from them.
+SECRET_ENV_NAME = re.compile(r"(?:^|_)(?:TOKEN|KEY|SECRET|PASS|PASSWORD|PSK|CHAT|AUTH|PAT|CRED)\d*(?:_|$)")
 GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered first - F11/F12 brick)"
 
 # ---- CUM-141: mid-run console-wedge detection + in-place auto-recovery ------
@@ -49,6 +46,26 @@ GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered fi
 # wedged and every remaining hardware test FAILS FAST with a clear marker instead
 # of each burning a full read timeout (the 58-cascade this replaces).
 from wedge_guard import WedgeSentinel, is_wedge_candidate as _is_wedge_candidate  # noqa: E402
+
+
+def env_secrets() -> list:
+    """The current values of every credential-named environment variable."""
+    return [value for name, value in os.environ.items() if SECRET_ENV_NAME.search(name.upper())]
+
+
+class _ScrubbedStream:
+    """sys.stdout / sys.stderr while pytest does not capture output (``-s``): a
+    print reaches the terminal at once, before any report exists, so each write is
+    scrubbed on the way out. Everything else is the wrapped stream's."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        return self._stream.write(scrub(text, env_secrets()))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 # ---- markers (registered here AND in pytest.ini; belt + suspenders) --------
@@ -67,6 +84,16 @@ def pytest_configure(config: "pytest.Config") -> None:
         config.addinivalue_line("markers", f"{name}: {desc}")
     # One wedge sentinel per session, reachable from the runtest hooks below.
     config._nimbus_wedge = WedgeSentinel(enabled=not config.getoption("--no-wedge-recovery"))
+    # Live output (-s, or tee-sys) is printed before a report exists: scrub it too.
+    if config.getoption("capture", "fd") in ("no", "tee-sys") and not isinstance(sys.stdout, _ScrubbedStream):
+        config._nimbus_streams = (sys.stdout, sys.stderr)
+        sys.stdout, sys.stderr = _ScrubbedStream(sys.stdout), _ScrubbedStream(sys.stderr)
+
+
+def pytest_unconfigure(config: "pytest.Config") -> None:
+    streams = getattr(config, "_nimbus_streams", None)
+    if streams:
+        sys.stdout, sys.stderr = streams
 
 
 # ---- CLI options -----------------------------------------------------------
@@ -145,18 +172,26 @@ def pytest_runtest_setup(item: "pytest.Item") -> None:
 
 def scrub_report(report) -> None:
     """Replace every known secret value in a test report with its redacted form
-    before pytest prints it: the traceback text, a skip reason, and the captured
-    output sections. Repr redaction (redact.Secret) cannot reach a value an f-string
-    already copied into a URL, a library error quoting that URL, or pytest's
-    character diff of a failed string comparison; this does. A report with nothing
-    to scrub is left exactly as pytest built it."""
-    extra = [os.environ.get(name, "") for name in SECRET_ENV]
+    before pytest prints it: the traceback text (cut pieces too), a skip reason,
+    and the captured output sections. Repr redaction (redact.Secret) cannot reach a
+    value an f-string already copied into a URL, a library error quoting that URL,
+    or pytest's character diff of a failed string comparison; this does. A report
+    with nothing to scrub is left exactly as pytest built it. Fails closed: if
+    scrubbing itself fails, the report text is withheld rather than printed raw."""
+    try:
+        _scrub_report_text(report, env_secrets())
+    except Exception as exc:  # noqa: BLE001 - never print an unscrubbed report
+        report.longrepr = f"[conftest] report withheld: scrubbing it for secrets failed ({type(exc).__name__})"
+        report.sections = []
+
+
+def _scrub_report_text(report, extra: list) -> None:
     longrepr = report.longrepr
     if isinstance(longrepr, tuple) and len(longrepr) == 3:  # a skip: (path, line, reason)
         report.longrepr = (longrepr[0], longrepr[1], scrub(str(longrepr[2]), extra))
     elif longrepr is not None:
         text = str(longrepr)
-        clean = scrub(text, extra)
+        clean = scrub(text, extra, fragments=True)
         if clean != text:
             report.longrepr = clean
     report.sections = [(title, scrub(body, extra)) for title, body in report.sections]

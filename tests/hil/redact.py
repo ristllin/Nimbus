@@ -13,8 +13,8 @@ values, so HTTP, serial and URL code needs no change.
 it), so a string built that way, a library error that quotes such a URL, or pytest's
 character diff for a failed ``assert secret == other`` would carry the value past
 ``repr``. The second layer covers those: every ``Secret`` remembers its value
-(``remember``), and the HIL conftest runs each test report through ``scrub`` before
-pytest prints it.
+(``remember``), and the HIL conftest runs each test report, and live output when
+pytest does not capture it (``-s``), through ``scrub`` before it is printed.
 """
 
 from __future__ import annotations
@@ -24,10 +24,13 @@ from typing import FrozenSet, Iterable, Set
 
 SHOW_TAIL = 4  # the most characters a redacted repr ever shows
 SHOW_TAIL_MIN_LEN = 12  # shorter values show no characters at all
-SCRUB_MIN_LEN = 8  # shorter values are not scrubbed from text (too likely to hit other words)
-# A run of this many characters copied from a secret is masked even when the value is
-# cut: pytest shortens a long string to "prefix...suffix" in an assertion summary.
+SCRUB_MIN_LEN = 6  # shorter values are not scrubbed from text (too likely to hit other words)
+# A run of FRAGMENT characters copied from a secret of FRAGMENT_MIN_LEN or more is
+# masked even when the value is cut: pytest shortens a long string to
+# "prefix...suffix" in an assertion summary. Shorter values (a chat id) only match
+# whole, so a stray number in a log is never masked by accident.
 FRAGMENT = 6
+FRAGMENT_MIN_LEN = 12
 
 _known: Set[str] = set()  # every secret value long enough to scrub, for scrub()
 
@@ -55,11 +58,12 @@ def remember(value: object) -> None:
 
 @lru_cache(maxsize=8)
 def _fragments(values: FrozenSet[str]) -> FrozenSet[str]:
-    """Every FRAGMENT-long run of the values that can be cut mid-string. A URL is
-    left out: its runs ("https:", "/api/v") would mask every URL in a report."""
+    """Every FRAGMENT-long run of the values long enough to be cut mid-string. A
+    URL is left out: its runs ("https:", "/api/v") would mask every URL in a
+    report."""
     out: Set[str] = set()
     for v in values:
-        if "://" not in v:
+        if len(v) >= FRAGMENT_MIN_LEN and "://" not in v:
             out.update(v[i : i + FRAGMENT] for i in range(len(v) - FRAGMENT + 1))
     return frozenset(out)
 
@@ -67,6 +71,8 @@ def _fragments(values: FrozenSet[str]) -> FrozenSet[str]:
 def _mask_fragments(text: str, fragments: FrozenSet[str]) -> str:
     """Replace each stretch of ``text`` made of overlapping secret runs with
     ``<secret>``."""
+    if not fragments:
+        return text
     out, i = [], 0
     while i < len(text):
         if text[i : i + FRAGMENT] not in fragments:
@@ -81,17 +87,18 @@ def _mask_fragments(text: str, fragments: FrozenSet[str]) -> str:
     return "".join(out)
 
 
-def scrub(text: str, extra: Iterable[str] = ()) -> str:
+def scrub(text: str, extra: Iterable[str] = (), fragments: bool = False) -> str:
     """``text`` with every remembered secret value, and every value in ``extra``,
     replaced by its redacted form (longest first, so a value containing another is
-    replaced whole), then any leftover cut piece of one (FRAGMENT characters or
-    more) masked."""
+    replaced whole). With ``fragments``, also mask any leftover cut piece of a long
+    value (FRAGMENT characters or more): pytest's own reprs cut strings, so a
+    traceback needs it; printed output carries values whole."""
     values = set(_known)
     values.update(v for v in map(str, extra) if len(v) >= SCRUB_MIN_LEN)
     for value in sorted(values, key=len, reverse=True):
         if value in text:
             text = text.replace(value, redact(value))
-    return _mask_fragments(text, _fragments(frozenset(values)))
+    return _mask_fragments(text, _fragments(frozenset(values))) if fragments else text
 
 
 class Secret(str):

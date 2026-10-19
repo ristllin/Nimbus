@@ -27,6 +27,7 @@ import string
 import subprocess
 import sys
 import textwrap
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -621,7 +622,23 @@ _LEAK_CONFTEST = textwrap.dedent(
     _spec = importlib.util.spec_from_file_location("hil_conftest", os.path.join(HIL, "conftest.py"))
     hil_conftest = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(hil_conftest)
+    pytest_addoption = hil_conftest.pytest_addoption
+    pytest_configure = hil_conftest.pytest_configure
+    pytest_unconfigure = hil_conftest.pytest_unconfigure
     pytest_runtest_makereport = hil_conftest.pytest_runtest_makereport
+    """
+)
+
+_LIVE_PROBE = textwrap.dedent(
+    """
+    import os
+
+    from redact import Secret
+
+
+    def test_prints_live():
+        print("bench bot", str(Secret(os.environ["NIMBUS_TEST_TG_TOKEN"])))
+        print("raw env", os.environ["NIMBUS_LINEAR_MCP_TOKEN"])
     """
 )
 
@@ -694,6 +711,76 @@ def test_a_failing_leg_never_prints_the_bot(tmp_path):
     for i in range(len(token) - SHOW_TAIL):
         assert token[i : i + SHOW_TAIL + 1] not in out, "the token reached the test output"
     assert chat not in out, "the chat id reached the test output"
+
+
+@pytest.mark.host
+def test_live_output_under_dash_s_is_scrubbed(tmp_path):
+    """With -s a print reaches the terminal before any report exists (the lane A
+    fill legs run that way): the conftest scrubs stdout itself."""
+    token, _ = _fake_values()
+    linear = token.lower()[::-1]  # a second fake, read raw from a credential-named variable
+    (tmp_path / "conftest.py").write_text(_LEAK_CONFTEST, encoding="utf-8")
+    (tmp_path / "test_live.py").write_text(_LIVE_PROBE, encoding="utf-8")
+    env = dict(os.environ, N2_HIL_DIR=str(HIL_DIR), NIMBUS_TEST_TG_TOKEN=token, NIMBUS_LINEAR_MCP_TOKEN=linear)
+    argv = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-s", "-q", str(tmp_path)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=60, cwd=tmp_path, env=env)
+    out = r.stdout + r.stderr
+    assert "1 passed" in out and "bench bot <secret ...wxyz>" in out, out[-2000:]
+    assert token not in out and linear not in out and linear[:-SHOW_TAIL] not in out
+
+
+@pytest.mark.host
+@pytest.mark.parametrize(
+    "name",
+    [
+        "NIMBUS_TEST_TG_TOKEN",
+        "NIMBUS_TEST_TG_CHAT",
+        "NIMBUS_TEST_OWNER_CHAT",
+        "NIMBUS_TEST_STA_PASS",
+        "NIMBUS_TEST_STA_PASS2",
+        "NIMBUS_TEST_TOKEN",
+        "NIMBUS_LINEAR_MCP_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "GITHUB_PAT",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "nimbus_test_tg_token",
+    ],
+)
+def test_credential_env_names_are_scrubbed(name):
+    assert conftest.SECRET_ENV_NAME.search(name.upper()), name
+
+
+@pytest.mark.host
+@pytest.mark.parametrize(
+    "name", ["PATH", "HOME", "NIMBUS_TEST_IP", "NIMBUS_TEST_STA_SSID", "NIMBUS_PORT", "KEYCHAIN_HOME", "PATHEXT"]
+)
+def test_other_env_names_are_left_alone(name):
+    assert not conftest.SECRET_ENV_NAME.search(name), name
+
+
+@pytest.mark.host
+def test_short_secrets_scrub_whole_and_numbers_are_not_masked_by_accident():
+    short = "Q" + uuid.uuid4().hex[:6]  # 7 characters, unique per run
+    assert scrub(f"pass={short} end") == f"pass={short} end"  # not a Secret yet: left alone
+    Secret(short)  # remembered, scrubbed whole
+    assert scrub(f"pass={short} end") == "pass=<secret> end"
+    assert scrub(f"pass={short[:5]} end") == f"pass={short[:5]} end"
+    chat = str(uuid.uuid4().int)[:10]
+    Secret(chat)  # a chat id: whole only, never by fragment
+    assert scrub(f"uptime={chat[:8]} ms", fragments=True) == f"uptime={chat[:8]} ms"
+    assert scrub(f"chat {chat}", fragments=True) == "chat <secret>"
+
+
+@pytest.mark.host
+def test_scrub_report_fails_closed(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("bad")
+
+    monkeypatch.setattr(conftest, "scrub", boom)
+    report = SimpleNamespace(longrepr="E   token in here", sections=[("Captured stdout call", "token")])
+    conftest.scrub_report(report)
+    assert "report withheld" in report.longrepr and "token" not in report.longrepr
+    assert report.sections == []
 
 
 @pytest.mark.host
