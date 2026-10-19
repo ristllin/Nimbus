@@ -69,7 +69,10 @@ The chosen curve (chemistry or your custom points) is what turns voltage into th
 percent shown on screen, over the web page, and to the assistant. The capacity and
 the learned health set the runtime estimate. Health is relative: the first full
 discharge sets the baseline, and later discharges that traverse the same voltage
-band faster read as reduced capacity.
+band faster read as reduced capacity. It is an estimate, and the web page labels it
+so (Health (estimate)): a device that rarely runs down learns slowly and can read
+low. It never blocks a firmware update; a low reading only adds a note to keep the
+device on power while it updates.
 
 The discharge-rate and health learning are tuned for Li-ion packs. On a LiFePO4
 pack the **percent** follows the LiFePO4 curve correctly, but treat the runtime and

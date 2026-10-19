@@ -31,7 +31,7 @@ Every typed config value below is an NVS key in that namespace. The one blob
 The NVS partition is small and shared: `0x5000` = 20 KB in `default_16MB.csv`, which
 is 5 pages of 126 32-byte entries. NVS holds one page back for garbage collection, so
 about **504 entries (~16 KB)** carry every key in every namespace - `solide`, the
-orchestrator's `orchmem` scratchpad and `agjournal` journal, the RF calibration
+orchestrator's `orchmem` memory settings and `agjournal` journal, the RF calibration
 (`cal_data`, ~61 entries), Wi-Fi, and Bluetooth bonds. A string of `n` bytes costs one
 header entry plus `ceil((n + 1) / 32)` data entries; an int or bool costs one.
 
@@ -42,11 +42,53 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 |---|---|---|
 | Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (16000 B for the Cumulo router, which lists every upstream), so in NVS (~120 entries per 3800 B, nearly a whole page) four or five verified providers could exhaust it by themselves |
 | Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids; the Cumulo router list at most 12 ids and 480 B) and read on every turn |
-| Usage ledger `usgLedger` | NVS | Owner spend history and budgets per provider, bounded (12 providers, 48 tags). Per-model prices left it unchanged, byte for byte: everything per model lives in the files below. OpenAI's cached and cache-written tokens are split out of its input in memory and in the files below, but this value keeps OpenAI's input with them included and its cache fields 0, so it does not grow; the split is restored from the per-model file at boot. While the ledger lives here, a turn adds no new (provider, tag) attribution row: spend is still counted in the provider's totals and the files below |
-| Per-model spend | LittleFS file `/data/usage_models.txt` | Which models each provider's spend went to this period and all time. At most 32 rows, 8 named models per provider: a new model takes over that provider's oldest model with no spend this period, otherwise it folds into the provider's "other models" row, which is priced at the provider's highest known price; a provider with no row always gets one (another provider's smallest row folds into its own "other models"). Tracking starts at the first boot of a release with per-model prices, and the file is written then, before any turn records. The file marks that, whether the latest `usgLedger` write did not land, and keeps, per provider, the spend from before tracking started (earlier usage, priced at your default for that provider, else the highest price you set for one of its models, else the built-in default), spend whose model was lost, and the provider's all-time totals as of the latest `usgLedger` write that landed, with the part of them from before that write's billing period. At boot the rows must add up to the provider counters in NVS. Counters holding less all-time spend than that write did, or less than its spend from before its period plus their spend this period, were re-created (a settings-only reset, on this release or an earlier one): the file then describes none of them, and all of that provider's spend this period is priced at its highest known price. When the rows do not add up and the history shows an earlier release recorded since the latest turn a row recorded (it rewrites the history without models), that provider's spend this period is priced the same way. Otherwise, when the file is only behind the counters (one of its writes did not land) the rows stay and what they miss is priced at the provider's highest known price; when it may be ahead of them (a `usgLedger` write did not land), that provider's spend since tracking began loses its model and is priced at the provider's highest known price, never a cheaper one. If this file and the history are both gone while NVS still counts spend (Erase Storage on a device with no SD card erases `/data`), the period's spend is priced the same way. What a boot decides about re-created or vanished counters is written to the file at once. While the file on flash lacks what the boot decided (none is there, or that write failed), a turn writes it before its `usgLedger` write, and while a stale file is there the turn's history bucket names no model. When that write at boot fails, the file is removed only while the history shows tracking started (the next boot then prices the period's spend at the highest known price); otherwise it stays. Rewritten after each turn once tracking has started |
+| Usage ledger | LittleFS file `/data/usage_ledger.txt` | Owner spend history and budgets per provider, at most 12 providers and 48 attribution rows, and always under 3,800 B (a deleted routine's rows go first, then the smallest; provider counters never). Until v4.5.13 it lived in NVS as `usgLedger`, rewritten after every turn, and on a full partition most of a month's spend was lost. The move follows the rule below. Per-model prices left it unchanged, byte for byte: everything per model lives in the files below. OpenAI's cached and cache-written tokens are split out of its input in memory and in the files below, but the ledger keeps OpenAI's input with them included and its cache fields 0, so it does not grow; the split is restored from the per-model file at boot. While flash is unmounted and the ledger is served from its legacy NVS copy, a turn adds no new (provider, tag) attribution row: spend is still counted in the provider's totals and the files below |
+| Scratchpad | LittleFS file `/data/scratchpad.bin` | The assistant's working notes. Until v4.5.13 the `orchmem` key `scratchB` (and the older `scratch`); the same rule below |
+| Per-model spend | LittleFS file `/data/usage_models.txt` | Which models each provider's spend went to this period and all time. At most 32 rows, 8 named models per provider: a new model takes over that provider's oldest model with no spend this period, otherwise it folds into the provider's "other models" row, which is priced at the provider's highest known price; a provider with no row always gets one (another provider's smallest row folds into its own "other models"). Tracking starts at the first boot of a release with per-model prices, and the file is written then, before any turn records. The file marks that, whether the latest ledger write did not land, and keeps, per provider, the spend from before tracking started (earlier usage, priced at your default for that provider, else the highest price you set for one of its models, else the built-in default), spend whose model was lost, and the provider's all-time totals as of the latest ledger write that landed, with the part of them from before that write's billing period. At boot the rows must add up to the provider counters in the ledger file. Counters holding less all-time spend than that write did, or less than its spend from before its period plus their spend this period, were re-created (a settings-only reset, on this release or an earlier one): the file then describes none of them, and all of that provider's spend this period is priced at its highest known price. When the rows do not add up and the history shows an earlier release recorded since the latest turn a row recorded (it rewrites the history without models), that provider's spend this period is priced the same way. Otherwise, when the file is only behind the counters (one of its writes did not land) the rows stay and what they miss is priced at the provider's highest known price; when it may be ahead of them (a ledger write did not land), that provider's spend since tracking began loses its model and is priced at the provider's highest known price, never a cheaper one. If this file and the history are both gone while the ledger still counts spend (Erase Storage on a device with no SD card erases `/data`), the period's spend is priced the same way. What a boot decides about re-created or vanished counters is written to the file at once. While the file on flash lacks what the boot decided (none is there, or that write failed), a turn writes it before its ledger write, and while a stale file is there the turn's history bucket names no model. When that write at boot fails, the file is removed only while the history shows tracking started (the next boot then prices the period's spend at the highest known price); otherwise it stays. Rewritten after each turn once tracking has started |
 | Your model prices | LittleFS file `/data/usage_mrates.txt` | The prices you enter per model on the Usage page, at most 32 rows. Written only when you save a price; a write that does not land answers 507 like an NVS save (failure key `lfs_mrates`) and changes nothing |
 | Cumulo router prices | LittleFS file `/data/usage_rprices.txt` | What Cumulo bills for each model the device keeps (its choice list plus the head and sub-agent models), at most 24 rows. Written only by the Cumulo verify; when it is missing or empty and the Cumulo key is verified, the device runs one Cumulo verify shortly after boot to fill it |
 | Daily usage history | LittleFS file `/data/usage_hist.txt` | One bucket per day, provider and model (plus prompt-cache counts since per-model prices), at most 12 per day and 720 in all (60 days). Written atomically (a copy, then a rename) after each turn |
+
+**The moved stores (v4.5.14).** The usage ledger and the scratchpad were the two
+values rewritten in NVS on every turn. They now live in flash files, and every boot
+follows one rule:
+
+- Load the file; only when there is no file, load the legacy NVS key.
+- Save by writing the file atomically (a copy, then a rename) and reading it back; the
+  save counts only when the read-back matches. NVS is never written again.
+- Erase the legacy NVS copy only on a boot whose image was already valid when it
+  started (not the trial boot after an OTA), and only once the file reads back. A
+  rollback from a trial boot to v4.5.13 therefore still finds that release's last
+  values in NVS.
+
+A ledger save that does not land leaves the ledger marked unsaved: every later turn
+retries (each rewrites the whole file), the main loop retries once a minute, and
+`/api/state` shows `usageSaved: false` until one lands. A scratchpad save that does not
+land keeps the notes in RAM until restart and is reported as `lfs_scratch`.
+
+**The reserve.** Every key the firmware defines has a class
+(`lib/core/src/store_nvs_reserve.cpp`; `test_nvs_full` fails on a defined key without
+one):
+
+| Class | Examples | At the reserve |
+|---|---|---|
+| Critical | `tgOffset`, the OTA guard (`otaPend`, `otaBoots`, `otaPrev`, `otaLast`), `webTok`, `apPass`, the cloud credential (`cloudDevId`, `cloudCred`, `cloudHost`), `otaType`, `embLocked` | Always written |
+| Owner config | Provider keys, routing, connectors, Telegram allowlist and owners, Wi-Fi, every setting a person saves | Refused, unless the device is starved |
+| Rebuildable | `vfy_*`, `vrs_*`, `vrm_*`, `mch_*`, `antEnv`, `antAgents`, `dreamScrHash`, `zaiBase`, `tgBotName` | Refused |
+| Telemetry | `orchConv`, `otaNotif`, `otaNotes`, `battModel`, `lbPingEp`, the `agjournal` records, the legacy `usgLedger` and `scratchB` copies | Refused |
+
+A write that would leave fewer than **24 free entries** is refused unless its key is
+critical, and the refusal is reported like any failed write (a save route answers 507,
+`nvs.recentFails` names the key). Erases and rewrites that do not grow a value are
+never refused, so removing a key or connector always works. A refusal asks the
+**eviction pass**, which runs on the main loop (never inside a web request, at most
+every 30 s): it erases rebuildable caches in a fixed order (`vrs_*` and `vrm_*`, then
+any legacy `mcat_*`, then `dreamScrHash`, then `fbRules` only while it is a cloud copy,
+`fbSyncTs` set) until 24 entries are free again. It never erases `antEnv` or
+`antAgents` (that would orphan managed agents that keep costing money) or `mch_*`.
+When eviction cannot restore the reserve the device is **starved**: owner-config
+writes are accepted again and only rebuildable and telemetry writes stay refused, said
+once per boot in the device log, so a full device never answers 507 to every save.
 
 The guide `/api/state` checks: at least **4 KB** stays free, room for the largest
 single owner value (the connectors blob, capped at 3500 B = 3552 B of entries). Below
@@ -64,9 +106,11 @@ leftover legacy key for that provider.
 **A save that does not land never answers ok.** Every `agent::store` setter returns
 whether its write landed, and every write reports to a per-task persist ledger. The
 owner-config save routes (`POST /api/config`, `/api/orch`, `/api/connectors` in blob,
-patch, and delete modes, `/api/onboard/complete`, `/api/token/regen`, and the Wi-Fi
-saves `/savewifi` (the setup wizard) and `POST /api/wifi`) open a scope before their
-first write; `POST /api/mem/embedcfg` checks its config write directly. If any write of
+patch, and delete modes, `/api/onboard/complete`, `/api/token/regen`, the Wi-Fi
+saves `/savewifi` (the setup wizard) and `POST /api/wifi`, `POST /api/fallbacks`, and
+the Telegram routes `add`, `remove`, `rename`, `role`, `approve` and `public`) open a
+scope before their first write; `POST /api/mem/embedcfg`, `/api/mem/scratchpad` and
+`/api/mem/config` check their writes directly. If any write of
 that request did not land, the route answers **HTTP 507**:
 
 ```json
@@ -105,6 +149,8 @@ fallback is not power-atomic: a power cut inside that one write can lose the val
 | `GET /api/state` | `nvs.recentFails` | The newest 8 failed writes, newest first: `key`, `n` (the failure's number since boot, so a gap between two reads counts the failures in between) and `ageS` (seconds ago). Every failure is recorded, unlike the log line |
 | `GET /api/state` | `tgOffsetSaved`, `tgPoll` | Whether the stored Telegram offset matches the one in use (see `tgOffset` below), plus `tgPoll.offsetWrites`, `offsetWriteFails`, `staleDrops` (updates dropped below the offset, expected 0), `backoffMs` and `fails` (the getUpdates backoff) |
 | `GET /api/nvs/stats` (sign-in required) | `entries`, `keys[]` | What fills the partition: totals in 32-byte entries (`used`, `free`, `total`, `namespaces`), and every key in every namespace with `ns`, `key`, `type` (`int`, `str`, `blob`), `bytes` and `entries`. Names and sizes only, never a value. At most 512 keys (`truncated` says when more exist) |
+| `GET /api/state` | `nvsReserve.entries`, `.refused`, `.evicted`, `.starved` | The reserve (24 entries), writes it refused and keys the eviction pass erased since boot, and whether the device is starved |
+| `GET /api/state` | `usageSaved` | `false` while the usage ledger holds spend its file did not take (being retried) |
 | Test console `STATUS` | `nvs=<used>/<total> nvsfree=<free> nvsfail=<n>` | The same numbers, in bytes, at the end of the line |
 | Device log (`GET /api/log`, durable `nvs` class) | `nvs: write FAILED [<k>] - storage full? (<free> B free of <total> B)` | One line per failing key per minute. The key sits in brackets so the log's secret masking (which hides any `key=` value) leaves it readable |
 | Telegram, to the owner | "settings storage is almost full, so some changes may not be saved..." | Sent once per boot, after the first write that did not land, by the Telegram task on its own send path. Needs a bot token and an owner chat |
@@ -187,7 +233,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.6`, `ANT_MODEL` =
 | `tgToken` | string | `""` | Telegram bot token | **No - WRITE-ONLY.** UI exposes only `hasTg` (a boolean); the token is never read back into the UI |
 | `tgAllow` | string | `""` | Allowlisted chat ids (comma-separated) | Yes |
 | `tgOwners` | string | `""` | Owner chat ids (comma-separated subset of `tgAllow`); empty means the first allow entry is owner. | Yes |
-| `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). | Yes |
+| `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). Only allow-listed chats keep a name: a rename of any other id is refused, and each rename drops the names of chats no longer on the allowlist. | Yes |
 | `tgBotName` | string | `""` | The connected bot's `@username` (from getMe), display only. | Yes |
 | `tgPublic` | bool | `false` | Open access: accept anyone who messages the bot. Default off. | Yes |
 | `tgOffset` | int | `0` | Telegram long-poll offset: a copy of the one in use, read once when the Telegram task starts. While the device runs, the offset in RAM is the truth and only moves forward, so a write that does not land (a full NVS) never makes Telegram serve a page again; a restart right after a page can repeat that one page. Written once per new page, and after each turn of a page that holds a command, so a restart repeats at most the turn in progress, never a finished command; while a write is owed and failing, a page gets one attempt and the write is retried at most once a minute, so it lands within a minute of room appearing (`tgOffsetSaved` in `/api/state` reads `false` meanwhile). A token change resets it to `0`, stored as an erase, which lands on a full NVS too | Yes (internal) |

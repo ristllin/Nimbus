@@ -60,14 +60,15 @@ Rule of thumb:
 | Episodic - recent window | **PSRAM** | recent-N ring, hydrated from SD at boot | the ring *is* the whole history |
 | Media / voice / artifacts | **SD** | `/mem/blobs/<hash>.<ext>` content-addressed | ephemeral only (`/voice.pcm`, `/reply.mp3`, `/audio/tgvoice.ogg`), deleted per-turn - **no durable media** |
 | Telegram archive (every message and file in or out, full size) | **SD** | `/mem/tg/<chat>/<day>/` raw JSON, media and `index.jsonl` ([memory.md, section 4](memory.md#4-the-telegram-archive-sd-card)) | not kept (SD only) |
-| Scratchpad (goal tiers) | **NVS** | `orchmem`/`scratch` (~4 KB) | unchanged |
+| Scratchpad (goal tiers) | **LittleFS** | `/data/scratchpad.bin` (~4 KB; the `orchmem` NVS copy until v4.5.14) | unchanged |
+| Usage ledger (spend and budgets) | **LittleFS** | `/data/usage_ledger.txt` (the `usgLedger` NVS key until v4.5.14) | unchanged |
 | Journal | NVS (6 slots `agjournal/j0..j5`) - the SD day-stream was PLANNED, never built | - | same NVS |
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
 | Provider model catalogs (rebuildable cache) | **LittleFS** | `/data/mcat_<provider>.json` (see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
 | Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Beside it in `/log`: the boot counter (`boot.n`) and the crash dedupe record (`crash.seen`). Device EVENTS are also durable via the episodic `system` timeline (kind=log); events captured before the clock syncs wait in `/mem/pending_ev.txt` | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring; held events in `/data/pending_ev.txt` |
 
-Two things **do not move**: NVS config/keys/scratchpad/verify are already at the
+Two things **do not move**: NVS config/keys/verify are already at the
 right tier and are card-independent - the "critical info" the design rule keeps off
 SD. Rebuildable caches never live in NVS: the 20 KB partition is reserved for owner
 config and bounded values (the full rule and the HTTP 507 contract for a save that
@@ -430,7 +431,8 @@ existing SD-first/LittleFS-fallback `loadBlob`; episodic replays the old
 | Tenants (roles + quotas) | fully functional - the table lives on **internal flash**, not the card, so losing a card never drops everyone's role. |
 | Privacy boundaries | fully enforced - namespace and session filters live in the portable query layer, not the SD path, so degraded mode cannot open up what full mode keeps apart (asserted by `tests/hil/test_l20_degradation.py`). |
 | Journal / logs | last-N RAM ring + small rotating LittleFS file. |
-| Config / keys / scratchpad / verify | fully functional (NVS). |
+| Config / keys / verify | fully functional (NVS). |
+| Scratchpad, usage ledger | fully functional (LittleFS `/data`, card-independent). |
 
 **Verification signal (per AGENTS.md's bar):** a no-card boot logs
 `memory: storage tier=flash /data (no SD) sd_mounted=0 ...`, the dashboard shows the
@@ -577,7 +579,7 @@ retention/archival maintenance.
 - Blobs: content-address dedup; reference-count prune.
 - Migration: LittleFS blob → day-streams (+`.migrated`, no double-migrate);
   vectors SD-first/LittleFS-fallback.
-- Tiering/config: scratchpad NVS round-trip; mem-config clamps.
+- Tiering/config: scratchpad file round-trip (moved out of NVS in v4.5.14); mem-config clamps.
 
 **On-device HIL (`tests/hil`, `--allow-hardware`, gated markers)** - device
 behavior; SD rows stay skipped until `cardType != 0`:

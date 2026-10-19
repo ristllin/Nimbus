@@ -1879,13 +1879,13 @@ every schema property so a new field without a hint fails).)NIMBUSDOC"},
   {"turn-contract#persistent-scratchpad-response-object", "Persistent scratchpad (response object)",
    R"NIMBUSDOC(`scratchpad` is a top-level, **nullable object** response field - the model's own
 working memory, rewritten as it works. Unlike `memory` (which lives for the
-**next turn only**), the scratchpad **carries across turns** and is saved to the
-`orchmem` NVS namespace (`memory::scratchpad()`, `persistScratchpad()`), so it
-survives a restart when the save lands. When a save fails (a full NVS partition),
-the notes live in RAM only until restart: the change result says "kept until
-restart only (saving failed)" and the SCRATCHPAD prompt header says saving is
-failing, so the model never promises otherwise. It is a **free write**: returning
-it costs no tool round.
+**next turn only**), the scratchpad **persists across turns and across restarts**
+(`memory::scratchpad()`, serialized to the LittleFS file `/data/scratchpad.bin` via
+`persistScratchpad()`; before v4.5.14 the `orchmem` NVS namespace). When a save
+does not land, the notes live in RAM only until restart: the change result says
+"kept until restart only (saving failed)" and the SCRATCHPAD prompt header says
+saving is failing, so the model never promises otherwise. It is a **free write**:
+returning it costs no tool round.
 
 This response field is the model's normal write path. The admin-only
 `memory.scratchpad` tool remains as a read/edit path for operators; see
@@ -3379,11 +3379,11 @@ flowchart LR
   subgraph BACK["storage backing"]
     PS["PSRAM - working sets<br/>(vector search set,<br/>episodic recent window)"]
     SD["SD card - durable bulk<br/>(episodic day-streams,<br/>vector blob, media)"]
-    NVS["NVS - tiny config<br/>(scratchpad, keys)"]
-    LFS["LittleFS - bounded state<br/>(fold summary, no-SD<br/>fallback caches)"]
+    NVS["NVS - tiny config<br/>(keys, settings)"]
+    LFS["LittleFS - bounded state<br/>(scratchpad, fold summary,<br/>no-SD fallback caches)"]
   end
   CW -.-> LFS
-  SP -.-> NVS
+  SP -.-> LFS
   VM -.-> PS
   VM -.-> SD
   EP -.-> PS

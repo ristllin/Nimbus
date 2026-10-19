@@ -6,6 +6,15 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.14 - Critical fixes
+
+- **Spend and scratchpad notes are kept.** The usage ledger and the assistant's scratchpad were rewritten in the small settings storage after every message; once it filled, most of October's spend and every scratchpad change lived only until the next restart. Both now live in files in flash. The first start of this release carries them over, and the old copies are removed only once this release has proven itself (an update that rolls back still finds them). A save that fails is retried until it lands.
+- **The settings storage keeps room for what keeps the device safe.** The last 24 free entries are kept for the Telegram message position, the update rollback guard and the cloud sign-in, so a filling device no longer repeats messages or loses the ability to roll back a bad update. Background saves (caches, counters) are refused first, and rebuildable caches are cleared to make room. If even that is not enough, your own settings still save; only background saves wait.
+- **An update never starts without its safety net.** If the rollback guard cannot be stored, the update stops with "storage full" instead of installing an image that could not roll back, and a crash-looping image now rolls back even on a full storage.
+- **Battery health no longer blocks an update.** Battery health is an estimate learned from use, and a desk device that rarely runs down can read low without a way to fix it. It is now labeled an estimate, never stops an update, and a low reading only adds a note to keep the device on power while it updates.
+- **Saves that did not happen say so.** Removing, renaming, approving or promoting a Telegram chat, the fallback rules, the scratchpad and the memory settings now answer "storage full" when the change could not be stored, instead of a silent "saved". Removing a chat can no longer leave it as an owner, and only chats on the allowlist keep a display name.
+- **Sub-agent jobs survive a full storage.** Tidying the job list could erase a running job's record when the storage was full; running jobs are now never moved or erased.
+
 ## v4.5.14 - A quiet, honest nightly dream
 
 - **No more messages at night.** When the nightly memory upkeep (the dream) failed, its error notices were sent to Telegram at about 03:30. Background turns now keep their notices to themselves; the result is recorded in the timeline instead.

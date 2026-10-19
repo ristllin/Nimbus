@@ -27,11 +27,11 @@ flowchart LR
   subgraph BACK["storage backing"]
     PS["PSRAM - working sets<br/>(vector search set,<br/>episodic recent window)"]
     SD["SD card - durable bulk<br/>(episodic day-streams,<br/>vector blob, media)"]
-    NVS["NVS - tiny config<br/>(scratchpad, keys)"]
-    LFS["LittleFS - bounded state<br/>(fold summary, no-SD<br/>fallback caches)"]
+    NVS["NVS - tiny config<br/>(keys, settings)"]
+    LFS["LittleFS - bounded state<br/>(scratchpad, fold summary,<br/>no-SD fallback caches)"]
   end
   CW -.-> LFS
-  SP -.-> NVS
+  SP -.-> LFS
   VM -.-> PS
   VM -.-> SD
   EP -.-> PS

@@ -186,19 +186,21 @@ release, and no release moves running Virtual Nimbus instances by itself.
   theme-color progress bar, the screen says "do not power off", and voice capture
   is refused. The download normally runs alongside the live Telegram poller; on
   a busy device the poller runs it itself, between messages (see below).
-- **Battery / health gate** (manual and auto path): an interrupted flash on a
-  dying pack can leave a slot unbootable, so install is allowed only when the
-  pack can finish the write. The rule: level at or above 40% and estimated health
-  at or above 60%, or the device is on external power, or battery monitoring is
-  disabled (there is no pack to protect). Below that, the refusal names the next
-  step: a low level asks you to connect power (`err` `need-power`); a low health
-  estimate asks you to charge to full and recalibrate to 100% (`err`
-  `need-recalibrate`). Because the board has no VBUS sense line to detect the
-  charger, every stop offers **Install Anyway** ("I am charging"), which
-  re-submits with `force=1` and skips the gate.
+- **Battery gate** (manual and auto path): an interrupted flash on a dying pack
+  can leave a slot unbootable, so install is allowed only when the pack can finish
+  the write. The rule: level at or above 40%, or the device is on external power,
+  or battery monitoring is disabled (there is no pack to protect). Below that, the
+  refusal asks you to connect power (`err` `need-power`). Because the board has no
+  VBUS sense line to detect the charger, the stop offers **Install Anyway** ("I am
+  charging"), which re-submits with `force=1` and skips the gate.
+- **Battery health is an estimate and never blocks.** It is learned from discharge
+  history, so a desk device that rarely runs down can read low and has no way to
+  correct it. When it reads below 60% on battery, the install goes ahead and the
+  accept carries a plain note (`note` in the `POST /api/ota/apply` answer, shown
+  after the update starts): keep the device on power while it updates.
 - **Auto-install** (`autoUpd`, default off): evaluated hourly in an idle window:
-  no turn or voice in flight, battery at or above 50% or on external power,
-  estimated health at or above 60% when on battery, and heap headroom.
+  no turn or voice in flight, battery at or above 50% or on external power, and
+  heap headroom.
 
 ## On a busy device: the update runs between messages
 
@@ -260,12 +262,18 @@ Orchestrator mode first.
 
 ## Rollback
 
-Before the flip the device arms `otaPend/otaBoots/otaPrev` in NVS;
-`otaupd::bootGuard()` (the first line of `setup()`, raw NVS so it runs before
-every driver) counts boot attempts and flips back to the untouched previous slot
-after 3 failures. Healthy for 120 s (600 s if Wi-Fi never came up) marks the slot
-valid. Power loss mid-download touches only the inactive slot; power loss between
-guard-arm and flip is disarmed as `aborted-preflip`.
+Before the flip the device arms `otaPend/otaBoots/otaPrev` in NVS and reads them
+back. If one did not land (a full settings storage), the install stops with
+`storage_full` before the flip: an image that could never roll back is never
+booted. The guard keys are critical, so the settings-storage reserve keeps room for
+them (see the config and NVS reference). `otaupd::bootGuard()` (the first line of
+`setup()`, raw NVS so it runs before every driver) counts boot attempts and flips
+back to the untouched previous slot after 3 failures; an attempt it cannot store
+counts as over budget, so a crash-looping image rolls back on a full storage too.
+Healthy for 120 s (600 s if Wi-Fi never came up) marks the slot valid, once the
+pending flag's clear has landed (it retries until it does). Power loss
+mid-download touches only the inactive slot; power loss between guard-arm and flip
+is disarmed as `aborted-preflip`.
 
 ## Update over the USB cable (local, unsigned, cable-gated)
 
@@ -275,8 +283,8 @@ serial update is a third path: the **running** firmware accepts a locally-built
 `.bin` over the USB cable and installs it through the **same** esp_ota A/B engine,
 rollback guard, and deferred restart as cloud OTA. Compared to cloud OTA it drops
 everything that only makes sense for a remotely-fetched signed release: the HTTPS
-fetch, the ECDSA signature check, the version-eligibility check, and the
-battery/health install gate. It keeps the streamed-sha256 integrity check. The
+fetch, the ECDSA signature check, the version-eligibility check, and the battery
+install gate. The rollback guard read-back (`storage_full`) applies to it too. It keeps the streamed-sha256 integrity check. The
 physical cable is the trust boundary (the same trust model esptool and the ROM
 flash rely on), and the operator at the cable owns the power and version decision.
 A peer on Wi-Fi cannot reach the serial stream, and a device that is never cabled
@@ -313,8 +321,8 @@ easy to read amid ordinary log output.
 
 - Host: `pio test -e native -f test_ota_logic` (version/manifest/policy core +
   the signed-message golden, cross-checked against `tools/make_manifest.py
-  --print-message`; the battery/health `installGate` branches; the definitive
-  `checkResult` mapping incl. reachable-vs-unreachable; and the async check-flow
+  --print-message`; the battery `installGate` branches and the health advisory;
+  the definitive `checkResult` mapping incl. reachable-vs-unreachable; and the async check-flow
   class in `test_check_async_lifecycle`: single-flight over every state, so a
   second check while one is in flight can never start a second fetch, and the
   polled verdict is `pending` only until the check settles).
