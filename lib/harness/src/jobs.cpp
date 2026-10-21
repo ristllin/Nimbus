@@ -13,7 +13,7 @@
 #include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
 #include "nimbus/orch/sub_provenance.h"   // liveTask, the unverified rule, [tools: n] (lane S)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
-#include "nimbus/orch/model_choices.h"  // modelInChoices - validated spawn-model coercion
+#include "nimbus/orch/model_choices.h"  // modelInChoices, cheapestChoice - validated spawn-model coercion
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
@@ -500,19 +500,27 @@ void JobEngine::ledgerQueued(const PendingSpawn& p) {
   ledger_.push_back(std::move(e));
 }
 
+JobEngine::LedgerEntry* JobEngine::queuedEntry(const PendingSpawn& p) {
+  const std::string task = capText(p.task, kLedgerTaskMax);
+  for (auto& e : ledger_)
+    if (e.state == LedgerState::Queued && e.chatId == p.chatId && e.name == p.name && e.task == task)
+      return &e;
+  return nullptr;
+}
+
 void JobEngine::ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
                               const std::string& model) {
-  const std::string task = capText(p.task, kLedgerTaskMax);
-  for (auto& e : ledger_) {
-    if (e.state != LedgerState::Queued || e.chatId != p.chatId || e.name != p.name || e.task != task)
-      continue;
-    e.state = LedgerState::Running;
-    e.tag = tag;
-    e.provider = provider;
-    e.model = model;
-    e.atMs = nowMs();
-    return;
-  }
+  LedgerEntry* e = queuedEntry(p);
+  if (!e) return;
+  e->state = LedgerState::Running;
+  e->tag = tag;
+  e->provider = provider;
+  e->model = model;
+  e->atMs = nowMs();
+}
+
+void JobEngine::ledgerSwapped(const PendingSpawn& p, const std::string& why) {
+  if (LedgerEntry* e = queuedEntry(p)) e->swapped = capText(why, kLedgerReasonMax);
 }
 
 void JobEngine::ledgerRefused(const std::string& chatId, const std::string& name,
@@ -566,7 +574,9 @@ std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
     case LedgerState::Refused:   line += "did not start (" + ago + ") - " + e.reason; break;
     case LedgerState::Cancelled: line += "stopped " + ago; break;
   }
-  if (!e.asked.empty() && !e.model.empty() && e.asked != e.model)
+  if (!e.swapped.empty())
+    line += " (" + e.swapped + ")";
+  else if (!e.asked.empty() && !e.model.empty() && e.asked != e.model)
     line += " (asked for " + e.asked + ", which " + e.provider + " does not list)";
   return line + "\n";
 }
@@ -794,12 +804,27 @@ bool JobEngine::keylessToRouter(std::string& provider, std::string& model) const
   return true;
 }
 
+namespace {
+// Why neither the asked model nor the provider's sub-agent default can run, for the
+// ledger line and the head's note; names both, including when nothing was asked.
+std::string unlistedWhy(const std::string& provider, const std::string& asked,
+                        const std::string& sub) {
+  const std::string s = asked.empty() ? "no model was named and " + provider
+                                      : provider + " does not offer " + asked + ",";
+  if (sub.empty()) return s + (asked.empty() ? " has no sub-agent default" : " and has no sub-agent default");
+  return s + (asked.empty() ? " does not offer its sub-agent default " : " nor its sub-agent default ") + sub;
+}
+}  // namespace
+
 // Validated coercion (subagents F5): a model the provider does not list never
 // runs as an unchecked default. The asked model when listed, else the
-// provider's sub default when listed, else the first model the list holds; when
-// nothing validates the spawn is refused with the reason. A provider with no
-// list at all (custom: "" from modelChoices) runs as asked. Without the
-// modelChoices dep the old fallback to the sub default stands.
+// provider's sub default when listed, else the CHEAPEST model the list holds
+// (the built-in price table): never list position 0, which is the priciest model
+// on most providers' lists. Any substitution is named on the ledger line, also
+// when no model was asked. When no listed model has a known price the spawn is
+// refused with the reason. A provider with no list at all (custom: "" from
+// modelChoices) runs as asked. Without the modelChoices dep the old fallback to
+// the sub default stands.
 bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provider,
                                  std::string& model) {
   if (d_.modelIsValid && d_.modelIsValid(provider, model)) return true;
@@ -815,28 +840,41 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
     }
     if (!sub.empty() && nimbus::orch::modelInChoices(list, sub)) {
       model = sub;
+      if (!asked.empty())
+        ledgerSwapped(p, provider + " does not offer " + asked + "; runs on its sub-agent default " + sub);
     } else {
-      const size_t comma = list.find(',');
-      std::string first = list.substr(0, comma);
-      while (!first.empty() && first.back() == ' ') first.pop_back();
-      while (!first.empty() && first.front() == ' ') first.erase(first.begin());
-      if (first.empty()) {
-        const std::string what = asked.empty() ? std::string("a model") : asked;
-        hlog::logf("orchestrator: spawn refused (%s lists no usable model for %s)",
-                   provider.c_str(), what.c_str());
-        deliver(p.chatId, "Couldn't start that agent on " + provider + ": it does not offer " +
-                              what + ". Pick a model from its list under Providers & models.");
-        noteSpawnRefused(p.chatId, p.name, p.task,
-                         provider + " does not offer " + what +
-                             "; spawn it with a model from that provider's [AVAILABLE MODELS] entry");
+      const std::string why = unlistedWhy(provider, asked, sub);
+      model = nimbus::orch::cheapestChoice(provider.c_str(), list);
+      if (model.empty()) {
+        refuseUnpricedModel(p, provider, asked, sub, why);
         return false;
       }
-      model = first;
+      ledgerSwapped(p, why + "; runs on " + model + ", the cheapest model it lists");
     }
   }
   hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)",
              asked.length() ? asked.c_str() : "(none)", model.c_str(), provider.c_str());
   return true;
+}
+
+// No listed model has a known price: nothing runs. The owner hears what was asked
+// (or that nothing was) and which default is missing; the head gets the same.
+void JobEngine::refuseUnpricedModel(const PendingSpawn& p, const std::string& provider,
+                                    const std::string& asked, const std::string& sub,
+                                    const std::string& why) {
+  hlog::logf("orchestrator: spawn refused (%s: %s; no listed model has a known price)",
+             provider.c_str(), why.c_str());
+  std::string what = asked.empty() ? std::string("no model was named and ") : "it does not offer " + asked;
+  if (sub.empty())
+    what += asked.empty() ? "it has no default model" : " and has no default model";
+  else
+    what += asked.empty() ? "its default model " + sub + " is not on its list" : " or its default model " + sub;
+  deliver(p.chatId, "Couldn't start that agent on " + provider + ": " + what +
+                        ", and none of the models it offers has a known price to fall back on. "
+                        "Pick a model from its list under Providers & models.");
+  noteSpawnRefused(p.chatId, p.name, p.task,
+                   why + ", and no listed model has a known price; spawn it with a model from "
+                         "that provider's [AVAILABLE MODELS] entry");
 }
 
 bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,

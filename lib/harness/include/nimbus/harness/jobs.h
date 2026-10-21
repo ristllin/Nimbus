@@ -360,9 +360,14 @@ class JobEngine {
   std::string spawnProvider(const PendingSpawn& p) const;
   bool keylessToRouter(std::string& provider, std::string& model) const;
   // Validated coercion (subagents F5): the asked model when the provider lists
-  // it, else the provider's sub default when listed, else the first listed
-  // model. False when nothing validates (the owner and the head are told why).
+  // it, else the provider's sub default when listed, else the cheapest listed
+  // model by the built-in price table, never the first (the priciest on most
+  // lists). A substitution is named on the ledger line. False when no listed model
+  // has a known price (the owner and the head are told why).
   bool coerceSpawnModel(const PendingSpawn& p, const std::string& provider, std::string& model);
+  void refuseUnpricedModel(const PendingSpawn& p, const std::string& provider,
+                           const std::string& asked, const std::string& sub,
+                           const std::string& why);
   std::string routerOffer(const std::string& provider, const std::string& model) const;
   void refuseKeyless(const PendingSpawn& p, const std::string& provider, const std::string& model);
   std::string connectorHost(const PendingSpawn& p) const;
@@ -390,6 +395,7 @@ class JobEngine {
   enum class LedgerState : uint8_t { Queued, Running, Done, Failed, Refused, Cancelled };
   struct LedgerEntry {
     std::string chatId, name, task, tag, provider, model, asked, reason;
+    std::string swapped;   // why the model that runs is not the one asked for ("" = none)
     LedgerState state = LedgerState::Queued;
     uint32_t atMs = 0;
   };
@@ -397,6 +403,8 @@ class JobEngine {
   void ledgerQueued(const PendingSpawn& p);
   void ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
                      const std::string& model);
+  void ledgerSwapped(const PendingSpawn& p, const std::string& why);
+  LedgerEntry* queuedEntry(const PendingSpawn& p);   // this spawn's Queued row, or nullptr
   void ledgerRefused(const std::string& chatId, const std::string& name, const std::string& task,
                      const std::string& reason);
   void ledgerFinished(const char* tag, LedgerState st, const std::string& reason = std::string());

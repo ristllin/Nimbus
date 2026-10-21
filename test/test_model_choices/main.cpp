@@ -112,12 +112,34 @@ static void test_model_in_choices_exact_and_trimmed() {
   TEST_ASSERT_TRUE(modelInChoices("openai/gpt-5.6,anthropic/claude-sonnet-5", "anthropic/claude-sonnet-5"));
 }
 
+// The spawn-model fallback's pick (prism gate W1): the cheapest item by the built-in
+// price table, items trimmed like modelInChoices reads them, an unpriced item never
+// chosen, the earlier item on a tie, "" when nothing is priced.
+static void test_cheapest_choice_by_the_price_table() {
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5",
+                           cheapestChoice("anthropic", NIMBUS_ANT_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", cheapestChoice("openai", NIMBUS_OPENAI_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral-small-latest",
+                           cheapestChoice("mistral", NIMBUS_MISTRAL_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", cheapestChoice("cumulo", NIMBUS_CUMULO_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("glm-5.3-flash", cheapestChoice("zai", NIMBUS_ZAI_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5",
+                           cheapestChoice("anthropic", " claude-opus-5 ,\tclaude-haiku-4-5\r\n, x").c_str());
+  TEST_ASSERT_EQUAL_STRING("claude-opus-5", cheapestChoice("anthropic", "unpriced-z,claude-opus-5").c_str());
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-5",   // same price as sonnet-5-5: the earlier item wins
+                           cheapestChoice("anthropic", "claude-sonnet-5,claude-sonnet-5-5").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cheapestChoice("anthropic", "good-a,good-b").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cheapestChoice("anthropic", " , ").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cheapestChoice("custom", "llama-3").c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_slot_has_a_cold_start_list);
   RUN_TEST(test_cold_start_lists_hold_no_family_the_harvest_refuses);
   RUN_TEST(test_derivation_advertised_equals_spawnable_for_every_slot);
   RUN_TEST(test_model_in_choices_exact_and_trimmed);
+  RUN_TEST(test_cheapest_choice_by_the_price_table);
   RUN_TEST(test_cumulo_derivation_drops_what_no_upstream_runs);
   UNITY_END();
   return 0;

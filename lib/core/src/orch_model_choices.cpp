@@ -1,7 +1,9 @@
 #include "nimbus/orch/model_choices.h"
 
+#include <cstdint>
 #include <cstring>
 
+#include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/router_route.h"
 
 namespace nimbus {
@@ -58,6 +60,23 @@ bool modelInChoices(const std::string& csv, const std::string& model) {
   return !eachItem(csv, [&model](const char* p, size_t n) {   // stops at the match
     return !(n == model.size() && std::memcmp(p, model.data(), n) == 0);
   });
+}
+
+std::string cheapestChoice(const char* slug, const std::string& csv) {
+  std::string best;
+  uint64_t bestCost = UINT64_MAX;
+  eachItem(csv, [&](const char* p, size_t n) {
+    const std::string m(p, n);
+    if (const BuiltinPrice* row = builtinModelPrice(slug, m.c_str())) {
+      const uint64_t cost = (uint64_t)row->microIn + row->microOut;
+      if (cost < bestCost) {
+        best = m;
+        bestCost = cost;
+      }
+    }
+    return true;
+  });
+  return best;
 }
 
 }  // namespace orch

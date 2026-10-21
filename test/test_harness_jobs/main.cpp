@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstring>
 #include <map>
 #include <memory>
 #include <optional>
@@ -11,6 +12,8 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/jobs.h"
+#include "nimbus/orch/model_choices.h"   // staticModelChoices / modelInChoices
+#include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the cheapest fallback
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
@@ -1768,12 +1771,13 @@ static void test_job_delivery_tag_matches_whole_item() {
 // ---- (lane L) validated coercion, the spawn ledger, the conservation law --------
 
 // A spawn model the provider does not list runs a model it DOES list - its sub
-// default when listed, else the list's first - never an unchecked default; and
-// with nothing listed the spawn is refused with the reason (subagents F5).
+// default when listed, else the list's cheapest - never an unchecked default; and
+// with nothing priced listed the spawn is refused with the reason (subagents F5).
 static void test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model() {
   struct Case { std::string list, sub, asked, want; bool refused; };
   const Case cases[] = {
-      {"good-a,good-b", "sub-anthropic", "bad-x", "good-a", false},   // sub not listed: first listed
+      {"claude-opus-5,good-a,claude-haiku-4-5", "sub-anthropic", "bad-x", "claude-haiku-4-5", false},
+      {"good-a,good-b", "sub-anthropic", "bad-x", "", true},           // nothing listed is priced
       {"good-a,sub-anthropic", "sub-anthropic", "bad-x", "sub-anthropic", false},   // sub listed
       {"", "sub-anthropic", "custom-model", "custom-model", false},   // no list: as asked
       {" , ", "sub-anthropic", "bad-x", "", true},                     // nothing usable: refused
@@ -1807,6 +1811,126 @@ static void test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model() {
   ok.eng->pump();
   TEST_ASSERT_EQUAL_STRING("good-m", ok.adapter.dispatched[0].model.c_str());
   TEST_ASSERT_FALSE(LogCapture::contains("spawn model coerced"));
+}
+
+// ---- prism gate W1: the spawn-model fallback is the cheapest listed model --------
+// A spawn whose model the provider does not list, on a provider whose sub-agent
+// default is not listed either, ran list position 0: the priciest model on the
+// cold-start lists (claude-opus-5, gpt-6-astra, gpt-5.6 on Cumulo). The class, over
+// every provider's cold-start list, with an unlisted model asked and with none asked:
+// the spawn runs a listed model that no listed model undercuts on the built-in price
+// table, and the ledger line names what was asked (or that nothing was), the default
+// that is not listed, and the model that runs.
+static uint64_t listedPrice(const char* slot, const std::string& model) {
+  const orch::BuiltinPrice* row = orch::builtinModelPrice(slot, model.c_str());
+  return row ? (uint64_t)row->microIn + row->microOut : UINT64_MAX;
+}
+
+static std::vector<std::string> csvItems(const std::string& csv) {
+  std::vector<std::string> out;
+  for (size_t at = 0; at <= csv.size();) {
+    size_t comma = csv.find(',', at);
+    if (comma == std::string::npos) comma = csv.size();
+    std::string m = csv.substr(at, comma - at);
+    at = comma + 1;
+    while (!m.empty() && m.back() == ' ') m.pop_back();
+    while (!m.empty() && m.front() == ' ') m.erase(m.begin());
+    if (!m.empty()) out.push_back(m);
+  }
+  return out;
+}
+
+static void test_spawn_model_fallback_is_the_cheapest_listed_model() {
+  int cases = 0;
+  for (const char* slot : {"anthropic", "openai", "mistral", "cumulo", "zai"}) {
+    const std::string list = orch::staticModelChoices(slot);
+    const std::vector<std::string> items = csvItems(list);
+    TEST_ASSERT_TRUE_MESSAGE(items.size() >= 2, slot);
+    for (const char* asked : {"bad-x", ""}) {
+      FakeAdapter other;   // the rig's own adapter is anthropic (declared first: it outlives the rig)
+      Rig r;
+      const bool own = std::strcmp(slot, "anthropic") == 0;
+      if (!own) {
+        other.backend = slot;
+        r.fabric.registerAdapter(&other);
+      }
+      r.keyed.insert(slot);
+      r.modelValid = [list](const std::string&, const std::string& m) { return orch::modelInChoices(list, m); };
+      r.modelChoices = [list](const std::string&) { return list; };
+      r.build();
+      orch::Spawn s = sp("research it");
+      s.provider = slot;
+      s.model = asked;
+      s.name = "helper";
+      r.eng->enqueueSpawn(s, "chat1");
+      r.eng->pump();
+      char msg[96];
+      snprintf(msg, sizeof msg, "%s, asked '%s'", slot, asked);
+      const auto& got = own ? r.adapter.dispatched : other.dispatched;
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)got.size(), msg);
+      const std::string ran = got[0].model;
+      TEST_ASSERT_TRUE_MESSAGE(orch::modelInChoices(list, ran), msg);
+      TEST_ASSERT_TRUE_MESSAGE(listedPrice(slot, ran) != UINT64_MAX, msg);
+      for (const std::string& m : items) TEST_ASSERT_TRUE_MESSAGE(listedPrice(slot, ran) <= listedPrice(slot, m), msg);
+      TEST_ASSERT_TRUE_MESSAGE(listedPrice(slot, items[0]) > listedPrice(slot, ran), msg);   // never position 0
+      const std::string led = r.eng->spawnLedgerText("chat1");
+      TEST_ASSERT_TRUE_MESSAGE(led.find("/" + ran + "): running") != std::string::npos, led.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(led.find("runs on " + ran + ", the cheapest model it lists") != std::string::npos,
+                               led.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(led.find("sub-agent default sub-" + std::string(slot)) != std::string::npos,
+                               led.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(led.find(*asked ? "does not offer bad-x" : "no model was named") != std::string::npos,
+                               led.c_str());
+      cases++;
+    }
+  }
+  printf("property: %d (provider, asked) cases, each on the cheapest listed model, disclosed\n", cases);
+}
+
+// No listed model has a known price: nothing runs, and the owner refusal and the
+// head's note say what was asked (or that nothing was) and which default is missing.
+// A substitution onto a LISTED sub-agent default is disclosed on the ledger too.
+static void test_spawn_model_refusal_and_default_swap_are_disclosed() {
+  for (const char* asked : {"bad-x", ""}) {
+    Rig r;
+    r.modelValid = [](const std::string&, const std::string& m) { return m == "good-a" || m == "good-b"; };
+    r.modelChoices = [](const std::string&) { return std::string("good-a,good-b"); };
+    r.build();
+    orch::Spawn s = sp("research it");
+    s.model = asked;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
+    const std::string said = r.delivered.back().second;
+    TEST_ASSERT_TRUE_MESSAGE(said.find("none of the models it offers has a known price") != std::string::npos,
+                             said.c_str());
+    const std::string note = r.eng->takeSpawnNotes("chat1");
+    TEST_ASSERT_TRUE_MESSAGE(note.find("no listed model has a known price") != std::string::npos, note.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(note.find("sub-agent default sub-anthropic") != std::string::npos, note.c_str());
+    if (*asked) {
+      TEST_ASSERT_TRUE_MESSAGE(said.find("it does not offer bad-x or its default model sub-anthropic") !=
+                                   std::string::npos,
+                               said.c_str());
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(said.find("no model was named and its default model sub-anthropic is not on its list") !=
+                                   std::string::npos,
+                               said.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(note.find("no model was named") != std::string::npos, note.c_str());
+    }
+  }
+  Rig d;
+  d.modelValid = [](const std::string&, const std::string& m) { return m == "sub-anthropic"; };
+  d.modelChoices = [](const std::string&) { return std::string("claude-opus-5,sub-anthropic"); };
+  d.build();
+  orch::Spawn s = sp("research it");
+  s.model = "bad-x";
+  d.eng->enqueueSpawn(s, "chat1");
+  d.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("sub-anthropic", d.adapter.dispatched[0].model.c_str());
+  const std::string led = d.eng->spawnLedgerText("chat1");
+  TEST_ASSERT_TRUE_MESSAGE(led.find("anthropic does not offer bad-x; runs on its sub-agent default sub-anthropic") !=
+                               std::string::npos,
+                           led.c_str());
 }
 
 // The ledger follows each spawn through queued, running, finished and refused,
@@ -1867,6 +1991,8 @@ static void test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
+  RUN_TEST(test_spawn_model_fallback_is_the_cheapest_listed_model);
+  RUN_TEST(test_spawn_model_refusal_and_default_swap_are_disclosed);
   RUN_TEST(test_lane_l_the_spawn_ledger_tracks_each_spawn_per_chat);
   RUN_TEST(test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal);
   RUN_TEST(test_spawn_brief_carries_chat_context);

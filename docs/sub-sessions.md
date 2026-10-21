@@ -114,11 +114,14 @@ the live `[SPAWN CAPACITY]` number in the recovery text
 ([turn-contract.md](reference/turn-contract.md)).
 
 **The model a spawn runs is one its provider lists.** A spawn that names a model
-the provider does not list runs the provider's sub-agent default when that is
-listed, else the first model the list holds; when the list holds nothing usable
-the spawn is refused with that reason. A provider with no list at all (the
-custom endpoint) runs the model as asked. The spawn ledger names the model that
-ran and the one that was asked for.
+the provider does not list (or names none) runs the provider's sub-agent default
+when that is listed, else the cheapest model the list holds by the built-in
+price table, never simply the first entry (on most lists the most expensive
+model). When no listed model has a known price the spawn is refused,
+and the owner and the head are told what was asked, or that nothing was, and
+which default is missing. A provider with no list at all (the custom endpoint)
+runs the model as asked. The spawn ledger names the model that ran, what was
+asked for and why it was substituted, also when no model was named.
 
 ## The brief - the exact prompt a sub-agent receives
 
@@ -241,7 +244,8 @@ spawn; no restart is needed.
 
 The model id is checked against the provider's choice list (live-harvested,
 else the cold-start list); an id outside it logs `spawn model coerced` and uses
-the per-provider sub-model default. The head's `[AVAILABLE MODELS]` line is
+the per-provider sub-model default when listed, else the cheapest listed model
+(above). The head's `[AVAILABLE MODELS]` line is
 built from that same list, so every model it is offered spawns as named. Deep
 research models are not in any list (they cannot run the turn contract), so a
 `deep_research` skill hint runs on the provider's sub-model default with its

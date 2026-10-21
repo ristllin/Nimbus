@@ -50,5 +50,12 @@ std::string effectiveModelChoices(const char* slug, const std::string& harvested
 // empty model never matches).
 bool modelInChoices(const std::string& csv, const std::string& model);
 
+// The cheapest of the `csv` items for provider `slug` by the built-in price table
+// (model_price_defaults.h: input plus output price per 1M tokens; the earlier item
+// wins a tie), or "" when no item has a price row of its own. Fail-closed money: an
+// unpriced model may cost more than any priced one, so it is never the answer. The
+// spawn-model fallback reads this instead of the list's first item.
+std::string cheapestChoice(const char* slug, const std::string& csv);
+
 }  // namespace orch
 }  // namespace nimbus
