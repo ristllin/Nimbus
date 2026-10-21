@@ -1118,7 +1118,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
 | `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
-| `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
+| `FAULT <cap> <on\|off>` / `FAULT?` / `FAULT clear` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen, sd_io, provider, relay_noslot, embed_fail) to prove graceful degradation; query the mask. `FAULT clear` ends every injected fault, `embed_fail` and the memory ballast included. |
 | `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Held as up to 16 blocks, so it can go past the largest free block, and never below 4 KB free. Reports what it holds, internal free, largest block and block count. |
 | `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers) with a recorded out-of-credit refusal (`HTTP 429 credit_balance_exhausted`), to exercise the memory-write queue. Replies `FAULT embed_fail=<0\|1> pending=<n>`; `off` also ends the embedding pause so the queue drains. |
 | `FAULT scratch_fail <on\|off>` | Make the scratchpad's flash file write fail, so a change is kept until restart only and says so, whatever the settings storage holds. Replies `FAULT scratch_fail=1`, or on `off` `FAULT scratch_fail=0 saved=<0\|1>` (`off` saves the notes again at once). `FAULT clear` ends it too, and ends `embed_fail`. |
@@ -1128,10 +1128,10 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `PROVFAULT <host> <status> <json>` / `PROVFAULT off` | Answer one provider host with a set HTTP status and error body instead of the network (for example a credit or overload error), until `off`. Reports "not wired" until the provider lane binds it. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
-| `REBOOT` | Software restart - the only sanctioned way to restart from the host. |
-| `REBOOT cold` | Restart with the clock cleared, so the boot starts unset like a power-on (a plain restart keeps the clock). |)NIMBUSDOC"},
+| `REBOOT` | Software restart - the only sanctioned way to restart from the host. |)NIMBUSDOC"},
   {"tools-and-commands#contributor-tools-console-commands-3", "Contributor tools - Console commands (3/7)",
-   R"NIMBUSDOC(| `FACTRESET` | Trigger the deferred factory reset (preserves hardware identity, erases config, restarts) - the console path to the web `/api/factory-reset`. |
+   R"NIMBUSDOC(| `REBOOT cold` | Restart with the clock cleared, so the boot starts unset like a power-on (a plain restart keeps the clock). |
+| `FACTRESET` | Trigger the deferred factory reset (preserves hardware identity, erases config, restarts) - the console path to the web `/api/factory-reset`. |
 | `HANG` | Deliberately hang the main loop to prove the watchdog recovers (~8 s). |
 | `MEMFILL <epi\|vec> <n> [bytes]` | Fill episodic or vector memory with test rows to exercise caps and pruning. |
 | `WEBTOK?` | Print the device's web access token (for the HIL harness). |)NIMBUSDOC"},

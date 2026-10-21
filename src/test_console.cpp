@@ -597,7 +597,12 @@ void dispatch(String line) {
       return;
     }
     if (rest == "clear" || rest == "none" || rest == "off") {
+      // Every injected fault lives in the registry mask (embed_fail included), so
+      // clearAll ends them all; the embedding outage also ends its pause, as
+      // "FAULT embed_fail off" does, so the queue drains at once.
+      const bool embedWas = nimbus::fault::active(nimbus::fault::EMBED_FAIL);
       nimbus::fault::clearAll();
+      if (embedWas && s_h.embedFail) s_h.embedFail(false);
       faultSramBallast(0);   // release any ballast too
       s_ttsMuted = false;    // and the AUDIOINJECT speech mute
       if (s_h.embedFail) s_h.embedFail(false);       // and the embedding outage
@@ -613,7 +618,8 @@ void dispatch(String line) {
     const bool on = !(onS == "off" || onS == "0" || onS == "false");
     nimbus::fault::Cap c;
     if (!nimbus::fault::parse(capS.c_str(), c)) {
-      Serial.printf("FAULT unknown capability '%s' (sd|memory|mic|speaker|led|screen)\n", capS.c_str());
+      Serial.printf("FAULT unknown capability '%s' (sd|memory|mic|speaker|led|screen|sd_io|provider|relay_noslot|embed_fail)\n",
+                    capS.c_str());
       Serial.flush();
       return;
     }

@@ -4,6 +4,10 @@
 // covered in test_orch_vector; here we pin the registry mechanics themselves.
 #include <unity.h>
 
+#include <cstdio>
+#include <string>
+#include <vector>
+
 #include "nimbus/fault.h"
 
 using namespace nimbus::fault;
@@ -45,6 +49,73 @@ static void test_clear_all() {
   clearAll();
   TEST_ASSERT_EQUAL_UINT16(0, mask());
   for (uint8_t i = 0; i < COUNT; i++) TEST_ASSERT_FALSE(active(Cap(i)));
+  // Property: whatever subset is injected, clearAll leaves nothing behind.
+  for (uint32_t subset = 1; subset < (1u << COUNT); subset += 37) {
+    for (uint8_t i = 0; i < COUNT; i++) set(Cap(i), (subset >> i) & 1u);
+    clearAll();
+    TEST_ASSERT_EQUAL_UINT16(0, mask());
+  }
+}
+
+// The unit L runner found FAULT clear leaving embed_fail on: that fault lived in a flag
+// of the memory subsystem, outside this registry. It is a registry cap now.
+static void test_embed_fail_is_a_registry_fault_that_clear_all_ends() {
+  Cap c = SD;
+  TEST_ASSERT_TRUE(parse("embed_fail", c));
+  TEST_ASSERT_EQUAL(EMBED_FAIL, c);
+  set(EMBED_FAIL, true);
+  set(PROVIDER, true);
+  TEST_ASSERT_TRUE(active(EMBED_FAIL));
+  clearAll();
+  TEST_ASSERT_FALSE(active(EMBED_FAIL));
+  TEST_ASSERT_EQUAL_UINT16(0, mask());
+}
+
+// ---- the console's FAULT verbs (class guard over src/test_console.cpp) ------------
+static std::string readSource(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static std::string sliceBetween(const std::string& s, const std::string& from, const std::string& to) {
+  const size_t a = s.find(from);
+  TEST_ASSERT_TRUE_MESSAGE(a != std::string::npos, from.c_str());
+  const size_t b = s.find(to, a + from.size());
+  TEST_ASSERT_TRUE_MESSAGE(b != std::string::npos, to.c_str());
+  return s.substr(a, b - a);
+}
+
+// Every "FAULT <name> ..." form the console parses before the registry lookup either
+// names a registry cap (so FAULT clear's clearAll ends it) or is a resource the clear
+// branch itself releases. A new verb with a flag of its own fails here until it is one
+// or the other - FAULT clear can never again leave a fault on.
+static void test_every_console_fault_verb_is_ended_by_fault_clear() {
+  const std::string src = readSource("src/test_console.cpp");
+  const std::string block = sliceBetween(src, "if (line.startsWith(\"FAULT \")) {", "if (line == \"RENDER?\")");
+  const std::string clear = sliceBetween(block, "if (rest == \"clear\"", "return;");
+  TEST_ASSERT_TRUE(clear.find("nimbus::fault::clearAll()") != std::string::npos);
+  struct Released { const char* verb; const char* release; };
+  static const Released kSelfHeld[] = {{"sram_ballast", "faultSramBallast(0)"}};
+  std::vector<std::string> verbs;
+  const std::string open = "rest.startsWith(\"";
+  for (size_t i = block.find(open); i != std::string::npos; i = block.find(open, i + 1)) {
+    const size_t a = i + open.size();
+    verbs.push_back(block.substr(a, block.find('"', a) - a));
+  }
+  TEST_ASSERT_TRUE(verbs.size() >= 2);
+  for (const std::string& v : verbs) {
+    Cap c = SD;
+    bool ended = parse(v.c_str(), c);
+    for (const Released& r : kSelfHeld)
+      if (v == r.verb) ended = clear.find(r.release) != std::string::npos;
+    TEST_ASSERT_TRUE_MESSAGE(ended, v.c_str());
+  }
 }
 
 static void test_idempotent_set() {
@@ -108,6 +179,8 @@ int main(int, char**) {
   RUN_TEST(test_set_and_clear_single);
   RUN_TEST(test_independent_bits);
   RUN_TEST(test_clear_all);
+  RUN_TEST(test_embed_fail_is_a_registry_fault_that_clear_all_ends);
+  RUN_TEST(test_every_console_fault_verb_is_ended_by_fault_clear);
   RUN_TEST(test_idempotent_set);
   RUN_TEST(test_parse_roundtrip);
   RUN_TEST(test_parse_case_insensitive);

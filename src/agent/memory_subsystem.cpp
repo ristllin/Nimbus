@@ -221,14 +221,14 @@ constexpr uint32_t kDrainBootGraceMs = 60000;   // none in the first minute: let
 #ifdef NIMBUS_TEST
 // FAULT embed_fail: only the embedding call fails, with Lumi's recorded refusal
 // (13 Oct 2026), so the queue and its honest reply run on demand. Test build only.
-bool g_embedFault = false;
+// The flag is the fault registry's EMBED_FAIL bit, so FAULT clear ends it too.
 const char* kEmbedFaultToken = "HTTP 429 credit_balance_exhausted";
 #endif
 
 // One embedding call for the memory engines, honoring the test fault.
 std::vector<int8_t> embedRaw(const String& text, String& err) {
 #ifdef NIMBUS_TEST
-  if (g_embedFault) { err = kEmbedFaultToken; return {}; }
+  if (nimbus::fault::active(nimbus::fault::EMBED_FAIL)) { err = kEmbedFaultToken; return {}; }
 #endif
   return embeddings::embed(text, err);
 }
@@ -1807,7 +1807,7 @@ int drainPendingBurst(int maxEntries, uint32_t budgetMs) {
 
 #ifdef NIMBUS_TEST
 String setEmbedFault(bool on) {
-  g_embedFault = on;
+  nimbus::fault::set(nimbus::fault::EMBED_FAIL, on);
   if (!on) { Lock g; g_park.clear(); }   // the outage is over: the next attempt goes straight out
   return String("FAULT embed_fail=") + (on ? "1" : "0") + " pending=" + pendingCount();
 }

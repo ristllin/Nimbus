@@ -32,7 +32,12 @@ namespace nimbus::fault {
 // RELAY_NOSLOT = "the cloud relay serves like v4.5.13": no TLS work slot for its dial
 // and big frames, and no busy answer for a big tunneled page during a turn. The
 // counter-leg of the concurrent-TLS bench test (it must reproduce the overlap).
-enum Cap : uint8_t { SD = 0, MEMORY, MIC, SPEAKER, LED, SCREEN, SD_IO, PROVIDER, RELAY_NOSLOT, COUNT };
+// EMBED_FAIL = "only the embedding call fails" with a recorded out-of-credit refusal,
+// so the memory-write queue runs on demand (FAULT embed_fail). It lives in this mask
+// like every other injected fault, so FAULT clear (clearAll) ends it too.
+enum Cap : uint8_t {
+  SD = 0, MEMORY, MIC, SPEAKER, LED, SCREEN, SD_IO, PROVIDER, RELAY_NOSLOT, EMBED_FAIL, COUNT
+};
 
 bool        active(Cap c);                    // is this capability currently faulted?
 void        set(Cap c, bool faulted);         // inject (true) / clear (false) one capability

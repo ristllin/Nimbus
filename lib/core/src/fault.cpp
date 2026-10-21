@@ -11,8 +11,8 @@ namespace {
 // endpoint on another task) never need a lock for the flag itself.
 volatile uint16_t g_mask = 0;
 
-const char* const kNames[COUNT] = {"sd",     "memory", "mic",      "speaker",     "led",
-                                   "screen", "sd_io",  "provider", "relay_noslot"};
+const char* const kNames[COUNT] = {"sd",     "memory", "mic",      "speaker",      "led",
+                                   "screen", "sd_io",  "provider", "relay_noslot", "embed_fail"};
 }  // namespace
 
 bool active(Cap c) { return c < COUNT && (g_mask & (uint16_t(1) << c)) != 0; }

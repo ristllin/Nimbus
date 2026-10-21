@@ -208,7 +208,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
 | `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
-| `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
+| `FAULT <cap> <on\|off>` / `FAULT?` / `FAULT clear` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen, sd_io, provider, relay_noslot, embed_fail) to prove graceful degradation; query the mask. `FAULT clear` ends every injected fault, `embed_fail` and the memory ballast included. |
 | `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Held as up to 16 blocks, so it can go past the largest free block, and never below 4 KB free. Reports what it holds, internal free, largest block and block count. |
 | `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers) with a recorded out-of-credit refusal (`HTTP 429 credit_balance_exhausted`), to exercise the memory-write queue. Replies `FAULT embed_fail=<0\|1> pending=<n>`; `off` also ends the embedding pause so the queue drains. |
 | `FAULT scratch_fail <on\|off>` | Make the scratchpad's flash file write fail, so a change is kept until restart only and says so, whatever the settings storage holds. Replies `FAULT scratch_fail=1`, or on `off` `FAULT scratch_fail=0 saved=<0\|1>` (`off` saves the notes again at once). `FAULT clear` ends it too, and ends `embed_fail`. |
