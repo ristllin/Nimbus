@@ -6,8 +6,10 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/apply.h"
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/orch/tool_taint.h"
 
@@ -358,6 +360,103 @@ static void test_round_consistent_reply_and_spawn_claims_cost_no_claim_round() {
                        nimbus::orch::kSpawnNotStartedLine) != std::string::npos);
 }
 
+// ---- one delivered reply per turn (bench C1 on the host) ----------------------
+// The LAN mock's "mock-claim-saved" head turn, byte for byte as
+// tests/hil/mock_llm.py (CLAIM_TURNS) answers it: a "Saved it" reply with one
+// memory write.
+static const char kMockClaimSaved[] =
+    R"({"reply": "Saved it to memory.", "mem_write": [{"content": "bench claim check note", )"
+    R"("importance": 0.5, "permanent": false, "ttl": "days"}]})";
+static const char kNotSavedLine[] = "(Correction: that has not been saved.)";
+
+// How the turn's memory write ends.
+enum class WriteEnd { Stored, Duplicate, Queued, Refused, FailedNoCode, NoStore, Unverified };
+
+static nimbus::orch::ToolResult writeResult(WriteEnd e) {
+  using nimbus::orch::ToolResult;
+  ToolResult r = ToolResult::fail("memory engine unavailable");   // FailedNoCode
+  if (e == WriteEnd::Stored) {
+    r = ToolResult::ok("stored memory m1a2b3c4");
+    r.code = nimbus::orch::kMemOutcomeStored;
+  } else if (e == WriteEnd::Duplicate) {
+    r = ToolResult::ok("duplicate of an existing memory (importance bumped)");
+    r.code = nimbus::orch::kMemOutcomeDuplicate;
+  } else if (e == WriteEnd::Queued) {   // FAULT embed_fail: the embedding outage queue
+    r = ToolResult::ok("queued memory p1, not stored yet: the embedding provider is out of credit.");
+    r.code = nimbus::orch::kMemOutcomeQueued;
+  } else if (e == WriteEnd::Refused) {
+    r = ToolResult::fail("the embedding provider is out of credit (not stored: the waiting list is full)");
+    r.code = nimbus::orch::kMemOutcomeRefused;
+  }
+  return r;
+}
+
+// What one applied turn put in front of the owner and into the history.
+struct Applied {
+  std::vector<std::string> delivered, captured;
+  int writes = 0;
+};
+
+// The mock turn through the real parse and apply, the way the device's
+// single-shot custom head runs it (no tool loop, so no correction round: the
+// check after apply is the only one).
+static Applied applyMockTurn(WriteEnd end) {
+  nimbus::orch::Turn t;
+  nimbus::orch::ParseError perr;
+  TEST_ASSERT_TRUE(nimbus::orch::parseHeadReply(kMockClaimSaved, t, perr) == nimbus::orch::ReplyShape::Turn);
+  TEST_ASSERT_EQUAL(1, (int)t.mem_write.size());
+  Applied out;
+  agent::ApplyDeps d;
+  d.deliver = [&out](const std::string&, const std::string& text) { out.delivered.push_back(text); };
+  d.captureAssistant = [&out](const std::string&, const std::string& text) { out.captured.push_back(text); };
+  if (end != WriteEnd::NoStore)
+    d.memDispatch = [&out, end](const char*, ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+      out.writes++;
+      return writeResult(end);
+    };
+  ClaimCheck cc;
+  cc.beginTurn();
+  agent::ApplyState st;
+  st.claims = &cc;
+  st.unverifiedConnector = end == WriteEnd::Unverified;
+  bool spawned = false;
+  agent::applyTurn(t, "serial", d, st, spawned);
+  return out;
+}
+
+// Every way a memory write can fail to land under a "Saved it" reply gives
+// exactly one delivered reply, ending with the correction, and the history row
+// is that same text once; a write that lands gives the same single reply with
+// no line. claimsTailed moves once per corrected reply.
+static void test_a_write_that_does_not_land_under_a_saved_reply_gets_one_corrected_reply() {
+  const struct {
+    WriteEnd end;
+    bool lands;
+    int writes;
+    const char* what;
+  } cases[] = {
+      {WriteEnd::Stored, true, 1, "stored"},
+      {WriteEnd::Duplicate, true, 1, "duplicate"},
+      {WriteEnd::Queued, false, 1, "queued (embedding outage)"},
+      {WriteEnd::Refused, false, 1, "refused"},
+      {WriteEnd::FailedNoCode, false, 1, "failed with no outcome code"},
+      {WriteEnd::NoStore, false, 0, "no memory store on this host"},
+      {WriteEnd::Unverified, false, 0, "refused: unverified connector result"},
+  };
+  for (const auto& c : cases) {
+    const uint32_t tailed = ClaimCheck::tailedCount();
+    const Applied a = applyMockTurn(c.end);
+    TEST_ASSERT_EQUAL_MESSAGE(c.writes, a.writes, c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)a.delivered.size(), c.what);
+    const std::string want =
+        c.lands ? std::string("Saved it to memory.") : std::string("Saved it to memory.\n\n") + kNotSavedLine;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), a.delivered[0].c_str(), c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)a.captured.size(), c.what);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(a.delivered[0].c_str(), a.captured[0].c_str(), c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(tailed + (c.lands ? 0 : 1), ClaimCheck::tailedCount(), c.what);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_consistent_replies_need_no_correction);
@@ -376,5 +475,6 @@ int main(int, char**) {
   RUN_TEST(test_round_that_writes_the_file_adds_no_line);
   RUN_TEST(test_round_forced_final_gets_the_line_and_no_extra_round);
   RUN_TEST(test_round_consistent_reply_and_spawn_claims_cost_no_claim_round);
+  RUN_TEST(test_a_write_that_does_not_land_under_a_saved_reply_gets_one_corrected_reply);
   return UNITY_END();
 }

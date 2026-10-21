@@ -125,6 +125,7 @@ struct Rig {
   std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
   agent::ScratchOutcome scratchOutcome = agent::ScratchOutcome::Applied;   // what the save reports
   std::vector<std::string> memCalls;   // ApplyDeps.memDispatch recorder (tool names)
+  orch::ToolResult memResult = orch::ToolResult::ok("stored");   // what every memory tool answers
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
   std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
   std::string chatSummary;          // L19-28: the compacted summary composeInputs hands the engine
@@ -253,7 +254,7 @@ struct Rig {
     d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst,
                                  const orch::Principal&) {
       memCalls.push_back(name);
-      return orch::ToolResult::ok("stored");
+      return memResult;
     };
     // Default = the harness's deny-all principal; adminChats = true opts into admin.
     d.apply.principalFor = [this](const std::string& chat) {
@@ -3369,6 +3370,50 @@ static void test_lane_s_the_claim_check_joins_the_final_check() {
   TEST_ASSERT_EQUAL_STRING("", r.finalChecks[2].c_str());
 }
 
+// Bench C1 on the host: the custom head (the LAN mock) answers the mock's exact
+// "mock-claim-saved" turn on the serial chat, and the memory write does not land
+// (FAULT embed_fail queues it; a full queue refuses it). The turn delivers exactly
+// one reply, ending with the correction, and the history row is that reply. A
+// stored write gives the same single reply with no line (counter-test).
+static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
+  const char* mockTurn =
+      R"({"reply": "Saved it to memory.", "mem_write": [{"content": "bench claim check note", )"
+      R"("importance": 0.5, "permanent": false, "ttl": "days"}]})";
+  const struct {
+    const char* code;
+    const char* text;
+    bool success, lands;
+  } cases[] = {
+      {orch::kMemOutcomeQueued, "queued memory p1, not stored yet", true, false},
+      {orch::kMemOutcomeRefused, "not stored: the waiting list is full", false, false},
+      {orch::kMemOutcomeStored, "stored memory m1", true, true},
+  };
+  for (const auto& c : cases) {
+    Rig r;
+    r.cfg.keyed.insert("custom");
+    r.cfg.orchHost = "custom";
+    r.adminChats = true;   // the serial console is an owner surface
+    Rig::Script s;
+    s.outJson = mockTurn;
+    r.scripts["custom"] = {s};
+    r.memResult = c.success ? orch::ToolResult::ok(c.text) : orch::ToolResult::fail(c.text);
+    r.memResult.code = c.code;
+    const uint32_t tailed = agent::ClaimCheck::tailedCount();
+    r.eng->handleMessage("remember the bench note", "", "serial");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), c.code);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("custom", r.attempts[0].host.c_str(), c.code);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.memCalls.size(), c.code);
+    const std::string want = c.lands ? std::string("Saved it to memory.")
+                                     : std::string("Saved it to memory.\n\n(Correction: that has not been saved.)");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.code);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("serial", r.delivered[0].first.c_str(), c.code);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.code);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.assistantRows.size(), c.code);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.assistantRows[0].second.c_str(), c.code);
+    TEST_ASSERT_EQUAL_MESSAGE(tailed + (c.lands ? 0 : 1), agent::ClaimCheck::tailedCount(), c.code);
+  }
+}
+
 // Formatting F3/F4 at the engine: reasoning, wrappers and tool markup never reach
 // the owner, on the turn path and the prose path; unknown <word> content stays.
 static void test_lane_l_markup_never_reaches_the_owner() {
@@ -3873,6 +3918,7 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_a_gated_recovered_spawn_is_reported);
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
   RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
+  RUN_TEST(test_pg5_custom_head_saved_claim_delivers_one_reply);
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
   RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);

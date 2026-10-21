@@ -4,9 +4,10 @@ The head runs on the LAN mock (the custom endpoint, single-shot structured
 turn), so every reply is fixed and the legs cost nothing. The device must hold
 each reply's claim against what the turn really did:
 
-  C1  a memory write the store refuses (``FAULT embed_fail on``) under a reply
-      that says "Saved it to memory." -> the delivered reply carries
-      "(Correction: that has not been saved.)" and ``claimsTailed`` goes up;
+  C1  a memory write that does not land (``FAULT embed_fail on``: the embedding
+      outage queues it, so it is not saved yet) under a reply that says "Saved
+      it to memory." -> the turn delivers exactly one reply, carrying
+      "(Correction: that has not been saved.)", and ``claimsTailed`` goes up;
   C2  the scratchpad route at a full NVS partition (``NVSFILL``) -> the change
       result says "kept until restart only (saving failed)"; after
       ``NVSFILL 0`` (fresh room) it does not;
@@ -36,14 +37,39 @@ SAVED_LINE = "(Correction: that has not been saved.)"
 RAM_LINE = "(Note: this is kept only until the next restart; saving it permanently failed.)"
 RAM_TOOL = "kept until restart only (saving failed)"
 FILL_CHUNK = int(os.environ.get("NIMBUS_S_FILL_CHUNK", "400"))
+# The chat a serial TURN runs in (main.cpp: injectMessage("serial", ...)).
+TURN_CHAT = "serial"
+# After the first reply row appears, how long to wait for a second one from the
+# same turn (a turn must deliver exactly one reply).
+SETTLE_S = 6.0
 
 
-def _episodic_last_assistant(be) -> str:
-    rows = be.net.get_json(f"/api/mem/episodic?limit=20&t={be.tok}", ip=be.ip, timeout=8.0).get("messages", [])
-    for r in reversed(rows):
-        if r.get("role") == "assistant":
-            return r.get("text", "")
-    return ""
+def assistant_replies(page: dict) -> dict:
+    """id -> text of the assistant replies on one /api/mem/episodic page. The API
+    answers newest first; ids are unique, so a new reply is a new id, wherever it
+    sits on the page and even when its text repeats an earlier reply."""
+    return {
+        str(r.get("id")): str(r.get("text") or "")
+        for r in page.get("messages", [])
+        if r.get("role") == "assistant" and r.get("kind", "message") == "message"
+    }
+
+
+def new_replies(before: dict, after: dict) -> dict:
+    return {k: v for k, v in after.items() if k not in before}
+
+
+def the_one_reply(got: dict, model: str) -> str:
+    """The turn's reply: exactly one new reply row, never none and never two."""
+    if not got:
+        pytest.fail(f"no delivered reply recorded for {model} in the {TURN_CHAT} chat")
+    assert len(got) == 1, f"one turn must deliver exactly one reply, got {len(got)}: {list(got.values())!r}"
+    return next(iter(got.values()))
+
+
+def _replies(be) -> dict:
+    q = f"/api/mem/episodic?session={TURN_CHAT}&kind=message&limit=20&t={be.tok}"
+    return assistant_replies(be.net.get_json(q, ip=be.ip, timeout=8.0))
 
 
 def _tailed(be) -> int:
@@ -51,21 +77,19 @@ def _tailed(be) -> int:
 
 
 def _turn(be, model: str, text: str, timeout: float = 90.0) -> str:
-    """One head turn on the mock scenario `model`; returns the delivered reply."""
+    """One head turn on the mock scenario `model`; returns the one reply it delivered."""
     be.set_model(model)
-    before = _episodic_last_assistant(be)
+    before = _replies(be)
     try:
         be.device.cmd(f"TURN {text}", expect="TURN <-", timeout=6.0)
     except Exception:  # noqa: BLE001 - the echo is advisory; the turn still fires
         pass
     assert be.server.wait_for_request(model, count=1, timeout=timeout), f"the head never reached {model}"
     end = time.time() + timeout
-    while time.time() < end:
-        got = _episodic_last_assistant(be)
-        if got and got != before:
-            return got
+    while time.time() < end and not new_replies(before, _replies(be)):
         time.sleep(2.0)
-    pytest.fail(f"no delivered reply recorded for {model}")
+    time.sleep(SETTLE_S)  # a second reply from the same turn would land in this window
+    return the_one_reply(new_replies(before, _replies(be)), model)
 
 
 def _fill_nvs(device) -> None:
