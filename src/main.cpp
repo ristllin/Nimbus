@@ -2762,7 +2762,10 @@ static void registerDeviceTools() {
           "nvs = settings-storage health (free bytes, saves that failed since boot, "
           "the last key that failed - never its value) and tgOffsetSaved (false means "
           "the device owes a Telegram offset write, so messages can arrive again - "
-          "a device-side repeat, not the owner's app). "
+          "a device-side repeat, not the owner's app), and embedParked = the embedding "
+          "provider is refusing (true: new memories wait on the device and recall is "
+          "keyword-only; embedParkedWhy says why - never claim memory is stored while "
+          "it is true). "
           "Silent - never makes a sound.",
           [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
             // W11: the hw snapshot PLUS the agent-layer live state (composed here,
@@ -2846,6 +2849,11 @@ static void registerDeviceTools() {
               st.saveFails = nimbus::sys::persistFailures();
               st.lastSaveFail = std::string(nimbus::sys::lastPersistFailKey().c_str());
               st.tgOffsetSaved = agent::telegram::pollStatus().offsetSaved;
+              // L19-9 (lane P): the embedding park, from the same source as
+              // /api/mem/stats - true means new memories wait on the device.
+              const String why = agent::memory::embedParkedWhy();
+              st.embedParked = why.length() > 0;
+              st.embedParkedWhy = std::string(why.c_str());
               s += ","; s += nimbus::orch::storageStateJson(st).c_str();
             }
             s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
@@ -2986,6 +2994,18 @@ static void otaEventHook(int ev, const char* a, const char* b) {
   }
 }
 
+// The Telegram task's staged-work slot is single, so it is multiplexed here: the
+// OTA check or install keeps priority, and otherwise one pending-embed drain step
+// runs (memory writes queued during an embedding outage, lane P). Both run
+// between the task's own work, never inside a turn, one per cycle.
+static bool stagedWorkPending() {
+  return otaupd::onPollPending() || (g_orchMode && agent::memory::embedDrainDue());
+}
+static void stagedWorkRun() {
+  if (otaupd::onPollPending()) otaupd::runOnPoll();
+  else if (g_orchMode) agent::memory::drainPendingStep();
+}
+
 static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   s.turnInFlight = g_orchMode && agent::orchestrator::turnInFlight();
   s.voiceActive = g_voiceActive;
@@ -3098,7 +3118,7 @@ void setup() {
   // between its own work (lane L32, docs/ota.md "On a busy device"). Wired before
   // telegram::begin() so the hooks are set before that task starts.
   otaupd::setPollProbe([] { return g_orchMode; }, agent::telegram::taskAlive);
-  agent::telegram::setStagedWork(otaupd::onPollPending, otaupd::runOnPoll);
+  agent::telegram::setStagedWork(stagedWorkPending, stagedWorkRun);
   // Owner-only Telegram `/update` approves + installs a pending OTA. Runs on the
   // tg_poll task (handleMessage); returns the reply text the owner sees.
   // ⚠ The OTA state is IN-RAM and resets on every boot, so "not available" here
@@ -4110,6 +4130,7 @@ void setup() {
     h.audioInject = [](const String& p) { return audioInjectTurn(p); };  // AUDIOINJECT (OA-030)
     h.tgInjectRaw = [](const String& p) { return agent::telegram::injectRawPage(p); };  // TGINJECT (full receive path)
     h.panicArmTurn = [](const String& k) { return nimbus::crash::armTurnPanic(k); };  // PANIC <kind> arm=turn [round=N]
+    h.embedFail = [](bool on) { return agent::memory::setEmbedFault(on); };  // FAULT embed_fail
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),

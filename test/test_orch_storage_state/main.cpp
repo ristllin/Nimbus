@@ -23,7 +23,8 @@ static void test_golden_fresh_device() {
   s.nvsStats = true;
   s.nvsFree = 16384;
   TEST_ASSERT_EQUAL_STRING(
-      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true}",
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true,"
+      "\"embedParked\":false,\"embedParkedWhy\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -39,7 +40,8 @@ static void test_golden_nvsfill0_shape() {
   s.lastSaveFail = "tgOffset";
   s.tgOffsetSaved = false;
   TEST_ASSERT_EQUAL_STRING(
-      "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},\"tgOffsetSaved\":false}",
+      "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},\"tgOffsetSaved\":false,"
+      "\"embedParked\":false,\"embedParkedWhy\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -60,6 +62,8 @@ static void test_keys_always_present_values_may_be_null() {
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"fails\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"lastFail\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"tgOffsetSaved\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParked\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParkedWhy\""), j.c_str());
     JsonDocument d;
     const std::string err = deserializeJson(d, j) ? "parse failed" : "";
     TEST_ASSERT_EQUAL_STRING_MESSAGE("", err.c_str(), j.c_str());
@@ -67,7 +71,24 @@ static void test_keys_always_present_values_may_be_null() {
     TEST_ASSERT_EQUAL_MESSAGE(s.lastSaveFail.empty(), d["nvs"]["lastFail"].isNull(), j.c_str());
     TEST_ASSERT_EQUAL_UINT32(s.saveFails, d["nvs"]["fails"].as<uint32_t>());
     TEST_ASSERT_EQUAL(s.tgOffsetSaved, d["tgOffsetSaved"].as<bool>());
+    TEST_ASSERT_EQUAL_MESSAGE(false, d["embedParked"].as<bool>(), j.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d["embedParkedWhy"].isNull(), j.c_str());
   }
+}
+
+// L19-9 (lane P): the embedding-outage shape. embedParked is true and its why is
+// the secret-safe cause slug, so the head can say memories are waiting on the
+// device instead of claiming its memory path is working (19 Oct head incident).
+static void test_golden_embedding_parked_shape() {
+  StorageState s;
+  s.nvsStats = true;
+  s.nvsFree = 16384;
+  s.embedParked = true;
+  s.embedParkedWhy = "out of embedding credit at openai";
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true,"
+      "\"embedParked\":true,\"embedParkedWhy\":\"out of embedding credit at openai\"}",
+      storageStateJson(s).c_str());
 }
 
 // A failing key name is a JSON string like any other: quotes and backslashes in
@@ -88,6 +109,7 @@ static void test_failing_key_name_is_json_safe() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_golden_fresh_device);
+  RUN_TEST(test_golden_embedding_parked_shape);
   RUN_TEST(test_golden_nvsfill0_shape);
   RUN_TEST(test_keys_always_present_values_may_be_null);
   RUN_TEST(test_failing_key_name_is_json_safe);

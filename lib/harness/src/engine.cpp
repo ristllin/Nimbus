@@ -352,10 +352,16 @@ std::string TurnEngine::takePendingMemResults(const std::string& chatId) {
   // Per chat (lane M): the results belong to the chat (and so the principal) whose
   // turn ran the mem_query. An engine-global slot handed the owner's memory search
   // results to whichever chat spoke next - a member's or a guest's turn included.
+  std::string body;
   auto it = pendingMemResults_.find(chatId);
-  if (it == pendingMemResults_.end()) return "";
-  const std::string body = std::move(it->second.body);
-  pendingMemResults_.erase(it);
+  if (it != pendingMemResults_.end()) {
+    body = std::move(it->second.body);
+    pendingMemResults_.erase(it);
+  }
+  // Writes queued during an embedding outage that were stored (or refused) since:
+  // the head promised "I'll remember" and can now confirm it (lane P). The drained
+  // confirmations join this chat's parked block, never a global slot.
+  if (d_.memNotes) body += d_.memNotes(chatId);
   if (body.empty()) return "";
   // BACKGROUND framing (owner field bug 2026-07-16): this block used to lead the
   // turn input with no do-not-latch instruction - the owner sent "try now?" (about
@@ -651,9 +657,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // applyTurn's dispatch all read the same identity, so a chat cannot be
   // advertised one capability set and judged by another (W14).
   const orch::Principal turnWho = d_.apply.whoFor(chatId);
-  std::vector<std::string> recalled;
+  orch::RecallOut recall;
   if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)
-    recalled = d_.recall(userText, turnWho);
+    recall = d_.recall(userText, turnWho);
+  const std::vector<std::string>& recalled = recall.hits;
   {
     // The figure check's sources: the input block (the owner's text, captions,
     // the window, fresh results) and, apart, the recalled memories. Only their
@@ -760,6 +767,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   ci.recalled = recalled;
   ci.catalogs = buildStableCatalogs();
+  ci.recallDegraded = recall.degraded;
   std::string instructions = agent::composeInstructions(ci);
   // ONE line, only when the loop was actually withheld - the interesting case,
   // and it keeps a healthy device's log clean. entry -> recall -> compose shows

@@ -1065,7 +1065,12 @@ static TurnEngine::Deps buildTurnDeps() {
     if (strcmp(cue, "turnstart") == 0) ::sfx::fire(nimbus::sfx::Ev::TurnStart);   // "Roger that."
   };
   d.recall = [](const std::string& userText, const nimbus::orch::Principal& who) {
-    return memory::recall(String(userText.c_str()), 0, who);
+    return memory::recallFor(String(userText.c_str()), 0, who);
+  };
+  // Queued memory writes stored by the drain since this chat's last turn (lane P).
+  d.memNotes = [](const std::string& chatId) {
+    const bool admin = roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin;
+    return memory::pendingNotes(nimbus::orch::nsForChat(chatId, admin));
   };
   // Gather the LIVE prompt inputs; the engine fills tools/loopOn/recalled and
   // every model-visible string lives in the portable harness (compose.cpp),

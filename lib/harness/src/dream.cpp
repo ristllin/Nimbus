@@ -710,10 +710,13 @@ std::string maintText(const NightReport& r) {
 
 std::string writesText(const nimbus::orch::MemOpCounters& w) {
   const uint32_t stored = w.added + w.updated;
-  const uint32_t tried = stored + w.dupSkipped + w.failed;
-  char b[96];
-  snprintf(b, sizeof b, "%u of %u memories stored (%u new, %u updated, %u failed)", (unsigned)stored,
-           (unsigned)tried, (unsigned)w.added, (unsigned)w.updated, (unsigned)w.failed);
+  const uint32_t tried = stored + w.dupSkipped + w.queued + w.failed;
+  // A queued write is NOT stored (it waits for its embedding); it is named so a
+  // billing outage during the night can never read as "memories stored".
+  char b[112];
+  snprintf(b, sizeof b, "%u of %u memories stored (%u new, %u updated, %u queued, %u failed)",
+           (unsigned)stored, (unsigned)tried, (unsigned)w.added, (unsigned)w.updated,
+           (unsigned)w.queued, (unsigned)w.failed);
   return b;
 }
 

@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@ struct Rec {
   std::string awaited;
   bool cancelResult = true;
   bool memSuccess = true;
+  std::string memCode;     // the outcome code memory.write returns ("" = none)
   std::string pendingMem;
   bool lastSpawnQuiet = false;   // the quiet flag passed to the last enqueueSpawn
   bool acceptSpawns = true;      // what the job queue answers (false: refused)
@@ -68,6 +70,7 @@ static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
     res.success = r.memSuccess;
     res.output = "ok-output";
     res.error = "err-output";
+    if (std::string(name) == "memory.write") res.code = r.memCode;
     return res;
   };
   d.persistMemory = [&r] { r.persists++; };
@@ -600,6 +603,27 @@ static void test_claims_failed_memory_write_gets_the_correction_line() {
   TEST_ASSERT_EQUAL_STRING("Logged your run.", applyChecked(r, d, t, cc).c_str());
 }
 
+// Lane P meets lane S: a queued write is NOT a stored one, so a "saved" claim
+// over it gets the correction line - the owner is told the fact is only waiting
+// in the embedding-outage queue, not remembered.
+static void test_claims_queued_write_backs_no_save_claim() {
+  Rec r;
+  r.memCode = nimbus::orch::kMemOutcomeQueued;
+  r.memSuccess = true;             // the dispatcher answered ok: the fact is queued
+  ApplyDeps d = makeDeps(r);
+  Turn t = replyTurn("Saved your pool locker code.");
+  nimbus::orch::MemWrite w;
+  w.content = "my pool locker code is 4417";
+  t.mem_write.push_back(w);
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_EQUAL_STRING("Saved your pool locker code.\n\n(Correction: that has not been saved.)",
+                           out.c_str());
+  TEST_ASSERT_TRUE(r.pendingMem.find("[MEMORY] mem_write \"my pool locker code is 4417\" -> ") !=
+                   std::string::npos);
+}
+
 static void test_claims_refused_enqueue_is_not_a_spawn() {
   for (int accept = 0; accept < 2; accept++) {
     Rec r;
@@ -683,6 +707,86 @@ static void test_claims_no_check_attached_is_byte_identical() {
   TEST_ASSERT_EQUAL_STRING("Logged.", r.captured[0].c_str());
 }
 
+// Lane P: every mem_write[] outcome is reported (13-14 Oct: 8 facts lost while the
+// turn said ok). Walks every outcome code the memory tools emit, plus an unknown
+// one: queued and refused (and unknown) add a MEMORY RESULTS line, memsaved fires
+// only for stored, the counters are exact, and a persist runs only when the store
+// changed.
+static void test_every_mem_write_outcome_is_reported() {
+  struct Row {
+    const char* code; bool success;
+    bool reported; bool memsaved; bool persists; int stored, queued, refused;
+    const char* words;
+  };
+  const Row rows[] = {
+      {nimbus::orch::kMemOutcomeStored, true, false, true, true, 1, 0, 0, ""},
+      {nimbus::orch::kMemOutcomeDuplicate, true, false, false, true, 0, 0, 0, ""},
+      {nimbus::orch::kMemOutcomeQueued, true, true, false, false, 0, 1, 0, "-> ok-output"},
+      {nimbus::orch::kMemOutcomeRefused, false, true, false, false, 0, 0, 1, "-> NOT stored: err-output"},
+      // A dispatcher with no codes: success is a store, a failure is reported.
+      {"", true, false, true, true, 1, 0, 0, ""},
+      {"", false, true, false, false, 0, 0, 1, "-> NOT stored: err-output"},
+      // A code this build does not know is never counted as saved.
+      {"brand_new_code", true, true, false, false, 0, 0, 1, "-> NOT stored: ok-output"},
+  };
+  for (const Row& row : rows) {
+    Rec r;
+    r.memCode = row.code;
+    r.memSuccess = row.success;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    Turn t;
+    nimbus::orch::MemWrite w;
+    w.content = "my pool locker code is 4417";
+    t.mem_write.push_back(w);
+    t.reply = "I'll remember that";
+    agent::applyTurn(t, "1001", d, st, spawned);
+    const bool reported = r.pendingMem.find("[MEMORY] mem_write \"my pool locker code is 4417\"") !=
+                          std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(row.reported, reported, row.code);
+    if (row.reported) TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find(row.words) != std::string::npos, row.code);
+    const bool saved = std::find(r.cues.begin(), r.cues.end(), "memsaved") != r.cues.end();
+    TEST_ASSERT_EQUAL_MESSAGE(row.memsaved, saved, row.code);
+    TEST_ASSERT_EQUAL_MESSAGE(row.persists ? 1 : 0, r.persists, row.code);
+    TEST_ASSERT_EQUAL_MESSAGE(row.stored, st.memStored, row.code);
+    TEST_ASSERT_EQUAL_MESSAGE(row.queued, st.memQueued, row.code);
+    TEST_ASSERT_EQUAL_MESSAGE(row.refused, st.memRefused, row.code);
+  }
+  // A host with no memory store reports every write as not stored (never a
+  // silent drop: the hosted daemon shipped without the dispatcher bound).
+  {
+    Rec r0;
+    ApplyDeps d0 = makeDeps(r0);
+    d0.memDispatch = nullptr;
+    ApplyState st0 = makeState(r0);
+    bool sp0 = false;
+    Turn t0;
+    nimbus::orch::MemWrite w0;
+    w0.content = "my pool locker code is 4417";
+    t0.mem_write.push_back(w0);
+    t0.reply = "I'll remember that";
+    agent::applyTurn(t0, "1001", d0, st0, sp0);
+    TEST_ASSERT_TRUE(r0.pendingMem.find("-> NOT stored: this host has no long-term memory store") !=
+                     std::string::npos);
+    TEST_ASSERT_EQUAL(1, st0.memRefused);
+    TEST_ASSERT_EQUAL(0, r0.persists);
+  }
+  // The excerpt is bounded and never splits a UTF-8 character.
+  Rec r;
+  r.memCode = nimbus::orch::kMemOutcomeQueued;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t;
+  nimbus::orch::MemWrite w;
+  w.content = std::string(79, 'a') + "\xC3\xA9" + std::string(50, 'b');
+  t.mem_write.push_back(w);
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_TRUE(r.pendingMem.find(std::string(79, 'a') + "...") != std::string::npos);
+  TEST_ASSERT_TRUE(r.pendingMem.find(std::string(50, 'b')) == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -710,11 +814,13 @@ int main(int, char**) {
   RUN_TEST(test_unverified_connector_turn_refuses_mem_write);
   RUN_TEST(test_mem_query_only_does_not_persist);
   RUN_TEST(test_claims_failed_memory_write_gets_the_correction_line);
+  RUN_TEST(test_claims_queued_write_backs_no_save_claim);
   RUN_TEST(test_claims_refused_enqueue_is_not_a_spawn);
   RUN_TEST(test_claims_ram_only_scratchpad_against_a_durability_claim);
   RUN_TEST(test_claims_noop_device_action_backs_nothing);
   RUN_TEST(test_claims_ask_is_checked_with_the_reply);
   RUN_TEST(test_claims_no_check_attached_is_byte_identical);
+  RUN_TEST(test_every_mem_write_outcome_is_reported);
   UNITY_END();
   return 0;
 }

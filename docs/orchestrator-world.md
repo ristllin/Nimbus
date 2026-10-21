@@ -206,15 +206,58 @@ malformed response, an embedding width that doesn't match the memory setting,
 or a router refusal such as out of credit / rate limited / route not allowed)
 and each maps to its own honest, secret-safe line (a key or Authorization header
 is never echoed; only a known provider name, the numeric HTTP status, or the two
-widths is shown). `memory.write` and `memory.update` refuse with that reason
-and store nothing rather than saving an un-embedded entry as if it were embedded
-(update embeds the new text before removing the old fact, so a failed update never
-loses the prior memory). `memory.search` and `memory.archive` search **degrade**
-instead of failing: they run a bounded, case-insensitive keyword scan over the
-same rows, inside the same namespace boundary the semantic path enforces, and
-label the result `keyword match, embeddings unavailable: <reason>` so the model
-does not mistake it for semantic recall. A transient embed outage therefore reads
-as "keyword match" plus the real cause, not as empty memory.
+widths is shown). A billing refusal (out of credit or quota at the provider, or a
+router budget) reads "out of embedding credit at <provider>" with the next step;
+it uses the same billing table as the chat head, so a new provider token is
+added once for both.
+
+**Writes during an outage are queued, never lost.** On the device (and on a
+hosted Virtual Nimbus) a `memory.write` (or `memory.update`) the embedder cannot serve is kept as text in
+a small pending queue and stored automatically once embeddings work again, with
+the same rules as a direct write (namespace, memory limit, time to live, pins),
+under the writer's role at that time. Every write ends in exactly one outcome,
+and the tool result says which:
+
+| Outcome | Meaning |
+|---|---|
+| `stored` | Embedded and in long-term memory. |
+| `duplicate` | The same fact is already stored. |
+| `queued` | Kept on the device, not stored yet; stored automatically when embeddings work again. Keyword search already finds it (marked `pending, not stored yet`). |
+| `refused` | Not stored, with the reason: nothing to embed, the conversation's memory limit, the queue is full, or the device could not write the queue to storage. |
+
+The queue holds at most 64 facts or 48 KB, and 16 per member conversation; when
+full it refuses new writes and never drops a queued fact. It lives on the SD card
+(`/mem/pending_embed.bin`), or on internal flash (`/data/pendemb.bin`) with no
+card or while the card is away; a hosted instance keeps it beside its vectors. "Queued" is claimed only after that file is
+written. Facts are kept as text, so a later embedding-model change does not
+strand them. While the provider keeps refusing, the device stops calling it:
+billing, key and setup failures pause embedding for 30 minutes and then try once;
+transient failures back off from 30 seconds up to 30 minutes. Writes made during
+the pause queue in milliseconds, automatic recall skips the embed call, and a
+success ends the pause. The owner gets one plain notice per billing episode, shared with the
+chat notice for the same provider. One queued fact is stored per step: on the
+Telegram task between its own work (never inside a turn, not in the first minute
+after a restart, at most every 20 seconds, and only with enough free memory for
+the call), up to 10 at the start
+of the nightly dream, and the queue persists across restarts. A fact that waits
+past a role change is stored under the new role, and a member who loses access
+loses their queued facts too. Erasing storage clears the queue. Saving a new
+embedding model (even with a reset of the stored vectors) keeps it: the facts
+are stored with the new model.
+
+The model hears about every outcome. A `mem_write[]` item that was queued or not
+stored is reported in the next turn's MEMORY RESULTS, and a queued fact that was
+stored later is reported the same way ("now stored"), so "I'll remember that" can
+be confirmed a turn later instead of being a guess. Without the queue (the
+host agent lab), a write the embedder cannot serve is refused with the reason, and update embeds the new text before
+removing the old fact, so a failed update never loses the prior memory.
+
+`memory.search` and `memory.archive` search **degrade** instead of failing: they
+run a bounded, case-insensitive keyword scan over the same rows (and the queued
+facts), inside the same namespace boundary the semantic path enforces, and label
+the result `keyword match, embeddings unavailable: <reason>` so the model does
+not mistake it for semantic recall. A transient embed outage therefore reads as
+"keyword match" plus the real cause, not as empty memory.
 
 ## 2. Per-turn context assembly
 
@@ -246,6 +289,11 @@ the constraint is device RAM):
    memory tiers, see §1).
 
 ### 2.1 Recall
+When embeddings cannot serve recall (paused, no key, a failed call), the turn
+gets a keyword match over the same memories and the queued facts instead, and
+RELEVANT MEMORIES opens with one line saying recall is keyword-only and why, so
+an outage never reads as "nothing relevant". The device, a hosted instance and
+the lab share this rule.
 ```
 query = active_task + " " + latest_user_messages + " " + all_scratchpad_goals
 hits  = vdb.search(query, k = retrieval_count)          # default 10
@@ -414,7 +462,8 @@ rails, executes with a timeout, **audits every call to the blob stream**
 
 - `GET /api/mem/stats` - vector count and cap, scratchpad items, episodic row
   count, embed config, storage tier (`sdPresent`, `sdMissing`, `flashFull`,
-  `store`).
+  `store`), `pending` (memory writes waiting for an embedding) and `embedParked`
+  (why embeddings are paused, empty when they are not).
 - `GET /api/mem/vector?query&limit&offset` - browse (importance-sorted) or
   semantic search.
 - `POST /api/mem/vector?op=delete|permanent|temporary|flush|flushnp|dedupe` - row

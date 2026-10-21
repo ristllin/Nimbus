@@ -7,6 +7,7 @@
 
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/device_actions.h"
+#include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
 
@@ -134,6 +135,11 @@ struct ApplyState {
   // were merged into the turn already).
   bool spawnAttempted = false;
   int spawnsEnqueued = 0;   // out: spawn intents handed to the job engine
+  // Out: this turn's mem_write[] outcomes (a duplicate counts as neither). The
+  // turn and dream records carry them, so "ok" never hides a lost write.
+  int memStored = 0;
+  int memQueued = 0;
+  int memRefused = 0;
   // v3.7.0: may THIS turn's chat read/write the shared namespace? The device
   // sets it for the owner's chats and the token-authenticated local surfaces;
   // a Telegram member never gets it. Combined with the turn's chatId it forms
@@ -144,6 +150,11 @@ struct ApplyState {
 // result (CUM-536) - shared by applyTurn's mem_write[] and the head loop's
 // memory.write tool, so both paths say the same thing.
 extern const char kUnverifiedMemoryRefusal[];
+
+// One memory.write result, classified by its outcome code. Unknown or missing
+// codes on a failure read as Refused, so a new code can never be counted as saved.
+enum class MemWriteOutcome { Stored, Duplicate, Queued, Refused };
+MemWriteOutcome memWriteOutcome(const nimbus::orch::ToolResult& r);
 
 // Apply one parsed turn. spawnedOut reports whether any sub-agent was enqueued
 // (the caller suppresses the bare "Done." only when true).

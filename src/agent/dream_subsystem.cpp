@@ -246,9 +246,30 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
                                              /*quietOk=*/true);
   };
 
+  // Memory writes queued during an embedding outage: store up to 10 (30 s budget)
+  // before the night, so the reflection runs over a store that already holds them.
+  // Outside the memory Lock (each step embeds over TLS); a parked embedder skips it.
+  if (memory::pendingCount() > 0) {
+    const int drained = memory::drainPendingBurst(10, 30000);
+    alogf("dream: pending memories stored=%d left=%d", drained, memory::pendingCount());
+  }
+  const memory::WriteOutcomes writesBefore = memory::writeOutcomes();
+
   g_firing = true;
   NightResult night = runNight(d, clock, force);
   g_firing = false;
+
+  // The night's memory writes by outcome: "ok" never hides a write that was only
+  // queued or was not stored (14 Oct: 6 of 6 failed under "Nightly dream ok"). The
+  // owner-facing row carries the same counts via the MemOpCounters seam.
+  {
+    const memory::WriteOutcomes after = memory::writeOutcomes();
+    const int st = after.stored - writesBefore.stored, qu = after.queued - writesBefore.queued,
+              rf = after.refused - writesBefore.refused;
+    if (st || qu || rf)
+      alogf("dream: memory writes stored=%d queued=%d refused=%d (pending=%d)", st, qu, rf,
+            memory::pendingCount());
+  }
   const NightReport& rep = night.report;
   alogf("dream: %s%s%s tokens=%u attempt=%u retry=%us streak=%u", outcomeSlug(rep.outcome),
         rep.cause.empty() ? "" : " cause=", rep.cause.c_str(), (unsigned)rep.tokens,

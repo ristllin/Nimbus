@@ -36,6 +36,7 @@
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/pending_embed.h"   // memory writes that survive an embedding outage
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/scratchpad.h"
@@ -192,6 +193,8 @@ class NimbusdRig {
   // ---- durable data layout --------------------------------------------------
   std::string memDir() const { return opt_.dataDir + "/mem"; }
   std::string vectorsPath() const { return memDir() + "/vectors.bin"; }
+  // Memory writes waiting for an embedding (an outage), as text (lane P).
+  std::string pendingPath() const { return memDir() + "/pending_embed.bin"; }
   std::string scratchPath() const { return memDir() + "/scratchpad.txt"; }
   std::string memConfigPath() const { return memDir() + "/memconfig.txt"; }
   std::string episodicDir() const { return memDir() + "/episodic"; }
@@ -211,6 +214,89 @@ class NimbusdRig {
     fsutil::writeFileAtomic(vectorsPath(), vec_.serialize());
     fsutil::writeFileAtomic(scratchPath(), scratch_.serialize());
     fsutil::writeFileAtomic(memConfigPath(), memCfg_.serialize());
+    if (pending_.dirty()) persistPending();
+  }
+
+  // ---- memory writes that survive an embedding outage (lane P) ------------
+  static uint32_t steadyMs() {
+    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  bool persistPending() {
+    const bool ok = fsutil::writeFileAtomic(pendingPath(), pending_.serialize());
+    if (ok) pending_.markClean();
+    return ok;
+  }
+  size_t pendingCount() const { return pending_.size(); }
+  const orch::EmbedPark& embedPark() const { return park_; }
+  // One drain step (engine thread): the oldest queued fact through the same write
+  // rails, under its namespace's current principal; the vectors are persisted
+  // before the entry leaves the queue.
+  orch::EmbedDrainResult drainPendingOnce() {
+    orch::EmbedDrainDeps d;
+    d.principalForNs = [this](const std::string& ns, orch::Principal& who) {
+      if (ns == orch::kOwnerNs) { who = principal(); return true; }
+      if (ns.rfind("chat:", 0) != 0) return false;
+      who = access_->principalFor(ns.substr(5));
+      return true;
+    };
+    d.persistVectors = [this] { return fsutil::writeFileAtomic(vectorsPath(), vec_.serialize()); };
+    const orch::EmbedDrainResult r = orch::drainOne(memCtx_, d);
+    if (r.step != orch::EmbedDrainStep::Idle)
+      std::fprintf(stderr, "[nimbusd] pending drain %s %s (left=%zu)\n", orch::embedDrainStepName(r.step),
+                   r.id.c_str(), pending_.size());
+    return r;
+  }
+  // The recall embed, through the park memo (device parity): no doomed call on
+  // every turn while parked; a failure parks, a success ends the park. `why` gets
+  // the cause words when no vector came back.
+  std::vector<int8_t> recallEmbed(const std::string& q, std::string& why) {
+    if (park_.blocked(steadyMs())) {
+      why = orch::embedFailWords(park_.reason(), park_.detail());
+      return {};
+    }
+    std::string eerr, detail;
+    auto v = embed(q, eerr);
+    orch::EmbedFail kind = orch::EmbedFail::None;
+    if (v.empty()) {
+      kind = orch::classifyEmbedFail(eerr, detail);
+      if (kind == orch::EmbedFail::None) kind = orch::EmbedFail::Unknown;
+      why = orch::embedFailWords(kind, detail);
+    }
+    park_.onResult(kind, steadyMs(), detail);
+    return v;
+  }
+  // Automatic recall (device parity, memory_subsystem recallFor): semantic when
+  // embeddings serve it, else the labelled keyword scan over the store and the
+  // pending queue. Device read boundary: STRICTLY the caller's own namespace, so
+  // an approved member never recalls the owner's memories; an unattributed caller
+  // recalls nothing rather than everything.
+  orch::RecallOut recallFor(const std::string& q, const orch::Principal& who) {
+    orch::RecallOut out;
+    if (vec_.size() == 0 && pending_.empty()) return out;
+    const std::vector<std::string> ns{who.valid() ? who.ns : std::string("\x01none")};
+    std::string why;
+    std::vector<int8_t> v;
+    if (embedAvailable()) v = recallEmbed(q, why);
+    else why = orch::embedFailWords(orch::EmbedFail::NoKey, "");
+    if (v.empty()) return orch::lexicalRecall(vec_, &pending_, q, orch::RecallScope{ns, nowHours(), 5}, why);
+    for (const auto& hit : vec_.search(v, 5, nowHours(), ns)) out.hits.push_back(hit.content);
+    return out;
+  }
+  // The engine thread's idle tick: at most one step every 5 s, never while parked.
+  void drainTick() {
+    if (pending_.empty() || park_.blocked(steadyMs())) return;
+    const uint32_t now = steadyMs();
+    if (lastDrainMs_ && now - lastDrainMs_ < 5000) return;
+    lastDrainMs_ = now;
+    drainPendingOnce();
+  }
+  // Test seam (offline suite, live embed-outage scenario): make only the
+  // embedding call fail with a recorded provider token ("" = off). Off also ends
+  // the embedding pause, like the device's FAULT embed_fail off.
+  void setEmbedShim(const std::string& token) {
+    embedShim_ = token;
+    if (token.empty()) park_.clear();
   }
 
   // ---- the surface a scenario drives ---------------------------------------
@@ -1406,6 +1492,17 @@ class NimbusdRig {
     mc.episodic = epi_.get();
     mc.nowHours = [] { return nowHours(); };
     mc.embed = [this](const std::string& text, std::string& err) { return embed(text, err); };
+    // Memory writes survive an embedding outage (device parity, lane P): the
+    // queue persists beside the vectors with the same atomic writer, loaded
+    // after them so a crash replay is recognised by id on the first drain.
+    if (fsutil::readFile(pendingPath(), blob)) pending_.deserialize(blob);
+    pending_.markClean();
+    mc.pending = &pending_;
+    mc.persistPending = [this] { return persistPending(); };
+    mc.park = &park_;
+    mc.nowMs = [] { return steadyMs(); };
+    mc.embedProvider = [this] { return opt_.embedHost; };
+    memCtx_ = mc;
     orch::registerMemoryTools(reg_, mc);
 
     registerWebSearchTool();
@@ -1543,8 +1640,26 @@ class NimbusdRig {
   // fixed guess. `err` is left empty on success.
   std::vector<int8_t> embed(const std::string& text, std::string& err) {
     err.clear();
+    if (!embedShim_.empty()) { err = embedShim_; return {}; }
     if (!opt_.embeddings) { err = "no model"; return {}; }
     return embedWith(text, err, opt_.embedHost, opt_.embedModel, opt_.embedDims);
+  }
+
+  // The machine code of a provider error body ({"error":"x"}, or {"error":{"code"
+  // or "type"}}): bounded and limited to [a-z0-9_.-], so it is secret-safe.
+  static std::string errorCodeOf(const std::string& body) {
+    ArduinoJson::JsonDocument d;
+    if (deserializeJson(d, body)) return std::string();
+    std::string c;
+    ArduinoJson::JsonVariantConst e = d["error"];
+    if (e.is<const char*>()) c = e.as<const char*>();
+    else if (e["code"].is<const char*>()) c = e["code"].as<const char*>();
+    else if (e["type"].is<const char*>()) c = e["type"].as<const char*>();
+    if (c.size() > 48) c.resize(48);
+    for (char ch : c)
+      if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '-'))
+        return std::string();
+    return c;
   }
 
   // One embeddings call with an explicit (possibly candidate) config: the live
@@ -1572,7 +1687,14 @@ class NimbusdRig {
     std::string httpErr;
     if (!http_->exec(req, resp, httpErr))            { err = "connect failed"; return {}; }
     if (resp.status == 401 || resp.status == 403)    { err = "key rejected"; return {}; }
-    if (resp.status < 200 || resp.status >= 300)     { err = "HTTP " + std::to_string(resp.status); return {}; }
+    if (resp.status < 200 || resp.status >= 300) {
+      // Device parity (embeddings.cpp): append the provider's machine code, so a
+      // billing refusal (429 credit_balance_exhausted) classifies as billing.
+      err = "HTTP " + std::to_string(resp.status);
+      const std::string code = errorCodeOf(resp.body);
+      if (!code.empty()) err += " " + code;
+      return {};
+    }
     std::vector<float> f;
     std::string perr;
     if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, perr)) {
@@ -1977,18 +2099,10 @@ class NimbusdRig {
     d.platform = makePosixPlatform(&mem_);
     d.jobs = jobs_.get();
     d.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
-    d.recall = [this](const std::string& q, const orch::Principal& who) {
-      std::vector<std::string> out;
-      if (!embedAvailable()) return out;
-      std::string eerr;
-      auto v = embed(q, eerr);
-      if (v.empty()) return out;
-      // Device read boundary (memory_subsystem recall): STRICTLY the caller's own
-      // namespace, so an approved member never recalls the owner's memories; an
-      // unattributed caller recalls nothing rather than everything.
-      const std::vector<std::string> ns{who.valid() ? who.ns : std::string("\x01none")};
-      for (const auto& hit : vec_.search(v, 5, nowHours(), ns)) out.push_back(hit.content);
-      return out;
+    d.recall = [this](const std::string& q, const orch::Principal& who) { return recallFor(q, who); };
+    // Queued memory writes stored since this chat's last turn (lane P).
+    d.memNotes = [this](const std::string& chat) {
+      return pending_.takeNotes(access_->principalFor(chat).ns);
     };
     d.composeInputs = [this](const std::string& chat) {
       agent::ComposeInputs in;
@@ -2111,6 +2225,12 @@ class NimbusdRig {
     d.apply.principalFor = [this](const std::string& chat) {
       return access_->principalFor(chat);
     };
+    // The reply's mem_write[] / mem_query[] fields (device memDispatch): through the
+    // same registry and principal as the memory tools, then persisted. Unbound, the
+    // fields were dropped in silence on a hosted instance (lane P live run, 19 Oct).
+    d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst a,
+                                 const orch::Principal& who) { return reg_.dispatch(name, a, who); };
+    d.apply.persistMemory = [this] { flush(); };
     // Per-chat running memory (device g_mem.model(chatId)): one person's rolling
     // summary never rides another person's prompt. Engine thread only.
     d.apply.setModelMemory = [this](const std::string& chat, const std::string& m) {
@@ -2477,6 +2597,11 @@ class NimbusdRig {
 
   PosixEpiFs         epiFs_;
   orch::VectorMemory vec_;
+  orch::PendingEmbeds pending_;   // memory writes waiting for an embedding (lane P)
+  orch::EmbedPark     park_;
+  orch::MemoryContext memCtx_;    // the tools' context (the drain reuses it)
+  uint32_t            lastDrainMs_ = 0;
+  std::string         embedShim_; // test seam: the embed call fails with this token
   orch::Scratchpad   scratch_;
   orch::MemConfig    memCfg_;
   std::unique_ptr<orch::AppendLogEpisodicStore> epi_;

@@ -299,9 +299,14 @@ static void test_staged_work_runs_only_at_the_poll_loop_top() {
   TEST_ASSERT_TRUE(anchor(ota, "installRun();") > anchor(ota, "staticvoidinstallTask(void*){"));
   // The OTA run is reached only through that seam: main.cpp hands it over and never
   // calls it, and no other module names it.
+  // The slot is single, so main.cpp multiplexes it (lane P: the pending-embed
+  // drain shares it): one hand-over, and the OTA run keeps priority in the run.
   const std::string& m = codeOf("src/main.cpp");
-  TEST_ASSERT_EQUAL_size_t(
-      1, countOf(m, "agent::telegram::setStagedWork(otaupd::onPollPending,otaupd::runOnPoll)"));
+  TEST_ASSERT_EQUAL_size_t(1, countOf(m, "agent::telegram::setStagedWork(stagedWorkPending,stagedWorkRun)"));
+  const size_t mux = anchor(m, "staticvoidstagedWorkRun(){");
+  TEST_ASSERT_TRUE(anchor(m, "if(otaupd::onPollPending())otaupd::runOnPoll();") > mux);
+  TEST_ASSERT_TRUE(anchor(m, "if(otaupd::onPollPending())otaupd::runOnPoll();") <
+                   anchor(m, "agent::memory::drainPendingStep();"));
   for (const Source& s : firmware()) {
     if (s.path == "src/sys/ota_update.cpp" || s.path == "src/sys/ota_update.h") continue;
     const size_t named = countOf(s.code, "runOnPoll");

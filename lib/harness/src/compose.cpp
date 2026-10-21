@@ -84,7 +84,10 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   "- memory: short-lived notes for the NEXT turn only; NOT durable storage.\n"
   "- mem_write: durable facts (importance 0-1; ttl session|days|weeks|months|"
   "permanent). It is stored just before this reply is delivered; the device "
-  "confirms or corrects a save claim before the owner sees it.\n"
+  "confirms or corrects a save claim before the owner sees it, and a write that "
+  "is queued (embeddings down) or not stored is reported in the next turn's "
+  "MEMORY RESULTS, so phrase saving as intent, never as already done this "
+  "turn.\n"
   "- mem_query: searches whose results arrive next turn as MEMORY RESULTS.\n"
   "- device: local actions - led, lights, tts, reboot, config, orch_model. config "
   "tunes owner knobs (brightness, theme, posture, profile, voice, sound, devName); "
@@ -123,8 +126,8 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
 // Static "how memory works" note appended to the composed prompt (Phase 1/2).
 static const char* MEMORY_EXPLAINER =
   "\n## HOW YOUR MEMORY WORKS\n"
-  "- RELEVANT MEMORIES (in this turn's context) were recalled for this message automatically.\n"
-  "- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded + stored).\n"
+  "- RELEVANT MEMORIES above (in this turn's context) were recalled for this message automatically.\n"
+  "- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded and stored, or queued on the device while embeddings are down).\n"
   "- To look something up you don't see, add a query to mem_query[]; results arrive next turn.\n"
   "- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.\n";
 
@@ -432,6 +435,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   dyn.recentConversation = in.recentConversation;
   dyn.scratchpad = in.scratchpad;
   dyn.recalled = in.recalled;
+  dyn.recallDegraded = in.recallDegraded;
   parts.dyn = assembleContext(dyn, budget - staticBytes - (int)parts.summary.size()).prompt;
   return layout::join(parts);
 }

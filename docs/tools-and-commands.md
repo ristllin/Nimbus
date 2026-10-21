@@ -209,8 +209,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
-| `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Reports internal free and largest block. |
-| `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers), to exercise the memory-write queue. Reports "not wired" until the memory lane binds it. |
+| `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Held as up to 16 blocks, so it can go past the largest free block, and never below 4 KB free. Reports what it holds, internal free, largest block and block count. |
+| `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers) with a recorded out-of-credit refusal (`HTTP 429 credit_balance_exhausted`), to exercise the memory-write queue. Replies `FAULT embed_fail=<0\|1> pending=<n>`; `off` also ends the embedding pause so the queue drains. |
 | `PANIC <abort\|nullptr\|canary\|twdt\|oom>` | Crash the device the chosen way so the crash summary at the next boot can be checked per kind. `PANIC <nullptr\|abort\|canary> arm=turn [round=N]` arms the crash inside the next turn instead: it fires as that turn sends its request in round N (default 0) and is dropped if the turn ends first. |
 | `NVSFILL <entries>` / `NVSFILL 0` | Fill a scratch settings namespace to exercise the storage-full paths in seconds; `0` erases the scratch namespace. Reports free space before and after. |
 | `CAPTEST <tokens>` | Cap the first attempt of the next provider request at that many output tokens, so a cut reply and its retry run on demand. Reports "not wired" until the provider lane binds it. |

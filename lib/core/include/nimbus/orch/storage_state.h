@@ -20,9 +20,15 @@ struct StorageState {
   uint32_t    saveFails = 0;         // writes that did not land since boot
   std::string lastSaveFail;          // the most recent failing key ("" = none)
   bool        tgOffsetSaved = true;  // the stored Telegram offset cursor is current
+  // L19-9 (lane P): embeddings are parked - new memories wait in the queue on
+  // the device instead of being stored (the short reason /api/mem/stats shows;
+  // "" = not parked). The head cites it instead of claiming memory is working.
+  bool        embedParked = false;
+  std::string embedParkedWhy;        // "" = not parked; a secret-safe cause slug
 };
 
-// "nvs":{"free":..,"fails":..,"lastFail":..},"tgOffsetSaved":..
+// "nvs":{"free":..,"fails":..,"lastFail":..},"tgOffsetSaved":..,
+// "embedParked":..,"embedParkedWhy":..(null when not parked)
 std::string storageStateJson(const StorageState& s);
 
 }  // namespace orch

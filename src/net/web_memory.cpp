@@ -207,6 +207,10 @@ void handleStats(AsyncWebServerRequest* r) {
   d["sdMissing"]      = s.sdMissingWithData;
   d["flashFull"]      = s.flashFull;
   d["maxVectors"]     = s.maxVectors;
+  // Memory writes waiting for an embedding (an outage), and why embeddings are
+  // parked ("" = not parked). They are stored once embeddings work again.
+  d["pending"]        = s.pending;
+  d["embedParked"]    = s.embedParked;
   d["store"]          = s.sdMissingWithData ? "SD not detected (card holds memories)"
                         : s.sdPresent        ? "SD /mem"
                                              : "flash /data (no SD)";
@@ -714,6 +718,7 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
     }
     applyEmbedWidthLocked(dims);
   }
+  mem::noteEmbedConfigChanged();   // a new config: try embeddings again at once
   handleEmbedCfgGet(r);
 }
 

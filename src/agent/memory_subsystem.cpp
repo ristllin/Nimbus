@@ -11,6 +11,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>                  // feed the WDT during a long durable-store wipe
+#include <esp_heap_caps.h>                 // the drain's largest-block admission floor
 #include <time.h>
 #include <utility>
 
@@ -40,6 +41,8 @@
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/memory_tools.h"
+#include "nimbus/orch/billing_refusal.h"   // one owner notice per billing episode (shared with chat)
+#include "nimbus/orch/pending_embed.h"     // memory writes that survive an embedding outage
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
@@ -48,6 +51,7 @@ namespace agent {
 namespace memory {
 
 static void registerTenantTools();   // v3.7.0 admin-by-conversation (defined below)
+static void loadPending();           // the pending-embed queue (defined below)
 
 using namespace nimbus::orch;
 
@@ -132,13 +136,45 @@ constexpr int    kArchiveMaxEntries = 2000;
 // refuse the write (the overflow guard the audit found missing).
 constexpr size_t kFlashFreeFloor = 96 * 1024;
 
+// ---- memory writes that survive an embedding outage (pending_embed.h) --------
+// The queue of facts waiting for an embedding, its durable sidecar, and the RAM
+// park memo. The sidecar lives on the card beside the vectors; with no card (or a
+// card lost mid-run) it falls back to LittleFS, because an outage on a cardless
+// device must not lose facts either. Never NVS.
+nimbus::orch::PendingEmbeds g_pending;
+nimbus::orch::EmbedPark     g_park;
+MemoryContext               g_ctx;   // the context the tools were registered with (the drain reuses it)
+const char* kPendSdPath  = "/mem/pending_embed.bin";
+const char* kPendLfsPath = "/data/pendemb.bin";
+bool        g_pendOnLfs  = false;   // the newest durable copy is the LittleFS fallback
+uint32_t    g_lastDrainMs = 0;
+// Every memory.write / memory.update outcome since boot (RAM only): the dream's
+// end line reports the night's counts from the delta.
+WriteOutcomes g_outcomes;
+constexpr uint32_t kDrainEveryMs = 20000;   // at most one drain step per 20 s
+constexpr uint32_t kDrainBootGraceMs = 60000;   // none in the first minute: let the boot settle
+#ifdef NIMBUS_TEST
+// FAULT embed_fail: only the embedding call fails, with Lumi's recorded refusal
+// (13 Oct 2026), so the queue and its honest reply run on demand. Test build only.
+bool g_embedFault = false;
+const char* kEmbedFaultToken = "HTTP 429 credit_balance_exhausted";
+#endif
+
+// One embedding call for the memory engines, honoring the test fault.
+std::vector<int8_t> embedRaw(const String& text, String& err) {
+#ifdef NIMBUS_TEST
+  if (g_embedFault) { err = kEmbedFaultToken; return {}; }
+#endif
+  return embeddings::embed(text, err);
+}
+
 // Bind the embedder: call the provider, and on the FIRST successful embedding
 // freeze the embed config (set-once lock) so the web UI knows the VDB is now
 // committed to this provider/model/dims. Signature matches the portable
 // Embedder (std::string in); we bridge to the Arduino-String adapter call.
 std::vector<int8_t> embedText(const std::string& text, std::string& err) {
   String e;
-  std::vector<int8_t> v = embeddings::embed(String(text.c_str()), e);
+  std::vector<int8_t> v = embedRaw(String(text.c_str()), e);
   if (!v.empty() && !store::embedLocked()) store::setEmbedLocked(true);
   // Thread the real cause up to the memory tools (CUM-435) so they can report why
   // instead of a fixed guess; also keep the local log line.
@@ -202,7 +238,10 @@ bool eraseDurableStore() {
   // barrier already refuses it; this is defense in depth + a consistent reload).
   g_vec.flushAll();
   g_archive.flushAll();   // drop the cold store too (the /mem tree wipe removes its blob)
+  g_pending.flushAll();   // queued facts are memories too; the /mem wipe removes the SD copy
+  g_park.clear();
   g_scratch.clearAll();
+  LittleFS.remove(kPendLfsPath);   // the cardless fallback copy outlives a /mem wipe otherwise
   const char* root = g_haveSd ? "/mem" : "/data";
   const bool ok = !g_fs->exists(root) || rmTree(*g_fs, root);
   g_fs->mkdir(root);   // recreate the empty parent so post-reboot persists work
@@ -621,6 +660,40 @@ void begin() {
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
   ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)
+  // Memory writes survive an embedding outage: the queue, its durable sidecar and
+  // the park memo (lane P). The queue loads after the vectors so a crash replay
+  // (stored AND still queued) is recognised by id on the first drain.
+  loadPending();
+  ctx.pending = &g_pending;
+  ctx.persistPending = [] { return persistPending(); };
+  ctx.park = &g_park;
+  ctx.parkLock = [](const std::function<void()>& fn) { Lock g; fn(); };
+  ctx.nowMs = [] { return (uint32_t)millis(); };
+  ctx.clockSynced = [] { return clockSynced(); };
+  ctx.embedProvider = [] { return std::string(store::embedProvider().c_str()); };
+  ctx.onParked = [](nimbus::orch::EmbedFail kind, const std::string& raw) {
+    alogf("memory: embeddings parked (%s)", nimbus::orch::embedFailWords(kind, "").c_str());
+    if (kind != nimbus::orch::EmbedFail::OutOfCredit) return;
+    // One plain notice per billing episode, shared with the chat head's notice so
+    // the same provider refusing chat and embeddings makes ONE message. A
+    // background turn (dream, routine) never pings; the next owner turn may.
+    if (orchestrator::inScheduledTurn()) return;
+    const String prov = store::embedProvider();
+    if (!nimbus::orch::billingNoticeDue(prov.c_str())) return;
+    const String owner = orchestrator::firstAllowedChat();
+    if (!owner.length()) return;
+    int status = 0;
+    if (raw.rfind("HTTP ", 0) == 0) status = atoi(raw.c_str() + 5);
+    const std::string words = nimbus::orch::billingNotice(prov.c_str(), status, "") +
+        " Memories shared meanwhile are kept on the device and stored once it works again.";
+    agent::telegram::send(owner, String(words.c_str()), /*block=*/false);
+  };
+  ctx.onWriteOutcome = [](const char* code) {
+    if (!strcmp(code, nimbus::orch::kMemOutcomeStored)) g_outcomes.stored++;
+    else if (!strcmp(code, nimbus::orch::kMemOutcomeQueued)) g_outcomes.queued++;
+    else if (!strcmp(code, nimbus::orch::kMemOutcomeRefused)) g_outcomes.refused++;
+  };
+  g_ctx = ctx;
   registerMemoryTools(g_reg, ctx);
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
@@ -1076,13 +1149,13 @@ void begin() {
     return ToolRegistry::Verdict::allow();
   });
 
-  alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s)",
+  alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s, pending=%d)",
         g_vec.size(), g_vec.dims(), g_haveSd ? "SD /mem" : "flash /data (no SD)",
         g_vec.maxEntries(),
         effHaveSd() ? (std::to_string(g_archive.size()) + "/" +
                        std::to_string(kArchiveMaxEntries)).c_str() : "off (no SD)",
         embeddings::available() ? "on" : "no-key",
-        agent::tavily::available() ? "on" : "off");
+        agent::tavily::available() ? "on" : "off", (int)g_pending.size());
 }
 
 // ---- v3.7.0 admin-by-conversation -------------------------------------------
@@ -1339,33 +1412,97 @@ void tickSdHealth(uint32_t nowMs) {
 // Write a blob to `path` atomically: to `<path>.tmp`, then rename over `path`, so a
 // crash mid-write leaves the previous good blob intact (single-writer; FAT + LittleFS
 // rename is atomic enough for our case). Returns false on any FS error.
-static bool writeBlobAtomic(const std::string& path, const std::string& blob) {
+static bool writeBlobAtomicOn(fs::FS& fsys, const std::string& path, const std::string& blob) {
   // Barrier: the durable store is being wiped - refuse every persist/sidecar so a
   // blocked-then-released persist can't rewrite a just-deleted blob from RAM.
   if (g_erasing) return false;
-  // FAULT sd_io: emulate a mid-op SD write failure (see nimbus::fault::SD_IO) so
-  // the vector/blob persist-failure + demote path is testable without a real pull.
-  if (nimbus::fault::active(nimbus::fault::SD_IO)) return false;
   std::string tmp = path + ".tmp";
-  File f = g_fs->open(tmp.c_str(), FILE_WRITE);
+  File f = fsys.open(tmp.c_str(), FILE_WRITE);
   if (!f) return false;
   size_t n = f.write((const uint8_t*)blob.data(), blob.size());
   f.close();
-  if (n != blob.size()) { g_fs->remove(tmp.c_str()); return false; }
-  g_fs->remove(path.c_str());               // rename won't overwrite on some FS impls
-  return g_fs->rename(tmp.c_str(), path.c_str());
+  if (n != blob.size()) { fsys.remove(tmp.c_str()); return false; }
+  fsys.remove(path.c_str());               // rename won't overwrite on some FS impls
+  return fsys.rename(tmp.c_str(), path.c_str());
+}
+static bool writeBlobAtomic(const std::string& path, const std::string& blob) {
+  // FAULT sd_io: emulate a mid-op SD write failure (see nimbus::fault::SD_IO) so
+  // the vector/blob persist-failure + demote path is testable without a real pull.
+  // It applies to the data store only; the pending queue's explicit LittleFS
+  // fallback (persistPending) is internal flash and keeps working.
+  if (nimbus::fault::active(nimbus::fault::SD_IO)) return false;
+  return writeBlobAtomicOn(*g_fs, path, blob);
+}
+
+// The recall feeds the same park memo as writes and the drain: a failure parks,
+// a success clears the park (and so lets the drain run).
+static void noteRecallEmbed(bool ok, const String& err) {
+  std::string detail;
+  nimbus::orch::EmbedFail kind = nimbus::orch::EmbedFail::None;
+  if (!ok) {
+    kind = nimbus::orch::classifyEmbedFail(std::string(err.c_str()), detail);
+    if (kind == nimbus::orch::EmbedFail::None) kind = nimbus::orch::EmbedFail::Unknown;
+  }
+  bool started = false;
+  {
+    Lock g;
+    if (ok && g_park.reason() == nimbus::orch::EmbedFail::OutOfCredit)
+      nimbus::orch::billingEpisodeEnd(store::embedProvider().c_str());
+    started = g_park.onResult(kind, millis(), detail);
+  }
+  if (started && g_ctx.onParked) g_ctx.onParked(kind, std::string(err.c_str()));
+}
+
+// Recall when embeddings cannot serve it: the keyword scan over the live store and
+// the pending queue, inside the same read boundary, labelled with the cause so the
+// prompt says recall is keyword-only (never a silent empty section).
+static nimbus::orch::RecallOut keywordRecall(const String& queryText, int k,
+                                             const nimbus::orch::Principal& who,
+                                             const std::string& cause) {
+  nimbus::orch::RecallScope scope;
+  scope.nsAllow = {who.valid() ? who.ns : std::string("\x01none")};
+  scope.nowHours = nowHours();
+  scope.k = k;
+  Lock g;
+  return nimbus::orch::lexicalRecall(g_vec, &g_pending, std::string(queryText.c_str()), scope, cause);
 }
 
 std::vector<std::string> recall(const String& queryText, int k,
                                 const nimbus::orch::Principal& who) {
-  std::vector<std::string> out;
-  if (nimbus::fault::active(nimbus::fault::MEMORY)) return out;   // resilience: no-memory turn
-  if (queryText.length() == 0 || !embeddings::available()) return out;
-  { Lock g; if (g_vec.size() == 0) return out; }   // quick locked empty-check: skip the embed
+  return recallFor(queryText, k, who).hits;
+}
+
+nimbus::orch::RecallOut recallFor(const String& queryText, int k,
+                                  const nimbus::orch::Principal& who) {
+  nimbus::orch::RecallOut res;
+  std::vector<std::string>& out = res.hits;
+  if (nimbus::fault::active(nimbus::fault::MEMORY)) return res;   // resilience: no-memory turn
+  if (queryText.length() == 0) return res;
+  // Quick locked empty-check: skip the embed. Facts queued during an outage count:
+  // a fresh device's first facts may all be waiting.
+  { Lock g; if (g_vec.size() == 0 && g_pending.empty()) return res; }
   if (k <= 0) k = g_cfg.retrievalCount;
+  if (!embeddings::available())
+    return keywordRecall(queryText, k, who,
+                         nimbus::orch::embedFailWords(nimbus::orch::EmbedFail::NoKey, ""));
+  // Embeddings parked (out of credit, key rejected, offline): no doomed TLS embed
+  // on every turn (about 1.8 s and a 10 KB heap dip each, 13-14 Oct).
+  bool parked;
+  { Lock g; parked = g_park.blocked(millis()); }
+  if (parked) {
+    const String why = embedParkedWhy();
+    alogf("memory: recall skipped - embeddings parked (%s)", why.c_str());
+    return keywordRecall(queryText, k, who, std::string(why.c_str()));
+  }
   String err;
-  std::vector<int8_t> qv = embeddings::embed(queryText, err);  // TLS - NOT under the lock
-  if (qv.empty()) { alogf("memory: recall embed failed (%s) - fail-open", err.c_str()); return out; }
+  std::vector<int8_t> qv = embedRaw(queryText, err);  // TLS - NOT under the lock
+  noteRecallEmbed(!qv.empty(), err);
+  if (qv.empty()) {
+    alogf("memory: recall embed failed (%s) - keyword recall", err.c_str());
+    std::string detail;
+    const auto kind = nimbus::orch::classifyEmbedFail(std::string(err.c_str()), detail);
+    return keywordRecall(queryText, k, who, nimbus::orch::embedFailWords(kind, detail));
+  }
   // Composite-ranked recall: relevance x recency x importance, query-time expiry
   // filtering, near-dup collapse, MMR-on-ties - all tuned by the persisted MemConfig.
   nimbus::orch::RecallParams rp;
@@ -1397,7 +1534,7 @@ std::vector<std::string> recall(const String& queryText, int k,
   // instantly expired. Skip the boost until the clock is real; recall itself is
   // unaffected (expiry clamps SAFE pre-sync - nothing expires).
   if (!boostIds.empty() && clockSynced()) g_vec.boostAccessed(boostIds, 0.05f, now);
-  return out;
+  return res;
 }
 
 nimbus::orch::MemOpCounters opCounters() {
@@ -1440,6 +1577,164 @@ void persistArchive() {
   if (writeBlobAtomic(g_arcPath, g_archive.serialize())) g_archive.markClean();
   else alog("memory: archive persist failed");
 }
+
+// ---- the pending-embed queue (lane P) -----------------------------------------
+// Make the queue durable. On the card while it answers; with no card, or a card
+// lost mid-run, on LittleFS behind the same free-space floor as the degraded
+// vector persist. false = nothing durable was written, and the write seam then
+// refuses honestly instead of claiming "queued". An empty queue removes its file.
+bool persistPending() {
+  Lock g;
+  if (g_erasing) return false;
+  const std::string blob = g_pending.serialize();
+  if (effHaveSd()) {
+    const bool ok = g_pending.empty() ? (!g_fs->exists(kPendSdPath) || g_fs->remove(kPendSdPath))
+                                      : writeBlobAtomic(kPendSdPath, blob);
+    noteSdIoResult(ok);
+    if (ok) {
+      if (g_pendOnLfs) { LittleFS.remove(kPendLfsPath); g_pendOnLfs = false; }
+      g_pending.markClean();
+      return true;
+    }
+    // The card refused the write: keep a durable copy on LittleFS instead.
+  }
+  if (g_pending.empty()) {
+    LittleFS.remove(kPendLfsPath);
+    g_pendOnLfs = false;
+    g_pending.markClean();
+    return true;
+  }
+  const size_t freeB = LittleFS.totalBytes() - LittleFS.usedBytes();
+  if (freeB < blob.size() + kFlashFreeFloor) {
+    alogf("memory: pending queue not persisted (flash free %uKB)", (unsigned)(freeB / 1024));
+    return false;
+  }
+  if (!writeBlobAtomicOn(LittleFS, kPendLfsPath, blob)) return false;
+  g_pendOnLfs = g_haveSd;   // a card device writing here means the card is away
+  g_pending.markClean();
+  return true;
+}
+
+// Boot: the card copy, then any LittleFS fallback copy (written while the card
+// was away, or on a cardless boot) merged in, deduplicated by id.
+static void loadPending() {
+  auto readAll = [](fs::FS& fsys, const char* path) -> std::string {
+    File f = fsys.open(path, FILE_READ);
+    if (!f) return std::string();
+    String b = f.readString();
+    f.close();
+    return std::string(b.c_str(), b.length());
+  };
+  if (g_haveSd) {
+    const std::string sd = readAll(*g_fs, kPendSdPath);
+    if (!sd.empty() && !g_pending.deserialize(sd))
+      alog("memory: pending queue blob partial - kept what parsed");
+  }
+  const std::string lfs = readAll(LittleFS, kPendLfsPath);
+  if (!lfs.empty()) {
+    nimbus::orch::PendingEmbeds extra;
+    if (!extra.deserialize(lfs)) alog("memory: pending fallback blob partial - kept what parsed");
+    for (const auto& e : extra.getAll()) g_pending.enqueue(e);
+    g_pendOnLfs = true;
+    if (g_haveSd && persistPending()) alog("memory: pending fallback merged back onto the card");
+  }
+  g_pending.markClean();
+}
+
+int pendingCount() { Lock g; return (int)g_pending.size(); }
+
+WriteOutcomes writeOutcomes() { Lock g; return g_outcomes; }
+
+std::string pendingNotes(const std::string& ns) { Lock g; return g_pending.takeNotes(ns); }
+
+String embedParkedWhy() {
+  Lock g;   // the detail string is rewritten by other tasks
+  if (!g_park.parked()) return String();
+  return String(nimbus::orch::embedFailWords(g_park.reason(), g_park.detail()).c_str());
+}
+
+void noteEmbedConfigChanged() { Lock g; g_park.clear(); }
+
+// RAM-only predicate polled by the Telegram task's staged-work slot (cheap: no
+// I/O). Due when facts wait, the park allows a try, the device has the memory a
+// TLS embed needs (the recall admission gate plus a largest-block floor; below it
+// the drain simply waits, the queue is durable), and the last step was 20 s ago.
+bool embedDrainDue() {
+  if (!g_begun || g_erasing || g_pending.empty()) return false;
+  const uint32_t now = millis();
+  if (now < kDrainBootGraceMs || now - g_lastDrainMs < kDrainEveryMs) return false;
+  // Lock-free on purpose: a few word-sized reads polled often on the Telegram
+  // task; drainOne re-checks the park under the lock before any network call.
+  if (g_park.blocked(now) || !embeddings::available()) return false;
+  if (ESP.getFreeHeap() < ORCH_RECALL_MIN_HEAP) return false;
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+      ORCH_TURN_MIN_LARGEST_BLOCK)
+    return false;
+  return true;
+}
+
+// The principal that writes into `ns` today: the owner's namespace is the
+// admin's; a member's is "chat:<id>" under that chat's current role and quota.
+static bool principalForNs(const std::string& ns, nimbus::orch::Principal& who) {
+  using nimbus::orch::Role;
+  if (ns.empty() || ns == nimbus::orch::kOwnerNs) {
+    who = nimbus::orch::principalForRole("web", Role::Admin);
+    return true;
+  }
+  if (ns.rfind("chat:", 0) != 0) return false;   // mcp / unknown: no writer to resolve
+  const std::string chat = ns.substr(5);
+  nimbus::orch::Quota q;
+  orchestrator::tenantQuotaOf(chat, q);
+  who = nimbus::orch::principalForRole(chat, orchestrator::roleOfChat(String(chat.c_str())), q);
+  return true;
+}
+
+// One drain step, on the Telegram task between its own work (never inside a
+// turn). The stack high-water mark is logged so the bench can check it keeps
+// 4 KB free on tg_poll.
+void drainPendingStep() {
+  g_lastDrainMs = millis();
+  if (g_pending.empty()) return;
+  nimbus::orch::EmbedDrainDeps d;
+  d.principalForNs = principalForNs;
+  d.withLock = [](const std::function<void()>& fn) { Lock g; fn(); };
+  d.persistVectors = [] { return persistVectors(); };
+  const nimbus::orch::EmbedDrainResult r = nimbus::orch::drainOne(g_ctx, d);
+  alogf("memory: pending drain %s %s (left=%d, stack free %u B)", nimbus::orch::embedDrainStepName(r.step),
+        r.id.c_str(), pendingCount(), (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+}
+
+// Dream phase 1: up to `maxEntries` drain steps within `budgetMs`, so the night's
+// reflection runs over a store that holds the facts queued during the day.
+int drainPendingBurst(int maxEntries, uint32_t budgetMs) {
+  const uint32_t t0 = millis();
+  int stored = 0;
+  for (int i = 0; i < maxEntries && !g_pending.empty() && millis() - t0 < budgetMs; i++) {
+    {
+      Lock g;
+      if (g_park.blocked(millis())) break;
+    }
+    nimbus::orch::EmbedDrainDeps d;
+    d.principalForNs = principalForNs;
+    d.withLock = [](const std::function<void()>& fn) { Lock g; fn(); };
+    d.persistVectors = [] { return persistVectors(); };
+    const nimbus::orch::EmbedDrainResult r = nimbus::orch::drainOne(g_ctx, d);
+    if (r.step == nimbus::orch::EmbedDrainStep::Stored) stored++;
+    if (r.step == nimbus::orch::EmbedDrainStep::Failed || r.step == nimbus::orch::EmbedDrainStep::Parked ||
+        r.step == nimbus::orch::EmbedDrainStep::NotDurable)
+      break;
+  }
+  g_lastDrainMs = millis();
+  return stored;
+}
+
+#ifdef NIMBUS_TEST
+String setEmbedFault(bool on) {
+  g_embedFault = on;
+  if (!on) { Lock g; g_park.clear(); }   // the outage is over: the next attempt goes straight out
+  return String("FAULT embed_fail=") + (on ? "1" : "0") + " pending=" + pendingCount();
+}
+#endif
 
 bool persistScratchpad() {
   Lock g;
@@ -2242,6 +2537,8 @@ Stats stats() {
   s.flashFull = g_flashFull;
   s.maxVectors = g_vec.maxEntries();
   s.archivedCount = effHaveSd() ? g_archive.size() : 0;
+  s.pending = (int)g_pending.size();
+  s.embedParked = embedParkedWhy();
   if (g_epiLog) {
     s.epiHydrateTruncated = g_epiLog->hydrateTruncated();
     s.epiIndexFloorDay = (int)g_epiLog->indexFloorDay();

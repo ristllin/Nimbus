@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
 #include "nimbus/mem_cap.h"
+#include "nimbus/orch/billing_refusal.h"   // isBillingRefusal / billingEpisodeEnd - one table with the chat head
+#include "nimbus/orch/pending_embed.h"
 #include "nimbus/orch/caps.h"   // scratchpad tier/item caps -> capacity line (W11)
 #include "nimbus/orch/episodic_log.h"   // civilDate for the honest history floor
 #include "nimbus/orch/mem_ttl.h"
@@ -59,18 +62,24 @@ const char kScratchRamOnlyNote[] = "; kept until restart only (saving failed)";
 namespace {
 bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
 
-// The status portion of an "HTTP ..." token: a known router refusal code maps to
-// its own class; otherwise ProviderError carrying ONLY the numeric status.
+// The status portion of an "HTTP ..." token. A billing refusal (the ONE table
+// shared with the chat head, billing_refusal.h) is OutOfCredit; a 429 without a
+// billing token is RateLimited; a known router code maps to its own class;
+// anything else is ProviderError carrying ONLY the numeric status.
 EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
-  if (raw.find("funding_cap_reached")  != std::string::npos) return EmbedFail::OutOfCredit;
-  if (raw.find("rate_limited")         != std::string::npos) return EmbedFail::RateLimited;
-  if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
   std::string code;
   for (size_t i = 5; i < raw.size(); i++) {   // digits after "HTTP " are secret-safe
     const char c = raw[i];
     if (c < '0' || c > '9') break;
     code += c;
   }
+  const int status = code.empty() ? 0 : std::atoi(code.c_str());
+  // The router's monthly cap (HTTP 429 ceiling_reached) is a billing refusal too;
+  // it is checked beside the shared table, which does not carry it yet.
+  if (isBillingRefusal(status, raw) || raw.find("ceiling_reached") != std::string::npos)
+    return EmbedFail::OutOfCredit;
+  if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
+  if (status == 429 || raw.find("rate_limited") != std::string::npos) return EmbedFail::RateLimited;
   detail = code;
   return EmbedFail::ProviderError;
 }
@@ -128,6 +137,8 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
                           : ("no embeddings key for " + detail);
   if (kind == EmbedFail::ProviderError)
     return detail.empty() ? "provider error" : ("provider error HTTP " + detail);
+  if (kind == EmbedFail::OutOfCredit)
+    return detail.empty() ? "out of embedding credit" : ("out of embedding credit at " + detail);
   if (kind == EmbedFail::WidthMismatch) {
     const size_t slash = detail.find('/');
     if (slash == std::string::npos)
@@ -141,7 +152,6 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
     {EmbedFail::Busy,            "connection busy, retry"},
     {EmbedFail::Unreachable,     "provider unreachable"},
     {EmbedFail::Timeout,         "provider timed out"},
-    {EmbedFail::OutOfCredit,     "out of embedding credit for now"},
     {EmbedFail::RateLimited,     "provider busy (rate limited)"},
     {EmbedFail::RouteNotAllowed, "embeddings route not allowed for this provider"},
     {EmbedFail::BadResponse,     "provider sent a malformed response"},
@@ -153,16 +163,21 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
   return "unavailable";
 }
 
-std::string embedFailReason(const std::string& raw) {
-  std::string detail;
-  const EmbedFail k = classifyEmbedFail(raw, detail);
+std::string embedFailReasonFor(EmbedFail k, const std::string& detail) {
   std::string w = embedFailWords(k, detail);
   if (w.empty()) w = "unavailable";
   std::string out = "embeddings: " + w;
   if (k == EmbedFail::NoKey) out += " (add the embedding provider's key under Assistant > Models on the device web page)";
   if (k == EmbedFail::WidthMismatch)
     out += " (set Dimensions to the model's size in Memory > Embedding model)";
+  if (k == EmbedFail::OutOfCredit) out += " (add credit on the provider's billing page)";
   return out;
+}
+
+std::string embedFailReason(const std::string& raw) {
+  std::string detail;
+  const EmbedFail k = classifyEmbedFail(raw, detail);
+  return embedFailReasonFor(k, detail);
 }
 
 namespace {
@@ -271,12 +286,18 @@ bool numArg(JsonObjectConst a, const char* k, double& out) {
 // no expiry - just by using the other tool. Stamps `e` in place, appends any
 // user-facing note, and returns a refusal string (or nullptr to proceed).
 //
-// The counts come from the STORE, never from a number the caller passes in.
+// The counts come from the STORE, never from a number the caller passes in. A
+// fact waiting in the pending-embed queue counts too, so the queue is never a
+// way around the ceiling. `freed` is how many of those counted slots this write
+// gives back: the queued entry being stored itself (the drain), and the memory an
+// update replaces.
 const char* applyWriteQuotas(const MemoryContext& ctx, const Principal& who,
-                             VecEntry& e, std::string& note) {
+                             VecEntry& e, std::string& note, int freed = 0) {
   static std::string refusal;   // the message outlives this call
   const Quota q = effectiveQuota(who.role, who.quota);
-  if (q.maxVectors && ctx.vec->countIn(who.ns) >= q.maxVectors) {
+  const int64_t used = (int64_t)ctx.vec->countIn(who.ns) +
+                       (ctx.pending ? ctx.pending->countIn(who.ns) : 0) - freed;
+  if (q.maxVectors && used >= (int64_t)q.maxVectors) {
     refusal = "this conversation has reached its memory limit (" +
               std::to_string(q.maxVectors) +
               ") - ask the device's admin to raise it, or remove an old memory first";
@@ -296,12 +317,18 @@ const char* applyWriteQuotas(const MemoryContext& ctx, const Principal& who,
   return nullptr;
 }
 
+ToolResult withCode(ToolResult r, const char* code, const MemoryContext& ctx) {
+  r.code = code;
+  if (ctx.onWriteOutcome) ctx.onWriteOutcome(code);
+  return r;
+}
+
 // memory.write did not insert: a duplicate (saying what it did about a pin,
 // so a "pinned" reply can be checked - only for the writer's own memory: another
 // namespace's pin state is not theirs to learn), or an entry of the wrong width.
-// Every duplicate answer extends one shared base sentence, and countWrite tells
-// a duplicate from a new entry by that same constant, so the reply and the
-// counter can never drift apart.
+// Every duplicate answer extends one shared base sentence, so the reply and the
+// counters (which classify by the outcome code, falling back to this prefix)
+// can never drift apart.
 const char kDuplicateWrite[] = "duplicate of an existing memory (importance bumped";
 ToolResult notInsertedResult(const VectorMemory& vec, bool askedPermanent) {
   if (!vec.lastAddWasDuplicate())
@@ -316,44 +343,227 @@ ToolResult notInsertedResult(const VectorMemory& vec, bool askedPermanent) {
   return ToolResult::ok(s);
 }
 
-ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
-  std::string content = strArg(a, "content");
-  if (content.empty()) return ToolResult::fail("missing 'content'");
-  if (!ctx.vec || !ctx.embed) return ToolResult::fail("memory engine unavailable");
-  std::string eerr;
-  std::vector<int8_t> vec = embedForStore(ctx, ctx.vec->dims(), content, eerr);
-  // No embedding, no store: the vector store has no deferred-embedding path
-  // (add() needs a full-width vector), so refuse HONESTLY with the real cause
-  // instead of the old fixed guess - never store the text as if it were embedded.
-  if (vec.empty()) return ToolResult::fail(embedFailReason(eerr) + " (memory not stored)");
+// One embed attempt that consults and feeds the park memo. While parked it makes
+// NO network call and reports the parked cause; a success ends the park (and the
+// billing episode at that provider, so its next refusal is told again).
+struct EmbedTry {
+  std::vector<int8_t> vec;
+  EmbedFail kind = EmbedFail::None;
+  std::string detail;   // secret-safe (a known slug or digits)
+  bool parked = false;  // skipped: the park said the attempt was doomed
+};
 
-  VecEntry e;
-  e.id = contentId(content);
-  e.content = content;
-  double imp = 0.5;
+bool knownProviderSlug(const std::string& p) {
+  static const char* kProviders[] = {"openai", "mistral", "cumulo", "anthropic", "zai"};
+  for (const char* known : kProviders) if (p == known) return true;
+  return false;
+}
+
+void underParkLock(const MemoryContext& ctx, const std::function<void()>& fn) {
+  if (ctx.parkLock) ctx.parkLock(fn);
+  else fn();
+}
+
+// Record an embed attempt's outcome in the park memo (under its lock).
+void noteEmbedResult(const MemoryContext& ctx, EmbedTry& t, const std::string& err, uint32_t now) {
+  const std::string prov = ctx.embedProvider ? ctx.embedProvider() : std::string();
+  if (t.vec.empty()) {
+    t.kind = classifyEmbedFail(err, t.detail);
+    if (t.kind == EmbedFail::None) t.kind = EmbedFail::Unknown;   // empty vector, empty err
+    if (t.kind == EmbedFail::OutOfCredit && knownProviderSlug(prov)) t.detail = prov;
+  }
+  if (!ctx.park) return;
+  bool started = false;
+  underParkLock(ctx, [&] {
+    if (!t.vec.empty() && ctx.park->reason() == EmbedFail::OutOfCredit && knownProviderSlug(prov))
+      billingEpisodeEnd(prov.c_str());
+    started = ctx.park->onResult(t.vec.empty() ? t.kind : EmbedFail::None, now, t.detail);
+  });
+  if (started && t.vec.empty() && ctx.onParked) ctx.onParked(t.kind, err);
+}
+
+EmbedTry tryEmbed(const MemoryContext& ctx, int width, const std::string& text) {
+  EmbedTry t;
+  const uint32_t now = ctx.nowMs ? ctx.nowMs() : 0;
+  if (ctx.park)
+    underParkLock(ctx, [&] {
+      if (!ctx.park->blocked(now)) return;
+      t.parked = true;
+      t.kind = ctx.park->reason();
+      t.detail = ctx.park->detail();
+    });
+  if (t.parked) return t;
+  std::string err;
+  t.vec = embedForStore(ctx, width, text, err);   // the network call: never under the lock
+  noteEmbedResult(ctx, t, err, now);
+  return t;
+}
+
+// Can this failure wait in the queue? Everything except "nothing to embed".
+bool queueable(const MemoryContext& ctx, EmbedFail k) {
+  return ctx.pending && k != EmbedFail::BadRequest && k != EmbedFail::None;
+}
+
+// The fields of one write, from the tool's args or from a queued entry.
+struct WriteSpec {
+  std::string content;
+  float importance = 0.5f;
+  bool permanent = false;
+  std::string ttlName;
+  std::string source = "self";
+  uint32_t createdAtHours = 0;
+};
+
+WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defImportance) {
+  WriteSpec w;
+  w.content = strArg(a, "content");
+  double imp = defImportance;
   numArg(a, "importance", imp);
-  e.importance = (float)imp;
-  if (e.importance < 0) e.importance = 0;
-  if (e.importance > 1) e.importance = 1;
-  e.permanentFlag = a["permanent"].is<bool>() ? a["permanent"].as<bool>() : false;
-  e.source = strArg(a, "source", "self");
-  e.createdAtHours = ctx.nowHours();
-  // ttl class chosen by the model (default weeks when absent/unknown).
-  e.ttlHours = ttlHoursFromName(strArg(a, "ttl", "").c_str());
-  e.vec = std::move(vec);
+  w.importance = (float)(imp < 0 ? 0 : imp > 1 ? 1 : imp);
+  w.permanent = a["permanent"].is<bool>() ? a["permanent"].as<bool>() : false;
+  w.source = strArg(a, "source", "self");
+  w.ttlName = strArg(a, "ttl", "");
+  w.createdAtHours = ctx.nowHours();
+  return w;
+}
 
+WriteSpec specFromPending(const MemoryContext& ctx, const PendingEmbed& p) {
+  WriteSpec w;
+  w.content = p.content;
+  w.importance = p.importance;
+  w.permanent = p.permanent;
+  w.ttlName = p.ttlName;
+  w.source = p.source;
+  // A fact queued before the clock was set is stamped now, when it is stored, so
+  // its age is never read against a boot-relative hour (the pre-sync trap).
+  w.createdAtHours = p.clockSynced ? p.createdAtHours : ctx.nowHours();
+  return w;
+}
+
+// Build the entry a write stores (no vector yet) and run the quota rails.
+// Returns the refusal, or nullptr. The caller has already checked who.valid()
+// and writeOwn.
+const char* prepareWrite(const MemoryContext& ctx, const Principal& who, const WriteSpec& w,
+                         VecEntry& e, std::string& note, int freed) {
+  e = VecEntry();
+  e.id = contentId(w.content);
+  e.content = w.content;
+  e.importance = w.importance;
+  e.permanentFlag = w.permanent;
+  e.source = w.source;
+  e.createdAtHours = w.createdAtHours;
+  // ttl class chosen by the model (default weeks when absent/unknown).
+  e.ttlHours = ttlHoursFromName(w.ttlName.c_str());
   // WRITE RAIL (v3.7.0): the namespace comes from the authenticated caller, not
-  // from the model's arguments - a member's turn cannot store into the owner's
-  // or another chat's memory by asking. Unattributed callers cannot write at all.
-  if (!who.valid()) return ToolResult::fail("memory write needs an identified caller");
-  if (!who.perms().writeOwn)
-    return ToolResult::fail("this conversation isn't approved to store memories yet");
+  // from the model's arguments.
   e.ns = who.ns;
+  return applyWriteQuotas(ctx, who, e, note, freed);
+}
+
+PendingEmbed pendingFrom(const MemoryContext& ctx, const VecEntry& e, const WriteSpec& w,
+                         EmbedFail why) {
+  PendingEmbed p;
+  p.id = e.id;
+  p.ns = e.ns;
+  p.content = w.content;
+  p.importance = w.importance;
+  p.permanent = w.permanent;
+  p.ttlName = w.ttlName;
+  p.source = w.source;
+  p.createdAtHours = w.createdAtHours;
+  p.clockSynced = ctx.clockSynced ? ctx.clockSynced() : true;
+  p.lastFail = (uint8_t)why;
+  return p;
+}
+
+// Put a write the embedder cannot serve now into the durable queue. "queued" is
+// claimed only after the queue reached storage; a full queue or a failed persist
+// refuses honestly and nothing queued is evicted.
+ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const EmbedTry& t,
+                           const std::string& note, const char* notStored) {
+  const std::string cause = embedFailReasonFor(t.kind, t.detail);
+  auto refuse = [&](const std::string& why) {
+    return withCode(ToolResult::fail(cause + " (" + notStored + ": " + why + ")"),
+                    kMemOutcomeRefused, ctx);
+  };
+  switch (ctx.pending->enqueue(p)) {
+    case PendingEmbeds::Add::Full:
+      return refuse(std::to_string(PendingEmbeds::kMaxEntries) + " memories are already waiting");
+    case PendingEmbeds::Add::BytesFull:
+      return refuse("the waiting list on the device is full");
+    case PendingEmbeds::Add::NsFull:
+      return refuse("this conversation already has " +
+                    std::to_string(PendingEmbeds::kMaxPerMember) + " memories waiting");
+    case PendingEmbeds::Add::TooLong:
+      return refuse("too long to keep while embeddings are down; save a shorter version");
+    case PendingEmbeds::Add::Empty:
+      return refuse("nothing to store");
+    case PendingEmbeds::Add::Added:
+      if (ctx.persistPending && !ctx.persistPending()) {
+        ctx.pending->pop(p.id);
+        return refuse("device storage unavailable");
+      }
+      break;
+    case PendingEmbeds::Add::Coalesced:
+      // Already durably queued; a failed rewrite only loses the importance bump.
+      if (ctx.persistPending) ctx.persistPending();
+      break;
+  }
+  // Report what is queued now (a coalesced entry keeps the stronger intent).
+  const PendingEmbed* queued = ctx.pending->find(p.id);
+  const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
+  return withCode(
+      ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
+                     (update ? ", not changed yet: " : ", not stored yet: ") + cause +
+                     ". It is kept on the device and " +
+                     (update ? "applied" : "stored") +
+                     " automatically when embeddings work again; keyword search finds it "
+                     "meanwhile. Until then, do not say it is saved." + note),
+      kMemOutcomeQueued, ctx);
+}
+
+// Store an embedded entry: the end of every successful write. A duplicate keeps
+// the shared pin-state sentence (notInsertedResult), so the reply and the
+// counters can never drift apart.
+ToolResult storeEmbedded(const MemoryContext& ctx, const VecEntry& e, const std::string& note) {
+  const bool inserted = ctx.vec->add(e);
+  if (inserted) return withCode(ToolResult::ok("stored memory " + e.id + note), kMemOutcomeStored, ctx);
+  ToolResult r = notInsertedResult(*ctx.vec, e.permanentFlag);
+  return withCode(std::move(r), r.success ? kMemOutcomeDuplicate : kMemOutcomeRefused, ctx);
+}
+
+ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
+  const WriteSpec w = specFromArgs(ctx, a, 0.5);
+  if (w.content.empty()) return withCode(ToolResult::fail("missing 'content'"), kMemOutcomeRefused, ctx);
+  if (!ctx.vec || !ctx.embed)
+    return withCode(ToolResult::fail("memory engine unavailable"), kMemOutcomeRefused, ctx);
+  // The rails run BEFORE the embed, so a caller that may not write never spends
+  // an embedding call. Unattributed callers cannot write at all.
+  if (!who.valid())
+    return withCode(ToolResult::fail("memory write needs an identified caller"), kMemOutcomeRefused, ctx);
+  if (!who.perms().writeOwn)
+    return withCode(ToolResult::fail("this conversation isn't approved to store memories yet"),
+                    kMemOutcomeRefused, ctx);
+  VecEntry e;
   std::string note;
-  if (const char* refusal = applyWriteQuotas(ctx, who, e, note)) return ToolResult::fail(refusal);
-  bool inserted = ctx.vec->add(e);
-  if (inserted) return ToolResult::ok("stored memory " + e.id + note);
-  return notInsertedResult(*ctx.vec, e.permanentFlag);
+  if (const char* refusal = prepareWrite(ctx, who, w, e, note, 0))
+    return withCode(ToolResult::fail(refusal), kMemOutcomeRefused, ctx);
+
+  EmbedTry t = tryEmbed(ctx, ctx.vec->dims(), w.content);
+  if (!t.vec.empty()) {
+    e.vec = std::move(t.vec);
+    return storeEmbedded(ctx, e, note);
+  }
+  // No embedding: never store the text as if it were embedded. With the queue
+  // bound the fact waits for the embedder; without it (or with nothing to embed)
+  // the write is refused with the real cause.
+  if (!queueable(ctx, t.kind))
+    return withCode(ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not stored)"),
+                    kMemOutcomeRefused, ctx);
+  // The exact same fact is already stored: nothing to wait for.
+  if (ctx.vec->idVisible(e.id, readSetFor(who)))
+    return withCode(ToolResult::ok("duplicate of an existing memory"), kMemOutcomeDuplicate, ctx);
+  return enqueueOrRefuse(ctx, pendingFrom(ctx, e, w, t.kind), t, note, "memory not stored");
 }
 
 // ---- memory.update (replace/supersede an existing fact) ---------------------
@@ -361,67 +571,75 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
 // old one: find the memory to replace (by id, or by the closest semantic match to a
 // short description of the OLD fact), remove it, and store the new content. If nothing
 // close is found it just stores the new fact (never deletes an unrelated memory).
+
+// The memory an update replaces: the explicit id, else the nearest match to the
+// description, only when it is genuinely close (cosine sim >= 0.55), so a vague
+// description can't delete an unrelated memory. Empty = nothing to replace.
+std::string resolveUpdateTarget(const MemoryContext& ctx, const Principal& who,
+                                const std::string& id, const std::vector<int8_t>& descVec) {
+  if (!id.empty()) return id;
+  if (descVec.empty()) return std::string();
+  auto hits = ctx.vec->search(descVec, 1, 0, readSetFor(who));
+  if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) return hits[0].id;
+  return std::string();
+}
+
 ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   if (!who.perms().writeOwn)
-    return ToolResult::fail("this conversation isn't approved to change memories");
-  std::string content = strArg(a, "content");
-  if (content.empty()) return ToolResult::fail("missing 'content' (the new fact)");
-  if (!ctx.vec || !ctx.embed) return ToolResult::fail("memory engine unavailable");
-
-  // Embed the NEW content FIRST: if embeddings are unavailable, refuse honestly
-  // BEFORE removing anything, so a failed update can never delete the old fact and
-  // leave nothing in its place (CUM-435).
-  std::string eerr;
-  std::vector<int8_t> vec = embedForStore(ctx, ctx.vec->dims(), content, eerr);
-  if (vec.empty()) return ToolResult::fail(embedFailReason(eerr) + " (memory not changed)");
-
-  // Identify the memory to replace: explicit id, else the nearest match to 'old'/'query'.
-  std::string oldId = strArg(a, "id");
-  if (oldId.empty()) {
-    std::string q = strArg(a, "old");
-    if (q.empty()) q = strArg(a, "query");
-    if (!q.empty()) {
-      std::string qerr;
-      std::vector<int8_t> qv = embedForStore(ctx, ctx.vec->dims(), q, qerr);
-      if (!qv.empty()) {
-        auto hits = ctx.vec->search(qv, 1, 0, readSetFor(who));
-        // Only treat it as "the same fact" if it's genuinely close (cosine sim >= 0.55),
-        // so a vague description can't delete an unrelated memory.
-        if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) oldId = hits[0].id;
-      }
-    }
-  }
+    return withCode(ToolResult::fail("this conversation isn't approved to change memories"),
+                    kMemOutcomeRefused, ctx);
+  const WriteSpec w = specFromArgs(ctx, a, 0.6);
+  if (w.content.empty())
+    return withCode(ToolResult::fail("missing 'content' (the new fact)"), kMemOutcomeRefused, ctx);
+  if (!ctx.vec || !ctx.embed)
+    return withCode(ToolResult::fail("memory engine unavailable"), kMemOutcomeRefused, ctx);
+  const std::string oldIdArg = strArg(a, "id");
+  std::string desc = strArg(a, "old");
+  if (desc.empty()) desc = strArg(a, "query");
   // A caller may only replace a memory INSIDE its own boundary - an id from
   // another principal's namespace is refused rather than silently deleted.
-  if (!oldId.empty() && !ctx.vec->idVisible(oldId, readSetFor(who)))
-    return ToolResult::fail("no such memory");
-  const bool removed = !oldId.empty() && ctx.vec->remove(oldId);
+  if (!oldIdArg.empty() && !ctx.vec->idVisible(oldIdArg, readSetFor(who)))
+    return withCode(ToolResult::fail("no such memory"), kMemOutcomeRefused, ctx);
+
+  // Embed the NEW content FIRST: if embeddings are unavailable nothing is removed,
+  // so a failed update can never delete the old fact and leave nothing in its
+  // place (CUM-435). With the queue bound the update waits, and the old fact stays
+  // until the new one is stored.
+  EmbedTry t = tryEmbed(ctx, ctx.vec->dims(), w.content);
+  if (t.vec.empty()) {
+    if (!queueable(ctx, t.kind) || !who.valid())
+      return withCode(ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not changed)"),
+                      kMemOutcomeRefused, ctx);
+    VecEntry e;
+    std::string note;
+    if (const char* refusal = prepareWrite(ctx, who, w, e, note, oldIdArg.empty() ? 0 : 1))
+      return withCode(ToolResult::fail(refusal), kMemOutcomeRefused, ctx);
+    PendingEmbed p = pendingFrom(ctx, e, w, t.kind);
+    p.op = PendingOp::Update;
+    p.oldId = oldIdArg;
+    p.oldDesc = oldIdArg.empty() ? desc : std::string();
+    return enqueueOrRefuse(ctx, p, t, note, "memory not changed");
+  }
+  std::vector<int8_t> descVec;
+  if (oldIdArg.empty() && !desc.empty()) descVec = tryEmbed(ctx, ctx.vec->dims(), desc).vec;
+  const std::string oldId = resolveUpdateTarget(ctx, who, oldIdArg, descVec);
 
   VecEntry e;
-  e.ns = who.ns;   // the replacement belongs to the caller, like every write
-  e.id = contentId(content);
-  e.content = content;
-  double imp = 0.6;
-  numArg(a, "importance", imp);
-  e.importance = (float)(imp < 0 ? 0 : imp > 1 ? 1 : imp);
-  e.permanentFlag = a["permanent"].is<bool>() ? a["permanent"].as<bool>() : false;
-  e.source = strArg(a, "source", "self");
-  e.createdAtHours = ctx.nowHours();
-  // ttl class, SAME semantics + default as memory.write (audit 2026-07-24: update
-  // silently dropped ttl, so an updated fact fell back to the struct default -
-  // a DIFFERENT default than write's - and a permanent fact lost its permanence
-  // unless re-flagged).
-  e.ttlHours = ttlHoursFromName(strArg(a, "ttl", "").c_str());
-  e.vec = std::move(vec);
+  std::string note;
   // The SAME rails as memory.write. This path also stores when nothing matched
   // ("stored as new" below), which makes it a full write seam - an unrailed one
-  // was a way around every ceiling.
-  std::string note;
-  if (const char* refusal = applyWriteQuotas(ctx, who, e, note)) return ToolResult::fail(refusal);
+  // was a way around every ceiling. The replacement belongs to the caller.
+  const int freed = (!oldId.empty() && ctx.vec->idVisible(oldId, readSetFor(who))) ? 1 : 0;
+  if (const char* refusal = prepareWrite(ctx, who, w, e, note, freed))
+    return withCode(ToolResult::fail(refusal), kMemOutcomeRefused, ctx);
+  e.vec = std::move(t.vec);
+  const bool removed = !oldId.empty() && ctx.vec->remove(oldId);
   ctx.vec->add(e);
-  return ToolResult::ok((removed ? ("updated: replaced the prior memory with \"" + content + "\"")
-                                 : ("no close match to replace; stored \"" + content + "\" as new"))
-                        + note);
+  return withCode(
+      ToolResult::ok((removed ? ("updated: replaced the prior memory with \"" + w.content + "\"")
+                              : ("no close match to replace; stored \"" + w.content + "\" as new")) +
+                     note),
+      kMemOutcomeStored, ctx);
 }
 
 // ---- memory.pin (pin / unpin / delete a stored memory) ----------------------
@@ -429,6 +647,18 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
 // pin (never decay/evict), UNPIN (let it decay/expire again), or delete. Memories
 // are keyed by a content hash, so the model can target one by its exact `content`
 // (we recompute the id) or by `id` if it kept one from a prior write.
+// A fact still waiting for an embedding is a memory too: "delete" removes it from
+// the queue (inside the caller's namespace), so it is never stored later.
+bool deleteQueued(const MemoryContext& ctx, const std::string& id, const Principal& who) {
+  if (!ctx.pending) return false;
+  const PendingEmbed* q = ctx.pending->find(id);
+  if (!q || !nsAllowsEntry(q->ns, readSetFor(who))) return false;
+  ctx.pending->pop(id);
+  if (ctx.persistPending) ctx.persistPending();
+  if (ctx.vec->idVisible(id, readSetFor(who))) ctx.vec->remove(id);
+  return true;
+}
+
 ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   if (!ctx.vec) return ToolResult::fail("memory engine unavailable");
   if (!who.perms().writeOwn)
@@ -445,6 +675,8 @@ ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& w
   // visibility check, "delete the fact that the alarm code is 4417" from any
   // chat would remove the admin's entry. The refusal is deliberately identical
   // to "no such memory": confirming that an id exists is itself a disclosure.
+  if (action == "delete" && deleteQueued(ctx, id, who))
+    return ToolResult::ok("delete ok (" + id + ", it was waiting for embeddings and is never stored)");
   if (!ctx.vec->idVisible(id, readSetFor(who)))
     return ToolResult::fail("no memory with id " + id);
   bool ok;
@@ -471,32 +703,47 @@ ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& w
 // engine's nsVisible). Clearly labelled so the model never mistakes it for
 // semantic recall. Returns ok (degraded), never a bare failure, so a transient
 // embed outage no longer reads as "empty memory".
-ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
-                                 int k, const Principal& who, const std::string& eerr) {
-  const std::string label = "keyword match, embeddings unavailable: " +
-                            embedFailLabelReason(eerr);
-  const std::vector<std::string> allow = readSetFor(who);
-  const LexQuery lq = lexParse(query);   // the shared word rule (CUM-515)
-  const uint32_t nowH = ctx.nowHours ? ctx.nowHours() : 0;
-  std::vector<std::pair<int, std::string>> found;   // (keyword hits, bullet)
+// The keyword scan both degraded paths share (the search tool's fallback and
+// automatic recall): live entries inside the read boundary and not expired, plus
+// the facts waiting in the pending queue, ranked by distinct keyword hits.
+// Each hit is (score, text) where text is "[NN%] content" or the pending tag.
+std::vector<std::pair<int, std::string>> lexicalHits(const VectorMemory& vec, const PendingEmbeds* pending,
+                                                     const LexQuery& lq, const std::vector<std::string>& allow,
+                                                     uint32_t nowH) {
+  std::vector<std::pair<int, std::string>> found;   // (keyword hits, text)
   size_t scanned = 0;
-  for (const auto& e : ctx.vec->getAll()) {          // importance-desc
+  for (const auto& e : vec.getAll()) {               // importance-desc
     if (++scanned > kLexScanMax) break;
     if (!nsAllowsEntry(e.ns, allow)) continue;       // never widen the read boundary
     if (entryExpired(e, nowH)) continue;             // same query-time TTL as semantic search
     const int sc = lexCoverage(e.content, lq);       // distinct words matched, in place
     if (sc <= 0) continue;
-    found.push_back({sc, "- [" + std::to_string((int)(e.importance * 100)) + "%] " +
-                             e.content + "\n"});
+    found.push_back({sc, "[" + std::to_string((int)(e.importance * 100)) + "%] " + e.content});
   }
+  // Facts written during the outage wait in the queue; the same read boundary
+  // applies, and each says it is not stored yet.
+  if (pending)
+    for (const auto& p : pending->getAll(allow)) {
+      const int sc = lexCoverage(p.content, lq);
+      if (sc <= 0) continue;
+      found.push_back({sc, "[pending, not stored yet] " + p.content});
+    }
   // Rank by keyword hits desc; getAll() was importance-desc, so stable_sort keeps
   // importance order within a tie.
   std::stable_sort(found.begin(), found.end(),
                    [](const std::pair<int, std::string>& x,
                       const std::pair<int, std::string>& y) { return x.first > y.first; });
+  return found;
+}
+
+ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
+                                 int k, const Principal& who, const std::string& reasonWords) {
+  const std::string label = "keyword match, embeddings unavailable: " + reasonWords;
+  const LexQuery lq = lexParse(query);   // the shared word rule (CUM-515)
+  const auto found = lexicalHits(*ctx.vec, ctx.pending, lq, readSetFor(who), ctx.nowHours ? ctx.nowHours() : 0);
   std::string out;
   int n = 0;
-  for (const auto& f : found) { if (n >= k) break; out += f.second; n++; }
+  for (const auto& f : found) { if (n >= k) break; out += "- " + f.second + "\n"; n++; }
   if (n == 0) return ToolResult::ok("No memories matched (" + label + ")." + commonWordsHint(lq));
   return ToolResult::ok("Found " + std::to_string(n) + " memories (" + label + "):\n" + out);
 }
@@ -515,11 +762,15 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
   int k = numArg(a, "n_results", kNum) ? (int)std::lround(kNum)
         : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
   if (k < 1) k = 1;
-  std::string eerr;
-  std::vector<int8_t> qv = embedForStore(ctx, ctx.vec->dims(), query, eerr);
+  EmbedTry t = tryEmbed(ctx, ctx.vec->dims(), query);
   // Degrade instead of hard-failing: a keyword scan over the same rows + the same
   // read boundary, clearly labelled, so recall is not simply "empty" (CUM-435).
-  if (qv.empty()) return lexicalSearchFallback(ctx, query, k, who, eerr);
+  // While embeddings are parked it goes straight here, with no network call.
+  if (t.vec.empty()) {
+    std::string w = embedFailWords(t.kind, t.detail);
+    return lexicalSearchFallback(ctx, query, k, who, w.empty() ? std::string("unavailable") : w);
+  }
+  const std::vector<int8_t>& qv = t.vec;
 
   auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
   // Apply the user/model relevance threshold (similarity = 1 - distance).
@@ -883,23 +1134,39 @@ ToolResult doScratch(const MemoryContext& ctx, JsonObjectConst a) {
 }  // namespace
 
 // Count what a write or update did (MemoryContext::ops; no-op when unbound). The
-// result's own words say which way it went: doWrite answers "stored memory <id>" or
-// "duplicate of ..."; doUpdate succeeds only once the new wording is stored.
+// result's outcome code says which way it went (every doWrite/doUpdate return is
+// withCode'd); the duplicate-prefix text match stays as the fallback for a result
+// that carries no code, so the reply and the counter can never drift apart. A
+// QUEUED write counts as queued, never as stored: "ok" must not report a fact that
+// only waits for its embedding as landed (lane M's honest dream row + lane P's queue).
 static ToolResult countWrite(MemOpCounters* ops, ToolResult r) {
   if (!ops) return r;
+  if (!r.code.empty()) {
+    if (!r.success) ops->failed++;
+    else if (r.code == kMemOutcomeQueued) ops->queued++;
+    else if (r.code == kMemOutcomeDuplicate) ops->dupSkipped++;
+    else ops->added++;
+    return r;
+  }
   if (!r.success) ops->failed++;
   else if (r.output.rfind(kDuplicateWrite, 0) == 0) ops->dupSkipped++;
   else ops->added++;
   return r;
 }
 static ToolResult countUpdate(MemOpCounters* ops, ToolResult r) {
-  if (ops) (r.success ? ops->updated : ops->failed)++;
+  if (!ops) return r;
+  if (r.code == kMemOutcomeQueued && r.success) ops->queued++;
+  else (r.success ? ops->updated : ops->failed)++;
   return r;
 }
 
+static void registerOptionalMemoryTools(ToolRegistry& reg, const MemoryContext& ctx);
+
 void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
   reg.add("memory.write",
-          "Store a fact in long-term associative memory so you can recall it later.",
+          "Store a fact in long-term associative memory so you can recall it later. If "
+          "embeddings are down the fact is queued on the device and stored later; the result "
+          "says which.",
           [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
             return countWrite(ctx.ops, doWrite(ctx, a, who));
           },
@@ -971,6 +1238,11 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
   // handler above still refuses; this only stops the prompt from offering it).
   reg.setAdminOnly("memory.scratchpad");
 
+  registerOptionalMemoryTools(reg, ctx);
+}
+
+// Tools that exist only when their store is bound.
+static void registerOptionalMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
   // memory.episodic is registered only when an episodic store is bound (device).
   if (ctx.episodic) {
     reg.add("memory.episodic",
@@ -1018,5 +1290,161 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
   }
 }
 
+// ---- degraded automatic recall ------------------------------------------------
+RecallOut lexicalRecall(const VectorMemory& vec, const PendingEmbeds* pending, const std::string& query,
+                        const RecallScope& scope, const std::string& cause) {
+  RecallOut r;
+  r.degraded = cause.empty() ? std::string("unavailable") : cause;
+  const int k = scope.k > 0 ? scope.k : 5;
+  const auto found = lexicalHits(vec, pending, lexParse(query), scope.nsAllow, scope.nowHours);
+  for (const auto& f : found) {
+    if ((int)r.hits.size() >= k) break;
+    r.hits.push_back(f.second);
+  }
+  return r;
+}
+
+// ---- the pending-embed drain ---------------------------------------------------
+const char* embedDrainStepName(EmbedDrainStep s) {
+  switch (s) {
+    case EmbedDrainStep::Idle:       return "idle";
+    case EmbedDrainStep::Parked:     return "parked";
+    case EmbedDrainStep::Stored:     return "stored";
+    case EmbedDrainStep::Duplicate:  return "duplicate";
+    case EmbedDrainStep::Dropped:    return "dropped";
+    case EmbedDrainStep::Refused:    return "refused";
+    case EmbedDrainStep::Failed:     return "failed";
+    case EmbedDrainStep::NotDurable: return "not-durable";
+  }
+  return "?";
+}
+
+namespace {
+std::string excerpt80(const std::string& s) {
+  if (s.size() <= 80) return s;
+  return s.substr(0, (size_t)utf8CapLen(s.c_str(), (int)s.size(), 80)) + "...";
+}
+
+void runLocked(const EmbedDrainDeps& d, const std::function<void()>& fn) {
+  if (d.withLock) d.withLock(fn);
+  else fn();
+}
+
+// Pop `id` once the vector store is durable (the crash-safety invariant), then
+// persist the queue. Returns false when the vector persist failed: the entry stays.
+bool commitDrained(const MemoryContext& ctx, const EmbedDrainDeps& d, const std::string& id) {
+  if (d.persistVectors && !d.persistVectors()) return false;
+  ctx.pending->pop(id);
+  if (ctx.persistPending) ctx.persistPending();
+  return true;
+}
+
+// The namespace's writer NOW: a member revoked since the write never gets the
+// fact stored (their queued text is dropped with them).
+bool writerOf(const EmbedDrainDeps& d, const PendingEmbed& p, Principal& who) {
+  return d.principalForNs && d.principalForNs(p.ns, who) && who.valid() && who.ns == p.ns &&
+         who.perms().writeOwn;
+}
+
+void popAndPersist(const MemoryContext& ctx, const std::string& id) {
+  ctx.pending->pop(id);
+  if (ctx.persistPending) ctx.persistPending();
+}
+
+// Embed the queued content (and, for an update by description, the description),
+// OUTSIDE the lock: a TLS call, like recall. An empty vec means retry later.
+EmbedTry embedQueued(const MemoryContext& ctx, const PendingEmbed& p, std::vector<int8_t>& descVec) {
+  EmbedTry t = tryEmbed(ctx, ctx.vec->dims(), p.content);
+  if (t.vec.empty() || p.op != PendingOp::Update || !p.oldId.empty() || p.oldDesc.empty()) return t;
+  EmbedTry td = tryEmbed(ctx, ctx.vec->dims(), p.oldDesc);
+  if (td.vec.empty()) return td;   // keep the old fact: retry the whole update later
+  descVec = std::move(td.vec);
+  return t;
+}
+
+// Under the lock: rebuild the entry with the CURRENT principal's rails, store it,
+// and pop it only once the vectors are durable.
+EmbedDrainStep storeQueued(const MemoryContext& ctx, const EmbedDrainDeps& d, const PendingEmbed& p,
+                      const Principal& who, std::vector<int8_t> vec, const std::vector<int8_t>& descVec) {
+  if (!ctx.pending->find(p.id)) return EmbedDrainStep::Idle;   // erased meanwhile
+  std::string oldId;
+  if (p.op == PendingOp::Update) {
+    oldId = resolveUpdateTarget(ctx, who, p.oldId, descVec);
+    if (!oldId.empty() && !ctx.vec->idVisible(oldId, readSetFor(who))) oldId.clear();
+  }
+  VecEntry e;
+  std::string note;
+  const WriteSpec w = specFromPending(ctx, p);
+  if (const char* refusal = prepareWrite(ctx, who, w, e, note, 1 + (oldId.empty() ? 0 : 1))) {
+    popAndPersist(ctx, p.id);
+    ctx.pending->addNote(p.ns, "[MEMORY] queued mem_write \"" + excerpt80(p.content) +
+                                   "\" -> NOT stored (" + refusal + ")");
+    if (ctx.onWriteOutcome) ctx.onWriteOutcome(kMemOutcomeRefused);
+    return EmbedDrainStep::Refused;
+  }
+  e.vec = std::move(vec);
+  if (!oldId.empty()) ctx.vec->remove(oldId);
+  const bool inserted = ctx.vec->add(e);
+  // A failed persist keeps the entry; the vector stays in RAM and the next step
+  // finds its id stored and only retries the persist.
+  if (!commitDrained(ctx, d, p.id)) return EmbedDrainStep::NotDurable;
+  if (ctx.onWriteOutcome) ctx.onWriteOutcome(inserted ? kMemOutcomeStored : kMemOutcomeDuplicate);
+  ctx.pending->addNote(p.ns, "[MEMORY] queued mem_write \"" + excerpt80(p.content) + "\" -> now " +
+                                 (p.op == PendingOp::Update ? "applied" : "stored") + " (" + p.id +
+                                 (inserted ? "" : ", it matched an existing memory") + ")");
+  return inserted ? EmbedDrainStep::Stored : EmbedDrainStep::Duplicate;
+}
+
+// A crash after the vector persist and before the queue persist leaves the fact
+// both stored and queued: the replay only pops it, with no embed. True when it
+// handled the entry (`step` says how).
+bool replayIfStored(const MemoryContext& ctx, const EmbedDrainDeps& d, const PendingEmbed& p,
+                    const Principal& who, EmbedDrainStep& step) {
+  bool done = false;
+  runLocked(d, [&] {
+    if (p.op != PendingOp::Write || !ctx.vec->idVisible(p.id, readSetFor(who))) return;
+    done = true;
+    step = commitDrained(ctx, d, p.id) ? EmbedDrainStep::Duplicate : EmbedDrainStep::NotDurable;
+  });
+  return done;
+}
+}  // namespace
+
+EmbedDrainResult drainOne(const MemoryContext& ctx, const EmbedDrainDeps& d) {
+  EmbedDrainResult r;
+  if (!ctx.pending || !ctx.vec || !ctx.embed) return r;
+  PendingEmbed p;
+  bool have = false;
+  runLocked(d, [&] {
+    if (const PendingEmbed* f = ctx.pending->front()) { p = *f; have = true; }
+  });
+  if (!have) return r;
+  r.id = p.id;
+  bool parked = false;
+  if (ctx.park) underParkLock(ctx, [&] { parked = ctx.park->blocked(ctx.nowMs ? ctx.nowMs() : 0); });
+  if (parked) {
+    r.step = EmbedDrainStep::Parked;
+    return r;
+  }
+  Principal who;
+  if (!writerOf(d, p, who)) {
+    runLocked(d, [&] { popAndPersist(ctx, p.id); });
+    r.step = EmbedDrainStep::Dropped;
+    return r;
+  }
+  if (replayIfStored(ctx, d, p, who, r.step)) return r;
+  std::vector<int8_t> descVec;
+  EmbedTry t = embedQueued(ctx, p, descVec);
+  if (t.vec.empty()) {
+    runLocked(d, [&] {
+      ctx.pending->noteFailed(p.id, t.kind);
+      if (ctx.persistPending) ctx.persistPending();
+    });
+    r.step = t.parked ? EmbedDrainStep::Parked : EmbedDrainStep::Failed;
+    return r;
+  }
+  runLocked(d, [&] { r.step = storeQueued(ctx, d, p, who, std::move(t.vec), descVec); });
+  return r;
+}
 }  // namespace orch
 }  // namespace nimbus

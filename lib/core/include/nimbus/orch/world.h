@@ -104,6 +104,7 @@ struct ContextInputs {
                                    //     whole OLDEST rows when it does not fit.
   const Scratchpad* scratchpad = nullptr;  // 6. model working memory
   std::vector<std::string> recalled;       // 7. "## RELEVANT MEMORIES" bullets
+  std::string recallDegraded;              // 7. why recall was keyword-only ("" = it was not)
   std::string memoryExplainer;  // 8. how-your-memory-works note ("" => skipped)
 };
 

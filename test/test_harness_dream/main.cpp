@@ -631,7 +631,7 @@ struct Rig {
     d.jobs = jobs.get();
     d.deliver = deliverFn;
     d.fire = [this](const char* c) { cues.push_back(c); };
-    d.recall = [](const std::string&, const nimbus::orch::Principal&) { return std::vector<std::string>{}; };
+    d.recall = [](const std::string&, const nimbus::orch::Principal&) { return nimbus::orch::RecallOut{}; };
     d.composeInputs = [](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";

@@ -58,6 +58,9 @@ struct ComposeInputs {
                                      // ABOVE the recent window: summary + verbatim tail.
   const nimbus::orch::Scratchpad* scratchpad = nullptr;
   std::vector<std::string> recalled;
+  // Why automatic recall was keyword-only this turn ("" = it was not): the prompt
+  // says so even with no hits, so an outage never reads as "nothing relevant".
+  std::string recallDegraded;
   int budgetBytes = nimbus::orch::kContextBudgetMax;
   // W10: who THIS turn's message is from - the prompt used to claim every
   // conversation was "your owner", which is wrong for member/guest chats (the

@@ -106,7 +106,7 @@ struct Rig {
     d.platform = plat.contract();
     d.jobs = jobs.get();
     d.deliver = deliverFn;
-    d.recall = [](const std::string&, const orch::Principal&) { return std::vector<std::string>{}; };
+    d.recall = [](const std::string&, const orch::Principal&) { return orch::RecallOut{}; };
     d.composeInputs = [](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
@@ -709,7 +709,7 @@ static void test_failed_write_night_row_says_failed_with_counts() {
   const std::string row = dream::renderDreamRow(r.report);
   TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Degraded, (int)r.report.outcome);
   TEST_ASSERT_TRUE_MESSAGE(row.find("Nightly dream degraded (memory writes failed): 1 of 3 memories "
-                                    "stored (1 new, 0 updated, 2 failed)") == 0, row.c_str());
+                                    "stored (1 new, 0 updated, 0 queued, 2 failed)") == 0, row.c_str());
   TEST_ASSERT_TRUE(row.find("spent 1000 tokens") != std::string::npos);
   // And a failed turn with a failed write: FAILED, the cause and the counts.
   Night f;
@@ -719,8 +719,28 @@ static void test_failed_write_night_row_says_failed_with_counts() {
   };
   const std::string frow = dream::renderDreamRow(dream::runNight(f.deps(), clockAt(7, 210), false).report);
   TEST_ASSERT_TRUE_MESSAGE(frow.find("Nightly dream FAILED (billing: chat HTTP 400: credit balance is too low), "
-                                     "no retry tonight; 0 of 1 memories stored (0 new, 0 updated, 1 failed)") == 0,
+                                     "no retry tonight; 0 of 1 memories stored (0 new, 0 updated, 0 queued, 1 failed)") == 0,
                            frow.c_str());
+}
+
+// Lane P meets lane M: a write queued during the night (embedding outage) is
+// never counted as stored. The row names it queued, so a billing outage during
+// the night can never read as "memories stored".
+static void test_queued_write_night_row_names_it_queued() {
+  Night n;
+  n.turn = [&n] {
+    n.ops.queued += 1;
+    orch::FireOutcome o;
+    o.ok = true;
+    o.tokens.add(900, 100);
+    return o;
+  };
+  dream::NightResult r = dream::runNight(n.deps(), clockAt(7, 210), false);
+  const std::string row = dream::renderDreamRow(r.report);
+  TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Ran, (int)r.report.outcome);
+  TEST_ASSERT_TRUE_MESSAGE(row.find("ok: 0 of 1 memories stored (0 new, 0 updated, 1 queued, 0 failed)") !=
+                               std::string::npos,
+                           row.c_str());
 }
 
 static void test_memory_unavailable_night_says_so_and_is_degraded() {
@@ -1322,6 +1342,7 @@ int main(int, char**) {
   RUN_TEST(test_night_outcome_property);
   RUN_TEST(test_dream_night_retry_window);
   RUN_TEST(test_failed_write_night_row_says_failed_with_counts);
+  RUN_TEST(test_queued_write_night_row_names_it_queued);
   RUN_TEST(test_memory_unavailable_night_says_so_and_is_degraded);
   RUN_TEST(test_streak_alerts_and_breaker_exemption);
   RUN_TEST(test_gate_starvation_bound);

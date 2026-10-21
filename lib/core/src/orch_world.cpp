@@ -419,6 +419,7 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
     // huge chat window can never starve the self-model in the other direction.
     int wants = (int)in.recentConversation.size() + (int)in.sessions.size() + 512;
     for (const auto& r : in.recalled) wants += (int)r.size() + 3;
+    if (!in.recallDegraded.empty()) wants += 160 + (int)in.recallDegraded.size();
     const int kTailCap = 3072;
     const int tailReserve = 256 + (wants < kTailCap ? wants : kTailCap);
     const int room = softBudget - (int)out.size() - tailReserve;
@@ -489,13 +490,23 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
   // a time so we keep as many as fit rather than dropping the whole block (this
   // is the section most likely to bind the budget). Injected as
   // "## RELEVANT MEMORIES" bullets.
-  if (!in.recalled.empty()) {
+  if (!in.recalled.empty() || !in.recallDegraded.empty()) {
     // Accumulate the header + as many bullets as fit into a scratch block, and
     // splice it in ONLY if at least one bullet survived - never emit a bare
     // "## RELEVANT MEMORIES" header with nothing under it (it misleads the model
     // and wastes a tight budget). Bullets are the lowest-priority bulk, so we
     // keep as many as fit rather than dropping the block wholesale.
+    // When embeddings could not serve recall, ONE line says so (even with no
+    // hits): an empty section used to read the same as "nothing relevant"
+    // during an outage (13-14 Oct), so the model said it did not remember.
     std::string block = "\n## RELEVANT MEMORIES\n";
+    const bool degraded = !in.recallDegraded.empty();
+    if (degraded)
+      block += "(Automatic recall is keyword-only right now: " + in.recallDegraded +
+               ". Search your memory and episodic history before saying you do not "
+               "remember something.)\n";
+    if (degraded && (int)(out.size() + block.size()) > softBudget) block = "\n## RELEVANT MEMORIES\n";
+    const bool noticeKept = degraded && block.size() > sizeof("\n## RELEVANT MEMORIES\n") - 1;
     size_t projected = out.size() + block.size();
     int kept = 0;
     for (const auto& mem : in.recalled) {
@@ -510,7 +521,7 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
       projected += bullet.size();
       kept++;
     }
-    if (kept > 0) out += block;
+    if (kept > 0 || noticeKept) out += block;
     if (kept < (int)in.recalled.size()) {
       ctx.truncated = true;
       ctx.droppedSections.push_back(

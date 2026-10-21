@@ -141,10 +141,15 @@ class TurnEngine {
     // Sound cue, execution-only: "turnstart" (device: sfx TurnStart). Nullable.
     std::function<void(const char* cue)> fire;
 
-    // Associative recall for the user's message (device: memory::recall -
-    // embed + VDB search, fail-open). Nullable => no recall.
-    std::function<std::vector<std::string>(const std::string& userText,
-                                           const nimbus::orch::Principal& who)> recall;
+    // Associative recall for the user's message (device: memory::recallFor -
+    // embed + VDB search; when embeddings cannot serve it, a keyword scan that
+    // says so in RecallOut::degraded). Nullable => no recall.
+    std::function<nimbus::orch::RecallOut(const std::string& userText,
+                                          const nimbus::orch::Principal& who)> recall;
+    // Notes for this chat from the pending-embed drain ("[MEMORY] queued mem_write
+    // ... -> now stored"), taken once; they join the turn's MEMORY RESULTS.
+    // Nullable => none.
+    std::function<std::string(const std::string& chatId)> memNotes;
     // Gather the LIVE prompt inputs (devName/hostLabel/directive/running
     // memory/HAL+fault hardware manifest/sessions/scratchpad). The engine
     // fills tools/loopOn/recalled itself so "advertised == callable" is a

@@ -36,9 +36,13 @@ struct ToolResult {
   bool        success = true;
   std::string output;
   std::string error;
+  // A machine outcome for callers that must count results, never parse words.
+  // Empty for most tools; the memory write tools set stored, duplicate, queued or
+  // refused (memory_tools.h kMemOutcome*).
+  std::string code;
 
-  static ToolResult ok(const std::string& out) { return {true, out, ""}; }
-  static ToolResult fail(const std::string& err) { return {false, "", err}; }
+  static ToolResult ok(const std::string& out) { return {true, out, "", ""}; }
+  static ToolResult fail(const std::string& err) { return {false, "", err, ""}; }
 };
 
 // WHO is making this call (v3.7.0 - the per-principal data boundary). A tool

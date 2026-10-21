@@ -62,6 +62,7 @@
 #include <solide/storage.h>            // activeFs(): the mounted card (SD_MMC on Freenove)
 #include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
+#include "nimbus/test_ballast.h"       // FAULT sram_ballast - multi-block ballast (host-tested)
 
 // Lane K's provider-wire hooks (declared in test_console.h): WEAK defaults that
 // report "not wired" until lane K links its strong definitions.
@@ -240,24 +241,31 @@ void fstat(String path) {
 }
 
 // ---- program-2026-10-18 fault/crash/clock seams ---------------------------
-// Internal-SRAM ballast (FAULT sram_ballast <bytes>): one MALLOC_CAP_INTERNAL
-// block held until released, so the real turn/loop heap gates fire at a chosen
-// free level without touching hardware (study T6). Not a fault cap - just RAM
-// the test pins down.
-void* s_sramBallast = nullptr;
-size_t s_sramBallastN = 0;
+// Internal-SRAM ballast (FAULT sram_ballast <bytes>): internal memory held until
+// released, so the real turn/loop/drain heap gates fire at a chosen free level
+// without touching hardware (study T6). Not a fault cap - just RAM the test pins
+// down. Held as several blocks (nimbus/test_ballast.h): one block can never exceed
+// the fragmented heap's largest free block (about 22 KB of about 47 KB free on
+// unit A), which never reaches the 12 KB gates. Never below kBallastKeepFree.
+nimbus::Ballast s_sramBallast;
+constexpr size_t kBallastKeepFree = 4096;   // the console can still answer
+constexpr uint32_t kBallastCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
 volatile uint32_t s_stackSink = 0;   // keeps overflowStack's writes observable
 bool s_ttsMuted = false;             // AUDIOINJECT: no text-to-speech for the injected turn
+nimbus::BallastHeap internalHeap() {
+  nimbus::BallastHeap h;
+  h.alloc = [](size_t n, void*) { return heap_caps_malloc(n, kBallastCaps); };
+  h.release = [](void* p, void*) { heap_caps_free(p); };
+  h.largest = [](void*) { return heap_caps_get_largest_free_block(kBallastCaps); };
+  h.freeNow = [](void*) { return heap_caps_get_free_size(kBallastCaps); };
+  return h;
+}
 void faultSramBallast(size_t bytes) {
-  if (s_sramBallast) { heap_caps_free(s_sramBallast); s_sramBallast = nullptr; s_sramBallastN = 0; }
-  if (bytes) {
-    s_sramBallast = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_sramBallastN = s_sramBallast ? bytes : 0;
-  }
-  Serial.printf("FAULT sram_ballast=%u held=%u intFree=%u intLargest=%u\n",
-                (unsigned)bytes, (unsigned)s_sramBallastN,
+  s_sramBallast.fill(bytes, kBallastKeepFree, internalHeap());
+  Serial.printf("FAULT sram_ballast=%u held=%u intFree=%u intLargest=%u chunks=%d\n",
+                (unsigned)bytes, (unsigned)s_sramBallast.held(),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), s_sramBallast.chunks());
   Serial.flush();
 }
 
@@ -565,7 +573,7 @@ void dispatch(String line) {
     // Two program-2026-10-18 extensions precede the capability parse:
     //   FAULT sram_ballast <bytes>  (0 = release) pins internal SRAM down so the
     //     turn/loop heap gates run without unplugging RAM (study T6). Self-held
-    //     here: a single heap_caps internal allocation, never a fault cap.
+    //     here: up to 16 heap_caps internal blocks, never a fault cap.
     //   FAULT embed_fail <on|off>  an embedding-only outage (lane P wires it).
     String rest = line.substring(6); rest.trim();
     if (rest.startsWith("sram_ballast")) {

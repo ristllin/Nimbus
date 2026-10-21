@@ -40,6 +40,31 @@ static bool deviceElementLanded(const std::string& one) {
          one.find("(no-key)") == std::string::npos;
 }
 
+MemWriteOutcome memWriteOutcome(const ToolResult& r) {
+  using nimbus::orch::kMemOutcomeDuplicate;
+  using nimbus::orch::kMemOutcomeQueued;
+  using nimbus::orch::kMemOutcomeRefused;
+  using nimbus::orch::kMemOutcomeStored;
+  if (r.code == kMemOutcomeStored) return MemWriteOutcome::Stored;
+  if (r.code == kMemOutcomeDuplicate) return MemWriteOutcome::Duplicate;
+  if (r.code == kMemOutcomeQueued) return MemWriteOutcome::Queued;
+  if (r.code == kMemOutcomeRefused) return MemWriteOutcome::Refused;
+  // No code (a dispatcher that predates the codes) or one this build does not
+  // know: success is a store, anything else is reported as not stored - never
+  // silently counted as saved.
+  if (r.code.empty() && r.success) return MemWriteOutcome::Stored;
+  return MemWriteOutcome::Refused;
+}
+
+// The first 80 bytes of a fact for a MEMORY RESULTS line, never splitting a
+// UTF-8 character.
+static std::string memExcerpt(const std::string& s) {
+  if (s.size() <= 80) return s;
+  size_t n = 80;
+  while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+  return s.substr(0, n) + "...";
+}
+
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote) {
@@ -219,6 +244,17 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // v3.7.0: every memory tool runs under THIS turn's principal - the routing
   // chat is the namespace, and only an owner chat may touch the shared one.
   const nimbus::orch::Principal who = d.whoFor(chatId);
+  // A host with no memory store never drops the fields in silence: each write is
+  // reported as not stored, so the head does not take its intent for a save.
+  if (!d.memDispatch && !t.mem_write.empty()) {
+    hlog::logf("orchestrator: mem_write ignored (%u item(s)) - no memory store on this host",
+               (unsigned)t.mem_write.size());
+    st.memRefused += (int)t.mem_write.size();
+    if (st.pendingMemResults)
+      for (const auto& w : t.mem_write)
+        *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
+                                 "\" -> NOT stored: this host has no long-term memory store\n";
+  }
   if (d.memDispatch && (!t.mem_write.empty() || !t.mem_query.empty())) {
     auto memWork = [&] {
       bool memMutated = false;
@@ -242,15 +278,43 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           if (!w.ttl.empty()) a["ttl"] = w.ttl;
           ToolResult r = d.memDispatch("memory.write", a.as<ArduinoJson::JsonObjectConst>(), who);
           hlog::logf("orchestrator: mem_write -> %s", (r.success ? r.output : r.error).c_str());
-          // Stored, or already held (a duplicate): both back a save claim; a
-          // refusal, a quota drop or an embedding failure backs none.
+          // Every write ends stored, duplicate, queued or refused. Stored and a
+          // duplicate back a save claim (the claim ledger); queued and refused
+          // back none, and the head hears about them in the next turn's MEMORY
+          // RESULTS: a queued or lost fact is never reported as saved
+          // (13-14 Oct: 8 facts lost in silence).
+          const MemWriteOutcome mo = memWriteOutcome(r);
+          const bool landed = mo == MemWriteOutcome::Stored || mo == MemWriteOutcome::Duplicate;
           if (st.claims)
             nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite,
-                                           !r.success, r.output,
+                                           !landed, r.output,
                                            w.permanent ? nimbus::orch::kFxPermanent : 0);
-          if (r.success && d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
-          memMutated = true;
+          switch (mo) {
+            case MemWriteOutcome::Stored:
+              st.memStored++;
+              memMutated = true;
+              if (d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
+              break;
+            case MemWriteOutcome::Duplicate:
+              memMutated = true;   // the existing memory's importance was bumped
+              break;
+            case MemWriteOutcome::Queued:
+              st.memQueued++;
+              if (st.pendingMemResults)
+                *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) + "\" -> " +
+                                         r.output + "\n";
+              break;
+            case MemWriteOutcome::Refused:
+              st.memRefused++;
+              if (st.pendingMemResults)
+                *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
+                                         "\" -> NOT stored: " + (r.success ? r.output : r.error) + "\n";
+              break;
+          }
         }
+      if (st.memStored || st.memQueued || st.memRefused)
+        hlog::logf("orchestrator: mem_write outcomes stored=%d queued=%d refused=%d",
+                   st.memStored, st.memQueued, st.memRefused);
       for (const auto& q : t.mem_query) {
         JsonDocument a;
         a["query"] = q;

@@ -269,6 +269,12 @@ class LabRig {
 
  private:
   // ---- memory + tools -------------------------------------------------------
+  static uint32_t nowHoursLab() {
+    return (uint32_t)(std::chrono::duration_cast<std::chrono::hours>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count());
+  }
+
   void buildMemory() {
     vec_.configure(opt_.embedDims);
     vec_.setMaxEntries(2000);
@@ -280,11 +286,7 @@ class LabRig {
     mc.cfg = &memCfg_;
     mc.episodic = epi_.get();
     mc.ops = &memOps_;   // what memory writes did (the dream's honest outcome)
-    mc.nowHours = [] {
-      return (uint32_t)(std::chrono::duration_cast<std::chrono::hours>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count());
-    };
+    mc.nowHours = [] { return nowHoursLab(); };
     // CUM-435: the Embedder seam now threads the failure cause; the rig logs its
     // own embed errors to stderr, so clear err here (empty vector still signals
     // "unavailable" to the memory tools, which then degrade / refuse honestly).
@@ -550,11 +552,13 @@ class LabRig {
     d.jobs = jobs_.get();
     d.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
     d.recall = [this](const std::string& q, const orch::Principal&) {
-      std::vector<std::string> out;
-      if (!opt_.embeddings) return out;
+      orch::RecallOut out;
+      if (!opt_.embeddings || vec_.size() == 0) return out;
       auto v = embed(q);
-      if (v.empty()) return out;
-      for (const auto& hit : vec_.search(v, 5)) out.push_back(hit.content);
+      // An embed failure never reads as "nothing relevant" (device parity): the
+      // keyword scan answers, and the prompt says recall is keyword-only.
+      if (v.empty()) return orch::lexicalRecall(vec_, nullptr, q, orch::RecallScope{{}, nowHoursLab(), 5}, "unavailable");
+      for (const auto& hit : vec_.search(v, 5)) out.hits.push_back(hit.content);
       return out;
     };
     d.composeInputs = [this](const std::string& chat) {

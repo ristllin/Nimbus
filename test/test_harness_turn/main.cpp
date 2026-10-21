@@ -8,6 +8,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
@@ -109,6 +111,7 @@ struct Rig {
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
   std::vector<std::string> recallQueries;
   std::vector<std::string> recallResult{"[92%] owner likes tea"};
+  std::string recallDegraded;   // lane P: the cause when recall was keyword-only
   std::vector<orch::ToolRegistry::Spec> specs;      // advertised registry tools
   std::vector<std::string> mcpRequests;
   std::string mcpResponse =
@@ -192,7 +195,7 @@ struct Rig {
     d.fire = [this](const char* c) { cues.push_back(c); };
     d.recall = [this](const std::string& q, const nimbus::orch::Principal&) {
       recallQueries.push_back(q);
-      return recallResult;
+      return nimbus::orch::RecallOut{recallResult, recallDegraded};
     };
     d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
@@ -661,6 +664,48 @@ static void test_happy_turn_delivers_and_accounts() {
 }
 
 // ---- (2) recall gate --------------------------------------------------------
+
+// Lane P (F5): a recall seam returns RecallOut, so a fourth copy that hides an
+// outage behind an empty list does not compile.
+static_assert(std::is_same<decltype(std::declval<TurnEngine::Deps>().recall(
+                                std::string(), nimbus::orch::Principal())),
+                           nimbus::orch::RecallOut>::value,
+              "the recall seam must say when it was degraded");
+
+// An embedding outage is announced in the prompt, never silent: degraded with no
+// hits still gets the keyword-only line; degraded with hits gets both; a healthy
+// recall gets no line (no notice spam).
+static void test_recall_outage_is_announced_not_silent() {
+  const char* kLine = "Automatic recall is keyword-only right now: out of embedding credit at openai.";
+  {
+    Rig r;
+    r.recallResult.clear();
+    r.recallDegraded = "out of embedding credit at openai";
+    r.eng->handleMessage("what is my locker code?", "", "1001");
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find(kLine) != std::string::npos);
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find("## RELEVANT MEMORIES") != std::string::npos);
+  }
+  {
+    Rig r;
+    r.recallResult = {"[pending, not stored yet] my locker code is 4417"};
+    r.recallDegraded = "out of embedding credit at openai";
+    r.eng->handleMessage("what is my locker code?", "", "1001");
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find(kLine) != std::string::npos);
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find("my locker code is 4417") != std::string::npos);
+  }
+  {
+    Rig r;   // healthy: the hits, and no notice
+    r.eng->handleMessage("what do I drink?", "", "1001");
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find("owner likes tea") != std::string::npos);
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find("keyword-only") == std::string::npos);
+  }
+  {
+    Rig r;   // nothing relevant and healthy: no section at all, as before
+    r.recallResult.clear();
+    r.eng->handleMessage("hello", "", "1001");
+    TEST_ASSERT_TRUE(r.eng->lastInstructions().find("## RELEVANT MEMORIES") == std::string::npos);
+  }
+}
 
 static void test_recall_injected_for_user_text_skipped_for_synthesis() {
   Rig r;
@@ -3570,6 +3615,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
+  RUN_TEST(test_recall_outage_is_announced_not_silent);
   UNITY_END();
   return 0;
 }

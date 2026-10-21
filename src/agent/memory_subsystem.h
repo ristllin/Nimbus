@@ -9,6 +9,7 @@
 #include "nimbus/orch/retention.h"   // RetentionStatus (pruneRetention's outcome)
 #include "nimbus/orch/memory_tools.h"   // MemOpCounters (lane M)
 #include "nimbus/orch/scratchpad.h"
+#include "nimbus/orch/memory_tools.h"   // RecallOut
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_archive.h"
 #include "nimbus/orch/vector_memory.h"
@@ -161,10 +162,17 @@ nimbus::orch::EpisodicStore& episodic();
 // otherwise the tool refuses a fact while the prompt hands it over anyway.
 std::vector<std::string> recall(const String& queryText, int k = 0,
                                 const nimbus::orch::Principal& who = {});
+// The same recall with its outcome: when embeddings cannot serve it (parked, no
+// key, a failed call) the hits come from a keyword scan and `degraded` names why,
+// so the turn's prompt says recall is keyword-only. The engine's recall seam.
+nimbus::orch::RecallOut recallFor(const String& queryText, int k,
+                                  const nimbus::orch::Principal& who);
 
 // Persist current state. persistVectors() writes the whole blob (O(n), cheap for
 // the device's scale); called automatically after a mutating MCP call.
-bool persistVectors();     // false = the blob did not land (flash floor or write error)
+// Returns false when nothing durable was written (flash floor or write error);
+// the pending-embed drain then keeps its entry queued.
+bool persistVectors();
 // What memory.write / memory.update did since boot (RAM, monotonic; lane M).
 nimbus::orch::MemOpCounters opCounters();
 void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
@@ -323,7 +331,33 @@ struct Stats {
   int  epiBootIndexed = 0;
   int  epiBackfillRows = 0;
   bool epiIndexComplete = true;
+  // Memory writes waiting for an embedding (an outage), and why embeddings are
+  // parked right now ("" = not parked).
+  int    pending = 0;
+  String embedParked;
 };
+
+// ---- memory writes that survive an embedding outage (lane P) ----------------
+// The pending-embed queue: facts written while the embedder was failing, kept on
+// the card (else LittleFS) and stored once embeddings work again.
+bool persistPending();        // durable write of the queue; false = not durable
+// memory.write / memory.update outcomes since boot (RAM only; the drain counts too).
+struct WriteOutcomes { int stored = 0, queued = 0, refused = 0; };
+WriteOutcomes writeOutcomes();
+int  pendingCount();
+// Drain notes for this namespace's next turn ("... -> now stored"), taken once.
+std::string pendingNotes(const std::string& ns);
+String embedParkedWhy();      // "" when embeddings are not parked
+void noteEmbedConfigChanged();// an embed config or key save: the park ends
+// The Telegram task's staged-work slot: a cheap RAM-only "due" predicate and one
+// drain step. Never inside a turn.
+bool embedDrainDue();
+void drainPendingStep();
+// Dream phase 1: up to maxEntries steps within budgetMs; returns how many stored.
+int  drainPendingBurst(int maxEntries, uint32_t budgetMs);
+#ifdef NIMBUS_TEST
+String setEmbedFault(bool on);   // FAULT embed_fail on|off (test build only)
+#endif
 Stats stats();
 
 // Wall-clock hours source for TTL stamping (NTP time if synced, else boot-
