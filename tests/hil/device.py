@@ -176,6 +176,36 @@ class BootError(DeviceError):
     """A panic / reboot-loop was seen in the boot capture (F11/F14)."""
 
 
+class CommandFailed(DeviceError):
+    """A console command that cannot have worked: its line is longer than the console
+    takes, or the reply that matched says ``FAILED`` or ``trunc=1``."""
+
+
+# The test console's command-line cap in bytes (src/test_console.cpp kLineCap; a host
+# test keeps the two equal). Bytes past it are dropped until the newline, so the
+# command runs on a cut line: a 4-message TGINJECT page (about 820 B) once met a
+# 512 B cap, and the leg waited 120 s for a turn that could not come.
+CONSOLE_LINE_CAP = 4096
+_REPLY_FAILED_RE = re.compile(r"\bFAILED\b|\btrunc=1\b")
+
+
+def command_line_problem(line: str) -> Optional[str]:
+    """Why ``line`` cannot reach the console whole, or None when it fits."""
+    n = len(line.encode("utf-8"))
+    if n > CONSOLE_LINE_CAP:
+        verb = line.split(" ", 1)[0][:24]
+        return f"{verb} line is {n} bytes, the console takes {CONSOLE_LINE_CAP}"
+    return None
+
+
+def reply_failure(expected: str, reply: str) -> Optional[str]:
+    """Why the console's matched ``reply`` is a failure, or None. A caller whose
+    ``expected`` text names the failure (a negative-path leg) gets it back as data."""
+    if _REPLY_FAILED_RE.search(expected) or not _REPLY_FAILED_RE.search(reply):
+        return None
+    return f"the console answered: {reply}"
+
+
 def _esptool_module_available() -> bool:
     """Whether this interpreter can ``import esptool`` (a seam the host tests fake)."""
     return importlib.util.find_spec("esptool") is not None
@@ -645,15 +675,34 @@ class Device:
                 return m
 
     def cmd(self, line: str, expect: str, timeout: float = 5.0) -> str:
-        """drain -> send -> expect. The common request/response shape."""
+        """drain -> send -> expect. The common request/response shape.
+
+        Fails fast (CommandFailed) instead of returning a reply that only looks like
+        one: a line longer than the console takes is never sent, and a matched reply
+        saying ``FAILED`` or ``trunc=1`` raises (unless ``expect`` asks for that)."""
+        problem = command_line_problem(line)
+        if problem:
+            raise CommandFailed(problem)
         self.drain(quiet=0.2)
         self.send(line)
-        return self.expect(expect, timeout=timeout)
+        reply = self.expect(expect, timeout=timeout)
+        failure = reply_failure(expect, reply)
+        if failure:
+            raise CommandFailed(failure)
+        return reply
 
     def cmd_re(self, line: str, pattern: str, timeout: float = 5.0) -> "re.Match[str]":
+        """cmd() with a regex; the same fail-fast rules."""
+        problem = command_line_problem(line)
+        if problem:
+            raise CommandFailed(problem)
         self.drain(quiet=0.2)
         self.send(line)
-        return self.expect_re(pattern, timeout=timeout)
+        m = self.expect_re(pattern, timeout=timeout)
+        failure = reply_failure(pattern, m.string)
+        if failure:
+            raise CommandFailed(failure)
+        return m
 
     # -- high-level affordances ---------------------------------------------
     def webtok(self) -> Secret:

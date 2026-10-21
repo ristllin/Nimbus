@@ -1151,7 +1151,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days); report what it removed, or that it waited for a turn or a busy card. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
-| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive); a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. |
+| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive); a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. The page rides one command line, and a test-image line holds up to 4096 bytes. |
 | `AUDIOINJECT <path>` / `AUDIOINJECT off` | Run the hold-to-talk path on a recorded 16 kHz mono 16-bit WAV already on the card (put it there with `FSPUT`): the clip replaces the microphone, then the real speech-to-text call and the voice turn run. Spoken replies stay off until `AUDIOINJECT off`. |
 | `MODE <0\|1>` | Switch operating mode (0 = Notifier, 1 = Orchestrator); persists and restarts. |
 

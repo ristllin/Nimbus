@@ -82,7 +82,14 @@ String   s_line;             // command-line accumulator (also the frame-tee pre
 bool     s_badge = false;     // F9 error badge armed
 int      s_badgeReason = 0;   // last WiFi disconnect reason
 
-constexpr size_t kLineCap = 512;   // matches the existing orch-console cap
+// Bytes per command line; the rest of a longer line is dropped until the newline, so
+// the command sees a cut line. Test builds only (this whole file is NIMBUS_TEST): it
+// holds a realistic injected getUpdates page in one TGINJECT line (the 4-message burst
+// legs send about 820 B, the local media inject about 2 KB), where 512 cut the burst
+// page and its leg waited out a turn that could not come. The debug builds' TURN/IP
+// mini-console in main.cpp keeps its own 512, and the production image has no serial
+// console. tests/hil/device.py CONSOLE_LINE_CAP mirrors this value (host-tested).
+constexpr size_t kLineCap = 4096;
 constexpr int    kByteBudget = 256;  // bytes drained per pump call (loop stays responsive)
 
 // One-slot screensaver command mailbox (single-producer/single-consumer, both on
@@ -1962,7 +1969,11 @@ void pumpOrch() {
     if (c < 0) break;
     if (c == '\n' || c == '\r') {
       if (s_line.length()) {
-        dispatch(s_line); s_line = "";
+        dispatch(s_line);
+        // Assigning a String with no buffer frees the line's block: a long TGINJECT
+        // line must not keep up to kLineCap of internal RAM for the rest of the boot.
+        static const String kNoLine;
+        s_line = kNoLine;
         if (s_fsActive) { fsputPump(); return; }  // FSPUT just armed - hand the stream over
       }
     } else if (s_line.length() < kLineCap) {
