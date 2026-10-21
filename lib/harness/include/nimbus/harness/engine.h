@@ -254,7 +254,9 @@ class TurnEngine {
   // a [SCHEDULED LOOP] preamble; recall runs for the prompt). loopId (optional,
   // additive) feeds the spend-attribution tag "loop:<id>"; empty => "loop".
   // quietOk (additive; the DREAM loop): an all-empty turn delivers nothing -
-  // the bare "Done." fallback is suppressed (ApplyState.quietFallback).
+  // the bare "Done." fallback is suppressed (ApplyState.quietFallback), and every
+  // engine notice is held. The reserved dream goes further: its own reply, ask and
+  // correction lines are never sent either, but come back in FireOutcome.held.
   // once (W20): a self-set single wakeup - renders a [WAKEUP] preamble instead
   // (calling a one-shot the model armed for itself a "recurring task" is a lie
   // the honesty rails would then have to argue with). ownerReminder (W22): the
@@ -427,6 +429,7 @@ class TurnEngine {
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
+  std::string heldReply_;               // the dream turn's output, held (FireOutcome.held)
   // True while a quiet scheduled turn runs: every engine notice is held (deliver)
   // and the one-notice billing latch is left armed (lane M x lane K).
   bool holdingNotices() const { return scheduledTurn_ && quietTurn_; }

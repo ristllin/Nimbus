@@ -17,7 +17,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 ## v4.5.14 - A quiet, honest nightly dream
 
-- **No more messages at night.** When the nightly memory upkeep (the dream) failed, its error notices were sent to Telegram at about 03:30. Background turns now keep their notices to themselves; the result is recorded in the timeline instead.
+- **No more messages at night.** When the nightly memory upkeep (the dream) failed, its error notices were sent to Telegram at about 03:30. Background turns now keep their notices to themselves; the result is recorded in the timeline instead. When the dream has something to tell you, it now waits for your next conversation instead of arriving at night.
 - **The dream says what it did.** The timeline row now reads ok only when every memory it saved landed, and gives the counts: how many were stored, updated and failed. A failed night names the cause; a deferred night says when it will try again.
 - **A failed night tries again, a few times.** A night that was deferred for low memory, or failed for a passing reason, retries 15 minutes later, up to three times before 07:00. Repeated failures no longer switch dreaming off; after three failed nights in a row you get one message the next time you talk to the device.
 - **Memory only.** The dream can read and save memories and tidy the scratchpad, and nothing else: no files, helpers, web searches or routines in the middle of the night.

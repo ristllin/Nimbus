@@ -211,6 +211,11 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     07:00; key, credit, budget and parse failures wait for the next night. The
     breaker never disables the dream; after 3 failed nights in a row (then every 7)
     the owner is told once, at their next conversation, never at night.
+  - **Quiet.** The dream messages nobody while it runs: its failure, provider-switch
+    and billing notices are held, and so are its own reply, question and correction
+    lines, with no sound or attention cue. Anything it had for the owner goes out
+    once, with the streak alert when there is one, when the owner's next turn ends
+    (RAM only: a restart before then drops it).
   - **A night the restart cut short.** The reflection turn writes an in-flight
     marker (night, attempt, start time) into `/data/dream.json` before it starts and
     clears it with its outcome. A boot that finds the marker without an outcome

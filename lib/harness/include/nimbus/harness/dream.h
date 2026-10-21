@@ -275,6 +275,7 @@ struct NightReport {
   bool alert = false;           // tonight crossed an alert point (owner alert due)
   bool stateSaved = true;       // /data/dream.json landed
   std::string stateWhy;         // why it did not ("storage not mounted", "storage write failed")
+  std::string held;             // what the reflection had for the owner, held (FireOutcome.held)
 };
 
 // The boot's working copy of the dream state. RAM is the authority between fires and
@@ -409,6 +410,11 @@ struct BootReconcile {
 std::string renderDreamRow(const NightReport& r, size_t cap = 240);
 // The owner alert when report.alert is set (plain words, no ticket numbers).
 std::string streakAlertText(const NightReport& r);
+// The one message the owner gets at their next conversation (never at night): the
+// streak alert and what the reflection held for them (NightReport.held, clipped to
+// kHeldNoteMax bytes, UTF-8 safe), each when there is one. "" = nothing to send.
+constexpr size_t kHeldNoteMax = 1500;
+std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply);
 
 // Seconds from `c` until the reserved slot (minuteOfDay `slot`) on the next local day.
 uint32_t secondsToNextSlot(const NightClock& c, uint16_t slot);

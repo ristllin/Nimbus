@@ -29,8 +29,8 @@ using AlertSink = std::function<void(const std::string& text)>;
 void begin(const agent::Hooks& hooks, AlertSink alert);
 
 // Feed the idle gate's quiet clock - called from the engine's onTurnEnd hook. A
-// pending streak alert goes out here, when a turn of the owner's ends (never from
-// the night itself).
+// pending streak alert, and the note the reflection held for the owner, go out
+// here as one message when a turn ends (never from the night itself).
 void noteTurnEnd(uint32_t nowMs);
 
 // Local Loops pre-fire gate (loops::setFireGate): 0 => idle, fire; else defer

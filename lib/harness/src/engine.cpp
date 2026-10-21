@@ -1379,7 +1379,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       deliver(chatId, so.text);
-      if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+      // A notice a quiet turn held never reached the owner, so it is no history row either.
+      if (!holdingNotices() && d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -1486,7 +1487,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text);
-    if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+    if (!holdingNotices() && d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
     // row name it (the provider answered; the device could not use the answer).
@@ -1542,7 +1543,27 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const int dropped = dream::restrictTurn(turn);
     if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
   }
-  agent::applyTurn(turn, chatId, d_.apply, st, spawned);
+  if (memoryOnly) {
+    // The nightly dream messages nobody while it runs (PG4; unit L, 21 Oct: its
+    // "memory was unavailable tonight" summary went to Telegram). Its reply, ask and
+    // correction lines are held for the owner's next conversation (FireOutcome.held),
+    // and its sound, attention and completion cues stay off; deliver() already holds
+    // its engine notices.
+    agent::ApplyDeps held = d_.apply;
+    held.deliver = [this](const std::string&, const std::string& text) {
+      if (text.empty()) return;
+      heldReply_ += heldReply_.empty() ? text : "\n\n" + text;
+      hlog::logf("quiet turn: reply held for the owner's next turn (%.96s)", text.c_str());
+    };
+    held.emitAsk = nullptr;
+    held.fire = nullptr;
+    held.turnComplete = nullptr;
+    held.speak = nullptr;
+    held.captureAssistant = nullptr;
+    agent::applyTurn(turn, chatId, held, st, spawned);
+  } else {
+    agent::applyTurn(turn, chatId, d_.apply, st, spawned);
+  }
   parkMemResults(chatId);
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
@@ -1733,6 +1754,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
     return o;
   }
   lastReply_.clear();
+  heldReply_.clear();
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
@@ -1793,6 +1815,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   loopName_.clear();
   o.tokens  = lastTurnUsage_;   // this fire's own spend, set on every exit (lane T)
   o.detail  = lastReply_;
+  o.held = std::move(heldReply_);
+  heldReply_.clear();
   if (!o.ok) o.error = facts().chain.render(nimbus::orch::FailureChain::kTextMax);
   return o;
 }

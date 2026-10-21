@@ -211,6 +211,10 @@ struct FireOutcome {
   // idempotent may set it - today the dream, which runs maintenance once per
   // local day and retries a deferred or transiently failed reflection that night.
   uint32_t    retryAfterSec = 0;
+  // PG4: what a quiet turn would have sent and held back instead - the nightly dream
+  // messages nobody while it runs, and its glue hands this text to the owner at
+  // their next conversation. "" = nothing held.
+  std::string held;
 };
 // A fire was ATTEMPTED (reached a provider) unless it was deferred for memory. Only
 // an attempt rolls the outcome (consecFails / daily fire / semantic-repeat); a memory

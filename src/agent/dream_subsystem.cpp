@@ -52,6 +52,7 @@ static uint8_t  g_defersTonight = 0;
 static uint32_t g_deferDay = 0;
 static bool     g_firing = false;        // the dream's own turn is running
 static std::string g_pendingAlert;       // sent at the next owner turn, never at night
+static std::string g_pendingReply;       // what the reflection held for the owner (latest)
 // A starved night's row, decided in the gate. The gate runs under the loops lock and
 // the timeline write takes the memory lock - the opposite order to loop.create (memory
 // lock, then loops lock) - so the row is written later, from tg_poll with no loops lock
@@ -122,11 +123,12 @@ void begin(const agent::Hooks& hooks, AlertSink alert) {
 void noteTurnEnd(uint32_t nowMs) {
   g_lastTurnEndMs = nowMs ? nowMs : 1;
   if (!g_firing) emitStarvedRow();
-  // A failing streak is told when the owner is next around (any turn of theirs
-  // ends), never by a 04:00 message.
-  if (!g_firing && !g_pendingAlert.empty() && g_alert) {
-    const std::string msg = std::move(g_pendingAlert);
+  // A failing streak, and anything the reflection had for the owner, is told when
+  // the owner is next around (any turn of theirs ends), never by a 04:00 message.
+  if (!g_firing && g_alert && (!g_pendingAlert.empty() || !g_pendingReply.empty())) {
+    const std::string msg = ownerNoteText(g_pendingAlert, g_pendingReply);
     g_pendingAlert.clear();
+    g_pendingReply.clear();
     g_alert(msg);
   }
 }
@@ -281,6 +283,10 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   if (!rep.stateSaved)
     alogf("dream: state not saved (%s) - this boot keeps the count in RAM", rep.stateWhy.c_str());
   if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  if (!rep.held.empty()) {
+    g_pendingReply = rep.held;   // the latest night's note replaces an unsent older one
+    alogf("dream: a note for the owner is held for their next turn (%u B)", (unsigned)rep.held.size());
+  }
   publishStatus(rep);
   return night.fire;
 }

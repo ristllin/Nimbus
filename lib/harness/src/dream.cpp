@@ -555,6 +555,7 @@ nimbus::orch::FireOutcome reflect(const NightDeps& d, const std::string& inputs,
   r.ops = after - before;
   r.tokens = o.tokens.total();
   r.error = o.ok ? std::string() : o.error;
+  r.held = o.held;
   return o;
 }
 
@@ -896,6 +897,19 @@ std::string streakAlertText(const NightReport& r) {
   return "Nightly memory upkeep has not worked for " + std::to_string(r.streak) +
          " nights in a row (" + why + "). It keeps trying each night. To pause it, send "
          "/loop off dream.";
+}
+
+std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply) {
+  std::string out = streakAlert;
+  if (heldReply.empty()) return out;
+  std::string body = heldReply;
+  if (body.size() > kHeldNoteMax) {
+    body.resize((size_t)nimbus::utf8CapLen(body.c_str(), (int)body.size(), (int)kHeldNoteMax - 3));
+    body += "...";
+  }
+  if (!out.empty()) out += "\n\n";
+  out += "From the nightly memory upkeep:\n" + body;
+  return out;
 }
 
 uint16_t windowEndFor(uint16_t slotMinute) {

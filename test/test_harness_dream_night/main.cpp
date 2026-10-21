@@ -87,6 +87,8 @@ struct Rig {
   std::vector<std::string> inputsSeen;
   std::vector<std::string> callNames;     // names the scripted model calls mid-turn
   int spawns = 0, deviceActions = 0;
+  int asks = 0, cues = 0, completes = 0, speaks = 0, captures = 0;   // the other channels
+  bool memFails = false;                  // memory writes refused (an embedding outage)
   // Per call: ok + error + output + usage.
   bool ok = true;
   std::string err;
@@ -95,6 +97,7 @@ struct Rig {
   // Opt-in scripted fabric (the billing-switch test): anthropic refuses with a
   // billing 400 and the turn moves to the next host, which answers.
   bool billingSwitch = false;
+  orch::StepErr switchKind = orch::StepErr::None;   // any other scripted fabric switch
   std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
 
@@ -131,11 +134,17 @@ struct Rig {
     d.apply.principalFor = [](const std::string& chat) {
       return orch::principalForRole(chat, orch::Role::Admin);
     };
-    d.apply.memDispatch = [](const char* name, ArduinoJson::JsonObjectConst a, const orch::Principal&) {
+    d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst a, const orch::Principal&) {
       if (std::string(name) == "memory.search")
         return orch::ToolResult::ok(std::string("found: ") + (a["query"] | ""));
+      if (memFails) return orch::ToolResult::fail("embedding unavailable");
       return orch::ToolResult::ok("stored memory m1");
     };
+    d.apply.emitAsk = [this] { asks++; };
+    d.apply.fire = [this](const char*) { cues++; };
+    d.apply.turnComplete = [this](const std::string&) { completes++; };
+    d.apply.speak = [this](const std::string&) { speaks++; };
+    d.apply.captureAssistant = [this](const std::string&, const std::string&) { captures++; };
     d.apply.enqueueSpawn = [this](const orch::Spawn&, const std::string&, bool) { spawns++; return true; };
     d.apply.stageDevice = [this](const orch::ValidatedAction&) { deviceActions++; };
     for (const char* h : {"anthropic", "openai", "mistral"}) {
@@ -179,13 +188,15 @@ struct Rig {
                             const std::string&, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,
                             const std::function<void(const std::string&, const std::string&)>& notify) {
-      if (!billingSwitch || hl.size() < 2) {
+      const orch::StepErr kind = billingSwitch ? orch::StepErr::Billing : switchKind;
+      if (kind == orch::StepErr::None || hl.size() < 2) {
         err = "network: connect failed";
         return false;
       }
-      if (ht.onStepError) ht.onStepError(hl[0], "chat HTTP 400: credit balance is too low");
-      agent::providers::setTestFabricSwitch(
-          {hl[0], hl[1], orch::StepErr::Billing, 400, false});
+      const bool billing = kind == orch::StepErr::Billing;
+      if (ht.onStepError)
+        ht.onStepError(hl[0], billing ? "chat HTTP 400: credit balance is too low" : "network: no response");
+      agent::providers::setTestFabricSwitch({hl[0], hl[1], kind, billing ? 400 : 0, false});
       if (notify) notify(hl[0], hl[1]);
       orch::TokenUsage u;
       u.add(40, 6);
@@ -194,11 +205,16 @@ struct Rig {
       return true;
     };
   }
-  orch::FireOutcome dreamTurn(const std::string& inputs = "[DREAM] test") {
-    return eng->injectScheduledTurn("1001", inputs, "Dream", "dream", /*quietOk=*/true);
+  orch::FireOutcome dreamTurn(const std::string& inputs = "[DREAM] test", const std::string& chat = "1001") {
+    return eng->injectScheduledTurn(chat, inputs, "Dream", "dream", /*quietOk=*/true);
   }
-  orch::FireOutcome routineTurn() {
-    return eng->injectScheduledTurn("1001", "check the weather", "Morning", "L1", /*quietOk=*/false);
+  orch::FireOutcome routineTurn(const std::string& chat = "1001") {
+    return eng->injectScheduledTurn(chat, "check the weather", "Morning", "L1", /*quietOk=*/false);
+  }
+  // Nothing reached the owner on any channel: no message, ask, sound, completion,
+  // speech or history row.
+  int ownerContacts() const {
+    return (int)delivered.size() + asks + cues + completes + speaks + captures;
   }
 };
 
@@ -258,6 +274,116 @@ static void test_quiet_turn_notice_count_zero_on_every_failure_path() {
     q.eng->handleMessage("hello again", "Roy", "1001");
     TEST_ASSERT_TRUE(q.delivered.size() >= 1);
   }
+}
+
+// ---- (1b) the quiet-turn notice matrix (PG4: unit L, 21 Oct) ------------------------
+// With memory writes failing, the bench dream sent its own summary ("Memory was also
+// unavailable during tonight") to Telegram: deliver() held the engine's notices, but
+// the turn's reply went out through the apply path. The class rule over failure kind
+// x channel: whatever the dream's turn ends on - a failure notice, a provider switch,
+// a billing refusal, a cut or unreadable reply, a reply, an ask, a degraded summary -
+// nothing reaches the owner on any channel while it runs (no message, cue or history
+// row: a held salvage notice used to be captured as if the owner had read it); its
+// reply and ask come back held for the owner's next conversation. The same kinds on an ordinary routine still reach the owner, and the
+// post-update quiet turn keeps its reply (the hold is the dream's alone).
+
+struct QuietKind {
+  const char* name; int fail; const char* out; bool memFails; int sw; bool held;
+  const char* err;   // a scripted provider error of its own (the cut reply)
+};
+static const QuietKind kQuietKinds[] = {
+    // fail: index into kFails (-1 none); sw: 0 none, 1 billing switch, 2 transport switch
+    {"server error", 0, nullptr, false, 0, false},
+    {"rate limit", 1, nullptr, false, 0, false},
+    {"timeout", 2, nullptr, false, 0, false},
+    {"low memory", 3, nullptr, false, 0, false},
+    {"key", 4, nullptr, false, 0, false},
+    {"credit", 5, nullptr, false, 0, false},
+    {"network", 6, nullptr, false, 0, false},
+    {"no text", 7, nullptr, false, 0, false},
+    {"parse", 8, nullptr, false, 0, false},
+    {"budget", 9, nullptr, false, 0, false},
+    {"billing switch", -1, "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}", false, 1, false},
+    {"transport switch", -1, "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}", false, 2, false},
+    {"reply", -1, "{\"reply\":\"Dream check: the bench note was never saved.\",\"memory\":\"\",\"ask\":\"\"}", false, 0, true},
+    {"ask", -1, "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"Which Anna did you mean?\"}", false, 0, true},
+    {"reply and ask", -1, "{\"reply\":\"Two notes clash.\",\"memory\":\"\",\"ask\":\"Keep the newer one?\"}", false, 0, true},
+    {"cut reply", -1, "{\"reply\":\"Two notes cl", false, 0, false, "cut: stop_reason max_tokens"},
+    {"degraded summary", -1,
+     "{\"reply\":\"Memory was unavailable tonight; two notes were not saved.\",\"memory\":\"\",\"ask\":\"\","
+     "\"mem_write\":[{\"content\":\"owner works from home on Fridays\"},{\"content\":\"Anna's birthday is 3 March\"}]}",
+     true, 0, true},
+};
+static const char* const kChannels[] = {"1001", "web", "serial", ""};
+
+static void scriptQuiet(Rig& r, const QuietKind& k) {
+  if (k.fail >= 0) script(r, kFails[k.fail]);
+  if (k.out) r.outJson = k.out;
+  if (k.err) {
+    r.ok = false;
+    r.err = k.err;
+  }
+  r.memFails = k.memFails;
+  if (k.sw) {
+    r.cfg.midFail = true;   // the engine routes the turn through the fabric
+    r.billingSwitch = k.sw == 1;
+    r.switchKind = k.sw == 2 ? orch::StepErr::Transport : orch::StepErr::None;
+    orch::billingEpisodeEnd("anthropic");   // a fresh billing episode per rig
+  }
+}
+
+static void test_quiet_dream_contacts_nobody_over_the_matrix() {
+  for (const QuietKind& k : kQuietKinds) {
+    for (const char* chat : kChannels) {
+      char msg[96];
+      snprintf(msg, sizeof msg, "%s on '%s'", k.name, chat);
+      Rig q;
+      scriptQuiet(q, k);
+      const orch::FireOutcome o = q.dreamTurn("[DREAM] test", chat);
+      TEST_ASSERT_EQUAL_MESSAGE(0, q.ownerContacts(), msg);
+      TEST_ASSERT_EQUAL_MESSAGE(k.held, !o.held.empty(), msg);
+      if (k.held && k.out) {
+        JsonDocument want;
+        deserializeJson(want, k.out);
+        const std::string reply = want["reply"] | "", ask = want["ask"] | "";
+        if (!reply.empty()) TEST_ASSERT_TRUE_MESSAGE(o.held.find(reply) != std::string::npos, msg);
+        if (!ask.empty()) TEST_ASSERT_TRUE_MESSAGE(o.held.find(ask) != std::string::npos, msg);
+      }
+      // Counter-test: the same kind on an ordinary routine reaches the owner.
+      Rig n;
+      scriptQuiet(n, k);
+      n.routineTurn(chat);
+      TEST_ASSERT_TRUE_MESSAGE(n.delivered.size() >= 1, msg);
+      // The hold never outlives the dream: the next owner turn's reply is sent.
+      q.ok = true;
+      q.cfg.overBudgetHosts.clear();
+      q.outJson = "{\"reply\":\"morning\",\"memory\":\"\",\"ask\":\"\"}";
+      q.eng->handleMessage("hi", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(q.delivered.size() >= 1, msg);
+    }
+  }
+  // The post-update quiet turn holds its engine notices but still sends its reply.
+  Rig sys;
+  sys.outJson = "{\"reply\":\"Updated to the new version.\",\"memory\":\"\",\"ask\":\"\"}";
+  const orch::FireOutcome so = sys.eng->injectScheduledTurn("1001", "post-update", "Update", "system", true);
+  TEST_ASSERT_TRUE(so.held.empty());
+  TEST_ASSERT_EQUAL(1, (int)sys.delivered.size());
+}
+
+static void test_held_note_reaches_the_owner_once_in_plain_words() {
+  TEST_ASSERT_EQUAL_STRING("", dream::ownerNoteText("", "").c_str());
+  TEST_ASSERT_EQUAL_STRING("streak", dream::ownerNoteText("streak", "").c_str());
+  TEST_ASSERT_EQUAL_STRING("From the nightly memory upkeep:\nTwo notes clash.",
+                           dream::ownerNoteText("", "Two notes clash.").c_str());
+  TEST_ASSERT_EQUAL_STRING("streak\n\nFrom the nightly memory upkeep:\nTwo notes clash.",
+                           dream::ownerNoteText("streak", "Two notes clash.").c_str());
+  // A long note is clipped UTF-8 safe.
+  std::string big;
+  while (big.size() < 3 * dream::kHeldNoteMax) big += "caf\xC3\xA9 ";
+  const std::string note = dream::ownerNoteText("", big);
+  TEST_ASSERT_TRUE(note.size() <= dream::kHeldNoteMax + 40);
+  TEST_ASSERT_TRUE(validUtf8(note));
+  TEST_ASSERT_TRUE(note.size() >= 3 && note.compare(note.size() - 3, 3, "...") == 0);
 }
 
 // A quiet turn does not consume the one-notice billing latch (lane M x lane K).
@@ -1611,6 +1737,21 @@ static void test_every_night_path_writes_exactly_one_row() {
                        .rfind("Nightly dream skipped tonight (device busy after 12 tries)", 0) == 0);
 }
 
+// The night carries what the reflection held to the glue, which hands it to the
+// owner at their next conversation (ownerNoteText).
+static void test_the_night_carries_the_held_note() {
+  Night n;
+  n.turn = [] {
+    orch::FireOutcome o;
+    o.ok = true;
+    o.held = "Two notes clash.";
+    return o;
+  };
+  TEST_ASSERT_EQUAL_STRING("Two notes clash.", dream::runNight(n.deps(), clockAt(7, 210), false).report.held.c_str());
+  Night quiet;
+  TEST_ASSERT_TRUE(dream::runNight(quiet.deps(), clockAt(7, 210), false).report.held.empty());
+}
+
 // One generated store and night sequence for the bounded-retry property.
 static void runBoundedSequence() {
   Night n;
@@ -1705,6 +1846,8 @@ static void test_memory_write_counters_on_the_registry_path() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
+  RUN_TEST(test_quiet_dream_contacts_nobody_over_the_matrix);
+  RUN_TEST(test_held_note_reaches_the_owner_once_in_plain_words);
   RUN_TEST(test_quiet_billing_switch_keeps_the_notice_latch_armed);
   RUN_TEST(test_dream_can_never_call_files_or_session_tools);
   RUN_TEST(test_dream_turn_fields_cannot_spawn_or_act);
@@ -1732,6 +1875,7 @@ int main(int, char**) {
   RUN_TEST(test_boot_reconcile_keeps_the_working_copy_a_fire_opened);
   RUN_TEST(test_boot_reconcile_is_bounded_when_the_store_refuses);
   RUN_TEST(test_every_night_path_writes_exactly_one_row);
+  RUN_TEST(test_the_night_carries_the_held_note);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);
