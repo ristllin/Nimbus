@@ -38,7 +38,10 @@
 //   - a night the restart cut short is reconciled at boot: the marker written
 //     before the turn names the attempt, the boot turns it into the night's
 //     verdict with one row and a bounded retry inside the window, and no
-//     previous night's verdict ever shows under a newer lastRun.
+//     previous night's verdict ever shows under a newer lastRun;
+//   - the boot reconcile runs only once storage, clock and sinks are up, never
+//     trusts a torn or foreign file or a superseded marker, keeps the working copy
+//     and is bounded on a refusing store.
 
 using agent::JobEngine;
 using agent::TurnEngine;
@@ -1239,6 +1242,258 @@ static void test_completed_night_leaves_no_marker_and_is_byte_identical() {
   TEST_ASSERT_TRUE(back.inflightStart == c.crashedFile.inflightStart);
 }
 
+// ---- (6d) the boot reconcile driver (PG4: unit L, 21 Oct) -------------------------
+// The bench leg died at "panic during boot" right after PANIC arm=turn. The only
+// crash on record was the armed one (the leg read its own panic report as a boot
+// failure); these pin the class the reconcile itself must hold: it runs only once
+// its seams are up, never trusts a torn or foreign file, never counts a marker a
+// later fire superseded, never re-reads over the working copy, and never loops.
+
+struct BootRig {
+  bool store = true, clock = true, sinks = true;
+  bool haveFile = true;
+  std::string file;            // the raw /data/dream.json text
+  bool refuse = false;         // the store refuses every save
+  uint64_t lastRun = 0;        // the reserved loop's lastRun
+  int loads = 0, saves = 0, loopApplied = 0, rows = 0;
+  dream::NightReport row;
+  dream::DreamMemo memo;
+
+  dream::BootDeps deps() {
+    dream::BootDeps d;
+    d.storeReady = [this] { return store; };
+    d.clockSynced = [this] { return clock; };
+    d.sinksReady = [this] { return sinks; };
+    d.loadState = [this](dream::DreamState& s) {
+      loads++;
+      if (!haveFile) { s = dream::DreamState{}; return true; }
+      return dream::loadDreamState(file, s);
+    };
+    d.saveState = [this](const dream::DreamState& s) {
+      saves++;
+      if (refuse) return false;
+      file = dream::dumpDreamState(s);
+      haveFile = true;
+      return true;
+    };
+    d.loopLastRun = [this] { return lastRun; };
+    d.applyLoop = [this](const dream::NightReport&) { loopApplied++; };
+    d.publish = [this](const dream::NightReport& r) { rows++; row = r; };
+    d.memo = &memo;
+    return d;
+  }
+};
+
+// The file a restart mid-reflection leaves: night `day`, attempt 1, started at 03:30.
+static std::string markerFile(uint32_t day) {
+  Night n;
+  n.crash = true;
+  n.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::runNight(n.deps(), clockAt(day, 210), false);
+  TEST_ASSERT_EQUAL(day, n.crashedFile.inflightNight);
+  return dream::dumpDreamState(n.crashedFile);
+}
+
+static void test_boot_reconcile_waits_for_its_seams_then_runs_once() {
+  // Before the store is mounted, the clock is real or the timeline and loop records
+  // are up, the pump waits and reads nothing; the old glue gave up for the whole
+  // boot when the store was not mounted on its first pass.
+  BootRig b;
+  b.file = markerFile(9);
+  dream::BootReconcile rec;
+  const dream::NightClock c = clockAt(9, 230);
+  b.store = false;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Waiting, (int)rec.pump(b.deps(), c));
+  b.store = true;
+  b.clock = false;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Waiting, (int)rec.pump(b.deps(), c));
+  b.clock = true;
+  b.sinks = false;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Waiting, (int)rec.pump(b.deps(), c));
+  TEST_ASSERT_EQUAL(0, b.loads);
+  TEST_ASSERT_FALSE(b.memo.loaded);
+  TEST_ASSERT_FALSE(rec.done);
+  // Every seam up: the night is reconciled exactly once, saved FIRST.
+  b.sinks = true;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)rec.pump(b.deps(), c));
+  TEST_ASSERT_EQUAL(1, b.saves);
+  TEST_ASSERT_EQUAL(1, b.loopApplied);
+  TEST_ASSERT_EQUAL(1, b.rows);
+  TEST_ASSERT_EQUAL_STRING("restarted", b.row.cause.c_str());
+  TEST_ASSERT_EQUAL(900, (int)b.row.retryAfterSec);
+  TEST_ASSERT_TRUE(b.file.find("inNight") == std::string::npos);   // cleared durably
+  TEST_ASSERT_TRUE(b.memo.loaded);
+  TEST_ASSERT_EQUAL(0, (int)b.memo.st.inflightNight);
+  TEST_ASSERT_EQUAL(1, b.memo.st.attemptsTonight);
+  // Later passes: nothing more, whatever the seams say.
+  for (int i = 0; i < 5; ++i)
+    TEST_ASSERT_EQUAL((int)dream::BootStep::Done, (int)rec.pump(b.deps(), c));
+  TEST_ASSERT_EQUAL(1, b.rows);
+  TEST_ASSERT_EQUAL(1, b.loopApplied);
+  TEST_ASSERT_EQUAL(1, b.loads);
+  // Null seams never crash: a rig with nothing bound waits.
+  dream::BootReconcile bare;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Waiting, (int)bare.pump(dream::BootDeps{}, c));
+}
+
+static void test_boot_reconcile_never_trusts_a_torn_file() {
+  // Property over every truncation of a marker file (a write cut mid-way, a
+  // corrupted block): unreadable, so no marker, no row, no counter, and the boot's
+  // working copy starts fresh instead of half-trusting the bytes.
+  const std::string full = markerFile(9);
+  for (size_t cut = 0; cut < full.size(); ++cut) {
+    BootRig b;
+    b.file = full.substr(0, cut);
+    dream::DreamState probe;
+    TEST_ASSERT_FALSE_MESSAGE(dream::loadDreamState(b.file, probe), b.file.c_str());
+    dream::BootReconcile rec;
+    TEST_ASSERT_EQUAL((int)dream::BootStep::Clean, (int)rec.pump(b.deps(), clockAt(9, 230)));
+    TEST_ASSERT_EQUAL(0, b.rows);
+    TEST_ASSERT_EQUAL(0, b.loopApplied);
+    TEST_ASSERT_EQUAL(0, b.saves);
+    TEST_ASSERT_TRUE(b.memo.loaded);
+    TEST_ASSERT_EQUAL(0, (int)b.memo.st.inflightNight);
+    TEST_ASSERT_EQUAL(0, b.memo.st.streak);
+  }
+  // A file bigger than the state can be is unreadable too (never read into RAM on
+  // the device), even when it is valid JSON with a marker.
+  std::string big = full;
+  big.insert(big.size() - 1, ",\"pad\":\"" + std::string(dream::kStateFileMax, 'x') + "\"");
+  dream::DreamState probe;
+  TEST_ASSERT_FALSE(dream::loadDreamState(big, probe));
+  // Counter-test: the whole file is read and reconciled.
+  BootRig whole;
+  whole.file = full;
+  dream::BootReconcile rec;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)rec.pump(whole.deps(), clockAt(9, 230)));
+}
+
+static void test_boot_reconcile_reads_a_marker_from_another_firmware_safely() {
+  // Another firmware's file: a newer version, extra keys, fields of the wrong type.
+  // Known fields are used, a wrong-typed one reads as absent, counters are clamped.
+  dream::DreamState st;
+  TEST_ASSERT_TRUE(dream::loadDreamState(
+      "{\"v\":2,\"maintDay\":\"x\",\"attempts\":900,\"streak\":-4,\"last\":\"exploded\","
+      "\"cause\":17,\"inNight\":\"20747\",\"inAttempt\":3,\"inStart\":12345,\"future\":[1,2]}",
+      st));
+  TEST_ASSERT_EQUAL(0, (int)st.maintDay);
+  TEST_ASSERT_EQUAL(255, st.attemptsTonight);
+  TEST_ASSERT_EQUAL(0, st.streak);
+  TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Ran, (int)st.lastOutcome);
+  TEST_ASSERT_EQUAL_STRING("", st.lastCause.c_str());
+  TEST_ASSERT_EQUAL(0, (int)st.inflightNight);   // a string night is no marker
+  BootRig foreign;
+  foreign.file = "{\"v\":2,\"inNight\":\"20747\",\"inAttempt\":3}";
+  dream::BootReconcile r0;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Clean, (int)r0.pump(foreign.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(0, foreign.rows);
+  // A marker naming attempt 0 is still a started attempt: attempt 1.
+  BootRig zero;
+  zero.file = "{\"v\":1,\"inNight\":9,\"inAttempt\":0,\"inStart\":\"0000000000000000\"}";
+  dream::BootReconcile r1;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r1.pump(zero.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(1, zero.row.attempt);
+  TEST_ASSERT_TRUE(dream::renderDreamRow(zero.row).find("retry 2 of 3 at 04:05") != std::string::npos);
+  // A marker dated after today (a clock that ran ahead) is anchored to today: no
+  // later night's streak day or attempt day is pinned.
+  BootRig ahead;
+  ahead.file = markerFile(40);
+  dream::BootReconcile r2;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r2.pump(ahead.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(9, (int)ahead.memo.st.streakDay);
+  TEST_ASSERT_EQUAL(9, (int)ahead.memo.st.attemptDay);
+  TEST_ASSERT_EQUAL(0, (int)ahead.memo.st.maintDay);   // day 40's stamp reads as never
+  TEST_ASSERT_EQUAL(1, ahead.row.streak);
+  // When night 40 comes it is a night like any other: maintenance runs, the streak
+  // moves, all three attempts are there.
+  Night later;
+  later.haveSaved = true;
+  later.saved = ahead.memo.st;
+  later.turn = [] { return failWith("chat HTTP 401: bad key"); };
+  const dream::NightResult n40 = dream::runNight(later.deps(), clockAt(40, 210), false);
+  TEST_ASSERT_EQUAL(2, n40.report.streak);
+  TEST_ASSERT_EQUAL(1, n40.report.attempt);
+  TEST_ASSERT_EQUAL(1, later.maintRuns);
+  // The same holds for a file with no marker at all.
+  BootRig clean;
+  clean.file = "{\"v\":1,\"maintDay\":40,\"attemptDay\":40,\"attempts\":3,\"streakDay\":40,\"streak\":2}";
+  dream::BootReconcile r3;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Clean, (int)r3.pump(clean.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(0, (int)clean.memo.st.maintDay);
+  TEST_ASSERT_EQUAL(0, (int)clean.memo.st.attemptsTonight);
+  TEST_ASSERT_EQUAL(0, (int)clean.memo.st.streakDay);
+  TEST_ASSERT_EQUAL(2, clean.memo.st.streak);   // the count itself is kept
+}
+
+static void test_boot_reconcile_drops_a_marker_a_later_fire_superseded() {
+  // The marker of night 9 survived on disk while the reserved loop kept firing: a
+  // firmware that does not know the marker ran nights 10-12, or the outcome writes
+  // after it did not land. The loop's lastRun is newer than the marker's start, so
+  // that night is already on record: cleared, with no row and no counter, and the
+  // file's newer verdict stays.
+  const std::string mark = markerFile(9);
+  dream::DreamState fileSt;
+  TEST_ASSERT_TRUE(dream::loadDreamState(mark, fileSt));
+  BootRig b;
+  b.file = mark;
+  b.lastRun = clockAt(12, 210).epoch;
+  dream::BootReconcile rec;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Stale, (int)rec.pump(b.deps(), clockAt(12, 300)));
+  TEST_ASSERT_EQUAL(0, b.rows);
+  TEST_ASSERT_EQUAL(0, b.loopApplied);
+  TEST_ASSERT_EQUAL(1, b.saves);
+  TEST_ASSERT_TRUE(b.file.find("inNight") == std::string::npos);
+  TEST_ASSERT_EQUAL((int)fileSt.lastOutcome, (int)b.memo.st.lastOutcome);
+  TEST_ASSERT_EQUAL(fileSt.streak, b.memo.st.streak);
+  TEST_ASSERT_TRUE(dream::markerStale(fileSt, fileSt.inflightStart + dream::kMarkerStaleSlackSec + 1));
+  // Counter-tests: the fire that wrote the marker set lastRun just before it (the
+  // scheduler claims the run first), and a drill never moves lastRun at all.
+  for (uint64_t last : {fileSt.inflightStart - 1, fileSt.inflightStart, (uint64_t)0}) {
+    BootRig same;
+    same.file = mark;
+    same.lastRun = last;
+    dream::BootReconcile r;
+    TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r.pump(same.deps(), clockAt(9, 230)));
+    TEST_ASSERT_EQUAL(1, same.rows);
+  }
+}
+
+static void test_boot_reconcile_keeps_the_working_copy_a_fire_opened() {
+  // A fire this boot already opened the state (a console drill before the clock
+  // synced): its working copy is the authority, and the file it may lag behind is
+  // never re-read over it.
+  BootRig b;
+  b.file = markerFile(9);
+  b.memo.loaded = true;
+  b.memo.st.attemptDay = 9;
+  b.memo.st.attemptsTonight = 2;
+  b.memo.st.streak = 4;
+  dream::BootReconcile rec;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Clean, (int)rec.pump(b.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(0, b.loads);
+  TEST_ASSERT_EQUAL(0, b.rows);
+  TEST_ASSERT_EQUAL(2, b.memo.st.attemptsTonight);
+  TEST_ASSERT_EQUAL(4, b.memo.st.streak);
+}
+
+static void test_boot_reconcile_is_bounded_when_the_store_refuses() {
+  // A store that refuses every save: nothing is counted (save first), the pump gives
+  // up after the bound with the marker left for a boot with a working store, and it
+  // never loops.
+  BootRig b;
+  b.file = markerFile(9);
+  b.refuse = true;
+  dream::BootReconcile rec;
+  for (int i = 1; i < dream::kBootSaveTries; ++i)
+    TEST_ASSERT_EQUAL((int)dream::BootStep::SaveFailed, (int)rec.pump(b.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL((int)dream::BootStep::GaveUp, (int)rec.pump(b.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Done, (int)rec.pump(b.deps(), clockAt(9, 230)));
+  TEST_ASSERT_EQUAL(dream::kBootSaveTries, b.saves);
+  TEST_ASSERT_EQUAL(0, b.rows);
+  TEST_ASSERT_EQUAL(0, b.loopApplied);
+  TEST_ASSERT_TRUE(b.file.find("\"inNight\":9") != std::string::npos);
+}
+
 // One generated store and night sequence for the bounded-retry property.
 static void runBoundedSequence() {
   Night n;
@@ -1353,6 +1608,12 @@ int main(int, char**) {
   RUN_TEST(test_interrupted_night_after_the_window_counts_once_and_never_retries);
   RUN_TEST(test_interrupted_night_never_shows_an_older_verdict);
   RUN_TEST(test_completed_night_leaves_no_marker_and_is_byte_identical);
+  RUN_TEST(test_boot_reconcile_waits_for_its_seams_then_runs_once);
+  RUN_TEST(test_boot_reconcile_never_trusts_a_torn_file);
+  RUN_TEST(test_boot_reconcile_reads_a_marker_from_another_firmware_safely);
+  RUN_TEST(test_boot_reconcile_drops_a_marker_a_later_fire_superseded);
+  RUN_TEST(test_boot_reconcile_keeps_the_working_copy_a_fire_opened);
+  RUN_TEST(test_boot_reconcile_is_bounded_when_the_store_refuses);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);

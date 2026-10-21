@@ -55,9 +55,11 @@ void pumpDrill();
 
 // The boot reconcile (L19-31): a marker with no outcome in /data/dream.json names
 // a reflection turn the restart cut short. Call on every pollJobs pass (tg_poll,
-// before the loops tick): once the clock is synced it turns that marker into the
-// night's verdict - fail, one timeline row, the streak and the loop's consecFails
-// exactly once - and schedules the same-night retry while the window is open.
+// before the loops tick): once internal storage is mounted, the clock is synced and
+// the timeline and loop records are up, it turns that marker into the night's
+// verdict - fail, one timeline row, the streak and the loop's consecFails exactly
+// once - and schedules the same-night retry while the window is open. A torn file
+// or a marker a later fire superseded is never counted (dream::BootReconcile).
 void pumpBootReconcile();
 
 // The last night of this boot, for /api/state and the health report (any task).

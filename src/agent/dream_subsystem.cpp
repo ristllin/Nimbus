@@ -78,7 +78,9 @@ static DreamMemo g_memo;
 static bool loadState(DreamState& st) {
   File f = flashMounted() ? LittleFS.open(kStatePath, FILE_READ) : File();
   if (f) {
-    String s = f.readString();
+    // A torn or foreign file larger than the state can be is never read into RAM.
+    String s;
+    if (f.size() <= kStateFileMax) s = f.readString();
     f.close();
     if (loadDreamState(std::string(s.c_str(), s.length()), st)) return true;
     alog("dream: state file unreadable - starting fresh");
@@ -326,49 +328,15 @@ void pumpDrill() {
 }
 
 // ---- the boot reconcile: a night the restart cut short (L19-31) ------------------
-static bool g_bootChecked = false;    // one reconcile per boot
-static uint8_t g_bootTries = 0;       // state saves attempted for it (flood bound)
-constexpr uint8_t kBootSaveTries = 10;
+// The decisions (when it may run, stale and torn markers, save-first, the bounded
+// retry) are the pure BootReconcile (dream.h, host-tested); this binds its seams.
+static BootReconcile g_boot;   // one reconcile per boot (tg_poll only)
 
-void pumpBootReconcile() {
-  if (g_bootChecked) return;
-  if (!flashMounted()) {   // nothing readable: no marker can exist on this boot
-    g_bootChecked = true;
-    return;
-  }
-  if (!memory::clockSynced()) return;   // the night and its window need the local clock
-  DreamState st;
-  loadState(st);
-  const NightClock c = nightClock();
-  const InterruptedNight v = reconcileBoot(st, c);
-  if (!v.interrupted) {
-    g_bootChecked = true;
-    g_memo.loaded = true;   // this boot's working copy (RAM is the authority now)
-    g_memo.st = st;
-    return;
-  }
-  // Save FIRST, then count: the marker clears durably before any counter moves,
-  // so a boot whose save fails (tried again below) can never move the streak or
-  // consecFails twice for one interruption. A store that keeps refusing is said
-  // ONCE and never looped on (the unit L bench class): the marker stays for a
-  // boot with a working store, and this boot moves no counter.
-  if (!saveState(st)) {
-    if (++g_bootTries >= kBootSaveTries) {
-      g_bootChecked = true;
-      alog("dream: interrupted night NOT reconciled this boot (the state save keeps "
-           "failing); the marker stays on disk");
-    }
-    return;
-  }
-  g_bootChecked = true;
-  g_memo.loaded = true;
-  g_memo.st = st;
-  const NightReport& rep = v.report;
+static void publishInterrupted(const NightReport& rep) {
   alogf("dream: interrupted night reconciled - attempt %u of %u, the device restarted "
         "during the reflection%s",
         (unsigned)rep.attempt, (unsigned)kMaxAttempts,
         rep.retryAfterSec ? ", retry scheduled" : ", no retry inside the window");
-  loops::applyInterruptedOutcome(kLoopId, rep.retryAfterSec, c.epoch);
   publishStatus(rep);
   if (rep.alert) g_pendingAlert = streakAlertText(rep);
   if (g_hooks.onDreamEnd) {
@@ -377,6 +345,41 @@ void pumpBootReconcile() {
     ev.cause = rep.error;
     ev.report = &rep;
     g_hooks.onDreamEnd(ev);
+  }
+}
+
+static const BootDeps& bootDeps() {
+  static BootDeps d;
+  if (d.loadState) return d;
+  d.storeReady = flashMounted;
+  d.clockSynced = memory::clockSynced;
+  // The row goes to the episodic store and the loop side to loops.json: both are
+  // read at boot before the turn task starts, so this holds from the first pass.
+  d.sinksReady = [] { return memory::storageResolved() && loops::ready(); };
+  d.loadState = loadState;
+  d.saveState = saveState;
+  d.loopLastRun = [] { return loops::lastRunOf(kLoopId); };
+  d.applyLoop = [](const NightReport& rep) {
+    loops::applyInterruptedOutcome(kLoopId, rep.retryAfterSec, (uint64_t)time(nullptr));
+  };
+  d.publish = publishInterrupted;
+  d.memo = &g_memo;
+  return d;
+}
+
+void pumpBootReconcile() {
+  if (g_boot.done) return;
+  switch (g_boot.pump(bootDeps(), nightClock())) {
+    case BootStep::Stale:
+      alog("dream: an in-flight marker older than the routine's last run was cleared "
+           "(that night is already on record)");
+      break;
+    case BootStep::GaveUp:
+      alog("dream: interrupted night NOT reconciled this boot (the state save keeps "
+           "failing); the marker stays on disk");
+      break;
+    default:
+      break;   // waiting, clean, reconciled (published above) or a save to retry
   }
 }
 

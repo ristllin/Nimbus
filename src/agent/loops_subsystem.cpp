@@ -333,6 +333,14 @@ bool applyInterruptedOutcome(const String& id, uint32_t retryAfterSec, uint64_t 
   return true;
 }
 
+bool ready() { return g_loaded; }
+
+uint64_t lastRunOf(const String& id) {
+  Lock lk;
+  const LoopRecord* l = findById(std::string(id.c_str()));
+  return l ? l->lastRun : 0;
+}
+
 // ---- the tick --------------------------------------------------------------
 void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   if (!g_loaded) return;

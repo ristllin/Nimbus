@@ -80,6 +80,12 @@ bool firing();
 // Returns false when the loop is absent.
 bool applyInterruptedOutcome(const String& id, uint32_t retryAfterSec, uint64_t nowEpoch);
 
+// The dream's boot reconcile asks these before it writes (PG4): ready() once begin()
+// has read loops.json, and the reserved loop's lastRun (0 when absent), which tells a
+// marker a later fire already superseded from the night it names.
+bool ready();
+uint64_t lastRunOf(const String& id);
+
 // SNTP bring-up (CUM-504). Call on EVERY tick of the network-up hook (net::link,
 // main task): netUp is the latch verdict, upEdge says an IP session began this tick.
 // Kicks SNTP on every up edge (the boot join included, however early it landed) and

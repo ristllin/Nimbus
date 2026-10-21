@@ -395,6 +395,7 @@ std::string dumpDreamState(const DreamState& s) {
 }
 
 bool loadDreamState(const std::string& json, DreamState& out) {
+  if (json.size() > kStateFileMax) return false;
   JsonDocument d;
   if (deserializeJson(d, json) != DeserializationError::Ok || !d.is<JsonObject>()) return false;
   DreamState s;
@@ -438,6 +439,13 @@ MaintResult maintainVectors(nimbus::orch::VectorMemory& v, float decayFactor, ui
 }
 
 namespace {
+
+// An outcome write clears the in-flight marker (L19-31).
+void clearMarker(DreamState& st) {
+  st.inflightNight = 0;
+  st.inflightAttempt = 0;
+  st.inflightStart = 0;
+}
 
 bool alertDue(uint8_t streak) {
   if (streak < kAlertStreak) return false;
@@ -579,9 +587,8 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
     r.outcome = DreamOutcome::Skipped;
     st.lastOutcome = r.outcome;
     st.lastCause.clear();
-    st.inflightNight = 0;   // an outcome clears any marker, even one left by an
-    st.inflightAttempt = 0; // earlier night a failing store kept on disk
-    st.inflightStart = 0;
+    clearMarker(st);   // an outcome clears any marker, even one left by an earlier
+                       // night a failing store kept on disk
     r.streak = st.streak;
     r.stateSaved = save(st);
     o.ok = true;
@@ -613,9 +620,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   settleStreak(c, st, r);
   st.lastOutcome = r.outcome;
   st.lastCause = r.cause;
-  st.inflightNight = 0;   // the outcome write clears the marker
-  st.inflightAttempt = 0;
-  st.inflightStart = 0;
+  clearMarker(st);   // the outcome write clears the marker
   r.stateSaved = save(st);
   o.retryAfterSec = r.retryAfterSec;
   fingerprint(c, r, o);
@@ -628,6 +633,10 @@ InterruptedNight reconcileBoot(DreamState& st, const NightClock& c) {
   InterruptedNight out;
   if (st.inflightNight == 0) return out;
   out.interrupted = true;
+  // A marker another clock or firmware wrote: never dated after today (that would
+  // pin a later night's streak and attempts), and always a started attempt.
+  if (c.synced && st.inflightNight > c.localDay) st.inflightNight = c.localDay;
+  if (st.inflightAttempt == 0) st.inflightAttempt = 1;
   NightReport& r = out.report;
   // The marker is the truth about the attempt (its pre-turn save landed), so the
   // state's counters are restored to it before any retry re-opens the night.
@@ -659,9 +668,7 @@ InterruptedNight reconcileBoot(DreamState& st, const NightClock& c) {
   // carried, and the marker clears: this save IS the outcome write.
   st.lastOutcome = r.outcome;
   st.lastCause = r.cause;
-  st.inflightNight = 0;
-  st.inflightAttempt = 0;
-  st.inflightStart = 0;
+  clearMarker(st);
   return out;
 }
 
@@ -670,6 +677,82 @@ void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
   l.lastResult = nimbus::orch::LastResult::Fail;
   if (l.consecFails < 255) l.consecFails++;   // the post-fire outcome write never ran
   if (retryAfterSec) l.nextRun = nowEpoch + retryAfterSec;
+}
+
+// ---- the boot reconcile driver (PG4) ----------------------------------------------
+
+bool markerStale(const DreamState& st, uint64_t loopLastRun) {
+  return st.inflightNight != 0 && loopLastRun > st.inflightStart + kMarkerStaleSlackSec;
+}
+
+namespace {
+
+bool seamUp(const std::function<bool()>& f) { return f && f(); }
+
+void prime(DreamMemo* memo, const DreamState& st) {
+  if (!memo) return;
+  memo->loaded = true;
+  memo->st = st;
+}
+
+// The state this boot reconciles: the working copy a fire already opened, else the
+// file. A missing, torn or foreign file holds no marker. A day stamp after today was
+// written under another clock and is unknowable, so it reads as never: it must not
+// pin tonight's maintenance, attempts or streak.
+DreamState bootState(const BootDeps& d, const NightClock& c) {
+  DreamState st;
+  if (d.memo && d.memo->loaded) {
+    st = d.memo->st;
+  } else if (!d.loadState || !d.loadState(st)) {
+    st = DreamState{};
+  }
+  if (!c.synced) return st;
+  if (st.maintDay > c.localDay) st.maintDay = 0;
+  if (st.streakDay > c.localDay) st.streakDay = 0;
+  if (st.attemptDay > c.localDay) {
+    st.attemptDay = 0;
+    st.attemptsTonight = 0;
+  }
+  return st;
+}
+
+// The durable outcome write of the boot: done and primed when it lands, otherwise
+// tried again on the next pass until the bound.
+BootStep saveOrRetry(BootReconcile& b, const BootDeps& d, const DreamState& st, BootStep ok) {
+  if (d.saveState && d.saveState(st)) {
+    b.done = true;
+    prime(d.memo, st);
+    return ok;
+  }
+  if (++b.saveTries >= kBootSaveTries) {
+    b.done = true;
+    return BootStep::GaveUp;
+  }
+  return BootStep::SaveFailed;
+}
+
+}  // namespace
+
+BootStep BootReconcile::pump(const BootDeps& d, const NightClock& c) {
+  if (done) return BootStep::Done;
+  if (!seamUp(d.storeReady) || !seamUp(d.clockSynced) || (d.sinksReady && !d.sinksReady()))
+    return BootStep::Waiting;
+  DreamState st = bootState(d, c);
+  if (markerStale(st, d.loopLastRun ? d.loopLastRun() : 0)) {
+    clearMarker(st);
+    return saveOrRetry(*this, d, st, BootStep::Stale);
+  }
+  const InterruptedNight v = reconcileBoot(st, c);
+  if (!v.interrupted) {
+    done = true;
+    prime(d.memo, st);
+    return BootStep::Clean;
+  }
+  const BootStep step = saveOrRetry(*this, d, st, BootStep::Reconciled);
+  if (step != BootStep::Reconciled) return step;
+  if (d.applyLoop) d.applyLoop(v.report);
+  if (d.publish) d.publish(v.report);
+  return step;
 }
 
 // ---- the row ----------------------------------------------------------------------

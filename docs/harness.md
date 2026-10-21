@@ -218,7 +218,12 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     run"), one timeline row says the dream was interrupted, the failing-night streak
     and the routine's failure count move exactly once, and the interrupted attempt
     is one of the bounded retries - the routine runs again inside the night's window
-    while it is still before 07:00 local.
+    while it is still before 07:00 local. The reconcile waits until internal storage
+    is mounted, the clock is set and the timeline and routine records are up. A state
+    file that is torn, not JSON or larger than the state can be holds no marker
+    (nothing is invented for it), a day stamp dated after today reads as never, and a
+    marker older than the routine's last run (a later fire, on this firmware or
+    another, already recorded that night) is cleared with no row and no count.
   - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
     are capped at 12 per night; the heap floor is not.
   - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night

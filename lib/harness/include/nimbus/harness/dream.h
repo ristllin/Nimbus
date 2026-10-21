@@ -231,7 +231,11 @@ struct DreamState {
   uint64_t inflightStart = 0;   // UTC epoch s the turn started
 };
 std::string dumpDreamState(const DreamState& s);
-bool loadDreamState(const std::string& json, DreamState& out);   // false = unreadable
+// false = unreadable: not a JSON object, or larger than kStateFileMax (a torn or
+// foreign file is never half-trusted). A field of the wrong type reads as absent
+// and every counter is clamped, so a file another firmware wrote loads safely.
+constexpr size_t kStateFileMax = 1024;   // the state is about 200 B with a marker
+bool loadDreamState(const std::string& json, DreamState& out);
 // The legacy NVS value (16 hex digits, "" when unset) as a fresh state's baseline.
 DreamState stateFromLegacyHash(const std::string& hex);
 
@@ -324,7 +328,10 @@ struct InterruptedNight {
 // retry while the marker's night is still the current local night and its window
 // (windowEndFor) is still open; the interrupted attempt is one of the bounded
 // retries. The caller persists `st` BEFORE applying the loop side, so a boot whose
-// save fails moves no counter and can try again. Call with a synced clock.
+// save fails moves no counter and can try again. Call with a synced clock. A marker
+// cannot be from the future (one dated after today is anchored to today, so no later
+// night's streak or attempts are touched) and always names a started attempt (an
+// attempt of 0 reads as 1).
 InterruptedNight reconcileBoot(DreamState& st, const NightClock& c);
 // The loop-record half of that outcome (the scheduler's post-fire write never
 // ran): lastResult fail and consecFails +1, once - the caller clears the marker
@@ -333,6 +340,54 @@ InterruptedNight reconcileBoot(DreamState& st, const NightClock& c);
 // lane T's lastErr field.
 void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
                            uint32_t retryAfterSec);
+
+// --- the boot reconcile driver (pure; program-2026-10-18 PG4) -------------------
+// The device's pumpBootReconcile, host-tested end to end. It runs once its seams are
+// up - the state store mounted, the local clock real, and the timeline and the loop
+// records it writes to ready - and until then it waits, so a pass that comes early
+// asks again instead of giving up on a marker it could not read yet. Then:
+//   - the state is the working copy a fire already opened this boot (never re-read
+//     over it), else the file; a file that is torn, oversized or not JSON holds no
+//     marker, and nothing is invented for it; a day stamp dated after today (another
+//     clock wrote it) reads as never;
+//   - a stale marker is cleared with no row and no counter: the reserved loop ran
+//     after the marker's attempt started (markerStale), so a later fire - on this
+//     firmware or another one - already put that night or a newer one on record;
+//   - an interrupted night is saved first (the marker cleared durably), then the
+//     loop side and the row are handed over exactly once;
+//   - a store that keeps refusing the save is given up on after kBootSaveTries passes
+//     with nothing counted (the marker stays for a boot with a working store).
+// Every seam may be null; no path throws or loops.
+constexpr uint8_t  kBootSaveTries = 10;
+constexpr uint32_t kMarkerStaleSlackSec = 300;   // a fire's lastRun precedes its marker by seconds
+// The marker names an attempt older than the reserved loop's last fire.
+bool markerStale(const DreamState& st, uint64_t loopLastRun);
+
+struct BootDeps {
+  std::function<bool()> storeReady;    // the state file's store is mounted
+  std::function<bool()> clockSynced;   // the night and its window need the local clock
+  std::function<bool()> sinksReady;    // the timeline and the loop records are up
+  std::function<bool(DreamState&)> loadState;          // false = no file, or unreadable
+  std::function<bool(const DreamState&)> saveState;    // false = not saved
+  std::function<uint64_t()> loopLastRun;               // the reserved loop's lastRun (0 = none)
+  std::function<void(const NightReport&)> applyLoop;   // the loop side, once per interruption
+  std::function<void(const NightReport&)> publish;     // status and the timeline row, once
+  DreamMemo* memo = nullptr;                           // this boot's working copy
+};
+enum class BootStep : uint8_t {
+  Waiting = 0,  // a seam is not up yet: asked again on the next pass
+  Clean,        // no marker: the working copy is primed
+  Reconciled,   // the interrupted night is on record (row, counters, retry)
+  Stale,        // a later fire superseded the marker: cleared, nothing counted
+  SaveFailed,   // the marker could not be cleared durably: tried again next pass
+  GaveUp,       // kBootSaveTries refusals: nothing counted, the marker stays on disk
+  Done,         // this boot's reconcile has already finished
+};
+struct BootReconcile {
+  bool done = false;
+  uint8_t saveTries = 0;
+  BootStep pump(const BootDeps& d, const NightClock& c);
+};
 
 // The ev:dream timeline row, at most `cap` bytes, always starting "Nightly dream ".
 //   Nightly dream ok: +2 memories, 1 updated; maintenance pruned=0 deduped=0; spent 21544 tokens

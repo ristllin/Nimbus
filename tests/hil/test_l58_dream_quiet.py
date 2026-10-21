@@ -31,8 +31,10 @@ Legs:
      next boot reconciles it - one ``Nightly dream interrupted`` timeline row,
      the dream's last result fail with "the device restarted during this run",
      and a ``/api/loops`` next run that retries the same night while the window
-     is open (the interrupted attempt is one of the bounded retries). Skipped
-     until lane O1 wires the arm hook.
+     is open (the interrupted attempt is one of the bounded retries). The panic
+     handler's report is the crash under test, so the leg reads past it to the
+     ROM's ``rst:`` banner before the boot scan (which fails on any panic marker)
+     takes over. Skipped when the image has no arm hook.
 
 Conditions: unit L (the fill unit), Orchestrator mode, a cheap head
 (claude-haiku-5-5), the owner's Telegram chat allowlisted, the unit on the LAN.
@@ -209,6 +211,28 @@ def test_dream_writes_no_nvs(orch: Device):
     )
 
 
+_ARMED_PANIC = "Guru Meditation"  # the armed null store, as the panic handler prints it
+_ROM_RESET = "rst:"  # the ROM banner of the boot after it
+
+
+def _await_armed_panic_reboot(dev: Device, panic_timeout: float = 240.0) -> str:
+    """Wait out the panic this leg armed and the reboot after it; returns the panic line.
+
+    The panic handler prints its report ("Guru Meditation ...", the backtrace,
+    "Rebooting...") before the reset. wait_ready fails on any panic marker, so it is
+    only called once the ROM's ``rst:`` banner arrived: called straight after DREAM,
+    it read the armed panic as a boot failure (unit L, 21 Oct: "panic during boot"
+    while the next boot came up and ran). A drill that ends with no panic fails here,
+    so the leg cannot pass on a turn the arm never reached."""
+    line = dev.expect(_ARMED_PANIC, timeout=panic_timeout)
+    try:
+        dev.expect(_ROM_RESET, timeout=20.0)
+    except Exception:  # noqa: BLE001 - the USB endpoint dropped at the reset (re-enumerated)
+        dev.reopen_after_reenumerate(drain_boot=False)
+    dev.wait_ready(timeout=90.0)
+    return line
+
+
 def _arm_turn_panic(dev: Device) -> None:
     """Arm the mid-turn panic (lane O1's hook); skip when the build lacks it."""
     try:
@@ -232,7 +256,8 @@ def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
     orch.send("DREAM")
     orch.expect("DREAM queued", timeout=5.0)
     # The armed panic fires deep in the reflection turn; the device restarts.
-    orch.wait_ready(timeout=90.0)
+    panic = _await_armed_panic_reboot(orch)
+    assert "StoreProhibited" in panic, f"not the armed null store: {panic}"
     # The boot reconcile waits for the synced clock; poll for its verdict.
     night = {}
     deadline = time.time() + 120.0
