@@ -12,6 +12,13 @@ test_file_append, test_orch_transcript):
    Anthropic's free count_tokens endpoint).
 2. A food-log turn: "log my lunch" ends in at most 3 requests (headloop rounds)
    and appends the row with files.append, never a whole-file artifact.save.
+3. The 19 Oct replay shape (L19-45): the same three-word owner text twice,
+   30 s apart. The first reply moves the device history the second turn's
+   prompt carries (the running-memory note, the recent window), so the second
+   turn is a replay whose per-turn block changed. Turn 2 stays one round (the
+   turn line's usage IS round 0) and must read at least 90% of the golden
+   prefix from the cache and write under 1,000 tokens to it - the shape that
+   re-wrote 10-11K cached tokens per replay on 19 Oct.
 
 Markers: ``net`` + ``agent`` (real provider calls on the head, about $0.03 on
 claude-haiku-5-5). Needs --allow-hardware, NIMBUS_TEST_IP and NIMBUS_TEST_TOKEN,
@@ -77,6 +84,15 @@ def _per_turn_text(ip: str) -> str:
     return dyn + "\n\n" + inp
 
 
+def _history_line(ip: str) -> str:
+    """The 'device history this turn:' line of the last turn's anatomy header
+    (L19-28): what the device itself sent as history in the system prompt."""
+    page = _S.get(f"http://{ip}/api/lastturn", timeout=10).text
+    m = re.search(r"^device history this turn: (.*)$", page, re.M)
+    assert m, "/api/lastturn shows no device history line - is this build older than the L19-28 header?"
+    return m.group(1)
+
+
 def _count_tokens(model: str, text: str) -> int:
     import requests
 
@@ -123,6 +139,46 @@ def test_l60_second_turn_reads_the_static_prefix(board):
     assert second["cacheR"] >= 0.9 * prefix, (
         f"turn 2 round 0 read {second['cacheR']} of a {prefix}-token static prefix (< 90%)"
     )
+
+
+def test_l60_replayed_turn_hits_the_prefix_cache(board):
+    """L19-45: the 19 Oct replay shape on the bench. The same three-word owner
+    text, 30 s apart; the first reply moves the device history the second
+    turn's prompt carries. Turn 2 must stay one round (the turn line IS round
+    0) and read at least 90% of the golden prefix while writing under 1,000
+    tokens to the cache. The exact running-memory change between the pair is
+    pinned by the live leg (prompt-cache-live cache-replay), which controls
+    the note; here it is reported, and the history line as a whole must move
+    (the recent window always grows by the first exchange)."""
+    ip, model = board
+    text = "thanks, same again"  # three words, the same on both turns
+    before = _log(ip)
+    _chat(ip, text)
+    first = _turn_usage(_log_since(ip, before))
+    hist1 = _history_line(ip)
+    time.sleep(30)  # the replay gap of the 19 Oct incident
+    before = _log(ip)
+    _chat(ip, text)
+    log2 = _log_since(ip, before)
+    second = _turn_usage(log2)
+    hist2 = _history_line(ip)
+    rounds = re.findall(r"headloop round=(\d+)", log2)
+    assert rounds and len(rounds) == 1, (
+        f"the replayed turn took {len(rounds)} headloop rounds - the round-0 check "
+        "needs a tool-free turn, re-run the leg"
+    )
+    per_turn = _count_tokens(model, _per_turn_text(ip))
+    prefix = second["total"] - per_turn
+    print(
+        f"L60 replay turn1={first} turn2={second} perTurnTokens={per_turn} "
+        f"prefixTokens={prefix}\nhistory turn1: {hist1}\nhistory turn2: {hist2}"
+    )
+    assert prefix > 1024, f"implausible cached prefix size {prefix}"
+    assert second["cacheR"] >= 0.9 * prefix, (
+        f"replayed turn 2 round 0 read {second['cacheR']} of a {prefix}-token golden prefix (< 90%)"
+    )
+    assert second["cacheW"] < 1000, f"replayed turn 2 round 0 wrote {second['cacheW']} tokens to the cache (>= 1000)"
+    assert hist1 != hist2, "the device history in the prompt did not move between the replays"
 
 
 def test_l60_food_log_turn_appends_in_three_requests(board):

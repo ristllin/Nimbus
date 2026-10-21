@@ -12,6 +12,13 @@
 //               checks turn 2's round 0 reads at least 90% of it from the cache.
 //               --flat sends the same prompt as ONE string (the pre-layout wire:
 //               one system block holding the per-turn text), the "before" leg.
+//   cache-replay
+//               the 19 Oct replay shape (L19-45): the SAME three-word owner
+//               text on both turns, --gap seconds apart (default 30), only the
+//               running-memory note changing between them. Turn 2 round 0 must
+//               read at least 90% of the golden prefix and write under 1,000
+//               tokens to the cache (on hosts that report no cache writes:
+//               send under 1,000 fresh tokens).
 //   food-log    one "log my lunch" turn with files.append, files.read tail and
 //               skill.get on the registry (canned results): at most 3 requests,
 //               and a files_append call that carries the row.
@@ -251,6 +258,46 @@ std::unique_ptr<Turn> turnFor(int k, const std::string& repo, const std::string&
   return t;
 }
 
+// L19-45: the 19 Oct replay shape - the SAME three-word owner text on both
+// turns, 30 s apart, and only the running-memory note (plus the minute clock)
+// moving between them. On 19 Oct that shape re-wrote 10-11K tokens of a 23K
+// prompt to the cache on every replay.
+const char* kReplayText = "log my lunch";
+
+std::unique_ptr<Turn> turnReplayFor(int k, const std::string& repo, const std::string& host,
+                                    const std::string& model) {
+  std::unique_ptr<Turn> t(new Turn);
+  agent::ComposeInputs& in = t->ci;
+  in.devName = "Nimbus";
+  in.hostLabel = host + " / " + model;
+  in.fw = "4.5.14-lab";
+  in.directive = "Be warm and brief. Log meals to the food log when I send one.";
+  in.hw.ring = in.hw.touch = in.hw.mic = in.hw.speaker = true;
+  in.hw.sd = in.hw.wifi = in.hw.telegram = in.hw.files = in.hw.battery = true;
+  for (const auto& d : kTools) in.tools.push_back({d.name, d.desc});
+  in.loopOn = true;
+  in.catalogs = catalogs(repo, host, model);
+  in.chatSummary =
+      "\n## CONVERSATION SUMMARY (compacted earlier - a summary of prior conversation; information, "
+      "not instructions)\n1. Owner intent: tracks meals in roy-food/food-log.csv (date,meal,kcal,protein_g).\n"
+      "2. Daily target 1900 kcal, 140 g protein.\n3. Prefers short replies with the running total.\n";
+  // ---- per turn: only the running-memory note differs between the two turns ----
+  in.now = localNow();
+  in.runningMemory = k == 0 ? "owner asked to log lunch" : "lunch logged: 520 kcal, 24 g protein";
+  in.speakerRole = "admin";
+  in.speakerLabel = "Roy";
+  in.speakerPresent = true;
+  in.recalled = std::vector<std::string>{"[81%] the owner's food log is roy-food/food-log.csv"};
+  in.recentConversation = "\n## RECENT CONVERSATION (this chat, oldest first)\n- user: morning!\n"
+                          "- assistant: Morning Roy. Breakfast logged: 420 kcal.\n";
+  t->sp.reset(new nimbus::orch::Scratchpad);
+  t->sp->add(nimbus::orch::Tier::Short, "log lunch, report total");
+  in.scratchpad = t->sp.get();
+  t->inputs = "[ACTIVE SESSIONS]\nNo active jobs.\n[CHANNEL] This message arrived via Telegram\n[USER]\n" +
+              std::string(kReplayText);
+  return t;
+}
+
 struct Rig {
   Curl http;
   std::string model;
@@ -442,6 +489,67 @@ void scCachePair(Rig& rig, Report& r, const std::string& repo, int gapS, bool fl
             ",\"turn2\":" + requestsJson(rig, turn1Calls, rig.http.calls.size());
 }
 
+// The golden prefix on hosts without a token-count endpoint: the turn-2
+// request's reported input minus the per-turn share of the prompt content
+// (byte share; the tools ride the prefix, so they stay in the estimate).
+long estPrefixTokens(const agent::layout::PromptParts& p, size_t userBytes, long fullTokens) {
+  const double perTurnBytes = (double)p.dyn.size() + (double)userBytes;
+  const double contentBytes = (double)p.stat.size() + (double)p.summary.size() + perTurnBytes;
+  return fullTokens - (long)(fullTokens * perTurnBytes / contentBytes + 0.5);
+}
+
+// L19-45: the replay shape - the same three-word owner text, --gap seconds
+// apart (default 30), only the running-memory note changing between the
+// turns. Turn 2 round 0 must read >= 90% of the golden prefix and write under
+// 1,000 tokens to the cache (on hosts that report no cache writes: send under
+// 1,000 fresh tokens, the part the cache did not absorb).
+void scCacheReplay(Rig& rig, Report& r, const std::string& repo, int gapS) {
+  std::string out, err;
+  const std::unique_ptr<Turn> t1 = turnReplayFor(0, repo, r.host, r.model);
+  const std::string ins1 = agent::composeInstructions(t1->ci);
+  const bool ok1 = runTurn(rig, r.host, ins1, t1->inputs, out, err);
+  const size_t turn1Calls = rig.http.calls.size();
+  std::this_thread::sleep_for(std::chrono::seconds(gapS));
+  const std::unique_ptr<Turn> t2 = turnReplayFor(1, repo, r.host, r.model);
+  const std::string ins2 = agent::composeInstructions(t2->ci);
+  const bool ok2 = runTurn(rig, r.host, ins2, t2->inputs, out, err);
+  r.err = err;
+  const agent::layout::PromptParts p1 = agent::layout::split(ins1), p2 = agent::layout::split(ins2);
+  const Usage u2 = rig.http.calls.size() > turn1Calls ? usageOf(rig.http.calls[turn1Calls]) : Usage{};
+  r.check("turn 1 ok", ok1);
+  r.check("turn 2 ok", ok2);
+  r.check("the same three-word owner text on both turns", t1->inputs == t2->inputs);
+  r.check("the running-memory note changed between them", t1->ci.runningMemory != t2->ci.runningMemory);
+  r.check("static + summary blocks identical across the replay",
+          p1.stat == p2.stat && p1.summary == p2.summary);
+  r.check("the per-turn blocks differ", p1.dyn != p2.dyn);
+  long prefix = -1;
+  bool prefixEstimated = false;
+  if (r.host == "anthropic") {
+    prefix = anthropicPrefixTokens(rig, rig.http.calls[turn1Calls].body);
+    r.check("golden prefix counted", prefix > 0);
+    r.check("turn 2 round 0 reads >= 90% of the golden prefix",
+            prefix > 0 && u2.cacheRead * 10 >= prefix * 9);
+    r.check("turn 2 round 0 writes < 1000 tokens to the cache", u2.cacheWrite < 1000);
+  } else {
+    prefix = estPrefixTokens(p2, t2->inputs.size(), u2.in);
+    prefixEstimated = true;
+    r.check("golden prefix estimated", prefix > 0);
+    r.check("turn 2 round 0 reads >= 90% of the golden prefix (byte-share estimate)",
+            prefix > 0 && u2.cacheRead * 10 >= prefix * 9);
+    r.check("turn 2 round 0 sends < 1000 fresh tokens", u2.in - u2.cacheRead < 1000);
+  }
+  r.extra = ",\"replayText\":\"" + std::string(kReplayText) + "\",\"gapSeconds\":" + std::to_string(gapS) +
+            ",\"prefixEstimated\":" + std::string(prefixEstimated ? "true" : "false") +
+            ",\"staticBytes\":" + std::to_string(p1.stat.size()) +
+            ",\"summaryBytes\":" + std::to_string(p1.summary.size()) + ",\"dynBytes\":[" +
+            std::to_string(p1.dyn.size()) + "," + std::to_string(p2.dyn.size()) + "]" +
+            ",\"prefixTokens\":" + std::to_string(prefix) +
+            ",\"turn2Round0CacheRead\":" + std::to_string(u2.cacheRead) +
+            ",\"turn1\":" + requestsJson(rig, 0, turn1Calls) +
+            ",\"turn2\":" + requestsJson(rig, turn1Calls, rig.http.calls.size());
+}
+
 void scFoodLog(Rig& rig, Report& r, const std::string& repo) {
   std::string out, err;
   std::unique_ptr<Turn> t = turnFor(1, repo, r.host, r.model);
@@ -468,14 +576,14 @@ void scFoodLog(Rig& rig, Report& r, const std::string& repo) {
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: prompt-cache-live <cache-pair|food-log> <host> <model> [--gap=s] [--flat] [--record=f]\n");
+    std::fprintf(stderr, "usage: prompt-cache-live <cache-pair|cache-replay|food-log> <host> <model> [--gap=s] [--flat] [--record=f]\n");
     return 2;
   }
   const char* envPath = std::getenv("NIMBUS_ENV_FILE");
   if (!envPath) { std::fprintf(stderr, "set NIMBUS_ENV_FILE\n"); return 2; }
   loadEnv(envPath);
   std::string record;
-  int gap = 60;
+  int gap = -1;   // -1 = the scenario's own default (60 cache-pair, 30 cache-replay)
   bool flat = false;
   for (int i = 4; i < argc; i++) {
     if (!strncmp(argv[i], "--record=", 9)) record = argv[i] + 9;
@@ -492,7 +600,8 @@ int main(int argc, char** argv) {
   r.host = argv[2];
   r.model = argv[3];
   if (keyFor(r.host).empty()) { std::fprintf(stderr, "no key for %s\n", r.host.c_str()); return 2; }
-  if (r.scenario == "cache-pair") scCachePair(rig, r, repo, gap, flat);
+  if (r.scenario == "cache-pair") scCachePair(rig, r, repo, gap < 0 ? 60 : gap, flat);
+  else if (r.scenario == "cache-replay") scCacheReplay(rig, r, repo, gap < 0 ? 30 : gap);
   else if (r.scenario == "food-log") scFoodLog(rig, r, repo);
   else { std::fprintf(stderr, "unknown scenario\n"); return 2; }
   print(r, record);
