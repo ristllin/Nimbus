@@ -67,6 +67,10 @@ MemOpCounters         g_memOps;         // memory.write/update outcomes since bo
 // drops entries at TTL exactly as before. Lives in PSRAM like the live set.
 nimbus::orch::VectorArchive g_archive;
 Scratchpad            g_scratch;
+// The bytes the scratchpad file last took (a persist of the same bytes writes nothing)
+// and its failure line (once a minute, with the count).
+nimbus::store::LandedFingerprint g_scratchLanded;
+nimbus::store::FailureLog        g_scratchFailLog;
 MemConfig             g_cfg;
 // Device cap: bound the ring so the whole-blob rewrite per turn (persistEpisodic)
 // stays small on LittleFS (~500 msgs * ~150 B ~= 75 KB). The SD append-log store
@@ -632,6 +636,10 @@ void begin() {
     ScratchIo io;
     const nimbus::store::MovedLoad m = nimbus::store::loadMoved(io);
     if (m.value.length()) g_scratch.deserialize(m.value);
+    // Loaded from the file and serializing back to the same bytes: nothing to write
+    // until something changes (a legacy NVS load is written at the first persist).
+    if (m.src == nimbus::store::MovedSource::File && g_scratch.serialize() == m.value)
+      g_scratchLanded.noteLanded(m.value);
     // The legacy copy goes only on a boot whose image was already valid, and only
     // once the file reads back (a rollback from a trial boot still finds it).
     if (m.src == nimbus::store::MovedSource::File &&
@@ -1788,19 +1796,23 @@ String setEmbedFault(bool on) {
 }
 #endif
 
-// The scratchpad file: written atomically and read back (the moved-store rule). A
-// save that did not land is reported to the persist ledger ("lfs_scratch"), so the
-// scratchpad route answers 507 and /api/state names it; the notes stay in RAM. The
-// result also reaches the scratchpad's own failing flag, so the tool result, the
+// The scratchpad file: written atomically and read back (the moved-store rule), and
+// only when its bytes differ from the ones that last landed. A save that did not land
+// is reported to the persist ledger ("lfs_scratch"), so the scratchpad route answers
+// 507 and /api/state names it; the notes stay in RAM and the next persist tries again.
+// The result also reaches the scratchpad's own failing flag, so the tool result, the
 // turn's effect ledger and the prompt header all say when the notes are RAM only.
 bool persistScratchpad() {
   Lock g;
   const std::string blob = g_scratch.serialize();
   ScratchIo io;
-  const bool ok = nimbus::store::persistMoved(io, blob);
-  if (!ok)
-    alogf("scratchpad: persist FAILED (%u B) - contents survive in RAM only",
-          (unsigned)blob.size());
+  const auto out = nimbus::store::persistIfChanged(io, g_scratchLanded, blob);
+  const bool ok = out != nimbus::store::PersistOutcome::Failed;
+  if (!ok) {
+    if (const uint32_t n = g_scratchFailLog.noteFailure(millis()))
+      alogf("scratchpad: persist FAILED x%u (%u B) - contents survive in RAM only",
+            (unsigned)n, (unsigned)blob.size());
+  }
   g_scratch.setSaveFailing(!ok);
   return nimbus::sys::notePersist(ok, "lfs_scratch");
 }

@@ -22,6 +22,7 @@
 //   bool readNvs(std::string& out);             // true when the legacy key exists
 //   bool eraseNvs();                            // true when the key is gone
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -99,6 +100,65 @@ class DirtyRetry {
   uint32_t retryMs_;
   uint32_t lastMs_ = 0;
   bool     dirty_ = false;
+};
+
+// ---- persist only on a change ------------------------------------------------------
+// The scratchpad is persisted two or three times per turn whether or not it changed.
+// LandedFingerprint remembers the bytes the file last took (a 64-bit FNV-1a hash and
+// the length), so a persist of the same bytes writes nothing; a write that did not
+// land leaves the old fingerprint, so the next persist tries again.
+class LandedFingerprint {
+ public:
+  bool changed(const std::string& v) const { return !known_ || len_ != v.size() || hash_ != hashOf(v); }
+  void noteLanded(const std::string& v) {
+    known_ = true;
+    len_ = v.size();
+    hash_ = hashOf(v);
+  }
+
+ private:
+  static uint64_t hashOf(const std::string& v) {
+    uint64_t h = 1469598103934665603ull;   // FNV-1a 64
+    for (unsigned char c : v) h = (h ^ c) * 1099511628211ull;
+    return h;
+  }
+  bool     known_ = false;
+  size_t   len_ = 0;
+  uint64_t hash_ = 0;
+};
+
+enum class PersistOutcome : uint8_t { Unchanged = 0, Landed, Failed };
+
+// persistMoved, skipped when the bytes equal what last landed.
+template <typename Io>
+PersistOutcome persistIfChanged(Io& io, LandedFingerprint& last, const std::string& v) {
+  if (!last.changed(v)) return PersistOutcome::Unchanged;
+  if (!persistMoved(io, v)) return PersistOutcome::Failed;
+  last.noteLanded(v);
+  return PersistOutcome::Landed;
+}
+
+// ---- a failure line at most once a minute, with a count ----------------------------
+// noteFailure returns how many failures the line due now reports (this one and every
+// one held back since the last line), or 0 while the window holds it back.
+class FailureLog {
+ public:
+  explicit FailureLog(uint32_t windowMs = 60000) : windowMs_(windowMs) {}
+  uint32_t noteFailure(uint32_t nowMs) {
+    ++pending_;
+    if (logged_ && (uint32_t)(nowMs - lastMs_) < windowMs_) return 0;
+    logged_ = true;
+    lastMs_ = nowMs;
+    const uint32_t n = pending_;
+    pending_ = 0;
+    return n;
+  }
+
+ private:
+  uint32_t windowMs_;
+  uint32_t lastMs_ = 0;
+  uint32_t pending_ = 0;
+  bool     logged_ = false;
 };
 
 }  // namespace store
