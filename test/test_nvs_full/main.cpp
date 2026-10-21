@@ -16,6 +16,7 @@
 #include "nimbus/orch/model_ledger.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/store/nvs_diag.h"
+#include "nimbus/orch/scratchpad.h"
 #include "nimbus/store/persist.h"
 #include "nimbus/store/moved_store.h"
 #include "nimbus/store/nvs_reserve.h"
@@ -1007,7 +1008,11 @@ static void test_value_entries_match_the_partition_model() {
 
 // The reserve property, over every class row and a spread of value sizes: a write that
 // would leave fewer than the reserve is refused unless it is critical; one more free
-// entry and it lands. Erases and non-growing rewrites always land, even at 0 free.
+// entry and it lands. A write that cannot fit at all - fewer available entries than the
+// new value takes, because the IDF writes the new value before it erases the old one -
+// is refused for every class (RefuseNoRoom, the L19-20 "nothing left" refusal: the
+// driver would fail it anyway, and a refusal reports through notePersist like any
+// failed write). Erases and non-growing rewrites always land, even at 0 free.
 static void test_reserve_property_over_every_row() {
   size_t n = 0;
   const NvsKeyClass* t = nvsKeyTable(&n);
@@ -1022,18 +1027,34 @@ static void test_reserve_property_over_every_row() {
         for (size_t old : {(size_t)0, in.newEntries > 2 ? in.newEntries - 2 : (size_t)0}) {
           in.oldEntries = old;
           const size_t growth = in.newEntries - old;
-          in.available = kNvsReserveEntries + growth - 1;   // one entry short
           const bool critical = t[i].cls == NvsClass::Critical;
-          TEST_ASSERT_EQUAL_MESSAGE(critical ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
-                                    (int)nvsAdmit(in), t[i].key);
-          in.available = kNvsReserveEntries + growth;          // exactly enough
-          TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::Write, (int)nvsAdmit(in), t[i].key);
-          // Starved: owner config lands again, rebuildable and telemetry stay refused.
-          in.available = 0;
+          // One entry short: refused - RefuseNoRoom when even the whole value cannot
+          // fit, otherwise the reserve's RefuseReserve (critical still lands).
+          in.available = kNvsReserveEntries + growth - 1;
+          const int oneShort = in.available < in.newEntries
+                                   ? (int)NvsAdmit::RefuseNoRoom
+                                   : critical ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve;
+          TEST_ASSERT_EQUAL_MESSAGE(oneShort, (int)nvsAdmit(in), t[i].key);
+          // One more entry: the reserve is whole, so it lands - unless the value
+          // itself still cannot fit (a rewrite over a 24-entry stored value), which
+          // is RefuseNoRoom for every class.
+          in.available = kNvsReserveEntries + growth;
+          const int enough = in.available < in.newEntries
+                                  ? (int)NvsAdmit::RefuseNoRoom : (int)NvsAdmit::Write;
+          TEST_ASSERT_EQUAL_MESSAGE(enough, (int)nvsAdmit(in), t[i].key);
+          // Starved (the pass could not restore the reserve): owner config lands
+          // again when it fits, rebuildable and telemetry stay refused. When the
+          // partition truly has nothing left, nothing growing lands, whatever its
+          // class.
+          in.available = in.newEntries;
           in.starved = true;
-          const bool lands = critical || t[i].cls == NvsClass::Owner;
-          TEST_ASSERT_EQUAL_MESSAGE(lands ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
-                                    (int)nvsAdmit(in), t[i].key);
+          if (in.available < kNvsReserveEntries + growth) {
+            const bool lands = critical || t[i].cls == NvsClass::Owner;
+            TEST_ASSERT_EQUAL_MESSAGE(lands ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
+                                      (int)nvsAdmit(in), t[i].key);
+          }
+          in.available = 0;
+          TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::RefuseNoRoom, (int)nvsAdmit(in), t[i].key);
           in.starved = false;
         }
         // Erase and a same-size or smaller rewrite: always, at 0 free, any class.
@@ -1046,6 +1067,129 @@ static void test_reserve_property_over_every_row() {
         in.oldEntries = in.newEntries + 3;
         TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(in));
       }
+    }
+  }
+}
+
+// L19-20a: the available-entries source (nvs_get_stats on the device) is read before
+// every growing write, critical ones included, and never for an erase or a write that
+// does not grow; with nothing left, every growing write is refused whatever its class
+// (a refusal reports through notePersist like any failed write - the helper pattern
+// test_device_seam_asks_the_reserve pins). Exercised through nvsAdmitWrite, the exact
+// path src/sys/nvs_guard.cpp takes.
+static void test_growing_writes_read_stats_and_refuse_when_nothing_is_left() {
+  int reads = 0;
+  const auto available = [&reads]() {
+    ++reads;
+    return (size_t)0;
+  };
+  // Erases and non-growing rewrites never read the stats: the remedy always works.
+  reads = 0;
+  TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Str,
+                                                             10, 10, true, false, available));
+  TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Str,
+                                                             10, 12, false, false, available));
+  TEST_ASSERT_EQUAL_INT(0, reads);
+  // A growing write reads them exactly once, whatever its class - critical included.
+  for (int c = 0; c < 4; ++c) {
+    reads = 0;
+    TEST_ASSERT_EQUAL((int)NvsAdmit::RefuseNoRoom,
+                      (int)nvsAdmitWrite((NvsClass)c, NvsValKind::Str, 10, 0, false, false,
+                                         available));
+    TEST_ASSERT_EQUAL_INT(1, reads);
+  }
+  // A blob reads them even when it shrinks: the span check comes first.
+  reads = 0;
+  TEST_ASSERT_EQUAL((int)NvsAdmit::RefuseNoRoom,
+                    (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Blob, 64, 100, false, false,
+                                       available));
+  TEST_ASSERT_EQUAL_INT(1, reads);
+  // With entries left, the critical growing write lands (it may spend the reserve).
+  TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Critical, NvsValKind::Str,
+                                                             10, 0, false, false,
+                                                             [] { return (size_t)5; }));
+  // The device gate asks it the same way: every class, stats read, starved passed on.
+  const std::string guard = readFile("src/sys/nvs_guard.cpp");
+  TEST_ASSERT_TRUE(guard.find("nvsAdmitWrite(classifyNvsKey(ns, key), kind, bytes, "
+                              "storedEntries(ns, key),") != std::string::npos);
+  TEST_ASSERT_TRUE(guard.find("s_starved.load(), [] { return nvsAvailableEntries(); })") !=
+                   std::string::npos);
+}
+
+// L19-20b: a blob write, new or rewrite, is admitted only when the available entries
+// cover the whole span the value takes while the IDF writes it (nvsBlobWriteSpan: one
+// data entry per 32 B, one chunk header per 125-entry page, the index entry, and up to
+// 13 entries of a first page tail too small for the value, which still count as free -
+// ESP-IDF 5.5.4 skips a tail under 400 B and keeps one entry back). At span minus 1
+// the write is refused before nvs_set_blob is ever called, so the IDF never enters the
+// multi-page cleanup that strands entries after a failed rewrite; at span it lands.
+struct SpyBlobNvs {
+  size_t free = 0;
+  int    setBlobCalls = 0;
+  bool setBlob(const char*, const std::string& v) {
+    ++setBlobCalls;
+    const size_t need = nvsBlobWriteSpan(v.size());
+    if (need > free) return false;
+    free -= need;
+    return true;
+  }
+};
+
+// The device pattern: the gate first, and only an admission calls the blob writer.
+static bool deviceBlobWrite(SpyBlobNvs& nvs, NvsClass cls, size_t bytes, size_t oldEntries) {
+  const NvsAdmit a = nvsAdmitWrite(cls, NvsValKind::Blob, bytes, oldEntries, false, false,
+                                   [&nvs] { return nvs.free; });
+  if (a != NvsAdmit::Write) return false;   // reported through notePersist, like any failed write
+  return nvs.setBlob("blob", std::string(bytes, 'x'));
+}
+
+static void test_blob_span_check_refuses_before_nvs_set_blob() {
+  // The span model, pinned: a 32 B blob on the worst page (data + chunk header + index
+  // + a skipped 1-entry tail) and a 4,000 B one (125 data + a header + the index + the
+  // 13-entry tail allowance); always at least the value's own entries.
+  TEST_ASSERT_EQUAL_size_t(4, nvsBlobWriteSpan(32));
+  TEST_ASSERT_EQUAL_size_t(140, nvsBlobWriteSpan(4000));
+  for (size_t b = 0; b <= 4000; b += 61)
+    TEST_ASSERT_TRUE(nvsBlobWriteSpan(b) >= nvsValueEntries(NvsValKind::Blob, b));
+  // At span minus 1 the write is refused and nvs_set_blob is never called.
+  SpyBlobNvs nvs{nvsBlobWriteSpan(1000) - 1};
+  TEST_ASSERT_FALSE(deviceBlobWrite(nvs, NvsClass::Owner, 1000, 0));
+  TEST_ASSERT_EQUAL_INT(0, nvs.setBlobCalls);
+  // At span it lands: the span gate is the only thing between span-1 and span, so the
+  // class is critical (an owner blob additionally waits for the reserve - the
+  // property below covers that composition).
+  nvs.free = nvsBlobWriteSpan(1000);
+  TEST_ASSERT_TRUE(deviceBlobWrite(nvs, NvsClass::Critical, 1000, 0));
+  TEST_ASSERT_EQUAL_INT(1, nvs.setBlobCalls);
+  // A REWRITE that shrinks is span-checked all the same: the IDF writes the new
+  // version completely before it erases the old one (the Lumi failure mode), and so
+  // is a critical blob.
+  const size_t span500 = nvsBlobWriteSpan(500);
+  nvs.free = span500 - 1;
+  TEST_ASSERT_FALSE(deviceBlobWrite(nvs, NvsClass::Owner, 500,
+                                    nvsValueEntries(NvsValKind::Blob, 2000)));
+  TEST_ASSERT_EQUAL_INT(1, nvs.setBlobCalls);   // only the 1000 B call above
+  TEST_ASSERT_FALSE(deviceBlobWrite(nvs, NvsClass::Critical, 500, 0));
+  TEST_ASSERT_EQUAL_INT(1, nvs.setBlobCalls);
+  nvs.free = span500;
+  TEST_ASSERT_TRUE(deviceBlobWrite(nvs, NvsClass::Owner, 500,
+                                   nvsValueEntries(NvsValKind::Blob, 2000)));
+  TEST_ASSERT_EQUAL_INT(2, nvs.setBlobCalls);
+  // The property: blob sizes 1 to 4,000 B, free counts 0 to 60. A critical blob lands
+  // exactly when its span fits; an owner blob additionally waits for the reserve.
+  // Either refusal leaves nvs_set_blob uncalled.
+  for (size_t b = 1; b <= 4000; ++b) {
+    const size_t span = nvsBlobWriteSpan(b);
+    const size_t entries = nvsValueEntries(NvsValKind::Blob, b);
+    for (size_t free = 0; free <= 60; ++free) {
+      SpyBlobNvs crit{free};
+      const bool critLands = free >= span;
+      TEST_ASSERT_TRUE(deviceBlobWrite(crit, NvsClass::Critical, b, 0) == critLands);
+      TEST_ASSERT_EQUAL_INT(critLands ? 1 : 0, crit.setBlobCalls);
+      SpyBlobNvs own{free};
+      const bool ownerLands = free >= span && free >= kNvsReserveEntries + entries;
+      TEST_ASSERT_TRUE(deviceBlobWrite(own, NvsClass::Owner, b, 0) == ownerLands);
+      TEST_ASSERT_EQUAL_INT(ownerLands ? 1 : 0, own.setBlobCalls);
     }
   }
 }
@@ -1310,10 +1454,18 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
   }
 }
 
-// Every raw NVS writer in the reviewed set reports its verdict: each raw write call sits
-// in a statement that passes through notePersist (the "a raw writer skips the ledger"
-// class: the journal, the scratchpad, the OTA guard and the verify side channels were
-// all silent before). main.cpp writes only right after erasing the whole partition.
+// Every raw NVS writer reports its verdict: each raw write call sits in a statement
+// that passes through notePersist (the "a raw writer skips the ledger" class: the
+// journal, the scratchpad, the OTA guard and the verify side channels were all silent
+// before). main.cpp writes only right after erasing the whole partition.
+//
+// L19-20c: the blob-capable primitives (putBytes, nvs_set_blob, nvs_set_str - the ones
+// that can hit the multi-page blob path) are guarded over ALL of src/ and lib/: a file
+// outside the reviewed set below that writes one fails here until it goes through the
+// gated helpers (agent::store, NvsKv, the config_nvs saves). Reviewed raw writers:
+// ota_update.cpp's guard wrappers (each raw line sits on a notePersist call) and
+// main.cpp's factory-reset identity restore (best-effort, onto a partition it erased
+// lines above, so there is nothing to refuse it).
 static void test_raw_nvs_writers_report_through_notePersist() {
   std::regex raw(R"re(solide::memory::(set[A-Z]\w*|eraseKey|clear)\(|nvs_set_\w+\(|nvs_erase_\w+\(|\b(p|s_prefs)\.(put[A-Z]\w*|remove|clear)\()re");
   const char* files[] = {"src/agent/provider_verify.cpp", "src/agent/memory_subsystem.cpp",
@@ -1338,6 +1490,47 @@ static void test_raw_nvs_writers_report_through_notePersist() {
     }
     TEST_ASSERT_TRUE_MESSAGE(n > 0, f);   // the scan found the file's writers at all
   }
+  // The all-of-src-and-lib guard over the three blob-capable primitives.
+  std::regex blobPrim(R"re(\bputBytes\s*\(|\bnvs_set_blob\s*\(|\bnvs_set_str\s*\()re");
+  // file -> every raw line must sit on a notePersist call
+  const std::map<std::string, bool> reviewed = {
+      {"src/sys/ota_update.cpp", true},
+      {"src/main.cpp", false},   // the factory-reset identity restore, onto an erased partition
+  };
+  int seen = 0;
+  for (const char* root : {"src", "lib"}) {
+    for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
+      if (!e.is_regular_file()) continue;
+      const std::string path = e.path().generic_string();
+      const std::string ext = e.path().extension().string();
+      if (ext != ".cpp" && ext != ".h" && ext != ".hpp") continue;
+      const std::string text = readFile(path.c_str());
+      if (text.find("putBytes") == std::string::npos &&
+          text.find("nvs_set_blob") == std::string::npos &&
+          text.find("nvs_set_str") == std::string::npos)
+        continue;
+      size_t start = 0;
+      while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(start, end - start);
+        const size_t cm = line.find("//");
+        if (cm != std::string::npos) line = line.substr(0, cm);
+        if (std::regex_search(line, blobPrim)) {
+          ++seen;
+          const auto it = reviewed.find(path);
+          TEST_ASSERT_TRUE_MESSAGE(it != reviewed.end(),
+                                   ("unreviewed raw blob/str NVS writer: " + path + ": " + line).c_str());
+          if (it != reviewed.end() && it->second)
+            TEST_ASSERT_TRUE_MESSAGE(line.find("notePersist(") != std::string::npos,
+                                     (path + ": " + line).c_str());
+        }
+        start = end + 1;
+      }
+    }
+  }
+  // The scan found the reviewed writers at all (the guard is not scanning nothing).
+  TEST_ASSERT_TRUE(seen >= 2);
 }
 
 // ---- 8. the moved stores: the usage ledger and the scratchpad (lane C, D-2) -------
@@ -1346,8 +1539,10 @@ struct FakeMovedIo {
   std::string file, nvs;
   bool failWrite = false, corruptWrite = false;
   int nvsErases = 0;
+  int writes = 0;   // atomic writes attempted (the persist-on-change count)
   bool readFile(std::string& out) { if (!fileExists) return false; out = file; return true; }
   bool writeFileAtomic(const std::string& v) {
+    ++writes;
     if (failWrite) return false;
     fileExists = true;
     file = corruptWrite ? v.substr(0, v.size() / 2) : v;
@@ -1445,6 +1640,88 @@ static void test_moved_store_dirty_and_retry() {
   TEST_ASSERT_TRUE(w.retryDue(0xFFFFF000u + 60000u));
 }
 
+// L19-22: the scratchpad file is written only when its bytes differ from the ones that
+// last landed. The scratchpad used to persist two or three times a turn whether or not
+// anything changed; the fingerprint (a 64-bit hash plus the length, in RAM) skips
+// identical persists, a write that did not land keeps the old fingerprint so the next
+// persist tries the same bytes again, and the failure log line is throttled the way
+// notePersist's is: one line per minute, carrying the count of failures it covers.
+static void test_scratchpad_persists_only_on_change() {
+  using nimbus::orch::Scratchpad;
+  using nimbus::orch::Tier;
+  using nimbus::store::PersistOutcome;
+  // A real scratchpad: N identical persists produce one write; changing one tier
+  // produces exactly one more.
+  FakeMovedIo io;
+  nimbus::store::LandedFingerprint landed;
+  Scratchpad pad;
+  TEST_ASSERT_TRUE(pad.replace(Tier::Short, {"read the pump schedule"}) > 0);
+  TEST_ASSERT_TRUE(pad.add(Tier::Mid, "call the plumber about the leak"));
+  const std::string v1 = pad.serialize();
+  for (int i = 0; i < 6; ++i)   // a turn persists several times
+    TEST_ASSERT_EQUAL((int)(i == 0 ? PersistOutcome::Landed : PersistOutcome::Unchanged),
+                      (int)nimbus::store::persistIfChanged(io, landed, v1));
+  TEST_ASSERT_EQUAL_INT(1, io.writes);
+  TEST_ASSERT_TRUE(pad.replace(Tier::Long, {"fix the pump", "close the valve"}) > 0);
+  const std::string v2 = pad.serialize();
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Landed,
+                    (int)nimbus::store::persistIfChanged(io, landed, v2));
+  for (int i = 0; i < 6; ++i)
+    TEST_ASSERT_EQUAL((int)PersistOutcome::Unchanged,
+                      (int)nimbus::store::persistIfChanged(io, landed, v2));
+  TEST_ASSERT_EQUAL_INT(2, io.writes);
+  // An empty scratchpad that booted from an empty file writes nothing either (the
+  // device primes the fingerprint at boot when the file round-trips).
+  FakeMovedIo emptyIo; emptyIo.fileExists = true;
+  nimbus::store::LandedFingerprint emptyLanded;
+  emptyLanded.noteLanded("");
+  Scratchpad empty;
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Unchanged,
+                    (int)nimbus::store::persistIfChanged(emptyIo, emptyLanded, empty.serialize()));
+  TEST_ASSERT_EQUAL_INT(0, emptyIo.writes);
+  // A write that did not land leaves the old fingerprint: the next persist of the same
+  // bytes tries again, and once one lands the churn stops.
+  FakeMovedIo failing; failing.failWrite = true;
+  nimbus::store::LandedFingerprint retry;
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Failed,
+                    (int)nimbus::store::persistIfChanged(failing, retry, "note|1"));
+  TEST_ASSERT_EQUAL_INT(1, failing.writes);
+  failing.failWrite = false;
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Landed,
+                    (int)nimbus::store::persistIfChanged(failing, retry, "note|1"));
+  TEST_ASSERT_EQUAL_INT(2, failing.writes);
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Unchanged,
+                    (int)nimbus::store::persistIfChanged(failing, retry, "note|1"));
+  TEST_ASSERT_EQUAL_INT(2, failing.writes);
+  // A changed value that fails, then changes again before landing: the newer bytes
+  // are what gets written (the RAM copy is the truth).
+  FakeMovedIo torn; torn.failWrite = true;
+  nimbus::store::LandedFingerprint tornFp;
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Failed,
+                    (int)nimbus::store::persistIfChanged(torn, tornFp, "old"));
+  torn.failWrite = false;
+  TEST_ASSERT_EQUAL((int)PersistOutcome::Landed,
+                    (int)nimbus::store::persistIfChanged(torn, tornFp, "new"));
+  TEST_ASSERT_EQUAL_STRING("new", torn.file.c_str());
+}
+
+// The scratchpad failure line: at most one per minute, and it carries the count.
+static void test_scratchpad_failure_log_is_throttled_with_a_count() {
+  nimbus::store::FailureLog log(60000);
+  TEST_ASSERT_EQUAL_UINT32(1, log.noteFailure(1000));   // the first failure logs at once
+  for (uint32_t t = 2000; t <= 60000; t += 1000)
+    TEST_ASSERT_EQUAL_UINT32(0, log.noteFailure(t));    // held back: no line inside the minute
+  TEST_ASSERT_EQUAL_UINT32(60, log.noteFailure(61000)); // 59 held back + this one
+  TEST_ASSERT_EQUAL_UINT32(0, log.noteFailure(61001));
+  TEST_ASSERT_EQUAL_UINT32(0, log.noteFailure(62000));
+  TEST_ASSERT_EQUAL_UINT32(3, log.noteFailure(121001)); // two held back + this one
+  // millis() wrap: still exactly one line per minute.
+  nimbus::store::FailureLog wrap(60000);
+  TEST_ASSERT_EQUAL_UINT32(1, wrap.noteFailure(0xFFFFF000u));
+  TEST_ASSERT_EQUAL_UINT32(0, wrap.noteFailure(0xFFFFF000u + 30000u));
+  TEST_ASSERT_EQUAL_UINT32(2, wrap.noteFailure(0xFFFFF000u + 60000u));
+}
+
 // The device seam of both moves: the ledger and the scratchpad persist through the
 // moved-store rule into their files, never NVS, and retire the legacy copy only on a
 // boot whose image was already valid.
@@ -1467,9 +1744,16 @@ static void test_moved_store_device_seams() {
   const size_t ps = ms.find("bool persistScratchpad() {");
   TEST_ASSERT_TRUE(ps != std::string::npos);
   const std::string sp = ms.substr(ps, ms.find("\n}\n", ps) - ps);
-  TEST_ASSERT_TRUE(sp.find("nimbus::store::persistMoved(io, blob)") != std::string::npos);
+  // L19-22: the persist goes through the change fingerprint and the failure line is
+  // throttled (one line per minute with the count), like notePersist's.
+  TEST_ASSERT_TRUE(sp.find("nimbus::store::persistIfChanged(io, g_scratchLanded, blob)") !=
+                  std::string::npos);
+  TEST_ASSERT_TRUE(sp.find("g_scratchFailLog.noteFailure(millis())") != std::string::npos);
   TEST_ASSERT_TRUE(sp.find("notePersist(ok, \"lfs_scratch\")") != std::string::npos);
   TEST_ASSERT_TRUE(sp.find("putBytes") == std::string::npos);
+  // A boot whose file round-trips the loaded notes primes the fingerprint: the first
+  // persist after it writes nothing until the notes change.
+  TEST_ASSERT_TRUE(ms.find("g_scratchLanded.noteLanded(m.value)") != std::string::npos);
   TEST_ASSERT_TRUE(ms.find("nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot())") != std::string::npos);
   // bootGuard sets the "valid at boot" latch only on the not-pending paths.
   const std::string ota = readFile("src/sys/ota_update.cpp");
@@ -1565,6 +1849,8 @@ int main(int, char**) {
   RUN_TEST(test_eviction_plan_order_and_exclusions);
   RUN_TEST(test_value_entries_match_the_partition_model);
   RUN_TEST(test_reserve_property_over_every_row);
+  RUN_TEST(test_growing_writes_read_stats_and_refuse_when_nothing_is_left);
+  RUN_TEST(test_blob_span_check_refuses_before_nvs_set_blob);
   RUN_TEST(test_reserve_covers_the_critical_working_set);
   RUN_TEST(test_reserve_keeps_critical_writes_landing_on_a_filling_device);
   RUN_TEST(test_eviction_pass_restores_the_reserve_or_reports_starved);
@@ -1573,6 +1859,8 @@ int main(int, char**) {
   RUN_TEST(test_raw_nvs_writers_report_through_notePersist);
   RUN_TEST(test_moved_store_migration_legs);
   RUN_TEST(test_moved_store_dirty_and_retry);
+  RUN_TEST(test_scratchpad_persists_only_on_change);
+  RUN_TEST(test_scratchpad_failure_log_is_throttled_with_a_count);
   RUN_TEST(test_moved_store_device_seams);
   RUN_TEST(test_2c_routes_report_storage_full);
   RUN_TEST(test_verdict_memo_writes_only_on_change);
