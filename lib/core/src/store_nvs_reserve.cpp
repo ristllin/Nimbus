@@ -214,8 +214,27 @@ size_t nvsValueEntries(NvsValKind kind, size_t bytes) {
   return 1;
 }
 
+size_t nvsBlobWriteSpan(size_t bytes) {
+  constexpr size_t kEntry = 32;
+  constexpr size_t kPageEntries = 126;                       // entries per NVS page
+  constexpr size_t kChunkMax = kEntry * (kPageEntries - 1);  // 4,000 B: one chunk per page
+  // A page tail under kChunkMax / 10 that cannot take the value is skipped: it holds
+  // (tail / 32) + 1 entries (the IDF keeps one back), so at most 13.
+  constexpr size_t kSkippedTail = (kChunkMax / 10 - 1) / kEntry + 1;
+  const size_t data = bytes ? (bytes + kEntry - 1) / kEntry : 1;   // an empty blob: one chunk
+  const size_t headers = (data + kPageEntries - 2) / (kPageEntries - 1);
+  const size_t skipped = data < kSkippedTail ? data : kSkippedTail;
+  return data + headers + 1 + skipped;   // + the index entry
+}
+
 NvsAdmit nvsAdmit(const NvsAdmitIn& in) {
-  if (nvsWriteShrinks(in.erase, in.newEntries, in.oldEntries)) return NvsAdmit::Write;
+  if (in.erase) return NvsAdmit::Write;
+  // A blob, new or rewrite, must fit whole before the IDF starts writing it.
+  if (in.blobSpan && in.available < in.blobSpan) return NvsAdmit::RefuseNoRoom;
+  if (nvsWriteShrinks(false, in.newEntries, in.oldEntries)) return NvsAdmit::Write;
+  // The IDF writes the new value before it erases the old one: with fewer available
+  // entries than the value takes, nothing can hold it, whatever its class.
+  if (in.available < in.newEntries) return NvsAdmit::RefuseNoRoom;
   if (in.cls == NvsClass::Critical) return NvsAdmit::Write;
   if (in.cls == NvsClass::Owner && in.starved) return NvsAdmit::Write;
   // NVS writes the new value before it erases the old one, but the net cost of a

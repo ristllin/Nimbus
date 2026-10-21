@@ -5,7 +5,10 @@
 // Every NVS writer asks nvsAdmit() before a write that may grow the partition. A
 // refusal is reported through notePersist by the caller like any failed write, so a
 // save route's SaveScope answers 507 storage_full and /api/state shows the key.
-// Erases and writes that do not grow a value are always admitted.
+// Erases and non-blob writes that do not grow a value are always admitted; a growing
+// write of any class is refused when the partition cannot hold the new value, and a
+// blob write (none ship today; a new one is admitted with NvsValKind::Blob and listed
+// in test_nvs_full's raw-writer guard) must fit its whole span.
 //
 // The eviction pass (agent::store::nvsMaintain) runs on the main loop, never inside a
 // web route: a refusal only raises a request flag here; the pass erases rebuildable

@@ -45,18 +45,13 @@ bool nvsAdmit(const char* ns, const char* key, nimbus::store::NvsValKind kind, s
               bool erase) {
   using namespace nimbus::store;
   if (erase) return true;   // an erase only frees entries
-  NvsAdmitIn in;
-  in.cls        = classifyNvsKey(ns, key);
-  in.newEntries = nvsValueEntries(kind, bytes);
-  in.oldEntries = storedEntries(ns, key);
-  in.starved    = s_starved.load();
-  // Shrinks and critical writes need no stats read at all.
-  if (nvsWriteShrinks(false, in.newEntries, in.oldEntries) || in.cls == NvsClass::Critical)
-    return true;
-  in.available = nvsAvailableEntries();
-  if (nvsAdmit(in) == NvsAdmit::Write) return true;
+  // The stats are read for every growing write (critical ones too) and every blob
+  // write; a non-blob write that does not grow skips them (nvsAdmitWrite).
+  const NvsAdmit a = nvsAdmitWrite(classifyNvsKey(ns, key), kind, bytes, storedEntries(ns, key),
+                                   false, s_starved.load(), [] { return nvsAvailableEntries(); });
+  if (a == NvsAdmit::Write) return true;
   s_refused.fetch_add(1);
-  s_evictReq.store(true);
+  s_evictReq.store(true);   // the main-loop pass frees rebuildable entries for the next try
   return false;
 }
 
