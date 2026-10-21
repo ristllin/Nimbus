@@ -445,6 +445,16 @@ std::string TurnEngine::syncCapacityText() const {
   return out;
 }
 
+void TurnEngine::noteUnappliedSpawnClaim(const std::string& chatId) {
+  hlog::log("orchestrator: reply claims sub-agents but the answer was not applied - correction added");
+  hlog::log("orchestrator: spawn ledger spawned=0 claimed=1");
+  if (d_.jobs)
+    d_.jobs->noteSpawnIntentRefused(chatId, "", "",
+                                    "your reply said sub-agents were started, but that answer was "
+                                    "cut off or unreadable, so nothing in it ran and nothing is "
+                                    "running for them");
+}
+
 std::string TurnEngine::buildDynamicContext() {
   std::string ctx;
   // A provider fallback from the previous turn, surfaced once (mention only if
@@ -1318,6 +1328,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
+      if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       deliver(chatId, so.text);
       if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
       err = "cut: " + err;
@@ -1424,6 +1435,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
+    if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text);
     if (d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;

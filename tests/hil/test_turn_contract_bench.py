@@ -27,11 +27,18 @@ token Telegram accepts; with none, or one it refuses (``tgAuthFail``), it skips
 as BLOCKED instead of failing.
 
 Serial lines are the seam for log facts (the /api/log ring holds about 1 KB,
-too little for a turn). Delivered text comes from GET /api/chat?turn=<id>.
+too little for a turn). Delivered text comes from GET /api/chat?turn=<id>. Each
+turn starts only when the device is idle (no sub-agent job, no turn ending for a
+while) and is read until its own answer, never to the first ``turn end:`` line,
+which can belong to a synthesis turn or a routine that was already due.
 
 Board legs are gated: ``hil`` + ``net`` + ``agent``. Reuse a joined board with NIMBUS_TEST_IP,
-NIMBUS_TEST_TOKEN and NIMBUS_PORT. Cost: about 18 sub-agents plus 8 head turns
-on claude-haiku-5-5 (well under $0.10).
+NIMBUS_TEST_TOKEN and NIMBUS_PORT. Cost: about 18 sub-agents, 8 head turns and
+their synthesis turns on claude-haiku-5-5. The device's own usage estimate rose by
+about $0.65 on unit A (19 Oct); that overstates the bill, because claude-haiku-5-5
+has no built-in price row yet (the Anthropic default rate applies) and the
+forced-cut leg's canned usage (4,096 output tokens per request) is counted but
+never billed.
 """
 
 from __future__ import annotations
@@ -100,43 +107,65 @@ def _chat(net, ip, text: str) -> str:
     return turn
 
 
-def _delivered(net, ip, turn: str, timeout: float = 60.0) -> str:
-    """Everything delivered for this web-chat turn (reply, ask and any appended
-    correction line), once the turn is answered."""
+def _turn_ledgers(device, net, ip, turn: str, timeout: float = 240.0):
+    """Run one web-chat turn to its answer and return (ledgers, delivered text).
+
+    ``ledgers`` holds every ``spawn ledger spawned=N claimed=M`` line printed
+    while the turn ran, as (spawned, claimed). The turn's own line comes before
+    its answer (apply logs it, then delivers), so reading until /api/chat says
+    the turn is done catches it. The first ``turn end:`` line is NOT the end of
+    this turn: turns run one at a time, and a turn that was already due (a
+    synthesis turn, a routine) ends first. Reading to the first ``turn end:``
+    attributed another turn's end to bench row 6 on 19 Oct (unit A)."""
+    ledgers = []
     deadline = time.time() + timeout
     while time.time() < deadline:
+        try:
+            m = device.expect_re(LEDGER_RE, timeout=3.0)
+            ledgers.append((int(m.group(1)), int(m.group(2))))
+            continue
+        except ExpectTimeout:
+            pass
         j = net.get_json(f"/api/chat?turn={turn}", ip=ip, timeout=8.0)
-        if j.get("done"):
-            return str(j.get("reply") or "")
         assert not j.get("gone"), f"turn {turn} is gone before it was answered"
-        time.sleep(2.0)
+        if j.get("done"):
+            try:  # lines still in the host's serial buffer
+                while True:
+                    m = device.expect_re(LEDGER_RE, timeout=2.0)
+                    ledgers.append((int(m.group(1)), int(m.group(2))))
+            except ExpectTimeout:
+                pass
+            return ledgers, str(j.get("reply") or "")
     raise AssertionError(f"turn {turn} was not answered within {timeout:.0f}s")
 
 
-def _watch_turn(device, timeout: float):
-    """Read serial up to the next 'turn end:' line; return (ledger, ok) where
-    ledger is (spawned, claimed) or None when the turn logged none."""
-    ledger = None
-    deadline = time.time() + timeout
-    while True:
-        left = deadline - time.time()
-        assert left > 0, "no 'turn end:' line on serial in time"
-        m = device.expect_re(LEDGER_RE + "|" + TURN_END_RE, timeout=left)
-        if m.group(1) is not None:
-            ledger = (int(m.group(1)), int(m.group(2)))
-        else:
-            return ledger, m.group(3) == "ok"
-
-
-def _settle(device, quiet: float = 45.0, cap: float = 180.0) -> None:
-    """Let the sub-agent wave finish: read serial until no turn (the synthesis
-    turns included) has ended for ``quiet`` seconds, at most ``cap``."""
+def _wait_idle(net, ip, device, quiet: float = 30.0, cap: float = 600.0) -> None:
+    """Wait until the device is idle before the next turn: no sub-agent job
+    (``/api/state`` jobs == 0 on two polls in a row, so a spawn being handed over
+    is not missed), then no turn ending for ``quiet`` seconds, so the synthesis
+    turn the last results start has run. A sub-agent wave lasts longer than any
+    fixed quiet window, so waiting on turn ends alone was not enough."""
     end_by = time.time() + cap
+    idle_polls = 0
     while time.time() < end_by:
+        jobs = int(net.get_json("/api/state", ip=ip, timeout=8.0).get("jobs") or 0)
+        idle_polls = idle_polls + 1 if jobs == 0 else 0
         try:
+            if idle_polls < 2:
+                device.expect_re(TURN_END_RE, timeout=10.0)  # keep serial drained meanwhile
+                continue
             device.expect_re(TURN_END_RE, timeout=min(quiet, max(1.0, end_by - time.time())))
+            idle_polls = 0  # a turn just ended: check the jobs again
         except ExpectTimeout:
-            return
+            if idle_polls >= 2:
+                return
+    raise AssertionError(f"the device did not go idle within {cap:.0f}s (sub-agents or turns still running)")
+
+
+def _clip(text: str, n: int = 300) -> str:
+    """The text for a report, with an explicit mark when it was shortened (a
+    plain slice reads like a reply the device cut mid-word)."""
+    return repr(text) if len(text) <= n else f"{text[:n]!r} [report shortened, {len(text)} chars in all]"
 
 
 @pytest.fixture(scope="module")
@@ -229,16 +258,74 @@ TOPICS = [
 ]
 
 
-def _spawn_row_problem(ledger, text: str) -> str:
+def _spawn_row_problem(ledgers, text: str) -> str:
     """'' when one bench turn kept the spawn contract, else what went wrong."""
     if stray_markup(text):
         return f"markup reached the owner: {stray_markup(text)!r}"
-    if ledger is None:
-        return f"the head neither started nor claimed sub-agents: {text[:200]!r}"
-    spawned, claimed = ledger
+    if not ledgers:
+        return f"no spawn ledger line while this turn ran (it asked for three sub-agents): {_clip(text)}"
+    spawned, claimed = ledgers[-1]
     if spawned != claimed and SPAWN_LINE not in text:
-        return f"claimed {claimed} sub-agents, spawned {spawned}, and the reply did not say so: {text[:200]!r}"
+        return f"claimed {claimed} sub-agents, spawned {spawned}, and the reply did not say so: {_clip(text)}"
     return ""
+
+
+def test_a_turn_is_read_to_its_own_answer_not_the_first_turn_end():
+    """The row attribution, without a board: the 19 Oct shape (another turn's
+    end first, then this turn's ledger line and answer) reads 3/3."""
+
+    class Dev:
+        def __init__(self, lines):
+            self.lines = list(lines)
+
+        def expect_re(self, pattern, timeout=5.0):
+            while self.lines:
+                m = re.search(pattern, self.lines.pop(0))
+                if m:
+                    return m
+            raise ExpectTimeout(pattern, [])
+
+    class Net:
+        def __init__(self):
+            self.polls = 0
+
+        def get_json(self, path, ip=None, timeout=None):
+            self.polls += 1
+            return {"done": self.polls > 1, "reply": "Starting three research sub-agents."}
+
+    dev = Dev(
+        [
+            "turn end: ok host=anthropic tokens in=2400 out=300 tools=0 reply=420B",  # a synthesis turn
+            "orchestrator: spawn ledger spawned=3 claimed=3",
+            "turn end: ok host=anthropic tokens in=7300 out=900 tools=0 reply=180B",
+        ]
+    )
+    ledgers, text = _turn_ledgers(dev, Net(), "ip", "t1", timeout=30.0)
+    assert ledgers == [(3, 3)], ledgers
+    assert _spawn_row_problem(ledgers, text) == ""
+    assert "no spawn ledger line" in _spawn_row_problem([], text)
+    assert "report shortened" in _clip("x" * 400) and "report shortened" not in _clip("short")
+
+
+def test_the_bench_waits_for_running_sub_agents():
+    """``_wait_idle`` returns only after two job-free polls and a quiet window."""
+
+    class Dev:
+        def expect_re(self, pattern, timeout=5.0):
+            raise ExpectTimeout(pattern, [])
+
+    class Net:
+        def __init__(self, jobs):
+            self.jobs = list(jobs)
+            self.polls = 0
+
+        def get_json(self, path, ip=None, timeout=None):
+            self.polls += 1
+            return {"jobs": self.jobs.pop(0) if self.jobs else 0}
+
+    net = Net([3, 2, 0, 1, 0, 0])
+    _wait_idle(net, "ip", Dev(), quiet=0.01, cap=30.0)
+    assert net.polls == 6, net.polls  # a job reappearing restarts the count
 
 
 @_board_leg
@@ -247,8 +334,8 @@ def test_six_turns_spawned_equals_claimed_or_corrected(board, net, device):
     any row that broke the contract fails the leg."""
     ip = board
     rows = []
-    _settle(device, quiet=10.0, cap=60.0)
     for a, b, c in TOPICS:
+        _wait_idle(net, ip, device)
         device.drain(quiet=0.3)
         turn = _chat(
             net,
@@ -256,13 +343,11 @@ def test_six_turns_spawned_equals_claimed_or_corrected(board, net, device):
             f"Start three research sub-agents on anthropic with model {MODEL}, one each on: "
             f"{a}; {b}; {c}. Each should answer in two sentences. Do not do the research yourself.",
         )
-        ledger, _ok = _watch_turn(device, timeout=240.0)
-        text = _delivered(net, ip, turn)
-        rows.append((a, ledger, SPAWN_LINE in text, _spawn_row_problem(ledger, text)))
-        _settle(device)
+        ledgers, text = _turn_ledgers(device, net, ip, turn)
+        rows.append((a, ledgers, SPAWN_LINE in text, _spawn_row_problem(ledgers, text)))
     print("bench spawn table: topic | spawned/claimed | correction line | problem")
-    for a, ledger, corrected, problem in rows:
-        sc = f"{ledger[0]}/{ledger[1]}" if ledger else "none"
+    for a, ledgers, corrected, problem in rows:
+        sc = " ".join(f"{sp}/{cl}" for sp, cl in ledgers) if ledgers else "none"
         print(f"  {a} | {sc} | {'yes' if corrected else 'no'} | {problem or 'ok'}")
     problems = [p for *_, p in rows if p]
     assert not problems, "; ".join(problems)
@@ -292,6 +377,9 @@ def test_forced_cut_gives_the_salvage_marker(board, net, device):
     )
     # No failover during this leg: a switch to another keyed provider would
     # answer instead of the cut.
+    # The previous leg's sub-agents and synthesis turns finish first, so the
+    # canned cut answers this leg's turn and nothing else.
+    _wait_idle(net, ip, device)
     prio = str(net.get_json("/api/orch", ip=ip, timeout=8.0).get("provPrio") or "")
     net.post("/api/orch", {"provPrio": "anthropic"}, ip=ip, timeout=8.0)
     try:
@@ -304,9 +392,8 @@ def test_forced_cut_gives_the_salvage_marker(board, net, device):
         if "not wired" in armed.group(0):
             pytest.skip("PROVFAULT is not wired in this image (the provider-wire hook)")
         turn = _chat(net, ip, "Explain how a kettle works.")
-        _ledger, ok = _watch_turn(device, timeout=120.0)
-        text = _delivered(net, ip, turn)
-        print(f"bench cut leg: turn ok={ok} delivered={text[:200]!r}")
+        _ledgers, text = _turn_ledgers(device, net, ip, turn, timeout=120.0)
+        print(f"bench cut leg: delivered={_clip(text)}")
         assert SALVAGE_MARKER in text or CUT_LINE in text, f"no honest cut line: {text[:300]!r}"
         assert CUT_TEXT not in text or SALVAGE_MARKER in text, "the cut text was delivered as if complete"
         assert "{" not in text, "raw JSON reached the owner"

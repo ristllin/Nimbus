@@ -2861,6 +2861,113 @@ static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
   TEST_ASSERT_FALSE(t.anyDelivered("Correction"));
 }
 
+// The class behind the 19 Oct bench row ("Starting three research sub-agents
+// ..." with nothing started): every delivered text that claims sub-agents either
+// has them started or carries the correction line, on every delivery path. A
+// cut or unreadable answer runs nothing, so a claim in its salvaged text is
+// always false; a prose answer carries no spawn item, so its claim is too.
+static const char kClaimReply[] =
+    "Starting three research sub-agents on anthropic: how sourdough starters work, proofing "
+    "temperatures, and why bread goes stale. I'll send one combined answer.";
+
+static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked_and_corrected() {
+  // Provider-reported cut (the adapter kept the partial turn), then an
+  // unreported one (the JSON itself is cut): the marker AND the correction.
+  for (int reported = 0; reported < 2; reported++) {
+    Rig r(true);
+    r.cfg.toolLoop = false;
+    r.cfg.keyed = {"anthropic"};
+    Rig::Script s;
+    s.outJson = std::string("{\"reply\":\"") + kClaimReply + "\",\"session_ops\":[{\"op\":\"spawn\",\"ta";
+    if (reported) {
+      s.ok = false;
+      s.err = "cut at the output limit (8192 tokens)";
+      s.partialOnFail = true;
+    }
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("research it", "Roy", "1001");
+    const std::string got = r.lastText();
+    TEST_ASSERT_TRUE_MESSAGE(got.rfind(kClaimReply, 0) == 0, got.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSalvageCutMarker) != std::string::npos, got.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSpawnNotStartedLine) != std::string::npos, got.c_str());
+    TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
+    TEST_ASSERT_TRUE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
+    TEST_ASSERT_TRUE(r.hookEnds.back().error.rfind("cut: ", 0) == 0);
+    TEST_ASSERT_EQUAL_STRING(got.c_str(), r.assistantRows.back().second.c_str());   // what the owner saw
+    r.eng->handleMessage("and?", "Roy", "1001");   // the head hears it too
+    TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started, but that "
+                                                   "answer was cut off or unreadable") != std::string::npos);
+  }
+  // An unreadable (not cut) answer: no cut marker, still the correction.
+  Rig u(true);
+  u.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = std::string("{\"reply\":\"") + kClaimReply + "\"} and then some chatter";
+  u.scripts["anthropic"] = {s};
+  u.eng->handleMessage("research it", "Roy", "1001");
+  const std::string want = std::string(kClaimReply) + "\n\n" + orch::kSpawnNotStartedLine;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), u.lastText().c_str());
+  TEST_ASSERT_TRUE(u.hookEnds.back().error.rfind("parse: ", 0) == 0);
+}
+
+// Over every byte cut of a turn whose reply claims three sub-agents and carries
+// them: no prefix starts one, and any delivered text holding the claim carries
+// the correction; only the whole turn starts all three, with no correction.
+static void test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim() {
+  const std::string full = std::string("{\"reply\":\"") + kClaimReply +
+                           "\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"sourdough\"},"
+                           "{\"op\":\"spawn\",\"task\":\"proofing\"},{\"op\":\"spawn\",\"task\":\"stale\"}]}";
+  int claims = 0;
+  for (size_t L = 1; L <= full.size(); L++) {
+    Rig r(true);
+    r.cfg.toolLoop = false;
+    Rig::Script s;
+    s.outJson = full.substr(0, L);
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("research it", "Roy", "1001");
+    const std::string got = r.lastText();
+    char msg[48];
+    snprintf(msg, sizeof msg, "cut %u of %u", (unsigned)L, (unsigned)full.size());
+    if (L == full.size()) {
+      TEST_ASSERT_EQUAL_MESSAGE(3, r.jobs->pendingCount(), msg);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(kClaimReply, r.delivered.front().second.c_str(), msg);
+      TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("Correction"), msg);
+      continue;
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(0, r.jobs->pendingCount(), msg);
+    if (!orch::replyClaimsSpawn(got)) continue;
+    claims++;
+    TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSpawnNotStartedLine) != std::string::npos, msg);
+  }
+  TEST_ASSERT_TRUE(claims > 100);   // the claim is whole well before the spawn list
+  printf("property: %u cut prefixes, %d delivered a spawn claim, each with the correction\n",
+         (unsigned)full.size() - 1, claims);
+}
+
+// A prose answer (no orch_turn, as a head can give on its last round) that
+// claims sub-agents: delivered with the correction and counted in the ledger.
+static void test_lane_l_a_prose_answer_that_claims_spawns_is_corrected() {
+  Rig r(true);
+  r.cfg.toolLoop = false;
+  Rig::Script s;
+  s.outJson = kClaimReply;
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("research it", "Roy", "1001");
+  const std::string want = std::string(kClaimReply) + "\n\n" + orch::kSpawnNotStartedLine;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
+  TEST_ASSERT_TRUE(LogCapture::contains("head reply was prose"));
+  TEST_ASSERT_TRUE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
+  // Counter-test: prose that claims nothing is delivered as it is.
+  Rig c(true);
+  c.cfg.toolLoop = false;
+  s.outJson = "Sourdough rises because wild yeast and bacteria ferment the flour.";
+  c.scripts["anthropic"] = {s};
+  c.eng->handleMessage("why?", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING(s.outJson.c_str(), c.lastText().c_str());
+  TEST_ASSERT_FALSE(c.anyDelivered("Correction"));
+}
+
 // Pseudo-tool salvage (subagents F2): session_ops called as a tool joins the turn
 // once; a final orch_turn repeating it (re-spaced, re-cased) adds nothing, and a
 // different task adds one (no over-deduping).
@@ -3514,6 +3621,9 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_a_stringified_spawn_list_starts_its_sub);
   RUN_TEST(test_lane_l_an_empty_task_spawn_is_reported_not_skipped);
   RUN_TEST(test_lane_l_a_promise_without_a_spawn_is_corrected);
+  RUN_TEST(test_lane_l_a_cut_answer_that_claims_spawns_is_marked_and_corrected);
+  RUN_TEST(test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim);
+  RUN_TEST(test_lane_l_a_prose_answer_that_claims_spawns_is_corrected);
   RUN_TEST(test_lane_l_pseudo_tool_spawns_join_the_turn_exactly_once);
   RUN_TEST(test_lane_l_an_empty_pseudo_tool_call_is_reported);
   RUN_TEST(test_lane_l_recovered_actions_apply_only_on_clean_owner_turns);

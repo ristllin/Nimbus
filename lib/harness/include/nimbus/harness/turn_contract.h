@@ -62,10 +62,14 @@ bool dropRecoveredContainers(nimbus::orch::Turn& t);
 // cut (`reportedCut`). With nothing salvageable, one plain cause line instead
 // of the old "formatting error" apology. `cut` reports which case it was, for
 // the turn-end row's err ("cut: ..." or "parse: ...").
+// Nothing in such an answer runs, so salvaged text that says sub-agents started
+// also gets the spawn correction line (`claimsSpawn`), cut or not: a claim is
+// never delivered without it.
 struct SalvageOutcome {
   std::string text;        // what to deliver (never empty)
   bool salvaged = false;   // text came from the answer itself
   bool cut = false;
+  bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
                                bool reportedCut);

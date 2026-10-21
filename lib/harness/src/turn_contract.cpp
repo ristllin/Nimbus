@@ -188,7 +188,9 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
     return o;
   }
   o.salvaged = true;
+  o.claimsSpawn = orch::replyClaimsSpawn(text);
   o.text = o.cut ? text + "\n\n" + orch::kSalvageCutMarker : text;
+  if (o.claimsSpawn) o.text += std::string("\n\n") + orch::kSpawnNotStartedLine;
   return o;
 }
 

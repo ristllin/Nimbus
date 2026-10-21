@@ -362,6 +362,10 @@ class TurnEngine {
   static std::string refusedBlock(const std::string& notes, bool mayHaveRun);
   // Lane L: the [SPAWN CAPACITY] sentence on how keyed providers run subs.
   std::string syncCapacityText() const;
+  // Lane L: an answer that was not applied (cut or unreadable) but whose
+  // salvaged text claims sub-agents: the ledger line and the head's note, as
+  // apply gives a promise without a spawn.
+  void noteUnappliedSpawnClaim(const std::string& chatId);
   std::string buildDynamicContext();
   std::string buildStableCatalogs();
  public:

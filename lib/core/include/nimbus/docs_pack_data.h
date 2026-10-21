@@ -1661,8 +1661,11 @@ The owner gets that text, plus one fixed line exactly when the answer was cut:
 "(My answer was cut off before I finished, and nothing else in it was carried
 out. Ask me to continue.)". With nothing to salvage, one plain line says the
 answer was cut off or could not be read and that nothing in it was carried
-out. The delivered text is captured to the chat history, and the turn-end row
-carries `err` `cut: ...` or `parse: ...`. A failed turn takes the cut path when
+out. Nothing in such an answer runs, so salvaged text that says sub-agents
+started also gets the spawn correction line, cut or not, and the turn logs
+`spawn ledger spawned=0 claimed=1` and leaves the head a note. The delivered text
+is captured to the chat history, and the turn-end row carries `err` `cut: ...`
+or `parse: ...`. A failed turn takes the cut path when
 its error is a cut by the typed step rule (`StepErr::Cut`: still cut after the
 one retry with more room, or an answer too large for the device), or an untyped
 line that names the output limit; a request refused for its `max_tokens` value
