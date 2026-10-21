@@ -25,10 +25,17 @@ struct StorageState {
   // "" = not parked). The head cites it instead of claiming memory is working.
   bool        embedParked = false;
   std::string embedParkedWhy;        // "" = not parked; a secret-safe cause slug
+  // L19-9 (lane C): the NVS reserve. `starved` means the partition is so full
+  // that background saves are refused to keep owner settings landing (the same
+  // flag /api/state reports as nvsReserve.starved); `refused` counts the writes
+  // the reserve turned away since boot. The head cites it to explain a device
+  // that is out of settings-storage room instead of guessing.
+  bool        nvsReserveStarved = false;
+  uint32_t    nvsReserveRefused = 0;
 };
 
-// "nvs":{"free":..,"fails":..,"lastFail":..},"tgOffsetSaved":..,
-// "embedParked":..,"embedParkedWhy":..(null when not parked)
+// "nvs":{"free":..,"fails":..,"lastFail":..},"nvsReserve":{"starved":..,"refused":..},
+// "tgOffsetSaved":..,"embedParked":..,"embedParkedWhy":..(null when not parked)
 std::string storageStateJson(const StorageState& s);
 
 }  // namespace orch

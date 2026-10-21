@@ -23,7 +23,8 @@ static void test_golden_fresh_device() {
   s.nvsStats = true;
   s.nvsFree = 16384;
   TEST_ASSERT_EQUAL_STRING(
-      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true,"
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},"
+      "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":true,"
       "\"embedParked\":false,\"embedParkedWhy\":null}",
       storageStateJson(s).c_str());
 }
@@ -40,7 +41,8 @@ static void test_golden_nvsfill0_shape() {
   s.lastSaveFail = "tgOffset";
   s.tgOffsetSaved = false;
   TEST_ASSERT_EQUAL_STRING(
-      "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},\"tgOffsetSaved\":false,"
+      "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},"
+      "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":false,"
       "\"embedParked\":false,\"embedParkedWhy\":null}",
       storageStateJson(s).c_str());
 }
@@ -56,11 +58,16 @@ static void test_keys_always_present_values_may_be_null() {
     s.saveFails = (shape & 4) ? 3 : 0;
     s.lastSaveFail = (shape & 4) ? (shape & 2 ? "tgOffset" : "sfxLvlN") : "";
     s.tgOffsetSaved = !(shape & 2);
+    s.nvsReserveStarved = shape & 1;
+    s.nvsReserveRefused = (shape & 2) ? 24u : 0u;
     const std::string j = storageStateJson(s);
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"nvs\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"free\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"fails\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"lastFail\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"nvsReserve\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"starved\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"refused\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"tgOffsetSaved\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParked\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParkedWhy\""), j.c_str());
@@ -71,6 +78,8 @@ static void test_keys_always_present_values_may_be_null() {
     TEST_ASSERT_EQUAL_MESSAGE(s.lastSaveFail.empty(), d["nvs"]["lastFail"].isNull(), j.c_str());
     TEST_ASSERT_EQUAL_UINT32(s.saveFails, d["nvs"]["fails"].as<uint32_t>());
     TEST_ASSERT_EQUAL(s.tgOffsetSaved, d["tgOffsetSaved"].as<bool>());
+    TEST_ASSERT_EQUAL_MESSAGE(s.nvsReserveStarved, d["nvsReserve"]["starved"].as<bool>(), j.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(s.nvsReserveRefused, d["nvsReserve"]["refused"].as<uint32_t>(), j.c_str());
     TEST_ASSERT_EQUAL_MESSAGE(false, d["embedParked"].as<bool>(), j.c_str());
     TEST_ASSERT_TRUE_MESSAGE(d["embedParkedWhy"].isNull(), j.c_str());
   }
@@ -86,8 +95,26 @@ static void test_golden_embedding_parked_shape() {
   s.embedParked = true;
   s.embedParkedWhy = "out of embedding credit at openai";
   TEST_ASSERT_EQUAL_STRING(
-      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true,"
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},"
+      "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":true,"
       "\"embedParked\":true,\"embedParkedWhy\":\"out of embedding credit at openai\"}",
+      storageStateJson(s).c_str());
+}
+
+// L19-9 (lane C): the starved-reserve golden - the device is so full that
+// background saves are refused to keep owner settings landing. The head cites
+// starved instead of guessing, and refused names how many writes were turned
+// away since boot.
+static void test_golden_starved_reserve_shape() {
+  StorageState s;
+  s.nvsStats = true;
+  s.nvsFree = 288;
+  s.nvsReserveStarved = true;
+  s.nvsReserveRefused = 17;
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"nvs\":{\"free\":288,\"fails\":0,\"lastFail\":null},"
+      "\"nvsReserve\":{\"starved\":true,\"refused\":17},\"tgOffsetSaved\":true,"
+      "\"embedParked\":false,\"embedParkedWhy\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -109,6 +136,7 @@ static void test_failing_key_name_is_json_safe() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_golden_fresh_device);
+  RUN_TEST(test_golden_starved_reserve_shape);
   RUN_TEST(test_golden_embedding_parked_shape);
   RUN_TEST(test_golden_nvsfill0_shape);
   RUN_TEST(test_keys_always_present_values_may_be_null);

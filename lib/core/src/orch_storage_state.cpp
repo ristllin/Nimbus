@@ -12,6 +12,11 @@ std::string storageStateJson(const StorageState& s) {
   else nvs["free"] = nullptr;
   nvs["fails"] = s.saveFails;
   nvs["lastFail"] = s.lastSaveFail.empty() ? nullptr : JsonString(s.lastSaveFail.c_str());
+  // L19-9 (lane C): the reserve block sits next to the nvs object, so a starved
+  // device explains itself the same way a full one does.
+  JsonObject nvsReserve = d["nvsReserve"].to<JsonObject>();
+  nvsReserve["starved"] = s.nvsReserveStarved;
+  nvsReserve["refused"] = s.nvsReserveRefused;
   d["tgOffsetSaved"] = s.tgOffsetSaved;
   d["embedParked"] = s.embedParked;
   d["embedParkedWhy"] = s.embedParkedWhy.empty() ? nullptr : JsonString(s.embedParkedWhy.c_str());

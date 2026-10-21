@@ -2854,6 +2854,11 @@ static void registerDeviceTools() {
               const String why = agent::memory::embedParkedWhy();
               st.embedParked = why.length() > 0;
               st.embedParkedWhy = std::string(why.c_str());
+              // L19-9 (lane C): the NVS reserve - the same numbers /api/state
+              // reports as nvsReserve, so the head can name a starved device.
+              const nimbus::sys::NvsGuardStats gs = nimbus::sys::nvsGuardStats();
+              st.nvsReserveStarved = gs.starved;
+              st.nvsReserveRefused = gs.refused;
               s += ","; s += nimbus::orch::storageStateJson(st).c_str();
             }
             s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
