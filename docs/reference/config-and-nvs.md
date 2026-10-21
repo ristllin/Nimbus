@@ -64,7 +64,9 @@ follows one rule:
 A ledger save that does not land leaves the ledger marked unsaved: every later turn
 retries (each rewrites the whole file), the main loop retries once a minute, and
 `/api/state` shows `usageSaved: false` until one lands. A scratchpad save that does not
-land keeps the notes in RAM until restart and is reported as `lfs_scratch`.
+land keeps the notes in RAM until restart and is reported as `lfs_scratch`; the file
+itself is written only when the notes actually change (the device remembers the bytes
+that last landed), so a turn with no edit writes no flash.
 
 **The reserve.** Every key the firmware defines has a class
 (`lib/core/src/store_nvs_reserve.cpp`; `test_nvs_full` fails on a defined key without
@@ -89,6 +91,27 @@ any legacy `mcat_*`, then `dreamScrHash`, then `fbRules` only while it is a clou
 When eviction cannot restore the reserve the device is **starved**: owner-config
 writes are accepted again and only rebuildable and telemetry writes stay refused, said
 once per boot in the device log, so a full device never answers 507 to every save.
+
+Before any write that grows a value, the gate reads the partition's free entries
+(`nvs_get_stats`), critical keys included: a write whose value cannot fit at all is
+refused for every class, reported the same way.
+
+**Blobs must fit their whole span (a driver defect, and the pinned toolchain).** A
+blob is the one value type that can span NVS pages, and the NVS driver in the
+toolchain this firmware pins has a defect: when a rewrite of a stored multi-page blob
+runs out of space partway, the cleanup erases the *old* version's chunk indices while
+the new version's chunks were written under shifted ones, so every entry the failed
+rewrite took stays stranded, counted as used, until the next boot. One failed rewrite
+can take a partition from about a kilobyte free to nothing in a single turn. The
+defect was seen on **ESP-IDF 5.5.4**, the version the build pins: `platformio.ini`
+locks the pioarduino platform at 55.03.39, whose Arduino core (3.3.9) is built on
+ESP-IDF 5.5.4; a toolchain bump must re-check the failure cleanup before it lands.
+The device therefore refuses a blob write, new or rewrite and whatever its class,
+*before* the driver is called, unless the free entries cover the value's whole span:
+one data entry per 32 bytes, one chunk header per 126-entry page, the index entry,
+and up to 13 entries of a page tail too small for the value (the driver skips such a
+tail but still counts it free). No blob writer ships in the device today; a host test
+scan fails the build if one appears outside the gated helpers.
 
 The guide `/api/state` checks: at least **4 KB** stays free, room for the largest
 single owner value (the connectors blob, capped at 3500 B = 3552 B of entries). Below
@@ -138,6 +161,11 @@ a value that shrinks, so a growing save can never lose the set; if that write st
 fails, the old value is written back). The same applies to removing a chat from the
 Telegram allowlist, whose worst case is an empty allowlist (nobody allowed). This
 fallback is not power-atomic: a power cut inside that one write can lose the value.
+
+**Runbook.** Free entries come from removing a value (an unused connector card, a
+rebuildable cache the device can fetch again), never from a reboot: a restart removes
+nothing, and what a failed write stranded comes back only until the next failed write
+strands it again.
 
 **Observability.**
 
