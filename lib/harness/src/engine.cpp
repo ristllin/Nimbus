@@ -74,6 +74,58 @@ nimbus::orch::ErrorClass errorClassOf(nimbus::orch::StepErr k) {
     default:                   return ErrorClass::None;
   }
 }
+
+// Lane T (19 Oct triage): what the owner hears about a failed turn. The cause comes
+// from the turn's FIRST cause through the one typed rule (stepErrCause), never as raw
+// provider text ("messages HTTP 400: The request body ..."), and asking again is
+// offered only when it can help: a cause in transit (transport, server error or
+// overload, rate limit, timeout). A refused request (bad request, auth, billing, a
+// rejected model, a cut answer) comes back the same, so it gets the plain cause.
+struct OwnerCause {
+  std::string text;
+  bool        transient = false;
+};
+
+bool transientKind(nimbus::orch::StepErr k) {
+  using nimbus::orch::StepErr;
+  return k == StepErr::Transport || k == StepErr::ServerError || k == StepErr::RateLimited ||
+         k == StepErr::Timeout;
+}
+
+OwnerCause ownerCause(const std::string& host, const std::string& why) {
+  if (why.empty()) return {"the provider gave no response", true};
+  if (router_refusal::isRefusalCause(why)) return {why, false};   // an owner sentence with its fix
+  int status = 0;
+  const nimbus::orch::StepErr k = nimbus::orch::classifyStepError(why, &status);
+  const bool untyped = status == 0 && k == nimbus::orch::StepErr::Transport &&
+                       why.rfind("network", 0) != 0;
+  if (untyped && why.find("budget") != std::string::npos)
+    return {"this turn hit its limits before a final answer", false};
+  if (untyped && why.find("key") != std::string::npos)
+    return {"no working provider key (check Assistant > Models on the web page)", false};
+  if (untyped) {   // a short device or adapter token ("loop failed"): no HTTP text in it
+    std::string c = host + ": " + why;
+    const int keep = nimbus::utf8CapLen(c.c_str(), (int)c.size(), (int)router_refusal::kEngineCauseMax);
+    if (keep < (int)c.size()) c = c.substr(0, (size_t)keep) + "…";
+    return {c, true};
+  }
+  return {nimbus::orch::stepErrCause(k, host, status), transientKind(k)};
+}
+
+// The sentence after a failure: "Nothing is still running" only when no helper is
+// active; otherwise how many helpers are still working and that their results will
+// arrive. `advice` ("" for none) follows it.
+std::string afterFailure(int activeJobs, const std::string& advice) {
+  std::string out;
+  if (activeJobs <= 0) out = "Nothing is still running";
+  else if (activeJobs == 1) out = "1 helper is still working; its result will arrive when it finishes";
+  else out = std::to_string(activeJobs) + " helpers are still working; their results will arrive when they finish";
+  if (advice.empty()) return out + ".";
+  if (activeJobs <= 0) return out + "; " + advice + ".";
+  std::string a = advice;
+  a[0] = (char)toupper((unsigned char)a[0]);
+  return out + ". " + a + ".";
+}
 }  // namespace
 
 namespace orch = nimbus::orch;
@@ -483,6 +535,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   tf.spend.clear();
   tf.chain.clear();
   tf.metered = false;
+  tf.switched = false;
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
@@ -832,6 +885,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hlog::logf("turn spend: %s %s | %s", okFlag ? "ok" : "FAIL",
                  turnSourceSlug(turnSource_, attribution_), line);
     }
+    // Lane T (19 Oct triage): a turn no host billed was never served by a fallback -
+    // fallback=false on its row, and the next turn gets no [FALLBACK] note about it.
+    const orch::SpendSlot* last = tf.spend.lastBilled();
+    if (!last && tf.switched) pendingFallbackPath_.clear();
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;
@@ -849,9 +906,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.requestedModel = requestedModel;
     for (size_t i = tf.spend.n; i-- > 0;)
       if (host == tf.spend.slot[i].host) { ev.servedModel = tf.spend.slot[i].model; break; }
-    ev.fallback = orch::servedByDisclosure(requestedHost, requestedModel, host,
-                                           ev.servedModel).fallback;
-    const orch::SpendSlot* last = tf.spend.lastBilled();
+    ev.fallback = last && orch::servedByDisclosure(requestedHost, requestedModel, host,
+                                                   ev.servedModel).fallback;
     ev.model = last ? last->model : "";
     ev.source = turnSource_;
     ev.attribution = attribution_;
@@ -998,6 +1054,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // The hosts this turn ran on, in order, for the next turn's [FALLBACK] note.
   std::string switchPath = host;
   auto noteSwitch = [&](orch::ErrorClass reason) {
+    tf.switched = true;
     pendingFallbackPath_ = switchPath;
     pendingFallbackReason_ = reason;
     pendingFallbackWhose_ = turnLabel();
@@ -1145,10 +1202,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // honest low-memory reply instead of a transport-error cause that reads as a
     // wrong-provider fallback. (Device copy: no em dash, no space-hyphen-space.)
     // CUM-477: the copy names what happened and the two things that help.
+    const int activeJobs = d_.jobs ? d_.jobs->activeCount() : 0;
     if (isLowMem(err)) {
       deliver(chatId, "That didn't finish - the device ran out of working memory for this "
-                      "request. Nothing is still running; try a shorter question or wait a "
-                      "minute.");
+                      "request. " + afterFailure(activeJobs, "try a shorter question or wait a minute"));
       if (tf.chain.empty()) tf.chain.noteDevice(("low memory: " + err).c_str());
       fireTurnEnd(false, 0);
       return false;
@@ -1172,24 +1229,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
     // Lane T: the owner hears the FIRST cause, not the last host's (the 18 Oct dream
     // died on an Anthropic 400 and was reported as Mistral's bare "chat HTTP 400"),
-    // and which other hosts failed after it.
+    // in the typed words (ownerCause), and which other hosts failed after it.
     const orch::FailStep* first = tf.chain.first();
-    const std::string why = first ? first->text : err;
-    auto hasWhy = [&](const char* s) { return why.find(s) != std::string::npos; };
-    if (why.empty())                                    cause = "the provider gave no response";
-    else if (hasWhy("timeout"))                         cause = "the provider did not answer in time";
-    else if (hasWhy("key"))                             cause = "no working provider key (check Assistant > Models on the web page)";
-    else if (hasWhy("network"))                         cause = "the provider could not be reached (check the connection)";
-    else if (hasWhy("HTTP 401") || hasWhy("HTTP 403")) cause = "the provider rejected this device's key";
-    else if (hasWhy("HTTP 5"))                          cause = "the provider had a server error";
-    else if (hasWhy("budget"))                          cause = "this turn hit its limits before a final answer";
-    else if (hasWhy("cut at the output limit"))         cause = "the answer was cut off at the output limit";
-    else {
-      cause = (first ? first->host + ": " : std::string()) + why;   // already one clean line
-      const int keep = nimbus::utf8CapLen(cause.c_str(), (int)cause.size(),
-                                          (int)router_refusal::kEngineCauseMax);
-      if (keep < (int)cause.size()) cause = cause.substr(0, (size_t)keep) + "…";
-    }
+    const OwnerCause oc = ownerCause(first ? first->host : host, first ? first->text : err);
+    cause = oc.text;
     std::vector<std::string> alsoFailed;
     for (size_t i = 1; i < tf.chain.size(); ++i)
       if (tf.chain.at(i).host != orch::FailureChain::kDeviceHost &&
@@ -1198,9 +1241,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     std::string also;
     for (size_t i = 0; i < alsoFailed.size(); ++i)
       also += (i == 0 ? "" : (i + 1 == alsoFailed.size() ? " and " : ", ")) + alsoFailed[i];
-    if (!also.empty()) cause += " (" + also + " also failed)";
-    deliver(chatId, "That didn't finish - " + cause +
-                    ". Nothing is still running; ask again to retry.");
+    if (!also.empty()) cause += "; " + also + " also failed";
+    deliver(chatId, "That didn't finish - " + cause + ". " +
+                        afterFailure(activeJobs, oc.transient ? "ask again to retry" : ""));
     fireTurnEnd(false, 0);
     return false;
   }

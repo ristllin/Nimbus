@@ -1386,7 +1386,7 @@ static TurnEngine::Deps buildTurnDeps() {
       row.src = src;
       row.host = ev.host;
       row.model = disc.model;
-      row.fallback = disc.fallback;
+      row.fallback = ev.fallback;   // false when no host billed (nothing was served)
       row.tools = ev.rounds;
       row.in = ev.usage.promptTokens;
       row.out = ev.usage.completionTokens;

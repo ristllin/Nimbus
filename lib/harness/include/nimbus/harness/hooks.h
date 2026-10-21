@@ -51,7 +51,8 @@ struct TurnEndEv {
   std::string requestedHost;   // the head chosen before any failover
   std::string requestedModel;  // orchModel(requestedHost) (may be empty)
   std::string servedModel;     // the model key `host` billed under ("" when it billed nothing)
-  bool fallback = false;        // served host != requested, or served model differs from requested
+  bool fallback = false;        // served host != requested, or served model differs from requested;
+                                // false when no host billed (nothing was served)
   // Lane T (frozen at turn end, so the hook never reads a store that the turn's own
   // device actions may already have changed):
   std::string model;           // the model key of the last host that billed ("" = none)

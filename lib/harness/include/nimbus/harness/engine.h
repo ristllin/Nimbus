@@ -431,6 +431,7 @@ class TurnEngine {
     nimbus::orch::TurnSpend    spend;
     nimbus::orch::FailureChain chain;
     bool                       metered = false;   // the spend reached the ledger
+    bool                       switched = false;  // this turn recorded a [FALLBACK] switch
   };
   std::unique_ptr<TurnFacts> facts_;
   TurnFacts& facts();

@@ -930,9 +930,10 @@ static void test_cum544_all_timeouts_say_no_answer_in_time() {
   r.scripts["openai"] = {slow};
   TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
   TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
-  // Lane T: the first cause, and the other host that failed after it.
+  // Lane T: the first cause in the typed words, and the other host that failed after
+  // it; a timeout is in transit, so asking again is offered.
   TEST_ASSERT_EQUAL_STRING(
-      "That didn't finish - the provider did not answer in time (openai also failed). "
+      "That didn't finish - zai did not answer in time; openai also failed. "
       "Nothing is still running; ask again to retry.",
       r.lastText().c_str());
   TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
@@ -2967,18 +2968,135 @@ static void test_every_failed_turn_exit_carries_a_cause() {
 }
 
 // The owner hears the FIRST cause and which hosts failed after it (the 18 Oct dream
-// was reported as Mistral's bare "chat HTTP 400").
+// was reported as Mistral's bare "chat HTTP 400"), in the typed words: never the raw
+// provider line, and no "ask again" for a refusal that would come back the same.
+static const char kAntInvalidJson[] =
+    "messages HTTP 400: The request body is not valid JSON: invalid unicode code point at line 1 "
+    "column 55142";
 static void test_owner_notice_names_the_first_cause() {
   Rig r;
-  r.scripts["anthropic"] = {{false, "", "messages HTTP 400: The request body is not valid JSON", 0, "", 0, 0}};
+  r.scripts["anthropic"] = {{false, "", kAntInvalidJson, 0, "", 0, 0}};
   r.scripts["openai"] = {{false, "", "resp HTTP 400: Invalid body", 0, "", 0, 0}};
   r.scripts["mistral"] = {{false, "", "chat HTTP 400", 0, "", 0, 0}};
   TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
-  TEST_ASSERT_EQUAL_STRING(
-      "That didn't finish - anthropic: messages HTTP 400: The request body is not valid JSON "
-      "(openai and mistral also failed). Nothing is still running; ask again to retry.",
-      r.lastText().c_str());
+  const std::string want = "That didn't finish - " +
+                           orch::stepErrCause(orch::StepErr::BadRequest, "anthropic", 400) +
+                           "; openai and mistral also failed. Nothing is still running.";
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("chat HTTP 400", r.hookEnds.back().error.c_str());   // still the last
+  TEST_ASSERT_NOT_NULL(std::strstr(r.hookEnds.back().chain->first()->text.c_str(), "not valid JSON"));
+}
+
+// L19-13a, the class over every typed kind the generic notice can carry: the owner
+// never reads "HTTP <code>:" provider text, and "ask again" appears exactly for the
+// kinds in transit (transport, server error or overload, timeout). Rate limits and
+// billing have their own replies; a cut is salvaged.
+static void test_failure_notice_retry_advice_only_when_transient() {
+  struct Case { const char* err; const char* raw; bool retry; };   // raw: the provider
+  const Case cases[] = {                                          // body that must not leak
+      {kAntInvalidJson, "not valid JSON", false},                        // bad request
+      {"messages HTTP 401: invalid x-api-key", "x-api-key", false},      // auth
+      {"messages HTTP 404: model: claude-nonexistent-test", "claude-nonexistent-test", false},  // rejected
+      {"messages HTTP 529: Overloaded", "Overloaded", true},              // overloaded
+      {"messages HTTP 503: upstream connect error", "upstream", true},    // server error
+      {"timeout: the provider did not answer in time", "", true},         // timeout (device token)
+      {"network", "", true},                                              // transport
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    r.cfg.keyed = {"anthropic"};
+    r.scripts["anthropic"] = {{false, "", c.err, 0, "", 0, 0}, {false, "", c.err, 0, "", 0, 0}};
+    TEST_ASSERT_FALSE_MESSAGE(r.eng->runTurn("inputs", "1001", ""), c.err);
+    const std::string t = r.lastText();
+    TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(t.c_str(), "That didn't finish - anthropic "), t.c_str());
+    if (c.raw[0]) TEST_ASSERT_NULL_MESSAGE(std::strstr(t.c_str(), c.raw), t.c_str());
+    // Every "HTTP" in the notice is the typed parenthetical status ("(HTTP 400)"),
+    // never the raw provider line ("messages HTTP 400: The request body ...").
+    for (const char* h = t.c_str(); (h = std::strstr(h, "HTTP")) != nullptr; ++h)
+      TEST_ASSERT_TRUE_MESSAGE(h >= t.c_str() + 2 && h[-1] == '(' && h[-2] == ' ',
+                               t.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(c.retry, std::strstr(t.c_str(), "ask again") != nullptr, t.c_str());
+  }
+}
+
+// L19-13b: "Nothing is still running" only when the job table holds no active job;
+// with helpers in flight the notice says how many and that their results will arrive.
+static void test_failure_notice_names_helpers_still_running() {
+  for (int jobs = 0; jobs <= 2; ++jobs) {
+    Rig r;
+    for (int i = 0; i < jobs; ++i) {
+      orch::Spawn sp;
+      sp.task = "research item";
+      r.jobs->enqueueSpawn(sp, "1001");
+    }
+    TEST_ASSERT_EQUAL(jobs, r.jobs->activeCount());
+    r.scripts["anthropic"] = {{false, "", "network", 0, "", 0, 0}};
+    r.scripts["openai"] = {{false, "", "network", 0, "", 0, 0}};
+    r.scripts["mistral"] = {{false, "", "network", 0, "", 0, 0}};
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    const std::string t = r.lastText();
+    TEST_ASSERT_EQUAL_MESSAGE(jobs == 0, t.find("Nothing is still running") != std::string::npos, t.c_str());
+    if (jobs == 1)
+      TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(t.c_str(), "1 helper is still working; its result will arrive"),
+                                   t.c_str());
+    if (jobs == 2)
+      TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(t.c_str(), "2 helpers are still working; their results will arrive"),
+                                   t.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(t.c_str(), "sk again to retry."), t.c_str());   // transient
+  }
+  // The low-memory reply keeps the same rule.
+  Rig m;
+  orch::Spawn sp;
+  sp.task = "research item";
+  m.jobs->enqueueSpawn(sp, "1001");
+  m.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request", 0, "", 0, 0}};
+  TEST_ASSERT_FALSE(m.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL_STRING(
+      "That didn't finish - the device ran out of working memory for this request. 1 helper is "
+      "still working; its result will arrive when it finishes. Try a shorter question or wait a "
+      "minute.",
+      m.lastText().c_str());
+}
+
+// L19-13c: a turn where no host returned a billed response was never served by a
+// fallback: fallback=false on its turn-end event (the row's source) and no [FALLBACK]
+// note for the next turn, on the ladder and in the fabric. A switched turn that is
+// served keeps both, and its reply is sent exactly once.
+static void test_no_billed_response_means_no_fallback() {
+  {   // legacy ladder: every host fails before any output
+    Rig r;
+    for (const char* h : {"anthropic", "openai", "mistral"})
+      r.scripts[h] = {{false, "", "network", 0, "", 0, 0}, {false, "", "network", 0, "", 0, 0}};
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_NOT_EQUAL(std::string("anthropic"), r.hookEnds.back().host);   // it did switch
+    TEST_ASSERT_FALSE(r.hookEnds.back().fallback);
+    r.scripts.clear();
+    r.eng->handleMessage("and now?", "Roy", "1001");
+    TEST_ASSERT_NULL(std::strstr(r.attempts.back().inputs.c_str(), "[FALLBACK"));
+  }
+  {   // fabric: every host fails and none billed
+    Rig r;
+    r.cfg.midFail = true;
+    r.fabricVisits = {{0, 0, "network"}, {0, 0, "network"}, {0, 0, "network"}};
+    r.fabricOk = false;
+    r.fabricErr = "network";
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_FALSE(r.hookEnds.back().fallback);
+    r.fabricVisits.clear();
+    r.fabricOk = true;
+    r.eng->handleMessage("and now?", "Roy", "1001");
+    TEST_ASSERT_NULL(std::strstr(r.attempts.empty() ? "" : r.attempts.back().inputs.c_str(), "[FALLBACK"));
+  }
+  {   // counter-test: a switched turn that is served keeps its fallback, reply sent once
+    Rig r;
+    r.cfg.midFail = true;
+    r.fabricSwitch = true;
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_TRUE(r.hookEnds.back().fallback);
+    int replies = 0;
+    for (const auto& d : r.delivered) replies += d.second == "hello there" ? 1 : 0;
+    TEST_ASSERT_EQUAL(1, replies);
+  }
 }
 
 // The 37,771-for-15,438 class: a failing scheduled fire reports ITS OWN spend, never
@@ -3148,6 +3266,9 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);
   RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
   RUN_TEST(test_owner_notice_names_the_first_cause);
+  RUN_TEST(test_failure_notice_retry_advice_only_when_transient);
+  RUN_TEST(test_failure_notice_names_helpers_still_running);
+  RUN_TEST(test_no_billed_response_means_no_fallback);
   RUN_TEST(test_scheduled_failure_reports_cause_and_own_spend);
   RUN_TEST(test_fallback_note_names_previous_turn_and_reason);
   RUN_TEST(test_metering_matrix_once_per_turn_per_host);
