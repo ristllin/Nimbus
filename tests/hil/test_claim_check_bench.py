@@ -8,15 +8,18 @@ each reply's claim against what the turn really did:
       outage queues it, so it is not saved yet) under a reply that says "Saved
       it to memory." -> the turn delivers exactly one reply, carrying
       "(Correction: that has not been saved.)", and ``claimsTailed`` goes up;
-  C2  the scratchpad route at a full NVS partition (``NVSFILL``) -> the change
-      result says "kept until restart only (saving failed)"; after
-      ``NVSFILL 0`` (fresh room) it does not;
+  C2  the scratchpad route: the scratchpad lives in a flash file (v4.5.14), so a
+      full NVS partition (``NVSFILL``) still saves and the result carries no
+      note; a failed flash write (``FAULT scratch_fail on``) answers 507 with
+      the result "... kept until restart only (saving failed)"; once the fault
+      ends the notes land and the note is gone;
   C3  a durability claim ("so it will survive a restart") at a full NVS ->
       the RAM-only note rides the reply; C4 the same turn with room -> no line
       and ``claimsTailed`` unchanged (the counter-test).
 
-C1 needs lane P's ``FAULT embed_fail`` binding; on a build without it the leg
-is skipped with that reason (never passed). Unit: the fill unit (unit L).
+C1 needs lane P's ``FAULT embed_fail`` binding and C2 ``FAULT scratch_fail``; on
+a build without one the leg is skipped with that reason (never passed). Unit:
+the fill unit (unit L).
 
 Run: python3 -m pytest tests/hil/test_claim_check_bench.py -m "hil and net" --allow-hardware
 """
@@ -104,6 +107,28 @@ def _free_nvs(device) -> None:
     device.cmd("NVSFILL 0", expect="NVSFILL", timeout=20.0)
 
 
+def scratch_result(status: int, body: dict) -> tuple:
+    """(status, the tool's result) of one scratchpad route answer: 200 carries the
+    result as msg, and so does the 507 for a change whose save did not land (the
+    change is applied until restart). Anything else is a refusal of the request."""
+    assert status in (200, 507), f"scratchpad route -> {status} {body!r}"
+    return status, str(body.get("msg", ""))
+
+
+def _scratch(be, action: str, **fields) -> tuple:
+    r = be.net.post("/api/mem/scratchpad", {"action": action, "t": be.tok, **fields}, ip=be.ip, timeout=8.0)
+    return scratch_result(r.status_code, r.json())
+
+
+def _scratch_fault(device, on: bool) -> str:
+    """FAULT scratch_fail: the scratchpad's flash file write fails until off (off
+    retries the save and reports saved=<0|1>)."""
+    out = device.cmd(f"FAULT scratch_fail {'on' if on else 'off'}", expect="FAULT", timeout=6.0)
+    if "scratch_fail=" not in out:
+        pytest.skip(f"FAULT scratch_fail is not bound in this build ({out.strip()!r})")
+    return out
+
+
 @pytest.fixture
 def mock_head(custom_backend):  # noqa: F811
     """The head on the mock (orchHost=custom), restored afterwards."""
@@ -132,24 +157,29 @@ def test_c1_refused_memory_write_gets_the_correction_line(mock_head):
         be.device.cmd("FAULT embed_fail off", expect="FAULT", timeout=6.0)
 
 
-def test_c2_scratchpad_route_reports_a_ram_only_save(mock_head):
+def test_c2_scratchpad_note_follows_the_flash_file(mock_head):
     be = mock_head
-
-    def add(text: str) -> str:
-        r = be.net.post(
-            "/api/mem/scratchpad", {"action": "add", "tier": "short", "text": text, "t": be.tok}, ip=be.ip, timeout=8.0
-        )
-        assert r.status_code == 200, f"scratchpad add -> {r.status_code}"
-        return r.json().get("msg", "")
-
-    assert RAM_TOOL not in add("bench fresh room")  # fresh room: the save lands
+    _scratch_fault(be.device, False)  # skips on a build without the verb
+    _scratch(be, "clear", tier="short")
+    code, msg = _scratch(be, "add", tier="short", text="bench fresh room")
+    assert (code, RAM_TOOL in msg) == (200, False), f"fresh room: the save lands ({code} {msg!r})"
     _fill_nvs(be.device)
     try:
-        assert RAM_TOOL in add("bench full nvs"), "a failed save must say the note lasts only until restart"
+        code, msg = _scratch(be, "add", tier="short", text="bench full nvs")
+        assert (code, RAM_TOOL in msg) == (200, False), f"a full NVS must not touch the flash save ({code} {msg!r})"
     finally:
         _free_nvs(be.device)
-    assert RAM_TOOL not in add("bench room again")
-    be.net.post("/api/mem/scratchpad", {"action": "clear", "tier": "short", "t": be.tok}, ip=be.ip, timeout=8.0)
+    _scratch_fault(be.device, True)
+    try:
+        code, msg = _scratch(be, "add", tier="short", text="bench flash fail")
+        assert code == 507, f"a change whose flash save failed must answer 507 ({code} {msg!r})"
+        assert RAM_TOOL in msg, f"a failed flash save must say the note lasts only until restart ({msg!r})"
+    finally:
+        out = _scratch_fault(be.device, False)
+    assert "saved=1" in out, f"the notes did not land once the fault ended: {out!r}"
+    code, msg = _scratch(be, "add", tier="short", text="bench room again")
+    assert (code, RAM_TOOL in msg) == (200, False), f"the save lands again ({code} {msg!r})"
+    _scratch(be, "clear", tier="short")
 
 
 def test_c3_c4_durability_claim_full_nvs_then_room(mock_head):

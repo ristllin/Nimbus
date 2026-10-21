@@ -4136,6 +4136,7 @@ void setup() {
     h.tgInjectRaw = [](const String& p) { return agent::telegram::injectRawPage(p); };  // TGINJECT (full receive path)
     h.panicArmTurn = [](const String& k) { return nimbus::crash::armTurnPanic(k); };  // PANIC <kind> arm=turn [round=N]
     h.embedFail = [](bool on) { return agent::memory::setEmbedFault(on); };  // FAULT embed_fail
+    h.scratchFail = [](bool on) { return agent::memory::setScratchFault(on); };  // FAULT scratch_fail
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),

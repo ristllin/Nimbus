@@ -48,6 +48,10 @@ inline constexpr char kStorageFullMessage[] =
 
 // {"error":"storage_full","message":"<kStorageFullMessage>"}
 std::string storageFullJson();
+// The same answer for a change that was applied but not saved, carrying the route's
+// own result as "msg" (the key its ok body uses): the scratchpad route's
+// "added to short; kept until restart only (saving failed)".
+std::string storageFullJson(const std::string& msg);
 
 // The reply a save route sends once its writes are done. `persisted` false means at
 // least one write this request made did not land: the answer is ALWAYS the 507

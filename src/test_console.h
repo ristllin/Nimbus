@@ -214,6 +214,10 @@ struct Hooks {
   // demand. Lane P wires it to make ONLY the embedder fail (FAULT provider already
   // covers "every LLM host unreachable"). Returns a short status line.
   std::function<String(bool on)> embedFail;
+  // FAULT scratch_fail <on|off>: the scratchpad's flash file write fails, so the
+  // notes are kept until restart only and every surface says so, whatever the NVS
+  // state (the scratchpad moved out of NVS in v4.5.14). Off retries the save.
+  std::function<String(bool on)> scratchFail;
   // PANIC ... arm=turn: arm a panic to fire INSIDE the next turn, deep on the
   // tg_poll task at the transport write (the worst-case dump the 64 KB coredump
   // partition must hold, study T7/B4). Lane O1 wires it. The immediate PANIC

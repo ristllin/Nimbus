@@ -64,9 +64,11 @@ follows one rule:
 A ledger save that does not land leaves the ledger marked unsaved: every later turn
 retries (each rewrites the whole file), the main loop retries once a minute, and
 `/api/state` shows `usageSaved: false` until one lands. A scratchpad save that does not
-land keeps the notes in RAM until restart and is reported as `lfs_scratch`; the file
-itself is written only when the notes actually change (the device remembers the bytes
-that last landed), so a turn with no edit writes no flash.
+land keeps the notes in RAM until restart and is reported as `lfs_scratch` (the
+change result says "kept until restart only (saving failed)"); a full NVS partition
+does not affect it. The file itself is written only when the notes actually change
+(the device remembers the bytes that last landed), so a turn with no edit writes no
+flash.
 
 **The reserve.** Every key the firmware defines has a class
 (`lib/core/src/store_nvs_reserve.cpp`; `test_nvs_full` fails on a defined key without
@@ -146,6 +148,10 @@ that request did not land, the route answers **HTTP 507**:
 ```json
 {"error":"storage_full","message":"Couldn't save: device storage is full. Remove an unused provider key or connector and try again."}
 ```
+
+A scratchpad change whose save did not land is still applied until restart, so its 507
+also carries the change result as `msg`, as the route's 200 body does
+(`"msg":"added to short; kept until restart only (saving failed)"`).
 
 The web page shows that sentence as its failure toast (and in the setup wizard's
 status lines), never "Saved". Side effects wait for the write: a provider key that did

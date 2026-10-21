@@ -575,6 +575,7 @@ void dispatch(String line) {
     //     turn/loop heap gates run without unplugging RAM (study T6). Self-held
     //     here: up to 16 heap_caps internal blocks, never a fault cap.
     //   FAULT embed_fail <on|off>  an embedding-only outage (lane P wires it).
+    //   FAULT scratch_fail <on|off>  the scratchpad file write fails.
     String rest = line.substring(6); rest.trim();
     if (rest.startsWith("sram_ballast")) {
       String a = rest.substring(12); a.trim();
@@ -588,10 +589,19 @@ void dispatch(String line) {
       else reply("FAULT embed_fail: not wired in this build (lane P)");
       return;
     }
+    if (rest.startsWith("scratch_fail")) {
+      String a = rest.substring(12); a.trim();
+      const bool on = !(a == "off" || a == "0" || a == "false");
+      if (s_h.scratchFail) reply(s_h.scratchFail(on));
+      else reply("FAULT scratch_fail: not wired in this build");
+      return;
+    }
     if (rest == "clear" || rest == "none" || rest == "off") {
       nimbus::fault::clearAll();
       faultSramBallast(0);   // release any ballast too
       s_ttsMuted = false;    // and the AUDIOINJECT speech mute
+      if (s_h.embedFail) s_h.embedFail(false);       // and the embedding outage
+      if (s_h.scratchFail) s_h.scratchFail(false);   // and the scratchpad write failure (re-saves)
       agent::memory::applyConfig();
       Serial.println("FAULT cleared mask=0x00");
       Serial.flush();

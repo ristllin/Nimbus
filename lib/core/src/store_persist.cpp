@@ -4,21 +4,40 @@ namespace nimbus {
 namespace store {
 
 namespace {
-// Minimal JSON string escape for the fixed message (quotes + backslashes only; the
-// message is a compile-time constant with neither, but the builder stays honest).
-void appendEscaped(std::string& out, const char* s) {
-  for (; *s; ++s) {
-    if (*s == '"' || *s == '\\') out += '\\';
-    out += *s;
+// JSON string escape: quotes, backslashes and control bytes (a route's result can
+// carry request text, such as a tier name). UTF-8 passes through unchanged.
+void appendEscaped(std::string& out, const char* s, size_t n) {
+  static const char kHex[] = "0123456789abcdef";
+  for (size_t i = 0; i < n; ++i) {
+    const unsigned char c = (unsigned char)s[i];
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += (char)c;
+    } else if (c < 0x20) {
+      out += "\\u00";
+      out += kHex[c >> 4];
+      out += kHex[c & 0x0F];
+    } else {
+      out += (char)c;
+    }
   }
 }
-}  // namespace
 
-std::string storageFullJson() {
+std::string storageFullHead() {
   std::string out = "{\"error\":\"";
   out += kStorageFullCode;
   out += "\",\"message\":\"";
-  appendEscaped(out, kStorageFullMessage);
+  appendEscaped(out, kStorageFullMessage, sizeof(kStorageFullMessage) - 1);
+  out += "\"";
+  return out;
+}
+}  // namespace
+
+std::string storageFullJson() { return storageFullHead() + "}"; }
+
+std::string storageFullJson(const std::string& msg) {
+  std::string out = storageFullHead() + ",\"msg\":\"";
+  appendEscaped(out, msg.data(), msg.size());
   out += "\"}";
   return out;
 }

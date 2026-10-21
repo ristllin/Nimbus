@@ -385,7 +385,9 @@ void handleScratchGet(AsyncWebServerRequest* r) {
 // POST /api/mem/scratchpad - proxied through the memory.scratchpad tool so the
 // caps/validation are identical to the model's path. Body carries the tool args.
 // A change whose save did not land answers 507 storage_full (the SaveScope sees the
-// scratchpad file's failure in the persist ledger); the change stays until restart.
+// scratchpad file's failure in the persist ledger) with the tool's result as "msg":
+// the change stays until restart, and the result says so. The scratchpad lives in a
+// flash file, so a full NVS partition neither fails the save nor adds that note.
 void handleScratchPost(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   nimbus::sys::SaveScope save;
@@ -400,13 +402,12 @@ void handleScratchPost(AsyncWebServerRequest* r) {
   // owner, so build it through the helper that sets a role.
   const nimbus::orch::Principal who = nimbus::orch::principalForRole(
       "web", nimbus::orch::Role::Admin);
-  // The tool saves a change itself and reports a failed save in its message; the
-  // route's SaveScope still answers 507 storage_full when that save did not land
-  // (the scratchpad file's failure is in the persist ledger) - the change stays
-  // until restart.
+  // The tool saves a change itself and reports a failed save in its message
+  // ("kept until restart only (saving failed)"); the route's SaveScope answers 507
+  // storage_full when that save did not land, carrying the message.
   ToolResult res = mem::registry().dispatch("memory.scratchpad", args.as<JsonObjectConst>(), who);
   if (res.success && save.failed()) {
-    sendJson(r, nimbus::store::kStorageFullStatus, String(nimbus::store::storageFullJson().c_str()));
+    sendJson(r, nimbus::store::kStorageFullStatus, String(nimbus::store::storageFullJson(res.output).c_str()));
     return;
   }
   JsonDocument d; d["ok"] = res.success; d["msg"] = res.success ? res.output : res.error;

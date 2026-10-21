@@ -160,6 +160,29 @@ static void test_save_reply_is_507_storage_full_never_ok() {
   TEST_ASSERT_EQUAL_STRING("{\"ok\":true,\"restart\":false}", good.body.c_str());
 }
 
+// A change applied but not saved (the scratchpad route) answers the same 507 body
+// plus the route's own result as msg, escaped so request text (a tier name) can
+// never break the JSON; the plain body is unchanged byte for byte.
+static void test_storage_full_body_carries_the_route_result() {
+  const std::string plain = std::string("{\"error\":\"storage_full\",\"message\":\"") + kStorageFullMessage + "\"}";
+  TEST_ASSERT_EQUAL_STRING(plain.c_str(), storageFullJson().c_str());
+  const char* msgs[] = {
+      "added to short; kept until restart only (saving failed)",
+      "a \"quoted\\tier\"\nand a\ttab\x01 cleared; kept until restart only (saving failed)",
+      "caf\xC3\xA9 cleared",
+      "",
+  };
+  for (const char* m : msgs) {
+    const std::string body = storageFullJson(std::string(m));
+    JsonDocument d;
+    TEST_ASSERT_TRUE_MESSAGE(deserializeJson(d, body) == DeserializationError::Ok, body.c_str());
+    TEST_ASSERT_EQUAL_STRING("storage_full", d["error"] | "");
+    TEST_ASSERT_EQUAL_STRING(kStorageFullMessage, d["message"] | "");
+    TEST_ASSERT_EQUAL_STRING(m, d["msg"] | "<none>");
+    TEST_ASSERT_FALSE(claimsOk(body));
+  }
+}
+
 // The message follows the copy guide: what happened, then the one next step;
 // sentence case; no em dash; names both remedies the store makes work when full.
 static void test_storage_full_message_copy() {
@@ -1953,12 +1976,19 @@ static void test_moved_store_device_seams() {
 // cache written once per verdict.
 static void test_2c_routes_report_storage_full() {
   const std::string wm = readFile("src/net/web_memory.cpp");
-  for (const char* fn : {"void handleScratchPost(", "void handleConfigPut("}) {
-    const size_t s = wm.find(fn);
-    TEST_ASSERT_TRUE_MESSAGE(s != std::string::npos, fn);
+  // The memory-config route answers the plain body; the scratchpad route's change is
+  // applied in RAM, so its 507 also carries the tool's result ("kept until restart
+  // only (saving failed)") as msg.
+  const struct { const char* fn; const char* body; } routes[] = {
+      {"void handleScratchPost(", "nimbus::store::storageFullJson(res.output)"},
+      {"void handleConfigPut(", "nimbus::store::storageFullJson()"},
+  };
+  for (const auto& rt : routes) {
+    const size_t s = wm.find(rt.fn);
+    TEST_ASSERT_TRUE_MESSAGE(s != std::string::npos, rt.fn);
     const std::string body = wm.substr(s, wm.find("\n}\n", s) - s);
-    TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::sys::SaveScope save;") != std::string::npos, fn);
-    TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::store::storageFullJson()") != std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::sys::SaveScope save;") != std::string::npos, rt.fn);
+    TEST_ASSERT_TRUE_MESSAGE(body.find(rt.body) != std::string::npos, rt.fn);
   }
   const std::string web = readFile("src/net/webui.cpp");
   const std::string rm = routeRegion(web, "/api/telegram/remove");
@@ -2004,6 +2034,7 @@ static void test_verdict_memo_writes_only_on_change() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_reply_is_507_storage_full_never_ok);
+  RUN_TEST(test_storage_full_body_carries_the_route_result);
   RUN_TEST(test_storage_full_message_copy);
   RUN_TEST(test_every_covered_route_answers_507_on_a_full_nvs);
   RUN_TEST(test_string_write_verdict_truth_table);

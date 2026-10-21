@@ -95,7 +95,7 @@ one at a time:
 | 8 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
 | 9 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 10 | per-turn | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of this chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below |
-| 11 | per-turn | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
+| 11 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
 | 12 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 
 #### The cacheable prefix

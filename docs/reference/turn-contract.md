@@ -133,7 +133,7 @@ prose answer (which carries no spawn).
   "mem_write":   [ { "content","importance","permanent","ttl" } ],
   "mem_query":   [ "search string", ... ],
   "session_ops": [ { "op","id","task","provider","model","skill","name","project","attach" } ],
-  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; carries across turns, saved to NVS */,
+  "scratchpad":  { "active","short":[...],"mid":[...],"long":[...] } /* nullable object; replace-per-tier; carries across turns, saved to flash */,
 
   "spawn":   [ { "provider","model","skill","task","category","note","name" } ],
   "await":   [ "job-tag string", ... ]

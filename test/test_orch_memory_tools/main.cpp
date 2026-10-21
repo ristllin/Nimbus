@@ -2,11 +2,13 @@
 
 #include <ArduinoJson.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/memory_tools.h"
+#include "nimbus/store/moved_store.h"   // the scratchpad's flash-file save rule
 
 #include "../support/episodic_fixture.h"   // CUM-515: bench B's recorded history
 
@@ -51,10 +53,12 @@ static std::vector<int8_t> fakeEmbed(const std::string& text, std::string& err) 
 
 static bool g_persistOk = true;   // what the scratchpad save reports
 static int g_persistCalls = 0;
+static std::function<bool()> g_persistHook;   // when set, the save's answer instead of g_persistOk
 
 static ToolRegistry buildServer(bool withArchive = true) {
   g_persistOk = true;
   g_persistCalls = 0;
+  g_persistHook = nullptr;
   g_vec = VectorMemory(); g_vec.configure(4);
   g_scratch = Scratchpad();
   g_cfg = MemConfig();
@@ -70,7 +74,10 @@ static ToolRegistry buildServer(bool withArchive = true) {
   ctx.episodic = &g_epi;
   ctx.embed = fakeEmbed;
   ctx.nowHours = [] { return g_now; };
-  ctx.persistScratch = [] { g_persistCalls++; return g_persistOk; };
+  ctx.persistScratch = [] {
+    g_persistCalls++;
+    return g_persistHook ? g_persistHook() : g_persistOk;
+  };
   // Bind the cold store like the device does only with an SD card present. The
   // prune sink routes expired live entries here; archiveAvailable simulates the
   // card staying present (a mid-run pull flips it false).
@@ -1171,6 +1178,71 @@ static void test_scratchpad_change_reports_a_ram_only_save() {
   TEST_ASSERT_EQUAL(0, g_persistCalls);
 }
 
+// The scratchpad's two stores since v4.5.14: the flash file it saves to, and the
+// legacy NVS copy it only reads at migration and erases once. On a full NVS the
+// file write still lands; an NVS mutation is refused.
+struct ScratchStores {
+  bool nvsFull = false;
+  bool fileFails = false;   // the flash write fails (flash full or failing)
+  bool fileExists = false;
+  std::string file, nvs = "legacy scratchB";
+  bool readFile(std::string& out) {
+    if (!fileExists) return false;
+    out = file;
+    return true;
+  }
+  bool writeFileAtomic(const std::string& v) {
+    if (fileFails) return false;
+    fileExists = true;
+    file = v;
+    return true;
+  }
+  bool readNvs(std::string& out) {
+    out = nvs;
+    return true;
+  }
+  bool eraseNvs() {
+    if (nvsFull) return false;
+    nvs.clear();
+    return true;
+  }
+};
+
+// The change result says "kept until restart only (saving failed)" exactly when the
+// flash file write failed, whatever the NVS state: the save is the device's
+// persistScratchpad rule (the moved store through the change fingerprint; a torn
+// read-back is test_nvs_full's), and it never writes or erases NVS.
+static void test_scratchpad_note_follows_the_flash_file_not_nvs() {
+  const char* changes[] = {
+      R"({"action":"set_active","text":"wiring the ring"})",
+      R"({"action":"add","tier":"long","text":"no em dashes"})",
+      R"({"action":"replace","tier":"mid","items":["ship v1"]})",
+      R"({"action":"clear","tier":"short"})",
+      R"({"action":"clear"})",
+  };
+  for (int nvsFull = 0; nvsFull < 2; nvsFull++) {
+    for (int fileFails = 0; fileFails < 2; fileFails++) {
+      for (const char* c : changes) {
+        ToolRegistry reg = buildServer();
+        ScratchStores io;
+        io.nvsFull = nvsFull != 0;
+        io.fileFails = fileFails != 0;
+        nimbus::store::LandedFingerprint landed;
+        g_persistHook = [&io, &landed] {
+          return nimbus::store::persistIfChanged(io, landed, g_scratch.serialize()) !=
+                 nimbus::store::PersistOutcome::Failed;
+        };
+        const ToolResult r = call(reg, "memory.scratchpad", c);
+        g_persistHook = nullptr;
+        TEST_ASSERT_TRUE_MESSAGE(r.success, c);
+        TEST_ASSERT_EQUAL_MESSAGE(fileFails != 0, has(r.output, "kept until restart only (saving failed)"), c);
+        TEST_ASSERT_EQUAL_MESSAGE(fileFails == 0, io.fileExists && io.file == g_scratch.serialize(), c);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("legacy scratchB", io.nvs.c_str(), c);   // NVS untouched
+      }
+    }
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -1225,5 +1297,6 @@ int main(int, char**) {
   RUN_TEST(test_pin_tool_description_says_what_pinning_does_not_do);
   RUN_TEST(test_duplicate_write_reports_its_pin_state);
   RUN_TEST(test_scratchpad_change_reports_a_ram_only_save);
+  RUN_TEST(test_scratchpad_note_follows_the_flash_file_not_nvs);
   return UNITY_END();
 }

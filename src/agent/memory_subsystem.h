@@ -358,6 +358,7 @@ void drainPendingStep();
 int  drainPendingBurst(int maxEntries, uint32_t budgetMs);
 #ifdef NIMBUS_TEST
 String setEmbedFault(bool on);   // FAULT embed_fail on|off (test build only)
+String setScratchFault(bool on); // FAULT scratch_fail on|off (test build only)
 #endif
 Stats stats();
 

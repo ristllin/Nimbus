@@ -71,6 +71,11 @@ Scratchpad            g_scratch;
 // and its failure line (once a minute, with the count).
 nimbus::store::LandedFingerprint g_scratchLanded;
 nimbus::store::FailureLog        g_scratchFailLog;
+#ifdef NIMBUS_TEST
+// FAULT scratch_fail: the scratchpad file write fails (flash full or failing), so the
+// RAM-only path runs on demand whatever the NVS state. Test build only.
+bool g_scratchFault = false;
+#endif
 MemConfig             g_cfg;
 // Device cap: bound the ring so the whole-blob rewrite per turn (persistEpisodic)
 // stays small on LittleFS (~500 msgs * ~150 B ~= 75 KB). The SD append-log store
@@ -149,6 +154,9 @@ struct ScratchIo {
     return n == out.size();
   }
   bool writeFileAtomic(const std::string& v) {
+#ifdef NIMBUS_TEST
+    if (g_scratchFault) return false;
+#endif
     if (LittleFS.totalBytes() == 0) return false;   // not mounted: nothing can be stored
     LittleFS.mkdir("/data");
     return agent::writeFileAtomic(kScratchPath, v, "scratchpad", false);
@@ -1802,6 +1810,14 @@ String setEmbedFault(bool on) {
   g_embedFault = on;
   if (!on) { Lock g; g_park.clear(); }   // the outage is over: the next attempt goes straight out
   return String("FAULT embed_fail=") + (on ? "1" : "0") + " pending=" + pendingCount();
+}
+
+// Off retries the save at once, so notes changed during the fault land in the file.
+String setScratchFault(bool on) {
+  Lock g;
+  g_scratchFault = on;
+  if (on) return String("FAULT scratch_fail=1");
+  return String("FAULT scratch_fail=0 saved=") + (persistScratchpad() ? "1" : "0");
 }
 #endif
 
