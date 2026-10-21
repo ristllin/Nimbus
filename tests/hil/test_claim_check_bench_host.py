@@ -148,18 +148,20 @@ class FakeUnit:
         raise AssertionError(f"unexpected console line {line!r}")
 
     def _row(self, role: str, text: str) -> None:
-        self.rows.append({"id": f"m{len(self.rows) + 1:08x}", "session": "serial", "role": role, "kind": "message", "text": text})
+        self.rows.append(
+            {"id": f"m{len(self.rows) + 1:08x}", "session": "serial", "role": role, "kind": "message", "text": text}
+        )
 
     def _turn(self, text: str) -> None:
         self.requests.append(self.model)
         reply = {"mock-claim-saved": SAVED_REPLY, "mock-claim-durable": DURABLE_REPLY}.get(self.model, "mock says hi")
-        if self.model == "mock-claim-saved" and self.embed_fail:   # queued, not saved yet
+        if self.model == "mock-claim-saved" and self.embed_fail:  # queued, not saved yet
             reply += "\n\n" + SAVED_LINE
             self.tailed += 1
         if self.model == "mock-claim-durable":
             changed = self.short != [NOTE]
             self.short = [NOTE]
-            if changed and self.scratch_fail:   # the flash file did not take it
+            if changed and self.scratch_fail:  # the flash file did not take it
                 reply += "\n\n" + RAM_LINE
                 self.tailed += 1
         self._row("user", text)
@@ -167,7 +169,7 @@ class FakeUnit:
 
     # -- web routes (form posts and token-gated GETs)
     def post(self, path: str, data: dict, ip=None, timeout: float = 5.0):
-        if path == "/api/orch":   # a persisted config save
+        if path == "/api/orch":  # a persisted config save
             if self.nvs_full:
                 self.refused_saves.append(dict(data))
                 return _Resp(507, {"error": "storage_full"})
@@ -185,7 +187,7 @@ class FakeUnit:
         else:
             self.short = []
             msg = "short cleared"
-        if self.short != before and self.scratch_fail:   # the flash write failed; NVS plays no part
+        if self.short != before and self.scratch_fail:  # the flash write failed; NVS plays no part
             return _Resp(507, {"error": "storage_full", "msg": f"{msg}; {RAM_TOOL}"})
         return _Resp(200, {"ok": True, "msg": msg})
 
@@ -226,3 +228,10 @@ def test_c2_runs_against_the_device_rules(unit):
     leg.test_c2_scratchpad_note_follows_the_flash_file(unit.be)
     assert not unit.nvs_full and not unit.scratch_fail and unit.short == []
     assert unit.refused_saves == []
+
+
+def test_c3_c4_run_against_the_device_rules(unit):
+    leg.test_c3_c4_durability_claim_follows_the_flash_save(unit.be)
+    assert unit.refused_saves == [], f"a config save was sent at a full NVS: {unit.refused_saves}"
+    assert unit.tailed == 1  # only the turn whose flash save failed got the note
+    assert not unit.nvs_full and not unit.scratch_fail and unit.short == []

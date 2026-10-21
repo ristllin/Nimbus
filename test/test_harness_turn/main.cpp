@@ -3414,6 +3414,46 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
   }
 }
 
+// Bench C3/C4 on the host: the mock's "mock-claim-durable" turn ("so it will
+// survive a restart" with a scratchpad item) on the custom head. The scratchpad
+// saves to a flash file, so on a full NVS the save lands (Applied) and the claim
+// is true; only a failed flash write (AppliedRamOnly) gets the RAM-only note; an
+// update that changes nothing (Skipped) adds no line either. Exactly one reply each.
+static void test_pg5_custom_head_durability_claim_follows_the_flash_save() {
+  const char* mockTurn =
+      R"({"reply": "Put it in my notes, so it will survive a restart.", "scratchpad": )"
+      R"({"active": null, "short": ["bench claim check note"], "mid": null, "long": null}})";
+  const char* ramLine = "(Note: this is kept only until the next restart; saving it permanently failed.)";
+  const struct {
+    agent::ScratchOutcome outcome;
+    bool line;
+    const char* what;
+  } cases[] = {
+      {agent::ScratchOutcome::Applied, false, "saved to flash (full NVS or room)"},
+      {agent::ScratchOutcome::AppliedRamOnly, true, "flash write failed"},
+      {agent::ScratchOutcome::Skipped, false, "nothing changed"},
+  };
+  for (const auto& c : cases) {
+    Rig r;
+    r.cfg.keyed.insert("custom");
+    r.cfg.orchHost = "custom";
+    r.adminChats = true;   // the scratchpad is admin-only; the serial console is an owner surface
+    Rig::Script s;
+    s.outJson = mockTurn;
+    r.scripts["custom"] = {s};
+    r.scratchOutcome = c.outcome;
+    const uint32_t tailed = agent::ClaimCheck::tailedCount();
+    r.eng->handleMessage("put the bench note in your notes", "", "serial");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.scratchApplied.size(), c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.what);
+    const std::string& got = r.delivered[0].second;
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)got.find("Put it in my notes, so it will survive a restart."), c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(c.line, got.find(ramLine) != std::string::npos, c.what);
+    TEST_ASSERT_TRUE_MESSAGE(got.find("(Correction:") == std::string::npos, c.what);
+    TEST_ASSERT_EQUAL_MESSAGE(tailed + (c.line ? 1 : 0), agent::ClaimCheck::tailedCount(), c.what);
+  }
+}
+
 // Formatting F3/F4 at the engine: reasoning, wrappers and tool markup never reach
 // the owner, on the turn path and the prose path; unknown <word> content stays.
 static void test_lane_l_markup_never_reaches_the_owner() {
@@ -3919,6 +3959,7 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
   RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
   RUN_TEST(test_pg5_custom_head_saved_claim_delivers_one_reply);
+  RUN_TEST(test_pg5_custom_head_durability_claim_follows_the_flash_save);
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
   RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);

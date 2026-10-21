@@ -13,11 +13,14 @@ each reply's claim against what the turn really did:
       note; a failed flash write (``FAULT scratch_fail on``) answers 507 with
       the result "... kept until restart only (saving failed)"; once the fault
       ends the notes land and the note is gone;
-  C3  a durability claim ("so it will survive a restart") at a full NVS ->
-      the RAM-only note rides the reply; C4 the same turn with room -> no line
-      and ``claimsTailed`` unchanged (the counter-test).
+  C3  a durability claim ("so it will survive a restart"), the scenario set
+      while NVS has room (a config save at a full NVS answers 507): at a full
+      NVS the scratchpad still saves to flash, so no line and ``claimsTailed``
+      unchanged; with the flash write failing too (``FAULT scratch_fail on``)
+      the RAM-only note rides the reply and ``claimsTailed`` goes up; C4 the
+      same turn with room -> no line and ``claimsTailed`` unchanged.
 
-C1 needs lane P's ``FAULT embed_fail`` binding and C2 ``FAULT scratch_fail``; on
+C1 needs lane P's ``FAULT embed_fail`` binding and C2/C3 ``FAULT scratch_fail``; on
 a build without one the leg is skipped with that reason (never passed). Unit:
 the fill unit (unit L).
 
@@ -79,9 +82,14 @@ def _tailed(be) -> int:
     return int(be.state().get("claimsTailed", -1))
 
 
-def _turn(be, model: str, text: str, timeout: float = 90.0) -> str:
-    """One head turn on the mock scenario `model`; returns the one reply it delivered."""
-    be.set_model(model)
+def _turn(be, model: str, text: str, timeout: float = 90.0, switch: bool = True) -> str:
+    """One head turn on the mock scenario `model`; returns the one reply it delivered.
+    switch=False keeps the scenario already set: switching is a persisted config
+    save, which answers 507 at a full NVS, so a full-NVS turn switches before the fill."""
+    if switch:
+        be.set_model(model)
+    else:
+        be.server.reset()
     before = _replies(be)
     try:
         be.device.cmd(f"TURN {text}", expect="TURN <-", timeout=6.0)
@@ -182,20 +190,36 @@ def test_c2_scratchpad_note_follows_the_flash_file(mock_head):
     _scratch(be, "clear", tier="short")
 
 
-def test_c3_c4_durability_claim_full_nvs_then_room(mock_head):
+def test_c3_c4_durability_claim_follows_the_flash_save(mock_head):
     be = mock_head
+    _scratch_fault(be.device, False)  # skips on a build without the verb
+    model, ask = "mock-claim-durable", "put the bench note in your notes"
+    be.set_model(model)  # a config save: before the fill (at a full NVS it answers 507)
+    _scratch(be, "clear", tier="short")
     _fill_nvs(be.device)
     try:
+        # C3a: the scratchpad saves to flash, so at a full NVS the claim is true.
         t0 = _tailed(be)
-        reply = _turn(be, "mock-claim-durable", "put the bench note in your notes")
-        assert RAM_LINE in reply, f"no RAM-only note on a durability claim at full NVS: {reply!r}"
-        assert _tailed(be) == t0 + 1
+        reply = _turn(be, model, ask, switch=False)
+        assert RAM_LINE not in reply and SAVED_LINE not in reply, f"at a full NVS the flash save lands: {reply!r}"
+        assert _tailed(be) == t0
+        # C3b: the flash write fails too -> the RAM-only note rides the reply.
+        code, _ = _scratch(be, "clear", tier="short")
+        assert code == 200, f"the clear must save to flash at a full NVS ({code})"
+        _scratch_fault(be.device, True)
+        try:
+            t1 = _tailed(be)
+            reply = _turn(be, model, ask, switch=False)
+            assert RAM_LINE in reply, f"no RAM-only note on a durability claim the flash did not take: {reply!r}"
+            assert _tailed(be) == t1 + 1
+        finally:
+            _scratch_fault(be.device, False)
     finally:
         _free_nvs(be.device)
-    # C4, the counter-test: with room, the same claim is true and costs nothing.
-    t1 = _tailed(be)
-    be.net.post("/api/mem/scratchpad", {"action": "clear", "tier": "short", "t": be.tok}, ip=be.ip, timeout=8.0)
-    reply = _turn(be, "mock-claim-durable", "put the bench note in your notes")
+    # C4, the counter-test: room and a working flash, the same claim costs nothing.
+    _scratch(be, "clear", tier="short")
+    t2 = _tailed(be)
+    reply = _turn(be, model, ask, switch=False)
     assert RAM_LINE not in reply and SAVED_LINE not in reply, reply
-    assert _tailed(be) == t1
-    be.net.post("/api/mem/scratchpad", {"action": "clear", "tier": "short", "t": be.tok}, ip=be.ip, timeout=8.0)
+    assert _tailed(be) == t2
+    _scratch(be, "clear", tier="short")
