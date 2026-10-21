@@ -498,7 +498,6 @@ static void addReserveState(JsonDocument& d) {
   r["starved"] = g.starved;
   d["usageSaved"] = agent::store::usageLedgerSaved();
 }
-}
 
 static void buildState(String& out) {
   JsonDocument d;
