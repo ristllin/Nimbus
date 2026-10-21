@@ -11,6 +11,9 @@
 //   metering-fail          a failed turn still files what its billed rounds cost
 //   diagnose-from-evidence the head reports the recorded first cause of a failed
 //                          dream, and invents none
+//   repeat-from-storage    the head names the device's settings storage (nearly
+//                          full, the Telegram offset not saved) as the reason the
+//                          same answer repeats, not the owner's app
 //   provider-error-reason  a request body with invalid UTF-8 is rejected before
 //                          inference, with the provider's reason, and unbilled
 //
@@ -29,6 +32,7 @@ struct Report {
 void meteringSwitch(LabRig& rig, const Report& r);
 void meteringFail(LabRig& rig, const Report& r);
 void diagnoseFromEvidence(LabRig& rig, const Report& r);
+void repeatFromStorage(LabRig& rig, const Report& r);
 void providerErrorReason(LabRig& rig, const Report& r);
 
 }  // namespace turnrec

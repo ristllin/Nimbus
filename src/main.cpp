@@ -125,6 +125,7 @@
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
 #include "nimbus/orch/failure_rows.h"  // dreamRowText - the dream timeline row (lane T)
+#include "nimbus/orch/storage_state.h"  // storageStateJson -> device.status (L19-9)
 #include "sys/config_nvs.h"
 #include "test_console.h"  // no-op inline stubs unless -DNIMBUS_TEST (env:test)
 #include <WiFi.h>  // WiFi.status()/localIP() radio reads + the F8/F9 event echo (test)
@@ -2750,7 +2751,11 @@ static void registerDeviceTools() {
           "cost/budget question, "
           "cfg{} = the current value of every knob the config action sets, and "
           "lastFail = the most recent failed turn since boot with its causes, first "
-          "cause first (null when none) - quote it when asked why something failed. "
+          "cause first (null when none) - quote it when asked why something failed, "
+          "nvs = settings-storage health (free bytes, saves that failed since boot, "
+          "the last key that failed - never its value) and tgOffsetSaved (false means "
+          "the device owes a Telegram offset write, so messages can arrive again - "
+          "a device-side repeat, not the owner's app). "
           "Silent - never makes a sound.",
           [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
             // W11: the hw snapshot PLUS the agent-layer live state (composed here,
@@ -2823,6 +2828,19 @@ static void registerDeviceTools() {
             // The last failed turn since boot (RAM only): its id, source, age and the
             // first cause first - read this before explaining any failure.
             s += ",\"lastFail\":"; s += agent::orchestrator::lastFailJson();
+            // L19-9: settings-storage health and the Telegram offset cursor (lane
+            // A's getters), so the head can explain lost settings and repeated
+            // deliveries itself instead of blaming the owner's app.
+            {
+              nimbus::orch::StorageState st;
+              nimbus::store::NvsUsage nu;
+              st.nvsStats = nimbus::sys::nvsUsage(nu);
+              st.nvsFree = nu.freeBytes;
+              st.saveFails = nimbus::sys::persistFailures();
+              st.lastSaveFail = std::string(nimbus::sys::lastPersistFailKey().c_str());
+              st.tgOffsetSaved = agent::telegram::pollStatus().offsetSaved;
+              s += ","; s += nimbus::orch::storageStateJson(st).c_str();
+            }
             s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
             s += ",\"otaSlot\":\""; s += otaupd::runningSlot(); s += "\"";
             s += ",\"autoUpdate\":"; s += agent::store::otaAutoUpdate() ? "true" : "false";

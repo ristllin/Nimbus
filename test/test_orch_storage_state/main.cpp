@@ -1,0 +1,95 @@
+#include <unity.h>
+
+#include <string>
+
+#include <ArduinoJson.h>
+
+#include "nimbus/orch/storage_state.h"
+
+// storage_state - the settings-storage and Telegram-offset block of device.status
+// (L19-9). Under test: the golden JSON on a fresh device and on the NVSFILL-0
+// shape (host fakes for lane A's getters), the presence property (every key is
+// always present; values may be null) and that a failing key name stays a safe
+// JSON string - a key name only, never a value.
+
+using namespace nimbus::orch;
+
+void setUp() {}
+void tearDown() {}
+
+// The golden on a fresh device: real free space, no failed save, nothing owed.
+static void test_golden_fresh_device() {
+  StorageState s;   // defaults are the fresh shape
+  s.nvsStats = true;
+  s.nvsFree = 16384;
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},\"tgOffsetSaved\":true}",
+      storageStateJson(s).c_str());
+}
+
+// The golden on the NVSFILL-0 shape (lane A's getters faked host-side): the
+// partition is nearly full, saves failed, the last failing key is the Telegram
+// offset, and its stored copy is behind - the shape the head must be able to
+// cite instead of blaming the owner's app.
+static void test_golden_nvsfill0_shape() {
+  StorageState s;
+  s.nvsStats = true;
+  s.nvsFree = 288;
+  s.saveFails = 2;
+  s.lastSaveFail = "tgOffset";
+  s.tgOffsetSaved = false;
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},\"tgOffsetSaved\":false}",
+      storageStateJson(s).c_str());
+}
+
+// The presence property: over every shape the builder can be handed, all four
+// keys are always present and the JSON parses; `free` is null exactly when the
+// usage query did not answer, `lastFail` exactly when no key failed.
+static void test_keys_always_present_values_may_be_null() {
+  for (int shape = 0; shape < 8; ++shape) {
+    StorageState s;
+    s.nvsStats = shape & 1;
+    s.nvsFree = (shape & 2) ? 288 : 16384;
+    s.saveFails = (shape & 4) ? 3 : 0;
+    s.lastSaveFail = (shape & 4) ? (shape & 2 ? "tgOffset" : "sfxLvlN") : "";
+    s.tgOffsetSaved = !(shape & 2);
+    const std::string j = storageStateJson(s);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"nvs\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"free\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"fails\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"lastFail\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"tgOffsetSaved\""), j.c_str());
+    JsonDocument d;
+    const std::string err = deserializeJson(d, j) ? "parse failed" : "";
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", err.c_str(), j.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(s.nvsStats, !d["nvs"]["free"].isNull(), j.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(s.lastSaveFail.empty(), d["nvs"]["lastFail"].isNull(), j.c_str());
+    TEST_ASSERT_EQUAL_UINT32(s.saveFails, d["nvs"]["fails"].as<uint32_t>());
+    TEST_ASSERT_EQUAL(s.tgOffsetSaved, d["tgOffsetSaved"].as<bool>());
+  }
+}
+
+// A failing key name is a JSON string like any other: quotes and backslashes in
+// it cannot break the block (NVS keys cannot hold them, but the builder must
+// not be the thing that breaks if one ever does).
+static void test_failing_key_name_is_json_safe() {
+  StorageState s;
+  s.nvsStats = true;
+  s.lastSaveFail = "a\"b\\c";
+  s.saveFails = 1;
+  const std::string j = storageStateJson(s);
+  JsonDocument d;
+  const DeserializationError de = deserializeJson(d, j);
+  TEST_ASSERT_TRUE_MESSAGE(de == DeserializationError::Ok, j.c_str());
+  TEST_ASSERT_EQUAL_STRING("a\"b\\c", d["nvs"]["lastFail"].as<const char*>());
+}
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_golden_fresh_device);
+  RUN_TEST(test_golden_nvsfill0_shape);
+  RUN_TEST(test_keys_always_present_values_may_be_null);
+  RUN_TEST(test_failing_key_name_is_json_safe);
+  return UNITY_END();
+}

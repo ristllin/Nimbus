@@ -282,6 +282,7 @@ turnrec::Report report(Ctx& c) {
 void scMeteringSwitch(LabRig& rig, Ctx& c) { turnrec::meteringSwitch(rig, report(c)); }
 void scMeteringFail(LabRig& rig, Ctx& c) { turnrec::meteringFail(rig, report(c)); }
 void scDiagnoseFromEvidence(LabRig& rig, Ctx& c) { turnrec::diagnoseFromEvidence(rig, report(c)); }
+void scRepeatFromStorage(LabRig& rig, Ctx& c) { turnrec::repeatFromStorage(rig, report(c)); }
 void scProviderErrorReason(LabRig& rig, Ctx& c) { turnrec::providerErrorReason(rig, report(c)); }
 
 // 12. The live ".env" regression (2026-08-13, Nimbus-4): asked how to set up
@@ -365,6 +366,7 @@ const Scenario kScenarios[] = {
     {"metering-switch", "a switched turn files each provider's spend under it, once", scMeteringSwitch, false},
     {"metering-fail",   "a failed turn still files what its billed rounds cost",      scMeteringFail, false},
     {"diagnose-from-evidence", "a failed dream's recorded cause is what the head reports", scDiagnoseFromEvidence, false},
+    {"repeat-from-storage", "a repeating answer is the device's settings storage, not the owner's app", scRepeatFromStorage, false},
     {"provider-error-reason",  "an invalid UTF-8 body is rejected with a reason, unbilled", scProviderErrorReason, false},
 };
 

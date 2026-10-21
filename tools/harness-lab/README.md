@@ -199,6 +199,9 @@ python3 metering_check.py $R/usage.jsonl $R/run.log      # METERING MATCH per pr
 #   '--fault=anthropic:2-:400:badreq' '--fault=mistral:*:400:badreq' ... scenarios metering-fail
 # The head reports the recorded first cause of a failed dream (pin the head model):
 #   NIMBUS_LAB_MODEL=claude-haiku-5-5 ... scenarios diagnose-from-evidence
+# The head names the device's settings storage (nearly full, the Telegram offset
+# not saved) as the reason the same answer repeats, not the owner's app:
+#   NIMBUS_LAB_MODEL=<model> '--fault=<other hosts>:*:0:connect' scenarios repeat-from-storage
 # A body with invalid UTF-8 is rejected with the provider's reason, unbilled:
 #   --host=mistral ... scenarios provider-error-reason
 ```

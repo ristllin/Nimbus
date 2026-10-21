@@ -165,6 +165,89 @@ void diagnoseFromEvidence(LabRig& rig, const Report& r) {
          std::to_string(t.tokensOut) + " out");
 }
 
+// Failure-cause L1's storage twin (L19-9): the NVSFILL-0 shape seeded as the
+// device's own evidence - device.status shows the settings partition nearly full
+// with failed saves (the last one the Telegram offset, not saved), and the history
+// shows three identical deliveries of one short owner message - then the owner's
+// question. The reply must name the device's settings storage and must not blame
+// the owner's phone, app or network. Pin the head with NIMBUS_LAB_MODEL; fault
+// every other host so the leg stays on one provider.
+void repeatFromStorage(LabRig& rig, const Report& r) {
+  using namespace nimbus;
+  orch::StorageState& st = rig.storageState();
+  st.nvsStats = true;
+  st.nvsFree = 288;
+  st.saveFails = 2;
+  st.lastSaveFail = "tgOffset";
+  st.tgOffsetSaved = false;
+  const uint32_t now = (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+  auto& epi = rig.episodic();
+  epi.addSession({"repeat", now - 50, "", "Owner chat", "active"});
+  epi.addSession({"system", now - 50, "", "Device timeline", "active"});
+  int seq = 0x610;
+  auto row = [&](const std::string& sess, const std::string& role, uint32_t ts,
+                 const std::string& text, const std::string& tags) {
+    char id[16];
+    std::snprintf(id, sizeof id, "m%08x", seq++);
+    orch::EpisodicMessage m;
+    m.id = id;
+    m.sessionId = sess;
+    m.tsHours = ts;
+    m.role = role;
+    m.kind = orch::MsgKind::Message;
+    m.text = text;
+    m.tags = tags;
+    epi.addMessage(m);
+  };
+  auto logRow = [&](uint32_t ts, const std::string& text, const std::string& tags) {
+    char id[16];
+    std::snprintf(id, sizeof id, "m%08x", seq++);
+    orch::EpisodicMessage m;
+    m.id = id;
+    m.sessionId = "system";
+    m.tsHours = ts;
+    m.role = "system";
+    m.kind = orch::MsgKind::Log;
+    m.text = text;
+    m.tags = tags;
+    epi.addMessage(m);
+  };
+  const std::string q = "what does my note about the garage key say";
+  const std::string a = "Your note says the spare garage key is in the kitchen drawer.";
+  for (int i = 0; i < 3; ++i) {
+    row("repeat", "user", now - 3 * (3 - i), q, "tg,repeat");
+    row("repeat", "assistant", now - 3 * (3 - i), a, "tg,repeat");
+  }
+  // The once-per-boot notice a failed save raises (the device's exact text,
+  // store::kStorageNoticeText, sent to the owner chat by telegram.cpp).
+  row("repeat", "assistant", now - 8,
+      "Nimbus-Lab: settings storage is almost full, so some changes may not be saved. "
+      "To free space, open the device web page and remove connectors or provider "
+      "keys you don't use.", "tg,notice");
+  // The device's own evidence: the persist-failure log line (config_nvs, the
+  // device's exact format) for each failed save, and a restart between them.
+  for (int i = 0; i < 2; ++i)
+    logRow(now - 3 * (3 - i), "nvs: write FAILED [tgOffset] - storage full? (288 B free"
+                             " of 20480 B)", "ev:nvs");
+  logRow(now - 6, "restart complete, orchestrator mode", "boot");
+  auto t = rig.say("repeat", "Why do I keep getting the same answer over and over? "
+                             "Is something wrong with the device?");
+  show(t);
+  r.check(!t.reply.empty() && !has(t.reply, "didn't finish"), "the owner got an answer");
+  r.check(has(t.reply, "storage") || has(t.reply, "nvs") || has(t.reply, "settings"),
+          "the answer names the device's settings storage");
+  r.check(!has(t.reply, "your phone") && !has(t.reply, "your app") &&
+              !has(t.reply, "your telegram") && !has(t.reply, "your network") &&
+              !has(t.reply, "your internet") && !has(t.reply, "your connection") &&
+              !has(t.reply, "reinstall"),
+          "the answer does not blame the owner's phone, app or network");
+  r.note(std::string("served by ") + t.host + ", " + std::to_string(t.tokensIn) + " in / " +
+         std::to_string(t.tokensOut) + " out");
+}
+
+
 // Failure-cause L2: one invalid UTF-8 byte in the owner text reaches the provider
 // (until the device cleans every provider-bound string). Pin one host with --host
 // and fault the others.

@@ -25,6 +25,7 @@
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/session_tools.h"
+#include "nimbus/orch/storage_state.h"
 #include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_memory.h"
@@ -173,6 +174,10 @@ class LabRig {
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
   orch::EpisodicStore& episodic() { return *epi_; }
+  // The settings-storage state the device.status stand-in reports (L19-9),
+  // through the same portable builder the device uses. Fresh by default; a
+  // scenario sets the shape it needs (for example the NVSFILL-0 shape).
+  nimbus::orch::StorageState& storageState() { return deviceStorage_; }
   CurlHttpTransport& http() { return http_; }
   // The top of the transport chain: what every lab request goes through.
   agent::HttpTransport& net() { return wire_; }
@@ -349,16 +354,31 @@ class LabRig {
   }
 
   // A stand-in for the device-status tool, so prompts that ask "what are you running
-  // on" have something honest to call.
+  // on" have something honest to call. deviceStorage_ carries the settings-storage
+  // state the same block the device reports (L19-9), built by the same portable
+  // builder (storageState() is the public setter surface).
+  nimbus::orch::StorageState deviceStorage_;
   void registerDeviceStatusTool() {
-    reg_.add("device.status", "Report the device's current state.",
-             [this](ArduinoJson::JsonObjectConst, const orch::Principal&) {
-               return orch::ToolResult::ok(
-                   std::string("{\"name\":\"") + opt_.devName +
-                   "\",\"mode\":\"orchestrator\",\"host\":\"harness-lab\",\"vectors\":" +
-                   std::to_string(vec_.size()) + "}");
-             },
-             R"({"type":"object","properties":{}})");
+    // The stand-in carries the same contract the device's device.status carries:
+    // the model reads these sentences to know what the block means, so the lab
+    // description mirrors the device's (main.cpp) wording for the state it
+    // reports, not a shorter one.
+    reg_.add(
+        "device.status",
+        "Read the COMPLETE live device state - call this before answering any question "
+        "about the device's behavior, current settings, capacity, versions or the "
+        "time. Includes nvs = settings-storage health (free bytes, saves that failed "
+        "since boot, the last key that failed - never its value) and tgOffsetSaved "
+        "(false means the device owes a Telegram offset write, so messages can "
+        "arrive again - a device-side repeat, not the owner's app).",
+        [this](ArduinoJson::JsonObjectConst, const orch::Principal&) {
+          return orch::ToolResult::ok(
+              std::string("{\"name\":\"") + opt_.devName +
+              "\",\"mode\":\"orchestrator\",\"host\":\"harness-lab\",\"vectors\":" +
+              std::to_string(vec_.size()) + "," +
+              nimbus::orch::storageStateJson(deviceStorage_) + "}");
+        },
+        R"({"type":"object","properties":{}})");
   }
 
   // Real embeddings through the same portable request/response codec the device
