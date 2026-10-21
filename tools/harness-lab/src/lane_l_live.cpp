@@ -171,12 +171,17 @@ struct LabJournalStore : orch::JournalStore {
     auto it = slots.find(slot);
     return it == slots.end() ? std::string() : it->second;
   }
-  void put(int slot, const std::string& v) override {
-    if (refuseWrites) { refused++; return; }
+  bool put(int slot, const std::string& v) override {
+    if (refuseWrites) { refused++; return false; }
     puts++;
     slots[slot] = v;
+    return true;
   }
-  void remove(int slot) override { if (!refuseWrites) slots.erase(slot); }
+  bool remove(int slot) override {
+    if (refuseWrites) return false;
+    slots.erase(slot);
+    return true;
+  }
   void clearNs() override { if (!refuseWrites) slots.clear(); }
 };
 
