@@ -294,6 +294,14 @@ gets a keyword match over the same memories and the queued facts instead, and
 RELEVANT MEMORIES opens with one line saying recall is keyword-only and why, so
 an outage never reads as "nothing relevant". The device, a hosted instance and
 the lab share this rule.
+
+The keyword scan copies nothing from the store: it picks at most the 2,000 most
+important memories by importance alone, scores each one where it is stored, reads
+the queued facts in place, and builds text only for the hits it returns, so its
+memory use depends on the number of hits, not on the size of the store. On the
+device it also holds to the memory floors of the embedding call (12 KB free and a
+5 KB contiguous block): below them it skips the scan, and the line says that
+keyword recall was skipped because the device is low on memory.
 ```
 query = active_task + " " + latest_user_messages + " " + all_scratchpad_goals
 hits  = vdb.search(query, k = retrieval_count)          # default 10

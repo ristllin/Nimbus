@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <utility>
 
 #include "nimbus/mem_cap.h"
@@ -212,19 +213,23 @@ std::vector<int8_t> embedForStore(const MemoryContext& ctx, int width, const std
 // is unscoped; a legacy empty entry ns belongs to the owner. Kept in lockstep so
 // the lexical fallback enforces EXACTLY the semantic read boundary and can never
 // widen access.
+// Compared in place (no copy of the namespace per entry: a member namespace such as
+// "chat:-1001234567890" is longer than a short-string buffer, and the keyword scan
+// asks this once per entry).
 bool nsAllowsEntry(const std::string& entryNs, const std::vector<std::string>& allow) {
   if (allow.empty()) return true;
-  const std::string eff = entryNs.empty() ? std::string(kOwnerNs) : entryNs;
-  for (const auto& a : allow) if (a == eff) return true;
+  const std::string_view eff =
+      entryNs.empty() ? std::string_view(kOwnerNs) : std::string_view(entryNs);
+  for (const auto& a : allow) if (std::string_view(a) == eff) return true;
   return false;
 }
 
-// Mirror of VectorMemory::isExpiredRaw (orch_vector_memory.cpp) over the public
-// VecEntry fields, so the keyword fallback hides the SAME entries the semantic
-// path drops at query time (a fact the owner set to expire must not resurface
-// through the fallback). nowHours == 0 (clockless) disables the age check, exactly
-// like the engine.
-bool entryExpired(const VecEntry& e, uint32_t nowHours) {
+// Mirror of VectorMemory::isExpiredRaw (orch_vector_memory.cpp) over an entry's
+// view, so the keyword fallback hides the SAME entries the semantic path drops at
+// query time (a fact the owner set to expire must not resurface through the
+// fallback). nowHours == 0 (clockless) disables the age check, exactly like the
+// engine.
+bool entryExpired(const VectorMemory::EntryView& e, uint32_t nowHours) {
   if (e.permanentFlag || e.creatorFlag) return false;
   if (e.importance < VectorMemory::kMinImportance) return true;
   if (e.ttlHours <= 0) return false;
@@ -242,10 +247,6 @@ std::string commonWordsHint(const LexQuery& lq) {
                            "search ignores - search again with a distinctive word.")
              : std::string();
 }
-
-// Bound on entries examined by a keyword fallback, so a full store cannot turn a
-// degraded search into a long stall under the memory lock.
-constexpr size_t kLexScanMax = 2000;
 
 // Deterministic id from content (djb2). On-device a content hash is stable,
 // needs no RNG, and dedup handles near-collisions anyway.
@@ -705,47 +706,121 @@ ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& w
 // embed outage no longer reads as "empty memory".
 // The keyword scan both degraded paths share (the search tool's fallback and
 // automatic recall): live entries inside the read boundary and not expired, plus
-// the facts waiting in the pending queue, ranked by distinct keyword hits.
-// Each hit is (score, text) where text is "[NN%] content" or the pending tag.
-std::vector<std::pair<int, std::string>> lexicalHits(const VectorMemory& vec, const PendingEmbeds* pending,
-                                                     const LexQuery& lq, const std::vector<std::string>& allow,
-                                                     uint32_t nowH) {
-  std::vector<std::pair<int, std::string>> found;   // (keyword hits, text)
-  size_t scanned = 0;
-  for (const auto& e : vec.getAll()) {               // importance-desc
-    if (++scanned > kLexScanMax) break;
-    if (!nsAllowsEntry(e.ns, allow)) continue;       // never widen the read boundary
-    if (entryExpired(e, nowH)) continue;             // same query-time TTL as semantic search
-    const int sc = lexCoverage(e.content, lq);       // distinct words matched, in place
-    if (sc <= 0) continue;
-    found.push_back({sc, "[" + std::to_string((int)(e.importance * 100)) + "%] " + e.content});
+// the facts waiting in the pending queue, ranked by distinct keyword hits; the
+// best k come back as "[NN%] content" or the pending tag.
+//
+// It copies nothing from the store (it runs while embeddings are down, often on a
+// device already short of memory): one forEachEntry pass keeps the kLexScanMax most
+// important entries as 8-byte (importance, index) slots, each is scored in place,
+// the queue is read by reference, and only the k returned hits get a text.
+
+// One slot of the scan order: an entry's importance and its storage index.
+struct LexSlot {
+  float    importance;
+  uint32_t index;
+};
+// Scan order: importance desc, storage order within a tie (getAll()'s order).
+bool lexSlotBefore(const LexSlot& a, const LexSlot& b) {
+  if (a.importance != b.importance) return a.importance > b.importance;
+  return a.index < b.index;
+}
+using LexSlots = std::vector<LexSlot, WorkingAllocator<LexSlot>>;
+
+// The kLexScanMax most important entries, in scan order, through a bounded heap whose
+// front is the last slot in scan order (the one a better entry replaces).
+LexSlots lexScanOrder(const VectorMemory& vec) {
+  LexSlots slots;
+  slots.reserve(std::min((size_t)vec.size(), kLexScanMax));
+  vec.forEachEntry([&slots](size_t i, const VectorMemory::EntryView& e) {
+    // A NaN importance (a corrupt stored blob) ranks as 0, so the order stays strict.
+    const LexSlot s{e.importance == e.importance ? e.importance : 0.0f, (uint32_t)i};
+    if (slots.size() < kLexScanMax) {
+      slots.push_back(s);
+      std::push_heap(slots.begin(), slots.end(), lexSlotBefore);
+    } else if (lexSlotBefore(s, slots.front())) {
+      std::pop_heap(slots.begin(), slots.end(), lexSlotBefore);
+      slots.back() = s;
+      std::push_heap(slots.begin(), slots.end(), lexSlotBefore);
+    }
+  });
+  std::sort_heap(slots.begin(), slots.end(), lexSlotBefore);
+  return slots;
+}
+
+// One hit before its text is built: keyword hits, its position in the scan (live
+// entries in scan order, then the queue oldest first) and its content, by address
+// (valid while the caller holds the memory lock). pct < 0 marks a queued fact.
+struct LexHit {
+  int                score;
+  uint32_t           seq;
+  const std::string* content;
+  int                pct;
+};
+// Rank: more keyword hits first, scan position within a tie (the stable order).
+bool lexHitBefore(const LexHit& a, const LexHit& b) {
+  if (a.score != b.score) return a.score > b.score;
+  return a.seq < b.seq;
+}
+using LexHits = std::vector<LexHit, WorkingAllocator<LexHit>>;
+
+// Keep the k best hits in rank order; `best` has room for k + 1.
+void keepBest(LexHits& best, size_t k, const LexHit& h) {
+  if (best.size() == k && !lexHitBefore(h, best.back())) return;
+  best.insert(std::upper_bound(best.begin(), best.end(), h, lexHitBefore), h);
+  if (best.size() > k) best.pop_back();
+}
+
+std::string lexHitText(const LexHit& h) {
+  char tag[32];
+  const int n = h.pct < 0 ? snprintf(tag, sizeof(tag), "[pending, not stored yet] ")
+                          : snprintf(tag, sizeof(tag), "[%d%%] ", h.pct);
+  std::string t;
+  t.reserve((size_t)n + h.content->size());
+  t.append(tag, (size_t)n);
+  t.append(*h.content);
+  return t;
+}
+
+std::vector<std::string> lexicalHits(const VectorMemory& vec, const PendingEmbeds* pending,
+                                     const LexQuery& lq, const std::vector<std::string>& allow,
+                                     uint32_t nowH, size_t k) {
+  std::vector<std::string> out;
+  if (k == 0) return out;
+  LexHits best;
+  best.reserve(std::min(k, kLexScanMax + (pending ? pending->size() : 0)) + 1);
+  uint32_t seq = 0;
+  for (const LexSlot& s : lexScanOrder(vec)) {
+    const VectorMemory::EntryView e = vec.entryAt(s.index);
+    ++seq;
+    if (!nsAllowsEntry(e.ns, allow)) continue;   // never widen the read boundary
+    if (entryExpired(e, nowH)) continue;         // same query-time TTL as semantic search
+    const int sc = lexCoverage(e.content, lq);   // distinct words matched, in place
+    if (sc > 0) keepBest(best, k, LexHit{sc, seq, &e.content, (int)(s.importance * 100)});
   }
   // Facts written during the outage wait in the queue; the same read boundary
   // applies, and each says it is not stored yet.
   if (pending)
-    for (const auto& p : pending->getAll(allow)) {
+    pending->forEachEntry([&](const PendingEmbed& p) {
+      ++seq;
+      if (!nsAllowsEntry(p.ns, allow)) return;
       const int sc = lexCoverage(p.content, lq);
-      if (sc <= 0) continue;
-      found.push_back({sc, "[pending, not stored yet] " + p.content});
-    }
-  // Rank by keyword hits desc; getAll() was importance-desc, so stable_sort keeps
-  // importance order within a tie.
-  std::stable_sort(found.begin(), found.end(),
-                   [](const std::pair<int, std::string>& x,
-                      const std::pair<int, std::string>& y) { return x.first > y.first; });
-  return found;
+      if (sc > 0) keepBest(best, k, LexHit{sc, seq, &p.content, -1});
+    });
+  out.reserve(best.size());
+  for (const LexHit& h : best) out.push_back(lexHitText(h));
+  return out;
 }
 
 ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
                                  int k, const Principal& who, const std::string& reasonWords) {
   const std::string label = "keyword match, embeddings unavailable: " + reasonWords;
   const LexQuery lq = lexParse(query);   // the shared word rule (CUM-515)
-  const auto found = lexicalHits(*ctx.vec, ctx.pending, lq, readSetFor(who), ctx.nowHours ? ctx.nowHours() : 0);
+  const auto found = lexicalHits(*ctx.vec, ctx.pending, lq, readSetFor(who),
+                                 ctx.nowHours ? ctx.nowHours() : 0, (size_t)k);
+  if (found.empty()) return ToolResult::ok("No memories matched (" + label + ")." + commonWordsHint(lq));
   std::string out;
-  int n = 0;
-  for (const auto& f : found) { if (n >= k) break; out += "- " + f.second + "\n"; n++; }
-  if (n == 0) return ToolResult::ok("No memories matched (" + label + ")." + commonWordsHint(lq));
-  return ToolResult::ok("Found " + std::to_string(n) + " memories (" + label + "):\n" + out);
+  for (const auto& f : found) out += "- " + f + "\n";
+  return ToolResult::ok("Found " + std::to_string(found.size()) + " memories (" + label + "):\n" + out);
 }
 
 // ---- memory.search ----------------------------------------------------------
@@ -1291,16 +1366,21 @@ static void registerOptionalMemoryTools(ToolRegistry& reg, const MemoryContext& 
 }
 
 // ---- degraded automatic recall ------------------------------------------------
+const char kRecallLowMemoryTail[] = "; keyword recall skipped, the device is low on memory";
+
 RecallOut lexicalRecall(const VectorMemory& vec, const PendingEmbeds* pending, const std::string& query,
                         const RecallScope& scope, const std::string& cause) {
   RecallOut r;
-  r.degraded = cause.empty() ? std::string("unavailable") : cause;
-  const int k = scope.k > 0 ? scope.k : 5;
-  const auto found = lexicalHits(vec, pending, lexParse(query), scope.nsAllow, scope.nowHours);
-  for (const auto& f : found) {
-    if ((int)r.hits.size() >= k) break;
-    r.hits.push_back(f.second);
+  if (cause.empty()) r.degraded = "unavailable";
+  else r.degraded = cause;   // one copy (a ternary made a const temporary, then a second)
+  // Below the recall floors nothing is scanned: the prompt line says recall is
+  // keyword-only and that this turn's keyword recall was skipped.
+  if (scope.lowMemory) {
+    r.degraded += kRecallLowMemoryTail;
+    return r;
   }
+  const int k = scope.k > 0 ? scope.k : 5;
+  r.hits = lexicalHits(vec, pending, lexParse(query), scope.nsAllow, scope.nowHours, (size_t)k);
   return r;
 }
 

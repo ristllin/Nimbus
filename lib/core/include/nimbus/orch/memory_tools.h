@@ -182,11 +182,27 @@ struct RecallOut {
 // Degraded recall: a bounded keyword scan with the same read boundary and expiry
 // rule as the semantic path, over the live store and the pending queue (tagged
 // "pending, not stored yet"). Read-only: no importance boost, no TTL reset.
+//
+// It runs while embeddings are down, often on a device already short of memory, so
+// it copies nothing: one non-copying pass picks the kLexScanMax most important
+// entries as (importance, index) pairs (8 bytes each, through the working allocator,
+// PSRAM on the device), each is scored in place, the queue is read by reference, and
+// text is built only for the k hits returned. Its allocation is bounded by k and the
+// scan cap, never by the store size (test_orch_recall_alloc counts it at 5,000
+// entries).
+// Entries a keyword scan examines at most, so a full store cannot turn a degraded
+// search into a long stall under the memory lock.
+inline constexpr size_t kLexScanMax = 2000;
 struct RecallScope {
   std::vector<std::string> nsAllow;   // the caller's read set (empty = unscoped)
   uint32_t nowHours = 0;              // the expiry clock (0 = clockless: nothing expires)
   int k = 5;                          // at most this many hits
+  // The device is below the recall memory floors (the same free-heap and largest-block
+  // floors as the embed path): the scan is skipped and `degraded` says so.
+  bool lowMemory = false;
 };
+// Appended to RecallOut::degraded when the scan was skipped for low memory.
+extern const char kRecallLowMemoryTail[];
 RecallOut lexicalRecall(const VectorMemory& vec, const PendingEmbeds* pending, const std::string& query,
                         const RecallScope& scope, const std::string& cause);
 

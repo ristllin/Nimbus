@@ -77,6 +77,12 @@ class PendingEmbeds {
   int    countIn(const std::string& ns) const;
   // Entries visible under a read set (empty = unscoped), oldest first.
   std::vector<PendingEmbed> getAll(const std::vector<std::string>& nsAllow = {}) const;
+  // Visit every entry, oldest first, by const reference (no copy): the degraded
+  // keyword recall reads the queue on a device that may be short of memory.
+  template <typename Fn>
+  void forEachEntry(Fn&& fn) const {
+    for (const PendingEmbed& e : entries_) fn(e);
+  }
   int    removeNs(const std::string& ns);
   int    flushAll();
 

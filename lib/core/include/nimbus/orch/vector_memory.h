@@ -244,6 +244,30 @@ class VectorMemory {
 
   // Browse/admin (get_all / delete / flush / mark_permanent / dedupe).
   std::vector<VecEntry> getAll() const;               // importance-desc
+
+  // A read-only view of one stored entry: every field except the vector bytes, by
+  // reference into the store. Making one copies and allocates nothing.
+  struct EntryView {
+    const std::string& id;
+    const std::string& content;
+    const std::string& ns;
+    float    importance;
+    int32_t  ttlHours;
+    uint32_t createdAtHours;
+    bool     creatorFlag;
+    bool     permanentFlag;
+  };
+  // Visit every entry in storage order, fn(index, view), with no copy and no
+  // allocation. The degraded keyword recall reads the store this way: it runs while
+  // embeddings are down, often on a device already short of memory, where a getAll()
+  // copy of a 5,000-entry store was about a megabyte of vectors plus a small heap
+  // block per entry. Indexes and views stay valid until the next mutation, so read
+  // under the same lock as any other store access.
+  template <typename Fn>
+  void forEachEntry(Fn&& fn) const {
+    for (size_t i = 0; i < entries_.size(); i++) fn(i, viewOf(entries_[i]));
+  }
+  EntryView entryAt(size_t i) const { return viewOf(entries_[i]); }   // i < size()
   // v3.7.0: is this id inside the caller's read set? Every id-keyed mutation
   // (remove / markPermanent / markTemporary) must check it - filtering READS
   // alone would still let one principal delete or pin another's memory by
@@ -314,6 +338,10 @@ class VectorMemory {
     std::vector<int8_t, WorkingAllocator<int8_t>> vec;
   };
   static VecEntry toPublic(const Stored& s);
+  static EntryView viewOf(const Stored& s) {
+    return EntryView{s.id, s.content, s.ns, s.importance, s.ttlHours, s.createdAtHours,
+                     s.creatorFlag, s.permanentFlag};
+  }
   // Retention score on the raw fields, shared by the public retentionScore(VecEntry)
   // and the internal eviction loop (which works on Stored).
   static float retentionOf(float importance, int32_t ttlHours, uint32_t createdAtHours,

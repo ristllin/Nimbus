@@ -11,7 +11,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>                  // feed the WDT during a long durable-store wipe
-#include <esp_heap_caps.h>                 // the drain's largest-block admission floor
+#include <esp_heap_caps.h>                 // the recall and drain largest-block floor
 #include <time.h>
 #include <utility>
 
@@ -1513,9 +1513,20 @@ static void noteRecallEmbed(bool ok, const String& err) {
   if (started && g_ctx.onParked) g_ctx.onParked(kind, std::string(err.c_str()));
 }
 
+// The memory floors of the embed path: total free internal heap and the largest
+// contiguous internal block (one TLS handshake's worth). The pending drain waits
+// below them, and the keyword recall skips its scan below them: it runs while
+// embeddings are down, often on a device already short of memory.
+static bool recallHeapOk() {
+  if (ESP.getFreeHeap() < ORCH_RECALL_MIN_HEAP) return false;
+  return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >=
+         ORCH_TURN_MIN_LARGEST_BLOCK;
+}
+
 // Recall when embeddings cannot serve it: the keyword scan over the live store and
 // the pending queue, inside the same read boundary, labelled with the cause so the
-// prompt says recall is keyword-only (never a silent empty section).
+// prompt says recall is keyword-only (never a silent empty section). Below the
+// recall floors the scan is skipped and the label says so.
 static nimbus::orch::RecallOut keywordRecall(const String& queryText, int k,
                                              const nimbus::orch::Principal& who,
                                              const std::string& cause) {
@@ -1523,6 +1534,8 @@ static nimbus::orch::RecallOut keywordRecall(const String& queryText, int k,
   scope.nsAllow = {who.valid() ? who.ns : std::string("\x01none")};
   scope.nowHours = nowHours();
   scope.k = k;
+  scope.lowMemory = !recallHeapOk();
+  if (scope.lowMemory) alogi("memory: keyword recall skipped - low memory");   // RAM ring only
   Lock g;
   return nimbus::orch::lexicalRecall(g_vec, &g_pending, std::string(queryText.c_str()), scope, cause);
 }
@@ -1726,11 +1739,7 @@ bool embedDrainDue() {
   // Lock-free on purpose: a few word-sized reads polled often on the Telegram
   // task; drainOne re-checks the park under the lock before any network call.
   if (g_park.blocked(now) || !embeddings::available()) return false;
-  if (ESP.getFreeHeap() < ORCH_RECALL_MIN_HEAP) return false;
-  if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
-      ORCH_TURN_MIN_LARGEST_BLOCK)
-    return false;
-  return true;
+  return recallHeapOk();
 }
 
 // The principal that writes into `ns` today: the owner's namespace is the
