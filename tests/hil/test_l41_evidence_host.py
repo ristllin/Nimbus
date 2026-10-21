@@ -73,6 +73,53 @@ def test_bulk_overlap_rule():
     assert ev.bulk_overlaps([t], [apart]) == []
 
 
+def test_res_lines_parse_and_busy_is_not_a_res():
+    c = ev.collect(
+        [
+            "relay: res 200 body=7074 sent=1",
+            "relay: res 503 body=23 sent=0",
+            "relay: res 200 body=375598 waited 20004ms for the TLS slot -> busy",
+        ]
+    )
+    assert c["res"] == [
+        {"status": 200, "body": 7074, "sent": True},
+        {"status": 503, "body": 23, "sent": False},
+    ]
+    assert len(c["busy"]) == 1
+
+
+def test_state_polls_in_the_slot_are_caught():
+    # The 15bdbad7 shape: a 7,074 B poll (a 9.5 KB frame) went out as a bulk frame, and
+    # a 6,384 B one waited out the turn and was answered busy.
+    c = ev.collect(
+        [
+            "relay: bulk res body=7074 frame=9560 at=1000 ms=40 waited=0",
+            "relay: res 200 body=6384 waited 20003ms for the TLS slot -> busy",
+            BULK,
+            "relay: res 200 body=375598 waited 20004ms for the TLS slot -> busy",
+            "relay: 400000 B answer held back (turn in flight) -> busy",
+            "relay: res 200 body=7074 sent=1",
+        ]
+    )
+    bad = ev.small_answers_in_the_slot(c)
+    assert len(bad) == 2
+    assert "body=7074" in bad[0] and "body=6384" in bad[1]
+    # A boundary body (exactly the threshold) is small; one byte over is a page.
+    edge = ev.collect(
+        [
+            f"relay: bulk res body={ev.RELAY_BULK_BYTES} frame=11100 at=1 ms=1 waited=0",
+            f"relay: bulk res body={ev.RELAY_BULK_BYTES + 1} frame=11100 at=1 ms=1 waited=0",
+        ]
+    )
+    assert len(ev.small_answers_in_the_slot(edge)) == 1
+    # Only pages in the slot: nothing to report.
+    assert ev.small_answers_in_the_slot(ev.collect([BULK, "relay: res 200 body=7074 sent=1"])) == []
+
+
+def test_threshold_matches_the_firmware():
+    assert ev.relay_bulk_bytes_in_source() == ev.RELAY_BULK_BYTES
+
+
 def test_ladder_rule():
     ok = [{"mark": "20000"}, {"mark": "18976"}, {"mark": "9000"}]
     assert ev.ladder_ok(ok)

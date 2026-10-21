@@ -12,12 +12,16 @@
 // failed over to another provider for a device fault. The rule now:
 //
 //   - The dial (TLS connect, WebSocket upgrade, hello) takes the slot, like pairing.
-//   - A response frame over kRelayBulkBytes takes the slot one 8 KB chunk at a time
-//     and releases it between chunks, so a turn waiting for the slot gets it within
-//     one chunk (a turn waits at most 10 s for the slot; a whole page can take far
-//     longer than that on a busy link).
-//   - Heartbeats, pongs, hello, acks and small frames (the dashboard's 5 s polls,
-//     20 B to 6.4 KB) take no slot, so the page stays live during a turn.
+//   - A response whose body is over kRelayBulkBytes takes the slot, its frame one
+//     8 KB chunk at a time, released between chunks, so a turn waiting for the slot
+//     gets it within one chunk (a turn waits at most 10 s for the slot; a whole page
+//     can take far longer than that on a busy link).
+//   - Heartbeats, pongs, hello, acks and small answers (the dashboard's 5 s polls,
+//     bodies of 20 B to about 7.1 KB) take no slot, so the page stays live during a
+//     turn. The rule is on the body, never the frame: base64 makes the frame 4/3 of
+//     the body plus the JSON head, so a 7,074 B poll is a 9.5 KB frame. Deciding on
+//     the frame put every poll over about 6 KB in the slot, where it waited out the
+//     turn's exchange and got the busy answer (the dashboard went dead mid-turn).
 //   - The slot is never held across the loopback replay: a tunneled handler can run
 //     an embed call that takes the slot itself.
 //   - Before a big frame starts, the wait is short takes (200 ms) with the inbound
@@ -29,7 +33,7 @@
 namespace nimbus {
 namespace cloud {
 
-inline constexpr size_t kRelayBulkBytes = 8192;         // a frame over this takes the slot
+inline constexpr size_t kRelayBulkBytes = 8192;         // a body over this takes the slot; the chunk size
 inline constexpr uint32_t kRelayDialSlotMs = 15000;     // the dial's acquire (pairing's value)
 inline constexpr uint32_t kRelaySlotTakeMs = 200;       // one take between pumps
 inline constexpr uint32_t kRelayBusyAfterMs = 20000;    // no slot this long after the request: 503
@@ -46,8 +50,9 @@ inline constexpr uint32_t kBusyRetrySlotS = 5;
 inline constexpr uint32_t kBusyRetryLowMemS = 10;
 inline constexpr const char* kBusyBody = "Device busy, try again.";
 
-// Does a response frame of this many bytes need the slot?
-inline bool frameNeedsSlot(size_t frameBytes) { return frameBytes > kRelayBulkBytes; }
+// Does the response frame carrying a body of this many bytes need the slot? Pass the
+// body length (before base64), never the frame's: see the rule above.
+inline bool frameNeedsSlot(size_t bodyBytes) { return bodyBytes > kRelayBulkBytes; }
 
 // May the first dial after boot go now? Once Telegram's first poll has connected,
 // or kRelayFirstDialWaitMs after Wi-Fi came up, whichever is first.

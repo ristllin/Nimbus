@@ -27,7 +27,10 @@ Legs (unit A, test build, cloud-paired, Lumi-shaped corpus so round bodies reach
       503 during the turn (the busy answer) and a 200 after it.
       Pass: no write failure (every trace fail=none, af=0), no switch, no overlap
       (tlsOverlaps unchanged, no bulk frame spanning an exchange it did not wait
-      for), the page served or busy-then-served.
+      for), the page served or busy-then-served, and the dashboard's state polls
+      never in the slot: /api/state is at most 8 KB, no bulk frame or slot-busy
+      answer carries a body that small (bulks == 0 for state polls during the
+      turn), and with the probe running small answers were tunneled.
   (b) the counter-leg: ``FAULT relay_noslot on`` (the relay serves like v4.5.13)
       and the same cloud page loads must reproduce the overlap (tlsOverlaps moves),
       or the test could not fail.
@@ -143,14 +146,29 @@ def test_l41_turn_beside_page_loads_no_overlap(device):
     # The loopback replay: busy (503) while the turn ran, the page (200) after it.
     assert statuses and statuses[-1] == 200, f"the page was not served after the turn: {statuses}"
     assert all(x in (200, 503) for x in statuses), f"unexpected loopback statuses: {statuses}"
+    # The dashboard's state polls take no slot (the rule is on the body, and a 6-7 KB
+    # poll is an 8.5-9.5 KB frame), so none waits out the turn's exchange.
+    small = ev.small_answers_in_the_slot(c)
+    assert not small, f"state polls went through the TLS slot during the turn (bulks must be 0): {small}"
+    # The premise of that check, measured on this unit (a separate failure: content growth).
+    state_body = len(s.get(f"http://{ip}/api/state", timeout=10).content)
+    assert state_body <= ev.RELAY_BULK_BYTES, (
+        f"/api/state is {state_body} B, over the {ev.RELAY_BULK_BYTES} B slot threshold: the dashboard's "
+        "polls would wait out every turn exchange (trim the state answer or revisit kRelayBulkBytes)"
+    )
+    polls = [r for r in c["res"] if r["status"] == 200 and r["body"] <= ev.RELAY_BULK_BYTES]
     big = [t.body for t in c["traces"] if t.body]
-    print(f"L41a: bodies={big} statuses={statuses} bulks={len(c['bulks'])} busy={len(c['busy'])}")
+    print(
+        f"L41a: bodies={big} statuses={statuses} bulks={len(c['bulks'])} busy={len(c['busy'])} "
+        f"state_body={state_body} small_res={len(polls)}"
+    )
     if not CLOUD_PROBE:
         pytest.skip(
             "device-side checks passed; the cloud page loads need the owner's browser probe "
             "(set NIMBUS_L41_CLOUD_PROBE=1 with lane X's cloud-page-probe running)"
         )
     assert c["bulks"] or c["busy"], "the cloud probe ran but no big tunneled frame or busy answer was seen"
+    assert polls, "the cloud probe ran but no dashboard state poll was tunneled during the leg"
 
 
 @pytest.mark.hil

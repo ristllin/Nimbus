@@ -17,10 +17,11 @@ This guard encodes the class, deterministically and with no board:
     closes its socket before any other TLS. The Telegram archive's downloads
     (``tg_archive.cpp``) share that exception only because they run on that task,
     after the poll socket is closed, which is checked below;
-  * the relay's big frames go through the slot: ``emitResFrame`` routes a frame
-    over ``kRelayBulkBytes`` to ``writeBigFrame``, which takes the slot per chunk;
-    ``wsWriteAll`` is used only for small frames (heartbeat, pong, hello, acks,
-    small answers);
+  * the relay's big frames go through the slot: ``emitResFrame`` routes an answer
+    whose body is over ``kRelayBulkBytes`` to ``writeBigFrame``, which takes the slot
+    per chunk (decided on the body: base64 makes a 7 KB poll a 9.5 KB frame, and a
+    poll must not wait for a turn); ``wsWriteAll`` is used only for small frames
+    (heartbeat, pong, hello, acks, small answers);
   * the transport takes the slot before its traced exchange;
   * the transport's retained-document guard measures what the parse kept
     (``measureJson``), never ``memoryUsage()``, which always returns 0 in
@@ -176,7 +177,10 @@ def test_relay_dial_and_big_frames_take_the_slot():
     emit = fns["emitResFrame"][1]
     sender = fns.get("sendFrame", (0, ""))[1]
     assert re.search(r"\bsendFrame\s*\(", emit) and "frameNeedsSlot(" in sender and "writeBigFrame(" in sender, (
-        "emitResFrame must send a frame over kRelayBulkBytes through writeBigFrame (the slot)"
+        "emitResFrame must send a body over kRelayBulkBytes through writeBigFrame (the slot)"
+    )
+    assert re.search(r"frameNeedsSlot\(\s*bodyLen\s*\)", sender), (
+        "sendFrame must decide the slot on the body length, never the base64 frame's"
     )
     big = fns.get("writeBigFrame", (0, ""))[1]
     assert "acquireWork(" in big and "writeBulk(" in big and "releaseWork(" in big, (

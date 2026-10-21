@@ -2,15 +2,46 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <random>
+#include <string>
 #include <vector>
 
+#include "nimbus/cloud/loopback_target.h"
+#include "nimbus/cloud/relay_codec.h"
 #include "nimbus/cloud/relay_slot.h"
+#include "nimbus/cloud/relay_ws.h"
 
 using namespace nimbus::cloud;
 
 void setUp() {}
 void tearDown() {}
+
+// ---- the res frame a body travels in (emitResFrame) ------------------------------
+//
+// The slot rule is stated on the body, but the bytes on the wire (and the time a write
+// takes) are the frame's: the WebSocket header, the JSON head, then the body in base64.
+// Every test below names a BODY and derives its frame the way the device builds it, so
+// a rule applied to the wrong unit shows up here. kHead is the head of a dashboard
+// poll's answer in the shape emitResFrame serializes (src/net/relay_client.cpp: t, id,
+// status, the kept headers, reopened for bodyB64): a cloud request id and the two
+// headers /api/state carries.
+static const std::string kHead =
+    "{\"t\":\"res\",\"id\":\"3f0c2a9e-5b7d-4e21-9a8f-6c1d2e3b4a5f\",\"status\":200,"
+    "\"headers\":{\"Content-Type\":\"application/json\",\"Cache-Control\":\"no-store\"}";
+static constexpr size_t kMaxBody = kLoopbackMaxRespBody;   // the 383 KiB tunnel cap
+// The dashboard's 5 s /api/state polls as measured: 6,384 B and 7,074 B bodies.
+static constexpr size_t kPollBodies[] = {6384, 7074};
+
+static size_t resFrameBytes(size_t bodyBytes) {
+  static const char kMid[] = ",\"bodyB64\":\"";
+  static const char kSuf[] = "\"}";
+  const size_t payload =
+      kHead.size() + (bodyBytes ? (sizeof(kMid) - 1) + b64EncodedLen(bodyBytes) + (sizeof(kSuf) - 1) : 1);
+  const uint8_t mask[4] = {1, 2, 3, 4};
+  uint8_t hdr[14];
+  return ws::writeFrameHeader(ws::Opcode::Text, payload, mask, hdr) + payload;
+}
 
 // ---- a simulated device: one work slot, a turn task, the relay ----------------------
 //
@@ -108,11 +139,14 @@ struct Outcome {
 };
 
 // One tunneled request through the real templates: loopback (no slot), then the
-// frame; small frames go straight out, big ones wait (pumping) and write per chunk.
-static Outcome serve(Sim& s, uint32_t reqAt, uint32_t loopbackMs, size_t frameBytes) {
+// frame for a `bodyBytes` answer. The decision is on the body (as sendFrame makes it);
+// a small answer's frame goes straight out, a big one waits (pumping) and is written
+// per chunk.
+static Outcome serve(Sim& s, uint32_t reqAt, uint32_t loopbackMs, size_t bodyBytes) {
   Outcome o;
+  const size_t frameBytes = resFrameBytes(bodyBytes);
   s.advanceTo(reqAt + loopbackMs);   // the slot is never held across the loopback
-  if (!frameNeedsSlot(frameBytes)) {
+  if (!frameNeedsSlot(bodyBytes)) {
     o.small = true;
     s.write(frameBytes, false);
     o.answeredAt = s.now;
@@ -147,12 +181,20 @@ static bool overlaps(const Sim::Span& x, const Sim::Span& y) { return x.a < y.b 
 
 // ---- policy ---------------------------------------------------------------------
 
-static void test_policy_which_frames_take_the_slot() {
-  // Heartbeat, hello, pong, acks and the dashboard's polls (20 B to 6,384 B) never do.
-  for (size_t n : {(size_t)2, (size_t)20, (size_t)180, (size_t)6384, kRelayBulkBytes})
+static void test_policy_which_answers_take_the_slot() {
+  // Heartbeat, hello, pong, acks and the dashboard's polls never do, though a poll's
+  // frame is over kRelayBulkBytes (8.6 and 9.5 KB): the rule is on the body.
+  for (size_t n : {(size_t)0, (size_t)2, (size_t)20, (size_t)180, kPollBodies[0], kPollBodies[1], kRelayBulkBytes})
     TEST_ASSERT_FALSE(frameNeedsSlot(n));
-  for (size_t n : {kRelayBulkBytes + 1, (size_t)65536, (size_t)523055})
-    TEST_ASSERT_TRUE(frameNeedsSlot(n));
+  for (size_t poll : kPollBodies) TEST_ASSERT_TRUE(resFrameBytes(poll) > kRelayBulkBytes);
+  for (size_t n : {kRelayBulkBytes + 1, (size_t)65536, kMaxBody}) TEST_ASSERT_TRUE(frameNeedsSlot(n));
+  // Counter-test in the dimension the body rule stops checking: the frame. The biggest
+  // frame that skips the slot (an 8 KB body) stays under 12 KB, one and a half chunks,
+  // and every frame past it takes the slot.
+  const size_t unslottedMax = resFrameBytes(kRelayBulkBytes);
+  TEST_ASSERT_TRUE(unslottedMax < 12 * 1024);
+  for (size_t n = 0; n <= 4 * kRelayBulkBytes; ++n)
+    if (resFrameBytes(n) > unslottedMax) TEST_ASSERT_TRUE(frameNeedsSlot(n));
   TEST_ASSERT_TRUE(kRelayBusyAfterMs < kRelayResBudgetMs);
   TEST_ASSERT_TRUE(kRelayResBudgetMs < kRelayCloudTimeoutMs);
   TEST_ASSERT_FALSE(firstDialReady(false, 0));
@@ -167,7 +209,7 @@ static void test_wait_pumps_every_200ms_and_answers_busy_before_30s() {
   Sim s;
   s.turns.push_back({0, 120000});
   s.advanceTo(1);
-  const Outcome o = serve(s, 1000, 300, 375598 * 4 / 3 + 200);
+  const Outcome o = serve(s, 1000, 300, 375598);   // the config page
   TEST_ASSERT_EQUAL((int)SlotWait::Busy, (int)o.wait);
   TEST_ASSERT_TRUE(o.answeredAt < 1000 + kRelayCloudTimeoutMs);
   TEST_ASSERT_TRUE(o.answeredAt >= 1000 + kRelayBusyAfterMs);
@@ -177,26 +219,34 @@ static void test_wait_pumps_every_200ms_and_answers_busy_before_30s() {
   TEST_ASSERT_TRUE(s.bulkTx.empty());   // only the small 503 went out
 }
 
-// Counter-test: a small poll is never delayed, even while a turn holds the slot.
-static void test_small_polls_never_wait_for_the_slot() {
-  for (size_t n : {(size_t)20, (size_t)6384, kRelayBulkBytes}) {
+// The dashboard's polls are never delayed, even while a turn holds the slot for a
+// minute: every body up to kRelayBulkBytes goes straight out after the loopback,
+// whatever base64 makes of its frame. Deciding on the frame stalled every poll over
+// about 6 KB for 20 s and then answered it busy, so the page went dead mid-turn.
+static void test_dashboard_polls_never_wait_for_the_slot() {
+  std::vector<size_t> bodies = {20, kPollBodies[0], kPollBodies[1], kRelayBulkBytes};
+  for (size_t n = 0; n <= kRelayBulkBytes; n += 97) bodies.push_back(n);
+  for (size_t n : bodies) {
     Sim s;
     s.turns.push_back({0, 60000});
     s.advanceTo(10);
     const Outcome o = serve(s, 5000, 5, n);
     TEST_ASSERT_TRUE(o.small);
     TEST_ASSERT_EQUAL_UINT32(5005, s.lastTx);   // straight out after the loopback
+    TEST_ASSERT_TRUE(o.answeredAt < 5005 + kRelaySlotTakeMs);
+    TEST_ASSERT_TRUE(s.bulkTx.empty());
   }
 }
 
-// Counter-test: the longest single hold of a maximal frame (523,055 B, the 383 KiB cap)
-// stays under the turn's 10 s acquire, even on a link far slower than the field's
-// (the 375 KB page took 2.7 s uncontended): one chunk at 1 KB/s is 8.2 s.
+// Counter-test: the longest single hold of a maximal answer (the 383 KiB cap, a
+// 523 KB frame) stays under the turn's 10 s acquire, even on a link far slower than
+// the field's (the 375 KB page took 2.7 s uncontended): one chunk at 1 KB/s is 8.2 s.
 static void test_maximal_frame_hold_stays_under_the_turn_acquire() {
+  TEST_ASSERT_TRUE(resFrameBytes(kMaxBody) > 520000);
   for (uint32_t bps : {1000u, 40000u, 200000u}) {
     Sim s;
     s.bytesPerSec = bps;
-    const Outcome o = serve(s, 0, 100, 523055);
+    const Outcome o = serve(s, 0, 100, kMaxBody);
     TEST_ASSERT_EQUAL((int)SlotWait::Acquired, (int)o.wait);
     TEST_ASSERT_TRUE(s.maxRelayHold < kTurnSlotAcquireMs);
   }
@@ -204,7 +254,7 @@ static void test_maximal_frame_hold_stays_under_the_turn_acquire() {
 }
 
 // Property over random interleavings (fake clock): turns wanting the slot at random
-// times for holds of 0-120 s, relay requests of random sizes. The relay never writes a
+// times for holds of 0-120 s, relay answers of random body sizes. The relay never writes a
 // big frame without the slot, its bulk writes never overlap a turn's hold, no turn
 // ever waits as long as its 10 s acquire, every busy answer lands before 30 s, and a
 // completed page lands inside the 28 s budget (a stall past it is reported, never
@@ -228,9 +278,9 @@ static void test_property_relay_bulk_never_overlaps_a_turn() {
     std::vector<Outcome> outs;
     uint32_t reqAt = rng() % 30000;
     for (int i = 0; i < 4; ++i) {
-      const size_t frame = (rng() % 3 == 0) ? (size_t)(rng() % 8000) : (size_t)(9000 + rng() % 514000);
+      const size_t body = (rng() % 3 == 0) ? (size_t)(rng() % 8000) : (size_t)(9000 + rng() % (kMaxBody - 9000));
       const uint32_t at = std::max(reqAt, s.now);
-      const Outcome o = serve(s, at, rng() % 3000, frame);
+      const Outcome o = serve(s, at, rng() % 3000, body);
       if (!o.small) {
         if (o.wait == SlotWait::Busy) {
           ++busy;
@@ -267,7 +317,7 @@ static void test_property_spans_are_disjoint() {
     s.bytesPerSec = 30000 + rng() % 300000;
     s.turns.push_back({rng() % 5000, rng() % 30000});
     s.turns.push_back({10000 + rng() % 20000, rng() % 60000});
-    serve(s, rng() % 8000, 50, 200000 + rng() % 300000);
+    serve(s, rng() % 8000, 50, 150000 + rng() % 225000);
     s.advanceTo(s.now + 100000);
     for (const Sim::Span& tx : s.bulkTx)
       for (const Sim::Span& h : s.turnHolds)
@@ -306,14 +356,63 @@ static void test_bulk_always_returns_the_slot() {
   TEST_ASSERT_EQUAL(0, held);
 }
 
+// ---- the device side: sendFrame decides on the body ------------------------------
+//
+// Static check over src/net/relay_client.cpp (comments stripped): emitResFrame hands
+// sendFrame the body length, and sendFrame's one slot decision uses it. The templates
+// above cannot see the call site; this fails on the tree that passed the frame length.
+static std::string readFile(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string all;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) all.append(buf, n);
+  std::fclose(f);
+  return all;
+}
+static std::string stripLineComments(const std::string& src) {
+  std::string out;
+  for (size_t a = 0; a < src.size();) {
+    size_t e = src.find('\n', a);
+    if (e == std::string::npos) e = src.size();
+    std::string line = src.substr(a, e - a);
+    const size_t c = line.find("//");
+    if (c != std::string::npos) line.erase(c);
+    out += line + "\n";
+    a = e + 1;
+  }
+  return out;
+}
+static int countOf(const std::string& hay, const std::string& needle) {
+  int n = 0;
+  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) n++;
+  return n;
+}
+
+static void test_send_frame_decides_on_the_body() {
+  const std::string src = stripLineComments(readFile("src/net/relay_client.cpp"));
+  const size_t at = src.find("\nBigFrame sendFrame(const uint8_t* frame, size_t len, size_t bodyLen,");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "sendFrame moved: update this guard");
+  const size_t end = src.find("\n}\n", at);
+  TEST_ASSERT_TRUE(end != std::string::npos);
+  const std::string fn = src.substr(at, end - at);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countOf(fn, "frameNeedsSlot("), "sendFrame makes one slot decision");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countOf(fn, "frameNeedsSlot(bodyLen)"),
+                                "sendFrame must decide the slot on the body length, never the frame's");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countOf(src, "sendFrame(frame, off, obodyLen, reqAtMs)"),
+                                "emitResFrame must hand sendFrame the body length");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, countOf(src, "frameNeedsSlot("), "a second slot decision in the relay");
+}
+
 int main() {
   UNITY_BEGIN();
-  RUN_TEST(test_policy_which_frames_take_the_slot);
+  RUN_TEST(test_policy_which_answers_take_the_slot);
   RUN_TEST(test_wait_pumps_every_200ms_and_answers_busy_before_30s);
-  RUN_TEST(test_small_polls_never_wait_for_the_slot);
+  RUN_TEST(test_dashboard_polls_never_wait_for_the_slot);
   RUN_TEST(test_maximal_frame_hold_stays_under_the_turn_acquire);
   RUN_TEST(test_property_relay_bulk_never_overlaps_a_turn);
   RUN_TEST(test_property_spans_are_disjoint);
   RUN_TEST(test_bulk_always_returns_the_slot);
+  RUN_TEST(test_send_frame_decides_on_the_body);
   return UNITY_END();
 }

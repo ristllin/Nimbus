@@ -453,10 +453,12 @@ BigFrame writeBigFrame(const uint8_t* frame, size_t len, size_t bodyLen, uint32_
   return BigFrame::Sent;
 }
 
-// Send one built frame: a small one straight out, a big one through the TLS work slot
-// (or, on the bench counter-leg, straight out as v4.5.13 did).
+// Send one built frame: a small answer straight out, a big one through the TLS work slot
+// (or, on the bench counter-leg, straight out as v4.5.13 did). Decided on the body, not
+// the frame: base64 and the head make the frame about a third larger, so the dashboard's
+// 6-7 KB polls are 8.5-9.5 KB frames that must not wait out a turn's exchange.
 BigFrame sendFrame(const uint8_t* frame, size_t len, size_t bodyLen, uint32_t reqAtMs) {
-  if (!nimbus::cloud::frameNeedsSlot(len)) return wsWriteAll(frame, len) ? BigFrame::Sent : BigFrame::Failed;
+  if (!nimbus::cloud::frameNeedsSlot(bodyLen)) return wsWriteAll(frame, len) ? BigFrame::Sent : BigFrame::Failed;
   if (!relayNoSlot()) return writeBigFrame(frame, len, bodyLen, reqAtMs);
   nimbus::heapwatch::tlsIoBegin("relay.bulk");
   const bool ok = wsWriteAll(frame, len);
@@ -488,7 +490,7 @@ bool settleFrame(BigFrame out, const char* id, int status, size_t bodyLen, uint3
 // Frame a `res` back over the WS: a SMALL head {t,id,status,headers} built with
 // ArduinoJson (correct escaping), then the base64 body spliced directly into ONE PSRAM
 // frame buffer. This avoids handing ArduinoJson a 300 KB linked string (which it did not
-// reliably retain) and keeps the whole res in one PSRAM buffer. A frame over
+// reliably retain) and keeps the whole res in one PSRAM buffer. A body over
 // kRelayBulkBytes goes out through the TLS work slot (writeBigFrame); `reqAtMs` is when
 // the request arrived (0 = now), the start of the cloud's 30 s bound.
 void emitResFrame(const char* id, int status, const http_replay::Headers& headers,

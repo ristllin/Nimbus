@@ -179,9 +179,12 @@ immediately after close - so the single mbedTLS arena holds at most the Telegram
 session plus one work session (two work sessions when **Concurrent connections**
 is set to 2, applied at boot). The cloud relay keeps its WebSocket open between
 requests, but its dial (connect, upgrade, hello) takes the slot, and so does every
-response frame over 8 KB, one 8 KB chunk at a time with the slot released between
-chunks, so a turn waiting for the slot gets it within one chunk. Heartbeats, acks
-and small responses take no slot. `tests/hil/test_l41_tls_slot_guard.py` (a source
+response whose body is over 8 KB, its frame one 8 KB chunk at a time with the slot
+released between chunks, so a turn waiting for the slot gets it within one chunk.
+Heartbeats, acks and small responses, including the dashboard's 6-7 KB status polls,
+take no slot, so the cloud dashboard stays live during a turn. The rule is on the
+body, not the frame: base64 makes the frame about a third larger, and deciding on
+the frame put every poll in the slot. `tests/hil/test_l41_tls_slot_guard.py` (a source
 check, no board) fails on any new TLS connect outside the slot.
 
 ## PSRAM-backed mbedTLS - the unblock for every live turn
