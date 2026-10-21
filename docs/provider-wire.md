@@ -253,7 +253,14 @@ per-host loops could not carry a turn across providers.)
    spawn, a message). The owner gets an honest error instead.
 3. A provider over its monthly token budget is skipped at turn entry (the
    budget gate picks the first keyed, under-budget alternate).
-4. Provider switches always start a fresh provider-side thread; continuity
+4. The park above holds here too, in the same RAM store: a billing or auth
+   refusal parks the host, a parked head is skipped at turn entry (the turn
+   starts on the first alternate that is not parked, and the next turn's
+   `[FALLBACK]` note names the head it started past), a parked alternate is
+   never a failover target, and the billing notice is told once per episode on
+   every path. With every host parked the head is asked anyway. The context fold
+   skips parked hosts the same way, and its answers and failures feed the park.
+5. Provider switches always start a fresh provider-side thread; continuity
    comes from the device's own layers (recent-conversation window, per-chat
    running memory, vector recall) - see
    [turn-anatomy.md](turn-anatomy.md) §3.

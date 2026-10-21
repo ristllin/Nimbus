@@ -245,6 +245,13 @@ std::string convMapSet(std::string raw, const std::string& chat,
 
 TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) {}
 
+void ProviderHosts::noteFailed(const std::string& host, const std::string& err) const {
+  if (!failed) return;
+  int status = 0;
+  const nimbus::orch::StepErr kind = nimbus::orch::classifyStepError(err, &status);
+  failed(host, kind, status);
+}
+
 void TurnEngine::deliver(const std::string& chatId, const std::string& text) {
   // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
   // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
@@ -258,6 +265,19 @@ void TurnEngine::deliver(const std::string& chatId, const std::string& text) {
     return;
   }
   if (d_.deliver) d_.deliver(chatId, text);
+}
+
+// One notice per billing episode on every path that meets the refusal (the fabric's
+// switch, the single-shot ladder, a turn that starts past a parked head). A quiet
+// turn holds the notice (deliver) without taking the latch, so the next seam that
+// can say it still does (lane M x lane K).
+void TurnEngine::deliverBillingNotice(const std::string& chatId, const std::string& host,
+                                      const std::string& text) {
+  if (!holdingNotices() && !nimbus::orch::billingNoticeDue(host.c_str())) {
+    hlog::logf("orchestrator: %s billing notice already given this episode", host.c_str());
+    return;
+  }
+  deliver(chatId, text);
 }
 
 void TurnEngine::emitHead(uint8_t ringStatus) {
@@ -1060,7 +1080,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const bool r = d_.hosts.run(h, cv, instructions, inputs, outJson, err, headToolsPtr, &attempt);
     tf.spend.add(h.c_str(),
                  d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
-    if (!r) tf.chain.note(h, err);
+    if (r) {
+      d_.hosts.noteAnswered(h);   // an answer ends a park and its billing episode
+    } else {
+      tf.chain.note(h, err);
+      d_.hosts.noteFailed(h, err);   // a billing or auth refusal parks the host (lane K)
+    }
     return r;
   };
   // Keyed AND runnable: the device registered exactly the three orchTurn* hosts,
@@ -1170,7 +1195,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 
   // Introspection: a provider-side conversation at entry (a stateless marker such
   // as "messages" holds nothing on the provider, so it is not one).
-  const bool convContinued = providerChainHeld(convId);
+  bool convContinued = providerChainHeld(convId);   // false again if the turn starts past a parked head
   hlog::logf("orchestrator: turn host=%s (conv=%d heap=%u)", host.c_str(),
              (int)convContinued, (unsigned)freeHeap());
   // Stage 2 phase 5: LOOP turns run the engine-owned FABRIC loop when the gate
@@ -1193,6 +1218,29 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     pendingFallbackWhose_ = turnLabel();
     pendingFallbackMs_ = nowMs();
   };
+  // Lane K's park on the single-shot path (the fabric does this inside its loop): a
+  // head that refused for billing or auth earlier this boot is not asked again; the
+  // turn starts on the first alternate that is not parked, and the next turn's
+  // [FALLBACK] note names the head it started past. With every host parked the head
+  // is asked anyway (the provider decides; the owner was already told).
+  auto startPastParkedHead = [&]() {
+    providers::HostPark why;
+    if (!d_.hosts.isParked(host, &why)) return;
+    for (const std::string& alt : fallbackOrder(errorClassOf(why.kind), /*needFabric=*/false)) {
+      if (d_.hosts.isParked(alt)) continue;
+      hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
+                 orch::stepErrSlug(why.kind), alt.c_str());
+      if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
+        deliverBillingNotice(chatId, host, "\xE2\x9A\xA0\xEF\xB8\x8F " +
+                                               orch::billingNotice(host, why.httpStatus, alt));
+      switchPath += " -> " + alt;
+      noteSwitch(errorClassOf(why.kind));
+      host = alt;
+      convId = "";
+      convContinued = false;
+      return;
+    }
+  };
   if (fabricOn) {
     std::vector<std::string> hostList{host};
     // Alternates chosen by the unified fallback engine (CUM-41). The error is not
@@ -1210,17 +1258,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           const providers::FabricSwitch& sw = providers::lastFabricSwitch();
           const std::string warn = "\xE2\x9A\xA0\xEF\xB8\x8F ";
           if (sw.kind == orch::StepErr::Billing) {
-            // Lane M x lane K: a quiet background turn holds its notices (the
-            // deliver below), so it must not consume the one-notice latch either -
-            // the owner hears of this billing episode from the next seam that can
-            // actually say it (an attended turn, the embedding seam).
-            if (holdingNotices()) {
-              ++quietNoticesHeld_;
-              hlog::logf("quiet turn: notice held, not sent (%.96s)",
-                         (warn + orch::billingNotice(from, sw.httpStatus, to)).c_str());
-            } else if (orch::billingNoticeDue(from.c_str())) {
-              deliver(chatId, warn + orch::billingNotice(from, sw.httpStatus, to));
-            }
+            deliverBillingNotice(chatId, from, warn + orch::billingNotice(from, sw.httpStatus, to));
           } else if (!sw.parkedStart) {
             deliver(chatId, warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) +
                                 " - switching to " + to + ". Your progress this turn carries over.");
@@ -1239,6 +1277,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         });
     convId = "";   // stateless loops keep no provider-side conversation
   } else {
+    startPastParkedHead();
     ok = runTurnHost(host, convId);
   }
   // Retry/failover ONLY when no loop tool executed: a replay re-runs the whole tool
@@ -1289,18 +1328,28 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     int tried = 0;
     for (const std::string& fb : fallbackOrder(ec, /*needFabric=*/false)) {
       if (ok || tried >= 2) break;
+      if (d_.hosts.isParked(fb)) {   // lane K: a parked alternate is not asked again
+        hlog::logf("orchestrator: %s is parked - not a failover target", fb.c_str());
+        continue;
+      }
       tried++;
       hlog::logf("orchestrator: %s down -> failover to %s", host.c_str(), fb.c_str());
       // The notice names the real reason for THIS host (err is the host that just
       // failed - the first host, then each fallback): a provider that did not
       // answer in time is not "unavailable" (CUM-544), and neither is a Cumulo
       // router that refused the model or the account (its own cause and fix,
-      // router_refusal.h; bench CUM-530).
-      deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) + fb +
-              " (your recent messages carry over; the provider-side thread restarts).");
+      // router_refusal.h; bench CUM-530). A billing refusal is told once per
+      // episode, like the fabric's (deliverBillingNotice).
+      const std::string notice = std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) +
+                                 fb + " (your recent messages carry over; the provider-side thread restarts).";
+      const orch::StepErr failKind = orch::classifyStepError(err);
+      if (failKind == orch::StepErr::Billing)
+        deliverBillingNotice(chatId, host, notice);
+      else
+        deliver(chatId, notice);
       // Record the switch as a model-facing context note for the next turn.
       switchPath += " -> " + fb;
-      noteSwitch(classifyErr(err));
+      noteSwitch(errorClassOf(failKind));
       turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry above)
       convId = ""; host = fb; ok = runTurnHost(host, convId);
     }
@@ -1768,7 +1817,7 @@ std::vector<std::string> TurnEngine::foldHostCandidates() const {
     if (h.empty() || !d_.hosts.has(h)) return false;
     if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) return false;
     if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) return false;
-    return true;
+    return !d_.hosts.isParked(h);   // lane K: a host refused for billing or auth waits
   };
   auto add = [&](std::string h) {
     trimInPlace(h);
@@ -1799,7 +1848,7 @@ std::vector<std::string> TurnEngine::foldHostCandidates() const {
     std::string rf = d_.cfg.provider.routerFallbackHost();
     trimInPlace(rf);
     if (!rf.empty() && d_.hosts.has(rf) &&
-        !(d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(rf)))
+        !(d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(rf)) && !d_.hosts.isParked(rf))
       out.push_back(std::move(rf));
   }
   return out;
@@ -1888,7 +1937,8 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
     foldSpend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
-    if (ok) { host = h; usage = u; break; }
+    if (ok) { d_.hosts.noteAnswered(h); host = h; usage = u; break; }
+    d_.hosts.noteFailed(h, err);
     hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
   }
   meterSpend(foldSpend, "compact");

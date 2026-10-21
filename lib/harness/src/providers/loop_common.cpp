@@ -159,7 +159,7 @@ struct ParkSlot {
   uint32_t sinceMs = 0;
   bool probing = false;      // kParkProbeMs passed: the next request is the probe
 };
-ParkSlot g_parks[4];         // the fabric speaks three hosts; fixed storage, never grows
+ParkSlot g_parks[6];         // every head host (the fabric's three, custom, cumulo, zai); fixed
 FabricSwitch g_lastSwitch;
 
 size_t parkFingerprint(const ProviderDeps& pd, const std::string& host) {

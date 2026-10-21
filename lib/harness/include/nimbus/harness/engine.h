@@ -60,10 +60,32 @@ using FabricLoopFn = std::function<bool(
     const std::function<void(const std::string& fromHost,
                              const std::string& toHost)>& notify)>;
 
+namespace providers {
+struct HostPark;   // why a host is parked (providers.h)
+}
+
 // Registry: host name -> ProviderTurnFn. An unknown host fails with the same
 // "host 'X' unavailable" error the device lambda produced, so it fails over.
 class ProviderHosts {
  public:
+  // Lane K's billing and auth park on the paths outside the fabric loop: the
+  // single-shot ladder and the context fold skip a parked host and feed the park
+  // with every answer and failure, so a refused host is asked once per episode on
+  // every path, not once per turn. The device binds these to providers::hostParked,
+  // noteHostFailed and unparkHost over its ProviderDeps (the park's key and model
+  // fingerprint is the fabric's). Unset = no host is ever parked.
+  std::function<bool(const std::string& host, providers::HostPark* why)> parked;
+  std::function<void(const std::string& host, nimbus::orch::StepErr kind, int httpStatus)> failed;
+  std::function<void(const std::string& host)> answered;
+  bool isParked(const std::string& host, providers::HostPark* why = nullptr) const {
+    return parked && parked(host, why);
+  }
+  // A failed request there, typed from its error line (classifyStepError).
+  void noteFailed(const std::string& host, const std::string& err) const;
+  void noteAnswered(const std::string& host) const {
+    if (answered) answered(host);
+  }
+
   // Optional fabric loop - when set AND cfg.loop.midTurnFailover() is true, the
   // engine routes LOOP turns here; ProviderTurnFn stays the single-shot (and
   // gate-off) path.
@@ -362,6 +384,10 @@ class TurnEngine {
   static std::string refusedBlock(const std::string& notes, bool mayHaveRun);
   // Lane L: the [SPAWN CAPACITY] sentence on how keyed providers run subs.
   std::string syncCapacityText() const;
+  // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
+  // with the embedding seam), held without taking the latch on a quiet turn.
+  void deliverBillingNotice(const std::string& chatId, const std::string& host,
+                            const std::string& text);
   // Lane L: an answer that was not applied (cut or unreadable) but whose
   // salvaged text claims sub-agents: the ledger line and the head's note, as
   // apply gives a promise without a spawn.

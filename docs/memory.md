@@ -322,6 +322,8 @@ summary instead of an ever-growing transcript.
 - **If a provider is down**: the fold tries the device's other configured
   providers before counting a failure (the same order turns use), so one
   provider having trouble doesn't stall compaction - or message you about it.
+  A provider that refused for credit or its key is skipped until that is fixed,
+  the same as for turns.
 - **If it keeps failing**: after 3 consecutive failures (or a fold that
   refills immediately), automatic compaction pauses for that chat and you get
   ONE alert; `/compact` always remains available and un-pauses it.

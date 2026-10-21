@@ -368,6 +368,10 @@ providers::ProviderDeps deviceProviderDeps() {
     if (!strcmp(host, "anthropic")) return std::string(store::anthropicKey().c_str());
     if (!strcmp(host, "mistral"))   return std::string(store::mistralKey().c_str());
     if (!strcmp(host, "custom"))    return std::string(store::customKey().c_str());
+    // The router heads: the adapters never read these (each builds its own deps),
+    // but the provider park fingerprints every head's key, so a new key un-parks it.
+    if (!strcmp(host, "zai"))       return std::string(store::zaiKey().c_str());
+    if (!strcmp(host, "cumulo"))    return std::string(store::cumuloKey().c_str());
     return std::string();
   };
   pd.orchModel = [](const char* host) { return std::string(store::orchModel(host).c_str()); };

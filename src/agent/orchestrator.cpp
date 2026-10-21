@@ -1485,6 +1485,15 @@ static TurnEngine::Deps buildTurnDeps() {
                                     ht, spend, notify);
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
+  // Lane K's park, one store for the fabric and the single-shot ladder and fold,
+  // over the same ProviderDeps (the park's key and model fingerprint).
+  d.hosts.parked = [](const std::string& h, providers::HostPark* why) {
+    return providers::hostParked(deviceProviderDeps(), h, why);
+  };
+  d.hosts.failed = [](const std::string& h, nimbus::orch::StepErr kind, int httpStatus) {
+    providers::noteHostFailed(deviceProviderDeps(), h, kind, httpStatus);
+  };
+  d.hosts.answered = [](const std::string& h) { providers::unparkHost(h); };
   // Head on the custom/LAN endpoint (Stage H): a single-shot chat-completions
   // structured turn (no tool loop v1 - the portable fn ignores `tools`), so a
   // fully keyless LAN setup (e.g. Ollama) can run the whole orchestrator.

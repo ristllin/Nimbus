@@ -20,7 +20,9 @@
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/providers.h"   // lane K's host park (hostParked / noteHostFailed)
 #include "nimbus/harness/turn_contract.h"
+#include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
 #include "nimbus/orch/budget.h"
@@ -265,7 +267,32 @@ struct Rig {
     for (const char* h : {"openai", "anthropic", "mistral", "custom", "cumulo", "zai"})
       d.hosts.add(h, providerFor(h));
     wireFabricStub(d);
+    wirePark(d);
     eng.reset(new TurnEngine(std::move(d)));
+  }
+
+  // Lane K's host park, bound like the device: the real providers::hostParked /
+  // noteHostFailed / unparkHost over a ProviderDeps whose key and model are this rig's
+  // config, so a new key un-parks a host. The park and the billing-notice latch are
+  // per process, so every rig starts with neither.
+  agent::providers::ProviderDeps parkDeps;
+  void wirePark(TurnEngine::Deps& d) {
+    agent::providers::clearHostParks();
+    for (const char* h : {"openai", "anthropic", "mistral", "custom", "cumulo", "zai"})
+      orch::billingEpisodeEnd(h);
+    parkDeps.key = [this](const char* h) {
+      auto it = cfg.keys.find(h);
+      return it == cfg.keys.end() ? std::string() : it->second;
+    };
+    parkDeps.orchModel = [this](const char* h) { return modelOf(h); };
+    parkDeps.nowMs = [this] { return plat.ms; };
+    d.hosts.parked = [this](const std::string& h, agent::providers::HostPark* why) {
+      return agent::providers::hostParked(parkDeps, h, why);
+    };
+    d.hosts.failed = [this](const std::string& h, orch::StepErr k, int status) {
+      agent::providers::noteHostFailed(parkDeps, h, k, status);
+    };
+    d.hosts.answered = [](const std::string& h) { agent::providers::unparkHost(h); };
   }
 
   // Fabric stub (recording): only reachable when a test opts in with
@@ -423,6 +450,18 @@ struct Rig {
     return n;
   }
   std::string lastText() const { return delivered.empty() ? "" : delivered.back().second; }
+  int countDelivered(const char* needle) const {
+    int n = 0;
+    for (auto& p : delivered)
+      if (p.second.find(needle) != std::string::npos) n++;
+    return n;
+  }
+  int attemptsOn(const std::string& host) const {
+    int n = 0;
+    for (auto& a : attempts)
+      if (a.host == host) n++;
+    return n;
+  }
   bool anyDelivered(const char* needle) const {
     for (auto& p : delivered)
       if (p.second.find(needle) != std::string::npos) return true;
@@ -1154,6 +1193,200 @@ static void test_billing_refusal_is_not_a_rate_limit() {
     TEST_ASSERT_TRUE_MESSAGE(r.lastText().find("out of credit") != std::string::npos, err);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("wait"), err);
   }
+}
+
+// ---- (5d) the billing park holds on every non-fabric path (lane K, PG2) -------
+// Lane K parks a host that refused for billing or auth and tells the owner once per
+// episode, but only the fabric loop honoured it: the single-shot ladder (tool loop
+// off, mid-turn failover off, a custom head) re-sent to the refusing host and
+// re-notified on every turn. The class, over every recorded billing refusal, every
+// head, both non-fabric paths, and one or two refusing hosts: three turns ask each
+// refusing host once and tell the owner once per host, and every turn is answered.
+static const char* const kBillingRefusals[] = {
+    "messages HTTP 400: Your credit balance is too low to access the Anthropic API. Please go to "
+    "Plans & Billing to upgrade or purchase credits.",
+    "resp HTTP 429: You exceeded your current quota, please check your plan and billing details.",
+    "resp HTTP 429: You have no credits remaining. Add credits to continue using the API.",
+    "chat HTTP 402: Payment Required",
+};
+
+static void test_billing_park_holds_on_the_single_shot_ladder() {
+  const char* const hosts[] = {"anthropic", "openai", "mistral"};
+  int cases = 0;
+  for (int h = 0; h < 3; h++) {
+    for (const char* refusal : kBillingRefusals) {
+      for (int loop = 0; loop < 2; loop++) {   // single shot, then the tool loop without the fabric
+        for (int refusing = 1; refusing <= 2; refusing++) {   // the head, then the head and its first alternate
+          Rig r;
+          r.cfg.toolLoop = loop == 1;
+          const std::string head = hosts[h], alt = hosts[(h + 1) % 3];
+          r.cfg.priority = head + "," + alt + "," + hosts[(h + 2) % 3];
+          Rig::Script refused;
+          refused.ok = false;
+          refused.err = refusal;
+          r.scripts[head] = {refused};
+          if (refusing == 2) r.scripts[alt] = {refused};
+          for (int t = 0; t < 3; t++) r.eng->handleMessage("hi", "Roy", "1001");
+          char msg[192];
+          snprintf(msg, sizeof msg, "head %s, refusing %d, loop %d, refusal %.60s", head.c_str(),
+                   refusing, loop, refusal);
+          TEST_ASSERT_EQUAL_MESSAGE(1, r.attemptsOn(head), msg);
+          TEST_ASSERT_EQUAL_MESSAGE(refusing == 2 ? 1 : 3, r.attemptsOn(alt), msg);
+          TEST_ASSERT_EQUAL_MESSAGE(refusing, r.countDelivered("out of credit"), msg);
+          TEST_ASSERT_EQUAL_MESSAGE(3, r.countDelivered("hello there"), msg);
+          TEST_ASSERT_TRUE_MESSAGE(r.fabricCalls.empty(), msg);
+          cases++;
+        }
+      }
+    }
+  }
+  printf("property: %d (head, refusal, path, refusing hosts) cases, each refusing host asked "
+         "once and told once over 3 turns\n", cases);
+}
+
+// The rest of the park's life on the ladder and the fold: a parked alternate is
+// skipped, the fold never asks a parked host, the probe after kParkProbeMs is one
+// request and a second refusal stays quiet, a new key ends the park (and the episode).
+static void test_billing_park_lifecycle_on_the_ladder_and_the_fold() {
+  Rig r;   // anthropic, openai, mistral; single shot
+  r.cfg.toolLoop = false;
+  Rig::Script refused;
+  refused.ok = false;
+  refused.err = kBillingRefusals[0];
+  r.scripts["anthropic"] = {refused};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL(1, r.countDelivered("out of credit"));
+  TEST_ASSERT_TRUE(LogCapture::contains("fabric: anthropic parked (billing, HTTP 400)"));
+
+  // A turn that starts past the parked head runs on a fresh thread, and the
+  // /api/lastturn capture says so (not the parked head's held conversation).
+  r.cfg.convId = "1001=anthropic|abc;";
+  r.eng->handleMessage("thread", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts.back().host.c_str());
+  TEST_ASSERT_FALSE(r.debug.back().convContinued);
+
+  // The fold skips the parked host, and a fold that answers leaves the park alone.
+  const std::vector<std::string> cands = r.eng->foldHostCandidates();
+  TEST_ASSERT_EQUAL(2, (int)cands.size());
+  TEST_ASSERT_EQUAL_STRING("openai", cands[0].c_str());
+  std::string sum;
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "digest", sum) == TurnEngine::FoldResult::Ok);
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
+
+  // A parked alternate is not a failover target: openai fails in transit (its one
+  // retry), the ladder goes past the parked anthropic to mistral.
+  Rig::Script down;
+  down.ok = false;
+  down.err = "network";
+  r.scripts["openai"] = {down};
+  r.scriptIdx["openai"] = 0;
+  r.attempts.clear();
+  r.eng->handleMessage("again", "Roy", "1001");
+  TEST_ASSERT_EQUAL(0, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL(2, r.attemptsOn("openai"));
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("mistral"));
+  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: anthropic is parked - not a failover target"));
+  r.scripts["openai"] = {Rig::Script()};
+  r.scriptIdx["openai"] = 0;
+
+  // After kParkProbeMs the next turn sends one probe; refused again, the host is
+  // parked again and the owner is not told a second time in the same episode.
+  r.plat.ms += agent::providers::kParkProbeMs;
+  r.attempts.clear();
+  r.eng->handleMessage("later", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL(1, r.countDelivered("out of credit"));
+  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: anthropic billing notice already given this episode"));
+  r.attempts.clear();
+  r.eng->handleMessage("and later", "Roy", "1001");
+  TEST_ASSERT_EQUAL(0, r.attemptsOn("anthropic"));
+
+  // A new key ends the park and the episode: the host is asked again and, still
+  // refusing, the owner hears of the new episode once.
+  r.cfg.keys["anthropic"] = "sk-other-ant";
+  r.attempts.clear();
+  r.eng->handleMessage("new key", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL(2, r.countDelivered("out of credit"));
+  TEST_ASSERT_TRUE(LogCapture::contains("fabric: anthropic un-parked (its key or model changed)"));
+}
+
+// A probe that is answered ends the park and its episode: the host serves again, and
+// a later refusal there is a new episode the owner hears about once.
+static void test_billing_park_answered_probe_ends_the_episode() {
+  Rig r;
+  r.cfg.toolLoop = false;
+  Rig::Script refused;
+  refused.ok = false;
+  refused.err = kBillingRefusals[0];
+  r.scripts["anthropic"] = {refused, Rig::Script(), refused};
+  r.eng->handleMessage("hi", "Roy", "1001");   // refused: parked, told
+  r.plat.ms += agent::providers::kParkProbeMs;
+  r.eng->handleMessage("later", "Roy", "1001");   // the probe is answered
+  TEST_ASSERT_EQUAL(2, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL_STRING("anthropic", r.attempts.back().host.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("fabric: anthropic answered again - un-parked"));
+  r.eng->handleMessage("again", "Roy", "1001");   // refused again: a new episode
+  TEST_ASSERT_EQUAL(3, r.attemptsOn("anthropic"));
+  TEST_ASSERT_EQUAL(2, r.countDelivered("out of credit"));
+}
+
+// A check that sends nothing (the fold's canFoldNow, run on every pump pass) may be
+// the first to see kParkProbeMs pass; the probe is still one request, sent by the
+// next turn, and a refusal re-parks the host for another kParkProbeMs.
+static void test_billing_park_probe_is_one_request_whoever_checks_first() {
+  Rig r;
+  r.cfg.toolLoop = false;
+  Rig::Script refused;
+  refused.ok = false;
+  refused.err = kBillingRefusals[0];
+  r.scripts["anthropic"] = {refused};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  r.plat.ms += agent::providers::kParkProbeMs;
+  for (int i = 0; i < 5; i++) TEST_ASSERT_TRUE(r.eng->canFoldNow());   // pump passes, no fold due
+  r.attempts.clear();
+  for (int t = 0; t < 3; t++) r.eng->handleMessage("later", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));   // the probe, then parked again
+  TEST_ASSERT_EQUAL(3, r.attemptsOn("openai"));
+  TEST_ASSERT_EQUAL(1, r.countDelivered("out of credit"));
+  TEST_ASSERT_EQUAL(2, (int)r.eng->foldHostCandidates().size());
+}
+
+// The latch is shared and a quiet turn leaves it armed, on the ladder as in the
+// fabric: an episode another seam already told (the embedding notice) is not told
+// again by a chat turn, and a refusal met by the nightly dream is told once by the
+// next attended turn, which starts past the parked head.
+static void test_billing_notice_latch_is_shared_and_kept_by_quiet_turns() {
+  {
+    Rig r;
+    r.cfg.toolLoop = false;
+    Rig::Script refused;
+    refused.ok = false;
+    refused.err = kBillingRefusals[0];
+    r.scripts["anthropic"] = {refused};
+    TEST_ASSERT_TRUE(orch::billingNoticeDue("anthropic"));   // the embedding seam told it
+    r.eng->handleMessage("hi", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
+    TEST_ASSERT_EQUAL(0, r.countDelivered("out of credit"));
+    TEST_ASSERT_EQUAL(1, r.countDelivered("hello there"));
+  }
+  Rig q;
+  q.cfg.toolLoop = false;
+  Rig::Script refused;
+  refused.ok = false;
+  refused.err = kBillingRefusals[0];
+  q.scripts["anthropic"] = {refused};
+  const orch::FireOutcome night = q.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  TEST_ASSERT_TRUE(night.ok);
+  TEST_ASSERT_EQUAL(0, q.countDelivered("out of credit"));   // nothing at night
+  TEST_ASSERT_TRUE(q.eng->quietNoticesHeld() >= 1);
+  q.eng->handleMessage("morning", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, q.attemptsOn("anthropic"));   // the night's one request, none since
+  TEST_ASSERT_EQUAL(1, q.countDelivered("anthropic says the account is out of credit (HTTP 400)"));
+  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: anthropic is parked (billing) - starting on openai"));
+  q.eng->handleMessage("and now", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, q.countDelivered("out of credit"));
 }
 
 // ---- (6) budget failover + all-exhausted refusal ----------------------------
@@ -3612,6 +3845,16 @@ static void test_model_change_during_the_turn_never_relabels_it() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", r.hookEnds.back().model.c_str());
 }
 
+// Lane K's park on the non-fabric paths (PG2), one group so main stays under the
+// length ceiling.
+static void runBillingParkTests() {
+  RUN_TEST(test_billing_park_holds_on_the_single_shot_ladder);
+  RUN_TEST(test_billing_park_lifecycle_on_the_ladder_and_the_fold);
+  RUN_TEST(test_billing_park_answered_probe_ends_the_episode);
+  RUN_TEST(test_billing_park_probe_is_one_request_whoever_checks_first);
+  RUN_TEST(test_billing_notice_latch_is_shared_and_kept_by_quiet_turns);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
@@ -3675,6 +3918,7 @@ int main(int, char**) {
   RUN_TEST(test_no_retry_after_tool_dispatched);
   RUN_TEST(test_rate_limit_reply_names_the_window);
   RUN_TEST(test_billing_refusal_is_not_a_rate_limit);
+  runBillingParkTests();
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
   RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);
