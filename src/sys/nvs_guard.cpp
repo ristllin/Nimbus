@@ -48,7 +48,7 @@ bool nvsAdmit(const char* ns, const char* key, nimbus::store::NvsValKind kind, s
   // The stats are read for every growing write (critical ones too) and every blob
   // write; a non-blob write that does not grow skips them (nvsAdmitWrite).
   const NvsAdmit a = nvsAdmitWrite(classifyNvsKey(ns, key), kind, bytes, storedEntries(ns, key),
-                                   false, s_starved.load(), [] { return nvsAvailableEntries(); });
+                                   s_starved.load(), [] { return nvsAvailableEntries(); });
   if (a == NvsAdmit::Write) return true;
   s_refused.fetch_add(1);
   s_evictReq.store(true);   // the main-loop pass frees rebuildable entries for the next try

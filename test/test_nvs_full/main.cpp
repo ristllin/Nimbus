@@ -1072,9 +1072,10 @@ static void test_reserve_property_over_every_row() {
 }
 
 // L19-20a: the available-entries source (nvs_get_stats on the device) is read before
-// every growing write, critical ones included, and never for an erase or a write that
-// does not grow; with nothing left, every growing write is refused whatever its class
-// (a refusal reports through notePersist like any failed write - the helper pattern
+// every growing write, critical ones included, and never for a write that does not
+// grow (an erase never reaches the gate: the device seam short-circuits it); with
+// nothing left, every growing write is refused whatever its class (a refusal reports
+// through notePersist like any failed write - the helper pattern
 // test_device_seam_asks_the_reserve pins). Exercised through nvsAdmitWrite, the exact
 // path src/sys/nvs_guard.cpp takes.
 static void test_growing_writes_read_stats_and_refuse_when_nothing_is_left() {
@@ -1083,30 +1084,31 @@ static void test_growing_writes_read_stats_and_refuse_when_nothing_is_left() {
     ++reads;
     return (size_t)0;
   };
-  // Erases and non-growing rewrites never read the stats: the remedy always works.
+  // Non-growing rewrites never read the stats: the remedy always works, and the
+  // device seam short-circuits erases before the gate (an erase only frees entries).
   reads = 0;
   TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Str,
-                                                             10, 10, true, false, available));
-  TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Str,
-                                                             10, 12, false, false, available));
+                                                             10, 12, false, available));
   TEST_ASSERT_EQUAL_INT(0, reads);
+  TEST_ASSERT_TRUE(readFile("src/sys/nvs_guard.cpp").find("if (erase) return true;") !=
+                   std::string::npos);
   // A growing write reads them exactly once, whatever its class - critical included.
   for (int c = 0; c < 4; ++c) {
     reads = 0;
     TEST_ASSERT_EQUAL((int)NvsAdmit::RefuseNoRoom,
-                      (int)nvsAdmitWrite((NvsClass)c, NvsValKind::Str, 10, 0, false, false,
+                      (int)nvsAdmitWrite((NvsClass)c, NvsValKind::Str, 10, 0, false,
                                          available));
     TEST_ASSERT_EQUAL_INT(1, reads);
   }
   // A blob reads them even when it shrinks: the span check comes first.
   reads = 0;
   TEST_ASSERT_EQUAL((int)NvsAdmit::RefuseNoRoom,
-                    (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Blob, 64, 100, false, false,
+                    (int)nvsAdmitWrite(NvsClass::Owner, NvsValKind::Blob, 64, 100, false,
                                        available));
   TEST_ASSERT_EQUAL_INT(1, reads);
   // With entries left, the critical growing write lands (it may spend the reserve).
   TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmitWrite(NvsClass::Critical, NvsValKind::Str,
-                                                             10, 0, false, false,
+                                                             10, 0, false,
                                                              [] { return (size_t)5; }));
   // The device gate asks it the same way: every class, stats read, starved passed on.
   const std::string guard = readFile("src/sys/nvs_guard.cpp");
@@ -1137,7 +1139,7 @@ struct SpyBlobNvs {
 
 // The device pattern: the gate first, and only an admission calls the blob writer.
 static bool deviceBlobWrite(SpyBlobNvs& nvs, NvsClass cls, size_t bytes, size_t oldEntries) {
-  const NvsAdmit a = nvsAdmitWrite(cls, NvsValKind::Blob, bytes, oldEntries, false, false,
+  const NvsAdmit a = nvsAdmitWrite(cls, NvsValKind::Blob, bytes, oldEntries, false,
                                    [&nvs] { return nvs.free; });
   if (a != NvsAdmit::Write) return false;   // reported through notePersist, like any failed write
   return nvs.setBlob("blob", std::string(bytes, 'x'));
@@ -1466,6 +1468,59 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
 // ota_update.cpp's guard wrappers (each raw line sits on a notePersist call) and
 // main.cpp's factory-reset identity restore (best-effort, onto a partition it erased
 // lines above, so there is nothing to refuse it).
+
+// One file's raw blob/str lines against the reviewed set: file -> every raw line must
+// sit on a notePersist call; a reviewed file without that demand writes onto a
+// partition it just erased.
+static void scanFileForRawBlobWriters(const std::string& path,
+                                      const std::map<std::string, bool>& reviewed, int& seen) {
+  const std::string text = readFile(path.c_str());
+  if (text.find("putBytes") == std::string::npos &&
+      text.find("nvs_set_blob") == std::string::npos &&
+      text.find("nvs_set_str") == std::string::npos)
+    return;
+  std::regex blobPrim(R"re(\bputBytes\s*\(|\bnvs_set_blob\s*\(|\bnvs_set_str\s*\()re");
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    std::string line = text.substr(start, end - start);
+    const size_t cm = line.find("//");
+    if (cm != std::string::npos) line = line.substr(0, cm);
+    if (std::regex_search(line, blobPrim)) {
+      ++seen;
+      const auto it = reviewed.find(path);
+      TEST_ASSERT_TRUE_MESSAGE(it != reviewed.end(),
+                               ("unreviewed raw blob/str NVS writer: " + path + ": " + line).c_str());
+      if (it != reviewed.end() && it->second)
+        TEST_ASSERT_TRUE_MESSAGE(line.find("notePersist(") != std::string::npos,
+                                 (path + ": " + line).c_str());
+    }
+    start = end + 1;
+  }
+}
+
+// L19-20c's all-of-src-and-lib scan over the blob-capable primitives, called by
+// test_raw_nvs_writers_report_through_notePersist.
+static void scanRawBlobWritersOutsideTheGatedHelpers() {
+  const std::map<std::string, bool> reviewed = {
+      {"src/sys/ota_update.cpp", true},
+      {"src/main.cpp", false},   // the factory-reset identity restore, onto an erased partition
+  };
+  int seen = 0;
+  for (const char* root : {"src", "lib"}) {
+    for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
+      if (!e.is_regular_file()) continue;
+      const std::string path = e.path().generic_string();
+      const std::string ext = e.path().extension().string();
+      if (ext != ".cpp" && ext != ".h" && ext != ".hpp") continue;
+      scanFileForRawBlobWriters(path, reviewed, seen);
+    }
+  }
+  // The scan found the reviewed writers at all (the guard is not scanning nothing).
+  TEST_ASSERT_TRUE(seen >= 2);
+}
+
 static void test_raw_nvs_writers_report_through_notePersist() {
   std::regex raw(R"re(solide::memory::(set[A-Z]\w*|eraseKey|clear)\(|nvs_set_\w+\(|nvs_erase_\w+\(|\b(p|s_prefs)\.(put[A-Z]\w*|remove|clear)\()re");
   const char* files[] = {"src/agent/provider_verify.cpp", "src/agent/memory_subsystem.cpp",
@@ -1490,47 +1545,7 @@ static void test_raw_nvs_writers_report_through_notePersist() {
     }
     TEST_ASSERT_TRUE_MESSAGE(n > 0, f);   // the scan found the file's writers at all
   }
-  // The all-of-src-and-lib guard over the three blob-capable primitives.
-  std::regex blobPrim(R"re(\bputBytes\s*\(|\bnvs_set_blob\s*\(|\bnvs_set_str\s*\()re");
-  // file -> every raw line must sit on a notePersist call
-  const std::map<std::string, bool> reviewed = {
-      {"src/sys/ota_update.cpp", true},
-      {"src/main.cpp", false},   // the factory-reset identity restore, onto an erased partition
-  };
-  int seen = 0;
-  for (const char* root : {"src", "lib"}) {
-    for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
-      if (!e.is_regular_file()) continue;
-      const std::string path = e.path().generic_string();
-      const std::string ext = e.path().extension().string();
-      if (ext != ".cpp" && ext != ".h" && ext != ".hpp") continue;
-      const std::string text = readFile(path.c_str());
-      if (text.find("putBytes") == std::string::npos &&
-          text.find("nvs_set_blob") == std::string::npos &&
-          text.find("nvs_set_str") == std::string::npos)
-        continue;
-      size_t start = 0;
-      while (start < text.size()) {
-        size_t end = text.find('\n', start);
-        if (end == std::string::npos) end = text.size();
-        std::string line = text.substr(start, end - start);
-        const size_t cm = line.find("//");
-        if (cm != std::string::npos) line = line.substr(0, cm);
-        if (std::regex_search(line, blobPrim)) {
-          ++seen;
-          const auto it = reviewed.find(path);
-          TEST_ASSERT_TRUE_MESSAGE(it != reviewed.end(),
-                                   ("unreviewed raw blob/str NVS writer: " + path + ": " + line).c_str());
-          if (it != reviewed.end() && it->second)
-            TEST_ASSERT_TRUE_MESSAGE(line.find("notePersist(") != std::string::npos,
-                                     (path + ": " + line).c_str());
-        }
-        start = end + 1;
-      }
-    }
-  }
-  // The scan found the reviewed writers at all (the guard is not scanning nothing).
-  TEST_ASSERT_TRUE(seen >= 2);
+  scanRawBlobWritersOutsideTheGatedHelpers();
 }
 
 // ---- 8. the moved stores: the usage ledger and the scratchpad (lane C, D-2) -------

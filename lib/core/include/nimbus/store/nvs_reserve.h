@@ -122,20 +122,20 @@ inline bool nvsWriteShrinks(bool erase, size_t newEntries, size_t oldEntries) {
 
 // The whole admission for one write, the way the device asks it: `available` is read
 // (it costs an nvs_get_stats walk) for every write that needs it, a growing write of
-// any class and every blob write, and never for an erase or a non-blob write that does
-// not grow. `available` is a callable returning the available entries.
+// any class and every blob write, and never for a non-blob write that does not grow.
+// An erase never gets here (it is always admitted; the device gate short-circuits
+// it). `available` is a callable returning the available entries.
 template <typename AvailableFn>
 NvsAdmit nvsAdmitWrite(NvsClass cls, NvsValKind kind, size_t bytes, size_t oldEntries,
-                       bool erase, bool starved, AvailableFn&& available) {
+                       bool starved, AvailableFn&& available) {
   NvsAdmitIn in;
   in.cls        = cls;
   in.newEntries = nvsValueEntries(kind, bytes);
   in.oldEntries = oldEntries;
   in.blobSpan   = kind == NvsValKind::Blob ? nvsBlobWriteSpan(bytes) : 0;
-  in.erase      = erase;
-  in.starved    = starved;
-  if (!erase && (in.blobSpan || !nvsWriteShrinks(false, in.newEntries, oldEntries)))
+  if (in.blobSpan || !nvsWriteShrinks(false, in.newEntries, oldEntries))
     in.available = available();
+  in.starved = starved;
   return nvsAdmit(in);
 }
 
