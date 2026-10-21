@@ -8,8 +8,8 @@ every key has a class; the last 24 free entries are kept for critical writes (th
 offset, the OTA guard, the credentials); erases and non-growing rewrites always
 land; a refusal answers 507 storage_full; a main-loop pass evicts rebuildable
 caches, and a device that still cannot get back to the reserve is "starved" (owner
-settings save again, background saves stay refused). The usage ledger and the
-scratchpad moved to flash files.
+settings save again down to a floor of 8 free entries, background saves stay
+refused). The usage ledger and the scratchpad moved to flash files.
 
 Legs (unit L, the fill unit, on the TEST build: ``NVSFILL``, ``TURN``, ``OTASIM``):
 

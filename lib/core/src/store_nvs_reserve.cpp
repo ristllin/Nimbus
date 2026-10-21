@@ -236,12 +236,14 @@ NvsAdmit nvsAdmit(const NvsAdmitIn& in) {
   // entries than the value takes, nothing can hold it, whatever its class.
   if (in.available < in.newEntries) return NvsAdmit::RefuseNoRoom;
   if (in.cls == NvsClass::Critical) return NvsAdmit::Write;
-  if (in.cls == NvsClass::Owner && in.starved) return NvsAdmit::Write;
   // NVS writes the new value before it erases the old one, but the net cost of a
   // growing rewrite is only the growth: that is what must leave the reserve intact.
+  // Starved, owner config may spend the reserve, but never its floor: the entries the
+  // offset and OTA guard rewrites need stay free whatever the owner saves.
+  const size_t keep = in.cls == NvsClass::Owner && in.starved ? kNvsStarvedFloorEntries
+                                                               : kNvsReserveEntries;
   const size_t growth = in.newEntries - in.oldEntries;   // > 0 here (not a shrink)
-  if (in.available >= growth && in.available - growth >= kNvsReserveEntries)
-    return NvsAdmit::Write;
+  if (in.available >= growth && in.available - growth >= keep) return NvsAdmit::Write;
   return NvsAdmit::RefuseReserve;
 }
 

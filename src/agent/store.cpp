@@ -757,8 +757,10 @@ void nvsMaintain(uint32_t nowMs) {
     s_starvedLogged = true;
     agent::alogcf(nimbus::errlog::cat::kNvs,
                   "nvs: below the reserve after eviction (%u of %u entries free) - "
-                  "background saves are paused, owner settings still save",
-                  (unsigned)avail, (unsigned)kReserve);
+                  "background saves are paused, owner settings still save while "
+                  "%u entries stay free",
+                  (unsigned)avail, (unsigned)kReserve,
+                  (unsigned)nimbus::store::kNvsStarvedFloorEntries);
   }
 }
 

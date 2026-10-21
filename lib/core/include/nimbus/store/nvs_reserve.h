@@ -17,9 +17,11 @@
 //     space or reuse it), so the storage-full remedy always works; a blob write must
 //     fit its whole span, a rewrite included (the IDF leak below);
 //   - when the reserve cannot be restored even after evicting the rebuildable caches
-//     (the device is STARVED), owner-config writes are accepted again and only
+//     (the device is STARVED), owner-config writes are accepted again, down to a
+//     FLOOR of kNvsStarvedFloorEntries free entries they may never take, and
 //     rebuildable and telemetry writes stay refused, so a full device never answers
-//     "storage full" to every save forever;
+//     "storage full" to every save forever, yet owner config can never take the
+//     entries the Telegram offset and OTA guard rewrites need;
 //   - the eviction plan: which rebuildable keys may go, in which order. Never the
 //     managed-agent ids (antEnv, antAgents: evicting them orphans remote agents that
 //     keep costing money) and never the model choice lists (mch_: wave 1 has no file
@@ -46,6 +48,19 @@ const char* nvsClassName(NvsClass c);   // "critical" | "owner" | "rebuildable" 
 // (test_nvs_full pins it): a cloud credential re-mint (about 12 entries) plus the OTA
 // guard rewrite (about 7) plus the Telegram offset, with margin.
 inline constexpr size_t kNvsReserveEntries = 24;
+
+// The free entries a STARVED owner-config write must leave. Starved, owner config may
+// spend the reserve, but a growing owner write is refused (RefuseReserve, reported as
+// storage full like any reserve refusal) when it would leave fewer than this. The
+// driver writes a new value before it erases the old one, so even a one-entry rewrite
+// (the Telegram offset) fails on a partition with no free entry: without the floor a
+// new owner key could take the last entries and every later offset save would fail
+// (messages replayed as paid turns). The floor covers arming the OTA guard (about 6
+// entries) plus the offset rewrite (1), with one to spare (test_nvs_full pins it).
+// Critical writes may still spend it: the whole reserve is theirs.
+inline constexpr size_t kNvsStarvedFloorEntries = 8;
+static_assert(kNvsStarvedFloorEntries >= 1 && kNvsStarvedFloorEntries < kNvsReserveEntries,
+              "the starved floor keeps at least one entry and sits inside the reserve");
 
 // One classification row. `prefix` rows match any key that starts with `key`.
 // `evictOrder` > 0 marks a rebuildable key the main-loop pass may erase to restore the
@@ -84,12 +99,14 @@ size_t nvsBlobWriteSpan(size_t bytes);
 // ---- the admission decision --------------------------------------------------
 // Every growing write is checked against the available entries, critical ones
 // included: a critical write may use the whole reserve but is refused when the
-// partition cannot hold its new value at all. A blob write, new or rewrite, is
-// admitted only when the available entries cover its whole span (nvsBlobWriteSpan):
-// ESP-IDF 5.5.4's cleanup after a failed multi-page blob write erases the wrong chunk
-// indices when the new copy is the second version, so one failed rewrite leaves every
-// chunk it wrote stranded (counted used) until the next boot. Refused before the
-// write, that path is never entered.
+// partition cannot hold its new value at all; a starved owner-config write may use
+// the reserve down to kNvsStarvedFloorEntries (its growth is what must leave the
+// floor); every other growing write must leave the whole reserve. A blob write, new
+// or rewrite, is admitted only when the available entries cover its whole span
+// (nvsBlobWriteSpan): ESP-IDF 5.5.4's cleanup after a failed multi-page blob write
+// erases the wrong chunk indices when the new copy is the second version, so one
+// failed rewrite leaves every chunk it wrote stranded (counted used) until the next
+// boot. Refused before the write, that path is never entered.
 struct NvsAdmitIn {
   NvsClass cls          = NvsClass::Owner;
   size_t   available    = 0;   // nvs_get_stats available_entries (GC page excluded)
@@ -101,7 +118,8 @@ struct NvsAdmitIn {
 };
 enum class NvsAdmit : uint8_t {
   Write = 0,        // go ahead (the driver may still refuse a truly full partition)
-  RefuseReserve,    // would eat into the reserve: refused, reported as storage full
+  RefuseReserve,    // would eat into the reserve (starved owner config: into the floor):
+                    // refused, reported as storage full
   RefuseNoRoom,     // the partition cannot hold the new value (or a blob's span) at all
 };
 NvsAdmit nvsAdmit(const NvsAdmitIn& in);

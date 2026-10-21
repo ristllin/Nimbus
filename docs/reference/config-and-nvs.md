@@ -75,7 +75,7 @@ one):
 | Class | Examples | At the reserve |
 |---|---|---|
 | Critical | `tgOffset`, the OTA guard (`otaPend`, `otaBoots`, `otaPrev`, `otaLast`), `webTok`, `apPass`, the cloud credential (`cloudDevId`, `cloudCred`, `cloudHost`), `otaType`, `embLocked` | Always written |
-| Owner config | Provider keys, routing, connectors, Telegram allowlist and owners, Wi-Fi, every setting a person saves | Refused, unless the device is starved |
+| Owner config | Provider keys, routing, connectors, Telegram allowlist and owners, Wi-Fi, every setting a person saves | Refused, unless the device is starved (then refused only below the floor of 8) |
 | Rebuildable | `vfy_*`, `vrs_*`, `vrm_*`, `mch_*`, `antEnv`, `antAgents`, `dreamScrHash`, `zaiBase`, `tgBotName` | Refused |
 | Telemetry | `orchConv`, `otaNotif`, `otaNotes`, `battModel`, `lbPingEp`, the `agjournal` records, the legacy `usgLedger` and `scratchB` copies | Refused |
 
@@ -91,6 +91,13 @@ any legacy `mcat_*`, then `dreamScrHash`, then `fbRules` only while it is a clou
 When eviction cannot restore the reserve the device is **starved**: owner-config
 writes are accepted again and only rebuildable and telemetry writes stay refused, said
 once per boot in the device log, so a full device never answers 507 to every save.
+Starved owner saves still stop at a **floor of 8 free entries**: a save that would
+leave fewer is refused (507, like any reserve refusal). Those last entries are what
+the Telegram position and the update rollback safety net need to keep saving: the
+storage writes a new value before it removes the old one, so even a one-entry rewrite
+fails on a partition with nothing free, and messages would then be answered again
+after every restart. Eight covers arming the rollback safety net (about 6 entries)
+and the Telegram position (1), with one to spare.
 
 Before any write that grows a value, the gate reads the partition's free entries
 (`nvs_get_stats`), critical keys included: a write whose value cannot fit at all is

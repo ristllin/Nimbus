@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -7,6 +8,7 @@
 #include <functional>
 #include <set>
 #include <map>
+#include <random>
 #include <regex>
 #include <string>
 #include <vector>
@@ -1006,6 +1008,51 @@ static void test_value_entries_match_the_partition_model() {
   TEST_ASSERT_EQUAL_size_t(4, nvsValueEntries(NvsValKind::Blob, 33));
 }
 
+// The starved leg of the reserve property, for one write (`in`: class, new and old
+// entries; a growing write). Starved (the pass could not restore the reserve): owner
+// config may spend the reserve, down to the floor and no further; rebuildable and
+// telemetry stay refused; critical lands whenever the value fits.
+static void assertStarvedLeg(NvsAdmitIn in, const char* key) {
+  in.starved = true;
+  const size_t growth = in.newEntries - in.oldEntries;
+  const bool critical = in.cls == NvsClass::Critical;
+  const bool owner = in.cls == NvsClass::Owner;
+  const auto verdict = [&in](bool lands) {
+    if (in.available < in.newEntries) return (int)NvsAdmit::RefuseNoRoom;
+    return lands ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve;
+  };
+  // One short of the reserve: owner config still lands (the fallback).
+  in.available = kNvsReserveEntries + growth - 1;
+  TEST_ASSERT_EQUAL_MESSAGE(verdict(critical || owner), (int)nvsAdmit(in), key);
+  // One short of the floor: refused unless critical.
+  in.available = kNvsStarvedFloorEntries + growth - 1;
+  TEST_ASSERT_EQUAL_MESSAGE(verdict(critical), (int)nvsAdmit(in), key);
+  // Exactly the floor left after it: owner config lands, and the Telegram offset (a
+  // critical int rewrite) is still admitted with a free entry to land in (the driver
+  // writes it before it erases the old one).
+  in.available = kNvsStarvedFloorEntries + growth;
+  const int atFloor = verdict(critical || owner);
+  TEST_ASSERT_EQUAL_MESSAGE(atFloor, (int)nvsAdmit(in), key);
+  if (owner && atFloor == (int)NvsAdmit::Write) {
+    NvsAdmitIn offset;
+    offset.cls = NvsClass::Critical;
+    offset.newEntries = offset.oldEntries = nvsValueEntries(NvsValKind::Int, 0);
+    offset.available = in.available - growth;
+    offset.starved = true;
+    TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::Write, (int)nvsAdmit(offset), key);
+    TEST_ASSERT_TRUE_MESSAGE(offset.available >= offset.newEntries, key);
+  }
+  // A NEW key taking every free entry (the gate's finding: a new owner key took the
+  // partition to zero): refused unless critical.
+  if (in.oldEntries == 0) {
+    in.available = in.newEntries;
+    TEST_ASSERT_EQUAL_MESSAGE(verdict(critical), (int)nvsAdmit(in), key);
+  }
+  // Truly nothing left: nothing growing lands, whatever its class.
+  in.available = 0;
+  TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::RefuseNoRoom, (int)nvsAdmit(in), key);
+}
+
 // The reserve property, over every class row and a spread of value sizes: a write that
 // would leave fewer than the reserve is refused unless it is critical; one more free
 // entry and it lands. A write that cannot fit at all - fewer available entries than the
@@ -1013,6 +1060,9 @@ static void test_value_entries_match_the_partition_model() {
 // is refused for every class (RefuseNoRoom, the L19-20 "nothing left" refusal: the
 // driver would fail it anyway, and a refusal reports through notePersist like any
 // failed write). Erases and non-growing rewrites always land, even at 0 free.
+// Starved, owner config may spend the reserve down to kNvsStarvedFloorEntries and no
+// further (a NEW owner key that would leave fewer is refused), and after any owner
+// write it admits, the Telegram offset rewrite still has a free entry to land in.
 static void test_reserve_property_over_every_row() {
   size_t n = 0;
   const NvsKeyClass* t = nvsKeyTable(&n);
@@ -1042,20 +1092,7 @@ static void test_reserve_property_over_every_row() {
           const int enough = in.available < in.newEntries
                                   ? (int)NvsAdmit::RefuseNoRoom : (int)NvsAdmit::Write;
           TEST_ASSERT_EQUAL_MESSAGE(enough, (int)nvsAdmit(in), t[i].key);
-          // Starved (the pass could not restore the reserve): owner config lands
-          // again when it fits, rebuildable and telemetry stay refused. When the
-          // partition truly has nothing left, nothing growing lands, whatever its
-          // class.
-          in.available = in.newEntries;
-          in.starved = true;
-          if (in.available < kNvsReserveEntries + growth) {
-            const bool lands = critical || t[i].cls == NvsClass::Owner;
-            TEST_ASSERT_EQUAL_MESSAGE(lands ? (int)NvsAdmit::Write : (int)NvsAdmit::RefuseReserve,
-                                      (int)nvsAdmit(in), t[i].key);
-          }
-          in.available = 0;
-          TEST_ASSERT_EQUAL_MESSAGE((int)NvsAdmit::RefuseNoRoom, (int)nvsAdmit(in), t[i].key);
-          in.starved = false;
+          assertStarvedLeg(in, t[i].key);
         }
         // Erase and a same-size or smaller rewrite: always, at 0 free, any class.
         in.available = 0;
@@ -1208,6 +1245,10 @@ static void test_reserve_covers_the_critical_working_set() {
   const size_t offset = nvsValueEntries(NvsValKind::Int, 0);
   TEST_ASSERT_TRUE(credential + otaGuard + offset <= kNvsReserveEntries);
   TEST_ASSERT_TRUE(kNvsReserveEntries >= 24);   // the owner decision (Q4): at least 24
+  // The starved floor owner config never takes: arming the OTA guard with the offset
+  // rewrite after it, and one entry to spare; inside the reserve.
+  TEST_ASSERT_TRUE(otaGuard + offset + 1 <= kNvsStarvedFloorEntries);
+  TEST_ASSERT_TRUE(kNvsStarvedFloorEntries < kNvsReserveEntries);
 }
 
 // The reserve in action on a full-partition fake, the way the device gates: at
@@ -1265,17 +1306,126 @@ static void test_reserve_keeps_critical_writes_landing_on_a_filling_device() {
   // The remedy still works: removing a key is an erase.
   g.nvs.str["zaiKey"] = std::string(49, 'z');
   TEST_ASSERT_TRUE(eraseLanded(g.nvs, "zaiKey"));
-  // Starved (the pass could not restore the reserve): owner config is accepted again.
-  g.fillTo(4);
+  // Starved (the pass could not restore the reserve): owner config is accepted again
+  // while it leaves the floor ("zai" takes 2 entries and leaves exactly the floor),
+  // and not past it.
+  g.fillTo(kNvsStarvedFloorEntries + 2);
   g.starved = true;
   TEST_ASSERT_TRUE(g.putStr("orchHost", "zai"));
+  TEST_ASSERT_EQUAL_size_t(kNvsStarvedFloorEntries, g.nvs.freeEntries());
+  TEST_ASSERT_FALSE(g.putInt("loopMaxCnt", 4));               // a NEW owner int: past the floor
   TEST_ASSERT_FALSE(g.putStr("orchConv", "openai|c_123"));
   TEST_ASSERT_FALSE(g.putStr("vrs_openai", "nocredits"));
+  TEST_ASSERT_TRUE(g.putInt("tgOffset", 500));                // the offset still lands
   // Fresh device: nothing is refused.
   GatedNvs fresh(504);
   TEST_ASSERT_TRUE(fresh.putStr("orchConv", "openai|c_1"));
   TEST_ASSERT_TRUE(fresh.putStr("vrs_openai", "nocredits"));
   TEST_ASSERT_TRUE(fresh.putInt("lbPingEp", 1));
+}
+
+// The starved floor end to end on the fake (the gate's finding: in the starved
+// fallback a new owner key could take the partition to zero free entries, after which
+// the Telegram offset and the OTA guard rewrites failed at the driver). Starved owner
+// saves land until the next one would cross the floor, and stop there; the offset
+// keeps landing; the OTA guard can still be armed, and the offset lands after it.
+static void test_starved_owner_saves_stop_at_the_floor() {
+  GatedNvs g(504);
+  g.nvs.ints["tgOffset"] = 100;
+  g.fillTo(kNvsReserveEntries - 1);   // below the reserve, and nothing left to evict
+  g.starved = true;
+  const std::string value(40, 'v');   // 3 entries a save
+  int landed = 0;
+  for (int i = 0; i < 40; ++i) {
+    const std::string k = "own_new" + std::to_string(i);   // unlisted: owner config
+    if (g.putStr(k.c_str(), value)) ++landed;
+  }
+  TEST_ASSERT_TRUE(landed > 0);                                          // the fallback saves
+  TEST_ASSERT_TRUE(g.nvs.freeEntries() >= kNvsStarvedFloorEntries);      // never past the floor
+  TEST_ASSERT_TRUE(g.nvs.freeEntries() < kNvsStarvedFloorEntries + 3);   // and it got there
+  for (int i = 0; i < 20; ++i) TEST_ASSERT_TRUE(g.putInt("tgOffset", 101 + i));
+  TEST_ASSERT_TRUE(g.putInt("otaPend", 1));
+  TEST_ASSERT_TRUE(g.putInt("otaBoots", 0));
+  TEST_ASSERT_TRUE(g.putStr("otaPrev", "app1"));
+  TEST_ASSERT_TRUE(g.putStr("otaLast", std::string(30, 'r')));
+  TEST_ASSERT_TRUE(g.nvs.freeEntries() >= 1);
+  TEST_ASSERT_TRUE(g.putInt("tgOffset", 999));
+  TEST_ASSERT_EQUAL_INT(999, g.nvs.ints["tgOffset"]);
+}
+
+// The floor as a sequence property: from any start, any sequence of admitted
+// non-critical writes (owner config starved or not, rebuildable, telemetry; new keys,
+// growing and shrinking rewrites and erases; ints, strings and blobs; the starved
+// flag flipping at any point) never leaves fewer free entries than the start or the
+// floor, whichever is lower. So whenever the device had a free entry, the Telegram
+// offset rewrite (a critical int) still has one after the sequence, and from the
+// floor up the OTA guard can still be armed with the offset landing after it.
+// Critical writes are left out on purpose: the reserve is theirs to spend, and
+// test_reserve_covers_the_critical_working_set sizes it for them.
+static void test_starved_floor_holds_over_any_admitted_sequence() {
+  std::mt19937 rng(20261021u);
+  const NvsClass classes[] = {NvsClass::Owner, NvsClass::Rebuildable, NvsClass::Telemetry};
+  size_t admittedGrowing = 0, endedAtFloor = 0;
+  for (int run = 0; run < 400; ++run) {
+    const size_t start = 1 + rng() % 60;
+    size_t avail = start;
+    std::map<int, size_t> stored;   // key -> entries it takes
+    bool starved = (rng() & 1) != 0;
+    for (int step = 0; step < 200; ++step) {
+      if (rng() % 16 == 0) starved = !starved;   // the main-loop pass may flip it any time
+      const int key = (int)(rng() % 24);
+      NvsAdmitIn in;
+      in.cls = classes[rng() % 3];
+      in.starved = starved;
+      in.oldEntries = stored.count(key) ? stored[key] : 0;
+      if (rng() % 8 == 0) {   // an erase: always admitted, frees the key's entries
+        in.erase = true;
+        TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(in));
+        avail += in.oldEntries;
+        stored.erase(key);
+        continue;
+      }
+      const NvsValKind kind = (NvsValKind)(rng() % 3);
+      const size_t bytes = rng() % 700;
+      in.newEntries = nvsValueEntries(kind, bytes);
+      in.blobSpan = kind == NvsValKind::Blob ? nvsBlobWriteSpan(bytes) : 0;
+      in.available = avail;
+      if (nvsAdmit(in) != NvsAdmit::Write) continue;
+      // The driver writes the whole new value (a blob: its span) before it erases the
+      // old one; a write it cannot hold fails and changes nothing.
+      if (avail < (in.blobSpan ? in.blobSpan : in.newEntries)) continue;
+      if (in.newEntries > in.oldEntries) ++admittedGrowing;
+      avail = avail + in.oldEntries - in.newEntries;
+      stored[key] = in.newEntries;
+      TEST_ASSERT_TRUE_MESSAGE(avail >= std::min(start, kNvsStarvedFloorEntries),
+                               "an admitted write crossed the starved floor");
+    }
+    if (avail == kNvsStarvedFloorEntries) ++endedAtFloor;
+    // The Telegram offset rewrite: admitted, and the driver has an entry to put it in.
+    NvsAdmitIn offset;
+    offset.cls = NvsClass::Critical;
+    offset.newEntries = offset.oldEntries = nvsValueEntries(NvsValKind::Int, 0);
+    offset.available = avail;
+    offset.starved = starved;
+    TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(offset));
+    TEST_ASSERT_TRUE(avail >= offset.newEntries);
+    if (start < kNvsStarvedFloorEntries) continue;
+    // From the floor up: the OTA guard arms (four new critical keys), then the offset.
+    const size_t guard[] = {nvsValueEntries(NvsValKind::Int, 0), nvsValueEntries(NvsValKind::Int, 0),
+                            nvsValueEntries(NvsValKind::Str, 4), nvsValueEntries(NvsValKind::Str, 30)};
+    for (size_t g : guard) {
+      NvsAdmitIn arm;
+      arm.cls = NvsClass::Critical;
+      arm.newEntries = g;
+      arm.available = avail;
+      TEST_ASSERT_EQUAL((int)NvsAdmit::Write, (int)nvsAdmit(arm));
+      avail -= g;
+    }
+    TEST_ASSERT_TRUE(avail >= offset.newEntries);
+  }
+  // Not vacuous: the sequences admitted growing writes and drove devices to the floor.
+  TEST_ASSERT_TRUE(admittedGrowing > 1000);
+  TEST_ASSERT_TRUE(endedAtFloor > 0);
 }
 
 // The eviction pass, end to end on the fake: evict in plan order until the reserve is
@@ -1890,6 +2040,8 @@ int main(int, char**) {
   RUN_TEST(test_blob_span_check_refuses_before_nvs_set_blob);
   RUN_TEST(test_reserve_covers_the_critical_working_set);
   RUN_TEST(test_reserve_keeps_critical_writes_landing_on_a_filling_device);
+  RUN_TEST(test_starved_owner_saves_stop_at_the_floor);
+  RUN_TEST(test_starved_floor_holds_over_any_admitted_sequence);
   RUN_TEST(test_eviction_pass_restores_the_reserve_or_reports_starved);
   RUN_TEST(test_device_seam_asks_the_reserve);
   RUN_TEST(test_store_setter_verdicts_are_never_silently_dropped);
