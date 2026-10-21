@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/hooks.h"   // DreamEndEv - the night's one timeline row
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/memory_tools.h"   // MemOpCounters - what the reflection's writes did
@@ -300,6 +301,11 @@ struct NightDeps {
   std::function<bool()> embeddingsUp;
   std::function<nimbus::orch::MemOpCounters()> memOps;
   std::function<nimbus::orch::FireOutcome(const std::string& inputs)> injectTurn;
+  // The night's ev:dream row: called exactly once per runNight, on every exit (ran,
+  // skipped, deferred, failed, degraded; a store that is not mounted or refuses the
+  // state save included). The device binds it to the timeline hook, which writes
+  // renderDreamRow(*ev.report) to the episodic store on the card - never to NVS.
+  std::function<void(const agent::DreamEndEv&)> emitRow;
 };
 struct NightResult {
   nimbus::orch::FireOutcome fire;   // what the scheduler sees (retryAfterSec, per-night detail)
@@ -307,6 +313,10 @@ struct NightResult {
 };
 // force = the console DREAM drill: run the reflection even on a quiet night.
 NightResult runNight(const NightDeps& d, const NightClock& c, bool force);
+// The timeline event for a night's report: one builder for the fire, the starved night
+// and the boot reconcile, so no path assembles its own row or leaves one out.
+// ev.report borrows `rep` (valid while the hook runs).
+agent::DreamEndEv dreamEndEvent(const NightReport& rep, bool turnOk);
 
 // --- a night the restart cut short (L19-31) -----------------------------------
 // The scheduler persists lastRun before a fire and the outcome only after it

@@ -7,6 +7,11 @@ Telegram at about 04:30 (canonical rows 27 and 28). This leg drives the console
 ``ev:dream`` timeline row (``EPIQ Nightly dream``) and the absence of any Telegram
 send while the quiet turn failed.
 
+Rows are read with ``EPIQ --full`` and the counted-row reader of the turn record
+legs (the summary line, then each row whole, newest first): the first version read
+only up to the summary line and saw no rows at all, and the default 48-character
+preview cuts the counts off.
+
 The drill is queued: the console replies ``DREAM queued`` and the turn task logs
 ``DREAM fired ok=<0|1> detail=<...>`` when the night ends. (It used to run the night
 on the loop task, whose 8 KB stack cannot hold a turn: the device panicked and
@@ -50,30 +55,17 @@ import time
 import pytest
 
 from device import Device, ExpectTimeout
+from test_turn_record_bench import _epiq
 
 pytestmark = [pytest.mark.hil, pytest.mark.agent]
 
-_DREAM_ROW = re.compile(r"Nightly dream [^\"]*")
 _PANIC = ("Guru Meditation", "Rebooting...", "Backtrace:")
 _FS_DOWN = "File system is not mounted"
 
 
 def _dream_rows(dev: Device) -> list[str]:
-    """Every ev:dream row text the episodic store returns for the query."""
-    dev.drain(quiet=0.3)
-    dev.send("EPIQ Nightly dream")
-    rows: list[str] = []
-    deadline = time.time() + 8.0
-    while time.time() < deadline:
-        try:
-            line = dev.expect_re(r"Nightly dream|EPIQ|ERR", timeout=max(0.5, deadline - time.time()))
-        except ExpectTimeout:
-            break
-        for m in _DREAM_ROW.finditer(line.string):
-            rows.append(m.group(0))
-        if "EPIQ" in line.string and "Nightly dream" not in line.string:
-            break
-    return rows
+    """The newest ev:dream rows (up to three), newest first, each whole."""
+    return [text for _, text in _epiq(dev, "Nightly dream") if text.startswith("Nightly dream ")]
 
 
 def _status(dev: Device) -> dict:
@@ -166,7 +158,7 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
     assert "telegram: send" not in window, "a failed quiet dream sent a Telegram message"
     rows = _dream_rows(orch)
     assert rows, "no ev:dream row was written"
-    newest = rows[-1]
+    newest = rows[0]
     assert newest.startswith("Nightly dream FAILED ("), newest
     assert "memories stored" in newest and "failed)" in newest, newest  # the counts
     # A retry only inside the 03:30-07:00 window and while tries remain that local day
@@ -187,7 +179,9 @@ def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
     finally:
         orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
     assert "telegram: send" not in window, "the dream messaged the owner"
-    newest = _dream_rows(orch)[-1]
+    rows = _dream_rows(orch)
+    assert rows, "no ev:dream row was written"
+    newest = rows[0]
     assert not newest.startswith("Nightly dream ok"), newest
     if newest.startswith("Nightly dream degraded"):
         m = re.search(r"(\d+) failed\)", newest)
@@ -272,7 +266,7 @@ def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
     assert night.get("err") == "the device restarted during this run", night
     assert night.get("stateSaved") is True, night
     rows = _dream_rows(orch)
-    newest = rows[-1] if rows else ""
+    newest = rows[0] if rows else ""
     assert newest.startswith("Nightly dream interrupted (the device restarted during the reflection)"), (
         f"no interrupted row in the timeline: {rows}"
     )

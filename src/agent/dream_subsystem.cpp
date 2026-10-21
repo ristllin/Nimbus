@@ -59,14 +59,15 @@ static std::string g_pendingAlert;       // sent at the next owner turn, never a
 static bool        g_starvedPending = false;
 static NightReport g_starved;
 
+// The night's one ev:dream row (main.cpp's hook writes it to the episodic store).
+static void emitRow(const agent::DreamEndEv& ev) {
+  if (g_hooks.onDreamEnd) g_hooks.onDreamEnd(ev);
+}
+
 static void emitStarvedRow() {
   if (!g_starvedPending) return;
   g_starvedPending = false;
-  if (!g_hooks.onDreamEnd) return;
-  agent::DreamEndEv ev;
-  ev.cause = g_starved.cause;
-  ev.report = &g_starved;
-  g_hooks.onDreamEnd(ev);
+  emitRow(dreamEndEvent(g_starved, false));
 }
 
 // ---- dream state: /data/dream.json (LittleFS), never NVS -------------------------
@@ -239,6 +240,7 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   };
   d.embeddingsUp = [] { return embeddings::available(); };
   d.memOps = [] { return memory::opCounters(); };
+  d.emitRow = emitRow;   // the row, from inside the night, on every exit
   // An ordinary scheduled turn: the same rails (reboot/loop.create refused, LoopCaps
   // metered as "loop:dream"), memory tools only, and quiet - an empty reply and every
   // engine notice stay off the owner's phone at night.
@@ -280,16 +282,6 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
     alogf("dream: state not saved (%s) - this boot keeps the count in RAM", rep.stateWhy.c_str());
   if (rep.alert) g_pendingAlert = streakAlertText(rep);
   publishStatus(rep);
-  if (g_hooks.onDreamEnd) {
-    agent::DreamEndEv ev;
-    ev.turnOk = night.fire.ok;
-    ev.prunedVectors = rep.maint.pruned;
-    ev.dedupedVectors = rep.maint.deduped;
-    ev.tokens = rep.tokens;
-    ev.cause = rep.error;
-    ev.report = &rep;
-    g_hooks.onDreamEnd(ev);
-  }
   return night.fire;
 }
 
@@ -339,13 +331,7 @@ static void publishInterrupted(const NightReport& rep) {
         rep.retryAfterSec ? ", retry scheduled" : ", no retry inside the window");
   publishStatus(rep);
   if (rep.alert) g_pendingAlert = streakAlertText(rep);
-  if (g_hooks.onDreamEnd) {
-    agent::DreamEndEv ev;
-    ev.turnOk = false;
-    ev.cause = rep.error;
-    ev.report = &rep;
-    g_hooks.onDreamEnd(ev);
-  }
+  emitRow(dreamEndEvent(rep, false));
 }
 
 static const BootDeps& bootDeps() {

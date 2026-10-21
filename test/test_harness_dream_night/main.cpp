@@ -1494,6 +1494,123 @@ static void test_boot_reconcile_is_bounded_when_the_store_refuses() {
   TEST_ASSERT_TRUE(b.file.find("\"inNight\":9") != std::string::npos);
 }
 
+// ---- (6e) one night, one row (PG4: unit L, 21 Oct) ---------------------------------
+// The bench leg read "no ev:dream row was written" after a failed night on a full
+// NVS; its reader stopped at the EPIQ summary line, before any row. The firmware
+// side of the class is pinned here: every path through a night hands the timeline
+// exactly one row, whatever the turn, the writes or the store did (a state store
+// that is down still gets its row, saying "state not saved"). The night has no NVS
+// seam at all; the device writes the row to the episodic store on the card.
+
+struct RowCase {
+  const char* name;
+  int kind;          // 0 ok, 1 failed turn, 2 low-memory defer, 3 quiet day
+  const char* err;   // the turn's error (kind 1)
+  uint32_t failed;   // memory writes that failed
+  bool embedUp;
+  int store;         // 0 healthy, 1 not mounted, 2 refuses writes, 3 takes one write
+  bool force;
+};
+
+static const RowCase kRowCases[] = {
+    {"ok", 0, "", 0, true, 0, false},
+    {"server error", 1, "chat HTTP 500: overloaded", 0, true, 0, false},
+    {"rate limit", 1, "chat HTTP 429: slow down", 0, true, 0, false},
+    {"timeout", 1, "timeout: no answer in 120 s", 0, true, 0, false},
+    {"network", 1, "network: no response", 0, true, 0, false},
+    {"key", 1, "chat HTTP 401: invalid x-api-key", 0, true, 0, false},
+    {"credit", 1, "chat HTTP 400: credit balance is too low", 0, true, 0, false},
+    {"bad request", 1, "chat HTTP 400: bad body", 0, true, 0, false},
+    {"budget", 1, "budget: over the monthly ceiling", 0, true, 0, false},
+    {"parse", 1, "parse: not json", 0, true, 0, false},
+    {"other", 1, "something new", 0, true, 0, false},
+    {"no text", 1, "", 0, true, 0, false},
+    {"low memory defer", 2, "", 0, true, 0, false},
+    {"failed writes", 0, "", 3, true, 0, false},
+    {"memory unavailable", 0, "", 0, false, 0, false},
+    {"quiet day", 3, "", 0, true, 0, false},
+    {"quiet day, drill", 3, "", 0, true, 0, true},
+    {"failed, store not mounted", 1, "network: no response", 0, true, 1, false},
+    {"failed, store refuses", 1, "network: no response", 0, true, 2, false},
+    {"failed, store dies mid-night", 1, "network: no response", 0, true, 3, false},
+    {"degraded, store refuses", 0, "", 2, true, 2, false},
+    {"quiet day, store not mounted", 3, "", 0, true, 1, false},
+};
+
+static void scriptNight(Night& n, const RowCase& k) {
+  n.mounted = k.store != 1;
+  n.saveRefused = k.store == 2;
+  n.failAfter = k.store == 3 ? 1 : -1;
+  n.embedUp = k.embedUp;
+  n.quietDay = k.kind == 3;
+  if (n.quietDay) {   // a provably quiet night: the scratchpad as the last dream left it
+    n.haveSaved = true;
+    n.saved.scrHash = n.scratch;
+  }
+  n.ops.failed = 0;
+  const RowCase kk = k;
+  Night* np = &n;
+  n.turn = [kk, np] {
+    np->ops.failed += kk.failed;   // the reflection's writes, as the counters see them
+    orch::FireOutcome o;
+    if (kk.kind == 1) return failWith(kk.err);
+    if (kk.kind == 2) { o.deferred = true; return o; }
+    o.ok = true;
+    return o;
+  };
+}
+
+static void test_every_night_path_writes_exactly_one_row() {
+  for (const RowCase& k : kRowCases) {
+    for (uint16_t minute : {(uint16_t)210, (uint16_t)400, (uint16_t)1200}) {
+      Night n;
+      scriptNight(n, k);
+      int rows = 0;
+      std::string text;
+      bool reportSeen = false;
+      dream::NightDeps d = n.deps();
+      d.emitRow = [&](const agent::DreamEndEv& ev) {
+        rows++;
+        reportSeen = ev.report != nullptr;
+        if (ev.report) text = dream::renderDreamRow(*ev.report);
+      };
+      const dream::NightResult res = dream::runNight(d, clockAt(30, minute), k.force);
+      char msg[96];
+      snprintf(msg, sizeof msg, "%s at minute %u", k.name, (unsigned)minute);
+      TEST_ASSERT_EQUAL_MESSAGE(1, rows, msg);
+      TEST_ASSERT_TRUE_MESSAGE(reportSeen, msg);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(dream::renderDreamRow(res.report).c_str(), text.c_str(), msg);
+      TEST_ASSERT_TRUE_MESSAGE(text.rfind("Nightly dream ", 0) == 0, msg);
+      if (!res.report.stateSaved)
+        TEST_ASSERT_TRUE_MESSAGE(text.find("state not saved") != std::string::npos, msg);
+      if (k.kind == 3 && !k.force)
+        TEST_ASSERT_EQUAL_MESSAGE((int)dream::DreamOutcome::Skipped, (int)res.report.outcome, msg);
+    }
+  }
+  // The event carries the night itself (the row, the cause, the spend).
+  dream::NightReport rep;
+  rep.outcome = dream::DreamOutcome::Failed;
+  rep.cause = "network";
+  rep.error = "network: no response";
+  rep.tokens = 12;
+  rep.maint.pruned = 2;
+  rep.maint.deduped = 1;
+  const agent::DreamEndEv ev = dream::dreamEndEvent(rep, false);
+  TEST_ASSERT_TRUE(ev.report == &rep);
+  TEST_ASSERT_FALSE(ev.turnOk);
+  TEST_ASSERT_EQUAL_STRING("network: no response", ev.cause.c_str());
+  TEST_ASSERT_EQUAL(12, (int)ev.tokens);
+  TEST_ASSERT_EQUAL(2, ev.prunedVectors);
+  TEST_ASSERT_EQUAL(1, ev.dedupedVectors);
+  // The starved night and the interrupted night render through the same event.
+  dream::NightReport starved;
+  starved.outcome = dream::DreamOutcome::Starved;
+  starved.cause = "recent-turn";
+  starved.attempt = 12;
+  TEST_ASSERT_TRUE(dream::renderDreamRow(*dream::dreamEndEvent(starved, false).report)
+                       .rfind("Nightly dream skipped tonight (device busy after 12 tries)", 0) == 0);
+}
+
 // One generated store and night sequence for the bounded-retry property.
 static void runBoundedSequence() {
   Night n;
@@ -1614,6 +1731,7 @@ int main(int, char**) {
   RUN_TEST(test_boot_reconcile_drops_a_marker_a_later_fire_superseded);
   RUN_TEST(test_boot_reconcile_keeps_the_working_copy_a_fire_opened);
   RUN_TEST(test_boot_reconcile_is_bounded_when_the_store_refuses);
+  RUN_TEST(test_every_night_path_writes_exactly_one_row);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);

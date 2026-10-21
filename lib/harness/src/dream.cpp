@@ -560,6 +560,28 @@ nimbus::orch::FireOutcome reflect(const NightDeps& d, const std::string& inputs,
 
 }  // namespace
 
+agent::DreamEndEv dreamEndEvent(const NightReport& rep, bool turnOk) {
+  agent::DreamEndEv ev;
+  ev.turnOk = turnOk;
+  ev.prunedVectors = rep.maint.pruned;
+  ev.dedupedVectors = rep.maint.deduped;
+  ev.tokens = rep.tokens;
+  ev.cause = rep.error;
+  ev.report = &rep;
+  return ev;
+}
+
+namespace {
+
+// Every exit of a night: the per-night fingerprint, then its one timeline row.
+void closeNight(const NightDeps& d, const NightClock& c, const NightReport& r,
+                nimbus::orch::FireOutcome& o) {
+  fingerprint(c, r, o);
+  if (d.emitRow) d.emitRow(dreamEndEvent(r, o.ok));
+}
+
+}  // namespace
+
 NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   NightResult res;
   NightReport& r = res.report;
@@ -592,7 +614,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
     r.streak = st.streak;
     r.stateSaved = save(st);
     o.ok = true;
-    fingerprint(c, r, o);
+    closeNight(d, c, r, o);
     return res;
   }
 
@@ -623,7 +645,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   clearMarker(st);   // the outcome write clears the marker
   r.stateSaved = save(st);
   o.retryAfterSec = r.retryAfterSec;
-  fingerprint(c, r, o);
+  closeNight(d, c, r, o);
   return res;
 }
 
