@@ -171,6 +171,11 @@ crash-why: Stack canary watchpoint triggered (tg_poll)
   the round reached rides the RTC record above). The file is skipped
   when internal memory is below the forensic floors, because a file open is itself an
   allocation that aborts on failure; the RTC record still names the request then.
+- When: at once when the crash cut an owner request (a message, photo, voice message,
+  file or console request - the owner is waiting on that reply). A crash that cut a
+  background turn (a routine, such as the nightly memory pass) is held and sent once,
+  at the owner's next turn; a crash with nothing in progress still goes out at boot.
+  Never more than one notice per boot (`nimbus/orch/restart_notice.h`).
 
 Device events captured before the clock syncs (a power-on boot has no time until SNTP
 answers) wait in a 16-row / 4 KB file on the data store instead of RAM, so an offline

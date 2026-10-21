@@ -10,6 +10,7 @@
 #include "nimbus/crash_summary.h"
 #include "nimbus/exchange_trace.h"
 #include "nimbus/logring.h"
+#include "nimbus/orch/restart_notice.h"
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
 #include "nimbus/sys/breadcrumb.h"
@@ -586,6 +587,86 @@ static void test_crash_notice_copy_for_every_kind() {
                            crashNotice("", nullptr, "").c_str());
 }
 
+// ---- the restart notice: what the owner hears, and when -------------------------------
+
+namespace {
+const char* const kTurnKinds[] = {"", "photo", "file", "voice", "message", "console", "routine", "background"};
+}  // namespace
+
+// The 03:32 case: a crash inside a routine at night sends nothing at boot and nothing at
+// the routines that follow; it goes out once, as one line, at the owner's next turn.
+// Counter-test: a crash during an owner message still sends at boot.
+static void test_quiet_hold_crash_in_a_routine_waits_for_the_owner() {
+  using namespace nimbus::orch;
+  TurnJournal routine;
+  routine.kind = "routine";
+  const RestartNoticePlan p = planRestartNotice("Lumi", (int)ResetReason::Panic, &routine, "03:32",
+                                                "one of its jobs ran out of memory");
+  TEST_ASSERT_EQUAL_INT((int)NoticeTiming::Held, (int)p.timing);
+  RestartNoticeQueue q;
+  TEST_ASSERT_TRUE(q.atBoot(p).empty());   // zero sends at boot
+  TEST_ASSERT_TRUE(q.atBoot(p).empty());   // a second plan in the same boot changes nothing
+  TEST_ASSERT_TRUE(q.holding());
+  TEST_ASSERT_TRUE(q.atTurnStart("routine").empty());   // the routines that follow stay quiet
+  TEST_ASSERT_TRUE(q.atTurnStart("background").empty());
+  TEST_ASSERT_EQUAL_STRING(
+      "Lumi restarted after a crash (one of its jobs ran out of memory) while running a routine from 03:32. "
+      "That run did not finish.",
+      q.atTurnStart("voice").c_str());   // one line at the owner's next turn
+  TEST_ASSERT_TRUE(q.atTurnStart("message").empty() && !q.holding());   // and only once
+
+  TurnJournal message;
+  message.kind = "message";
+  RestartNoticeQueue owner;
+  const std::string atBoot =
+      owner.atBoot(planRestartNotice("Lumi", (int)ResetReason::Panic, &message, "03:32", "a software error"));
+  TEST_ASSERT_TRUE(contains(atBoot, "while answering your message from 03:32"));
+  TEST_ASSERT_FALSE(owner.holding());
+  TEST_ASSERT_TRUE(owner.atTurnStart("message").empty());
+}
+
+// Property over (kind, reset reason): a boot never sends more than one notice, whatever
+// the interrupted turn was and however many turns follow. A restart that was not a crash
+// sends none yet. A crash sends exactly one: at boot for an owner request or nothing in
+// progress, at the owner's turn for the device's own work.
+static void test_never_more_than_one_notice_per_boot() {
+  using namespace nimbus::orch;
+  int crashBoots = 0;
+  for (int reset = -1; reset <= kLastResetReason + 2; ++reset) {
+    for (const char* kind : kTurnKinds) {
+      TurnJournal j;
+      j.kind = kind;
+      const TurnJournal* lost = kind[0] ? &j : nullptr;
+      const RestartNoticePlan p = planRestartNotice("Lumi", reset, lost, "03:32", "a software error");
+      if (!isCrashReset(reset)) {
+        TEST_ASSERT_EQUAL_INT((int)NoticeTiming::None, (int)p.timing);
+        TEST_ASSERT_TRUE(p.text.empty());
+        continue;
+      }
+      ++crashBoots;
+      const bool held = lost && !isOwnerRequestKind(lost->kind);
+      TEST_ASSERT_EQUAL_INT((int)(held ? NoticeTiming::Held : NoticeTiming::Now), (int)p.timing);
+      RestartNoticeQueue q;
+      const std::string atBoot = q.atBoot(p);
+      std::vector<std::string> sent;
+      if (!atBoot.empty()) sent.push_back(atBoot);
+      const std::string again = q.atBoot(p);
+      if (!again.empty()) sent.push_back(again);
+      for (const char* k : kTurnKinds) {
+        if (!k[0]) continue;
+        const std::string at = q.atTurnStart(k);
+        if (!at.empty()) sent.push_back(at);
+      }
+      TEST_ASSERT_EQUAL_UINT_MESSAGE(1, (unsigned)sent.size(), p.text.c_str());
+      TEST_ASSERT_EQUAL_STRING(p.text.c_str(), sent[0].c_str());
+      if (held)
+        TEST_ASSERT_TRUE(atBoot.empty());   // nothing at boot, one line at the owner's turn
+      else
+        TEST_ASSERT_EQUAL_STRING(p.text.c_str(), atBoot.c_str());   // still sent at boot
+    }
+  }
+  TEST_ASSERT_TRUE(crashBoots >= 40);   // every crash reset x every kind
+}
 // ---- the forensic window (rows 44, 57) ----------------------------------------------
 
 // The heaptrace level: the transport writes a trace to the durable log only when
@@ -836,6 +917,8 @@ int main(int, char**) {
   RUN_TEST(test_turn_journal_round_trip);
   RUN_TEST(test_journal_write_gate_and_mark);
   RUN_TEST(test_crash_notice_copy_for_every_kind);
+  RUN_TEST(test_quiet_hold_crash_in_a_routine_waits_for_the_owner);
+  RUN_TEST(test_never_more_than_one_notice_per_boot);
   RUN_TEST(test_trace_abnormal_grid);
   RUN_TEST(test_trace_samples_ignore_the_unsampled_point);
   RUN_TEST(test_headloop_classification);

@@ -3782,7 +3782,8 @@ void setup() {
   // serial path below is unchanged.
   if (g_orchMode) orchestratorBegin();
   // After a crash boot, tell the owner in plain words (and name the request that was
-  // cut short); the reply queue exists now.
+  // cut short), at once when they were waiting on it, else at their next turn; the
+  // reply queue exists now.
   if (g_orchMode) nimbus::crash::queueCrashNotice();
   sramSnap("post-orch");  // CUM-185: after tg_poll/fabric/orchestrator task stacks are up
   BOOT_STAGE(120, 120, 0, Orch);   // YELLOW: orchestrator up (final stage before loop)

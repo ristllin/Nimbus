@@ -23,6 +23,7 @@
 #include "nimbus/crash_summary.h"
 #include "nimbus/harness/hooks.h"   // TurnSource - mirrored by value in turn_journal.h
 #include "nimbus/logring.h"
+#include "nimbus/orch/restart_notice.h"
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
 #include "nimbus/sys/panic_arm.h"
@@ -95,6 +96,19 @@ std::string g_textHead;
 // The journal a crash left behind, read once at boot (collectTurnJournal).
 nimbus::orch::TurnJournal g_lostTurn;
 bool        g_lostTurnFound = false;
+
+// The owner's restart notice: sent at boot, or held for the owner's next turn
+// (nimbus/orch/restart_notice.h). Boot (loop task) and turn start (tg_poll) both touch
+// it, so each call runs under a spinlock; the calls only move strings, never allocate.
+nimbus::orch::RestartNoticeQueue g_notices;
+portMUX_TYPE g_noticeMux = portMUX_INITIALIZER_UNLOCKED;
+
+void sendRestartNotice(std::string text, const char* when) {
+  if (text.empty()) return;
+  const String owner = agent::orchestrator::firstAllowedChat();
+  const bool queued = owner.length() && agent::telegram::send(owner, String(text.c_str()), /*block=*/false);
+  agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (%s)", queued ? "queued" : "not queued", when);
+}
 
 const char* wakeCause() {
   switch (esp_sleep_get_wakeup_cause()) {
@@ -337,6 +351,12 @@ void turnStarted(int source, const std::string& chat, const std::string& textHea
   g_textHead.clear();
   stage(nimbus::sys::Stage::Turn, g_journal.kind.c_str());
   g_journalOnDisk = writeJournal();
+  // A held restart notice goes out at the owner's next turn (not at a routine's).
+  std::string held;
+  portENTER_CRITICAL(&g_noticeMux);
+  held = g_notices.atTurnStart(g_journal.kind);
+  portEXIT_CRITICAL(&g_noticeMux);
+  sendRestartNotice(std::move(held), "the owner's next turn");
 }
 
 void turnRound(int round) {
@@ -382,19 +402,26 @@ void collectTurnJournal() {
 
 void queueCrashNotice() {
   if (!crashBoot()) return;
-  const String owner = agent::orchestrator::firstAllowedChat();
-  if (!owner.length()) return;
   const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
-  // This crash's own dump names the cause; an older dump (this crash wrote none) does not.
+  // A crash's own dump names its cause; an older dump (this crash wrote none) does not.
   const Report* dump = (g_report && g_report->thisReset && (!g_report->newKnown || g_report->isNew))
                            ? g_report : nullptr;
-  const CrashKind kind = crashKind(dump, g_reason);
-  const std::string msg = nimbus::orch::crashNotice(std::string(sys::deviceName().c_str()), j,
-                                                    j ? localHhmm(j->at) : std::string(),
-                                                    plainCause(kind));
-  const bool queued = agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
-  agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s cause=%s)",
-                queued ? "queued" : "not queued", j ? j->kind.c_str() : "none", plainCause(kind));
+  const char* cause = plainCause(crashKind(dump, g_reason));
+  // Held only when the crash cut a background turn (the owner is not waiting on it);
+  // sent once at the owner's next turn (restart_notice.h).
+  nimbus::orch::RestartNoticePlan plan = nimbus::orch::planRestartNotice(
+      std::string(sys::deviceName().c_str()), g_reason, j, j ? localHhmm(j->at) : std::string(), cause);
+  const nimbus::orch::NoticeTiming timing = plan.timing;
+  std::string now;
+  portENTER_CRITICAL(&g_noticeMux);
+  now = g_notices.atBoot(std::move(plan));
+  portEXIT_CRITICAL(&g_noticeMux);
+  agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s)",
+                timing == nimbus::orch::NoticeTiming::Now    ? "at boot"
+                : timing == nimbus::orch::NoticeTiming::Held ? "held for the owner's next turn"
+                                                             : "none",
+                j ? j->kind.c_str() : "none");
+  sendRestartNotice(std::move(now), "at boot");
 }
 
 #ifdef NIMBUS_TEST

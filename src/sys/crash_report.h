@@ -15,7 +15,9 @@
 //   3. collectTurnJournal() once LittleFS is mounted, then queueCrashNotice() after the
 //      Telegram task starts (Orchestrator mode): after a crash boot, one plain-words
 //      message to the owner naming the request that was in flight (/crash/turn.json),
-//      sent through the reply queue.
+//      sent through the reply queue. A crash that cut a background turn (a routine or
+//      background task) is held and sent once at the owner's next turn instead
+//      (nimbus/orch/restart_notice.h); a crash during an owner request still sends at boot.
 //
 // Everything runs on the boot task or the turn task: no new task, no TLS, no NVS writes.
 
@@ -66,7 +68,9 @@ void noteTurnText(const std::string& text);
 // never taken for the old one).
 void collectTurnJournal();
 // After a crash boot: queue the owner notice through the reply queue (call once the
-// Telegram task is up), naming the turn collectTurnJournal() found.
+// Telegram task is up), naming the turn collectTurnJournal() found. A crash that cut
+// a background turn is held and sent once at the owner's next turn; anything else
+// sends at boot (nimbus/orch/restart_notice.h).
 void queueCrashNotice();
 
 #ifdef NIMBUS_TEST
