@@ -221,6 +221,14 @@ struct DreamState {
   uint8_t  streak = 0;          // nights in a row that failed or degraded
   DreamOutcome lastOutcome = DreamOutcome::Ran;
   std::string lastCause;
+  // In-flight marker (L19-31): set just before the reflection turn starts, cleared
+  // by the outcome write. A boot that finds it holds an attempt whose outcome never
+  // landed - the device restarted mid-reflection - and reconciles it
+  // (reconcileBoot). Serialized ONLY while set, so a completed night's file is
+  // byte-identical to the marker-less format.
+  uint32_t inflightNight = 0;   // local day of the attempt (0 = no marker)
+  uint8_t  inflightAttempt = 0; // its 1-based attempt number
+  uint64_t inflightStart = 0;   // UTC epoch s the turn started
 };
 std::string dumpDreamState(const DreamState& s);
 bool loadDreamState(const std::string& json, DreamState& out);   // false = unreadable
@@ -296,11 +304,42 @@ struct NightResult {
 // force = the console DREAM drill: run the reflection even on a quiet night.
 NightResult runNight(const NightDeps& d, const NightClock& c, bool force);
 
+// --- a night the restart cut short (L19-31) -----------------------------------
+// The scheduler persists lastRun before a fire and the outcome only after it
+// returns, so a restart mid-reflection left the loop record holding the PREVIOUS
+// night's verdict under the new lastRun, no timeline row, and no retry inside the
+// night's window. The marker closes the hole: runNight sets it just before the turn
+// and the outcome write clears it, so a boot can tell "the night never finished"
+// from "the night never ran".
+struct InterruptedNight {
+  bool interrupted = false;   // the marker named an attempt whose outcome never landed
+  NightReport report;         // the reconciled outcome: row, retry, streak, lastErr
+};
+// Reconcile at boot, over the pure night state. A marker with no outcome becomes
+// the night's verdict: fail, with the lastErr sentence "the device restarted
+// during this run" in report.error. `st` comes back with the verdict recorded
+// (lastOutcome/lastCause), the attempt bookkeeping restored to the marker's night,
+// and the marker cleared; the streak moves exactly once for that night (a second
+// boot of the same interruption moves nothing). report.retryAfterSec asks for a
+// retry while the marker's night is still the current local night and its window
+// (windowEndFor) is still open; the interrupted attempt is one of the bounded
+// retries. The caller persists `st` BEFORE applying the loop side, so a boot whose
+// save fails moves no counter and can try again. Call with a synced clock.
+InterruptedNight reconcileBoot(DreamState& st, const NightClock& c);
+// The loop-record half of that outcome (the scheduler's post-fire write never
+// ran): lastResult fail and consecFails +1, once - the caller clears the marker
+// durably first - plus nextRun at the retry (0 = keep the boot's next slot). The
+// lastErr sentence itself rides the dream's own surface until loops.json grows
+// lane T's lastErr field.
+void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
+                           uint32_t retryAfterSec);
+
 // The ev:dream timeline row, at most `cap` bytes, always starting "Nightly dream ".
 //   Nightly dream ok: +2 memories, 1 updated; maintenance pruned=0 deduped=0; spent 21544 tokens
 //   Nightly dream skipped (quiet day); maintenance pruned=0 deduped=0
 //   Nightly dream deferred (low memory), retry 1 of 3 at 03:45
 //   Nightly dream FAILED (provider-5xx: <cause>), retry 2 of 3 at 04:00; spent 812 tokens
+//   Nightly dream interrupted (the device restarted during the reflection), retry 2 of 3 at 03:45
 //   Nightly dream degraded (memory writes failed): 0 of 3 stored, 3 failed; ...
 std::string renderDreamRow(const NightReport& r, size_t cap = 240);
 // The owner alert when report.alert is set (plain words, no ticket numbers).

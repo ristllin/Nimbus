@@ -9,6 +9,7 @@
 #include "adapters/embeddings.h"   // available() - can memory writes land tonight?
 #include "agent_config.h"          // ORCH_AUTO_TURN_MIN_HEAP (gate heap floor)
 #include "fs_atomic.h"             // writeFileAtomic - /data/dream.json
+#include "loops_subsystem.h"       // applyInterruptedOutcome - the loop side of the reconcile
 #include "memory_subsystem.h"      // engines + Lock + stats + nowHours + opCounters
 #include "orchestrator.h"
 #include "store.h"                 // the legacy NVS quiet-night baseline (read only)
@@ -167,6 +168,7 @@ static void publishStatus(const NightReport& rep) {
   s.known = true;
   s.last = outcomeSlug(rep.outcome);
   strlcpy(s.cause, rep.cause.c_str(), sizeof s.cause);
+  strlcpy(s.err, rep.error.c_str(), sizeof s.err);
   s.stateSaved = rep.stateSaved;
   strlcpy(s.stateWhy, rep.stateWhy.c_str(), sizeof s.stateWhy);
   s.attempts = rep.attempt;
@@ -300,6 +302,61 @@ void pumpDrill() {
   req.chatId = chat;
   const orch::FireOutcome o = fire(req, /*force=*/true);
   alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
+}
+
+// ---- the boot reconcile: a night the restart cut short (L19-31) ------------------
+static bool g_bootChecked = false;    // one reconcile per boot
+static uint8_t g_bootTries = 0;       // state saves attempted for it (flood bound)
+constexpr uint8_t kBootSaveTries = 10;
+
+void pumpBootReconcile() {
+  if (g_bootChecked) return;
+  if (!flashMounted()) {   // nothing readable: no marker can exist on this boot
+    g_bootChecked = true;
+    return;
+  }
+  if (!memory::clockSynced()) return;   // the night and its window need the local clock
+  DreamState st;
+  loadState(st);
+  const NightClock c = nightClock();
+  const InterruptedNight v = reconcileBoot(st, c);
+  if (!v.interrupted) {
+    g_bootChecked = true;
+    g_memo.loaded = true;   // this boot's working copy (RAM is the authority now)
+    g_memo.st = st;
+    return;
+  }
+  // Save FIRST, then count: the marker clears durably before any counter moves,
+  // so a boot whose save fails (tried again below) can never move the streak or
+  // consecFails twice for one interruption. A store that keeps refusing is said
+  // ONCE and never looped on (the unit L bench class): the marker stays for a
+  // boot with a working store, and this boot moves no counter.
+  if (!saveState(st)) {
+    if (++g_bootTries >= kBootSaveTries) {
+      g_bootChecked = true;
+      alog("dream: interrupted night NOT reconciled this boot (the state save keeps "
+           "failing); the marker stays on disk");
+    }
+    return;
+  }
+  g_bootChecked = true;
+  g_memo.loaded = true;
+  g_memo.st = st;
+  const NightReport& rep = v.report;
+  alogf("dream: interrupted night reconciled - attempt %u of %u, the device restarted "
+        "during the reflection%s",
+        (unsigned)rep.attempt, (unsigned)kMaxAttempts,
+        rep.retryAfterSec ? ", retry scheduled" : ", no retry inside the window");
+  loops::applyInterruptedOutcome(kLoopId, rep.retryAfterSec, c.epoch);
+  publishStatus(rep);
+  if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  if (g_hooks.onDreamEnd) {
+    agent::DreamEndEv ev;
+    ev.turnOk = false;
+    ev.cause = rep.error;
+    ev.report = &rep;
+    g_hooks.onDreamEnd(ev);
+  }
 }
 
 }  // namespace dream

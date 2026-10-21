@@ -154,22 +154,31 @@ static void test_no_console_hook_runs_a_turn_inline() {
 }
 
 static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
-  size_t fires = 0, pumps = 0;
+  size_t fires = 0, pumps = 0, reconciles = 0;
   for (const Source& s : firmware()) {
     const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "=fire(req,");
     const size_t p = countOf(s.code, "dream::pumpDrill(");
+    const size_t rb = countOf(s.code, "dream::pumpBootReconcile(");
     if (f) TEST_ASSERT_TRUE_MESSAGE(s.path == "src/main.cpp" || s.path == "src/agent/dream_subsystem.cpp",
                                     s.path.c_str());
-    if (p) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator.cpp", s.path.c_str());
+    if (p || rb) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator.cpp", s.path.c_str());
     fires += f;
     pumps += p;
+    reconciles += rb;
   }
   TEST_ASSERT_EQUAL(2, fires);   // the loops fire hook (main.cpp) and pumpDrill
   TEST_ASSERT_EQUAL(1, pumps);
+  TEST_ASSERT_EQUAL(1, reconciles);   // the boot reconcile: once, on the turn task
   // main.cpp's one fire is the scheduler hook, and the pump sits in pollJobs (tg_poll).
   TEST_ASSERT_EQUAL(1, countOf(codeOf("src/main.cpp"), "if(agent::dream::isReserved(r.id))returnagent::dream::fire(r);"));
-  TEST_ASSERT_EQUAL(1, countOf(between("src/agent/orchestrator.cpp", "intpollJobs(){", "loops::checkDue("),
-                               "dream::pumpDrill();"));
+  const std::string pollJobs =
+      between("src/agent/orchestrator.cpp", "intpollJobs(){", "loops::checkDue(");
+  TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpDrill();"));
+  // The boot reconcile runs before the drill pump and the tick, so the retry it
+  // schedules can fire the same pass and a night interrupted by a restart is
+  // reconciled before anything else fires the dream.
+  TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpBootReconcile();"));
+  TEST_ASSERT_TRUE(pollJobs.find("dream::pumpBootReconcile();") < pollJobs.find("dream::pumpDrill();"));
 }
 
 // File work (or a card probe) through the raw Arduino SD global ("SD." directly, not

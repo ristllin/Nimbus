@@ -32,7 +32,11 @@
 //   - same-night retries are bounded, maintenance runs once per local day, the
 //     reserved loop survives the consec-fail breaker, the busy gate is bounded;
 //   - dream state lives in a file (fresh device, legacy NVS migration, zero NVS
-//     writes), and [MEMORY RESULTS] go back to the chat that asked.
+//     writes), and [MEMORY RESULTS] go back to the chat that asked;
+//   - a night the restart cut short is reconciled at boot: the marker written
+//     before the turn names the attempt, the boot turns it into the night's
+//     verdict with one row and a bounded retry inside the window, and no
+//     previous night's verdict ever shows under a newer lastRun.
 
 using agent::JobEngine;
 using agent::TurnEngine;
@@ -383,6 +387,8 @@ struct Night {
   int failAfter = -1;              // >= 0: the store takes this many writes, then refuses
   bool useMemo = true;             // the device keeps a working copy for the boot
   dream::DreamMemo memo;
+  bool crash = false;              // simulate a restart mid-turn: freeze the file as
+  dream::DreamState crashedFile;   // it stood when the reflection turn began
   std::string legacyHex;           // the NVS key (read only)
   uint64_t scratch = 0xABCDEF;
   bool quietDay = false;
@@ -436,6 +442,7 @@ struct Night {
     d.injectTurn = [this](const std::string& in) {
       turns++;
       lastInputs = in;
+      if (crash) crashedFile = saved;   // the pre-turn save (marker) just landed
       return turn();
     };
     return d;
@@ -904,6 +911,252 @@ static void test_store_failing_after_n_writes_keeps_counts_and_says_so() {
   TEST_ASSERT_EQUAL(92, (int)n.saved.attemptDay);
 }
 
+// ---- (6c) a night the restart cut short (L19-31) ---------------------------------
+
+static void test_interrupted_night_reconciles_at_boot() {
+  // The 19 Oct class: an unexplained reset mid-reflection left the previous night's
+  // verdict under the new lastRun, no row and no retry. The marker is written before
+  // the turn; the boot reconciles it into the night's verdict.
+  Night n;
+  n.crash = true;
+  n.turn = [] { return failWith("chat HTTP 500: overloaded"); };   // never lands
+  dream::runNight(n.deps(), clockAt(9, 210), false);
+  TEST_ASSERT_EQUAL(9, (int)n.crashedFile.inflightNight);
+  TEST_ASSERT_EQUAL(1, n.crashedFile.inflightAttempt);
+  TEST_ASSERT_TRUE(n.crashedFile.inflightStart == clockAt(9, 210).epoch);
+  TEST_ASSERT_TRUE(dream::dumpDreamState(n.crashedFile).find("\"inNight\":9") != std::string::npos);
+  // Reload at 03:50, still inside the window: the row, the counters, a retry.
+  dream::DreamState st = n.crashedFile;
+  dream::InterruptedNight v = dream::reconcileBoot(st, clockAt(9, 230));
+  TEST_ASSERT_TRUE(v.interrupted);
+  const dream::NightReport& r = v.report;
+  TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Failed, (int)r.outcome);
+  TEST_ASSERT_EQUAL_STRING("restarted", r.cause.c_str());
+  TEST_ASSERT_EQUAL_STRING("the device restarted during this run", r.error.c_str());
+  TEST_ASSERT_EQUAL(1, r.attempt);
+  TEST_ASSERT_EQUAL(900, (int)r.retryAfterSec);
+  TEST_ASSERT_EQUAL(245, r.retryAtMinute);   // 04:05, inside the 07:00 window
+  TEST_ASSERT_EQUAL(1, r.streak);
+  TEST_ASSERT_FALSE(r.alert);
+  TEST_ASSERT_EQUAL_STRING("Nightly dream interrupted (the device restarted during the "
+                           "reflection), retry 2 of 3 at 04:05",
+                           dream::renderDreamRow(r).c_str());
+  // The state: marker cleared (this save IS the outcome write), the interrupted
+  // attempt kept as one of the bounded retries, the verdict replaces the old one.
+  TEST_ASSERT_EQUAL(0, (int)st.inflightNight);
+  TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Failed, (int)st.lastOutcome);
+  TEST_ASSERT_EQUAL_STRING("restarted", st.lastCause.c_str());
+  TEST_ASSERT_EQUAL(9, (int)st.attemptDay);
+  TEST_ASSERT_EQUAL(1, st.attemptsTonight);
+  // Idempotence: a second boot over the reconciled state moves nothing.
+  dream::DreamState again = st;
+  TEST_ASSERT_FALSE(dream::reconcileBoot(again, clockAt(9, 235)).interrupted);
+  // The loop side (the scheduler's post-fire write never ran) lands once.
+  orch::LoopRecord loop = dream::reservedLoopRecord();
+  const uint64_t boot = clockAt(9, 230).epoch;
+  dream::applyInterruptedToLoop(loop, boot, r.retryAfterSec);
+  TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)loop.lastResult);
+  TEST_ASSERT_EQUAL(1, loop.consecFails);
+  TEST_ASSERT_TRUE(loop.nextRun == boot + 900);
+  // The retry the boot scheduled opens at attempt 2 and stays bounded.
+  Night after;
+  after.haveSaved = true;
+  after.saved = st;
+  after.memo.loaded = true;
+  after.memo.st = st;   // this boot's working copy, as pumpBootReconcile primes it
+  after.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::NightResult res = dream::runNight(after.deps(), clockAt(9, 245), false);
+  TEST_ASSERT_EQUAL(2, res.report.attempt);
+  TEST_ASSERT_EQUAL(900, (int)res.fire.retryAfterSec);
+  // That retry can die too: the second reconcile of the SAME night counts the
+  // attempt and schedules the last retry, but the streak moves once per night,
+  // not once per crash.
+  Night twice;
+  twice.crash = true;
+  twice.haveSaved = true;
+  twice.saved = st;
+  twice.memo.loaded = true;
+  twice.memo.st = st;
+  twice.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::runNight(twice.deps(), clockAt(9, 245), false);
+  TEST_ASSERT_EQUAL(2, twice.crashedFile.inflightAttempt);
+  dream::DreamState st2 = twice.crashedFile;
+  dream::InterruptedNight v3 = dream::reconcileBoot(st2, clockAt(9, 250));
+  TEST_ASSERT_TRUE(v3.interrupted);
+  TEST_ASSERT_EQUAL(900, (int)v3.report.retryAfterSec);   // retry 3 of 3
+  TEST_ASSERT_EQUAL(1, v3.report.streak);                  // once for the night
+  dream::applyInterruptedToLoop(loop, clockAt(9, 250).epoch, v3.report.retryAfterSec);
+  TEST_ASSERT_EQUAL(2, loop.consecFails);   // one per failed fire, as the scheduler does
+}
+
+static void test_interrupted_night_after_the_window_counts_once_and_never_retries() {
+  // A crash at 06:20, boot at 07:05: the verdict and the counters still land,
+  // but the window is closed, so the loop keeps its next slot.
+  Night late;
+  late.crash = true;
+  late.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::runNight(late.deps(), clockAt(9, 380), false);
+  dream::DreamState st = late.crashedFile;
+  dream::InterruptedNight v = dream::reconcileBoot(st, clockAt(9, 425));
+  TEST_ASSERT_TRUE(v.interrupted);
+  TEST_ASSERT_EQUAL(0, (int)v.report.retryAfterSec);
+  const std::string row = dream::renderDreamRow(v.report);
+  TEST_ASSERT_TRUE_MESSAGE(row.find("Nightly dream interrupted (the device restarted "
+                                    "during the reflection), no retry tonight") == 0,
+                           row.c_str());
+  orch::LoopRecord loop = dream::reservedLoopRecord();
+  const uint64_t boot = clockAt(9, 425).epoch;
+  const uint64_t slot = loop.nextRun;
+  dream::applyInterruptedToLoop(loop, boot, 0);
+  TEST_ASSERT_EQUAL(1, loop.consecFails);
+  TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)loop.lastResult);
+  TEST_ASSERT_TRUE(loop.nextRun == slot);   // no retry: the next slot stands
+  // A boot the NEXT day (the device stayed off): no retry either, the marker's
+  // night is over, and the streak still moves exactly once for it.
+  Night stale;
+  stale.crash = true;
+  stale.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::runNight(stale.deps(), clockAt(9, 380), false);
+  dream::DreamState gone = stale.crashedFile;
+  dream::InterruptedNight nv = dream::reconcileBoot(gone, clockAt(10, 100));
+  TEST_ASSERT_TRUE(nv.interrupted);
+  TEST_ASSERT_EQUAL(0, (int)nv.report.retryAfterSec);
+  TEST_ASSERT_EQUAL(1, nv.report.streak);
+  // A quiet night's outcome write also clears a marker a failing store left
+  // behind from an earlier night (the skip path saves state too).
+  Night skip;
+  skip.crash = true;
+  skip.quietDay = true;
+  dream::runNight(skip.deps(), clockAt(9, 380), true);   // force: the turn runs
+  TEST_ASSERT_TRUE(skip.saved.inflightNight == 0);
+}
+
+static void test_interrupted_night_never_shows_an_older_verdict() {
+  // Property (L19-31): generated sequences of (fire, optional outcome, reload).
+  // Whatever happens, the verdict the state holds after a reload belongs to the
+  // NEWEST fire (its lastRun), never to a previous night's; the loop's consecFails
+  // moves exactly once per interruption; retries stay bounded; a completed night
+  // leaves no marker.
+  g_seed = 191031u;
+  for (int i = 0; i < 300; ++i) {
+    Night n;
+    orch::LoopRecord loop = dream::reservedLoopRecord();
+    int expectOutcome = -1;   // (int)DreamOutcome the newest fire must have left
+    std::string expectCause;
+    uint32_t day = 200;
+    for (int night = 0; night < 6; ++night, ++day) {
+      const uint32_t kind = rnd() % 3;   // 0 ok, 1 failed turn, 2 restart mid-turn
+      const uint16_t minute = (uint16_t)(210 + rnd() % 90);
+      if (kind == 2) {
+        // Fire, no outcome: the device restarts mid-reflection.
+        n.crash = true;
+        n.turn = [] { return failWith("chat HTTP 503: down"); };
+        dream::runNight(n.deps(), clockAt(day, minute), false);
+        dream::DreamState st = n.crashedFile;
+        // The boot: reload + reconcile. The interrupted verdict REPLACES whatever
+        // the previous night left under this newer lastRun.
+        dream::InterruptedNight v = dream::reconcileBoot(st, clockAt(day, minute + 5));
+        TEST_ASSERT_TRUE(v.interrupted);
+        TEST_ASSERT_EQUAL((int)dream::DreamOutcome::Failed, (int)st.lastOutcome);
+        TEST_ASSERT_EQUAL_STRING("restarted", st.lastCause.c_str());
+        TEST_ASSERT_TRUE(st.inflightNight == 0);
+        orch::LoopRecord before = loop;
+        dream::applyInterruptedToLoop(loop, clockAt(day, minute + 5).epoch, v.report.retryAfterSec);
+        TEST_ASSERT_EQUAL(before.consecFails < 255 ? before.consecFails + 1 : before.consecFails,
+                          loop.consecFails);
+        TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)loop.lastResult);
+        expectOutcome = (int)dream::DreamOutcome::Failed;
+        expectCause = "restarted";
+        // The boot persists the reconciled state and primes its working copy.
+        n.crash = false;
+        TEST_ASSERT_TRUE(dream::loadDreamState(dream::dumpDreamState(st), n.saved));
+        n.haveSaved = true;
+        n.memo.loaded = true;
+        n.memo.st = st;
+        if (v.report.retryAfterSec && rnd() % 2) {
+          // The scheduled retry fires tonight and completes: attempt 2 or 3.
+          const bool ok = rnd() % 2 == 0;
+          n.turn = [ok] {
+            orch::FireOutcome o;
+            o.ok = ok;
+            if (!ok) o.error = "chat HTTP 401: bad key";
+            return o;
+          };
+          dream::NightResult res =
+              dream::runNight(n.deps(), clockAt(day, v.report.retryAtMinute), false);
+          TEST_ASSERT_TRUE(res.report.attempt <= dream::kMaxAttempts);
+          TEST_ASSERT_TRUE(n.saved.inflightNight == 0);
+          orch::onFireResult(loop, res.fire.ok, res.fire.tokens,
+                             orch::fnv64(res.fire.detail), clockAt(day, v.report.retryAtMinute).epoch);
+          expectOutcome = (int)res.report.outcome;
+          expectCause = res.report.cause;
+        }
+      } else {
+        // The night completes (with same-night retries the scheduler drives).
+        const bool ok = kind == 0;
+        n.turn = [ok] {
+          orch::FireOutcome o;
+          o.ok = ok;
+          if (!ok) o.error = "timeout: no answer";
+          return o;
+        };
+        uint16_t m = minute;
+        int attempts = 0;
+        dream::NightResult res;
+        do {
+          res = dream::runNight(n.deps(), clockAt(day, m), false);
+          attempts++;
+          orch::onFireResult(loop, res.fire.ok, res.fire.tokens,
+                             orch::fnv64(res.fire.detail), clockAt(day, m).epoch);
+          m = (uint16_t)(m + res.report.retryAfterSec / 60u);
+        } while (res.report.retryAfterSec && attempts < 40);
+        TEST_ASSERT_TRUE(attempts <= dream::kMaxAttempts);
+        TEST_ASSERT_TRUE(n.saved.inflightNight == 0);   // a completed night leaves no marker
+        expectOutcome = (int)res.report.outcome;
+        expectCause = res.report.cause;
+      }
+      // A reload after the night (the next boot, before anything fired): with no
+      // marker the reconcile must leave the verdict alone, and that verdict is
+      // the newest fire's, never an older night's.
+      dream::DreamState st = n.saved;
+      dream::InterruptedNight v = dream::reconcileBoot(st, clockAt(day + 1, 100));
+      TEST_ASSERT_FALSE(v.interrupted);
+      TEST_ASSERT_EQUAL(expectOutcome, (int)st.lastOutcome);
+      TEST_ASSERT_EQUAL_STRING(expectCause.c_str(), st.lastCause.c_str());
+    }
+  }
+}
+
+static void test_completed_night_leaves_no_marker_and_is_byte_identical() {
+  // Counter-test for the marker: a night that completes writes EXACTLY the
+  // state today's format has (no marker keys ride a finished night), so the
+  // file a finished night leaves is byte-identical to a pre-marker build's.
+  Night n;
+  n.turn = [] {
+    orch::FireOutcome o;
+    o.ok = true;
+    return o;
+  };
+  dream::runNight(n.deps(), clockAt(50, 210), false);
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"v\":1,\"maintDay\":50,\"scrHash\":\"0000000000abcdef\",\"attemptDay\":50,"
+      "\"attempts\":1,\"streakDay\":0,\"streak\":0,\"last\":\"ran\",\"cause\":\"\"}",
+      dream::dumpDreamState(n.saved).c_str());
+  // The marker keys exist only while the turn is in flight, and round-trip.
+  Night c;
+  c.crash = true;
+  dream::runNight(c.deps(), clockAt(51, 210), false);
+  const std::string mid = dream::dumpDreamState(c.crashedFile);
+  TEST_ASSERT_TRUE(mid.find("\"inNight\":51") != std::string::npos);
+  TEST_ASSERT_TRUE(mid.find("\"inAttempt\":1") != std::string::npos);
+  TEST_ASSERT_TRUE(mid.find("\"inStart\":\"") != std::string::npos);
+  dream::DreamState back;
+  TEST_ASSERT_TRUE(dream::loadDreamState(mid, back));
+  TEST_ASSERT_EQUAL(51, (int)back.inflightNight);
+  TEST_ASSERT_EQUAL(1, back.inflightAttempt);
+  TEST_ASSERT_TRUE(back.inflightStart == c.crashedFile.inflightStart);
+}
+
 // One generated store and night sequence for the bounded-retry property.
 static void runBoundedSequence() {
   Night n;
@@ -1012,6 +1265,10 @@ int main(int, char**) {
   RUN_TEST(test_dream_state_store_fresh_legacy_and_full_nvs);
   RUN_TEST(test_unmounted_store_is_never_written_and_the_night_stays_bounded);
   RUN_TEST(test_store_failing_after_n_writes_keeps_counts_and_says_so);
+  RUN_TEST(test_interrupted_night_reconciles_at_boot);
+  RUN_TEST(test_interrupted_night_after_the_window_counts_once_and_never_retries);
+  RUN_TEST(test_interrupted_night_never_shows_an_older_verdict);
+  RUN_TEST(test_completed_night_leaves_no_marker_and_is_byte_identical);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);

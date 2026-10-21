@@ -382,6 +382,13 @@ std::string dumpDreamState(const DreamState& s) {
   d["streak"] = s.streak;
   d["last"] = outcomeSlug(s.lastOutcome);
   d["cause"] = s.lastCause;
+  if (s.inflightNight) {   // only while set: a finished night's file keeps this format
+    d["inNight"] = s.inflightNight;
+    d["inAttempt"] = s.inflightAttempt;
+    char st[17];
+    snprintf(st, sizeof st, "%016" PRIx64, s.inflightStart);
+    d["inStart"] = st;
+  }
   std::string out;
   serializeJson(d, out);
   return out;
@@ -402,6 +409,10 @@ bool loadDreamState(const std::string& json, DreamState& out) {
   if (!outcomeFromSlug(d["last"] | "ran", s.lastOutcome)) s.lastOutcome = DreamOutcome::Ran;
   s.lastCause = d["cause"] | "";
   if (s.lastCause.size() > 32) s.lastCause.resize(32);
+  s.inflightNight = d["inNight"] | 0u;
+  const unsigned ia = d["inAttempt"] | 0u;
+  s.inflightAttempt = (uint8_t)(ia > 255 ? 255 : ia);
+  s.inflightStart = strtoull(d["inStart"] | "0", nullptr, 16);
   out = s;
   return true;
 }
@@ -568,6 +579,9 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
     r.outcome = DreamOutcome::Skipped;
     st.lastOutcome = r.outcome;
     st.lastCause.clear();
+    st.inflightNight = 0;   // an outcome clears any marker, even one left by an
+    st.inflightAttempt = 0; // earlier night a failing store kept on disk
+    st.inflightStart = 0;
     r.streak = st.streak;
     r.stateSaved = save(st);
     o.ok = true;
@@ -577,7 +591,10 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
 
   st.attemptsTonight++;
   r.attempt = st.attemptsTonight;
-  save(st);   // a reboot mid-turn still counts the attempt
+  st.inflightNight = c.localDay;         // the marker: the turn is running, its
+  st.inflightAttempt = st.attemptsTonight; // outcome write is what clears it
+  st.inflightStart = c.epoch;
+  save(st);   // a reboot mid-turn still counts the attempt, and now names it
 
   MemStats stats = d.stats ? d.stats() : MemStats{};
   stats.pruned = r.maint.pruned;
@@ -596,10 +613,63 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   settleStreak(c, st, r);
   st.lastOutcome = r.outcome;
   st.lastCause = r.cause;
+  st.inflightNight = 0;   // the outcome write clears the marker
+  st.inflightAttempt = 0;
+  st.inflightStart = 0;
   r.stateSaved = save(st);
   o.retryAfterSec = r.retryAfterSec;
   fingerprint(c, r, o);
   return res;
+}
+
+// ---- a night the restart cut short (L19-31) --------------------------------------
+
+InterruptedNight reconcileBoot(DreamState& st, const NightClock& c) {
+  InterruptedNight out;
+  if (st.inflightNight == 0) return out;
+  out.interrupted = true;
+  NightReport& r = out.report;
+  // The marker is the truth about the attempt (its pre-turn save landed), so the
+  // state's counters are restored to it before any retry re-opens the night.
+  st.attemptDay = st.inflightNight;
+  st.attemptsTonight = st.inflightAttempt;
+  r.outcome = DreamOutcome::Failed;
+  r.cause = "restarted";
+  r.error = "the device restarted during this run";
+  r.attempt = st.inflightAttempt;
+  r.stateSaved = true;   // the caller persists before applying anything
+  // Retry while the marker's night is still the current local night and its
+  // window is open; the interrupted attempt is one of the bounded retries. After
+  // the window (or a later day) the loop keeps the next slot the boot computed.
+  const uint32_t nextMin = (uint32_t)c.minuteOfDay + kDeferSec / 60u;
+  if (c.localDay == st.inflightNight && st.attemptsTonight < kMaxAttempts &&
+      nextMin < windowEndFor(c.slotMinute)) {
+    r.retryAfterSec = kDeferSec;
+    r.retryAtMinute = (uint16_t)nextMin;
+  }
+  // The night failed: the streak moves exactly once for it, so a second boot of
+  // the same interruption (a save that failed) moves nothing.
+  if (st.streakDay != st.inflightNight) {
+    st.streakDay = st.inflightNight;
+    if (st.streak < 255) st.streak++;
+    r.alert = alertDue(st.streak);
+  }
+  r.streak = st.streak;
+  // The interrupted verdict replaces whatever older outcome the file still
+  // carried, and the marker clears: this save IS the outcome write.
+  st.lastOutcome = r.outcome;
+  st.lastCause = r.cause;
+  st.inflightNight = 0;
+  st.inflightAttempt = 0;
+  st.inflightStart = 0;
+  return out;
+}
+
+void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
+                            uint32_t retryAfterSec) {
+  l.lastResult = nimbus::orch::LastResult::Fail;
+  if (l.consecFails < 255) l.consecFails++;   // the post-fire outcome write never ran
+  if (retryAfterSec) l.nextRun = nowEpoch + retryAfterSec;
 }
 
 // ---- the row ----------------------------------------------------------------------
@@ -655,6 +725,17 @@ std::string retryText(const NightReport& r) {
   return b;
 }
 
+// The failed night's row arm (lane M). An interrupted night (L19-31: the device
+// restarted mid-reflection, reconciled at boot) says what happened and when it
+// tries again, nothing else - the turn died in flight, so its write counts and
+// its spend are unknowable and are never guessed.
+std::string failedText(const NightReport& r, const std::string& spent) {
+  if (r.cause == "restarted")
+    return "interrupted (the device restarted during the reflection)" + retryText(r);
+  return "FAILED (" + r.cause + (r.error.empty() ? "" : ": " + oneLine(r.error, 72)) + ")" +
+         retryText(r) + "; " + writesText(r.ops) + spent + "; " + maintText(r);
+}
+
 }  // namespace
 
 std::string renderDreamRow(const NightReport& r, size_t cap) {
@@ -677,8 +758,7 @@ std::string renderDreamRow(const NightReport& r, size_t cap) {
              " after " + std::to_string(r.attempt) + " tries); " + maintText(r);
       break;
     case DreamOutcome::Failed:
-      row += "FAILED (" + r.cause + (r.error.empty() ? "" : ": " + oneLine(r.error, 72)) + ")" +
-             retryText(r) + "; " + writesText(r.ops) + spent + "; " + maintText(r);
+      row += failedText(r, spent);
       break;
     case DreamOutcome::Degraded:
       row += std::string("degraded (") +

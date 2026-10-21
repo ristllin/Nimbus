@@ -53,11 +53,19 @@ nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& r,
 bool requestDrill(const std::string& chatId);
 void pumpDrill();
 
+// The boot reconcile (L19-31): a marker with no outcome in /data/dream.json names
+// a reflection turn the restart cut short. Call on every pollJobs pass (tg_poll,
+// before the loops tick): once the clock is synced it turns that marker into the
+// night's verdict - fail, one timeline row, the streak and the loop's consecFails
+// exactly once - and schedules the same-night retry while the window is open.
+void pumpBootReconcile();
+
 // The last night of this boot, for /api/state and the health report (any task).
 struct Status {
   bool known = false;          // a night has run since boot
   const char* last = "";       // outcome slug
   char cause[33] = {};
+  char err[64] = {};           // the failure's own text ("" when ok)
   bool stateSaved = true;      // /data/dream.json landed
   char stateWhy[24] = {};      // why not ("storage not mounted", "storage write failed")
   uint8_t attempts = 0;        // reflections tonight

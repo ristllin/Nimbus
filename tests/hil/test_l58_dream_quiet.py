@@ -27,6 +27,12 @@ Legs:
      failed count - never ok.
   3. Storage: the dream path writes no NVS (STATUS: used bytes and failed NVS
      writes are the same before and after the drill; run it on the NVSFILL'd unit).
+  4. A restart mid-drill (``PANIC arm=turn`` while the reflection turn runs): the
+     next boot reconciles it - one ``Nightly dream interrupted`` timeline row,
+     the dream's last result fail with "the device restarted during this run",
+     and a ``/api/loops`` next run that retries the same night while the window
+     is open (the interrupted attempt is one of the bounded retries). Skipped
+     until lane O1 wires the arm hook.
 
 Conditions: unit L (the fill unit), Orchestrator mode, a cheap head
 (claude-haiku-5-5), the owner's Telegram chat allowlisted, the unit on the LAN.
@@ -201,3 +207,62 @@ def test_dream_writes_no_nvs(orch: Device):
     assert (after["nvs"], after["nvsfail"]) == (before["nvs"], before["nvsfail"]), (
         "the dream path wrote NVS (used bytes or failed writes moved)"
     )
+
+
+def _arm_turn_panic(dev: Device) -> None:
+    """Arm the mid-turn panic (lane O1's hook); skip when the build lacks it."""
+    try:
+        armed = dev.cmd("PANIC nullptr arm=turn", "arm", timeout=5.0)
+    except ExpectTimeout:
+        pytest.skip("PANIC arm=turn hook not wired yet (lane O1)")
+    if "not wired" in armed:
+        pytest.skip("PANIC arm=turn hook not wired yet (lane O1)")
+
+
+@pytest.mark.net
+def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
+    """L19-31: a DREAM drill the restart cuts short leaves an in-flight marker.
+    The next boot reconciles it: one ``Nightly dream interrupted`` row (never the
+    previous night's verdict), the dream reports fail with "the device restarted
+    during this run", and the routine's next run retries the same night while
+    the night's window is still open (a daytime drill keeps the next slot)."""
+    _arm_turn_panic(orch)
+    ip = _status(orch)["ip"]
+    orch.drain(quiet=0.5)
+    orch.send("DREAM")
+    orch.expect("DREAM queued", timeout=5.0)
+    # The armed panic fires deep in the reflection turn; the device restarts.
+    orch.wait_ready(timeout=90.0)
+    # The boot reconcile waits for the synced clock; poll for its verdict.
+    night = {}
+    deadline = time.time() + 120.0
+    while time.time() < deadline:
+        night = net.get_json("/api/state", ip=ip, timeout=8.0).get("dream", {})
+        if night.get("known") and night.get("cause") == "restarted":
+            break
+        time.sleep(3.0)
+    assert night.get("known") is True, f"no dream verdict after the restart: {night}"
+    assert night.get("last") == "failed", night
+    assert night.get("cause") == "restarted", night
+    assert night.get("err") == "the device restarted during this run", night
+    assert night.get("stateSaved") is True, night
+    rows = _dream_rows(orch)
+    newest = rows[-1] if rows else ""
+    assert newest.startswith("Nightly dream interrupted (the device restarted during the reflection)"), (
+        f"no interrupted row in the timeline: {rows}"
+    )
+    # The loop record: fail, and a next run that honors the night's window.
+    loops = net.get_json("/api/loops", ip=ip, timeout=8.0)
+    dream = next((lp for lp in loops if lp.get("id") == "dream"), None)
+    assert dream is not None, "the reserved dream routine is missing from /api/loops"
+    assert dream.get("lastResult") == "fail", dream
+    now = int(net.get_json("/api/state", ip=ip, timeout=8.0).get("clock", {}).get("epoch", 0))
+    retry = re.search(r"retry (\d) of 3 at (\d{2}):(\d{2})", newest)
+    if retry:
+        assert 2 <= int(retry.group(1)) <= 3, newest
+        assert 0 < int(dream.get("nextRun", 0)) - now <= 900 + 120, (
+            f"a retry was promised but nextRun is not tonight's retry: {dream}"
+        )
+    else:
+        assert "no retry tonight" in newest, newest
+        assert int(dream.get("nextRun", 0)) > now, f"the window is closed but the routine is due at once: {dream}"

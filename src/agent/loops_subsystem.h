@@ -72,6 +72,14 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t freeHeap);
 // "Done." into the channel the loop delivers to (the web chat included).
 bool firing();
 
+// A fire whose turn never returned (lane M, L19-31: the device restarted
+// mid-dream, so the post-fire outcome write never ran). The dream's boot
+// reconcile calls this under the loops lock, ONCE per interruption, after it
+// cleared the dream's marker durably: lastResult fail, consecFails +1, and
+// nextRun at the same-night retry (retryAfterSec 0 = keep the next slot).
+// Returns false when the loop is absent.
+bool applyInterruptedOutcome(const String& id, uint32_t retryAfterSec, uint64_t nowEpoch);
+
 // SNTP bring-up (CUM-504). Call on EVERY tick of the network-up hook (net::link,
 // main task): netUp is the latch verdict, upEdge says an IP session began this tick.
 // Kicks SNTP on every up edge (the boot join included, however early it landed) and

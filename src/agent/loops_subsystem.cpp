@@ -13,6 +13,7 @@
 #include "../sys/agent_log.h"
 #include "agent_config.h"         // ORCH_AUTO_TURN_MIN_HEAP
 #include "memory_subsystem.h"     // memory::clockSynced - the strict "clock is real" test
+#include "nimbus/harness/dream.h"           // applyInterruptedToLoop - the dream's boot reconcile
 #include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
 #include "nimbus/wifi/net_up.h"   // SntpKick - the pure SNTP kick schedule (CUM-504)
 #include "store.h"
@@ -321,6 +322,16 @@ void setOriginHook(OriginHook origin) {
 }
 
 bool firing() { return s_firing; }
+
+bool applyInterruptedOutcome(const String& id, uint32_t retryAfterSec, uint64_t nowEpoch) {
+  Lock lk;
+  LoopRecord* l = findById(std::string(id.c_str()));
+  if (!l) return false;
+  // The decision lives in the host-tested core; this seam only holds the lock.
+  agent::dream::applyInterruptedToLoop(*l, nowEpoch, retryAfterSec);
+  persist();
+  return true;
+}
 
 // ---- the tick --------------------------------------------------------------
 void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {

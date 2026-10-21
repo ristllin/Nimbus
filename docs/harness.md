@@ -211,10 +211,19 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     07:00; key, credit, budget and parse failures wait for the next night. The
     breaker never disables the dream; after 3 failed nights in a row (then every 7)
     the owner is told once, at their next conversation, never at night.
+  - **A night the restart cut short.** The reflection turn writes an in-flight
+    marker (night, attempt, start time) into `/data/dream.json` before it starts and
+    clears it with its outcome. A boot that finds the marker without an outcome
+    reconciles it: the night's verdict is fail ("the device restarted during this
+    run"), one timeline row says the dream was interrupted, the failing-night streak
+    and the routine's failure count move exactly once, and the interrupted attempt
+    is one of the bounded retries - the routine runs again inside the night's window
+    while it is still before 07:00 local.
   - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
     are capped at 12 per night; the heap floor is not.
   - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night
-    baseline, tonight's attempts and the failing-night streak. The legacy NVS key
+    baseline, tonight's attempts, the failing-night streak and, while a reflection
+    runs, its in-flight marker. The legacy NVS key
     `dreamScrHash` is read once to migrate and never written. The file is read once
     per boot; after that RAM holds the state and each save is for the next boot, so a
     file area that is not mounted or refuses writes cannot reset the attempt count,

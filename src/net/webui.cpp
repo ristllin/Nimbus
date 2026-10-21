@@ -566,6 +566,7 @@ static void buildState(String& out) {
       // it were a literal, and ds is gone before the document is serialized.
       dj["last"] = ds.last;
       dj["cause"] = (const char*)ds.cause;
+      dj["err"] = (const char*)ds.err;
       dj["stateSaved"] = ds.stateSaved;
       dj["stateWhy"] = (const char*)ds.stateWhy;
       dj["attempts"] = ds.attempts;
