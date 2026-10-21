@@ -16,6 +16,7 @@
 #include "../support/fake_config.h"
 #include "../support/fake_fabric.h"   // CUM-538: the opt-in sub-agent fabric
 #include "../support/fake_platform.h"
+#include "../support/mock_claim_turns.h"   // the LAN mock's claim-check turns
 #include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/claim_check.h"
@@ -3376,9 +3377,6 @@ static void test_lane_s_the_claim_check_joins_the_final_check() {
 // one reply, ending with the correction, and the history row is that reply. A
 // stored write gives the same single reply with no line (counter-test).
 static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
-  const char* mockTurn =
-      R"({"reply": "Saved it to memory.", "mem_write": [{"content": "bench claim check note", )"
-      R"("importance": 0.5, "permanent": false, "ttl": "days"}]})";
   const struct {
     const char* code;
     const char* text;
@@ -3394,7 +3392,7 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
     r.cfg.orchHost = "custom";
     r.adminChats = true;   // the serial console is an owner surface
     Rig::Script s;
-    s.outJson = mockTurn;
+    s.outJson = harness_test::kMockClaimSavedTurn;
     r.scripts["custom"] = {s};
     r.memResult = c.success ? orch::ToolResult::ok(c.text) : orch::ToolResult::fail(c.text);
     r.memResult.code = c.code;
@@ -3404,7 +3402,7 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE("custom", r.attempts[0].host.c_str(), c.code);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.memCalls.size(), c.code);
     const std::string want = c.lands ? std::string("Saved it to memory.")
-                                     : std::string("Saved it to memory.\n\n(Correction: that has not been saved.)");
+                                     : std::string("Saved it to memory.\n\n") + harness_test::kNotSavedLine;
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("serial", r.delivered[0].first.c_str(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.code);
@@ -3420,10 +3418,7 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
 // is true; only a failed flash write (AppliedRamOnly) gets the RAM-only note; an
 // update that changes nothing (Skipped) adds no line either. Exactly one reply each.
 static void test_pg5_custom_head_durability_claim_follows_the_flash_save() {
-  const char* mockTurn =
-      R"({"reply": "Put it in my notes, so it will survive a restart.", "scratchpad": )"
-      R"({"active": null, "short": ["bench claim check note"], "mid": null, "long": null}})";
-  const char* ramLine = "(Note: this is kept only until the next restart; saving it permanently failed.)";
+  const char* ramLine = harness_test::kRamOnlyLine;
   const struct {
     agent::ScratchOutcome outcome;
     bool line;
@@ -3439,7 +3434,7 @@ static void test_pg5_custom_head_durability_claim_follows_the_flash_save() {
     r.cfg.orchHost = "custom";
     r.adminChats = true;   // the scratchpad is admin-only; the serial console is an owner surface
     Rig::Script s;
-    s.outJson = mockTurn;
+    s.outJson = harness_test::kMockClaimDurableTurn;
     r.scripts["custom"] = {s};
     r.scratchOutcome = c.outcome;
     const uint32_t tailed = agent::ClaimCheck::tailedCount();

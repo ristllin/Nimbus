@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/mock_claim_turns.h"
 #include "nimbus/harness/apply.h"
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/head_loop.h"
@@ -361,13 +362,8 @@ static void test_round_consistent_reply_and_spawn_claims_cost_no_claim_round() {
 }
 
 // ---- one delivered reply per turn (bench C1 on the host) ----------------------
-// The LAN mock's "mock-claim-saved" head turn, byte for byte as
-// tests/hil/mock_llm.py (CLAIM_TURNS) answers it: a "Saved it" reply with one
-// memory write.
-static const char kMockClaimSaved[] =
-    R"({"reply": "Saved it to memory.", "mem_write": [{"content": "bench claim check note", )"
-    R"("importance": 0.5, "permanent": false, "ttl": "days"}]})";
-static const char kNotSavedLine[] = "(Correction: that has not been saved.)";
+using harness_test::kMockClaimSavedTurn;
+using harness_test::kNotSavedLine;
 
 // How the turn's memory write ends.
 enum class WriteEnd { Stored, Duplicate, Queued, Refused, FailedNoCode, NoStore, Unverified };
@@ -397,13 +393,13 @@ struct Applied {
   int writes = 0;
 };
 
-// The mock turn through the real parse and apply, the way the device's
+// The LAN mock's "mock-claim-saved" turn through the real parse and apply, the way the device's
 // single-shot custom head runs it (no tool loop, so no correction round: the
 // check after apply is the only one).
 static Applied applyMockTurn(WriteEnd end) {
   nimbus::orch::Turn t;
   nimbus::orch::ParseError perr;
-  TEST_ASSERT_TRUE(nimbus::orch::parseHeadReply(kMockClaimSaved, t, perr) == nimbus::orch::ReplyShape::Turn);
+  TEST_ASSERT_TRUE(nimbus::orch::parseHeadReply(kMockClaimSavedTurn, t, perr) == nimbus::orch::ReplyShape::Turn);
   TEST_ASSERT_EQUAL(1, (int)t.mem_write.size());
   Applied out;
   agent::ApplyDeps d;

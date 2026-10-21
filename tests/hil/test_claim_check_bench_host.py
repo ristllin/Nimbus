@@ -17,9 +17,14 @@ device for something it refuses fails on the host first.
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 import pytest
 
 import test_claim_check_bench as leg
+from mock_llm import CLAIM_TURNS
 from test_claim_check_bench import (
     RAM_LINE,
     RAM_TOOL,
@@ -235,3 +240,15 @@ def test_c3_c4_run_against_the_device_rules(unit):
     assert unit.refused_saves == [], f"a config save was sent at a full NVS: {unit.refused_saves}"
     assert unit.tailed == 1  # only the turn whose flash save failed got the note
     assert not unit.nvs_full and not unit.scratch_fail and unit.short == []
+
+
+def test_the_host_suites_check_the_turns_the_mock_sends():
+    """test/support/mock_claim_turns.h carries the mock's claim turns byte for byte
+    (the C++ host suites run them through the real parse, apply and engine) and the
+    lines the legs expect."""
+    hdr = (Path(__file__).resolve().parents[2] / "test/support/mock_claim_turns.h").read_text()
+    raw = dict(re.findall(r'constexpr char (k\w+)\[\] = R"\((.*)\)";', hdr))
+    assert raw["kMockClaimSavedTurn"] == json.dumps(CLAIM_TURNS["mock-claim-saved"])
+    assert raw["kMockClaimDurableTurn"] == json.dumps(CLAIM_TURNS["mock-claim-durable"])
+    lines = dict(re.findall(r'constexpr char (k\w+Line)\[\] =\s*"([^"]*)";', hdr))
+    assert lines == {"kNotSavedLine": SAVED_LINE, "kRamOnlyLine": RAM_LINE}
