@@ -1552,19 +1552,21 @@ static void test_boot_reconcile_reads_a_marker_from_another_firmware_safely() {
 }
 
 static void test_boot_reconcile_drops_a_marker_a_later_fire_superseded() {
-  // The marker of night 9 survived on disk while the reserved loop kept firing: a
-  // firmware that does not know the marker ran nights 10-12, or the outcome writes
-  // after it did not land. The loop's lastRun is newer than the marker's start, so
-  // that night is already on record: cleared, with no row and no counter, and the
-  // file's newer verdict stays.
-  const std::string mark = markerFile(9);
+  // The marker of a night (21 Oct 2026, day 20747) survived on disk while the
+  // reserved loop kept firing: a firmware that does not know the marker ran the next
+  // three nights, or the outcome writes after it did not land. The loop's lastRun is
+  // newer than the marker's start, so that night is already on record: cleared, with
+  // no row and no counter, and the file's newer verdict stays.
+  const uint32_t day = 20747;
+  const std::string mark = markerFile(day);
   dream::DreamState fileSt;
   TEST_ASSERT_TRUE(dream::loadDreamState(mark, fileSt));
+  TEST_ASSERT_TRUE(fileSt.inflightStart >= dream::kSyncedEpochMin);
   BootRig b;
   b.file = mark;
-  b.lastRun = clockAt(12, 210).epoch;
+  b.lastRun = clockAt(day + 3, 210).epoch;
   dream::BootReconcile rec;
-  TEST_ASSERT_EQUAL((int)dream::BootStep::Stale, (int)rec.pump(b.deps(), clockAt(12, 300)));
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Stale, (int)rec.pump(b.deps(), clockAt(day + 3, 300)));
   TEST_ASSERT_EQUAL(0, b.rows);
   TEST_ASSERT_EQUAL(0, b.loopApplied);
   TEST_ASSERT_EQUAL(1, b.saves);
@@ -1579,9 +1581,19 @@ static void test_boot_reconcile_drops_a_marker_a_later_fire_superseded() {
     same.file = mark;
     same.lastRun = last;
     dream::BootReconcile r;
-    TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r.pump(same.deps(), clockAt(9, 230)));
+    TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r.pump(same.deps(), clockAt(day, 230)));
     TEST_ASSERT_EQUAL(1, same.rows);
   }
+  // A console drill before the time sync, on a device up for days without it, writes
+  // a marker whose start is not a real date: it cannot be compared with a real
+  // lastRun, so the interruption is reconciled, never dropped as stale (review).
+  BootRig unsynced;
+  unsynced.file = markerFile(5);   // a 1970 "day 5" clock
+  unsynced.lastRun = clockAt(day - 1, 210).epoch;   // the last real nightly fire
+  dream::BootReconcile r2;
+  TEST_ASSERT_EQUAL((int)dream::BootStep::Reconciled, (int)r2.pump(unsynced.deps(), clockAt(day, 230)));
+  TEST_ASSERT_EQUAL(1, unsynced.rows);
+  TEST_ASSERT_EQUAL(1, unsynced.loopApplied);
 }
 
 static void test_boot_reconcile_keeps_the_working_copy_a_fire_opened() {

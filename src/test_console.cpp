@@ -1970,10 +1970,10 @@ void pumpOrch() {
     if (c == '\n' || c == '\r') {
       if (s_line.length()) {
         dispatch(s_line);
-        // Assigning a String with no buffer frees the line's block: a long TGINJECT
-        // line must not keep up to kLineCap of internal RAM for the rest of the boot.
-        static const String kNoLine;
-        s_line = kNoLine;
+        // Assigning a null C string frees the line's heap block (String::copy ->
+        // invalidate); "" or an empty String would keep its capacity. A long TGINJECT
+        // line must not hold up to kLineCap of internal RAM for the rest of the boot.
+        s_line = static_cast<const char*>(nullptr);
         if (s_fsActive) { fsputPump(); return; }  // FSPUT just armed - hand the stream over
       }
     } else if (s_line.length() < kLineCap) {

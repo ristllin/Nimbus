@@ -228,7 +228,8 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     file that is torn, not JSON or larger than the state can be holds no marker
     (nothing is invented for it), a day stamp dated after today reads as never, and a
     marker older than the routine's last run (a later fire, on this firmware or
-    another, already recorded that night) is cleared with no row and no count.
+    another, already recorded that night) is cleared with no row and no count; one
+    started before the clock was set has no comparable time and is reconciled.
   - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
     are capped at 12 per night; the heap floor is not.
   - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night

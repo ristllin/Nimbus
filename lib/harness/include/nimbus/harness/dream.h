@@ -371,7 +371,10 @@ void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
 // Every seam may be null; no path throws or loops.
 constexpr uint8_t  kBootSaveTries = 10;
 constexpr uint32_t kMarkerStaleSlackSec = 300;   // a fire's lastRun precedes its marker by seconds
-// The marker names an attempt older than the reserved loop's last fire.
+constexpr uint64_t kSyncedEpochMin = 1600000000; // the device's "clock is set" floor (Sep 2020)
+// The marker names an attempt older than the reserved loop's last fire. A marker
+// started under a clock that was never set (a console drill before the time sync)
+// has no comparable start, so it is never judged stale: it is reconciled.
 bool markerStale(const DreamState& st, uint64_t loopLastRun);
 
 struct BootDeps {

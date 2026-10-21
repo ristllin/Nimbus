@@ -705,7 +705,8 @@ void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
 // ---- the boot reconcile driver (PG4) ----------------------------------------------
 
 bool markerStale(const DreamState& st, uint64_t loopLastRun) {
-  return st.inflightNight != 0 && loopLastRun > st.inflightStart + kMarkerStaleSlackSec;
+  return st.inflightNight != 0 && st.inflightStart >= kSyncedEpochMin &&
+         loopLastRun > st.inflightStart + kMarkerStaleSlackSec;
 }
 
 namespace {
