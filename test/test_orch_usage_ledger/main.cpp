@@ -2592,28 +2592,37 @@ static void test_after_migration_a_new_tag_pair_is_recorded() {
 // never goes.
 static void test_new_tags_hold_the_byte_guard() {
   nimbus::orch::UsageLedger L;
-  const char* provs[] = {"openai", "anthropic", "mistral", "zai"};
-  for (const char* p : provs) {
-    L.setLimits(p, 5000000, 1000, 1, 2500);
-    L.recordTokens(p, 123456, 65432, 20261021, "turn");
+  const char* provs[] = {"openai", "anthropic", "mistral", "zai", "cumulo", "tavily"};
+  uint64_t totalIn[6] = {};
+  for (int pi = 0; pi < 6; ++pi) {
+    L.setLimits(provs[pi], 5000000, 1000, 1, 2500);
+    L.recordTokens(provs[pi], 123456789, 98765432, 20261021, "turn");
+    totalIn[pi] += 123456789;
   }
   for (int i = 0; L.tagEntries().size() < nimbus::orch::UsageLedger::kMaxTags; ++i) {
     char tag[48];
     std::snprintf(tag, sizeof(tag), "loop:routine_with_a_long_id_%04d", i);
-    L.recordTokens(provs[i % 4], 1000000u + (uint64_t)i, 2000u + (uint64_t)i, 20261021, tag);
+    L.recordTokens(provs[i % 6], 1000000u + (uint64_t)i, 2000u + (uint64_t)i, 20261021, tag);
+    totalIn[i % 6] += 1000000u + (uint64_t)i;
   }
   TEST_ASSERT_EQUAL(nimbus::orch::UsageLedger::kMaxTags, L.tagEntries().size());
-  // One routine is deleted: its rows are rejected by the keep predicate and go first.
+  const size_t before = L.serialize().size();
+  TEST_ASSERT_TRUE(before >= 3000);   // a realistic full ledger of new tags
+  // A tight cap forces drops; one routine is deleted, so its rows are rejected by
+  // the keep predicate and go before any smallest row.
+  const size_t cap = before - 600;
   const size_t dropped = L.fitSerialized(
-      nimbus::orch::UsageLedger::kSerializedMaxBytes,
-      [](const std::string& t) { return t != "loop:routine_with_a_long_id_0000"; });
+      cap, [](const std::string& t) { return t != "loop:routine_with_a_long_id_0000"; });
   TEST_ASSERT_TRUE(dropped > 0);
+  TEST_ASSERT_TRUE(L.serialize().size() < cap);
   TEST_ASSERT_TRUE(L.serialize().size() <= nimbus::orch::UsageLedger::kSerializedMaxBytes);
-  // The provider entries survive the guard with all their spend.
-  for (const char* p : provs) {
-    const nimbus::orch::ProviderBudget* e = L.find(p);
+  // The provider entries survive the guard with all their spend: the guard may only
+  // drop attribution rows, so every provider keeps the tokens it was handed (the
+  // base turn plus its share of the tag rows).
+  for (int pi = 0; pi < 6; ++pi) {
+    const nimbus::orch::ProviderBudget* e = L.find(provs[pi]);
     TEST_ASSERT_NOT_NULL(e);
-    TEST_ASSERT_EQUAL_UINT64(123456, e->tokensIn);
+    TEST_ASSERT_EQUAL_UINT64(totalIn[pi], e->tokensIn);
   }
   bool deletedRow = false;
   for (const auto& t : L.tagEntries())
