@@ -1737,6 +1737,26 @@ static void test_scratchpad_failure_log_is_throttled_with_a_count() {
   TEST_ASSERT_EQUAL_UINT32(2, wrap.noteFailure(0xFFFFF000u + 60000u));
 }
 
+// L19-29: the device seam of the tag-rows transition. The ledger's load path turns
+// new (provider, tag) audit rows off only while it serves the legacy NVS copy
+// (flash unmounted); the file branch leaves them on (the ledger lives on LittleFS).
+static void test_new_tag_rows_follow_the_ledger_home() {
+  const std::string st = readFile("src/agent/store.cpp");
+  const size_t fb = st.find("if (LittleFS.totalBytes() == 0) {");   // the NVS fallback
+  TEST_ASSERT_TRUE(fb != std::string::npos);
+  const size_t fe = st.find("} else {", fb);
+  TEST_ASSERT_TRUE(fe != std::string::npos);
+  const std::string fallback = st.substr(fb, fe - fb);
+  TEST_ASSERT_TRUE(fallback.find("g_ledger.setAllowNewTags(false);") != std::string::npos);
+  // The file branch (from the else to the load's end) never disables new tags.
+  const size_t lm = st.find("loadModelsLocked();", fe);
+  TEST_ASSERT_TRUE(lm != std::string::npos);
+  const std::string fileBranch = st.substr(fe, lm - fe);
+  TEST_ASSERT_TRUE(fileBranch.find("setAllowNewTags") == std::string::npos);
+  // And the fallback is the only place in the file that touches the switch.
+  TEST_ASSERT_EQUAL_size_t(1, countOf(st, "setAllowNewTags"));
+}
+
 // The device seam of both moves: the ledger and the scratchpad persist through the
 // moved-store rule into their files, never NVS, and retire the legacy copy only on a
 // boot whose image was already valid.
@@ -1877,6 +1897,7 @@ int main(int, char**) {
   RUN_TEST(test_scratchpad_persists_only_on_change);
   RUN_TEST(test_scratchpad_failure_log_is_throttled_with_a_count);
   RUN_TEST(test_moved_store_device_seams);
+  RUN_TEST(test_new_tag_rows_follow_the_ledger_home);
   RUN_TEST(test_2c_routes_report_storage_full);
   RUN_TEST(test_verdict_memo_writes_only_on_change);
   return UNITY_END();

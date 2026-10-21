@@ -2564,6 +2564,79 @@ static void test_ledger_drops_deleted_routines_rows_first() {
   TEST_ASSERT_TRUE(smallest);
 }
 
+// ---- L19-29: new tag rows once the ledger lives on LittleFS (CUM-681) -----------
+// The ledger's file is where new (provider, tag) audit rows may grow again; the NVS
+// fallback keeps them off. The device seam (src/agent/store.cpp) sets
+// setAllowNewTags(false) only in the unmounted-flash branch - test_nvs_full pins
+// that wiring; these tests pin the ledger behavior both sides of the transition.
+
+// After the migration a new (provider, tag) pair is recorded (the file branch;
+// allowNewTags defaults to true).
+static void test_after_migration_a_new_tag_pair_is_recorded() {
+  nimbus::orch::UsageLedger L;
+  L.recordTokens("anthropic", 1000, 100, 20261021, "compact");
+  TEST_ASSERT_EQUAL(1, (int)L.tagEntries().size());
+  TEST_ASSERT_EQUAL_STRING("anthropic", L.tagEntries()[0].prov.c_str());
+  TEST_ASSERT_EQUAL_STRING("compact", L.tagEntries()[0].tag.c_str());
+  TEST_ASSERT_EQUAL_UINT64(1000, L.tagEntries()[0].tokIn);
+  // Spend is counted in the provider entry too, so the audit row adds, never replaces.
+  TEST_ASSERT_EQUAL_UINT64(1000, L.find("anthropic")->tokensIn);
+  // A repeat of the same pair accumulates into the row, never a second one.
+  L.recordTokens("anthropic", 500, 50, 20261021, "compact");
+  TEST_ASSERT_EQUAL(1, (int)L.tagEntries().size());
+  TEST_ASSERT_EQUAL_UINT64(1500, L.tagEntries()[0].tokIn);
+}
+
+// The 3,800 B byte guard still holds with new tags on: rows the keep predicate
+// rejects go first (a deleted routine), then the smallest rows; a provider entry
+// never goes.
+static void test_new_tags_hold_the_byte_guard() {
+  nimbus::orch::UsageLedger L;
+  const char* provs[] = {"openai", "anthropic", "mistral", "zai"};
+  for (const char* p : provs) {
+    L.setLimits(p, 5000000, 1000, 1, 2500);
+    L.recordTokens(p, 123456, 65432, 20261021, "turn");
+  }
+  for (int i = 0; L.tagEntries().size() < nimbus::orch::UsageLedger::kMaxTags; ++i) {
+    char tag[48];
+    std::snprintf(tag, sizeof(tag), "loop:routine_with_a_long_id_%04d", i);
+    L.recordTokens(provs[i % 4], 1000000u + (uint64_t)i, 2000u + (uint64_t)i, 20261021, tag);
+  }
+  TEST_ASSERT_EQUAL(nimbus::orch::UsageLedger::kMaxTags, L.tagEntries().size());
+  // One routine is deleted: its rows are rejected by the keep predicate and go first.
+  const size_t dropped = L.fitSerialized(
+      nimbus::orch::UsageLedger::kSerializedMaxBytes,
+      [](const std::string& t) { return t != "loop:routine_with_a_long_id_0000"; });
+  TEST_ASSERT_TRUE(dropped > 0);
+  TEST_ASSERT_TRUE(L.serialize().size() <= nimbus::orch::UsageLedger::kSerializedMaxBytes);
+  // The provider entries survive the guard with all their spend.
+  for (const char* p : provs) {
+    const nimbus::orch::ProviderBudget* e = L.find(p);
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL_UINT64(123456, e->tokensIn);
+  }
+  bool deletedRow = false;
+  for (const auto& t : L.tagEntries())
+    deletedRow = deletedRow || t.tag == "loop:routine_with_a_long_id_0000";
+  TEST_ASSERT_FALSE(deletedRow);
+}
+
+// On the NVS fallback a new tag is still refused; the migration flips it back and
+// the same pair is recorded. The flip is the amendment's transition.
+static void test_on_the_nvs_fallback_a_new_tag_is_still_refused() {
+  nimbus::orch::UsageLedger L;
+  L.setAllowNewTags(false);   // the device's unmounted-flash branch
+  L.recordTokens("openai", 700, 70, 20261021, "compact");
+  TEST_ASSERT_EQUAL(0, (int)L.tagEntries().size());
+  // Refusing the audit row loses no spend: the provider entry still counts it.
+  TEST_ASSERT_EQUAL_UINT64(700, L.find("openai")->tokensIn);
+  // The migration: flash mounts, the ledger loads from its file, tags turn back on.
+  L.setAllowNewTags(true);
+  L.recordTokens("openai", 700, 70, 20261021, "compact");
+  TEST_ASSERT_EQUAL(1, (int)L.tagEntries().size());
+  TEST_ASSERT_EQUAL_UINT64(700, L.tagEntries()[0].tokIn);
+}
+
 // ---- dirty and retry: spend recorded while the file refuses is never lost ----------
 // The device persists the ledger through the moved-store rule (moved_store.h) and marks
 // a write that did not land with DirtyRetry (src/agent/store.cpp persistLedgerLocked,
@@ -2767,6 +2840,9 @@ int main() {
   RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
   RUN_TEST(test_ledger_byte_guard_keeps_serialize_under_the_cap);
   RUN_TEST(test_ledger_drops_deleted_routines_rows_first);
+  RUN_TEST(test_after_migration_a_new_tag_pair_is_recorded);
+  RUN_TEST(test_new_tags_hold_the_byte_guard);
+  RUN_TEST(test_on_the_nvs_fallback_a_new_tag_is_still_refused);
   RUN_TEST(test_ledger_dirty_and_retry_never_loses_spend);
   RUN_TEST(test_ledger_legacy_nvs_spend_moves_to_the_file_on_retry);
   return UNITY_END();
