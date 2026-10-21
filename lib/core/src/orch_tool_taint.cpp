@@ -35,6 +35,7 @@ const ToolTaintRow kRows[] = {
     {"web.search", T::External, E::Read},
     // files (src/agent/files_subsystem.cpp)
     {"artifact.save", T::Internal, E::FileWrite},
+    {"files.append", T::Internal, E::FileWrite},   // G1a: writes rows, echoes only the count
     {"files.fetch", T::External, E::FileWrite},
     {"files.list", T::Internal, E::Read},
     {"files.read", T::External, E::Read},

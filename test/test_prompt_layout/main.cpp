@@ -221,17 +221,22 @@ static void test_static_block_does_not_move_under_budget_pressure() {
   std::unique_ptr<Turn> a = turnAt(3), b = turnAt(4);
   for (int i = 0; i < 40; i++) b->ci.recalled.push_back(std::string(300, 'r'));
   b->ci.recentConversation += std::string(6000, 'w') + "\n";
+  // A device-scale budget (the real derive: ~21 KB on a 128 K head). A smaller one
+  // no longer reaches the clip branch since lane S's evidence rule grew the static
+  // role text: the capability section would drop whole (room < 1024), which is the
+  // regime the orch_world drop branch exists for - not the one this test exercises.
+  const int kBud = 20480;   // a 128 K head's derived system-prompt budget
   for (auto* t : {a.get(), b.get()}) {
     for (int i = 0; i < 40; i++)
       t->ci.tools.push_back({"tool_" + std::to_string(i), std::string(200, 'd')});
-    t->ci.budgetBytes = 16384;
+    t->ci.budgetBytes = kBud;
   }
   const std::string pa = agent::composeInstructions(a->ci), pb = agent::composeInstructions(b->ci);
   TEST_ASSERT_TRUE_MESSAGE(prefixDiff(pa, pb).empty(), prefixDiff(pa, pb).c_str());
   TEST_ASSERT_TRUE(layout::split(pa).stat.find("capability list clipped") != std::string::npos);
   // ...and the whole prompt still honors the budget, catalogs aside.
   const size_t catalogs = std::strlen(kCatalogs);
-  TEST_ASSERT_TRUE(layout::flat(pb).size() <= 16384 + catalogs);
+  TEST_ASSERT_TRUE(layout::flat(pb).size() <= (size_t)kBud + catalogs);
 }
 
 // ---- prefix stability: on the wire -----------------------------------------------
