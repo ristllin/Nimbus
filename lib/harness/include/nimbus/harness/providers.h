@@ -245,6 +245,11 @@ struct FabricSwitch {
 };
 const FabricSwitch& lastFabricSwitch();
 
+// Test rigs only (host tests): pin the record the engine's notify callback reads
+// inside the notify call, so a scripted fabric can say WHY a host changed without
+// the real provider loop. Single-task exact, like the record it replaces.
+void setTestFabricSwitch(const FabricSwitch& sw);
+
 // Test builds (the bench billing leg): every request to API host `host`
 // ("api.anthropic.com") is answered locally with `status` and `body` - nothing is
 // sent - until cleared. The test console wires it. Defined only in test and host

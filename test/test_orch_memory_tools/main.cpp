@@ -1121,7 +1121,9 @@ static void test_duplicate_write_reports_its_pin_state() {
   TEST_ASSERT_TRUE(has(perm.output, "NOT pinned"));
   ToolResult plain = call(reg2, "memory.write", R"({"content":"the teal color rule"})");
   TEST_ASSERT_EQUAL_STRING("duplicate of an existing memory (importance bumped)", plain.output.c_str());
-  // Another namespace's pinned memory: the answer says nothing about its pin.
+  // Another namespace keeps its OWN copy of the same fact (namespace-scoped
+  // dedup, FM-2: two people saving the same fact each keep one), and the answer
+  // says nothing about the other namespace's pin.
   ToolRegistry reg3 = buildServer();
   storedId(call(reg3, "memory.write", R"({"content":"the teal color rule","permanent":true})"));
   JsonDocument a;
@@ -1129,7 +1131,8 @@ static void test_duplicate_write_reports_its_pin_state() {
   const ToolResult other = reg3.dispatch("memory.write", a.as<JsonObjectConst>(),
                                          nimbus::orch::principalForRole("4242", nimbus::orch::Role::User));
   TEST_ASSERT_TRUE_MESSAGE(other.success, other.error.c_str());
-  TEST_ASSERT_EQUAL_STRING("duplicate of an existing memory (importance bumped)", other.output.c_str());
+  TEST_ASSERT_TRUE(has(other.output, "stored memory"));
+  TEST_ASSERT_TRUE(other.output.find("pinned") == std::string::npos);
 }
 
 static void test_pin_tool_description_says_what_pinning_does_not_do() {

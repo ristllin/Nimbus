@@ -13,7 +13,9 @@
 #include "nimbus/harness/compose.h"   // loopToolName - the advertised (wire) tool names
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/providers.h"  // setTestFabricSwitch - the scripted fabric's switch record
 #include "nimbus/mem_cap.h"
+#include "nimbus/orch/billing_refusal.h"   // billingEpisodeEnd - a fresh episode per test
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/tool_registry.h"
@@ -87,6 +89,9 @@ struct Rig {
   std::string err;
   std::string outJson = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";
   uint32_t usageIn = 0, usageOut = 0;
+  // Opt-in scripted fabric (the billing-switch test): anthropic refuses with a
+  // billing 400 and the turn moves to the next host, which answers.
+  bool billingSwitch = false;
   std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
 
@@ -128,7 +133,7 @@ struct Rig {
         return orch::ToolResult::ok(std::string("found: ") + (a["query"] | ""));
       return orch::ToolResult::ok("stored memory m1");
     };
-    d.apply.enqueueSpawn = [this](const orch::Spawn&, const std::string&, bool) { spawns++; };
+    d.apply.enqueueSpawn = [this](const orch::Spawn&, const std::string&, bool) { spawns++; return true; };
     d.apply.stageDevice = [this](const orch::ValidatedAction&) { deviceActions++; };
     for (const char* h : {"anthropic", "openai", "mistral"}) {
       const std::string host = h;
@@ -154,7 +159,37 @@ struct Rig {
         return true;
       });
     }
+    wireFabricStub(d);
     eng.reset(new TurnEngine(std::move(d)));
+  }
+
+  // Opt-in scripted fabric (out of the constructor only to keep the lizard
+  // ceiling honest): with billingSwitch set, the first host refuses with a
+  // billing 400, the turn moves to the next host and answers there. The engine's
+  // notify callback reads providers::lastFabricSwitch() inside the notify call,
+  // so the rig pins the record the way the real loop would.
+  void wireFabricStub(TurnEngine::Deps& d) {
+    d.hosts.fabricSupports = [](const std::string& h) {
+      return h == "anthropic" || h == "openai" || h == "mistral";
+    };
+    d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string&,
+                            const std::string&, std::string& out, std::string& err,
+                            const agent::HeadTools& ht, orch::TurnSpend* spend,
+                            const std::function<void(const std::string&, const std::string&)>& notify) {
+      if (!billingSwitch || hl.size() < 2) {
+        err = "network: connect failed";
+        return false;
+      }
+      if (ht.onStepError) ht.onStepError(hl[0], "chat HTTP 400: credit balance is too low");
+      agent::providers::setTestFabricSwitch(
+          {hl[0], hl[1], orch::StepErr::Billing, 400, false});
+      if (notify) notify(hl[0], hl[1]);
+      orch::TokenUsage u;
+      u.add(40, 6);
+      if (spend) spend->add(hl[1].c_str(), "model-next", u);
+      out = outJson;
+      return true;
+    };
   }
   orch::FireOutcome dreamTurn(const std::string& inputs = "[DREAM] test") {
     return eng->injectScheduledTurn("1001", inputs, "Dream", "dream", /*quietOk=*/true);
@@ -220,6 +255,33 @@ static void test_quiet_turn_notice_count_zero_on_every_failure_path() {
     q.eng->handleMessage("hello again", "Roy", "1001");
     TEST_ASSERT_TRUE(q.delivered.size() >= 1);
   }
+}
+
+// A quiet turn does not consume the one-notice billing latch (lane M x lane K).
+// The fabric's billing switch tells the owner once per episode; billingNoticeDue
+// consumes the latch when it says yes. A quiet background turn holds its notices,
+// so it must not consume the latch either - otherwise a night that fails on an
+// out-of-credit provider eats the episode's one notice and the owner never hears
+// of it. The next attended switch then tells the owner, and only once.
+static void test_quiet_billing_switch_keeps_the_notice_latch_armed() {
+  Rig r;
+  r.cfg.midFail = true;       // the engine routes the turn through the fabric
+  r.billingSwitch = true;
+  orch::billingEpisodeEnd("anthropic");   // arm a fresh episode
+  const orch::FireOutcome quiet = r.dreamTurn();
+  TEST_ASSERT_TRUE(quiet.ok);                 // the turn answered on the next host
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());   // nothing at night, as ever
+  TEST_ASSERT_TRUE(r.eng->quietNoticesHeld() >= 1);
+  // The latch was NOT consumed by the held notice: the same episode's billing
+  // switch on an attended turn still reaches the owner...
+  const orch::FireOutcome attended = r.routineTurn();
+  TEST_ASSERT_TRUE(attended.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("out of credit") != std::string::npos);
+  // ...and the episode's second notice stays quiet (one per episode).
+  const orch::FireOutcome attended2 = r.routineTurn();
+  TEST_ASSERT_TRUE(attended2.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
 }
 
 // ---- (2) the dream's surface: memory tools only ---------------------------------
@@ -1251,6 +1313,7 @@ static void test_memory_write_counters_on_the_registry_path() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
+  RUN_TEST(test_quiet_billing_switch_keeps_the_notice_latch_armed);
   RUN_TEST(test_dream_can_never_call_files_or_session_tools);
   RUN_TEST(test_dream_turn_fields_cannot_spawn_or_act);
   RUN_TEST(test_quiet_preamble_never_asks_for_a_reply);

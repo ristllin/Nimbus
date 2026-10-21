@@ -244,6 +244,7 @@ void clearHostParks() {
 }
 
 const FabricSwitch& lastFabricSwitch() { return g_lastSwitch; }
+void setTestFabricSwitch(const FabricSwitch& sw) { g_lastSwitch = sw; }
 
 // The bench seams exist only in test and host builds: the production image has
 // neither the setter nor the check, so nothing can script a provider answer there.
