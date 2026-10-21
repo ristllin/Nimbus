@@ -261,12 +261,18 @@ struct Rig {
     // same way - the rig mirrors that so a router-fallback turn has a head to run.
     for (const char* h : {"openai", "anthropic", "mistral", "custom", "cumulo", "zai"})
       d.hosts.add(h, providerFor(h));
-    // Fabric stub (recording): only reachable when a test opts in with
-    // cfg.midFail = true - the rig default keeps every legacy test on the
-    // scripted single-shot path. Mirrors the device: fabricSupports knows the
-    // three cloud hosts, so a custom head must fall back to hosts.run.
-    // Like providers::runFabricLoop: each host bills into its own counter, filed into
-    // the spend table once at the end under the model configured for it.
+    wireFabricStub(d);
+    eng.reset(new TurnEngine(std::move(d)));
+  }
+
+  // Fabric stub (recording): only reachable when a test opts in with
+  // cfg.midFail = true - the rig default keeps every legacy test on the
+  // scripted single-shot path. Mirrors the device: fabricSupports knows the
+  // three cloud hosts, so a custom head must fall back to hosts.run.
+  // Like providers::runFabricLoop: each host bills into its own counter, filed
+  // into the spend table once at the end under the model configured for it.
+  // (Out of the constructor only to keep the lizard length ceiling honest.)
+  void wireFabricStub(TurnEngine::Deps& d) {
     d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string&,
                             const std::string&, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,
@@ -276,7 +282,6 @@ struct Rig {
     d.hosts.fabricSupports = [](const std::string& h) {
       return h == "openai" || h == "anthropic" || h == "mistral";
     };
-    eng.reset(new TurnEngine(std::move(d)));
   }
 
   // Lane L: the delivered text is captured, and the sub-agent rig queues spawns
