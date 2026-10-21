@@ -3,6 +3,7 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/harness/turn_anatomy.h"  // HistoryFacts (TurnDebugEv)
 #include "nimbus/orch/failure_chain.h"   // FailureChain - why a turn failed
 #include "nimbus/orch/head_loop.h"       // HeadToolCall / HeadToolResult
 #include "nimbus/orch/token_usage.h"
@@ -107,6 +108,10 @@ struct TurnDebugEv {
   bool ok = false;
   // Why the turn failed (borrowed like the others; null or empty on success).
   const nimbus::orch::FailureChain* failure = nullptr;
+  // The turn ran the stateless tool loop (no provider-side conversation).
+  bool loopTurn = false;
+  // What the device sent as history in the system prompt (turn_anatomy.h).
+  HistoryFacts history;
 };
 
 struct Hooks {

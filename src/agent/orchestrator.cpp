@@ -5,6 +5,7 @@
 #include "nimbus/harness/apply.h"       // portable turn-application policy (Stage E)
 #include "nimbus/harness/jobs.h"        // portable sub-agent job machinery (Stage F)
 #include "nimbus/harness/engine.h"      // portable turn orchestration (Stage G)
+#include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
 #include "nimbus/harness/head_arc.h"    // portable head-arc reconciler (W6)
 #include "store.h"
 #include "store_config.h"               // harnessConfigFromStore - the HarnessConfig view
@@ -469,29 +470,15 @@ static void captureTurnDebug(const TurnDebugEv& ev) {
   const std::string& inputs = *ev.inputs;
   const std::string& outJson = *ev.rawOut;
   const std::string& brief = ev.transcriptBrief ? *ev.transcriptBrief : kNoBrief;
-  // Lane T: a failed turn's header names its causes, first cause first.
-  const std::string result =
-      ev.ok ? std::string("ok")
-            : ev.failure && !ev.failure->empty() ? "FAILED - " + ev.failure->render(240)
-                                                 : std::string("FAILED");
+  // The head (provider chain, the history the device sent, the section legend,
+  // and - lane T - a failed turn's causes, first cause first) is portable and
+  // host-tested (turn_anatomy.h), shared with the hosted daemon.
+  const std::string head = agent::turnAnatomyHeader(ev);
   const size_t need =
-      instructions.size() + inputs.size() + outJson.size() + brief.size() + result.size() + 1024;
+      head.size() + instructions.size() + inputs.size() + outJson.size() + brief.size() + 1024;
   char* b = (char*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
   if (!b) return;   // no PSRAM -> skip capture, never the turn
-  size_t off = (size_t)snprintf(b, need,
-      "===== NIMBUS TURN ANATOMY - the last completed turn =====\n"
-      "host: %s\n"
-      "provider conversation: %s\n"
-      "result: %s\n"
-      "sections: 1 system prompt · 2 per-turn input · 3 raw model output ·\n"
-      "4 tool-loop transcript (the mid-turn rounds, when the turn used tools).\n"
-      "\n===== 1. INSTRUCTIONS - the system prompt sent this turn =====\n"
-      "(role + HOW YOU RUN + capability manifest + owner directive + [RUNNING\n"
-      "MEMORY] + [RELEVANT MEMORIES] associative recall)\n\n",
-      ev.host.c_str(),
-      ev.convContinued ? "CONTINUED - the provider held history from prior turns"
-                       : "FRESH - no prior history visible to the model",
-      result.c_str());
+  size_t off = 0;
   auto app = [&](const char* s, size_t n) {
     if (off + n >= need - 1) n = need - 1 - off;
     memcpy(b + off, s, n);
@@ -499,11 +486,13 @@ static void captureTurnDebug(const TurnDebugEv& ev) {
   };
   auto appStr = [&](const std::string& s) { app(s.c_str(), s.size()); };
   auto appLit = [&](const char* s) { app(s, strlen(s)); };
+  appStr(head);
   appStr(instructions);
   appLit("\n\n===== 2. INPUT - the per-turn message block =====\n"
          "(optional [MEMORY RESULTS] / [FRESH RESULTS] + live session digest +\n"
-         "[CHANNEL] + [USER] - the ONLY user-message content the model sees\n"
-         "unless the provider conversation above is CONTINUED)\n\n");
+         "[CHANNEL] + [USER] - the current message; earlier conversation reaches\n"
+         "the model only through the device history in section 1, or the provider\n"
+         "chain when the header says CONTINUED)\n\n");
   appStr(inputs);
   appLit("\n\n===== 3. MODEL RAW OUTPUT - the orch_turn JSON =====\n\n");
   if (outJson.size()) appStr(outJson);

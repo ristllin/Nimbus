@@ -77,8 +77,8 @@ std::string display(const std::string& instructions) {
   const PromptParts p = split(instructions);
   if (!p.split) return instructions;
   std::string out = p.stat;
-  if (!p.summary.empty()) out += "\n[----- static block ends; conversation summary block -----]\n" + p.summary;
-  out += "\n[----- cached blocks end; per-turn block -----]\n" + p.dyn;
+  if (!p.summary.empty()) out += kDisplaySummaryLabel + p.summary;
+  out += kDisplayDynLabel + p.dyn;
   return out;
 }
 

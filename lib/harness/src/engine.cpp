@@ -1,6 +1,7 @@
 #include "nimbus/harness/engine.h"
 
 #include "nimbus/harness/prompt_layout.h"
+#include "nimbus/harness/turn_anatomy.h"   // measureHistory / providerChainHeld (/api/lastturn)
 
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
@@ -720,6 +721,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                (unsigned)t_.loopMinHeap, (unsigned)instructions.size());
   // Diagnostics show the cacheable parts as labelled lines (layout::display).
   lastInstructions_ = layout::display(instructions);   // the PROMPT? console command
+  // What the device itself sends as history this turn, measured on the prompt as
+  // composed (the turn anatomy header; never inferred from the provider chain).
+  const HistoryFacts history = measureHistory(instructions, ci.chatSummary, ci.runningMemory);
 
   // (host was picked above, before compose - the budget derivation needs it.)
   // Conversation state is per-CHAT + per-host (Release B2): the map
@@ -1089,9 +1093,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
   }
 
+  // Introspection: a provider-side conversation at entry (a stateless marker such
+  // as "messages" holds nothing on the provider, so it is not one).
+  const bool convContinued = providerChainHeld(convId);
   hlog::logf("orchestrator: turn host=%s (conv=%d heap=%u)", host.c_str(),
-             (int)(convId.length() > 0), (unsigned)freeHeap());
-  const bool convContinued = convId.length() > 0;   // introspection: history state at entry
+             (int)convContinued, (unsigned)freeHeap());
   // Stage 2 phase 5: LOOP turns run the engine-owned FABRIC loop when the gate
   // is on - retry/failover happens INSIDE the loop, per round, against the
   // shared transcript (executed results are data; nothing re-dispatches). The
@@ -1227,6 +1233,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.transcriptBrief = &lastBrief_;
     ev.ok = ok && !outJson.empty();
     ev.failure = ev.ok ? nullptr : &tf.chain;
+    ev.loopTurn = !lastBrief_.empty();   // only a tool loop hands back a transcript brief
+    ev.history = history;
     d_.hooks.onTurnDebug(ev);
   }
   if (!ok || outJson.empty()) {

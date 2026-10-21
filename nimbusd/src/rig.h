@@ -26,6 +26,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/turn_anatomy.h"   // the /api/lastturn page head
 #include "nimbus/harness/websearch.h"
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
@@ -1213,10 +1214,9 @@ class NimbusdRig {
   // captureTurnDebug shape), capped so a huge prompt cannot grow it without bound.
   void captureTurn(const agent::TurnDebugEv& ev) {
     static constexpr size_t kCap = 256 * 1024;
-    std::string t = "===== NIMBUS TURN ANATOMY - the last completed turn =====\nhost: " + ev.host +
-                    "\nprovider conversation: " + (ev.convContinued ? "CONTINUED" : "FRESH") +
-                    "\nresult: " + (ev.ok ? "ok" : "FAILED") +
-                    "\n\n===== 1. INSTRUCTIONS - the system prompt sent this turn =====\n" +
+    // The head (provider chain, the history the device sent, the section legend)
+    // is the device's own (turn_anatomy.h), so both pages tell the same truth.
+    std::string t = agent::turnAnatomyHeader(ev) +
                     (ev.instructions ? hostedPrompt(*ev.instructions) : std::string()) +
                     "\n\n===== 2. INPUT - the per-turn input block =====\n" +
                     (ev.inputs ? *ev.inputs : std::string()) +

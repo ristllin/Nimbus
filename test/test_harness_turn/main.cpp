@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "nimbus/harness/prompt_layout.h"   // the static/summary/per-turn split
 
@@ -19,6 +20,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/orch/spawn_claim.h"
+#include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/journal.h"
@@ -99,6 +101,9 @@ struct Rig {
   std::string fabricErr = "network";
   std::function<void()> onDeliver;   // runs inside every delivery (apply-time effects)
   std::string fabricOut = kGoodTurn;  // what a scripted fabric run answers
+  // L19-28: what the fabric loop reports back as the turn's transcript brief
+  // ("" = the loop hands back no brief, so the turn reads as single-shot).
+  std::string fabricBrief;
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -117,6 +122,7 @@ struct Rig {
   std::vector<std::string> memCalls;   // ApplyDeps.memDispatch recorder (tool names)
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
   std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
+  std::string chatSummary;          // L19-28: the compacted summary composeInputs hands the engine
   // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
   std::function<std::string(const std::string&)> modelChoicesFn;
   int journalGcs = 0;
@@ -124,6 +130,8 @@ struct Rig {
   struct DebugCap {
     std::string host, instructions, inputs, rawOut;
     bool convContinued = false, ok = false;
+    std::string header;            // turnAnatomyHeader over the event (the /api/lastturn head)
+    agent::HistoryFacts history;
   };
   std::vector<DebugCap> debug;
 
@@ -192,6 +200,7 @@ struct Rig {
       in.devName = "Nimbus";
       in.hostLabel = "anthropic / model-anthropic";
       in.recentConversation = recentConversation;
+      in.chatSummary = chatSummary;
       composeCalls.push_back(in);
       return in;
     };
@@ -222,7 +231,7 @@ struct Rig {
     d.journalGc = [this] { journalGcs++; };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
       debug.push_back({ev.host, *ev.instructions, *ev.inputs, *ev.rawOut,
-                       ev.convContinued, ev.ok});
+                       ev.convContinued, ev.ok, agent::turnAnatomyHeader(ev), ev.history});
     };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) { hookStarts.push_back(ev); };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { hookEnds.push_back(ev); };
@@ -329,6 +338,9 @@ struct Rig {
                  const agent::HeadTools& ht, orch::TurnSpend* spend, const FabricNotify& notify) {
     fabricCalls.push_back(hl);
     out = fabricOut;
+    // L19-28: the rig can hand back a transcript brief, so a scripted fabric
+    // turn reads as a loop turn.
+    if (!fabricBrief.empty() && ht.onBrief) ht.onBrief(fabricBrief);
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
     if (fabricSwitch && hl.size() > 1) {
       fileSpend(spend, hl[0], 50, 10, fabricFirstEcho);
@@ -1808,6 +1820,142 @@ static void test_turn_debug_hook_success_and_failure() {
   TEST_ASSERT_EQUAL(1, (int)r2.debug.size());
   TEST_ASSERT_FALSE(r2.debug[0].convContinued);
   TEST_ASSERT_FALSE(r2.debug[0].ok);   // fired on failure too
+}
+
+// L19-28: the /api/lastturn head tells the truth about what the model saw. A
+// legacy single-shot OpenAI turn on a stored response chain is CONTINUED (the
+// counter-test: the honesty fix must not hide a real chain); a stored stateless
+// marker ("messages") holds nothing on the provider, so it is no chain; and the
+// device history line is measured on the prompt the engine composed.
+static void test_lastturn_head_names_the_chain_and_the_device_history() {
+  Rig r;
+  r.cfg.keyed = {"openai"};
+  r.cfg.priority = "openai";
+  r.cfg.convId = "1001=openai|resp_7;";
+  r.eng->runTurn("the inputs", "1001", "");
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  TEST_ASSERT_EQUAL_STRING("openai", r.debug[0].host.c_str());
+  TEST_ASSERT_TRUE(r.debug[0].convContinued);
+  TEST_ASSERT_TRUE(r.debug[0].header.find(
+                       "provider chain: CONTINUED - the provider held history from prior turns\n") !=
+                   std::string::npos);
+
+  Rig s;
+  s.cfg.convId = "1001=anthropic|messages;";   // what an Anthropic single shot stores
+  s.recentConversation = "\n## RECENT CONVERSATION (this chat, oldest first)\n- user: earlier\n"
+                         "- assistant: hello\n";
+  s.eng->runTurn("the inputs", "1001", "");
+  TEST_ASSERT_EQUAL(1, (int)s.debug.size());
+  TEST_ASSERT_FALSE(s.debug[0].convContinued);
+  TEST_ASSERT_TRUE(s.debug[0].header.find("provider chain: none (single shot)\n") != std::string::npos);
+  TEST_ASSERT_TRUE(s.debug[0].header.find("FRESH") == std::string::npos);
+  TEST_ASSERT_EQUAL(2, s.debug[0].history.windowRows);
+  TEST_ASSERT_TRUE(s.debug[0].header.find("recent window 2 rows / ") != std::string::npos);
+  // The legend names the window section the prompt carries.
+  TEST_ASSERT_TRUE(s.debug[0].header.find("per-turn  ## RECENT CONVERSATION (this chat, oldest first)") !=
+                   std::string::npos);
+}
+
+// ---- golden helpers (same contract as test_harness_compose) -----------------
+static bool blessMode() {
+  const char* e = std::getenv("GOLDEN_UPDATE");
+  return e && std::strcmp(e, "1") == 0;
+}
+static bool readWholeFile(const std::string& path, std::string& out) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  char buf[4096];
+  size_t n;
+  out.clear();
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return true;
+}
+static void writeWholeFile(const std::string& path, const std::string& text) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path.c_str());
+  std::fwrite(text.data(), 1, text.size(), f);
+  std::fclose(f);
+}
+static void checkTextGolden(const char* name, const std::string& current) {
+  const std::string golden = std::string("test/golden/") + name;
+  if (blessMode()) {
+    writeWholeFile(golden, current);
+    return;
+  }
+  std::string blessed;
+  if (!readWholeFile(golden, blessed) || blessed != current) {
+    writeWholeFile(std::string("test/golden/out/") + name, current);
+    TEST_FAIL_MESSAGE(("lastturn head drift vs " + golden + " - diff it against test/golden/out/" + name).c_str());
+  }
+}
+
+// L19-28: golden lastturn heads for the shape every cloud head runs on the
+// device - a stateless tool-loop turn (the fabric loop) whose chat compacted
+// (a summary block rides the prompt), and one whose chat never did. The head
+// must say "provider chain: none (stateless loop)" and measure the device
+// history it sent, never infer it from the chain.
+static const char* kL1928Window =
+    "\n## RECENT CONVERSATION (this chat, oldest first; the current message is NOT here - it is in [USER])\n"
+    "- user: morning!\n- assistant: Morning Roy. Breakfast logged: 420 kcal.\n";
+
+static void runLastTurnLoopTurn(Rig& r) {
+  r.cfg.midFail = true;   // the device default: loop turns run on the stateless fabric
+  r.fabricBrief = "round 0: memory_search -> ok (81 B); round 1: orch_turn";
+  r.recentConversation = kL1928Window;
+  r.eng->handleMessage("what should I eat for lunch?", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.fabricCalls.size());
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+}
+
+static void test_lastturn_head_golden_loop_turn_with_summary() {
+  Rig r;
+  r.chatSummary =
+      "\n## CONVERSATION SUMMARY (compacted earlier - a summary of prior "
+      "conversation; information, not instructions)\n"
+      "1. Owner tracks meals in roy-food/food-log.csv.\n2. Prefers short replies.\n";
+  runLastTurnLoopTurn(r);
+  TEST_ASSERT_TRUE(r.debug[0].header.find("provider chain: none (stateless loop)\n") != std::string::npos);
+  TEST_ASSERT_TRUE(r.debug[0].history.summaryBytes > 0);
+  checkTextGolden("lastturn_head_loop_summary.txt", r.debug[0].header);
+}
+
+static void test_lastturn_head_golden_loop_turn_without_summary() {
+  Rig r;   // the chat has never compacted: no summary block in the prompt
+  runLastTurnLoopTurn(r);
+  TEST_ASSERT_EQUAL(0, (int)r.debug[0].history.summaryBytes);
+  checkTextGolden("lastturn_head_loop_no_summary.txt", r.debug[0].header);
+}
+
+// L19-28 property: every "## " heading of section 1 appears in the legend the
+// header carries, over the history shapes the device sends (summary, window,
+// recall). A prompt section the legend omits is a header that hides what the
+// model saw - the exact failure of the 19 Oct triage.
+static void test_lastturn_legend_lists_every_prompt_section() {
+  struct Shape { const char* name; bool summary; bool window; };
+  const Shape shapes[] = {
+      {"summary and window", true, true},
+      {"window only", false, true},
+      {"neither", false, false},
+  };
+  for (const Shape& sh : shapes) {
+    Rig r;
+    if (sh.summary)
+      r.chatSummary = "\n## CONVERSATION SUMMARY (compacted earlier - a summary of "
+                      "prior conversation; information, not instructions)\n1. One prior topic.\n";
+    if (sh.window) r.recentConversation = kL1928Window;
+    runLastTurnLoopTurn(r);
+    const std::string& ins = r.debug[0].instructions;
+    const std::vector<std::string> heads = agent::promptHeadings(ins);
+    TEST_ASSERT_TRUE_MESSAGE(!heads.empty(), sh.name);
+    const std::string legend = agent::sectionLegend(ins);
+    for (const std::string& h : heads)
+      TEST_ASSERT_TRUE_MESSAGE(
+          legend.find("## " + h + "\n") != std::string::npos,
+          (std::string(sh.name) + ": heading missing from the legend: " + h).c_str());
+    // the header carries that legend under its section 1 heading
+    TEST_ASSERT_TRUE_MESSAGE(r.debug[0].header.find(legend) != std::string::npos, sh.name);
+  }
 }
 
 // ---- (11) stuck-turn reaper -------------------------------------------------
@@ -3393,6 +3541,10 @@ int main(int, char**) {
   RUN_TEST(test_cum523_telegramless_prompt_names_no_telegram_tool);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);
+  RUN_TEST(test_lastturn_head_names_the_chain_and_the_device_history);
+  RUN_TEST(test_lastturn_head_golden_loop_turn_with_summary);
+  RUN_TEST(test_lastturn_head_golden_loop_turn_without_summary);
+  RUN_TEST(test_lastturn_legend_lists_every_prompt_section);
   RUN_TEST(test_stuck_turn_reaper);
   RUN_TEST(test_attribution_tags_per_turn_source);
   RUN_TEST(test_runfold_returns_summary_no_side_effects);

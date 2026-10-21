@@ -51,6 +51,10 @@ std::string flat(const std::string& instructions);
 // The same text with each split shown as a labelled line, for the turn anatomy
 // page and the PROMPT? console dump.
 std::string display(const std::string& instructions);
+// The labelled lines display() puts at the splits (the turn anatomy legend and
+// the bench legs find the parts by them).
+inline constexpr const char* kDisplaySummaryLabel = "\n[----- static block ends; conversation summary block -----]\n";
+inline constexpr const char* kDisplayDynLabel = "\n[----- cached blocks end; per-turn block -----]\n";
 
 // The user message a split prompt sends: the dynamic block, then the turn input.
 std::string userWithDynamic(const PromptParts& p, const std::string& inputs);

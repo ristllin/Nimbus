@@ -175,8 +175,9 @@ exactly **five** sources:
    itself. It **resets** on: host failover, the same-host fresh retry, a
    token/provider switch, a compaction fold (deliberately - the summary
    replaces it), and (OpenAI only) whenever the last response carried
-   unanswered tool calls. `/api/lastturn` prints whether the chain was CONTINUED
-   or FRESH.
+   unanswered tool calls. `/api/lastturn` names the provider chain in its header
+   (`none (stateless loop)` on a tool-loop turn, `none (single shot)` on a fresh
+   single-shot turn, `CONTINUED` only while a provider really holds the history).
 3. **`[RUNNING MEMORY]`** - the model's own running notes, per-chat since v3.3.0
    (in the per-turn part of the prompt).
 4. **Long-term memory recall** - only what's semantically similar to the new text.
@@ -232,12 +233,15 @@ the reply names that real cause instead. The device never goes silent on a chat.
 ## Diagnosing a confusing reply
 
 Work through the blocks above in order: open that turn's **Turn anatomy** in the
-Chat tab (or `/api/lastturn` for the most recent one). It shows whether the
-conversation chain was CONTINUED or FRESH (a fresh chain plus an ambiguous
-message is the most common cause of a non-sequitur), whether a `[MEMORY
-RESULTS]` or `[FRESH RESULTS]` block led the input, exactly which memories were
-recalled, and - in section 4 - every tool call the model made mid-turn with its
-arguments and result.
+Chat tab (or `/api/lastturn` for the most recent one). Its header names the
+provider chain and measures the device history sent in the prompt - the summary,
+the recent window, the running memory and the recalled items - so a stateless
+loop turn no longer reads as a chat with no memory of earlier turns. The legend
+under section 1 lists every `##` section the prompt carries (an ambiguous message
+with little device history is the most common cause of a non-sequitur). The page
+also shows whether a `[MEMORY RESULTS]` or `[FRESH RESULTS]` block led the input,
+exactly which memories were recalled, and - in section 4 - every tool call the
+model made mid-turn with its arguments and result.
 
 ## The claim check
 
