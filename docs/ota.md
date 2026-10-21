@@ -140,6 +140,9 @@ release, and no release moves running Virtual Nimbus instances by itself.
   source and no secret. A gate (`tools/release_gate/check_elf_symbols.py --bin`) first
   proves each ELF is the one its image was built from: the build embeds the ELF's
   SHA-256 in the image, and the crash report's `elf=` field carries its first digits.
+  The same gate runs its symbol checks on all four images: only the color display
+  driver linked, and none of the test build's crash switches (that scan runs even
+  with `--identity-only`).
   `tools/crash_decode.py --elf <elf> <log>` checks that hash and prints each address
   of the crash's backtrace as a function and source line. For a dump older than 90
   days, rebuild the tag and check the hash the same way.

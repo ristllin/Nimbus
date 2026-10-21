@@ -104,9 +104,16 @@ def test_identity_not_an_app_image_fails():
         assert not ok and "app image" in msg
 
 
-def test_identity_cli_writes_the_release_record(tmp_path):
+def _fake_nm(monkeypatch, symbols: str) -> None:
+    """Stand in for xtensa nm (the gate-logic CI job has no toolchain)."""
+    monkeypatch.setattr(elf, "find_nm", lambda: "xtensa-esp32s3-elf-nm")
+    monkeypatch.setattr(elf, "read_symbols", lambda nm, path: symbols)
+
+
+def test_identity_cli_writes_the_release_record(tmp_path, monkeypatch):
     import hashlib
 
+    _fake_nm(monkeypatch, "42001000 T app_main\n")
     elf_path = tmp_path / "firmware.elf"
     bin_path = tmp_path / "firmware.bin"
     out = tmp_path / "elf-sha256.txt"
@@ -129,6 +136,91 @@ def test_identity_cli_writes_the_release_record(tmp_path):
     assert out.read_text() == "freenove-28 " + hashlib.sha256(b"\x7fELF body").hexdigest() + "\n"
     bin_path.write_bytes(_image_with_sha(hashlib.sha256(b"other").digest()))
     assert elf.main(["--elf", str(elf_path), "--bin", str(bin_path), "--identity-only"]) == 1
+
+
+# --- the crash-switch scan runs on every image, --identity-only included -------
+# The release loop gates all four images; a run that skipped the scan let three of them
+# (the Freenove boards) ship unchecked for the test console's crash switches.
+def _matching_pair(tmp_path, elf_bytes: bytes = b"\x7fELF body"):
+    import hashlib
+
+    elf_path = tmp_path / "firmware.elf"
+    bin_path = tmp_path / "firmware.bin"
+    elf_path.write_bytes(elf_bytes)
+    bin_path.write_bytes(_image_with_sha(hashlib.sha256(elf_bytes).digest()))
+    return str(elf_path), str(bin_path)
+
+
+def test_identity_only_run_with_arm_turn_panic_fails(tmp_path, monkeypatch, capsys):
+    elf_path, bin_path = _matching_pair(tmp_path)
+    _fake_nm(monkeypatch, "42001000 T _ZN6nimbus5crash12armTurnPanicERK6String\n42002000 T app_main\n")
+    assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == 1
+    out = capsys.readouterr().out
+    assert "armTurnPanic" in out and "ELF matches the image" in out and "FAIL" in out
+
+
+def test_identity_only_refuses_every_crash_switch(tmp_path, monkeypatch):
+    elf_path, bin_path = _matching_pair(tmp_path)
+    for marker in elf.TEST_ONLY_MARKERS:
+        _fake_nm(monkeypatch, f"42001000 T _Z{len(marker)}{marker}v\n42002000 T app_main\n")
+        assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == 1, marker
+
+
+def test_identity_only_clean_image_passes_without_the_tft_checks(tmp_path, monkeypatch):
+    elf_path, bin_path = _matching_pair(tmp_path)
+    _fake_nm(monkeypatch, "42002000 T app_main\n")  # no TFT plumbing symbol: not checked here
+    assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == 0
+
+
+def test_identity_only_fails_closed_without_nm(tmp_path, monkeypatch):
+    elf_path, bin_path = _matching_pair(tmp_path)
+    monkeypatch.setattr(elf, "find_nm", lambda: None)
+    assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == 1
+
+
+def test_identity_only_scans_a_real_elf(tmp_path):
+    """End to end with the real toolchain: an object file that defines
+    nimbus::crash::armTurnPanic fails an identity-only run; the same file without it
+    passes. Skipped where no xtensa toolchain is installed (the gate-logic CI job)."""
+    import os
+    import subprocess
+
+    import pytest
+
+    nm = elf.find_nm()
+    gxx = nm[: -len("nm")] + "g++" if nm else ""
+    if not nm or not os.path.exists(gxx):
+        pytest.skip("no xtensa toolchain (build the firmware once to fetch it)")
+    for name, want in (("armTurnPanic", 1), ("armTurnLater", 0)):
+        src = tmp_path / f"{name}.cpp"
+        obj = tmp_path / f"{name}.o"
+        src.write_text(f"namespace nimbus {{ namespace crash {{ void {name}(const char* k) {{ (void)k; }} }} }}\n")
+        subprocess.run([gxx, "-c", str(src), "-o", str(obj)], check=True)
+        elf_path, bin_path = _matching_pair(tmp_path, obj.read_bytes())
+        assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == want, name
+
+
+def test_release_workflow_runs_the_full_elf_gate_on_every_shipped_image():
+    """release.yml: every env the release builds is ELF-gated, every variant it signs
+    is among them, and no gate call passes --identity-only (which skips the e-paper
+    and plumbing checks)."""
+    import pathlib
+    import re
+
+    text = (pathlib.Path(elf.REPO) / ".github" / "workflows" / "release.yml").read_text()
+    build = re.search(r"^\s*pio run((?: -e \S+)+)\s*$", text, re.M)
+    assert build, "the release build line (pio run -e ...) moved: update this test"
+    built = set(re.findall(r"-e (\S+)", build.group(1)))
+    loop = re.search(r"for pair in ([^;]+); do\n(?P<body>.*?)\n\s*done", text, re.S)
+    assert loop and "check_elf_symbols.py" in loop.group("body"), "the per-variant ELF gate loop moved"
+    pairs = dict(pair.split(":") for pair in loop.group(1).split())
+    assert set(pairs.values()) == built, f"built {sorted(built)} but ELF-gated {sorted(pairs.values())}"
+    signed = set(re.findall(r"^\s*([a-z0-9-]+)=firmware-[a-z0-9-]+\.bin", text, re.M))
+    assert signed and signed <= set(pairs), f"signed variants {sorted(signed)} not all ELF-gated"
+    commands = re.sub(r"\\\n\s*", " ", text).splitlines()  # one line per shell command
+    calls = [ln for ln in commands if "check_elf_symbols.py" in ln and not ln.lstrip().startswith("#")]
+    assert calls, "no ELF gate call in release.yml"
+    assert not any("--identity-only" in ln for ln in calls), f"an ELF gate call skips checks: {calls}"
 
 
 def test_identity_only_without_a_bin_is_refused(tmp_path):

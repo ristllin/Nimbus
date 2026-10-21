@@ -6,7 +6,12 @@
    display fix. It also asserts the color-TFT panel plumbing IS linked (a real defined
    symbol), so an empty/half-built ELF cannot pass silently.
 
-2. Identity (crash forensics). A field core dump can only be decoded against the exact
+2. Test-build crash switches. A shipped image must never link the test console's
+   crash switches (TEST_ONLY_MARKERS): one that did could be made to crash on demand.
+   This scan runs on every invocation, --identity-only included, so no release image
+   can skip it.
+
+3. Identity (crash forensics). A field core dump can only be decoded against the exact
    ELF that produced the image, so the release archives every variant's firmware.elf.
    With --bin, the gate proves the archived ELF IS that image: the build embeds the
    ELF's SHA-256 in the image's app descriptor (esp_app_desc_t.app_elf_sha256, image
@@ -20,8 +25,9 @@ Usage:
     python3 tools/release_gate/check_elf_symbols.py [--elf <path>]
     python3 tools/release_gate/check_elf_symbols.py --elf <elf> --bin <bin> [--identity-only]
         [--variant <name> --sha-out <file>]
-Exit 0 = clean; exit 1 = e-paper linked, plumbing missing, ELF/bin mismatch, or a tool
-or file is unavailable.
+Exit 0 = clean; exit 1 = e-paper linked, plumbing missing, a test-build crash switch
+linked, ELF/bin mismatch, or a tool or file is unavailable. --identity-only skips the
+e-paper and plumbing checks, never the crash-switch scan.
 """
 
 from __future__ import annotations
@@ -73,6 +79,14 @@ def read_symbols(nm: str, elf: str) -> str:
     return out.stdout
 
 
+def check_test_only(symbols: str) -> "tuple[bool, str]":
+    """(ok, message): no test-build crash switch is linked. Runs on every image."""
+    test_only = [m for m in TEST_ONLY_MARKERS if m in symbols]
+    if test_only:
+        return False, f"test-build crash switches linked into a shipped image: {test_only}"
+    return True, "no test-build crash switches"
+
+
 def check(symbols: str) -> "tuple[bool, list[str]]":
     """(ok, messages)."""
     msgs = []
@@ -83,12 +97,9 @@ def check(symbols: str) -> "tuple[bool, list[str]]":
         msgs.append(f"e-paper symbols present in the TFT image: {epaper} (the 14.5 KB win regressed)")
     else:
         msgs.append("no GxEPD2 / e-paper symbols (size win intact)")
-    test_only = [m for m in TEST_ONLY_MARKERS if m in symbols]
-    if test_only:
-        ok = False
-        msgs.append(f"test-build crash switches linked into a shipped image: {test_only}")
-    else:
-        msgs.append("no test-build crash switches")
+    test_only_ok, test_only_msg = check_test_only(symbols)
+    ok = ok and test_only_ok
+    msgs.append(test_only_msg)
     if REQUIRED_TFT not in symbols:
         ok = False
         msgs.append(f"missing color-TFT plumbing symbol ({REQUIRED_TFT}) - ELF may be empty/half-built")
@@ -118,14 +129,20 @@ def check_identity(elf_bytes: bytes, image: bytes) -> "tuple[bool, str, str]":
     return True, f"ELF matches the image (app_elf_sha256 {elf_sha[:16]}..)", elf_sha
 
 
-def run_symbols(elf_path: str) -> bool:
+def run_symbols(elf_path: str, full: bool = True) -> bool:
+    """The symbol checks: all of them, or (full=False) only the crash-switch scan."""
     nm = find_nm()
     if not nm:
         print(
             "[gate:elf-symbols] FAIL: xtensa-esp32s3-elf-nm not found (build the firmware once to fetch the toolchain)"
         )
         return False
-    ok, msgs = check(read_symbols(nm, elf_path))
+    symbols = read_symbols(nm, elf_path)
+    if full:
+        ok, msgs = check(symbols)
+    else:
+        ok, msg = check_test_only(symbols)
+        msgs = [msg]
     for m in msgs:
         print(f"[gate:elf-symbols] {'ok' if ok else '!!'} {m}")
     return ok
@@ -151,17 +168,21 @@ def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Release gate: ELF symbols and image identity")
     ap.add_argument("--elf", default=DEFAULT_ELF, help="path to the built firmware.elf")
     ap.add_argument("--bin", help="the matching firmware.bin: assert its embedded ELF hash")
-    ap.add_argument("--identity-only", action="store_true", help="skip the symbol check (non-TFT variants)")
+    ap.add_argument(
+        "--identity-only",
+        action="store_true",
+        help="skip the e-paper and TFT plumbing checks (the crash-switch scan always runs)",
+    )
     ap.add_argument("--variant", default="", help="variant name for --sha-out")
     ap.add_argument("--sha-out", help="append '<variant> <app_elf_sha256>' to this file")
     args = ap.parse_args(argv)
     if args.identity_only and not args.bin:
-        ap.error("--identity-only checks nothing without --bin")  # a gate never passes vacuously
+        ap.error("--identity-only needs --bin (it is the identity check)")  # a gate never passes vacuously
 
     if not os.path.exists(args.elf):
         print(f"[gate:elf-symbols] FAIL: ELF not found at {args.elf} - run `pio run -e esp32s3` first")
         return 1
-    ok = args.identity_only or run_symbols(args.elf)
+    ok = run_symbols(args.elf, full=not args.identity_only)
     if args.bin:
         ok = run_identity(args.elf, args.bin, args.variant, args.sha_out) and ok
     print(f"[gate:elf-symbols] {'PASS' if ok else 'FAIL'}")

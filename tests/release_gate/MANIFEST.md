@@ -34,7 +34,7 @@ panel (CUM-231). Both are gated.
 | `test/test_panel_health` | HOST | The flip-aware `healthy()` MADCTL compare. Catches the partial MY/MX loss (`got=0xE8`) the v0.7.1 mask waved through, and does not thrash at flip=1 (the v0.7.0 full-byte bug). Regression witnesses for both prior versions are asserted in-file. |
 | `test/test_panel_heal` | HOST | The rearm guard (`nimbus::panel::unchangedFrameAction` / `tickHealthAction`, wired into `src/hw/tft_out.cpp`). Past the trust window the panel is re-armed UNCONDITIONALLY; `healthy()` only decides whether to ALSO repaint. This is the exact policy that regressed: an early return when `healthy()` read true left a beacon-slept panel white. |
 | `tools/release_gate/check_driver_pin.py` | HOST | Refuses a build pinned to a denylisted white-screen driver version (CUM-167 shipped on v0.6.0; fixed at v0.6.1). |
-| `tools/release_gate/check_elf_symbols.py` | HOST (needs `pio run -e esp32s3` first) | Keeps the e-paper driver out of the TFT image and proves the display plumbing linked. |
+| `tools/release_gate/check_elf_symbols.py` | HOST (needs `pio run -e esp32s3` first) | On every shipped image: keeps the e-paper driver out, proves the display plumbing linked, refuses the test build's crash switches (even with `--identity-only`), and proves the archived ELF built the image. |
 | `test_l29_release_gate.py::TestRenderToGlass` | **BENCH** | Pixels actually reach the glass. See the bench procedure below. |
 
 ### BENCH leg - render reaches the glass (retroactive proof of CUM-167)
