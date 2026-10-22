@@ -23,10 +23,25 @@ Legs (unit L, the fill unit, on the TEST build: ``NVSFILL``, ``TURN``, ``OTASIM`
 * ``test_l43_offset_lands_at_reserve`` (net + manual, the dedicated test bot): at
   reserve+1 the operator sends one message; the Telegram offset lands (no
   ``tgOffset`` in ``nvs.recentFails``) while a save answers 507.
-* ``test_l43_subs_journal_refused`` (hil + net + agent, about $0.05 on
-  ``claude-haiku-5-5``): at reserve+1 a turn spawns sub-agents; their journal
-  records are refused and named in ``nvs.recentFails`` (``agjournal.j<n>``), the
-  jobs still finish (held in RAM), and the device stays responsive.
+* ``test_l43_spawn_routine_restart_at_reserve`` (hil + net + agent, about $0.06 on
+  ``claude-haiku-5-5``; v4.6, lane C2): at reserve+1 a turn spawns two sub-agents and
+  a routine fires; then the device restarts. Every moved store is a file in /data
+  (``FLSTAT``: the sub-agent journal, routines, the usage ledger, the managed-agent
+  ids), nothing new is refused in ``nvs.recentFails`` (no ``agjournal.*``, no file
+  key), the settings storage did not shrink, and the jobs finish.
+* ``test_l43_running_helper_survives_a_restart_at_reserve`` (hil + net + agent, about
+  $0.03; SPAWN-JOURNAL-DURABILITY): at reserve+1 a helper is started and the device
+  restarted while it runs; after the boot the helper is polled again and its result
+  arrives (on v4.5.16 it was lost silently).
+* ``test_l43_finished_jobs_listed_after_restart`` (hil + net + agent, about $0.06;
+  L19-35): two helpers finish with saved results; after a restart an unrelated owner
+  turn's context (``/api/lastturn``) lists both finished jobs and the turn starts no
+  helper. The counter-leg (the record removed: the head re-runs the work) is the live
+  harness-lab scenario ``finished-jobs``.
+* ``test_l43_battmodel_flap_spends_nothing`` (hil; BATTMODEL-CHURN): ``BATTFLAP 200``
+  moves the battery model's full-charge anchor by a few millivolts 200 times through
+  the paced save: no save, no settings-storage entry spent, both on a roomy store and
+  at reserve+1; a real step saves at most once.
 * ``test_l43_otasim_rollback_at_reserve`` (hil): at reserve+1 the bad-image drill
   (``OTASIM arm`` + ``OTASIM crash``) still rolls back within 3 boots.
 * ``test_l43_ota_rc1_to_rc2`` (hil + manual, ``NIMBUS_L43_OTA_BASE`` = a bench OTA
@@ -229,13 +244,8 @@ def _offset_at_reserve(device, net, require_manual):
         nvs_free(device)
 
 
-@pytest.mark.hil
-@pytest.mark.net
-@pytest.mark.agent
-def test_l43_subs_journal_refused(device, net, orch, secrets):
-    if not secrets.get("ANTHROPIC_API_KEY"):
-        pytest.skip("no ANTHROPIC_API_KEY for the sub-agent leg")
-    # Settings first (they are owner config and would be refused once full).
+def use_haiku(net) -> None:
+    """Head and helpers on the cheap model (owner config: set before the fill)."""
     for k, v in (
         ("orchHost", "anthropic"),
         ("orchM_anthropic", MODEL),
@@ -244,28 +254,173 @@ def test_l43_subs_journal_refused(device, net, orch, secrets):
     ):
         r = net.post("/api/orch", {k: v}, timeout=8.0)
         assert r.status_code == 200, f"{k}: HTTP {r.status_code} {r.text[:120]}"
-    fill_to_reserve_plus_one(device, net)
-    device.drain(quiet=0.3)
-    device.turn(
-        "Spawn three sub-agents now, one per topic, each answering in one sentence: "
-        "the boiling point of water at sea level, the chemical symbol for gold, the capital of Peru. "
-        "Then tell me the three answers."
-    )
+
+
+def flash_file(device, path: str) -> int:
+    """Bytes of a file on the internal flash (``FLSTAT``), -1 when it is absent."""
+    m = device.cmd_re(f"FLSTAT {path}", r"FLSTAT \S+ exists=(?P<e>[01]) bytes=(?P<b>\d+)", timeout=6.0)
+    return int(m.group("b")) if m.group("e") == "1" else -1
+
+
+def count_spawns(device, want: int, timeout: float) -> int:
     spawned = 0
-    end = time.time() + 180
-    while time.time() < end and spawned < 3:
+    end = time.time() + timeout
+    while time.time() < end and spawned < want:
         try:
             device.expect_re(r"orchestrator: spawned job\d+", timeout=max(1.0, end - time.time()))
             spawned += 1
-        except Exception:  # noqa: BLE001 - fewer spawns than asked: judged below
+        except Exception:  # noqa: BLE001 - fewer spawns than asked: judged by the caller
             break
-    assert spawned >= 1, "the turn spawned no sub-agent (nothing to judge)"
+    return spawned
+
+
+def jobs_drained(net, timeout: float) -> bool:
+    return wait_until(lambda: int(state(net).get("jobs", 0) or 0) == 0, timeout, every=5.0)
+
+
+def restart(device, net) -> None:
+    device.reboot_and_confirm(timeout=40.0)
+    assert wait_until(lambda: device.status().group("wifi") == "1", 60, every=3.0), "no Wi-Fi after the restart"
+    net.ip = device.status().group("ip")
+
+    def up() -> bool:
+        try:
+            return bool(state(net))
+        except Exception:  # noqa: BLE001 - the web server needs a few seconds after Wi-Fi
+            return False
+
+    assert wait_until(up, 60, every=3.0), "the web server did not come back"
+
+
+MOVED_FILES = ("/data/agjournal.json", "/data/loops.json", "/data/usage_ledger.txt")
+ANT_FILES = ("/data/ant_env.txt", "/data/ant_agents.txt")
+
+
+def assert_no_new_store_failures(st: dict, before: set) -> None:
+    new = [k for k in failed_keys(st) if k not in before]
+    assert not [k for k in new if k.startswith("agjournal")], f"a journal write reached NVS: {new}"
+    assert not [k for k in new if k.startswith(("lfs_", "ant"))], f"a file store failed: {new}"
+
+
+def assert_on_flash(device, paths, when: str) -> None:
+    for path in paths:
+        assert flash_file(device, path) > 0, f"{path} is not on flash {when}"
+
+
+def start_routine_and_spawns(device, net) -> None:
+    """A routine that fires in two minutes, and a turn that spawns two helpers."""
+    sched = '{"kind":"once","in_seconds":120}'
+    r = net.post(
+        "/api/loops",
+        {"action": "create", "name": "l43 routine", "prompt": "Reply with exactly: routine ping", "schedule": sched},
+        timeout=8.0,
+    )
+    assert r.status_code == 200, f"routine create: HTTP {r.status_code} {r.text[:120]}"
+    device.drain(quiet=0.3)
+    device.turn(
+        "Spawn two sub-agents now, each answering in one sentence: the chemical symbol for gold, "
+        "and the capital of Peru. Then tell me both answers."
+    )
+    assert count_spawns(device, 2, 180) >= 1, "the turn spawned no sub-agent (nothing to judge)"
+    assert jobs_drained(net, 300), "the jobs did not finish"
+    device.expect_re(r"loops: fired 'l43 routine'", timeout=240.0)
+
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_l43_spawn_routine_restart_at_reserve(device, net, orch, secrets):
+    if not secrets.get("ANTHROPIC_API_KEY"):
+        pytest.skip("no ANTHROPIC_API_KEY for the sub-agent leg")
+    use_haiku(net)
+    st0 = fill_to_reserve_plus_one(device, net)
+    free0, fails0 = free_entries(st0), set(failed_keys(st0))
+    start_routine_and_spawns(device, net)
     st = state(net)
-    refused = failed_keys(st, "agjournal.")
-    assert refused, f"no refused journal write in recentFails: {failed_keys(st)}"
-    # The jobs are held in RAM and still deliver: the active-job count drains to 0.
-    assert wait_until(lambda: int(state(net).get("jobs", 0) or 0) == 0, 240, every=5.0), "jobs did not finish"
-    assert device.ping(timeout=6.0), "the device stopped answering on a full NVS"
+    assert_no_new_store_failures(st, fails0)
+    assert free_entries(st) >= free0 - 1, f"the settings storage shrank: {free0} -> {free_entries(st)}"
+    assert_on_flash(device, MOVED_FILES, "after the spawn and the routine")
+    # The managed-agent ids exist once an Anthropic sub ran through managed agents.
+    ant = [flash_file(device, p) for p in ANT_FILES]
+    restart(device, net)
+    st = state(net)
+    assert_no_new_store_failures(st, set())
+    assert free_entries(st) >= free0 - 1, f"the settings storage shrank across the restart: {free_entries(st)}"
+    assert_on_flash(device, MOVED_FILES, "after the restart")
+    assert [flash_file(device, p) for p in ANT_FILES] == ant
+    assert device.ping(timeout=6.0)
+
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_l43_running_helper_survives_a_restart_at_reserve(device, net, orch, secrets):
+    if not secrets.get("ANTHROPIC_API_KEY"):
+        pytest.skip("no ANTHROPIC_API_KEY for the sub-agent leg")
+    use_haiku(net)
+    fill_to_reserve_plus_one(device, net)
+    device.drain(quiet=0.3)
+    device.turn(
+        "Spawn one sub-agent named tide-check to explain in three sentences why the sea has two "
+        "high tides a day. Do not answer it yourself."
+    )
+    m = device.expect_re(r"orchestrator: spawned (?P<tag>job\d+)", timeout=180.0)
+    tag = m.group("tag")
+    device.drain(quiet=0.2)
+    restart(device, net)  # while the helper runs: v4.5.16 lost it here on a full store
+    device.expect_re(rf"orchestrator: poll {tag} ", timeout=120.0)
+    assert jobs_drained(net, 300), f"{tag} never finished after the restart"
+    st = state(net)
+    assert not failed_keys(st, "agjournal"), failed_keys(st)
+
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_l43_finished_jobs_listed_after_restart(device, net, orch, secrets):
+    if not secrets.get("ANTHROPIC_API_KEY"):
+        pytest.skip("no ANTHROPIC_API_KEY for the sub-agent leg")
+    use_haiku(net)
+    device.drain(quiet=0.3)
+    device.turn(
+        "Spawn two sub-agents in project tides: one named tide-research explaining in two sentences "
+        "why the sea has two high tides a day, one named moon-facts giving the Moon's average "
+        "distance from Earth in one sentence. Then tell me when both are done."
+    )
+    assert count_spawns(device, 2, 180) == 2, "the turn did not spawn both helpers"
+    assert jobs_drained(net, 300), "the helpers did not finish"
+    time.sleep(20)  # the synthesis turn reports them
+    restart(device, net)
+    device.drain(quiet=0.3)
+    device.turn("Unrelated question: what's a good name for a grey kitten?")
+    device.expect_re(r"turn end: ", timeout=180.0)
+    turn = net.get("/api/lastturn", timeout=10.0).text
+    assert "Finished before the device last restarted" in turn, "no finished jobs in the turn context"
+    for name in ("tide-research", "moon-facts"):
+        assert name in turn, f"{name} is not listed after the restart"
+    time.sleep(5)
+    assert int(state(net).get("jobs", 0) or 0) == 0, "the unrelated turn started a helper"
+
+
+@pytest.mark.hil
+def test_l43_battmodel_flap_spends_nothing(device, net, orch):
+    def flap(n: int, step: int = 0) -> dict:
+        line = device.cmd_re(
+            f"BATTFLAP {n}" + (f" {step}" if step else ""),
+            r"BATTFLAP moves=(?P<n>\d+) step=(?P<s>-?\d+) saves=(?P<saves>\d+) "
+            r"freeBefore=(?P<a>\d+) freeAfter=(?P<b>\d+)",
+            timeout=30.0,
+        )
+        return {k: int(v) for k, v in line.groupdict().items()}
+
+    roomy = flap(200)
+    assert roomy["saves"] == 0, f"a flapping anchor saved the model: {roomy}"
+    assert roomy["b"] >= roomy["a"], f"a flapping anchor spent entries: {roomy}"
+    fill_to_reserve_plus_one(device, net)
+    full = flap(200)
+    assert full["saves"] == 0 and full["b"] >= full["a"], f"at reserve+1: {full}"
+    step = flap(6, 25)  # real steps: at most one save (the hourly pace)
+    assert step["saves"] <= 1, f"real steps saved more than once in an hour: {step}"
 
 
 @pytest.mark.hil
@@ -361,6 +516,16 @@ def test_host_is_storage_full():
     assert not is_storage_full(_Resp(200, {"ok": True}))
     assert not is_storage_full(_Resp(507, {"error": "storage_full", "ok": True}))
     assert not is_storage_full(_Resp(507, ValueError("not json")))
+
+
+@pytest.mark.host
+def test_host_moved_store_paths_match_the_firmware_table():
+    """The files the bench leg looks for are the ones the firmware's moved-store table names."""
+    from pathlib import Path
+
+    table = (Path(__file__).resolve().parents[2] / "lib/core/include/nimbus/store/moved_store.h").read_text()
+    for path in ("/data/agjournal.json", "/data/usage_ledger.txt", "/data/ant_env.txt", "/data/ant_agents.txt"):
+        assert f'"{path}"' in table, path
 
 
 @pytest.mark.host

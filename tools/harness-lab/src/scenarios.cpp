@@ -13,6 +13,7 @@
 #include "scenarios_albums.h"
 #include "scenarios_photos.h"
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
+#include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
 
 namespace lab {
 namespace {
@@ -365,6 +366,11 @@ history::Report histReport(Ctx& c) {
 }
 void scHistoryCache(LabRig& rig, Ctx& c) { history::historyCache(rig, histReport(c)); }
 void scEpisodicDates(LabRig& rig, Ctx& c) { history::episodicDates(rig, histReport(c)); }
+// Lane C2 (scenarios_c2.h).
+void scFinishedJobs(LabRig& rig, Ctx& c) {
+  c2::finishedJobs(rig, {[&c](bool ok, const std::string& w) { c.check(ok, w); },
+                         [&c](const std::string& n) { c.note(n); }});
+}
 
 struct Scenario {
   const char* name;
@@ -406,6 +412,7 @@ const Scenario kScenarios[] = {
     {"photos-native",  "three label photos go to the head as images; the reply reads their values", scPhotosNative, false},
     {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
+    {"finished-jobs",  "after a restart the finished jobs ride the turn context and are not run again", scFinishedJobs, false},
 };
 
 }  // namespace

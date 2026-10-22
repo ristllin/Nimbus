@@ -205,6 +205,12 @@ class LabRig {
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
   agent::JobEngine& jobs() { return *jobs_; }
+  // Lane C2 (L19-35): give the job engine a journal (no fabric: spawns queue, never
+  // dispatch) and rebuild the engines over it, as the device does after a restart.
+  void attachJournal(orch::Journal* j) {
+    journal_ = j;
+    buildEngine();
+  }
   const orch::MemOpCounters& memOps() const { return memOps_; }
   orch::EpisodicStore& episodic() { return *epi_; }
   // The settings-storage state the device.status stand-in reports (L19-9),
@@ -583,6 +589,7 @@ class LabRig {
     agent::JobEngine::Deps jd;
     jd.platform = platform();
     jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+    jd.journal = journal_;
     jobs_.reset(new agent::JobEngine(std::move(jd)));
 
     agent::TurnEngine::Deps d;
@@ -829,6 +836,7 @@ class LabRig {
   std::string tavilyKey_;
 
   std::unique_ptr<agent::JobEngine>  jobs_;
+  orch::Journal*                     journal_ = nullptr;   // attachJournal (C2)
   std::unique_ptr<agent::TurnEngine> eng_;
 
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_;
