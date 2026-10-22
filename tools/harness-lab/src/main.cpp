@@ -8,6 +8,7 @@
 //   nimbus-lab sub <task>             one Anthropic sub-agent end to end (sub_cmd.cpp)
 //   nimbus-lab reply-markup           turn-contract live suite L-L1 (lane_l_live.cpp)
 //   nimbus-lab spawn-e2e              turn-contract live suite L-L2 (lane_l_live.cpp)
+//   nimbus-lab models-live [leg]      models on demand live suite (lane_h_live.cpp)
 //
 // Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
 // (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
@@ -22,6 +23,7 @@
 #include "lab_options.h"
 #include "lab_rig.h"
 #include "honesty_eval.h"
+#include "lane_h_live.h"
 #include "lane_l_live.h"
 #include "scenarios.h"
 #include "selftest.h"
@@ -52,7 +54,10 @@ void usage() {
       "  spawn-e2e                 a sub-agent end to end (legs A-D); --legs=A,B,C,D\n"
       "                            --sub=<provider:model> --head-model=<id> --reps=<n>\n"
       "                            (leg C) --timeout=<s> --out=<json>\n"
-      "                            both: --effort=<low|...|none> pins Anthropic effort\n"
+      "  models-live [lists|switch|router-id|all]  models on demand: the live model lists,\n"
+      "                            a model switch, a router id refused; --head-host=<h>\n"
+      "                            --head-model=<id> --reps=<n> --out=<json>\n"
+      "                            all three: --effort=<low|...|none> pins Anthropic effort\n"
       "                            (none or adapter = the adapter's own effort)\n"
       "\n"
       "Options:\n"
@@ -278,6 +283,10 @@ int main(int argc, char** argv) {
 
   if (cmd == "reply-markup" || cmd == "spawn-e2e")
     return runLaneL(cmd, env, laneL, opt.verboseHttp, sub.timeoutS);
+  if (cmd == "models-live") {
+    laneL.verbose = opt.verboseHttp;
+    return lab::cmdModelsLive(env, laneL, args.size() > 1 ? args[1] : "all");
+  }
   if (cmd == "honesty") {
     if (laneL.reps < 1 || laneL.reps > 20) { std::fprintf(stderr, "--reps must be 1..20\n"); return 2; }
     return lab::runHonestyEval(env, opt, laneL.reps, only);

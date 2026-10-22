@@ -69,6 +69,8 @@
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 #include "nimbus/test_ballast.h"       // FAULT sram_ballast - multi-block ballast (host-tested)
 #include "agent/adapters/image_vision.h"  // VISIONCHECK - one caption request through the park (L19-8)
+#include "agent/model_refresh.h"   // MODELS? / MODELS passive - the model list refresh (R5)
+#include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
 
 namespace nimbus::tc {
@@ -579,6 +581,25 @@ void tgGuardStatus() {
   Serial.printf("TGGUARD dups=%u ceiling=%u poison=%u tries=%u holding=%d booted=%d kept=%d\n",
                 (unsigned)g.dupDrops, (unsigned)g.ceilingDrops, (unsigned)g.poisonAcks, (unsigned)g.tries,
                 int(g.holding), int(g.booted), int(g.kept));
+  Serial.flush();
+}
+
+// MODELS? | MODELS passive (lane H, R5): one line per provider slot with
+// the stamp kept with its model list (fetch time, the build that fetched it) and
+// whether a refresh is queued or running, then the running build. "passive" runs
+// the passive check now (weekly / after an update) instead of at boot + 10 min.
+void modelsTest(const String& arg) {
+  if (arg == "passive") {
+    Serial.printf("MODELS passive queued=%d\n", agent::model_refresh::passiveCheckNow());
+    Serial.flush();
+    return;
+  }
+  for (const nimbus::orch::ProviderSlot& slot : nimbus::orch::kProviderSlots) {
+    Serial.printf("MODELS %s fetchedAt=%lu fw=%s pending=%d\n", slot.slug,
+                  (unsigned long)agent::model_refresh::fetchedAt(slot.slug),
+                  agent::model_refresh::stampFw(slot.slug).c_str(), (int)agent::model_refresh::pending(slot.slug));
+  }
+  Serial.printf("MODELS? build=%s\n", NIMBUS_FW_BUILD);
   Serial.flush();
 }
 
@@ -2127,6 +2148,7 @@ void dispatch(String line) {
     return;
   }
   if (line == "TGGUARD?") { tgGuardStatus(); return; }
+  if (line == "MODELS?" || line == "MODELS passive") { modelsTest(line.substring(line.indexOf(' ') + 1)); return; }
   if (line == "HISTV2" || line.startsWith("HISTV2 ")) {
     // HISTV2 [0|1]: the turn-structured history switch (RAM only, on at boot).
     // 0 restores the previous window and capture byte for byte (the bench's

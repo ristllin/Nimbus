@@ -467,3 +467,15 @@ def test_run_gate_storm_step_needs_both_arguments(capsys):
 
     assert run_gate.main(["--host-only", "--candidate", _CANDIDATE]) == 1
     assert "pass both --storm-evidence and --candidate" in capsys.readouterr().out
+
+def test_lane_h_models_on_demand_leg_is_listed():
+    """Lane H: the models-on-demand bench leg and its page check are in the gate list,
+    and the leg file exists (a listed leg with no file would read as a pass by omission)."""
+    from pathlib import Path
+
+    import run_gate
+
+    text = run_gate.PROGRAM_2026_10_18_BATTERY
+    assert "tests/hil/test_l50_model_refresh_h.py" in text
+    assert "74_model_picker.spec.mjs" in text
+    assert (Path(run_gate.__file__).resolve().parents[2] / "tests/hil/test_l50_model_refresh_h.py").is_file()

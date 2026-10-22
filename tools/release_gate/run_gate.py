@@ -88,6 +88,14 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   #   catalog; the Cumulo list is whole or says "more" (unit A); a keyless pinned head runs on
   #   a keyed host (LAN mock). Phases run in order around the flashes (see the module doc).
   pytest tests/hil/test_l50_model_refresh.py -m net --allow-hardware
+  # Models on demand (lane H): two dropdown refreshes inside the hour start one refresh per
+  #   provider and fetchedAt moves; a refresh asked mid-turn starts after the turn; one
+  #   web-chat turn "Switch to Sonnet 5.5." on claude-haiku-5-5 applies; after a flash the
+  #   passive refresh runs once per provider (MODELS passive, run first). Unit L.
+  pytest tests/hil/test_l50_model_refresh_h.py -m "hil or net" --allow-hardware
+  #   ...and the page shows "Updated <time>" after opening a model dropdown:
+  #   (cd tools/webui_harness && TARGET=device BASE_URL=http://<ip> NIMBUS_TOKEN=<tok> \
+  #    npx playwright test tests/74_model_picker.spec.mjs -g "cached list first")
 """
 
 # The storm suite (STORM-E2E): eight storm legs on both bench units, each first on the
