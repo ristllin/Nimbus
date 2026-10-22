@@ -265,24 +265,6 @@ void clearErrorBadge();
 
 }  // namespace nimbus::tc
 
-// ---- provider-wire test hooks (lane K fills them; lane N declares them) -------
-// CAPTEST and PROVFAULT call these. test_console.cpp gives each a WEAK default
-// that returns false, so the console replies "not wired" and this build does not
-// depend on lane K's branch. Lane K provides the STRONG definitions, with exactly
-// these signatures, in a provider translation unit the firmware already links
-// (e.g. lib/harness/src/providers/loop_common.cpp): a strong definition in a new
-// file that nothing else references is never pulled from the library archive,
-// and the weak default would silently win. Return true when the override is set.
-namespace agent::providers {
-// Cap the FIRST attempt of the next provider request at `tokens` output tokens, so
-// a live turn is cut on demand and the retry-with-headroom path runs (lane K).
-bool setTestFirstAttemptCap(uint32_t tokens);
-// Answer requests to `host` with HTTP `status` and `body` instead of the network,
-// until cleared (lane K's typed-error legs: credit balance, overload, rate limit).
-bool setTestStatusOverride(const std::string& host, int status, const std::string& body);
-bool clearTestStatusOverride();
-}  // namespace agent::providers
-
 namespace nimbus::tc {
 
 // AUDIOINJECT keeps text-to-speech OFF for the injected voice turn: while muted,

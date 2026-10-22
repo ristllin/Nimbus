@@ -54,6 +54,8 @@
 #include <time.h>                      // TZCHK - setenv(TZ)/tzset/localtime_r
 #include <nvs.h>                       // NVSFILL - raw scratch-namespace writes (bypass the reserve)
 #include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
+#include "nimbus/harness/output_caps.h"  // CAPTEST - the first-attempt cap (test builds)
+#include "nimbus/harness/providers.h"    // PROVFAULT - the canned provider answer (test builds)
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
@@ -63,16 +65,6 @@
 #include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 #include "nimbus/test_ballast.h"       // FAULT sram_ballast - multi-block ballast (host-tested)
-
-// Lane K's provider-wire hooks (declared in test_console.h): WEAK defaults that
-// report "not wired" until lane K links its strong definitions.
-namespace agent::providers {
-__attribute__((weak)) bool setTestFirstAttemptCap(uint32_t) { return false; }
-__attribute__((weak)) bool setTestStatusOverride(const std::string&, int, const std::string&) {
-  return false;
-}
-__attribute__((weak)) bool clearTestStatusOverride() { return false; }
-}  // namespace agent::providers
 
 namespace nimbus::tc {
 namespace {
@@ -384,14 +376,19 @@ void tgInject(const String& json) {
   Serial.flush();
 }
 
-// CAPTEST <tokens>: cap the first attempt of the next provider request (lane K
-// hook), so a live turn is cut on demand and the retry-with-headroom path runs.
-void capTest(const String& arg) {
+// CAPTEST <tokens> | CAPTEST 0: cap the first attempt of every provider request, so a
+// live turn is cut on demand and the retry-with-headroom path runs; 0 ends the cap.
+void capTest(String arg) {
+  arg.trim();
+  if (arg == "0" || arg == "off") {
+    agent::providers::setTestFirstAttemptCap(0);
+    reply("CAPTEST off");
+    return;
+  }
   const long n = arg.toInt();
-  if (n <= 0) { reply("CAPTEST usage: CAPTEST <tokens>"); return; }
-  if (agent::providers::setTestFirstAttemptCap((uint32_t)n)) Serial.printf("CAPTEST %ld\n", n);
-  else Serial.println("CAPTEST not wired in this build (lane K)");
-  Serial.flush();
+  if (n <= 0) { reply("CAPTEST usage: CAPTEST <tokens> | CAPTEST 0"); return; }
+  agent::providers::setTestFirstAttemptCap((uint32_t)n);
+  reply(String("CAPTEST ") + n);
 }
 
 // PROVFAULT <api-host> <status> <json body> | PROVFAULT off: answer a provider
@@ -400,8 +397,8 @@ void capTest(const String& arg) {
 void provFault(String arg) {
   arg.trim();
   if (arg == "off") {
-    reply(agent::providers::clearTestStatusOverride() ? String("PROVFAULT off")
-                                                      : String("PROVFAULT not wired in this build (lane K)"));
+    agent::providers::clearTestStatusOverride();
+    reply("PROVFAULT off");
     return;
   }
   const int a = arg.indexOf(' ');
@@ -411,10 +408,8 @@ void provFault(String arg) {
   const int status = arg.substring(a + 1, b).toInt();
   const String body = arg.substring(b + 1);
   if (status < 100 || status > 599) { reply("PROVFAULT status must be 100..599"); return; }
-  if (agent::providers::setTestStatusOverride(std::string(host.c_str()), status, std::string(body.c_str())))
-    Serial.printf("PROVFAULT %s %d armed (%u B body)\n", host.c_str(), status, (unsigned)body.length());
-  else
-    Serial.println("PROVFAULT not wired in this build (lane K)");
+  agent::providers::setTestStatusOverride(std::string(host.c_str()), status, std::string(body.c_str()));
+  Serial.printf("PROVFAULT %s %d armed (%u B body)\n", host.c_str(), status, (unsigned)body.length());
   Serial.flush();
 }
 
