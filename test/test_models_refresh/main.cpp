@@ -11,6 +11,7 @@
 #include "nimbus/orch/models_tool.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/tool_taint.h"
 
 // R5 refresh policy (model_refresh.h): one RAM queue for every refresh request
 // (the head's models.list refresh:true and orch_model misses, the owner's
@@ -154,6 +155,14 @@ static void test_never_a_fetch_inside_the_tool() {
   TEST_ASSERT_TRUE(r.output.find("\"refresh\":\"recent\"") != std::string::npos);
 }
 
+// The rows are the providers' own text (ids, names; the router's from its upstreams):
+// a turn that read them has read outside content, so the leaked-markup repair and the
+// other taint rails treat it as such. It changes nothing on the device.
+static void test_models_list_output_is_outside_text() {
+  TEST_ASSERT_EQUAL(int(Taint::External), int(toolTaint("models.list")));
+  TEST_ASSERT_EQUAL(int(ToolEffect::Read), int(toolEffect("models.list")));
+}
+
 // ---- the stamp in the model file header and the passive refresh ---------------
 
 static void test_stamp_round_trips_and_ignores_unknown_keys() {
@@ -255,6 +264,7 @@ int main(int, char**) {
   RUN_TEST(test_due_only_when_the_device_is_free);
   RUN_TEST(test_the_rate_window_survives_the_clock_wrap);
   RUN_TEST(test_never_a_fetch_inside_the_tool);
+  RUN_TEST(test_models_list_output_is_outside_text);
   RUN_TEST(test_stamp_round_trips_and_ignores_unknown_keys);
   RUN_TEST(test_passive_refresh_reads_the_firmware_from_the_file_header);
   RUN_TEST(test_after_an_update_each_provider_refreshes_once);

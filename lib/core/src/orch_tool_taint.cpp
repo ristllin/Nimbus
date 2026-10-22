@@ -69,9 +69,10 @@ const ToolTaintRow kRows[] = {
     {"device.selftest", T::Internal, E::Read},
     {"device.control", T::Internal, E::Config},
     {"ota.status", T::Internal, E::Read},
-    // the provider model lists (lib/core/src/orch_models_tool.cpp, R5): the device's own
-    // cached lists; refresh:true only queues a fetch for after the turn
-    {"models.list", T::Internal, E::Read},
+    // the provider model lists (lib/core/src/orch_models_tool.cpp, R5): ids and names
+    // come from the providers' own lists (the router's from its upstreams), so the
+    // output is outside text; refresh:true only queues a fetch for after the turn
+    {"models.list", T::External, E::Read},
     // media (src/sfx/music.cpp)
     {"media.list", T::Internal, E::Read},
     {"media.play", T::Internal, E::Media},

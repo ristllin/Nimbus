@@ -468,6 +468,7 @@ static void test_models_list_contract_at_most_20_rows_every_field() {
   TEST_ASSERT_EQUAL_STRING("2026-10-20T00:00Z", provs[0]["fetchedAt"] | "");
   TEST_ASSERT_TRUE(provs[2]["fetchedAt"].isNull());
   TEST_ASSERT_EQUAL_STRING("built-in", provs[2]["source"] | "");
+  TEST_ASSERT_TRUE(has(d["note"] | "", "No fetched list yet for zai (built-in list)"));
   TEST_ASSERT_TRUE(m.refreshed.empty());   // no refresh unless asked
 }
 

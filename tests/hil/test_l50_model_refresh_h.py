@@ -188,7 +188,11 @@ def test_l50h_a_refresh_asked_during_a_turn_runs_after_it(board, device):
                 data={"text": "Count from 1 to 30 in words, one per line, then say done."}, timeout=10)
     assert r.status_code == 200
     turn = str(r.json().get("turn") or "")
-    lines = _serial_lines(device, 1.5)   # the turn has started on the device
+    lines = []
+    deadline = time.time() + 20
+    while time.time() < deadline and not any("turn host=" in l for l in lines):
+        lines += _serial_lines(device, 0.5)   # wait until the turn is running on the device
+    assert any("turn host=" in l for l in lines), "the web-chat turn did not start within 20 s"
     for p in cand:   # a provider not refreshed within the hour
         ask = _refresh(board, p)
         if ask.get("refresh") == "queued":

@@ -102,11 +102,14 @@ std::vector<std::vector<const ModelRow*>> matchingRows(const std::vector<Provide
   return out;
 }
 
-std::string noteText(const std::vector<ProviderModels>& lists, size_t more, bool builtIn) {
+std::string noteText(const std::vector<ProviderModels>& lists, size_t more) {
+  if (lists.empty()) return "No provider has a key.";
+  std::string builtIn;   // the providers still on their built-in list, by name
+  for (const ProviderModels& pm : lists)
+    if (!pm.fetched) builtIn += (builtIn.empty() ? "" : ", ") + pm.provider;
   std::string note;
-  if (builtIn) note = "a provider with source built-in has no fetched list yet; ask with refresh:true. ";
+  if (!builtIn.empty()) note = "No fetched list yet for " + builtIn + " (built-in list); ask with refresh:true. ";
   if (more) note += "More models match: narrow with provider, query or line.";
-  if (lists.empty()) note = "No provider has a key.";
   while (!note.empty() && note.back() == ' ') note.pop_back();
   return note;
 }
@@ -175,7 +178,6 @@ std::string modelsListJson(const std::vector<ProviderModels>& lists, const Model
   const std::vector<std::vector<const ModelRow*>> match = matchingRows(lists, q);
   JsonDocument doc;
   JsonArray provs = doc["providers"].to<JsonArray>();
-  bool builtIn = false;
   size_t total = 0;
   for (size_t i = 0; i < lists.size(); ++i) {
     const ProviderModels& pm = lists[i];
@@ -188,7 +190,6 @@ std::string modelsListJson(const std::vector<ProviderModels>& lists, const Model
     const RefreshNote* n = noteFor(refresh, pm.provider);
     if (n) o["refresh"] = refreshAskToken(n->ask);
     else o["refresh"] = nullptr;
-    builtIn = builtIn || !pm.fetched;
     total += match[i].size();
   }
   // Take the providers' rows in turn, so one long list cannot crowd out the rest.
@@ -201,7 +202,7 @@ std::string modelsListJson(const std::vector<ProviderModels>& lists, const Model
         ++shown;
       }
   doc["more"] = (uint32_t)(total - shown);
-  const std::string note = noteText(lists, total - shown, builtIn);
+  const std::string note = noteText(lists, total - shown);
   if (!note.empty()) doc["note"] = note;
   std::string out;
   serializeJson(doc, out);
