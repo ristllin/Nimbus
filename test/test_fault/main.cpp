@@ -101,7 +101,8 @@ static void test_every_console_fault_verb_is_ended_by_fault_clear() {
   const std::string clear = sliceBetween(block, "if (rest == \"clear\"", "return;");
   TEST_ASSERT_TRUE(clear.find("nimbus::fault::clearAll()") != std::string::npos);
   struct Released { const char* verb; const char* release; };
-  static const Released kSelfHeld[] = {{"sram_ballast", "faultSramBallast(0)"}};
+  static const Released kSelfHeld[] = {{"sram_ballast", "faultSramBallast(0)"},
+                                       {"scratch_fail", "s_h.scratchFail(false)"}};
   std::vector<std::string> verbs;
   const std::string open = "rest.startsWith(\"";
   for (size_t i = block.find(open); i != std::string::npos; i = block.find(open, i + 1)) {
