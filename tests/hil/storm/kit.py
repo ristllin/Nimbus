@@ -572,17 +572,28 @@ class StormBench:
     def restart(self, timeout: float = 90.0) -> None:
         """Restart over HTTP and wait until the unit answers again with a fresh uptime;
         the console is reopened (the restart re-enumerates USB)."""
+        before = self.uptime()
         r = self.net.post("/api/restart", {}, timeout=8.0)
         assert r.status_code in (200, 202), f"restart refused: HTTP {r.status_code}"
-        self.wait_back(timeout)
+        self.wait_back(timeout, before_ms=before)
 
-    def wait_back(self, timeout: float = 120.0, fresh_ms: int = 120000) -> None:
+    def uptime(self) -> Optional[int]:
+        try:
+            return int(self.net.get_json("/api/state", timeout=6.0).get("uptimeMs"))
+        except Exception:  # noqa: BLE001 - unreadable: wait_back falls back to a fresh uptime
+            return None
+
+    def wait_back(self, timeout: float = 120.0, before_ms: Optional[int] = None, fresh_ms: int = 120000) -> None:
+        """Wait until the unit answers again after a restart: its uptime is below the one
+        read before the restart (``before_ms``; a busy boot can keep the web page silent
+        for minutes, so "fresh" alone missed a crash boot on unit A), else under
+        ``fresh_ms``."""
         time.sleep(6.0)
         end = time.time() + timeout
         while time.time() < end:
             try:
                 up = self.net.get_json("/api/state", timeout=4.0).get("uptimeMs", 10**9)
-                if up < fresh_ms:
+                if (before_ms is not None and up < before_ms) or up < fresh_ms:
                     self.tap.restarted(up)
                     self.tap.poll()  # the boot's lines (a crash notice among them) before they scroll away
                     break

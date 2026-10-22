@@ -36,6 +36,7 @@ BOUNDS = g.Bounds(max_paid_turns=2, max_provider_requests=8, max_identical=5, no
 
 def _cut_turn(storm, text: str, uid: int) -> str:
     """Start the turn and restart the unit inside it; returns how it was cut."""
+    before = storm.uptime()
     if storm.control:
         storm.set_mock_scenario("mock-hold")
         storm.inject(text, uid)
@@ -43,7 +44,7 @@ def _cut_turn(storm, text: str, uid: int) -> str:
         assert got, "the head request never reached the mock"
         time.sleep(2.0)
         r = storm.net.post("/api/test/reboot", {}, timeout=8.0)
-        storm.wait_back()
+        storm.wait_back(before_ms=before)
         storm.set_mock_scenario("mock-echo")
         return f"restart while the head request was held (HTTP {r.status_code})"
     armed = storm.verb("PANIC abort arm=turn round=0", "PANIC", timeout=6.0)
@@ -52,7 +53,9 @@ def _cut_turn(storm, text: str, uid: int) -> str:
         storm.inject(text, uid, timeout=120.0)
     except Exception as e:  # noqa: BLE001 - the console dies with the crash: expected
         print(f"[storm] console lost in the crash: {type(e).__name__}")
-    storm.wait_back(timeout=360.0)  # a crash boot writes its dump and rescans the card: about 3 min on unit A
+    storm.wait_back(
+        timeout=360.0, before_ms=before
+    )  # a crash boot writes its dump and rescans the card: about 3 min on unit A
     return armed.strip()
 
 
