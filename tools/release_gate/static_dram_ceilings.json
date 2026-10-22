@@ -1,0 +1,9 @@
+{
+  "about": "Static DRAM (.dram0.bss + .dram0.data) per shipped variant, checked by check_static_dram.py on every release image. baseline: the v4.5.15 ELF (b38e0a51). ceiling: baseline + 1024 B. Raising a ceiling needs the bench heap A/B (idle and request-start free heap, before and after) in the PR.",
+  "variants": {
+    "nimbus-tft": {"env": "esp32s3", "baseline": 90611, "ceiling": 91635},
+    "freenove-28": {"env": "esp32s3-cyd", "baseline": 90699, "ceiling": 91723},
+    "freenove-35": {"env": "esp32s3-cyd-35", "baseline": 90699, "ceiling": 91723},
+    "freenove-40": {"env": "esp32s3-cyd-40", "baseline": 90699, "ceiling": 91723}
+  }
+}

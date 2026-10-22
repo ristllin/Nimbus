@@ -87,14 +87,17 @@ class JobEngine {
     std::function<uint8_t(const char* backend)> backendHue;
 
     // Sub-session spend attribution (nullable): fired ONCE per job when a
-    // terminal poll carries real provider token usage (today only the OpenAI
-    // Responses poll reports it; the Anthropic events poll has none - no data
-    // is invented). Device wires store::recordProviderTokens(backend, in, out,
-    // "spawn:<backend>", <model key>). `model` is the job's JobRecord.model: the
-    // sub-agent's model or selector, or the literal "default" when none was
-    // resolved (the device resolves that to store::subModel(backend)).
-    std::function<void(const std::string& backend, const std::string& model, uint32_t tokensIn,
-                       uint32_t tokensOut)>
+    // terminal poll carries real provider token usage (the OpenAI Responses poll,
+    // and the Anthropic session read at a finished poll; no data is invented). The
+    // synchronous subs are metered at their dispatch instead (seam_meter.h). The
+    // device and the hosted instance report it to the seam meter (the monthly spend
+    // ceiling, filed under "spawn:<backend>"). `model` is the job's JobRecord.model:
+    // the sub-agent's model or selector, or the literal "default" when none was
+    // resolved (resolved to the provider's sub model). The usage rides as a
+    // TokenUsage (prompt, completion and the cache traffic, in the provider's native
+    // meaning), so every part prices at its rate.
+    std::function<void(const std::string& backend, const std::string& model,
+                       const nimbus::orch::TokenUsage& usage)>
         recordSpawnUsage;
 
     // Recent-results spill (nullable - Context Fabric Stage 1): called with the

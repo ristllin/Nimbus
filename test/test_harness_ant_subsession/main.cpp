@@ -227,6 +227,7 @@ static void test_recorded_polls_running_then_done() {
   // OA-107: a done session's output files are listed once (none here).
   d.http.script.push_back({"api.anthropic.com", "/v1/files?scope_id=", 200,
                            fixture("files_list_session_empty_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());   // the finished session's usage read
   auto pd = d.contract();
   const std::string job = "anthropic:" + r.sessionId;
   agent::ResultEnvelope env{};
@@ -567,6 +568,7 @@ static agent::ResultEnvelope pollIdle(const char* stopReason) {
   d.http.script.push_back({"", "/events", 200, ev});
   if (stopReason && !strcmp(stopReason, "end_turn"))   // a done session lists its output files
     d.http.script.push_back({"", "/v1/files?scope_id=sesn_1", 200, "{\"data\":[]}"});
+  d.http.script.push_back(harness_test::antSessionUsage());   // read only when the poll is terminal
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sesn_1", env));

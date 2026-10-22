@@ -13,6 +13,7 @@
 #include "nimbus/orch/compact.h"      // modelCtxTokens, ORCH_COMPACT_PROMPT (the fold round)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
+#include "nimbus/orch/seam_meter.h"   // anthropicSessionUsage - a finished sub's spend
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "wire.h"
@@ -621,6 +622,39 @@ static void antOutputWaitDone(const char* sid) {
     if (!strncmp(w.sid, sid, sizeof(w.sid) - 1)) { w.sid[0] = 0; w.polls = 0; }
 }
 
+// Lane DEF: a finished session's billed usage (GET /v1/sessions/<id>). The events poll
+// carries none, so without this read an Anthropic sub-agent's spend never reached the
+// monthly spend ceiling, the Usage page or the budgets. One GET per finished job (a
+// GET passes the paid-call gate). A cut or busy (429) read answers Network, so the job
+// is polled again and the read retried; any other failure delivers the result and
+// counts the session's estimate (fail-closed, never zero), so a read that keeps failing
+// never costs the owner the result.
+static FabricErr antSessionUsage(const ProviderDeps& pd, const char* sid, ResultEnvelope& env) {
+  JsonDocument filter;
+  filter["usage"] = true;
+  keepErrorEnvelope(filter);
+  JsonDocument doc;
+  const int code = antRequest(pd, "GET", std::string("/v1/sessions/") + sid, "", doc, filter);
+  if (code <= 0 || code == 429) {
+    if (code > 0) logCallFail("session usage", code, doc);
+    return FabricErr::Network;
+  }
+  nimbus::orch::meterSubSearchRuns("anthropic", env.webRuns);   // billed per search, beside the tokens
+  if (code != 200) {
+    logCallFail("session usage", code, doc);
+    env.promptTokens = nimbus::orch::kSessionInputEstimateTokens;
+    env.completionTokens = (uint32_t)((strlen(env.reply) + 1) / 2);
+    return FabricErr::Ok;
+  }
+  const nimbus::orch::TokenUsage u =
+      nimbus::orch::anthropicSessionUsage(doc["usage"].as<ArduinoJson::JsonVariantConst>());
+  env.promptTokens = u.promptTokens;
+  env.completionTokens = u.completionTokens;
+  env.cacheReadTokens = u.cacheReadTokens;
+  env.cacheWriteTokens = u.cacheWriteTokens;
+  return FabricErr::Ok;
+}
+
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {
   const char* colon = strchr(jobId, ':');
   if (!colon) return FabricErr::BadRequest;
@@ -687,6 +721,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   if (errored)    env.state = JobState::Error;
   else if (done)  { env.state = JobState::Done; if (!env.reply[0]) strncpy(env.reply, "(done)", sizeof(env.reply)-1); }
   else            env.state = JobState::Running;
+  if (errored || done) return antSessionUsage(pd, sid, env);
   return FabricErr::Ok;
 }
 

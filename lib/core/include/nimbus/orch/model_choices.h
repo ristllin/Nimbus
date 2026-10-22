@@ -24,8 +24,10 @@
 // them. src/agent/agent_config.h keeps the historical *_MODEL_CHOICES names as
 // aliases of these.
 #define NIMBUS_MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
-#define NIMBUS_OPENAI_MODEL_CHOICES  "gpt-6-astra,gpt-5.6,gpt-5.6-terra,gpt-5.6-luna"
-#define NIMBUS_ANT_MODEL_CHOICES     "claude-opus-5,claude-sonnet-5,claude-haiku-4-5"
+// Lane DEF: each list carries its provider's role defaults (model_defaults.h), so a
+// never-verified provider offers and validates the sub default it runs on.
+#define NIMBUS_OPENAI_MODEL_CHOICES  "gpt-6-astra,gpt-5.6,gpt-5.6-terra,gpt-5.6-luna,gpt-6-luna"
+#define NIMBUS_ANT_MODEL_CHOICES     "claude-opus-5,claude-sonnet-5,claude-haiku-5-5"
 // Router providers: Cumulo speaks the OpenAI-compatible router (default upstream
 // openai), so its defaults are the proven router models; Z.ai is GLM.
 #define NIMBUS_CUMULO_MODEL_CHOICES  "gpt-5.6,gpt-5.6-terra,gpt-5.6-luna"

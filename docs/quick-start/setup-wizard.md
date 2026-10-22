@@ -72,6 +72,13 @@ The wizard asks for two required things and lets you skip the rest:
 | Directive | Skippable | Standing guidance that shapes how the assistant behaves for you. Keep the default or edit it. |
 | Name this device | Skippable | One name drives the setup network name, the LAN address, the Bluetooth name, and what the assistant calls itself. Applies after the next restart. |
 
+The **Add an AI provider** step and the last step of the wizard say what the device
+starts with: the provider's standard model for the assistant, its cheapest model for
+helpers, photo captions, routines and the nightly dream, and a **monthly spend
+ceiling of 20 USD** across all providers, after which paid calls pause until you
+raise it (**Assistant > Usage**) or the month ends. See
+[Monthly spend ceiling and default models](../spend-ceiling.md).
+
 On a **touchscreen board**, keep the wizard open while the device joins your
 Wi-Fi: the setup network shuts down after handoff (to protect the display from
 its own radio), and the wizard carries you to the device's new LAN address

@@ -541,6 +541,13 @@ class WebApi {
     d["mode"]    = 1;                    // Orchestrator (a VN is an assistant)
     d["jobs"]    = s.turnInFlight ? 1 : 0;
     d["needsOnboarding"] = false;        // provisioned by the platform
+    // Lane DEF: the monthly spend ceiling (the same shape as the device's).
+    {
+      JsonDocument cd;
+      if (deserializeJson(cd, rig_->spendCeiling().stateJson()) == DeserializationError::Ok)
+        d["spend"] = cd.as<JsonObject>();
+      d["setupDefaults"] = rig_->spendCeiling().setupText();
+    }
     d["provVerified"]    = s.providerConfigured;
     d["running"] = s.running;
     d["hasRing"] = false;                // no LED ring on a hosted instance
@@ -684,6 +691,11 @@ class WebApi {
     u["lastIn"] = s.lastTokensIn;
     u["lastOut"] = s.lastTokensOut;
     u["byProvider"].to<JsonArray>();
+    {
+      JsonDocument cd;   // lane DEF: the Usage page's monthly ceiling meter
+      if (deserializeJson(cd, rig_->spendCeiling().stateJson()) == DeserializationError::Ok)
+        u["ceiling"] = cd.as<JsonObject>();
+    }
     d["jobs"].to<JsonArray>();
     std::string out;
     serializeJson(d, out);
@@ -958,6 +970,17 @@ class WebApi {
     return applied;
   }
 
+  // Lane DEF: POST spendCeil=<cents> (1 to 100,000 USD), the owner's monthly ceiling;
+  // status 0 when absent. Applied at once (the state file, not a hosted setting).
+  ApiResp spendCeilWrite(const std::string& body) {
+    if (!present(formFieldNames(body), "spendCeil")) return ApiResp{0, "", ""};
+    const uint64_t micro = nimbus::orch::parseCeilingCents(formValue(body, "spendCeil"));
+    if (micro == 0) return refuse("spend ceiling must be a positive whole number of cents");
+    if (!rig_->spendCeiling().setLimitMicro(micro))
+      return ApiResp{507, "application/json", R"({"error":"storage_full","note":"Couldn't save the ceiling."})"};
+    return okJson(R"({"ok":true,"applied":1})");
+  }
+
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
@@ -967,10 +990,12 @@ class WebApi {
     // Refuse a mid-turn write BEFORE anything else in the body applies, so a 503
     // always means "nothing changed".
     if (!w.empty() && eng_->snapshot().turnInFlight) return busy();
+    const ApiResp ceil = spendCeilWrite(body);
+    if (ceil.status != 0 && ceil.status != 200) return ceil;
     const ApiResp allow = allowlistWrite(body);
     if (allow.status != 0) return allow;
-    if (w.empty()) {   // only no-op knobs, or the allowlist (applied above)
-      const bool tg = present(formFieldNames(body), "tgAllow");
+    if (w.empty()) {   // only no-op knobs, or the allowlist / the ceiling (applied above)
+      const bool tg = present(formFieldNames(body), "tgAllow") || ceil.status == 200;
       return okJson(tg ? R"({"ok":true,"applied":1})" : R"({"ok":true,"applied":0})");
     }
     auto fut = eng_->dispatchRead([this, w]() { return applyOrchWrites(w); });
@@ -1101,6 +1126,11 @@ class WebApi {
   ApiResp chatPost(const std::string& body) {
     std::string text = formValue(body, "text");
     if (text.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
+    // Lane DEF: paid calls are paused at the monthly spend ceiling: answer at once.
+    if (nimbus::orch::spendFrozen())
+      return ApiResp{409, "application/json",
+                     R"({"error":"Paid AI calls are paused: this month's spend ceiling is reached. )"
+                     R"(Raise it on Assistant > Usage.","code":"spend_ceiling"})"};
     // A mid-turn message is QUEUED, never rejected: the prompt row is recorded and
     // the turn is posted to the engine mailbox (which runs turns strictly in order).
     // The turn id IS this prompt row's seq, and it rides the postMessage so every

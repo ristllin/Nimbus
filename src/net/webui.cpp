@@ -79,6 +79,7 @@
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
+#include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
 #include "nimbus/theme.h"
@@ -854,6 +855,13 @@ static void buildState(String& out) {
   // First-run gate: the web UI shows the setup wizard overlay while this is true
   // (cleared when the wizard finishes, or by an NVS-wipe factory reset).
   d["needsOnboarding"] = !agent::store::onboarded();
+  // Lane DEF: the monthly spend ceiling (the paused banner, the wizard's defaults line).
+  {
+    JsonDocument cd;
+    if (deserializeJson(cd, agent::spend::stateJson()) == DeserializationError::Ok)
+      d["spend"] = cd.as<JsonObject>();
+    d["setupDefaults"] = agent::spend::setupText();
+  }
   if (s_wc.testWakeInfo) d["testWake"] = s_wc.testWakeInfo();   // test image only (CUM-248)
   // Onboarding summary truth (CUM-233): at least one provider verified - the SAME
   // gate /api/onboard/complete enforces. Lets the wizard's Done step derive its
@@ -1119,6 +1127,13 @@ static bool modelPickAllowed(const nimbus::orch::ProviderSlot& slot, bool orchRo
   l.router = !strcmp(slot.slug, "cumulo");
   const std::string pick(v.c_str());
   if (agent::model_pick::allowed(l, pick)) return true;
+  // Lane DEF: the role's own default (the sub default for a sub pick) is always valid.
+  if (!orchRole) {
+    agent::model_pick::PickLists sub = l;
+    sub.defaultModel =
+        agent::store::roleDefaultModel(slot.slug, nimbus::orch::DefaultRole::Sub).c_str();
+    if (agent::model_pick::allowed(sub, pick)) return true;
+  }
   l.catalog = agent::model_pick::catalogSelectors(
       std::string(agent::store::modelCatalogJson(slot.slug).c_str()),
       orchRole ? "orchestrator" : "sub-agent", &agent::PsramJsonAllocator::instance());
@@ -1290,6 +1305,12 @@ static void buildOrchState(String& out) {
       JsonDocument pd;
       if (deserializeJson(pd, pj) == DeserializationError::Ok && pd.is<JsonArray>())
         u["byProvider"] = pd.as<JsonArray>();   // deep-copied into d
+    }
+    // Lane DEF: the monthly spend ceiling across all providers (the Usage meter).
+    {
+      JsonDocument cd;
+      if (deserializeJson(cd, agent::spend::stateJson()) == DeserializationError::Ok)
+        u["ceiling"] = cd.as<JsonObject>();
     }
   }
   d["sfxLvlN"]  = agent::store::sfxLevelNotif();
@@ -1657,6 +1678,14 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
   if (n == "orchTrace")    { agent::store::setOrchTrace(v == "1" || v == "true"); return true; }
   if (n == "ttsOn")        { agent::store::setTtsEnabled(v == "1" || v == "true"); return true; }
   if (n == "loopRounds")   { agent::store::setOrchLoopRounds(v.toInt()); return true; }
+  // Lane DEF: the monthly spend ceiling in cents (clamped to 1 to 100,000 USD). A write
+  // that did not land reports to the persist ledger, so the route answers 507.
+  if (n == "spendCeil") {
+    const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(v.c_str()));
+    if (micro == 0) { err = "spend ceiling must be a positive whole number of cents"; return true; }
+    agent::spend::setLimitMicro(micro);
+    return true;
+  }
   if (n == "loopRescap")   { agent::store::setOrchLoopResultCap(v.toInt()); return true; }  // per-tool-result byte cap (dialable for stress)
   if (n == "loopTotcap")   { agent::store::setOrchLoopTotalCap(v.toInt()); return true; }   // cumulative tool-output byte budget
   // Local Loops governor caps (routines) - owner may only TIGHTEN; reloadCaps() applies live.
@@ -2984,6 +3013,15 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     const int mode = s_wc.currentMode ? s_wc.currentMode() : (int)solide::memory::getInt("mode", 0);
     if (mode != 1) { r->send(409, "application/json", "{\"error\":\"switch to Orchestrator mode to chat\"}"); return; }
+    // Lane DEF: at the monthly spend ceiling no turn can run; say so at once instead of
+    // a message that waits for a reply that never comes (the chat's one notice already
+    // explains it; this is the send's answer, not a chat message).
+    if (nimbus::orch::spendFrozen()) {
+      r->send(409, "application/json",
+              "{\"error\":\"Paid AI calls are paused: this month's spend ceiling is reached. "
+              "Raise it on Assistant > Usage.\",\"code\":\"spend_ceiling\"}");
+      return;
+    }
     String text = r->hasParam("text", true) ? r->getParam("text", true)->value() : "";
     text.trim();
     if (text.length() == 0) { r->send(400, "application/json", "{\"error\":\"empty message\"}"); return; }

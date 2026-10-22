@@ -6,6 +6,7 @@
 
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/reply_text.h"
+#include "nimbus/orch/seam_meter.h"   // meterSubAnswer - a sub's spend (lane DEF)
 #include "wire.h"
 
 // openai_compat - a PORTABLE synchronous sub-session over the OpenAI
@@ -22,7 +23,9 @@ using wire::serializeBody;
 
 namespace {
 struct CompatSlot {
-  char jobId[96];
+  // The dispatcher writes at most 72 bytes of job id (outJobId), so a slot keeps no more
+  // (lane DEF: 192 B of static RAM back across the eight slots).
+  char jobId[72];
   std::string reply;
   bool used;
 };
@@ -85,6 +88,7 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
     filter["choices"][0]["message"]["content"] = true;
   }
   filter["error"]["message"] = true;
+  filter["usage"] = true;   // lane DEF: the run's billed usage (the spend ceiling)
   return serializeBody(doc);
 }
 
@@ -140,6 +144,7 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   JsonDocument out;
   const uint32_t deadlineMs = compatSubDeadlineMs(ep);
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const size_t requestChars = body.size();
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
                       std::move(body), deadlineMs, out, filter);
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
@@ -148,6 +153,10 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   // The content may be a chunk list (a reasoning model's thinking, then its text).
   std::string reply = anthropic ? nimbus::orch::messagesContentText(out["content"])
                                 : nimbus::orch::chatContentText(out["choices"][0]["message"]["content"]);
+  // Lane DEF: the run billed whatever it returned, so it is metered before any check.
+  nimbus::orch::meterSubAnswer(backendTag, ep.model.c_str(),
+                               out["usage"].as<ArduinoJson::JsonVariantConst>(), requestChars,
+                               reply.size(), 0);
   if (reply.empty()) return FabricErr::ParseFail;
 
   char id[24];

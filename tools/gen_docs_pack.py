@@ -46,6 +46,7 @@ CURATED = [
     "docs/memory.md",
     "docs/turn-anatomy.md",
     "docs/people-and-privacy.md",
+    "docs/spend-ceiling.md",
     "docs/notifier-status-language.md",
 ]
 

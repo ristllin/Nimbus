@@ -12,6 +12,7 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/jobs.h"
+#include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/model_choices.h"   // staticModelChoices / modelInChoices
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the cheapest fallback
 #include "nimbus/harness/providers.h"
@@ -142,9 +143,9 @@ struct Rig {
     d.turnInFlight = [this] { return turnInFlight; };
     d.hooks.onSpawn = [this](const agent::SpawnEv& ev) { hookSpawns.push_back(ev); };
     d.hooks.onResult = [this](const agent::ResultEv& ev) { hookResults.push_back(ev); };
-    d.recordSpawnUsage = [this](const std::string& b, const std::string& m, uint32_t in,
-                                uint32_t out) {
-      spawnUsage.push_back({b, m, in, out});
+    d.recordSpawnUsage = [this](const std::string& b, const std::string& m,
+                                const orch::TokenUsage& u) {
+      spawnUsage.push_back({b, m, u.promptTokens, u.completionTokens});
     };
     d.persistResult = [this](const std::string& prj, const std::string& name, const std::string&,
                              const std::string& text, const std::string&) {
@@ -334,8 +335,10 @@ static void test_spawn_refusals_reach_the_head_with_the_real_reason() {
   TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes("other-chat").c_str());   // never another chat's
   std::string notes = r.eng->takeSpawnNotes("chat1");
   TEST_ASSERT_EQUAL_STRING(
-      "- 'gcal-fetch' did not start: the spawn queue is full (12 waiting); start it again "
-      "after some finish\n", notes.c_str());
+      ("- 'gcal-fetch' did not start: the spawn queue is full (" +
+       std::to_string(orch::kMaxPendingSpawns) + " waiting); start it again after some finish\n")
+          .c_str(),
+      notes.c_str());
   TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes("chat1").c_str());   // consumed
 
   // 2. the provider refused the dispatch (the owner hears the same sentence)
@@ -495,6 +498,37 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
   }
 }
 
+// Lane DEF: at the monthly spend ceiling a sub-agent dispatch is refused before any
+// request leaves the device (the wire gate), whatever provider it would run on; the
+// queued work does not start and nothing is billed. Counter-test: the same spawn
+// with the ceiling open reaches the provider.
+static bool g_subFrozen = false;
+static bool subFrozen() { return g_subFrozen; }
+static void test_spend_ceiling_refuses_a_sub_dispatch_before_any_request() {
+  for (const bool frozen : {true, false}) {
+    Rig r;
+    CompatAdapter zai;
+    r.fabric.registerAdapter(&zai);
+    r.keyed.insert("zai");
+    zai.deps.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"});
+    g_subFrozen = frozen;
+    orch::installSpendFreeze(&subFrozen);
+    orch::Spawn s = sp("summarize the GLM paper");
+    s.provider = "zai";
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    orch::installSpendFreeze(nullptr);
+    TEST_ASSERT_EQUAL(frozen ? 0 : 1, (int)zai.deps.http.seen.size());
+    if (frozen) {
+      bool maybe = true;
+      const std::string notes = r.eng->takeSpawnNotes("chat1", &maybe);
+      TEST_ASSERT_FALSE(maybe);   // nothing went out: it did not start, nothing was billed
+      TEST_ASSERT_TRUE_MESSAGE(notes.find("did not start") != std::string::npos, notes.c_str());
+      TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
+    }
+  }
+}
+
 // CUM-538 gate: a 200 whose result could not be read (empty content, or a body the
 // device could not parse) means the provider RAN the sub and charged for it. It was
 // told "couldn't start" and the head "did not start", so it could pay again.
@@ -570,8 +604,10 @@ static void test_spawn_note_budget_is_per_chat() {
   orch::Spawn extra = sp("summarize the thread");
   extra.name = "b-task";
   b.eng->enqueueSpawn(extra, "chat2");   // the queue is still full
-  TEST_ASSERT_EQUAL_STRING("- 'b-task' did not start: the spawn queue is full (12 waiting); "
-                           "start it again after some finish\n",
+  TEST_ASSERT_EQUAL_STRING(("- 'b-task' did not start: the spawn queue is full (" +
+                            std::to_string(orch::kMaxPendingSpawns) +
+                            " waiting); start it again after some finish\n")
+                               .c_str(),
                            b.eng->takeSpawnNotes("chat2").c_str());
   const std::string n1 = b.eng->takeSpawnNotes("chat1");   // chat1 folded in its own budget
   TEST_ASSERT_TRUE(n1.size() <= 700);
@@ -2200,6 +2236,7 @@ int main(int, char**) {
   RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);
   RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
   RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
+  RUN_TEST(test_spend_ceiling_refuses_a_sub_dispatch_before_any_request);
   RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
   RUN_TEST(test_an_unreadable_answer_may_have_run);
   RUN_TEST(test_spawn_note_budget_is_per_chat);

@@ -7,7 +7,17 @@
 // /api/fallbacks (N3), /api/ota/check + files payloads (N5), /api/wakeups (N2).
 import { readFileSync } from 'node:fs';
 
+// The monthly spend ceiling (lane DEF): spend.cpp's stateJson(), on /api/state (spend)
+// and /api/orch (usage.ceiling).
+export const CEILING = {
+  limitCents: 2000, spentCents: 640, frozen: false, ownerSet: false, month: 202610,
+  resetsOn: '1 November', saved: true, loaded: true,
+};
+
 export const STATE = {
+  spend: CEILING,
+  setupDefaults:
+    "Each provider starts on a standard model for the assistant and its cheapest model for helpers, photo captions, routines and the nightly dream. Paid AI calls pause once a month's estimated spend reaches $20.00. Change models on Assistant > Models and the ceiling on Assistant > Usage.",
   fw: 'v4.3.0-pre', build: 'n1-harness', mode: 1, jobs: 2,
   heap: 120 * 1024, heapTotal: 300 * 1024, heapMin: 90 * 1024,
   psramFree: 6.2 * 1048576, psramTotal: 8 * 1048576,
@@ -77,6 +87,7 @@ export const ORCH = {
   modInbound: 0, modOutbound: 0, modInjection: 0,
   sfxLvlN: 2, sfxLvlO: 2, sfxTheme: 'terran', sfxVol: 60, sfxTier: 'basic', sfxSync: 'idle',
   usage: {
+    ceiling: CEILING,
     sessIn: 12000, sessOut: 4300, turns: 8, lastIn: 900, lastOut: 300,
     // Per-provider ledger rows. Field names mirror the device's providerUsageJson()
     // (store.cpp): prov / tokens / calls / tok(In|Out) / tot(In|Out|Calls) / rate*

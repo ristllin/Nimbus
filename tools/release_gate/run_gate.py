@@ -27,6 +27,7 @@ import check_driver_pin
 import check_elf_symbols
 import check_ota_preserves_nvs
 import check_sram_staging
+import check_static_dram
 import check_test_console_guard
 import model_id_lint
 
@@ -73,6 +74,12 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   #   200-copy storm is one (x200) row and at most one fold, twelve turns render all twelve,
   #   a restart keeps the history bytes, HISTV2 0 restores the old window. Unit A (SD).
   pytest tests/hil/test_l52_history_cache.py -m "hil and agent" --allow-hardware
+  # Monthly spend ceiling (lane DEF): a fake provider (PROVFAULT 200 with a canned usage) or
+  #   SPENDSET drives the device to the ceiling; head turn, spawn, photo, voice note, routine
+  #   and DREAM each refuse with zero requests; one notice on Telegram and one on the web
+  #   chat; frozen across a restart and a full settings store; raising the ceiling over
+  #   /api/orch lets the next turn run; CLOCK across the month boundary clears it quietly.
+  pytest tests/hil/test_l65_spend_ceiling.py -m hil --allow-hardware
 """
 
 CLOUD_BATTERY = """\
@@ -99,6 +106,7 @@ def run_host_checks() -> bool:
         ("config-mapping (CUM-388)", check_config_mapping.main),
         ("test-console guard (p18-N)", check_test_console_guard.main),
         ("model-id lint (p18-N)", model_id_lint.main),
+        ("static-dram ceiling (p18-DEF)", check_static_dram.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))

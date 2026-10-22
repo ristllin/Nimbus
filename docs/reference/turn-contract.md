@@ -455,7 +455,7 @@ or present-but-mistyped - array parses to an **empty vector**, and an absent
 | `kSpawnCategoryMax` | 16 (−1 = 15) | `caps.h` | `spawn.category`, `session_ops.id` |
 | `kSpawnNoteMax` | 80 (−1 = 79) | `caps.h` | `spawn.note` |
 | `kAgentMaxJobs` | 6 | `caps.h` | vector caps for `spawn`, `mem_write`, `mem_query`, `session_ops`; `[SPAWN CAPACITY]` per-turn ceiling |
-| `kMaxPendingSpawns` | 12 | `caps.h` | pending-spawn queue depth; `[SPAWN CAPACITY]` queue room |
+| `kMaxPendingSpawns` | 8 | `caps.h` | pending-spawn queue depth; `[SPAWN CAPACITY]` queue room |
 | `kMaxActiveInflight` | 4 | `caps.h` | max sub-agents in flight (device concurrency window) |
 | `kScratchActiveMax` | 240 | `caps.h` | `scratchpad.active` |
 | `kScratchItemMax` | 160 | `caps.h` | each `scratchpad` tier item |

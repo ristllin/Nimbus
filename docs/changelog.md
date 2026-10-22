@@ -36,6 +36,26 @@ PDFs, connectors and the web page:
 - **A file that cannot be sent says so.** When a file queued for Telegram fails to upload, the chat gets one line naming it and saying it is still under Files, instead of silence.
 - **Lighter page loads through the cloud.** The page and its script now load as two smaller responses, so the page fits the cloud link with room to grow.
 
+Spend ceiling and default models:
+
+- **A monthly spend ceiling, on by default.** Paid AI calls pause once a calendar
+  month's estimated spend across all providers reaches 20 USD (change it under
+  Assistant > Usage). The device stops the calls itself, so a provider account on
+  auto-recharge cannot run away; you hear about it once on Telegram, once in the web
+  chat and on the device screen, and raising the ceiling or the new month lifts it.
+  Devices set up before this update keep their models and get one message about the
+  ceiling on their first start. Every paid call counts: helpers on every provider,
+  memory, photo descriptions, speech, images, file checks and message screening, at
+  the usage the provider reports or a high estimate where it reports none. A reminder
+  or wakeup due during a pause runs soon after it lifts. [Monthly spend ceiling](spend-ceiling.md)
+- **Cost-conscious default models.** New setups run the assistant on each provider's
+  standard model (Claude Sonnet 5, OpenAI's mini class, Mistral Medium, GLM-5.3) and
+  helpers, photo captions, routines and the nightly dream on its cheapest model.
+  Routines, reminders, wakeups and the dream now always run on the cheapest model with
+  light reasoning, whatever the assistant runs on.
+- **A release check on internal memory.** A release image whose static internal RAM
+  grows past its recorded ceiling now fails the release gate.
+
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

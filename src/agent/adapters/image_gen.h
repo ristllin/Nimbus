@@ -25,7 +25,8 @@ constexpr size_t kGenMaxBytes = 3u * 1024 * 1024;
 // Generate an image from `prompt` into a freshly ps_malloc'd buffer. `model` blank
 // => gpt-image-1; `size` blank => 1024x1024 (normalized per model); `quality` blank
 // => low. Returns the buffer (CALLER MUST free() it) and sets `outLen`, or nullptr
-// with a reason in `errOut`. Touches no filesystem. Blocks up to ~120 s (generation
+// with a reason in `errOut` (nimbus::orch::kSpendFrozenError, with no request made,
+// while the monthly spend ceiling pauses paid calls). Touches no filesystem. Blocks up to ~120 s (generation
 // is slow) - MUST run on the turn task, never AsyncTCP.
 uint8_t* generateToBuffer(const String& prompt, const char* model, const char* size,
                           const char* quality, size_t& outLen, String& errOut);

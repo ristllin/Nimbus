@@ -20,6 +20,8 @@
 #include "fs_atomic.h"                     // writeFileAtomic - the usage files (tmp + rename)
 #include "provider_gate.h"                // the daily spend notice (L19-2)
 #include "nimbus/orch/model_choices.h"     // effectiveModelChoices - the priceable models
+#include "nimbus/orch/model_defaults.h"    // role defaults (lane DEF): head, sub, background
+#include "spend_ceiling_store.h"           // the monthly spend ceiling counts every record
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h" // GET /api/usage/models body
@@ -350,30 +352,44 @@ String providerPriority() { return pcGet(&PSnap::providerPriority); }
 String orchPriority()     { return providerPriority(); }
 String subPriority()      { return pcGet(&PSnap::subPriority); }
 
-static String defaultModelFor(const String& provider) {
-  if (provider == "openai")    return OPENAI_MODEL;
-  if (provider == "anthropic") return ANT_MODEL;
-  if (provider == "mistral")   return MISTRAL_MODEL;
-  if (provider == "custom")    return customModel();
-  // CUM-288: a router fallback head resolves to its default model, not "". An
-  // empty model let budgeting fall to the conservative default window on a
-  // router-only device (Cumulo or Z.ai); the resolved default lets the budget
-  // derive from the real window. Fixed for the whole router class, not just
-  // Cumulo, so a Z.ai-only device does not re-hit the same gap.
-  if (provider == "cumulo")    return CUMULO_MODEL;
-  if (provider == "zai")       return ZAI_MODEL;
-  return "";
+// The model a role runs on when the owner picked none (lane DEF, owner requirement 21
+// Oct): the ONE role-default table (nimbus/orch/model_defaults.h), picked by price
+// class from this provider's catalog. A custom endpoint runs its one configured model.
+// CUM-288 holds for every slot with a row: a router head (Cumulo, Z.ai) resolves to
+// its default model, never "", so the budget derives from the real window.
+static String defaultModelFor(const String& provider, nimbus::orch::DefaultRole role) {
+  if (provider == "custom") return customModel();
+  const char* p = provider.c_str();
+  if (!nimbus::orch::roleDefaultRow(p, role)) return "";
+  const String harvested = modelChoices(provider);   // "" = never harvested
+  const std::string list =
+      nimbus::orch::effectiveModelChoices(p, std::string(harvested.c_str()));
+  return nimbus::orch::roleDefaultModel(p, role, list, harvested.length() > 0).c_str();
 }
 
 String orchModel(const String& provider) {
+  // A background turn (a routine, a wakeup, the dream) runs on the cheapest tier
+  // whatever the head is (the 22 Oct silent-routine cost: a routine on the priciest
+  // head spent 3K thinking tokens and sent nothing). Thread-local: a web request on
+  // another task meanwhile still reads the owner's configured head.
+  if (nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Background) {
+    const String bg = defaultModelFor(provider, nimbus::orch::DefaultRole::Background);
+    if (bg.length()) return bg;
+  }
   String key = String(AKEY_ORCH_MODEL_PFX) + provider;
   String v = getStrQuiet(key.c_str(), "");
-  return v.length() ? v : defaultModelFor(provider);
+  return v.length() ? v : defaultModelFor(provider, nimbus::orch::DefaultRole::Head);
 }
 String subModel(const String& provider) {
   String key = String(AKEY_SUB_MODEL_PFX) + provider;
   String v = getStrQuiet(key.c_str(), "");
-  return v.length() ? v : defaultModelFor(provider);
+  return v.length() ? v : defaultModelFor(provider, nimbus::orch::DefaultRole::Sub);
+}
+String captionModel(const String& provider) {
+  return defaultModelFor(provider, nimbus::orch::DefaultRole::Caption);
+}
+String roleDefaultModel(const String& provider, nimbus::orch::DefaultRole role) {
+  return defaultModelFor(provider, role);
 }
 String agentFabricCfg() {
   return getStrQuiet(AKEY_AGENT_FABRIC, "code:openai,research:openai,ops:anthropic");
@@ -1291,11 +1307,9 @@ void recordProviderTokens(const String& provider, uint32_t tokensIn, uint32_t to
   recordProviderTokens(provider, d, tag, "");   // provider level only
 }
 
-void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta& d,
-                          const char* tag, const char* model) {
-  if (provider.length() == 0 || d.empty()) return;
-  if (!model) model = "";
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
+static void recordProviderTokensLocked(const String& provider,
+                                       const nimbus::orch::TokenDelta& d, const char* tag,
+                                       const char* model) {  // caller holds g_ledgerMx
   auto& L = ledgerLocked();
   const std::string prov(provider.c_str());
   const auto* e = L.find(prov);
@@ -1327,9 +1341,24 @@ void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta
   }
 }
 
-void recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
-  if (spend.empty()) return;
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
+void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta& d,
+                          const char* tag, const char* model) {
+  if (provider.length() == 0 || d.empty()) return;
+  if (!model) model = "";
+  uint64_t micro = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    recordProviderTokensLocked(provider, d, tag, model);
+    micro = ledgerLocked().priceDeltaMicro(std::string(provider.c_str()), model, d);
+  }
+  // The monthly spend ceiling counts the record at its price, after the ledger lock (the
+  // ceiling store may read the ledger on its first load).
+  agent::spend::commit(micro, false);
+}
+
+// recordProviderSpend's ledger work (caller holds g_ledgerMx): every slot filed, each
+// store persisted once; answers the spend at the ledger's prices (micro-USD).
+static uint64_t recordProviderSpendLocked(const nimbus::orch::TurnSpend& spend, const char* tag) {
   auto& L = ledgerLocked();
   const uint32_t day = currentDayKey();
   const std::string t(tag ? tag : "");
@@ -1359,11 +1388,21 @@ void recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag) 
     histLocked().prune(day, 60);
     persistHistLocked();
   }
+  return L.priceTurnMicro(spend);
 }
 
-void recordProviderCall(const String& provider) {
-  if (provider.length() == 0) return;
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
+void recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
+  uint64_t micro = 0;
+  if (!spend.empty()) {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    micro = recordProviderSpendLocked(spend, tag);
+  }
+  // The ceiling counts the turn after the ledger lock. A fold ("compact") runs inside a
+  // turn: only the turn's own record (billed or not) ends its pending rounds.
+  agent::spend::commit(micro, !(tag && std::strcmp(tag, "compact") == 0));
+}
+
+static void recordProviderCallLocked(const String& provider) {  // caller holds g_ledgerMx
   auto& L = ledgerLocked();
   const std::string prov(provider.c_str());
   const auto* e = L.find(prov);
@@ -1377,6 +1416,80 @@ void recordProviderCall(const String& provider) {
     H.prune(day, 60);
     persistHistLocked();
   }
+}
+
+void recordProviderCall(const String& provider) {
+  if (provider.length() == 0) return;
+  uint64_t micro = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    recordProviderCallLocked(provider);
+    micro = ledgerLocked().priceDeltaMicro(std::string(provider.c_str()), "",
+                                           nimbus::orch::TokenDelta{}, 1);
+  }
+  agent::spend::commit(micro, false);   // a search call counts toward the ceiling too
+}
+
+// ---- the monthly spend ceiling's inputs (lane DEF) -----------------------------
+
+uint64_t priceSpendMicro(const nimbus::orch::TurnSpend& spend) {
+  if (spend.empty()) return 0;
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  return ledgerLocked().priceTurnMicro(spend);
+}
+
+void recordSideSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
+  if (spend.empty()) return;
+  uint64_t micro = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    micro = recordProviderSpendLocked(spend, tag);
+  }
+  agent::spend::commit(micro, false);   // never ends the turn in flight
+}
+
+bool usageHasHistory() {
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  for (const auto& e : ledgerLocked().entries())
+    if (e.totalIn || e.totalOut || e.totalCalls) return true;
+  return false;
+}
+
+uint64_t monthToDateMicro() {
+  const time_t now = time(nullptr);
+  struct tm tmv;
+  if (now < 1609459200 || !localtime_r(&now, &tmv)) return 0;
+  // The first day of this month (device timezone) as a UTC day key: the history's
+  // buckets are UTC days, so the one boundary day counts whole (fail-closed).
+  struct tm first = tmv;
+  first.tm_mday = 1;
+  first.tm_hour = first.tm_min = first.tm_sec = 0;
+  first.tm_isdst = -1;
+  const time_t firstAt = mktime(&first);
+  const uint32_t firstDay = firstAt > 0 ? (uint32_t)(firstAt / 86400) : 0;
+  const uint32_t monthPeriod = currentPeriodKey(1);
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  uint64_t micro = 0;
+  auto addSat = [&micro](uint64_t v) { micro = nimbus::orch::addSatMicro(micro, v); };
+  for (const auto& e : L.entries()) {
+    if (e.resetDay == 1 && e.periodKey == monthPeriod) {
+      // The ledger's own period IS this calendar month: the Usage page's estimate.
+      addSat(L.priceProvider(e.name) * 10000ULL);
+      continue;
+    }
+    // Another reset day: this month's daily buckets of that provider.
+    for (const auto& b : histLocked().entries()) {
+      if (b.prov != e.name || b.dayKey < firstDay) continue;
+      nimbus::orch::TokenDelta d;
+      d.in = b.tokIn;
+      d.out = b.tokOut;
+      d.cacheR = b.cacheR;
+      d.cacheW = b.cacheW;
+      addSat(L.priceDeltaMicro(b.prov, b.model, d, b.calls));
+    }
+  }
+  return micro;
 }
 
 bool setProviderRates(const String& provider, uint32_t centsPerMIn,

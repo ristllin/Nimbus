@@ -34,22 +34,30 @@
 #define OPENAI_MODEL_CHOICES  NIMBUS_OPENAI_MODEL_CHOICES
 #define ANT_MODEL_CHOICES     NIMBUS_ANT_MODEL_CHOICES
 #define CUMULO_MODEL_CHOICES  NIMBUS_CUMULO_MODEL_CHOICES
-#define CUMULO_MODEL          "gpt-5.6"
 #define ZAI_MODEL_CHOICES     NIMBUS_ZAI_MODEL_CHOICES
-#define ZAI_MODEL             "glm-5.3"
+
+// ---- Default models (lane DEF: defensive defaults, owner requirement 21 Oct 2026) ---
+// The role defaults live in ONE table, nimbus/orch/model_defaults.h (head, sub-agents,
+// captions, background turns per provider, picked by price class from the catalog);
+// store::orchModel / subModel read it. These are the HEAD defaults the rest of the
+// device names (the always-valid pick, the adapters' fallback); test_model_defaults
+// pins each to the table's head row:
+//   Anthropic claude-sonnet-5 (never opus or fable), OpenAI the mini class, Mistral
+//   medium, Z.ai glm-5.3, Cumulo the router default (the cloud meters it).
+#define ANT_MODEL     "claude-sonnet-5"
+#define OPENAI_MODEL  "gpt-5.6-luna"
+#define MISTRAL_MODEL "mistral-medium-latest"
+#define ZAI_MODEL     "glm-5.3"
+#define CUMULO_MODEL  "gpt-5.6"
 
 // ---- Anthropic REST endpoints ----------------------------------------------
 #define ANTHROPIC_HOST  "api.anthropic.com"
 #define ANTHROPIC_PORT  443
 #define ANTHROPIC_VER   "2023-06-01"
-// Default Anthropic model (orchestrator + sub-session fallback).
-#define ANT_MODEL       "claude-sonnet-5"
 
 // ---- OpenAI REST endpoints -------------------------------------------------
 #define OPENAI_HOST  "api.openai.com"
 #define OPENAI_PORT  443
-// No "-latest" flagship alias exists for OpenAI, so this needs a periodic bump.
-#define OPENAI_MODEL "gpt-5.6"
 
 // ---- Mistral REST endpoints (host ported 2026-07 - Conversations API) -------
 #define MISTRAL_HOST "api.mistral.ai"
@@ -67,9 +75,6 @@
 // what the router can actually route.
 #define CUMULO_HOST_DEFAULT "app.cumulo-nimbus.ai"
 #define MISTRAL_PORT 443
-// Default Mistral model (orchestrator + sub-session fallback); the "-latest"
-// alias tracks the flagship without a periodic bump.
-#define MISTRAL_MODEL "mistral-large-latest"
 
 // ---- Poll cadence + INTERNAL-heap floors -----------------------------------
 // ⚠ MEMORY MODEL (read docs/memory-model.md before touching these): this S3 has

@@ -12,6 +12,7 @@
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
+#include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "nimbus/orch/reply_text.h"
 #include "wire.h"
@@ -906,13 +907,15 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   if (slot < 0) return FabricErr::RemoteFail;   // cache full: journal backs off
 
   std::string body;
+  std::string subModel;   // the model the run named (lane DEF: its spend is metered under it)
   Provenance prov;   // CUM-536: decided from the request, applied to the response
   {
     JsonDocument doc;
     doc["store"]        = true;
     wire::putFieldStr(doc["inputs"], d.instruction ? std::string(d.instruction) : std::string(),
                       "the sub-agent task");
-    doc["model"]        = (d.model && d.model[0]) ? d.model : model.c_str();
+    subModel            = (d.model && d.model[0]) ? std::string(d.model) : model;
+    doc["model"]        = subModel;
     doc["instructions"] = MISTRAL_AGENT_SYS;
     // Studio connectors ride the conversation and run server-side (auto tool_choice
     // - no forcing, so no 422). Free-text result (no response_format schema).
@@ -929,11 +932,13 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // widening beyond this is needed to keep {file_id,file_name,file_type}.
   oi["type"] = true; oi["content"] = true;
   oi["name"] = true;          // tool.execution: which tool ran (connector provenance)
+  filter["usage"] = true;     // lane DEF: the run's billed usage (the spend ceiling)
   keepMistralError(filter);   // every error-envelope shape
 
   JsonDocument doc = makeDoc(pd);   // response -> PSRAM; execJson streams it off the socket
   HeaderList quota;                 // a 429's x-ratelimit-*: which window refused
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const size_t requestChars = body.size();
   int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
                             kSyncSubCeilingMs, &quota);
   // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts the read
@@ -956,6 +961,10 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   }
   RunCounts runs;
   std::string reply = outputsReply(doc, prov, runs);
+  // Lane DEF: the run billed whatever it returned, so it is metered before any check.
+  nimbus::orch::meterSubAnswer("mistral", subModel.c_str(),
+                               doc["usage"].as<ArduinoJson::JsonVariantConst>(), requestChars,
+                               reply.size(), runs.web);
   // Capture any code_interpreter-produced files (poll -> env.artifacts[]).
   std::vector<MistralFileRef> files;
   const int droppedFiles = mistralParseFileRefs(doc, files);

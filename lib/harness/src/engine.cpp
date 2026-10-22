@@ -19,6 +19,8 @@
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
+#include "nimbus/orch/model_defaults.h"  // lane DEF: background turns run on the cheapest tier
+#include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate (monthly spend ceiling)
 #include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
 
 #include "nimbus/harness/conversation.h"   // histV2: historyTurns / fitHistory / foldSlice
@@ -741,6 +743,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   tf.chain.clear();
   tf.metered = false;
   tf.switched = false;
+  // Lane DEF: the monthly spend ceiling. While paid calls are paused no turn reaches
+  // a provider (recall's embed below included). The owner hears why once per channel
+  // from the device's notice pump, so the refused turn itself sends nothing.
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Head)) {
+    tf.chain.noteDevice(nimbus::orch::kSpendFrozenError);
+    lastTurnUsage_ = {};
+    hlog::logf("orchestrator: %s turn refused - %s",
+               turnSourceSlug(turnSource_, attribution_), nimbus::orch::kSpendFrozenError);
+    return false;
+  }
   // Lane S: a fresh effect ledger; the sub-agent results the entry wrapper
   // folded in count as read (sourced or with no lookup behind them).
   claims_.beginTurn();
@@ -1483,6 +1495,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   if (!ok || outJson.empty()) {
     hlog::logf("orchestrator: turn failed (%s)", err.c_str());
+    // Lane DEF: a round crossed the monthly spend ceiling mid-turn and the next request
+    // was refused before it left. No error reply: the notice pump tells the owner why,
+    // once per channel. Keyed on THIS turn's error, never the global state, so an
+    // unrelated failure still gets its honest reply.
+    if (nimbus::orch::isSpendFrozenError(err)) {
+      tf.chain.noteDevice(nimbus::orch::kSpendFrozenError);
+      fireTurnEnd(false, 0);
+      return false;
+    }
     // Lane L (parsing P3): an answer the provider cut at its output limit is not
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
@@ -1882,6 +1903,23 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     return o;
   }
+  // Lane DEF: at the monthly spend ceiling a routine, a wakeup or the dream is not a
+  // fire (deferred: no daily fire burned, no failure breaker rolled) and dials nothing.
+  const nimbus::orch::SpendSeam seam = dream::isReserved(loopId) ? nimbus::orch::SpendSeam::Dream
+                                      : (once || ownerReminder) ? nimbus::orch::SpendSeam::Wakeup
+                                                                : nimbus::orch::SpendSeam::Routine;
+  if (!nimbus::orch::paidCallAllowed(seam)) {
+    o.deferred = true;
+    o.detail = "deferred: monthly spend ceiling reached";
+    o.error = nimbus::orch::kSpendFrozenError;   // the scheduler tells it from a memory defer
+    hlog::logf("loops: scheduled %s refused - %s", nimbus::orch::spendSeamSlug(seam),
+               nimbus::orch::kSpendFrozenError);
+    return o;
+  }
+  // A scheduled turn runs on the cheapest tier with a low effort cap whatever the
+  // head is (22 Oct: a routine on the priciest head thought for 3K tokens and sent
+  // nothing): store::orchModel and the output caps read this role on this task.
+  const nimbus::orch::BackgroundTurnScope backgroundTurn;
   lastReply_.clear();
   heldReply_.clear();
   scheduledTurn_ = true;
@@ -2067,6 +2105,11 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     return FoldResult::Deferred;
   }
   if (turnInFlight_) return FoldResult::Deferred;   // never interleave with a live turn
+  // Lane DEF: at the monthly spend ceiling the fold waits (a defer, not a failure).
+  if (!orch::paidCallAllowed(orch::SpendSeam::Fold)) {
+    hlog::logf("fold(%s): deferred - %s", chatId.c_str(), orch::kSpendFrozenError);
+    return FoldResult::Deferred;
+  }
 
   // Failover ladder (field 2026-08-11): the fold used to pin ONE host - while
   // the head turn's fabric failed over openai->anthropic and succeeded, the

@@ -62,6 +62,11 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"openai", "o4-mini-deep-research", 2000000, 8000000, 0},
     {"openai", "gpt-4o-mini", 150000, 600000, 0},
     {"openai", "text-embedding-3-small", 20000, 0, 0},
+    // Lane DEF: the paid calls outside a turn (seam_meter.h) price their reported usage
+    // here. gpt-image-1 input at its image-input rate (text input is half), output
+    // tokens are the image; gpt-4o-mini-transcribe input at its audio rate.
+    {"openai", "gpt-image-1", 10000000, 40000000, 0},
+    {"openai", "gpt-4o-mini-transcribe", 3000000, 5000000, 0},
     {"openai", "*", 2500000, 10000000, 0},
     {"anthropic", "claude-fable-5-1", 10000000, 50000000, 0},
     {"anthropic", "claude-opus-5-5", 4000000, 20000000, 0},
@@ -76,6 +81,8 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"mistral", "mistral-large", 2000000, 6000000, 0},
     {"mistral", "mistral-medium", 1500000, 7500000, 0},
     {"mistral", "mistral-small", 200000, 600000, 0},
+    {"mistral", "mistral-embed", 100000, 0, 0},        // lane DEF: memory embeddings
+    {"mistral", "mistral-moderation", 100000, 0, 0},   // lane DEF: the message classifier
     {"mistral", "*", 2000000, 6000000, 0},
     {"zai", "glm-5.3", 1400000, 4400000, 0},
     {"zai", "glm-5.2", 1400000, 4400000, 0},

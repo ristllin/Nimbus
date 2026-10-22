@@ -14,6 +14,7 @@
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/harness/reply_overflow.h"   // the whole text of a reply the envelope cut (L19-36)
 #include "nimbus/orch/provider_error.h"   // providerErrLine, oneLineText - the one error-line shape (CUM-620)
+#include "nimbus/orch/spend_ceiling.h"  // lane DEF: the paid-call gate before any request
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
@@ -48,6 +49,7 @@ struct LastExchange {
   bool partial = false;
   bool tooLarge = false;
   bool allocFailed = false;
+  bool spendFrozen = false;   // lane DEF: refused before the send (monthly spend ceiling)
 };
 inline LastExchange& lastExchange() {
   static LastExchange s;
@@ -63,6 +65,7 @@ inline LastExchange& lastExchange() {
 // failover and "check the connection" (CUM-477); else "network".
 inline constexpr uint32_t kStarvedTotalFree = 12000;   // == ORCH_TURN_HARD_FLOOR
 inline std::string transportError(const ProviderDeps& pd) {
+  if (lastExchange().spendFrozen) return nimbus::orch::kSpendFrozenError;
   if (lastExchange().allocFailed) return "low memory: the device could not make the request";
   const bool shortNow = !pd.freeHeap || pd.freeHeap() < kStarvedTotalFree;
   return (lastExchange().lowMem && shortNow)
@@ -143,6 +146,17 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
                     HeaderList* rateLimitHeaders = nullptr) {
   doc.clear();
   lastExchange() = LastExchange{};
+  // Lane DEF: the monthly spend ceiling. A request that starts paid work (anything but
+  // a GET poll or a DELETE cancel of work already running) is refused before it leaves
+  // the device - head rounds, sub dispatch, the fold, every provider and the router -
+  // so the freeze never relies on the provider to stop (auto-recharge cannot run away).
+  // Ahead of the bench's scripted answer below, so a fake provider is refused too.
+  if (std::strcmp(method, "GET") != 0 && std::strcmp(method, "DELETE") != 0 &&
+      !nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Wire)) {
+    lastExchange().spendFrozen = true;
+    hlog::logf("provider: %s%s refused - %s", host, path.c_str(), nimbus::orch::kSpendFrozenError);
+    return 0;
+  }
   if (!pd.http) return 0;
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   {   // test and host builds only: the bench's scripted provider answer
@@ -269,6 +283,9 @@ inline void transportFailure(const ProviderDeps& pd, uint32_t sentAtMs, uint32_t
   out.ok = false;
   out.error = headTransportError(pd, sentAtMs, timeoutMs);
   out.kind = nimbus::orch::classifyStepError(out.error);
+  // A request the spend ceiling refused fails the same way on every host: typed like
+  // an unreadable request (never retried, never switched, never parks a provider).
+  if (lastExchange().spendFrozen) out.kind = nimbus::orch::StepErr::BadRequest;
 }
 
 // Fail a head step on an HTTP answer that is not a 200: `error` is the log/owner

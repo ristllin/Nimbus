@@ -50,6 +50,7 @@ const sidebars = {
         'guides/connectors',
         'guides/mcp',
         'guides/people-and-privacy',
+        'guides/spend-ceiling',
         'guides/notifier-status-language',
       ],
     },

@@ -10,6 +10,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/failure_chain.h"
+#include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/turn_spend.h"
 
 // runFabricLoop (Stage 2 phase 5) - the engine-owned multi-provider loop.
@@ -500,6 +501,64 @@ static void test_cum621_a_cut_hands_back_its_partial_turn() {
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());   // nothing from a cut response runs
 }
 
+// ---- lane DEF: the monthly spend ceiling mid-turn ---------------------------------
+// A fake provider that keeps answering (every round another tool call, every round
+// billed): each billed round counts toward the ceiling at once, so the round that
+// reaches it is the last request. The next one is refused before it leaves the
+// device: no retry, no switch to another host (they are frozen too), no park.
+static uint64_t g_ceilLimit = 0, g_ceilPending = 0;
+static uint64_t ceilPricer(const orch::TurnSpend& s) {   // 1,000 micro-USD per token
+  uint64_t m = 0;
+  for (size_t i = 0; i < s.n; ++i) m += (uint64_t)(s.slot[i].in + s.slot[i].out) * 1000;
+  return m;
+}
+static void ceilSink(uint64_t micro) { g_ceilPending += micro; }
+static bool ceilFrozen() { return g_ceilPending >= g_ceilLimit; }
+
+static void runKeepsAnswering(uint64_t limitMicro, FakeProviderDeps& d, std::string& err,
+                              FakeProviderDeps::ToolRig& rig) {
+  for (int i = 0; i < 6; ++i)
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  g_ceilLimit = limitMicro;
+  g_ceilPending = 0;
+  orch::installSpendFreeze(&ceilFrozen);
+  orch::installPendingSpend(&ceilPricer, &ceilSink);
+  auto pd = d.contract();
+  d.fillTools(rig);
+  rig.ht.cfg.maxRounds = 4;
+  std::string out;
+  orch::TurnSpend sp;
+  providers::runFabricLoop(pd, {"anthropic", "openai"}, "SYS", "USER", out, err, rig.ht, &sp,
+                           nullptr);
+  orch::installSpendFreeze(nullptr);
+  orch::installPendingSpend(nullptr, nullptr);
+}
+
+static void test_spend_ceiling_refuses_the_next_round_before_any_request() {
+  // Each round bills 60 tokens = 60,000 micro-USD; the ceiling is 100,000: round 0
+  // (60,000) is under it, round 1 (120,000) reaches it, round 2 is refused unsent.
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  std::string err;
+  runKeepsAnswering(100000, d, err, rig);
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // rounds 0 and 1 only
+  for (const auto& req : d.http.seen) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", req.host.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(orch::isSpendFrozenError(err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)rig.dispatched.size());   // the two answered rounds' tools only
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains("refused - spend ceiling"));
+  TEST_ASSERT_FALSE(providers::hostParked(d.contract(), "anthropic"));   // never parks
+}
+
+// Counter-test: with room to spare the same provider keeps going to the round cap.
+static void test_spend_ceiling_with_room_lets_the_loop_run() {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  std::string err;
+  runKeepsAnswering(UINT64_MAX, d, err, rig);
+  TEST_ASSERT_TRUE(d.http.seen.size() >= 4);
+  TEST_ASSERT_FALSE(orch::isSpendFrozenError(err));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
@@ -516,5 +575,7 @@ int main(int, char**) {
   RUN_TEST(test_cum477_fabric_never_sends_an_unsent_request_three_times);
   RUN_TEST(test_cum477_switched_hosts_leave_nothing_on_the_heap);
   RUN_TEST(test_cum477_fabric_allocates_nothing_per_listed_host);
+  RUN_TEST(test_spend_ceiling_refuses_the_next_round_before_any_request);
+  RUN_TEST(test_spend_ceiling_with_room_lets_the_loop_run);
   return UNITY_END();
 }

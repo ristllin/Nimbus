@@ -398,10 +398,22 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                               uint32_t budgetMs,
                               const std::string& capReason) -> orch::HeadStep {
     for (;;) {
+      // Lane DEF: each billed round counts toward the monthly spend ceiling at once (the
+      // turn files its spend at its end), so a long loop that crosses it is refused at
+      // its next request (wire::exchange) instead of running to the turn's end.
+      const orch::TokenUsage before = hostUse[hostIdx];
       orch::HeadStep sr = cur(allowTools, prior, budgetMs, capReason);
+      orch::notePendingUsage(hostList[hostIdx].c_str(),
+                             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
+                             before, hostUse[hostIdx]);
       if (sr.ok) { unparkHost(hostList[hostIdx]); return sr; }
       typeStep(sr);
       noteFailed(sr);   // every failed attempt, the no-retry exits below included (lane T)
+      if (orch::isSpendFrozenError(sr.error)) {
+        hlog::logf("fabric: %s step refused - %s (no retry, no switch)",
+                   hostList[hostIdx].c_str(), orch::kSpendFrozenError);
+        return sr;
+      }
       // The typed rule (fabricRuleFor): a request unreadable anywhere (BadRequest:
       // an invalid body, a schema or size refused before the send) and a device
       // short of memory (CUM-404, CUM-477) fail the same way on every host, so no
@@ -423,7 +435,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         // Gate G5: the failed step may have captured a served-model echo on its HTTP
         // 200; only the attempt that serves the round may name the model.
         hostUse[hostIdx].servedModel.clear();
+        const orch::TokenUsage beforeRetry = hostUse[hostIdx];
         sr2 = cur(allowTools, prior, budgetMs, capReason);
+        orch::notePendingUsage(hostList[hostIdx].c_str(),
+                               pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
+                               beforeRetry, hostUse[hostIdx]);
         if (sr2.ok) { unparkHost(hostList[hostIdx]); return sr2; }
         typeStep(sr2);
         noteFailed(sr2);

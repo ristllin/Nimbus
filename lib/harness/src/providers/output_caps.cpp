@@ -1,5 +1,7 @@
 #include "nimbus/harness/output_caps.h"
 
+#include "nimbus/orch/model_defaults.h"   // lane DEF: a background turn thinks little
+
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -52,7 +54,11 @@ OutputCap anthropicCap(const std::string& model, RoundKind kind) {
   c.retryTokens = 12000;
   // Head rounds think at medium; the fold (a summary) needs little thinking. The
   // retry after a cut steps effort down so more of the budget goes to the answer.
-  c.effort = effort ? (kind == RoundKind::Fold ? "low" : "medium") : "";
+  // Lane DEF: a background turn (a routine, a wakeup, the dream) pins low effort too:
+  // nobody waits on it, and its thinking is what a silent run still bills.
+  const bool background =
+      nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Background;
+  c.effort = effort ? ((kind == RoundKind::Fold || background) ? "low" : "medium") : "";
   c.retryEffort = effort ? "low" : "";
   return c;
 }

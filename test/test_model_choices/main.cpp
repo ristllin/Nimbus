@@ -116,9 +116,9 @@ static void test_model_in_choices_exact_and_trimmed() {
 // price table, items trimmed like modelInChoices reads them, an unpriced item never
 // chosen, the earlier item on a tie, "" when nothing is priced.
 static void test_cheapest_choice_by_the_price_table() {
-  TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5",
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5",
                            cheapestChoice("anthropic", NIMBUS_ANT_MODEL_CHOICES).c_str());
-  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", cheapestChoice("openai", NIMBUS_OPENAI_MODEL_CHOICES).c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-6-luna", cheapestChoice("openai", NIMBUS_OPENAI_MODEL_CHOICES).c_str());
   TEST_ASSERT_EQUAL_STRING("mistral-small-latest",
                            cheapestChoice("mistral", NIMBUS_MISTRAL_MODEL_CHOICES).c_str());
   TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", cheapestChoice("cumulo", NIMBUS_CUMULO_MODEL_CHOICES).c_str());

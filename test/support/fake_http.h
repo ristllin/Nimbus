@@ -30,6 +30,15 @@ inline Exchange transportCut(uint32_t takesMs, const char* err = "no response") 
   return e;
 }
 
+// The usage read antPoll makes once a managed-agent session finished (lane DEF: GET
+// /v1/sessions/<id>, the session's billed usage for the monthly spend ceiling).
+inline Exchange antSessionUsage(const char* usage = "{\"input_tokens\":0,\"output_tokens\":0}") {
+  Exchange e;
+  e.expectPathContains = "/v1/sessions/";
+  e.body = std::string("{\"usage\":") + usage + "}";
+  return e;
+}
+
 struct FakeHttpTransport : agent::HttpTransport {
   std::vector<Exchange> script;
   size_t idx = 0;

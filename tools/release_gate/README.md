@@ -23,6 +23,7 @@ looking at the glass are all in scope.
 | Panel-heal stops re-arming a slept panel (CUM-231) | past the trust window the panel is re-armed unconditionally; `healthy()` never gates it | `test/test_panel_heal`, `test/test_panel_health` |
 | Settings lost across an update (CUM-237) | the OTA flow writes only its own bookkeeping keys, never an owner's Wi-Fi / provider key / touch cal / theme | `check_ota_preserves_nvs.py`, plus the provision -> OTA -> power-cycle -> read-NVS bench leg |
 | N7 internal-SRAM win regressed (CUM-24) | the Telegram `tg_poll` TLS staging buffers stay PSRAM pointer handles, not inline internal `.bss` (the ~6.7 KB win merged as 2598499) | `check_sram_staging.py`, `test_sram_staging.py` |
+| Static internal RAM grows silently release to release (v4.5.14 grew it 4.5 KB, found only by a bench A/B) | `.dram0.bss` + `.dram0.data` of each of the four release images at or under its recorded ceiling (baseline v4.5.15 plus 1 KB); raising a ceiling needs a bench heap A/B | `check_static_dram.py`, `static_dram_ceilings.json`, `test_static_dram.py` |
 | A test build's crash switch ships in a release image | the ELF scan for the test console's crash switches runs on all four release images (even with `--identity-only`), behind the source guard that keeps every use inside `#ifdef NIMBUS_TEST` | `check_elf_symbols.py`, `test_panic_guard.py`, `test_release_gate.py` (workflow wiring) |
 
 ## Running it

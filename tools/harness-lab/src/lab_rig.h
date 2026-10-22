@@ -22,6 +22,7 @@
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/model_defaults.h"   // --defaults: the device role table
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/session_tools.h"
@@ -120,6 +121,10 @@ class LabRig {
     // The turn-structured history (histV2), as on the device: on by default;
     // --hist-v1 renders the previous 12-row window instead.
     bool        histV2 = true;
+    // --defaults: unpinned hosts run the device's role defaults (lane DEF,
+    // nimbus/orch/model_defaults.h): the head row, the sub row for sub-agents, and the
+    // background row while a scheduled turn runs - the defaults wired end to end.
+    bool        roleDefaults = false;
   };
 
   LabRig(Env env, Options opt)
@@ -230,7 +235,25 @@ class LabRig {
   std::string modelFor(const std::string& h) const {
     auto it = opt_.models.find(h);
     if (it != opt_.models.end()) return it->second;
+    if (opt_.roleDefaults) {
+      const bool bg = nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Background;
+      const std::string m = roleDefault(h, bg ? nimbus::orch::DefaultRole::Background
+                                              : nimbus::orch::DefaultRole::Head);
+      if (!m.empty()) return m;
+    }
     return labDefaultModel(h);
+  }
+  // The sub-agent model: a pin, else (--defaults) the device's sub row, else modelFor.
+  std::string subModelFor(const std::string& h) const {
+    if (opt_.roleDefaults && !opt_.models.count(h)) {
+      const std::string m = roleDefault(h, nimbus::orch::DefaultRole::Sub);
+      if (!m.empty()) return m;
+    }
+    return modelFor(h);
+  }
+  static std::string roleDefault(const std::string& h, nimbus::orch::DefaultRole r) {
+    return nimbus::orch::roleDefaultModel(h.c_str(), r, nimbus::orch::staticModelChoices(h.c_str()),
+                                          false);
   }
 
   // One line that makes a run self-documenting: what it actually ran with.
@@ -489,7 +512,7 @@ class LabRig {
     p.providerPriority = [this] { return opt_.priority; };
     p.subPriority = [this] { return opt_.priority; };
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
-    p.subModel = [this](const std::string& h) { return modelFor(h); };
+    p.subModel = [this](const std::string& h) { return subModelFor(h); };
     // The device's own cold-start lists (one source: model_choices.h).
     p.modelChoices = [](const std::string& h) {
       return std::string(nimbus::orch::staticModelChoices(h.c_str()));
@@ -827,8 +850,9 @@ inline std::string labBanner(const Env& env, const LabRig::Options& opt) {
   for (const char* h : {"anthropic", "mistral", "zai", "openai"}) {
     if (env.providerKey(h).empty()) continue;
     auto it = opt.models.find(h);
-    m += std::string(m.empty() ? "" : " ") + h + "=" +
-         (it != opt.models.end() ? it->second : labDefaultModel(h));
+    const std::string dflt = opt.roleDefaults ? LabRig::roleDefault(h, nimbus::orch::DefaultRole::Head)
+                                              : labDefaultModel(h);
+    m += std::string(m.empty() ? "" : " ") + h + "=" + (it != opt.models.end() ? it->second : dflt);
   }
   const auto num = [](uint32_t v) { return v ? std::to_string(v) : std::string("adapter"); };
   return "lab: priority=" + opt.priority + " models[" + m + "] effort=" +
@@ -836,7 +860,8 @@ inline std::string labBanner(const Env& env, const LabRig::Options& opt) {
          " maxtok=" + num(opt.pins.maxTokens) + " ceiling_ms=" + num(opt.pins.ceilingMs) +
          " rounds=" + std::to_string(opt.rounds) + " failover=" + (opt.midTurnFailover ? "on" : "off") +
          " faults=" + std::to_string(opt.faults.size()) +
-         " record=" + (opt.recordDir.empty() ? std::string("off") : opt.recordDir);
+         " record=" + (opt.recordDir.empty() ? std::string("off") : opt.recordDir) +
+         (opt.roleDefaults ? " defaults=device-roles" : "");
 }
 
 inline std::string LabRig::banner() const { return labBanner(env_, opt_); }

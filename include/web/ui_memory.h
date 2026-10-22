@@ -162,6 +162,15 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <div class=sec id=budgetsSec>
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
 <p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a cap, that provider's turns and searches are refused until the reset day; the assistant fails over to another in-budget provider when it can.</p>
+<div class=provrow id=ceilSec style="border-top:0;margin-top:6px;padding-top:0">
+<label for=ceil_usd>Monthly spend ceiling</label>
+<div id=ceilMeter></div>
+<div class=row>
+<input id=ceil_usd type=number min=1 max=100000 step=1 placeholder="$ per month" aria-label="Monthly spend ceiling in dollars" style="flex:1 1 120px;max-width:200px">
+<button id=ceilsave type=button>Save</button>
+</div>
+<p class=hint id=ceilmsg>All providers together, this calendar month. At the ceiling, paid AI calls pause until you raise it or the month ends.</p>
+</div>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>

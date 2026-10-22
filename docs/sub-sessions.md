@@ -22,7 +22,7 @@ plain-text refusal in `[MEMORY RESULTS]` (`[SESSION] '<op>' isn't supported: ...
 what is running; `[FRESH RESULTS]` is how output comes back.
 
 Caps: 6 journal slots (`kAgentMaxJobs`), 4 in flight (`kMaxActiveInflight`),
-a 12-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
+an 8-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
 enqueue, decoupled from concurrency), task text up to 4095 bytes
 (`kSpawnTaskMax`, truncation logged), at most one dispatch every 2.5 s, and
 dispatch deferred below 12 KB of free internal heap (`ORCH_DISPATCH_MIN_HEAP`, the
@@ -71,7 +71,7 @@ it with file or session tools (on 17-18 Oct a note to "verify files_list" made
 every later turn poll a dead project). It is RAM only, at most 12 entries.
 
 **The pending queue is decoupled from concurrency.** `kMaxPendingSpawns`
-(12, `caps.h`) is the depth one turn may enqueue; `kAgentMaxJobs` (6) is the
+(8, `caps.h`) is the depth one turn may enqueue; `kAgentMaxJobs` (6) is the
 journal and concurrency ceiling. They are two distinct numbers.
 `JobEngine::enqueueSpawn` (`lib/harness/src/jobs.cpp`) refuses only when the
 inbox itself is full, with *"My spawn queue is full - I couldn't take that one.
@@ -284,8 +284,11 @@ marker naming that file and the reply's real size, for example `[cut at 16 KB: t
 whole reply, 40960 bytes, is saved as research/report-job0003.md; read the rest
 with files.read from an offset]`. If the card cannot take it the marker says the
 rest could not be saved, and why; the cut is never presented as the whole report.
-(A note about uncaptured files is kept whole either way.) Token usage is filled only by
-OpenAI (the Anthropic events poll returns no usage object - honest zeros). An
+(A note about uncaptured files is kept whole either way.) Every sub-agent's spend is
+metered: OpenAI's terminal poll carries its usage, a finished Anthropic session's usage
+is read once from `GET /v1/sessions/<id>`, and the synchronous subs (Mistral, Z.ai,
+Cumulo, custom) are metered at their one request; the web searches a sub runs on its
+provider count too (see [Monthly spend ceiling](spend-ceiling.md)). An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.

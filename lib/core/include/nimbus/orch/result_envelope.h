@@ -62,12 +62,17 @@ struct ResultEnvelope {
                               // PSRAM, never a static/internal buffer - the
                               // JobEngine allocates its slot via WorkingAllocator.
   char     error[128]  = {};  // set when state==Error
-  // Sub-session token usage, filled ONLY by adapters whose terminal poll returns
-  // a real provider `usage` object (OpenAI Responses does; the Anthropic events
-  // poll does not - honest zeros there). Feeds the "spawn:<backend>" spend
-  // attribution; additive POD, zeroed by the existing memsets.
+  // Sub-session token usage, filled ONLY from a real provider `usage` object at the
+  // terminal poll (the OpenAI Responses poll; the Anthropic session read once the
+  // events poll shows it finished). Feeds the "spawn:<backend>" spend attribution;
+  // additive POD, zeroed by the existing memsets.
   uint32_t promptTokens     = 0;
   uint32_t completionTokens = 0;
+  // Prompt-cache traffic of the same usage, in the provider's native meaning
+  // (TokenUsage): the Anthropic session read reports both outside promptTokens.
+  // Lane DEF: the monthly spend ceiling prices them at their own rates.
+  uint32_t cacheReadTokens  = 0;
+  uint32_t cacheWriteTokens = 0;
   // Connector provenance (CUM-536), filled by adapters that can see what ran
   // (the Mistral Conversations response lists one `tool.execution` entry per tool
   // run). connectorAsked = display name of an attached connector the TASK asked

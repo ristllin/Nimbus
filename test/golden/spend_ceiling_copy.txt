@@ -1,0 +1,18 @@
+[freeze]
+Paid AI calls are paused. This month's estimated spend ($20.13) reached the monthly spend ceiling of $20.00, so replies, helpers, voice, photo and image features stay off until the ceiling is raised or the month ends. To raise it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling. Otherwise paid calls resume on 1 November.
+[screen]
+Paid AI paused / $20.00 monthly ceiling reached. Raise it on the web page.
+[warn]
+This month's estimated AI spend is $16.20, 80% of the $20.00 monthly spend ceiling. At the ceiling, paid AI calls pause until the month ends or the ceiling is raised. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[migration on pace]
+New in this update: a monthly spend ceiling. Paid AI calls (replies, helpers, voice, photos and images) pause once this month's estimated spend across all providers reaches $20.00, and resume when the month ends or the ceiling is raised. This month so far: $6.60. At this month's pace (about $0.30 a day) the month ends under the ceiling. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[migration over, Opus head]
+New in this update: a monthly spend ceiling. Paid AI calls (replies, helpers, voice, photos and images) pause once this month's estimated spend across all providers reaches $20.00, and resume when the month ends or the ceiling is raised. This month so far: $63.20. That is already over the ceiling, so paid calls are paused now. The assistant runs on claude-opus-5, a premium model, so the ceiling is reached sooner; a standard model (claude-sonnet-5) costs about 2.5x less for the same work. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[migration on pace, Opus head]
+New in this update: a monthly spend ceiling. Paid AI calls (replies, helpers, voice, photos and images) pause once this month's estimated spend across all providers reaches $20.00, and resume when the month ends or the ceiling is raised. This month so far: $4.40. At this month's pace (about $0.20 a day) the month ends under the ceiling. The assistant runs on claude-opus-5, a premium model, so the ceiling is reached sooner; a standard model (claude-sonnet-5) costs about 2.5x less for the same work. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[migration, ceiling before the month ends, Opus head]
+New in this update: a monthly spend ceiling. Paid AI calls (replies, helpers, voice, photos and images) pause once this month's estimated spend across all providers reaches $20.00, and resume when the month ends or the ceiling is raised. This month so far: $14.30. At this month's pace (about $0.65 a day) the ceiling is reached in about 8 days. The assistant runs on claude-opus-5, a premium model, so the ceiling is reached sooner; a standard model (claude-sonnet-5) costs about 2.5x less for the same work. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[migration, clock unset]
+New in this update: a monthly spend ceiling. Paid AI calls (replies, helpers, voice, photos and images) pause once this month's estimated spend across all providers reaches $20.00, and resume when the month ends or the ceiling is raised. This month so far: $0.00. To change it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling.
+[setup]
+Each provider starts on a standard model for the assistant and its cheapest model for helpers, photo captions, routines and the nightly dream. Paid AI calls pause once a month's estimated spend reaches $20.00. Change models on Assistant > Models and the ceiling on Assistant > Usage.

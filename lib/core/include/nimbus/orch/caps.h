@@ -36,7 +36,9 @@ constexpr int kMaxActiveInflight = 4;   // v2.0.0: raised with the 2-slot TLS ar
 // caps above - see AGENTS.md / nimbus-no-subagent-concurrency). Bounded so the
 // PendingSpawn vector's internal-SRAM backing stays small (~314 B/entry, released
 // when the queue drains); waves beyond this come from the next synthesis turn.
-constexpr int kMaxPendingSpawns = 12;   // v4.1.0 (W5): was conflated with kAgentMaxJobs (6)
+// Lane DEF (defensive defaults, 21 Oct 2026): 12 -> 8. A deep fan-out still runs, in
+// smaller waves; each wave's synthesis decides whether the next one is worth paying for.
+constexpr int kMaxPendingSpawns = 8;   // v4.1.0 (W5): was conflated with kAgentMaxJobs (6)
 
 // How many sub-agents ONE turn may still start with `queued` spawns waiting: the
 // per-turn parse cap (kAgentMaxJobs session_ops) bounded by the queue room. The

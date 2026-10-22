@@ -191,6 +191,7 @@ class EngineThread {
       }
       if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
       if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
+      if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
       if (running_.load()) releaseHeld();
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();

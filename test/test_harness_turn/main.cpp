@@ -23,6 +23,8 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"   // lane K's host park (hostParked / noteHostFailed)
 #include "nimbus/harness/turn_contract.h"
+#include "nimbus/orch/model_defaults.h"
+#include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
@@ -3603,6 +3605,10 @@ static std::vector<ExitCase> exitCases() {
                  r.fabricOk = false;
                  r.fabricErr = "chat HTTP 400";
                }});
+  // Lane DEF: a round crossed the monthly spend ceiling mid-turn and the next request was
+  // refused before it left: a quiet exit (the notice pump tells the owner), with a cause.
+  v.push_back({"spend ceiling (mid-turn)", "anthropic", "spend ceiling",
+               failAll("spend ceiling: paid calls are paused")});
   v.push_back({"parse", "device", "parse", [](Rig& r) {
                  Rig::Script bad;
                  bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
@@ -3649,7 +3655,8 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   // The class guard: one table row per distinct failed exit in the engine.
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
-  const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse"};
+  const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse",
+                         "spend ceiling"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
@@ -4048,6 +4055,75 @@ static void runLaneK2Tests() {
   RUN_TEST(test_l19_14_unsent_reply_keeps_the_work);
 }
 
+// ---- lane DEF: the monthly spend ceiling at the turn core ---------------------------
+static bool g_turnFrozen = false;
+static bool turnFrozen() { return g_turnFrozen; }
+struct FreezeScope {
+  explicit FreezeScope(bool frozen) { g_turnFrozen = frozen; orch::installSpendFreeze(&turnFrozen); }
+  ~FreezeScope() { orch::installSpendFreeze(nullptr); g_turnFrozen = false; }
+};
+
+// While paid calls are paused an owner message reaches no provider (recall's embed
+// included) and gets no reply of its own: the owner hears why once per channel from
+// the device's notice pump. The message itself is still kept in the history.
+static void test_spend_ceiling_refuses_an_owner_turn_before_recall() {
+  Rig r;
+  FreezeScope frozen(true);
+  r.eng->handleMessage("what's the weather", "Roy", "1001");
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(0, (int)r.recallQueries.size());
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL(0, (int)r.hookStarts.size());
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+  TEST_ASSERT_FALSE(r.eng->turnInFlight());
+}
+
+// A routine, a wakeup and the dream are deferred (no daily fire burned, no failure
+// breaker rolled) and dial nothing; the fold waits too.
+static void test_spend_ceiling_defers_scheduled_turns_and_the_fold() {
+  Rig r;
+  FreezeScope frozen(true);
+  struct Case { const char* id; bool quiet, once; } cases[] = {
+      {"lp1", false, false}, {"lp2", false, true}, {"dream", true, false}};
+  for (const Case& c : cases) {
+    orch::FireOutcome o = r.eng->injectScheduledTurn("", "do the task", "task", c.id, c.quiet, c.once);
+    TEST_ASSERT_TRUE(o.deferred);
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_TRUE_MESSAGE(o.detail.find("spend ceiling") != std::string::npos, o.detail.c_str());
+    // The scheduler tells a ceiling defer from a memory one by this marker (lane DEF g3).
+    TEST_ASSERT_TRUE(orch::isSpendFrozenError(o.error));
+  }
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  std::string sum;
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "digest", sum) == TurnEngine::FoldResult::Deferred);
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+}
+
+// Counter-test plus the background role: open, the same scheduled turn runs, and the
+// provider sees it as a background turn (the cheapest tier, low effort); an owner
+// turn right after runs as the owner's.
+static void test_scheduled_turns_run_in_the_background_role() {
+  Rig r;
+  FreezeScope open(false);
+  r.scripts["anthropic"] = {{true, "{\"reply\":\"ok\"}", "", 0}};
+  std::vector<orch::TurnRole> roles;
+  r.onProviderCall = [&] { roles.push_back(orch::currentTurnRole()); };
+  orch::FireOutcome o = r.eng->injectScheduledTurn("", "do the task", "task", "lp1", false, false);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_FALSE(o.deferred);
+  r.eng->handleMessage("hello", "Roy", "1001");
+  TEST_ASSERT_EQUAL(2, (int)roles.size());
+  TEST_ASSERT_TRUE(roles[0] == orch::TurnRole::Background);
+  TEST_ASSERT_TRUE(roles[1] == orch::TurnRole::Owner);
+  TEST_ASSERT_TRUE(orch::currentTurnRole() == orch::TurnRole::Owner);
+}
+
+static void runSpendCeilingTests() {
+  RUN_TEST(test_spend_ceiling_refuses_an_owner_turn_before_recall);
+  RUN_TEST(test_spend_ceiling_defers_scheduled_turns_and_the_fold);
+  RUN_TEST(test_scheduled_turns_run_in_the_background_role);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
@@ -4165,6 +4241,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   runLaneK2Tests();   // (and the recall-outage test, kept in order; main sits at the length gate)
+  runSpendCeilingTests();
   UNITY_END();
   return 0;
 }

@@ -12,6 +12,7 @@
 #include "nimbus/audio_req.h"            // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/harness/providers.h"    // testStatusOverride - the bench's scripted answer (test builds)
 #include "../provider_gate.h"            // the one per-provider park (L19-8)
+#include "nimbus/orch/seam_meter.h"      // meterSeamAnswerBody - its spend (lane DEF)
 
 namespace agent {
 namespace embeddings {
@@ -200,6 +201,10 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
       return {};
     }
     gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, code, "");
+    // Lane DEF: an answered embedding is billed: its reported usage (else an estimate
+    // from the text) counts toward the monthly spend ceiling.
+    nimbus::orch::meterSeamAnswerBody(nimbus::orch::SpendSeam::Embed, provider.c_str(),
+                                      model.c_str(), bodyResp.c_str(), text.length(), 0);
 
     std::vector<float> floats;
     std::string perr;

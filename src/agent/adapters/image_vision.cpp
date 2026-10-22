@@ -11,6 +11,7 @@
 #include "../../sys/net_util.h"      // tlsClose, tlsSetup
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "nimbus/orch/reply_text.h"
+#include "nimbus/orch/seam_meter.h"   // meterSeamAnswerBody - its spend (lane DEF)
 #include "../agent_config.h"         // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
 #include "../orchestrator.h"          // inScheduledTurn, firstAllowedChat - the billing notice
 #include "../provider_gate.h"         // the one per-provider park (L19-8)
@@ -393,6 +394,15 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
     return String();
   }
   gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, status, "");
+  // Lane DEF: an answered description is billed: its reported usage (else an estimate:
+  // a picture at kImageEstimateChars plus the 512-token answer cap) counts toward the
+  // monthly spend ceiling.
+  {
+    const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(prov.host, prov.path, prov.model);
+    nimbus::orch::meterSeamAnswerBody(nimbus::orch::SpendSeam::VisionFallback, r.provider.c_str(),
+                                      r.model.c_str(), body.c_str(),
+                                      nimbus::orch::kImageEstimateChars, 512);
+  }
 
   JsonDocument doc;
   if (deserializeJson(doc, body)) { alog("vision: unparseable reply"); return String(); }

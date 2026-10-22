@@ -51,6 +51,7 @@
 #include "agent/memory_subsystem.h"           // setDataFs(SD) - route orch data to the card
 #include "agent/files_subsystem.h"            // E1: /mem/files artifact store
 #include "agent/orchestrator.h"
+#include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
 #include "nimbus/harness/web_chat.h"   // CUM-482: per-turn web chat reply pairing
 #include <esp_random.h>   // esp_random() - the web chat turn-id seed (unique across restarts)
@@ -872,6 +873,33 @@ static bool orchSendSink(const String& chatId, const String& text) {
   return agent::telegram::send(chatId, text);
 }
 
+// Lane DEF: the monthly spend ceiling's owner notices (the poll task). Telegram goes to
+// the owner chat (kept owed while the bot is off or has no owner yet); the web chat
+// gets a history row the page renders plus an async delivery an open page re-reads.
+// The device screen's line is drawn from the state itself (fillVoiceCtx).
+static void spendNoticePump() {
+  using agent::spend::NoticeKind;
+  using nimbus::orch::NoticeChannel;
+  std::string text;
+  NoticeKind k = NoticeKind::None;
+  if (agent::telegram::enabled()) {
+    k = agent::spend::nextNotice(NoticeChannel::Telegram, text);
+    const String owner = k != NoticeKind::None ? agent::orchestrator::firstAllowedChat() : String();
+    if (owner.length() && agent::telegram::send(owner, String(text.c_str()), /*block=*/false))
+      agent::spend::delivered(NoticeChannel::Telegram, k);
+  }
+  k = agent::spend::nextNotice(NoticeChannel::Web, text);
+  if (k != NoticeKind::None) {
+    agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message,
+                                  String(text.c_str()), "", "ev:spend");
+    {
+      std::lock_guard<std::mutex> lk(g_webChatMx);
+      agent::deliverToWebChat(g_webChat, text, /*routine=*/true);
+    }
+    agent::spend::delivered(NoticeChannel::Web, k);
+  }
+}
+
 // SpeakSink: voice the `tts` device action's text. Prefer the on-device speaker
 // (that is what the action promises and what the world prompt now tells the model),
 // and fall back to a Telegram audio message only when on-device speech is not
@@ -913,7 +941,22 @@ static void orchOnMessage(const String& from, const String& chatId,
 }
 
 // TickCallback: advance background jobs once per poll cycle; returns active count.
-static int orchTick() { return agent::orchestrator::pollJobs(); }
+// Lane DEF: the monthly spend ceiling's month rollover (once a minute) and the owner
+// notices it owes (~5 s), here on the poll task: they write flash files and the web
+// chat's history, which the watched main loop must never wait for.
+static int orchTick() {
+  const uint32_t now = millis();
+  static uint32_t s_spendPumpAt = 0, s_spendTickAt = 0;
+  if ((int32_t)(now - s_spendPumpAt) >= 0) {
+    s_spendPumpAt = now + 5000;
+    if ((int32_t)(now - s_spendTickAt) >= 0) {
+      s_spendTickAt = now + 60000;
+      agent::spend::tick();
+    }
+    spendNoticePump();
+  }
+  return agent::orchestrator::pollJobs();
+}
 
 // Menu repaint request: the menu paints directly (bypassing the scheduler), but
 // the panel takes ~2.2 s per refresh, so a burst of knob events must coalesce.
@@ -1093,7 +1136,22 @@ static bool deviceNeedsSetup() {
 // Hold-to-talk status line (CUM-456): drawn on the home screen - in the on-screen
 // ring, or the mic bar on a ring board - while the flow is live.
 static void fillVoiceCtx(render::ScreenCtx& c) {
-  if (g_voice.phase() == nimbus::voice::Phase::Idle) return;
+  if (g_voice.phase() == nimbus::voice::Phase::Idle) {
+    // Lane DEF: at the monthly spend ceiling the same line says paid AI is paused
+    // (the device screen's notice): hold-to-talk would only be refused, so it reads
+    // inactive until the ceiling is raised or the month ends.
+    if (g_orchMode) {
+      std::string detail;
+      const std::string line = agent::spend::screenLine(detail);
+      if (!line.empty()) {
+        c.voiceTitle = line;
+        c.voiceDetail = detail;
+        c.voiceTone = 1;   // alert
+        c.micBusy = true;
+      }
+    }
+    return;
+  }
   c.voiceTitle = g_voice.line().title;
   c.voiceDetail = g_voice.line().detail;
   c.voiceTone = uint8_t(g_voice.tone());
@@ -3842,6 +3900,9 @@ void setup() {
   // stack is up (STA connects async; adapters/Telegram tolerate a not-yet-ready
   // link and simply retry). Notifier mode leaves all of this dormant - the nsn
   // serial path below is unchanged.
+  // Lane DEF: the paid-call gate answers from the monthly spend ceiling before any
+  // turn can start (orchestratorBegin starts the poll task).
+  agent::spend::install();
   if (g_orchMode) orchestratorBegin();
   // After a crash boot, tell the owner in plain words (and name the request that was
   // cut short), at once when they were waiting on it, else at their next turn; the

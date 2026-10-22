@@ -6,6 +6,7 @@
 
 #include "nimbus/audio_req.h"   // core::parseTranscription (shared, host-tested parse)
 #include "nimbus/orch/voice_route.h"   // voiceActiveProvider / voiceRouteFor / voiceRefusalStatus
+#include "nimbus/orch/seam_meter.h"    // meterTranscription - its spend (lane DEF)
 #include "nimbus/voice_flow.h"         // SttResult + the hold-to-talk error taxonomy (CUM-456)
 #include "http_multipart.h"
 #include "../agent_config.h"           // CUMULO_HOST_DEFAULT
@@ -171,6 +172,11 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
           nimbus::voice::sentence(nimbus::voice::lineFor(nimbus::voice::classify(out), out)).c_str());
     return out;
   }
+  // Lane DEF: an answered transcription is billed: the provider's reported usage, else
+  // the audio's length (exact for the mic's PCM, conservative for a compressed note) at
+  // the model's per-minute price, counts toward the monthly spend ceiling.
+  nimbus::orch::meterTranscription(prov.slug.c_str(), prov.model, resp.c_str(),
+                                   nimbus::orch::audioMsEstimate(fsz, prefix != nullptr));
 
   // Response: {"text":"..."}. Parse via the shared, host-tested core parser (same
   // code path the regression test exercises). It uses a real JSON decoder so ALL

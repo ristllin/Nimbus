@@ -531,6 +531,23 @@ uint64_t UsageLedger::callRate(const std::string& prov, RateSrc* src) const {
   return v;
 }
 
+uint64_t UsageLedger::priceDeltaMicro(const std::string& prov, const char* model,
+                                      const TokenDelta& d, uint64_t calls) const {
+  MicroSum m;
+  if (!d.empty()) m.addTokens(d, (model && *model) ? rowRate(prov, model) : otherRate(prov));
+  if (calls) m.addCalls(calls, callRate(prov));
+  return m.sat ? UINT64_MAX : m.micro;
+}
+
+uint64_t UsageLedger::priceTurnMicro(const TurnSpend& spend) const {
+  uint64_t micro = 0;
+  for (size_t i = 0; i < spend.n; ++i) {
+    const SpendSlot& sl = spend.slot[i];
+    micro = satAddU(micro, priceDeltaMicro(sl.host, sl.model, ledgerDelta(sl)));
+  }
+  return micro;
+}
+
 namespace {
 
 bool rowOf(const ModelSpend& r, const ProviderBudget& e) {

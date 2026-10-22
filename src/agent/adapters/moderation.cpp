@@ -5,6 +5,7 @@
 #include <WiFiClientSecure.h>
 
 #include "../store.h"
+#include "nimbus/orch/seam_meter.h"   // the paid-call gate and the meter (lane DEF)
 #include "../../sys/agent_log.h"
 #include "../../sys/net_util.h"      // tlsSetup / tlsClose
 #include "../../sys/tls_arbiter.h"
@@ -62,9 +63,11 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   if (!readLine(c, line, deadline)) { tlsClose(c); arbiter::releaseWork(); alog("moderation: no response"); return ClassifierVerdict::Error; }
   while (readLine(c, line, deadline) && line.length() > 0) {}   // skip headers
 
-  // Filtered parse: only the per-category booleans of the first result.
+  // Filtered parse: only the per-category booleans of the first result (and the billed
+  // usage, lane DEF).
   JsonDocument filter;
   filter["results"][0]["categories"] = true;
+  filter["usage"] = true;
   JsonDocument resp;
   DeserializationError je = deserializeJson(resp, c, ArduinoJson::DeserializationOption::Filter(filter));
   tlsClose(c);
@@ -73,6 +76,9 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
 
   JsonObject cats = resp["results"][0]["categories"];
   if (cats.isNull()) return ClassifierVerdict::Error;   // no verdict body
+  nimbus::orch::meterSeamAnswer(nimbus::orch::SpendSeam::Moderation, "mistral",
+                                "mistral-moderation-latest",
+                                resp["usage"].as<ArduinoJson::JsonVariantConst>(), body.length(), 0);
   for (JsonPair kv : cats) {
     if (kv.value().as<bool>()) {
       alogf("moderation: flagged (%s)", kv.key().c_str());
@@ -84,6 +90,13 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
 
 ClassifierVerdict classify(const std::string& text, ModGate /*gate*/, uint32_t acquireMs) {
   if (text.empty()) return ClassifierVerdict::Allow;   // nothing to screen
+  // Lane DEF: at the monthly spend ceiling no classifier call is made. The answer is
+  // the one an outage gives (the gate's policy: inbound guest text fails closed, a reply
+  // fails open), never a verdict nobody reached.
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Moderation)) {
+    alog("moderation: skipped - monthly spend ceiling reached");
+    return ClassifierVerdict::Error;
+  }
   // No Cumulo provider key concept exists on-device yet (contract with N1), so
   // hasCumuloKey=false and this resolves to Mistral when a Mistral key is set.
   ModProvider p = nimbus::orch::pickProvider(/*cumulo=*/false, store::mistralKey().length() > 0);

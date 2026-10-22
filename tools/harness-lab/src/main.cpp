@@ -79,6 +79,7 @@ void usage() {
       "  --ceiling-ms=<n>                    per-request timeout ceiling (NIMBUS_LAB_CEILING_MS)\n"
       "  --rounds=<n>                        head tool-loop rounds per turn (1..32, default 12)\n"
       "  --no-failover                       turn the mid-turn fabric failover off\n"
+      "  --defaults                          unpinned hosts run the device's role defaults\n"
       "  --fault=<host:range:status[:detail]>  fail chosen requests (repeatable), e.g.\n"
       "                                      anthropic:2:529:overloaded, mistral:1-3:0:noresp\n"
       "  --record=<dir>                      append usage objects and error bodies to <dir>\n"
@@ -165,6 +166,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-tools")              opt.toolLoop = false;
     else if (a == "--no-embed")              opt.embeddings = false;
     else if (a == "--hist-v1")               opt.histV2 = false;
+    else if (a == "--defaults")              opt.roleDefaults = true;
     else if (a.rfind("--role=", 0) == 0)     opt.role = a.substr(7);
     else if (a.rfind("--heap=", 0) == 0)     opt.heapBytes = (uint32_t)std::stoul(a.substr(7));
     else if (a.rfind("--heap-decay=", 0) == 0) opt.heapDecay = (uint32_t)std::stoul(a.substr(13));
@@ -264,6 +266,8 @@ int main(int argc, char** argv) {
     if (args.size() < 2) { std::fprintf(stderr, "sub needs a task\n"); return 2; }
     for (size_t i = 1; i < args.size(); i++) sub.task += (i > 1 ? " " : "") + args[i];
     sub.model = forceModel;
+    if (sub.model.empty() && opt.roleDefaults)   // the device's anthropic sub row
+      sub.model = lab::LabRig::roleDefault("anthropic", nimbus::orch::DefaultRole::Sub);
     sub.verbose = opt.verboseHttp;
     if (sub.runs < 1 || sub.timeoutS < 1) {   // 0 runs would report "reached Done" vacuously
       std::fprintf(stderr, "--runs and --timeout must be at least 1\n");

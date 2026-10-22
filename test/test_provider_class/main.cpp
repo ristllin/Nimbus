@@ -746,6 +746,7 @@ static void test_sub_provenance_counts_per_provider() {
         "{\"data\":[{\"type\":\"agent.tool_use\",\"name\":\"web_search\"},{\"type\":\"agent.tool_use\",\"name\":\"bash\"},"
         "{\"type\":\"agent.mcp_tool_use\",\"name\":\"notion_search\"},{\"type\":\"agent.message\",\"content\":"
         "[{\"type\":\"text\",\"text\":\"done\"}]},{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+    d.http.script.push_back(harness_test::antSessionUsage());
     providers::ProviderDeps pd = d.contract();
     orch::ResultEnvelope env;
     providers::antPoll(pd, "anthropic:s1", env);

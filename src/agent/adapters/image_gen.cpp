@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 
 #include "nimbus/orch/image_gen.h"   // portable wire builder (single source of truth)
+#include "nimbus/orch/seam_meter.h"   // the paid-call gate and the meter (monthly spend ceiling)
 #include "../../sys/net_util.h"      // tlsSetup / tlsClose
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "../store.h"
@@ -18,6 +19,13 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
                           const char* quality, size_t& outLen, String& errOut) {
   outLen = 0;
   if (prompt.length() == 0) { errOut = "empty prompt"; return nullptr; }
+  // At the monthly spend ceiling no image is generated (before the key, the buffer and
+  // the TLS slot: the refusal costs nothing).
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::ImageGen)) {
+    errOut = nimbus::orch::kSpendFrozenError;
+    alog("imagegen: refused - monthly spend ceiling reached");
+    return nullptr;
+  }
   const String key = store::openaiKey();
   if (key.length() == 0) { errOut = "no OpenAI key"; return nullptr; }
 
@@ -101,8 +109,25 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     total = b64decodeToBuffer(c, buf, kGenMaxBytes, head.substring(q + 1), deadline, clean);
     break;
   }
+  // Lane DEF: a 2xx is a billed image. Its usage object follows the image data (read the
+  // short rest of the body), else it may have come before it; with none, the per-image
+  // price at the requested quality counts.
+  String rest;
+  while (clean && (int32_t)(millis() - deadline) < 0 && rest.length() < 1024) {
+    if (c.available()) rest += (char)c.read();
+    else if (!c.connected()) break;
+    else vTaskDelay(1);
+  }
   tlsClose(c);
   arbiter::releaseWork();
+  {
+    const String& src = rest.indexOf("\"usage\"") >= 0 ? rest : head;
+    const int u = src.indexOf("\"usage\"");
+    const int brace = u >= 0 ? src.indexOf('{', u) : -1;
+    const char* m = (model && *model) ? model : "gpt-image-1";
+    const char* q = (quality && *quality) ? quality : (strcmp(m, "gpt-image-1") == 0 ? "low" : "");
+    nimbus::orch::meterImage("openai", m, q, brace >= 0 ? src.c_str() + brace : nullptr);
+  }
   if (total == 0) {
     free(buf);
     errOut = "no image data in response";

@@ -1,4 +1,5 @@
 #pragma once
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -16,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
@@ -172,7 +174,13 @@ class NimbusdRig {
     }
     tap_.setInner(http_);   // the cumulo head's view of the transport (router refusals)
     installLog(opt_.verboseHttp);
+    // Lane DEF: an instance that already ran an earlier release has its memory dir.
+    struct stat st;
+    const bool hadState = ::stat(memDir().c_str(), &st) == 0;
     fsutil::mkdirs(memDir());
+    ceiling_.reset(new SpendCeilingVn(memDir() + "/spend_ceiling.txt", hadState,
+                                      cfg_.has("TELEGRAM_BOT_TOKEN")));
+    ceiling_->install();
     loadSettings();   // the owner's settings from the app (CUM-543), else the env defaults
     // Telegram trust (CUM-459): the device model, durable on the instance volume.
     access_.reset(new TelegramAccess(memDir()));
@@ -282,6 +290,28 @@ class NimbusdRig {
     if (v.empty()) return orch::lexicalRecall(vec_, &pending_, q, orch::RecallScope{ns, nowHours(), 5}, why);
     for (const auto& hit : vec_.search(v, 5, nowHours(), ns)) out.hits.push_back(hit.content);
     return out;
+  }
+  // Lane DEF: the monthly spend ceiling (the web API reads and edits it).
+  SpendCeilingVn& spendCeiling() { return *ceiling_; }
+  // The engine thread's idle tick for the ceiling: the month rollover, and the notices
+  // it owes the owner, once per channel (the web chat; Telegram's owner chat - the first
+  // allowlisted chat - when a bot runs here), each recorded and forwarded like any reply.
+  void spendTick() {
+    ceiling_->tick();
+    if (eng_) ceiling_->setHeadModel(modelFor(eng_->headHost()));
+    spendNotice(nimbus::orch::NoticeChannel::Web, kWebChatId);
+    if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
+      const std::string allow = access_->allowCsv();
+      const std::string owner = allow.substr(0, allow.find(','));
+      if (!owner.empty()) spendNotice(nimbus::orch::NoticeChannel::Telegram, owner);
+    }
+  }
+  void spendNotice(nimbus::orch::NoticeChannel ch, const std::string& chat) {
+    std::string text;
+    const auto k = ceiling_->nextNotice(ch, text);
+    if (k == SpendCeilingVn::Kind::None) return;
+    record(chat, text);
+    ceiling_->delivered(ch, k);
   }
   // The engine thread's idle tick: at most one step every 5 s, never while parked.
   void drainTick() {
@@ -1684,6 +1714,9 @@ class NimbusdRig {
     if (!embedRoute(provider, route)) { err = "no embeddings key for " + provider; return {}; }
     if (text.empty())  { err = "empty text"; return {}; }
     if (model.empty()) { err = "no model"; return {}; }
+    // Lane DEF: at the monthly spend ceiling no embedding is requested (the device's
+    // embeddings ride the per-provider park, which a hosted instance does not consult).
+    if (!orch::paidCallAllowed(orch::SpendSeam::Embed)) { err = orch::kSpendFrozenError; return {}; }
     agent::HttpRequest req;
     req.method = "POST";
     req.host = route.host;
@@ -1706,6 +1739,11 @@ class NimbusdRig {
       if (!code.empty()) err += " " + code;
       return {};
     }
+    // Lane DEF: an answered embedding is billed (its reported usage, else an estimate).
+    const std::string meterModel =
+        route.viaRouter && provider != kCumuloSlug ? provider + "/" + model : model;
+    orch::meterSeamAnswerBody(orch::SpendSeam::Embed, route.viaRouter ? kCumuloSlug : provider.c_str(),
+                              meterModel.c_str(), resp.body.c_str(), text.size(), 0);
     std::vector<float> f;
     std::string perr;
     if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, perr)) {
@@ -1875,6 +1913,11 @@ class NimbusdRig {
     c.budget.overBudget = [](const std::string&) { return false; };
     c.budget.recordTokens = [](const std::string&, uint32_t, uint32_t, uint32_t, uint32_t,
                                const std::string&, const std::string&) {};
+    // Lane DEF: every turn's spend counts toward the monthly spend ceiling (a fold runs
+    // inside a turn and does not end its pending rounds).
+    c.budget.recordSpend = [this](const orch::TurnSpend& spend, const std::string& tag) {
+      ceiling_->commit(spend, tag != "compact");
+    };
     c.ttsEnabled = [] { return false; };
     c.deviceName = [this] { return settings_.get().devName; };
     return c;
@@ -2499,6 +2542,13 @@ class NimbusdRig {
       if (eng_) eng_->maybeConsolidate(chat);
     };
     jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
+    // Lane DEF: a finished sub-agent's reported usage counts toward the monthly spend
+    // ceiling (device parity: orchestrator.cpp recordSpawnUsage).
+    jd.recordSpawnUsage = [this](const std::string& backend, const std::string& model,
+                                 const orch::TokenUsage& u) {
+      const std::string m = (model.empty() || model == "default") ? subModelFor(backend) : model;
+      orch::meterSeamUsage(orch::SpendSeam::Sub, backend.c_str(), m.c_str(), u);
+    };
   }
 
   // Connector-aware routing (device d.connectorProvider): a spawn whose skill names
@@ -2590,6 +2640,7 @@ class NimbusdRig {
 
   Config cfg_;
   Options opt_;
+  std::unique_ptr<SpendCeilingVn> ceiling_;   // lane DEF: before the engine (its config reads it)
   // Telegram allowlist + RBAC (CUM-459). Declared early so it outlives the engine and
   // job engine whose closures consult it.
   std::unique_ptr<TelegramAccess> access_;

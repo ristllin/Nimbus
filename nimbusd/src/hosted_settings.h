@@ -266,7 +266,8 @@ enum class Verdict { Apply, NoOp, Refuse };
 // the tool loop, the Telegram allowlist and the conversation/memory clears.
 inline bool appliedOrchField(const std::string& f) {
   static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
-                                   "clearMem", "convReset", "orchLoop", "tgAllow"};
+                                   "clearMem", "convReset", "orchLoop", "tgAllow",
+                                   "spendCeil"};   // lane DEF: the monthly spend ceiling
   for (const char* a : kApplied)
     if (f == a) return true;
   for (const auto& slot : nimbus::orch::kProviderSlots) {

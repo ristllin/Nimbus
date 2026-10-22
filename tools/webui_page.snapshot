@@ -959,6 +959,15 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <div class=sec id=budgetsSec>
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
 <p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a cap, that provider's turns and searches are refused until the reset day; the assistant fails over to another in-budget provider when it can.</p>
+<div class=provrow id=ceilSec style="border-top:0;margin-top:6px;padding-top:0">
+<label for=ceil_usd>Monthly spend ceiling</label>
+<div id=ceilMeter></div>
+<div class=row>
+<input id=ceil_usd type=number min=1 max=100000 step=1 placeholder="$ per month" aria-label="Monthly spend ceiling in dollars" style="flex:1 1 120px;max-width:200px">
+<button id=ceilsave type=button>Save</button>
+</div>
+<p class=hint id=ceilmsg>All providers together, this calendar month. At the ceiling, paid AI calls pause until you raise it or the month ends.</p>
+</div>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>
@@ -2886,13 +2895,27 @@ function vfyBadge(v,ts,reason,p){
 let MODELCAT={};
 let MODELCAT_SIG='';   // bumped when the catalog changes, part of each select's sig
 const SIZELBL={L:'Large',M:'Medium',S:'Small'};   // size class -> group name
-// Option label: the id plus a size-class badge and a deprecated marker when known.
-function modelLabel(id,m){
-  if(!m)return id;
+// Option label: the id plus a size-class badge and a deprecated marker when known,
+// and (lane DEF) its price per million input/output tokens when the device prices it,
+// so the stronger models are offered with what they cost (~ = a built-in estimate).
+function modelLabel(id,m,prov,key){
   let t=id;
-  if(m.size&&SIZELBL[m.size])t+=' · '+m.size;
-  if(m.deprecated)t+=' · deprecated';
+  if(m&&m.size&&SIZELBL[m.size])t+=' · '+m.size;
+  if(m&&m.deprecated)t+=' · deprecated';
+  const p=_modelPrice(prov,key||id);
+  if(p)t+=' · '+p;
   return t;
+}
+// "~$2/$10 per 1M" from the Usage page's price list (/api/usage/models), or "".
+let _umAsked=false;
+function _modelPrice(prov,id){
+  const u=_um();
+  if(!u){if(!_umAsked){_umAsked=true;loadUsageModels();}return '';}
+  if(!prov)return '';
+  const x=((u.editable||{})[prov]||[]).find(y=>y.m===id)||(u.models||[]).find(y=>y.prov===prov&&y.m===id);
+  if(!x||!x.rIn||!x.rOut)return '';
+  const d=v=>{const n=v/1e6;return '$'+(n>=1?(+n.toFixed(2)).toString():n.toFixed(2));};
+  return (x.src==='est'?'~':'')+d(x.rIn)+'/'+d(x.rOut)+' per 1M';
 }
 // Pretty name for a cumulo upstream group header (reuses the provider label map).
 function upstreamLabel(up){return PROVLBL[up]||(up.charAt(0).toUpperCase()+up.slice(1));}
@@ -2942,11 +2965,11 @@ function modelSel(id,cur,choices,verified){
     // holds the REST - a model shown in Recommended is not repeated in its group, so
     // the dropdown never lists the same id twice on a small panel.
     if(recIds.length){const g=document.createElement('optgroup');g.label='Recommended';
-      recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>modelSelOf(prov,x)===rid);opt(g,rid,modelLabel(rid,m));});
+      recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>modelSelOf(prov,x)===rid);opt(g,rid,modelLabel(rid,m,prov));});
       if(g.children.length)s.appendChild(g);}
     groupModels(prov,cat).forEach(gr=>{const items=gr.items.filter(m=>!seen[modelSelOf(prov,m)]);if(!items.length)return;
       const g=document.createElement('optgroup');g.label=gr.label;
-      items.forEach(m=>opt(g,modelSelOf(prov,m),modelLabel(m.id,m)));s.appendChild(g);});
+      items.forEach(m=>opt(g,modelSelOf(prov,m),modelLabel(m.id,m,prov,modelSelOf(prov,m))));s.appendChild(g);});
   }else{
     recIds.forEach(m=>opt(s,m,m));
   }
@@ -2958,7 +2981,7 @@ function modelSel(id,cur,choices,verified){
   if(cur&&!seen[curSel])opt(s,curSel,cur);
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
-  s.dataset.sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;   // rebuild-only-on-change signature (P1.1)
+  s.dataset.sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG+'|'+(_um()?'p':'');   // prices arrive later (lane DEF)   // rebuild-only-on-change signature (P1.1)
   s.onchange=()=>modelPick(id,s.value);
   return s;
 }
@@ -3227,6 +3250,7 @@ function applyOrch(d){
       _tile('This session',kt(u.sessIn+u.sessOut),'in '+kt(u.sessIn)+' · out '+kt(u.sessOut)+' · '+(u.turns||0)+' turns',0,'')+
       _tile('Last turn',kt(u.lastIn+u.lastOut),'in '+kt(u.lastIn)+' · out '+kt(u.lastOut),0,'');
     _usageBP=Array.isArray(u.byProvider)?u.byProvider:[];
+    _usageCeil=u.ceiling||null;   // lane DEF: the monthly spend ceiling (renderCeiling)
     if(d.providers)_provSlugs=Object.keys(d.providers);
     // Refetch the per-model prices when the ledger moved (the list must add up to the tile).
     const _sig=JSON.stringify(_usageBP),_uv=$('subpane-usage');
@@ -3496,7 +3520,34 @@ function loadUsageHistory(){
 function loadUsageModels(f){
   fetch('/api/usage/models').then(jok).then(d=>{_usageModels=(d&&Array.isArray(d.models))?d:null;renderUsageAll(f);}).catch(()=>{});
 }
-function renderUsageAll(f){renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
+function renderUsageAll(f){renderCeiling();renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
+// Lane DEF: the monthly spend ceiling across all providers (GET /api/orch usage.ceiling):
+// this month's estimate against the ceiling, and whether paid calls are paused.
+let _usageCeil=null;
+function renderCeiling(){
+  const box=$('ceilMeter'),c=_usageCeil; if(!box)return;
+  if(!c||!c.loaded){box.innerHTML='';return;}
+  const pct=c.limitCents>0?Math.min(100,c.spentCents/c.limitCents*100):0;
+  const col=c.frozen?'#f0687a':(pct>=80?'#e0b870':'#7fd1c8');
+  box.innerHTML='<div class=row style="justify-content:space-between"><b>'+_usd(c.spentCents,true)+' of '+
+    _usd(c.limitCents,false)+' this month'+(c.frozen?' <span class="badge vfy bad">paid calls paused</span>':'')+
+    '</b><span class=hint>'+(c.resetsOn?'Starts again '+_sEsc(c.resetsOn):'')+'</span></div>'+
+    '<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>';
+  const inp=$('ceil_usd');
+  if(inp&&document.activeElement!==inp&&!inp.dataset.edited)inp.value=Math.round(c.limitCents/100);
+}
+if($('ceil_usd'))$('ceil_usd').oninput=()=>{$('ceil_usd').dataset.edited='1';};
+// The ceiling is dollars in the UI, CENTS on the wire (spendCeil, 1 to 100,000 USD).
+if($('ceilsave'))$('ceilsave').onclick=()=>{
+  const usd=+$('ceil_usd').value||0;
+  if(usd<1||usd>100000){$('ceilmsg').textContent='Enter an amount from $1 to $100,000.';return;}
+  orchApply({spendCeil:Math.round(usd*100)}).then(ok=>{
+    if(ok===false)return;
+    delete $('ceil_usd').dataset.edited;
+    $('ceilmsg').textContent='Monthly spend ceiling set to $'+usd.toLocaleString()+'.';
+    loadOrch();
+  });
+};
 // One provider's models: its color mixed toward black or white by rank.
 function _shade(hex,r){const n=parseInt(hex.slice(1),16),f=[0,-.35,.4,-.55,.65,-.2,.22,-.68][r%8];
   return 'rgb('+[16,8,0].map(s=>{const c=n>>s&255;return Math.round(f<0?c*(1+f):c+(255-c)*f);}).join()+')';}
@@ -5354,7 +5405,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<p class=hint id=onb_provguide></p>'+
       '<label>API key</label><input id=onb_key type=password placeholder="Paste your API key">'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_provsave>Save &amp; Verify</button><span class=hint id=onb_provmsg></span></div>'+
-      '<p class=hint>The key stays on the device and is never shown again. It is checked with the provider before you continue.</p>';
+      '<p class=hint>The key stays on the device and is never shown again. It is checked with the provider before you continue.</p>'+
+      '<p class=hint id=onb_defaults></p>';
     if(s.id==='mode')return '<p class=hint>Notifier shows AI-coding-session status on the LED ring. Orchestrator turns the device into an autonomous assistant (Telegram, voice, memory). Change it anytime from the header.</p>'+
       '<div class=row><button type=button class=onbmb data-m=1>Orchestrator</button><button type=button class=onbmb data-m=0>Notifier</button></div>'+
       '<p class=hint id=onb_modemsg>Applied when you finish - a mode change restarts the device.</p>';
@@ -5419,6 +5471,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       const upd=()=>{pg.textContent=G[pv.value]||'';};
       pv.onchange=upd;upd();
       el('onb_provsave').onclick=doProvider;
+      // Lane DEF: the defaults and the monthly spend ceiling, in the device's own words.
+      fetch('/api/state').then(r=>r.json()).then(st=>{const d=el('onb_defaults');
+        if(d&&st&&st.setupDefaults)d.textContent=st.setupDefaults;}).catch(()=>{});
     } else if(s.id==='mode'){
       [...document.querySelectorAll('.onbmb')].forEach(b=>{
         b.classList.toggle('on',+b.dataset.m===(pendingMode!==null?pendingMode:curMode));
@@ -5462,7 +5517,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         el('onb_done_head').textContent=(wifi&&prov)
           ? 'You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.'
           : 'Almost there - complete the Wi-Fi and provider steps, then finish.';
+        const sp=st&&st.spend;   // lane DEF: the monthly spend ceiling, in plain words
         el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifi?'connected':'not connected')+'<br>&bull; Provider: '+(prov?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
+          (sp&&sp.limitCents?'<br>&bull; Monthly spend ceiling: '+_usd(sp.limitCents,false)+' across all providers (change it on Assistant &rarr; Usage)':'')+
           (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
       };
       paint(null);

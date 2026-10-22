@@ -11,6 +11,7 @@
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
 #include "nimbus/orch/reply_text.h"
+#include "nimbus/orch/seam_meter.h"   // meterSeamAnswer - the scan's spend (lane DEF)
 #include "../../sys/net_util.h"
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/fetch_policy.h"
@@ -316,6 +317,15 @@ int scanVerdict(const std::string& headText, const std::string& url,
   }
   gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, status, "");
   if (je) { reason = "scan: bad response"; return -1; }
+  // Lane DEF: an answer is billed: its reported usage (else an estimate from the request
+  // and the 60-token cap) counts toward the monthly spend ceiling. An error answer has
+  // no usage and no choices: nothing billed, nothing counted.
+  if (!resp["usage"].isNull() || !resp["choices"].isNull() || !resp["content"].isNull()) {
+    const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(p.host, p.path, p.model);
+    nimbus::orch::meterSeamAnswer(nimbus::orch::SpendSeam::UrlFetch, r.provider.c_str(),
+                                  r.model.c_str(), resp["usage"].as<ArduinoJson::JsonVariantConst>(),
+                                  body.length(), 60);
+  }
   // The content may be a chunk list (a reasoning model's thinking, then its text).
   const std::string answer = p.anthropic ? nimbus::orch::messagesContentText(resp["content"])
                                          : nimbus::orch::chatContentText(resp["choices"][0]["message"]["content"]);

@@ -126,7 +126,10 @@ jobs:
       #     The build embeds sha256(firmware.elf) in the image's app descriptor
       #     (app_elf_sha256), and a field core dump records the first hex digits of the
       #     same hash ("elf=" on the device's crash line), so a dump is decoded against
-      #     the exact ELF (tools/crash_decode.py).
+      #     the exact ELF (tools/crash_decode.py);
+      #   - static DRAM: .dram0.bss + .dram0.data at or under the variant's recorded ceiling
+      #     (tools/release_gate/static_dram_ceilings.json, baseline v4.5.15), so internal
+      #     RAM growth is a deliberate, measured decision, never a silent one.
       # Writes elf-sha256.txt (variant -> app_elf_sha256), the release record, and
       # stages each ELF xz-compressed for the artifact below.
       #
@@ -148,6 +151,9 @@ jobs:
             python3 tools/release_gate/check_elf_symbols.py \
               --elf ".pio/build/$env/firmware.elf" --bin ".pio/build/$env/firmware.bin" \
               --variant "$v" --sha-out elf-archive/elf-sha256.txt
+            # Static internal RAM under the variant's recorded ceiling (v4.5.15 baseline).
+            python3 tools/release_gate/check_static_dram.py \
+              --elf ".pio/build/$env/firmware.elf" --variant "$v"
             xz -9 -c ".pio/build/$env/firmware.elf" > "elf-archive/firmware-$v.elf.xz"
           done
           cat elf-archive/elf-sha256.txt

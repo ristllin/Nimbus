@@ -7,6 +7,8 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
+#include "nimbus/orch/model_defaults.h" // currentTurnRole - a background turn thinks little
+#include "nimbus/orch/seam_meter.h"    // meterSubSearchRuns - a sub's search runs (lane DEF)
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
@@ -187,11 +189,13 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   // file_search_call, function_call, ...); web_search_call is a web run.
   env.toolRuns = 0;
   env.webRuns = 0;
+  bool container = false;   // lane DEF: a code-interpreter run bills a container
   for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
     const std::string ty = item["type"] | "";
     if (ty.size() < 5 || ty.compare(ty.size() - 5, 5, "_call") != 0) continue;
     if (env.toolRuns < 0xFFFF) env.toolRuns++;
     if (ty == "web_search_call" && env.webRuns < 0xFFFF) env.webRuns++;
+    if (ty == "code_interpreter_call") container = true;
   }
   // Real billed usage of the background response (present on terminal objects).
   {
@@ -199,6 +203,17 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
         nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
     env.promptTokens     = u.promptTokens;
     env.completionTokens = u.completionTokens;
+    env.cacheReadTokens  = u.cacheReadTokens;    // lane DEF: cached input at its own rate
+    env.cacheWriteTokens = u.cacheWriteTokens;
+  }
+  // Lane DEF: the web searches the sub ran bill per call, outside the usage object (the
+  // tokens are filed once by the job engine from the envelope; a job is polled to its
+  // terminal state once).
+  if (nimbus::orch::isTerminal(env.state)) {
+    nimbus::orch::meterSubSearchRuns(backend, env.webRuns);
+    if (container)
+      nimbus::orch::meterSeamMicro(nimbus::orch::SpendSeam::Sub, backend,
+                                   nimbus::orch::kProviderContainerMicro);
   }
   if (env.state == JobState::Done) {
     wire::ReplyWriter w(env.reply, sizeof(env.reply));
@@ -401,6 +416,10 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // store:false between tool calls).
     if (oaiIsReasoningModel(model)) {
       req["reasoning"]["summary"] = "auto";
+      // Lane DEF: a background turn (a routine, a wakeup, the dream) thinks at low
+      // effort: nobody waits on it, and its thinking is what a silent run still bills.
+      if (nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Background)
+        req["reasoning"]["effort"] = "low";
       req["include"].to<JsonArray>().add("reasoning.encrypted_content");
     }
     {

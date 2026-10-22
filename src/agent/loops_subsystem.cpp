@@ -15,6 +15,7 @@
 #include "memory_subsystem.h"     // memory::clockSynced - the strict "clock is real" test
 #include "nimbus/harness/dream.h"           // applyInterruptedToLoop - the dream's boot reconcile
 #include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
+#include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError - a ceiling defer (lane DEF)
 #include "nimbus/wifi/net_up.h"   // SntpKick - the pure SNTP kick schedule (CUM-504)
 #include "store.h"
 #include "../sys/config_nvs.h"    // (device name - unused directly, kept for parity)
@@ -128,6 +129,16 @@ static void advanceNextRun(LoopRecord& l, uint64_t nowEpoch, bool clk) {
   } else {
     l.nextRun = 0;   // recomputed on clock sync
   }
+}
+
+// Lane DEF: a fire deferred because paid calls are paused (orch::onCeilingSkip), not for
+// memory: never the "low memory" line or the memory-wait state. Caller holds the lock.
+static void ceilingSkip(LoopRecord& l, uint64_t nowEpoch) {
+  const bool first = orch::onCeilingSkip(l, nowEpoch);
+  persist();
+  if (first)
+    alogf("loops: '%s' skipped - paid calls are paused (monthly spend ceiling)%s", l.name.c_str(),
+          l.sched.kind == orch::SchedKind::Once ? "; kept until they resume" : "");
 }
 
 // ---- id-gen ----------------------------------------------------------------
@@ -494,6 +505,10 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       if (l->firesToday > 0) l->firesToday--;
       if (g_dev.firesInWindow > 0) g_dev.firesInWindow--;
       l->lastRun = prevLastRun;   // the fire did not happen; do not claim it did
+      if (nimbus::orch::isSpendFrozenError(o.error)) {
+        ceilingSkip(*l, nowEpoch);
+        return;
+      }
       s_memDefer = true;
       // A fire whose pre-work is idempotent (the dream runs maintenance once per local
       // day) asks for a same-night retry instead of waiting for its next slot.

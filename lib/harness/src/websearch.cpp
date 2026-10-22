@@ -1,5 +1,7 @@
 #include "nimbus/harness/websearch.h"
 
+#include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate
+
 namespace agent {
 namespace websearch {
 
@@ -143,6 +145,11 @@ void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolD
             // recorded on a successful search below.
             if (deps.overBudget && deps.overBudget())
               return ToolResult::fail("web search skipped: Tavily monthly call budget reached");
+            // Lane DEF: the monthly spend ceiling across all providers (a turn can cross
+            // it mid-loop) - refused before the billable call.
+            if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Search))
+              return ToolResult::fail(std::string("web search skipped: ") +
+                                      nimbus::orch::kSpendFrozenError);
             if (!deps.search) return ToolResult::fail("web search is not wired on this build");
             const int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
             Result r = deps.search(q, k);

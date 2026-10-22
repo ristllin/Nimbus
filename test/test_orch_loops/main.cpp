@@ -619,6 +619,27 @@ static void test_once_rebase_preserves_retry_across_sync() {
   TEST_ASSERT_EQUAL_UINT64(realNow + 1, onceRebaseNextRun(a, realNow, 500));
 }
 
+// Lane DEF: a fire deferred by the monthly spend ceiling is "skipped", never a fire and
+// never lost. Every schedule kind: a recurring loop keeps its next slot; a one-time
+// wakeup stays armed a short retry out (not its whole delay again), so it fires soon
+// after the pause lifts. Only the first skip of a run asks for a log line.
+static void test_ceiling_skip_keeps_wakeups_and_logs_once() {
+  const uint64_t now = 1700000000ULL;
+  for (SchedKind k : {SchedKind::Interval, SchedKind::Daily, SchedKind::Weekly, SchedKind::Once}) {
+    LoopRecord l;
+    l.sched.kind = k;
+    l.sched.intervalSec = 3 * 24 * 3600;
+    l.nextRun = now + 5000;   // the slot the pre-fire advance gave it
+    l.lastResult = LastResult::Ok;
+    TEST_ASSERT_TRUE(onCeilingSkip(l, now));
+    TEST_ASSERT_EQUAL((int)LastResult::Skipped, (int)l.lastResult);
+    TEST_ASSERT_EQUAL_UINT64(k == SchedKind::Once ? now + kWakeupRetrySec : now + 5000, l.nextRun);
+    TEST_ASSERT_FALSE(onCeilingSkip(l, now + 300));   // still paused: no second log line
+    TEST_ASSERT_EQUAL(0, (int)l.consecFails);          // never a failure
+    TEST_ASSERT_EQUAL(0, (int)l.firesToday);           // never a fire
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_civil_roundtrip);
@@ -647,5 +668,6 @@ int main() {
   RUN_TEST(test_approval_gate);
   RUN_TEST(test_reason_mappings_cover_every_case);
   RUN_TEST(test_once_rebase_preserves_retry_across_sync);
+  RUN_TEST(test_ceiling_skip_keeps_wakeups_and_logs_once);
   return UNITY_END();
 }

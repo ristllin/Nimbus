@@ -427,6 +427,7 @@ static void test_every_reply_writer_cuts_utf8_safe_with_marker() {
     d.http.script.push_back({"", "", 200,
         "{\"data\":[{\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":" + text +
         "}]},{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+    d.http.script.push_back(harness_test::antSessionUsage());
     providers::ProviderDeps pd = d.contract();
     orch::ResultEnvelope env;
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:s1", env));

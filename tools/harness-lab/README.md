@@ -99,6 +99,7 @@ exactly what it ran with.
 | Output cap per request | `NIMBUS_LAB_MAXTOK` | `--max-tokens=` |
 | Per-request timeout ceiling | `NIMBUS_LAB_CEILING_MS` | `--ceiling-ms=` |
 | Head tool-loop rounds (1..32) | | `--rounds=` |
+| The device's role defaults for unpinned hosts: the head row, the sub-agent row, and the background row while a scheduled turn runs (`nimbus/orch/model_defaults.h`) | | `--defaults` |
 
 The device sends no effort and caps Anthropic output at 3000 tokens, and adaptive
 thinking counts toward that cap, so live legs pin a low effort until the

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/model_defaults.h" // DefaultRole - roleDefaultModel (lane DEF)
 #include "nimbus/orch/model_ledger.h"   // TokenDelta, ModelRate, RateEdit (per-model prices)
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - recordProviderSpend
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
@@ -102,8 +103,15 @@ String orchConvId();                        // "host|convId" (per-host conversat
 String providerPriority();                  // orchestrator-host priority list
 String orchPriority();                      // alias of providerPriority
 String subPriority();                       // sub-session provider priority list
-String orchModel(const String& provider);   // per-provider orchestrator model (defaults per provider)
-String subModel(const String& provider);    // per-provider sub-session model
+// Per-provider orchestrator model: the owner's pick, else the role default (lane DEF,
+// nimbus/orch/model_defaults.h). On a background turn (a routine, a wakeup, the dream)
+// the calling task reads the cheapest tier instead, whatever the head is.
+String orchModel(const String& provider);
+String subModel(const String& provider);      // per-provider sub-session model
+String captionModel(const String& provider);  // the fallback captioner's role default
+// The role default alone (no owner pick): what a provider runs for `role` when the owner
+// picked nothing. Always a valid pick for that role (the web model check accepts it).
+String roleDefaultModel(const String& provider, nimbus::orch::DefaultRole role);
 // Live model list harvested from the provider's /v1/models by the verify pass;
 // "" until a verify has run. Callers fall back to the static compile-time list.
 String modelChoices(const String& provider);
@@ -406,6 +414,18 @@ void   recordProviderTokens(const String& provider, const nimbus::orch::TokenDel
 // each store - the NVS usgLedger once per turn, whatever the number of hosts.
 void   recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag);
 void   recordProviderCall(const String& provider);                     // per search call
+// The monthly spend ceiling's inputs (lane DEF). priceSpendMicro: a turn's (partial)
+// spend at the ledger's prices, the one formula (the ceiling's pending sink prices
+// each billed round with it). usageHasHistory: any provider ever recorded spend (the
+// device ran an earlier release). monthToDateMicro: this calendar month's estimate
+// (the ledger's period where its reset day is the 1st, else the daily history).
+uint64_t priceSpendMicro(const nimbus::orch::TurnSpend& spend);
+// A paid call outside a turn that the Usage page tracks (a sub-agent's spend, under
+// `tag` "spawn:<provider>"): filed like a turn's spend, counted by the ceiling without
+// ending the turn in flight.
+void     recordSideSpend(const nimbus::orch::TurnSpend& spend, const char* tag);
+bool     usageHasHistory();
+uint64_t monthToDateMicro();
 bool   providerOverBudget(const String& provider);                     // gate before spend
 // CUM-708: the ledger's ranking price of a model (micro-USD per 1M in + out; UINT64_MAX
 // when unpriced) - what the spawn-model fallback picks the cheapest by.

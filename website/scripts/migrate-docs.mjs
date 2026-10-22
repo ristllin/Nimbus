@@ -50,6 +50,7 @@ const PAGES = [
   ['connectors.md', 'guides/connectors.md', 'Connectors - external tools per provider', 'Connectors'],
   ['mcp.md', 'guides/mcp.md', 'MCP - the device as client and server', 'MCP'],
   ['people-and-privacy.md', 'guides/people-and-privacy.md', 'People and privacy - roles, quotas, what stays private', 'People & privacy'],
+  ['spend-ceiling.md', 'guides/spend-ceiling.md', 'Monthly spend ceiling and default models', 'Spend ceiling'],
   ['notifier-status-language.md', 'guides/notifier-status-language.md', 'Notifier status language', 'Status language'],
   // Cloud
   ['cloud-relay.md', 'cloud/cloud-access.md', 'Cloud access - reach the device from anywhere', 'Cloud access'],

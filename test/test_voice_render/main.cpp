@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
 #include "nimbus/voice_flow.h"
@@ -239,6 +240,30 @@ static void test_bar_no_network() {
   golden("voice_bar_no_network", c);
 }
 
+// ---- lane DEF: the monthly spend ceiling's screen line ----------------------------
+// While paid calls are paused the hold-to-talk line says so (main.cpp fillVoiceCtx):
+// the alert tone, the mic drawn inactive, on a ring board's bar and inside a ringless
+// board's on-screen ring, at every panel.
+static void applyPaused(ScreenCtx& c) {
+  nimbus::orch::CeilingFacts f;   // the 20 USD default
+  c.voiceTitle = nimbus::orch::freezeScreenLine(f);
+  c.voiceDetail = nimbus::orch::freezeScreenDetail(f);
+  c.voiceTone = 1;
+  c.micBusy = true;
+}
+
+static void test_bar_spend_paused() {
+  ScreenCtx c = orchCtx();
+  applyPaused(c);
+  golden("spend_paused_bar", c);
+}
+
+static void test_ring_spend_paused() {
+  ScreenCtx c = ringlessCtx(voice::Cue::None, 0);
+  applyPaused(c);
+  golden("spend_paused_ring", c);
+}
+
 // ---- structural -------------------------------------------------------------------
 
 // The device repaints ONLY the ring square at animation cadence; the voice line
@@ -293,6 +318,8 @@ int main() {
   RUN_TEST(test_ring_empty_transcript);
   RUN_TEST(test_bar_thinking);
   RUN_TEST(test_bar_no_network);
+  RUN_TEST(test_bar_spend_paused);
+  RUN_TEST(test_ring_spend_paused);
   RUN_TEST(test_ringless_status_stays_inside_the_ring_square);
   RUN_TEST(test_empty_voice_fields_change_nothing);
   return UNITY_END();

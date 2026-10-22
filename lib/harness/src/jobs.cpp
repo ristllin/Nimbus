@@ -1315,10 +1315,16 @@ int JobEngine::pump() {
     d_.journal->update(rec.tag, env_ref().state);
     // Spend attribution (spawn:<backend>): terminal polls only, so each job
     // records at most once (markSeen removes it from the poll set after this).
-    if (orch::isTerminal(env_ref().state) && d_.recordSpawnUsage &&
-        (env_ref().promptTokens || env_ref().completionTokens))
-      d_.recordSpawnUsage(rec.backend, rec.model, env_ref().promptTokens,
-                          env_ref().completionTokens);
+    if (orch::isTerminal(env_ref().state) && d_.recordSpawnUsage) {
+      orch::TokenUsage u;
+      u.promptTokens = env_ref().promptTokens;
+      u.completionTokens = env_ref().completionTokens;
+      u.cacheReadTokens = env_ref().cacheReadTokens;
+      u.cacheWriteTokens = env_ref().cacheWriteTokens;
+      u.responses = 1;
+      if (!u.empty() || u.cacheReadTokens || u.cacheWriteTokens)
+        d_.recordSpawnUsage(rec.backend, rec.model, u);
+    }
     const bool done = env_ref().state == orch::JobState::Done;
     // L19-36: a reply longer than the envelope is saved whole to the card first, and
     // the envelope ends with a marker naming that file and its real size.

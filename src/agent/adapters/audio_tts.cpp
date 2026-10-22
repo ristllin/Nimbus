@@ -13,6 +13,7 @@
 #include "b64_stream.h"              // shared base64 socket->file stream decoder
 #include "nimbus/tts_catalog.h"     // core::speakerTtsFormat (host-tested playback format)
 #include "nimbus/orch/voice_route.h" // voiceActiveProvider / voiceRouteFor (host-tested routing)
+#include "nimbus/orch/seam_meter.h"  // meterSpeech - its spend (lane DEF)
 #include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
 
@@ -187,6 +188,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
                                                      nimbus::orch::providerErrorText(errb)).c_str());
     return 0;
   }
+  // Lane DEF: an answered synthesis is billed per character of the text (the answer is
+  // audio, with no usage), counted toward the monthly spend ceiling.
+  nimbus::orch::meterSpeech(prov.slug.c_str(), prov.model, text.length());
 
   gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, "");
   File f = LittleFS.open(outPath, FILE_WRITE);

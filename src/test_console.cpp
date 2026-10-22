@@ -58,6 +58,7 @@
 #include "nimbus/harness/turn_inbox.h"  // HISTV2 - the turn-structured history switch
 #include "nimbus/harness/output_caps.h"  // CAPTEST - the first-attempt cap (test builds)
 #include "nimbus/harness/providers.h"    // PROVFAULT - the canned provider answer (test builds)
+#include "agent/spend_ceiling_store.h"   // SPENDSET - seed the monthly spend ceiling's count
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
@@ -466,6 +467,34 @@ void parkTest(String arg) {
                   nimbus::orch::parkKindSlug(e[i].kind), e[i].httpStatus, (unsigned)e[i].seamMask,
                   (unsigned)(e[i].recheckInMs / 1000), (unsigned)nimbus::orch::providerPark().pausedBy(e[i].provider));
   Serial.printf("PARK? providers=%u\n", (unsigned)n);
+}
+
+// SPENDSET <cents> | SPENDSET limit <cents> | SPENDSET?: the monthly spend ceiling's
+// bench seam (lane DEF). <cents> seeds this month's count (a fresh episode when it
+// lands at or over the ceiling); limit sets the ceiling as the owner would; ? prints
+// the state and the paid-call gate's consults and refusals per seam.
+void spendSet(String arg) {
+  arg.trim();
+  if (arg.startsWith("limit ")) {
+    String c = arg.substring(6);
+    c.trim();
+    const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(c.c_str()));
+    if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents>"); return; }
+    const bool ok = agent::spend::setLimitMicro(micro);
+    Serial.printf("SPENDSET limit %s %s\n", c.c_str(), ok ? "stored" : "NOT stored");
+  } else if (arg.length() && arg != "?") {
+    const long long cents = atoll(arg.c_str());
+    if (cents < 0) { reply("SPENDSET usage: SPENDSET <cents> | limit <cents> | ?"); return; }
+    agent::spend::testSetSpent((uint64_t)cents * 10000ULL);
+  }
+  Serial.printf("SPENDSET %s\n", agent::spend::stateJson().c_str());
+  String gate = "SPENDGATE";
+  for (int i = 0; i < nimbus::orch::kSpendSeamCount; ++i) {
+    const auto s = (nimbus::orch::SpendSeam)i;
+    gate += String(" ") + nimbus::orch::spendSeamSlug(s) + "=" +
+            nimbus::orch::paidGateConsults(s) + "/" + nimbus::orch::paidGateRefusals(s);
+  }
+  Serial.println(gate);
   Serial.flush();
 }
 
@@ -1983,6 +2012,10 @@ void dispatch(String line) {
   }
   if (line.startsWith("PROVFAULT ")) {
     provFault(line.substring(10));
+    return;
+  }
+  if (line.startsWith("SPENDSET")) {
+    spendSet(line.substring(8));
     return;
   }
   if (line.startsWith("TGINJECT ")) {

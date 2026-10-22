@@ -289,6 +289,13 @@ bool reviveReservedLoop(LoopRecord& l, int maxConsecFails);
 // deferred tick never consumes any daily ceiling. Clock-rollover-safe by
 // construction: it only ever moves nextRun forward from `nowEpoch`.
 void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec);
+// Lane DEF: the executor deferred a fire because paid calls are paused (the monthly
+// spend ceiling), never for memory. The caller has already un-claimed the fire; this
+// marks the record Skipped, keeps a recurring loop's next slot, and keeps a one-time
+// wakeup armed kWakeupRetrySec out, so it fires soon after the pause lifts (a raised
+// ceiling or a new month) instead of waiting its whole delay again. True on the first
+// skip of a run (the caller logs one line, never one per retry).
+bool onCeilingSkip(LoopRecord& l, uint64_t nowEpoch);
 // The clock just landed (boot-relative `oldNow` -> real `realNow`): the nextRun for
 // an armed one-shot Once that PRESERVES its remaining delay across the jump, instead
 // of resetting to the full interval. A Once that already failed a pre-sync fire

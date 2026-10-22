@@ -354,6 +354,14 @@ class UsageLedger {
   EffRate rowRate(const std::string& prov, const char* model) const;
   // micro-USD per 1000 calls: the owner's provider rate, else the built-in default.
   uint64_t callRate(const std::string& prov, RateSrc* src = nullptr) const;
+  // One record's spend in micro-USD, through the same rates and the same formula as
+  // priceProvider: `d` at rowRate(prov, model) (an empty model, or one with no price of
+  // its own, at the provider's highest price: fail-closed) plus `calls` at callRate.
+  // The monthly spend ceiling counts every record with it (lane DEF).
+  uint64_t priceDeltaMicro(const std::string& prov, const char* model, const TokenDelta& d,
+                           uint64_t calls = 0) const;
+  // A turn's whole spend (every slot through ledgerDelta, the R4 cache split) the same way.
+  uint64_t priceTurnMicro(const TurnSpend& spend) const;
   // THE one formula (UI, device.status, the $ gate): the provider's period estimate in
   // cents = each in-period model row at its own rowRate + spend since tracking began
   // that no row accounts for at otherRate + earlier usage at residualRate + calls at

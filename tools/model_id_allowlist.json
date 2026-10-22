@@ -7,8 +7,7 @@
   "allow": [
     {"id": "gpt-4o-mini", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "router vision default; R1 replaces the captioner"},
     {"id": "pixtral-12b-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"},
-    {"id": "claude-3-5-haiku-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"},
-    {"id": "claude-haiku-4-5", "file": "lib/core/include/nimbus/orch/model_choices.h", "lane": "F", "why": "cold-start list; the model store replaces it"}
+    {"id": "claude-3-5-haiku-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"}
   ],
   "keys": [
     {"id": "dall-e-2", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},

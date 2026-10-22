@@ -28,6 +28,7 @@ const char* const kProtectedConfigKeys[] = {
     "providerPriority", "provPrio", "orchPriority",
     "tgToken", "tgAllow", "sysPrompt",
     "orchLoop", "budget", "tlsSlots",
+    "spendCeil",                          // the monthly spend ceiling (lane DEF): owner-only
     // Provider API keys BY NAME (2026-07-17, caught by a smuggle test: "antKey"
     // rode alongside a benign knob and was silently IGNORED instead of loudly
     // refused - no write-through existed, but the contract is refuse-as-a-unit).

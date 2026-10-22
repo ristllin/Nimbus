@@ -37,6 +37,20 @@ Any one verified key runs the assistant. If you are not sure:
 
 You can add more providers later. You only need one to finish setup.
 
+## Default models and the monthly spend ceiling
+
+Each provider starts on cost-conscious models: its standard model for the assistant
+(Claude Sonnet 5 on Anthropic, the mini class on OpenAI, Mistral Medium, GLM-5.3 on
+Z.ai) and its cheapest model for helpers, photo captions, routines and the nightly
+dream (Claude Haiku 5.5, the nano class, Mistral Small, GLM-5.3 Flash). Stronger
+models are listed with their prices under **Assistant > Models**.
+
+Paid calls also pause once a month's estimated spend across all your providers
+reaches **20 USD**. Change that amount under **Assistant > Usage**. A provider
+account on auto-recharge cannot run away: the device stops the calls itself. See
+[Monthly spend ceiling and default models](../spend-ceiling.md) for what pauses, how
+you are told, and how to lift it.
+
 ## After you paste a key
 
 Tap **Save & Verify** (or **Verify** for a key that is already stored). The device

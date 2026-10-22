@@ -9,6 +9,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/orch_schema.h"       // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - usage extraction
+#include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
 #include "nimbus/orch/reply_text.h"
 #include "wire.h"
 
@@ -136,6 +137,7 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
     body = serializeBody(doc);
     JsonObject ci = filter["content"].add<JsonObject>(); ci["type"] = true; ci["text"] = true;
     filter["error"]["message"] = true;
+    filter["usage"] = true;   // lane DEF: the run's billed usage (the spend ceiling)
   } else {  // openai / mistral chat-completions
     path = "/v1/chat/completions";
     JsonDocument doc;
@@ -150,10 +152,12 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
     body = serializeBody(doc);
     JsonObject ch = filter["choices"].add<JsonObject>(); ch["message"]["content"] = true;
     filter["error"]["message"] = true;
+    filter["usage"] = true;   // lane DEF: the run's billed usage (the spend ceiling)
   }
 
   JsonDocument doc;
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const size_t requestChars = body.size();
   int code = custRequest(pd, "POST", path, std::move(body), anthropic, doc, filter);
   // The sub runs INSIDE this POST: a cut after it went out may have started it.
   if (code <= 0) return wire::subTransportErr(pd, t0, CUST_TIMEOUT_MS);
@@ -163,6 +167,11 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
 
   std::string reply = anthropic ? nimbus::orch::messagesContentText(doc["content"])
                                 : nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
+  // Lane DEF: the run billed whatever it returned, so it is metered before any check
+  // (a keyless LAN model prices at zero unless the owner set its rates).
+  nimbus::orch::meterSubAnswer("custom", model.c_str(),
+                               doc["usage"].as<ArduinoJson::JsonVariantConst>(), requestChars,
+                               reply.size(), 0);
   if (reply.empty()) return FabricErr::ParseFail;
 
   char id[24]; snprintf(id, sizeof(id), "c%08lx", (unsigned long)(pd.nowMs ? pd.nowMs() : 0));

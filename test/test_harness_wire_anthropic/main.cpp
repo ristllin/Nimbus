@@ -666,6 +666,7 @@ static void test_cum514_artifact_drops_the_narration() {
       antMsg(kSwedenReport) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
   d.http.script.push_back(kAntNoOutputs);
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -688,6 +689,7 @@ static void test_cum514_artifact_keeps_what_follows_the_report() {
       antMsg("Saved as sweden-rules.md.") + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
   d.http.script.push_back(kAntNoOutputs);
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -702,6 +704,7 @@ static void test_cum514_artifact_keeps_what_follows_the_report() {
       "{\"type\":\"text\",\"text\":\"curl 8.22.0\"},{\"type\":\"text\",\"text\":\", dated Sep 2\"}]},"
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
   one.http.script.push_back(kAntNoOutputs);
+  one.http.script.push_back(harness_test::antSessionUsage());
   auto opd = one.contract();
   agent::ResultEnvelope oenv{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(opd, "anthropic:sess_1", oenv));
@@ -720,6 +723,7 @@ static void test_cum514_artifact_keeps_a_long_earlier_section() {
       antMsg("Fetching one more page.") + "," + antMsg(sectionB) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
   d.http.script.push_back(kAntNoOutputs);
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -738,6 +742,7 @@ static void test_cum514_short_report_still_drops_notes() {
       antMsg(report) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
   d.http.script.push_back(kAntNoOutputs);
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -763,6 +768,7 @@ static void test_sub_poll_states() {
         "{\"type\":\"text\",\"text\":\"part1 \"},{\"type\":\"text\",\"text\":\"part2\"}]},"
         "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
     d.http.script.push_back(kAntNoOutputs);
+    d.http.script.push_back(harness_test::antSessionUsage());
     auto pd = d.contract();
     agent::ResultEnvelope env{};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,
@@ -774,6 +780,7 @@ static void test_sub_poll_states() {
     FakeProviderDeps d;
     d.http.script.push_back({"", "", 200,
         "{\"data\":[{\"type\":\"session.error\",\"error\":{\"message\":\"sandbox died\"}}]}"});
+    d.http.script.push_back(harness_test::antSessionUsage());
     auto pd = d.contract();
     agent::ResultEnvelope env{};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,
