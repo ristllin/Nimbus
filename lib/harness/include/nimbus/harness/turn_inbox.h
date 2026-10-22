@@ -3,6 +3,14 @@
 #include <string>
 #include <vector>
 
+// Declared, not included: msg_batch.h pulls telegram_offset.h, whose nimbus::core
+// would shadow the global core:: in every file that includes this header.
+namespace nimbus {
+namespace orch {
+class MessageBatcher;
+}
+}  // namespace nimbus
+
 // turn_inbox - what a channel knows about an inbound turn that the turn text
 // alone cannot carry, handed to the engine for the turn's history row (histV2).
 //
@@ -34,6 +42,17 @@ struct Inbound {
 
 // `routedText` is exactly the text the channel hands the engine for this turn.
 void noteInbound(const Inbound& in, const std::string& routedText);
+
+// The note for the turn of Telegram batch bucket `i` (nimbus/orch/msg_batch.h): its
+// source ("tg:<newest update id>x<message count>", "" for an inject with no ids), the
+// refs of its stored media in album order (`storedRefs[k]` for media k, "" = that item
+// left no media row: its description stays in the owner row, its only home), and what
+// the sender sent - the bucket's render with each stored item's segment cut back to
+// its label ("[image 2/3 ref=...]"), since the media row keeps the description. A
+// bucket with nothing stored keeps `said` empty (the routed text is what was sent).
+// The send time is not set: a late item already carries it in its label or text.
+Inbound inboundForBucket(const nimbus::orch::MessageBatcher& b, size_t i,
+                         const std::vector<std::string>& storedRefs);
 // The note for this chat's turn carrying `routedText`, consumed; false when there
 // is none (the slot is emptied either way: a stale note never outlives a turn).
 bool takeInbound(const std::string& chatId, const std::string& routedText, Inbound& out);

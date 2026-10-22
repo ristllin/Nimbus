@@ -93,6 +93,7 @@ struct TurnMedia {
   char    ref[17];    // the content hash (16 hex; the blob sidecar's name), "" when not fetched
   char    mime[48];   // Telegram's MIME type ("" when absent; a photo is image/jpeg)
   int64_t sentAt;     // Telegram's send time
+  bool    kept;       // its media row was stored: the turn's history row names it by ref
 };
 size_t turnMediaCount();
 const TurnMedia* turnMediaAt(size_t i);

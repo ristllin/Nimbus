@@ -134,6 +134,7 @@ class MessageBatcher {
   const char* mediaCaptionAt(size_t i, size_t k) const { return mediaSeg(i, k).text.c_str(); }
   // The segment text of media k (the label plus the description, or why it has none).
   void setMediaText(size_t i, size_t k, const std::string& text);
+  const char* mediaTextAt(size_t i, size_t k) const { return mediaSeg(i, k).segText.c_str(); }
   // Media items held by this drain (every bucket), for the device's slot budget.
   size_t  mediaInDrain() const { return mediaTotal_; }
 

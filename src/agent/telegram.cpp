@@ -613,6 +613,8 @@ static void freeSlots() {
 // The processed media of the turn about to run, in album order (turnMediaAt).
 static int8_t s_turnSlots[kMediaSlots];
 static size_t s_turnMedia = 0;
+// histV2: the blob ref (16 hex) of the voice note processVoice just stored ("" = none).
+static char s_voiceRef[17] = {};
 
 // Route a text field into cu as a batched turn segment (grouped into one turn per
 // chat by the drain driver). Model sees the full length; a late one carries its send
@@ -1396,6 +1398,7 @@ static void noteTurnMedia(int slot, const nimbus::orch::MediaLabel& label, bool 
   copyField(t.ref, sizeof t.ref, fetched ? label.ref : std::string());
   copyField(t.mime, sizeof t.mime, m.mime);
   t.sentAt = m.date;
+  t.kept = false;   // set once its media row is stored
   if (s_turnMedia < kMediaSlots) s_turnSlots[s_turnMedia++] = (int8_t)slot;
 }
 
@@ -1474,9 +1477,9 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   // file. The episodic row is what the MODEL reads later, stamped with the original
   // send time; the blob sidecar is what it can be re-shown from.
   storeInbound(in, who);
-  agent::memory::captureMediaFile(m.chatId, "user",
-                                  photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
-                                  String(seg.c_str()), localPath, photo ? "jpg" : "bin", m.date);
+  g_slots[slot].media.kept = agent::memory::captureMediaFile(
+      m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
+      String(seg.c_str()), localPath, photo ? "jpg" : "bin", m.date);
   LittleFS.remove(localPath);
   return true;
 }
@@ -1545,9 +1548,14 @@ static bool processVoice(int slot, std::string& transcript) {
   }
   // Durable audit copy of the inbound voice note -> /mem/blobs on the SD card, BEFORE
   // the privacy-delete of the LittleFS working file (docs/orchestrator-storage.md
-  // section 4). SD-gated no-op: with no card, nothing is retained.
-  agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio, text, localPath, "ogg",
-                                  v.date);
+  // section 4). SD-gated no-op: with no card, nothing is retained. histV2: the
+  // transcript is what the sender said, so it lives in the turn's owner row and the
+  // audio row keeps the blob only (stored once); the turn names it by its ref.
+  const bool histV2 = agent::history::v2Enabled();
+  std::string ref;
+  agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio,
+                                  histV2 ? String() : text, localPath, "ogg", v.date, &ref);
+  copyField(s_voiceRef, sizeof s_voiceRef, ref);
   LittleFS.remove(localPath);   // privacy: drop the LittleFS working copy
   if (text.length() == 0) {
     sendNow(v.chatId, "Couldn't transcribe that - please send text.");
@@ -1619,6 +1627,8 @@ static void publishGuard() {
   g_pubTries = g_guard.tries();
 }
 
+static void noteHistory(const nimbus::orch::PsString& text);
+
 // The receive cycle's I/O on this task (nimbus/net/tg_receive.h): one TLS session at a
 // time, every fetch and turn after the poll socket closed.
 struct TgIo {
@@ -1652,6 +1662,7 @@ struct TgIo {
   // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
+    noteHistory(text);   // histV2: the turn's source and stored media, for its history row
     if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
   }
@@ -1678,6 +1689,27 @@ struct TgIo {
 // returns 0, nothing acked). A page that holds a command is committed bucket by bucket
 // (checkpointOffset), so a restart re-runs at most the bucket in flight.
 static nimbus::net::TgReceiver g_receiver(g_cursor, g_batch, g_guard);
+
+// histV2 (lib/harness turn_inbox.h): what the turn about to run hands its history row -
+// its source (the bucket's newest update id and message count, so a re-served page is
+// captured once), the refs of the media rows its items left (album order) and what the
+// sender sent with each stored item cut back to its label (the media row keeps the
+// description). Noted just before the turn is routed; the engine takes it at capture.
+static void noteHistory(const nimbus::orch::PsString& text) {
+  const std::string voiceRef = s_voiceRef;
+  s_voiceRef[0] = 0;
+  if (!agent::history::v2Enabled()) return;
+  const size_t i = g_receiver.currentTurn();
+  if (i >= g_batch.turnCount()) return;
+  std::vector<std::string> refs(g_batch.mediaCountAt(i));
+  for (size_t j = 0; j < s_turnMedia; ++j) {
+    const TurnMedia& t = g_slots[s_turnSlots[j]].media;
+    if (t.kept && t.k >= 1 && (size_t)t.k <= refs.size()) refs[(size_t)t.k - 1] = t.ref;
+  }
+  agent::history::Inbound in = agent::history::inboundForBucket(g_batch, i, refs);
+  if (g_batch.voiceAt(i) && !voiceRef.empty()) in.refs.push_back(voiceRef);
+  agent::history::noteInbound(in, std::string(text.c_str(), text.size()));
+}
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
                             int& retryAfterS) {

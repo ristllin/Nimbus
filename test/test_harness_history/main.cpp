@@ -10,6 +10,8 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/turn_inbox.h"
 #include "nimbus/orch/episodic.h"
+#include "nimbus/orch/media_label.h"   // the one label the receive path writes (lane D)
+#include "nimbus/orch/msg_batch.h"     // the Telegram batch a turn comes from (lane D)
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 
@@ -352,11 +354,90 @@ static void test_fold_slice_starts_after_the_anchor() {
   TEST_ASSERT_TRUE(off.eng->historyFoldSlice("123", 65536, true).digest.empty());
 }
 
+
+// An album turn from lane D's batcher (three photos, a caption, a text in one bucket)
+// is captured once with its refs: the media rows keep the descriptions, the owner row
+// keeps the labels and the words with att: refs in album order and the bucket's
+// source, the next turn's history shows each description once, and the same page
+// served again is dropped before any provider call. An item that left no media row
+// keeps its description in the owner row (its only home).
+static void test_album_from_the_batcher_is_captured_once_with_its_refs() {
+  Rig r;
+  nimbus::orch::MessageBatcher b;
+  const char* refs[] = {"00000000abc00011", "00000000abc00012", "00000000abc00013"};
+  const char* descs[] = {"a red bicycle by a wall", "a bowl of ramen", "a cat on a sofa"};
+  for (int k = 0; k < 3; k++) b.addMedia("123", "Roy", k == 0 ? "our weekend" : "", k, 700 + k);
+  b.add("123", "Roy", "which one do you like?", 703);
+  std::vector<std::string> stored;
+  for (int k = 0; k < 3; k++) {
+    nimbus::orch::MediaLabel l;
+    l.k = k + 1;
+    l.n = 3;
+    l.ref = refs[k];
+    l.detail = descs[k];
+    const std::string seg = nimbus::orch::mediaSegment(l);
+    b.setMediaText(0, (size_t)k, seg);
+    if (k < 2) {   // the third item left no media row (its card write failed)
+      r.add("123", "user", MsgKind::Image, seg, "", std::string("/mem/blobs/") + refs[k] + ".jpg");
+      stored.push_back(refs[k]);
+    } else {
+      stored.push_back("");
+    }
+  }
+  const nimbus::orch::PsString routed = b.render(0);
+  const std::string text(routed.c_str(), routed.size());
+  const agent::history::Inbound in = agent::history::inboundForBucket(b, 0, stored);
+  TEST_ASSERT_EQUAL_STRING("tg:703x4", in.src.c_str());
+  TEST_ASSERT_EQUAL(2, (int)in.refs.size());
+  TEST_ASSERT_TRUE(in.said.find("a red bicycle") == std::string::npos);
+  TEST_ASSERT_TRUE(in.said.find("[image 1/3 ref=00000000abc00011]") != std::string::npos);
+  TEST_ASSERT_TRUE(in.said.find("a cat on a sofa") != std::string::npos);   // not stored: kept
+  TEST_ASSERT_TRUE(in.said.find("which one do you like?") != std::string::npos);
+  agent::history::noteInbound(in, text);
+  r.eng->handleMessage(text, "Roy", "123");
+  TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+  int owner = 0;
+  for (const auto& m : r.all("123"))
+    if (m.role == "user" && m.kind == MsgKind::Message) {
+      owner++;
+      TEST_ASSERT_EQUAL_STRING("00000000abc00011.00000000abc00012", agent::tagValue(m.tags, agent::kAttTag).c_str());
+      TEST_ASSERT_EQUAL_STRING("tg:703x4", agent::tagValue(m.tags, agent::kSrcTag).c_str());
+      TEST_ASSERT_TRUE(m.text.find("a bowl of ramen") == std::string::npos);   // stored once
+    }
+  TEST_ASSERT_EQUAL(1, owner);
+  // The page served again (the same bucket after a restart): dropped, no paid call.
+  agent::history::noteInbound(agent::history::inboundForBucket(b, 0, stored), text);
+  r.eng->handleMessage(text, "Roy", "123");
+  TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+  // The next turn's history: every description once, in place.
+  r.eng->handleMessage("thanks", "Roy", "123");
+  const std::string w = r.lastWindow();
+  for (const char* d : descs) TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, d), d);
+  TEST_ASSERT_TRUE(w.find("[image 1/3 ref=00000000abc00011] a red bicycle by a wall") != std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)count(w, "- user: "));
+}
+
+// A text-only page from the batcher: its source rides the owner row (H7 on the
+// device for text), and an inject with no update ids has none.
+static void test_text_bucket_source_and_inject_without_ids() {
+  nimbus::orch::MessageBatcher b;
+  b.add("555", "Roy", "hello", 9001);
+  agent::history::Inbound in = agent::history::inboundForBucket(b, 0, {});
+  TEST_ASSERT_EQUAL_STRING("tg:9001x1", in.src.c_str());
+  TEST_ASSERT_TRUE(in.said.empty());   // nothing stored: the routed text is what was sent
+  TEST_ASSERT_TRUE(in.refs.empty());
+  nimbus::orch::MessageBatcher web;
+  web.add("web", "web", "from the web chat");
+  TEST_ASSERT_TRUE(agent::history::inboundForBucket(web, 0, {}).src.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_owner_row_tags_and_stored_text);
   RUN_TEST(test_exactly_once_capture_by_source);
   RUN_TEST(test_stale_note_never_applies_to_another_turn);
+  RUN_TEST(test_album_from_the_batcher_is_captured_once_with_its_refs);
+  RUN_TEST(test_text_bucket_source_and_inject_without_ids);
   RUN_TEST(test_seedless_turn_trigger_row);
   RUN_TEST(test_assistant_rows_carry_out_kinds);
   RUN_TEST(test_switch_off_is_byte_identical);

@@ -217,9 +217,13 @@ called by the engine for every turn:
 - **Each item once.** A photo's description lives in its media row; the user
   row keeps what the sender sent with a bare label (`[image]`) where the photo
   sat, joined to the media row by its blob ref (the 16-hex content hash), and
-  the history puts the description back in place. A voice note's transcript is
-  the user row. Rows captured before this rule render once too (a repeated
-  description or a `ref=` label is recognized).
+  the history puts the description back in place (an album's labels each get
+  their own). A voice note's transcript is the user row. Rows captured before
+  this rule render once too (a repeated description or a `ref=` label is
+  recognized).
+- **Captured once.** A Telegram turn's user row carries its source (the newest
+  update id of its page and the message count), so a page served again after a
+  restart is not stored or answered a second time.
 - **What it did.** A reply row's `fx:` tag renders as `[did: memory, file]` or
   `[did: nothing]`, so a promise reads differently from a deliverable.
 - **When.** A day marker (`(Thu 22 Oct)`) opens each new local day, and an item

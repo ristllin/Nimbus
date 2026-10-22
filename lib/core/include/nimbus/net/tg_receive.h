@@ -127,6 +127,9 @@ class TgReceiver {
   // normal pause, at the same offset.
   bool holding() const { return settle_.holding(); }
   const TgSettle& settle() const { return settle_; }
+  // Inside Io::runTurn: the batch bucket that turn renders (its update ids, media
+  // segments and voice note), for the history's source and stored-media note.
+  size_t currentTurn() const { return current_; }
 
   // One polled cycle at the cursor. `longPollS` is the wait for a fresh poll; a held
   // page is re-polled with timeout 0.
@@ -393,6 +396,7 @@ class TgReceiver {
     if (polled_) guard_.mark(batch_.firstIdAt(i), kPhaseBucket);   // the turn is the risk now
     const bool command = batch_.commandAt(i);
     if (!command) guard_.noteTurn(io.bestEpoch());
+    current_ = i;   // currentTurn(): the bucket the turn below routes (histV2's source)
     io.runTurn(from, chat, batch_.render(i), command);
     ++out.turns;
     rememberBucket(i, io.bestEpoch());
@@ -413,6 +417,7 @@ class TgReceiver {
   std::vector<tg::Update> page_;
   std::vector<std::pair<int32_t, DupKey>> keys_;
   bool polled_ = true;   // the page came from getUpdates (poison marks apply)
+  size_t current_ = 0;   // the bucket of the turn being routed (valid inside runTurn)
 };
 
 }  // namespace nimbus::net

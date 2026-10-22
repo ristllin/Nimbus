@@ -11,6 +11,7 @@
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"       // capSummary / buildCompactInputs (L19-27)
 #include "nimbus/orch/episodic.h"
+#include "nimbus/orch/media_label.h"   // the receive path's label (lane D)
 #include "nimbus/orch/wire_limits.h"   // foldDigestCap / kJsonStrGuard
 
 // CUM-511 suite - /clear starts a genuinely fresh conversation.
@@ -681,6 +682,31 @@ static void test_anchored_fold_input_keeps_a_cut_summary_whole() {
   TEST_ASSERT_TRUE(agent::rowIdAfter(rest.front().firstId, slice.thru));
 }
 
+
+// L19-51 with lane D's label: a late item's label carries its send time
+// ("[image 1/1 ref=..., sent 09:58]"); the owner row keeps that label, the media row
+// the description, and the history shows the item once with its send time.
+static void test_hist_late_label_from_the_receive_path() {
+  HistChat c;
+  const std::string a = c.user("morning");
+  c.reply(a, "Morning!");
+  nimbus::orch::MediaLabel l;
+  l.k = 1;
+  l.n = 1;
+  l.ref = hex16(77);
+  l.sentAt = "09:58";
+  l.detail = "a parcel on the doorstep";
+  const std::string seg = nimbus::orch::mediaSegment(l);
+  c.add("user", MsgKind::Image, seg, "", "/mem/blobs/" + hex16(77) + ".jpg");
+  const std::string p = c.user(nimbus::orch::mediaTag(l), "att:" + hex16(77));
+  c.reply(p, "That came this morning.");
+  const std::string w = c.block();
+  TEST_ASSERT_TRUE_MESSAGE(w.find("- user: [image 1/1 ref=" + hex16(77) + ", sent 09:58] a parcel on the doorstep") !=
+                               std::string::npos,
+                           w.c_str());
+  TEST_ASSERT_EQUAL(1, (int)count(w, "a parcel on the doorstep"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_window_empty_after_clear_nonempty_before);
@@ -706,6 +732,7 @@ int main(int, char**) {
   RUN_TEST(test_collapse_repeats_rows);
   RUN_TEST(test_hist_replay_golden);
   RUN_TEST(test_anchored_fold_input_keeps_a_cut_summary_whole);
+  RUN_TEST(test_hist_late_label_from_the_receive_path);
   UNITY_END();
   return 0;
 }
