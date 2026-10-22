@@ -251,8 +251,12 @@ is `src/agent/telegram.cpp`). One cycle:
 crashes the device would be served again on every boot. The work in flight is marked in
 a record in RTC no-init memory (magic, build id, CRC; no settings write; a power-on
 clears it): the page while it is classified, each photo while it is fetched and
-described, each turn while it runs. A boot after a panic, watchdog or brownout counts a
-try against the mark (`main.cpp` hands the reset reason to the poll task); after two
+described, each turn while it runs. The record is two copies with a sequence number:
+every write goes to the copy not in use and seals its CRC last, and a boot takes the
+newest copy that checks out, so a restart in the middle of a write keeps the previous
+state instead of clearing it. A boot after a panic, watchdog or brownout counts a try
+against the mark (`main.cpp` hands the reset reason to `telegram::begin`, which boots
+the record and publishes its counters before the poll task starts); after two
 such resets on the same work it is skipped and only the owner's chat is told to send it
 again: a crashing photo becomes "could not be fetched: it made the device restart twice"
 in a turn that still answers everything else, a crashing turn is acked without running,

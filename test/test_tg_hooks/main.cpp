@@ -268,6 +268,9 @@ static void test_reset_reason_hook() {
   TEST_ASSERT_TRUE_MESSAGE(boot != std::string::npos, "begin() must boot the guard record");
   TEST_ASSERT_TRUE(boot < begin.find("xTaskCreatePinnedToCore("));
   const std::string bg = bodyOf(code(), "static void bootGuard() {");
+  // Once per boot (a second begin() must not count a crash twice), then boot, then publish.
+  TEST_ASSERT_TRUE(bg.find("if (g_pubBooted) return;") <
+                   bg.find("g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId())"));
   TEST_ASSERT_TRUE(bg.find("g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId())") <
                    bg.find("publishGuard();"));
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "g_guard.boot(").size());

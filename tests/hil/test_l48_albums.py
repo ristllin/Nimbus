@@ -6,9 +6,14 @@ album has fully arrived, every photo is fetched and described inside its turn, t
 turn runs with every item, the page is acked only after its turns returned, a
 duplicate costs no turn, the hourly ceiling bounds inbound turns, and a page that
 crashes the device twice is acked unprocessed. These legs prove it on hardware with
-no phone and no bot token: TGINJECT pages whose photos are card files (FSPUT, file id
-``LOCAL_/mem/...``), so neither the dedicated test bot nor the test chat is needed
-(the ``locks/tg-bot`` lock is not taken).
+no phone and no bot token: TGINJECT pages whose photos are card files, so neither the
+dedicated test bot nor the test chat is needed (the ``locks/tg-bot`` lock is not taken).
+The photos are staged over HTTP into the Files store (project ``l48``, file id
+``LOCAL_/mem/files/l48/<name>``, the project removed afterwards), not over the console:
+the console's FSPUT stalled at its acks on unit L while the cloud relay reconnected, and
+a stalled FSPUT leaves the console in its data mode, so every later command timed out.
+Each leg first waits until the device has been up for 30 s (the boot-time relay connect
+and first renders are done) and every guard read retries until the guard has booted.
 
 Unit A (SD card, TEST build, head provider pinned to claude-haiku-5-5 with effort low,
 the current captioner for the descriptions):
@@ -59,7 +64,9 @@ import tg_archive_bench as tb
 CHAT_DEFAULT = 4848484848  # a synthetic owner chat for the injected pages
 INJECT_DONE = "telegram: injected page:"
 LABEL_RE = re.compile(r"\[image (\d+)/(\d+)(?: ref=([0-9a-f]{16}))?")
-GUARD_RE = re.compile(r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+) holding=(\d)")
+GUARD_RE = re.compile(r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+) holding=(\d)(?: booted=(\d))?")
+STAGE_PROJECT = "l48"  # the Files store project the photos are staged in (removed afterwards)
+SETTLE_UPTIME_MS = 30000
 HEAPTRACE_RE = re.compile(
     r"transport: heaptrace (?P<target>\S+) body=(?P<body>\d+) pre=(?P<pre_f>\d+)/(?P<pre_l>\d+) "
     r"conn=\d+/(?P<conn_l>\d+) wrote=\d+/(?P<wrote_l>\d+) done=\d+/(?P<done_l>\d+) "
@@ -88,11 +95,17 @@ def album_turn_rows(rows: Iterable[dict], n: int) -> List[dict]:
 
 
 def guard_counts(line: str) -> Dict[str, int]:
+    """The counters of a ``TGGUARD`` reply; ``booted`` is -1 when the build predates it."""
     m = GUARD_RE.search(line or "")
     if not m:
         raise ValueError(f"not a TGGUARD line: {line!r}")
-    keys = ("dups", "ceiling", "poison", "tries", "holding")
-    return {k: int(v) for k, v in zip(keys, m.groups())}
+    keys = ("dups", "ceiling", "poison", "tries", "holding", "booted")
+    return {k: -1 if v is None else int(v) for k, v in zip(keys, m.groups())}
+
+
+def stage_path(name: str) -> str:
+    """The card path of a photo staged in the Files store (what ``LOCAL_`` names)."""
+    return f"/mem/files/{STAGE_PROJECT}/{name}"
 
 
 def head_traces(lines: Iterable[str], host: str = "api.anthropic.com") -> List[Dict[str, int]]:
@@ -115,11 +128,11 @@ def head_traces(lines: Iterable[str], host: str = "api.anthropic.com") -> List[D
     return out
 
 
-def album_page(
+def album_updates(
     uid: int, chat: int, items: List[Tuple[str, int]], caption: str = "", group: str = "", text: str = ""
-) -> str:
-    """One getUpdates page: an album of card files (path, size), the caption on the
-    first item, then an optional follow-up text."""
+) -> List[dict]:
+    """The updates of an album of card files (path, size), the caption on the first
+    item, then an optional follow-up text."""
     ups = []
     for i, (path, size) in enumerate(items):
         u = tb.local_photo_update(uid + i, chat, path, size, group=group or None)
@@ -128,6 +141,24 @@ def album_page(
         ups.append(u)
     if text:
         ups.append(tb.text_update(uid + len(items), chat, text))
+    return ups
+
+
+def album_page(
+    uid: int, chat: int, items: List[Tuple[str, int]], caption: str = "", group: str = "", text: str = ""
+) -> str:
+    """One getUpdates page (compact JSON: it rides one console line)."""
+    return tb.page(album_updates(uid, chat, items, caption, group, text))
+
+
+def eleven_page(uid: int, chat: int, items: List[Tuple[str, int]]) -> str:
+    """A 10-photo album plus one lone photo in one page. Each photo carries only the
+    rendition the device keeps (no thumbnail): with the thumbnails the page is longer
+    than one console line."""
+    lone = tb.local_photo_update(uid + 10, chat, items[10][0], items[10][1])
+    ups = album_updates(uid, chat, items[:10], group="L48C") + [lone]
+    for u in ups:
+        u["message"]["photo"] = u["message"]["photo"][-1:]
     return tb.page(ups)
 
 
@@ -178,8 +209,50 @@ def _inject(device, page: str, timeout: float = 900.0) -> List[str]:
     return _lines_until(device, INJECT_DONE, timeout)
 
 
-def _guard(device) -> Dict[str, int]:
-    return guard_counts(device.cmd("TGGUARD?", "TGGUARD", timeout=5.0))
+def _guard(device, timeout: float = 20.0) -> Dict[str, int]:
+    """The guard's counters once it has booted (a read before that is all zeros, which
+    is what the 22 Oct bench mistook for a lost count). Retries a garbled or early read."""
+    end, last = time.time() + timeout, None
+    while True:
+        try:
+            g = guard_counts(device.cmd("TGGUARD?", "TGGUARD", timeout=5.0))
+            if g["booted"] != 0:
+                return g
+            last = g
+        except Exception as e:  # noqa: BLE001 - console chatter or a cut line: read again
+            last = e
+        if time.time() >= end:
+            raise AssertionError(f"no booted guard read within {timeout:.0f} s: {last}")
+        time.sleep(1.0)
+
+
+def _settle(net, uptime_ms: int = SETTLE_UPTIME_MS, timeout: float = 90.0) -> None:
+    """Wait (over HTTP) until the device has been up for ``uptime_ms``."""
+
+    def up():
+        try:
+            return _state(net).get("uptimeMs", 0) >= uptime_ms
+        except Exception:  # noqa: BLE001 - still booting or busy
+            return False
+
+    assert _wait(up, timeout, every=3.0), f"the device did not settle ({uptime_ms} ms up) within {timeout:.0f} s"
+
+
+def _http(call, what: str, tries: int = 4):
+    """A request retried on a transport error or a busy answer (429/5xx)."""
+    last = None
+    for t in range(tries):
+        try:
+            r = call()
+            if r.status_code < 400:
+                return r
+            last = f"HTTP {r.status_code} {r.text[:160]}"
+            if r.status_code != 429 and r.status_code < 500:
+                break
+        except Exception as e:  # noqa: BLE001 - a dropped connection: retry
+            last = repr(e)
+        time.sleep(3.0 * (t + 1))
+    raise AssertionError(f"{what} failed: {last}")
 
 
 @pytest.fixture
@@ -187,24 +260,39 @@ def owner_chat(device, net):
     """The injected chat on the allowlist (it is the owner: the first entry), restored
     afterwards. No bot token is set: replies and notices are logged, not sent."""
     device.ensure_mode(1)
-    before = net.get_json("/api/orch", timeout=8.0).get("tgAllow", "")
+    _settle(net)
+    before = _http(lambda: net.get("/api/orch", timeout=8.0), "reading the allowlist").json().get("tgAllow", "")
     chat = _chat()
-    r = net.post("/api/orch", {"tgAllow": str(chat)}, timeout=8.0)
-    assert r.status_code == 200, f"setting the allowlist failed: HTTP {r.status_code}"
+    _http(lambda: net.post("/api/orch", {"tgAllow": str(chat)}, timeout=8.0), "setting the allowlist")
     try:
         yield chat
     finally:
-        net.post("/api/orch", {"tgAllow": before}, timeout=8.0)
+        _http(lambda: net.post("/api/orch", {"tgAllow": before}, timeout=8.0), "restoring the allowlist")
 
 
-def _stage(device, n: int, size: int, seed: int) -> List[Tuple[str, int]]:
-    items = []
-    for i in range(n):
-        data = tb.jpeg_near(size, seed=seed + i)
-        path = f"/mem/inject/l48_{seed}_{i}.jpg"
-        tb.fsput(device, data, path)
-        items.append((path, len(data)))
-    return items
+@pytest.fixture
+def stage(net):
+    """``stage(n, size, seed)`` puts n noise JPEGs into the Files store over HTTP and
+    returns their (card path, size); the whole project is removed afterwards."""
+    import requests
+
+    def put(n: int, size: int, seed: int) -> List[Tuple[str, int]]:
+        items = []
+        for i in range(n):
+            data = tb.jpeg_near(size, seed=seed + i)
+            name = f"p{seed}_{i}.jpg"
+            url = f"http://{net.ip}/api/files/upload?project={STAGE_PROJECT}&name={name}"
+            files = {"file": (name, data, "image/jpeg")}
+            _http(lambda: requests.post(url, files=files, headers=net._auth(), timeout=60), f"staging {name}")
+            items.append((stage_path(name), len(data)))
+        return items
+
+    try:
+        yield put
+    finally:
+        q = f"/api/files/rmproject?project={STAGE_PROJECT}&confirm=DELETE"
+        r = net.post(q, {}, timeout=20.0)
+        print(f"removed the staged photos: HTTP {r.status_code} {r.text[:80]}")
 
 
 # ---- unit A: albums ----------------------------------------------------------------
@@ -213,8 +301,8 @@ def _stage(device, n: int, size: int, seed: int) -> List[Tuple[str, int]]:
 @pytest.mark.hil
 @pytest.mark.net
 @pytest.mark.agent
-def test_l48_album_of_three_is_one_turn(device, net, owner_chat):
-    items = _stage(device, 3, 120000, seed=4801)
+def test_l48_album_of_three_is_one_turn(device, net, owner_chat, stage):
+    items = stage(3, 120000, seed=4801)
     base = _state(net)
     uid = tb.first_update_id() + 4800
     lines = _inject(device, album_page(uid, owner_chat, items, caption="All of this for dinner", group="L48A"))
@@ -250,8 +338,8 @@ def test_l48_album_of_three_is_one_turn(device, net, owner_chat):
 @pytest.mark.hil
 @pytest.mark.net
 @pytest.mark.agent
-def test_l48_album_and_text_is_one_turn(device, net, owner_chat):
-    items = _stage(device, 3, 90000, seed=4811)
+def test_l48_album_and_text_is_one_turn(device, net, owner_chat, stage):
+    items = stage(3, 90000, seed=4811)
     uid = tb.first_update_id() + 4810
     marker = f"did you see all three {uid}?"
     lines = _inject(device, album_page(uid, owner_chat, items, caption="lunch", group="L48B", text=marker))
@@ -265,13 +353,10 @@ def test_l48_album_and_text_is_one_turn(device, net, owner_chat):
 @pytest.mark.hil
 @pytest.mark.net
 @pytest.mark.agent
-def test_l48_eleven_photos_are_two_turns(device, net, owner_chat):
-    items = _stage(device, 11, 40000, seed=4821)
+def test_l48_eleven_photos_are_two_turns(device, net, owner_chat, stage):
+    items = stage(11, 40000, seed=4821)
     uid = tb.first_update_id() + 4820
-    page = album_page(uid, owner_chat, items[:10], group="L48C")
-    extra = json.loads(page)
-    extra["result"].append(tb.local_photo_update(uid + 10, owner_chat, items[10][0], items[10][1]))
-    lines = _inject(device, json.dumps(extra))
+    lines = _inject(device, eleven_page(uid, owner_chat, items))
     assert "10 messages batched into 1 turn" in lines[-1] and "resumes next cycle" in lines[-1], lines[-1]
     second = _lines_until(device, INJECT_DONE, 600)
     assert "1 message batched into 1 turn" in second[-1], second[-1]
@@ -296,9 +381,9 @@ def trace_summary(traces: List[Dict[str, int]]) -> Dict[str, int]:
 @pytest.mark.hil
 @pytest.mark.net
 @pytest.mark.agent
-def test_l48_ten_photos_against_one(device, net, owner_chat):
-    one = _stage(device, 1, 120000, seed=4831)
-    ten = _stage(device, 10, 120000, seed=4841)
+def test_l48_ten_photos_against_one(device, net, owner_chat, stage):
+    one = stage(1, 120000, seed=4831)
+    ten = stage(10, 120000, seed=4841)
     runs: Dict[str, List[Dict[str, int]]] = {"one": [], "ten": []}
     for r in range(3):
         for name, items in (("one", one), ("ten", ten)):
@@ -338,6 +423,8 @@ def test_l48_storm_one_turn_for_fifty_pages(device, net, owner_chat):
                 l42.restart_and_wait(net)
                 device.reopen_after_reenumerate()
                 mid = _guard(device)
+                print(f"after the restart: {mid}")
+                assert mid["booted"] == 1, f"the guard did not report its boot: {mid}"
                 assert mid["dups"] == before["dups"] + 24, f"the restart lost the duplicate count: {mid}"
             lines = _inject(device, page, timeout=300)
             notices += sum("guard notice (duplicate)" in ln for ln in lines)
@@ -386,13 +473,16 @@ def test_host_labels_and_album_rows():
 
 @pytest.mark.host
 def test_host_guard_counts():
-    assert guard_counts("TGGUARD dups=49 ceiling=0 poison=0 tries=0 holding=0") == {
+    assert guard_counts("TGGUARD dups=49 ceiling=0 poison=0 tries=0 holding=0 booted=1") == {
         "dups": 49,
         "ceiling": 0,
         "poison": 0,
         "tries": 0,
         "holding": 0,
+        "booted": 1,
     }
+    assert guard_counts("TGGUARD dups=0 ceiling=0 poison=0 tries=0 holding=0 booted=0")["booted"] == 0
+    assert guard_counts("TGGUARD dups=3 ceiling=0 poison=0 tries=0 holding=1")["booted"] == -1
     with pytest.raises(ValueError):
         guard_counts("ERR unknown 'TGGUARD?'")
 
@@ -431,3 +521,21 @@ def test_host_album_page_shape():
     assert msgs[0]["media_group_id"] == "G" and msgs[1]["media_group_id"] == "G"
     assert msgs[0]["photo"][-1]["file_id"] == "LOCAL_/mem/inject/a.jpg"
     assert msgs[2]["text"] == "hi"
+
+
+@pytest.mark.host
+def test_host_staged_pages_fit_one_console_line():
+    """The largest page a leg injects (ten photos plus one, staged paths, a 10-digit
+    chat, the largest update ids) rides one console line: a longer line is cut and the
+    leg would wait out a turn that never comes."""
+    from device import command_line_problem
+
+    items = [(stage_path(f"p4821_{i}.jpg"), 99999999) for i in range(11)]
+    page = eleven_page(999999999, 9999999999, items)
+    body = json.loads(page)
+    assert len(body["result"]) == 11 and body["result"][10]["message"].get("media_group_id") is None
+    assert body["result"][0]["message"]["photo"][-1]["file_id"] == "LOCAL_/mem/files/l48/p4821_0.jpg"
+    assert command_line_problem("TGINJECT " + page) is None, len(page)
+    assert len(page) < 3600, f"{len(page)} B leaves too little room under the console's line"
+    big = album_page(999999999, 9999999999, items[:3], caption="All of this for dinner", group="L48A", text="x" * 64)
+    assert command_line_problem("TGINJECT " + big) is None

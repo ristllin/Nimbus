@@ -1634,8 +1634,9 @@ static void publishGuard() {
 // poll task exists, and published at once: kept across a restart, a panic, the
 // watchdogs, a brownout (a crash counts a try against work it cut short), a deep-sleep
 // wake and a USB reset; rebuilt after a power-on, from another build, or when neither
-// copy reads as intact.
+// copy reads as intact. Once per boot: a second begin() must not count a crash twice.
 static void bootGuard() {
+  if (g_pubBooted) return;
   const bool kept = g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId());
   publishGuard();
   alogf("telegram: storm guard %s (reset %d, page tries %u, duplicates %u)", kept ? "kept" : "fresh",
