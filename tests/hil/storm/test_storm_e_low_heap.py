@@ -116,6 +116,8 @@ def test_storm_e_low_heap(storm):
         }
     )
     if not m.extra["dreamFinished"]:
+        # A device whose nightly upkeep never finishes is not usable, whatever the probe
+        # got (both images are measured the same way).
         m.notes.append(f"the upkeep did not finish under low memory: {dream[:120]}")
-        m.usable = m.usable and storm.control  # on the candidate a hung upkeep fails usable
+        m.usable = False
     kit.assert_graded(storm.finish(LEG, m, BOUNDS))
