@@ -2571,13 +2571,23 @@ static bool isMutatingTool(const std::string& name, const std::string& action) {
          name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad";
 }
 
+// The write tools reach their handler even under FAULT memory, which refuses and
+// counts them (MemoryContext::writable).
+static bool isMemoryWriteTool(const std::string& name) {
+  return name == "memory.write" || name == "memory.update";
+}
+
 std::string handleMcp(const std::string& jsonRpcRequest,
                       const nimbus::orch::Principal& who) {
   JsonDocument d;
   const bool parsed = deserializeJson(d, jsonRpcRequest) == DeserializationError::Ok;
   const std::string method = parsed ? std::string(d["method"] | "") : std::string();
-  const std::string name =
-      (parsed && method == "tools/call") ? std::string(d["params"]["name"] | "") : std::string();
+  const bool isToolCall = method == "tools/call";   // never true for an unparsed request
+  const std::string name = isToolCall ? std::string(d["params"]["name"] | "") : std::string();
+  // The call's `action` arg (for tools where only some actions write, e.g.
+  // memory.archive restore vs search/list). MCP nests args under params.arguments.
+  const std::string action =
+      isToolCall ? std::string(d["params"]["arguments"]["action"] | "") : std::string();
   // Resilience: with the memory subsystem faulted (FAULT memory), every MCP tool
   // call fails cleanly with a JSON-RPC error instead of touching the engines - the
   // model sees the error and carries on, proving a turn survives with no memory.
@@ -2585,7 +2595,7 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // engine unavailable" (ctx.writable) and counts the refusal: refused here, a
   // write was invisible to the night's outcome, which then read ok (unit L, 22 Oct).
   const bool faulted = nimbus::fault::active(nimbus::fault::MEMORY);
-  if (faulted && name != "memory.write" && name != "memory.update")
+  if (faulted && !isMemoryWriteTool(name))
     return "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32001,"
            "\"message\":\"memory subsystem unavailable (fault-injected)\"}}";
   // A few tools own a LONG provider round-trip (image.generate blocks ~90-120 s on
@@ -2594,11 +2604,6 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // 8 s watchdog and reboots the device (proven live). Such tools do their SD work
   // OUTSIDE the long wait, under their OWN brief Lock (they decode to PSRAM first),
   // so they dispatch outside this one. See image_gen.cpp.
-  // The call's `action` arg (for tools where only some actions write, e.g.
-  // memory.archive restore vs search/list). MCP nests args under params.arguments.
-  const std::string action =
-      (parsed && method == "tools/call")
-          ? std::string(d["params"]["arguments"]["action"] | "") : std::string();
   if (name == "image.generate") return g_reg.handleRpc(jsonRpcRequest, who);  // self-locks briefly
   // Serialize the whole dispatch with the turn task's engine access. Recursive, so the
   // nested applyConfig/persist* below re-enter safely. (A memory.write tool embeds via
@@ -2608,7 +2613,7 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   std::string resp = g_reg.handleRpc(jsonRpcRequest, who);
   // Persist ONLY after a MUTATING tools/call (dirty-flag discipline); a faulted
   // write was refused and changed nothing.
-  if (method == "tools/call" && isMutatingTool(name, action) && !faulted) {
+  if (isToolCall && isMutatingTool(name, action) && !faulted) {
     applyConfig();   // memory.config may have changed max_vectors
     persistVectors();
     // memory.scratchpad saves itself (its result reports a failed save); no

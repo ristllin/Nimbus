@@ -139,8 +139,9 @@ struct MemoryContext {
   MemOpCounters* ops = nullptr;               // optional: write outcome counters (lane M)
   // False while the memory engine cannot take writes (the device's FAULT memory):
   // memory.write and memory.update refuse as "memory engine unavailable", counted
-  // like every other refusal, from a tool call or a turn's mem_write alike. Null =
-  // always writable.
+  // like every other refusal, from a tool call or a turn's mem_write alike, and the
+  // pending queue's drain stores nothing (its facts stay queued). Null = always
+  // writable.
   std::function<bool()> writable;
 
   // ---- embedding outages (pending_embed.h). All optional: with `pending` null a

@@ -901,6 +901,32 @@ static void test_coalesced_update_keeps_intent_and_delete_covers_queue() {
   TEST_ASSERT_EQUAL_INT(0, (int)r.pending.size());
 }
 
+// An engine that cannot take writes (the device's FAULT memory) drains nothing from
+// the queue: the fact stays queued and nothing is counted as stored, so a night run
+// under the fault cannot report a write that landed. Once the engine takes writes,
+// the same drain stores it. (Security review, lane HF2: the fault gated tool writes
+// but not the drain.)
+static void test_an_unwritable_engine_drains_nothing() {
+  Rig r;
+  r.failWith = "HTTP 429 credit_balance_exhausted";
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeQueued, r.write("my locker code is 4417", owner()).code.c_str());
+  r.failWith.clear();
+  r.park.clear();
+  bool writable = false;
+  r.ctx.writable = [&writable] { return writable; };
+  DrainRig dr;
+  dr.principals[kOwnerNs] = owner();
+  const int callsBefore = r.embedCalls;
+  TEST_ASSERT_EQUAL_INT((int)EmbedDrainStep::Idle, (int)drainOne(r.ctx, dr.deps(r)).step);
+  TEST_ASSERT_EQUAL_INT(0, r.vec.size());
+  TEST_ASSERT_EQUAL_INT(1, (int)r.pending.size());
+  TEST_ASSERT_EQUAL_INT(callsBefore, r.embedCalls);   // not even an embed is spent
+  writable = true;
+  TEST_ASSERT_EQUAL_INT((int)EmbedDrainStep::Stored, (int)drainOne(r.ctx, dr.deps(r)).step);
+  TEST_ASSERT_EQUAL_INT(1, r.vec.size());
+  TEST_ASSERT_EQUAL_INT(0, (int)r.pending.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_queue_roundtrip_and_tolerant_deserialize);
@@ -924,5 +950,6 @@ int main(int, char**) {
   RUN_TEST(test_mem_write_never_silently_lost);
   RUN_TEST(test_lexical_recall_bounds_and_tags);
   RUN_TEST(test_coalesced_update_keeps_intent_and_delete_covers_queue);
+  RUN_TEST(test_an_unwritable_engine_drains_nothing);
   return UNITY_END();
 }

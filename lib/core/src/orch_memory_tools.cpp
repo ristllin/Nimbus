@@ -1497,7 +1497,9 @@ bool replayIfStored(const MemoryContext& ctx, const EmbedDrainDeps& d, const Pen
 
 EmbedDrainResult drainOne(const MemoryContext& ctx, const EmbedDrainDeps& d) {
   EmbedDrainResult r;
-  if (!ctx.pending || !ctx.vec || !ctx.embed) return r;
+  // An engine that cannot take writes (FAULT memory) stores nothing from the queue
+  // either; the facts wait, queued, until it can.
+  if (!ctx.pending || engineDown(ctx)) return r;
   PendingEmbed p;
   bool have = false;
   runLocked(d, [&] {
