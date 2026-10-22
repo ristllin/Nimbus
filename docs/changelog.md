@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.16 - No more restarts every few hours
+
+A fix release for a restart found on a desk device and reproduced on a bench device before the fix.
+
+- **No more restarts every few hours.** The device restarted itself about every three and a half hours, and during busy moments more often. A routine or a message that called a tool for longer than about 8 seconds held the memory card, and the device's main loop waited for the card with no time limit until the watchdog restarted the device. The main loop now only tries the card for a moment and, when it is busy, skips that round of upkeep or keeps the event for the next round, so a long tool call can no longer restart the device.
+
 ## v4.5.15 - Working memory is back
 
 A fix release on top of v4.5.14, found by the release test runs on two bench devices before v4.5.14 reached any desk device.
