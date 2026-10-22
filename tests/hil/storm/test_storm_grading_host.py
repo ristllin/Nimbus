@@ -348,3 +348,32 @@ def test_messages_per_turn():
         {"role": "assistant"},
     ]
     assert g.rows_per_turn(rows) == {"turn:m1": 2, "turn:m2": 1, "turn:?": 1}
+
+
+def test_the_log_tap_takes_only_newer_lines():
+    """A read can return older lines when the log moves (the card dropped out and the
+    log went to flash, whose tail holds earlier boots) or a line cut at its start; the
+    tap keeps only lines newer than the last it took, and a restart starts it again."""
+    tap = kit.LogTap(net=None)
+    tap.last = (100, 400000)
+    got = tap.take(
+        [
+            "101 400100 - telegram: msg from Owner (chat 1): a",
+            "eady-orch    intFree=37160",  # cut at the start of the read
+            "51 42112 - main: SD lost -> degraded (no reboot)",  # an earlier boot's tail
+            "101 400100 - telegram: msg from Owner (chat 1): a",  # read twice
+            "102 400200 - turn end: ok host=anthropic tokens in=1 out=1 tools=0 reply=2B src=owner",
+        ]
+    )
+    assert [ln.split(" - ")[1][:9] for ln in got] == ["telegram:", "turn end:"]
+    assert tap.skipped == 3
+    tap.restarted(uptime_ms=5000)
+    read = [
+        "103 402167 - the previous boot's tail",
+        "104 402300 - its last line",
+        "3 900 - boot line of the new boot",
+        "4 1200 - next line",
+    ]
+    assert tap.take(read) == ["3 900 - boot line of the new boot", "4 1200 - next line"]
+    assert tap.take(read) == []  # read again: nothing new
+    assert tap.take(read + ["5 1300 - a newer line"]) == ["5 1300 - a newer line"]

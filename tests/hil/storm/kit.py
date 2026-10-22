@@ -31,7 +31,7 @@ import json
 import os
 import re
 import time
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import grading as g
 
@@ -128,14 +128,22 @@ def first_update_id() -> int:
 
 class LogTap:
     """New device-log lines since the tap was armed, read over HTTP
-    (``/api/errlog/recent``). Lines are kept once each, in arrival order, across a
-    restart (the line text includes its sequence number and uptime)."""
+    (``/api/errlog/recent``), in order, each once.
+
+    Every durable-log line carries its boot's line number and uptime, both rising within
+    a boot, so a line is taken only when it is newer than the last one taken. That keeps
+    out the older lines a read can return when the log moves (a card that drops out puts
+    the log on flash, whose tail holds earlier boots: unit A, 22 Oct) and a line cut at
+    the start of a read. A restart the leg makes or expects (``restarted()``) starts the
+    count again for the new boot."""
 
     def __init__(self, net, window: int = 16000):
         self.net = net
         self.window = window
-        self.seen: set = set()
+        self.last = (-1, -1)  # (line number, uptime ms) of the newest line taken
         self.lines: List[str] = []
+        self.skipped = 0  # older or cut lines a read returned
+        self.new_boot: Optional[Tuple[float, int]] = None  # (host time, unit uptime ms) seen after a restart
 
     def _read(self) -> List[str]:
         try:
@@ -144,16 +152,57 @@ class LogTap:
         except Exception:  # noqa: BLE001 - busy or restarting: the next poll catches up
             return []
 
+    @staticmethod
+    def _key(line: str) -> Optional[Tuple[int, int]]:
+        m = g.LOG_LINE_RE.match(line)
+        return (int(m.group("seq")), int(m.group("ms"))) if m else None
+
     def arm(self) -> "LogTap":
-        self.seen.update(self._read())
+        keys = [k for k in map(self._key, self._read()) if k]
+        self.last = max(keys) if keys else (-1, -1)
         self.lines = []
         return self
 
-    def poll(self) -> List[str]:
-        new = [ln for ln in self._read() if ln not in self.seen]
-        self.seen.update(new)
+    def restarted(self, uptime_ms: int = 0) -> None:
+        """The unit restarted (seen at ``uptime_ms``): the next boot's lines start from
+        line 0 again. A read right after a restart still holds the previous boot's tail
+        first, so until a new-boot line is taken only the lines after the read's last boot
+        boundary count, and none stamped later than the unit has been up."""
+        self.last = (-1, -1)
+        self.new_boot = (time.time(), uptime_ms)
+
+    def _newest_boot(self, lines: List[str]) -> List[str]:
+        """The lines after the read's last boot boundary (where the line number falls):
+        a read that spans a restart, or a log that moved, holds earlier boots first."""
+        keys = [self._key(ln) for ln in lines]
+        start = 0
+        for i in range(1, len(lines)):
+            if keys[i] and keys[i - 1] and keys[i][0] < keys[i - 1][0]:
+                start = i
+        self.skipped += start
+        return lines[start:]
+
+    def take(self, lines: List[str]) -> List[str]:
+        lines = self._newest_boot(lines)
+        if self.new_boot is not None:  # right after a restart: nothing stamped later than the unit's uptime
+            t0, up = self.new_boot
+            cap = up + int((time.time() - t0) * 1000) + 5000
+            lines = [ln for ln in lines if (self._key(ln) or (0, cap + 1))[1] <= cap]
+        new = []
+        for ln in lines:
+            k = self._key(ln)
+            if k is None or k[0] <= self.last[0] or k[1] < self.last[1]:
+                self.skipped += 1
+                continue
+            self.last = k
+            new.append(ln)
+        if new:
+            self.new_boot = None
         self.lines.extend(new)
         return new
+
+    def poll(self) -> List[str]:
+        return self.take(self._read())
 
     def parsed(self) -> List[g.LogLine]:
         return g.parse_log("\n".join(self.lines))
@@ -426,7 +475,9 @@ class StormBench:
         end = time.time() + timeout
         while time.time() < end:
             try:
-                if self.net.get_json("/api/state", timeout=4.0).get("uptimeMs", 10**9) < fresh_ms:
+                up = self.net.get_json("/api/state", timeout=4.0).get("uptimeMs", 10**9)
+                if up < fresh_ms:
+                    self.tap.restarted(up)
                     self.tap.poll()  # the boot's lines (a crash notice among them) before they scroll away
                     break
             except Exception:  # noqa: BLE001 - still booting
