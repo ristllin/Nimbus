@@ -381,6 +381,24 @@ def _new_boot_seen(net, ip: str, before_n: Optional[int], budget_s: float) -> bo
     return value is not None and value > before_n
 
 
+def console_after_silent_boot(device) -> bool:
+    """Win the console back after a reboot the host link missed. On the S3's native
+    USB the console can stay silent after a panic reset while the board boots and
+    runs (unit L, 22 Oct 2026: the ROM printed up to "entry", the app's boot never
+    reached the host, the board served HTTP on the crash boot). A libusb bus reset
+    (no chip reset; MAC-safe with two boards attached through NIMBUS_HIL_OTHER_SERIAL)
+    and a reopen; True once the console answers PING. A reopen may reset the chip
+    (a usb boot after the crash boot, which first_boot_after skips)."""
+    device.close()
+    device.bus_reset()
+    try:
+        device.reopen_after_reenumerate(drain_boot=True)
+    except Exception as exc:  # noqa: BLE001 - reported, the caller decides
+        print(f"[L39] the console did not come back after a bus reset: {exc}")
+        return False
+    return device.ping(timeout=5.0)
+
+
 def _await_crash_reboot(device, net, ip: str, before_n: Optional[int], timeout: float) -> "Optional[str]":
     """Wait out a crash and the reboot after it; returns the READY beacon's IP.
 
@@ -402,8 +420,18 @@ def _await_crash_reboot(device, net, ip: str, before_n: Optional[int], timeout: 
         device.reopen_after_reenumerate(drain_boot=False)  # the handle was a dead endpoint
     except Exception:  # noqa: BLE001 - the USB endpoint dropped (re-enumerated)
         device.reopen_after_reenumerate(drain_boot=False)
-    _, ip2 = device.wait_ready(timeout=60.0)
-    return ip2
+    try:
+        _, ip2 = device.wait_ready(timeout=60.0)
+        return ip2
+    except ExpectTimeout:
+        # A silent console after the reset is the host link, not the board, once a
+        # new boot answers over the LAN: judge the crash there (the report is read
+        # over HTTP anyway) and win the console back for the next leg.
+        if not _new_boot_seen(net, ip, before_n, 60.0):
+            raise
+        print("[L39] the console stayed silent after the reset; the new boot answered over the LAN")
+        console_after_silent_boot(device)
+        return None
 
 
 def _panic_and_reboot(device, net, kind: str) -> "tuple[str, Optional[int]]":

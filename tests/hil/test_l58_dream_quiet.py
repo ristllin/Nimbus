@@ -27,9 +27,11 @@ Legs:
   1. Every provider unreachable (``FAULT provider on``): the row says FAILED with
      its cause and the write counts, a retry is scheduled for the same night, and
      the device sends NOTHING to Telegram (the failure notice is held).
-  2. Memory refused (``FAULT memory on``) after an owner turn that states durable
-     facts: the reflection's writes fail, and the row says degraded with the
-     failed count - never ok.
+  2. Memory refused (``FAULT memory on``) for the whole exchange: the owner states
+     two facts new to the unit (unique per run), the owner turn cannot save them,
+     every write the reflection tries is refused and counted, and the row says
+     degraded with exactly that count - never ok. A reflection that tries no write
+     leaves nothing to judge, and the leg skips with the row instead of passing.
   3. Storage: the dream path writes no NVS (STATUS: used bytes and failed NVS
      writes are the same before and after the drill; run it on the NVSFILL'd unit).
   4. A restart mid-drill (``PANIC arm=turn`` while the reflection turn runs): the
@@ -51,10 +53,12 @@ from __future__ import annotations
 
 import re
 import time
+from typing import Optional
 
 import pytest
 
 from device import Device, ExpectTimeout
+from test_l39_crash_forensics import _new_boot_seen, console_after_silent_boot
 from test_turn_record_bench import _epiq
 
 pytestmark = [pytest.mark.hil, pytest.mark.agent]
@@ -109,6 +113,29 @@ def _drill(dev: Device, timeout: float = 240.0) -> str:
     grown = _status(dev)["uptime"] - before["uptime"]
     assert grown >= (time.time() - t0) * 1000 - 5000, "the device restarted during the drill"
     return window
+
+
+# fire() logs the night's memory writes by outcome when it made any
+# (memory_subsystem.cpp): "dream: memory writes stored=<n> queued=<n> refused=<n>".
+_NIGHT_WRITES = re.compile(r"dream: memory writes stored=(\d+) queued=(\d+) refused=(\d+)")
+
+
+def night_writes(window: str) -> "tuple[int, int, int]":
+    """(stored, queued, refused) of the drill's night; (0, 0, 0) when it logged no write."""
+    m = _NIGHT_WRITES.search(window)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+
+def refused_night_reason(newest: str, refused: int) -> Optional[str]:
+    """Why the ev:dream row misreports a night whose ``refused`` writes failed, or None."""
+    if newest.startswith("Nightly dream ok"):
+        return f"{refused} refused write(s) under an ok row: {newest}"
+    if not newest.startswith("Nightly dream degraded"):
+        return f"a night that ran with refused writes must read degraded: {newest}"
+    m = re.search(r"(\d+) failed\)", newest)
+    if not m or int(m.group(1)) != refused:
+        return f"the row's failed count is not the {refused} refused write(s): {newest}"
+    return None
 
 
 def _health_row(health: dict, key: str) -> dict:
@@ -173,36 +200,37 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
 
 
 def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
-    # Memory fails from BEFORE the owner turn, so the day's facts are not stored by
-    # the turn itself and the night has something to write; its writes then fail too.
-    # The owner turn must END before the drill: "orchestrator: turn" also matches the
-    # turn's start line, so the night used to queue behind a turn still running and
-    # the 240 s wait ran out.
+    """Memory refused for the whole exchange (FAULT memory from before the owner turn).
+    The facts are new to the unit: on unit L (22 Oct 2026) the owner turn found its
+    facts already stored ("I didn't add duplicates"), the reflection only searched, and
+    the honest row was "ok: 0 of 0", which this leg read as a failure. Every write the
+    reflection now tries is refused in the tool and counted (FAULT memory used to refuse
+    it before the counter, so the night read ok)."""
+    tag = f"b{int(time.time()) % 100000}"
     orch.cmd("FAULT memory on", "FAULT memory=1", timeout=5.0)
     try:
         orch.turn(
-            "Please remember for later: my sister Anna's birthday is on 3 March, and I work from home on Fridays now."
+            f"Please remember for later ({tag}): my bench neighbour Ola keeps three beehives, "
+            "and the bench van is parked in bay 14."
         )
-        orch.expect("turn end:", timeout=420.0)  # failing memory tools can stretch the owner turn
+        # The owner turn must END before the drill: "orchestrator: turn" also matches
+        # the turn's start line, so the night used to queue behind a running turn.
+        orch.expect("turn end:", timeout=180.0)
         orch.drain(quiet=2.0)
-        window = _drill(orch, timeout=480.0)  # every memory write of the night fails and is retried by the model
+        window = _drill(orch, timeout=480.0)  # every memory write of the night fails and may be retried
     finally:
         orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
     assert "telegram: send" not in window, "the dream messaged the owner"
     rows = _dream_rows(orch)
     assert rows, "no ev:dream row was written"
     newest = rows[0]
-    m = re.search(r"(\d+) of (\d+) memories stored \(.*?(\d+) failed\)", newest)
-    assert m, f"the dream row carries no write counts: {newest}"
-    attempted, failed = int(m.group(2)), int(m.group(3))
-    if newest.startswith("Nightly dream degraded"):
-        assert failed >= 1, newest
-        return
-    # Any other night must not hide a failed write behind "ok".
-    assert failed == 0, f"a night with failed writes did not say degraded: {newest}"
-    if attempted == 0:
-        pytest.skip(f"the model wrote nothing tonight, so the degraded path did not run (allowed): {newest}")
-    pytest.fail(f"writes were attempted with memory failing, yet none failed: {newest}")
+    stored, queued, refused = night_writes(window)
+    assert (stored, queued) == (0, 0), f"a write landed while memory was refused: {newest}"
+    if refused == 0:
+        assert not newest.startswith("Nightly dream degraded (memory writes failed)"), newest
+        pytest.skip(f"the reflection tried no memory write, so there was no refusal to count; row: {newest}")
+    why = refused_night_reason(newest, refused)
+    assert why is None, why
 
 
 def test_dream_writes_no_nvs(orch: Device):
@@ -218,11 +246,22 @@ def test_dream_writes_no_nvs(orch: Device):
     )
 
 
+class SilentConsole(Exception):
+    """The board rebooted after the armed panic (a newer boot answers over the LAN)
+    but the console stayed silent: the host link, not the board."""
+
+    def __init__(self, panic_line: str):
+        super().__init__("the console stayed silent after the reset; the new boot answered over the LAN")
+        self.panic_line = panic_line
+
+
 _ARMED_PANIC = "Guru Meditation"  # the armed null store, as the panic handler prints it
 _ROM_RESET = "rst:"  # the ROM banner of the boot after it
 
 
-def _await_armed_panic_reboot(dev: Device, panic_timeout: float = 240.0) -> str:
+def _await_armed_panic_reboot(
+    dev: Device, panic_timeout: float = 240.0, net=None, ip: Optional[str] = None, before_n: Optional[int] = None
+) -> str:
     """Wait out the panic this leg armed and the reboot after it; returns the panic line.
 
     The panic handler prints its report ("Guru Meditation ...", the backtrace,
@@ -230,13 +269,25 @@ def _await_armed_panic_reboot(dev: Device, panic_timeout: float = 240.0) -> str:
     only called once the ROM's ``rst:`` banner arrived: called straight after DREAM,
     it read the armed panic as a boot failure (unit L, 21 Oct: "panic during boot"
     while the next boot came up and ran). A drill that ends with no panic fails here,
-    so the leg cannot pass on a turn the arm never reached."""
+    so the leg cannot pass on a turn the arm never reached.
+
+    With ``net``: a console that stays silent after the reset (unit L, 22 Oct: the
+    crash boot ran and reconciled the night for 195 s while the host saw nothing past
+    the ROM "entry" line) is the host link once a boot newer than ``before_n``
+    answers over the LAN: SilentConsole, so the caller reads the boot's verdict over
+    HTTP first and only then wins the console back (a reopen can reset the chip, and
+    the night's status lives in the crash boot's RAM)."""
     line = dev.expect(_ARMED_PANIC, timeout=panic_timeout)
     try:
         dev.expect(_ROM_RESET, timeout=20.0)
     except Exception:  # noqa: BLE001 - the USB endpoint dropped at the reset (re-enumerated)
         dev.reopen_after_reenumerate(drain_boot=False)
-    dev.wait_ready(timeout=90.0)
+    try:
+        dev.wait_ready(timeout=90.0)
+    except ExpectTimeout:
+        if net is None or not _new_boot_seen(net, ip, before_n, 60.0):
+            raise
+        raise SilentConsole(line) from None
     return line
 
 
@@ -259,11 +310,19 @@ def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
     the night's window is still open (a daytime drill keeps the next slot)."""
     _arm_turn_panic(orch)
     ip = _status(orch)["ip"]
+    before_n = net.get_json("/api/state", ip=ip, timeout=8.0).get("boot", {}).get("n")
     orch.drain(quiet=0.5)
     orch.send("DREAM")
     orch.expect("DREAM queued", timeout=5.0)
     # The armed panic fires deep in the reflection turn; the device restarts.
-    panic = _await_armed_panic_reboot(orch)
+    console_ok = True
+    try:
+        panic = _await_armed_panic_reboot(
+            orch, net=net, ip=ip, before_n=before_n if isinstance(before_n, int) else None
+        )
+    except SilentConsole as exc:
+        print(f"[L58] {exc}")
+        panic, console_ok = exc.panic_line, False
     assert "StoreProhibited" in panic, f"not the armed null store: {panic}"
     # The boot reconcile waits for the synced clock; poll for its verdict.
     night = {}
@@ -278,6 +337,8 @@ def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
     assert night.get("cause") == "restarted", night
     assert night.get("err") == "the device restarted during this run", night
     assert night.get("stateSaved") is True, night
+    if not console_ok:  # the verdict above was read from the crash boot; now the rows need the console
+        assert console_after_silent_boot(orch), "the console did not come back after a bus reset (USB wedge)"
     rows = _dream_rows(orch)
     newest = rows[0] if rows else ""
     assert newest.startswith("Nightly dream interrupted (the device restarted during the reflection)"), (
@@ -288,6 +349,8 @@ def test_interrupted_dream_is_reconciled_at_the_next_boot(orch: Device, net):
     dream = next((lp for lp in loops if lp.get("id") == "dream"), None)
     assert dream is not None, "the reserved dream routine is missing from /api/loops"
     assert dream.get("lastResult") == "fail", dream
+    # The record names the cause (it read fail with no lastErr on 22 Oct 2026).
+    assert dream.get("lastErr") == "the device restarted during this run", dream
     now = int(net.get_json("/api/state", ip=ip, timeout=8.0).get("clock", {}).get("epoch", 0))
     retry = re.search(r"retry (\d) of 3 at (\d{2}):(\d{2})", newest)
     if retry:

@@ -16,8 +16,14 @@ from __future__ import annotations
 
 import pytest
 
-from device import BootError, Device, DeviceError
-from test_l58_dream_quiet import _await_armed_panic_reboot, _dream_rows
+from device import BootError, Device, DeviceError, ExpectTimeout
+from test_l58_dream_quiet import (
+    SilentConsole,
+    _await_armed_panic_reboot,
+    _dream_rows,
+    night_writes,
+    refused_night_reason,
+)
 
 pytestmark = pytest.mark.host
 
@@ -126,3 +132,64 @@ def test_the_dream_rows_are_read_whole_and_newest_first():
 def test_no_rows_reads_as_none():
     dev = _console(["EPIQ rows=0 ms=3 files=0 bytes=0 older=0 next=-"])
     assert _dream_rows(dev) == []
+
+
+# ---- a console that stays silent after the armed panic's reset -------------------
+ROM_ONLY = ["rst:0xc (RTC_SW_CPU_RST),boot:0x2b (SPI_FAST_FLASH_BOOT)", "entry 0x403c88b8"]
+
+
+class _BootNet:
+    """GET /api/state as a board that has rebooted into boot ``n`` answers it."""
+
+    def __init__(self, n: int):
+        self.n = n
+
+    def get_json(self, path, ip=None, timeout=5.0):
+        assert path == "/api/state"
+        return {"boot": {"n": self.n}}
+
+
+def _silent_after_rom():
+    dev = _canned(ARMED_REPORT + ROM_ONLY)
+
+    def silent(timeout=20.0, max_total=None):
+        dev._pushback.clear()
+        raise ExpectTimeout("READY beacon", ROM_ONLY)
+
+    dev.wait_ready = silent
+    return dev
+
+
+def test_a_silent_console_after_the_reset_is_the_host_link_when_the_lan_sees_a_new_boot():
+    """Unit L, 22 Oct 2026: the crash boot ran and reconciled the night while the host
+    saw nothing past the ROM "entry" line. The leg reads the verdict over HTTP."""
+    with pytest.raises(SilentConsole) as got:
+        _await_armed_panic_reboot(
+            _silent_after_rom(), panic_timeout=1.0, net=_BootNet(376), ip="192.0.2.1", before_n=375
+        )
+    assert got.value.panic_line == PANIC
+
+
+def test_a_silent_console_with_no_lan_check_still_fails():
+    with pytest.raises(ExpectTimeout):
+        _await_armed_panic_reboot(_silent_after_rom(), panic_timeout=1.0)
+
+
+# ---- the degraded-night leg's judgement ---------------------------------------------
+OK_NONE = "Nightly dream ok: 0 of 0 memories stored (0 new, 0 updated, 0 queued, 0 failed), scratchpad groomed"
+DEGRADED_2 = (
+    "Nightly dream degraded (memory writes failed): 0 of 2 memories stored (0 new, 0 updated, 0 queued, 2 failed)"
+)
+
+
+def test_the_nights_writes_are_read_from_the_drill_window():
+    window = "[agent] dream: start\n[agent] dream: memory writes stored=0 queued=0 refused=2 (pending=0)\n"
+    assert night_writes(window) == (0, 0, 2)
+    assert night_writes("[agent] dream: end ok pruned=0 deduped=0 tokens=1681") == (0, 0, 0)
+
+
+def test_refused_writes_need_a_degraded_row_with_their_count():
+    assert refused_night_reason(DEGRADED_2, 2) is None
+    assert "under an ok row" in refused_night_reason(OK_NONE, 2)  # the release-run reading, with writes
+    assert "failed count" in refused_night_reason(DEGRADED_2, 3)
+    assert "must read degraded" in refused_night_reason("Nightly dream FAILED (network: x), no retry tonight", 1)

@@ -470,3 +470,52 @@ def test_rows_from_before_the_leg_never_count():
     seen = SEEN_22_OCT | {"m00000f75", "m00000f76"}
     ok, why = offline_rows_verdict(PAGE_22_OCT, seen, 1)
     assert not ok and "0 earlier offline boot(s)" in why
+
+
+# ---- a console that stays silent after a crash reset ---------------------------------
+class _SilentDevice:
+    """The ROM banner arrives, then the app's boot never reaches the host."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def expect(self, substr, timeout=5.0):
+        self.calls.append(f"expect {substr}")
+        return "rst:0xc (RTC_SW_CPU_RST),boot:0x2b (SPI_FAST_FLASH_BOOT)"
+
+    def wait_ready(self, timeout=20.0, max_total=None):
+        raise l39.ExpectTimeout("READY beacon", ["entry 0x403c88b8"])
+
+    def close(self):
+        self.calls.append("close")
+
+    def bus_reset(self, *a, **k):
+        self.calls.append("bus_reset")
+        return True
+
+    def reopen_after_reenumerate(self, drain_boot=True):
+        self.calls.append("reopen")
+        return self
+
+    def ping(self, timeout=3.0):
+        return True
+
+
+class _StateNet:
+    def __init__(self, n):
+        self.n = n
+
+    def get_json(self, path, ip=None, timeout=5.0):
+        return {"boot": {"n": self.n}}
+
+
+def test_a_crash_boot_the_console_missed_is_judged_over_the_lan_and_the_console_won_back():
+    dev = _SilentDevice()
+    assert l39._await_crash_reboot(dev, _StateNet(277), "192.0.2.1", 276, 10.0) is None
+    assert dev.calls[-3:] == ["close", "bus_reset", "reopen"]
+
+
+def test_a_silent_console_with_no_new_boot_is_still_a_failure(monkeypatch):
+    monkeypatch.setattr(l39, "_new_boot_seen", lambda net, ip, before_n, budget_s: False)
+    with pytest.raises(l39.ExpectTimeout):
+        l39._await_crash_reboot(_SilentDevice(), _StateNet(276), "192.0.2.1", 276, 10.0)
