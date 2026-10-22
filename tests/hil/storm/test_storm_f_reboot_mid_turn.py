@@ -52,7 +52,7 @@ def _cut_turn(storm, text: str, uid: int) -> str:
         storm.inject(text, uid, timeout=120.0)
     except Exception as e:  # noqa: BLE001 - the console dies with the crash: expected
         print(f"[storm] console lost in the crash: {type(e).__name__}")
-    storm.wait_back(timeout=150.0)
+    storm.wait_back(timeout=360.0)  # a crash boot writes its dump and rescans the card: about 3 min on unit A
     return armed.strip()
 
 
