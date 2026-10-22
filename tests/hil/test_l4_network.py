@@ -18,6 +18,7 @@ import time
 
 import pytest
 
+from device import ExpectTimeout
 from net import AP_IP, WifiAuthFailure
 
 
@@ -148,6 +149,19 @@ def test_sta_connect_ok(device, net, secrets, require_secret):
     assert device.ping(), "device stopped answering after STA connect (wedged)"
 
 
+def _back_on_lan(net, timeout: float) -> bool:
+    """True once the device answers /api/state at NIMBUS_TEST_IP (or the last known IP)."""
+    ip = os.environ.get("NIMBUS_TEST_IP") or net.ip
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            net.get_json("/api/state", ip=ip, timeout=4.0)
+            return True
+        except Exception:  # noqa: BLE001 - still rejoining
+            time.sleep(5.0)
+    return False
+
+
 # ---- sta_auth_fail_reported (F9) -------------------------------------------
 @pytest.mark.net
 def test_sta_auth_fail_reported(device, net, secrets, require_secret):
@@ -171,9 +185,12 @@ def test_sta_auth_fail_reported(device, net, secrets, require_secret):
     finally:
         net.provision(secrets.sta_ssid, secrets.sta_pass)
         # Cleanup, not the contract: an access point often refuses a station for a
-        # while after a wrong password (reason 2 repeats on the bench), so the rejoin
-        # gets longer than a first join.
-        net.wait_got_ip(timeout=90.0)
+        # while after a wrong password (reason 2 repeated for over 90 s on unit A), so
+        # the rejoin can be slow. Fail only if the device never comes back at all.
+        try:
+            net.wait_got_ip(timeout=90.0)
+        except (WifiAuthFailure, ExpectTimeout):
+            assert _back_on_lan(net, timeout=180.0), "the device did not rejoin the LAN after the wrong-password leg"
 
 
 # ---- web_get_root (F16) ----------------------------------------------------

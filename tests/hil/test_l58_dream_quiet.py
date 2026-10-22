@@ -122,8 +122,12 @@ def _health_row(health: dict, key: str) -> dict:
 def orch(device: Device, secrets) -> Device:
     if not secrets.get("ANTHROPIC_API_KEY"):
         pytest.skip("no ANTHROPIC_API_KEY for the dream drill")
-    if not device.ping():
-        pytest.skip("console not answering")
+    # The session's port open can reset the board: give the console its boot first.
+    deadline = time.time() + 45.0
+    while not device.ping():
+        if time.time() > deadline:
+            pytest.skip("console not answering")
+        time.sleep(2.0)
     return device
 
 
