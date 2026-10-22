@@ -2,8 +2,13 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
+#include <map>
+#include <vector>
 #include <string>
 
+#include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/models_tool.h"
 #include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/tool_registry.h"
 
@@ -358,6 +363,205 @@ static void test_unknown_tool_lists_callable_names_bounded() {
   TEST_ASSERT_TRUE(b.error.size() < ToolRegistry::kUnknownToolListMax + 120);
 }
 
+
+// ---- models.list (R5): the tool contract --------------------------------------
+
+namespace {
+// A key is present (a null value counts; a missing key does not).
+bool keyIn(JsonObjectConst o, const char* k) {
+  for (ArduinoJson::JsonPairConst kv : o)
+    if (std::string(kv.key().c_str()) == k) return true;
+  return false;
+}
+ModelRow mrow(const std::string& id, const char* lifecycle = "active", uint16_t roles = 0) {
+  ModelRow r;
+  r.id = id;
+  r.name = "Name " + id;
+  r.line = id.substr(0, id.find('-', id.find('-') + 1));
+  r.size = 'M';
+  r.released = 1790000000;
+  r.ctx = 200000;
+  r.lifecycle = lifecycle;
+  r.roles = roles;
+  r.priceIn = 3000000;
+  r.priceOut = 15000000;
+  r.priceSource = "provider";
+  return r;
+}
+struct ModelsRig {
+  ToolRegistry reg;
+  std::map<std::string, ProviderModels> lists;
+  std::vector<std::string> keyed;
+  std::vector<std::string> refreshed;
+  ModelsRig() {
+    ModelsToolHandlers h;
+    h.keyedProviders = [this] { return keyed; };
+    h.load = [this](const std::string& p, ProviderModels& out) {
+      auto it = lists.find(p);
+      if (it == lists.end()) return false;
+      out = it->second;
+      return true;
+    };
+    h.requestRefresh = [this](const std::string& p) {
+      refreshed.push_back(p);
+      return RefreshAsk::Queued;
+    };
+    registerModelsTool(reg, h);
+  }
+  void add(const std::string& p, int n, uint32_t fetchedAt = 1792454400) {
+    ProviderModels pm;
+    pm.provider = p;
+    pm.fetched = fetchedAt != 0;
+    pm.fetchedAt = fetchedAt;
+    for (int i = 0; i < n; ++i) pm.rows.push_back(mrow(p + "-model-" + std::to_string(i)));
+    lists[p] = pm;
+    keyed.push_back(p);
+  }
+  ToolResult call(const char* argsJson) {
+    JsonDocument a;
+    deserializeJson(a, argsJson);
+    nimbus::orch::Principal who;
+    who.ns = "1001";
+    return reg.dispatch("models.list", a.as<JsonObjectConst>(), who);
+  }
+};
+}  // namespace
+
+// The contract: at most 20 rows, every row carries every field (null when
+// unknown), every provider its fetchedAt and source, and "more" counts the rest.
+// Three providers of 15: 20 rows, taken in turn, 25 more.
+static void test_models_list_contract_at_most_20_rows_every_field() {
+  ModelsRig m;
+  m.add("anthropic", 15);
+  m.add("openai", 15);
+  m.add("zai", 15, 0);   // never fetched: the built-in list
+  ToolResult r = m.call("{}");
+  TEST_ASSERT_TRUE(r.success);
+  JsonDocument d;
+  TEST_ASSERT_FALSE(deserializeJson(d, r.output));
+  JsonArrayConst models = d["models"].as<JsonArrayConst>();
+  TEST_ASSERT_EQUAL((int)kModelsListMaxRows, (int)models.size());
+  TEST_ASSERT_EQUAL(25, d["more"].as<int>());
+  const char* fields[] = {"provider", "id", "name", "line", "size", "released", "ctx", "lifecycle", "price"};
+  for (JsonObjectConst row : models) {
+    for (const char* f : fields) TEST_ASSERT_TRUE_MESSAGE(keyIn(row, f), f);
+    TEST_ASSERT_TRUE(row["price"]["source"].is<const char*>());
+    TEST_ASSERT_TRUE(keyIn(row["price"].as<JsonObjectConst>(), "in"));
+    TEST_ASSERT_TRUE(keyIn(row["price"].as<JsonObjectConst>(), "out"));
+  }
+  // Taken in turn: the first three rows are one per provider.
+  TEST_ASSERT_EQUAL_STRING("anthropic", models[0]["provider"] | "");
+  TEST_ASSERT_EQUAL_STRING("openai", models[1]["provider"] | "");
+  TEST_ASSERT_EQUAL_STRING("zai", models[2]["provider"] | "");
+  // A full row reads as stored: dates UTC, price USD per 1M with its source.
+  TEST_ASSERT_EQUAL_STRING("2026-09-21", models[0]["released"] | "");
+  TEST_ASSERT_EQUAL(200000, models[0]["ctx"].as<int>());
+  TEST_ASSERT_TRUE(models[0]["price"]["in"].as<double>() == 3.0);
+  TEST_ASSERT_TRUE(models[0]["price"]["out"].as<double>() == 15.0);
+  TEST_ASSERT_EQUAL_STRING("provider", models[0]["price"]["source"] | "");
+  JsonArrayConst provs = d["providers"].as<JsonArrayConst>();
+  TEST_ASSERT_EQUAL(3, (int)provs.size());
+  for (JsonObjectConst p : provs) {
+    TEST_ASSERT_TRUE(keyIn(p, "fetchedAt"));
+    TEST_ASSERT_EQUAL(15, p["total"].as<int>());
+  }
+  TEST_ASSERT_EQUAL_STRING("2026-10-20T00:00Z", provs[0]["fetchedAt"] | "");
+  TEST_ASSERT_TRUE(provs[2]["fetchedAt"].isNull());
+  TEST_ASSERT_EQUAL_STRING("built-in", provs[2]["source"] | "");
+  TEST_ASSERT_TRUE(m.refreshed.empty());   // no refresh unless asked
+}
+
+// Unknown values are null, never invented: no price is "none", no date is null.
+static void test_models_list_unknown_fields_are_null() {
+  ModelsRig m;
+  ProviderModels pm;
+  pm.provider = "mistral";
+  pm.fetched = true;
+  pm.fetchedAt = 1792454400;
+  ModelRow bare;
+  bare.id = "mistral-small-latest";
+  pm.rows.push_back(bare);
+  m.lists["mistral"] = pm;
+  m.keyed.push_back("mistral");
+  JsonDocument d;
+  deserializeJson(d, m.call("{\"provider\":\"mistral\"}").output);
+  JsonObjectConst row = d["models"][0];
+  TEST_ASSERT_TRUE(row["name"].isNull());
+  TEST_ASSERT_TRUE(row["line"].isNull());
+  TEST_ASSERT_TRUE(row["size"].isNull());
+  TEST_ASSERT_TRUE(row["released"].isNull());
+  TEST_ASSERT_TRUE(row["ctx"].isNull());
+  TEST_ASSERT_EQUAL_STRING("active", row["lifecycle"] | "");
+  TEST_ASSERT_TRUE(row["price"]["in"].isNull());
+  TEST_ASSERT_EQUAL_STRING("none", row["price"]["source"] | "");
+}
+
+// Filters: query (id or name), line, role, legacy; a named provider only; refresh
+// asks for that provider only.
+static void test_models_list_filters_and_refresh() {
+  ModelsRig m;
+  ProviderModels pm;
+  pm.provider = "anthropic";
+  pm.fetched = true;
+  pm.fetchedAt = 1792454400;
+  pm.rows = {mrow("claude-opus-5-5"), mrow("claude-sonnet-5-5"), mrow("claude-haiku-5-5"),
+             mrow("claude-sonnet-4-6", "legacy"), mrow("claude-embed-1", "active", RoleEmbedding)};
+  m.lists["anthropic"] = pm;
+  m.keyed.push_back("anthropic");
+  m.add("openai", 3);
+  JsonDocument d;
+  deserializeJson(d, m.call("{\"provider\":\"anthropic\",\"query\":\"SONNET\"}").output);
+  TEST_ASSERT_EQUAL(1, (int)d["models"].size());   // the legacy sonnet is hidden
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-5-5", d["models"][0]["id"] | "");
+  deserializeJson(d, m.call("{\"provider\":\"anthropic\",\"query\":\"sonnet\",\"include_legacy\":true}").output);
+  TEST_ASSERT_EQUAL(2, (int)d["models"].size());
+  deserializeJson(d, m.call("{\"provider\":\"anthropic\",\"line\":\"claude-opus\"}").output);
+  TEST_ASSERT_EQUAL(1, (int)d["models"].size());
+  deserializeJson(d, m.call("{\"provider\":\"anthropic\",\"role\":\"embedding\"}").output);
+  TEST_ASSERT_EQUAL(1, (int)d["models"].size());
+  TEST_ASSERT_EQUAL_STRING("claude-embed-1", d["models"][0]["id"] | "");
+  deserializeJson(d, m.call("{\"provider\":\"anthropic\"}").output);
+  TEST_ASSERT_EQUAL(3, (int)d["models"].size());   // chat models only by default
+  TEST_ASSERT_EQUAL(1, (int)d["providers"].size());
+  deserializeJson(d, m.call("{\"provider\":\"openai\",\"refresh\":true}").output);
+  TEST_ASSERT_EQUAL(1, (int)m.refreshed.size());
+  TEST_ASSERT_EQUAL_STRING("openai", m.refreshed[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("queued", d["providers"][0]["refresh"] | "");
+}
+
+// Bad arguments and a provider with no key are refused with the reason.
+static void test_models_list_refusals() {
+  ModelsRig m;
+  m.add("anthropic", 2);
+  ToolResult r = m.call("{\"provider\":\"google\"}");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "unknown provider 'google'"));
+  r = m.call("{\"provider\":\"openai\"}");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "openai has no API key"));
+  r = m.call("{\"refresh\":\"yes\"}");
+  TEST_ASSERT_FALSE(r.success);
+  r = m.call("{\"role\":\"wizard\"}");
+  TEST_ASSERT_FALSE(r.success);
+  r = m.call("{\"provider\":\"Anthropic\"}");   // case does not matter
+  TEST_ASSERT_TRUE(r.success);
+  ModelsRig none;
+  r = none.call("{}");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE(has(r.output, "No provider has a key."));
+}
+
+// The pointer line names the keyed providers and the tool; never a model id.
+static void test_models_pointer_line() {
+  const std::string l = modelsPointerLine({"cumulo", "anthropic"});
+  TEST_ASSERT_TRUE(has(l, "[AVAILABLE MODELS] providers with a key: cumulo, anthropic."));
+  TEST_ASSERT_TRUE(has(l, "models.list"));
+  TEST_ASSERT_TRUE(has(l, "run on cumulo only"));
+  TEST_ASSERT_EQUAL('\n', l.back());
+  TEST_ASSERT_EQUAL(1, (int)std::count(l.begin(), l.end(), '\n'));
+  TEST_ASSERT_EQUAL_STRING("[AVAILABLE MODELS] (none configured)\n", modelsPointerLine({}).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_unknown_tool_turn_field_session_ops);
@@ -382,6 +586,11 @@ int main(int, char**) {
   RUN_TEST(test_registry_remove_one);
   RUN_TEST(test_registry_remove_clears_policy);
   RUN_TEST(test_registry_remove_by_prefix);
+  RUN_TEST(test_models_list_contract_at_most_20_rows_every_field);
+  RUN_TEST(test_models_list_unknown_fields_are_null);
+  RUN_TEST(test_models_list_filters_and_refresh);
+  RUN_TEST(test_models_list_refusals);
+  RUN_TEST(test_models_pointer_line);
   UNITY_END();
   return 0;
 }

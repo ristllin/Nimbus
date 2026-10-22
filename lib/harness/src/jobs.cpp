@@ -15,6 +15,7 @@
 #include "nimbus/orch/sub_provenance.h"   // liveTask, the unverified rule, [tools: n] (lane S)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/model_choices.h"  // modelInChoices, cheapestChoice - validated spawn-model coercion
+#include "nimbus/orch/models_tool.h"   // L19-39: router ids on a direct provider
 #include "nimbus/orch/provider_park.h"  // the one per-provider park: a closed provider gets no spawn
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
@@ -842,6 +843,16 @@ bool JobEngine::keylessToRouter(std::string& provider, std::string& model) const
 }
 
 namespace {
+// L19-39: the bare id of a router id ("<upstream>/<model>") named on a direct
+// provider, when that provider lists it; "" otherwise (not a router id, or the
+// provider does not list the bare id either).
+std::string listedBareOfRouterId(const std::function<bool(const std::string&, const std::string&)>& valid,
+                                 const std::string& provider, const std::string& asked) {
+  if (!valid || !nimbus::orch::routerIdOnDirectProvider(provider, asked)) return "";
+  const std::string bare = asked.substr(asked.find('/') + 1);
+  return valid(provider, bare) ? bare : "";
+}
+
 // Why neither the asked model nor the provider's sub-agent default can run, for the
 // ledger line and the head's note; names both, including when nothing was asked.
 std::string unlistedWhy(const std::string& provider, const std::string& asked,
@@ -866,6 +877,20 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
                                  std::string& model) {
   if (d_.modelIsValid && d_.modelIsValid(provider, model)) return true;
   const std::string asked = model;
+  // L19-39: a router id ("<upstream>/<model>") named on a direct provider. It runs
+  // as its bare id when that provider lists it; either way the ledger line the
+  // head reads starts "not in <provider> list", never a silent swap.
+  const bool routerId = nimbus::orch::routerIdOnDirectProvider(provider, asked);
+  const std::string bare = listedBareOfRouterId(d_.modelIsValid, provider, asked);
+  if (!bare.empty()) {
+    ledgerSwapped(p, nimbus::orch::routerIdMissText(provider, asked, bare) + "; runs as " + bare);
+    hlog::logf("orchestrator: spawn model coerced (%s -> %s on %s)", asked.c_str(), bare.c_str(),
+               provider.c_str());
+    model = bare;
+    return true;
+  }
+  const std::string notOffered = routerId ? nimbus::orch::routerIdMissText(provider, asked, "")
+                                          : provider + " does not offer " + asked;
   const std::string sub = subModelOf(provider);
   if (!d_.modelChoices) {
     model = sub;
@@ -882,9 +907,9 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
                          (d_.modelIsValid && d_.modelIsValid(provider, sub)))) {
       model = sub;
       if (!asked.empty())
-        ledgerSwapped(p, provider + " does not offer " + asked + "; runs on its sub-agent default " + sub);
+        ledgerSwapped(p, notOffered + "; runs on its sub-agent default " + sub);
     } else {
-      const std::string why = unlistedWhy(provider, asked, sub);
+      const std::string why = routerId ? notOffered : unlistedWhy(provider, asked, sub);
       model = nimbus::orch::cheapestByEffectivePrice(provider.c_str(), list);   // CUM-708: the ledger's price
       if (model.empty()) {
         refuseUnpricedModel(p, provider, asked, sub, why);

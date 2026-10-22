@@ -39,6 +39,11 @@ struct ApplyDeps {
   std::function<bool(const std::string& prov, const std::string& model)> modelIsValid;
   std::function<bool(const std::string& prov)> providerHasKey;
   std::function<void(const std::string& prov, const std::string& model)> setOrchHostModel;
+  // An orch_model the provider's cached list does not hold: the device asks for
+  // one list refresh (at most one per provider per hour, never a connection here)
+  // and returns the head's answer, "not in <provider> list cached <date>; refresh
+  // queued" (models_tool.h modelMissText). Null => "not in <provider> list".
+  std::function<std::string(const std::string& prov, const std::string& model)> modelMiss;
 
   // Model working memory (OrchMemory): returns true when truncated to cap.
   std::function<bool(const std::string& chatId, const std::string& v)> setModelMemory;
@@ -155,6 +160,12 @@ extern const char kUnverifiedMemoryRefusal[];
 // codes on a failure read as Refused, so a new code can never be counted as saved.
 enum class MemWriteOutcome { Stored, Duplicate, Queued, Refused };
 MemWriteOutcome memWriteOutcome(const nimbus::orch::ToolResult& r);
+
+// Whether `reply` already carries the question in `ask`, so the ask is not
+// appended to the delivered message: the reply ends with `ask` verbatim, or its
+// last non-blank character is '?' (a reworded copy, ASK-DUPLICATE). Either empty:
+// false. The ask still raises the needs-you state either way.
+bool replyAlreadyAsks(const std::string& reply, const std::string& ask);
 
 // Apply one parsed turn. spawnedOut reports whether any sub-agent was enqueued
 // (the caller suppresses the bare "Done." only when true).

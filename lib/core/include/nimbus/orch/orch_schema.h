@@ -44,7 +44,9 @@ namespace orch {
   "recorded effects and sources and corrects the reply when they disagree. Never " \
   "invent ids, links, or successes."
 #define ORCH_D_ASK \
-  "A question for the owner when you need their input; empty string if none."
+  "A question for the owner when you need their input; empty string if none. It " \
+  "is appended to your reply as the same message; if the reply already ends with " \
+  "this question, leave ask empty."
 #define ORCH_D_SCRATCH \
   "Your working notes across turns, saved on the device, in tiers: " \
   "active (the one thing you are doing right NOW), short (this task's steps / a " \
@@ -98,10 +100,12 @@ namespace orch {
   "reply, prefer setting it back to false afterwards) and devName (the device's " \
   "name on the network + screen; takes effect after a reboot). Set only the " \
   "knobs you mean to change; null leaves a knob untouched. orch_model switches YOUR " \
-  "OWN provider host + model at runtime (provider openai|anthropic|mistral, model " \
-  "an id from that provider's AVAILABLE MODELS) - use it when asked to change your " \
-  "model, e.g. 'switch to opus'. Secrets, API keys, and provider PRIORITY stay " \
-  "BLOCKED - only the owner can change those, from the device web page."
+  "OWN provider host + model at runtime (provider " \
+  "openai|anthropic|mistral|zai|cumulo, model an id that provider lists in " \
+  "models.list or AVAILABLE MODELS: cumulo ids are <upstream>/<model> router ids, " \
+  "the other providers take bare ids) - use it when asked to change your model, " \
+  "e.g. 'switch to opus'. Secrets, API keys, and provider PRIORITY stay BLOCKED - " \
+  "only the owner can change those, from the device web page."
 #define ORCH_D_MEMW \
   "Durable facts to store in long-term memory (embedded + saved) so you can " \
   "recall them in future conversations. importance 0-1. ttl is how long the " \
@@ -211,7 +215,9 @@ static const char ORCH_SCHEMA_BODY[] =
   "{\"type\":\"object\",\"additionalProperties\":false,"
   "\"required\":[\"type\",\"provider\",\"model\"],\"properties\":{"
   "\"type\":{\"type\":\"string\",\"const\":\"orch_model\"},"
-  "\"provider\":{\"type\":\"string\",\"enum\":[\"openai\",\"anthropic\",\"mistral\"]},"
+  // Every first-class provider slot (kProviderSlots); test_harness_goldens keeps
+  // this enum and the ORCH_D_DEVICE prose in step with the registry.
+  "\"provider\":{\"type\":\"string\",\"enum\":[\"openai\",\"anthropic\",\"mistral\",\"zai\",\"cumulo\"]},"
   "\"model\":{\"type\":\"string\"}}}"
   "]}},"
   // spawn[] / await[] retired from the wire (session_ops is the one spawn

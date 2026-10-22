@@ -498,11 +498,30 @@ void test_config_override_with_protected_key_still_refused(void) {
   TEST_ASSERT_FALSE(a.allowed);
 }
 
+// The keyed shape {"orch_model":{"provider","model"}} - what a head with no schema
+// enforcement writes (Z.ai, bench 22 Oct) - validates exactly like the typed one,
+// and a keyed one missing its model is refused the same way.
+static void test_orch_model_keyed_shape_matches_the_typed_one() {
+  const ValidatedAction typed =
+      validateJson("{\"type\":\"orch_model\",\"provider\":\"zai\",\"model\":\"glm-5.3\"}");
+  const ValidatedAction keyed = validateJson("{\"orch_model\":{\"provider\":\"zai\",\"model\":\"glm-5.3\"}}");
+  TEST_ASSERT_TRUE(keyed.allowed);
+  TEST_ASSERT_EQUAL(int(typed.kind), int(keyed.kind));
+  TEST_ASSERT_EQUAL_STRING(typed.orchProvider.c_str(), keyed.orchProvider.c_str());
+  TEST_ASSERT_EQUAL_STRING(typed.orchModel.c_str(), keyed.orchModel.c_str());
+  const ValidatedAction bad = validateJson("{\"orch_model\":{\"provider\":\"zai\"}}");
+  TEST_ASSERT_FALSE(bad.allowed);
+  TEST_ASSERT_EQUAL_STRING("orch_model needs provider+model", bad.reason.c_str());
+  // A keyed value that is not an object is not an orch_model.
+  TEST_ASSERT_FALSE(validateJson("{\"orch_model\":\"glm-5.3\"}").allowed);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_led_defaults_and_clamp);
   RUN_TEST(test_orch_model_action);
   RUN_TEST(test_orch_model_requires_model);
+  RUN_TEST(test_orch_model_keyed_shape_matches_the_typed_one);
   RUN_TEST(test_led_modes);
   RUN_TEST(test_lights_off_and_full);
   RUN_TEST(test_led_off_word_becomes_lights_off);

@@ -203,6 +203,20 @@ void readConfigKnobs(ArduinoJson::JsonVariantConst c, ValidatedAction& a) {
 
 }  // namespace
 
+// orch_model: the agent switching its OWN host+model is a DELIBERATE exception to
+// the protected-key rule (host/model only; keys + priority stay owner-only). The
+// device re-validates model-in-choices before applying (choices live device-side);
+// here we just require a well-formed provider+model. `src` holds the two fields
+// (the typed element itself, or the keyed shape's inner object).
+static void readOrchModel(ArduinoJson::JsonVariantConst src, ValidatedAction& a) {
+  a.kind = ActionKind::OrchModel;
+  a.hasOrchModel = true;
+  a.orchProvider = (const char*)(src["provider"] | "");
+  a.orchModel = (const char*)(src["model"] | "");
+  a.allowed = !a.orchProvider.empty() && !a.orchModel.empty();
+  if (!a.allowed) a.reason = "orch_model needs provider+model";
+}
+
 ValidatedAction validateAction(ArduinoJson::JsonVariantConst el) {
   ValidatedAction a;
 
@@ -266,16 +280,7 @@ ValidatedAction validateAction(ArduinoJson::JsonVariantConst el) {
       return a;
     }
     if (!std::strcmp(t, "orch_model")) {
-      // The agent switching its OWN host+model is a DELIBERATE exception to the
-      // protected-key rule (host/model only; keys + priority stay owner-only). The
-      // device re-validates model-in-choices before applying (choices live device-
-      // side); here we just require a well-formed provider+model.
-      a.kind = ActionKind::OrchModel;
-      a.hasOrchModel = true;
-      a.orchProvider = (const char*)(el["provider"] | "");
-      a.orchModel = (const char*)(el["model"] | "");
-      a.allowed = !a.orchProvider.empty() && !a.orchModel.empty();
-      if (!a.allowed) a.reason = "orch_model needs provider+model";
+      readOrchModel(el, a);
       return a;
     }
     // Unknown discriminator: fall through to the legacy branches (an object
@@ -322,6 +327,15 @@ ValidatedAction validateAction(ArduinoJson::JsonVariantConst el) {
   if (el["reboot"] | false) {
     a.kind = ActionKind::Reboot;
     a.allowed = true;
+    return a;
+  }
+
+  // ---- orch_model (keyed) ------------------------------------------------------
+  // A head with no schema enforcement (Z.ai's json_object mode) writes the keyed
+  // shape {"orch_model":{"provider","model"}} like the other legacy actions; it was
+  // dropped as unsupported while the reply said it had switched (bench, 22 Oct).
+  if (el["orch_model"].is<ArduinoJson::JsonObjectConst>()) {
+    readOrchModel(el["orch_model"], a);
     return a;
   }
 

@@ -1,6 +1,8 @@
 #include "nimbus/harness/apply.h"
 
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
+#include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/spawn_claim.h"
 
 // Lifted from src/agent/orchestrator.cpp applyTurn (Stage E). Every summary
@@ -31,6 +33,16 @@ static bool replyEndsWith(const std::string& reply, const std::string& ask) {
   return re + 1 >= n && reply.compare(re + 1 - n, n, ask, ab, n) == 0;
 }
 
+bool replyAlreadyAsks(const std::string& reply, const std::string& ask) {
+  if (reply.empty() || ask.empty()) return false;
+  // ASK-DUPLICATE (Lumi 22 Oct): the head ends its reply with a question and then
+  // writes the same question, reworded, into ask, so the owner got it twice. A
+  // reply whose last non-blank character is '?' has asked already.
+  const size_t re = reply.find_last_not_of(" \t\r\n");
+  if (re != std::string::npos && reply[re] == '?') return true;
+  return replyEndsWith(reply, ask);
+}
+
 // Did one device element's summary say it ran? A voice-off tts, a sink-less
 // led, a refused reboot or an invalid / keyless model switch backs no claim.
 static bool deviceElementLanded(const std::string& one) {
@@ -38,6 +50,26 @@ static bool deviceElementLanded(const std::string& one) {
   if (one.size() >= 4 && one.compare(one.size() - 4, 4, "cfg ") == 0) return true;
   return one.rfind("orch_model(", 0) == 0 && one.find("(invalid)") == std::string::npos &&
          one.find("(no-key)") == std::string::npos;
+}
+
+// Why an orch_model the device refused names no model it can switch to, in the
+// words the head reads (the mid-turn device.control answer and the next turn's
+// [MEMORY RESULTS]). L19-39: a router id on a direct provider is refused as such,
+// with the bare id when that provider lists it; any other miss asks for a list
+// refresh through the device (modelMiss).
+static std::string orchModelMiss(const ValidatedAction& va, const ApplyDeps& d) {
+  const std::string& p = va.orchProvider;
+  const std::string& m = va.orchModel;
+  if (!nimbus::orch::isProviderSlug(p.c_str()))
+    return "'" + p + "' is not a provider (openai, anthropic, mistral, zai or cumulo)";
+  if (d.providerHasKey && !d.providerHasKey(p))
+    return p + " has no API key on this device, so it has no model list; only the owner adds keys";
+  if (nimbus::orch::routerIdOnDirectProvider(p, m)) {
+    const std::string bare = m.substr(m.find('/') + 1);
+    const bool listed = d.modelIsValid && d.modelIsValid(p, bare);
+    return nimbus::orch::routerIdMissText(p, m, listed ? bare : std::string());
+  }
+  return d.modelMiss ? d.modelMiss(p, m) : "not in " + p + " list";
 }
 
 MemWriteOutcome memWriteOutcome(const ToolResult& r) {
@@ -180,8 +212,12 @@ std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
       // checks the static choice list, so without this the agent could reroute its own
       // host to a keyless provider and strand every subsequent turn (prism). Keys are
       // owner-only (web UI); the agent can only move between providers already keyed.
-      if (!d.modelIsValid || !d.modelIsValid(va.orchProvider, va.orchModel)) {
-        devSummary += "orch_model(invalid) ";
+      // The provider must be one of the registry slots (the schema enum), and a
+      // refusal says why in the head's words after the pinned token.
+      if (!nimbus::orch::isProviderSlug(va.orchProvider.c_str()) || !d.modelIsValid ||
+          !d.modelIsValid(va.orchProvider, va.orchModel)) {
+        devSummary += "orch_model(invalid) " + va.orchModel + " on " + va.orchProvider + ": " +
+                      orchModelMiss(va, d) + " ";
       } else if (!d.providerHasKey || !d.providerHasKey(va.orchProvider)) {
         devSummary += "orch_model(no-key) ";
       } else {
@@ -231,6 +267,11 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   for (const auto& da : t.device) {
     const std::string one = applyDeviceElement(da.json, st.scheduledTurn, chatId, d, &st.riskNote);
     devSummary += one;
+    // A refused model switch reaches the head next turn: it learns why and what
+    // to do, instead of believing it switched.
+    if (one.rfind("orch_model(invalid) ", 0) == 0 && st.pendingMemResults)
+      *st.pendingMemResults += "[DEVICE] orch_model not applied: " + one.substr(20) +
+                               "- call models.list for the ids it offers\n";
     nimbus::orch::FxKind k;
     if (st.claims && ClaimCheck::deviceActionEffect(da.json, k))
       st.claims->effects().add(k, deviceElementLanded(one));
@@ -434,8 +475,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // reply / ask
   // reply + ask arrive as ONE message (owner-flagged: two consecutive bot messages
   // read as a glitch in human conversation). The ask still drives the needs-you
-  // attention state via emitAsk(). An ask the reply already ends with is not
-  // repeated (the head often writes its question into both fields).
+  // attention state via emitAsk(). An ask is not repeated when the reply already
+  // ends with a question (the head often writes its question into both fields,
+  // verbatim or reworded).
   if ((t.reply.length() || t.ask.length()) && d.fire) d.fire("reply");
   st.lastReply = t.reply;   // captured for the Local Loops semantic-repeat hash
   // Owner-visible notes that ride the reply and are never silent: the risk
@@ -443,21 +485,26 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // and the ask reach the owner as one message, so both are checked; the spawn
   // class is left to the spawn correction when it was added).
   const std::string riskNote = st.riskNote;
+  // A reply that already ends with a question carries the ask: it is not
+  // appended again, and only what is delivered is checked and captured.
+  const bool askAppended = t.reply.length() && t.ask.length() && !replyAlreadyAsks(t.reply, t.ask);
+  const bool askDelivered = t.ask.length() && (askAppended || t.reply.empty());
   const std::string claimTail =
-      st.claims ? st.claims->tailAfterApply(t.ask.empty() ? t.reply : t.reply + "\n\n" + t.ask,
+      st.claims ? st.claims->tailAfterApply(askAppended ? t.reply + "\n\n" + t.ask
+                                                        : (t.reply.length() ? t.reply : t.ask),
                                             /*skipSpawned=*/!spawnLine.empty())
                 : std::string();
   // The corrections (spawn line, claim lines) also ride the captured text.
   const std::string correctionTail = (spawnLine.empty() ? "" : "\n\n" + spawnLine) + claimTail;
   const std::string riskTail = riskNote + correctionTail;
   st.riskNote.clear();
-  const bool askRepeated = t.ask.length() && t.reply.length() && replyEndsWith(t.reply, t.ask);
-  if (t.reply.length() && t.ask.length() && !askRepeated) {
+  if (askAppended) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail + "\n\n" + t.ask);
     if (d.emitAsk) d.emitAsk();
   } else if (t.reply.length()) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail);
-    if (askRepeated && d.emitAsk) d.emitAsk();
+    // The question is in the reply: the needs-you state still fires.
+    if (t.ask.length() && d.emitAsk) d.emitAsk();
   } else if (t.ask.length()) {
     if (d.deliver) d.deliver(chatId, t.ask + riskTail);
     if (d.emitAsk) d.emitAsk();
@@ -486,9 +533,11 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // the corrected text, not the model's.
   st.delivered = t.reply.length() ? t.reply + correctionTail : std::string();
   const std::string askCaptured = t.reply.length() ? t.ask : t.ask + correctionTail;
+  // An ask the reply already carried was never sent on its own: history keeps
+  // what the owner received.
   if (d.captureAssistant) {
     if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
-    if (t.ask.length())   d.captureAssistant(chatId, askCaptured);
+    if (askDelivered)     d.captureAssistant(chatId, askCaptured);
   }
 }
 

@@ -1,0 +1,1 @@
+[AVAILABLE MODELS] providers with a key: cumulo, openai, anthropic, mistral, zai. Call models.list for the model ids each one offers before you name one in orch_model or a spawn; ids written <upstream>/<model> are router ids and run on cumulo only.

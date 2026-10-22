@@ -16,6 +16,7 @@
 #include "nimbus/orch/provider_park.h"   // lane DEF2: the provider-limit pause
 #include "nimbus/orch/model_choices.h"   // staticModelChoices / modelInChoices
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the cheapest fallback
+#include "nimbus/orch/models_tool.h"   // routerIdOnDirectProvider (L19-39)
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
@@ -2239,6 +2240,50 @@ static void test_file_task_defaults_and_explicit_provider() {
   }
 }
 
+
+// ---- L19-39: a router id on a direct provider ---------------------------------
+
+// The head read "openai/gpt-5.6" under cumulo and asked a direct provider for it;
+// every such spawn was swapped in silence. Now the ledger line the head reads says
+// "not in <provider> list" and why: the spawn runs as the bare id when that
+// provider lists it, else on the usual listed fallback. Counter-test: an id that is
+// simply not listed keeps its own wording, and the router keeps its own ids.
+static void test_l19_39_router_id_on_a_direct_provider_is_named_in_the_ledger() {
+  struct Case { const char* asked; const char* runs; const char* led; };
+  const Case cases[] = {
+      {"anthropic/claude-opus-5-5", "claude-opus-5-5",
+       "not in anthropic list: use claude-opus-5-5 (anthropic/claude-opus-5-5 is a cumulo router id); "
+       "runs as claude-opus-5-5"},
+      {"openai/gpt-5.6", "sub-anthropic",
+       "not in anthropic list: openai/gpt-5.6 is a cumulo router id; pick one of anthropic's ids "
+       "from models.list; runs on its sub-agent default sub-anthropic"},
+      {"bad-x", "sub-anthropic", "anthropic does not offer bad-x; runs on its sub-agent default sub-anthropic"},
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    r.modelValid = [](const std::string&, const std::string& m) {
+      return m == "claude-opus-5-5" || m == "sub-anthropic";
+    };
+    r.modelChoices = [](const std::string&) { return std::string("claude-opus-5-5,sub-anthropic"); };
+    r.build();
+    orch::Spawn s = sp("research it");
+    s.model = c.asked;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.adapter.dispatched.size(), c.asked);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.runs, r.adapter.dispatched[0].model.c_str(), c.asked);
+    const std::string led = r.eng->spawnLedgerText("chat1");
+    TEST_ASSERT_TRUE_MESSAGE(led.find(c.led) != std::string::npos, led.c_str());
+  }
+  // The router runs its own selectors as asked.
+  TEST_ASSERT_FALSE(orch::routerIdOnDirectProvider("cumulo", "openai/gpt-5.6"));
+  TEST_ASSERT_FALSE(orch::routerIdOnDirectProvider("openai", "gpt-5.6"));
+  TEST_ASSERT_FALSE(orch::routerIdOnDirectProvider("custom", "library/llama3"));
+  for (const orch::ProviderSlot& slot : orch::kProviderSlots)
+    TEST_ASSERT_EQUAL_MESSAGE(std::string(slot.slug) != "cumulo",
+                              orch::routerIdOnDirectProvider(slot.slug, "openai/gpt-5.6"), slot.slug);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -2270,6 +2315,7 @@ int main(int, char**) {
   RUN_TEST(test_file_task_prefers_the_pdf_route);
   RUN_TEST(test_file_task_defaults_and_explicit_provider);
   RUN_TEST(test_model_coercion_to_sub_default);
+  RUN_TEST(test_l19_39_router_id_on_a_direct_provider_is_named_in_the_ledger);
   RUN_TEST(test_one_key_spawn_openai_runs_on_router);
   RUN_TEST(test_one_key_spawn_anthropic_runs_on_router);
   RUN_TEST(test_one_key_spawn_direct_key_stays_direct);

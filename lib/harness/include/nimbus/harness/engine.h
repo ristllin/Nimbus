@@ -461,7 +461,9 @@ class TurnEngine {
   // apply gives a promise without a spawn.
   void noteUnappliedSpawnClaim(const std::string& chatId);
   std::string buildDynamicContext();
-  std::string buildStableCatalogs();
+  // modelsTool: the head can call models.list this turn, so [AVAILABLE MODELS] is
+  // the one pointer line instead of the per-provider lists.
+  std::string buildStableCatalogs(bool modelsTool = false);
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
   // [YOUR MODEL] line use (explicit orchHost, else the first keyed priority

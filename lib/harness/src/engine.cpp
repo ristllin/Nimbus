@@ -17,6 +17,7 @@
 #include "nimbus/orch/billing_refusal.h"  // billingNoticeDue / billingNotice - one notice per episode
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
+#include "nimbus/orch/models_tool.h"     // R5: the [AVAILABLE MODELS] pointer line
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/connectors_wire.h"  // resolveHeadHost - the one head-host rule
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
@@ -597,11 +598,36 @@ std::string TurnEngine::buildDynamicContext() {
   return ctx;
 }
 
-// [AVAILABLE MODELS]: one line, part of the stable catalogs.
-static std::string availableModelsLine(const TurnEngine::Deps& d_) {
+// The custom LAN endpoint is a real head and spawn target when configured.
+static bool customHostOn(const TurnEngine::Deps& d_) {
+  return d_.hosts.has("custom") && d_.cfg.provider.hasKey && d_.cfg.provider.hasKey("custom");
+}
+static std::string customModelOf(const TurnEngine::Deps& d_) {
+  return d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel("custom") : std::string();
+}
+
+// R5, 5d of the token table: on a turn where the head can call models.list,
+// [AVAILABLE MODELS] is one pointer line naming the keyed providers (the
+// per-provider lists cost about 26K tokens a day on Lumi).
+static std::string modelsPointer(const TurnEngine::Deps& d_) {
+  std::vector<std::string> keyed;
+  for (const orch::ProviderSlot& slot : orch::kProviderSlots)
+    if (d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(slot.slug)) keyed.push_back(slot.slug);
+  std::string line = orch::modelsPointerLine(keyed);
+  if (customHostOn(d_))
+    line.insert(line.size() - 1, " custom runs " + customModelOf(d_) + " (local network model).");
+  return line;
+}
+
+// [AVAILABLE MODELS]: one line, part of the stable catalogs - the pointer line
+// when models.list is callable, otherwise the lists themselves, the router's
+// under cumulo only (L19-39).
+static std::string availableModelsLine(const TurnEngine::Deps& d_, bool modelsTool) {
+  if (modelsTool) return modelsPointer(d_);
   std::string ctx;
   ctx += "[AVAILABLE MODELS] (yours + sub-agents')";
   bool any = false;
+  bool router = false;
   // CUM-486: walk the canonical provider registry (kProviderSlots), never a hand
   // list, so a provider added there is advertised here with no edit. The router
   // heads (cumulo/zai) are first-class keyed hosts (CUM-242); cumulo choices are
@@ -620,19 +646,20 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_) {
     const std::string note = d_.modelListNote ? d_.modelListNote(p) : std::string();
     ctx += " " + p + ": " + list + (note.empty() ? "" : " " + note) + ";";
     any = true;
+    router = router || p == "cumulo";
   }
   // The custom LAN endpoint, when configured, is a REAL spawn/head target - its
   // absence here made the honesty rails (correctly) refuse "spawn on custom"
   // even though the registry had it (live-caught 2026-08-12 on the Ollama E2E).
   // No verify pass runs for custom, so the model name comes from config, not
   // modelChoices.
-  if (d_.hosts.has("custom") && d_.cfg.provider.hasKey && d_.cfg.provider.hasKey("custom")) {
-    ctx += " custom: " +
-           (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel("custom") : std::string()) +
-           " (local network model);";
+  if (customHostOn(d_)) {
+    ctx += " custom: " + customModelOf(d_) + " (local network model);";
     any = true;
   }
   if (!any) ctx += " (none configured)";
+  // L19-39: the head read "openai/gpt-5.6" under cumulo and asked openai for it.
+  if (router) ctx += " The cumulo ids are router ids (<upstream>/<model>) and run on cumulo only.";
   ctx += "\n";
   return ctx;
 }
@@ -641,7 +668,7 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_) {
 // static prompt block (ComposeInputs::catalogs, prompt_layout.h), where a
 // provider reads them from its cache, instead of the per-turn input after the
 // volatile session counters.
-std::string TurnEngine::buildStableCatalogs() {
+std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   std::string ctx = "\n";
   ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
          (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
@@ -656,7 +683,7 @@ std::string TurnEngine::buildStableCatalogs() {
       ctx += "[YOUR MODEL] you are currently running on " + host + " / " +
              (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string()) + "\n";
   }
-  ctx += availableModelsLine(d_);
+  ctx += availableModelsLine(d_, modelsTool);
 
   // W15: the skills index BEFORE the connector catalog - playbooks frame HOW to
   // use the capabilities the catalog then lists.
@@ -919,7 +946,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ci.tools.push_back(orch::ToolInfo{loopToolName(s.name), s.description});
   }
   ci.recalled = recalled;
-  ci.catalogs = buildStableCatalogs();
+  // R5: the model lists move behind models.list when the head can call it: the
+  // loop runs this turn, the tool is registered, and the head is one with a tool
+  // loop (the custom-dialect heads, Z.ai and a custom endpoint, run single-shot:
+  // custom.cpp advertises no tool, so they keep the inline lists).
+  const bool headLoops = !d_.hosts.fabricSupports || d_.hosts.fabricSupports(host);
+  const bool modelsTool =
+      ci.loopOn && headLoops &&
+      std::any_of(specs.begin(), specs.end(), [](const orch::ToolRegistry::Spec& s) {
+        return s.name == "models.list" && !loopToolHidden(s.name);
+      });
+  ci.catalogs = buildStableCatalogs(modelsTool);
   ci.recallDegraded = recall.degraded;
   std::string instructions = agent::composeInstructions(ci);
   // ONE line, only when the loop was actually withheld - the interesting case,

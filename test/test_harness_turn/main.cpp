@@ -4261,6 +4261,54 @@ static void runLateLaneTests() {
   runSpendCeilingTests();
 }
 
+// R5, 5d of the token table: on a turn where the head can call models.list the
+// [AVAILABLE MODELS] block is the one pointer line, with no model id in it; a
+// single-shot turn (or a host with no models.list) keeps the lists, the router's
+// marked as cumulo-only (L19-39).
+static void test_r5_available_models_points_to_models_list_when_callable() {
+  for (int loop = 0; loop < 2; ++loop) {
+    for (int tool = 0; tool < 2; ++tool) {
+      Rig r;
+      r.cfg.keyed = {"anthropic", "cumulo"};
+      r.cfg.toolLoop = loop == 1;
+      if (tool) r.specs.push_back(orch::ToolRegistry::Spec{"models.list", "list models", "{}"});
+      r.modelChoicesFn = [](const std::string& p) {
+        return p == "cumulo" ? std::string("openai/gpt-5.6,anthropic/claude-opus-5-5")
+                             : std::string("claude-opus-5-5,claude-sonnet-5-5");
+      };
+      r.eng->handleMessage("switch to sonnet 5.5", "Owner", "1001");
+      TEST_ASSERT_TRUE(!r.attempts.empty());
+      const std::string& ins = r.attempts[0].instructions;
+      const bool pointer = loop == 1 && tool == 1;
+      TEST_ASSERT_EQUAL_MESSAGE(pointer, ins.find("[AVAILABLE MODELS] providers with a key: cumulo, anthropic.") !=
+                                             std::string::npos, ins.c_str());
+      TEST_ASSERT_EQUAL(!pointer, ins.find("claude-sonnet-5-5") != std::string::npos);
+      TEST_ASSERT_EQUAL(!pointer, ins.find("openai/gpt-5.6") != std::string::npos);
+      if (!pointer)
+        TEST_ASSERT_TRUE(ins.find("The cumulo ids are router ids (<upstream>/<model>) and run on cumulo only.") !=
+                         std::string::npos);
+    }
+  }
+  // A head with no tool loop (a custom-dialect head such as Z.ai: the device's
+  // fabricSupports says no) keeps the inline lists even with the loop on.
+  Rig z;
+  z.cfg.keyed = {"zai"};
+  z.cfg.routerHost = "zai";
+  z.specs.push_back(orch::ToolRegistry::Spec{"models.list", "list models", "{}"});
+  z.eng->handleMessage("switch to glm 5.3", "Owner", "1001");
+  TEST_ASSERT_TRUE(!z.attempts.empty());
+  TEST_ASSERT_EQUAL_STRING("zai", z.attempts[0].host.c_str());
+  TEST_ASSERT_TRUE(z.attempts[0].instructions.find("[AVAILABLE MODELS] (yours + sub-agents') zai:") !=
+                   std::string::npos);
+}
+
+// The [AVAILABLE MODELS] block: the CUM-486 parity and the R5 pointer line.
+static void runAvailableModelsTests() {
+  RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
+  RUN_TEST(test_r5_available_models_points_to_models_list_when_callable);
+  RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
+}
+
 // The suite in two halves (one function per half keeps each under the length gate).
 static void runFirstHalf() {
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
@@ -4337,8 +4385,7 @@ static void runSecondHalf() {
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
   RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);
-  RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
-  RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
+  runAvailableModelsTests();
   RUN_TEST(test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn);
   RUN_TEST(test_cum530_router_selector_head_gets_its_real_window);
   RUN_TEST(test_cum495_zai_prose_reply_is_delivered_not_apologized);

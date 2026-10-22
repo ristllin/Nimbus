@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -9,7 +10,10 @@
 #include "nimbus/harness/apply.h"
 #include "nimbus/orch/model_catalog.h"     // lane F: the model store
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/model_refresh.h"
 #include "nimbus/orch/model_selectable.h"
+#include "nimbus/orch/models_tool.h"
+#include "nimbus/orch/provider_slots.h"
 
 // Stage E suite - the SECURITY RAILS of turn application, host-tested for the
 // first time: scheduled-turn refusals (reboot/ttsOn/devName/sleepOvr/brightOvr),
@@ -281,8 +285,9 @@ static void test_orch_model_keyless_provider_refused() {
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
   bool spawned = false;
+  d.providerHasKey = [](const std::string& p) { return p != "zai"; };
   agent::applyTurn(
-      turnWithDevice("{\"type\":\"orch_model\",\"provider\":\"keyless\",\"model\":\"good-x\"}"),
+      turnWithDevice("{\"type\":\"orch_model\",\"provider\":\"zai\",\"model\":\"good-x\"}"),
       "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
   TEST_ASSERT_TRUE(LogCapture::contains("orch_model(no-key)"));
@@ -836,6 +841,193 @@ static void test_every_mem_write_outcome_is_reported() {
   TEST_ASSERT_TRUE(r.pendingMem.find(std::string(50, 'b')) == std::string::npos);
 }
 
+
+// ---- ASK-DUPLICATE (Lumi 22 Oct, m0000127a) -----------------------------------
+
+// The head ended its reply with a question and wrote the same question, reworded,
+// into ask: the owner got it twice. A reply whose last non-blank character is '?'
+// already asks; the ask is not appended, the needs-you state still fires, and the
+// history holds only what was sent.
+static void test_ask_duplicate_a_reworded_ask_after_a_question_is_not_appended() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t;
+  t.reply = "Lunch is logged at 640 kcal. Want me to add the walk too?\n";
+  t.ask = "Should I log the walk as well?";
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(t.reply.c_str(), r.delivered[0].second.c_str());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("Should I log") == std::string::npos);
+  TEST_ASSERT_EQUAL(1, r.emitAsks);                       // needs-you still fires
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());           // only what was sent
+  TEST_ASSERT_EQUAL_STRING(t.reply.c_str(), r.captured[0].c_str());
+}
+
+// The class: every reply ending in '?' (any trailing blanks) carries the ask; a
+// reply ending otherwise gets the ask appended after a blank line, captured too.
+static void test_ask_duplicate_the_last_non_blank_character_decides() {
+  const char* asks[] = {"Shall I?", "Do you want the weekly total?"};
+  const char* asked[] = {"Want details?", "Want details? ", "Want details?\n\n", "Ok?\t\r\n"};
+  const char* notAsked[] = {"Here's the status.", "Want details? Here's the status.",
+                            "Done (is that ok?)", "Saved."};
+  for (const char* a : asks) {
+    for (const char* rep : asked) {
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      ApplyState st = makeState(r);
+      bool spawned = false;
+      Turn t;
+      t.reply = rep;
+      t.ask = a;
+      agent::applyTurn(t, "1001", d, st, spawned);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(rep, r.delivered[0].second.c_str(), rep);
+      TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, rep);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), rep);
+      TEST_ASSERT_TRUE(agent::replyAlreadyAsks(rep, a));
+    }
+    for (const char* rep : notAsked) {
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      ApplyState st = makeState(r);
+      bool spawned = false;
+      Turn t;
+      t.reply = rep;
+      t.ask = a;
+      agent::applyTurn(t, "1001", d, st, spawned);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(rep) + "\n\n" + a).c_str(),
+                                       r.delivered[0].second.c_str(), rep);
+      TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, rep);
+      TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.captured.size(), rep);   // reply row + ask row
+      TEST_ASSERT_FALSE(agent::replyAlreadyAsks(rep, a));
+    }
+  }
+  // Either field empty: nothing is "already asked".
+  TEST_ASSERT_FALSE(agent::replyAlreadyAsks("", "Want details?"));
+  TEST_ASSERT_FALSE(agent::replyAlreadyAsks("Ok?", ""));
+}
+
+// ---- orch_model: the provider enum, the miss answer, router ids (R5, L19-39) ----
+
+// Every registry slot is a provider orch_model can switch to (the schema enum
+// gained cumulo and zai); anything else is refused before the list is read.
+static void test_orch_model_every_provider_slot_applies_and_nothing_else() {
+  for (const nimbus::orch::ProviderSlot& slot : nimbus::orch::kProviderSlots) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    const std::string json = std::string("{\"type\":\"orch_model\",\"provider\":\"") + slot.slug +
+                             "\",\"model\":\"good-x\"}";
+    agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.hostModelSet.size(), slot.slug);
+    TEST_ASSERT_EQUAL_STRING(slot.slug, r.hostModelSet[0].first.c_str());
+  }
+  for (const char* p : {"custom", "google", "", "OPENAI"}) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    const std::string json =
+        std::string("{\"type\":\"orch_model\",\"provider\":\"") + p + "\",\"model\":\"good-x\"}";
+    const std::string sum = agent::applyDeviceElement(json, false, "1001", d, nullptr);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.hostModelSet.size(), p);
+    if (*p) TEST_ASSERT_TRUE_MESSAGE(sum.find("is not a provider") != std::string::npos, sum.c_str());
+  }
+}
+
+// The miss answer rides the mid-turn device.control result and the next turn's
+// [MEMORY RESULTS]; N misses within an hour queue exactly one refresh per provider.
+static void test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour() {
+  nimbus::orch::ModelRefreshQueue q;
+  uint32_t now = 1000;
+  const uint32_t fetched = 1792454400;   // 2026-10-20
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  std::map<std::string, int> queued;      // provider -> requests that queued a refresh
+  int asks = 0;
+  d.modelMiss = [&](const std::string& p, const std::string&) {
+    asks++;
+    const nimbus::orch::RefreshAsk a = q.request(p.c_str(), true, now);
+    if (a == nimbus::orch::RefreshAsk::Queued) queued[p]++;
+    return nimbus::orch::modelMissText(p, fetched, a);
+  };
+  const char* provs[] = {"anthropic", "openai"};
+  int starts = 0;
+  for (int i = 0; i < 6; ++i) {
+    for (const char* p : provs) {
+      now += 60000;   // a minute apart: all inside the hour
+      const std::string json = std::string("{\"type\":\"orch_model\",\"provider\":\"") + p +
+                               "\",\"model\":\"claude-sonnet-5.5\"}";
+      const std::string sum = agent::applyDeviceElement(json, false, "1001", d, nullptr);
+      TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(invalid) ", 0) == 0, sum.c_str());
+      const std::string want = std::string("not in ") + p + " list cached 2026-10-20; ";
+      TEST_ASSERT_TRUE_MESSAGE(sum.find(want) != std::string::npos, sum.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(sum.find(i < 3 ? "refresh queued" : "refreshed within the hour") !=
+                                   std::string::npos,
+                               sum.c_str());
+    }
+    if (i == 2) {   // the main loop starts the queued refreshes between turns, one at a time
+      while (const char* due = q.due(false, true, false, true)) {
+        q.started(due, now);
+        starts++;
+      }
+    }
+  }
+  TEST_ASSERT_EQUAL(12, asks);
+  TEST_ASSERT_EQUAL(2, starts);                 // one refresh per provider in the hour
+  TEST_ASSERT_EQUAL(1, queued["anthropic"]);
+  TEST_ASSERT_EQUAL(1, queued["openai"]);
+  TEST_ASSERT_TRUE(q.due(false, true, false, true) == nullptr);
+  TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
+  // The end-of-turn device[] path tells the head next turn.
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"type\":\"orch_model\",\"provider\":\"anthropic\","
+                                  "\"model\":\"claude-sonnet-5.5\"}"),
+                   "1001", d, st, spawned);
+  TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find("[DEVICE] orch_model not applied: claude-sonnet-5.5 on anthropic: "
+                                             "not in anthropic list cached 2026-10-20") != std::string::npos,
+                           r.pendingMem.c_str());
+  TEST_ASSERT_TRUE(r.pendingMem.find("models.list") != std::string::npos);
+}
+
+// L19-39: a router id named on a direct provider is refused as such (no refresh
+// can fix it), naming the bare id when that provider lists it. On cumulo the same
+// id applies.
+static void test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  int misses = 0;
+  d.modelMiss = [&misses](const std::string& p, const std::string&) {
+    misses++;
+    return "not in " + p + " list";
+  };
+  d.modelIsValid = [](const std::string& p, const std::string& m) {
+    if (p == "cumulo") return m == "openai/gpt-5.6-sol";
+    return m == "gpt-5.6-sol";
+  };
+  std::string sum = agent::applyDeviceElement(
+      "{\"type\":\"orch_model\",\"provider\":\"openai\",\"model\":\"openai/gpt-5.6-sol\"}", false, "1001",
+      d, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(sum.find("not in openai list: use gpt-5.6-sol (openai/gpt-5.6-sol is a cumulo "
+                                    "router id)") != std::string::npos,
+                           sum.c_str());
+  sum = agent::applyDeviceElement(
+      "{\"type\":\"orch_model\",\"provider\":\"anthropic\",\"model\":\"anthropic/claude-opus-5-5\"}",
+      false, "1001", d, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(sum.find("not in anthropic list: anthropic/claude-opus-5-5 is a cumulo router id; "
+                                    "pick one of anthropic's ids from models.list") != std::string::npos,
+                           sum.c_str());
+  TEST_ASSERT_EQUAL(0, misses);   // no refresh asked for a category error
+  TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
+  // Counter-test: the router takes its own ids.
+  sum = agent::applyDeviceElement(
+      "{\"type\":\"orch_model\",\"provider\":\"cumulo\",\"model\":\"openai/gpt-5.6-sol\"}", false, "1001",
+      d, nullptr);
+  TEST_ASSERT_EQUAL_STRING("orch_model(cumulo/openai/gpt-5.6-sol) ", sum.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -871,6 +1063,11 @@ int main(int, char**) {
   RUN_TEST(test_claims_ask_is_checked_with_the_reply);
   RUN_TEST(test_claims_no_check_attached_is_byte_identical);
   RUN_TEST(test_every_mem_write_outcome_is_reported);
+  RUN_TEST(test_ask_duplicate_a_reworded_ask_after_a_question_is_not_appended);
+  RUN_TEST(test_ask_duplicate_the_last_non_blank_character_decides);
+  RUN_TEST(test_orch_model_every_provider_slot_applies_and_nothing_else);
+  RUN_TEST(test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour);
+  RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);
   UNITY_END();
   return 0;
 }
