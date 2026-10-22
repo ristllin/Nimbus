@@ -96,12 +96,19 @@ def newest_seq(lines: Iterable[LogLine]) -> int:
     return max(seqs) if seqs else -1
 
 
+# Periodic status lines: a steady device repeats them word for word on a timer, which is
+# health, not a loop.
+HEARTBEATS: Tuple[str, ...] = ("[sram] steady",)
+
+
 def identical_peak(lines: Iterable[LogLine], ignore: Sequence[str] = ()) -> Tuple[int, str]:
     """The most often repeated exact line text and its count. Lines holding any of
-    ``ignore`` are not counted (a leg's own drive, such as the injected page's echo)."""
+    ``ignore`` (a leg's own drive, such as the injected page's echo) or a periodic
+    status line (HEARTBEATS) are not counted."""
     counts: Dict[str, int] = {}
+    skip = tuple(ignore) + HEARTBEATS
     for ln in lines:
-        if any(s in ln.text for s in ignore):
+        if any(s in ln.text for s in skip):
             continue
         counts[ln.text] = counts.get(ln.text, 0) + 1
     if not counts:

@@ -120,6 +120,14 @@ def test_a_candidate_shaped_replay_passes():
     assert g.overall(g.grade(m, REPLAY_BOUNDS)) == g.PASS
 
 
+def test_a_steady_heartbeat_is_not_a_loop():
+    beat = "[sram] steady-orch    intFree=40408 intLargest=22516 heapMin=15460 psramFree=6821408 dIntFree=+0"
+    lines = g.parse_log("\n".join(f"{k} {k * 20000} - {beat}" for k in range(1, 12)))
+    assert g.identical_peak(lines) == (0, "")
+    loop = g.parse_log("\n".join(f"{k} {k} - orchTurn(custom): chat HTTP 402: x" for k in range(1, 7)))
+    assert g.identical_peak(loop)[0] == 6  # counter-test: a real repeat still counts
+
+
 def test_without_the_drive_filter_the_drive_echo_is_a_repeat():
     """Counter-test for the ignore list: the injected-page echo repeats 49 times."""
     assert g.identical_peak(g.parse_log(CANDIDATE_LOG))[0] == 49
