@@ -1,0 +1,2 @@
+Settings storage | degraded | 266 saves failed since start, last usgLedger, 0 entries free (under the reserve of 16); the reserve cannot be restored. Remove connectors you don't use to free space.
+Providers | degraded | openai says the account is out of credit (HTTP 429); it is checked again in 10 minutes; anthropic says the account is out of credit (HTTP 400); it is checked again in 10 minutes

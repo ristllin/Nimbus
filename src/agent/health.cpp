@@ -16,6 +16,10 @@
 #include "dream_subsystem.h"          // status() - did the last night save its state
 #include "nimbus/fault.h"
 #include "nimbus/orch/provider_park.h"  // the one per-provider park - the Providers row (L19-8)
+#include "nimbus/orch/health_rows.h"     // the Settings storage and Providers rows (portable)
+#include "nimbus/store/nvs_reserve.h"    // kNvsReserveEntries
+#include "../sys/config_nvs.h"           // persistFailures / lastPersistFailKey
+#include "../sys/nvs_guard.h"            // nvsAvailableEntries / nvsGuardStats
 
 namespace agent::health {
 
@@ -27,34 +31,15 @@ volatile uint32_t s_lbWhenMs = 0;
 
 const char* kOk = "ok", *kDegraded = "degraded", *kAbsent = "absent", *kUnknown = "unknown";
 
-struct Row { const char* key; const char* label; const char* state; String detail; };
+struct Row { String key; String label; const char* state; String detail; };
 
 // The Providers row (L19-8): every provider the one park holds closed - out of
 // credit, a refused key, or paused - with when it is checked again. Degraded while
-// any is closed; ok when every provider is open to every seam.
+// any is closed; ok when every provider is open to every seam. The words come from
+// the portable builder (nimbus/orch/health_rows.h, host-tested).
 Row providersRow() {
-  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
-  const size_t n = nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders,
-                                                         (uint32_t)millis());
-  String d;
-  const uint8_t all = nimbus::orch::providerPark().pausedBy(nimbus::orch::kPauseAllProviders);
-  if (all) {
-    d = "paid requests to every provider are paused";
-    if (all & nimbus::orch::kPauseSpendCeiling) d += ": the monthly spend limit is reached";
-  }
-  for (size_t i = 0; i < n && !all; i++) {
-    nimbus::orch::ParkVerdict v;
-    v.open = e[i].kind == nimbus::orch::ParkKind::None && !e[i].paused;
-    if (v.open) continue;
-    v.kind = e[i].kind;
-    v.paused = e[i].paused;
-    v.httpStatus = e[i].httpStatus;
-    v.recheckInMs = e[i].recheckInMs;
-    if (d.length()) d += "; ";
-    d += nimbus::orch::parkWords(e[i].provider, v).c_str();
-  }
-  if (!d.length()) return {"providers", "Providers", kOk, String("every provider open")};
-  return {"providers", "Providers", kDegraded, d};
+  const nimbus::orch::HealthRow r = nimbus::orch::providersRow(nimbus::orch::providerPark(), (uint32_t)millis());
+  return {"providers", "Providers", r.state == "ok" ? kOk : kDegraded, r.detail.c_str()};
 }
 
 // Per-capability evidence from the SINGLE tests too (owner 2026-07-16: pressing
@@ -106,6 +91,31 @@ Row flashRow() {
 }
 }  // namespace
 
+namespace {
+// Settings storage (19 Oct triage): degraded when free entries are under the
+// reserve, a save failed since start, or the reserve is starved (the portable rule,
+// nimbus/orch/health_rows.h). The older profile-seed deferral (CUM-408) rides the
+// same row.
+int addStoreRow(Row* rows, int n, int cap) {
+  nimbus::orch::SettingsStorageInputs in;
+  in.freeEntries = nimbus::sys::nvsAvailableEntries();
+  in.reserveEntries = nimbus::store::kNvsReserveEntries;
+  in.failsSinceBoot = nimbus::sys::persistFailures();
+  in.lastFailKey = nimbus::sys::lastPersistFailKey().c_str();
+  in.starved = nimbus::sys::nvsGuardStats().starved;
+  nimbus::orch::HealthRow hr;
+  const bool seedDeferred = agent::store::profileSeedDeferredNvsFull();
+  if (nimbus::orch::settingsStorageRow(in, hr)) {
+    if (seedDeferred) hr.detail += " Profile defaults are waiting for space.";
+    if (n < cap) rows[n++] = {"nvs", "Settings storage", kDegraded, hr.detail.c_str()};
+  } else if (seedDeferred && n < cap) {
+    rows[n++] = {"nvs", "Settings storage", kDegraded,
+                 "NVS full: profile defaults deferred, free space to apply them"};
+  }
+  return n;
+}
+}  // namespace
+
 void recordLoopback(bool tonePresent, uint32_t whenMs) {
   s_lbTone = tonePresent;
   s_lbWhenMs = whenMs ? whenMs : 1;   // never 0 (0 means "never run")
@@ -126,7 +136,7 @@ std::string reportJson(const Env& env) {
   using nimbus::fault::Cap;
   const nimbus::hw::HalHealth& hal = nimbus::hw::halHealth();
 
-  Row rows[18];
+  Row rows[20];   // the fixed rows plus the Settings storage row
   int n = 0;
 
   // LED ring + color panel: HAL begin-result AND not fault-injected. CUM-514: a
@@ -256,12 +266,7 @@ std::string reportJson(const Env& env) {
     if (dropped) d += String(", ") + dropped + " line(s) dropped under contention";
     rows[n++] = {"log", "Durable log", dropped ? kDegraded : kOk, d};
   }
-  // Settings storage (CUM-408): only appears when the one-time profile-seed migration
-  // could not persist because NVS is full, so it deferred rather than re-running on every
-  // battery-mode switch. A hint to free NVS space; clears on a reboot with headroom.
-  if (agent::store::profileSeedDeferredNvsFull())
-    rows[n++] = {"nvs", "Settings storage", kDegraded,
-                 "NVS full: profile defaults deferred, free space to apply them"};
+  n = addStoreRow(rows, n, sizeof(rows) / sizeof(rows[0]));
 
   JsonDocument d;
   JsonArray arr = d["components"].to<JsonArray>();
