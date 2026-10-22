@@ -20,15 +20,9 @@ Orchestrator-mode board with a provider key, and the serial token (or
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
-
-try:
-    import requests  # still used for the external Telegram API (never the device token)
-except ImportError:  # pragma: no cover
-    requests = None
 
 from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 
@@ -137,40 +131,56 @@ def test_compact_when_nothing_new_is_still_safe(board):
     assert len(after) >= len(before)  # rows only ever accumulate
 
 
-def test_fold_failure_is_bounded_and_recovers(board):
+def _out_texts(ip: str, chat, day: str) -> list:
+    """The text of every message the device sent to `chat` on `day`, oldest first,
+    from its own Telegram record (/api/tg/archive): a bot never sees its own messages
+    in getUpdates, so the old getUpdates count could not see a single one."""
+    rows, start = [], 0
+    while True:
+        page = _S.get(
+            f"http://{ip}/api/tg/archive", params={"chat": chat, "day": day, "limit": 200, "from": start}, timeout=20
+        ).json()
+        rows += page.get("rows", [])
+        if not page.get("more"):
+            break
+        start = page["next"]
+    texts = []
+    for r in rows:
+        if r.get("dir") != "out":
+            continue
+        item = _S.get(
+            f"http://{ip}/api/tg/archive/item", params={"chat": chat, "day": day, "name": r["raw"]}, timeout=20
+        ).json()
+        texts.append(str(item.get("text") or ""))
+    return texts
+
+
+def _wait_out(ip, chat, day, after: int, timeout_s: float, want=None) -> list:
+    """Messages sent after the first `after` ones, once `want` is among them (or the time is up)."""
+    deadline = time.time() + timeout_s
+    while True:
+        new = _out_texts(ip, chat, day)[after:]
+        if (want and any(want in t for t in new)) or time.time() >= deadline:
+            return new
+        time.sleep(5)
+
+
+def test_fold_failure_is_bounded_and_recovers(board, bench):
     """Field bug 2026-08-11 ("triple message on Compaction then failure"): a
     failing fold episode must be BOUNDED in owner-visible messages and must
     recover once the provider returns.
 
-    Drives the new FAULT provider cap (every LLM host answers "no response",
-    Telegram untouched) against a real Telegram chat via the dedicated test bot
-    (NIMBUS_TEST_TG_TOKEN/CHAT - never the owner's bot). Asserts, via the test
-    bot's getUpdates: a manual staged fold under the fault emits at most ONE
-    message for the whole failure episode (the "Couldn't compact" notice - the
-    per-retry "Compacting our conversation" pre-notice is gone), and a fold
-    after clearing the fault emits exactly the one success confirmation.
+    Drives the FAULT provider cap (every LLM host answers "no response",
+    Telegram untouched) against the dedicated test bot's chat (the bench fixture
+    makes it the owner chat and clears the token afterwards). The device's own
+    Telegram record is the count: a manual staged fold under the fault sends at
+    most ONE message for the whole failure episode (the "Couldn't compact"
+    notice - no per-retry "Compacting our conversation" pre-notice), and a fold
+    after clearing the fault sends exactly the one success confirmation.
     """
     ip, tok = board
-    bot = os.environ.get("NIMBUS_TEST_TG_TOKEN")
-    chat = os.environ.get("NIMBUS_TEST_TG_CHAT")
-    if not bot or not chat:
-        pytest.skip(
-            "set NIMBUS_TEST_TG_TOKEN + NIMBUS_TEST_TG_CHAT (dedicated "
-            "test bot) to run the fold-failure bound - SKIPPED, not proven"
-        )
-
-    def tg_updates(offset):
-        r = requests.get(
-            f"https://api.telegram.org/bot{bot}/getUpdates", params={"offset": offset, "timeout": 0}, timeout=15
-        )
-        return r.json().get("result", [])
-
-    def msgs_for_chat(updates):
-        return [
-            u["message"]["text"]
-            for u in updates
-            if str(u.get("message", {}).get("chat", {}).get("id")) == str(chat) and "text" in u.get("message", {})
-        ]
+    _, chat = bench
+    day = time.strftime("%Y-%m-%d", time.gmtime())
 
     def fault(on):
         r = _S.post(f"http://{ip}/api/fault", data={"cap": "provider", "on": "1" if on else "0"}, timeout=10)
@@ -179,30 +189,25 @@ def test_fold_failure_is_bounded_and_recovers(board):
     # Seed the test chat with real history BEFORE the fault - an empty chat's
     # manual fold answers "Nothing to compact yet." and never reaches the
     # failure path (the bound would pass vacuously).
+    seen = len(_out_texts(ip, chat, day))
     r = _S.post(
         f"http://{ip}/api/test/inject",
         data={"chat": chat, "text": f"Fold-failure seed {MARKER}: reply briefly."},
         timeout=10,
     )
     assert r.status_code == 202
-    time.sleep(45)  # let the seed turn complete + deliver while providers work
-
-    # Drain any queued updates (incl. the seed reply) so counts start clean.
-    seen = tg_updates(0)
-    offset = (seen[-1]["update_id"] + 1) if seen else 0
+    assert _wait_out(ip, chat, day, seen, 120.0, want=""), "the seed turn never replied to the test chat"
+    seen = len(_out_texts(ip, chat, day))
 
     try:
         fault(True)
         r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
         assert r.status_code == 202
-        time.sleep(45)  # a few pump passes - retries must stay silent
-        updates = tg_updates(offset)
-        texts = msgs_for_chat(updates)
+        texts = _wait_out(ip, chat, day, seen, 45.0)  # a few pump passes - retries must stay silent
         assert len(texts) <= 1, f"failing fold episode spammed: {texts}"
         for t in texts:
             assert "Compacting our conversation" not in t, "pre-notice is back"
-        if updates:
-            offset = updates[-1]["update_id"] + 1
+        seen += len(texts)
     finally:
         fault(False)  # never leave the board provider-faulted
 
@@ -210,6 +215,7 @@ def test_fold_failure_is_bounded_and_recovers(board):
     # confirms exactly once.
     r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
     assert r.status_code == 202
-    time.sleep(60)
-    texts = msgs_for_chat(tg_updates(offset))
-    assert texts.count("✓ Compacted.") == 1, f"expected one confirmation, got {texts}"
+    _wait_out(ip, chat, day, seen, 90.0, want="✓ Compacted.")
+    time.sleep(10)  # a second confirmation would land in this window
+    texts = _out_texts(ip, chat, day)[seen:]
+    assert sum("✓ Compacted." in t for t in texts) == 1, f"expected one confirmation, got {texts}"
