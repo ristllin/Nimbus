@@ -61,7 +61,7 @@ class HttpControl {
               NimbusdRig* rig = nullptr)
       : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
         dataDir_(rig ? rig->options().dataDir : std::string("/data")),
-        replies_(replies), page_(buildWebUiPage(token_)), api_(rig, eng, replies) {
+        replies_(replies), page_(buildWebUiPage(token_)), script_(buildWebUiScript()), api_(rig, eng, replies) {
     api_.setWebToken(token_);
   }
   ~HttpControl() { stop(); }
@@ -168,6 +168,7 @@ class HttpControl {
         {"GET", "/", &HttpControl::handleIndex, true},
         {"GET", "/index.html", &HttpControl::handleIndex, true},
         {"GET", "/logo.svg", &HttpControl::handleLogo, true},
+        {"GET", "/app.js", &HttpControl::handleScript, true},   // the page's own script
         {"GET", "/healthz", &HttpControl::handleHealthz, true},
         {"GET", "/readyz", &HttpControl::handleReadyz, false},
         {"GET", "/api/replies", &HttpControl::handleReplies, false},
@@ -203,6 +204,11 @@ class HttpControl {
 
   void handleIndex(int fd, const std::string&, const std::string&) {
     respond(fd, 200, "text/html; charset=utf-8", page_);
+  }
+
+  void handleScript(int fd, const std::string&, const std::string&) {
+    if (script_.empty()) { respond(fd, 404, "application/json", R"({"error":"not found"})"); return; }
+    respond(fd, 200, "text/javascript; charset=utf-8", script_);
   }
 
   void handleLogo(int fd, const std::string&, const std::string&) {
@@ -416,6 +422,9 @@ class HttpControl {
     std::string h = "HTTP/1.0 " + std::to_string(status) + " " + reason + "\r\n";
     h += "Content-Type: " + std::string(ctype) + "\r\n";
     h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    // Never cached: the page and its script (GET /app.js) must come from the same
+    // build, and every API answer is live state.
+    h += "Cache-Control: no-store\r\n";
     h += "Connection: close\r\n\r\n";
     ::send(fd, h.data(), h.size(), 0);
     ::send(fd, body.data(), body.size(), 0);
@@ -427,7 +436,8 @@ class HttpControl {
   std::string token_;
   std::string dataDir_;
   ReplyBuffer* replies_ = nullptr;
-  std::string page_;  // the assembled web app, token seeded, built once
+  std::string page_;    // the assembled web app, token seeded, built once
+  std::string script_;  // its script, served as GET /app.js (built once)
   WebApi api_;        // the /api/* surface (honest Virtual Nimbus semantics)
   int listenFd_ = -1;
   std::atomic<bool> running_{false};

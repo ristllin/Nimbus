@@ -82,8 +82,12 @@ static void checkPage(ndtest::Ctx& c) {
   // appended AFTER the app script and wraps the page's failure text, whose name is
   // pinned here so a rename in the shared page fails this test instead of silently
   // falling back to the bare retry hint.
-  c.ok(has(page, "function saveFailText("), "the page still defines saveFailText (the shim's seam)");
-  c.ok(page.find("window.__nimbusRefusal") > page.find("function saveFailText("),
+  // The app script is its own response (GET /app.js); its tag is parser-blocking,
+  // so a shim after the tag runs after the script defined saveFailText.
+  const std::string appJs = buildWebUiScript();
+  c.ok(has(appJs, "function saveFailText("), "the app script still defines saveFailText (the shim's seam)");
+  c.ok(page.find("<script src=\"app.js\"") != std::string::npos &&
+           page.find("window.__nimbusRefusal") > page.find("<script src=\"app.js\""),
        "the refusal shim runs after the app script defines saveFailText");
   c.ok(has(page, "window.saveFailText=function(e,d)"), "the shim surfaces a 400's server sentence");
 
@@ -124,6 +128,13 @@ static void checkPageFitsTheRelayFrame(ndtest::Ctx& c) {
   c.ok(raw <= kRawCap, "the hosted page fits the sidecar's raw body cap (480 KiB)");
   c.ok(b64 + kEnvelopeHeadroom <= kMaxFrameBytes,
        "the hosted page, base64-encoded, fits one relay frame with its 2 KiB envelope");
+  // The page script is its own response (GET /app.js): it must fit one frame too.
+  const std::string js = buildWebUiScript();
+  const size_t jsB64 = 4 * ((js.size() + 2) / 3);
+  c.ok(!js.empty() && page.find("<script src=\"app.js\"") != std::string::npos,
+       "the hosted page loads its script from app.js");
+  c.ok(js.size() <= kRawCap && jsB64 + kEnvelopeHeadroom <= kMaxFrameBytes,
+       "the hosted page script fits the sidecar's raw cap and one relay frame");
 }
 
 int main() {

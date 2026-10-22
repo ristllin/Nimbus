@@ -70,6 +70,7 @@
 #include "nimbus/touch_cal.h"                 // tchCal validation (shared with the console)
 #include "solide/touch.h"                     // live-apply a new calibration + touch::health()
 #include "nimbus/net/soak_state.h"            // CUM-257: uptime + soak counters onto /api/state
+#include "nimbus/net/page_split.h"            // CUM-565: the page and its script as two responses
 #include "nimbus/harness/claim_check.h"       // claimsCorrected / claimsTailed onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
 #include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
@@ -421,37 +422,92 @@ void unlockConfig() { portEXIT_CRITICAL(&s_cfgMux); }
 // Stream the config page as the ordered concatenation of its PROGMEM fragments
 // (CONFIG_HTML_PARTS, P4 split) with a chunked response: the callback copies
 // straight from flash into the TCP buffer as the socket drains - no RAM copy
-// of the page ever exists. Fragment lengths are measured once. The page is the
-// biggest response the device sends (about 375 KB), so it goes through the
-// internal-SRAM admission (web_admission.h): it trickles, or answers a self-reloading
-// busy page when memory is short (and to the cloud relay while a turn is in flight).
-static void sendConfigPage(AsyncWebServerRequest* r) {
-  static size_t s_len[CONFIG_HTML_PART_COUNT] = {0};
-  static size_t s_total = 0;
-  static bool   s_measured = false;
+// of the page ever exists. Fragment lengths are measured once.
+//
+// CUM-565: the page goes out as two responses (nimbus/net/page_split.h). GET /
+// sends every fragment but the last, then a one-line <script src="app.js"> tag;
+// GET app.js sends the last fragment (the page script) without its tags. The cloud
+// relay buffers each tunneled response whole under kLoopbackMaxRespBody, and the
+// one ~375 KB page had outgrown it. If the script fragment ever loses its exact
+// <script>...</script> shape the page is served whole, as before.
+//
+// Both go through the internal-SRAM admission (web_admission.h): they trickle, or
+// answer a busy reply when memory is short (and to the cloud relay while a turn is
+// in flight); the HTML busy page reloads itself, and the script tag reloads the page
+// when app.js fails to load.
+namespace {
+struct PageLayout {
+  size_t len[CONFIG_HTML_PART_COUNT] = {0};
+  size_t html = 0;        // bytes GET / sends (the tag included when split)
+  size_t jsOff = 0;       // the script body inside the last fragment
+  size_t jsLen = 0;
+  bool split = false;
+};
+const PageLayout& pageLayout() {
+  static PageLayout s_l;
+  static bool s_measured = false;
   if (!s_measured) {
+    size_t total = 0;
     for (size_t p = 0; p < CONFIG_HTML_PART_COUNT; p++) {
-      s_len[p] = strlen_P(CONFIG_HTML_PARTS[p]);
-      s_total += s_len[p];
+      s_l.len[p] = strlen_P(CONFIG_HTML_PARTS[p]);
+      total += s_l.len[p];
     }
+    const size_t last = CONFIG_HTML_PART_COUNT - 1;
+    s_l.split = nimbus::net::pageScriptBody(CONFIG_HTML_PARTS[last], s_l.len[last], s_l.jsOff,
+                                            s_l.jsLen);
+    s_l.html = s_l.split ? nimbus::net::splitHtmlBytes(total, s_l.len[last]) : total;
     s_measured = true;
   }
+  return s_l;
+}
+}  // namespace
+
+static void sendConfigPage(AsyncWebServerRequest* r) {
+  const PageLayout& L = pageLayout();
   AwsResponseFiller fill =
       [](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
-        size_t off = index;  // absolute offset into the concatenated page
-        for (size_t p = 0; p < CONFIG_HTML_PART_COUNT; p++) {
-          if (off < s_len[p]) {
-            size_t take = s_len[p] - off;
+        const PageLayout& L = pageLayout();
+        size_t off = index;  // absolute offset into the served page
+        const size_t parts = L.split ? CONFIG_HTML_PART_COUNT - 1 : CONFIG_HTML_PART_COUNT;
+        for (size_t p = 0; p < parts; p++) {
+          if (off < L.len[p]) {
+            size_t take = L.len[p] - off;
             if (take > maxLen) take = maxLen;
             memcpy_P(buf, CONFIG_HTML_PARTS[p] + off, take);
             return take;
           }
-          off -= s_len[p];
+          off -= L.len[p];
         }
-        return 0;  // past the last fragment: response complete
+        if (L.split && off < nimbus::net::kPageScriptTagLen) {
+          size_t take = nimbus::net::kPageScriptTagLen - off;
+          if (take > maxLen) take = maxLen;
+          memcpy(buf, nimbus::net::kPageScriptTag + off, take);
+          return take;
+        }
+        return 0;  // past the end: response complete
       };
-  if (!net::admission::admit(r, s_total, /*html=*/true, fill)) return;
+  if (!net::admission::admit(r, L.html, /*html=*/true, fill)) return;
   AsyncWebServerResponse* res = r->beginChunkedResponse("text/html", fill);
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+}
+
+// GET app.js: the page script (CUM-565). no-store like the page, so a browser never
+// pairs a fresh page with a script cached before an update.
+static void sendPageScript(AsyncWebServerRequest* r) {
+  const PageLayout& L = pageLayout();
+  if (!L.split) { r->send(404, "text/plain", "not found"); return; }
+  AwsResponseFiller fill =
+      [](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+        const PageLayout& L = pageLayout();
+        if (index >= L.jsLen) return 0;
+        size_t take = L.jsLen - index;
+        if (take > maxLen) take = maxLen;
+        memcpy_P(buf, CONFIG_HTML_PARTS[CONFIG_HTML_PART_COUNT - 1] + L.jsOff + index, take);
+        return take;
+      };
+  if (!net::admission::admit(r, L.jsLen, /*html=*/false, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse("text/javascript; charset=utf-8", fill);
   res->addHeader("Cache-Control", "no-store");
   r->send(res);
 }
@@ -1175,6 +1231,9 @@ static void buildOrchState(String& out) {
   d["orchLoop"] = agent::store::orchToolLoop();
   d["midFail"]  = agent::store::midTurnFailover();
   d["codeSbx"]  = agent::store::codeSandbox();
+  // How a PDF reaches the owner now (the one pdfRoute rule): the Code sandbox
+  // status line (openai | anthropic | device | nostore | sandboxoff | nokey).
+  d["pdfRoute"] = agent::connectors::pdfRouteSlug();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)
   d["tgLive"]   = agent::telegram::enabled();   // poll task actually running with a
@@ -1716,42 +1775,17 @@ void beginWeb(const WebConfig& wc) {
     }
     sendConfigPage(r);
   });
+  // CUM-565: the page script, a second response (see sendConfigPage). Ungated like
+  // the page: the browser loads it with a plain script tag, which carries no token.
+  s_server.on("/app.js", HTTP_GET, [](AsyncWebServerRequest* r) { sendPageScript(r); });
 
   // The dotted-ring mark (generated PROGMEM SVG - tools/logo/gen_logo.py).
   // Deliberately UNGATED like "/": it is the page favicon and the identify
   // gate's logo, both needed before a token exists; a logo is not sensitive.
   // Cacheable - it only changes with a firmware flash.
-  // --- Cloud tunnel (cumulo-nimbus) --------------------------------------------
-  // GET returns the status object; POST performs an action (optin/optout/pair/unpair).
-  // Token-gated like every other state-changing endpoint.
-  s_server.on("/api/cloud", HTTP_GET, [](AsyncWebServerRequest* r) {
-    if (authBlocked(r)) return;
-    JsonDocument d;
-    nimbus::relay::statusInto(d.to<JsonObject>());
-    String out;
-    serializeJson(d, out);
-    r->send(200, "application/json", out);
-  });
-  s_server.on("/api/cloud", HTTP_POST, [](AsyncWebServerRequest* r) {
-    if (authBlocked(r)) return;
-    String action = r->hasParam("action", true) ? r->getParam("action", true)->value() : "";
-    if (action == "optin") {
-      nimbus::relay::requestOptIn(true);
-    } else if (action == "optout") {
-      nimbus::relay::requestUnpair();
-      nimbus::relay::requestOptIn(false);
-    } else if (action == "pair") {
-      nimbus::relay::requestOptIn(true);
-      nimbus::relay::requestPair();
-    } else if (action == "unpair") {
-      nimbus::relay::requestUnpair();
-    } else {
-      r->send(400, "application/json", "{\"error\":\"bad_action\"}");
-      return;
-    }
-    r->send(200, "application/json", "{\"ok\":true}");
-  });
-
+  // CUM-718: the mintkey routes are registered BEFORE /api/cloud. The server matches
+  // a route as "equal, or a prefix plus '/'" in registration order, so /api/cloud
+  // registered first answered every /api/cloud/mintkey request (test_web_routes).
   // CUM-397: mint a Cumulo Nimbus spend key for THIS device. This is the ONLY code
   // path that mints; it fires solely from the user's Save click on the Cloud access
   // card (owner ruling 2026-09-14: nothing mints under the hood - not on pairing,
@@ -1823,6 +1857,37 @@ void beginWeb(const WebConfig& wc) {
     String out;
     serializeJson(d, out);
     r->send(200, "application/json", out);
+  });
+
+  // --- Cloud tunnel (cumulo-nimbus) --------------------------------------------
+  // GET returns the status object; POST performs an action (optin/optout/pair/unpair).
+  // Token-gated like every other state-changing endpoint.
+  s_server.on("/api/cloud", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    JsonDocument d;
+    nimbus::relay::statusInto(d.to<JsonObject>());
+    String out;
+    serializeJson(d, out);
+    r->send(200, "application/json", out);
+  });
+  s_server.on("/api/cloud", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String action = r->hasParam("action", true) ? r->getParam("action", true)->value() : "";
+    if (action == "optin") {
+      nimbus::relay::requestOptIn(true);
+    } else if (action == "optout") {
+      nimbus::relay::requestUnpair();
+      nimbus::relay::requestOptIn(false);
+    } else if (action == "pair") {
+      nimbus::relay::requestOptIn(true);
+      nimbus::relay::requestPair();
+    } else if (action == "unpair") {
+      nimbus::relay::requestUnpair();
+    } else {
+      r->send(400, "application/json", "{\"error\":\"bad_action\"}");
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true}");
   });
 
   s_server.on("/logo.svg", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -2550,6 +2615,53 @@ void beginWeb(const WebConfig& wc) {
     r->send(200, "application/json", "{\"ok\":true}");
   });
 
+  // ---- MCP OAuth 2.1 sign-in (CUM-256) -------------------------------------
+  // CUM-718: registered BEFORE the /api/connectors handlers below, which would
+  // otherwise answer every /api/connectors/oauth/* request (the server matches a
+  // route as "equal, or a prefix plus '/'" in registration order; test_web_routes).
+  // Arm an OAuth acquisition flow for a device-dialed MCP connector. Token-gated.
+  // The redirect base is the exact address the owner reached the device by, so
+  // the dynamically-registered redirect_uri matches on the callback. The main-loop
+  // pump advances the flow; the client polls /api/connectors/oauth/status.
+  s_server.on("/api/connectors/oauth/start", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String name = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
+    String redirectBase = String("http://") + r->host();
+    String err = agent::connectors::mcp::oauth::begin(name, redirectBase);
+    if (err.length()) {
+      JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
+      r->send(400, "application/json", out);
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+  s_server.on("/api/connectors/oauth/status", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    AsyncWebServerResponse* res =
+        r->beginResponse(200, "application/json", agent::connectors::mcp::oauth::statusJson());
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  s_server.on("/api/connectors/oauth/cancel", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    agent::connectors::mcp::oauth::cancel();
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+  // 22 Oct honesty (2): "Check now" on a Mistral connector card queues the workspace
+  // check alone (no full Verify). Registered before /api/connectors (CUM-718).
+  s_server.on("/api/connectors/check", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    if (!agent::store::hasMistralKey()) {
+      r->send(409, "application/json",
+              "{\"error\":\"no_key\",\"message\":\"Add your Mistral key first.\"}");
+      return;
+    }
+    agent::provider_verify::queueWorkspaceProbeIfStale(0);   // only when something is unconfirmed
+    r->send(200, "application/json",
+            agent::provider_verify::workspaceProbePending() ? "{\"ok\":true,\"queued\":true}"
+                                                            : "{\"ok\":true,\"queued\":false}");
+  });
+
   // ---- connectors (Phase C) - OWNER-ONLY registry of per-provider external
   // tools (MCP servers / OpenAI first-party connectors / Mistral built-ins).
   // GET returns a SANITIZED view (secrets never echoed - tok/oauth become
@@ -2605,6 +2717,9 @@ void beginWeb(const WebConfig& wc) {
       host = pri.substring(0, e);
     }
     out["host"] = host;
+    // 22 Oct honesty: why the last automatic workspace check missed, when the next
+    // slow re-check runs, and how many tools ride a Mistral request.
+    agent::connectors::webStatusInto(out.as<JsonObject>());
     String s; serializeJson(out, s);
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
     res->addHeader("Cache-Control", "no-store");
@@ -2707,7 +2822,7 @@ void beginWeb(const WebConfig& wc) {
     }
 
     String outBlob; serializeJson(cur, outBlob);
-    {
+    if (!del.length()) {   // a removal only shrinks the set: never refuse it
       std::string cfgErr = configError(outBlob);
       if (!cfgErr.empty()) {
         JsonDocument e; e["error"] = cfgErr; String out; serializeJson(e, out);
@@ -2730,35 +2845,6 @@ void beginWeb(const WebConfig& wc) {
     sendSaved(r, save);
   });
 
-  // ---- MCP OAuth 2.1 sign-in (CUM-256) -------------------------------------
-  // Arm an OAuth acquisition flow for a device-dialed MCP connector. Token-gated.
-  // The redirect base is the exact address the owner reached the device by, so
-  // the dynamically-registered redirect_uri matches on the callback. The main-loop
-  // pump advances the flow; the client polls /api/connectors/oauth/status.
-  s_server.on("/api/connectors/oauth/start", HTTP_POST, [](AsyncWebServerRequest* r) {
-    if (authBlocked(r)) return;
-    String name = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
-    String redirectBase = String("http://") + r->host();
-    String err = agent::connectors::mcp::oauth::begin(name, redirectBase);
-    if (err.length()) {
-      JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
-      r->send(400, "application/json", out);
-      return;
-    }
-    r->send(200, "application/json", "{\"ok\":true}");
-  });
-  s_server.on("/api/connectors/oauth/status", HTTP_GET, [](AsyncWebServerRequest* r) {
-    if (authBlocked(r)) return;
-    AsyncWebServerResponse* res =
-        r->beginResponse(200, "application/json", agent::connectors::mcp::oauth::statusJson());
-    res->addHeader("Cache-Control", "no-store");
-    r->send(res);
-  });
-  s_server.on("/api/connectors/oauth/cancel", HTTP_POST, [](AsyncWebServerRequest* r) {
-    if (authBlocked(r)) return;
-    agent::connectors::mcp::oauth::cancel();
-    r->send(200, "application/json", "{\"ok\":true}");
-  });
   // The device's own short redirect: the owner's verify URL / web QR points here, and
   // it 302s the owner's browser on to the provider's consent page. NOT token-gated
   // (the owner opens it fresh on a phone), so it instead requires the per-flow launch

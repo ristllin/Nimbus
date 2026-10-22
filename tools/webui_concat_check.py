@@ -77,6 +77,17 @@ def main() -> None:
     if bad:
         sys.exit(f"FAIL: page invariants broken: {bad}")
 
+    # CUM-565: the device serves the page script as its own response (GET app.js,
+    # lib/core/include/nimbus/net/page_split.h): the LAST fragment must be exactly
+    # <script>...</script> plus a newline, or the device falls back to one ~375 KB
+    # response that no longer fits the cloud relay's buffer.
+    last = fragment_payload(ROOT / "include" / "web" / f"{order[-1]}.h")
+    if not (last.startswith("<script>") and last.endswith("</script>\n")):
+        sys.exit(
+            f"FAIL: the last fragment ({order[-1]}) must be exactly <script>...</script> "
+            "and a newline (the device serves it as GET app.js)"
+        )
+
     # No native browser dialogs on the web surface - they block the page and look
     # nothing like the app; the whole UI uses the styled in-app modal (CUM-266).
     # Shares the scanner with tools/check_no_native_dialogs.py (the empty-allowlist

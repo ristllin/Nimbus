@@ -1,4 +1,5 @@
 #pragma once
+#include "nimbus/net/page_split.h"   // the page and its script as two responses
 #include <string>
 
 #include "webui_page.h"  // generated: kWebUiParts[] / kWebUiPartCount
@@ -72,11 +73,22 @@ inline std::string buildWebUiPage(const std::string& webToken) {
       "window.NIMBUS_HOSTED=true;\n"
       "try{localStorage.setItem('nimbusTok','" + tok + "');}catch(e){}</script>";
 
+  // The page script goes out as its own response (GET /app.js, as on the device:
+  // nimbus/net/page_split.h): each body must fit one relay frame, and the whole page
+  // no longer does. The tag's script is parser-blocking, so the refusal shim appended
+  // below still runs after it.
+  const size_t last = kWebUiPartCount - 1;
+  size_t off = 0, n = 0;
+  const bool split = nimbus::net::pageScriptBody(
+      kWebUiParts[last], std::char_traits<char>::length(kWebUiParts[last]), off, n);
   std::string page;
-  size_t total = bootstrap.size();
+  size_t total = bootstrap.size() + nimbus::net::kPageScriptTagLen;
   for (size_t i = 0; i < kWebUiPartCount; i++) total += std::char_traits<char>::length(kWebUiParts[i]);
   page.reserve(total);
-  for (size_t i = 0; i < kWebUiPartCount; i++) page += kWebUiParts[i];
+  for (size_t i = 0; i < kWebUiPartCount; i++) {
+    if (i == last && split) page += nimbus::net::kPageScriptTag;
+    else page += kWebUiParts[i];
+  }
 
   // Inject the bootstrap directly after the page <title>, which sits at the very
   // top of the first fragment (ui_shell) - long before the single app <script> -
@@ -89,6 +101,16 @@ inline std::string buildWebUiPage(const std::string& webToken) {
     page.insert(0, bootstrap);  // anchor moved: still seed (degrades, never fakes)
   page += kRefusalShim;
   return page;
+}
+
+// GET /app.js: the page script body (the last fragment without its tags), or ""
+// when the fragment is not in the split shape (the page then carries it inline).
+inline std::string buildWebUiScript() {
+  const size_t last = kWebUiPartCount - 1;
+  const size_t len = std::char_traits<char>::length(kWebUiParts[last]);
+  size_t off = 0, n = 0;
+  if (!nimbus::net::pageScriptBody(kWebUiParts[last], len, off, n)) return std::string();
+  return std::string(kWebUiParts[last] + off, n);
 }
 
 }  // namespace nimbusd
