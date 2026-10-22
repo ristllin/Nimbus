@@ -3010,9 +3010,49 @@ function modelSel(id,cur,choices,verified){
   if(cur&&!seen[curSel])opt(s,curSel,cur);
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
-  s.dataset.sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG+'|'+(_um()?'p':'');   // prices arrive later (lane DEF)   // rebuild-only-on-change signature (P1.1)
+  s.dataset.sig=modelSelSig(choices,verified);   // rebuild-only-on-change signature (P1.1)
   s.onchange=()=>modelPick(id,s.value);
+  // R5: opening the dropdown shows the cached list at once and asks for a fresh one.
+  if(verified){s.addEventListener('focus',()=>modelsRefreshOnOpen(prov));
+    s.addEventListener('mousedown',()=>modelsRefreshOnOpen(prov));}
   return s;
+}
+// ---- Model list refresh on open (R5) ----------------------------------------
+// The device queues the refresh (at most one per provider an hour, run between
+// turns) and answers at once; the page polls GET /api/models until the list's
+// fetchedAt moves, then shows "Updated <time>" under the provider row.
+let MODELFETCH={};   // provider -> fetchedAt (unix s) of the list shown
+const MREFRESH={};   // provider -> when this page last asked (one ask per 30 s)
+function updLabel(ts){
+  if(!ts)return 'Updated just now';
+  const d=new Date(ts*1000),hm=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  return 'Updated '+(d.toDateString()===new Date().toDateString()?hm:d.toLocaleDateString([],{day:'numeric',month:'short'})+' '+hm);
+}
+function setUpd(prov,txt){const e=$('mupd_'+prov);if(e)e.textContent=txt;}
+function modelsRefreshOnOpen(prov){
+  if(HOSTED)return;   // a Virtual Nimbus keeps its list through its own verify
+  const t=Date.now();if(MREFRESH[prov]&&t-MREFRESH[prov]<30000)return;MREFRESH[prov]=t;
+  const before=MODELFETCH[prov]||0;
+  fetch('/api/models/refresh',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({provider:prov}).toString()})
+   .then(r=>r.json()).then(j=>{
+     if(!j||!j.ok)return;
+     if(j.refresh==='recent'){if(j.fetchedAt)setUpd(prov,updLabel(j.fetchedAt));return;}
+     setUpd(prov,'Checking for new models');
+     pollModelsFor(prov,before,0);})
+   .catch(()=>{});
+}
+function pollModelsFor(prov,before,n){
+  setTimeout(()=>{fetch('/api/models?provider='+encodeURIComponent(prov)).then(r=>r.json()).then(d=>{
+    const p=d&&d.providers&&d.providers[prov];if(!p)return;
+    const fresh=(p.fetchedAt||0)>before;
+    if(p.refreshPending&&!fresh&&n<20)return pollModelsFor(prov,before,n+1);
+    MODELCAT[prov]=p.models||[];MODELFETCH[prov]=p.fetchedAt||0;
+    MODELCAT_SIG+='+'+prov+(p.fetchedAt||n);
+    resyncModelSels();
+    setUpd(prov,fresh?updLabel(p.fetchedAt):(p.refreshPending?'Still checking for new models':
+      'Couldn\'t check for new models. '+(p.fetchedAt?updLabel(p.fetchedAt)+'.':'Try again later.')));
+  }).catch(()=>{});},2000);
 }
 // CUM-530: a model the device refuses answers 400 with the allowed values - show
 // them under the provider row (it used to answer 200 and change nothing).
@@ -3086,6 +3126,9 @@ function provRow(name,p){
   l2.innerHTML='<label>Session model</label>';
   l2.appendChild(modelSel('subM_'+name,p.subModel,p.choices,p.verify===1));
   mrow.appendChild(l1); mrow.appendChild(l2); w.appendChild(mrow);
+  const mu=document.createElement('div'); mu.className='hint'; mu.id='mupd_'+name;   // R5: "Updated <time>"
+  if(MODELFETCH[name])mu.textContent=updLabel(MODELFETCH[name]);
+  w.appendChild(mu);
   return w;
 }
 // Maps a provider slug to its /api/orch key-write field. cumulo/zai have their own
@@ -3117,9 +3160,13 @@ function provSync(name,p){
   syncModelSel('orchM_'+name,p.orchModel,p.choices,p.verify===1);
   syncModelSel('subM_'+name,p.subModel,p.choices,p.verify===1);
 }
+// One signature for a model select, shared by the build and the poll's sync: they
+// used to differ once prices loaded (the build added '|p'), so every 5 s poll rebuilt
+// every model select. Prices arrive later than the catalog, so they are part of it.
+function modelSelSig(choices,verified){return (choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG+'|'+(_um()?'p':'');}
 function syncModelSel(id,cur,choices,verified){
   const s=$(id); if(!s||document.activeElement===s)return;   // mid-pick: hands off
-  const sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;
+  const sig=modelSelSig(choices,verified);
   if(s.dataset.sig!==sig){s.replaceWith(modelSel(id,cur,choices,verified));return;}
   const want=modelCurOf(id.substring(id.indexOf('_')+1),cur);
   if(s.value!==want)s.value=want;
@@ -3128,17 +3175,21 @@ function syncModelSel(id,cur,choices,verified){
 // open provider selects so they upgrade from the CSV fallback to the grouped list.
 // Not on the 5s poll (the PSRAM-built payload is multi-KB): called when the Models
 // pane opens and after a verify harvest, which is when the catalog can change.
+function resyncModelSels(){
+  if(ORCH&&ORCH.providers)Object.keys(ORCH.providers).forEach(n=>{const pp=ORCH.providers[n];if(!pp)return;
+    syncModelSel('orchM_'+n,pp.orchModel,pp.choices,pp.verify===1);
+    syncModelSel('subM_'+n,pp.subModel,pp.choices,pp.verify===1);});
+}
 function loadModels(){
   if(!canPoll())return;
   fetch('/api/models').then(r=>r.json()).then(d=>{
     const provs=(d&&d.providers)||{};
     const next={};
-    Object.keys(provs).forEach(p=>{next[p]=(provs[p]&&provs[p].models)||[];});
+    Object.keys(provs).forEach(p=>{next[p]=(provs[p]&&provs[p].models)||[];
+      MODELFETCH[p]=(provs[p]&&provs[p].fetchedAt)||0;if(MODELFETCH[p])setUpd(p,updLabel(MODELFETCH[p]));});
     MODELCAT=next;
     MODELCAT_SIG=String((d&&d.generatedAt)||'')+':'+Object.keys(next).map(p=>p+next[p].length).join(',');
-    if(ORCH&&ORCH.providers)Object.keys(ORCH.providers).forEach(n=>{const pp=ORCH.providers[n];if(!pp)return;
-      syncModelSel('orchM_'+n,pp.orchModel,pp.choices,pp.verify===1);
-      syncModelSel('subM_'+n,pp.subModel,pp.choices,pp.verify===1);});
+    resyncModelSels();
   }).catch(()=>{});
 }
 // A Tool use switch: saved the moment it changes (no Save needed); while that save

@@ -8,6 +8,7 @@
 #include "nimbus/orch/model_ledger.h"   // TokenDelta, ModelRate, RateEdit (per-model prices)
 #include "nimbus/orch/model_selectable.h"   // PickRole - the one model check (lane F)
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - recordProviderSpend
+#include "nimbus/orch/usage_ledger.h"   // EffRate - modelRate (models.list)
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
 
 namespace nimbus { namespace orch { struct CapRule; } }   // provider_caps.h (lane DEF2)
@@ -462,6 +463,9 @@ bool   providerOverBudget(const String& provider);                     // gate b
 // CUM-708: the ledger's ranking price of a model (micro-USD per 1M in + out; UINT64_MAX
 // when unpriced) - what the spawn-model fallback picks the cheapest by.
 uint64_t modelRankPrice(const std::string& provider, const std::string& model);
+// models.list (R5): the price the ledger charges `model` of `provider`, per field,
+// with the tier that priced it (owner, router, provider fallback, built-in).
+nimbus::orch::EffRate modelRate(const std::string& provider, const std::string& model);
 [[nodiscard]] bool   setProviderBudget(const String& provider, uint64_t tokenLimit,
                          uint32_t callLimit, uint8_t resetDay,
                          uint64_t centsLimit = 0);                      // owner web edit (W16: + $ cap in cents)

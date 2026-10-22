@@ -90,6 +90,7 @@
 #include "../agent/orchestrator.h"
 #include "../agent/loops_subsystem.h"   // /api/loops -> Local Loops
 #include "../agent/adapters/tts_voices.h"
+#include "../agent/model_refresh.h"   // R5: the dropdown refresh and fetchedAt
 #include "../agent/provider_verify.h"
 #include "../agent/model_pick.h"         // CUM-530: the model save rule (host-tested)
 #include "../agent/store.h"
@@ -1433,6 +1434,9 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     addStoredRows(p, text, o, includeUnusable, now);
     const uint32_t at = o["fetchedAt"] | 0u;
     o["stale"] = !(now && at && now >= at && now - at <= ttl);
+    // R5: a refresh is queued or running for this list (the dropdown polls until
+    // fetchedAt moves, then says "Updated <time>").
+    o["refreshPending"] = agent::model_refresh::pending(p);
   }
   serializeJson(d, out);
 }
@@ -2446,14 +2450,31 @@ void beginWeb(const WebConfig& wc) {
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
   });
-  // POST /api/models/refresh {provider} - force a re-harvest (enqueues a verify;
-  // the UI polls generatedAt / verifyPending). No body provider = refresh nothing.
+  // POST /api/models/refresh {provider} - R5: the model dropdown asks for a fresh
+  // list. It joins the one refresh queue (at most one per provider per hour, run
+  // between turns on the verify task) and answers at once with what happened and
+  // the cached list's fetchedAt: queued / pending (the UI polls GET /api/models
+  // until fetchedAt moves) or recent (the cached list stands). 400 for an unknown
+  // provider, 409 for one with no key.
   s_server.on("/api/models/refresh", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String p = r->hasParam("provider", true) ? r->getParam("provider", true)->value() : String();
-    bool ok = p.length() && agent::provider_verify::request(p);
-    r->send(ok ? 200 : 409, "application/json",
-            ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"busy or no provider\"}");
+    if (!nimbus::orch::isProviderSlug(p.c_str())) {
+      r->send(400, "application/json", "{\"ok\":false,\"error\":\"unknown provider\"}");
+      return;
+    }
+    const nimbus::orch::RefreshAsk a = agent::model_refresh::request(p.c_str(), "web");
+    if (a == nimbus::orch::RefreshAsk::NoKey) {
+      r->send(409, "application/json", "{\"ok\":false,\"error\":\"no key\"}");
+      return;
+    }
+    char body[160];
+    snprintf(body, sizeof(body), "{\"ok\":true,\"provider\":\"%s\",\"refresh\":\"%s\",\"fetchedAt\":%lu}",
+             p.c_str(), nimbus::orch::refreshAskToken(a),
+             (unsigned long)agent::model_refresh::fetchedAt(p.c_str()));
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", body);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
   });
   // GET /api/fallbacks - the active fallback rule set (CUM-41).
   s_server.on("/api/fallbacks", HTTP_GET, [](AsyncWebServerRequest* r) {

@@ -238,9 +238,8 @@ closes that provider for every seam too.
 **A provider with no key of its own runs on the Cumulo router** when the
 Cumulo key is set and the router offers that provider's model: the spawn's
 `<provider>/<model>` selector, else the selector of that provider's sub-model
-default, must be in the router's choice list (the `cumulo` entry of
-`[AVAILABLE MODELS]`; a bare id there is the router's default upstream,
-openai). The log says `spawn on openai has no key - runs on the Cumulo router as
+default, must be in the router's choice list (the `cumulo` rows of `models.list`; a bare
+id there is the router's default upstream, openai). The log says `spawn on openai has no key - runs on the Cumulo router as
 openai/gpt-5.6` and the sub runs on the `cumulo` backend with that selector. A
 provider with a key of its own always runs on it. A spawn whose `skill` names a
 connector never runs on the router (the router never carries the owner's
@@ -261,10 +260,14 @@ provider's model store that the key can run, else (before the first fetch) the
 built-in starting list, or the provider's default, or the model the owner chose
 for that provider (never refused; a helper with no model named runs it). An id it refuses logs
 `spawn model coerced` and uses the per-provider sub-model default when listed,
-else the cheapest listed model (above). The head's `[AVAILABLE MODELS]` line is
-the store's short list, a subset of what the check accepts, so every model it is
-offered spawns as named; the line says how old the list is ("list from
-2026-10-22, may miss newer models"). Deep
+else the cheapest listed model (above). The head reads the store through
+`models.list` (or, on a single-shot turn, the `[AVAILABLE MODELS]` line: the store's
+short list, which says how old it is, "list from 2026-10-22, may miss newer
+models"), a subset of what the check accepts, so every model it is offered spawns as
+named. A router id (`<upstream>/<model>`) named on a direct provider is not in that
+provider's list: the spawn ledger the head reads says `not in <provider> list` and
+why, and the spawn runs as the bare id when that provider lists it, else on the
+fallback above. Deep
 research models are not in any list (they cannot run the turn contract), so a
 `deep_research` skill hint runs on the provider's sub-model default with its
 always-on web search, not on a dedicated deep-research model.

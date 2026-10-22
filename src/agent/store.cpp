@@ -1941,6 +1941,11 @@ uint64_t modelRankPrice(const std::string& provider, const std::string& model) {
   return ledgerLocked().rankPrice(provider, model.c_str());
 }
 
+nimbus::orch::EffRate modelRate(const std::string& provider, const std::string& model) {
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  return ledgerLocked().effectiveRate(provider, model.c_str());
+}
+
 String providerBudgetJson() {
   std::lock_guard<std::mutex> lk(g_ledgerMx);
   auto& L = ledgerLocked();

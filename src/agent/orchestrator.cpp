@@ -22,6 +22,7 @@
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
+#include "model_refresh.h"   // R5: the orch_model miss answer
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
 #include "files_subsystem.h"            // files::available - E1 capability manifest
@@ -779,6 +780,8 @@ static agent::ApplyDeps buildApplyDeps() {
   d.modelIsValid = [](const std::string& p, const std::string& m) {
     return modelIsValid(String(p.c_str()), m.c_str());
   };
+  // R5 (lane H): a miss queues one list refresh and answers with the cache date.
+  d.modelMiss = [](const std::string& p, const std::string& m) { return agent::model_refresh::missText(p, m); };
   d.providerHasKey = [](const std::string& p) { return providerHasKey(String(p.c_str())); };
   d.setOrchHostModel = [](const std::string& p, const std::string& m) {
     store::setOrchHost(String(p.c_str()));

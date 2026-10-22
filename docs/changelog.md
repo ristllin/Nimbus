@@ -71,6 +71,13 @@ Models:
 - **A model you chose keeps working.** A helper started with no model named runs the helper model you chose, also on Cumulo when it was saved without its "openai/" prefix (it used to run the cheapest model on the list). If a provider's list stops naming a model you chose, it keeps running and you are told once. OpenAI's gpt-5.6, which OpenAI answers but does not list, is accepted.
 - **A provider whose key you removed is skipped.** When the provider set as the assistant has no key, the device answers on a provider that has one and tells you once, instead of failing with a rejected-key message. With no key anywhere it says "No AI provider has a key: add one under Assistant > Models." instead of "Done."
 
+Models and questions:
+
+- **The assistant looks up current models itself.** It asks the device for a provider's model list when it needs a model id, instead of carrying every list in every message, so each message is smaller. A switch to a model the saved list does not have says so, with the list's date, and a fresh list is fetched after the turn.
+- **Model dropdowns refresh when you open them.** Opening a model dropdown shows the saved list at once, fetches a fresh one and then says "Updated" with the time. Each list is also refreshed weekly and after an update, and no provider's list is fetched more than once an hour.
+- **More models to switch to.** The assistant can switch itself to a Z.ai or Cumulo Nimbus model too. A Cumulo Nimbus model id asked of another provider is refused with the name that provider uses.
+- **A question is asked once.** When a reply already ends with a question, the follow-up question is no longer added again below it.
+
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

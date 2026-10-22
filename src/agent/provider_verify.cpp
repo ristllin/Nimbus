@@ -152,15 +152,19 @@ static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 // (workspace_probe.h).
 static bool                g_wsOnly = false;
 static WorkspaceProbeQueue g_wsq;
+// R5: the claimed task is a model-list refresh only (requestRefresh), written after
+// the claim like g_wsOnly.
+static bool                g_refreshOnly = false;
 
 static void deferLowMemory(const String& provider, uint32_t max8);
 
-static bool startTask(const char* provider, bool wsOnly) {
+static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = false) {
   bool idle = false;
   if (!g_pending.compare_exchange_strong(idle, true)) return false;  // one verify at a time
   strncpy(g_provider, provider, sizeof(g_provider) - 1);
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = wsOnly;
+  g_refreshOnly = refreshOnly;
   // Memory before the stack: never while a turn is in flight, only with room for the
   // stack plus 16 KB, and only when the RESTING largest block clears the handshake
   // floor (a single sample inside a transient read 7,156 B on a device resting at
@@ -171,7 +175,9 @@ static bool startTask(const char* provider, bool wsOnly) {
   const bool lowBlock = deferReason(resting, (uint32_t)VERIFY_MIN_MAX8)[0] != 0;
   if (sv != nimbus::heapwatch::SpawnVerdict::Ok || lowBlock) {
     g_pending = false;
-    if (wsOnly) return false;   // the probe queue re-arms itself (rearmWorkspaceProbe)
+    // The probe queue re-arms itself (rearmWorkspaceProbe); a refresh stays queued in
+    // model_refresh and records no deferral (it is not a verify).
+    if (wsOnly || refreshOnly) return false;
     const int ri = retryIdx(provider);
     if (sv == nimbus::heapwatch::SpawnVerdict::TurnInFlight) {
       if (ri >= 0) g_wantStart[ri] = true;
@@ -196,6 +202,8 @@ static bool startTask(const char* provider, bool wsOnly) {
 }
 
 bool request(const String& provider) { return startTask(provider.c_str(), false); }
+
+bool requestRefresh(const String& provider) { return startTask(provider.c_str(), false, true); }
 
 bool pending() { return g_pending; }
 
@@ -725,6 +733,14 @@ static void recordVerify(const String& prov, int8_t result, const char* rsn = ""
   if (result != -1) { int ri = retryIdx(prov); if (ri >= 0) g_retry[ri].clear(); }
 }
 
+// A model-list refresh (R5) touches the cached verdict only when the answer changed
+// it (a key revoked since the last verify, or a first verdict): an unchanged verdict
+// writes nothing to NVS, and a transient failure leaves verdict and reason alone.
+static void recordOutcome(const String& prov, int8_t result, const char* rsn, bool refreshOnly) {
+  if (refreshOnly && (result == -1 || store::verifyResult(prov) == result)) return;
+  recordVerify(prov, result, rsn);
+}
+
 // A verify the memory gate refused (startTask). recordVerify keeps a cached VERIFIED
 // as-is (a transient blip must not demote it), so the badge shows low-memory only for
 // a provider that is not verified, and only then is the measured number stored. The
@@ -744,6 +760,8 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
 static void runOne() {
   if (g_wsOnly) { runWorkspaceProbeOnly(); g_pending = false; return; }   // CUM-537
   String provider = g_provider;
+  const bool refreshOnly = g_refreshOnly;   // R5: the model list only
+  if (refreshOnly) alogf("verify: %s model list refresh (GET only)", provider.c_str());
 
   String hostBuf;               // backs a dynamic host (zai probe result / cumulo base)
   const char* host = nullptr;
@@ -801,7 +819,7 @@ static void runOne() {
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
   if (!arbiter::acquireWork(35000)) {
-    recordVerify(provider, -1, "tlsbusy");
+    recordOutcome(provider, -1, "tlsbusy", refreshOnly);
     alogf("verify: %s tls busy", provider.c_str());
     g_pending = false;
     return;
@@ -875,7 +893,7 @@ static void runOne() {
       // NVS"). The catalog is a flash file now, but persisting the definitive verdict
       // FIRST still costs nothing and keeps it ahead of any later write. The
       // recordVerify at the end is then idempotent.
-      if (result != -1) recordVerify(provider, result, rsn);
+      if (result != -1) recordOutcome(provider, result, rsn, refreshOnly);
       // LLM providers: the verify already fetched the model list - store it (lane F:
       // the whole list, streamed, in the provider's model store; no NVS write).
       if (!isTg && !isTav && code == 200) fetchModelList(provider, client, key);
@@ -910,15 +928,17 @@ static void runOne() {
   }
   // Usability probe (bounded): now that the GET client is closed but we still hold
   // the work slot, confirm the owner's SELECTED models actually run on this key.
-  if (result == 1 && (provider == "openai" || provider == "anthropic" || provider == "mistral"))
+  // A model-list refresh (R5) stops at the list: no paid probe, no other sync.
+  const bool fullVerify = result == 1 && !refreshOnly;
+  if (fullVerify && (provider == "openai" || provider == "anthropic" || provider == "mistral"))
     probeSelectedModels(provider);
   // On a Cumulo key, pull the admin master fallback rule set (provisional; CUM-41).
-  if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
+  if (fullVerify && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   // On a Mistral key, learn which Studio connectors are authenticated in the owner's
   // Mistral account, so gcal/notion/slack become usable only once connected there.
-  if (result == 1 && provider == "mistral") (void)syncMistralConnectors(key);
+  if (fullVerify && provider == "mistral") (void)syncMistralConnectors(key);
   arbiter::releaseWork();
-  recordVerify(provider, result, rsn);
+  recordOutcome(provider, result, rsn, refreshOnly);
   // A verify verdict is tiny and load-bearing. On a maxed NVS the verdict write
   // above can fail, leaving a real HTTP 200 stuck at -1 (live-caught on .61: 5
   // provisioned providers' catalog caches overflowed the ~20 KB NVS). Since CUM-479

@@ -1,0 +1,63 @@
+#pragma once
+#include <cstdint>
+#include <string>
+
+#include "nimbus/orch/models_tool.h"   // RefreshAsk
+
+// model_refresh - the device side of "models on demand" (owner ruling R5): the
+// models.list tool, the refresh queue and the passive refresh.
+//
+// Every refresh request (the head's models.list refresh:true or an orch_model the
+// cached list does not hold, the owner opening a model dropdown, the passive check)
+// joins one RAM queue with one rule: at most one refresh per provider per hour
+// (nimbus::orch::ModelRefreshQueue, host-tested). tick() on the main loop starts a
+// queued refresh only when the device is free - no turn in flight, online, the
+// verify slot idle, the resting heap above the handshake floor - one provider at a
+// time, on the self-deleting verify task (provider_verify::requestRefresh). Nothing
+// here opens a connection or blocks: the tool and the web route only set a flag.
+//
+// The passive refresh: weekly, or after a firmware update. A provider's list carries
+// a stamp on flash (/data/mstamp_<slug>.txt: "#models v1 fetchedAt=<s> fw=<build>",
+// the build being NIMBUS_FW_BUILD, so a new image of any kind counts as an update),
+// written after every list fetch; at boot plus 10 minutes, then every 6 hours, a
+// keyed provider whose stamp is missing, a week old or from another firmware is
+// queued. Never NVS.
+namespace agent {
+namespace model_refresh {
+
+// Orchestrator mode, once at boot after the tool registry is up: registers
+// models.list and arms the passive check.
+void begin();
+
+// Main loop, every pass (returns at once on most passes): starts one due refresh
+// and runs the passive check on its slow clock.
+void tick(uint32_t nowMs);
+
+// Any task. Ask for a refresh of `provider`; `why` labels the log line ("head",
+// "miss", "web", "passive").
+nimbus::orch::RefreshAsk request(const char* provider, const char* why);
+
+// The answer to an orch_model the cached list does not hold (ApplyDeps::modelMiss):
+// asks for a refresh and returns "not in <provider> list cached <date>; refresh
+// queued".
+std::string missText(const std::string& provider, const std::string& model);
+
+// The fetch time of `provider`'s list from its stamp (unix seconds; 0 = never, or
+// fetched while the clock was unset).
+uint32_t fetchedAt(const char* provider);
+
+// The firmware build that fetched `provider`'s list ("" = no stamp).
+std::string stampFw(const char* provider);
+
+// A refresh of `provider` is queued or running.
+bool pending(const char* provider);
+
+// Run the passive check now instead of on its clock (the test console's MODELS
+// passive); returns how many providers it queued.
+int passiveCheckNow();
+
+// Verify task, after a list fetch stored a list: writes the stamp.
+void noteFetched(const char* provider);
+
+}  // namespace model_refresh
+}  // namespace agent

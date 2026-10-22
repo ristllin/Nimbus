@@ -261,3 +261,135 @@ test('cold start (no catalog) falls back to the flat choices list', async ({ pag
   await expect(sel.locator('option[value="claude-opus-5"]')).toHaveCount(1);
   await expect(sel.locator('option[value="claude-sonnet-5"]')).toHaveCount(1);
 });
+
+// R5: opening a model dropdown shows the cached list at once, asks the device for
+// a fresh one (POST /api/models/refresh, rate-limited per provider on the device)
+// and then says "Updated <time>". Host: the device answers are mocked; the first
+// GET is the cached list, the refresh lands on a later GET. With TARGET=device the
+// real device answers (the bench leg) and the page must end on "Updated".
+const ON_DEVICE = process.env.TARGET === 'device';
+
+function cachedThenFresh() {
+  const now = Math.floor(Date.now() / 1000);
+  const old = now - 3 * 86400;
+  const anthropic = (models, fetchedAt, refreshPending) => ({
+    keyed: true, verified: 1, probe: 1, refreshedAt: 0, stale: false, fetchedAt, refreshPending, models,
+  });
+  const cached = [cm('claude-opus-5', 'L'), cm('claude-sonnet-5', 'M')];
+  const fresh = [cm('claude-opus-5-5', 'L'), cm('claude-sonnet-5-5', 'M'), cm('claude-haiku-5-5', 'S')];
+  const body = (prov) => ({ generatedAt: now, ttlSec: 86400, roles: ['orchestrator', 'sub-agent'], providers: { anthropic: prov } });
+  return {
+    old, now,
+    cachedBody: body(anthropic(cached, old, false)),
+    pendingBody: body(anthropic(cached, old, true)),
+    freshBody: body(anthropic(fresh, now, false)),
+  };
+}
+
+test('model dropdown: cached list first, then a refresh and "Updated <time>"', async ({ page }, testInfo) => {
+  test.setTimeout(ON_DEVICE ? 150000 : 30000);
+  await seedToken(page);
+  const s = cachedThenFresh();
+  let posts = 0, gets = 0;
+  if (!ON_DEVICE) {
+    await page.route('**/api/orch', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) }));
+    await page.route(/\/api\/models(\?.*)?$/, (route) => {
+      gets++;
+      const b = posts === 0 ? s.cachedBody : (gets <= 2 ? s.pendingBody : s.freshBody);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    });
+    await page.route('**/api/models/refresh', (route) => {
+      posts++;
+      expect(new URLSearchParams(route.request().postData() || '').get('provider')).toBe('anthropic');
+      return route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: true, provider: 'anthropic', refresh: 'queued', fetchedAt: s.old }) });
+    });
+  }
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  const grp = page.locator('#subpane-llm details.setgroup').first();
+  if (!(await grp.evaluate((d) => d.open))) await grp.locator('summary').click();
+  const sel = page.locator('#orchM_anthropic');
+  await expect(sel).toBeEnabled({ timeout: ON_DEVICE ? 20000 : 5000 });
+  const upd = page.locator('#mupd_anthropic');
+  if (!ON_DEVICE) {
+    // The cached list is there at once, with its own age, before anything is asked.
+    await expect(sel.locator('option[value="claude-opus-5"]')).toHaveCount(1);
+    await expect(upd).toHaveText(/^Updated /);
+    expect(posts).toBe(0);
+  }
+  await page.screenshot({ path: `screenshots/laneH-picker-cached-${testInfo.project.name}.png`, fullPage: true });
+  await sel.focus();                                       // opening the dropdown
+  if (!ON_DEVICE) {
+    await expect(upd).toHaveText('Checking for new models');
+    await expect.poll(() => posts).toBe(1);
+  }
+  await expect(upd).toHaveText(/^Updated \d/, { timeout: ON_DEVICE ? 120000 : 15000 });
+  await page.screenshot({ path: `screenshots/laneH-picker-updated-${testInfo.project.name}.png`, fullPage: true });
+  await sel.blur();
+  if (!ON_DEVICE) {
+    // The fresh list replaces the cached one once the select is closed.
+    await expect(sel.locator('option[value="claude-sonnet-5-5"]')).toHaveCount(1, { timeout: 8000 });
+    await sel.focus();                                     // a second open inside 30 s asks nothing
+    await page.waitForTimeout(300);
+    expect(posts).toBe(1);
+  }
+});
+
+// The device's rate limit: a refresh within the hour answers "recent", and the page
+// just shows the cached list's age - no polling, no "Checking".
+test('model dropdown: a recent refresh shows the cached time without polling', async ({ page }) => {
+  test.skip(ON_DEVICE, 'host mocks only');
+  await seedToken(page);
+  const s = cachedThenFresh();
+  let gets = 0;
+  await page.route('**/api/orch', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) }));
+  await page.route(/\/api\/models(\?.*)?$/, (route) => {
+    gets++;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(s.freshBody) });
+  });
+  await page.route('**/api/models/refresh', (route) => route.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ ok: true, provider: 'anthropic', refresh: 'recent', fetchedAt: s.now }) }));
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  const grp = page.locator('#subpane-llm details.setgroup').first();
+  if (!(await grp.evaluate((d) => d.open))) await grp.locator('summary').click();
+  const sel = page.locator('#orchM_anthropic');
+  await expect(sel).toBeEnabled();
+  const before = gets;
+  await sel.focus();
+  await expect(page.locator('#mupd_anthropic')).toHaveText(/^Updated \d/);
+  await page.waitForTimeout(2500);
+  expect(gets).toBe(before);   // nothing polled
+});
+
+// The poll never rebuilds a model select that did not change: once the per-model
+// prices load, the build and the poll's sync must agree on the select's signature
+// (they disagreed, so every 5 s poll replaced every model select).
+test('model picker: the poll keeps an unchanged select once prices load', async ({ page }) => {
+  test.skip(ON_DEVICE, 'host mocks only');
+  test.setTimeout(30000);
+  await seedToken(page);
+  await page.route('**/api/orch', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(orchPayload()) }));
+  await page.route(/\/api\/models(\?.*)?$/, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(modelsPayload()) }));
+  await page.route('**/api/usage/models', (route) => route.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ asOf: '2026-10', models: [], residual: [], provRate: {},
+      editable: { anthropic: [{ m: 'claude-opus-5', rIn: 5000000, rOut: 25000000, src: 'est', oIn: 0, oOut: 0 }] } }) }));
+  await openApp(page);
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=llm]').click();
+  const grp = page.locator('#subpane-llm details.setgroup').first();
+  if (!(await grp.evaluate((d) => d.open))) await grp.locator('summary').click();
+  const sel = page.locator('#orchM_anthropic');
+  // Prices are in the labels once /api/usage/models answered.
+  await expect(sel.locator('option', { hasText: 'per 1M' }).first()).toHaveCount(1, { timeout: 12000 });
+  await sel.evaluate((s) => { s.__kept = 1; });
+  await page.waitForTimeout(11000);   // two 5 s polls
+  expect(await page.locator('#orchM_anthropic').evaluate((s) => s.__kept === 1)).toBe(true);
+});

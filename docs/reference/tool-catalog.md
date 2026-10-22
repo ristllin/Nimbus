@@ -368,6 +368,36 @@ refuses and says the key is missing. The key is human-set, never
 model-writable. A monthly call budget can gate it. The provider-gated tools are
 one table, `kGatedTools` in `lib/core/include/nimbus/orch/tool_gates.h`.
 
+## `models.list` - the provider model lists
+
+Registered by `src/agent/model_refresh.cpp` (the portable tool is
+`lib/core/src/orch_models_tool.cpp`). The head asks which models a provider
+offers instead of reading every provider's list in every prompt: on a turn where
+it can call this tool, the prompt's `[AVAILABLE MODELS]` block is one line naming
+the providers with a key and pointing here (a single-shot turn keeps the lists).
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `models.list` | List the models a provider offers, from the device's cached list: the id (what `orch_model` and a spawn take), name, line, size, release date, context, lifecycle, price per 1M tokens with its source, and when the list was fetched. At most 20 rows; narrow with provider, query or line. `refresh:true` also queues a fresh fetch from the provider for after this turn (at most once an hour per provider); this call still answers from the cache. | `provider` (string: `cumulo`, `openai`, `anthropic`, `mistral` or `zai`; omit for every provider with a key), `query` (part of an id or name), `line` (a model line), `role` (`orchestrator`, `sub-agent`, `vision`, `embedding`, `stt`, `tts` or `image`; default the chat models), `include_legacy` (boolean), `refresh` (boolean) | live |
+
+The answer is one JSON object: `providers[]` (`provider`, `fetchedAt` as a UTC
+minute or null, `source` `fetched` or `built-in`, `total` matching rows,
+`refresh` `queued` / `pending` / `recent` or null) and `models[]` (`provider`,
+`id`, `name`, `line`, `size`, `released`, `ctx`, `lifecycle`, `price` `{in, out,
+source}`), every field present and null when unknown, plus `more` (matching rows
+not shown). With several providers the rows are taken in turn, so one long list
+(the router's) cannot crowd out the rest. Router ids are written
+`<upstream>/<model>` and appear only under `cumulo`; the other providers list bare
+ids. Every id shown is one the `orch_model` and spawn checks accept.
+
+The tool never opens a connection. `refresh:true` only queues: the device runs the
+refresh between turns, one provider at a time, on the verify task, and the next
+`models.list` reads the new list. The same queue serves an `orch_model` that names
+an id the cached list does not hold (the answer is `not in <provider> list cached
+<date>; refresh queued`), the owner opening a model dropdown in the web app, and a
+passive refresh weekly or after a firmware update. Whoever asks, a provider is
+refreshed at most once an hour.
+
 ## `tenant.*` - people & roles
 
 Registered by the memory subsystem. Manage who may talk to the device and what
@@ -421,7 +451,7 @@ Device actions are **not** registry tools - they arrive as the turn's
 | `led` | ring pattern + color + brightness | `mode` (`solid` \| `spinner` \| `pulse` \| `flash` \| `rainbow`), color `r`/`g`/`b` (0–255), `brightness` (0–255 or null) | live |
 | `lights` | ring on/off shorthand | `value` (`off` \| `full`) | live |
 | `config` | benign, owner-friendly knobs (allow-listed keys only) | e.g. `ledBrightness`, `priority` (routing *preference*), `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`/`sfxLvlO`, `sfxVol`, `sfxTheme`, `sttProv`, `ttsProv`, `ttsVoice`, `ttsOn`, `sleepOvr`, `brightOvr`, `devName` | live (rails enforced) |
-| `orch_model` | switch the head's own provider + model at runtime | `provider` (`openai` \| `anthropic` \| `mistral`), `model` (string) | live |
+| `orch_model` | switch the head's own provider + model at runtime | `provider` (`openai` \| `anthropic` \| `mistral` \| `zai` \| `cumulo`), `model` (an id that provider lists in `models.list`) | live |
 | `reboot` | restart the device | (none) | live |
 | `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` | live |
 
@@ -429,7 +459,12 @@ Rails: a `config` action carrying any protected key (secrets, the auth
 allow-list, provider routing/priority, the routines blob (`loops`) or the budget governors - see
 the human-web-only rail above) is refused as a **whole** with reason
 `protected-BLOCKED`. `orch_model` is the one deliberate exception to the routing
-rule: the model may repoint its own head host + model. Session ops (spawn /
+rule: the model may repoint its own head host + model. A refused switch says why,
+in the mid-turn `device.control` answer and in the next turn's `[MEMORY RESULTS]`:
+an id the cached list does not hold answers `not in <provider> list cached <date>;
+refresh queued`, and a router id (`<upstream>/<model>`) named on a direct provider
+answers `not in <provider> list: use <bare id> (<id> is a cumulo router id)` when
+that provider lists the bare id, else names the id as a cumulo router id. Session ops (spawn /
 terminate) are **not** device actions - they go through the turn's
 `session_ops[]` / `session.*`, never `device[]`.
 

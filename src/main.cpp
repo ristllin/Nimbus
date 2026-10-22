@@ -71,6 +71,7 @@
 #include <solide/audio.h>                     // long-press-to-talk mic capture
 #include <vector>
 #include "agent/provider_verify.h"
+#include "agent/model_refresh.h"      // R5: models.list + the refresh queue
 #include "agent/store.h"
 #include "agent/telegram.h"
 #include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
@@ -3849,6 +3850,9 @@ void setup() {
   // exists). Order-independent of the tool loop; also exposed over /mcp.
   nimbus::hw::setInputsProvider(buildSelfTestInputs);
   registerDeviceTools();
+  // R5: models.list and the model-list refresh queue, Orchestrator only (the head
+  // and the web UI are its users; a refresh needs the verify task's heap).
+  if (g_orchMode) agent::model_refresh::begin();
 
   // Sound cue engine: after memory::begin (SD tier known) + NVS config.
   // The router tap is the single seam through which BOTH modes' attention
@@ -5845,6 +5849,9 @@ void loop() {
   // same self-deleting, TLS-arbited verify task as the capProbe tick above - no new
   // task, no new TLS slot. Runs in either mode (deferrals bite hardest in Notifier).
   agent::provider_verify::pumpRetry();
+  // R5: one queued model-list refresh (head, dropdown or passive check) starts here
+  // when the device is free, on the same self-deleting verify task; never in a turn.
+  agent::model_refresh::tick(now);
 
   // Auto-revert a POST /api/preview once its window elapses: nothing else
   // necessarily calls refreshRing() again on its own, so this is the one place

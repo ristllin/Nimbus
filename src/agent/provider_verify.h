@@ -29,6 +29,13 @@ void begin();
 // slot: returns false if a verify is already pending (caller reports "busy").
 bool request(const String& provider);
 
+// R5: refresh `provider`'s model list through the same self-deleting, TLS-arbited
+// task: the GET /models fetch and the list harvest only - no model probes, no
+// connector or fallback sync, and the cached verdict changes only when the answer
+// does. False (nothing started) while a verify runs, a turn is in flight or the
+// resting heap is short; the caller (model_refresh) keeps it queued for later.
+bool requestRefresh(const String& provider);
+
 // True while a verify is queued or running.
 bool pending();
 

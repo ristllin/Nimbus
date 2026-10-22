@@ -444,11 +444,18 @@ carries its price and where it comes from (`priceSrc`: the router's price, the
 built-in estimate, or `unknown`, shown as "price unknown"). A one-shot cheap
 usability probe per selected model means a model your key cannot actually use never
 appears. The list is served at `GET /api/models` (add `?all=1` to include
-probe-hidden models) with `fetchedAt` and `stale`, and every verify refreshes it: a
-manual **Verify**, `POST /api/models/refresh`, or, with **Capability validation** set
-to Active, the scheduled re-check (default every 24 hours; OpenAI, Anthropic and
-Mistral keys only). The generated [capability matrix](reference/capabilities-matrix.md)
-shows which role and feature each provider offers.
+probe-hidden models) with `fetchedAt`, `stale` and `refreshPending`, and every verify
+refreshes it: a manual **Verify**, or, with **Capability validation** set to Active,
+the scheduled re-check (default every 24 hours; OpenAI, Anthropic and Mistral keys
+only). A list refresh fetches the model list alone (no model probe, so it costs no
+tokens): opening a model dropdown in the web app (`POST /api/models/refresh`; the
+dropdown then shows "Updated" with the time), the assistant asking through
+`models.list`, a model switch that names an id the store does not hold, and a passive
+refresh weekly or after a firmware update (the version in the store's header differs
+from the running one). They share one queue: a provider is refreshed at most once an
+hour, only between turns, one provider at a time. The generated
+[capability matrix](reference/capabilities-matrix.md) shows which role and feature
+each provider offers.
 
 Provider failover is a rule engine shared with the cloud (one admin-editable rule
 set): predicates match provider, model (with a trailing-`*` glob), size class,
