@@ -20,6 +20,7 @@
 #include "store.h"
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"   // activity tag: Telegram downloads
+#include "../sys/psram_static.h" // pending-slot buffers live in PSRAM, not internal .bss
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #include "adapters/image_vision.h"   // a photo enters the conversation as words
@@ -83,7 +84,7 @@ struct PendingVoice {
   char from[64];
   bool set;
 };
-static PendingVoice g_voice = {};
+static PendingVoice& g_voice = ::nimbus::psramStatic<PendingVoice>();   // PSRAM (psram_static.h)
 
 // An inbound photo or document seen during a poll. Same deferral as a voice
 // note: the download needs the TLS arena, which getUpdates is holding, so the
@@ -101,7 +102,7 @@ struct PendingAttach {
   bool photo;      // false = document
   bool set;
 };
-static PendingAttach g_attach = {};
+static PendingAttach& g_attach = ::nimbus::psramStatic<PendingAttach>();   // PSRAM
 
 // A media file to SEND (device -> owner), drained on the poll task after the poll
 // socket closes so only one TLS session is ever resident. One slot: the next
@@ -114,7 +115,7 @@ struct PendingMedia {
   bool sd;           // stream from memory::dataFs() (SD) instead of LittleFS
   bool set;
 };
-static PendingMedia g_media = {};
+static PendingMedia& g_media = ::nimbus::psramStatic<PendingMedia>();   // PSRAM; g_mediaMux stays internal
 // sendMedia() may be called from another task/core (console TTSTG/TGSEND on the
 // main loop) while the poll task drains g_media - publish/consume the slot under a
 // spinlock so the drain never sees a half-written struct (torn 'set').
@@ -324,7 +325,7 @@ static char* ensureApiResp() {
 // deterministic "can't store files yet" reply instead of being silently dropped.
 static AttachmentSink g_attachSink = nullptr;
 struct Pending { char chatId[24]; char name[40]; char preview[64]; };
-static Pending s_pending[5];
+static Pending (&s_pending)[5] = ::nimbus::psramStatic<Pending[5]>();   // PSRAM; s_tgMux stays internal
 static int     s_pendCount = 0;
 
 static void pendingPush(const char* chatId, const char* name, const char* text) {

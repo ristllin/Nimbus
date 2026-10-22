@@ -97,6 +97,18 @@ safe in PSRAM because `tg_poll` is their single consumer and its TLS work is
 fully serialized, so a batch never needs two of either live at once - moving them
 off internal freed ~6.7 KB of the scarce pool with no behavior change.
 
+Long-lived fixed buffers that would otherwise be file-scope statics in internal
+`.bss` are declared through `nimbus::psramStatic<T>()` (`src/sys/psram_static.h`):
+`static T& g_x = nimbus::psramStatic<T>();` keeps every use site and `sizeof`
+unchanged, starts the object zeroed like a static, and leaves only a 4-byte
+reference in internal RAM. It applies only to task-context data: never a buffer an
+ISR, IRAM code or DMA touches, and never the spinlock itself (the lock stays
+internal, only the data it guards moves). This holds the web model-memory echo,
+the fold status echo, the system-turn prompt, the large OAuth handoff buffers and
+the Telegram pending slots (voice, attachment, media, unknown-chat approvals): about
+6.3 KB that v4.5.14 had added back to static internal RAM.
+`tests/hil/test_psram_statics_host.py` fails if one moves back inline.
+
 Moving the MP3 scratch to PSRAM let the sfx task stack drop from 20 KB to 12 KB and
 made the 8 KB music task safe. Measured on the Solide S3 in Orchestrator mode with
 Wi-Fi up, that returned about 9 KB to the internal free pool: total `intFree`

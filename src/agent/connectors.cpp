@@ -8,6 +8,7 @@
 #include "../sys/agent_log.h"
 #include "../sys/net_util.h"
 #include "../sys/tls_arbiter.h"
+#include "../sys/psram_static.h"   // the large OAuth handoff buffers live in PSRAM
 
 #include "nimbus/orch/connectors_wire.h"     // portable attach builders + catalog
 #include "nimbus/orch/mcp_client.h"          // portable JSON-RPC + Streamable HTTP framing
@@ -1190,11 +1191,17 @@ Flow s_flow;  // main-loop-owned
 // the critical section never allocates. Strings live only in s_flow / snapshot.
 portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool s_reqStart = false, s_reqCode = false, s_reqCancel = false;
-char s_inName[64] = {0}, s_inRedirect[128] = {0}, s_inCode[1024] = {0}, s_inState[64] = {0};
+// The large buffers live in PSRAM (psram_static.h); only the 4-byte references stay
+// in internal RAM. The lock (s_mux) stays internal.
+char s_inName[64] = {0}, s_inState[64] = {0};
+char (&s_inRedirect)[128] = ::nimbus::psramStatic<char[128]>();
+char (&s_inCode)[1024]    = ::nimbus::psramStatic<char[1024]>();
 // snapshot published for the web/screen (read on the web task).
 volatile bool s_snapActive = false;
-char s_snapPhase[16] = {0}, s_snapConn[64] = {0}, s_snapUserCode[16] = {0},
-     s_snapVerify[160] = {0}, s_snapErr[192] = {0}, s_snapAuthUrl[1024] = {0};
+char s_snapPhase[16] = {0}, s_snapConn[64] = {0}, s_snapUserCode[16] = {0};
+char (&s_snapVerify)[160]   = ::nimbus::psramStatic<char[160]>();    // PSRAM
+char (&s_snapErr)[192]      = ::nimbus::psramStatic<char[192]>();    // PSRAM
+char (&s_snapAuthUrl)[1024] = ::nimbus::psramStatic<char[1024]>();   // PSRAM
 // The state expected on the callback while awaiting consent, published so the
 // (unauthenticated) /oauth/cb handler can DROP a non-matching callback before it
 // touches the single handoff slot - a LAN peer cannot then clobber the real code

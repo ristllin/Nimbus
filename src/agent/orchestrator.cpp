@@ -53,6 +53,7 @@
 #include "nimbus/harness/router_refusal.h" // CUM-539/530: a router refusal, read and answered like the hosted head
 #include "nimbus/orch/safety_activity.h"  // cumuloHostFromBase - the router host the refusal tap watches
 #include "../sys/ps_json.h"              // PsramJsonAllocator - the refusal tap's filter copy stays off internal heap
+#include "../sys/psram_static.h"         // long-lived echo buffers in PSRAM, not internal .bss
 
 #include "nimbus/orch/budget.h"         // deriveBudget - brief/fold-slice bytes from the head window
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
@@ -172,7 +173,7 @@ static portMUX_TYPE g_foldSpin = portMUX_INITIALIZER_UNLOCKED;   // console (mai
 // upsert moves the slot vector) is a use-after-free, not a skewed counter. Only
 // tg_poll writes this fixed buffer; readers copy it under the spinlock. Same
 // pattern as g_memEcho.
-static char g_foldEcho[224] = {};
+static char (&g_foldEcho)[224] = ::nimbus::psramStatic<char[224]>();   // PSRAM (psram_static.h)
 static void publishFoldStatus(const std::string& chat);   // fwd (defined below)
 static NvsJournalStore       g_journalStore;
 
@@ -181,7 +182,9 @@ static NvsJournalStore       g_journalStore;
 // directly risks a dangling read across a realloc. So the turn path mirrors it
 // into this fixed buffer (strlcpy, always NUL-terminated) and the web accessor
 // reads the buffer: worst case a torn *text*, never a torn pointer.
-static char g_memEcho[nimbus::orch::kMemModelMax + 1] = {};
+// Lives in PSRAM (psram_static.h): about 1.2 KB that internal RAM no longer holds.
+static char (&g_memEcho)[nimbus::orch::kMemModelMax + 1] =
+    ::nimbus::psramStatic<char[nimbus::orch::kMemModelMax + 1]>();
 static void syncMemEcho() {
   // Web echo: the NEWEST chat's running memory (B3 - the store is per-chat now).
   strlcpy(g_memEcho, g_mem.modelAny().c_str(), sizeof(g_memEcho));
@@ -2065,7 +2068,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // its own task context, where a synchronous LLM turn would trip the watchdog),
 // drained here on tg_poll - the same single-producer/consumer char-buffer+flag
 // handoff as the telegram token swap. One slot; the latest stager wins.
-static char          s_sysTurnPrompt[512] = {};
+static char          (&s_sysTurnPrompt)[512] = ::nimbus::psramStatic<char[512]>();   // PSRAM
 static char          s_sysTurnName[32] = {};
 static volatile bool s_sysTurnPending = false;
 static portMUX_TYPE  s_sysTurnMux = portMUX_INITIALIZER_UNLOCKED;
