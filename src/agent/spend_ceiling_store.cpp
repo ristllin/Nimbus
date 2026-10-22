@@ -11,6 +11,7 @@
 #include <new>
 
 #include "fs_atomic.h"
+#include "nimbus/orch/provider_park.h"   // the one per-provider park: its pause switch
 #include "store.h"
 #include "../sys/agent_log.h"
 #include "../sys/config_nvs.h"   // notePersist: an owner edit that did not store answers 507
@@ -147,12 +148,25 @@ void meterSink(nimbus::orch::SpendSeam seam, const char* provider,
   commit(nimbus::orch::addSatMicro(store::priceSpendMicro(spend), estimateMicro), false);
 }
 
+// The freeze rides the one per-provider park (lane K2): while it holds, every provider
+// answers "paused" to every seam that consults the park (embeddings, the caption step,
+// speech, the download scan, the sub-agent picker, the chat fabric). The park keeps the
+// pause in RAM only: this file is the source of truth, and the first report after boot
+// (the minute tick) applies it before the first turn.
+void freezeToPark(bool isFrozen) {
+  if (isFrozen)
+    nimbus::orch::providerPark().pause(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling);
+  else
+    nimbus::orch::providerPark().resume(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling);
+}
+
 }  // namespace
 
 void install() {
   nimbus::orch::installSpendFreeze(&frozen);
   nimbus::orch::installPendingSpend(&store::priceSpendMicro, &addPending);
   nimbus::orch::installSeamMeter(&meterSink);
+  nimbus::orch::installFreezeListener(&freezeToPark);
 }
 
 bool frozen() {

@@ -80,6 +80,9 @@ Once per pause, on each channel:
 - **The device screen**: a line in place of **Hold to talk** that says paid AI is
   paused.
 
+The **Providers** row on the **Health** page also says paid requests to every provider
+are paused while it lasts.
+
 The message names the ceiling, this month's estimate, and how to raise it. It is not
 repeated for every message you send while the pause lasts, and a restart does not
 send it again.
@@ -124,8 +127,8 @@ Other defaults keep a single request from turning into a long bill:
   once and 8 waiting;
 - routines run at most 24 times a day each, and use at most 120,000 tokens a day
   each (400,000 for all routines together);
-- a message delivered twice is answered once, and a burst of messages is answered
-  with a bounded number of replies per hour.
+- a message delivered twice is answered once, and the device answers at most 60
+  messages an hour from Telegram, 12 of them always kept for your own chat.
 
 ## Devices that were set up before this update
 

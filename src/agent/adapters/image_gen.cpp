@@ -7,6 +7,7 @@
 #include "../../sys/net_util.h"      // tlsSetup / tlsClose
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "../store.h"
+#include "../provider_gate.h"         // the one per-provider park (lane K2)
 #include "../../sys/agent_log.h"
 #include "b64_stream.h"              // shared base64 socket->file stream decoder
 
@@ -28,6 +29,14 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   }
   const String key = store::openaiKey();
   if (key.length() == 0) { errOut = "no OpenAI key"; return nullptr; }
+  // The one per-provider park: a provider out of credit, with a rejected key, or paused
+  // (by the owner or the ceiling) is not asked.
+  const nimbus::orch::ParkVerdict gv = gate::check("openai", nimbus::orch::PaidSeam::ImageGen, key);
+  if (!gv.open) {
+    errOut = gate::words("openai", gv);
+    alogf("imagegen: refused - %s", errOut.c_str());
+    return nullptr;
+  }
 
   const std::string body = nimbus::orch::imageGenRequestBody(
       std::string(prompt.c_str()), model ? std::string(model) : std::string(),
@@ -85,10 +94,12 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
       if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
     }
     free(buf); tlsClose(c); arbiter::releaseWork();
+    gate::noteAnswer("openai", nimbus::orch::PaidSeam::ImageGen, key, status, errb);
     errOut = "HTTP " + String(status);
     alogf("imagegen: HTTP %d: %.140s", status, errb);
     return nullptr;
   }
+  gate::noteAnswer("openai", nimbus::orch::PaidSeam::ImageGen, key, status, "");
 
   // Body is {"created":..,"data":[{"b64_json":"<base64 png>"}], ...} - find the key
   // TOLERANT of whitespace after the colon (compact and pretty JSON differ), then

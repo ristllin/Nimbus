@@ -4118,10 +4118,45 @@ static void test_scheduled_turns_run_in_the_background_role() {
   TEST_ASSERT_TRUE(orch::currentTurnRole() == orch::TurnRole::Owner);
 }
 
+// The freeze rides K2's park: a turn that passed the gate an instant before the ceiling
+// froze finds every host "paused" in the park. It sends nothing (the notice pump tells
+// the owner once); the owner's own pause, with no ceiling, still gets its reply.
+static int g_freezeConsults = 0;
+static bool freezesAfterTheGate() { return ++g_freezeConsults > 1; }
+static void test_a_ceiling_pause_found_in_the_park_sends_nothing() {
+  const char* paused = "paused: paid requests to anthropic are paused";
+  {
+    Rig r;
+    g_freezeConsults = 0;
+    orch::installSpendFreeze(&freezesAfterTheGate);
+    r.cfg.midFail = true;
+    r.fabricVisits = {{0, 0, paused}};
+    r.fabricOk = false;
+    r.fabricErr = paused;
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", "hi"));
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+    orch::installSpendFreeze(nullptr);
+  }
+  Rig o;   // counter-test: the same paused answer with no ceiling is the owner's pause
+  o.cfg.midFail = true;
+  o.fabricVisits = {{0, 0, paused}};
+  o.fabricOk = false;
+  o.fabricErr = paused;
+  TEST_ASSERT_FALSE(o.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_TRUE(o.delivered.size() >= 1);
+}
+
 static void runSpendCeilingTests() {
+  RUN_TEST(test_a_ceiling_pause_found_in_the_park_sends_nothing);
   RUN_TEST(test_spend_ceiling_refuses_an_owner_turn_before_recall);
   RUN_TEST(test_spend_ceiling_defers_scheduled_turns_and_the_fold);
   RUN_TEST(test_scheduled_turns_run_in_the_background_role);
+}
+
+// The later lanes' suites, in merge order (main sits at the length gate).
+static void runLateLaneTests() {
+  runLaneK2Tests();
+  runSpendCeilingTests();
 }
 
 int main(int, char**) {
@@ -4240,8 +4275,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
-  runLaneK2Tests();   // (and the recall-outage test, kept in order; main sits at the length gate)
-  runSpendCeilingTests();
+  runLateLaneTests();   // lanes K2 and DEF (and the recall-outage test, kept in order; main sits at the length gate)
   UNITY_END();
   return 0;
 }

@@ -568,7 +568,8 @@ static agent::ResultEnvelope pollIdle(const char* stopReason) {
   d.http.script.push_back({"", "/events", 200, ev});
   if (stopReason && !strcmp(stopReason, "end_turn"))   // a done session lists its output files
     d.http.script.push_back({"", "/v1/files?scope_id=sesn_1", 200, "{\"data\":[]}"});
-  d.http.script.push_back(harness_test::antSessionUsage());   // read only when the poll is terminal
+  const bool running = !stopReason || !strcmp(stopReason, "requires_action");
+  if (!running) d.http.script.push_back(harness_test::antSessionUsage());   // a finished session's usage read
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sesn_1", env));
@@ -640,6 +641,7 @@ static void checkSandboxNote(const std::string& events, const char* path, const 
     d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200, events});
     d.http.script.push_back({"api.anthropic.com", "/v1/files?scope_id=" + r.sessionId, 200, "{\"data\":[]}"});
   }
+  d.http.script.push_back(harness_test::antSessionUsage());   // the third poll finishes: its usage read
   auto pd = d.contract();
   const std::string job = "anthropic:" + r.sessionId;
   agent::ResultEnvelope env{};
@@ -690,9 +692,11 @@ static void test_l19_37_no_sandbox_path_no_note() {
   FakeProviderDeps d;
   d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200, sandboxDoneEvents(nullptr)});
   d.http.script.push_back({"api.anthropic.com", "/v1/files?scope_id=" + r.sessionId, 200, "{\"data\":[]}"});
+  d.http.script.push_back(harness_test::antSessionUsage());
   d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200,
                            fixture("session_events_list_done_200.json")});
   d.http.script.push_back({"api.anthropic.com", "/v1/files?scope_id=" + r.sessionId, 200, "{\"data\":[]}"});
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   const std::string job = "anthropic:" + r.sessionId;
   for (int i = 0; i < 2; i++) {
@@ -723,6 +727,7 @@ static void test_outputs_pdf_captured_as_artifact() {
                            fixture("session_events_list_outputs_done_200.json")});
   d.http.script.push_back({"api.anthropic.com", "/v1/files?scope_id=" + sid, 200,
                            fixture("files_list_session_outputs_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());   // then the finished session's usage read
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   const std::string job = "anthropic:" + sid;
@@ -738,7 +743,7 @@ static void test_outputs_pdf_captured_as_artifact() {
   // that did not).
   TEST_ASSERT_TRUE(std::string(env.reply).find("not retrieved") == std::string::npos);
   // The listing asks for this session only, with both betas, on the device key.
-  const agent::HttpRequest& lr = d.http.seen.back();
+  const agent::HttpRequest& lr = d.http.seen[1];
   TEST_ASSERT_EQUAL_STRING("GET", lr.method.c_str());
   TEST_ASSERT_EQUAL_STRING(("/v1/files?scope_id=" + sid).c_str(), lr.path.c_str());
   TEST_ASSERT_EQUAL_STRING("files-api-2025-04-14,managed-agents-2026-04-01",
@@ -756,6 +761,7 @@ static void test_outputs_listing_lag_keeps_the_job_running() {
   d.http.script.push_back({"", "/v1/files?scope_id=", 200, fixture("files_list_session_empty_200.json")});
   d.http.script.push_back({"", "/events", 200, done});
   d.http.script.push_back({"", "/v1/files?scope_id=", 200, fixture("files_list_session_outputs_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   const std::string job = "anthropic:" + sid + "-lag";
   agent::ResultEnvelope env{};
@@ -777,6 +783,7 @@ static void test_outputs_listing_failure_retries() {
   d.http.script.push_back({"", "/v1/files?scope_id=", 500, "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal\"}}"});
   d.http.script.push_back({"", "/events", 200, done});
   d.http.script.push_back({"", "/v1/files?scope_id=", 200, fixture("files_list_session_outputs_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   const std::string job = "anthropic:" + sid + "-retry";
   agent::ResultEnvelope env{};
@@ -797,6 +804,7 @@ static void test_outputs_wait_is_bounded() {
     d.http.script.push_back({"", "/events", 200, done});
     d.http.script.push_back({"", "/v1/files?scope_id=", 200, fixture("files_list_session_empty_200.json")});
   }
+  d.http.script.push_back(harness_test::antSessionUsage());   // the third poll finishes
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   agent::JobState states[3];
@@ -817,12 +825,13 @@ static void test_summary_only_session_is_not_a_file() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "/events", 200, fixture("session_events_list_done_200.json")});
   d.http.script.push_back({"", "/v1/files?scope_id=", 200, fixture("files_list_session_empty_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sesn_summary", env));
   TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
   TEST_ASSERT_EQUAL(0, env.artifactCount);
-  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());   // events, the file listing, the usage read
 }
 
 // More files than the capture cap: the first kMaxArtifacts are captured and the
@@ -836,6 +845,7 @@ static void test_outputs_past_the_cap_are_named() {
   list += "]}";
   d.http.script.push_back({"", "/events", 200, fixture("session_events_list_outputs_done_200.json")});
   d.http.script.push_back({"", "/v1/files?scope_id=", 200, list});
+  d.http.script.push_back(harness_test::antSessionUsage());
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sesn_cap", env));
@@ -847,13 +857,14 @@ static void test_outputs_past_the_cap_are_named() {
 static void test_routed_session_lists_no_files() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "/events", 200, fixture("session_events_list_outputs_done_200.json")});
+  d.http.script.push_back(harness_test::antSessionUsage());   // its usage is still read (the ceiling counts router spend)
   auto pd = d.contract();
   pd.routerBase = [] { return std::string("https://cumulo.example"); };
   pd.routerKey = [] { return std::string("cumulo_sk_fake"); };
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sesn_routed", env));
   TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
-  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // the events and the usage read: no listing
 }
 
 // A file task tells the sub where to save; any other task is sent unchanged.

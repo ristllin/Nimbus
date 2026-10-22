@@ -223,6 +223,8 @@ static void test_anthropic_finished_session_reads_its_usage() {
   d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200,
       "{\"data\":[{\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]},"
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  const Exchange noFiles{"", "/v1/files?scope_id=", 200, "{\"data\":[]}"};   // the output listing first
+  d.http.script.push_back(noFiles);
   d.http.script.push_back({"", "/v1/sessions/sess_1", 200,
       "{\"id\":\"sess_1\",\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":6028,"
       "\"cache_creation\":{\"ephemeral_5m_input_tokens\":128},\"output_tokens\":15}}"});
@@ -246,6 +248,7 @@ static void test_anthropic_finished_session_reads_its_usage() {
   for (int status : {0, 429}) {
     FakeProviderDeps cut;
     cut.http.script.push_back(d.http.script[0]);
+    cut.http.script.push_back(noFiles);
     Exchange e = transportCut(0);
     if (status) e = Exchange{"", "/v1/sessions/", status, "{}"};
     cut.http.script.push_back(e);
@@ -258,6 +261,7 @@ static void test_anthropic_finished_session_reads_its_usage() {
   for (int status : {404, 503}) {
     FakeProviderDeps gone;
     gone.http.script.push_back(d.http.script[0]);
+    gone.http.script.push_back(noFiles);
     gone.http.script.push_back({"", "/v1/sessions/", status, "{}"});
     auto gpd = gone.contract();
     agent::ResultEnvelope genv{};

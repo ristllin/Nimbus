@@ -20,9 +20,10 @@
 // what the call cost, and the call it must contain), and every seam kind has one.
 //
 // Device seams outside lane DEF's files (embeddings, the fallback captioner, speech,
-// the download scan) consult the per-provider park of lane K2, which answers "paused"
-// while the ceiling freezes paid calls; until that park is in the tree those rows are
-// reported as ignored, never as passing.
+// the download scan, and image generation besides this lane's own gate) consult the
+// per-provider park of lane K2, which answers "paused" while the ceiling freezes paid
+// calls (the ceiling store's freeze listener sets the park's pause switch). Those rows
+// are enforced whenever the park is in the tree, and the counter-test covers them too.
 
 void setUp() {}
 void tearDown() {}
@@ -120,11 +121,24 @@ const SeamRow kSeams[] = {
      "paidCallAllowed(nimbus::orch::SpendSeam::Search)", false, nimbus::orch::SpendSeam::Search},
     {"image generation", "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(",
      "paidCallAllowed(nimbus::orch::SpendSeam::ImageGen)", false, nimbus::orch::SpendSeam::ImageGen},
-    {"embeddings", "src/agent/adapters/embeddings.cpp", "embedWith(", "gate::check(", true, nimbus::orch::SpendSeam::Embed},
-    {"vision (fallback captioner)", "src/agent/adapters/image_vision.cpp", "String describeImage(", "gate::check(", true, nimbus::orch::SpendSeam::VisionFallback},
-    {"speech to text", "src/agent/adapters/audio_stt.cpp", "transcribeCommon(", "gate::check(", true, nimbus::orch::SpendSeam::Stt},
-    {"text to speech", "src/agent/adapters/audio_tts.cpp", "synthesizeToFile(", "gate::check(", true, nimbus::orch::SpendSeam::Tts},
-    {"url_fetch scan", "src/agent/adapters/url_fetch.cpp", "scanVerdict(", "gate::check(", true, nimbus::orch::SpendSeam::UrlFetch},
+    {"image generation (park)", "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(",
+     "gate::check(\"openai\", nimbus::orch::PaidSeam::ImageGen", true, nimbus::orch::SpendSeam::ImageGen},
+    {"embeddings", "src/agent/adapters/embeddings.cpp", "std::vector<int8_t> embedWith(const String& text,",
+     "gate::check(provider.c_str(), nimbus::orch::PaidSeam::Embeddings", true, nimbus::orch::SpendSeam::Embed},
+    {"vision (fallback captioner)", "src/agent/adapters/image_vision.cpp", "String describeImage(",
+     "resolve(prov, slug)", true, nimbus::orch::SpendSeam::VisionFallback},
+    {"vision: the provider pick", "src/agent/adapters/image_vision.cpp", "bool resolve(Provider& p, std::string& slug)",
+     "pickOpenProvider(order, visionKeyOf, nimbus::orch::PaidSeam::Vision", true, nimbus::orch::SpendSeam::VisionFallback},
+    {"speech to text", "src/agent/adapters/audio_stt.cpp", "static nimbus::voice::SttResult transcribeCommon(",
+     "closedByPark(prov, out)", true, nimbus::orch::SpendSeam::Stt},
+    {"speech to text: the park", "src/agent/adapters/audio_stt.cpp", "static bool closedByPark(",
+     "gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Stt", true, nimbus::orch::SpendSeam::Stt},
+    {"text to speech", "src/agent/adapters/audio_tts.cpp", "size_t synthesizeToFile(",
+     "gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts", true, nimbus::orch::SpendSeam::Tts},
+    {"url_fetch scan", "src/agent/adapters/url_fetch.cpp", "int scanVerdict(", "resolveScan(p, reason)", true,
+     nimbus::orch::SpendSeam::UrlFetch},
+    {"url_fetch scan: the provider pick", "src/agent/adapters/url_fetch.cpp", "bool resolveScan(",
+     "nimbus::orch::PaidSeam::UrlFetch", true, nimbus::orch::SpendSeam::UrlFetch},
     {"moderation", "src/agent/adapters/moderation.cpp", "ClassifierVerdict classify(const std::string& text,",
      "paidCallAllowed(nimbus::orch::SpendSeam::Moderation)", false, nimbus::orch::SpendSeam::Moderation},
     {"hosted embeddings", "nimbusd/src/rig.h", "std::vector<int8_t> embedWith(const std::string& text,",
@@ -180,6 +194,13 @@ const MeterRow kMeters[] = {
 const MeterRow kSinks[] = {
     {"device sink", S::Head, "src/agent/spend_ceiling_store.cpp", "void install()", "installSeamMeter("},
     {"hosted sink", S::Head, "nimbusd/src/spend_ceiling_vn.h", "void install()", "installSeamMeter("},
+    // The freeze rides K2's park: the device store hands every change to the pause switch.
+    {"freeze to the park", S::Head, "src/agent/spend_ceiling_store.cpp", "void install()",
+     "installFreezeListener(&freezeToPark)"},
+    {"the park's pause switch", S::Head, "src/agent/spend_ceiling_store.cpp", "void freezeToPark(bool isFrozen)",
+     "pause(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling)"},
+    {"the park's resume", S::Head, "src/agent/spend_ceiling_store.cpp", "void freezeToPark(bool isFrozen)",
+     "resume(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling)"},
 };
 
 // "" when the meter row holds, else why not ("" signature: anywhere in the file).
@@ -218,7 +239,7 @@ static void test_every_paid_seam_consults_the_gate() {
 // Counter-test: drop one consult from a copy of its function and the checker fails.
 static void test_removing_a_consult_fails_the_checker() {
   for (const SeamRow& r : kSeams) {
-    if (r.parkSeam) continue;
+    if (r.parkSeam && !parkInTree()) continue;
     std::string src = slurp(r.file);
     const std::string body = functionBody(src, r.signature);
     TEST_ASSERT_FALSE_MESSAGE(body.empty(), r.seam);

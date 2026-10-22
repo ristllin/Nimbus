@@ -1499,7 +1499,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // was refused before it left. No error reply: the notice pump tells the owner why,
     // once per channel. Keyed on THIS turn's error, never the global state, so an
     // unrelated failure still gets its honest reply.
-    if (nimbus::orch::isSpendFrozenError(err)) {
+    // The same for a turn whose every host the park answered "paused" while the ceiling
+    // holds (the park carries the freeze; the owner's own pause still gets its reply).
+    const bool ceilingPause = orch::classifyStepError(err) == orch::StepErr::Paused &&
+                              nimbus::orch::spendFrozen();
+    if (nimbus::orch::isSpendFrozenError(err) || ceilingPause) {
       tf.chain.noteDevice(nimbus::orch::kSpendFrozenError);
       fireTurnEnd(false, 0);
       return false;
