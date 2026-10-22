@@ -293,6 +293,84 @@ static void test_more_media_kinds() {
   TEST_ASSERT_EQUAL_INT((int)Attachment::Kind::Document, (int)u[0].attachment.kind);
 }
 
+// Lane D (albums as one turn): a Telegram album is several updates that share a
+// media_group_id, with the caption on the first item only. The parser keeps, per
+// item: the group id, the server date, the chosen rendition's pixel size and its
+// file_unique_id (the duplicate guard's content key and the files-store hand-off),
+// in wire order. Each item offers three renditions; the largest within the budget is
+// chosen, as for a single photo.
+static std::string albumItem(int uid, int mid, const char* tag, const char* caption) {
+  std::string cap = caption ? std::string(",\"caption\":\"") + caption + "\"" : std::string();
+  return std::string("{\"update_id\":") + std::to_string(uid) + ",\"message\":{\"message_id\":" +
+         std::to_string(mid) + ",\"date\":1792400000,\"media_group_id\":\"13900001\"," +
+         "\"chat\":{\"id\":77,\"type\":\"private\"},\"from\":{\"id\":77,\"first_name\":\"Ana\"}," +
+         "\"photo\":[{\"file_id\":\"" + tag + "_s\",\"file_unique_id\":\"U" + tag + "s\",\"width\":90," +
+         "\"height\":68,\"file_size\":1500},{\"file_id\":\"" + tag + "_m\",\"file_unique_id\":\"U" + tag +
+         "m\",\"width\":320,\"height\":240,\"file_size\":21000},{\"file_id\":\"" + tag +
+         "_l\",\"file_unique_id\":\"U" + tag + "l\",\"width\":1280,\"height\":960,\"file_size\":170226}]" +
+         cap + "}}";
+}
+
+static void test_album_fixture_keeps_group_date_size_and_unique_id() {
+  const std::string body = "{\"ok\":true,\"result\":[" + albumItem(501, 41, "a", "All of this for dinner") +
+                           "," + albumItem(502, 42, "b", nullptr) + "," + albumItem(503, 43, "c", nullptr) +
+                           "]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(body, u));
+  TEST_ASSERT_EQUAL_INT(3, (int)u.size());
+  const char* tags[] = {"a", "b", "c"};
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_EQUAL_INT32(501 + i, u[i].updateId);
+    TEST_ASSERT_EQUAL_INT64(41 + i, u[i].messageId);
+    TEST_ASSERT_EQUAL_INT64(1792400000, u[i].date);
+    TEST_ASSERT_EQUAL_STRING("13900001", u[i].mediaGroupId.c_str());
+    TEST_ASSERT_EQUAL_STRING("77", u[i].chatId.c_str());
+    TEST_ASSERT_EQUAL_INT((int)Attachment::Kind::Photo, (int)u[i].attachment.kind);
+    TEST_ASSERT_EQUAL_STRING((std::string(tags[i]) + "_l").c_str(), u[i].attachment.fileId.c_str());
+    TEST_ASSERT_EQUAL_STRING((std::string("U") + tags[i] + "l").c_str(), u[i].attachment.fileUniqueId.c_str());
+    TEST_ASSERT_EQUAL_UINT32(1280, u[i].attachment.width);
+    TEST_ASSERT_EQUAL_UINT32(960, u[i].attachment.height);
+    TEST_ASSERT_EQUAL_UINT32(170226, u[i].attachment.fileSize);
+  }
+  // The caption rides the first item only; it is the item's text, at full length.
+  TEST_ASSERT_TRUE(u[0].textIsCaption);
+  TEST_ASSERT_EQUAL_STRING("All of this for dinner", u[0].text.c_str());
+  TEST_ASSERT_EQUAL_INT(0, (int)u[1].text.size());
+  TEST_ASSERT_EQUAL_INT(0, (int)u[2].text.size());
+}
+
+// A single photo from a fresh chat has no group id: the field stays empty (the
+// batcher then treats it as a one-item album).
+static void test_single_photo_has_no_group_id() {
+  const std::string body =
+      "{\"ok\":true,\"result\":[{\"update_id\":9,\"message\":{\"message_id\":1,\"date\":1792400100,"
+      "\"chat\":{\"id\":5},\"photo\":[{\"file_id\":\"p\",\"file_unique_id\":\"Up\",\"width\":800,"
+      "\"height\":600,\"file_size\":90000}]}}]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(body, u));
+  TEST_ASSERT_EQUAL_INT(0, (int)u[0].mediaGroupId.size());
+  TEST_ASSERT_EQUAL_STRING("Up", u[0].attachment.fileUniqueId.c_str());
+  TEST_ASSERT_EQUAL_UINT32(800, u[0].attachment.width);
+}
+
+// Documents and voice notes carry their file_unique_id too; a body without the field
+// (older fixtures, injected test pages) leaves it empty rather than failing.
+static void test_document_and_voice_unique_ids() {
+  const std::string body =
+      "{\"ok\":true,\"result\":["
+      "{\"update_id\":11,\"message\":{\"chat\":{\"id\":5},\"document\":{\"file_id\":\"d\","
+      "\"file_unique_id\":\"Ud\",\"file_name\":\"menu.pdf\",\"mime_type\":\"application/pdf\"}}},"
+      "{\"update_id\":12,\"message\":{\"chat\":{\"id\":5},\"voice\":{\"file_id\":\"v\","
+      "\"file_unique_id\":\"Uv\",\"file_size\":9000}}},"
+      "{\"update_id\":13,\"message\":{\"chat\":{\"id\":5},\"voice\":{\"file_id\":\"w\"}}}]}";
+  std::vector<Update> u;
+  TEST_ASSERT_TRUE(parse(body, u));
+  TEST_ASSERT_EQUAL_STRING("Ud", u[0].attachment.fileUniqueId.c_str());
+  TEST_ASSERT_EQUAL_UINT32(0, u[0].attachment.width);
+  TEST_ASSERT_EQUAL_STRING("Uv", u[1].attachment.fileUniqueId.c_str());
+  TEST_ASSERT_EQUAL_STRING("", u[2].attachment.fileUniqueId.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_long_message_not_truncated);
@@ -314,5 +392,8 @@ int main(int, char**) {
   RUN_TEST(test_keeps_message_id_date_and_media_group);
   RUN_TEST(test_edited_message_carries_ids_only);
   RUN_TEST(test_more_media_kinds);
+  RUN_TEST(test_album_fixture_keeps_group_date_size_and_unique_id);
+  RUN_TEST(test_single_photo_has_no_group_id);
+  RUN_TEST(test_document_and_voice_unique_ids);
   return UNITY_END();
 }

@@ -9,6 +9,7 @@
 
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
+#include "nimbus/orch/media_label.h"
 #include "nimbus/orch/msg_batch.h"
 
 // CUM-398 rapid-message batcher (nimbus::orch::MessageBatcher). These assert the
@@ -743,6 +744,231 @@ static void test_command_mid_burst_costs_no_extra_cycle() {
   TEST_ASSERT_EQUAL_STRING("msg k2q", turns[2].text.c_str());
 }
 
+// ---- albums and bursts as one turn (lane D) -----------------------------------
+
+using nimbus::orch::MediaClass;
+using nimbus::orch::MediaLabel;
+using nimbus::orch::mediaSegment;
+using nimbus::orch::SegKind;
+
+// What the device does after the drain: give every media segment of bucket i its
+// label (k/N among the turn's media) and description. Returns the labels it set.
+static std::vector<std::string> describeAll(MessageBatcher& b, size_t i) {
+  std::vector<std::string> out;
+  const size_t n = b.mediaCountAt(i);
+  for (size_t k = 0; k < n; ++k) {
+    MediaLabel l;
+    l.k = (int)k + 1;
+    l.n = (int)n;
+    char ref[17];
+    std::snprintf(ref, sizeof ref, "%016x", 0xabc000 + b.mediaSlotAt(i, k));
+    l.ref = ref;
+    l.detail = "photo in slot " + std::to_string(b.mediaSlotAt(i, k));
+    out.push_back(mediaSegment(l));
+    b.setMediaText(i, k, out.back());
+  }
+  return out;
+}
+
+// The 15 Oct burst (photo 1 with the caption, photos 2 and 3, then a text): ONE turn,
+// interleaved in arrival order, every photo numbered k/3 with its own description,
+// the caption with its photo at full length, the text after the third photo.
+static void test_album_and_text_render_as_one_interleaved_turn() {
+  MessageBatcher b;
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addMedia("77", "Ana", "All of this for dinner", 0, 501));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addMedia("77", "Ana", "", 1, 502));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addMedia("77", "Ana", "", 2, 503));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("77", "Ana", "I sent 3 images. Did you see all?", 504));
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(4, b.messageCountAt(0));
+  TEST_ASSERT_EQUAL_UINT(3, b.mediaCountAt(0));
+  TEST_ASSERT_EQUAL_UINT(3, b.mediaInDrain());
+  for (size_t k = 0; k < 3; ++k) {
+    TEST_ASSERT_EQUAL_INT((int)k, b.mediaSlotAt(0, k));
+    TEST_ASSERT_EQUAL_INT32(501 + (int32_t)k, b.mediaUpdateIdAt(0, k));
+  }
+  TEST_ASSERT_EQUAL_STRING("All of this for dinner", b.mediaCaptionAt(0, 0));
+  const std::vector<std::string> labels = describeAll(b, 0);
+  const std::string r = b.render(0).c_str();
+  const size_t p1 = r.find("[image 1/3 ref="), p2 = r.find("[image 2/3 ref="), p3 = r.find("[image 3/3 ref=");
+  const size_t cap = r.find("They wrote: All of this for dinner"), txt = r.find("I sent 3 images");
+  TEST_ASSERT_TRUE(p1 != std::string::npos && p2 != std::string::npos && p3 != std::string::npos);
+  TEST_ASSERT_TRUE(p1 < cap && cap < p2 && p2 < p3 && p3 < txt);   // arrival order
+  TEST_ASSERT_TRUE(has(r, "Message 4 of 4 from Ana:"));
+  for (const std::string& l : labels) TEST_ASSERT_TRUE(has(r, l.c_str()));
+  // The turn that contains the follow-up text contains all three photo segments.
+  TEST_ASSERT_TRUE(r.find("photo in slot 2") < txt);
+}
+
+// A single photo (no album, no group id, a fresh chat) renders exactly as the
+// pre-batching photo turn did: its label and description, then "They wrote:".
+static void test_single_photo_renders_like_before() {
+  MessageBatcher b;
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addMedia("5", "Bo", "what is this", 0, 9));
+  describeAll(b, 0);
+  const std::string r = b.render(0).c_str();
+  TEST_ASSERT_EQUAL_STRING("[image 1/1 ref=0000000000abc000] photo in slot 0\n\nThey wrote: what is this",
+                           r.c_str());
+  MessageBatcher bare;
+  bare.addMedia("5", "Bo", "", 0, 9);
+  describeAll(bare, 0);
+  TEST_ASSERT_EQUAL_STRING("[image 1/1 ref=0000000000abc000] photo in slot 0", bare.render(0).c_str());
+}
+
+// The 10/11 cap: a 10-photo album is one turn; the 11th item is Deferred (re-served
+// next drain, never dropped), and the turn says more are waiting.
+static void test_ten_media_one_turn_eleventh_deferred() {
+  MessageBatcher b;
+  for (int i = 0; i < (int)cap::kBatchMaxMediaPerChat; ++i)
+    TEST_ASSERT_TRUE(BatchAdd::Deferred != b.addMedia("77", "Ana", "", i, 600 + i));
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxMediaPerChat, b.mediaCountAt(0));
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.addMedia("77", "Ana", "", 10, 610));
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxMediaPerChat, b.mediaCountAt(0));
+  TEST_ASSERT_TRUE(b.cappedAt(0));
+  describeAll(b, 0);
+  const std::string r = b.render(0).c_str();
+  TEST_ASSERT_TRUE(has(r, "[image 10/10 ref="));
+  TEST_ASSERT_TRUE(has(r, "More messages from this chat are waiting"));
+}
+
+// Counter-test for the raised media limits: the drain's slots are a hard ceiling
+// across chats too. Two chats of 6 photos each: the 11th item (chat B's 5th) is
+// Deferred, as is anything needing a slot after it (a voice note); text still fits.
+static void test_media_slots_cap_the_drain_across_chats() {
+  MessageBatcher b;
+  int slot = 0;
+  for (int i = 0; i < 6; ++i) TEST_ASSERT_TRUE(BatchAdd::Deferred != b.addMedia("A", "a", "", slot++, 100 + i));
+  for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(BatchAdd::Deferred != b.addMedia("B", "b", "", slot++, 200 + i));
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxMediaPerDrain, b.mediaInDrain());
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.addMedia("B", "b", "", slot, 204));
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.addVoice("C", "c", slot, 300));
+  TEST_ASSERT_TRUE(BatchAdd::Deferred != b.add("C", "c", "text needs no slot", 301));
+  TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxMediaPerDrain, b.mediaInDrain());
+  b.clear();
+  TEST_ASSERT_EQUAL_UINT(0, b.mediaInDrain());
+}
+
+// A command next to media is still a turn of its own, and the media around it keep
+// their own turns in order.
+static void test_command_boundary_next_to_media() {
+  MessageBatcher b;
+  b.addMedia("77", "Ana", "", 0, 1);
+  TEST_ASSERT_TRUE(BatchAdd::CommandBoundary == b.add("77", "Ana", "/status", 2));
+  b.addMedia("77", "Ana", "", 1, 3);
+  TEST_ASSERT_EQUAL_UINT(3, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.mediaCountAt(0));
+  TEST_ASSERT_TRUE(b.commandAt(1));
+  TEST_ASSERT_EQUAL_STRING("/status", b.render(1).c_str());
+  TEST_ASSERT_EQUAL_UINT(1, b.mediaCountAt(2));
+  TEST_ASSERT_EQUAL_INT(1, b.mediaSlotAt(2, 0));
+}
+
+// The voice boundary: photos, a voice note, a text. The voice note is a turn of its own
+// between them (its transcript), so replies come in the order things were sent.
+static void test_voice_boundary_next_to_media() {
+  MessageBatcher b;
+  b.addMedia("77", "Ana", "lunch", 0, 1);
+  b.addMedia("77", "Ana", "", 1, 2);
+  TEST_ASSERT_TRUE(BatchAdd::VoiceBoundary == b.addVoice("77", "Ana", 2, 3));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("77", "Ana", "and a coffee", 4));
+  TEST_ASSERT_EQUAL_UINT(3, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(2, b.mediaCountAt(0));
+  TEST_ASSERT_TRUE(b.voiceAt(1));
+  TEST_ASSERT_EQUAL_INT(2, b.voiceSlotAt(1));
+  TEST_ASSERT_EQUAL_UINT(0, b.mediaCountAt(1));   // a voice note is not a media segment
+  b.setVoiceText(1, "it was a big salad");
+  TEST_ASSERT_EQUAL_STRING("it was a big salad", b.render(1).c_str());
+  TEST_ASSERT_EQUAL_STRING("and a coffee", b.render(2).c_str());
+  TEST_ASSERT_EQUAL_UINT(3, b.mediaInDrain());   // the voice note holds a slot too
+  // Two voice notes in a row are two turns; a voice note never joins a text bucket.
+  MessageBatcher v;
+  v.add("9", "x", "first");
+  v.addVoice("9", "x", 0, 2);
+  v.addVoice("9", "x", 1, 3);
+  TEST_ASSERT_EQUAL_UINT(3, v.turnCount());
+}
+
+// Full-length captions: the old 256-byte cut is gone (a 3000-byte caption reaches the
+// turn whole); counter-test: a caption past the per-chat byte budget still defers the
+// item to the next drain instead of cutting or dropping it.
+static void test_full_length_captions_and_their_cap() {
+  MessageBatcher b;
+  const std::string longCap(3000, 'c');
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addMedia("77", "Ana", longCap, 0, 1));
+  describeAll(b, 0);
+  TEST_ASSERT_TRUE(has(b.render(0).c_str(), longCap.c_str()));
+  const std::string big(cap::kBatchMaxBytesPerChat, 'd');
+  TEST_ASSERT_TRUE(BatchAdd::Deferred == b.addMedia("77", "Ana", big, 1, 2));
+  TEST_ASSERT_EQUAL_UINT(1, b.mediaCountAt(0));
+  TEST_ASSERT_EQUAL_UINT(1, b.mediaInDrain());
+  // Alone in a fresh drain the same caption fits (a single message is never stuck).
+  MessageBatcher fresh;
+  TEST_ASSERT_TRUE(BatchAdd::Deferred != fresh.addMedia("77", "Ana", big, 1, 2));
+}
+
+// A late or redelivered text carries its original send time; an on-time one is
+// byte-for-byte unchanged.
+static void test_late_text_carries_its_send_time() {
+  MessageBatcher b;
+  b.add("77", "Ana", "are you there?", 1, "09:58");
+  TEST_ASSERT_EQUAL_STRING("(sent 09:58) are you there?", b.render(0).c_str());
+  b.add("77", "Ana", "hello", 2);
+  const std::string r = b.render(0).c_str();
+  TEST_ASSERT_TRUE(has(r, "Message 1 of 2 from Ana:\n(sent 09:58) are you there?"));
+  TEST_ASSERT_TRUE(has(r, "Message 2 of 2 from Ana:\nhello"));
+}
+
+// The largest turn the batcher can build stays well under the 64 KB single-string
+// limit of the device's JSON writer: a full album at the description cap plus the
+// per-chat caption budget.
+static void test_largest_turn_stays_bounded() {
+  MessageBatcher b;
+  const std::string capText(cap::kBatchMaxBytesPerChat / cap::kBatchMaxMediaPerChat, 'q');
+  for (int i = 0; i < (int)cap::kBatchMaxMediaPerChat; ++i) b.addMedia("77", "Somebody Long Name", capText, i, i + 1);
+  for (size_t k = 0; k < b.mediaCountAt(0); ++k) {
+    MediaLabel l;
+    l.k = (int)k + 1;
+    l.n = 10;
+    l.ref = "0123456789abcdef";
+    l.sentAt = "21 Oct 09:58";
+    l.detail = std::string(5 * nimbus::orch::kMediaTextMax, 'z');
+    b.setMediaText(0, k, mediaSegment(l));
+  }
+  const size_t n = b.render(0).size();
+  TEST_ASSERT_TRUE(n > cap::kBatchMaxMediaPerChat * nimbus::orch::kMediaTextMax);
+  TEST_ASSERT_TRUE_MESSAGE(n < 40 * 1024, "one turn must stay far below the 64 KB string cap");
+}
+
+// The drain routes media and voice actions into the batcher (addClassified); a media
+// item the device had no slot for (StopNoAck) stops the drain un-acked.
+static void test_drain_routes_media_and_voice() {
+  FakeServer srv;
+  ClassifiedUpdate m1 = txt(10, "77", "Ana", "caption");
+  m1.action = ClassifiedUpdate::Action::BatchMedia;
+  m1.slot = 0;
+  ClassifiedUpdate m2 = txt(11, "77", "Ana", "");
+  m2.action = ClassifiedUpdate::Action::BatchMedia;
+  m2.slot = 1;
+  ClassifiedUpdate v = txt(12, "77", "Ana", "");
+  v.action = ClassifiedUpdate::Action::BatchVoice;
+  v.slot = 2;
+  ClassifiedUpdate stop;
+  stop.updateId = 13;
+  stop.action = ClassifiedUpdate::Action::StopNoAck;
+  addPage(srv, {m1, m2, v, stop, txt(14, "77", "Ana", "never reached")});
+  MessageBatcher b;
+  const DrainResult r = runDrain(b, 10, srv);
+  TEST_ASSERT_TRUE(r.stopped);
+  TEST_ASSERT_EQUAL_INT32(13, r.ackOffset);   // acked through the voice note, not past the stop
+  TEST_ASSERT_EQUAL_INT(3, r.messagesBatched);
+  TEST_ASSERT_EQUAL_UINT(2, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(2, b.mediaCountAt(0));
+  TEST_ASSERT_EQUAL_STRING("caption", b.mediaCaptionAt(0, 0));
+  TEST_ASSERT_TRUE(b.voiceAt(1));
+  TEST_ASSERT_EQUAL_UINT(4, srv.handledIdx.size());   // never classified past the stop
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_message_is_raw_text);
@@ -774,5 +1000,15 @@ int main(int, char**) {
   RUN_TEST(test_contiguous_mode_keeps_id_runs);
   RUN_TEST(test_burst_property_commands_are_their_own_turns);
   RUN_TEST(test_command_mid_burst_costs_no_extra_cycle);
+  RUN_TEST(test_album_and_text_render_as_one_interleaved_turn);
+  RUN_TEST(test_single_photo_renders_like_before);
+  RUN_TEST(test_ten_media_one_turn_eleventh_deferred);
+  RUN_TEST(test_media_slots_cap_the_drain_across_chats);
+  RUN_TEST(test_command_boundary_next_to_media);
+  RUN_TEST(test_voice_boundary_next_to_media);
+  RUN_TEST(test_full_length_captions_and_their_cap);
+  RUN_TEST(test_late_text_carries_its_send_time);
+  RUN_TEST(test_largest_turn_stays_bounded);
+  RUN_TEST(test_drain_routes_media_and_voice);
   return UNITY_END();
 }

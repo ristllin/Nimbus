@@ -151,6 +151,19 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 `[CONTEXT]` is **not** a head-turn block - it rides the *sub-agent brief* only
 (see [sub-sessions.md](sub-sessions.md)).
 
+**What `[USER]` holds for a burst or an album.** Messages sent together arrive as one
+`[USER]` message: one `Message k of N from <name>:` block per message, in the order
+they were sent (a single message arrives as itself, byte for byte). A photo or file is
+its label and its description, then `They wrote:` and its caption:
+`[image 2/3 ref=0123456789abcdef] a plate of pasta ...`. The label is one format
+everywhere (the turn, the stored row, the history): `k/N` is the item's place among
+the turn's media, `ref` is its content hash (16 hex characters, absent when nothing
+was fetched), and the text after the bracket is the description or why there is none
+(`(couldn't be described)`, `(could not be fetched: too large)`). A late or
+redelivered item carries its original send time: `(sent 09:58)` before a text,
+`, sent 09:58` inside a label. A voice note is its own turn (its transcript); a
+command is always its own turn.
+
 ### 3. Conversation history - no transcript replay
 
 The device never replays a full transcript. Cross-turn continuity comes from

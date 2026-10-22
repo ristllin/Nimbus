@@ -11,6 +11,7 @@
 #include <cstring>
 #include <map>
 
+#include "nimbus/net/tg_dup_guard.h"   // dupHash: the same chat key as the duplicate guard
 #include "nimbus/tg_archive.h"
 
 namespace nimbus {
@@ -23,6 +24,7 @@ namespace {
 constexpr int64_t kPlausibleClock = 1577836800LL;   // 2020-01-01: the device clock is set
 constexpr size_t kCopySlice = 4096;
 constexpr size_t kSeqCacheMax = 8;
+constexpr size_t kSeenRing = 64;   // updates remembered per boot (over six full pages)
 constexpr const char* kNoChat = "0";   // updates with no chat, and stranger overflow rows
 // FAT gives every file whole clusters (16-32 KB on a 16-32 GB card); counting a file
 // as 32 KB at least over-estimates what deleting it frees, so the pressure pass stops
@@ -195,10 +197,13 @@ bool Archive::appendLine(const std::string& path, const std::string& line) {
   return w->close() && ok;
 }
 
-bool forEachLine(Fs& fs, const std::string& path,
-                 const std::function<void(const std::string&)>& fn) {
+namespace {
+
+// Lines of a file to `fn` until it returns true. 1: stopped there, 0: read to the end,
+// -1: the file could not be opened. Lines over 16 KB are skipped.
+int streamLines(Fs& fs, const std::string& path, const std::function<bool(const std::string&)>& fn) {
   std::unique_ptr<Reader> r = fs.openRead(path);
-  if (!r) return false;
+  if (!r) return -1;
   std::string line;
   bool skipping = false;
   uint8_t buf[512];
@@ -206,7 +211,7 @@ bool forEachLine(Fs& fs, const std::string& path,
     for (int i = 0; i < n; ++i) {
       const char c = (char)buf[i];
       if (c == '\n') {
-        if (!skipping && !line.empty()) fn(line);
+        if (!skipping && !line.empty() && fn(line)) return 1;
         line.clear();
         skipping = false;
       } else if (!skipping) {
@@ -215,16 +220,42 @@ bool forEachLine(Fs& fs, const std::string& path,
       }
     }
   }
-  if (!skipping && !line.empty()) fn(line);
-  return true;
+  return (!skipping && !line.empty() && fn(line)) ? 1 : 0;
+}
+
+}  // namespace
+
+bool forEachLineUntil(Fs& fs, const std::string& path, const std::function<bool(const std::string&)>& fn) {
+  return streamLines(fs, path, fn) == 1;
+}
+
+bool forEachLine(Fs& fs, const std::string& path,
+                 const std::function<void(const std::string&)>& fn) {
+  return streamLines(fs, path, [&](const std::string& l) {
+           fn(l);
+           return false;
+         }) >= 0;
 }
 
 bool Archive::indexHas(const std::string& indexPath, const std::string& needle) {
-  bool found = false;
-  forEachLine(fs_, indexPath, [&](const std::string& l) {
-    if (!found && l.find(needle) != std::string::npos) found = true;
-  });
-  return found;
+  return forEachLineUntil(fs_, indexPath,
+                          [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+}
+
+bool Archive::seenThisBoot(uint32_t chat, int64_t id) const {
+  for (const SeenId& s : seen_)
+    if (s.chat == chat && s.id == id) return true;
+  return false;
+}
+
+void Archive::noteSeen(uint32_t chat, int64_t id) {
+  if (seenThisBoot(chat, id)) return;
+  if (seen_.size() < kSeenRing) {
+    seen_.push_back({chat, id});
+    return;
+  }
+  seen_[seenHead_] = {chat, id};
+  seenHead_ = (seenHead_ + 1) % kSeenRing;
 }
 
 // ---- inbound ----------------------------------------------------------------
@@ -248,37 +279,60 @@ bool Archive::archiveOneUpdate(const char* raw, size_t len, const Now& now) {
   // An update with no chat still is archived, under "0" (no real chat has that id),
   // within the stranger budgets: anyone can cause one.
   const std::string chat = validChatDir(m.chat) ? m.chat : kNoChat;
+  const uint32_t chatKey = nimbus::net::dupHash(chat);
+  if (seenThisBoot(chatKey, m.updateId)) {   // written or verified this boot: no card read
+    ++stats_.dupes;
+    return false;
+  }
   const bool stranger = chat == kNoChat || (trust_ && trust_(chat) == Trust::Stranger);
   curTrust_ = stranger ? Trust::Stranger : Trust::Allowed;
   const std::string day = dayFromEpoch(m.date);
   const std::string base = inBase(m.updateId);
   const std::string rawPath = itemPath(chat, day, base + ".json");
   if (fs_.exists(rawPath)) {
-    // A replay of the same update: nothing new is written. A crash between the raw
-    // write and its index line leaves the line missing; the replay restores it.
-    ++stats_.dupes;
-    char needle[40];
-    std::snprintf(needle, sizeof needle, "\"u\":%lld,", (long long)m.updateId);
-    if (!indexHas(indexPathOf(chat, day), needle)) {
-      writeInRow(m, chat, day, base);
-      ++stats_.repaired;
-    }
+    replayed(m, chat, day, base);
+    noteSeen(chatKey, m.updateId);
     return false;
   }
-  if (stranger && strangerOverflowSeen(chat, day, m.updateId)) {
+  if (stranger && !strangerAdmitted(m, chat, day, len)) return false;
+  fs_.mkdirs(dayDirPath(chat, day));
+  if (!writeSmallAtomic(rawPath, std::string(raw, len))) { ++stats_.writeErrors; return false; }
+  const uint32_t errs = stats_.writeErrors;
+  writeInRow(m, chat, day, base);
+  if (stats_.writeErrors == errs) noteSeen(chatKey, m.updateId);   // a lost line is repaired on replay
+  ++stats_.inItems;
+  return true;
+}
+
+// A stranger's update within its budgets (true), or the reason it is not written:
+// a replay already recorded as over the limit, a spent budget, the folder cap.
+bool Archive::strangerAdmitted(const InMeta& m, const std::string& chat, const std::string& day, size_t len) {
+  if (strangerOverflowSeen(chat, day, m.updateId)) {
     ++stats_.dupes;   // a replay of an update already recorded as over the limit
     return false;
   }
-  if (stranger) {
-    const Admit a = admitStranger(chat, day, len);
-    if (a == Admit::No) { ++stats_.strangerSkipped; return false; }
-    if (a == Admit::Overflow) { writeOverflowRow(m, day); return false; }
+  const Admit a = admitStranger(chat, day, len);
+  if (a == Admit::No) {
+    ++stats_.strangerSkipped;
+    return false;
   }
-  fs_.mkdirs(dayDirPath(chat, day));
-  if (!writeSmallAtomic(rawPath, std::string(raw, len))) { ++stats_.writeErrors; return false; }
-  writeInRow(m, chat, day, base);
-  ++stats_.inItems;
+  if (a == Admit::Overflow) {
+    writeOverflowRow(m, day);
+    return false;
+  }
   return true;
+}
+
+// A replay of an update already on the card: nothing new is written. A crash between
+// the raw write and its index line leaves the line missing; the replay restores it.
+void Archive::replayed(const InMeta& m, const std::string& chat, const std::string& day,
+                       const std::string& base) {
+  ++stats_.dupes;
+  char needle[40];
+  std::snprintf(needle, sizeof needle, "\"u\":%lld,", (long long)m.updateId);
+  if (indexHas(indexPathOf(chat, day), needle)) return;
+  writeInRow(m, chat, day, base);
+  ++stats_.repaired;
 }
 
 // Charge one stranger update against the day's budgets. No: a budget is spent (the
@@ -421,6 +475,50 @@ bool Archive::enqueue(const Job& j) {
   }
   jobs_.push_back(j);
   return true;
+}
+
+// ---- one download, shared with the turn path -------------------------------------
+
+bool Archive::adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
+                         Fs& src, const std::string& srcPath) {
+  if (!validChatDir(chat) || fileId.empty()) return false;
+  const std::string day = dayFromEpoch(date), base = inBase(updateId);
+  auto it = std::find_if(jobs_.begin(), jobs_.end(),
+                         [&](const Job& j) { return j.chat == chat && j.day == day && j.base == base; });
+  if (it == jobs_.end() || it->fileId != fileId) return false;
+  const Job j = *it;
+  const std::string file = itemPath(chat, day, jobName(j));
+  const std::string part = file + ".part";
+  uint64_t bytes = 0;
+  if (!fs_.exists(file)) {
+    if (!copyIn(src, srcPath, part, bytes) || bytes == 0) {
+      fs_.remove(part);
+      return false;   // the job stays queued: the archive fetches it itself
+    }
+    if (!fs_.rename(part, file)) {
+      fs_.remove(part);
+      return false;
+    }
+  }
+  jobs_.erase(it);   // nothing above touched the queue: the iterator is still valid
+  finishJob(j, "ok", stats_.mediaOk, bytes, "");
+  return true;
+}
+
+std::string Archive::mediaFor(const std::string& chat, int64_t updateId, int64_t date,
+                              const std::string& fileId) {
+  if (!validChatDir(chat) || fileId.empty()) return std::string();
+  const std::string day = dayFromEpoch(date), base = inBase(updateId);
+  std::unique_ptr<Reader> r = fs_.openRead(itemPath(chat, day, base + ".json"));
+  if (!r) return std::string();
+  std::string raw;
+  uint8_t buf[512];
+  for (int n = r->read(buf, sizeof buf); n > 0 && raw.size() < 64 * 1024; n = r->read(buf, sizeof buf))
+    raw.append((const char*)buf, (size_t)n);
+  InMeta m;
+  if (!parseUpdateMeta(raw.data(), raw.size(), m) || !m.hasMedia || m.media.fileId != fileId) return std::string();
+  const std::string file = itemPath(chat, day, base + "." + mediaExt(m.media));
+  return fs_.exists(file) ? file : std::string();
 }
 
 // ---- outbound -----------------------------------------------------------------

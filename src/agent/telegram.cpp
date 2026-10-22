@@ -32,6 +32,13 @@
 #include "nimbus/telegram_offset.h"   // nimbus::core::TgOffsetCursor (host-tested)
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
+#include "nimbus/orch/media_label.h"  // the one inbound media label (host-tested)
+#include "nimbus/orch/blob_store.h"   // BlobHasher: the content hash of an inbound file
+#include "nimbus/net/tg_receive.h"    // the receive cycle: settle, breakers, turns (host-tested)
+#include "nimbus/net/tg_owner.h"      // which chat the device's notices go to (host-tested)
+#include "nimbus/net/tg_media_memo.h" // blob-hash dedupe of the description step (host-tested)
+#include <new>                        // placement new: the memo lives in PSRAM
+#include "nimbus/sys/breadcrumb.h"    // crc32: the firmware build id of the guard record
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
 #include "nimbus/net/tg_backoff.h"    // getUpdates backoff + retry_after (host-tested)
@@ -45,6 +52,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - queue storage on PSRAM (docs/memory-model.md)
+#include <esp_attr.h>        // RTC_NOINIT_ATTR - the storm breakers' record
+#include <esp_app_desc.h>    // the running image's ELF hash: the guard record's build id
+#include <time.h>
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
 #include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
 
@@ -76,33 +86,57 @@ struct InboundMsg {
                        // message waited for tg_poll (the CUM-462 bench seam)
 };
 
-// A voice note seen during a poll, downloaded + transcribed AFTER the getUpdates
-// TLS closes (only one TLS session at a time on the single arena).
-struct PendingVoice {
-  char fileId[128];
-  char chatId[32];
-  char from[64];
-  bool set;
+// One inbound photo, document or voice note of the page being drained: what the
+// receive cycle needs to fetch it after the poll socket closes, inside its turn (only
+// one TLS session at a time). The caption is not here: it rides the batcher at full
+// length. One slot per item, kBatchMaxMediaPerDrain per drain (an album of 10 fits),
+// in a lazily allocated PSRAM array (never a static: 10 slots in internal .bss would
+// cost the turn's heap), freed for the next page when the page ends.
+struct MediaSlot {
+  char     fileId[128];
+  char     fileUniqueId[48];   // Telegram's stable id: the duplicate key and the files-store hand-off
+  char     chatId[32];
+  char     from[64];
+  char     fileName[64];
+  char     mime[48];
+  uint32_t size;               // Telegram's size hint (0 = unknown)
+  uint32_t width, height;      // the chosen photo rendition (0 when absent)
+  int32_t  updateId;
+  int64_t  date;               // Telegram's send time
+  uint8_t  kind;               // nimbus::tg::Attachment::Kind (Photo, Document, Voice)
+  bool     used;
+  TurnMedia media;             // filled once processed: the turn's ordered segment list
+  const char* why;             // a failed item's reason (a static string), else nullptr
 };
-static PendingVoice& g_voice = ::nimbus::psramStatic<PendingVoice>();   // PSRAM (psram_static.h)
+static constexpr size_t kMediaSlots = nimbus::orch::kBatchMaxMediaPerDrain;
+static MediaSlot* g_slots = nullptr;   // PSRAM, allocated on the first media item
+static MediaSlot* ensureSlots() {
+  if (!g_slots) {
+    g_slots = (MediaSlot*)heap_caps_calloc(kMediaSlots, sizeof(MediaSlot), MALLOC_CAP_SPIRAM);
+  }
+  return g_slots;
+}
 
-// An inbound photo or document seen during a poll. Same deferral as a voice
-// note: the download needs the TLS arena, which getUpdates is holding, so the
-// work happens after the poll socket closes. One slot per cycle; a second
-// attachment in the same batch is left un-acked and re-served next poll rather
-// than dropped.
-struct PendingAttach {
-  char fileId[128];
-  char chatId[32];
-  char from[64];
-  char fileName[64];
-  char mime[48];
-  char caption[257];
-  uint32_t size;
-  bool photo;      // false = document
-  bool set;
-};
-static PendingAttach& g_attach = ::nimbus::psramStatic<PendingAttach>();   // PSRAM
+// The device's best epoch: the clock when set, else the newest Telegram date seen
+// plus the uptime since, else uptime (the hourly ceiling and the answer times need a
+// time base before the clock syncs).
+static int64_t  s_serverDate = 0;
+static uint32_t s_serverDateMs = 0;
+static constexpr time_t kClockSet = 1577836800;   // 2020-01-01
+
+static void noteServerDate(int64_t date) {
+  if (date <= s_serverDate) return;
+  s_serverDate = date;
+  s_serverDateMs = millis();
+}
+
+static uint32_t deviceEpoch() {
+  const time_t t = time(nullptr);
+  if (t >= kClockSet) return (uint32_t)t;
+  if (s_serverDate > 0) return (uint32_t)(s_serverDate + (millis() - s_serverDateMs) / 1000);
+  return 1 + millis() / 1000;
+}
+
 
 // A media file to SEND (device -> owner), drained on the poll task after the poll
 // socket closes so only one TLS session is ever resident. One slot: the next
@@ -168,9 +202,18 @@ volatile uint32_t g_pubOffsetWriteFails = 0;
 volatile uint32_t g_pubStaleDrops = 0;
 volatile uint32_t g_pubBackoffEnd = 0;     // millis() when the backoff ends (in the
                                            // past when none: one word, never torn)
-// The archive's observer seams (telegram.h). Set once at boot, before begin().
-InboundObserver  g_inboundObs  = nullptr;
-OutboundObserver g_outboundObs = nullptr;
+// The inbound storm breakers' record (nimbus/net/tg_dup_guard.h: duplicate breaker,
+// hourly ceiling, poison guard) in RTC no-init memory: it survives a restart, a panic,
+// a watchdog and a brownout, never a power cycle, and costs no settings write. Magic,
+// build id and CRC reject garbage; the poll task boots it before the first poll.
+RTC_NOINIT_ATTR nimbus::net::TgGuardState s_guardRtc;
+nimbus::net::TgGuard g_guard(s_guardRtc);
+int g_resetReason = 0;   // this boot's esp_reset_reason (main.cpp, setResetReason)
+volatile uint32_t g_pubDupDrops = 0;
+volatile uint32_t g_pubCeilingDrops = 0;
+volatile uint32_t g_pubPoisonAcks = 0;
+volatile uint8_t  g_pubTries = 0;
+volatile bool     g_pubHolding = false;
 // CUM-308: a token verified once (getMe) can be REVOKED later while the poll loop
 // keeps running - Telegram then 401s every getUpdates while the cached verdict
 // still reads "verified". This debounces consecutive poll auth failures (401/403,
@@ -383,34 +426,20 @@ static String firstListEntry(const String& list) {
   return first;
 }
 
+}  // namespace
+
 // The chat that device notices go to, by the same rule as isOwner: the first explicit
 // owner that is also allow-listed, else (no owners set) the first allow-list entry.
-// "" when there is none. Poll-task-owned reads (g_owners/g_allowlist), as allowed().
-static String ownerChat() {
-  String owners = g_owners;
-  owners.trim();
-  if (owners.length() == 0) return firstListEntry(g_allowlist);
-  int start = 0;
-  while (start < (int)owners.length()) {
-    int end = owners.indexOf(',', start);
-    if (end < 0) end = (int)owners.length();
-    String entry = owners.substring(start, end);
-    entry.trim();
-    if (entry.length() && allowed(entry)) return entry;
-    start = end + 1;
-  }
-  return String();
+// "" when there is none. Poll-task-owned reads (g_owners/g_allowlist), as allowed():
+// call it from the poll task (the archive's pressure notice runs there too). The rule
+// itself is portable and host-tested (nimbus/net/tg_owner.h).
+String ownerChat() {
+  return String(nimbus::net::ownerChatOf(g_owners.c_str(), g_allowlist.c_str(),
+                                         [](const std::string& c) { return allowed(String(c.c_str())); })
+                    .c_str());
 }
 
-// The observer seams (telegram.h): every inbound update, every outbound send.
-static void observeInbound(const nimbus::tg::Update& u) {
-  if (g_inboundObs) g_inboundObs(u);
-}
-static void observeOutbound(const char* chatId, const char* kind, const char* text,
-                            const char* path = "", bool sd = false) {
-  if (!g_outboundObs) return;
-  g_outboundObs(OutboundItem{chatId, kind, text ? text : "", path ? path : "", sd});
-}
+namespace {
 
 static inline bool urlSafe(unsigned char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -516,72 +545,103 @@ bool jsonStr(const char* json, const char* key, char* val, int valLen) {
   return i > 0;
 }
 
-// Parse a getUpdates response body (host-tested nimbus::tg::parseUpdates), invoke
-// the callback per allowed message with the FULL message text (no 255-char cut, no
-// escape mangling), and advance the offset ACK only for updates we actually
-// accepted. The allowlist gates on message.chat.id (the authorized conversation),
-// NEVER message.from.id (sender-controlled).
-// CUM-398: classify one getUpdates page into the drain driver's per-update actions.
-// Text from an allowed chat is BATCHED (grouped into one turn per chat by
-// drainPages); voice/photo/document keep their existing one-slot-per-cycle deferral
-// (a busy slot yields StopNoAck, which stops the drain WITHOUT acking that update so
-// it is re-served); pending-approval / disallowed / handled-inline updates are
-// AckOnly (the offset advances past them but they do not join a turn). All the
-// inline side effects (queue a voice note, hand a file to the files lane, push a
-// sender for approval, answer "can't take that file") are unchanged - only the
-// text dispatch moved from an inline g_cb turn to the batcher.
-// Copy an inbound file's metadata into the single deferred-attachment slot (the
-// download + describe/store happen later, after the poll socket closes). Caller has
-// already checked the slot is free. Straight-line; utf8CapLen never severs a UTF-8
-// character in the caption (a split multi-byte would 400 the later vision request).
-static void queueAttachment(const nimbus::tg::Update& u, const String& chatId,
-                            const String& from, int kind) {
-  memset(&g_attach, 0, sizeof(g_attach));
-  strncpy(g_attach.fileId,   u.attachment.fileId.c_str(),   sizeof(g_attach.fileId) - 1);
-  strncpy(g_attach.chatId,   chatId.c_str(),                sizeof(g_attach.chatId) - 1);
-  strncpy(g_attach.from,     from.c_str(),                  sizeof(g_attach.from) - 1);
-  strncpy(g_attach.fileName, u.attachment.fileName.c_str(), sizeof(g_attach.fileName) - 1);
-  strncpy(g_attach.mime,     u.attachment.mime.c_str(),     sizeof(g_attach.mime) - 1);
-  const int keep = nimbus::utf8CapLen(u.text.c_str(), (int)u.text.length(),
-                                      (int)sizeof(g_attach.caption) - 1);
-  memcpy(g_attach.caption, u.text.c_str(), (size_t)keep);
-  g_attach.caption[keep] = 0;
-  g_attach.size  = u.attachment.fileSize;
-  g_attach.photo = (kind == 2);
-  g_attach.set   = true;
+// ---- classification ---------------------------------------------------------
+// One getUpdates page is classified into the receive cycle's per-update actions
+// (nimbus/net/tg_receive.h runs them): text from an allowed chat is batched into one
+// turn per chat; a photo or document becomes a media segment of that turn (its caption
+// with it, at full length), fetched and described inside the turn; a voice note is a
+// turn of its own; pending-approval, disallowed and inline-handled updates are AckOnly
+// (the offset advances past them but they join no turn). A media item with no free
+// slot this drain is StopNoAck: the drain stops WITHOUT acking it, and it and the rest
+// are served again next cycle. The allowlist gates on message.chat.id (the authorized
+// conversation), NEVER message.from.id (sender-controlled).
+
+// The send time of a late or redelivered item in the device's local time ("09:58", or
+// "21 Oct 09:58" on another day); "" when it is on time or the clock is unset.
+static std::string sentAtOf(int64_t date) {
+  const time_t now = time(nullptr);
+  if (!nimbus::orch::lateItem((int64_t)now, date)) return std::string();
+  struct tm d = {}, n = {};
+  const time_t t = (time_t)date;
+  localtime_r(&t, &d);
+  localtime_r(&now, &n);
+  char buf[24];
+  const bool sameDay = d.tm_yday == n.tm_yday && d.tm_year == n.tm_year;
+  strftime(buf, sizeof buf, sameDay ? "%H:%M" : "%d %b %H:%M", &d);
+  return std::string(buf);
 }
 
+static void copyField(char* dst, size_t cap, const std::string& src) {
+  strncpy(dst, src.c_str(), cap - 1);
+  dst[cap - 1] = 0;
+}
+
+// Take a free media slot for an inbound photo, document or voice note: -1 when none is
+// free this drain (the caller defers the update) or PSRAM is short.
+static int takeSlot(const nimbus::tg::Update& u) {
+  MediaSlot* slots = ensureSlots();
+  if (!slots) return -1;
+  for (size_t i = 0; i < kMediaSlots; ++i) {
+    MediaSlot& m = slots[i];
+    if (m.used) continue;
+    memset(&m, 0, sizeof m);
+    copyField(m.fileId, sizeof m.fileId, u.attachment.fileId);
+    copyField(m.fileUniqueId, sizeof m.fileUniqueId, u.attachment.fileUniqueId);
+    copyField(m.chatId, sizeof m.chatId, u.chatId);
+    copyField(m.from, sizeof m.from, u.from);
+    copyField(m.fileName, sizeof m.fileName, u.attachment.fileName);
+    copyField(m.mime, sizeof m.mime, u.attachment.mime);
+    m.size = u.attachment.fileSize;
+    m.width = u.attachment.width;
+    m.height = u.attachment.height;
+    m.updateId = u.updateId;
+    m.date = u.date;
+    m.kind = (uint8_t)u.attachment.kind;
+    m.used = true;
+    return (int)i;
+  }
+  return -1;
+}
+
+// The page ended (its turns ran, or it was acked unprocessed): every slot is free.
+static void freeSlots() {
+  if (!g_slots) return;
+  for (size_t i = 0; i < kMediaSlots; ++i) g_slots[i].used = false;
+}
+
+// The processed media of the turn about to run, in album order (turnMediaAt).
+static int8_t s_turnSlots[kMediaSlots];
+static size_t s_turnMedia = 0;
+
 // Route a text field into cu as a batched turn segment (grouped into one turn per
-// chat by the drain driver). Model sees the full length.
-// A forwarded "/command" is someone else's words: it enters labeled and never runs.
+// chat by the drain driver). Model sees the full length; a late one carries its send
+// time. A forwarded "/command" is someone else's words: it enters labeled and never runs.
 static void batchTextInto(const nimbus::tg::Update& u, nimbus::orch::ClassifiedUpdate& cu) {
   cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;
   cu.chatId = u.chatId;
   cu.from   = u.from;
   cu.text   = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;
+  cu.sentAt = sentAtOf(u.date);
 }
 
-// Voice note: queue for STT (one slot per cycle). A busy slot returns true
-// (StopNoAck) so this update and the rest are re-served next poll rather than lost.
-static bool classifyVoice(const nimbus::tg::Update& u, const String& chatId,
-                          const String& from, bool isAllowed,
-                          nimbus::orch::ClassifiedUpdate& cu) {
-  if (!(isAllowed && u.attachment.fileId.size())) return false;
-  if (g_voice.set) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return true; }
-  strncpy(g_voice.fileId, u.attachment.fileId.c_str(), sizeof(g_voice.fileId) - 1);
-  strncpy(g_voice.chatId, chatId.c_str(),               sizeof(g_voice.chatId) - 1);
-  strncpy(g_voice.from,   from.c_str(),                 sizeof(g_voice.from)   - 1);
-  g_voice.set = true;
-  alogf("telegram: voice note from %s queued for STT", chatId.c_str());
-  return false;
+// Voice note: a turn of its own (its transcript), in its place among the chat's
+// messages. No free slot: StopNoAck, so it and the rest are served next poll.
+static void classifyVoice(const nimbus::tg::Update& u, bool isAllowed, nimbus::orch::ClassifiedUpdate& cu) {
+  if (!(isAllowed && u.attachment.fileId.size())) return;
+  const int slot = takeSlot(u);
+  if (slot < 0) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return; }
+  cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchVoice;
+  cu.chatId = u.chatId;
+  cu.from = u.from;
+  cu.slot = slot;
+  alogf("telegram: voice note from %s queued (update %ld)", u.chatId.c_str(), (long)u.updateId);
 }
 
-// Inbound file (document/photo): hand to the files lane if installed, else queue it
-// for the deferred download, else route any caption as text - never a silent drop.
-// A busy deferred slot returns true (StopNoAck).
-static bool classifyFile(const nimbus::tg::Update& u, const String& chatId,
-                         const String& from, bool isAllowed,
-                         nimbus::orch::ClassifiedUpdate& cu) {
+// Inbound file (document/photo): hand to the files lane if installed, else a media
+// segment of its chat's turn (fetched and described inside the turn), else route any
+// caption as text - never a silent drop. No free slot: StopNoAck.
+static void classifyFile(const nimbus::tg::Update& u, const String& chatId, const String& from,
+                         bool isAllowed, nimbus::orch::ClassifiedUpdate& cu) {
   const int kind = (u.attachment.kind == nimbus::tg::Attachment::Kind::Document) ? 1 : 2;
   bool handled = false;
   if (isAllowed && g_attachSink)
@@ -590,9 +650,17 @@ static bool classifyFile(const nimbus::tg::Update& u, const String& chatId,
                            String(u.attachment.mime.c_str()), u.attachment.fileSize,
                            kind, String(u.text.c_str()));
   if (isAllowed && !handled && u.attachment.fileId.size()) {
-    if (g_attach.set) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return true; }
-    queueAttachment(u, chatId, from, kind);
-    handled = true;
+    const int slot = takeSlot(u);
+    if (slot < 0) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return; }
+    cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchMedia;
+    cu.chatId = u.chatId;
+    cu.from = u.from;
+    cu.text = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;   // the caption, at full length
+    cu.slot = slot;
+    alogf("telegram: media queued (update %ld, group %s, %ux%u)", (long)u.updateId,
+          u.mediaGroupId.size() ? u.mediaGroupId.c_str() : "-", (unsigned)u.attachment.width,
+          (unsigned)u.attachment.height);
+    return;
   }
   if (isAllowed && !handled && g_cb) {
     // Nothing could take it: still route any caption as text (batched with this
@@ -602,7 +670,6 @@ static bool classifyFile(const nimbus::tg::Update& u, const String& chatId,
   } else if (!isAllowed) {
     pendingPush(chatId.c_str(), from.c_str(), u.text.c_str());
   }
-  return false;
 }
 
 // Plain text message: batch it (a burst becomes ONE turn per chat), or queue an
@@ -633,12 +700,11 @@ static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::
   return true;   // a well-formed ok:true body - this poll cycle authenticated
 }
 
-// Classify ONE update and run its inline side effect (queue a voice note / hand a
-// file to the files lane / push an unlisted sender for approval / route a caption as
-// text). Returns the drain action. drainPages calls this LAZILY, in order, and only
-// for updates it actually reaches - so a side effect never runs for an update that is
-// then left un-acked and re-served (which would run it twice). Text from an allowed
-// chat is batched into one turn per chat; a busy voice/file slot yields StopNoAck.
+// Classify ONE update and run its inline side effect (take a media slot / hand a file
+// to the files lane / push an unlisted sender for approval / route a caption as text).
+// Returns the drain action. The receive cycle calls this LAZILY, in order, and only for
+// updates it actually reaches, after its duplicate breaker - so a side effect never runs
+// for an update that is then left un-acked and re-served (which would run it twice).
 // `polled` is false for an injected test page, whose ids are not Telegram's: the
 // replay guard (which compares ids with the getUpdates offset) does not apply to it.
 static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, bool polled) {
@@ -646,7 +712,6 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, 
   nimbus::orch::ClassifiedUpdate cu;
   cu.updateId = u.updateId;
   cu.action   = nimbus::orch::ClassifiedUpdate::Action::AckOnly;   // default: handled/ignored
-  observeInbound(u);                // sees every update, before any guard or classification
   if (u.updateId <= 0) return cu;   // defensive: never side-effect on a bogus id
   // Replay guard: an update below the offset cursor was already confirmed, so it must
   // not run again. Never expected (the cursor only moves forward); counted, not handled.
@@ -660,7 +725,7 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, 
   const String from(u.from.c_str());
   const bool isAllowed = chatId.length() && allowed(chatId);
   if (u.attachment.kind == Kind::Voice)
-    classifyVoice(u, chatId, from, isAllowed, cu);
+    classifyVoice(u, isAllowed, cu);
   else if (u.attachment.kind == Kind::Document || u.attachment.kind == Kind::Photo)
     classifyFile(u, chatId, from, isAllowed, cu);
   else if (u.text.size())
@@ -676,6 +741,14 @@ void closePollSocket() {
   if (!g_pollScOpen) return;
   tlsClose(g_pollSc);
   g_pollScOpen = false;
+}
+
+// Every TLS session of this task other than the poll socket opens here: the poll
+// socket closes first, so at most one session is ever resident. That is what lets a
+// held page keep the keep-alive socket open between its re-polls (tg_settle.h).
+static bool workConnect(WiFiClientSecure& sc) {
+  closePollSocket();
+  return tlsConnect(sc);
 }
 
 // Read exactly `want` keep-alive body bytes: store up to bufLen-1, DRAIN the rest
@@ -884,16 +957,20 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   if (br < 0) { rp.fetchError = true; return; }   // alloc/socket error (socket closed inside)
   if (br == 1) return;                            // oversized: deferred to a limit=1 re-poll
 
-  // Free the single arena before the orchestrator turn runs (in drainAndDispatch) -
-  // or honor a server close. Idle keeps the socket open (zero re-handshake churn).
-  bool hasUpdate = strstr(body, "\"update_id\"") != nullptr;
-  if (serverClose || hasUpdate) closePollSocket();
+  // Honor a server close. Otherwise the keep-alive socket stays open: an idle answer
+  // re-polls on it with zero re-handshake churn, and so does a page held for the rest
+  // of an album (tg_settle.h). That is safe only because every other TLS user of this
+  // task closes it first (doSendMessageRaw, the file fetches, the typing indicator, a
+  // turn, the archive tick, drainMedia, the staged work); test_tg_hooks pins it.
+  if (serverClose) closePollSocket();
   // Archive hook (inbound): the raw page as read, before the turn path parses,
   // classifies, batches or deduplicates it (whole updates are kept even when the
-  // rest of the page will not parse). A replay is deduplicated by update_id inside.
+  // rest of the page will not parse). A replay, or a held page seen again, is
+  // deduplicated by update_id inside (this boot's ring costs no card read).
   agent::tgarchive::onInboundPage(body, (size_t)stored, g_token);
   const bool parsedOk = parsePageBody(body, (size_t)stored, out);
   rp.count = (int)out.size();
+  for (const nimbus::tg::Update& u : out) noteServerDate(u.date);
   // A 200 whose body is not an ok:true page backs off like any failed fetch, instead
   // of polling the same unreadable answer again a second later.
   rp.fetchError = !parsedOk;
@@ -903,68 +980,12 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
 }
 
-// A page holds a command when some update can become a command turn: a plain text
-// message (no attachment, so not a caption) from an allowed chat, not a forward,
-// starting with '/'. An unlisted sender's "/start" or a captioned photo never reaches
-// the batcher as a command, so neither switches the page to per-bucket commits.
-static bool pageHasCommand(const std::vector<nimbus::tg::Update>& page) {
-  return std::any_of(page.begin(), page.end(), [](const nimbus::tg::Update& u) {
-    return u.attachment.kind == nimbus::tg::Attachment::Kind::None && !u.forwarded &&
-           nimbus::orch::isCommandText(u.text) && allowed(String(u.chatId.c_str()));
-  });
-}
-
 // The one write of the stored offset (the cursor checks its verdict and counts it).
 static bool writeOffset(int32_t v) { return store::setTelegramOffset(v); }
 
 // After each bucket of a page that holds a command: store the offset now, while writes
 // land (TgOffsetCursor::checkpoint), so a restart re-runs at most the next bucket.
 static void checkpointOffset() { g_cursor.checkpoint(millis(), writeOffset); }
-
-// One turn per bucket of g_batch. Closes the poll socket before the first so only one
-// TLS session is ever resident (an empty/partial page can leave it open). Each render()
-// is materialized one at a time (in PSRAM), so a burst never holds a pile of rendered
-// turns on the scarce internal heap; the turn then runs the whole tool loop
-// synchronously on this task.
-static void emitTurn(size_t i) {
-  if (i == 0) closePollSocket();
-  if (g_cb)
-    g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
-         String(g_batch.render(i).c_str()));
-}
-
-// CUM-398: drain ONE getUpdates page of rapidly-arriving messages into one turn per
-// chat (a slash command is a turn of its own). The page is fetched at the RAM offset
-// cursor; once its turns have run, the cursor advances past it, so the NEXT poll
-// confirms the page server-side whether or not NVS took the stored copy (that write
-// happens in persistOffset; a failed write can no longer replay anything while the
-// device runs - the 14 Oct loop). A reset mid-drain re-serves the whole page
-// (at-least-once per page, no loss). A rapid burst fits one page; a backlog drains a
-// page per cycle. Still fully serial on tg_poll - no new task, one TLS session at a
-// time. Returns the message count handled this cycle, or -1 on a poll error (backoff,
-// with Telegram's retry_after in `retryAfterS`). `yielded`: the poll was given up for a
-// waiting local turn (CUM-462; returns 0, nothing acked). A page that holds a command
-// is committed bucket by bucket (drainCycle + checkpointOffset), so a restart re-runs
-// at most the bucket in flight and never a command that already ran.
-static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
-                            int& retryAfterS) {
-  // This page's parsed updates; fetch (below) fills it and handle reads it. Exactly
-  // one page is fetched per call, so this holds at most one getUpdates page.
-  std::vector<nimbus::tg::Update> pageUpdates;
-  auto fetch = [&](int32_t off) -> nimbus::orch::RawPage {
-    nimbus::orch::RawPage rp;
-    fetchOnePage(off, longPollS, pageUpdates, rp, yielded, outcome);
-    rp.hasCommand = pageHasCommand(pageUpdates);
-    return rp;
-  };
-  auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
-    return handleUpdate(pageUpdates[(size_t)i], /*polled=*/true);
-  };
-  const nimbus::orch::DrainResult r =
-      nimbus::orch::drainCycle(g_batch, g_cursor, fetch, handle, emitTurn, checkpointOffset);
-  retryAfterS = r.retryAfterS;
-  return r.fetchError ? -1 : r.messagesBatched;
-}
 
 #if defined(NIMBUS_TEST)
 // The test seam's page (injectRawUpdates; the console's TGINJECT via injectRawPage):
@@ -978,56 +999,6 @@ static size_t       s_rawInjectLen = 0;
 static portMUX_TYPE s_rawMux = portMUX_INITIALIZER_UNLOCKED;
 static size_t       s_injNext = 0;           // poll task: first update not yet taken
 static bool         s_injArchived = false;   // poll task: the page passed the archive hook
-
-// Run an injected page through the same receive path as a polled one (the archive
-// hook, handleUpdate, the batcher, emitTurn), without fetching and without touching
-// the offset cursor (its ids are not Telegram's). A page that stops on a busy slot (an
-// album: one attachment slot per cycle) resumes at the update that was not taken on
-// the next cycle, as Telegram would re-serve it; the archive sees the page once.
-static void drainInjectedPage() {
-  portENTER_CRITICAL(&s_rawMux);
-  char* body = s_rawInject;
-  const size_t len = s_rawInjectLen;
-  portEXIT_CRITICAL(&s_rawMux);
-  if (!body) return;
-  if (!s_injArchived) agent::tgarchive::onInboundPage(body, len, g_token);   // archive hook
-  s_injArchived = true;
-  std::vector<nimbus::tg::Update> ups;
-  const bool ok = parsePageBody(body, len, ups);   // parsePageBody logs a failure
-  const size_t first = std::min(s_injNext, ups.size());
-  ups.erase(ups.begin(), ups.begin() + (std::ptrdiff_t)first);
-  size_t last = 0;
-  auto fetch = [&](int32_t) {
-    nimbus::orch::RawPage rp;
-    rp.count = (int)ups.size();
-    rp.limit = rp.count + 1;   // one page, nothing more to fetch
-    rp.hasCommand = pageHasCommand(ups);
-    return rp;
-  };
-  auto handle = [&](int i) {
-    last = (size_t)i;
-    return handleUpdate(ups[(size_t)i], /*polled=*/false);
-  };
-  nimbus::orch::DrainResult r{};
-  if (ok) {
-    r = nimbus::orch::drainOnePage(g_batch, 0, fetch, handle);
-    for (size_t i = 0; i < g_batch.turnCount(); ++i) emitTurn(i);
-    g_batch.clear();
-    alogf("telegram: injected page: %d message%s batched into %d turn%s%s", r.messagesBatched,
-          r.messagesBatched == 1 ? "" : "s", r.turnsEmitted, r.turnsEmitted == 1 ? "" : "s",
-          r.stopped ? " (stopped on a busy slot or cap: resumes next cycle)" : "");
-  }
-  if (ok && r.stopped) {
-    s_injNext = first + last;   // the update that was not taken runs again next cycle
-    return;
-  }
-  s_injNext = 0;
-  s_injArchived = false;
-  portENTER_CRITICAL(&s_rawMux);
-  s_rawInject = nullptr;
-  portEXIT_CRITICAL(&s_rawMux);
-  heap_caps_free(body);
-}
 #endif  // NIMBUS_TEST
 
 // Publish the poll health /api/state reads (telegram::pollStatus) from the poll task.
@@ -1083,9 +1054,8 @@ static void sendStorageNotice() {
 // One raw sendMessage POST. htmlMode adds parse_mode=HTML (the text must then
 // already BE converted HTML). Returns Telegram's ok verdict.
 static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode) {
-  closePollSocket();   // free the single arena (never 2 resident TLS sessions)
-  WiFiClientSecure sc;
-  if (!tlsConnect(sc)) { alog("telegram: send connect fail"); return false; }
+  WiFiClientSecure sc;   // workConnect frees the single arena first (never 2 resident TLS sessions)
+  if (!workConnect(sc)) { alog("telegram: send connect fail"); return false; }
 
   char prefix[72];
   int prefixLen = snprintf(prefix, sizeof(prefix), "chat_id=%s%s&text=", chatId,
@@ -1140,9 +1110,8 @@ bool doSendMessage(const char* chatId, const char* text) {
 }
 
 // A short notice the poll task sends at once, bypassing the reply queue (the voice
-// note and attachment paths). Observed and archived like every outbound send.
+// note path). Archived like every outbound send.
 static bool sendNow(const char* chatId, const char* text) {
-  observeOutbound(chatId, "text", text);
   agent::tgarchive::onOutboundText(String(chatId), String(text ? text : ""), "direct");   // archive hook
   return doSendMessage(chatId, text);
 }
@@ -1181,7 +1150,7 @@ static TgPath resolveFilePath(const char* fileId, char* filePath, size_t cap, co
   filePath[0] = 0;
   for (int t = 0; t < 2; t++) {
     WiFiClientSecure sc;
-    if (!tlsConnect(sc)) {
+    if (!workConnect(sc)) {
       alogf("telegram: %s getFile connect fail", what);
       return TgPath::Connect;
     }
@@ -1214,7 +1183,7 @@ static TgDl downloadToLfs(const char* filePath, const char* localPath, size_t ca
                           uint32_t timeoutMs, size_t& total) {
   total = 0;
   WiFiClientSecure sc;
-  if (!tlsConnect(sc)) return TgDl::Connect;
+  if (!workConnect(sc)) return TgDl::Connect;
   char req[320];
   snprintf(req, sizeof(req),
     "GET /file/bot%s/%s HTTP/1.0\r\n"
@@ -1242,274 +1211,539 @@ static TgDl downloadToLfs(const char* filePath, const char* localPath, size_t ca
   return writeFail ? TgDl::Write : TgDl::Done;
 }
 
-// Steps 1-2 of a voice note: resolve and download it to `localPath` (LittleFS).
-// Returns false when it already told the sender why it could not.
-static bool fetchVoiceNote(const PendingVoice& v, const char* localPath, size_t& total) {
-  // LittleFS refuses to open a file for write in a nonexistent directory, and
-  // nothing else creates /audio - on a fresh filesystem EVERY voice note died
-  // here with a silent "voice fs open fail" (field bug, Board 3 2026-07-21;
-  // Board 1 only worked because legacy firmware had left the dir behind).
+// A file copied from the card instead of downloaded: "" when it landed whole, else why.
+static const char* localCopyVerdict(const char* localPath, size_t cap, size_t total) {
+  if (total > 0 && total < cap) return "";
+  LittleFS.remove(localPath);
+  return total >= cap ? "too large" : "download failed";
+}
+
+// Steps 1-2 of any inbound file: bring it to `localPath` on LittleFS (the staging
+// file, deleted as soon as the durable copies exist), at most `cap` bytes. One
+// download per Telegram file: when the archive already holds this very file (same
+// update, same file id) it is copied from the card instead; a test build's
+// "LOCAL_<path>" id reads a card file. Returns "" on success, else the plain reason it
+// could not ("too large", "download failed", ...), which goes into the turn's label.
+static const char* fetchToLfs(const MediaSlot& m, const char* localPath, size_t cap, size_t& total) {
+  // LittleFS refuses to open a file for write in a nonexistent directory, and nothing
+  // else creates /audio - on a fresh filesystem EVERY voice note died here with a
+  // silent "voice fs open fail" (field bug, Board 3 2026-07-21).
   if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
-  if (injectedLocal(v.fileId, localPath, total, 1048576)) {
-    if (total > 0 && total < 1048576) return true;
-    LittleFS.remove(localPath);
-    sendNow(v.chatId, "Couldn't receive that voice note. Send a text message instead.");
-    return false;
-  }
+  total = 0;
+  const agent::tgarchive::InboundRef ref{m.chatId, m.updateId, m.date, m.fileId};
+  if (agent::tgarchive::takeFromArchive(ref, localPath, cap, total) ||
+      injectedLocal(m.fileId, localPath, total, cap))
+    return localCopyVerdict(localPath, cap, total);
   char filePath[160];
-  const TgPath fp = resolveFilePath(v.fileId, filePath, sizeof(filePath), "voice");
-  if (fp == TgPath::Connect) return false;
-  if (fp == TgPath::NoPath) {
-    sendNow(v.chatId, "Couldn't receive that voice note. Send a text message instead.");
-    return false;
-  }
-  // 45 s window + a 1 MB cap, one retry on a short download. The old 64 KB cap
-  // silently kept only the FIRST ~8-30 s of opus audio (bitrate-dependent), so long
-  // voice notes came back as short partial transcripts with no error anywhere
-  // (owner-hit 2026-07-22). 1 MB covers ~2 min even at high-bitrate opus; the file
-  // is deleted right after STT, and LittleFS keeps a comfortable margin.
+  const TgPath fp = resolveFilePath(m.fileId, filePath, sizeof(filePath), "media");
+  if (fp != TgPath::Ok) return "download failed";
+  // One retry on a short download (voice notes: a long note came back as a short
+  // partial transcript with no error anywhere, owner-hit 2026-07-22).
   for (int t = 0; t < 2; t++) {
-    const TgDl d = downloadToLfs(filePath, localPath, 1048576, 45000, total);
-    if (d == TgDl::Connect) {
-      alog("telegram: voice dl connect fail");
-      sendNow(v.chatId, "Couldn't download your voice note - please try again.");
-      return false;
-    }
-    if (d == TgDl::Open) {
-      alog("telegram: voice fs open fail");
-      // Never a silent drop: the owner is waiting on a reply to their voice note.
-      sendNow(v.chatId, "I couldn't save your voice note (storage hiccup) - please try again or send text.");
-      return false;
-    }
-    if (d == TgDl::Write) {
+    const TgDl d = downloadToLfs(filePath, localPath, cap, 60000, total);
+    if (d == TgDl::Connect) return "download failed";
+    if (d == TgDl::Open) return "storage hiccup";
+    // Hitting the cap means the file was TRUNCATED, not finished. Telegram may omit
+    // file_size, so the pre-check cannot always catch an oversized file - and storing a
+    // torn JPEG durably, then failing to describe it, is the worst of both outcomes.
+    if (d == TgDl::Write || total >= cap) {
       LittleFS.remove(localPath);
-      alog("telegram: voice fs write fail (storage full?)");
-      sendNow(v.chatId, "I couldn't save your voice note (storage full) - please try again or send text.");
-      return false;
+      return d == TgDl::Write ? "storage full" : "too large";
     }
-    if (total >= 512) break;
+    if (total >= 512) return "";
     vTaskDelay(pdMS_TO_TICKS(400));
   }
-  return true;
-}
-
-// The reply for a photo or document that did not land within kPhotoBudget.
-static void attachRefused(const PendingAttach& a, const char* localPath, size_t total) {
+  if (total > 0) return "";
   LittleFS.remove(localPath);
-  sendNow(a.chatId, total >= nimbus::tg::kPhotoBudget
-      ? "That file is too large for me to take. Send a smaller one."
-      : "I couldn't save that file - please try again.");
+  return "download failed";
 }
 
-// Steps 1-2 of a photo or document: resolve and download it to `localPath` (a
-// LittleFS staging file, deleted as soon as the durable copy is on the card), within
-// kPhotoBudget. Returns false when it already told the sender why.
-static bool fetchAttachment(const PendingAttach& a, const char* localPath, size_t& total) {
-  if (!LittleFS.exists("/audio")) LittleFS.mkdir("/audio");
-  if (injectedLocal(a.fileId, localPath, total, nimbus::tg::kPhotoBudget)) {
-    if (total > 0 && total < nimbus::tg::kPhotoBudget) return true;
-    attachRefused(a, localPath, total);
-    return false;
-  }
-  char filePath[160];
-  const TgPath fp = resolveFilePath(a.fileId, filePath, sizeof(filePath), "attach");
-  if (fp == TgPath::Connect) return false;
-  if (fp == TgPath::NoPath) {
-    sendNow(a.chatId, "Couldn't fetch that file. Try sending it again.");
-    return false;
-  }
-  const TgDl d = downloadToLfs(filePath, localPath, nimbus::tg::kPhotoBudget, 60000, total);
-  if (d == TgDl::Connect) {
-    alog("telegram: attach dl connect fail");
-    sendNow(a.chatId, "Couldn't download that file - please try again.");
-    return false;
-  }
-  if (d == TgDl::Open) {
-    alog("telegram: attach fs open fail");
-    sendNow(a.chatId, "I couldn't save that file (storage hiccup) - please try again.");
-    return false;
-  }
-  // Hitting the cap means the file was TRUNCATED, not finished. Telegram may omit
-  // file_size, so the pre-check cannot always catch an oversized file - and storing
-  // a torn JPEG durably, then failing to describe it, is the worst of both outcomes.
-  if (d == TgDl::Write || total == 0 || total >= nimbus::tg::kPhotoBudget) {
-    alogf("telegram: attach download failed (%u bytes)", (unsigned)total);
-    attachRefused(a, localPath, total);
-    return false;
-  }
-  return true;
+// The content hash of a staged file (the blob store's 16-hex FNV-1a digest): the
+// label's ref, the blob sidecar's name and the files store's dedupe key.
+static std::string hashFile(const char* localPath) {
+  File f = LittleFS.open(localPath, FILE_READ);
+  if (!f) return std::string();
+  nimbus::orch::BlobHasher h;
+  uint8_t buf[512];
+  size_t n;
+  while ((n = f.read(buf, sizeof(buf))) > 0) h.update(buf, n);
+  f.close();
+  return h.hex();
 }
 
-static void handleVoice() {
-  if (!g_voice.set) return;
-  closePollSocket();
-  PendingVoice v = g_voice;
-  g_voice.set = false;
-  if (!tgPathSafe(v.fileId)) { alog("telegram: voice file_id unsafe - rejected"); return; }
+// What the file store needs from the receive boundary: the staged file, its content
+// hash and Telegram's file_unique_id (the files lane dedupes on them), and the name it
+// is kept under: every stored attachment is named by its update id, so a photo can
+// never replace an older one after a restart and two documents with the same name
+// never overwrite each other.
+struct InboundFile {
+  const MediaSlot& slot;
+  const char* lfsPath;
+  std::string hash;
+  bool photo;
+};
 
-  // If no STT sink is wired, voice is unusable here (bench audio broken + no key):
-  // answer with a nudge to send text and skip the download entirely.
-  if (!g_stt) {
-    sendNow(v.chatId, "Voice messages aren't available yet. Send a text message instead.");
-    return;
-  }
-
-  // 1) + 2) getFile and the download (fetchVoiceNote), tagged for the low-water ladder.
-  nimbus::heapwatch::Scope downloading(nimbus::heapwatch::kTgDownload);
-  const char* localPath = "/audio/tgvoice.ogg";
-  size_t total = 0;
-  if (!fetchVoiceNote(v, localPath, total)) return;
-  alogf("telegram: voice downloaded %u bytes", (unsigned)total);
-  if (total == 0) { sendNow(v.chatId, "Voice note was empty."); return; }
-
-  downloading.end();
-  // 3) STT via the injected sink, then route the transcript like a text message.
-  //    BENCH-BROKEN here: no sink is installed on the bench (broken audio + no
-  //    Mistral key), so this path is compile-verified only, never run live.
-  String transcript = g_stt(localPath, "audio/ogg");
-  if (transcript.length() == 0) {           // one retry: STT flakes are usually a
-    vTaskDelay(pdMS_TO_TICKS(1200));        // transient TLS/provider hiccup (owner
-    transcript = g_stt(localPath, "audio/ogg");   // R5c: never silently ignore voice)
-  }
-  // Durable audit copy of the inbound voice note -> /mem/blobs on the SD card, BEFORE
-  // the privacy-delete of the LittleFS working file (docs/orchestrator-storage.md §4).
-  // SD-gated no-op: with no card, nothing is retained (unchanged privacy posture).
-  agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio,
-                                  transcript, localPath, "ogg");
-  LittleFS.remove(localPath);   // privacy: drop the LittleFS working copy
-  if (transcript.length() == 0) {
-    sendNow(v.chatId, "Couldn't transcribe that - please send text.");
-    return;
-  }
-  alogf("telegram: voice -> \"%.40s\"", transcript.c_str());
-  String echo = String("\xF0\x9F\x8E\xA4 ") + transcript;   // 🎤 echo what we heard
-  sendNow(v.chatId, echo.c_str());
-  if (g_cb) g_cb(String(v.from), String(v.chatId), transcript);
+static bool storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
+  char fname[96];
+  if (in.photo || !in.slot.fileName[0])
+    snprintf(fname, sizeof(fname), "%s-%ld.%s", in.photo ? "photo" : "file", (long)in.slot.updateId,
+             in.photo ? "jpg" : "bin");
+  else
+    snprintf(fname, sizeof(fname), "%ld-%s", (long)in.slot.updateId, in.slot.fileName);
+  // One project per sender keeps a chat's files together and readable at a glance in
+  // the web UI. The hash and in.slot.fileUniqueId are the files store's dedupe keys.
+  char proj[48];
+  snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
+  std::string ferr;
+  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns)) return true;
+  alogf("telegram: attach store failed: %s", ferr.c_str());
+  return false;
 }
 
-// ---- inbound attachments (photos + documents) -------------------------------
-// Deferred exactly like a voice note: download after the poll socket closes, so
-// only one TLS session is ever resident.
-//
-// ⚠ SD-GATED, by the owner's decision. Media on internal flash would compete
-// with the firmware's own OTA slots for a 3.5 MB partition, and a single phone
-// photo can be a sixth of it. With no card the device says so plainly instead of
-// half-accepting a file it cannot keep.
-//
-// What enters the CONVERSATION is never the bytes. A photo is described once on
-// arrival and the description is what the model reads - a few hundred characters
-// that compact, summarize and re-read like any other text, instead of a blob
-// that would dominate the context window for as long as it stayed in it. The
-// original stays on the card, so "that photo I sent you on Tuesday" is
-// answerable by looking again.
-static void handleAttachment() {
-  if (!g_attach.set) return;
-  closePollSocket();
-  PendingAttach a = g_attach;
-  g_attach.set = false;
-  if (!tgPathSafe(a.fileId)) { alog("telegram: attachment file_id unsafe - rejected"); return; }
-
-  if (!agent::memory::haveSd()) {
-    sendNow(a.chatId,
-                  "I can't keep files without an SD card. Tell me what's in it and "
-                  "I'll remember that instead.");
-    return;
-  }
-  if (a.size && a.size > nimbus::tg::kPhotoBudget) {
-    sendNow(a.chatId, "That file is too large for me to take. Send a smaller one.");
-    return;
-  }
-  // The sender's storage limit, checked BEFORE the download. A quota enforced
-  // only after the bytes have landed lets every first offender through, and on
-  // this device "after" also means a minute of radio and a megabyte of flash
-  // already spent. Telegram's reported size is a hint that can read low, so the
-  // real size is re-checked below once the file is on disk.
-  const nimbus::orch::Principal who = nimbus::orch::principalForRole(
-      std::string(a.chatId), orchestrator::roleOfChat(String(a.chatId)),
+static nimbus::orch::Principal senderOf(const char* chatId) {
+  return nimbus::orch::principalForRole(
+      std::string(chatId), orchestrator::roleOfChat(String(chatId)),
       [&] { nimbus::orch::Quota q;
-            orchestrator::tenantQuotaOf(std::string(a.chatId), q); return q; }());
-  if (files::wouldExceedQuota(who, a.size ? a.size : 1)) {
-    sendNow(a.chatId,
-                  "You've used up your file storage on this device. Ask the owner to "
-                  "raise it, or delete something first.");
+            orchestrator::tenantQuotaOf(std::string(chatId), q); return q; }());
+}
+
+// Why a photo or document cannot be taken before it is fetched ("" when it can).
+//
+// SD-GATED, by the owner's decision: media on internal flash would compete with the
+// firmware's own update slots for a 3.5 MB partition, and one phone photo can be a
+// sixth of it. With no card the turn says so plainly instead of half-accepting a file
+// the device cannot keep. The sender's storage limit is checked BEFORE the download
+// (a quota enforced only after the bytes landed lets every first offender through);
+// Telegram's size hint can read low, so the real size is checked again after.
+static const char* refusalOf(const MediaSlot& m, const nimbus::orch::Principal& who) {
+  if (!tgPathSafe(m.fileId)) return "unreadable file id";
+  if (!agent::memory::haveSd()) return "no memory card in the device";
+  if (m.size && m.size > nimbus::tg::kPhotoBudget) return "too large";
+  if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return "over the sender's storage limit";
+  return "";
+}
+
+// The vision call's caption context for photo k of n of a turn (the captioner reads it
+// after "The sender wrote: "): the album's caption (the first one among its media) and
+// the item's place in it, so every photo of an album is described with its caption.
+static String visionContext(size_t turn, size_t k, size_t n) {
+  String cap;
+  for (size_t j = 0; j < n && !cap.length(); ++j) cap = g_batch.mediaCaptionAt(turn, j);
+  if (n <= 1) return cap;
+  const String place = String("(photo ") + (unsigned)(k + 1) + " of " + (unsigned)n + " sent together)";
+  return cap.length() ? cap + " " + place : place;
+}
+
+// The typing indicator while a turn's media are fetched: at most once per photo, and
+// only kTypingGapMs or more after the last one (Telegram shows it for about 5 s; each
+// is one short TLS session on this task, so an album never turns into a burst of them).
+static constexpr uint32_t kTypingGapMs = 4000;
+static uint32_t s_lastTypingMs = 0;
+static bool     s_typedOnce = false;
+
+static void maybeTyping(const char* chatId) {
+  if (!g_token.length() || !chatId[0]) return;
+  for (const char* p = chatId; *p; ++p)
+    if (!((*p >= '0' && *p <= '9') || *p == '-')) return;   // a real Telegram chat id only
+  const uint32_t now = millis();
+  if (s_typedOnce && now - s_lastTypingMs < kTypingGapMs) return;
+  char body[64];
+  const int len = snprintf(body, sizeof(body), "chat_id=%s&action=typing", chatId);
+  if (len <= 0 || len >= (int)sizeof(body)) return;   // never a Content-Length the body cannot meet
+  s_typedOnce = true;
+  s_lastTypingMs = now;
+  WiFiClientSecure sc;
+  if (!workConnect(sc)) return;
+  char req[256];
+  snprintf(req, sizeof(req),
+           "POST /bot%s/sendChatAction HTTP/1.0\r\nHost: " TG_HOST "\r\n"
+           "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\n"
+           "Connection: close\r\n\r\n",
+           g_token.c_str(), len);
+  sc.print(req);
+  sc.print(body);
+  char line[MAX_LINE];
+  readLine(sc, line, sizeof(line), millis() + 5000);
+  tlsClose(sc);
+}
+
+// Photo or document k of n of turn `turn` (slot `slot`): fetched, hashed, handed to the
+// archive (one download), described (a photo), kept in the file store and the episodic
+// record, and returned as its segment text - the one label (media_label.h) and the
+// description, or why there is none. Never a separate reply: a failure is part of the
+// turn, so the assistant answers it with everything else the owner sent.
+// The blob-hash dedupe of the paid description step (nimbus/net/tg_media_memo.h): a
+// photo sent again with the same bytes and caption is described once. Allocated in
+// PSRAM on first use (its strings ride PSRAM too), never a static.
+static nimbus::net::MediaMemo* g_memo = nullptr;
+static nimbus::net::MediaMemo* memo() {
+  if (!g_memo) {
+    void* p = heap_caps_malloc(sizeof(nimbus::net::MediaMemo), MALLOC_CAP_SPIRAM);
+    if (p) g_memo = new (p) nimbus::net::MediaMemo();
+  }
+  return g_memo;
+}
+
+// Record photo k of n of the turn about to run in its ordered segment list.
+static void noteTurnMedia(int slot, const nimbus::orch::MediaLabel& label, bool fetched) {
+  MediaSlot& m = g_slots[slot];
+  TurnMedia& t = m.media;
+  t.k = label.k;
+  t.n = label.n;
+  t.photo = label.kind == nimbus::orch::MediaKind::Image;
+  t.fetched = fetched;
+  copyField(t.ref, sizeof t.ref, fetched ? label.ref : std::string());
+  copyField(t.mime, sizeof t.mime, m.mime);
+  t.sentAt = m.date;
+  if (s_turnMedia < kMediaSlots) s_turnSlots[s_turnMedia++] = (int8_t)slot;
+}
+
+// The segment of an item that could not be taken or fetched (false: not fetched). The
+// reason stays with the item for a reply that has nothing else to answer.
+static bool failedSegment(nimbus::orch::MediaLabel& label, const char* why, int slot, std::string& seg) {
+  label.cls = nimbus::orch::MediaClass::FetchFailed;
+  label.detail = why;
+  seg = nimbus::orch::mediaSegment(label);
+  noteTurnMedia(slot, label, false);
+  g_slots[slot].why = why;
+  alogf("telegram: media %d/%d not taken (update %ld): %s", label.k, label.n, (long)g_slots[slot].updateId, why);
+  return false;
+}
+
+// Steps 3-5 once the file is staged: the label's ref (the content hash), the archive's
+// copy (one download), the description (a photo) or the name (a document).
+static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t n, nimbus::orch::MediaLabel& label) {
+  const MediaSlot& m = in.slot;
+  label.ref = in.hash;
+  agent::tgarchive::adoptInbound({m.chatId, m.updateId, m.date, m.fileId}, in.lfsPath);
+  // Vision is best-effort: if no provider can look at it, the photo is still kept and
+  // the label says so. The same bytes and caption already described: no second call.
+  String description;
+  const String ctx = in.photo ? visionContext(turn, k, n) : String();
+  std::string known;
+  nimbus::net::MediaMemo* mm = in.photo ? memo() : nullptr;
+  if (mm && mm->find(m.chatId, in.hash, ctx.c_str(), known)) {
+    description = known.c_str();
+    alogf("telegram: media %d/%d described before (same photo and caption): no second call", label.k, label.n);
+  } else if (in.photo && agent::vision::available()) {
+    alogf("telegram: media %d/%d describing", label.k, label.n);
+    description = agent::vision::describeImage(in.lfsPath, m.mime[0] ? m.mime : "image/jpeg", nullptr, ctx);
+    if (mm) mm->put(m.chatId, in.hash, ctx.c_str(), description.c_str());
+  }
+  if (!in.photo) {
+    label.cls = nimbus::orch::MediaClass::Stored;
+    label.detail = m.fileName;
     return;
   }
+  label.cls = description.length() ? nimbus::orch::MediaClass::Described : nimbus::orch::MediaClass::NotDescribed;
+  label.detail = description.c_str();
+}
 
-  // 1) + 2) getFile and the download (fetchAttachment), tagged for the low-water ladder.
+static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string& seg) {
+  const MediaSlot& m = g_slots[slot];
+  const bool photo = m.kind == (uint8_t)nimbus::tg::Attachment::Kind::Photo;
+  nimbus::orch::MediaLabel label;
+  label.kind = photo ? nimbus::orch::MediaKind::Image : nimbus::orch::MediaKind::File;
+  label.k = (int)k + 1;
+  label.n = (int)n;
+  label.sentAt = sentAtOf(m.date);
+  const nimbus::orch::Principal who = senderOf(m.chatId);
+  const char* why = refusalOf(m, who);
+  if (why[0]) return failedSegment(label, why, slot, seg);
+  if (photo) maybeTyping(m.chatId);
+  closePollSocket();
   nimbus::heapwatch::Scope downloading(nimbus::heapwatch::kTgDownload);
   const char* localPath = "/audio/tgattach.bin";
   size_t total = 0;
-  if (!fetchAttachment(a, localPath, total)) return;
-  alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
-  // Telegram's size hint can read low; the real size is authoritative.
-  if (files::wouldExceedQuota(who, (uint32_t)total)) {
+  alogf("telegram: media %d/%d fetch start (update %ld)", label.k, label.n, (long)m.updateId);
+  why = fetchToLfs(m, localPath, nimbus::tg::kPhotoBudget, total);
+  if (!why[0] && files::wouldExceedQuota(who, (uint32_t)total)) {
     LittleFS.remove(localPath);
-    sendNow(a.chatId,
-                  "That file would put you over your storage limit. Ask the owner to "
-                  "raise it, or delete something first.");
-    return;
+    why = "over the sender's storage limit";
   }
-
+  if (why[0]) return failedSegment(label, why, slot, seg);
+  alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   downloading.end();
-  // 3) A photo becomes a description; a document becomes a note that it arrived.
-  //    Vision is best-effort: if no provider can look at it, the photo is still
-  //    kept and acknowledged - the conversation just does not gain a description.
-  const char* ext = a.photo ? "jpg" : "bin";
-  String description;
-  if (a.photo && agent::vision::available()) {
-    description = agent::vision::describeImage(localPath, a.mime[0] ? a.mime : "image/jpeg",
-                                               nullptr, String(a.caption));
+  const InboundFile in{m, localPath, hashFile(localPath), photo};
+  describeStaged(in, turn, k, n, label);
+  seg = nimbus::orch::mediaSegment(label);
+  noteTurnMedia(slot, label, true);
+  // Store it through the FILE STORE: that is what makes it count against the sender's
+  // storage limit, and a photo someone sent shows up in Memory & Files like any other
+  // file. The episodic row is what the MODEL reads later, stamped with the original
+  // send time; the blob sidecar is what it can be re-shown from.
+  storeInbound(in, who);
+  agent::memory::captureMediaFile(m.chatId, "user",
+                                  photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
+                                  String(seg.c_str()), localPath, photo ? "jpg" : "bin", m.date);
+  LittleFS.remove(localPath);
+  return true;
+}
+
+// A turn of failed media only (no text, no caption, nothing fetched): one plain reply
+// to the sender with the reason and the next step, instead of a paid turn.
+static void mediaFailed(const char* chatId, size_t count) {
+  const char* why = "";
+  for (size_t i = 0; i < s_turnMedia && !why[0]; ++i) why = g_slots[s_turnSlots[i]].why ? g_slots[s_turnSlots[i]].why : "";
+  const bool many = count > 1;
+  String text;
+  if (!strcmp(why, "no memory card in the device"))
+    text = "This device can't keep photos or files without a memory card. Describe it in words instead.";
+  else if (!strcmp(why, "too large"))
+    text = many ? "Those files are too large to take. Send smaller ones." : "That file is too large to take. Send a smaller one.";
+  else if (!strcmp(why, "over the sender's storage limit"))
+    text = "Your file storage on this device is full. Ask the owner to raise it, or delete something first.";
+  else
+    text = many ? "Couldn't fetch those files. Try sending them again." : "Couldn't fetch that file. Try sending it again.";
+  sendNow(chatId, text.c_str());
+}
+
+// An item the poison guard skips (fetching or describing it crashed the device twice):
+// its label says so, and the turn runs with everything else that was sent.
+static void skipMedia(size_t k, size_t n, int slot, std::string& seg) {
+  const MediaSlot& m = g_slots[slot];
+  nimbus::orch::MediaLabel label;
+  label.kind = m.kind == (uint8_t)nimbus::tg::Attachment::Kind::Photo ? nimbus::orch::MediaKind::Image
+                                                                       : nimbus::orch::MediaKind::File;
+  label.k = (int)k + 1;
+  label.n = (int)n;
+  label.sentAt = sentAtOf(m.date);
+  failedSegment(label, "it made the device restart twice", slot, seg);
+}
+
+// A voice note's turn text: downloaded (one download, shared with the archive),
+// transcribed, kept, and echoed. False when it already told the sender why there is
+// no transcript (no speech provider, a failed download, an empty note): no turn runs.
+static bool processVoice(int slot, std::string& transcript) {
+  const MediaSlot& v = g_slots[slot];
+  if (!tgPathSafe(v.fileId)) { alog("telegram: voice file_id unsafe - rejected"); return false; }
+  // With no STT sink wired, voice is unusable here: answer with a nudge to send text
+  // and skip the download entirely.
+  if (!g_stt) {
+    sendNow(v.chatId, "Voice messages aren't available yet. Send a text message instead.");
+    return false;
   }
+  closePollSocket();
+  nimbus::heapwatch::Scope downloading(nimbus::heapwatch::kTgDownload);
+  const char* localPath = "/audio/tgvoice.ogg";
+  size_t total = 0;
+  // 1 MB: the old 64 KB cap silently kept only the first 8-30 s of opus audio.
+  const char* why = fetchToLfs(v, localPath, 1048576, total);
+  if (why[0]) {
+    alogf("telegram: voice note not fetched: %s", why);
+    sendNow(v.chatId, "Couldn't receive that voice note. Send it again, or send a text message instead.");
+    return false;
+  }
+  alogf("telegram: voice downloaded %u bytes", (unsigned)total);
+  downloading.end();
+  agent::tgarchive::adoptInbound({v.chatId, v.updateId, v.date, v.fileId}, localPath);
+  String text = g_stt(localPath, "audio/ogg");
+  if (text.length() == 0) {           // one retry: STT flakes are usually a transient
+    vTaskDelay(pdMS_TO_TICKS(1200));  // TLS/provider hiccup (owner R5c: never silently
+    text = g_stt(localPath, "audio/ogg");   // ignore voice)
+  }
+  // Durable audit copy of the inbound voice note -> /mem/blobs on the SD card, BEFORE
+  // the privacy-delete of the LittleFS working file (docs/orchestrator-storage.md
+  // section 4). SD-gated no-op: with no card, nothing is retained.
+  agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio, text, localPath, "ogg",
+                                  v.date);
+  LittleFS.remove(localPath);   // privacy: drop the LittleFS working copy
+  if (text.length() == 0) {
+    sendNow(v.chatId, "Couldn't transcribe that - please send text.");
+    return false;
+  }
+  alogf("telegram: voice -> \"%.40s\"", text.c_str());
+  sendNow(v.chatId, (String("\xF0\x9F\x8E\xA4 ") + text).c_str());   // echo what was heard
+  transcript = text.c_str();
+  return true;
+}
 
-  const String label = a.photo
-      ? (description.length() ? String("[image] ") + description
-                              : String("[image] (couldn't be described)"))
-      : String("[file] ") + (a.fileName[0] ? a.fileName : "attachment");
-
-  // Store it through the FILE STORE, not straight into a blob directory. That
-  // is what makes it count against the sender's storage limit (the earlier
-  // version measured a quota over an index the media never entered, so the gate
-  // was inert), and it also means a photo someone sent shows up in Memory &
-  // Files like any other file, and can be shared or deleted from there.
-  {
-    char fname[80];
-    const char* base = a.fileName[0] ? a.fileName : nullptr;
-    if (base) {
-      snprintf(fname, sizeof(fname), "%s", base);
+// One plain owner notice from the storm breakers, on this task's own outbound path.
+static void sendGuardNotice(const nimbus::net::TgNotice& n) {
+  const String owner = ownerChat();
+  if (!owner.length()) return;
+  String name = nimbus::sys::deviceName();
+  if (!name.length()) name = "Nimbus";
+  String text;
+  if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) {
+    text = n.verdict == nimbus::net::DupVerdict::Replay
+        ? "Telegram delivered a message again that was already answered, so the repeat was skipped."
+        : String("The same message arrived twice within ") + (unsigned)(nimbus::net::kRepeatWindowS / 60) +
+              " minutes, before the first was answered, so the repeat was skipped. Send it again if you "
+              "meant to.";
+  } else if (n.kind == nimbus::net::TgNotice::Kind::Ceiling) {
+    char when[32] = "";
+    const time_t at = (time_t)n.resumeAt;
+    if (time(nullptr) >= kClockSet) {
+      struct tm tm = {};
+      localtime_r(&at, &tm);
+      strftime(when, sizeof(when), "until %H:%M", &tm);
     } else {
-      // Photos carry no filename. Name it by arrival so a chat's images sort
-      // sensibly and two photos in one second cannot collide.
-      snprintf(fname, sizeof(fname), "photo-%lu.%s",
-               (unsigned long)(millis() / 1000), ext);
+      const uint32_t mins = (n.resumeAt > deviceEpoch() ? n.resumeAt - deviceEpoch() : 0) / 60 + 1;
+      snprintf(when, sizeof(when), "for about %u minutes", (unsigned)mins);
     }
-    // One project per sender keeps a chat's files together and readable at a
-    // glance in the web UI.
-    char proj[48];
-    snprintf(proj, sizeof(proj), "chat-%s", a.chatId);
-    std::string ferr;
-    if (!agent::files::saveStream(proj, fname, LittleFS, localPath, ferr, who.ns)) {
-      LittleFS.remove(localPath);
-      alogf("telegram: attach store failed: %s", ferr.c_str());
-      sendNow(a.chatId, "I couldn't keep that file - please try again.");
+    if (n.owner)
+      text = String("Replies are paused ") + when + ": " + (unsigned)nimbus::net::kInboundTurnsPerHour +
+             " messages were answered in the last hour, the most it answers in an hour. Messages sent "
+             "before then are not answered; send them again after that.";
+    else
+      text = String("Replies to other chats are paused ") + when + ": they used their share of the " +
+             (unsigned)nimbus::net::kInboundTurnsPerHour + " answers an hour. Your own messages still get "
+             "answers.";
+  } else if (n.items == 1) {
+    text = "Something you sent could not be processed: the device restarted twice while working on it. "
+           "Send it again.";
+  } else {
+    text = String("The last ") + n.items +
+           " items you sent could not be processed: the device restarted twice while working on them. "
+           "Send them again.";
+  }
+  send(owner, name + ": " + text, /*block=*/false);
+  alogf("telegram: guard notice (%s) queued for the owner",
+        n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
+        : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+}
+
+// The running image's id for the guard record: a record written by another build
+// (its RTC layout may differ) is rebuilt, never read.
+static uint32_t guardBuildId() {
+  const esp_app_desc_t* d = esp_app_get_description();
+  return nimbus::sys::crc32(d->app_elf_sha256, sizeof(d->app_elf_sha256));
+}
+
+static void publishGuard() {
+  g_pubDupDrops = g_guard.dupDrops();
+  g_pubCeilingDrops = g_guard.ceilingDrops();
+  g_pubPoisonAcks = g_guard.poisonAcks();
+  g_pubTries = g_guard.tries();
+}
+
+// The receive cycle's I/O on this task (nimbus/net/tg_receive.h): one TLS session at a
+// time, every fetch and turn after the poll socket closed.
+struct TgIo {
+  bool polled = true;                                  // false: an injected test page
+  nimbus::net::TgPollOutcome* outcome = nullptr;       // CUM-308 classification of the fetch
+
+  nimbus::net::TgFetch fetch(int32_t offset, int timeoutS, std::vector<nimbus::tg::Update>& out) {
+    nimbus::net::TgFetch f;
+    fetchOnePage(offset, timeoutS, out, f.rp, f.yielded, outcome);
+    return f;
+  }
+  uint32_t nowMs() const { return millis(); }
+  int64_t nowEpoch() const {
+    const time_t t = time(nullptr);
+    return t >= kClockSet ? (int64_t)t : 0;
+  }
+  uint32_t bestEpoch() const { return deviceEpoch(); }
+  bool allowed(const std::string& chat) const { return telegram::allowed(String(chat.c_str())); }
+  bool isOwnerChat(const std::string& chat) const { return ownerChat() == chat.c_str(); }
+  nimbus::orch::ClassifiedUpdate classify(const nimbus::tg::Update& u) { return handleUpdate(u, polled); }
+  bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string& seg) {
+    return telegram::processMedia(turn, k, n, slot, seg);
+  }
+  void mediaFailed(const std::string& chat, size_t turn) {
+    telegram::mediaFailed(chat.c_str(), g_batch.mediaCountAt(turn));
+    s_turnMedia = 0;
+  }
+  void skipMedia(size_t, size_t k, size_t n, int slot, std::string& seg) { telegram::skipMedia(k, n, slot, seg); }
+  bool processVoice(int slot, std::string& transcript) { return telegram::processVoice(slot, transcript); }
+  // One turn per bucket, on this task, after the poll socket closed: the whole tool
+  // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
+  void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
+    closePollSocket();
+    if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+    s_turnMedia = 0;   // the ordered segment list belonged to that turn
+  }
+  void notice(const nimbus::net::TgNotice& n) { sendGuardNotice(n); }
+  void checkpoint() { checkpointOffset(); }
+  void endPage() {
+    s_turnMedia = 0;
+    freeSlots();
+    publishGuard();
+  }
+};
+
+// CUM-398 batching, albums as one turn (R2) and the storm breakers: one getUpdates page
+// per call, at the RAM offset cursor, through the portable receive cycle. A page that
+// may still grow (an album uploading, a burst being typed) is held: re-polled with
+// timeout 0 next cycle, nothing classified, acked or stored meanwhile. A dispatched
+// page runs its turns (each photo fetched and described inside its turn) and only then
+// moves the cursor past itself, so the NEXT poll confirms it server-side whether or not
+// NVS took the stored copy. A reset mid-drain re-serves the whole page (at-least-once;
+// the duplicate breaker skips what was already answered). Still fully serial on
+// tg_poll - no new task, one TLS session at a time. Returns the message count handled
+// this cycle, or -1 on a poll error (backoff, with Telegram's retry_after in
+// `retryAfterS`). `yielded`: the poll was given up for a waiting local turn (CUM-462;
+// returns 0, nothing acked). A page that holds a command is committed bucket by bucket
+// (checkpointOffset), so a restart re-runs at most the bucket in flight.
+static nimbus::net::TgReceiver g_receiver(g_cursor, g_batch, g_guard);
+
+static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
+                            int& retryAfterS) {
+  TgIo io;
+  io.outcome = outcome;
+  const nimbus::net::TgCycle c = g_receiver.cycle(io, longPollS);
+  g_pubHolding = g_receiver.holding();
+  publishGuard();
+  yielded = c.kind == nimbus::net::TgCycle::Kind::Yielded;
+  retryAfterS = c.retryAfterS;
+  const nimbus::net::TgSettle& st = g_receiver.settle();
+  if (c.kind == nimbus::net::TgCycle::Kind::Held)
+    alogif("telegram: settle hold (re-poll %d, %s)", st.repolls(), nimbus::net::settleWhyName(st.why()));
+  else if (c.kind == nimbus::net::TgCycle::Kind::Ran && st.lastHeldMs())
+    alogf("telegram: settle dispatch n=%d after %u ms (%s)", c.messages, (unsigned)st.lastHeldMs(),
+          nimbus::net::settleWhyName(st.why()));
+  if (c.duplicates)
+    alogf("telegram: %d duplicate%s dropped (%u since the guard was cleared)", c.duplicates,
+          c.duplicates == 1 ? "" : "s", (unsigned)g_guard.dupDrops());
+  if (c.ceilingSkips)
+    alogf("telegram: hourly ceiling: %d turn%s skipped", c.ceilingSkips, c.ceilingSkips == 1 ? "" : "s");
+  if (c.kind == nimbus::net::TgCycle::Kind::Poisoned || c.poisonSkips)
+    alog("telegram: work that crashed the device twice was skipped unprocessed; the owner is told");
+  return c.kind == nimbus::net::TgCycle::Kind::FetchError ? -1 : c.messages;
+}
+
+#if defined(NIMBUS_TEST)
+// Run an injected page through the same receive path as a polled one (the archive
+// hook, the duplicate breaker, handleUpdate, the batcher, the media processing, one turn
+// per bucket), without fetching and without touching the offset cursor (its ids are not
+// Telegram's). A page that stops on a cap (more media than this drain's slots) resumes
+// at the update that was not taken on the next cycle, as Telegram would re-serve it;
+// the archive sees the page once.
+static void drainInjectedPage() {
+  portENTER_CRITICAL(&s_rawMux);
+  char* body = s_rawInject;
+  const size_t len = s_rawInjectLen;
+  portEXIT_CRITICAL(&s_rawMux);
+  if (!body) return;
+  if (!s_injArchived) agent::tgarchive::onInboundPage(body, len, g_token);   // archive hook
+  s_injArchived = true;
+  std::vector<nimbus::tg::Update> ups;
+  const bool ok = parsePageBody(body, len, ups);   // parsePageBody logs a failure
+  if (ok) {
+    TgIo io;
+    io.polled = false;
+    nimbus::net::TgCycle c;
+    const size_t next = g_receiver.injected(io, ups, s_injNext, c);
+    alogf("telegram: injected page: %d message%s batched into %d turn%s%s", c.messages,
+          c.messages == 1 ? "" : "s", c.turns, c.turns == 1 ? "" : "s",
+          next < ups.size() ? " (stopped on a cap: resumes next cycle)" : "");
+    if (c.duplicates)
+      alogf("telegram: %d duplicate%s dropped (%u since the guard was cleared)", c.duplicates,
+            c.duplicates == 1 ? "" : "s", (unsigned)g_guard.dupDrops());
+    if (next < ups.size()) {
+      s_injNext = next;   // the update that was not taken runs again next cycle
       return;
     }
   }
-  // The episodic row is what the MODEL reads later; the blob sidecar is what it
-  // can be re-shown from.
-  agent::memory::captureMediaFile(a.chatId, "user",
-                                  a.photo ? nimbus::orch::MsgKind::Image
-                                          : nimbus::orch::MsgKind::File,
-                                  label, localPath, ext);
-  LittleFS.remove(localPath);
-
-  // 4) Route it as this chat's next turn, so the assistant answers the picture
-  //    the same way it answers a sentence. The caption rides along - the sender's
-  //    own words are the question they are actually asking about the image.
-  String turn = label;
-  if (a.caption[0]) turn += String("\n\nThey wrote: ") + a.caption;
-  if (g_cb) g_cb(String(a.from), String(a.chatId), turn);
-  else sendNow(a.chatId, a.photo ? "Got the photo." : "Got the file.");
+  s_injNext = 0;
+  s_injArchived = false;
+  portENTER_CRITICAL(&s_rawMux);
+  s_rawInject = nullptr;
+  portEXIT_CRITICAL(&s_rawMux);
+  heap_caps_free(body);
 }
+#endif  // NIMBUS_TEST
 
 // ---- media send (device -> owner; drained on the poll task) -----------------
 // Map a kind to the Bot API method + form field + a filename/mime. Photos are sent
@@ -1543,7 +1777,6 @@ static void drainMedia() {
   httpmp::Options opt;
   opt.srcFs = m.sd ? &agent::memory::dataFs() : nullptr;   // E1: SD artifacts
   opt.lockSrc = m.sd;                                      // serialize SD reads (tg_poll)
-  observeOutbound(m.chatId, m.kind, m.caption, m.path, m.sd);
   bool ok = httpmp::post(TG_HOST, TG_PORT, path, "", fields, field, base, mime, m.path, resp, err,
                          opt);
   alogf("telegram: %s %s (%s)", method, ok ? "ok" : "FAIL", ok ? "" : err.c_str());
@@ -1569,6 +1802,13 @@ void pollTask(void*) {
   // NVS into the 14 Oct replay loop; test_nvs_full pins this single read).
   g_cursor.seed(store::telegramOffset());
   publishPollStatus();
+  // The storm breakers' record (RTC memory): kept across a restart, a panic, a watchdog
+  // or a brownout (which counts a try against a page whose processing it cut short),
+  // rebuilt after a power-on, from another build, or when it reads as garbage.
+  const bool guardKept = g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId());
+  alogf("telegram: storm guard %s (reset %d, page tries %u, duplicates %u)", guardKept ? "kept" : "fresh",
+        g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
+  publishGuard();
   if (haveToken) {
     alogf("telegram: poll start (offset=%ld) heap=%u", (long)g_cursor.offset(), ESP.getFreeHeap());
     // SECURITY: warn loudly if a token is set but the allowlist is empty - allowed()
@@ -1671,17 +1911,18 @@ void pollTask(void*) {
                                                    : "auth recovered - token accepted again");
       noteDrainResult(n, yielded, retryAfterS);
 
-      // Free the single arena before ANY non-poll TLS this cycle: a voice note,
-      // active-job polling, a queued reply, or an injected message.
-      if (g_pollScOpen && (g_voice.set || g_activeJobs > 0 ||
+      // Free the single arena before ANY non-poll TLS this cycle: active-job polling, a
+      // queued reply, or an injected message. A held page keeps it open otherwise.
+      if (g_pollScOpen && (g_activeJobs > 0 ||
                            (g_replyQ   && uxQueueMessagesWaiting(g_replyQ)   > 0) ||
                            (g_inboundQ && uxQueueMessagesWaiting(g_inboundQ) > 0)))
         closePollSocket();
     }
 
     // The stored offset follows the RAM cursor (a newly acked page now; while a write
-    // is owed, at most one retry a minute - also on cycles that skipped the poll).
-    if (haveToken) persistOffset();
+    // is owed, at most one retry a minute - also on cycles that skipped the poll). Never
+    // while a page is held: a hold stores nothing (it acked nothing either).
+    if (haveToken && !g_receiver.holding()) persistOffset();
 
     // Quiesce: once asked to stop, start NO new work this cycle (an injected local
     // turn, a voice note or file, job polling, reply sends). It all stays queued and
@@ -1734,8 +1975,6 @@ void pollTask(void*) {
       }
     }
 
-    if (haveToken) handleVoice();   // voice notes arrive via Telegram; own TLS
-    if (haveToken) handleAttachment();   // photos/documents; own TLS too
     if (haveToken) drainMedia();    // outbound media (device -> owner); own TLS
 
     // Advance background jobs (orchestrator::pollJobs) - synchronous, this task.
@@ -1783,7 +2022,10 @@ void pollTask(void*) {
     // should not run another drain/turn cycle before the exit check - the
     // factory reset is waiting on this task.
     if (!g_running) break;
-    idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
+    // A held page re-polls after the settle pace; otherwise the normal pause. Either
+    // ends for a local turn (CUM-462).
+    idlePause(g_receiver.holding() ? nimbus::net::kSettleRepollMs
+                                   : (activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS));
   }
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
   // touching a dead task's state. Queues are deliberately left alive (reboot or
@@ -1833,8 +2075,7 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
 void setTick(TickCallback cb)   { g_tick = cb; }
 void setSttSink(SttSink cb)     { g_stt = cb; }
 void setAttachmentSink(AttachmentSink cb) { g_attachSink = cb; }
-void setInboundObserver(InboundObserver cb)   { g_inboundObs = cb; }
-void setOutboundObserver(OutboundObserver cb) { g_outboundObs = cb; }
+void setResetReason(int reason) { g_resetReason = reason; }
 
 static bool publishMedia(const String& chatId, const char* kind, const char* filePath,
                          const String& caption, bool sd, bool refuseIfBusy) {
@@ -2032,7 +2273,6 @@ void denyPending(const String& chatId) { pendingRemove(chatId.c_str()); }   // s
 
 bool send(const String& chatId, const String& text, bool block) {
   if (!g_replyQ) return false;
-  observeOutbound(chatId.c_str(), "text", text.c_str());   // the whole text, before any split
   // Archive hook (outbound): the whole text, before it is split into parts.
   if (enabled()) agent::tgarchive::onOutboundText(chatId, text, "send");
   // block=true: wait up to 100 ms so a turn's reply isn't dropped on a full
@@ -2112,6 +2352,21 @@ PollStatus pollStatus() {
   const int32_t left = (int32_t)(g_pubBackoffEnd - millis());
   st.backoffMs = left > 0 ? (uint32_t)left : 0;
   return st;
+}
+
+size_t turnMediaCount() { return s_turnMedia; }
+const TurnMedia* turnMediaAt(size_t i) {
+  return (i < s_turnMedia && g_slots) ? &g_slots[s_turnSlots[i]].media : nullptr;
+}
+
+GuardStatus guardStatus() {
+  GuardStatus g;
+  g.dupDrops = g_pubDupDrops;
+  g.ceilingDrops = g_pubCeilingDrops;
+  g.poisonAcks = g_pubPoisonAcks;
+  g.tries = g_pubTries;
+  g.holding = g_pubHolding;
+  return g;
 }
 
 // CUM-308: the debounced "the bot token was rejected" verdict. True only after a

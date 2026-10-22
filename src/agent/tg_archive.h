@@ -44,6 +44,22 @@ void onOutboundMedia(const String& chatId, const char* kind, const char* srcPath
 // when the hand-over queue was full (the upload then answers 429 and is retried).
 bool onRestored(const nimbus::tgarc::Restored& r);
 
+// One download per Telegram file, shared by the archive and the assistant (Telegram
+// task only). takeFromArchive: when the archive already holds this update's file and it
+// is the very file `fileId` (the same rendition), copy it to `lfsPath` on LittleFS (the
+// turn path's staging file) and return true, with `total` the bytes copied (the file
+// size with nothing copied when it is `cap` or more); false: the caller downloads it.
+// adoptInbound: the turn path downloaded this update's file to `lfsPath`; when the
+// archive is still waiting to fetch the same file, it copies it from there instead.
+struct InboundRef {
+  const char* chat;     // the chat id
+  int32_t     updateId;
+  int64_t     date;     // Telegram's date (it names the archive's day folder)
+  const char* fileId;   // the rendition the turn path wants
+};
+bool takeFromArchive(const InboundRef& in, const char* lfsPath, size_t cap, size_t& total);
+void adoptInbound(const InboundRef& in, const char* lfsPath);
+
 // For the restore upload (web task): whether the hand-over queue can take one more
 // index line (when not, the upload answers 429 and the tool retries), and whether an
 // upload is open (the storage-pressure pass waits for it).

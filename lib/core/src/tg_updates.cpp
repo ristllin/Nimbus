@@ -61,15 +61,20 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
   m["from"]["first_name"] = true;
   m["from"]["username"] = true;
   m["voice"]["file_id"] = true;
+  m["voice"]["file_unique_id"] = true;
   m["voice"]["file_size"] = true;
   JsonObject md = m["document"].to<JsonObject>();
   md["file_id"] = true;
+  md["file_unique_id"] = true;
   md["file_name"] = true;
   md["mime_type"] = true;
   md["file_size"] = true;
   JsonObject mp = m["photo"][0].to<JsonObject>();
   mp["file_id"] = true;
+  mp["file_unique_id"] = true;
   mp["file_size"] = true;
+  mp["width"] = true;
+  mp["height"] = true;
   m["video"]["file_id"] = true;
   m["video"]["file_size"] = true;
   m["sticker"]["file_id"] = true;
@@ -134,10 +139,12 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
       if (msg["voice"]["file_id"].is<const char*>()) {
         a.kind = Attachment::Kind::Voice;
         a.fileId = msg["voice"]["file_id"].as<const char*>();
+        a.fileUniqueId = msg["voice"]["file_unique_id"] | "";
         a.fileSize = msg["voice"]["file_size"] | 0u;
       } else if (msg["document"]["file_id"].is<const char*>()) {
         a.kind = Attachment::Kind::Document;
         a.fileId = msg["document"]["file_id"].as<const char*>();
+        a.fileUniqueId = msg["document"]["file_unique_id"] | "";
         a.fileName = msg["document"]["file_name"] | "";
         a.mime = msg["document"]["mime_type"] | "";
         a.fileSize = msg["document"]["file_size"] | 0u;
@@ -173,7 +180,10 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
         if (!best.isNull() && best["file_id"].is<const char*>()) {
           a.kind = Attachment::Kind::Photo;
           a.fileId = best["file_id"].as<const char*>();
+          a.fileUniqueId = best["file_unique_id"] | "";
           a.fileSize = bestSz;
+          a.width = best["width"] | 0u;
+          a.height = best["height"] | 0u;
         }
       } else if (msg["video"]["file_id"].is<const char*>()) {
         a.kind = Attachment::Kind::Video;

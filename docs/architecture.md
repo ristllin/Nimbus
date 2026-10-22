@@ -105,8 +105,10 @@ agent host:
   goals - tiered across PSRAM, SD card, and flash
   ([Orchestrator World](./orchestrator-world.md),
   [storage tiering](./orchestrator-storage.md)).
-- **Telegram** as the conversation channel, including voice notes, photos, and
-  per-person roles and quotas ([people and privacy](./people-and-privacy.md)).
+- **Telegram** as the conversation channel, including voice notes, photos and
+  albums answered as one turn, guards against repeated deliveries, and per-person
+  roles and quotas ([people and privacy](./people-and-privacy.md),
+  [inbound Telegram](./architecture/orchestrator-live-turn.md#inbound-telegram-albums-bursts-and-the-storm-guards)).
 - **Voice** - hold-to-talk on the device, speech-to-text and text-to-speech
   through the configured provider.
 - **The web UI** - a token-gated control surface served from the device itself

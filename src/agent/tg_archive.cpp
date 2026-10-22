@@ -612,19 +612,11 @@ void discardQueue() {
   }
 }
 
-// The first owner chat: the explicit owners list, else the first allowlist entry.
-String ownerChat() {
-  String list = store::telegramOwners();
-  list.trim();
-  if (!list.length()) list = store::telegramAllowlist();
-  const int comma = list.indexOf(',');
-  String first = comma < 0 ? list : list.substring(0, comma);
-  first.trim();
-  return first;
-}
-
+// The notice goes where every device notice goes (telegram::ownerChat: never a chat
+// that was removed from the allowlist). The pressure pass runs on the poll task, which
+// owns the allowlist that rule reads.
 void tellOwnerOfPressure(const arc::PressureOutcome& o) {
-  const String owner = ownerChat();
+  const String owner = telegram::ownerChat();
   if (!owner.length()) return;
   String msg = "The memory card is almost full, so the oldest saved Telegram messages and "
                "files were deleted to make room.";
@@ -766,6 +758,61 @@ bool copyLocalInject(const char* fileId, const char* lfsPath, size_t& total, siz
   return true;
 }
 #endif
+
+namespace {
+
+// Copy a card file to LittleFS; the byte count copied, or -1 when it failed.
+int64_t copyToLfs(const std::string& src, const char* lfsPath) {
+  std::unique_ptr<arc::Reader> r = card().openRead(src);
+  CardFs lfs(LittleFS, /*card=*/false);
+  std::unique_ptr<arc::Writer> w = r ? lfs.openWrite(lfsPath, false) : nullptr;
+  if (!w) return -1;
+  uint8_t buf[512];
+  int64_t got = 0;
+  for (int n = r->read(buf, sizeof buf); n > 0; n = r->read(buf, sizeof buf)) {
+    if (!w->write(buf, (size_t)n)) {
+      w->close();
+      return -1;
+    }
+    got += n;
+  }
+  w->close();
+  return got;
+}
+
+}  // namespace
+
+bool takeFromArchive(const InboundRef& in, const char* lfsPath, size_t cap, size_t& total) {
+  total = 0;
+  if (!in.chat || !in.fileId || !lfsPath || !available() || !arc::isTelegramChat(in.chat)) return false;
+  ensure();
+  const std::string src = g_arc->mediaFor(in.chat, in.updateId, in.date, in.fileId);
+  if (src.empty()) return false;
+  const int64_t size = card().size(src);
+  if (size <= 0) return false;
+  if ((size_t)size >= cap) {   // the caller's "too large" answer, nothing copied
+    total = (size_t)size;
+    return true;
+  }
+  if (copyToLfs(src, lfsPath) != size) {
+    LittleFS.remove(lfsPath);
+    return false;   // the caller downloads it instead
+  }
+  total = (size_t)size;
+  alogf("tg archive: media for update %ld reused (%u bytes), no second download", (long)in.updateId,
+        (unsigned)total);
+  return true;
+}
+
+void adoptInbound(const InboundRef& in, const char* lfsPath) {
+  if (!in.chat || !in.fileId || !lfsPath || !available() || !arc::isTelegramChat(in.chat)) return;
+  ensure();
+  CardFs lfs(LittleFS, /*card=*/false);
+  if (g_arc->adoptMedia(in.chat, in.updateId, in.date, in.fileId, lfs, lfsPath)) {
+    alogf("tg archive: media for update %ld kept from the turn's download", (long)in.updateId);
+    publishStats();
+  }
+}
 
 bool queueHasRoom() {
   portENTER_CRITICAL(&g_qMux);

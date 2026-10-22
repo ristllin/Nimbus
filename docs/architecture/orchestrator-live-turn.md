@@ -209,6 +209,58 @@ here; every driver DMA buffer keeps using the default internal allocator, untouc
 This lifts the whole handshake off the scarce internal heap and unblocks every live
 turn - and recall's second TLS handshake within a turn.
 
+## Inbound Telegram: albums, bursts and the storm guards
+
+Every inbound Telegram page goes through one receive cycle on the `tg_poll` task
+(`nimbus/net/tg_receive.h`, host-tested end to end in `test_tg_burst`; the device seam
+is `src/agent/telegram.cpp`). One cycle:
+
+1. **Fetch** one `getUpdates` page at the RAM offset cursor (the archive sees it as
+   read, before anything else; an update already saved this boot costs no card read).
+2. **Settle** (`nimbus/net/tg_settle.h`). A phone uploads an album one photo at a time,
+   so the first poll often holds only part of it. The page is held (re-polled with
+   timeout 0 after the 1 s pause, on the same keep-alive socket) until it has not grown
+   for 3 s with media or 1.5 s for text only, or it is full, or its newest Telegram date
+   is older than that window plus 2 s, or 15 s have passed since its first item was
+   seen. A hold classifies, acks and stores nothing; local turns, job polling and reply
+   sends keep running between re-polls. Keeping the poll socket open is safe only
+   because every other TLS session of the task opens through `workConnect`, which
+   closes it first.
+3. **Break duplicates and classify** (`nimbus/net/tg_dup_guard.h`). A message already
+   answered (same chat, message id and date), or the same content in the same chat
+   within 2 minutes and before its answer went out, is acked and skipped, with one
+   owner notice per episode. Text joins its chat's turn; a photo or document becomes a
+   media segment of that turn (its caption with it, at full length) and takes one of
+   ten download slots (a lazily allocated PSRAM array); a voice note is a turn of its
+   own; a command is a turn of its own. An eleventh media item waits for the next page.
+4. **Run each turn in order.** Past the hourly ceiling (60 inbound head turns in any
+   rolling hour, 12 of them reserved for the owner's chat, so the other allowed chats
+   stop at 48; commands do not count) a turn is skipped, with one owner notice per
+   trip. Otherwise every photo of the turn is fetched, hashed, handed to the archive
+   (one download per file), described and stored, in album order, with a typing
+   indicator at most once per photo and only 4 s or more after the last; then the turn
+   runs with every item of its bucket (`MessageBatcher::render`, the one label
+   `nimbus/orch/media_label.h`). A failed item is part of the turn, never a separate
+   reply, unless the turn has nothing else (no text, no caption, nothing fetched): then
+   one plain reply says why, instead of a paid turn.
+5. **Commit.** Only after the page's turns returned does the cursor move past it (a
+   page holding a command checkpoints after each bucket), so a reset anywhere re-serves
+   the page and the duplicate breaker skips what was already answered.
+
+**The poison guard.** Media are acked only after processing, so a page whose processing
+crashes the device would be served again on every boot. The work in flight is marked in
+a record in RTC no-init memory (magic, build id, CRC; no settings write; a power-on
+clears it): the page while it is classified, each photo while it is fetched and
+described, each turn while it runs. A boot after a panic, watchdog or brownout counts a
+try against the mark (`main.cpp` hands the reset reason to the poll task); after two
+such resets on the same work it is skipped and only the owner's chat is told to send it
+again: a crashing photo becomes "could not be fetched: it made the device restart twice"
+in a turn that still answers everything else, a crashing turn is acked without running,
+and a page that crashes while it is classified is acked unprocessed. A page served
+again keeps a mark that lies inside it, so the count survives a command page's
+per-bucket checkpoints. The duplicate breaker and the hourly ceiling keep their state
+in the same record, so a restart in the middle of a storm keeps it at one paid turn.
+
 ## Voice and Telegram-media adapters
 
 Speech and media share one uploader and a provider-configurable STT/TTS pair.

@@ -29,6 +29,9 @@ struct Card : nimbus::tgarc::Fs {
   int writeCalls = 0;
   size_t maxWriteLen = 0;  // the largest single write (proves slice-sized writes)
   bool dead = false;       // every operation fails (card absent)
+  int readOpens = 0;       // files opened for reading
+  size_t bytesServed = 0;  // bytes handed to readers
+  int existsCalls = 0;
   // Return true to fail this write (path, offset in file, length).
   std::function<bool(const std::string&, size_t, size_t)> failWrite;
   std::vector<std::string> removed;
@@ -57,15 +60,20 @@ struct Card : nimbus::tgarc::Fs {
   struct R : nimbus::tgarc::Reader {
     std::string data;
     size_t at = 0;
+    size_t* served = nullptr;
     int read(uint8_t* d, size_t cap) override {
       const size_t n = std::min(cap, data.size() - at);
       std::copy(data.begin() + (long)at, data.begin() + (long)(at + n), d);
       at += n;
+      if (served) *served += n;
       return (int)n;
     }
   };
 
-  bool exists(const std::string& p) override { return !dead && (files.count(p) || dirs.count(p)); }
+  bool exists(const std::string& p) override {
+    ++existsCalls;
+    return !dead && (files.count(p) || dirs.count(p));
+  }
   bool mkdirs(const std::string& dir) override {
     if (dead) return false;
     for (size_t i = 1; i <= dir.size(); ++i)
@@ -86,8 +94,10 @@ struct Card : nimbus::tgarc::Fs {
   }
   std::unique_ptr<nimbus::tgarc::Reader> openRead(const std::string& p) override {
     if (dead || !files.count(p)) return nullptr;
+    ++readOpens;
     auto r = std::make_unique<R>();
     r->data = files[p];
+    r->served = &bytesServed;
     return r;
   }
   bool rename(const std::string& from, const std::string& to) override {

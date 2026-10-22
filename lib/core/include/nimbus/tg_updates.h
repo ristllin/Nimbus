@@ -40,9 +40,17 @@ struct Attachment {
   };
   Kind        kind = Kind::None;
   std::string fileId;
+  // Telegram's file_unique_id: the same for the same file over time and across bots
+  // (it cannot be used to download). The duplicate guard keys a re-sent identical
+  // file on it, and the files store receives it with the content hash.
+  std::string fileUniqueId;
   std::string fileName;   // documents only ("" otherwise)
   std::string mime;       // "" if absent
   uint32_t    fileSize = 0;  // bytes as reported by Telegram (0 = unknown)
+  // Pixel size of the chosen photo rendition (0 when absent or not a photo), for
+  // the receive log lines.
+  uint32_t    width = 0;
+  uint32_t    height = 0;
 };
 
 struct Update {

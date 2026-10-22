@@ -481,7 +481,11 @@ turn and at every clip site:
 Everything exchanged with the device over Telegram is kept on the SD card, at full
 fidelity, separate from the conversation memory above. The conversation keeps its own
 bounded copy of a photo (the 512 KB rendition the vision step reads); the archive is
-the record.
+the record. Each file is downloaded once: when the conversation's copy is the same
+file as the archive's (the usual case: Telegram's largest size of a phone photo is
+under 512 KB), the archive takes it from the conversation's download, and an update
+served again reuses the archived file. Only when the archive wants a larger size than
+the conversation can read does it fetch its own.
 
 **What is saved, and when.**
 
@@ -505,7 +509,9 @@ the record.
 
 **Layout.** One folder per chat and per day; the day of an inbound item is
 Telegram's own message date (UTC), so names never depend on uptime or the device
-clock, and a replay of the same update lands on the same name and adds nothing.
+clock, and a replay of the same update lands on the same name and adds nothing. An
+update already saved this boot (an album held over several polls, a page served again)
+is recognized without reading the card at all.
 
 ```text
 /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.json    raw inbound update

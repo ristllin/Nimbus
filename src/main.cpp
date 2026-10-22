@@ -2708,6 +2708,10 @@ static void orchestratorBegin() {
   // a token is configured; otherwise it's a no-op and the device idles in
   // Orchestrator mode with just the local ring/panel + web UI live.
   ORCH_MARK("orch: telegram");
+  // The reset-reason hook the Telegram poison guard needs: a page whose processing a
+  // panic, watchdog or brownout cut short counts a try (two acks it unprocessed and
+  // tells the owner); a power-on clears the guard's RTC record. Set before begin().
+  agent::telegram::setResetReason((int)esp_reset_reason());
   agent::telegram::begin(agent::store::telegramToken(),
                          agent::store::telegramAllowlist(), orchOnMessage);
   agent::telegram::setTick(orchTick);

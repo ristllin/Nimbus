@@ -6,6 +6,16 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## Unreleased
+
+- **Albums are answered once.** Several photos sent together get one reply that covers every photo, in the order sent, with the caption on the right photo. Before, each photo got its own reply, out of order, and a question sent right after an album could be answered before the last photos were looked at ("I didn't receive the third image"). A text sent right after the album joins the same reply; a voice note keeps its place among your messages.
+- **A photo is never lost to a restart.** A photo used to be marked as received before it was looked at, so a restart at that moment lost it. Now nothing is marked received until its reply is done, and a photo that keeps crashing the device is skipped after the second restart (the rest of your message is still answered) with one message asking you to send it again.
+- **Full captions.** A caption longer than 256 characters reached the assistant cut off. It now arrives whole.
+- **Repeats cost one reply.** A message Telegram delivers again after it was answered, or the same message sent twice within 2 minutes before the first answer, is answered once, and you are told once. On 19 Oct one short message was answered 735 times.
+- **An hourly limit.** The device answers at most 60 messages an hour, and 12 of them are always kept for your own chat, so a busy shared chat cannot use up your replies. When it pauses, it tells you once, with the time replies resume. Commands always work.
+- **One download per photo.** The Telegram archive and the assistant used to download the same photo and voice note twice; they now share one download.
+- **Late messages show their time.** A message or photo that arrives late, or is delivered again, carries the time it was sent, so the assistant does not take it for a new one.
+
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

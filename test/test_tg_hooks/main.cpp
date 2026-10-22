@@ -4,16 +4,21 @@
 #include <string>
 #include <vector>
 
-// The Telegram observer seams (src/agent/telegram.h: setInboundObserver,
-// setOutboundObserver) that the on-device Telegram archive attaches to. The archive
-// must see EVERY inbound update and EVERY outbound send, so these pin the device
-// wiring as a class over src/agent/telegram.cpp (comments stripped): a new receive or
-// send path that bypasses the seam fails here.
-//   - inbound: handleUpdate calls observeInbound first, before the replay guard and
-//     before any classification (voice, file, text);
-//   - outbound: every wire send of a text goes through send() (observed before it is
-//     split) or sendNow() (observed), the reply-queue drain only delivers what send()
-//     already observed, and every media upload is observed just before it.
+// The Telegram device seams as a class over src/agent/telegram.cpp (comments
+// stripped): a new receive or send path that bypasses one fails here.
+//   - one archive hook path: the observer seams built for the archive
+//     were never wired, so they are gone; the archive's direct hooks are the one path
+//     (inbound: the page as read; outbound: every text and media send);
+//   - the receive path: the polled page and the injected test page both run the
+//     portable receive cycle (nimbus/net/tg_receive.h), whose classify is handleUpdate;
+//   - one TLS session at a time: every other TLS session of the poll task opens
+//     through workConnect, which closes the keep-alive poll socket first, so a page
+//     held for the rest of an album may keep that socket open between re-polls;
+//   - a hold stores nothing (no settings write while a page is held);
+//   - the media slots are a lazily allocated PSRAM array, never a static;
+//   - one owner rule for every device notice.
+
+#include "nimbus/net/tg_owner.h"
 
 void setUp() {}
 void tearDown() {}
@@ -88,30 +93,49 @@ static const std::string& code() {
   return c;
 }
 
-static void test_inbound_observed_first() {
-  const std::string h = bodyOf(code(), "static nimbus::orch::ClassifiedUpdate handleUpdate(");
-  const size_t obs = h.find("observeInbound(u);");
-  TEST_ASSERT_TRUE(obs != std::string::npos);
-  for (const char* later : {"g_cursor.admit(", "classifyVoice(", "classifyFile(", "classifyText(",
-                            "allowed(chatId)"}) {
-    const size_t at = h.find(later);
-    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos && obs < at, later);
+static std::string readCode(const char* path) { return stripComments(readFile(path)); }
+
+// The observer seams are deleted, not left as dead code beside the
+// direct hooks. Exactly one inbound archive hook path: the polled page as read (in
+// fetchOnePage, before it is parsed) and the injected test page.
+static void test_one_archive_hook_path() {
+  for (const char* gone : {"InboundObserver", "OutboundObserver", "OutboundItem", "setInboundObserver",
+                           "setOutboundObserver", "observeInbound", "observeOutbound"}) {
+    TEST_ASSERT_TRUE_MESSAGE(code().find(gone) == std::string::npos, gone);
+    TEST_ASSERT_TRUE_MESSAGE(readCode("src/agent/telegram.h").find(gone) == std::string::npos, gone);
+    TEST_ASSERT_TRUE_MESSAGE(readCode("src/main.cpp").find(gone) == std::string::npos, gone);
   }
-  // handleUpdate is the only path from a getUpdates page to a classifier: its
-  // definition, the polled drain, and the injected test page.
-  TEST_ASSERT_EQUAL_size_t(3, findAll(code(), "handleUpdate(").size());
-  TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "observeInbound(u);").size());
+  TEST_ASSERT_EQUAL_size_t(2, findAll(code(), "agent::tgarchive::onInboundPage(").size());
+  const std::string fetch = bodyOf(code(), "static void fetchOnePage(");
+  TEST_ASSERT_TRUE(fetch.find("agent::tgarchive::onInboundPage(") < fetch.find("parsePageBody("));
+  // Outbound: send() archives the whole text before it is split, sendNow before it
+  // sends, drainMedia before the upload.
+  const std::string snd = bodyOf(code(), "bool send(const String& chatId, const String& text, bool block) {");
+  TEST_ASSERT_TRUE(snd.find("agent::tgarchive::onOutboundText(") < snd.find("TG_CHUNK"));
+  const std::string now = bodyOf(code(), "static bool sendNow(const char* chatId, const char* text) {");
+  TEST_ASSERT_TRUE(now.find("agent::tgarchive::onOutboundText(") < now.find("doSendMessage("));
+  const std::string media = bodyOf(code(), "static void drainMedia() {");
+  TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") < media.find("httpmp::post("));
 }
 
-// The test seam's page (injectRawUpdates, the console's TGINJECT) runs the same
-// receive path - handleUpdate, so the observer sees it - and never moves the offset.
-static void test_injected_page_uses_the_receive_path() {
+// The polled page and the injected test page run the same receive cycle; its classify
+// is handleUpdate (the replay guard applies only to a polled page), so a classifier
+// can be reached from a page only through it.
+static void test_pages_run_the_receive_cycle() {
+  const std::string drain = bodyOf(code(), "static int drainAndDispatch(");
+  TEST_ASSERT_TRUE(drain.find("g_receiver.cycle(io, longPollS)") != std::string::npos);
   const std::string inj = bodyOf(code(), "static void drainInjectedPage() {");
-  TEST_ASSERT_TRUE(inj.find("handleUpdate(ups[(size_t)i], false)") != std::string::npos);
-  TEST_ASSERT_TRUE(inj.find("emitTurn(i)") != std::string::npos);
+  TEST_ASSERT_TRUE(inj.find("g_receiver.injected(io, ups, s_injNext, c)") != std::string::npos);
+  TEST_ASSERT_TRUE(inj.find("io.polled = false;") != std::string::npos);
   TEST_ASSERT_TRUE(inj.find("g_cursor") == std::string::npos);
-  TEST_ASSERT_TRUE(code().find("handleUpdate(pageUpdates[(size_t)i], true)") != std::string::npos);
+  TEST_ASSERT_TRUE(code().find("return handleUpdate(u, polled);") != std::string::npos);
   TEST_ASSERT_TRUE(code().find("if (polled && !g_cursor.admit(u.updateId)) {") != std::string::npos);
+  // handleUpdate: its definition and the receive cycle's classify, nothing else.
+  TEST_ASSERT_EQUAL_size_t(2, findAll(code(), "handleUpdate(").size());
+  for (const char* c : {"classifyVoice(", "classifyFile(", "classifyText("}) {
+    const std::vector<size_t> at = findAll(code(), c);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, at.size(), c);   // definition + the one call in handleUpdate
+  }
   // Test builds only: an injected page can name any chat, so production never has it.
   const std::string raw = readFile("src/agent/telegram.cpp");
   for (const char* sym : {"bool injectRawUpdates(const char* body, size_t len) {",
@@ -130,58 +154,141 @@ static void test_injected_page_uses_the_receive_path() {
   TEST_ASSERT_TRUE(hOpen != std::string::npos && (hClose == std::string::npos || hClose < hOpen));
 }
 
-static void test_every_text_send_is_observed() {
+// One TLS session at a time on the poll task: tlsConnect is reached only by the poll
+// socket's own connect and by workConnect, which closes that socket first; every other
+// session of this file opens through workConnect. The turn, the media and the voice
+// processing close it before they start, and so does the archive tick. This is what
+// makes it safe for a held page to keep the keep-alive socket open between re-polls,
+// and fetchOnePage closes it only when the server says so.
+static void test_every_tls_session_closes_the_poll_socket_first() {
   const std::string& c = code();
-  // The raw sendMessage POST is reached only through doSendMessage.
-  TEST_ASSERT_EQUAL_size_t(3, findAll(c, "doSendMessageRaw(").size());   // definition + html + plain
-  // doSendMessage: its definition, sendNow, and the reply-queue drain (which delivers
-  // what send() observed before queueing it). Nothing else sends a text directly.
-  const std::vector<size_t> calls = findAll(c, "doSendMessage(");
-  TEST_ASSERT_EQUAL_size_t(3, calls.size());
-  const std::string now = bodyOf(c, "static bool sendNow(const char* chatId, const char* text) {");
-  TEST_ASSERT_TRUE(now.find("observeOutbound(chatId, \"text\", text);") < now.find("doSendMessage("));
-  TEST_ASSERT_TRUE(c.find("if (!doSendMessage(reply.chatId, reply.text)") != std::string::npos);
-  // send() observes the whole text before it is split into numbered parts.
-  const std::string snd = bodyOf(c, "bool send(const String& chatId, const String& text, bool block) {");
-  const size_t obs = snd.find("observeOutbound(chatId.c_str(), \"text\", text.c_str());");
-  TEST_ASSERT_TRUE(obs != std::string::npos);
-  TEST_ASSERT_TRUE(obs < snd.find("xQueueSend("));
-  TEST_ASSERT_TRUE(obs < snd.find("TG_CHUNK"));
+  const std::vector<size_t> connects = findAll(c, "tlsConnect(");
+  TEST_ASSERT_EQUAL_size_t(3, connects.size());   // definition, the poll socket, workConnect
+  TEST_ASSERT_TRUE(bodyOf(c, "static void fetchOnePage(").find("tlsConnect(g_pollSc)") != std::string::npos);
+  const std::string wc = bodyOf(c, "static bool workConnect(WiFiClientSecure& sc) {");
+  TEST_ASSERT_TRUE(wc.find("closePollSocket();") < wc.find("tlsConnect(sc)"));
+  // Every local TLS client is connected through workConnect.
+  const size_t locals = findAll(c, "WiFiClientSecure sc;").size();
+  TEST_ASSERT_TRUE(locals >= 4);   // sendMessage, getFile, the download, the typing indicator
+  TEST_ASSERT_EQUAL_size_t(locals + 1, findAll(c, "workConnect(").size());   // + its definition
+  for (const char* fn : {"static bool processMedia(", "static bool processVoice(int slot, std::string& transcript) {"}) {
+    const std::string b = bodyOf(c, fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("closePollSocket();") != std::string::npos, fn);
+  }
+  const std::string turn = c.substr(c.find("void runTurn(const std::string& from"));
+  TEST_ASSERT_TRUE(turn.find("closePollSocket();") < turn.find("g_cb("));
+  TEST_ASSERT_TRUE(c.find("agent::tgarchive::tick(g_token, &idleWaitEnds, &closePollSocket);") != std::string::npos);
+  const std::string fetch = bodyOf(c, "static void fetchOnePage(");
+  TEST_ASSERT_TRUE(fetch.find("if (serverClose) closePollSocket();") != std::string::npos);
+  TEST_ASSERT_TRUE(fetch.find("hasUpdate") == std::string::npos);
 }
 
-static void test_every_media_send_is_observed() {
+// A hold stores nothing: the stored offset is never written while a page is held (it
+// acked nothing either), and the held page re-polls at the settle pace.
+static void test_a_hold_writes_no_settings() {
+  const std::string poll = bodyOf(code(), "void pollTask(void*) {");
+  TEST_ASSERT_TRUE(poll.find("if (haveToken && !g_receiver.holding()) persistOffset();") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(1, findAll(poll, "persistOffset();").size() - findAll(poll, "g_cursor.reset();\n      persistOffset();").size());
+  TEST_ASSERT_TRUE(poll.find("g_receiver.holding() ? nimbus::net::kSettleRepollMs") != std::string::npos);
+  // No other path writes the offset.
+  TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "store::setTelegramOffset(").size());
+}
+
+// The media slots: a lazily allocated PSRAM array, never a static (ten slots in
+// internal .bss would come off every turn's heap), freed when the page ends.
+static void test_media_slots_are_lazy_psram() {
   const std::string& c = code();
-  const std::vector<size_t> posts = findAll(c, "httpmp::post(");
-  TEST_ASSERT_EQUAL_size_t(1, posts.size());
-  const std::string media = bodyOf(c, "static void drainMedia() {");
-  const size_t obs = media.find("observeOutbound(m.chatId, m.kind, m.caption, m.path, m.sd);");
-  TEST_ASSERT_TRUE(obs != std::string::npos);
-  TEST_ASSERT_TRUE(obs < media.find("httpmp::post("));
+  TEST_ASSERT_TRUE(c.find("static MediaSlot* g_slots = nullptr;") != std::string::npos);
+  TEST_ASSERT_TRUE(c.find("heap_caps_calloc(kMediaSlots, sizeof(MediaSlot), MALLOC_CAP_SPIRAM)") != std::string::npos);
+  TEST_ASSERT_TRUE(c.find("psramStatic<MediaSlot") == std::string::npos);
+  TEST_ASSERT_TRUE(c.find("static MediaSlot g_") == std::string::npos);
+  TEST_ASSERT_TRUE(c.find("kMediaSlots = nimbus::orch::kBatchMaxMediaPerDrain") != std::string::npos);
+  const std::string endPage = c.substr(c.find("void endPage() {"), 120);
+  TEST_ASSERT_TRUE(endPage.find("freeSlots();") != std::string::npos);
 }
 
 // A forwarded "/command" is someone else's words: it enters the batch labeled
 // (orch::forwardedText, host-tested in test_orch_command_parse), and it does not make
-// the page a command page.
+// the page a command page (the receive cycle's rule, nimbus/net/tg_receive.h).
 static void test_forwarded_commands_never_reach_the_command_path() {
   const std::string bt = bodyOf(code(), "static void batchTextInto(");
   TEST_ASSERT_TRUE(bt.find("cu.text   = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;") !=
                    std::string::npos);
-  // A page is a command page only for an update that can become a command turn: plain
-  // text (not a caption), allowed chat, not a forward.
-  const std::string pc = bodyOf(code(), "static bool pageHasCommand(");
-  for (const char* cond : {"u.attachment.kind == nimbus::tg::Attachment::Kind::None", "!u.forwarded",
-                           "nimbus::orch::isCommandText(u.text)", "allowed(String(u.chatId.c_str()))"})
+  const std::string rx = readCode("lib/core/include/nimbus/net/tg_receive.h");
+  const size_t at = rx.find("bool pageHasCommand(Io& io) const {");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string pc = rx.substr(at, rx.find("\n  }\n", at) - at);
+  for (const char* cond : {"u.attachment.kind == tg::Attachment::Kind::None", "!u.forwarded",
+                           "orch::isCommandText(u.text)", "io.allowed(u.chatId)"})
     TEST_ASSERT_TRUE_MESSAGE(pc.find(cond) != std::string::npos, cond);
-  // Every text that reaches the batcher goes through batchTextInto.
+  // Every text that reaches the batcher goes through batchTextInto, and a media item's
+  // caption takes the same forwarded label.
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;").size());
+  TEST_ASSERT_EQUAL_size_t(2, findAll(code(), "u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;").size());
+}
+
+// One owner rule. The archive's card-pressure notice no longer has its
+// own copy (which skipped the allowlist check); every notice goes to ownerChat(), and
+// a chat removed from the allowlist never receives one even while the owners list
+// still names it first.
+static void test_one_owner_rule_for_every_notice() {
+  const std::string arc = readCode("src/agent/tg_archive.cpp");
+  TEST_ASSERT_TRUE(arc.find("String ownerChat()") == std::string::npos);
+  TEST_ASSERT_TRUE(arc.find("telegram::ownerChat()") != std::string::npos);
+  TEST_ASSERT_TRUE(code().find("nimbus::net::ownerChatOf(") != std::string::npos);
+  auto allow = [](const std::string& list) {
+    return [list](const std::string& c) {
+      return ("," + list + ",").find("," + c + ",") != std::string::npos;
+    };
+  };
+  using nimbus::net::ownerChatOf;
+  // The de-listed first owner is skipped; the next listed owner gets it.
+  TEST_ASSERT_EQUAL_STRING("222", ownerChatOf("111, 222", "222,333", allow("222,333")).c_str());
+  TEST_ASSERT_EQUAL_STRING("", ownerChatOf("111", "222,333", allow("222,333")).c_str());
+  // No owners set: the first allowlist entry (trimmed).
+  TEST_ASSERT_EQUAL_STRING("333", ownerChatOf("  ", " 333 ,444", allow("333,444")).c_str());
+  TEST_ASSERT_EQUAL_STRING("", ownerChatOf("", "", allow("")).c_str());
+  TEST_ASSERT_EQUAL_STRING("444", ownerChatOf(",,444", "444", allow("444")).c_str());
+}
+
+// The reset reason reaches the poison guard from main.cpp before the poll task starts.
+static void test_reset_reason_hook() {
+  const std::string m = readCode("src/main.cpp");
+  const size_t hook = m.find("agent::telegram::setResetReason((int)esp_reset_reason());");
+  TEST_ASSERT_TRUE(hook != std::string::npos);
+  TEST_ASSERT_TRUE(hook < m.find("agent::telegram::begin("));
+  const std::string poll = bodyOf(code(), "void pollTask(void*) {");
+  TEST_ASSERT_TRUE(poll.find("g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId())") <
+                   poll.find("while (g_running) {"));
+  TEST_ASSERT_TRUE(code().find("RTC_NOINIT_ATTR nimbus::net::TgGuardState s_guardRtc;") != std::string::npos);
+}
+
+// The ordered segment list the image path reads (telegram::turnMediaAt): every item a
+// turn processed is recorded in album order, fetched or not, and the list belongs to
+// that one turn (cleared after its callback and when the page ends).
+static void test_turn_media_list_follows_the_turn() {
+  const std::string& c = code();
+  const std::string fail = bodyOf(c, "static bool failedSegment(");
+  TEST_ASSERT_TRUE(fail.find("noteTurnMedia(slot, label, false);") != std::string::npos);
+  const std::string pm = bodyOf(c, "static bool processMedia(");
+  TEST_ASSERT_TRUE(pm.find("noteTurnMedia(slot, label, true);") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(3, findAll(c, "noteTurnMedia(").size());   // definition + two calls
+  const std::string turn = c.substr(c.find("void runTurn(const std::string& from"), 400);
+  TEST_ASSERT_TRUE(turn.find("g_cb(") < turn.find("s_turnMedia = 0;"));
+  const std::string endPage = c.substr(c.find("void endPage() {"), 120);
+  TEST_ASSERT_TRUE(endPage.find("s_turnMedia = 0;") != std::string::npos);
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
-  RUN_TEST(test_inbound_observed_first);
-  RUN_TEST(test_injected_page_uses_the_receive_path);
-  RUN_TEST(test_every_text_send_is_observed);
-  RUN_TEST(test_every_media_send_is_observed);
+  RUN_TEST(test_one_archive_hook_path);
+  RUN_TEST(test_pages_run_the_receive_cycle);
+  RUN_TEST(test_every_tls_session_closes_the_poll_socket_first);
+  RUN_TEST(test_a_hold_writes_no_settings);
+  RUN_TEST(test_media_slots_are_lazy_psram);
   RUN_TEST(test_forwarded_commands_never_reach_the_command_path);
+  RUN_TEST(test_one_owner_rule_for_every_notice);
+  RUN_TEST(test_reset_reason_hook);
+  RUN_TEST(test_turn_media_list_follows_the_turn);
   return UNITY_END();
 }

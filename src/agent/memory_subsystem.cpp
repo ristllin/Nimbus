@@ -2183,8 +2183,19 @@ void captureSession(const char* sessionId, const char* provider, const String& t
   // session rows persist with the next message capture (cheap to defer).
 }
 
-String captureMessage(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
-                      const String& text, const String& blobPath, const String& tags) {
+// A row's references and stamp: the blob, the tags, and `tsHours` when the caller knows
+// when it happened (an inbound Telegram item's send time; 0 = now).
+struct RowRefs {
+  const String& blobPath;
+  const String& tags;
+  uint32_t      tsHours;
+};
+
+static String captureMessageAt(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
+                               const String& text, const RowRefs& refs) {
+  const String& blobPath = refs.blobPath;
+  const String& tags = refs.tags;
+  const uint32_t tsHours = refs.tsHours;
   if (!g_begun) return String();
   Lock g;   // shared with the web/MCP task
   EpisodicMessage m;
@@ -2192,7 +2203,7 @@ String captureMessage(const char* sessionId, const char* role, nimbus::orch::Msg
   snprintf(id, sizeof(id), "m%08x", (unsigned)(++g_epiSeq));
   m.id = id;
   m.sessionId = sessionId ? sessionId : "";
-  m.tsHours = nowHours();
+  m.tsHours = tsHours ? tsHours : nowHours();
   m.role = role ? role : "";
   m.kind = kind;
   m.text = std::string(text.c_str());
@@ -2206,6 +2217,11 @@ String captureMessage(const char* sessionId, const char* role, nimbus::orch::Msg
   if (watch) noteSdIoResult(g_epiLog->unpersistedCount() == unpBefore);
   persistEpisodic();   // no-op for the SD append-log (addMessage already durable)
   return String(m.id.c_str());
+}
+
+String captureMessage(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
+                      const String& text, const String& blobPath, const String& tags) {
+  return captureMessageAt(sessionId, role, kind, text, RowRefs{blobPath, tags, 0});
 }
 
 // ---- Glass Box P3: per-turn dossier files ----------------------------------
@@ -2480,7 +2496,7 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
 }
 
 bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
-                      const String& text, const char* srcPath, const char* ext) {
+                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch) {
   if (!g_begun || !effHaveSd() || !srcPath) return false;
   if (g_erasing) return false;   // durable store is being wiped - don't write a new blob into it
   uint8_t buf[512];
@@ -2507,7 +2523,13 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
     g_fs->remove(path.c_str());
     if (!g_fs->rename(tmp.c_str(), path.c_str())) { alog("memory: media blob rename failed"); return false; }
   }
-  captureMessage(sessionId, role, kind, text, String(path.c_str()));
+  // L19-51: an inbound item is stamped with its original send time, and the exact time
+  // rides a "sent:<epoch>" tag, so a late or redelivered item never reads as new.
+  const bool sent = sentEpoch >= 1577836800LL;   // a plausible Telegram date
+  char tag[32] = "";
+  if (sent) snprintf(tag, sizeof(tag), "sent:%lld", (long long)sentEpoch);
+  const String blob(path.c_str()), tags(tag);
+  captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0});
   return true;
 }
 

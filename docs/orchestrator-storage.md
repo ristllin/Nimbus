@@ -445,7 +445,7 @@ existing SD-first/LittleFS-fallback `loadBlob`; episodic replays the old
 |---|---|
 | VDB | working set in PSRAM (or internal); durable to LittleFS **hard-capped ≈400 vecs** + score eviction. Closes the unbounded-flash bug. |
 | Episodic | no-card-AT-BOOT: in-RAM 500-ring + LittleFS whole-blob. ⚠ a MID-RUN demote keeps the append-log (256-ring, nothing persists until promote) (as before). |
-| Media | **refused**, not degraded (since v3.7.0): an inbound photo or document is declined with a message suggesting the sender describe it in words. Media on internal flash would compete with the firmware's own OTA slots for a 3.5 MB partition, and one phone photo can be a sixth of it. Voice notes still transcribe (the audio is transient); only the durable copy is skipped. |
+| Media | **refused**, not degraded (since v3.7.0): an inbound photo or document is not downloaded: sent on its own it gets a plain reply asking the sender to describe it in words, and inside a message or an album the turn names it as not kept ("no memory card in the device"). Media on internal flash would compete with the firmware's own OTA slots for a 3.5 MB partition, and one phone photo can be a sixth of it. Voice notes still transcribe (the audio is transient); only the durable copy is skipped. |
 | Files (artifact store) | **unavailable**: `artifact.save` fails with a legible reason and the listing reports `present:false`. |
 | Tenants (roles + quotas) | fully functional - the table lives on **internal flash**, not the card, so losing a card never drops everyone's role. |
 | Privacy boundaries | fully enforced - namespace and session filters live in the portable query layer, not the SD path, so degraded mode cannot open up what full mode keeps apart (asserted by `tests/hil/test_l20_degradation.py`). |
@@ -513,7 +513,9 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   `.part`→rename atomic, then an episodic `Audio` row referencing it. Wired at three
   capture sites: the **inbound Telegram voice note** (`/audio/tgvoice.ogg`, persisted
   *before* the LittleFS privacy-delete), an **inbound Telegram photo or document**,
-  and the **on-device mic turn** (`/voice.pcm`). A spoken reply is recorded as a text
+  and the **on-device mic turn** (`/voice.pcm`). An inbound Telegram item's row is
+  stamped with the time it was sent, not when it arrived, and tagged `sent:<epoch>`,
+  so a late or redelivered photo never reads as new. A spoken reply is recorded as a text
   row, not a media sidecar. With no card this is a no-op. The resulting row
   appears in `/api/mem/episodic` as `{"kind":"audio","blob":"/mem/blobs/<hash>.<ext>"}`.
   Privacy note: raw inbound voice-note audio is retained on the card by design; erase the

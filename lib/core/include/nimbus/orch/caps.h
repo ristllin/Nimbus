@@ -102,6 +102,15 @@ constexpr size_t kBatchMaxBytesPerChat = 8192;
 constexpr size_t kBatchMaxChats        = 8;
 //  - total accumulator payload across all chats in one drain (PSRAM ceiling).
 constexpr size_t kBatchMaxTotalBytes   = 32768;
+//  - media (photos, documents) sharing one turn: the Telegram album maximum, so a
+//    whole album is one turn. The 11th item is Deferred to the next drain.
+constexpr size_t kBatchMaxMediaPerChat = 10;
+//  - media and voice notes held by one drain: the device's download slots (lazily
+//    allocated in PSRAM, one per item). A page holds at most 10 updates, so this
+//    only binds for an injected test page; the next item is Deferred, never dropped.
+constexpr size_t kBatchMaxMediaPerDrain = 10;
+static_assert(kBatchMaxMediaPerChat <= kBatchMaxMediaPerDrain, "an album fits one drain");
+static_assert(kBatchMaxMediaPerChat <= kBatchMaxMsgsPerChat, "an album fits one turn");
 // One getUpdates page is drained per cycle (its turns run before the offset moves past
 // it, so no page can be lost on a mid-drain reset - see drainOnePage and drainCycle). A rapid burst fits one page = one turn; a backlog drains a page per
 // cycle. There is deliberately no multi-page-per-drain accumulation.

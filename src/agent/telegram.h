@@ -1,7 +1,6 @@
 #pragma once
 #include <Arduino.h>
 
-#include "nimbus/tg_updates.h"   // nimbus::tg::Update - what the inbound observer sees
 
 // telegram - Telegram Bot API long-poll client for Nimbus, ported from
 // Nuage-Solide src/telegram_client.{h,cpp} (Head Orchestrator v2).
@@ -49,53 +48,67 @@ using AttachmentSink = bool (*)(const String& chatId, const String& from,
                                 const String& mime, uint32_t fileSize,
                                 int kind, const String& caption);
 
-// ---- observer seams (the Telegram archive attaches here) ----------------------
-// Inbound: called on the poll task for EVERY getUpdates update the drain reaches,
-// first, before the replay guard, the allowlist, classification, moderation and
-// batching, so a refused, stale or deferred update is still seen. An update past a
-// stop point (a busy voice or file slot, a batch cap) is seen again when Telegram
-// re-serves it next cycle, and a restart can re-serve one page: dedupe by update_id.
-// It runs inside the poll cycle, so keep it short.
-using InboundObserver = void (*)(const nimbus::tg::Update& u);
-
-// Outbound: called once for EVERY message the device sends to Telegram: a text
-// before it is split into numbered parts (send(), on the CALLER's task, any task), a
-// notice the poll task sends directly, and a media file just before its upload (poll
-// task). It is called when the send is attempted, not after Telegram confirms it.
-// Keep it non-blocking; queue any heavy work.
-struct OutboundItem {
-  const char* chatId;
-  const char* kind;   // "text" | "document" | "photo" | "voice" | "audio"
-  const char* text;   // the whole text, or the media caption ("" for none)
-  const char* path;   // media source file ("" for text)
-  bool        sd;     // path is on the SD card (memory::dataFs), not LittleFS
-};
-using OutboundObserver = void (*)(const OutboundItem& item);
-
 void begin(const String& token, const String& allowlist, MessageCallback cb);
 void setTick(TickCallback cb);
 void setSttSink(SttSink cb);   // optional; voice is unverified here
 void setAttachmentSink(AttachmentSink cb);   // optional; files lane plugs in here
-// Optional, set once at boot before begin(); nullptr (the default) observes nothing.
-void setInboundObserver(InboundObserver cb);
-void setOutboundObserver(OutboundObserver cb);
+// This boot's esp_reset_reason(), set by main.cpp before begin(): the poison guard
+// counts a panic, watchdog or brownout reset against a page whose processing it cut
+// short, and a power-on clears its record (nimbus/net/tg_dup_guard.h).
+void setResetReason(int reason);
 
 #if defined(NIMBUS_TEST)
 // Test seam (the test build's TGINJECT console verb): queue ONE raw getUpdates
 // response body to run through the normal receive path on the poll task - the same
-// parser, the inbound observer, the allowlist, classification, the batcher with its
-// command boundary, and one turn per bucket - exactly as a polled page, except that it
-// never moves the getUpdates offset (its ids are not Telegram's). Returns false when a
-// page is already waiting, the body is empty or over 64 KB, or PSRAM is short.
+// parser, the archive hook, the duplicate breaker and the hourly ceiling, the
+// allowlist, classification, the batcher with its command and voice boundaries, the
+// media processing inside each turn, and one turn per bucket - exactly as a polled
+// page, except that it is never held and never moves the getUpdates offset (its ids
+// are not Telegram's). Returns false when a page is already waiting, the body is empty
+// or over 64 KB, or PSRAM is short.
 // Test builds only: an injected page can name any chat, the owner's included.
 bool injectRawUpdates(const char* body, size_t len);
 // TGINJECT (the console verb): the same seam, returning the console's one-line
-// summary. The page also passes the Telegram archive hook once (archive, parse,
-// classify, batch, dispatch, attachment slots); a page that stops on a busy slot (an
-// album) resumes where it stopped on the next cycle. Media whose file_id is
-// "LOCAL_<path>" is read from that file on the card instead of fetched.
+// summary. The page also passes the Telegram archive hook once; a page that stops on a
+// cap (more media than one drain's slots) resumes where it stopped on the next cycle.
+// Media whose file_id is "LOCAL_<path>" is read from that file on the card instead of
+// fetched.
 String injectRawPage(const String& body);
 #endif
+
+// The chat the device's own notices go to: the first explicit owner that is still on
+// the allowlist, else the first allowlist entry; "" when there is none (one rule for
+// every notice, nimbus/net/tg_owner.h). Call it on the poll task, like isOwner().
+String ownerChat();
+
+// The media of the turn the MessageCallback is running, in the order they were sent:
+// the ordered segment list the image path uses (each photo can go to the head as an
+// image part, in this order, beside the text the turn carries). Valid only inside the
+// callback, on the poll task; empty for a turn with no photo or file.
+struct TurnMedia {
+  int     k;          // 1-based place among the turn's media (the label's k)
+  int     n;          // the turn's media count (the label's N)
+  bool    photo;      // false: a document
+  bool    fetched;    // false: it could not be fetched (its label says why)
+  char    ref[17];    // the content hash (16 hex; the blob sidecar's name), "" when not fetched
+  char    mime[48];   // Telegram's MIME type ("" when absent; a photo is image/jpeg)
+  int64_t sentAt;     // Telegram's send time
+};
+size_t turnMediaCount();
+const TurnMedia* turnMediaAt(size_t i);
+
+// The inbound storm breakers since the record was last cleared (it survives restarts,
+// not a power cycle): duplicates dropped, turns skipped at the hourly ceiling, pages
+// acked unprocessed by the poison guard, and the crash resets counted against the page
+// in flight. Published by the poll task; any task may read it.
+struct GuardStatus {
+  uint32_t dupDrops;
+  uint32_t ceilingDrops;
+  uint32_t poisonAcks;
+  uint8_t  tries;
+  bool     holding;   // a page is being held for the rest of an album or burst
+};
+GuardStatus guardStatus();
 
 // Inject a message as if it arrived from Telegram - enqueued + dispatched by the
 // poll task (correct stack + TLS context). Used by the web test endpoint.

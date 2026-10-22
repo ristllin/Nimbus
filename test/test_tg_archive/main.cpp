@@ -1394,6 +1394,132 @@ static void test_factory_sweep_covers_the_archive_root() {
   TEST_ASSERT_TRUE(nimbus::orch::isRetentionExempt(kRoot));
 }
 
+// ---- replays cost no index scan ----------------------------------------------
+
+// A re-served update (an album held over several polls, a page re-served after a busy
+// slot or a restart) used to read the day's whole index from the card each time, under
+// the card lock on the poll task. The ring of updates seen this boot skips the card
+// entirely, and a fresh boot's check stops at the first matching line.
+static void test_replay_against_a_large_index_costs_no_scan() {
+  Card card;
+  Archive a(card);
+  std::vector<std::string> ups;
+  for (int i = 1; i <= 1000; ++i) ups.push_back(update(i, "9", kOct18, text("row")));
+  for (size_t at = 0; at < ups.size(); at += 50) {
+    std::vector<std::string> chunk(ups.begin() + (long)at, ups.begin() + (long)std::min(at + 50, ups.size()));
+    const std::string p = page(chunk);
+    a.captureInboundPage(p.data(), p.size(), {kOct18, 0});
+  }
+  const size_t indexBytes = card.files[idx("9", "2026-10-18")].size();
+  TEST_ASSERT_TRUE(indexBytes > 50000);
+  // The last page, replayed three times in the same boot: no read, no lookup at all.
+  const std::string last = page({ups[997], ups[998], ups[999]});
+  const int opens = card.readOpens, exists = card.existsCalls;
+  const size_t served = card.bytesServed;
+  for (int r = 0; r < 3; ++r) TEST_ASSERT_EQUAL_INT(0, a.captureInboundPage(last.data(), last.size(), {kOct18, 0}));
+  TEST_ASSERT_EQUAL_INT(opens, card.readOpens);
+  TEST_ASSERT_EQUAL_INT(exists, card.existsCalls);
+  TEST_ASSERT_EQUAL_size_t(served, card.bytesServed);
+  // A fresh boot: the first replay checks the card once per update and stops reading
+  // the index at the first hit (an early row costs a small part of the file) ...
+  Archive b(card);
+  const std::string early = page({ups[2]});
+  const size_t before = card.bytesServed;
+  TEST_ASSERT_EQUAL_INT(0, b.captureInboundPage(early.data(), early.size(), {kOct18, 0}));
+  TEST_ASSERT_TRUE(card.bytesServed - before < indexBytes / 50);
+  // ... and the next replays of it read nothing.
+  const size_t after = card.bytesServed;
+  const int opens2 = card.readOpens;
+  for (int r = 0; r < 3; ++r) b.captureInboundPage(early.data(), early.size(), {kOct18, 0});
+  TEST_ASSERT_EQUAL_size_t(after, card.bytesServed);
+  TEST_ASSERT_EQUAL_INT(opens2, card.readOpens);
+  TEST_ASSERT_EQUAL_UINT32(4, b.stats().dupes);
+  TEST_ASSERT_EQUAL_INT(0, card.violations);
+}
+
+// The ring is a fixed size: an update that fell out of it is checked on the card again
+// (still deduped, never written twice).
+static void test_seen_ring_overflow_still_dedupes() {
+  Card card;
+  Archive a(card);
+  std::vector<std::string> ups;
+  for (int i = 1; i <= 200; ++i) ups.push_back(update(i, "9", kOct18, text("x")));
+  for (const std::string& u : ups) {
+    const std::string p = page({u});
+    a.captureInboundPage(p.data(), p.size(), {kOct18, 0});
+  }
+  const auto files = card.files;
+  for (const std::string& u : ups) {
+    const std::string p = page({u});
+    TEST_ASSERT_EQUAL_INT(0, a.captureInboundPage(p.data(), p.size(), {kOct18, 0}));
+  }
+  TEST_ASSERT_TRUE(files == card.files);
+  TEST_ASSERT_EQUAL_UINT32(200, a.stats().dupes);
+}
+
+// ---- one download per Telegram file (22 Oct) ------------------------------------
+
+// The turn path fetched the photo into its staging file: the archive, waiting for the
+// same file, copies it in. The job ends "ok" and Telegram is never asked again.
+static void test_adopt_shares_the_turn_paths_download() {
+  Card card;
+  Archive a(card);
+  TgSource src;
+  src.files["P"] = fakes::bytes(170000, 9);
+  const std::string p = page({update(31, "9", kOct18, "\"photo\":[{\"file_id\":\"P\",\"width\":1280,\"height\":960}]")});
+  a.captureInboundPage(p.data(), p.size(), {kOct18, 0});
+  TEST_ASSERT_EQUAL_UINT32(1, a.pending());
+  Card lfs;
+  lfs.mkdirs("/audio");
+  lfs.files["/audio/tgattach.bin"] = src.files["P"];
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 31, kOct18, "P", lfs, "/audio/tgattach.bin"));
+  TEST_ASSERT_EQUAL_UINT32(0, a.pending());
+  TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/31.jpg"] == src.files["P"]);
+  TEST_ASSERT_FALSE(card.files.count("/mem/tg/9/2026-10-18/31.jpg.part"));
+  JsonDocument ev = parseLine(card.lines(idx("9", "2026-10-18")).back());
+  TEST_ASSERT_EQUAL_STRING("ok", ev["st"] | "");
+  drain(a, src);
+  TEST_ASSERT_EQUAL_INT(0, src.opens);   // one download in all
+  TEST_ASSERT_EQUAL_UINT32(1, a.stats().mediaOk);
+  // And the reverse: the archive's finished file is what the turn path copies.
+  TEST_ASSERT_EQUAL_STRING("/mem/tg/9/2026-10-18/31.jpg", a.mediaFor("9", 31, kOct18, "P").c_str());
+  TEST_ASSERT_EQUAL_STRING("", a.mediaFor("9", 31, kOct18, "other").c_str());
+  TEST_ASSERT_EQUAL_STRING("", a.mediaFor("9", 32, kOct18, "P").c_str());
+}
+
+// Another rendition (the turn path's budget-bound one, the archive's largest): no
+// sharing, the archive fetches its own full-size file. A failed copy leaves the job
+// queued; a voice note shares the same way.
+static void test_adopt_only_the_same_file() {
+  Card card;
+  Archive a(card);
+  TgSource src;
+  src.files["big"] = fakes::bytes(900000, 3);
+  const std::string p = page({update(41, "9", kOct18,
+      "\"photo\":[{\"file_id\":\"mid\",\"width\":1280,\"height\":960,\"file_size\":200000},"
+      "{\"file_id\":\"big\",\"width\":2560,\"height\":1920,\"file_size\":900000}]")});
+  a.captureInboundPage(p.data(), p.size(), {kOct18, 0});
+  Card lfs;
+  lfs.mkdirs("/audio");
+  lfs.files["/audio/tgattach.bin"] = fakes::bytes(200000, 4);
+  TEST_ASSERT_FALSE(a.adoptMedia("9", 41, kOct18, "mid", lfs, "/audio/tgattach.bin"));
+  TEST_ASSERT_EQUAL_UINT32(1, a.pending());
+  TEST_ASSERT_EQUAL_STRING("", a.mediaFor("9", 41, kOct18, "mid").c_str());
+  drain(a, src);
+  TEST_ASSERT_EQUAL_INT(1, src.opens);
+  TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/41.jpg"] == src.files["big"]);
+  // A missing staging file: the job stays queued for the archive's own fetch.
+  const std::string v = page({update(42, "9", kOct18, "\"voice\":{\"file_id\":\"V\",\"duration\":2}")});
+  a.captureInboundPage(v.data(), v.size(), {kOct18, 0});
+  TEST_ASSERT_FALSE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/none.ogg"));
+  TEST_ASSERT_EQUAL_UINT32(1, a.pending());
+  lfs.files["/audio/tgvoice.ogg"] = fakes::bytes(9000, 5);
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/tgvoice.ogg"));
+  TEST_ASSERT_EQUAL_UINT32(0, a.pending());
+  TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/42.ogg"] == lfs.files["/audio/tgvoice.ogg"]);
+  TEST_ASSERT_EQUAL_INT(0, card.violations);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_archive_path_predicate);
@@ -1438,5 +1564,9 @@ int main(int, char**) {
   RUN_TEST(test_every_outbound_send_site_passes_an_archive_hook);
   RUN_TEST(test_factory_sweep_covers_the_archive_root);
   RUN_TEST(test_tginject_media_is_test_build_only);
+  RUN_TEST(test_replay_against_a_large_index_costs_no_scan);
+  RUN_TEST(test_seen_ring_overflow_still_dedupes);
+  RUN_TEST(test_adopt_shares_the_turn_paths_download);
+  RUN_TEST(test_adopt_only_the_same_file);
   return UNITY_END();
 }

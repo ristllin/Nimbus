@@ -10,6 +10,7 @@
 #include "dream_scenarios.h"
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
+#include "scenarios_albums.h"
 
 namespace lab {
 namespace {
@@ -347,6 +348,10 @@ void scDreamQuiet(LabRig& rig, Ctx& c) { dreamQuiet(rig, checkOf(c), noteOf(c));
 void scDreamBadKey(LabRig& rig, Ctx& c) { dreamBadKey(rig, checkOf(c), noteOf(c)); }
 void scDreamNoEmbed(LabRig& rig, Ctx& c) { dreamNoEmbed(rig, checkOf(c), noteOf(c)); }
 
+// Lane D: albums as one turn (scenarios_albums.cpp).
+albums::Report albumsReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scAlbumsOneTurn(LabRig& rig, Ctx& c) { albums::albumsOneTurn(rig, albumsReport(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -381,6 +386,7 @@ const Scenario kScenarios[] = {
     {"diagnose-from-evidence", "a failed dream's recorded cause is what the head reports", scDiagnoseFromEvidence, false},
     {"repeat-from-storage", "a repeating answer is the device's settings storage, not the owner's app", scRepeatFromStorage, false},
     {"provider-error-reason",  "an invalid UTF-8 body is rejected with a reason, unbilled", scProviderErrorReason, false},
+    {"albums-one-turn", "an album and its follow-up are one turn whose reply covers every photo", scAlbumsOneTurn, false},
 };
 
 }  // namespace

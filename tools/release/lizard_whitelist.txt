@@ -34,7 +34,6 @@ lib/core/src/orch_head_loop.cpp:nimbus::orch::runHeadLoop
 lib/core/src/settings_menu.cpp:nimbus::SettingsMenu::helpText
 src/agent/health.cpp:agent::health::reportJson
 lib/harness/src/jobs.cpp:agent::JobEngine::dispatchSpawn
-src/agent/telegram.cpp:agent::telegram::handleAttachment
 src/agent/adapters/image_gen.cpp:agent::imagegen::generateToBuffer
 src/agent/loops_subsystem.cpp:agent::loops::checkDue
 lib/core/src/power_battery_model.cpp:nimbus::power::BatteryModel::update
@@ -80,7 +79,6 @@ src/net/webui.cpp:nimbus::net::loopWeb
 lib/core/src/orch_usage_ledger.cpp:nimbus::orch::UsageLedger::deserialize
 src/main.cpp:renderMenu
 lib/harness/src/skill_md.cpp:agent::parseSkillMd
-src/agent/telegram.cpp:agent::telegram::handleVoice
 src/agent/files_subsystem.cpp:agent::files::runScanFetch
 tools/tcal_wizard.py:main
 src/main.cpp:otaEventHook

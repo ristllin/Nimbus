@@ -310,6 +310,20 @@ class Archive {
   // Record a restored file that is already on the card.
   bool recordRestored(const Restored& r);
 
+  // One download per Telegram file (shared with the assistant). The turn path fetches
+  // an inbound photo, document or voice note once, into its own staging file; when the
+  // archive is waiting to fetch the very same file for that update (same update, same
+  // file id, so the same rendition), it copies the staged file in instead of
+  // downloading it again, and the job ends "ok". False when the archive wants another
+  // rendition (it then fetches its own), has no such job, or the copy failed (the job
+  // stays queued).
+  bool adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
+                  Fs& src, const std::string& srcPath);
+  // The other direction: the archive's finished media file for that update when it is
+  // the file `fileId` ("" otherwise), so the turn path copies it instead of fetching.
+  std::string mediaFor(const std::string& chat, int64_t updateId, int64_t date,
+                       const std::string& fileId);
+
   // Queued jobs, plus one while an overflow waits for the resume pass to re-read it.
   size_t pending() const { return jobs_.size() + (overflowed_ ? 1 : 0); }
   // Downloads. One step fetches the next job, writing the card in `cap`-byte slices,
@@ -344,6 +358,8 @@ class Archive {
   bool appendLine(const std::string& path, const std::string& line);
   std::string scrub(const std::string& s) const;
   bool archiveOneUpdate(const char* raw, size_t len, const Now& now);
+  void replayed(const InMeta& m, const std::string& chat, const std::string& day, const std::string& base);
+  bool strangerAdmitted(const InMeta& m, const std::string& chat, const std::string& day, size_t len);
   void writeInRow(const InMeta& m, const std::string& chat, const std::string& day,
                   const std::string& base);
   MediaRow recordMedia(const InMeta& m, const std::string& chat, const std::string& day,
@@ -372,6 +388,19 @@ class Archive {
   std::vector<DayUsage> usage();
   void applyPlan(const std::vector<DayUsage>& days, const PressurePlan& plan,
                  PressureOutcome& out);
+
+  // Updates written or verified this boot, by (chat, update id): a re-served update in
+  // it costs no card read at all (an album held over several polls, a page re-served
+  // after a busy slot or a restart). A fixed ring; an id that fell out of it is checked
+  // on the card as before.
+  struct SeenId {
+    uint32_t chat;
+    int64_t  id;
+  };
+  bool seenThisBoot(uint32_t chat, int64_t id) const;
+  void noteSeen(uint32_t chat, int64_t id);
+  std::vector<SeenId> seen_;
+  size_t              seenHead_ = 0;
 
   Fs&                 fs_;
   std::vector<std::string> redact_;
@@ -419,6 +448,9 @@ std::vector<MediaRef> newestMedia(Fs& fs, const std::string& chat, size_t limit)
 // Stream every line of a file to `fn` (lines over 16 KB are skipped). Returns false
 // when the file cannot be opened.
 bool forEachLine(Fs& fs, const std::string& path, const std::function<void(const std::string&)>& fn);
+// The same, stopping at the first line for which `fn` returns true (the rest of the
+// file is not read). Returns whether some line stopped it.
+bool forEachLineUntil(Fs& fs, const std::string& path, const std::function<bool(const std::string&)>& fn);
 // `s` with every raw control byte (0x00-0x1F) written as \u00XX: safe to paste into
 // JSON (a serialized document has no raw control bytes outside strings).
 std::string escapeControls(const std::string& s);

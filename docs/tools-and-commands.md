@@ -66,6 +66,23 @@ restarts in the middle of a burst that holds a command, it picks up where it
 stopped: it repeats at most the message it was handling when it restarted, never a
 command it had already finished.
 
+Photos, files and voice notes take part in the same way. An album (up to 10 photos
+sent together) is answered as one turn once it has fully arrived: the device waits
+about 3 seconds after the last photo (never more than 15 seconds in all), then
+answers everything sent so far in one reply, every photo numbered and described in
+the order it was sent, with its caption. A text sent right after the album joins
+that reply; one sent while the device is already working on the album gets the next
+reply. A voice note is a turn of its own, in its place among your messages. A photo
+that could not be fetched (too large, no memory card in the device) is named in the
+same reply; one sent on its own, with no caption, gets a short reply saying why.
+
+Repeats and floods are bounded. When Telegram delivers a message that was already
+answered, or the same message arrives twice within 2 minutes before the first one
+was answered, the repeat is skipped and the owner is told once. The device answers
+at most 60 messages an hour, and the owner's own chat always keeps 12 of them (other
+allowed chats stop at 48); past that it pauses replies, tells the owner once with the
+time they resume, and does not answer what was sent in between. Commands always run.
+
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time
 wake-up the assistant sets for itself (a single follow-up turn, minutes to days
@@ -243,7 +260,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days). Replies `EPIPRUNE days=<n> status=<ran\|deferred-turn\|deferred-busy\|no-store\|clock-unset>`; a pass that ran adds `dayfiles=<n> blobs=<n> kept=<n>`, with `blobs=deferred` while the history index is still being rebuilt after a restart. A deferred pass removed nothing. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
-| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive); a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. The page rides one command line, and a test-image line holds up to 4096 bytes. |
+| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive), through the duplicate breaker and the hourly limit; a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The page is never held for more and the offset never moves. The page rides one command line, and a test-image line holds up to 4096 bytes. |
+| `TGGUARD?` | Print the Telegram storm guards since their record was last cleared (it survives restarts, not a power cycle): `dups` (repeats skipped), `ceiling` (turns skipped at the hourly limit), `poison` (pages skipped after crashing the device twice), `tries` (crash restarts counted against the page in flight) and `holding` (a page is waiting for the rest of an album). |
 | `AUDIOINJECT <path>` / `AUDIOINJECT off` | Run the hold-to-talk path on a recorded 16 kHz mono 16-bit WAV already on the card (put it there with `FSPUT`): the clip replaces the microphone, then the real speech-to-text call and the voice turn run. Spoken replies stay off until `AUDIOINJECT off`. |
 | `MODE <0\|1>` | Switch operating mode (0 = Notifier, 1 = Orchestrator); persists and restarts. |
 

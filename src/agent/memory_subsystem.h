@@ -297,8 +297,10 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
 // (for large media like the ~480 KB mic recording). Content-address dedup: an
 // identical blob isn't re-copied. Returns true if a durable row was captured. SD-gated
 // no-op (returns false with no card). The caller keeps owning/deleting `srcPath`.
+// `sentEpoch` (an inbound Telegram item's send time, 0 when none) stamps the row with
+// that time instead of the arrival hour and tags it "sent:<epoch>".
 bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
-                      const String& text, const char* srcPath, const char* ext);
+                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch = 0);
 
 // Retention maintenance (§4): on the SD append-log, prune day-streams older than
 // `retentionDays` and, once the episodic index covers the whole card,
