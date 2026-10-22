@@ -76,16 +76,18 @@ def test_storm_e_low_heap(storm):
     with storm.session(kit.keep_for(storm), kit.head_for(storm)):
         free = _internal_free(storm)
         hold = max(0, free - LEAVE_FREE)
+        # The window opens before the ballast and closes after its release: under the
+        # ballast the history route itself answers busy (unit A, 22 Oct).
+        w = kit.Window(storm).open()
         out = storm.verb(f"FAULT sram_ballast {hold}", "FAULT sram_ballast", timeout=10.0)
         held = BALLAST_RE.search(out)
         print(f"[storm] ballast: {out.strip()}")
         try:
-            w = kit.Window(storm).open()
             kit.owner_turn(storm, f"storm e {uid}: reply with the single word pong", uid, timeout=240.0)
             dream = _dream(storm)
-            w.close()
         finally:
             storm.verb("FAULT sram_ballast 0", "FAULT sram_ballast", timeout=10.0)
+        w.close()
         probe = storm.fresh_message(kit.ANSWER_RE, f"storm e probe {uid}: reply pong", uid + 1)
     replies = w.replies(NOTICE_RE)
     zero = [ln.text for ln in w.lines if ZERO_WRITE_RE.search(ln.text)]
