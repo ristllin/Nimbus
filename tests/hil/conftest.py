@@ -413,7 +413,11 @@ def storm(device, net, request):
         except DeviceError:  # an earlier leg's restart left the console closed
             alive = False
         if not alive:
-            device.reopen_after_reenumerate()
+            try:
+                device.reopen_after_reenumerate()
+            except DeviceError:  # a silent endpoint: one targeted bus reset, then once more
+                device.bus_reset(target_serial=kit.port_mac(device.port) or None)
+                device.reopen_after_reenumerate()
         device.ensure_mode(1)
         bench = kit.StormBench(device, net, mock=mock, leg=getattr(request.module, "LEG", ""))
         bench.settle()

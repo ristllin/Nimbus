@@ -111,6 +111,16 @@ def text_page(update_id: int, chat: int, text: str, date: int) -> str:
     return json.dumps({"ok": True, "result": [{"update_id": update_id, "message": msg}]}, separators=(",", ":"))
 
 
+def port_mac(port: Optional[str]) -> str:
+    """The MAC a serial port's USB serial number names (the ESP32-S3's own), or ''."""
+    try:
+        from serial.tools import list_ports
+
+        return next((p.serial_number or "" for p in list_ports.comports() if p.device == port), "")
+    except Exception:  # noqa: BLE001 - no pyserial listing: no targeted reset
+        return ""
+
+
 def first_update_id() -> int:
     env = os.environ.get("NIMBUS_TGINJECT_BASE")
     return int(env) if env else 910000000 + (int(time.time()) % 900000) * 100
@@ -156,6 +166,7 @@ class StormBench:
     def __init__(self, device, net, mock=None, leg: str = ""):
         self.device = device
         self.leg = leg
+        self.mac = port_mac(getattr(device, "port", None))
         self.env = read_env()
         self.tg = TG_MODE and bool(self.env.get("NIMBUS_TEST_TG_TOKEN") and self.env.get("NIMBUS_TEST_TG_CHAT"))
         self.chat = int(self.env["NIMBUS_TEST_TG_CHAT"]) if self.tg else owner_chat_for(leg)
@@ -427,9 +438,13 @@ class StormBench:
         self.settle()
 
     def reopen_console(self, tries: int = 3) -> None:
-        """Reattach the console after a restart re-enumerated USB: the reopen is retried,
-        and the console must answer PING, or the leg stops here (a leg that went on with
-        a closed console would fail in its next step's setup instead)."""
+        """Reattach the console after a restart re-enumerated USB. A reopen that finds a
+        silent endpoint is followed by a USB bus reset of this unit only (by its MAC; the
+        other unit is skipped), then retried; the console must answer PING. The control
+        image is driven over HTTP alone, so there a console that stays away is noted and
+        the leg goes on; on the candidate the leg stops here."""
+        from device import Device
+
         last = None
         for _ in range(tries):
             try:
@@ -438,7 +453,13 @@ class StormBench:
                     return
             except Exception as e:  # noqa: BLE001 - re-enumerating: try again
                 last = e
+            Device.bus_reset(target_serial=self.mac or None)
             time.sleep(5.0)
+        if self.control:
+            print(
+                f"[storm] the console did not come back after the restart ({last}); the control leg goes on over HTTP"
+            )
+            return
         raise AssertionError(f"the console did not come back after the restart: {last}")
 
     def settle(self, uptime_ms: int = 30000, timeout: float = 90.0) -> None:
