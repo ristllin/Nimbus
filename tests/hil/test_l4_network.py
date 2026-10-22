@@ -52,6 +52,11 @@ def lan_ip_or_skip(device, net, secrets, require_secret) -> str:
         pytest.skip(f"could not join LAN for web test (reason={exc.reason})")
 
 
+# The LED-ring params (lib/core profile.cpp isRingParam(), by machine name). Since
+# CUM-187 /api/state lists none of them on a board with no ring (hasRing=false).
+RING_PARAMS = {"posture", "ring_brightness", "ring_fps", "attn_led_index", "attn_hue", "attn_anim", "attn_period_ms"}
+
+
 def ringbright_param(state: dict) -> dict:
     """Pull the RingBrightness entry from /api/state's params array by NAME so tests
     don't hardcode the Param enum int."""
@@ -67,6 +72,30 @@ def ringbright_param(state: dict) -> dict:
         f"/api/state params has no RingBrightness entry: {[q.get('name') for q in state.get('params', [])]}"
     )
     return p
+
+
+def tunable_param(state: dict) -> dict:
+    """The numeric param a web-config leg edits: RingBrightness on a board with a ring;
+    on a board without one, the first numeric non-ring param, after checking that no
+    ring param is listed at all (the CUM-187 capability hide)."""
+    if state.get("hasRing", True):
+        return ringbright_param(state)
+    params = state.get("params", [])
+    ring = [p.get("name") for p in params if p.get("name") in RING_PARAMS]
+    assert not ring, f"/api/state lists ring params on a board with no ring (hasRing=false): {ring}"
+    p = next((p for p in params if p.get("kind") == "num"), None)
+    assert p is not None, f"/api/state params has no numeric entry to edit: {[q.get('name') for q in params]}"
+    return p
+
+
+def other_value(p: dict, avoid: int) -> int:
+    """A legal value for ``p`` (on its step, inside min..max) that is not ``avoid``."""
+    lo, hi = int(p.get("min", 0)), int(p.get("max", 255))
+    step = max(1, int(p.get("step", 1)))
+    for v in range(lo + step, hi + 1, step):
+        if v != avoid:
+            return v
+    raise AssertionError(f"param {p.get('name')} has no second legal value in {lo}..{hi}")
 
 
 # Profile preset table a preview composes from (a throwaway Config carrying ONLY
@@ -187,9 +216,9 @@ def test_web_post_config(device, net, secrets, require_secret):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
 
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
-    bright = ringbright_param(st0)
+    bright = tunable_param(st0)
     pkey = bright["key"]
-    target = 33 if int(bright["value"]) != 33 else 44  # distinct from current
+    target = other_value(bright, int(bright["value"]))  # distinct from current, legal for the param
 
     resp = net.post("/api/config", {"profile": "1", f"p_{pkey}": str(target)}, ip=ip, timeout=5.0)
     assert resp.status_code == 200, f"POST /api/config -> {resp.status_code}"
@@ -204,7 +233,7 @@ def test_web_post_config(device, net, secrets, require_secret):
             break
 
     assert reflected is not None, (
-        f"RingBrightness override {target} never reflected in /api/state (staged edit lost / cross-core race - F16)"
+        f"{bright['name']} override {target} never reflected in /api/state (staged edit lost / cross-core race - F16)"
     )
     assert reflected["profile"] == 1, f"profile={reflected['profile']!r}, expected 1 after POST"
     assert device.ping(), "device stopped answering after the concurrent web load"
@@ -282,9 +311,9 @@ def test_persist_across_reboot(device, net, secrets, require_secret):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
 
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
-    bright = ringbright_param(st0)
+    bright = tunable_param(st0)
     pkey = bright["key"]
-    target = 27 if int(bright["value"]) != 27 else 39
+    target = other_value(bright, int(bright["value"]))
 
     net.post("/api/config", {f"p_{pkey}": str(target)}, ip=ip, timeout=5.0)
     applied = False
@@ -307,7 +336,7 @@ def test_persist_across_reboot(device, net, secrets, require_secret):
 
     st2 = net.get_json("/api/state", ip=ip2, timeout=5.0)
     cur2 = next((p for p in st2["params"] if p["key"] == pkey), None)
-    assert cur2 is not None, "RingBrightness param missing after reboot"
+    assert cur2 is not None, f"{bright['name']} param missing after reboot"
     # THE F10 ASSERTION: the override must have survived. Fails today (no SD).
     assert int(cur2["value"]) == target and cur2["overridden"] is True, (
         f"override lost across reboot: value={cur2['value']} "

@@ -24,6 +24,8 @@ Markers: ``net`` (LAN + a token). Non-destructive: reads only, no device state c
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from test_l4_network import lan_ip_or_skip
@@ -106,12 +108,16 @@ def test_ungated_shell_leaks_no_device_data(device, net, secrets, require_secret
     assert "nimbus1234" not in body, "the setup-AP password is baked into the open shell"
 
 
-def test_connect_offers_a_token_url_per_origin(device, net, secrets, require_secret):
+def test_connect_offers_a_signin_url_per_origin(device, net, secrets, require_secret):
     """`/api/connect` must hand out a sign-in URL for EVERY reachable origin.
 
     The browser stores the token per origin, so one URL cannot authenticate both
     addresses. Regression guard for the mislabelled link that sent "nimbus.local" to
     the raw-IP URL and left the name permanently asking for a token.
+
+    Since CUM-45 (v4.4.0) each URL carries its own single-use ``?c=`` sign-in code,
+    never the durable token: the page trades the code for the token over
+    ``POST /api/signin/exchange``, so a copied or synced link is inert once used.
     """
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     if not net.token():
@@ -122,11 +128,10 @@ def test_connect_offers_a_token_url_per_origin(device, net, secrets, require_sec
     assert tok, "/api/connect returned no token for an authenticated caller"
 
     url = c.get("url", "")
-    assert url.startswith("http://") and f"t={tok}" in url, (
-        f"/api/connect 'url' is not a token-bearing sign-in URL: {url!r}"
-    )
-
-    assert f"//{ip}/" in url, f"the IP sign-in URL {url!r} does not address the IP {ip} it was fetched from"
+    m = re.fullmatch(r"http://([^/]+)/\?c=([0-9a-f]+)", url)
+    assert m, f"/api/connect 'url' is not a one-time sign-in URL (http://<host>/?c=<code>): {url!r}"
+    assert m.group(1) == ip, f"the IP sign-in URL {url!r} does not address the IP {ip} it was fetched from"
+    assert tok not in url, f"the IP sign-in URL carries the durable token: {url!r}"
 
     # lan_ip_or_skip() already proved STA is up, which is exactly the condition under
     # which the device emits mdnsUrl - so a MISSING mdnsUrl is the regression, not a
@@ -137,16 +142,24 @@ def test_connect_offers_a_token_url_per_origin(device, net, secrets, require_sec
         f"(mdns={mdns!r}) - nimbus.local would have no way to obtain a token and would "
         "show the identify gate forever"
     )
-    assert f"t={tok}" in mdns_url, (
-        f"the mDNS sign-in URL carries no token: {mdns_url!r} - visiting it would "
-        "land on the identify gate, which is the exact bug this guards"
-    )
-    assert mdns and mdns in mdns_url, (
+    mm = re.fullmatch(r"http://([^/]+)/\?c=([0-9a-f]+)", mdns_url)
+    assert mm, f"the mDNS sign-in URL carries no sign-in code: {mdns_url!r}"
+    assert tok not in mdns_url, f"the mDNS sign-in URL carries the durable token: {mdns_url!r}"
+    assert mdns and mm.group(1) == mdns, (
         f"the mDNS URL {mdns_url!r} does not address the advertised name {mdns!r} - a "
         "link labelled with one host must point at that same host"
     )
-    # The whole point of two URLs: they must address DIFFERENT origins, since the
-    # browser stores the token per origin and one URL cannot sign in at both.
-    assert mdns_url != url, (
-        "the mDNS and IP sign-in URLs are identical - one origin is left with no way to obtain a token"
+    # The whole point of two URLs: they must address DIFFERENT origins, each with its
+    # own code (the browser stores the token per origin; a code is single-use).
+    assert mdns_url != url and mm.group(2) != m.group(2), (
+        "the mDNS and IP sign-in URLs share an origin or a code - one origin is left with no way to obtain a token"
     )
+
+    # Each code trades for the token exactly once, with no token sent by the caller.
+    for code in (m.group(2), mm.group(2)):
+        r = net.post("/api/signin/exchange", {"code": code}, ip=ip, timeout=8.0, auth=False)
+        assert r.status_code == 200 and r.json().get("token") == tok, (
+            f"a fresh sign-in code did not trade for the device token: HTTP {r.status_code}"
+        )
+        again = net.post("/api/signin/exchange", {"code": code}, ip=ip, timeout=8.0, auth=False)
+        assert again.status_code == 401, f"a used sign-in code traded again: HTTP {again.status_code}"

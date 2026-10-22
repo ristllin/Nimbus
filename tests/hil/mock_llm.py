@@ -72,6 +72,12 @@ CLAIM_TURNS = {
         "reply": "Put it in my notes, so it will survive a restart.",
         "scratchpad": {"active": None, "short": ["bench claim check note"], "mid": None, "long": None},
     },
+    # L55 row 4: a head turn whose session_ops arrived as plain text, not a list (the
+    # Lumi shape that was dropped in silence). The device must refuse it honestly.
+    "mock-spawn-plaintext": {
+        "reply": "Starting three researchers on it now.",
+        "session_ops": "spawn three researchers on this and summarize",
+    },
 }
 TOOLLOOP_FINAL = "toolloop final"
 USAGE_PROMPT_TOKENS = 1234

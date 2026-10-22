@@ -30,7 +30,7 @@ try:
 except ImportError:  # pragma: no cover
     requests = None
 
-from webrig import ip_tok_or_skip, make_session, require_orchestrator
+from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
@@ -47,17 +47,8 @@ def _api(ip: str, tok: str, path: str, **kw):
 
 
 def _chat(ip: str, tok: str, text: str, timeout_s: int = 90) -> str:
-    """Send one web-chat message and poll its reply (the single-slot pairing)."""
-    url, _ = _api(ip, tok, "/api/chat")
-    r = _S.post(url, data={"text": text}, timeout=10)
-    assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        time.sleep(3)
-        j = _S.get(url, timeout=10).json()
-        if not j.get("pending", True) and j.get("reply"):
-            return j["reply"]
-    pytest.fail(f"no chat reply within {timeout_s}s for: {text[:60]}")
+    """Send one web-chat message and return that turn's own reply (by turn id)."""
+    return chat_turn(_S, ip, text, timeout_s=timeout_s)
 
 
 def _episodic(ip: str, tok: str, **params) -> list:

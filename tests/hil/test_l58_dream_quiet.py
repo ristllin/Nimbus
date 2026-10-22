@@ -93,7 +93,8 @@ def _drill(dev: Device, timeout: float = 240.0) -> str:
     dev.drain(quiet=0.5)
     start = len(dev._transcript)
     dev.send("DREAM")
-    dev.expect("DREAM queued", timeout=5.0)
+    queued = dev.expect("DREAM ", timeout=5.0)
+    assert "DREAM queued" in queued, f"the drill was not queued (an earlier night still runs?): {queued}"
     dev.expect("DREAM fired", timeout=timeout)
     # Telegram sends are queued; give a held-or-sent notice time to surface.
     try:
@@ -171,11 +172,14 @@ def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
     orch.turn(
         "Please remember for later: my sister Anna's birthday is on 3 March, and I work from home on Fridays now."
     )
-    orch.expect("orchestrator: turn", timeout=120.0)
+    # The owner turn must END before memory fails: "orchestrator: turn" also matches
+    # the turn's start line, so the fault used to land mid-turn and the night queued
+    # behind a turn whose memory tools kept failing (the 240 s wait ran out).
+    orch.expect("turn end:", timeout=180.0)
     orch.drain(quiet=2.0)
     orch.cmd("FAULT memory on", "FAULT memory=1", timeout=5.0)
     try:
-        window = _drill(orch)
+        window = _drill(orch, timeout=480.0)  # every memory write of the night fails and is retried by the model
     finally:
         orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
     assert "telegram: send" not in window, "the dream messaged the owner"

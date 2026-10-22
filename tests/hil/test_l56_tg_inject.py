@@ -21,6 +21,8 @@ spend; a leg that drives a real turn is marked ``agent`` and gated on a key.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from device import Device, ExpectTimeout
@@ -88,10 +90,27 @@ def _raw_hook_present(dev: Device) -> bool:
         return False
 
 
+def _inject(dev: Device, page: str, timeout_s: float = 90.0) -> str:
+    """TGINJECT one page, waiting out a page that is still running.
+
+    The poll task runs one injected page per poll cycle (an album one photo per
+    cycle) and refuses the next page with ``busy`` until then; legs sent back to back
+    in the v4.5.14 release run hit that refusal, and the media legs read it as a
+    pass. Every leg is judged on its own page, and a page that never finishes fails."""
+    deadline = time.time() + timeout_s
+    while True:
+        line = dev.cmd("TGINJECT " + page, "TGINJECT", timeout=15.0)
+        if "busy" not in line:
+            return line
+        if time.time() > deadline:
+            pytest.fail(f"the previous injected page never finished running ({timeout_s:.0f} s): {line}")
+        time.sleep(2.0)
+
+
 @pytest.mark.parametrize("shape", sorted(PAGES))
 def test_inbound_shape_takes_the_right_action(device: Device, shape):
     dev = device
-    line = dev.cmd("TGINJECT " + PAGES[shape], "TGINJECT", timeout=15.0)
+    line = _inject(dev, PAGES[shape])
     if shape in TEXT_LIKE:
         # Text and commands run through the public inject queue even before lane R.
         assert "injected=1" in line or "text=1" in line, f"{shape}: not injected: {line}"
@@ -100,3 +119,4 @@ def test_inbound_shape_takes_the_right_action(device: Device, shape):
         pytest.skip(f"{shape}: full raw-update hook not wired yet (lane R)")
     # Lane A/D present: the media/album path acknowledged the shape.
     assert "parse FAILED" not in line, f"{shape}: parse failed: {line}"
+    assert "queued" in line, f"{shape}: the page was not queued: {line}"

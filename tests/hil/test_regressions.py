@@ -19,7 +19,7 @@ import time
 import pytest
 
 from net import WifiAuthFailure
-from test_l4_network import lan_ip_or_skip, ringbright_param
+from test_l4_network import lan_ip_or_skip, other_value, tunable_param
 from test_l5_agent import (
     test_agent_turn_live as _agent_turn_live,
     test_orch_boot_ok as _orch_boot_ok,
@@ -76,9 +76,9 @@ def test_R_F10_persist_no_sd(device, net, secrets, require_secret):
     test/test_persist_contract/ - see README."""
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
-    bright = ringbright_param(st0)
+    bright = tunable_param(st0)
     pkey = bright["key"]
-    target = 27 if int(bright["value"]) != 27 else 39
+    target = other_value(bright, int(bright["value"]))
 
     net.post("/api/config", {f"p_{pkey}": str(target)}, ip=ip, timeout=5.0)
     applied = False
@@ -101,7 +101,7 @@ def test_R_F10_persist_no_sd(device, net, secrets, require_secret):
 
     st2 = net.get_json("/api/state", ip=ip2, timeout=5.0)
     cur2 = next((p for p in st2["params"] if p["key"] == pkey), None)
-    assert cur2 is not None, "RingBrightness param missing after reboot"
+    assert cur2 is not None, f"{bright['name']} param missing after reboot"
     assert int(cur2["value"]) == target and cur2["overridden"] is True, (
         f"override lost across reboot: value={cur2['value']} "
         f"overridden={cur2['overridden']} (F10 - SD-backed blob not persisted)"
@@ -137,18 +137,20 @@ def test_R_F16_web_race(device, net, secrets, require_secret):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
 
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
-    bright = ringbright_param(st0)
-    pkey = bright["key"]
+    bright = tunable_param(st0)   # RingBrightness, or a numeric param on a board with no ring
+    pkey, name = bright["key"], bright["name"]
+    lo, hi, step = int(bright["min"]), int(bright["max"]), max(1, int(bright["step"]))
+    legal = list(range(lo, hi + 1, step))[:40]
 
     last = None
     for i in range(20):
-        val = 20 + (i % 40)  # cycle 20..59
+        val = legal[i % len(legal)]
         net.post("/api/config", {f"p_{pkey}": str(val)}, ip=ip, timeout=5.0)
         last = val
         st = net.get_json("/api/state", ip=ip, timeout=5.0)  # torn JSON would raise
         cur = next((p for p in st["params"] if p["key"] == pkey), None)
-        assert cur is not None, "RingBrightness vanished from params mid-hammer"
-        assert 0 <= int(cur["value"]) <= 255, f"RingBrightness read a torn/out-of-range value {cur['value']!r} - F16"
+        assert cur is not None, f"{name} vanished from params mid-hammer"
+        assert lo <= int(cur["value"]) <= hi, f"{name} read a torn/out-of-range value {cur['value']!r} - F16"
 
     final = None
     for _ in range(10):
@@ -158,7 +160,7 @@ def test_R_F16_web_race(device, net, secrets, require_secret):
         if cur and int(cur["value"]) == last:
             final = cur
             break
-    assert final is not None, f"final RingBrightness never settled to last write {last} - F16 race"
+    assert final is not None, f"final {name} never settled to last write {last} - F16 race"
     assert device.ping(), "device unresponsive after the F16 hammer"
 
 

@@ -25,6 +25,8 @@ clean on a device-less box.
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import pytest
 
@@ -79,3 +81,89 @@ def require_orchestrator(session, ip: str, label: str) -> dict:
     if st.get("mode") != 1:
         pytest.skip("Orchestrator mode required (MODE 1)")
     return st
+
+
+def chat_turn(session, ip: str, text: str, timeout_s: float = 150.0, poll_s: float = 2.0) -> str:
+    """Send one web-chat message and return THAT turn's reply.
+
+    Reads ``GET /api/chat?turn=<id>`` (CUM-482), never the legacy single slot: the
+    slot still holds the previous reply while the new message waits, so a reader of
+    it lines up one reply behind (the v4.5.14 release run read "OK" from an earlier
+    file as a /compact reply, and turn 1 as turn 2). Fails on a turn the device
+    forgot (``gone``) and on no answer within ``timeout_s``."""
+    r = session.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
+    if r.status_code == 503:  # the previous reply is still finishing
+        time.sleep(3)
+        r = session.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
+    assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:200]}"
+    turn = str(r.json().get("turn") or "")
+    assert turn, f"/api/chat gave no turn id: {r.text[:200]}"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(poll_s)
+        j = session.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json()
+        assert not j.get("gone"), f"turn {turn} is gone before it was answered: {text[:60]}"
+        if j.get("done"):
+            return str(j.get("reply") or "")
+    pytest.fail(f"turn {turn} was not answered within {timeout_s:.0f}s: {text[:60]}")
+
+
+def stitch(acc: str, snap: str, overlap: int = 160):
+    """Append the new part of one /api/log snapshot to ``acc``; return (acc, gap).
+
+    The RAM log is a 1,280-byte ring that wraps mid-line, so each read is the last
+    1,280 bytes. The tail of what was already read is found in the new snapshot and
+    only what follows it is appended. When it is not found the ring turned over
+    between two reads: the snapshot is appended after a gap mark and ``gap`` is True."""
+    if not acc:
+        return snap, False
+    key = acc[-overlap:]
+    at = snap.rfind(key)
+    if at >= 0:
+        return acc + snap[at + len(key) :], False
+    return acc + "\n[log gap]\n" + snap, True
+
+
+class LogFollower:
+    """Follow /api/log while a turn runs and stitch it into one text.
+
+    One read after a turn sees only its last 1,280 bytes, so the turn's first lines
+    are gone; this polls the ring every ``period_s`` in a thread and stitches the
+    reads. ``gaps`` counts reads the ring had already turned past (lines lost), so a
+    leg that asserts a line is ABSENT can refuse to judge a text with holes in it."""
+
+    def __init__(self, session, ip: str, period_s: float = 0.4):
+        self._s, self._ip, self._period = session, ip, period_s
+        self._acc, self._base, self.gaps = "", 0, 0
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+
+    @property
+    def text(self) -> str:
+        """What the log gained after the follower started (never the lines before it)."""
+        return self._acc[self._base :]
+
+    def _read(self) -> None:
+        try:
+            snap = self._s.get(f"http://{self._ip}/api/log", timeout=8).text
+        except Exception:  # noqa: BLE001 - a missed read shows up as a gap, never a crash
+            return
+        self._acc, gap = stitch(self._acc, snap)
+        self.gaps += int(gap)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._read()
+            self._stop.wait(self._period)
+
+    def __enter__(self) -> "LogFollower":
+        self._read()
+        self._base = len(self._acc)
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        self._t.join(timeout=10)
+        time.sleep(1.0)
+        self._read()   # the turn's last lines

@@ -167,6 +167,20 @@ class Backend:
         except Exception:  # noqa: BLE001 - the echo is advisory; turn still fires
             pass
 
+    def wait_idle(self, timeout: float = 180.0) -> None:
+        """Wait until no sub-agent runs and no turn is in flight (GET /api/chat?watch=1
+        busy == 0 on two polls in a row), so a synthesis turn from an earlier spawn
+        cannot land on the next leg's head or mock (it did in the v4.5.14 release run:
+        the head-custom leg counted the previous leg's synthesis as a second request)."""
+        deadline, quiet = time.time() + timeout, 0
+        while time.time() < deadline:
+            busy = int(_oget(self.net, self.ip, self.tok, "/api/chat?watch=1").get("busy") or 0)
+            quiet = quiet + 1 if busy == 0 else 0
+            if quiet >= 2:
+                return
+            time.sleep(3.0)
+        pytest.fail(f"the device did not go idle within {timeout:.0f}s (sub-agents or a turn still running)")
+
     def assert_healthy(self) -> None:
         """The resilience bar every scenario ends on: the loop answers PING and
         the web surface still serves Orchestrator state."""
@@ -310,6 +324,7 @@ def test_turn_roundtrip_deterministic(custom_backend):
         be.device.expect("ORCH REPLY", timeout=120.0)
     except Exception:  # noqa: BLE001 - synthesis phrasing/timing is the LLM's
         pass
+    be.wait_idle()   # the synthesis turn ends here, not on the next leg
     be.assert_healthy()
 
 
@@ -324,6 +339,7 @@ def test_head_custom_turn(custom_backend):
     scenario would emit a tool_calls round IF tools were advertised, so one
     request IS the no-tool-loop proof). RESTORES orchHost in-test."""
     be = custom_backend
+    be.wait_idle()
     be.set_model("mock-toolloop")
     prior_host = be.orch().get("orchHost", "")
     r = _opost(be.net, be.ip, be.tok, {"orchHost": "custom", "convReset": "1"})
@@ -355,8 +371,8 @@ def test_head_custom_turn(custom_backend):
 
         # Settle: no second round (the loop never engages on head-custom v1).
         time.sleep(8.0)
-        n = len(be.server.requests_for("mock-toolloop"))
-        assert n == 1, f"expected the single-shot head wire (1 request), saw {n}"
+        mine = [r for r in be.server.requests_for("mock-toolloop") if "say hello" in str(r.messages[-1:])]
+        assert len(mine) == 1, f"expected the single-shot head wire (1 request for this turn), saw {len(mine)}"
 
         # The mock's structured reply parsed + applied end-to-end (advisory:
         # the serial echo can tear under burst).
@@ -372,8 +388,9 @@ def test_head_custom_turn(custom_backend):
 
 def test_salvage_on_bad_json(custom_backend):
     """200 + truncated JSON -> the adapter's stream parse yields empty content
-    -> FabricErr::ParseFail -> the owner gets the clean 'Couldn't start that
-    agent on custom.' message, NEVER the raw JSON - and the device stays up."""
+    -> FabricErr::ParseFail -> the owner gets the honest "answered, but I couldn't
+    read its result" message (it ran, so never "couldn't start", since CUM-538),
+    NEVER the raw JSON - and the device stays up."""
     be = custom_backend
     be.set_model("mock-badjson")
     be.trigger_spawn("say anything")
@@ -381,10 +398,9 @@ def test_salvage_on_bad_json(custom_backend):
     got = be.server.wait_for_request("mock-badjson", count=1, timeout=SPAWN_WAIT_S)
     assert got, "the device never POSTed to the mock"
 
-    # dispatchSpawn: FabricErr != Ok -> deliver("Couldn't start that agent on
-    # <provider>.") to the serial chat.
-    line = be.device.expect("Couldn't start that agent", timeout=90.0)
-    assert "custom" in line
+    # dispatchSpawn: FabricErr::ParseFail -> spawnRefusal's ParseFail words
+    # (lib/harness/src/jobs.cpp) to the serial chat.
+    be.device.expect("The agent on custom answered, but I couldn't read its result", timeout=90.0)
 
     # The truncated body must never surface to the owner.
     marker = BADJSON_BODY.decode()[:20]
@@ -422,7 +438,7 @@ def test_retry_on_500(custom_backend):
 def test_timeout_handled(custom_backend):
     """The mock sleeps past CUST_TIMEOUT_MS (30 s, compile-time - the MOCK's
     delay is the configurable side: NIMBUS_MOCK_SLOW_S) -> the read deadline
-    lapses -> code 0 -> FabricErr::Network -> clean owner message. The 30 s
+    lapses -> FabricErr::Timeout -> the honest "didn't respond in time" message. The 30 s
     block runs INLINE on the tg_poll task, so the main loop + web server must
     stay responsive throughout."""
     be = custom_backend
@@ -440,7 +456,9 @@ def test_timeout_handled(custom_backend):
     st = be.state()
     assert st.get("mode") == 1, "web surface died during the blocking dispatch"
 
-    be.device.expect("Couldn't start that agent", timeout=DEVICE_CUST_TIMEOUT_S + 90.0)
+    # FabricErr::Timeout: the sub may have started, so the words claim neither
+    # outcome (CUM-538), never "couldn't start".
+    be.device.expect("The agent on custom didn't respond in time", timeout=DEVICE_CUST_TIMEOUT_S + 90.0)
     be.assert_healthy()
 
 

@@ -2,7 +2,11 @@
 """Per-turn input and cache use from a saved device log (read-only).
 
 Reads one or more saved log files (the device /api/log or /api/errlog text, or an
-SD log copy) and sums the engine's per-turn usage lines:
+SD log copy) and sums the engine's per-turn usage lines, from v4.5.14 on
+
+    turn spend: ok <source> | <host>/<model> in=N out=N cR=N cW=N n=N [| <host>/...]
+
+(every host the turn billed, summed) and before v4.5.14
 
     orchestrator: turn -> ... [tokens in=N out=N cacheR=N cacheW=N]
 
@@ -23,11 +27,23 @@ import re
 import sys
 
 TURN = re.compile(r"orchestrator: turn -> .*\[tokens in=(\d+) out=(\d+) cacheR=(\d+) cacheW=(\d+)\]")
+SPEND = re.compile(r"turn spend: (?:ok|FAIL) [^|\n]*\|(.*)")
+SLOT = re.compile(r"\S+/\S+ in=(\d+) out=(\d+) cR=(\d+) cW=(\d+) n=\d+")
 
 
 def turns_from(text: str) -> list[tuple[int, int, int, int]]:
     """Every per-turn usage tuple (in, out, cacheR, cacheW) in the text, in order."""
-    return [tuple(int(x) for x in m.groups()) for m in TURN.finditer(text)]
+    turns = []
+    for line in text.splitlines():
+        m = TURN.search(line)
+        if m:
+            turns.append(tuple(int(x) for x in m.groups()))
+            continue
+        m = SPEND.search(line)
+        slots = SLOT.findall(m.group(1)) if m else []
+        if slots:
+            turns.append(tuple(sum(int(sl[k]) for sl in slots) for k in range(4)))
+    return turns
 
 
 def summarize(turns: list[tuple[int, int, int, int]]) -> dict:

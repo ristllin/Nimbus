@@ -63,6 +63,8 @@ MARKERS = ("tomatoes", "bike pump", "lapsang", "dishwasher salt", "attic ladder"
 DRAIN_WAIT_S = 180.0
 STACK_FLOOR_B = 4096
 GATE_FREE_B = 12000  # the drain's admission gate (internal free heap)
+BALLAST_FREE_B = 7000  # what the gate leg leaves free: well under the gate, over the ballast's 4 KB floor
+ALIVE_HEAP = re.compile(r"ORCH alive .*\bheap=(\d+)")  # the console's periodic internal free heap
 
 
 def _fact_turn(topic: str) -> str:
@@ -212,6 +214,21 @@ def _lines_for(dev: Device, seconds: float) -> list:
         out.append(line)
 
 
+def _wait_idle(lan, timeout: float = 120.0) -> None:
+    """No turn in flight and no sub-agent running on two polls in a row (GET
+    /api/chat?watch=1 busy), then a short settle."""
+    s, ip = lan
+    deadline, quiet = time.time() + timeout, 0
+    while time.time() < deadline:
+        busy = int(s.get(f"http://{ip}/api/chat", params={"watch": "1"}, timeout=10).json().get("busy") or 0)
+        quiet = quiet + 1 if busy == 0 else 0
+        if quiet >= 2:
+            time.sleep(3.0)
+            return
+        time.sleep(2.0)
+    pytest.fail(f"the device did not go idle within {timeout:.0f}s")
+
+
 def _queue_one(dev: Device, lan, base: dict, topic: str) -> dict:
     """Fault on, one turn that asks to remember this test's fact; returns the stats with it queued."""
     _fault(dev, True)
@@ -359,15 +376,24 @@ def test_drain_waits_below_the_admission_gate(device: Device, lan, funded_embedd
     dev = device
     base = _stats(lan)
     _queue_one(dev, lan, base, "gate")  # queued and parked
+    # Size the ballast only once the remember turn has fully ended: memory its tail
+    # still held (the release run sized it on ORCH REPLY) came back inside the window,
+    # lifted free memory over the gate and the drain was rightly admitted.
+    _wait_idle(lan)
     free = int(dev.cmd_re("FAULT sram_ballast 0", r"intFree=(\d+)", timeout=8.0).group(1))
     held = dev.cmd_re(
-        f"FAULT sram_ballast {max(free - (GATE_FREE_B - 2500), 0)}", r"held=(\d+) intFree=(\d+)", timeout=8.0
+        f"FAULT sram_ballast {max(free - BALLAST_FREE_B, 0)}", r"held=(\d+) intFree=(\d+)", timeout=8.0
     )
     try:
         if int(held.group(2)) >= GATE_FREE_B:
             pytest.fail(f"the ballast could not take free memory under {GATE_FREE_B} B: {held.group(0)}")
         _fault(dev, False)  # embeddings back and the park cleared: only the gate holds the drain now
         lines = _lines_for(dev, 60.0)
+        heaps = [int(m.group(1)) for m in (ALIVE_HEAP.search(ln) for ln in lines) if m]
+        assert heaps and max(heaps) < GATE_FREE_B, (
+            f"the leg lost its precondition: free memory read {max(heaps) if heaps else 'nothing'} B in the "
+            f"window, not under the {GATE_FREE_B} B gate (the ballast did not hold it down)"
+        )
         assert not any("memory: pending drain" in ln for ln in lines), (
             "a drain step ran below the admission gate:\n" + "\n".join(ln for ln in lines if "pending drain" in ln)
         )

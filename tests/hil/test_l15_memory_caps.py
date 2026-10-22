@@ -35,7 +35,7 @@ import time
 
 import pytest
 
-from webrig import ip_tok_or_skip, make_session, require_orchestrator
+from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
@@ -110,8 +110,7 @@ def test_degraded_fold_completes_from_ram_ring(rig):
         assert r.status_code == 200, "FAULT sd on failed"
         before = _compact_row_ids()
 
-        _S.post(_url(ip, tok, "/api/chat"), data={"text": "Reply OK only: degraded fold marker."}, timeout=10)
-        time.sleep(25)  # let the turn land on tg_poll
+        chat_turn(_S, ip, "Reply OK only: degraded fold marker.", timeout_s=90)  # read to its own answer
         # Nudge past the byte threshold. The stage bypasses thresholds; if the
         # automatic pass already folded, this is a harmless no-op and the
         # assertion below is satisfied by that pass - either way a fold

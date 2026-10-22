@@ -18,6 +18,13 @@ Two bench legs for the provider-wire rules the host suites pin
 Both console verbs are TEST-build only; a board whose console does not know them
 skips loudly (the verbs ride the test console, which lane N owns).
 
+Each turn is read to ITS OWN answer (``GET /api/chat?turn=<id>``), never from the
+legacy single slot, which still holds the previous reply while the next message
+waits; and the log facts come from the serial console, because the /api/log ring
+holds about 1 KB, too little for one turn (the v4.5.14 release run read turn 1's
+tail as turn 2 both ways). ``CAPTEST 0`` must end the cap, or every later turn and
+file runs cut.
+
 Markers: ``hil`` + ``net`` + ``agent`` (real provider calls on the head, about
 $0.02 on claude-haiku-5-5). Needs --allow-hardware, NIMBUS_TEST_IP and
 NIMBUS_TEST_TOKEN, the serial port of the same board, an Anthropic head
@@ -30,6 +37,7 @@ import time
 
 import pytest
 
+from device import ExpectTimeout
 from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
@@ -40,31 +48,38 @@ CREDIT_400 = (
 )
 
 _S = None
+CUT_CAP = 128   # leg 1's first-attempt cap (output tokens)
 
 
-def _chat(ip: str, text: str, timeout_s: int = 150) -> str:
-    url = f"http://{ip}/api/chat"
-    r = _S.post(url, data={"text": text}, timeout=10)
+def _serial_lines(device, window_s: float) -> list:
+    """Every console line printed in the next ``window_s`` seconds."""
+    lines = []
+    end = time.time() + window_s
+    while time.time() < end:
+        try:
+            lines.append(device.expect_re(r".", timeout=max(0.2, end - time.time())).string)
+        except ExpectTimeout:
+            break
+    return lines
+
+
+def _turn(device, ip: str, text: str, timeout_s: int = 150):
+    """Run one web-chat turn to its own answer; return (reply, the console lines it printed)."""
+    device.drain(quiet=0.3)
+    r = _S.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
     assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
+    turn = str(r.json().get("turn") or "")
+    assert turn, f"/api/chat gave no turn id: {r.text[:200]}"
+    lines = []
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        time.sleep(3)
-        j = _S.get(url, timeout=10).json()
-        if not j.get("pending", True) and j.get("reply"):
-            return j["reply"]
-    pytest.fail(f"no chat reply within {timeout_s}s for: {text[:60]}")
-
-
-def _log(ip: str) -> str:
-    return _S.get(f"http://{ip}/api/log", timeout=10).text
-
-
-def _log_since(ip: str, before: str) -> str:
-    now = _log(ip)
-    # The log is a ring: keep what was added after the snapshot's last line.
-    tail = before.strip().splitlines()[-1] if before.strip() else ""
-    at = now.rfind(tail) if tail else -1
-    return now[at + len(tail) :] if at >= 0 else now
+        lines += _serial_lines(device, 2.0)
+        j = _S.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json()
+        assert not j.get("gone"), f"turn {turn} is gone before it was answered"
+        if j.get("done"):
+            lines += _serial_lines(device, 3.0)   # the turn's last lines, still in the buffer
+            return str(j.get("reply") or ""), "\n".join(lines)
+    pytest.fail(f"turn {turn} was not answered within {timeout_s}s: {text[:60]}")
 
 
 @pytest.fixture(scope="module")
@@ -81,26 +96,33 @@ def board(device):
         pytest.skip("test console has no CAPTEST/PROVFAULT verbs (flash the [env:test] build with them)")
     yield ip
     try:
-        device.send("CAPTEST 0")
-        device.send("PROVFAULT off")
+        device.cmd("CAPTEST 0", "CAPTEST", timeout=5)
+        device.cmd("PROVFAULT off", "PROVFAULT", timeout=5)
     except Exception:  # noqa: BLE001 - restore best-effort; a leak only lasts until reboot
         pass
 
 
+def test_captest_zero_ends_the_cap(board, device):
+    """CAPTEST 0 ends the cap (it was refused with a usage line, so the cap leaked
+    into every later turn and file until a restart)."""
+    assert device.cmd(f"CAPTEST {CUT_CAP}", "CAPTEST", timeout=5).strip() == f"CAPTEST {CUT_CAP}"
+    assert device.cmd("CAPTEST 0", "CAPTEST", timeout=5).strip() == "CAPTEST off"
+
+
 def test_cut_answer_retried_with_headroom_no_failover(board, device):
     ip = board
-    before = _log(ip)
-    device.cmd("CAPTEST 128", "CAPTEST", timeout=5)
+    device.cmd(f"CAPTEST {CUT_CAP}", "CAPTEST", timeout=5)
     try:
-        reply = _chat(
+        reply, log = _turn(
+            device,
             ip,
             "Do these one at a time with your tools: search your memory for my bike, then list my "
             "files, then search memory for my scooter, then write a 200-word note about bikes as "
             "your reply.",
         )
     finally:
-        device.cmd("CAPTEST 0", "CAPTEST", timeout=5)
-    log = _log_since(ip, before)
+        cap_off = device.cmd("CAPTEST 0", "CAPTEST", timeout=5).strip()
+    assert cap_off == "CAPTEST off", f"CAPTEST 0 did not end the cap: {cap_off!r}"
     assert reply, "the cut turn produced no reply"
     assert "one retry with" in log, "a cut first attempt must be retried once with headroom"
     assert "fabric: switching" not in log, "a cut answer must not fail over"
@@ -109,17 +131,16 @@ def test_cut_answer_retried_with_headroom_no_failover(board, device):
 
 def test_billing_refusal_parks_the_host(board, device):
     ip = board
-    before = _log(ip)
     device.cmd(f"PROVFAULT api.anthropic.com 400 {CREDIT_400}", "PROVFAULT", timeout=5)
     try:
-        first = _chat(ip, "What is two plus two? Answer in one short sentence.")
-        log1 = _log_since(ip, before)
-        mid = _log(ip)
-        second = _chat(ip, "And three plus three? One short sentence.")
-        log2 = _log_since(ip, mid)
+        first, log1 = _turn(device, ip, "What is two plus two? Answer in one short sentence.")
+        second, log2 = _turn(device, ip, "And three plus three? One short sentence.")
     finally:
         device.cmd("PROVFAULT off", "PROVFAULT", timeout=5)
     assert first and second, "both turns must be answered by the next provider"
+    assert "4" in first or "four" in first.lower(), f"turn 1 read another turn's reply: {first[:200]!r}"
+    assert "6" in second or "six" in second.lower(), f"turn 2 read another turn's reply: {second[:200]!r}"
+    assert f"at {CUT_CAP} tokens" not in log1 + log2, "leg 1's CAPTEST cap leaked into this leg"
     # Turn 1: one refused request, no same-host retry, a park, one switch.
     assert log1.count("TEST override answered api.anthropic.com") == 1, log1[-2000:]
     assert "parked (billing, HTTP 400)" in log1

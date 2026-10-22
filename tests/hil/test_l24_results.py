@@ -42,10 +42,7 @@ import time
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.net]
 
@@ -56,13 +53,18 @@ CHAT_B = "924102"
 MARKER = f"SPILL-{int(time.time()) % 100000}"  # unique per run; reruns can't alias
 
 
+# The header-authed device session (webrig): a ?t= query has been ignored since
+# CUM-45, so the old ?t= URLs 401'd and the board fixture read that as "not in
+# Orchestrator mode" and skipped the whole file green.
+_S = None
+
+
 def _u(ip, tok, path):
-    sep = "&" if "?" in path else "?"
-    return f"http://{ip}{path}{sep}t={tok}"
+    return f"http://{ip}{path}"
 
 
 def _resultput(ip, tok, chat, text, kind="tool", name="seed"):
-    r = requests.post(
+    r = _S.post(
         _u(ip, tok, "/api/test/resultput"), data={"chat": chat, "text": text, "kind": kind, "name": name}, timeout=15
     )
     if r.status_code == 404:
@@ -76,7 +78,7 @@ def _astool(ip, tok, chat, tool, args=None):
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args or {}}}
     )
-    r = requests.post(_u(ip, tok, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
+    r = _S.post(_u(ip, tok, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
     if r.status_code == 404:
         pytest.skip("/api/test/astool not present - board not flashed [env:test]")
     assert r.status_code == 200, f"astool {tool} as {chat}: {r.status_code} {r.text[:200]}"
@@ -106,22 +108,10 @@ def _text(resp) -> str:
 
 @pytest.fixture(scope="module")
 def board():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (WEBTOK?) to run L24")
-    try:
-        st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
-    except requests.RequestException as exc:
-        pytest.skip(
-            f"NIMBUS_TEST_IP is set but the board is unreachable over HTTP from this "
-            f"process ({exc}). L24 is a web/LAN leg: run it DIRECTLY (not under the "
-            f"serial launchd job, which has no LAN route on this Mac). See PR_BODY runbook."
-        )
-    if st.get("mode") != 1:
-        pytest.skip("board is not in Orchestrator mode - flash/MODE 1 first")
+    global _S
+    ip, tok = ip_tok_or_skip("L24")
+    _S = make_session(tok)
+    require_orchestrator(_S, ip, "L24")  # a rejected token FAILS loudly, never skips
     return ip, tok
 
 
@@ -216,18 +206,12 @@ def test_live_spill_overflows_fresh_ring(board):
         "(6) about mountains [RT-6], (7) about rivers [RT-7]. Do not answer them "
         "yourself - delegate all seven."
     )
-    r = requests.post(_u(ip, tok, "/api/chat"), data={"text": prompt}, timeout=15)
-    assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
-    # Let the fan-out complete (7 cloud sub-agents + synthesis).
+    reply = chat_turn(_S, ip, prompt, timeout_s=240)   # the head turn's own answer
+    assert reply, "the fan-out turn gave no reply"
+    # Let the fan-out complete (7 cloud sub-agents + synthesis): no job left running.
     deadline = time.time() + 240
-    reply = ""
-    while time.time() < deadline:
+    while time.time() < deadline and int(_S.get(_u(ip, tok, "/api/state"), timeout=10).json().get("jobs") or 0):
         time.sleep(6)
-        j = requests.get(_u(ip, tok, "/api/chat"), timeout=10).json()
-        if not j.get("pending", True) and j.get("reply"):
-            reply = j["reply"]
-            break
-    assert reply, "no synthesis reply within 240s"
 
     # The head runs as the owner (web chat) - read the ring as the owner.
     owner_chat = os.environ.get("NIMBUS_TEST_OWNER_CHAT", "")

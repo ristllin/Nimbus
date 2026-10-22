@@ -23,14 +23,15 @@ the ledger.
 
 Conditions (study T7, amendment): fresh device, a full NVS partition (NVSFILL, so
 the managed-agent id cache cannot persist - CUM-481), a router-only key, a reboot
-mid-run, and a malformed ``session_ops`` shape. The oracle is the spawn ledger: on
+mid-run, and a malformed ``session_ops`` shape (test_l55_spawn_malformed.py, on the
+scripted mock head). The oracle is the spawn ledger: on
 any turn that claims N sub-agents, exactly N were dispatched, and a spawn that
 cannot run produces an honest "could not start" line, never a phantom job the head
 then polls.
 
 ⚠ needs provider access (``agent``) and the board (``hil``); the orchestrator pins
 the model (claude-haiku-5-5 with sub-agents). The malformed-shape leg costs no
-tokens (it is refused before dispatch).
+tokens (it runs on the LAN mock head).
 """
 
 from __future__ import annotations
@@ -42,18 +43,6 @@ from typing import Optional, Tuple
 import pytest
 
 from device import Device, ExpectTimeout
-
-
-# A getUpdates page whose message asks the head to spawn, plus a directly
-# malformed session_ops shape (a non-array, the row-4 trigger) fed through the
-# normal receive path. Lane N's TGINJECT delivers it; lane L's normalizer must
-# turn it into an honest refusal, not a silent drop.
-_MALFORMED_SESSION_OPS = (
-    '{"ok":true,"result":[{"update_id":90001,"message":{"message_id":1,'
-    '"date":1792300000,"chat":{"id":424242,"type":"private"},'
-    '"from":{"id":424242,"first_name":"Bench"},'
-    '"text":"spawn three researchers on this and summarize"}}]}'
-)
 
 
 # The ledger line, in lane L's shape (``spawn ledger spawned=N claimed=M``) and the
@@ -127,14 +116,9 @@ def spawn_ready(device: Device, secrets) -> Device:
     return device
 
 
-@pytest.mark.hil
-@pytest.mark.agent
-def test_malformed_session_ops_is_refused_not_dropped(spawn_ready: Device):
-    dev = spawn_ready
-    dev.drain(quiet=0.3)
-    dev.send("TGINJECT " + _MALFORMED_SESSION_OPS)
-    # The normalizer must name the bad shape; a drop (the bug) prints nothing.
-    dev.expect_re(r"(session_ops|spawn).*(refus|invalid|could not|not an array)", timeout=60.0)
+# The malformed session_ops leg is test_l55_spawn_malformed.py: the shape has to come
+# from the head's own turn (a scripted mock head), which an injected Telegram text
+# from an unlisted chat can never produce (it only queues an approval).
 
 
 @pytest.mark.hil

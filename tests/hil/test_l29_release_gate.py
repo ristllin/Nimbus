@@ -52,6 +52,27 @@ def _scrok(device) -> str:
     return m.group(1) if m else ""
 
 
+def panel_power_verdict(rddpm: int, rddst: int, madctl_expect: int) -> str:
+    """'' when a non-gated panel answers as configured, else the reason it does not.
+
+    RDDST's status byte mirrors MADCTL's fixed bits; the MY/MX flip bits (0xC0) read
+    back 0 whatever was written and bit 0 toggles with the refresh scan, which is
+    exactly the driver's own health check (solide display_tft healthy()). RDDPM
+    (0x0A) reads 0x00 on this panel family even while it displays (driver note,
+    measured on hardware), and TFTPWR? reads it right after forcing sleep-out and
+    display-on, so a zero there carries no state and is never taken as either answer;
+    a NON-zero RDDPM is real and must carry display-on (bit 2)."""
+    if rddst == 0:
+        return f"RDDST read back all zero (panel not answering): rddpm=0x{rddpm:08x}"
+    got = (rddst >> 24) & 0xFE
+    want = madctl_expect & ~0xC0 & 0xFE
+    if got != want:
+        return f"RDDST status byte 0x{got:02x} is not the configured MADCTL bits 0x{want:02x} (panel lost its setup)"
+    if rddpm != 0 and not rddpm & 0x04:
+        return f"RDDPM 0x{rddpm:02x} is readable and says display off (bit 2 clear)"
+    return ""
+
+
 def _require_wifi(device) -> None:
     """Skip loudly if the board is not on Wi-Fi (the tunnel/loopback legs need the
     local web server reachable at its STA IP)."""
@@ -203,7 +224,7 @@ class TestRenderToGlass:
         device.send("TFTPWR?")
         # Read past the expected-MADCTL line to the post-rearm power readback (which
         # carries BOTH the power register and the status register).
-        device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0)
+        madctl = int(device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0).group(1), 16)
         pm = device.expect_re(r"after-rearm rddpm=0x([0-9A-Fa-f]+)\s+rddst=0x([0-9A-Fa-f]+)", timeout=6.0)
         rddpm = int(pm.group(1), 16)
         rddst = int(pm.group(2), 16)
@@ -223,10 +244,13 @@ class TestRenderToGlass:
                 "drifted (a shared-MISO board cannot self-check pixels)"
             )
             return
-        # Non-gated board: RDDPM IS a real display-on signal - keep the strict check,
-        # and its value is panel-specific so we only assert it is not the all-zero
-        # 'nothing answered'.
-        assert rddpm != 0, "panel power register read back all zero (panel not answering)"
+        # Non-gated board: the panel's registers are readable, so judge it the way the
+        # driver's health check does (RDDST against the MADCTL written), plus RDDPM's
+        # display-on bit whenever that register reads at all (panel_power_verdict). A
+        # dead panel (RDDST zero) or one that silently reset (status byte 0x00) fails.
+        verdict = panel_power_verdict(rddpm, rddst, madctl)
+        assert not verdict, f"{verdict} (rddst=0x{rddst:08x})"
+        assert _scrok(device) == "1", "non-gated board did not report scrok=1 (panel health check failing)"
 
     def test_panel_recovers_from_a_silent_reset(self, device):
         # TFTBREAK resets the panel behind the driver (white-screen on demand);

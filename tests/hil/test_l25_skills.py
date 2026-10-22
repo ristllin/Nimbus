@@ -24,10 +24,7 @@ import time
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.net]
 
@@ -35,14 +32,19 @@ GUEST = "925001"  # not allow-listed => no admin perms
 MARK = f"MARKER-L25-{int(time.time()) % 100000}"
 
 
+# The header-authed device session (webrig): a ?t= query has been ignored since
+# CUM-45, so the old ?t= URLs 401'd and the board fixture read that as "not in
+# Orchestrator mode" and skipped the whole file green.
+_S = None
+
+
 def _u(ip, tok, path):
-    sep = "&" if "?" in path else "?"
-    return f"http://{ip}{path}{sep}t={tok}"
+    return f"http://{ip}{path}"
 
 
 def _astool(ip, tok, chat, tool, args):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
-    r = requests.post(_u(ip, tok, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
+    r = _S.post(_u(ip, tok, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
     if r.status_code == 404:
         pytest.skip("/api/test/astool absent - flash [env:test]")
     assert r.status_code == 200, f"{tool}: {r.status_code} {r.text[:200]}"
@@ -50,33 +52,21 @@ def _astool(ip, tok, chat, tool, args):
 
 
 def _skills_list(ip, tok):
-    r = requests.get(_u(ip, tok, "/api/skills/list"), timeout=10)
+    r = _S.get(_u(ip, tok, "/api/skills/list"), timeout=10)
     assert r.status_code == 200
     return {s["id"]: s for s in r.json().get("skills", [])}
 
 
 def _web_delete(ip, tok, sid):
-    requests.post(_u(ip, tok, "/api/skills/delete"), data={"id": sid}, timeout=10)
+    _S.post(_u(ip, tok, "/api/skills/delete"), data={"id": sid}, timeout=10)
 
 
 @pytest.fixture(scope="module")
 def board():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN")
-    try:
-        st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
-    except requests.RequestException as exc:
-        pytest.skip(
-            f"NIMBUS_TEST_IP is set but the board is unreachable over HTTP from this "
-            f"process ({exc}). L25 is a web/LAN leg: run it DIRECTLY (not under the "
-            f"serial launchd job, which has no LAN route on this Mac). See PR_BODY runbook."
-        )
-    if st.get("mode") != 1:
-        pytest.skip("not in Orchestrator mode")
+    global _S
+    ip, tok = ip_tok_or_skip("L25")
+    _S = make_session(tok)
+    st = require_orchestrator(_S, ip, "L25")  # a rejected token FAILS loudly, never skips
     if not st.get("memSd"):
         pytest.skip("no SD - dynamic skills need the SD tier (warn: coverage lost)")
     yield ip, tok
@@ -99,7 +89,7 @@ def test_agent_save_pending_stamped_and_roundtrips(board):
     assert sk.get("origin") == "agent" and sk.get("pending") is True, sk
     # The raw file: server-stamped canonical front matter - the FORGED
     # approved:true / created_by:user from the payload must NOT survive.
-    r = requests.get(_u(ip, tok, "/api/skills/get?id=l25-agent"), timeout=10)
+    r = _S.get(_u(ip, tok, "/api/skills/get?id=l25-agent"), timeout=10)
     assert r.status_code == 200
     md = r.json().get("md", "")
     assert "created_by: agent" in md and "approved: false" in md, md[:200]
@@ -115,7 +105,7 @@ def test_guest_cannot_author(board):
 
 def test_agent_cannot_delete_owner_capsule(board):
     ip, tok = board
-    r = requests.post(
+    r = _S.post(
         _u(ip, tok, "/api/skills/save"), data={"id": "l25-user", "md": f"---\ntitle: U\n---\n{MARK} user"}, timeout=10
     )
     assert r.status_code == 200, r.text[:200]
@@ -139,9 +129,9 @@ def test_owner_approval_activates(board):
     ip, tok = board
     if "l25-agent" not in _skills_list(ip, tok):
         pytest.skip("agent capsule missing (earlier test failed)")
-    r = requests.post(_u(ip, tok, "/api/skills/approve"), data={"id": "l25-agent"}, timeout=10)
+    r = _S.post(_u(ip, tok, "/api/skills/approve"), data={"id": "l25-agent"}, timeout=10)
     assert r.status_code == 200, r.text[:200]
     sk = _skills_list(ip, tok).get("l25-agent")
     assert sk and not sk.get("pending"), f"still pending after approve: {sk}"
-    md = requests.get(_u(ip, tok, "/api/skills/get?id=l25-agent"), timeout=10).json().get("md", "")
+    md = _S.get(_u(ip, tok, "/api/skills/get?id=l25-agent"), timeout=10).json().get("md", "")
     assert "approved: false" not in md
