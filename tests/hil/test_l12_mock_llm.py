@@ -65,6 +65,27 @@ HEAD_PREFERENCE = ("anthropic", "openai", "mistral")
 HEAD_KEY_FIELD = {"anthropic": "antKey", "openai": "oaiKey", "mistral": "mistKey"}
 
 
+# An earlier leg's sub-agent ends in an unattended synthesis turn on the head
+# (docs/harness.md, sub-agents): two quiet polls this far apart mean none is due.
+IDLE_POLL_S = 3.0
+IDLE_POLLS = 3
+
+
+def user_section(rec) -> str:
+    """The text after the prompt's last ``[USER]`` marker in a recorded request's
+    user message ("" for a turn with no owner message, e.g. a synthesis turn)."""
+    msgs = rec.messages or []
+    user = next((m.get("content") or "" for m in reversed(msgs) if m.get("role") == "user"), "")
+    return user.rsplit("[USER]", 1)[1].strip() if "[USER]" in user else ""
+
+
+def requests_for_turn(recs, ask: str) -> list:
+    """The recorded requests that carry ``ask`` as their owner message: the head
+    wire of THAT turn, never a background turn (a synthesis) that reached the
+    same mock model meanwhile."""
+    return [r for r in recs if user_section(r) == ask]
+
+
 # ---- low-level helpers (token-gated HTTP; owner-batch-2 gates ALL /api GETs) --
 def _oget(net, ip, tok, path):
     sep = "&" if "?" in path else "?"
@@ -166,6 +187,20 @@ class Backend:
             self.device.cmd(f"TURN {prompt}", expect="TURN <-", timeout=6.0)
         except Exception:  # noqa: BLE001 - the echo is advisory; turn still fires
             pass
+
+    def wait_idle(self, timeout: float = 180.0) -> None:
+        """Wait until no sub-agent runs and no turn is in flight (GET /api/chat?watch=1
+        ``busy`` == 0 on IDLE_POLLS polls in a row), so an earlier leg's synthesis turn
+        does not land on the next leg's head: in the v4.5.14 release run it reached
+        the head-custom leg's mock as a second request (both units)."""
+        deadline, quiet = time.time() + timeout, 0
+        while time.time() < deadline:
+            busy = int(_oget(self.net, self.ip, self.tok, "/api/chat?watch=1").get("busy") or 0)
+            quiet = quiet + 1 if busy == 0 else 0
+            if quiet >= IDLE_POLLS:
+                return
+            time.sleep(IDLE_POLL_S)
+        pytest.fail(f"the device did not go idle within {timeout:.0f}s (sub-agents or a turn still running)")
 
     def assert_healthy(self) -> None:
         """The resilience bar every scenario ends on: the loop answers PING and
@@ -310,6 +345,7 @@ def test_turn_roundtrip_deterministic(custom_backend):
         be.device.expect("ORCH REPLY", timeout=120.0)
     except Exception:  # noqa: BLE001 - synthesis phrasing/timing is the LLM's
         pass
+    be.wait_idle()  # the spawn's synthesis turn ends inside this leg, not on the next one
     be.assert_healthy()
 
 
@@ -322,19 +358,26 @@ def test_head_custom_turn(custom_backend):
     POST /v1/chat/completions carrying response_format json_schema (orch_turn)
     + [system, user] messages and NO tools (single-shot - the mock's toolloop
     scenario would emit a tool_calls round IF tools were advertised, so one
-    request IS the no-tool-loop proof). RESTORES orchHost in-test."""
+    request IS the no-tool-loop proof). The count is of THIS turn's requests (its
+    owner text): a background turn reaching the same mock model is not the head
+    wire. RESTORES orchHost in-test."""
     be = custom_backend
+    be.wait_idle()
     be.set_model("mock-toolloop")
+    ask = f"say hello ({int(time.time())})"
     prior_host = be.orch().get("orchHost", "")
     r = _opost(be.net, be.ip, be.tok, {"orchHost": "custom", "convReset": "1"})
     assert r.status_code == 200, f"orchHost=custom -> {r.status_code}"
     try:
         try:
-            be.device.cmd("TURN say hello", expect="TURN <-", timeout=6.0)
+            be.device.cmd(f"TURN {ask}", expect="TURN <-", timeout=6.0)
         except Exception:  # noqa: BLE001 - the echo is advisory; turn still fires
             pass
 
-        got = be.server.wait_for_request("mock-toolloop", count=1, timeout=90.0)
+        deadline = time.time() + 90.0
+        while time.time() < deadline and not requests_for_turn(be.server.requests_for("mock-toolloop"), ask):
+            time.sleep(0.5)
+        got = requests_for_turn(be.server.requests_for("mock-toolloop"), ask)
         assert got, (
             "the device never POSTed the HEAD turn to the mock - "
             "orchHost=custom did not route (head-custom path broken?)"
@@ -355,8 +398,12 @@ def test_head_custom_turn(custom_backend):
 
         # Settle: no second round (the loop never engages on head-custom v1).
         time.sleep(8.0)
-        n = len(be.server.requests_for("mock-toolloop"))
-        assert n == 1, f"expected the single-shot head wire (1 request), saw {n}"
+        all_recs = be.server.requests_for("mock-toolloop")
+        mine = requests_for_turn(all_recs, ask)
+        others = [user_section(r) or "(no owner message: a background turn)" for r in all_recs if r not in mine]
+        assert len(mine) == 1, (
+            f"expected the single-shot head wire (1 request for this turn), saw {len(mine)}; other requests: {others}"
+        )
 
         # The mock's structured reply parsed + applied end-to-end (advisory:
         # the serial echo can tear under burst).
