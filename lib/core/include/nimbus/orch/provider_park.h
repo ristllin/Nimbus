@@ -183,6 +183,10 @@ class ProviderPark {
   bool deserialize(const std::string& blob, uint32_t nowMs);
 
   void clear();          // RAM state only (tests, a factory erase); storage untouched
+  // The bench's clean slate (test console PARK clear): every park and latch ends and
+  // the file is saved without them, so a restart does not bring them back. Pauses stay
+  // (they belong to the owner and the spend limit).
+  void forgetParks(uint32_t nowMs);
   void forgetStorage();  // tests: drop the registered storage and the loaded flag
 
  private:

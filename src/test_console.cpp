@@ -68,6 +68,7 @@
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 #include "nimbus/test_ballast.h"       // FAULT sram_ballast - multi-block ballast (host-tested)
 #include "agent/adapters/image_vision.h"  // VISIONCHECK - one caption request through the park (L19-8)
+#include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
 
 namespace nimbus::tc {
 namespace {
@@ -443,6 +444,28 @@ void visionCheck(String path) {
   const String d = agent::vision::describeImage(path.c_str(), "image/jpeg", &solide::storage::activeFs(), "");
   esp_task_wdt_add(nullptr);
   Serial.printf("VISIONCHECK described=%u why=%s\n", (unsigned)d.length(), agent::vision::failWords().c_str());
+  Serial.flush();
+}
+
+// PARK? | PARK clear (L19-8): list the one per-provider park (one line per provider:
+// kind, HTTP status, closed seams, seconds to the re-check, pause causes), or end every
+// park and latch and save the file without them (pauses stay), so a bench leg leaves
+// no closed provider behind for the next one.
+void parkTest(String arg) {
+  arg.trim();
+  const uint32_t now = (uint32_t)millis();
+  if (arg == "clear") {
+    nimbus::orch::providerPark().forgetParks(now);
+    reply("PARK cleared");
+    return;
+  }
+  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
+  const size_t n = nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, now);
+  for (size_t i = 0; i < n; i++)
+    Serial.printf("PARK %s kind=%s status=%d seams=0x%02x recheckS=%u paused=%u\n", e[i].provider,
+                  nimbus::orch::parkKindSlug(e[i].kind), e[i].httpStatus, (unsigned)e[i].seamMask,
+                  (unsigned)(e[i].recheckInMs / 1000), (unsigned)nimbus::orch::providerPark().pausedBy(e[i].provider));
+  Serial.printf("PARK? providers=%u\n", (unsigned)n);
   Serial.flush();
 }
 
@@ -1970,6 +1993,10 @@ void dispatch(String line) {
   }
   if (line.startsWith("VISIONCHECK ")) {
     visionCheck(line.substring(12));
+    return;
+  }
+  if (line == "PARK?" || line.startsWith("PARK ")) {
+    parkTest(line == "PARK?" ? String() : line.substring(5));
     return;
   }
   if (line.startsWith("AUDIOINJECT ")) {

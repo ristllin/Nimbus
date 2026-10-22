@@ -270,6 +270,7 @@ def test_one_park_closes_every_seam_and_survives_a_restart(board, device):
     a restart (the park lives on flash)."""
     ip = board
     _verb_or_skip(device, "VISIONCHECK /nonexistent.jpg", "VISIONCHECK described=")
+    _verb_or_skip(device, "PARK clear", "PARK cleared")  # no park left by an earlier run
     before = _orch_get(ip)
     device.cmd(f"PROVFAULT api.openai.com 429 {CREDIT_EXHAUSTED_429}", "PROVFAULT", timeout=5)
     try:
@@ -302,11 +303,15 @@ def test_one_park_closes_every_seam_and_survives_a_restart(board, device):
     finally:
         device.cmd("PROVFAULT off", "PROVFAULT", timeout=5)
         _orch_set(ip, {"subPrio": before.get("subPrio", "anthropic,openai,mistral")})
-    # 4. A restart: the override is gone (RAM), the park is not (flash).
-    device.reboot_and_confirm()
-    require_orchestrator(_S, ip, "L55")
-    _, log4 = _turn(device, ip, "What did I tell you about my bike? One sentence.")
-    assert "park: openai closed for embeddings" in log4, "the park did not survive the restart: " + log4[-2000:]
+    # 4. A restart: the override is gone (RAM), the park is not (flash). PARK clear then
+    # leaves no closed provider behind for the next leg, or the next lane on this unit.
+    try:
+        device.reboot_and_confirm()
+        require_orchestrator(_S, ip, "L55")
+        _, log4 = _turn(device, ip, "What did I tell you about my bike? One sentence.")
+        assert "park: openai closed for embeddings" in log4, "the park did not survive the restart: " + log4[-2000:]
+    finally:
+        device.cmd("PARK clear", "PARK cleared", timeout=5)
 
 
 def test_unsent_first_write_no_switch_one_honest_reply(board, device):

@@ -475,6 +475,21 @@ void ProviderPark::clear() {
   pausedAll_ = 0;
 }
 
+void ProviderPark::forgetParks(uint32_t nowMs) {
+  FlushOnExit flushAfter{*this};   // after the lock below is released
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(nowMs);
+  for (Rec& r : recs_) {
+    if (!r.provider[0]) continue;
+    Rec kept;
+    std::memcpy(kept.provider, r.provider, sizeof(kept.provider));
+    kept.paused = r.paused;
+    r = kept;
+    dropIfEmpty(r);
+  }
+  saveLocked();
+}
+
 void ProviderPark::forgetStorage() {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   storage_ = ParkStorage();

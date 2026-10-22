@@ -305,6 +305,24 @@ static void test_pause_is_ram_only_and_survives_a_load() {
   TEST_ASSERT_EQUAL(orch::kPauseSpendCeiling, providerPark().pausedBy("anthropic"));
 }
 
+// The bench's clean slate (PARK clear): every park and latch ends and the file is
+// saved without them, so a restart does not bring them back; a pause stays.
+static void test_forget_parks_is_saved_and_keeps_pauses() {
+  FakeFlash f;
+  providerPark().setStorage(f.storage());
+  providerPark().park("openai", PaidSeam::Embeddings, kFp, ParkKind::Billing, 429, 1000);
+  TEST_ASSERT_TRUE(orch::billingNoticeDue("openai"));
+  providerPark().pause("mistral", orch::kPauseOwner);
+  TEST_ASSERT_FALSE(open("openai", PaidSeam::Chat, 1001));
+  providerPark().forgetParks(1002);
+  TEST_ASSERT_TRUE(open("openai", PaidSeam::Chat, 1003));
+  TEST_ASSERT_EQUAL(orch::kPauseOwner, providerPark().pausedBy("mistral"));
+  TEST_ASSERT_TRUE(f.blob.find("openai") == std::string::npos);
+  reboot(f, 5);
+  TEST_ASSERT_TRUE(open("openai", PaidSeam::Chat, 10));   // not back from flash
+  TEST_ASSERT_TRUE(orch::billingNoticeDue("openai"));    // the next episode is told again
+}
+
 // ---- 5. the 19 Oct scenario across seams ---------------------------------------------
 
 // A refusal replayed on the EMBEDDING seam (OpenAI 429 credit_balance_exhausted),
@@ -503,6 +521,7 @@ int main(int, char**) {
   RUN_TEST(test_daily_warning_latch);
   RUN_TEST(test_pause_switch_closes_every_seam_and_is_never_probed);
   RUN_TEST(test_pause_is_ram_only_and_survives_a_load);
+  RUN_TEST(test_forget_parks_is_saved_and_keeps_pauses);
   RUN_TEST(test_embedding_refusal_closes_vision_spawn_and_chat);
   RUN_TEST(test_rate_limit_on_one_seam_parks_nothing);
   RUN_TEST(test_spawn_refused_when_every_provider_is_closed);
