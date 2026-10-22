@@ -122,10 +122,21 @@ def _models_console(device) -> dict:
 
 
 @pytest.fixture(scope="module")
-def board():
+def board(device, net):
+    """The unit's address once its web server answers. Depends on ``device`` and ``net``
+    so the session reset and the station rejoin come first (right after a flash the
+    first request was refused)."""
     global _S
     ip, tok = ip_tok_or_skip("L50 lane H")
     _S = make_session(tok)
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            if _S.get(f"http://{ip}/api/state", timeout=5).status_code in (200, 401):
+                break
+        except Exception:  # noqa: BLE001 - not up yet
+            pass
+        time.sleep(3)
     require_orchestrator(_S, ip, "L50 lane H")
     return ip
 
