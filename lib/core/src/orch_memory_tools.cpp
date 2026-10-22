@@ -533,10 +533,15 @@ ToolResult storeEmbedded(const MemoryContext& ctx, const VecEntry& e, const std:
   return withCode(std::move(r), r.success ? kMemOutcomeDuplicate : kMemOutcomeRefused, ctx);
 }
 
+// The engine cannot take a write: not bound, or marked unwritable (FAULT memory).
+bool engineDown(const MemoryContext& ctx) {
+  return !ctx.vec || !ctx.embed || (ctx.writable && !ctx.writable());
+}
+
 ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   const WriteSpec w = specFromArgs(ctx, a, 0.5);
   if (w.content.empty()) return withCode(ToolResult::fail("missing 'content'"), kMemOutcomeRefused, ctx);
-  if (!ctx.vec || !ctx.embed)
+  if (engineDown(ctx))
     return withCode(ToolResult::fail("memory engine unavailable"), kMemOutcomeRefused, ctx);
   // The rails run BEFORE the embed, so a caller that may not write never spends
   // an embedding call. Unattributed callers cannot write at all.
@@ -592,7 +597,7 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
   const WriteSpec w = specFromArgs(ctx, a, 0.6);
   if (w.content.empty())
     return withCode(ToolResult::fail("missing 'content' (the new fact)"), kMemOutcomeRefused, ctx);
-  if (!ctx.vec || !ctx.embed)
+  if (engineDown(ctx))
     return withCode(ToolResult::fail("memory engine unavailable"), kMemOutcomeRefused, ctx);
   const std::string oldIdArg = strArg(a, "id");
   std::string desc = strArg(a, "old");

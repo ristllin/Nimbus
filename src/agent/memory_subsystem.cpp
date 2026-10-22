@@ -728,6 +728,9 @@ void begin() {
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
   ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)
+  // FAULT memory: writes are refused in the tool itself, so the refusal is counted
+  // (the dream's row) on the MCP and the mem_write paths alike.
+  ctx.writable = [] { return !nimbus::fault::active(nimbus::fault::MEMORY); };
   // Memory writes survive an embedding outage: the queue, its durable sidecar and
   // the park memo (lane P). The queue loads after the vectors so a crash replay
   // (stored AND still queued) is recognised by id on the first drain.
@@ -2570,10 +2573,19 @@ static bool isMutatingTool(const std::string& name, const std::string& action) {
 
 std::string handleMcp(const std::string& jsonRpcRequest,
                       const nimbus::orch::Principal& who) {
+  JsonDocument d;
+  const bool parsed = deserializeJson(d, jsonRpcRequest) == DeserializationError::Ok;
+  const std::string method = parsed ? std::string(d["method"] | "") : std::string();
+  const std::string name =
+      (parsed && method == "tools/call") ? std::string(d["params"]["name"] | "") : std::string();
   // Resilience: with the memory subsystem faulted (FAULT memory), every MCP tool
   // call fails cleanly with a JSON-RPC error instead of touching the engines - the
   // model sees the error and carries on, proving a turn survives with no memory.
-  if (nimbus::fault::active(nimbus::fault::MEMORY))
+  // The two write tools go on to their handler, which refuses them as "memory
+  // engine unavailable" (ctx.writable) and counts the refusal: refused here, a
+  // write was invisible to the night's outcome, which then read ok (unit L, 22 Oct).
+  const bool faulted = nimbus::fault::active(nimbus::fault::MEMORY);
+  if (faulted && name != "memory.write" && name != "memory.update")
     return "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32001,"
            "\"message\":\"memory subsystem unavailable (fault-injected)\"}}";
   // A few tools own a LONG provider round-trip (image.generate blocks ~90-120 s on
@@ -2582,11 +2594,6 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // 8 s watchdog and reboots the device (proven live). Such tools do their SD work
   // OUTSIDE the long wait, under their OWN brief Lock (they decode to PSRAM first),
   // so they dispatch outside this one. See image_gen.cpp.
-  JsonDocument d;
-  const bool parsed = deserializeJson(d, jsonRpcRequest) == DeserializationError::Ok;
-  const std::string method = parsed ? std::string(d["method"] | "") : std::string();
-  const std::string name =
-      (parsed && method == "tools/call") ? std::string(d["params"]["name"] | "") : std::string();
   // The call's `action` arg (for tools where only some actions write, e.g.
   // memory.archive restore vs search/list). MCP nests args under params.arguments.
   const std::string action =
@@ -2599,8 +2606,9 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // deadlock; the poll task already tolerates multi-second long-poll waits.)
   Lock g;
   std::string resp = g_reg.handleRpc(jsonRpcRequest, who);
-  // Persist ONLY after a MUTATING tools/call (dirty-flag discipline).
-  if (method == "tools/call" && isMutatingTool(name, action)) {
+  // Persist ONLY after a MUTATING tools/call (dirty-flag discipline); a faulted
+  // write was refused and changed nothing.
+  if (method == "tools/call" && isMutatingTool(name, action) && !faulted) {
     applyConfig();   // memory.config may have changed max_vectors
     persistVectors();
     // memory.scratchpad saves itself (its result reports a failed save); no

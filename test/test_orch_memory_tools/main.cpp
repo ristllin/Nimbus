@@ -51,6 +51,8 @@ static std::vector<int8_t> fakeEmbed(const std::string& text, std::string& err) 
   return {40, 40, 40, 40};
 }
 
+static bool g_writable = true;    // the engine takes writes (false = the device's FAULT memory)
+static MemOpCounters g_ops;        // what writes did (the dream's night outcome reads these)
 static bool g_persistOk = true;   // what the scratchpad save reports
 static int g_persistCalls = 0;
 static std::function<bool()> g_persistHook;   // when set, the save's answer instead of g_persistOk
@@ -69,8 +71,12 @@ static ToolRegistry buildServer(bool withArchive = true) {
   g_embedFail = false;
   g_embedErr.clear();
   g_embedWidth = 0;
+  g_writable = true;
+  g_ops = MemOpCounters();
   MemoryContext ctx;
   ctx.vec = &g_vec; ctx.scratch = &g_scratch; ctx.cfg = &g_cfg;
+  ctx.writable = [] { return g_writable; };
+  ctx.ops = &g_ops;
   ctx.episodic = &g_epi;
   ctx.embed = fakeEmbed;
   ctx.nowHours = [] { return g_now; };
@@ -1243,6 +1249,33 @@ static void test_scratchpad_note_follows_the_flash_file_not_nvs() {
   }
 }
 
+// FAULT memory on the device (the engine cannot take writes): memory.write and
+// memory.update refuse as "memory engine unavailable" with the refused code and
+// count as failed writes, like an unbound engine, so the nightly dream's outcome
+// sees them. The fault used to refuse MCP calls before this handler, so a refused
+// write was never counted and the night read ok (unit L, 22 Oct 2026).
+static void test_an_unwritable_engine_refuses_and_counts_every_write() {
+  ToolRegistry reg = buildServer();
+  g_writable = false;
+  const ToolResult w = call(reg, "memory.write", "{\"content\":\"owner likes teal\"}");
+  TEST_ASSERT_FALSE(w.success);
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, w.code.c_str());
+  TEST_ASSERT_TRUE(has(w.error, "memory engine unavailable"));
+  const ToolResult u = call(reg, "memory.update", "{\"content\":\"owner likes navy\",\"old\":\"teal\"}");
+  TEST_ASSERT_FALSE(u.success);
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, u.code.c_str());
+  TEST_ASSERT_EQUAL(2, (int)g_ops.failed);
+  TEST_ASSERT_EQUAL(0, (int)(g_ops.added + g_ops.updated + g_ops.queued + g_ops.dupSkipped));
+  TEST_ASSERT_EQUAL(0, (int)g_vec.size());
+  // Reads are not writes: search still answers from the store.
+  TEST_ASSERT_TRUE(call(reg, "memory.search", "{\"query\":\"teal\"}").success);
+  // The counter-test: the same write lands once the engine takes writes again.
+  g_writable = true;
+  TEST_ASSERT_TRUE(call(reg, "memory.write", "{\"content\":\"owner likes teal\"}").success);
+  TEST_ASSERT_EQUAL(1, (int)g_ops.added);
+  TEST_ASSERT_EQUAL(1, (int)g_vec.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -1298,5 +1331,6 @@ int main(int, char**) {
   RUN_TEST(test_duplicate_write_reports_its_pin_state);
   RUN_TEST(test_scratchpad_change_reports_a_ram_only_save);
   RUN_TEST(test_scratchpad_note_follows_the_flash_file_not_nvs);
+  RUN_TEST(test_an_unwritable_engine_refuses_and_counts_every_write);
   return UNITY_END();
 }
