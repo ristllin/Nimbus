@@ -14,6 +14,9 @@
 #include "../agent/memory_subsystem.h"   // Lock, dataFs, haveSd
 #include "../agent/tg_archive.h"         // available, statsJson, cardFs, onRestored
 #include "errlog_routes.h"               // registerDeferredWebRoute
+#include "nimbus/net/archive_page.h"     // the day page byte budget (prism row 7)
+#include "nimbus/tg_archive_zip.h"       // Export day: one day as a streamed ZIP
+#include "web_admission.h"               // the internal-SRAM gate for big responses
 #include "nimbus/orch/file_store.h"      // fileKindName / fileKindForName (Memory & Files kinds)
 #include "nimbus/tg_archive.h"
 #include "webui.h"                       // webAuthOk
@@ -109,14 +112,11 @@ void streamItem(AsyncWebServerRequest* r, const std::string& chat, const std::st
   }
   const char* ctype = contentTypeFor(name);
   const char* shown = wantInline ? inlineType(ctype) : nullptr;
-  AsyncWebServerResponse* res = r->beginChunkedResponse(
-      shown ? shown : ctype, [f](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-        agent::memory::Lock g;
-        if (!*f) return 0;
-        const int n = f->read(buf, maxLen);
-        if (n <= 0) { f->close(); return 0; }
-        return size_t(n);
-      });
+  // Up to 20 MB: through the internal-SRAM admission like every big response (prism,
+  // wave 1 row 6): it trickles, or answers busy when memory is short.
+  AwsResponseFiller fill = admission::cardFileFiller(f);
+  if (!admission::admit(r, size, /*html=*/false, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse(shown ? shown : ctype, fill);
   res->addHeader("Content-Disposition",
                  String(shown ? "inline" : "attachment") + "; filename=\"" + name.c_str() + "\"");
   res->addHeader("X-Content-Type-Options", "nosniff");
@@ -160,20 +160,32 @@ String daysJson(arc::Fs& fs, const std::string& chat, size_t from, size_t limit)
   return out;
 }
 
+// A day page carries only the rows that fit the small-reply budget (prism row 7);
+// `next` then points at the first row left out, so paging continues from there.
 String rowsJson(arc::Fs& fs, const std::string& chat, const std::string& day, size_t from,
                 size_t limit) {
   const arc::RowPage pg = arc::readRows(fs, chat, day, from, limit);
+  std::vector<std::string> rows;
+  std::vector<size_t> sizes;
+  rows.reserve(pg.rows.size());
+  for (const std::string& raw : pg.rows) {
+    rows.push_back(arc::escapeControls(raw));   // one JSON object per line
+    sizes.push_back(rows.back().size());
+  }
+  const size_t fit = archiveRowsThatFit(sizes, 128 + chat.size() + day.size());
+  const bool cut = fit < rows.size();
   String out = "{\"chat\":";
   jsonStr(out, chat);
   out += ",\"day\":";
   jsonStr(out, day);
   out += ",\"rows\":[";
-  for (size_t i = 0; i < pg.rows.size(); ++i) {
+  for (size_t i = 0; i < fit; ++i) {
     if (i) out += ',';
-    out += arc::escapeControls(pg.rows[i]).c_str();   // one JSON object per line
+    out += rows[i].c_str();
   }
-  out += "],\"from\":" + String((unsigned)from) + ",\"next\":" + String((unsigned)pg.next) +
-         ",\"more\":" + (pg.more ? "true" : "false") + "}";
+  const size_t next = cut ? from + fit : pg.next;
+  out += "],\"from\":" + String((unsigned)from) + ",\"next\":" + String((unsigned)next) +
+         ",\"more\":" + ((cut || pg.more) ? "true" : "false") + "}";
   return out;
 }
 
@@ -213,6 +225,42 @@ void handleItem(AsyncWebServerRequest* r) {
     return;
   }
   streamItem(r, chat, day, name, qp(r, "inline") == "1");
+}
+
+// ---- GET /api/tg/archive/zip (Export day) ----------------------------------------
+
+// One archived day as a ZIP, streamed (tg_archive_zip.h): no file is held in RAM,
+// each read takes the card lock, and the response goes through the admission gate.
+void handleZip(AsyncWebServerRequest* r) {
+  if (authBlocked(r)) return;
+  if (!agent::tgarchive::available()) {
+    sendJson(r, 503, "{\"error\":\"The archive needs the SD card.\"}");
+    return;
+  }
+  const std::string chat = qp(r, "chat"), day = qp(r, "day");
+  if (!arc::validChatDir(chat) || !arc::validDay(day)) {
+    sendJson(r, 400, "{\"error\":\"bad chat or day\"}");
+    return;
+  }
+  auto zip = std::make_shared<arc::DayZip>(agent::tgarchive::cardFs(), chat, day);
+  if (zip->fileCount() == 0) {
+    sendJson(r, 404, "{\"error\":\"nothing archived that day\"}");
+    return;
+  }
+  if (zip->tooLarge()) {
+    sendJson(r, 413, "{\"error\":\"That day is too large for one ZIP. Save its files one by one.\"}");
+    return;
+  }
+  AwsResponseFiller fill = [zip](uint8_t* buf, size_t maxLen, size_t) -> size_t {
+    return zip->fill(buf, maxLen);
+  };
+  if (!admission::admit(r, (size_t)zip->estimatedBytes(), /*html=*/false, fill)) return;
+  AsyncWebServerResponse* res = r->beginChunkedResponse("application/zip", fill);
+  res->addHeader("Content-Disposition",
+                 String("attachment; filename=\"") + zip->downloadName().c_str() + "\"");
+  res->addHeader("X-Content-Type-Options", "nosniff");
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
 }
 
 // ---- POST /api/tg/archive/import (the restore tool) ----------------------------
@@ -367,6 +415,7 @@ void impReply(AsyncWebServerRequest* r) {
 void registerTgArchiveRoutes(AsyncWebServer& server) {
   // The longer paths first (ESPAsyncWebServer prefix-matches "<uri>/").
   server.on("/api/tg/archive/item", HTTP_GET, handleItem);
+  server.on("/api/tg/archive/zip", HTTP_GET, handleZip);
   server.on("/api/tg/archive/import", HTTP_POST, impReply, nullptr, impBody);
   server.on("/api/tg/archive", HTTP_GET, handleList);
 }

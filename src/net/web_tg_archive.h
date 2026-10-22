@@ -10,6 +10,7 @@ class AsyncWebServerRequest;
 //   GET  /api/tg/archive?chat=<id>             that chat's days, newest first (paged)
 //   GET  /api/tg/archive?chat=<id>&day=<d>     that day's index lines (paged)
 //   GET  /api/tg/archive/item?chat=&day=&name= one record or media file (streamed)
+//   GET  /api/tg/archive/zip?chat=&day=        that day as a ZIP (streamed, Export day)
 //   POST /api/tg/archive/import?chat=&day=&name=r<hex16>.<ext>&kind=&role=&date=&note=
 //                                              the restore tool's upload (raw body)
 // The routes self-register; the three functions below let Memory & Files list and
