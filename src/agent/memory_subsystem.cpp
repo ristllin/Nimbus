@@ -2496,7 +2496,8 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
 }
 
 bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
-                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch) {
+                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch,
+                      std::string* refOut) {
   if (!g_begun || !effHaveSd() || !srcPath) return false;
   if (g_erasing) return false;   // durable store is being wiped - don't write a new blob into it
   uint8_t buf[512];
@@ -2530,6 +2531,7 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
   if (sent) snprintf(tag, sizeof(tag), "sent:%lld", (long long)sentEpoch);
   const String blob(path.c_str()), tags(tag);
   captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0});
+  if (refOut) *refOut = hasher.hex();
   return true;
 }
 

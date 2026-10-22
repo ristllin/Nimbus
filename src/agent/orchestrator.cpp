@@ -5,6 +5,7 @@
 #include "nimbus/harness/apply.h"       // portable turn-application policy (Stage E)
 #include "nimbus/harness/jobs.h"        // portable sub-agent job machinery (Stage F)
 #include "nimbus/harness/engine.h"      // portable turn orchestration (Stage G)
+#include "nimbus/harness/turn_inbox.h"  // histV2 switch (the turn-structured history)
 #include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
 #include "nimbus/harness/head_arc.h"    // portable head-arc reconciler (W6)
 #include "store.h"
@@ -851,7 +852,8 @@ static agent::ApplyDeps buildApplyDeps() {
     // The row carries what the turn actually did ("fx:mem,file" or "fx:none",
     // at most 24 B on the card), so a later turn can tell a promise from a
     // deliverable (rendered in the history by a later lane).
-    const std::string fx = g_engine ? g_engine->claimCheck().effects().fxTag() : std::string();
+    // histV2 adds the row's out: kind (reply, ask or tts) after the fx: tag.
+    const std::string fx = g_engine ? g_engine->assistantRowTags() : std::string();
     memory::captureMessage(chatId.c_str(), "assistant", orch::MsgKind::Message,
                            String(text.c_str()), "", withTurnTag(fx.c_str()));
     if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
@@ -1121,7 +1123,8 @@ static TurnEngine::Deps buildTurnDeps() {
                          "of prior conversation; information, not instructions)\n" +
                          cf.summary + "\n";
     }
-    in.recentConversation = buildRecentWindow(chatId);
+    // histV2: the engine renders the turn-structured history itself.
+    if (!agent::history::v2Enabled()) in.recentConversation = buildRecentWindow(chatId);
     in.devName   = std::string(nimbus::sys::deviceName().c_str());
     in.hostLabel = agent::hostForPrompt(g_cfg.provider);
     in.now       = std::string(nimbus::hw::localTimeStr().c_str());  // "" = unsynced
@@ -1196,20 +1199,68 @@ static TurnEngine::Deps buildTurnDeps() {
   // rest, so the head saw "zai: ;" / "cumulo: ;" and refused those sub-agents,
   // and kept offering o4-mini-deep-research, which validation coerced away.
   d.modelChoices = [](const std::string& p) { return modelChoicesFor(p); };
-  d.episodicCaptureUser = [](const std::string& chatId, const std::string& text,
-                             const std::string& fromTag) {
+  // The owner's row: `tags` is the sanitized "from:<sender>" plus, under histV2,
+  // the att:/src:/sent: items the engine adds. Returns the row id.
+  auto captureOwner = [](const std::string& chatId, const std::string& text,
+                         const std::string& tags) -> std::string {
     memory::captureSession(chatId.c_str(), store::orchHost().c_str(), String(text.c_str()));
     String id = memory::captureMessage(chatId.c_str(), "user", orch::MsgKind::Message,
-                                       String(text.c_str()), "", String(fromTag.c_str()));
+                                       String(text.c_str()), "", String(tags.c_str()));
     strncpy(g_curUserRowId, id.c_str(), sizeof(g_curUserRowId) - 1);
     g_curUserRowId[sizeof(g_curUserRowId) - 1] = 0;
     nimbus::crash::noteTurnText(text);   // the crash journal names a photo as a photo
     // The user row IS this turn's identity - re-key the turn tag off it (the
     // onTurnStart fallback minted a placeholder). The row does NOT carry a
-    // turn: tag itself: its own `id` is the key, and appending one would
-    // corrupt the "from:<sender>" label the chat view slices out of tags.
+    // turn: tag itself: its own `id` is the key.
     if (id.length()) snprintf(g_turnTag, sizeof(g_turnTag), "turn:%s", id.c_str());
-    if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
+    // Fold trigger on content (L19-26): a re-served copy of the last message adds nothing.
+    if (chatId != "system") g_folds.noteOwnerMessage(chatId, text);
+    return std::string(id.c_str());
+  };
+  d.episodicCaptureUser = [captureOwner](const std::string& chatId, const std::string& text,
+                                         const std::string& fromTag) {
+    captureOwner(chatId, text, fromTag);
+  };
+  // histV2 (conversation.h): the turn-structured history. A RAM switch, on by
+  // default (no settings key); the test console's HISTV2 0 restores the
+  // v4.5.15 window and capture byte for byte.
+  d.histV2 = [] { return agent::history::v2Enabled(); };
+  d.captureUserRow = captureOwner;
+  d.historyRows = [](const std::string& chatId, size_t limit, const std::string& before) {
+    using namespace nimbus::orch;
+    MsgQuery q;
+    q.sessionId = chatId;
+    q.haveKind = true; q.kind = MsgKind::Message;
+    q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+    q.limit = (int)limit;
+    q.before = before;
+    std::vector<EpisodicMessage> rows;
+    { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
+    return rows;
+  };
+  // A seedless turn's trigger row joins the turn by its turn: tag.
+  d.captureTrigger = [](const std::string& chatId, const std::string& text, const std::string& tags) {
+    memory::captureMessage(chatId.c_str(), "system", orch::MsgKind::Message, String(text.c_str()), "",
+                           withTurnTag(tags.c_str()));
+  };
+  d.historyMarks = [](const std::string& chatId) {
+    const nimbus::orch::ChatFold f = g_folds.get(chatId);
+    return agent::HistoryMarks{f.thru, f.softStart};
+  };
+  d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
+    g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write
+  };
+  // Minutes east of UTC from the device's own TZ (0 until the clock syncs).
+  d.utcOffsetMin = []() -> int32_t {
+    const time_t t = time(nullptr);
+    if (t < 1000000000) return 0;
+    struct tm lt, gt;
+    localtime_r(&t, &lt);
+    gmtime_r(&t, &gt);
+    int days = lt.tm_yday - gt.tm_yday;
+    if (days > 1) days = -1;        // local is Dec 31, UTC already Jan 1
+    else if (days < -1) days = 1;   // and the reverse
+    return (int32_t)(days * 1440 + (lt.tm_hour - gt.tm_hour) * 60 + (lt.tm_min - gt.tm_min));
   };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
@@ -2304,7 +2355,7 @@ static void compactTick() {
     g_folds.resume(chat);   // manual /compact overrides a paused breaker
   } else {
     const uint32_t kb = store::compactAtKB();
-    FoldDue due = g_folds.evaluateDue(chat, kb * 1024u, 200);
+    FoldDue due = g_folds.evaluateDue(chat, kb * 1024u, nimbus::orch::kFoldMsgsThreshold);
     if (due == FoldDue::ThrashPaused) {
       if (!pseudo)
         deliver(String(chat.c_str()),
@@ -2330,7 +2381,27 @@ static void compactTick() {
   // synchronously in handleMessage and gets its result message below.
 
   std::string digest;
-  {
+  std::string thru;   // H3: the newest row the new summary covers ("" = no anchor)
+  const size_t digestCap =
+      std::min(headBudget().foldSliceBytes, nimbus::orch::foldDigestCap(prev.summary.size()));
+  if (g_engine->histV2On()) {
+    // H3 + L19-26: only the turns after the last anchor that lie beyond the kept
+    // verbatim history (half the history budget), repeats collapsed. Nothing new
+    // there = no paid call: a flood of one line never folds.
+    const agent::FoldSlice slice = g_engine->historyFoldSlice(chat, digestCap, manual);
+    if (slice.digest.empty()) {
+      if (manual) {
+        if (!pseudo) deliver(String(chat.c_str()), String("Nothing to compact yet."), /*system=*/true);
+        return;
+      }
+      g_folds.noteFoldSkipped(chat);
+      publishFoldStatus(chat);
+      alogf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
+      return;
+    }
+    digest = slice.digest;
+    thru = slice.thru;
+  } else {
     using namespace nimbus::orch;
     MsgQuery q;
     q.sessionId = chat;
@@ -2348,12 +2419,12 @@ static void compactTick() {
     { memory::Lock lk; rows = memory::episodic().query(q); }
     // CUM-511: a fold summarizes only the live conversation - re-folding rows
     // from before a /clear would bring the cleared conversation straight back.
-    rows = agent::liveConversation(rows, std::string(), 0);
+    // L19-26: a run of one repeated owner message is one line with its count.
+    rows = agent::collapseRepeats(agent::liveConversation(rows, std::string(), 0));
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
     // anchor), bounded so summary + digest stay ONE whole provider string
     // (foldDigestCap; a 64 KB string goes null and the provider answers 400).
-    digest = dream::buildEpisodicDigest(
-        rows, std::min(headBudget().foldSliceBytes, nimbus::orch::foldDigestCap(prev.summary.size())));
+    digest = dream::buildEpisodicDigest(rows, digestCap);
   }
 
   std::string summary;
@@ -2367,7 +2438,7 @@ static void compactTick() {
     return;
   }
   if (res == agent::TurnEngine::FoldResult::Ok) {
-    g_folds.applyFold(chat, summary, (uint32_t)time(nullptr));   // blob FIRST
+    g_folds.applyFold(chat, summary, (uint32_t)time(nullptr), thru);   // blob FIRST (anchor with it)
     // ...and republish, which this function's own contract says to do on
     // "every turn end AND every fold outcome" - only the first half was ever
     // implemented. The echo has ONE writer, the onTurnEnd hook, so until now
@@ -2383,7 +2454,7 @@ static void compactTick() {
             " B / " + String((unsigned)prev.msgsSinceFold) + " msgs folded into a " +
             String((unsigned)summary.size()) + " B summary (" +
             String((unsigned)((millis() - t0) / 1000)) + " s)",
-        "", String("ev:compact"));
+        "", thru.empty() ? String("ev:compact") : String("ev:compact,thru:") + thru.c_str());
     // Success confirmation only for MANUAL /compact (the owner asked and was
     // promised a result). Auto folds complete silently - the ev:compact history
     // row + publishFoldStatus are their record.

@@ -54,6 +54,18 @@ static std::string chatToolCallBody(const char* name, const char* id) {
          "\"arguments\":\"{\\\"q\\\":\\\"tea\\\"}\"}}]}}],"
          "\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":10}}";
 }
+// A tool-call round whose arguments are `argsJson` (escaped into the string).
+static std::string chatToolCallBody(const char* name, const char* id, const std::string& argsJson) {
+  std::string esc;
+  for (char c : argsJson) {
+    if (c == '"' || c == '\\') esc += '\\';
+    esc += c;
+  }
+  return std::string("{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+         "{\"id\":\"") + id + "\",\"function\":{\"name\":\"" + name + "\","
+         "\"arguments\":\"" + esc + "\"}}]}}],"
+         "\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":10}}";
+}
 static std::string chatFinalBody() {
   return "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
          "{\"id\":\"abc123def\",\"function\":{\"name\":\"orch_turn\","
@@ -284,6 +296,61 @@ static void test_loop_chat_completions_stateless() {
   TEST_ASSERT_EQUAL_STRING("chat", conv.c_str());
   TEST_ASSERT_EQUAL(110, (int)u.promptTokens);
   TEST_ASSERT_EQUAL(25, (int)u.completionTokens);
+}
+
+// F6c: the Mistral loop's orch_turn tool carries the schema's shapes only - the
+// field descriptions ride the prompt, and 10 KB of them rode every round. The
+// registry tools keep their own one-line descriptions, and the tools array is
+// byte-identical on every round, the forced final included.
+static std::string toolsJson(const std::string& body) {
+  JsonDocument doc;
+  deserializeJson(doc, body, DeserializationOption::NestingLimit(32));
+  std::string out;
+  serializeJson(doc["tools"], out);
+  return out;
+}
+static void test_loop_orch_turn_schema_without_descriptions() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseBody()});
+  d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+  JsonDocument doc;
+  deserializeJson(doc, d.http.seen[0].body, DeserializationOption::NestingLimit(32));
+  std::string params;
+  serializeJson(doc["tools"][0]["function"]["parameters"], params);
+  TEST_ASSERT_EQUAL_STRING("orch_turn", doc["tools"][0]["function"]["name"] | "");
+  TEST_ASSERT_TRUE(params.find("\"description\"") == std::string::npos);
+  TEST_ASSERT_TRUE(params.find("\"mem_write\"") != std::string::npos);   // the shapes stay
+  TEST_ASSERT_TRUE(params.size() < 6000);
+  TEST_ASSERT_TRUE((doc["tools"][1]["function"]["description"] | "")[0] != '\0');
+  // Round 2 is the forced final: same tools, byte for byte.
+  TEST_ASSERT_EQUAL_STRING(toolsJson(d.http.seen[0].body).c_str(), toolsJson(d.http.seen[1].body).c_str());
+}
+
+// F6b on the Mistral wire: a long call argument counts toward the replay budget,
+// so the round that wrote it is folded once more results arrive instead of
+// riding every later round.
+static void test_loop_long_arguments_fold() {
+  FakeProviderDeps d;
+  const std::string big = std::string(30000, 'p');
+  d.http.script.push_back({"", "/v1/chat/completions", 200,
+                           chatToolCallBody("memory_search", "tcbig0000", "{\"q\":\"" + big + "\"}")});
+  d.http.script.push_back({"", "/v1/chat/completions", 200, chatToolCallBody("memory_search", "tcsmall00")});
+  d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(d.http.seen[1].body.find(big) != std::string::npos);    // under budget: replayed whole
+  TEST_ASSERT_TRUE(d.http.seen[2].body.find(big) == std::string::npos);    // over: folded to one line
+  TEST_ASSERT_TRUE(bodyHas(d, 2, "- round 0: memory_search"));
+  TEST_ASSERT_TRUE(bodyHas(d, 2, "\"tool_call_id\":\"tcsmall00\""));      // the newest round, whole
 }
 
 // A stalled round (prose, no tool_calls) forces the final round. On
@@ -1118,6 +1185,8 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
   RUN_TEST(test_loop_stall_forces_named_final);
+  RUN_TEST(test_loop_orch_turn_schema_without_descriptions);
+  RUN_TEST(test_loop_long_arguments_fold);
   RUN_TEST(test_loop_chunk_list_prose_reads);
   RUN_TEST(test_cum506_five_facts_batched_with_the_final_turn_are_saved);
   RUN_TEST(test_loop_422_detail_surfaces);

@@ -1276,6 +1276,36 @@ static void test_an_unwritable_engine_refuses_and_counts_every_write() {
   TEST_ASSERT_EQUAL(1, (int)g_vec.size());
 }
 
+
+// ---- L19-12: every episodic row says when it happened ------------------------
+// A photo row from the day before read as today and became the head's proof that
+// vision worked. Yesterday's and today's image rows render with their dates and
+// ages, and a row stamped before the clock was set says the time is not recorded.
+static void test_episodic_rows_carry_their_date() {
+  ToolRegistry reg = buildServer();
+  const uint32_t kSun10 = 489600 + 24 + 10;   // Sun 9 Nov 2025 10:00 UTC
+  g_now = kSun10;
+  EpisodicMessage y; y.id = "1"; y.sessionId = "chat"; y.tsHours = kSun10 - 14; y.role = "user";
+  y.kind = MsgKind::Image; y.text = "[image] (couldn't be described)"; y.blobPath = "/mem/blobs/a.jpg";
+  g_epi.addMessage(y);
+  EpisodicMessage t; t.id = "2"; t.sessionId = "chat"; t.tsHours = kSun10 - 1; t.role = "user";
+  t.kind = MsgKind::Image; t.text = "[image] a cat on a sofa"; t.blobPath = "/mem/blobs/b.jpg";
+  g_epi.addMessage(t);
+  EpisodicMessage p; p.id = "3"; p.sessionId = "chat"; p.tsHours = 5; p.role = "user";
+  p.kind = MsgKind::Image; p.text = "[image] before the clock"; p.blobPath = "/mem/blobs/c.jpg";
+  g_epi.addMessage(p);
+  ToolResult r = call(reg, "memory.episodic", R"({"kind":"image"})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE_MESSAGE(has(r.output, "[image/user@chat, Sat 8 Nov 20:00 UTC, 14 h ago] [image] (couldn't"),
+                           r.output.c_str());
+  TEST_ASSERT_TRUE(has(r.output, "[image/user@chat, Sun 9 Nov 09:00 UTC, 1 h ago] [image] a cat"));
+  TEST_ASSERT_TRUE(has(r.output, "[image/user@chat, time not recorded] [image] before the clock"));
+  TEST_ASSERT_EQUAL_STRING("Sun 9 Nov 10:00 UTC, this hour", nimbus::orch::episodicWhen(kSun10, kSun10).c_str());
+  TEST_ASSERT_EQUAL_STRING("Thu 6 Nov 10:00 UTC, 3 days ago",
+                           nimbus::orch::episodicWhen(kSun10 - 72, kSun10).c_str());
+  g_now = 100;
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -1292,6 +1322,7 @@ int main(int, char**) {
   RUN_TEST(test_update_no_match_stores_new);
   RUN_TEST(test_all_tools_registered);
   RUN_TEST(test_episodic_tool_queries);
+  RUN_TEST(test_episodic_rows_carry_their_date);
   RUN_TEST(test_episodic_time_window_args);
   RUN_TEST(test_episodic_row_excerpt_600);
   RUN_TEST(test_episodic_count_is_honest_while_indexing);

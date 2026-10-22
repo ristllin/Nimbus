@@ -130,7 +130,22 @@ struct ChatFold {
   uint32_t turnsSinceFold  = 0;    // thrash guard input (saturating)
   uint8_t  breakerFails    = 0;    // per-chat CompactBreaker persistence
   bool     breakerPaused   = false;
+  // H3 (turn-structured history): the newest row id the summary covers (the
+  // history starts after it) and the overflow shift (rows up to it are neither
+  // verbatim nor summarized until the next fold digests them). Both forward
+  // only; "" = none. Stored as suffixes of the epoch and turns fields
+  // ("1234;m0000a1f3"), which an older image's number parser stops before, so
+  // an OTA rollback still reads the blob.
+  std::string thru;
+  std::string softStart;
+  // RAM only (L19-26, fold on content): a hash of the chat's last owner message,
+  // so a re-served copy of it adds nothing toward the next fold.
+  uint32_t lastOwnerHash = 0;
 };
+
+// Owner messages a chat may gather before a fold is due by count alone (the
+// byte threshold is the owner's compactAtK). Only DISTINCT messages count.
+constexpr uint32_t kFoldMsgsThreshold = 200;
 
 // Device implements against LittleFS /data/chatsum.txt; host tests in-memory.
 struct FoldStoreIO {
@@ -155,21 +170,35 @@ class FoldStore {
   // time for kind=message rows). Persist is DEFERRED to the next noteTurn/
   // applyFold to keep per-message flash writes off the hot path.
   void noteMessage(const std::string& chatId, size_t bytes);
+  // An owner message, counted on content (L19-26): the same text again right
+  // after itself (a replayed or re-sent update) counts nothing, so a flood of
+  // one line can never make a fold due by count. Returns false for a repeat.
+  bool noteOwnerMessage(const std::string& chatId, const std::string& text);
+
+  // H3: the history's overflow shift moved forward to `rowId` (persisted with
+  // the turn's blob write). Rows it hides make a fold due.
+  void setSoftStart(const std::string& chatId, const std::string& rowId);
+  // A due fold found nothing new worth a summary (the slice beyond the kept
+  // verbatim tail was empty): the counters restart without a paid call.
+  void noteFoldSkipped(const std::string& chatId);
 
   // One completed turn on the chat: bumps the thrash counter and persists the
   // accumulated state (one small blob write per turn, not per message).
   void noteTurn(const std::string& chatId);
 
   // Evaluate the auto-fold trigger. bytesThreshold==0 disables (manual only).
+  // Also due when the history's overflow shift hides rows the summary does not
+  // cover yet (softStart after thru).
   // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam).
   FoldDue evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
                       uint32_t msgsThreshold);
 
   // A fold completed: store the capped summary, reset the counters, stamp the
   // epoch, clear the breaker, persist. (Write order: this blob FIRST - the
-  // caller resets the provider chain only after this returns.)
+  // caller resets the provider chain only after this returns.) `thru` (H3) is
+  // the newest row the summary now covers; a shift it covers is cleared.
   void applyFold(const std::string& chatId, const std::string& summary,
-                 uint32_t epoch);
+                 uint32_t epoch, const std::string& thru = std::string());
 
   // A fold attempt failed: breaker bookkeeping. True on the 3-fail pause edge
   // (alert once). Persisted.

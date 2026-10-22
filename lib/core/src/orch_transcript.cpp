@@ -32,6 +32,7 @@ void Transcript::addAssistantText(std::string text, int round, const char* provi
   it.text = std::move(text);
   it.round = (int8_t)round;
   setProvider(it, provider);
+  replayBytes_ += it.text.size();
   e_.push_back(std::move(it));
 }
 
@@ -43,6 +44,7 @@ void Transcript::addToolCall(const HeadToolCall& c, int round, const char* provi
   it.text = c.argsJson;
   it.round = (int8_t)round;
   setProvider(it, provider);
+  replayBytes_ += it.text.size();
   e_.push_back(std::move(it));
 }
 
@@ -54,7 +56,7 @@ void Transcript::addToolResult(const HeadToolResult& r, int round) {
   it.text = r.output;
   it.isError = r.isError;
   it.round = (int8_t)round;
-  toolBytes_ += r.output.size();
+  replayBytes_ += r.output.size();
   e_.push_back(std::move(it));
 }
 
@@ -86,35 +88,101 @@ std::string clipToRoom(const std::string& text, size_t room) {
 }
 }  // namespace
 
-size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
-  if (!maxTotalToolBytes || toolBytes_ <= maxTotalToolBytes) return 0;
-  // Append-only (prompt_layout.h): a result an earlier round already SENT keeps
-  // its bytes, so every round's request starts with the previous round's request
-  // and reads it from the provider cache. Only the newest round's results - not
-  // on any wire yet - are clipped, to the room the older ones leave. The entry is
-  // never removed, so every ToolUse stays answered by its ToolResult.
+const char Transcript::kFoldNote[] =
+    "[EARLIER TOOL ROUNDS OF THIS TURN - folded to one line each to save room; call the "
+    "tool again if you need a full result back]";
+
+int Transcript::newestRound() const {
   int newest = -1;
   for (const auto& it : e_)
-    if (it.kind == TranscriptItem::Kind::ToolResult && it.round > newest) newest = it.round;
-  size_t older = 0;
+    if (it.kind != TranscriptItem::Kind::User && it.round > newest) newest = it.round;
+  return newest;
+}
+
+namespace {
+// One folded round: each call with the gist of its result, or the gist of the
+// prose of a round that called nothing.
+std::string foldRoundLine(const std::vector<const TranscriptItem*>& items, int round) {
+  std::string out;
+  std::string prose;
+  for (const TranscriptItem* it : items) {
+    if (it->kind == TranscriptItem::Kind::AssistantText) prose += (prose.empty() ? "" : " ") + it->text;
+    if (it->kind != TranscriptItem::Kind::ToolUse) continue;
+    std::string result;
+    size_t bytes = 0;
+    bool err = false;
+    for (const TranscriptItem* r : items)
+      if (r->kind == TranscriptItem::Kind::ToolResult && r->id == it->id) {
+        result = r->text;
+        bytes = r->text.size();
+        err = r->isError;
+      }
+    const std::string label = "- round " + std::to_string(round) + ": " + it->name + " " +
+                              foldLine("", it->text, 60) + (err ? " -> error" : " ->");
+    out += foldLine(label, result, 200) + " (" + std::to_string((unsigned)bytes) + " B)\n";
+  }
+  if (out.empty() && !prose.empty())
+    out = foldLine("- round " + std::to_string(round) + ": (said)", prose, 200) + "\n";
+  return out;
+}
+}  // namespace
+
+void Transcript::foldOldRounds(int newest, size_t lowWater) {
+  std::string lines;
+  for (int round = 0; round < newest && replayBytes_ > lowWater; round++) {
+    std::vector<const TranscriptItem*> items;
+    for (const auto& it : e_)
+      if (it.kind != TranscriptItem::Kind::User && it.round == round) items.push_back(&it);
+    if (items.empty()) continue;
+    lines += foldRoundLine(items, round);
+    size_t freed = 0;
+    for (const TranscriptItem* it : items) freed += it->text.size();
+    e_.erase(std::remove_if(e_.begin(), e_.end(),
+                            [round](const TranscriptItem& it) {
+                              return it.kind != TranscriptItem::Kind::User && it.round == round;
+                            }),
+             e_.end());
+    replayBytes_ -= freed;
+  }
+  if (lines.empty()) return;
+  for (auto& it : e_) {
+    if (it.kind != TranscriptItem::Kind::User) continue;
+    if (it.text.find(kFoldNote) == std::string::npos) it.text += std::string("\n\n") + kFoldNote + "\n";
+    it.text += lines;
+    break;
+  }
+}
+
+void Transcript::clipNewest(int newest, size_t cap) {
+  size_t newestResults = 0;
   for (const auto& it : e_)
-    if (it.kind == TranscriptItem::Kind::ToolResult && it.round != newest) older += it.text.size();
-  size_t room = maxTotalToolBytes > older ? maxTotalToolBytes - older : 0;
-  size_t freed = 0;
+    if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) newestResults += it.text.size();
+  const size_t others = replayBytes_ - newestResults;
+  size_t room = cap > others ? cap - others : 0;
   for (auto& it : e_) {
     if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
     const size_t was = it.text.size();
     if (was > room) {
       std::string next = clipToRoom(it.text, room);
       if (next.size() < was) {
-        freed += was - next.size();
+        replayBytes_ -= was - next.size();
         it.text = std::move(next);
       }
     }
     room -= std::min(room, it.text.size());
   }
-  toolBytes_ -= freed;
-  return freed;
+}
+
+size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
+  if (!maxTotalToolBytes || replayBytes_ <= maxTotalToolBytes) return 0;
+  const size_t before = replayBytes_;
+  const int newest = newestRound();
+  // Hysteresis: fold down to half the cap, so the next fold is about cap/2
+  // bytes of new rounds away - the request is rewritten that rarely, and only
+  // here, never round after round.
+  foldOldRounds(newest, maxTotalToolBytes / 2);
+  if (replayBytes_ > maxTotalToolBytes) clipNewest(newest, maxTotalToolBytes);
+  return before - replayBytes_;
 }
 
 std::string Transcript::renderBrief(size_t maxBytes) const {

@@ -34,7 +34,7 @@ channel:
 |---|---|---|---|
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; the device parser + validator are the enforcement |
-| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
+| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
 | **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | none (single-shot head) | **No** - Z.ai answers `json_schema` requests with plain Markdown, so the head asks for `json_object`; a reply that is still prose is delivered as the reply (nothing else rides it) |
 | **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
 
@@ -96,12 +96,15 @@ Each renderer speaks its provider's dialect from the same record:
   of `tool_use` blocks answered by a user message of `tool_result` blocks. The
   **prefill rule**: an assistant message is emitted ONLY for rounds that carried
   a tool call - a prose-only (stalled) round is never echoed, because a trailing
-  assistant message plus forced `tool_choice` is a hard 400. The replay is
-  append-only on every loop wire: a round already sent keeps its bytes, so each
-  round reads the previous request from the provider cache, and past the replay
-  budget only the newest result is cut with a visible note (the
-  `tool_use`↔`tool_result` pairing an unanswered `tool_use` would 400 on is
-  never broken). See "The cacheable prefix" in [turn-anatomy.md](turn-anatomy.md).
+  assistant message plus forced `tool_choice` is a hard 400. The replay is the
+  same on every loop wire: append-only under the replay budget (every replayed
+  byte counts: arguments, prose, results), so each round reads the previous
+  request from the provider cache; past it the oldest whole rounds fold into one
+  line each in the seeded message, down to half the budget (one rewrite per
+  half-budget of new results), and a newest round alone over the budget is cut
+  with a visible note (the `tool_use`↔`tool_result` pairing an unanswered
+  `tool_use` would 400 on is never broken). See "The cacheable prefix" in
+  [turn-anatomy.md](turn-anatomy.md).
 - **OpenAI** (`renderOaiInput`, `openai.cpp`) sends the full Responses `input[]`
   with `store:false` every round - the user seed, then per round the reasoning
   items, `function_call` items, and their `function_call_output` answers. There

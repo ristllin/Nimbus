@@ -94,7 +94,7 @@ one at a time:
 | 7 | summary | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Clipped (floor 1024 B) or dropped when the static part leaves too little room |
 | 8 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
 | 9 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 10 | per-turn | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of this chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below |
+| 10 | per-turn | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat history: one user line and one assistant line per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Rules: see "The turn-structured history" below |
 | 11 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
 | 12 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 
@@ -172,12 +172,12 @@ exactly **five** sources:
 0. **`## CONVERSATION SUMMARY`** (since v3.6.0) - the chat's anchored fold
    summary: everything older than the verbatim window, compacted. See
    [memory.md](memory.md).
-1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages of this
-   chat, auto-injected from the episodic store's PSRAM ring every turn. This is
-   per-chat (Telegram A ≠ web ≠ voice) and survives a restart. On a tool-loop
-   turn (the default) the provider keeps no thread, so this window is the only
-   place the model sees its previous reply, which is why the newest rows ride
-   whole, within a byte budget derived from the head model's window. `/clear`
+1. **`## RECENT CONVERSATION`** (since v3.3.0) - the
+   chat's recent turns, auto-injected from the episodic store's PSRAM ring every
+   turn. This is per-chat (Telegram A ≠ web ≠ voice) and survives a restart. On
+   a tool-loop turn (the default) the provider keeps no thread, so this history
+   is the only place the model sees its previous reply, which is why messages
+   ride whole, within a byte budget derived from the head model's window. `/clear`
    writes a boundary row (`ev:clear`) into the chat's history: the window, the
    sub-agent brief's context and the next compaction all stop there, and the
    chat's summary, running notes and provider thread reset, so the next turn
@@ -203,7 +203,49 @@ text is clipped (args 256 B, results 1 KB, thinking 1 KB); since v4.2.0 the FULL
 call + result is parked alongside as a blob when the clip bit, reachable from the
 chat's "Show full result" (or `GET /api/mem/blob?path=`).
 
-#### The recent window rule
+#### The turn-structured history
+
+Built by `historyTurns()` and `fitHistory()` (`lib/harness/src/conversation.cpp`),
+called by the engine for every turn:
+
+- **A turn is the unit.** Each exchange renders as one `- user:` line and one
+  `- assistant:` line, whatever rows carried it: the reply and the question it
+  asked join, a spoken copy of a written reply is left out, and a turn that got
+  no answer shows `[no reply]`. A routine, wakeup or sub-agent synthesis turn
+  shows its trigger as a `- system:` line (`[routine "commute" ran]`), so its
+  reply never sits under the previous turn's reply.
+- **Each item once.** A photo's description lives in its media row; the user
+  row keeps what the sender sent with a bare label (`[image]`) where the photo
+  sat, joined to the media row by its blob ref (the 16-hex content hash), and
+  the history puts the description back in place. A voice note's transcript is
+  the user row. Rows captured before this rule render once too (a repeated
+  description or a `ref=` label is recognized).
+- **What it did.** A reply row's `fx:` tag renders as `[did: memory, file]` or
+  `[did: nothing]`, so a promise reads differently from a deliverable.
+- **When.** A day marker (`(Thu 22 Oct)`) opens each new local day, and an item
+  sent before the previous reply (a late or redelivered message) shows its send
+  time (`[image, sent 09:58]`).
+- **Repeats collapse.** Consecutive identical owner messages with nothing
+  answered in between are one line with a count: `- user (x37): ...`.
+- **Append-only between boundaries.** A closed turn's bytes depend only on its
+  own rows, so each turn's history continues the previous one byte for byte.
+  The start moves only at a `/clear`, at a fold (the history starts after the
+  newest row the summary covers) or at an overflow shift: past high water (the
+  byte budget, or 64 rows) the oldest whole turns drop until the rest fits half
+  of it, never one row per message, and never the newest turn or the last
+  answered one. The shift is kept with the fold state (`/data/chatsum.txt`), so
+  a restart renders the same history, and the rows it hid make the next fold
+  due.
+- **One message's cap.** A single message over 6 KB is clipped once, at a fixed
+  cap, so its bytes never change as the history grows.
+- **The rows it holds ride PSRAM.** The history reads the chat's rows a page at
+  a time, folds a run of identical owner rows into one as it reads, and keeps
+  the rows it holds in PSRAM-sized buffers, not internal heap.
+
+The switch behind it (`histV2`) is on by default and kept in RAM, never in
+settings; the test console's `HISTV2 0` restores the window below byte for byte.
+
+#### The recent window rule (the history switch off)
 
 Built by `dream::buildConversationWindow` (`lib/harness/src/dream.cpp`) and fitted
 by `assembleContext` (`lib/core/src/orch_world.cpp`):

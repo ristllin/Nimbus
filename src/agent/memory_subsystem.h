@@ -298,9 +298,13 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
 // identical blob isn't re-copied. Returns true if a durable row was captured. SD-gated
 // no-op (returns false with no card). The caller keeps owning/deleting `srcPath`.
 // `sentEpoch` (an inbound Telegram item's send time, 0 when none) stamps the row with
-// that time instead of the arrival hour and tags it "sent:<epoch>".
+// that time instead of the arrival hour and tags it "sent:<epoch>". `refOut`
+// (optional) receives the blob ref (the 16-hex content hash) the row carries: the
+// turn's owner row names its media by it (histV2 att: tag), so each photo or voice
+// note is stored once and joined to its turn.
 bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
-                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch = 0);
+                      const String& text, const char* srcPath, const char* ext, int64_t sentEpoch = 0,
+                      std::string* refOut = nullptr);
 
 // Retention maintenance (§4): on the SD append-log, prune day-streams older than
 // `retentionDays` and, once the episodic index covers the whole card,

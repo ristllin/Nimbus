@@ -11,6 +11,7 @@
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 #include "scenarios_albums.h"
+#include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 
 namespace lab {
 namespace {
@@ -351,6 +352,13 @@ void scDreamNoEmbed(LabRig& rig, Ctx& c) { dreamNoEmbed(rig, checkOf(c), noteOf(
 // Lane D: albums as one turn (scenarios_albums.cpp).
 albums::Report albumsReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scAlbumsOneTurn(LabRig& rig, Ctx& c) { albums::albumsOneTurn(rig, albumsReport(c)); }
+// The turn-structured history legs (scenarios_g0.h).
+history::Report histReport(Ctx& c) {
+  return {[&c](bool ok, const std::string& w) { c.check(ok, w); },
+          [&c](const std::string& n) { c.note(n); }};
+}
+void scHistoryCache(LabRig& rig, Ctx& c) { history::historyCache(rig, histReport(c)); }
+void scEpisodicDates(LabRig& rig, Ctx& c) { history::episodicDates(rig, histReport(c)); }
 
 struct Scenario {
   const char* name;
@@ -387,6 +395,8 @@ const Scenario kScenarios[] = {
     {"repeat-from-storage", "a repeating answer is the device's settings storage, not the owner's app", scRepeatFromStorage, false},
     {"provider-error-reason",  "an invalid UTF-8 body is rejected with a reason, unbilled", scProviderErrorReason, false},
     {"albums-one-turn", "an album and its follow-up are one turn whose reply covers every photo", scAlbumsOneTurn, false},
+    {"history-cache",  "facts, a photo and a routine ride the history once; a replay storm is one row", scHistoryCache, false},
+    {"episodic-dates", "memory_episodic rows carry their dates: today's unread photo reads as today's", scEpisodicDates, false},
 };
 
 }  // namespace

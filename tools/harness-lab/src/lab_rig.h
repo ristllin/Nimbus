@@ -71,6 +71,7 @@ struct TurnRecord {
   std::vector<std::string> deliveries;
   std::string host;
   uint32_t    tokensIn = 0, tokensOut = 0;
+  uint32_t    cacheRead = 0, cacheWrite = 0;   // the turn's prompt-cache tokens
   double      seconds = 0;
   bool        ok = false;
   std::string systemPrompt;
@@ -116,6 +117,9 @@ class LabRig {
     // only and every surface must say so (the claim check holds a "survives a
     // restart" reply against it).
     bool        scratchSaveFails = false;
+    // The turn-structured history (histV2), as on the device: on by default;
+    // --hist-v1 renders the v4.5.15 window instead.
+    bool        histV2 = true;
   };
 
   LabRig(Env env, Options opt)
@@ -147,6 +151,8 @@ class LabRig {
     cur_.host = lastHost_;
     cur_.tokensIn = eng_->lastTurnUsage().promptTokens;
     cur_.tokensOut = eng_->lastTurnUsage().completionTokens;
+    cur_.cacheRead = eng_->lastTurnUsage().cacheReadTokens;
+    cur_.cacheWrite = eng_->lastTurnUsage().cacheWriteTokens;
     cur_.ok = !cur_.deliveries.empty();
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     turns_.push_back(cur_);
@@ -180,6 +186,16 @@ class LabRig {
   }
 
   agent::TurnEngine& engine() { return *eng_; }
+  // A row as the device captures it (the device's id shape, the next id): a
+  // photo's media row, a replayed message, a /clear boundary.
+  struct Row {
+    std::string chat;
+    const char* role = "user";
+    orch::MsgKind kind = orch::MsgKind::Message;
+    std::string text, tags, blob;
+    uint32_t tsHours = 0;   // 0 = now
+  };
+  std::string addRow(const Row& r) { return captureRow(r); }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
@@ -582,6 +598,7 @@ class LabRig {
     };
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
+    wireHistory(d);
 
     // The glass box, for free: on the host these hooks are just callbacks.
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
@@ -681,18 +698,70 @@ class LabRig {
     return !opt_.scratchSaveFails;
   }
 
+  // The device's history seams over the lab's store (engine.h, histV2).
+  void wireHistory(agent::TurnEngine::Deps& d) {
+    d.histV2 = [this] { return opt_.histV2; };
+    d.historyRows = [this](const std::string& chat, size_t limit, const std::string& before) {
+      orch::MsgQuery q;
+      q.sessionId = chat;
+      q.haveKind = true;
+      q.kind = orch::MsgKind::Message;
+      q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
+      q.limit = (int)limit;
+      q.before = before;
+      return epi_->query(q);
+    };
+    d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
+      return turnTag_ = capture(c, "user", t, tags);
+    };
+    d.historyMarks = [this](const std::string& c) { return marks_[c]; };
+    d.noteHistoryShift = [this](const std::string& c, const std::string& s) { marks_[c].softStart = s; };
+    if (!opt_.histV2) return;
+    // As on the device: the assistant rows come from apply (with their fx: and
+    // out: tags and the turn id), not from every delivery, and a seedless turn
+    // gets a trigger row from a minted turn id.
+    d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) {
+      if (ev.source == agent::TurnSource::Owner || ev.source == agent::TurnSource::Serial) return;
+      turnTag_ = mintRowId();
+    };
+    d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
+      capture(c, "assistant", t, eng_->assistantRowTags() + ",turn:" + turnTag_);
+    };
+    d.captureTrigger = [this](const std::string& c, const std::string& t, const std::string& tags) {
+      capture(c, "system", t, tags + ",turn:" + turnTag_);
+    };
+  }
+
   // ---- episodic helpers -----------------------------------------------------
-  void capture(const std::string& chat, const char* role, const std::string& text,
-               const std::string& tags) {
+  std::string capture(const std::string& chat, const char* role, const std::string& text,
+                      const std::string& tags) {
+    Row r;
+    r.chat = chat;
+    r.role = role;
+    r.text = text;
+    r.tags = tags;
+    return captureRow(r);
+  }
+  // The next row id, in the device's shape.
+  std::string mintRowId() {
+    char id[16];
+    snprintf(id, sizeof(id), "m%08x", (unsigned)(++rowSeq_));
+    return id;
+  }
+  std::string captureRow(const Row& r) {
     orch::EpisodicMessage m;
-    m.sessionId = chat;
-    m.kind = orch::MsgKind::Message;
-    m.role = role;
-    m.text = text;
-    m.tags = tags;
-    m.tsHours = (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
+    m.id = mintRowId();
+    m.sessionId = r.chat;
+    m.kind = r.kind;
+    m.blobPath = r.blob;
+    m.role = r.role;
+    m.text = r.text;
+    m.tags = r.tags;
+    m.tsHours = r.tsHours ? r.tsHours
+                          : (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
     epi_->addMessage(m);
+    return m.id;
   }
 
   // The per-chat RECENT CONVERSATION window the device builds from its ring.
@@ -710,7 +779,7 @@ class LabRig {
 
   void record(const std::string& chat, const std::string& text) {
     cur_.deliveries.push_back(text);
-    capture(chat, "assistant", text, "");
+    if (!opt_.histV2) capture(chat, "assistant", text, "");   // histV2: apply captures the reply
   }
 
   static std::string trunc(const std::string& s, size_t n) {
@@ -740,6 +809,9 @@ class LabRig {
   std::unique_ptr<agent::TurnEngine> eng_;
 
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_;
+  uint32_t rowSeq_ = 0;
+  std::string turnTag_;   // the in-flight turn's id (assistant rows' turn: tag)
+  std::map<std::string, agent::HistoryMarks> marks_;
   std::vector<int> deviceActions_;
   std::vector<Spend> spend_;
 

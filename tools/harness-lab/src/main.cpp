@@ -62,6 +62,8 @@ void usage() {
       "  --verbose                           echo every HTTP exchange and tool call\n"
       "  --no-tools                          disable the agentic tool loop\n"
       "  --no-embed                          disable embeddings (no associative recall)\n"
+      "  --hist-v1                           the v4.5.15 conversation window, not the\n"
+      "                                      turn-structured history (histV2)\n"
       "  --role=<admin|user|guest|unknown>   run the chat as this role, so the\n"
       "                                      principal-scoped tool advertisement is\n"
       "                                      exercised (default: admin)\n"
@@ -162,6 +164,7 @@ int main(int argc, char** argv) {
     else if (a == "--verbose")               opt.verboseHttp = true;
     else if (a == "--no-tools")              opt.toolLoop = false;
     else if (a == "--no-embed")              opt.embeddings = false;
+    else if (a == "--hist-v1")               opt.histV2 = false;
     else if (a.rfind("--role=", 0) == 0)     opt.role = a.substr(7);
     else if (a.rfind("--heap=", 0) == 0)     opt.heapBytes = (uint32_t)std::stoul(a.substr(7));
     else if (a.rfind("--heap-decay=", 0) == 0) opt.heapDecay = (uint32_t)std::stoul(a.substr(13));

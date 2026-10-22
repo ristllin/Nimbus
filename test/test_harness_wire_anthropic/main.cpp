@@ -267,11 +267,13 @@ static void test_loop_echoes_assistant_with_tool_use() {
   TEST_ASSERT_EQUAL_STRING("messages", conv.c_str());
 }
 
-// Append-only replay (prompt_layout.h): every round's messages[] starts with the
-// previous round's messages[] byte for byte (the moving cache point aside), so
-// each round reads the last one from the provider cache. Over the replay budget
-// the NEWEST result is clipped or withheld with a visible marker - an older round
-// is never rewritten - and every tool_use stays answered.
+// Replay with one transcript-level fold and hysteresis (H6): a round's
+// messages[] continues the previous round's byte for byte (the moving cache point
+// aside) until the replay passes its budget; then the oldest whole rounds fold
+// into one line each in the seeded message, down to half the budget, so the
+// request is rewritten about once per half-budget of new results - and the
+// newest result always reaches the model whole (no "[not shown]" late in a long
+// loop). Every tool_use still on the wire stays answered.
 static std::string messagesWithoutCachePoints(const std::string& body) {
   JsonDocument doc;
   deserializeJson(doc, body, DeserializationOption::NestingLimit(16));
@@ -283,7 +285,7 @@ static std::string messagesWithoutCachePoints(const std::string& body) {
   serializeJson(msgs, out);
   return out;
 }
-static void test_loop_replay_is_append_only_over_budget() {
+static void test_loop_replay_folds_with_hysteresis_over_budget() {
   FakeProviderDeps d;
   for (int i = 1; i <= 5; i++) {
     std::string body = "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_" + std::to_string(i) +
@@ -313,27 +315,28 @@ static void test_loop_replay_is_append_only_over_budget() {
   bool ok = providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
   TEST_ASSERT_EQUAL(6, (int)d.http.seen.size());
+  int rewrites = 0;
   for (size_t k = 1; k < d.http.seen.size(); k++) {
     std::string prev = messagesWithoutCachePoints(d.http.seen[k - 1].body);
     std::string next = messagesWithoutCachePoints(d.http.seen[k].body);
     prev.pop_back();   // drop the closing ']' - the next request continues the array
-    TEST_ASSERT_TRUE_MESSAGE(next.compare(0, prev.size(), prev) == 0,
-                             ("round " + std::to_string(k) + " rewrote an earlier round").c_str());
+    if (next.compare(0, prev.size(), prev) != 0) rewrites++;
   }
+  // 5 results of ~7 KB against the 16 KB budget: folds at rounds 3 and 5 only
+  // (the T6 bound is ceil((35 - 16) / 8) + 1 = 4), never one per round.
+  TEST_ASSERT_EQUAL(2, rewrites);
   const std::string& b = d.http.seen.back().body;
-  // The first two results fit the 16 KB budget verbatim, tail and all...
-  TEST_ASSERT_TRUE(b.find("TAILMARK0") != std::string::npos);
-  TEST_ASSERT_TRUE(b.find("TAILMARK1") != std::string::npos);
-  // ...the third is clipped with a marker, the later ones withheld with a note.
-  TEST_ASSERT_TRUE(b.find("TAILMARK2") == std::string::npos);
-  TEST_ASSERT_TRUE(b.find("[cut: this turn's tool-output budget is spent") != std::string::npos);
-  TEST_ASSERT_TRUE(b.find("[not shown: this turn's tool-output budget is spent") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("TAILMARK4") != std::string::npos);   // the newest result, whole
+  TEST_ASSERT_TRUE(b.find("[not shown") == std::string::npos);
+  TEST_ASSERT_TRUE(b.find("[cut:") == std::string::npos);
+  TEST_ASSERT_TRUE(b.find("EARLIER TOOL ROUNDS OF THIS TURN") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("- round 0: memory_search") != std::string::npos);
   TEST_ASSERT_TRUE(bodyHas(d, 5, "USER"));
   for (int i = 1; i <= 5; i++) {
     const std::string id = "tu_" + std::to_string(i);
     const bool hasUse = b.find("\"id\":\"" + id + "\"") != std::string::npos;
     const bool hasRes = b.find("\"tool_use_id\":\"" + id + "\"") != std::string::npos;
-    TEST_ASSERT_TRUE_MESSAGE(hasUse && hasRes, ("orphan tool_use/result for " + id).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(hasUse == hasRes, ("orphan tool_use/result for " + id).c_str());
   }
 }
 
@@ -848,7 +851,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_round2_body_rendered_from_transcript);
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
-  RUN_TEST(test_loop_replay_is_append_only_over_budget);
+  RUN_TEST(test_loop_replay_folds_with_hysteresis_over_budget);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);
   RUN_TEST(test_loop_max_tokens_cut_retries_then_fails_loud);

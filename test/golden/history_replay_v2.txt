@@ -1,0 +1,15 @@
+
+## RECENT CONVERSATION (this chat, oldest first, one exchange per turn; the current message is NOT here - it is in [USER]. (xN) = the same message arrived N times in a row; [did: ...] = what that reply actually changed or looked up)
+(Sat 8 Nov)
+- user: Morning - anything urgent today?
+- assistant [did: lookup]: Nothing urgent. The dentist moved to 14:30.
+- user (x37): /skill approve meal-photo-science
+- assistant: [no reply]
+- system: [routine "Morning brief" ran]
+- assistant [did: lookup]: Sunny, 14 C. Trains on time.
+- user: [image] a plate of scrambled eggs on toast
+
+  They wrote: breakfast
+- assistant [did: file]: Logged: eggs on toast, about 420 kcal.
+
+  Same again tomorrow?

@@ -210,3 +210,27 @@ python3 metering_check.py $R/usage.jsonl $R/run.log      # METERING MATCH per pr
 reports cache reads and writes outside its input count, OpenAI inside it (split out
 as uncached, cached and written), other providers are not split. Faulted requests
 never reach the provider, so they bill nothing and are not recorded.
+
+## History legs: the turn-structured history
+
+Two scenarios check the head's conversation history (`src/scenarios_g0.cpp`). The
+lab runs the device's history (`histV2`, one exchange per turn) by default;
+`--hist-v1` renders the older 12-row window instead. Run them with `--no-embed`, so
+long-term memory recall cannot answer in place of the history:
+
+```bash
+R=/tmp/rec; mkdir -p $R
+./build/nimbus-lab --env=<secrets .env> --host=anthropic --model=claude-haiku-5-5 \
+    --no-embed --record=$R scenarios history-cache episodic-dates | tee $R/run.log
+python3 spend_ledger.py price $R/usage.jsonl
+```
+
+- `history-cache`: facts told in the first turns are answered from the history
+  later; a photo's description rides the history once; a routine sits between
+  owner turns as its own exchange (with its trigger line); 30 captured copies of
+  one message are one `(x30)` row and push nothing out; every owner turn's history
+  continues the previous one byte for byte until a `/clear` empties it. The
+  per-turn prompt-cache tokens are printed.
+- `episodic-dates`: two photo rows, yesterday's described and today's not; "did
+  any photo get read today?" must be answered "no" from the `memory_episodic`
+  output (each row carries its date and age).

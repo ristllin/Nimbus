@@ -14,6 +14,8 @@
 #include "nimbus/harness/hooks.h"       // Hooks / TurnDebugEv
 #include "nimbus/harness/jobs.h"        // JobEngine (fresh results + keyFromTag)
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
+#include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
+#include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
 #include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class
 #include "nimbus/orch/loops.h"          // FireOutcome (scheduled-turn result)
@@ -146,6 +148,12 @@ inline bool turnHeapOk(uint32_t freeInternal, uint32_t largestBlock,
 // is never offered them.
 bool isTelegramOnlyTool(const std::string& name);
 
+// histV2: where a chat's verbatim history starts (row ids; "" = none).
+struct HistoryMarks {
+  std::string thru;        // the newest row the fold summary covers
+  std::string softStart;   // the overflow shift: rows up to it are hidden until a fold
+};
+
 class TurnEngine {
  public:
   struct Deps {
@@ -217,6 +225,30 @@ class TurnEngine {
     // ring are scoped to it, so a clamped result cannot leak across chats.
     std::function<std::string(const std::string& name, const std::string& fullText,
                               const std::string& ns)> spillResult;
+
+    // ---- histV2: the turn-structured history (conversation.h) --------------
+    // All nullable. histV2 is on only when the switch says so AND rows can be
+    // read and the user row's id comes back; otherwise the device's window and
+    // the v4.5.15 capture stay byte-identical.
+    std::function<bool()> histV2;
+    // The chat's conversation rows (message and media kinds), newest first,
+    // strictly older than `before` ("" = from the newest), at most `limit`.
+    std::function<std::vector<nimbus::orch::EpisodicMessage>(
+        const std::string& chatId, size_t limit, const std::string& before)> historyRows;
+    // Capture the owner's row (text = what the sender sent, tags = from:, att:,
+    // src:, sent:) and return its id: the in-flight turn the window leaves out.
+    std::function<std::string(const std::string& chatId, const std::string& text,
+                              const std::string& tags)> captureUserRow;
+    // A seedless turn's trigger row (role system), written just before the
+    // turn's first assistant row, so a silent routine leaves nothing.
+    std::function<void(const std::string& chatId, const std::string& text,
+                       const std::string& tags)> captureTrigger;
+    // The chat's fold anchor and overflow shift ({thru, softStart}), and the
+    // shift's advance (persisted with the turn).
+    std::function<HistoryMarks(const std::string& chatId)> historyMarks;
+    std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // Minutes east of UTC for day markers and send times (unwired = UTC).
+    std::function<int32_t()> utcOffsetMin;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
@@ -356,6 +388,16 @@ class TurnEngine {
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
   // The claim check of the current (or last) turn: its effect ledger and flags.
   const ClaimCheck& claimCheck() const { return claims_; }
+  // The tags of the assistant row being captured now: S's fx: tag, and under
+  // histV2 its out: kind (reply / ask / tts).
+  std::string assistantRowTags() const;
+  // histV2 on for this engine (the switch and the seams it needs are wired).
+  bool histV2On() const;
+  // H3: the next fold's slice of this chat - the turns after the fold anchor
+  // beyond the verbatim history's low water (half the head's history budget, the
+  // same budget the window shifts to), rendered up to `capBytes`
+  // (conversation.h foldSlice). Empty = nothing worth a summary.
+  FoldSlice historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual);
   // Engine notices a quiet background turn held back since boot (never delivered).
   uint32_t quietNoticesHeld() const { return quietNoticesHeld_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
@@ -487,6 +529,28 @@ class TurnEngine {
   std::string pendingFallbackWhose_;   // "nightly dream", "routine 'X'", ...
   uint32_t    pendingFallbackMs_ = 0;  // nowMs() when it was recorded
   std::string loopName_;               // the scheduled turn in flight (its routine name)
+
+  // histV2 (conversation.h): the in-flight user row, a seedless turn's trigger
+  // row (written before its first assistant row), and the out: kind of the
+  // assistant row being captured.
+  std::string curUserRowId_;
+  std::string triggerText_, triggerTags_;
+  bool triggerPending_ = false;
+  std::string outKind_;
+  bool nextSpoken_ = false;            // apply's speak() just ran: the next capture is the tts line
+  bool replyPending_ = false;          // the turn has a reply apply has not captured yet
+  void setTrigger(const std::string& text, const std::string& src);
+  // The capture of a turn's own owner row (H1 tags, H7 duplicate source).
+  // False = a delivery already in the history: the turn is dropped.
+  bool captureOwnerRow(const std::string& chatId, const std::string& text, const std::string& fromTag);
+  // H2/H3: the RECENT CONVERSATION block for this turn ("" = none).
+  std::string historyBlock(const std::string& chatId, size_t highBytes);
+  // Capture one assistant row with its out: kind (and the trigger row first).
+  void captureAssistantRow(const std::string& chatId, const std::string& text, const char* outKind);
+  void flushTrigger(const std::string& chatId);   // the pending trigger row, once
+  // The chat's turns after o.startAfter, read a page at a time (repeats folded).
+  std::vector<HistTurn> loadTurns(const std::string& chatId, const HistoryOptions& o, size_t maxRows) const;
+  struct ApplyCapture;   // swaps apply's capture and speak hooks for one applyTurn
 
   // Lane T: the turn's spend per host and its failure chain - one allocation per
   // boot (large enough to land in PSRAM on the device), reset at every turn start.

@@ -43,22 +43,33 @@ class Transcript {
   // with encrypted_content - replayed only by the provider that wrote it.
   void attachMeta(int round, std::string meta);
 
-  // Cumulative ToolResult bytes - the loop's byte-budget input.
-  size_t toolBytes() const { return toolBytes_; }
+  // Every replayed byte (F6b): call arguments, prose and results - the loop's
+  // byte-budget input. A 40 KB artifact_save argument rides every later round,
+  // so it counts like a 40 KB result; only the seeded [USER] message (budgeted
+  // with the prompt) is left out.
+  size_t toolBytes() const { return replayBytes_; }
   size_t size() const { return e_.size(); }
   bool empty() const { return e_.empty(); }
   const std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>>& entries() const {
     return e_;
   }
 
-  // Fit the cumulative tool bytes under the cap WITHOUT rewriting a sent round:
-  // only the NEWEST round's results are clipped (with a visible "[cut: ...]"
-  // marker) or, when no room is left, replaced by a "[not shown: ...]" note.
-  // Older rounds keep their bytes, so the replayed request is append-only and
-  // each round reads the last one from the provider cache. ⚠ Entries are never
-  // REMOVED - the ToolCall <-> ToolResult pairing is an invariant (an unanswered
-  // tool_use 400s on Anthropic). Returns the bytes reclaimed.
+  // Fit the replay under the cap with ONE transcript-level fold and hysteresis
+  // (H6), the same on every provider:
+  //   * at or under the cap nothing changes, so the replayed request only grows
+  //     at its end and each round reads the last one from the provider cache;
+  //   * over the cap, the oldest whole rounds (every call with its result, never
+  //     the newest round, which the model has not seen yet) fold into one line
+  //     each, appended to the seeded message, until the replay is at or under
+  //     HALF the cap - so the next fold is about cap/2 bytes of new rounds away
+  //     instead of one round away;
+  //   * a newest round that alone exceeds the room left is clipped with a
+  //     visible "[cut: ...]" marker, or replaced by a "[not shown: ...]" note.
+  // A call and its result fold together or not at all (an unanswered tool_use
+  // 400s on Anthropic). Returns the replay bytes reclaimed.
   size_t trimToolOutputs(size_t maxTotalToolBytes);
+  // The heading the folded lines sit under in the seeded message.
+  static const char kFoldNote[];
 
   // Provider-neutral compact render (spawn-with-history, /api/lastturn debug).
   // Byte-bounded, oldest-first, with an explicit omission marker.
@@ -66,7 +77,10 @@ class Transcript {
 
  private:
   std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>> e_;
-  size_t toolBytes_ = 0;
+  size_t replayBytes_ = 0;
+  int newestRound() const;
+  void foldOldRounds(int newest, size_t lowWater);
+  void clipNewest(int newest, size_t cap);
 };
 
 }  // namespace orch

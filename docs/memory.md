@@ -319,18 +319,21 @@ summary instead of an ever-growing transcript.
 ### Owner's view
 
 - **When it happens**: automatically, after roughly 48 KB of conversation on a
-  chat since its last fold (knob: `compactKB`, 8–512, 0 turns auto-fold off) -
-  or on demand with the **`/compact`** command (owner-only, also listed in
-  /help).
+  chat since its last fold (knob: `compactKB`, 8–512, 0 turns auto-fold off),
+  after 200 distinct messages, or once the recent history has outgrown its
+  budget - and only when there is something new to summarize. The same message
+  arriving again and again (a re-sent or replayed update) counts once, so a
+  flood of one line never costs a summary. Or on demand with the **`/compact`**
+  command (owner-only, also listed in /help).
 - **What you see**: automatic compaction is silent - its record is the
   "Conversation compacted: … folded into a … summary" row in the chat history.
   A manual `/compact` acknowledges immediately and then confirms with
   "✓ Compacted." (or tells you it couldn't, with the next step). The web chat
   never gets notices (they would desync the reply pairing).
-- **What changes**: nothing you'd notice in conversation quality - the last
-  dozen messages stay verbatim in the model's context, the summary carries
-  everything older, and long-term facts were already in vector memory. What
-  improves: turns stop getting slower and more expensive as a chat ages.
+- **What changes**: nothing you'd notice in conversation quality - the recent
+  turns stay verbatim in the model's context, the summary carries everything
+  older, and long-term facts were already in vector memory. What improves:
+  turns stop getting slower and more expensive as a chat ages.
 - **If a provider is down**: the fold tries the device's other configured
   providers before counting a failure (the same order turns use), so one
   provider having trouble doesn't stall compaction - or message you about it.
@@ -360,10 +363,20 @@ flowchart LR
 ```
 
 - **Trigger** (`FoldStore::evaluateDue`): bytes-since-fold ≥ `compactKB` OR
-  ≥200 messages - provider-independent by design. A reactive path also
+  ≥200 distinct owner messages (`noteOwnerMessage`: the same text right after
+  itself counts nothing) OR rows the history's overflow shift hid that no
+  summary covers yet - provider-independent by design. A reactive path also
   classifies real provider context-overflow errors (`isContextOverflowError`)
   and queues a fold; the turn itself recovers via the existing fresh-thread
   retry.
+- **The anchor and the slice** (turn-structured history): the summary records
+  the newest row it covers (`thru`), and the history starts after it. A fold
+  digests only the turns after the previous anchor that lie beyond the kept
+  verbatim tail (half the history budget), repeats collapsed to one line with a
+  count; when that slice is under 1 KB there is nothing worth a paid call and
+  the fold is skipped. A manual `/compact` digests every turn.
+  The anchor and the overflow shift ride the fold blob as suffixes of its
+  numeric fields, which an older image's parser stops before.
 - **The fold call** (`TurnEngine::runFold`) is deliberately NOT a turn: no
   delivery, no recall, no tool loop, no conversation-map writes, no capture of
   the summary as chat history - the model's reply IS the summary and every
@@ -395,7 +408,10 @@ flowchart LR
 ### Verification
 
 Host: `test_orch_compact` (trigger math, breaker, thrash guard, codec,
-UTF-8-safe caps, fold-prompt contract), `test_harness_turn` (runFold's
+UTF-8-safe caps, fold-prompt contract, the anchor and shift round trip, a
+repeat counted once), `test_harness_chatwindow` (the fold slice: 500 identical
+messages never fold, 200 distinct 30-byte lines do), `test_harness_history`
+(the slice starts after the anchor), `test_harness_turn` (runFold's
 no-side-effects contract incl. a hostile summary carrying device actions -
 inert), `test_harness_compose` (§5a placement + budget-pressure drop).
 
@@ -460,12 +476,18 @@ turn logs one line: `budget: ctx=200K sys=32768 res=8192 tot=65536 (auto|owner)`
 The research principle (summary + verbatim tail) also applies **inside** a
 turn and at every clip site:
 
-- **In-turn replay** (every loop provider): append-only. A tool result already
-  sent keeps its bytes, so each round reads the previous round's request from the
-  provider cache. Once the replayed results pass the replay budget, the newest
-  result is cut with a visible `[cut: ...]` note (or withheld with `[not shown:
-  ...]`), and every `tool_use` keeps its `tool_result`. See the cacheable prefix
-  in [turn-anatomy.md](turn-anatomy.md).
+- **In-turn replay** (every loop provider): one transcript-level fold with
+  hysteresis. The replay budget counts every replayed byte (call arguments,
+  prose and results). Under it the replay is append-only: a round already sent
+  keeps its bytes, so each round reads the previous round's request from the
+  provider cache. Over it, the oldest whole rounds (each call with its result,
+  never the newest round) fold into one line each, appended to the seeded
+  message under `[EARLIER TOOL ROUNDS OF THIS TURN ...]`, until the replay is
+  at half the budget, so the request is rewritten about once per half-budget of
+  new results and the newest result always reaches the model. A newest round
+  that alone passes the budget is cut with a visible `[cut: ...]` note (or
+  withheld with `[not shown: ...]`), and every `tool_use` on the wire keeps its
+  `tool_result`. See the cacheable prefix in [turn-anatomy.md](turn-anatomy.md).
 - **Tool results**: a clamped result keeps its full text in the recent-results
   ring and the marker says how to get it -
   `…[truncated 8192 of 51234 B - fetch the rest with results.get("r3")]`.

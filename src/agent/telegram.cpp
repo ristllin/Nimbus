@@ -23,6 +23,7 @@
 #include "../sys/psram_static.h" // pending-slot buffers live in PSRAM, not internal .bss
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
+#include "nimbus/harness/turn_inbox.h"   // histV2: what the sender sent, for the turn's history row
 #include "adapters/image_vision.h"   // a photo enters the conversation as words
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
 #include "tg_archive.h"             // lane R: every update and every send is archived on SD

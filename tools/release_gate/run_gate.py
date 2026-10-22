@@ -69,6 +69,10 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   #   router-only key, reboot mid-run, a malformed session_ops shape -> spawned equals claimed,
   #   no phantom jobs, an honest refusal when a spawn cannot run.
   pytest tests/hil/test_l55_spawn_e2e.py -m "hil and agent" --allow-hardware
+  # The turn-structured history (lane G0; the message-level caching lane extends it): a
+  #   200-copy storm is one (x200) row and at most one fold, twelve turns render all twelve,
+  #   a restart keeps the history bytes, HISTV2 0 restores the old window. Unit A (SD).
+  pytest tests/hil/test_l52_history_cache.py -m "hil and agent" --allow-hardware
 """
 
 CLOUD_BATTERY = """\

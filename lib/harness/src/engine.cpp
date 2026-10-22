@@ -21,7 +21,9 @@
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 #include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
 
+#include "nimbus/harness/conversation.h"   // histV2: historyTurns / fitHistory / foldSlice
 #include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
+#include "nimbus/harness/turn_inbox.h"     // histV2: what the channel says the sender sent
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
@@ -600,6 +602,47 @@ std::string TurnEngine::buildStableCatalogs() {
 
 // ---- the turn core ----------------------------------------------------------
 
+// For one applyTurn: apply captures the spoken line, the reply and the question
+// as separate rows through one hook. Under histV2 the hook is wrapped so each row
+// carries its out: kind (a capture right after speak() is the tts line; the
+// first other one is the reply when the turn has one; the rest are the question)
+// and a seedless turn's trigger row lands first.
+struct TurnEngine::ApplyCapture {
+  TurnEngine* e = nullptr;
+  std::function<void(const std::string&, const std::string&)> capture;
+  std::function<void(const std::string&)> speak;
+
+  ApplyCapture(TurnEngine* eng, bool hasReply) {
+    if (!eng->histV2On() || !eng->d_.apply.captureAssistant) return;
+    e = eng;
+    capture = e->d_.apply.captureAssistant;
+    speak = e->d_.apply.speak;
+    e->replyPending_ = hasReply;
+    e->nextSpoken_ = false;
+    e->d_.apply.captureAssistant = [this](const std::string& chat, const std::string& text) {
+      const char* kind = e->nextSpoken_ ? "tts" : e->replyPending_ ? "reply" : "ask";
+      if (!e->nextSpoken_) e->replyPending_ = false;
+      e->nextSpoken_ = false;
+      e->flushTrigger(chat);   // a seedless turn's trigger row lands before its first reply row
+      e->outKind_ = kind;
+      capture(chat, text);
+      e->outKind_.clear();
+    };
+    if (speak)
+      e->d_.apply.speak = [this](const std::string& text) {
+        e->nextSpoken_ = true;
+        speak(text);
+      };
+  }
+  ~ApplyCapture() {
+    if (!e) return;
+    e->d_.apply.captureAssistant = std::move(capture);
+    e->d_.apply.speak = std::move(speak);
+  }
+  ApplyCapture(const ApplyCapture&) = delete;
+  ApplyCapture& operator=(const ApplyCapture&) = delete;
+};
+
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                          const std::string& userText) {
   return runTurn(inputs, chatId, userText, telegramOn(chatId));
@@ -768,6 +811,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const orch::ContextBudget budget =
       orch::deriveBudget(orch::modelCtxTokens(host, headModel), bov);
   ci.budgetBytes = budget.systemPromptBytes;
+  // H2: the turn-structured history replaces the device's 12-row window.
+  if (histV2On()) ci.recentConversation = historyBlock(chatId, budget.recentConvBytes);
   hlog::logf("budget: ctx=%uK sys=%d res=%u tot=%u (%s)", (unsigned)(budget.ctxTokens / 1000),
              budget.systemPromptBytes, (unsigned)budget.toolResultBytes,
              (unsigned)budget.toolTotalBytes,
@@ -1380,7 +1425,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       deliver(chatId, so.text);
       // A notice a quiet turn held never reached the owner, so it is no history row either.
-      if (!holdingNotices() && d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+      if (!holdingNotices()) captureAssistantRow(chatId, so.text, "reply");
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -1487,7 +1532,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text);
-    if (!holdingNotices() && d_.apply.captureAssistant) d_.apply.captureAssistant(chatId, so.text);
+    if (!holdingNotices()) captureAssistantRow(chatId, so.text, "reply");
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
     // row name it (the provider answered; the device could not use the answer).
@@ -1562,6 +1607,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     held.captureAssistant = nullptr;
     agent::applyTurn(turn, chatId, held, st, spawned);
   } else {
+    ApplyCapture capture(this, !turn.reply.empty());
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);
@@ -1636,7 +1682,9 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
               "writes are refused this turn).";
   hlog::log("orchestrator: auto-synthesis turn (batch complete)");
   lastTurnSpoke_ = false;
+  setTrigger("[sub-agent results arrived]", "synth");
   const bool ok = runTurn(inputs, chatId, "");
+  triggerPending_ = false;
   unverifiedTurn_ = false;
   freshInTurn_ = false;
   freshSourced_ = freshUnsourced_ = 0;
@@ -1698,7 +1746,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
       if (ch >= 0x20 && ch != ',' && ch != ':') fromTag += ch;
     }
   }
-  if (d_.episodicCaptureUser) d_.episodicCaptureUser(chatId, text, fromTag);
+  if (!captureOwnerRow(chatId, text, fromTag)) return;   // H7: already captured, no paid call
 
   attribution_ = "turn";                       // owner-driven spend (the default)
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
@@ -1806,7 +1854,14 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // round must not carry the previous turn's tokens into the loop caps and the dream
   // row (the 18 Oct dream reported 37,771 tokens it never spent).
   lastTurnUsage_ = {};
+  if (ownerReminder)
+    setTrigger("[reminder fired]", "remind:" + loopId);
+  else if (once)
+    setTrigger("[wakeup \"" + name + "\" fired]", "wake:" + loopId);
+  else
+    setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   o.ok = runTurn(inputs, target, prompt, telegram);
+  triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
   dreamTurn_ = false;
@@ -1982,6 +2037,174 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   hlog::logf("fold(%s): ok on %s (%u in / %u out)", chatId.c_str(), host.c_str(),
              (unsigned)usage.promptTokens, (unsigned)usage.completionTokens);
   return FoldResult::Ok;
+}
+
+// ---- histV2: the turn-structured history (conversation.h) --------------------
+
+bool TurnEngine::histV2On() const {
+  return d_.histV2 && d_.histV2() && d_.historyRows && d_.captureUserRow;
+}
+
+std::string TurnEngine::assistantRowTags() const {
+  std::string tags = claims_.effects().fxTag();
+  if (!outKind_.empty()) tags += std::string(",") + kOutTag + outKind_;
+  return tags;
+}
+
+namespace {
+// A routine or loop id inside a tag: id characters only, bounded.
+std::string tagSafe(const std::string& v) {
+  std::string o;
+  for (char c : v) {
+    const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    c == '_' || c == '-' || c == ':';
+    if (ok && o.size() < 40) o += c;
+  }
+  return o;
+}
+
+constexpr size_t kHistoryPageRows = 24;   // one read of the chat's rows (transient)
+constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds as it is read
+
+// The chat's rows after `startAfter`, newest first, a page at a time. An owner
+// row identical to the one read just before it folds into that row's count as
+// it is read, so a flood of one message holds one row of memory; reading stops
+// at the newest /clear, at `startAfter` and at `maxRows` distinct rows.
+void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const std::string& startAfter,
+                 size_t maxRows, std::vector<nimbus::orch::EpisodicMessage>& rows,
+                 std::vector<uint32_t>& repeats) {
+  std::string before;
+  for (int page = 0; page < kHistoryMaxPages; page++) {
+    std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, kHistoryPageRows, before);
+    const bool full = got.size() >= kHistoryPageRows;
+    if (full) before = got.back().id;
+    for (auto& m : got) {
+      if (isClearBoundary(m) || (!startAfter.empty() && !rowIdAfter(m.id, startAfter))) return;
+      if (!rows.empty() && isRepeatRow(rows.back(), m)) {
+        repeats.back()++;
+        continue;
+      }
+      if (rows.size() >= maxRows) return;
+      rows.push_back(std::move(m));
+      repeats.push_back(1);
+      spillToPsram(rows.back().text);   // the kept rows ride PSRAM, the page is transient
+      spillToPsram(rows.back().tags);
+      spillToPsram(rows.back().blobPath);
+    }
+    if (!full) return;
+  }
+}
+}  // namespace
+
+void TurnEngine::setTrigger(const std::string& text, const std::string& src) {
+  curUserRowId_.clear();   // a seedless turn has no owner row in flight
+  triggerText_ = text;
+  triggerTags_ = std::string(kTriggerTag) + "," + kSrcTag + tagSafe(src);
+  triggerPending_ = histV2On();
+}
+
+namespace {
+// The owner row's tags: the sender, then what the channel noted (H1).
+std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in) {
+  std::string tags = fromTag;
+  const auto add = [&tags](const std::string& item) { tags += (tags.empty() ? "" : ",") + item; };
+  std::string refs;
+  for (const auto& r : in.refs) refs += (refs.empty() ? "" : ".") + tagSafe(r);
+  if (!refs.empty()) add(kAttTag + refs);
+  if (!in.src.empty()) add(kSrcTag + tagSafe(in.src));
+  if (in.sentUnix) add(kSentTag + std::to_string(in.sentUnix));
+  return tags;
+}
+
+// H7: a source already in the chat's recent history (a re-served update, a
+// redelivery after a restart).
+bool sourceSeen(const TurnEngine::Deps& d, const std::string& chatId, const std::string& src) {
+  for (const auto& m : d.historyRows(chatId, 2 * kHistoryPageRows, std::string()))   // 48 rows
+    if (tagValue(m.tags, kSrcTag) == src) return true;
+  return false;
+}
+}  // namespace
+
+bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& text,
+                                 const std::string& fromTag) {
+  curUserRowId_.clear();
+  triggerPending_ = false;
+  if (!histV2On()) {
+    if (d_.episodicCaptureUser) d_.episodicCaptureUser(chatId, text, fromTag);
+    return true;
+  }
+  history::Inbound in;
+  const bool noted = history::takeInbound(chatId, text, in);
+  if (noted && !in.src.empty() && sourceSeen(d_, chatId, in.src)) {
+    hlog::logf("history: %s%s is already in this chat's history - delivery dropped", kSrcTag, in.src.c_str());
+    return false;   // captured once, answered once
+  }
+  // Stored once: the media rows keep their records, the owner row what was sent.
+  curUserRowId_ = d_.captureUserRow(chatId, noted && !in.said.empty() ? in.said : text,
+                                    noted ? ownerRowTags(fromTag, in) : fromTag);
+  return true;
+}
+
+std::vector<HistTurn> TurnEngine::loadTurns(const std::string& chatId, const HistoryOptions& o,
+                                            size_t maxRows) const {
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  std::vector<uint32_t> repeats;
+  readHistory(d_, chatId, o.startAfter, maxRows, rows, repeats);
+  return historyTurns(rows, o, &repeats);
+}
+
+std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes) {
+  if (chatId.empty() || chatId == "system") return std::string();
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  HistoryBudget b;
+  b.highBytes = highBytes;
+  HistoryOptions o;
+  o.inFlightId = curUserRowId_;
+  o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
+  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  // Twice the row budget: enough to see past high water and shift once; after
+  // the shift the whole history after the soft start fits one read.
+  const HistoryWindow w = fitHistory(loadTurns(chatId, o, 2 * b.highRows), marks.softStart, b, o.utcOffsetMin);
+  if (w.shifted) {
+    hlog::logf("history(%s): overflow shift to %s (%u B kept)", chatId.c_str(), w.softStart.c_str(),
+               (unsigned)w.bytes);
+    if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
+  }
+  return w.block;
+}
+
+FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
+  if (!histV2On() || chatId.empty()) return FoldSlice();
+  const std::string host = resolveTurnHost(d_);
+  HistoryBudget b;
+  b.highBytes = orch::deriveBudget(orch::modelCtxTokens(host, d_.cfg.provider.orchModel
+                                                                  ? d_.cfg.provider.orchModel(host)
+                                                                  : std::string()),
+                                   {})
+                    .recentConvBytes;
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  HistoryOptions o;
+  o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take
+  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  return foldSlice(loadTurns(chatId, o, 400), b.lowBytes(), capBytes, manual, o.utcOffsetMin);
+}
+
+void TurnEngine::captureAssistantRow(const std::string& chatId, const std::string& text,
+                                     const char* outKind) {
+  if (!d_.apply.captureAssistant) return;
+  if (!histV2On()) {
+    d_.apply.captureAssistant(chatId, text);
+    return;
+  }
+  flushTrigger(chatId);
+  outKind_ = outKind;
+  d_.apply.captureAssistant(chatId, text);
+  outKind_.clear();
+}
+
+void TurnEngine::flushTrigger(const std::string& chatId) {
+  if (triggerPending_ && d_.captureTrigger) d_.captureTrigger(chatId, triggerText_, triggerTags_);
+  triggerPending_ = false;
 }
 
 void TurnEngine::clearChatConv(const std::string& chatId) {

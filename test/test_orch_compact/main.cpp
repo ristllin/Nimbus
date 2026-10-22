@@ -355,6 +355,125 @@ static void test_foldstore_summary_separators_stripped() {
   TEST_ASSERT_EQUAL_STRING("badfieldsplit ok", fs2.get("c").summary.c_str());
 }
 
+
+// ---- H3 anchor, overflow shift and fold on content (L19-26) ----------------
+
+// The anchor and the shift survive a reboot, and the blob still reads on an
+// older image: the ids ride after the epoch and turn numbers, which the old
+// parser (digits up to the first non-digit) stops before.
+static void test_foldstore_anchor_roundtrip_rollback_safe() {
+  FakeIO io;
+  {
+    FoldStore fs;
+    fs.begin(&io);
+    fs.applyFold("tg1", "summary text", 1234567, "m0000a1f3");
+    fs.setSoftStart("tg1", "m0000a2b0");
+    fs.noteTurn("tg1");
+  }
+  FoldStore fs2;
+  fs2.begin(&io);
+  ChatFold f = fs2.get("tg1");
+  TEST_ASSERT_EQUAL_STRING("m0000a1f3", f.thru.c_str());
+  TEST_ASSERT_EQUAL_STRING("m0000a2b0", f.softStart.c_str());
+  TEST_ASSERT_EQUAL_UINT32(1234567, f.lastFoldEpoch);
+  TEST_ASSERT_EQUAL_UINT32(1, f.turnsSinceFold);
+  TEST_ASSERT_EQUAL_STRING("summary text", f.summary.c_str());
+  // The pre-anchor parser: every numeric field reads as its leading digits.
+  TEST_ASSERT_TRUE(io.blob.find("\x1F" "1234567;m0000a1f3\x1F" "1;m0000a2b0\x1F") != std::string::npos);
+  // No anchor = the exact pre-anchor record (byte-identical for a chat that never folded).
+  FakeIO io2;
+  FoldStore fs3;
+  fs3.begin(&io2);
+  fs3.noteMessage("c", 5);
+  fs3.noteTurn("c");
+  TEST_ASSERT_EQUAL_STRING("c\x1F" "5\x1F" "1\x1F" "0\x1F" "1\x1F" "0\x1F" "0\x1F\x1E", io2.blob.c_str());
+}
+
+// Fold on content: 500 copies of one owner message count once and never make a
+// fold due by count; 200 distinct messages still do (the count threshold).
+static void test_foldstore_owner_repeats_count_once() {
+  FakeIO io;
+  FoldStore fs;
+  fs.begin(&io);
+  int counted = 0;
+  for (int i = 0; i < 500; i++) counted += fs.noteOwnerMessage("c", "hello?") ? 1 : 0;
+  TEST_ASSERT_EQUAL_INT(1, counted);
+  TEST_ASSERT_EQUAL_UINT32(1, fs.get("c").msgsSinceFold);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold));
+  FoldStore fs2;
+  FakeIO io2;
+  fs2.begin(&io2);
+  for (int i = 0; i < 200; i++) fs2.noteOwnerMessage("d", "distinct line " + std::to_string(i));
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs2.evaluateDue("d", 48000, kFoldMsgsThreshold));
+  // A repeat AFTER another message is new content again (a genuine "yes" twice).
+  FoldStore fs3;
+  FakeIO io3;
+  fs3.begin(&io3);
+  TEST_ASSERT_TRUE(fs3.noteOwnerMessage("e", "yes"));
+  TEST_ASSERT_TRUE(fs3.noteOwnerMessage("e", "and the other one"));
+  TEST_ASSERT_TRUE(fs3.noteOwnerMessage("e", "yes"));
+}
+
+// Rows an overflow shift hides make a fold due until a fold covers them; the
+// shift moves forward only and never behind the anchor.
+static void test_foldstore_hidden_rows_make_a_fold_due() {
+  FakeIO io;
+  FoldStore fs;
+  fs.begin(&io);
+  fs.noteMessage("c", 10);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold));
+  fs.setSoftStart("c", "m00000040");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold));
+  fs.setSoftStart("c", "m00000020");   // backwards: ignored
+  TEST_ASSERT_EQUAL_STRING("m00000040", fs.get("c").softStart.c_str());
+  fs.applyFold("c", "covers it", 1000, "m00000044");
+  TEST_ASSERT_EQUAL_STRING("", fs.get("c").softStart.c_str());
+  TEST_ASSERT_EQUAL_STRING("m00000044", fs.get("c").thru.c_str());
+  fs.setSoftStart("c", "m00000030");   // behind the anchor: the summary covers it
+  TEST_ASSERT_EQUAL_STRING("", fs.get("c").softStart.c_str());
+  fs.applyFold("c", "older anchor", 1001, "m00000010");   // the anchor never moves back
+  TEST_ASSERT_EQUAL_STRING("m00000044", fs.get("c").thru.c_str());
+  // A skipped fold gives the hidden rows up instead of asking on every pass.
+  fs.noteTurn("c"); fs.noteTurn("c"); fs.noteTurn("c");
+  fs.setSoftStart("c", "m00000060");
+  fs.noteFoldSkipped("c");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold));
+  TEST_ASSERT_EQUAL_STRING("m00000060", fs.get("c").thru.c_str());
+  // A /clear (empty summary, epoch 0) restarts the history: no anchor, no shift.
+  fs.setSoftStart("c", "m00000070");
+  fs.applyFold("c", std::string(), 0);
+  TEST_ASSERT_EQUAL_STRING("", fs.get("c").thru.c_str());
+  TEST_ASSERT_EQUAL_STRING("", fs.get("c").softStart.c_str());
+}
+
+
+// L19-27 (the anchor's part): a summary already cut at the cap rides the next
+// anchored fold whole - the anchor never cuts it again, in the fold input, in the
+// store, or across a reload - so the next summary is built from every byte kept.
+static void test_anchored_folds_never_recut_a_cut_summary() {
+  std::string longSummary;
+  for (int i = 0; longSummary.size() < 6000; i++)
+    longSummary += "4. Pending item " + std::to_string(i) + ": call the plumber about the boiler.\n";
+  const std::string cut = capSummary(longSummary);
+  TEST_ASSERT_TRUE(cut.size() <= kChatSummaryMax);
+  TEST_ASSERT_TRUE(cut.compare(cut.size() - 3, 3, "\xE2\x80\xA6") == 0);
+  const std::string in = buildCompactInputs(cut, "- user: one more thing\n");
+  TEST_ASSERT_TRUE(in.find(cut) != std::string::npos);
+  FakeIO io;
+  {
+    FoldStore fs;
+    fs.begin(&io);
+    fs.applyFold("c", cut, 1000, "m00000010");
+    TEST_ASSERT_EQUAL_STRING(cut.c_str(), fs.get("c").summary.c_str());
+    fs.applyFold("c", fs.get("c").summary, 1001, "m00000020");   // the second anchored fold
+    TEST_ASSERT_EQUAL_STRING(cut.c_str(), fs.get("c").summary.c_str());
+  }
+  FoldStore again;
+  again.begin(&io);
+  TEST_ASSERT_EQUAL_STRING(cut.c_str(), again.get("c").summary.c_str());
+  TEST_ASSERT_EQUAL_STRING("m00000020", again.get("c").thru.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ctx_table_families);
@@ -378,5 +497,9 @@ int main(int, char**) {
   RUN_TEST(test_foldstore_blob_is_byte_bounded_dropping_oldest);
   RUN_TEST(test_foldstore_breaker_and_lru);
   RUN_TEST(test_foldstore_summary_separators_stripped);
+  RUN_TEST(test_foldstore_anchor_roundtrip_rollback_safe);
+  RUN_TEST(test_foldstore_owner_repeats_count_once);
+  RUN_TEST(test_foldstore_hidden_rows_make_a_fold_due);
+  RUN_TEST(test_anchored_folds_never_recut_a_cut_summary);
   return UNITY_END();
 }

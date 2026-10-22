@@ -1,0 +1,367 @@
+#include <unity.h>
+
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "nimbus/harness/conversation.h"
+#include "nimbus/harness/engine.h"
+#include "nimbus/harness/turn_inbox.h"
+#include "nimbus/orch/episodic.h"
+#include "../support/fake_config.h"
+#include "../support/fake_platform.h"
+
+// histV2 through the real TurnEngine: the owner row's tags and stored text (H1,
+// photo and voice stored once), exactly-once capture by source (H7), the trigger
+// row of a seedless turn (row 58), out: kinds on assistant rows, the engine's
+// RECENT CONVERSATION (H2) and its overflow shift (H3), and the switch off being
+// byte-identical to an engine that never heard of histV2.
+
+using namespace nimbus::orch;
+using agent::HistoryMarks;
+using agent::TurnEngine;
+using harness_test::FakeConfig;
+using harness_test::FakePlatform;
+
+void setUp() {}
+void tearDown() {}
+
+namespace {
+
+constexpr uint32_t kH = 489600 + 9;   // 2025-11-08 09:00 UTC: a synced clock
+
+struct Rig {
+  FakePlatform plat;
+  FakeConfig cfg;
+  InMemoryEpisodicStore store;
+  int seq = 0;
+  bool v2 = true;
+  bool wireV2 = true;
+  std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+  std::vector<std::string> instructions;   // what each provider call received
+  std::vector<std::pair<std::string, std::string>> legacyCaptures;   // episodicCaptureUser
+  std::string turnTag;                     // the in-flight turn's id (rows' turn: tag)
+  HistoryMarks marks;
+  int shifts = 0;
+  std::unique_ptr<TurnEngine> eng;
+
+  std::string add(const std::string& chat, const std::string& role, MsgKind kind,
+                  const std::string& text, const std::string& tags, const std::string& blob = "") {
+    EpisodicMessage m;
+    char id[16];
+    snprintf(id, sizeof(id), "m%08x", (unsigned)(++seq));
+    m.id = id;
+    m.sessionId = chat;
+    m.tsHours = kH;
+    m.role = role;
+    m.kind = kind;
+    m.text = text;
+    m.tags = tags;
+    m.blobPath = blob;
+    store.addMessage(m);
+    return m.id;
+  }
+  std::vector<EpisodicMessage> rows(const std::string& chat, size_t limit, const std::string& before) const {
+    MsgQuery q;
+    q.sessionId = chat;
+    q.haveKind = true;
+    q.kind = MsgKind::Message;
+    q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+    q.limit = (int)limit;
+    q.before = before;
+    return store.query(q);
+  }
+  std::vector<EpisodicMessage> all(const std::string& chat) const { return rows(chat, 500, ""); }
+
+  explicit Rig(bool wire = true) : wireV2(wire) {
+    cfg.toolLoop = false;
+    cfg.tts = true;
+    TurnEngine::Deps d;
+    d.cfg = cfg.contract();
+    d.platform = plat.contract();
+    d.deliver = [](const std::string&, const std::string&) {};
+    d.composeInputs = [](const std::string&) {
+      agent::ComposeInputs in;
+      in.devName = "Nimbus";
+      in.recentConversation = "\n## RECENT CONVERSATION (device window)\n";
+      return in;
+    };
+    d.episodicCaptureUser = [this](const std::string& c, const std::string& t, const std::string& f) {
+      legacyCaptures.push_back({t, f});
+      turnTag = add(c, "user", MsgKind::Message, t, f);
+    };
+    d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) {
+      if (ev.source != agent::TurnSource::Owner && ev.source != agent::TurnSource::Serial) {
+        char id[16];
+        snprintf(id, sizeof(id), "m%08x", (unsigned)(++seq));   // minted from the same counter
+        turnTag = id;
+      }
+    };
+    d.apply.deliver = d.deliver;
+    d.apply.principalFor = [](const std::string& chat) { return principalForRole(chat, Role::Admin); };
+    d.apply.speak = [](const std::string&) {};
+    d.apply.ttsEnabled = true;
+    d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
+      add(c, "assistant", MsgKind::Message, t, eng->assistantRowTags() + ",turn:" + turnTag);
+    };
+    d.hosts.add("anthropic", [this](std::string&, const std::string& ins, const std::string&, std::string& out,
+                                    std::string&, const agent::HeadTools*, TokenUsage*) {
+      instructions.push_back(ins);
+      out = reply;
+      return true;
+    });
+    if (wireV2) {
+      d.histV2 = [this] { return v2; };
+      d.historyRows = [this](const std::string& c, size_t limit, const std::string& before) {
+        return rows(c, limit, before);
+      };
+      d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
+        turnTag = add(c, "user", MsgKind::Message, t, tags);
+        return turnTag;
+      };
+      d.captureTrigger = [this](const std::string& c, const std::string& t, const std::string& tags) {
+        add(c, "system", MsgKind::Message, t, tags + ",turn:" + turnTag);
+      };
+      d.historyMarks = [this](const std::string&) { return marks; };
+      d.noteHistoryShift = [this](const std::string&, const std::string& s) {
+        marks.softStart = s;
+        shifts++;
+      };
+    }
+    eng.reset(new TurnEngine(std::move(d)));
+  }
+
+  std::string lastWindow() const {
+    const std::string& ins = instructions.back();
+    const size_t at = ins.find("\n## RECENT CONVERSATION");
+    if (at == std::string::npos) return std::string();
+    const size_t end = ins.find("\n## ", at + 5);
+    return ins.substr(at, end == std::string::npos ? std::string::npos : end - at);
+  }
+};
+
+size_t count(const std::string& hay, const std::string& needle) {
+  size_t n = 0;
+  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) n++;
+  return n;
+}
+
+const char* kRef = "00000000abc00001";
+
+}  // namespace
+
+// H1 + stored once: the channel's note gives the owner row what the sender sent
+// and the turn's media refs; the media row keeps the description.
+static void test_owner_row_tags_and_stored_text() {
+  Rig r;
+  r.add("123", "user", MsgKind::Image, "[image] a bowl of ramen", "", std::string("/mem/blobs/") + kRef + ".jpg");
+  agent::history::Inbound in;
+  in.chatId = "123";
+  in.said = "[image]\n\nThey wrote: lunch";
+  in.refs = {kRef};
+  in.src = "tg:9001x1";
+  in.sentUnix = kH * 3600u + 120;
+  const std::string routed = "[image] a bowl of ramen\n\nThey wrote: lunch";
+  agent::history::noteInbound(in, routed);
+  r.eng->handleMessage(routed, "Roy", "123");
+  const auto rows = r.all("123");
+  // newest first: assistant, user, image
+  TEST_ASSERT_EQUAL(3, (int)rows.size());
+  const EpisodicMessage& user = rows[1];
+  TEST_ASSERT_EQUAL_STRING("[image]\n\nThey wrote: lunch", user.text.c_str());
+  TEST_ASSERT_EQUAL_STRING(kRef, agent::tagValue(user.tags, agent::kAttTag).c_str());
+  TEST_ASSERT_EQUAL_STRING("tg:9001x1", agent::tagValue(user.tags, agent::kSrcTag).c_str());
+  TEST_ASSERT_TRUE(agent::tagValue(user.tags, "from:") == "Roy");
+  TEST_ASSERT_TRUE(r.legacyCaptures.empty());
+  // [USER] still carries the description this turn; the window left the photo out.
+  TEST_ASSERT_TRUE(r.instructions.back().find("RECENT CONVERSATION (device window)") == std::string::npos);
+  TEST_ASSERT_EQUAL(0, (int)count(r.lastWindow(), "bowl of ramen"));
+  // The assistant row says it is the reply.
+  TEST_ASSERT_EQUAL_STRING("reply", agent::tagValue(rows[0].tags, agent::kOutTag).c_str());
+  // Next turn: the photo renders once, in place, in the history.
+  r.eng->handleMessage("and dinner?", "Roy", "123");
+  TEST_ASSERT_EQUAL(1, (int)count(r.lastWindow(), "a bowl of ramen"));
+  TEST_ASSERT_TRUE(r.lastWindow().find("- user: [image] a bowl of ramen\n\n  They wrote: lunch") != std::string::npos);
+}
+
+// H7 / T8: random replay sequences (the same source delivered k times among
+// others) give exactly one owner row per source, and a duplicate makes no
+// provider call.
+static void test_exactly_once_capture_by_source() {
+  uint32_t rng = 7;
+  auto rnd = [&](uint32_t n) { rng = rng * 1103515245u + 12345u; return (rng >> 8) % n; };
+  for (int run = 0; run < 20; run++) {
+    Rig r;
+    std::map<std::string, int> delivered;
+    for (int i = 0; i < 30; i++) {
+      const std::string src = "tg:" + std::to_string(100 + rnd(8)) + "x1";
+      agent::history::Inbound in;
+      in.chatId = "555";
+      in.src = src;
+      agent::history::noteInbound(in, "message " + src);
+      r.eng->handleMessage("message " + src, "Roy", "555");
+      delivered[src]++;
+    }
+    std::map<std::string, int> rowsPerSrc;
+    for (const auto& m : r.all("555"))
+      if (m.role == "user") rowsPerSrc[agent::tagValue(m.tags, agent::kSrcTag)]++;
+    for (const auto& kv : delivered) TEST_ASSERT_EQUAL_MESSAGE(1, rowsPerSrc[kv.first], kv.first.c_str());
+    TEST_ASSERT_EQUAL((int)delivered.size(), (int)r.instructions.size());
+  }
+  // A note for another chat is stale: never applied to this one.
+  Rig r;
+  agent::history::Inbound other;
+  other.chatId = "999";
+  other.src = "tg:1x1";
+  agent::history::noteInbound(other, "hello");
+  r.eng->handleMessage("hello", "Roy", "555");
+  TEST_ASSERT_EQUAL_STRING("", agent::tagValue(r.all("555")[1].tags, agent::kSrcTag).c_str());
+}
+
+// A note whose turn never reached the engine (a refused caption, a command) is
+// stale: the chat's next turn, carrying other text, stores its own words and
+// none of the note's refs, source or text.
+static void test_stale_note_never_applies_to_another_turn() {
+  Rig r;
+  agent::history::Inbound in;
+  in.chatId = "123";
+  in.said = "[image]\n\nThey wrote: a refused caption";
+  in.refs = {kRef};
+  in.src = "tg:7x1";
+  agent::history::noteInbound(in, "[image] something\n\nThey wrote: a refused caption");
+  // ... the gate refused that turn, so the engine never took the note ...
+  r.eng->handleMessage("ok thanks", "Roy", "123");
+  const EpisodicMessage user = r.all("123")[1];
+  TEST_ASSERT_EQUAL_STRING("ok thanks", user.text.c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::tagValue(user.tags, agent::kAttTag).c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::tagValue(user.tags, agent::kSrcTag).c_str());
+  // The slot is empty afterwards: a later matching turn finds nothing either.
+  agent::history::Inbound left;
+  TEST_ASSERT_FALSE(agent::history::takeInbound("123", "[image] something\n\nThey wrote: a refused caption", left));
+}
+
+// Row 58: a routine that replies leaves a trigger row ahead of its reply; a
+// routine that stays silent leaves nothing.
+static void test_seedless_turn_trigger_row() {
+  Rig r;
+  r.eng->injectScheduledTurn("123", "check the trains", "commute", "l7", false, false, false);
+  auto rows = r.all("123");
+  TEST_ASSERT_EQUAL(2, (int)rows.size());
+  TEST_ASSERT_EQUAL_STRING("[routine \"commute\" ran]", rows[1].text.c_str());
+  TEST_ASSERT_TRUE(agent::hasTagItem(rows[1].tags, agent::kTriggerTag));
+  TEST_ASSERT_EQUAL_STRING("loop:l7", agent::tagValue(rows[1].tags, agent::kSrcTag).c_str());
+  TEST_ASSERT_EQUAL_STRING(agent::tagValue(rows[1].tags, "turn:").c_str(),
+                           agent::tagValue(rows[0].tags, "turn:").c_str());
+  r.reply = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->injectScheduledTurn("123", "only if needed", "quiet check", "l8", true, false, false);
+  TEST_ASSERT_EQUAL(2, (int)r.all("123").size());
+  // The next owner turn's history shows the routine as its own exchange.
+  r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->handleMessage("thanks", "Roy", "123");
+  TEST_ASSERT_TRUE(r.lastWindow().find("- system: [routine \"commute\" ran]\n- assistant [did: nothing]: ok") !=
+                   std::string::npos);
+}
+
+// out: kinds: the spoken line, the reply and the question each say what they are.
+static void test_assistant_rows_carry_out_kinds() {
+  Rig r;
+  r.reply = "{\"reply\":\"Market at 9.\",\"memory\":\"\",\"ask\":\"Set a reminder?\","
+            "\"device\":[{\"type\":\"tts\",\"text\":\"Market at nine.\"}]}";
+  r.eng->handleMessage("plan Saturday", "Roy", "123");
+  std::map<std::string, std::string> kinds;
+  for (const auto& m : r.all("123"))
+    if (m.role == "assistant") kinds[m.text] = agent::tagValue(m.tags, agent::kOutTag);
+  TEST_ASSERT_EQUAL_STRING("tts", kinds["Market at nine."].c_str());
+  TEST_ASSERT_EQUAL_STRING("reply", kinds["Market at 9."].c_str());
+  TEST_ASSERT_EQUAL_STRING("ask", kinds["Set a reminder?"].c_str());
+}
+
+// The switch off is byte-identical to an engine that never heard of histV2: the
+// same prompt, the same legacy capture, no new tags.
+static void test_switch_off_is_byte_identical() {
+  Rig off;
+  off.v2 = false;
+  Rig never(false);
+  for (Rig* r : {&off, &never}) {
+    agent::history::Inbound in;
+    in.chatId = "123";
+    in.src = "tg:5x1";
+    agent::history::noteInbound(in, "hello");
+    r->eng->handleMessage("hello", "Roy", "123");
+    r->eng->handleMessage("again", "Roy", "123");
+  }
+  TEST_ASSERT_EQUAL(2, (int)off.instructions.size());
+  TEST_ASSERT_EQUAL_STRING(never.instructions[1].c_str(), off.instructions[1].c_str());
+  TEST_ASSERT_TRUE(off.instructions[1].find("(device window)") != std::string::npos);
+  TEST_ASSERT_EQUAL(2, (int)off.legacyCaptures.size());
+  const auto a = off.all("123"), b = never.all("123");
+  TEST_ASSERT_EQUAL(b.size(), a.size());
+  for (size_t i = 0; i < a.size(); i++) {
+    TEST_ASSERT_EQUAL_STRING(b[i].text.c_str(), a[i].text.c_str());
+    TEST_ASSERT_EQUAL_STRING(b[i].tags.c_str(), a[i].tags.c_str());
+    TEST_ASSERT_TRUE(a[i].tags.find("out:") == std::string::npos);
+  }
+}
+
+// H3: past high water the oldest turns drop once (the shift is recorded and
+// persisted by the device), and the next turn's history starts after it: the
+// window is stable across turns between shifts and across a restart (a fresh
+// engine over the same rows and marks renders the same block).
+static void test_overflow_shift_is_recorded_and_stable() {
+  Rig r;
+  const std::string longText(700, 'w');
+  for (int i = 0; i < 14; i++) r.eng->handleMessage("q" + std::to_string(i) + " " + longText, "Roy", "123");
+  TEST_ASSERT_TRUE(r.shifts >= 1);
+  TEST_ASSERT_TRUE(r.shifts <= 4);   // steps of about high - low bytes, not one per turn
+  const std::string soft = r.marks.softStart;
+  TEST_ASSERT_FALSE(soft.empty());
+  // The window holds only rows after the shift.
+  TEST_ASSERT_TRUE(r.lastWindow().find("q0 ") == std::string::npos);
+  TEST_ASSERT_TRUE(r.lastWindow().find("q12 ") != std::string::npos);
+  // A restart: a new engine over the same store and marks renders the same history.
+  Rig fresh;
+  fresh.store = r.store;
+  fresh.seq = r.seq;
+  fresh.marks = r.marks;
+  const std::string before = r.lastWindow();
+  r.eng->handleMessage("probe", "Roy", "123");
+  fresh.eng->handleMessage("probe", "Roy", "123");
+  const std::string a = r.lastWindow(), b = fresh.lastWindow();
+  TEST_ASSERT_EQUAL_STRING(a.c_str(), b.c_str());
+  TEST_ASSERT_TRUE(a.compare(0, before.size() - 1, before, 0, before.size() - 1) == 0 || r.marks.softStart != soft);
+}
+
+// The fold slice reads after the anchor: rows the summary already covers are
+// never digested again.
+static void test_fold_slice_starts_after_the_anchor() {
+  Rig r;
+  for (int i = 0; i < 40; i++) r.eng->handleMessage("note " + std::to_string(i) + std::string(240, 'n'), "Roy", "123");
+  const agent::FoldSlice first = r.eng->historyFoldSlice("123", 65536, false);
+  TEST_ASSERT_FALSE(first.digest.empty());
+  TEST_ASSERT_TRUE(first.digest.find("note 0n") != std::string::npos);
+  r.marks.thru = first.thru;
+  r.marks.softStart.clear();
+  const agent::FoldSlice second = r.eng->historyFoldSlice("123", 65536, true);
+  TEST_ASSERT_TRUE(second.digest.find("note 0n") == std::string::npos);
+  // Off: no slice at all (the device keeps its v4.5.15 fold input).
+  Rig off;
+  off.v2 = false;
+  off.eng->handleMessage("x", "Roy", "123");
+  TEST_ASSERT_TRUE(off.eng->historyFoldSlice("123", 65536, true).digest.empty());
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  RUN_TEST(test_owner_row_tags_and_stored_text);
+  RUN_TEST(test_exactly_once_capture_by_source);
+  RUN_TEST(test_stale_note_never_applies_to_another_turn);
+  RUN_TEST(test_seedless_turn_trigger_row);
+  RUN_TEST(test_assistant_rows_carry_out_kinds);
+  RUN_TEST(test_switch_off_is_byte_identical);
+  RUN_TEST(test_overflow_shift_is_recorded_and_stable);
+  RUN_TEST(test_fold_slice_starts_after_the_anchor);
+  UNITY_END();
+  return 0;
+}

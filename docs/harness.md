@@ -89,8 +89,8 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → vector recall (embed + composite score + MMR)
   → composeInstructions: role/contract → identity+time → directive+running-memory
     → capabilities (live manifest + tool list) → running sessions
-    → RECENT CONVERSATION (per-chat, ≤12 msgs, newest rows whole, budget derived
-      from the head's window) → scratchpad → recall → memory-howto
+    → RECENT CONVERSATION (per-chat, one exchange per turn, append-only between
+      boundaries, budget derived from the head's window) → scratchpad → recall → memory-howto
   → input: [MEMORY RESULTS] + [FRESH RESULTS] + [ACTIVE SESSIONS] + providers/models
     /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])
   → host pick (orchHost || first of providerPriority) + per-chat conv chain

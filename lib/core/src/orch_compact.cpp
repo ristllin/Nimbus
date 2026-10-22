@@ -4,6 +4,7 @@
 #include <cctype>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen - every re-injected cap must be UTF-8-safe
+#include "nimbus/orch/history_rows.h"   // rowIdAfter / rowTextHash - the anchors, the repeat check
 #include "nimbus/orch/model_catalog.h"  // gptGeneration - the one gpt-<N> parser
 #include "nimbus/orch/router_route.h"   // resolveRouterRoute - the one selector split
 
@@ -159,6 +160,21 @@ uint32_t toU32(const std::string& s) {
   }
   return v;
 }
+// A row id kept in the blob: id characters only (it rides a numeric field).
+std::string cleanId(const std::string& v) {
+  std::string o;
+  for (char c : v) {
+    const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    if (!ok || o.size() >= 24) break;
+    o += c;
+  }
+  return o;
+}
+// "1234;m0000a1f3" -> the id after ';' ("" when none).
+std::string idSuffix(const std::string& field) {
+  const size_t semi = field.find(';');
+  return semi == std::string::npos ? std::string() : cleanId(field.substr(semi + 1));
+}
 }  // namespace
 
 void FoldStore::begin(FoldStoreIO* io) {
@@ -187,7 +203,9 @@ void FoldStore::begin(FoldStoreIO* io) {
     s.f.bytesSinceFold  = toU32(f[1]);
     s.f.msgsSinceFold   = toU32(f[2]);
     s.f.lastFoldEpoch   = toU32(f[3]);
+    s.f.thru            = idSuffix(f[3]);
     s.f.turnsSinceFold  = toU32(f[4]);
+    s.f.softStart       = idSuffix(f[4]);
     s.f.breakerFails    = (uint8_t)toU32(f[5]);
     s.f.breakerPaused   = toU32(f[6]) != 0;
     s.f.summary         = capSummary(rec.substr(p));   // re-cap on load (defense)
@@ -225,7 +243,9 @@ std::string FoldStore::encodeSlot(const Slot& s) {
   out += '\x1F'; out += std::to_string(s.f.bytesSinceFold);
   out += '\x1F'; out += std::to_string(s.f.msgsSinceFold);
   out += '\x1F'; out += std::to_string(s.f.lastFoldEpoch);
+  if (!s.f.thru.empty()) out += ";" + cleanId(s.f.thru);
   out += '\x1F'; out += std::to_string(s.f.turnsSinceFold);
+  if (!s.f.softStart.empty()) out += ";" + cleanId(s.f.softStart);
   out += '\x1F'; out += std::to_string((unsigned)s.f.breakerFails);
   out += '\x1F'; out += s.f.breakerPaused ? "1" : "0";
   out += '\x1F'; out += stripCtl(s.f.summary);
@@ -273,6 +293,39 @@ void FoldStore::noteMessage(const std::string& chatId, size_t bytes) {
   // Persist deferred to noteTurn - one flash write per turn, not per message.
 }
 
+bool FoldStore::noteOwnerMessage(const std::string& chatId, const std::string& text) {
+  Slot& s = upsert(chatId);
+  const uint32_t h = rowTextHash(text);
+  if (h == s.f.lastOwnerHash) return false;   // the same message again: nothing new
+  s.f.lastOwnerHash = h;
+  s.f.bytesSinceFold += (uint32_t)text.size();
+  s.f.msgsSinceFold  += 1;
+  return true;
+}
+
+void FoldStore::setSoftStart(const std::string& chatId, const std::string& rowId) {
+  const std::string id = cleanId(rowId);
+  if (id.empty()) return;
+  Slot& s = upsert(chatId);
+  if (!s.f.thru.empty() && !rowIdAfter(id, s.f.thru)) return;              // the summary covers it
+  if (!s.f.softStart.empty() && !rowIdAfter(id, s.f.softStart)) return;    // forward only
+  s.f.softStart = id;   // persisted with the turn's blob write (noteTurn)
+}
+
+void FoldStore::noteFoldSkipped(const std::string& chatId) {
+  Slot* s = find(stripCtl(chatId));
+  if (!s) return;
+  s->f.bytesSinceFold = 0;
+  s->f.msgsSinceFold = 0;
+  // Rows a shift hid and the slice did not take (under the byte floor, or behind
+  // a /clear) are given up rather than asked about on every pass.
+  if (!s->f.softStart.empty()) {
+    s->f.thru = s->f.softStart;
+    s->f.softStart.clear();
+  }
+  persist();
+}
+
 void FoldStore::noteTurn(const std::string& chatId) {
   Slot& s = upsert(chatId);
   if (s.f.turnsSinceFold < 0xFFFFFFFFu) s.f.turnsSinceFold += 1;
@@ -285,8 +338,10 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   Slot* s = find(stripCtl(chatId));
   if (!s) return FoldDue::No;
   if (s->f.breakerPaused) return FoldDue::No;
+  // H3: an overflow shift hides rows the summary does not cover yet.
+  const bool hidden = !s->f.softStart.empty() && (s->f.thru.empty() || rowIdAfter(s->f.softStart, s->f.thru));
   const bool over = s->f.bytesSinceFold >= bytesThreshold ||
-                    (msgsThreshold > 0 && s->f.msgsSinceFold >= msgsThreshold);
+                    (msgsThreshold > 0 && s->f.msgsSinceFold >= msgsThreshold) || hidden;
   if (!over) return FoldDue::No;
   // Thrash guard: due again within kThrashTurns of a COMPLETED fold means the
   // fold isn't shrinking this chat - pause (alert edge) instead of burning
@@ -300,8 +355,16 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
 }
 
 void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
-                          uint32_t epoch) {
+                          uint32_t epoch, const std::string& thru) {
   Slot& s = upsert(chatId);
+  const std::string id = cleanId(thru);
+  if (summary.empty()) {   // a /clear: the history restarts at its boundary row
+    s.f.thru.clear();
+    s.f.softStart.clear();
+  }
+  if (!id.empty() && (s.f.thru.empty() || rowIdAfter(id, s.f.thru))) s.f.thru = id;
+  if (!s.f.softStart.empty() && !s.f.thru.empty() && !rowIdAfter(s.f.softStart, s.f.thru))
+    s.f.softStart.clear();   // the summary now covers everything the shift hid
   s.f.summary        = capSummary(summary);
   s.f.bytesSinceFold = 0;
   s.f.msgsSinceFold  = 0;

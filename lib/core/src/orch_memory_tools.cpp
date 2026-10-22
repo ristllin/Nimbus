@@ -12,6 +12,8 @@
 #include "nimbus/orch/pending_embed.h"
 #include "nimbus/orch/caps.h"   // scratchpad tier/item caps -> capacity line (W11)
 #include "nimbus/orch/episodic_log.h"   // civilDate for the honest history floor
+#include "nimbus/orch/history_rows.h"  // kClockValidHours / wdayAbbr - a row's date (L19-12)
+#include "nimbus/orch/loops.h"         // civilFromDays
 #include "nimbus/orch/mem_ttl.h"
 
 using ArduinoJson::JsonArrayConst;
@@ -179,6 +181,19 @@ std::string embedFailReason(const std::string& raw) {
   std::string detail;
   const EmbedFail k = classifyEmbedFail(raw, detail);
   return embedFailReasonFor(k, detail);
+}
+
+std::string episodicWhen(uint32_t tsHours, uint32_t nowHours) {
+  if (tsHours < kClockValidHours) return "time not recorded";   // pre-sync rows are boot-relative
+  const CivilTime c = civilFromDays(tsHours / 24);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "%s %d %s %02u:00 UTC", wdayAbbr(c.wday), c.day, monthAbbr(c.month),
+           (unsigned)(tsHours % 24));
+  std::string out = buf;
+  if (nowHours < kClockValidHours || nowHours < tsHours) return out;
+  const uint32_t age = nowHours - tsHours;
+  if (age == 0) return out + ", this hour";
+  return out + ", " + (age < 48 ? std::to_string(age) + " h ago" : std::to_string(age / 24) + " days ago");
 }
 
 namespace {
@@ -1137,7 +1152,8 @@ ToolResult doEpisodic(const MemoryContext& ctx, JsonObjectConst a, const Princip
     // The SESSION rides every row (B2 field find): the tool searches ALL chats
     // by design, and without the source chat the model mis-attributed another
     // channel's words to "this chat" (live 2026-07-27).
-    out += "- [" + std::string(kindName(m.kind)) + "/" + m.role + "@" + m.sessionId + "] " +
+    out += "- [" + std::string(kindName(m.kind)) + "/" + m.role + "@" + m.sessionId + ", " +
+           episodicWhen(m.tsHours, nowH) + "] " +
            (m.text.size() > 600 ? m.text.substr(0, 600) + "..." : m.text);
     if (!m.blobPath.empty()) out += " (" + m.blobPath + ")";
     out += "\n";

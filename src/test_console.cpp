@@ -55,6 +55,7 @@
 #include <time.h>                      // TZCHK - setenv(TZ)/tzset/localtime_r
 #include <nvs.h>                       // NVSFILL - raw scratch-namespace writes (bypass the reserve)
 #include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
+#include "nimbus/harness/turn_inbox.h"  // HISTV2 - the turn-structured history switch
 #include "nimbus/harness/output_caps.h"  // CAPTEST - the first-attempt cap (test builds)
 #include "nimbus/harness/providers.h"    // PROVFAULT - the canned provider answer (test builds)
 #include <solide/selftest.h>
@@ -1975,6 +1976,39 @@ void dispatch(String line) {
     return;
   }
   if (line == "TGGUARD?") { tgGuardStatus(); return; }
+  if (line == "HISTV2" || line.startsWith("HISTV2 ")) {
+    // HISTV2 [0|1]: the turn-structured history switch (RAM only, on at boot).
+    // 0 restores the v4.5.15 window and capture byte for byte (the bench's
+    // byte-identical leg); no argument reports the state.
+    String a = line.length() > 6 ? line.substring(7) : String("");
+    a.trim();
+    if (a == "0" || a == "1") agent::history::setV2Enabled(a == "1");
+    Serial.printf("HISTV2 %d\n", agent::history::v2Enabled() ? 1 : 0);
+    Serial.flush();
+    return;
+  }
+
+  if (line.startsWith("HISTADD ")) {
+    // HISTADD <chat> <n> <text>: capture <n> owner rows of <text> in <chat>, as a
+    // replay storm leaves them (the history's xN collapse, L19-26), with no turn
+    // and no provider call. n is capped at 500.
+    String rest = line.substring(8);
+    rest.trim();
+    const int a = rest.indexOf(' ');
+    const int b = a < 0 ? -1 : rest.indexOf(' ', a + 1);
+    if (a <= 0 || b <= a) { reply("HISTADD usage: HISTADD <chat> <n> <text>"); return; }
+    const String chat = rest.substring(0, a);
+    int n = rest.substring(a + 1, b).toInt();
+    if (n < 1) n = 1;
+    if (n > 500) n = 500;
+    const String text = rest.substring(b + 1);
+    for (int i = 0; i < n; i++)
+      agent::memory::captureMessage(chat.c_str(), "user", nimbus::orch::MsgKind::Message, text, "",
+                                    String("from:bench"));
+    Serial.printf("HISTADD chat=%s n=%d\n", chat.c_str(), n);
+    Serial.flush();
+    return;
+  }
 
   // Unknown: echo the first token so the harness can see what was rejected.
   int sp = line.indexOf(' ');

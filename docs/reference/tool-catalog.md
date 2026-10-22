@@ -120,8 +120,11 @@ Notes:
   containing **any** of its words (common words ignored, plural and verb endings
   trimmed); two or more words rank rows holding more of them first, and the
   answer says when more rows matched than the limit returned (the full rule:
-  [orchestrator-world.md](../orchestrator-world.md) §1.3). Registered only
-  when an episodic store is bound (device).
+  [orchestrator-world.md](../orchestrator-world.md) §1.3). Each row says when
+  it happened: its date and hour (UTC) and its age, such as `16 h ago`, so a
+  photo from yesterday never reads as today's; a row stamped before the device
+  clock was set says the time is not recorded. Registered only when an episodic
+  store is bound (device).
 - `memory.archive` reaches the **cold store** of TTL-expired memories. Because
   re-embedding is expensive, a memory that reaches its time-to-live is moved to an
   archive on the SD card (embedding preserved) instead of being deleted, so it can be

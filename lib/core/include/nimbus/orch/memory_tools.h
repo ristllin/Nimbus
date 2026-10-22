@@ -84,6 +84,13 @@ std::string embedFailReason(const std::string& raw);
 // not the raw token).
 std::string embedFailReasonFor(EmbedFail kind, const std::string& detail);
 
+// When a memory.episodic row happened (L19-12): "Mon 19 Oct 14:00 UTC, 16 h ago".
+// Rows carried no time, so a photo row from the day before read as today and
+// became the head's proof that vision worked. The age is the timezone-free part
+// (the prompt's clock is local); "time not recorded" for a row stamped before the
+// clock was set (boot-relative hours). Pure + host-tested.
+std::string episodicWhen(uint32_t tsHours, uint32_t nowHours);
+
 // ToolResult::code values of memory.write / memory.update. Every write ends in
 // exactly one of them, and the words of a queued or refused one say so.
 inline constexpr const char* kMemOutcomeStored    = "stored";

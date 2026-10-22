@@ -30,7 +30,8 @@ static void test_append_and_tool_bytes() {
   t.addToolCall(call("id0", "memory_search", "{\"q\":\"x\"}"), 0, "anthropic");
   t.addToolResult(res("id0", "memory_search", std::string(500, 'a')), 0);
   TEST_ASSERT_EQUAL_UINT32(4, (uint32_t)t.size());
-  TEST_ASSERT_EQUAL_UINT32(500, (uint32_t)t.toolBytes());   // results only
+  // F6b: every replayed byte - prose (8) + call arguments (9) + result (500).
+  TEST_ASSERT_EQUAL_UINT32(517, (uint32_t)t.toolBytes());
   TEST_ASSERT_TRUE(t.entries()[0].pinned);                  // seeded user pinned
   TEST_ASSERT_EQUAL_STRING("anthropic", t.entries()[2].provider);
   TEST_ASSERT_TRUE(t.entries()[2].kind == TranscriptItem::Kind::ToolUse);
@@ -55,32 +56,84 @@ static void requireAnswered(const Transcript& t) {
   }
 }
 
-// The class rule: a round that was already sent keeps its bytes whatever the
-// budget, so the replayed request only ever grows at its end (prompt_layout.h).
-// Run the trim the way every loop does - before each round - and check every
-// earlier result is untouched after every later trim.
-static void test_trim_never_rewrites_a_sent_round() {
-  for (size_t cap : {1500u, 2500u, 4000u, 9000u}) {
+// The replay as a provider renders it: the seed, then every entry in order.
+static std::string body(const Transcript& t) {
+  std::string b;
+  for (const auto& e : t.entries()) b += std::to_string((int)e.kind) + "|" + e.id + "|" + e.text + "\n";
+  return b;
+}
+
+// T6, the class rule (H6): run the trim the way every loop does - before each
+// round - over 12 rounds whose results total 3x the cap. The request grows only
+// at its end except at a fold, and folds come about cap/2 bytes apart, not one
+// per round: the rounds whose body is not a byte extension of the previous one
+// number at most ceil((total - cap) / (cap / 2)) + 1. Between folds a sent round
+// keeps its bytes.
+static void test_trim_folds_with_hysteresis() {
+  for (size_t cap : {3000u, 6000u, 12000u}) {
     Transcript t;
     t.addUser("u");
-    std::vector<std::string> sent;   // each round's result as it went on the wire
-    for (int i = 0; i < 6; i++) {
+    const size_t per = cap * 3 / 12;
+    std::string prev;
+    size_t breaks = 0, total = 0;
+    for (int i = 0; i < 12; i++) {
       const std::string id = "id" + std::to_string(i);
-      t.addToolCall(call(id.c_str(), "web_search", "{}"), i, "anthropic");
-      t.addToolResult(res(id.c_str(), "web_search", std::string(1000, 'a' + i)), i);
+      t.addToolCall(call(id.c_str(), "web_search", "{\"q\":\"x\"}"), i, "anthropic");
+      t.addToolResult(res(id.c_str(), "web_search", std::string(per, (char)('a' + i))), i);
+      total += per + 9;
       t.trimToolOutputs(cap);
-      int seen = 0;
-      for (const auto& e : t.entries()) {
-        if (e.kind != TranscriptItem::Kind::ToolResult) continue;
-        if (seen < (int)sent.size())
-          TEST_ASSERT_TRUE_MESSAGE(e.text == sent[seen], "a sent round was rewritten");
-        else
-          sent.push_back(e.text);
-        seen++;
-      }
+      const std::string b = body(t);
+      if (!prev.empty() && b.compare(0, prev.size(), prev) != 0) breaks++;
+      prev = b;
+      TEST_ASSERT_TRUE(t.toolBytes() <= cap);
+      requireAnswered(t);
     }
-    requireAnswered(t);
+    const size_t bound = (total - cap + cap / 2 - 1) / (cap / 2) + 1;
+    TEST_ASSERT_TRUE_MESSAGE(breaks >= 1, "the replay never folded");
+    TEST_ASSERT_TRUE_MESSAGE(breaks <= bound, ("cap " + std::to_string(cap)).c_str());
+    // The newest round is always verbatim: the model has not seen it yet.
+    const auto& e = t.entries();
+    TEST_ASSERT_EQUAL_STRING(std::string(per, (char)('a' + 11)).c_str(), e.back().text.c_str());
+    // The folded rounds name what ran, inside the seeded message.
+    TEST_ASSERT_TRUE(e.front().text.find(Transcript::kFoldNote) != std::string::npos);
+    TEST_ASSERT_TRUE(e.front().text.find("- round 0: web_search") != std::string::npos);
   }
+}
+
+// Counter-test: under the cap nothing is rewritten at all, however many rounds.
+static void test_trim_under_cap_is_append_only() {
+  Transcript t;
+  t.addUser("u");
+  std::string prev;
+  for (int i = 0; i < 10; i++) {
+    const std::string id = "id" + std::to_string(i);
+    t.addToolCall(call(id.c_str(), "files_read", "{}"), i, "openai");
+    t.addToolResult(res(id.c_str(), "files_read", std::string(100, 'x')), i);
+    TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)t.trimToolOutputs(100000));
+    const std::string b = body(t);
+    TEST_ASSERT_TRUE(b.compare(0, prev.size(), prev) == 0);
+    prev = b;
+  }
+  TEST_ASSERT_TRUE(t.entries().front().text == "u");
+}
+
+// F6b: a long call argument counts like a long result. A 40 KB artifact_save
+// written in round 0 is folded once the next round's results arrive, instead of
+// riding every later round unbudgeted.
+static void test_trim_counts_call_arguments() {
+  Transcript t;
+  t.addUser("write the plan");
+  const std::string big = "{\"text\":\"" + std::string(40000, 'p') + "\"}";
+  t.addToolCall(call("id0", "artifact_save", big.c_str()), 0, "mistral");
+  t.addToolResult(res("id0", "artifact_save", "saved plan.md"), 0);
+  TEST_ASSERT_TRUE(t.toolBytes() > 40000);
+  t.addToolCall(call("id1", "files_list", "{}"), 1, "mistral");
+  t.addToolResult(res("id1", "files_list", "plan.md 40 KB"), 1);
+  TEST_ASSERT_TRUE(t.trimToolOutputs(24576) > 40000);
+  TEST_ASSERT_TRUE(t.toolBytes() < 24576 / 2);
+  TEST_ASSERT_TRUE(t.entries().front().text.find("- round 0: artifact_save") != std::string::npos);
+  TEST_ASSERT_TRUE(t.entries().front().text.find("saved plan.md") != std::string::npos);
+  requireAnswered(t);
 }
 
 static void test_trim_clips_the_newest_with_a_visible_marker() {
@@ -90,23 +143,25 @@ static void test_trim_clips_the_newest_with_a_visible_marker() {
   t.addToolResult(res("id0", "files_read", std::string(1000, 'x')), 0);
   t.trimToolOutputs(1500);
   t.addToolCall(call("id1", "files_read", "{}"), 1, "openai");
-  t.addToolResult(res("id1", "files_read", std::string(1000, 'y') + "END"), 1);
-  const size_t before = t.size();
+  t.addToolResult(res("id1", "files_read", std::string(2000, 'y') + "END"), 1);
   TEST_ASSERT_TRUE(t.trimToolOutputs(1500) > 0);
-  TEST_ASSERT_EQUAL_UINT32((uint32_t)before, (uint32_t)t.size());   // nothing removed
-  TEST_ASSERT_EQUAL_UINT32(1000, (uint32_t)t.entries()[2].text.size());   // round 0 verbatim
-  const std::string& newest = t.entries()[4].text;
+  // Round 0 folded into the seed; round 1 alone is over the cap: clipped.
+  TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)t.size());
+  const std::string& newest = t.entries()[2].text;
   TEST_ASSERT_TRUE(newest.find("[cut: this turn's tool-output budget is spent") != std::string::npos);
-  TEST_ASSERT_TRUE(newest.find("of 1003 B") != std::string::npos);   // names what was cut
+  TEST_ASSERT_TRUE(newest.find("of 2003 B") != std::string::npos);   // names what was cut
   TEST_ASSERT_TRUE(newest.find("END") == std::string::npos);
   TEST_ASSERT_TRUE(t.toolBytes() <= 1500);
   requireAnswered(t);
   // With no room left at all, the newest is withheld with a note instead.
-  t.addToolCall(call("id2", "files_read", "{}"), 2, "openai");
-  t.addToolResult(res("id2", "files_read", std::string(800, 'w')), 2);
-  t.trimToolOutputs(1500);
-  TEST_ASSERT_TRUE(t.entries()[6].text.find("[not shown: this turn's tool-output budget is spent (800 B)") == 0);
-  requireAnswered(t);
+  Transcript u;
+  u.addUser("u");
+  const std::string huge = "{\"a\":\"" + std::string(1400, 'z') + "\"}";
+  u.addToolCall(call("id2", "files_read", huge.c_str()), 0, "openai");
+  u.addToolResult(res("id2", "files_read", std::string(800, 'w')), 0);
+  u.trimToolOutputs(1500);
+  TEST_ASSERT_TRUE(u.entries()[2].text.find("[not shown: this turn's tool-output budget is spent (800 B)") == 0);
+  requireAnswered(u);
 }
 
 static void test_trim_noop_under_budget() {
@@ -150,7 +205,9 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_and_tool_bytes);
   RUN_TEST(test_empty_prose_not_recorded);
-  RUN_TEST(test_trim_never_rewrites_a_sent_round);
+  RUN_TEST(test_trim_folds_with_hysteresis);
+  RUN_TEST(test_trim_under_cap_is_append_only);
+  RUN_TEST(test_trim_counts_call_arguments);
   RUN_TEST(test_trim_clips_the_newest_with_a_visible_marker);
   RUN_TEST(test_trim_noop_under_budget);
   RUN_TEST(test_render_brief_bounded_and_marked);

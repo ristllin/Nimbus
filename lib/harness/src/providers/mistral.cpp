@@ -189,6 +189,19 @@ static void keepMistralError(JsonDocument& filter) {
 
 // ---- head turn (Conversations API + canonical schema) -----------------------
 
+// Drop every "description" from a schema node: the field docs already ride the
+// prompt (ORCH_FIELD_DOCS, from the same macros), so only the shapes are needed.
+// (The same reduction the Anthropic wire applies to fit its grammar budget.)
+static void mistralStripDescriptions(ArduinoJson::JsonVariant v) {
+  if (v.is<ArduinoJson::JsonObject>()) {
+    ArduinoJson::JsonObject o = v.as<ArduinoJson::JsonObject>();
+    o.remove("description");
+    for (ArduinoJson::JsonPair kv : o) mistralStripDescriptions(kv.value());
+  } else if (v.is<ArduinoJson::JsonArray>()) {
+    for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) mistralStripDescriptions(e);
+  }
+}
+
 // ---- multi-turn tool-use loop (ReAct) ---------------------------------------
 // Stage 2 phase 4: the loop runs on STATELESS /v1/chat/completions - messages[]
 // is rendered from the device-owned canonical transcript every round (the same
@@ -325,6 +338,9 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
       err = "schema parse";
       return false;
     }
+    // F6c: shapes only - the field docs ride the prompt, and the 10 KB of
+    // descriptions rode every round of every Mistral loop turn.
+    mistralStripDescriptions(sd.as<ArduinoJson::JsonVariant>());
     fn["parameters"] = sd;
   }
   for (const auto& sp : a.ht->specs) {
@@ -540,19 +556,6 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
 // only the Studio connector + schema pair was measured to hang. This is the
 // smaller of the two honest fixes; the other (route Studio connectors to a spawned
 // sub-agent, as nimbusd does) also needs the device catalog to say so.
-
-// Drop every "description" from a schema node: the field docs already ride the
-// prompt (ORCH_FIELD_DOCS, from the same macros), so only the shapes are needed.
-// (The same reduction the Anthropic wire applies to fit its grammar budget.)
-static void mistralStripDescriptions(ArduinoJson::JsonVariant v) {
-  if (v.is<ArduinoJson::JsonObject>()) {
-    ArduinoJson::JsonObject o = v.as<ArduinoJson::JsonObject>();
-    o.remove("description");
-    for (ArduinoJson::JsonPair kv : o) mistralStripDescriptions(kv.value());
-  } else if (v.is<ArduinoJson::JsonArray>()) {
-    for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) mistralStripDescriptions(e);
-  }
-}
 
 // The instruction that replaces the response_format on a schema-less turn: the
 // same canonical schema (single source, ~3.8 KB without descriptions), as text,
