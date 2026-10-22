@@ -38,8 +38,8 @@ Unit L (the fill unit, TEST build):
   the restart keeps the count (the guard record survives it). The store is freed in a
   ``finally``.
 * ``test_l48_guard_is_fresh_after_a_flash``: the first boot of a newly flashed image
-  logs ``storm guard fresh`` and counts nothing (a fresh device); run it right after the
-  flash, before any other leg.
+  starts a fresh guard record and counts nothing (a fresh device); run it alone right
+  after the flash, before any other leg (it reads that boot without restarting it).
 
 Human gate (manual, H2-1 to H2-4): a real 3-photo album from the phone gets one reply
 covering all three; a text 2 s after an album joins it; a text 20 s after gets its own
@@ -442,17 +442,26 @@ def test_l48_storm_one_turn_for_fifty_pages(device, net, owner_chat):
 
 
 @pytest.mark.hil
-def test_l48_guard_is_fresh_after_a_flash(device):
-    """Run first after flashing a new image: the guard record from the previous image is
-    rebuilt (its build id differs), so the first boot counts nothing. The guard boots
-    before the READY beacon, so its boot line is read from what the reboot consumed; the
-    verdict comes from ``TGGUARD?`` (``kept=0``)."""
-    device.reboot_and_confirm()
-    g = _guard(device)
-    seen = [ln for ln in device._transcript if "telegram: storm guard" in ln]
-    print(seen[-1] if seen else "(boot line not captured)", g)
+def test_l48_guard_is_fresh_after_a_flash(allow_hardware, port):
+    """The first boot of a newly flashed image rebuilds the guard record (the previous
+    image's build id differs), so it counts nothing. The guard boots in begin(), so any
+    restart after the flash (the ``device`` fixture restarts the board when a session
+    opens) is already a second boot that keeps the rebuilt record: this leg opens its
+    own console without a reset and reads the boot it finds (``TGGUARD?`` ``kept=0``).
+    Run it alone, first, right after the flash; on a later boot it skips."""
+    if not allow_hardware:
+        pytest.skip("hardware gated: pass --allow-hardware")
+    from device import Device
+
+    dev = Device(port=port).open()
+    try:
+        g = _guard(dev, timeout=60.0)
+        up = int(dev.status(timeout=10.0).group("up"))
+    finally:
+        dev.close()
+    print(f"uptime {up}: {g}")
     if g["kept"] == 1:
-        pytest.skip("not the first boot of this image: run this leg right after the flash")
+        pytest.skip("not the first boot of this image: run this leg alone right after the flash")
     assert g["kept"] == 0 and g["dups"] == 0 and g["tries"] == 0 and g["poison"] == 0, g
 
 
