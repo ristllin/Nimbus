@@ -45,9 +45,19 @@ def owner_chat_for(leg: str) -> int:
     return OWNER_CHAT_BASE + (g.LEGS.index(leg) + 1 if leg in g.LEGS else 0)
 
 
+# NIMBUS_STORM_TG=1: the leg runs with the dedicated test bot on the unit (locks/tg-bot
+# held for the leg, the token cleared in a finally) and the test chat as its owner, so
+# the device's Telegram record (/api/tg/archive, its outbound rows) is the owner channel
+# the notices are counted on, and the notices only sent with a token (the storage-full
+# notice) are in it.
+TG_MODE = os.environ.get("NIMBUS_STORM_TG") == "1"
+
+
 EVIDENCE_DIR = os.environ.get("NIMBUS_STORM_EVIDENCE") or os.path.join(
     os.environ.get("TMPDIR", "/tmp"), "nimbus-storm-evidence"
 )
+# Local bench state a leg must be able to put back by hand after an interruption.
+STATE_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "nimbus-storm-state")
 UNIT = os.environ.get("NIMBUS_STORM_UNIT", "")
 ENV_FILE = os.environ.get("NIMBUS_ENV_FILE") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), ".env"
@@ -111,7 +121,7 @@ class LogTap:
     (``/api/errlog/recent``). Lines are kept once each, in arrival order, across a
     restart (the line text includes its sequence number and uptime)."""
 
-    def __init__(self, net, window: int = 12000):
+    def __init__(self, net, window: int = 16000):
         self.net = net
         self.window = window
         self.seen: set = set()
@@ -146,7 +156,9 @@ class StormBench:
     def __init__(self, device, net, mock=None, leg: str = ""):
         self.device = device
         self.leg = leg
-        self.chat = owner_chat_for(leg)
+        self.env = read_env()
+        self.tg = TG_MODE and bool(self.env.get("NIMBUS_TEST_TG_TOKEN") and self.env.get("NIMBUS_TEST_TG_CHAT"))
+        self.chat = int(self.env["NIMBUS_TEST_TG_CHAT"]) if self.tg else owner_chat_for(leg)
         self.net = net
         self.mock = mock
         st = self.state()
@@ -158,7 +170,6 @@ class StormBench:
         self.started = time.time()
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
-        self.env = read_env()
 
     # ---- reads --------------------------------------------------------------------
     @property
@@ -225,16 +236,41 @@ class StormBench:
             "a Telegram bot token is on the unit: clear it, or take locks/tg-bot and run the leg with the test bot"
         )
         before = str(o.get("tgAllow") or "")
-        # Kept beside the evidence (never printed: the allowlist holds real chat ids), so an
-        # interrupted run can put it back by hand.
-        os.makedirs(EVIDENCE_DIR, exist_ok=True)
-        with open(os.path.join(EVIDENCE_DIR, f"allowlist-before-unit{self.unit or 'x'}.txt"), "w") as f:
+        # Kept in a local state file, never printed and never beside the evidence (the
+        # allowlist holds real chat ids), so an interrupted run can put it back by hand.
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(os.path.join(STATE_DIR, f"allowlist-before-unit{self.unit or 'x'}.txt"), "w") as f:
             f.write(before + "\n")
-        self.post_orch({"tgAllow": str(self.chat)})
         try:
-            yield self.chat
+            if self.tg:
+                import bench_lock
+
+                post = lambda f: self.net.post("/api/orch", f, timeout=10.0)  # noqa: E731
+                with bench_lock.bot_on_unit(
+                    post, self.env["NIMBUS_TEST_TG_TOKEN"], str(self.chat), f"storm {self.leg}"
+                ):
+                    time.sleep(5.0)  # the token swap lands on the poll task's next loop
+                    yield self.chat
+            else:
+                self.post_orch({"tgAllow": str(self.chat)})
+                yield self.chat
         finally:
             self.post_orch({"tgAllow": before}, ok=(200, 507))
+
+    def outbound(self) -> Optional[List[dict]]:
+        """Today's outbound Telegram rows for the owner chat (the device's archive), or
+        None without a bot token (nothing is archived then)."""
+        if not self.tg:
+            return None
+        rows, start = [], 0
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        while True:
+            q = f"/api/tg/archive?chat={self.chat}&day={day}&limit=200&from={start}"
+            page = self._retry(lambda: self.net.get_json(q, timeout=15.0), "reading the Telegram archive")
+            rows += [r for r in page.get("rows", []) if r.get("dir") == "out"]
+            if not page.get("more"):
+                return rows
+            start = page["next"]
 
     @contextlib.contextmanager
     def session(self, keep: Optional[str], head) -> Iterator[None]:
@@ -269,16 +305,22 @@ class StormBench:
         cap holds, they never lift it."""
         st = self.spend_state() if not self.control else None
         seeded = None
-        if st and (st["frozen"] or st["limitCents"] - st["spentCents"] < need_cents):
-            seeded = st["spentCents"]
-            self.verb("SPENDSET 0", "SPENDSET", timeout=6.0)
-            print(f"[storm] spend ceiling: {st}; this month's count seeded to 0 for the leg")
         try:
+            if st and (st["frozen"] or st["limitCents"] - st["spentCents"] < need_cents):
+                seeded = st["spentCents"]  # set first: a seed that raises after landing is still put back
+                self.verb("SPENDSET 0", "SPENDSET", timeout=6.0)
+                print(f"[storm] spend ceiling: {st}; this month's count seeded to 0 for the leg")
             yield st
         finally:
             if seeded is not None:
-                self.verb(f"SPENDSET {seeded}", "SPENDSET", timeout=6.0)
-                print(f"[storm] spend ceiling: this month's count put back to {seeded} cents")
+                # The month's count back, plus what the leg itself spent: the device keeps
+                # counting the bench's real spend.
+                now = self.spend_state() or {"spentCents": 0}
+                back = seeded + now["spentCents"]
+                self.verb(f"SPENDSET {back}", "SPENDSET", timeout=6.0)
+                print(
+                    f"[storm] spend ceiling: this month's count put back to {back} cents ({now['spentCents']} by the leg)"
+                )
 
     # ---- provider isolation and the head -------------------------------------------------
     @contextlib.contextmanager
@@ -294,10 +336,10 @@ class StormBench:
         cleared = [p for p, (fld, envname) in KEY_FIELDS.items() if p != keep and (provs.get(p) or {}).get("hasKey")]
         missing = [p for p in cleared if not self.env.get(KEY_FIELDS[p][1])]
         assert not missing, f"cannot restore {missing} afterwards: no key of that name in the bench .env"
-        for p in cleared:
-            self.post_orch({"clr_" + KEY_FIELDS[p][0]: "1"})
-        print(f"[storm] provider keys cleared for the leg: {cleared or 'none'}")
         try:
+            for p in cleared:  # inside the try: a clear that fails part way still restores all
+                self.post_orch({"clr_" + KEY_FIELDS[p][0]: "1"})
+            print(f"[storm] provider keys cleared for the leg: {cleared or 'none'}")
             yield
         finally:
             for p in cleared:
@@ -374,6 +416,7 @@ class StormBench:
         while time.time() < end:
             try:
                 if self.net.get_json("/api/state", timeout=4.0).get("uptimeMs", 10**9) < fresh_ms:
+                    self.tap.poll()  # the boot's lines (a crash notice among them) before they scroll away
                     break
             except Exception:  # noqa: BLE001 - still booting
                 pass
@@ -484,19 +527,19 @@ class StormBench:
 
             api = sf.Api(self.net.ip, str(self.net.token()), log=print)
             snap = sf.take_snapshot(api)
-            n = sf.fill(api, snap, target_free=0)
             try:
+                n = sf.fill(api, snap, target_free=0)  # records each filler in snap as it goes
                 yield {"free": n.get("free"), "how": "web API fill"}
             finally:
                 problems = sf.restore(api, snap)
                 assert not problems, f"the settings store was not restored: {problems}"
             return
         out = ""
-        for _ in range(40):
-            out = self.verb("NVSFILL 400", "NVSFILL", timeout=20.0)
-            if "full=1" in out:
-                break
         try:
+            for _ in range(40):
+                out = self.verb("NVSFILL 400", "NVSFILL", timeout=20.0)
+                if "full=1" in out:
+                    break
             yield {"free": (self.state().get("nvs") or {}).get("free"), "how": "NVSFILL", "last": out}
         finally:
             self.verb("NVSFILL 0", "NVSFILL", timeout=20.0)
@@ -556,9 +599,7 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
     metrics with the usable probe (a fresh message) graded after it."""
     uid = first_update_id()
     text = f"storm {leg} {uid}: reply with the single word pong"
-    before = bench.chat_rows()
-    mock_before = len(bench.mock.completions()) if bench.mock else 0
-    bench.tap.arm()
+    w = Window(bench).open()
     guard0 = guard_counts(bench)
     for k in range(copies):
         if restart_at is not None and k == restart_at:
@@ -572,15 +613,15 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
             bench.wait_turn_end()
         bench.tap.poll()
     bench.wait_quiet(quiet_s=25.0, timeout=900.0)
-    lines = bench.tap.parsed()
-    rows = g.new_rows(before, bench.chat_rows())
-    replies = g.classify_replies(rows, ANSWER_RE, REPLAY_NOTICE_RE)
+    w.close()
+    lines = w.lines
+    replies = w.replies(REPLAY_NOTICE_RE)
     peak, peak_line = g.identical_peak(lines, ignore=DRIVE_LINES)
     m = g.Metrics(
         paid_turns=g.paid_turns(lines),
-        provider_requests=(len(bench.mock.completions()) - mock_before) if bench.control else _head_requests(lines),
+        provider_requests=w.requests(),
         parked_requests=0,
-        notices=len(g.log_notices(lines)) + len(replies["notices"]),
+        notices=w.notices(REPLAY_NOTICE_RE),
         identical_peak=peak,
         identical_line=peak_line[:160],
     )
@@ -592,6 +633,7 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
             "otherReplies": len(replies["other"]),
             "logNotices": g.log_notices(lines),
             "inboundLogged": len(g.inbound_texts(lines, bench.chat)),
+            "telegramSent": [str(r.get("text") or "")[:120] for r in w.sent] if w.sent is not None else None,
         }
     )
     if not bench.control:
@@ -656,8 +698,11 @@ class Window:
         self.lines: List[g.LogLine] = []
         self.rows: List[dict] = []
         self.mock_requests = 0
+        self.out_before = 0
+        self.sent: Optional[List[dict]] = None  # outbound Telegram rows of the window (bot mode)
 
     def open(self) -> "Window":
+        self.out_before = len(self.bench.outbound() or [])
         self.rows_before = self.bench.chat_rows()
         self.mock_before = len(self.bench.mock.completions()) if self.bench.mock else 0
         self.bench.tap.arm()
@@ -668,7 +713,17 @@ class Window:
         self.lines = self.bench.tap.parsed()
         self.rows = g.new_rows(self.rows_before, self.bench.chat_rows())
         self.mock_requests = (len(self.bench.mock.completions()) - self.mock_before) if self.bench.mock else 0
+        out = self.bench.outbound()
+        self.sent = None if out is None else out[self.out_before :]
         return self
+
+    def notices(self, notice_re) -> int:
+        """Owner notices of the window, on the owner's channel: the Telegram record in bot
+        mode (every outbound text that is not the expected answer), else the chat's
+        history notices plus the notices the device logged as queued."""
+        if self.sent is not None:
+            return sum(1 for r in self.sent if not ANSWER_RE.search(str(r.get("text") or "")))
+        return len(self.replies(notice_re)["notices"]) + len(g.log_notices(self.lines))
 
     def replies(self, notice_re) -> dict:
         return g.classify_replies(self.rows, ANSWER_RE, notice_re)

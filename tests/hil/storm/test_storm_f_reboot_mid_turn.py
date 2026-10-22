@@ -73,7 +73,7 @@ def test_storm_f_reboot_mid_turn(storm):
         paid_turns=g.paid_turns(w.lines),
         provider_requests=w.requests(),
         parked_requests=0,
-        notices=len(replies["notices"]) + len(g.log_notices(w.lines)),
+        notices=w.notices(NOTICE_RE),
         identical_peak=peak,
         identical_line=line[:160],
         usable=probe["usable"],

@@ -11,7 +11,8 @@ with it. Every other provider key is cleared for the leg. Unit A.
 
 Bounds on the release candidate: at most two requests for the message (one attempt and
 at most one retry), no turn on another provider, exactly one owner message for the
-episode, the probe answered or honestly refused within 120 s.
+message and exactly one for the probe (the worse of the two is graded), the probe
+answered or honestly refused within 120 s.
 
 Run: NIMBUS_STORM_UNIT=A python3 -m pytest tests/hil/storm/test_storm_d_deterministic_error.py --allow-hardware -s
 """
@@ -62,7 +63,10 @@ def test_storm_d_deterministic_error(storm):
         paid_turns=g.paid_turns(lines),
         provider_requests=w.requests(HOST),
         parked_requests=0,
-        notices=len(episode["notices"]) + len(g.log_notices(w.lines)),
+        # Told once per owner message: the message's notices, and the probe's (a
+        # deterministic error refuses every message; each gets exactly one honest reply,
+        # never one per retry). The worse of the two is graded.
+        notices=max(w.notices(NOTICE_RE), p.notices(NOTICE_RE)),
         identical_peak=peak,
         identical_line=line[:160],
         usable=probe["usable"],

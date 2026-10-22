@@ -289,3 +289,22 @@ def test_filler_ids_are_distinct_and_page_sized():
     step = len(ids[0]) + len(settings_fill.PAD_NAME) + 2
     assert 200 <= step <= 400  # a few hundred bytes per step: the names string grows gently
     assert len(settings_fill.DIRECTIVE_HEAD) < settings_fill.DIRECTIVE_MAX
+
+
+def test_a_multi_episode_leg_is_graded_by_its_worst_episode_and_serializes(tmp_path):
+    """Leg c runs three episodes: the record carries the worst one's counters and a
+    summary of every episode, and still writes as JSON (an episode list that held the
+    graded episode's own extra was a circular reference on the bench, 22 Oct)."""
+    good = g.Metrics(paid_turns=2, provider_requests=1, parked_requests=0, notices=1, identical_peak=1, usable=True)
+    bad = g.Metrics(paid_turns=2, provider_requests=4, parked_requests=3, notices=0, identical_peak=4, usable=False)
+    bad.extra["shape"] = "quota-429"
+    b = g.Bounds(max_paid_turns=2, max_provider_requests=1, max_identical=5)
+    assert kit.worst_episode([good, bad, good], b) is bad
+    assert kit.worst_episode([good, good], b) is good
+    blocked = g.Metrics()
+    assert kit.worst_episode([good, blocked], b) is blocked
+    import test_storm_c_provider_refusing as legc  # noqa: F401 - the leg module imports cleanly
+
+    bad.extra["episodes"] = [{k: v for k, v in vars(e).items() if k not in ("extra", "notes")} for e in (good, bad)]
+    rec = g.evidence_record(g.RunId("c_provider_refusing", g.CANDIDATE, "v", "eb50beb8", "A", 1.0, 2.0), bad, b)
+    assert g.write_evidence(str(tmp_path), rec).endswith(".json") and rec["grade"] == g.FAIL

@@ -79,7 +79,7 @@ def _episode(storm, name: str, scenario: str) -> g.Metrics:
         paid_turns=g.paid_turns(w.lines),
         provider_requests=w.requests(HOST),
         parked_requests=parked,
-        notices=len(replies["notices"]) + len(g.log_notices(w.lines)),
+        notices=w.notices(NOTICE_RE),
         identical_peak=peak,
         identical_line=line[:160],
         usable=probe["usable"],
@@ -99,5 +99,8 @@ def test_storm_c_provider_refusing(storm):
             print(f"[storm] episode {name}: {m}")
             episodes.append(m)
     worst = kit.worst_episode(episodes, BOUNDS)
-    worst.extra["episodes"] = [{"metrics": vars(e).copy()} for e in episodes]
+    summary = [{k: v for k, v in vars(e).items() if k not in ("extra", "notes")} for e in episodes]
+    for row, e in zip(summary, episodes):
+        row["shape"] = e.extra.get("shape")
+    worst.extra["episodes"] = summary  # every episode's counters (the graded one is the worst)
     kit.assert_graded(storm.finish(LEG, worst, BOUNDS))

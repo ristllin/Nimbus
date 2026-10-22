@@ -136,7 +136,7 @@ def test_storm_g_file_store_full(storm):
         paid_turns=g.paid_turns(w.lines),
         provider_requests=w.requests(),
         parked_requests=0,
-        notices=len(replies["notices"]) + len(g.log_notices(w.lines)),
+        notices=w.notices(NOTICE_RE),
         identical_peak=max(peak, len(downloads) - PHOTOS + 1 if downloads else 0),
         identical_line=line[:160],
         usable=probe["usable"],
