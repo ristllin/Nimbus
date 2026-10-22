@@ -170,7 +170,10 @@ def test_sta_auth_fail_reported(device, net, secrets, require_secret):
         )
     finally:
         net.provision(secrets.sta_ssid, secrets.sta_pass)
-        net.wait_got_ip(timeout=25.0)
+        # Cleanup, not the contract: an access point often refuses a station for a
+        # while after a wrong password (reason 2 repeats on the bench), so the rejoin
+        # gets longer than a first join.
+        net.wait_got_ip(timeout=90.0)
 
 
 # ---- web_get_root (F16) ----------------------------------------------------

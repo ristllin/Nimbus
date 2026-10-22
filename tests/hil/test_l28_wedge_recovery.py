@@ -253,3 +253,42 @@ def test_bus_reset_falls_back_to_skipping_the_other_board_with_any():
     assert tries == [["python3", "u.py", "--serial", "14:C1"], ["python3", "u.py", "--skip", "28:84", "--any"]]
     assert bus_reset_argvs("u.py", None, "28:84") == [["python3", "u.py", "--skip", "28:84", "--any"]]
     assert bus_reset_argvs("u.py", None, None) == [["python3", "u.py"]]  # one board: the sole match
+
+
+class _SilentBoot:
+    """A Device whose boot stream goes silent; PING answers only after a re-attach
+    when ``answers_after_reattach`` (unit A: the reopen reset the chip)."""
+
+    @staticmethod
+    def make(answers_after_reattach: bool):
+        from device import Device
+
+        class Fake(Device):
+            reattached = 0
+
+            def _readline(self, deadline):
+                return None
+
+            def ping(self, timeout=3.0):
+                return answers_after_reattach and self.reattached > 0
+
+            def reopen_after_reenumerate(self, drain_boot=True):
+                self.reattached += 1
+                return self
+
+        return Fake(port="/dev/null-fake")
+
+
+def test_silent_boot_reattaches_once_and_reports_a_board_that_answers():
+    dev = _SilentBoot.make(answers_after_reattach=True)
+    assert dev.wait_ready(timeout=0.01) == (None, None)
+    assert dev.reattached == 1
+
+
+def test_a_board_still_silent_after_the_reattach_fails_the_boot():
+    from device import ExpectTimeout
+
+    dev = _SilentBoot.make(answers_after_reattach=False)
+    with pytest.raises(ExpectTimeout):
+        dev.wait_ready(timeout=0.01)
+    assert dev.reattached == 1  # one re-attach, never a loop

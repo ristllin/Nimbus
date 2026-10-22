@@ -380,7 +380,7 @@ void tgInject(const String& json) {
 // live turn is cut on demand and the retry-with-headroom path runs; 0 ends the cap.
 void capTest(String arg) {
   arg.trim();
-  if (arg == "0" || arg == "off") {
+  if (arg == "0") {
     agent::providers::setTestFirstAttemptCap(0);
     reply("CAPTEST off");
     return;

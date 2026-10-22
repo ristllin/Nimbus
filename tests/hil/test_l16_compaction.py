@@ -158,11 +158,14 @@ def _out_texts(ip: str, chat, day: str) -> list:
 
 
 def _wait_out(ip, chat, day, after: int, timeout_s: float, want=None) -> list:
-    """Messages sent after the first `after` ones, once `want` is among them (or the time is up)."""
+    """Messages sent after the first `after` ones: as soon as one contains `want`
+    (with `want` None, as soon as there is any), else whatever arrived by the time limit."""
     deadline = time.time() + timeout_s
     while True:
         new = _out_texts(ip, chat, day)[after:]
-        if (want and any(want in t for t in new)) or time.time() >= deadline:
+        if new and (want is None or any(want in t for t in new)):
+            return new
+        if time.time() >= deadline:
             return new
         time.sleep(5)
 
@@ -198,14 +201,15 @@ def test_fold_failure_is_bounded_and_recovers(board, bench):
         timeout=10,
     )
     assert r.status_code == 202
-    assert _wait_out(ip, chat, day, seen, 120.0, want=""), "the seed turn never replied to the test chat"
+    assert _wait_out(ip, chat, day, seen, 120.0), "the seed turn never replied to the test chat"
     seen = len(_out_texts(ip, chat, day))
 
     try:
         fault(True)
         r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
         assert r.status_code == 202
-        texts = _wait_out(ip, chat, day, seen, 45.0)  # a few pump passes - retries must stay silent
+        time.sleep(45)  # the WHOLE window: a few pump passes, and their retries must stay silent
+        texts = _out_texts(ip, chat, day)[seen:]
         assert len(texts) <= 1, f"failing fold episode spammed: {texts}"
         for t in texts:
             assert "Compacting our conversation" not in t, "pre-notice is back"

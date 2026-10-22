@@ -68,6 +68,24 @@ def _turn_usage(log: str, one_request: bool = True) -> dict:
     return {"in": i, "out": o, "cacheR": r, "cacheW": w, "total": i + r + w, "requests": n}
 
 
+def replay_cache_verdict(cache_r: int, cache_w: int, prefix: int, per_turn: int) -> str:
+    """'' when a replayed turn's round 0 kept the stable prefix cached, else why not.
+
+    The 19 Oct shape re-wrote the whole stable prefix (10-11K tokens) on every replay.
+    A healthy replay reads at least 90% of the prefix and writes at most its own
+    per-turn block plus 1,000 tokens of slack: the per-turn block changes on every
+    turn, so it is written fresh. (The lab harness's 1,000-token absolute bound held
+    a per-turn block of about 300 tokens; on a device with real history it is about
+    2,000.)"""
+    if prefix <= 1024:
+        return f"implausible cached prefix size {prefix}"
+    if cache_r < 0.9 * prefix:
+        return f"read {cache_r} of a {prefix}-token golden prefix (< 90%)"
+    if cache_w > per_turn + 1000:
+        return f"wrote {cache_w} tokens to the cache, more than its {per_turn}-token per-turn block + 1,000"
+    return ""
+
+
 def _per_turn_text(ip: str) -> str:
     """The per-turn block plus the per-turn input of the last turn (/api/lastturn)."""
     page = _S.get(f"http://{ip}/api/lastturn", timeout=10).text
@@ -161,11 +179,8 @@ def test_l60_replayed_turn_hits_the_prefix_cache(board):
         f"L60 replay turn1={first} turn2={second} perTurnTokens={per_turn} "
         f"prefixTokens={prefix}\nhistory turn1: {hist1}\nhistory turn2: {hist2}"
     )
-    assert prefix > 1024, f"implausible cached prefix size {prefix}"
-    assert second["cacheR"] >= 0.9 * prefix, (
-        f"replayed turn 2 round 0 read {second['cacheR']} of a {prefix}-token golden prefix (< 90%)"
-    )
-    assert second["cacheW"] < 1000, f"replayed turn 2 round 0 wrote {second['cacheW']} tokens to the cache (>= 1000)"
+    why = replay_cache_verdict(second["cacheR"], second["cacheW"], prefix, per_turn)
+    assert not why, f"replayed turn 2 round 0: {why}"
     assert hist1 != hist2, "the device history in the prompt did not move between the replays"
 
 
