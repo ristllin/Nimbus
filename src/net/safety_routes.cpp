@@ -6,6 +6,7 @@
 #include "errlog_routes.h"                  // registerDeferredWebRoute (self-registration)
 #include "../agent/safety_activity_store.h" // agent::safety:: surface
 #include "../agent/store.h"                 // agent::store::hasCumuloKey
+#include "nimbus/store/persist.h"           // the 507 answer for a change not saved
 
 namespace nimbus::net {
 namespace {
@@ -53,6 +54,8 @@ void handleApprove(AsyncWebServerRequest* r) {
     switch (res) {
       case agent::safety::ApproveResult::NotFound: code = 404; break;  // unknown id
       case agent::safety::ApproveResult::Full:     code = 409; break;  // allowlist full
+      case agent::safety::ApproveResult::NotSaved:                     // nothing changed
+        code = nimbus::store::kStorageFullStatus; break;
       default:                                     code = 400; break;  // bad scope / empty
     }
     JsonDocument d; d["error"] = msg;
@@ -69,7 +72,20 @@ void handleRevoke(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
-  if (!agent::safety::revokeAllow(id)) { r->send(404, "application/json", "{\"error\":\"unknown rule\"}"); return; }
+  switch (agent::safety::revokeAllow(id)) {
+    case agent::safety::RevokeResult::NotFound:
+      r->send(404, "application/json", "{\"error\":\"unknown rule\"}");
+      return;
+    case agent::safety::RevokeResult::NotSaved: {   // the rule stays, as the next boot loads it
+      JsonDocument d;
+      d["error"] = nimbus::store::kStorageFullCode;
+      d["message"] = nimbus::store::kFileSaveFailedMessage;
+      String body; serializeJson(d, body);
+      r->send(nimbus::store::kStorageFullStatus, "application/json", body);
+      return;
+    }
+    case agent::safety::RevokeResult::Ok: break;
+  }
   r->send(200, "application/json", "{\"ok\":true}");
 }
 

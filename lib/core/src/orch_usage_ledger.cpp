@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "nimbus/orch/loops.h"           // civilFromDays - a history day's period (L19-52)
 #include "nimbus/orch/model_choices.h"   // cheapestChoice - the built-in ranking (CUM-708)
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
@@ -1025,6 +1026,124 @@ bool UsageLedger::rebaseModelRows(const UsageHistory* history) {
     }
   }
   return forgot;
+}
+
+// ---- catching the counters up (C2) ---------------------------------------------------
+namespace {
+// A folded provider (cacheFoldedInNvs) whose cache split was not put back carries its
+// cache tokens inside tokensIn: compare and add in that form.
+bool foldedForm(const ProviderBudget& e) {
+  return cacheFoldedInNvs(e.name) && e.cacheRead == 0 && e.cacheWrite == 0;
+}
+uint64_t gapOf(uint64_t want, uint64_t have) { return want > have ? want - have : 0; }
+
+// The history's totals for provider `prov` over the days whose period (resetDay) is
+// `periodKey`.
+struct HistTotals {
+  TokenDelta d;
+  uint64_t   calls = 0;
+};
+HistTotals historyFor(const UsageHistory& h, const std::string& prov, uint8_t resetDay,
+                      uint32_t periodKey) {
+  HistTotals t;
+  bool sat = false;
+  for (const auto& b : h.entries()) {
+    if (b.prov != prov || b.dayKey == 0) continue;
+    const CivilTime c = civilFromDays(b.dayKey);
+    if (usagePeriodKey(c.year, c.month, c.day, resetDay) != periodKey) continue;
+    t.d.in = addSat(t.d.in, b.tokIn, sat);
+    t.d.out = addSat(t.d.out, b.tokOut, sat);
+    t.d.cacheR = addSat(t.d.cacheR, b.cacheR, sat);
+    t.d.cacheW = addSat(t.d.cacheW, b.cacheW, sat);
+    t.calls = addSat(t.calls, b.calls, sat);
+  }
+  return t;
+}
+}  // namespace
+
+void UsageLedger::addSpend(const std::string& name, const TokenDelta& d, uint32_t calls,
+                           uint32_t periodKey) {
+  if (!d.empty()) {
+    recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, std::string());
+    const ProviderBudget* e = find(name);
+    if (e && models_.tracking()) addLost(*e, d);
+  }
+  if (!calls) return;
+  ProviderBudget* e = ensure(name);
+  if (!e) return;
+  rollTo(e, periodKey);
+  e->calls += calls;
+  e->totalCalls += calls;
+}
+
+namespace {
+// What the history holds beyond `e`'s counters (`e` null: a provider the ledger lacks)
+// for the period `period` (`current`: the counters are of that period).
+UsageLedger::HistoryGap gapFor(const std::string& prov, const ProviderBudget* e, bool current,
+                               const HistTotals& t, uint32_t period) {
+  UsageLedger::HistoryGap g;
+  g.name = prov;
+  g.periodKey = period;
+  if (current && foldedForm(*e)) {
+    bool sat = false;
+    g.d.in = gapOf(addSat(addSat(t.d.in, t.d.cacheR, sat), t.d.cacheW, sat), e->tokensIn);
+  } else {
+    g.d.in = gapOf(t.d.in, current ? e->tokensIn : 0);
+    g.d.cacheR = gapOf(t.d.cacheR, current ? e->cacheRead : 0);
+    g.d.cacheW = gapOf(t.d.cacheW, current ? e->cacheWrite : 0);
+  }
+  g.d.out = gapOf(t.d.out, current ? e->tokensOut : 0);
+  g.calls = (uint32_t)gapOf(t.calls, current ? e->calls : 0);
+  return g;
+}
+}  // namespace
+
+std::vector<UsageLedger::HistoryGap> UsageLedger::historyGaps(const UsageHistory& h,
+                                                              uint32_t todayKey) const {
+  std::vector<HistoryGap> out;
+  if (!todayKey) return out;
+  const CivilTime today = civilFromDays(todayKey);
+  std::vector<std::string> provs;
+  for (const auto& b : h.entries())
+    if (std::find(provs.begin(), provs.end(), b.prov) == provs.end()) provs.push_back(b.prov);
+  for (const auto& prov : provs) {
+    const ProviderBudget* e = find(prov);
+    if (e && e->periodKey == 0) continue;   // counting before the clock synced: no period to match
+    const uint8_t rd = e ? e->resetDay : 1;
+    const uint32_t period = usagePeriodKey(today.year, today.month, today.day, rd);
+    // Counters of an older period roll to zero at the next record: compare against zero.
+    const bool current = e && e->periodKey == period;
+    HistoryGap g = gapFor(prov, e, current, historyFor(h, prov, rd, period), period);
+    if (!g.d.empty() || g.calls) out.push_back(std::move(g));
+  }
+  return out;
+}
+
+size_t UsageLedger::reconcileWithHistory(const UsageHistory& h, uint32_t todayKey) {
+  const std::vector<HistoryGap> gaps = historyGaps(h, todayKey);
+  for (const auto& g : gaps) addSpend(g.name, g.d, g.calls, g.periodKey);
+  return gaps.size();
+}
+
+void UsageLedger::mergeSpendSince(const UsageLedger& base, const UsageLedger& now) {
+  for (const auto& e : now.entries_) {
+    const ProviderBudget* b = base.find(e.name);
+    const bool same = b && b->periodKey == e.periodKey;
+    TokenDelta d;
+    if (same && foldedForm(e) != foldedForm(*b)) {
+      bool sat = false;   // compare the two in native input terms
+      const uint64_t ni = addSat(addSat(e.tokensIn, e.cacheRead, sat), e.cacheWrite, sat);
+      const uint64_t bi = addSat(addSat(b->tokensIn, b->cacheRead, sat), b->cacheWrite, sat);
+      d.in = gapOf(ni, bi);
+    } else {
+      d.in = gapOf(e.tokensIn, same ? b->tokensIn : 0);
+      d.cacheR = gapOf(e.cacheRead, same ? b->cacheRead : 0);
+      d.cacheW = gapOf(e.cacheWrite, same ? b->cacheWrite : 0);
+    }
+    d.out = gapOf(e.tokensOut, same ? b->tokensOut : 0);
+    const uint32_t calls = (uint32_t)gapOf(e.calls, same ? b->calls : 0);
+    addSpend(e.name, d, calls, e.periodKey);
+  }
 }
 
 void UsageLedger::noteCountersStored() {

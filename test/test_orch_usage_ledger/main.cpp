@@ -8,6 +8,8 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/orch/ledger_home.h"
+#include "nimbus/orch/loops.h"   // daysFromCivil / civilFromDays (L19-52 legs)
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
 #include "nimbus/orch/turn_spend.h"
@@ -2916,6 +2918,204 @@ static void test_cum708_cheapest_by_the_ledger_price() {
   setRankPriceSource(nullptr);
 }
 
+// ---- C2: the counters catch up with the history (L19-52); the ledger's home (row 21) ----
+namespace c2 {
+using nimbus::orch::LedgerHome;
+using nimbus::orch::TokenDelta;
+using nimbus::orch::UsageHistory;
+
+uint32_t day(int y, int m, int d) { return nimbus::orch::daysFromCivil(y, (unsigned)m, (unsigned)d); }
+
+// One device record: the provider ledger (with a model) and the day's history bucket.
+TokenDelta toks(uint64_t in, uint64_t out, uint64_t cr = 0, uint64_t cw = 0) {
+  TokenDelta d;
+  d.in = in;
+  d.out = out;
+  d.cacheR = cr;
+  d.cacheW = cw;
+  return d;
+}
+void record(UsageLedger& L, UsageHistory& h, const char* prov, const char* model, uint32_t dayKey,
+            const TokenDelta& d) {
+  const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays(dayKey);
+  const ProviderBudget* e = L.find(prov);
+  const uint32_t period = usagePeriodKey(c.year, c.month, c.day, e ? e->resetDay : 1);
+  const char* key = L.models().spendKey(model);
+  L.recordTokens(prov, d, period, "turn", key, dayKey);
+  h.record(prov, L.models().historyKey(key), dayKey, d, 0);
+}
+
+// The history's totals for `prov` in the period of `todayKey`.
+TokenDelta histPeriod(const UsageHistory& h, const char* prov, uint32_t todayKey, uint8_t resetDay = 1) {
+  const nimbus::orch::CivilTime t = nimbus::orch::civilFromDays(todayKey);
+  const uint32_t period = usagePeriodKey(t.year, t.month, t.day, resetDay);
+  TokenDelta sum;
+  for (const auto& b : h.entries()) {
+    if (b.prov != prov) continue;
+    const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays(b.dayKey);
+    if (usagePeriodKey(c.year, c.month, c.day, resetDay) != period) continue;
+    sum.in += b.tokIn;
+    sum.out += b.tokOut;
+    sum.cacheR += b.cacheR;
+    sum.cacheW += b.cacheW;
+  }
+  return sum;
+}
+}  // namespace c2
+
+// The 19 Oct case: the ledger loaded from a stale copy (counters lost between 05:01Z
+// and 08:32Z), the spend file and the history newer. It reports countersBehind until
+// reconciled, then its period counters match the history totals.
+static void test_l19_52_a_stale_ledger_catches_up_with_the_history() {
+  using namespace c2;
+  UsageLedger live;
+  UsageHistory h;
+  const uint32_t d18 = day(2026, 10, 18), d19 = day(2026, 10, 19);
+  record(live, h, "anthropic", "claude-haiku-5-5", d18, toks(12000, 900, 50000, 3000));
+  record(live, h, "mistral", "mistral-small-latest", d18, toks(4000, 300));
+  const std::string staleCopy = live.serialize();   // the last usgLedger write that landed
+  record(live, h, "anthropic", "claude-haiku-5-5", d19, toks(30000, 2100, 120000, 9000));   // 05:01Z..08:32Z
+  record(live, h, "anthropic", "claude-sonnet-5-5", d19, toks(8000, 1500));
+  record(live, h, "mistral", "mistral-small-latest", d19, toks(2500, 200));
+  const std::string spendFile = live.models().serializeSpend();
+  // The device's load: the stale counters, the newer spend file, then the history.
+  UsageLedger L;
+  L.deserialize(staleCopy);
+  L.models().deserializeSpend(spendFile);
+  L.settleModels(h);
+  TEST_ASSERT_TRUE(L.countersBehind(h, d19));
+  const ProviderBudget* a = L.find("anthropic");
+  TEST_ASSERT_TRUE(a->tokensIn < histPeriod(h, "anthropic", d19).in);
+  TEST_ASSERT_EQUAL_size_t(2, L.reconcileWithHistory(h, d19));
+  TEST_ASSERT_FALSE(L.countersBehind(h, d19));
+  for (const char* p : {"anthropic", "mistral"}) {
+    const ProviderBudget* e = L.find(p);
+    const TokenDelta want = histPeriod(h, p, d19);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(want.in, e->tokensIn, p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(want.out, e->tokensOut, p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(want.cacheR, e->cacheRead, p);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(want.cacheW, e->cacheWrite, p);
+    // The money gate sees at least what the live ledger saw (never cheaper).
+    TEST_ASSERT_TRUE_MESSAGE(L.estCents(p) >= live.estCents(p), p);
+  }
+  // Reconciling again changes nothing.
+  const std::string after = L.serialize();
+  TEST_ASSERT_EQUAL_size_t(0, L.reconcileWithHistory(h, d19));
+  TEST_ASSERT_EQUAL_STRING(after.c_str(), L.serialize().c_str());
+}
+
+// Counter-test: a current ledger is untouched, byte for byte; an undated device does
+// nothing; a counter ahead of the history (a history write that did not land) is never
+// lowered; last month's history days never count toward this period.
+static void test_l19_52_a_current_ledger_is_untouched() {
+  using namespace c2;
+  UsageLedger live;
+  UsageHistory h;
+  const uint32_t d30 = day(2026, 9, 30), d1 = day(2026, 10, 1), d19 = day(2026, 10, 19);
+  record(live, h, "anthropic", "claude-haiku-5-5", d30, toks(99999, 9999));   // September: another period
+  record(live, h, "anthropic", "claude-haiku-5-5", d1, toks(1000, 100, 5000, 200));
+  record(live, h, "openai", "gpt-6-luna", d19, toks(3000, 300, 1200, 0));
+  UsageLedger L;
+  L.deserialize(live.serialize());
+  L.models().deserializeSpend(live.models().serializeSpend());
+  L.settleModels(h);
+  const std::string before = L.serialize();
+  TEST_ASSERT_FALSE(L.countersBehind(h, d19));
+  TEST_ASSERT_EQUAL_size_t(0, L.reconcileWithHistory(h, d19));
+  TEST_ASSERT_EQUAL_STRING(before.c_str(), L.serialize().c_str());
+  TEST_ASSERT_EQUAL_size_t(0, L.reconcileWithHistory(h, 0));   // the clock is not set
+  // Ahead of the history: kept.
+  UsageLedger ahead;
+  ahead.deserialize(live.serialize());
+  ahead.recordTokens("anthropic", 777, 77, usagePeriodKey(2026, 10, 19, 1));
+  const std::string a0 = ahead.serialize();
+  TEST_ASSERT_EQUAL_size_t(0, ahead.reconcileWithHistory(h, d19));
+  TEST_ASSERT_EQUAL_STRING(a0.c_str(), ahead.serialize().c_str());
+}
+
+// The folded provider (OpenAI's cache counts inside its input in the stored form) is
+// compared in that form: a reload of a current copy never double-counts its cache.
+static void test_l19_52_folded_cache_is_compared_in_its_stored_form() {
+  using namespace c2;
+  UsageLedger live;
+  UsageHistory h;
+  const uint32_t d19 = day(2026, 10, 19);
+  record(live, h, "openai", "gpt-6-luna", d19, toks(3000, 300, 1200, 400));
+  UsageLedger L;
+  L.deserialize(live.serialize());   // no spend file: the cache split stays folded
+  TEST_ASSERT_FALSE(L.countersBehind(h, d19));
+  // Stale by one turn: the gap is added in the same folded form.
+  UsageLedger stale;
+  stale.deserialize(live.serialize());
+  record(live, h, "openai", "gpt-6-luna", d19, toks(1000, 100, 600, 0));
+  TEST_ASSERT_TRUE(stale.countersBehind(h, d19));
+  stale.reconcileWithHistory(h, d19);
+  const ProviderBudget* e = stale.find("openai");
+  TEST_ASSERT_EQUAL_UINT64(3000 + 1200 + 400 + 1000 + 600, e->tokensIn + e->cacheRead + e->cacheWrite);
+  TEST_ASSERT_EQUAL_UINT64(400, e->tokensOut);
+  TEST_ASSERT_FALSE(stale.countersBehind(h, d19));
+}
+
+// Prism row 21: four turns with the file store unavailable still trip the monthly cap.
+// The old rule (re-read the NVS copy on every call) never trips it.
+struct C2LedgerIo {
+  bool fileExists = false;
+  std::string file, nvs;
+  bool readFile(std::string& out) { if (!fileExists) return false; out = file; return true; }
+  bool writeFileAtomic(const std::string& v) { file = v; fileExists = true; return true; }
+  bool readNvs(std::string& out) { out = nvs; return !nvs.empty(); }
+  bool eraseNvs() { nvs.clear(); return true; }
+};
+static void test_row21_turns_on_the_nvs_fallback_still_trip_the_cap() {
+  using LedgerHome = nimbus::orch::LedgerHome;
+  const uint32_t period = usagePeriodKey(2026, 10, 22, 1);
+  UsageLedger seed;
+  seed.setLimits("anthropic", /*tokenLimit=*/10000, 0, 1);
+  seed.recordTokens("anthropic", 2000, 500, period);
+  C2LedgerIo io;
+  io.nvs = seed.serialize();
+  UsageLedger L;
+  LedgerHome home;
+  bool tripped = false;
+  for (int turn = 0; turn < 4; ++turn) {
+    const LedgerHome::Step st = home.ensure(L, /*fileUp=*/false, io);
+    TEST_ASSERT_EQUAL_INT(turn == 0 ? (int)LedgerHome::Step::Fallback : (int)LedgerHome::Step::None, (int)st);
+    L.recordTokens("anthropic", 1800, 400, period);
+    tripped = tripped || L.overTokenBudget("anthropic");
+  }
+  TEST_ASSERT_TRUE(tripped);   // 2,500 + 4 x 2,200 = 11,300 >= 10,000
+  TEST_ASSERT_FALSE(home.onFile());
+  // Counter-model: re-reading the NVS copy before each turn forgets the spend.
+  UsageLedger old;
+  bool oldTripped = false;
+  for (int turn = 0; turn < 4; ++turn) {
+    old.deserialize(io.nvs);
+    old.recordTokens("anthropic", 1800, 400, period);
+    oldTripped = oldTripped || old.overTokenBudget("anthropic");
+  }
+  TEST_ASSERT_FALSE(oldTripped);
+  // The file store comes up: the file (newer than the NVS copy) plus the spend counted
+  // on the fallback, never counted twice.
+  UsageLedger fileL;
+  fileL.deserialize(io.nvs);
+  fileL.recordTokens("anthropic", 3000, 600, period);   // spend the NVS copy never saw
+  io.file = fileL.serialize();
+  io.fileExists = true;
+  TEST_ASSERT_EQUAL_INT((int)LedgerHome::Step::Merged, (int)home.ensure(L, true, io));
+  TEST_ASSERT_TRUE(home.onFile());
+  TEST_ASSERT_EQUAL_INT((int)nimbus::store::MovedSource::File, (int)home.source());
+  const ProviderBudget* e = L.find("anthropic");
+  TEST_ASSERT_EQUAL_UINT64(2000 + 3000 + 4 * 1800, e->tokensIn);
+  TEST_ASSERT_EQUAL_UINT64(500 + 600 + 4 * 400, e->tokensOut);
+  TEST_ASSERT_TRUE(L.allowNewTags());   // on the file, new tag rows are allowed again
+  TEST_ASSERT_EQUAL_INT((int)LedgerHome::Step::None, (int)home.ensure(L, true, io));
+  // Straight to the file (no fallback first): a plain load.
+  LedgerHome h2;
+  UsageLedger L2;
+  TEST_ASSERT_EQUAL_INT((int)LedgerHome::Step::File, (int)h2.ensure(L2, true, io));
+  TEST_ASSERT_EQUAL_UINT64(5000, L2.find("anthropic")->tokensIn);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -2997,5 +3197,9 @@ int main() {
   RUN_TEST(test_l19_2_owner_limit_replaces_and_moves_the_threshold);
   RUN_TEST(test_l19_2_latch_is_per_provider);
   RUN_TEST(test_cum708_cheapest_by_the_ledger_price);
+  RUN_TEST(test_l19_52_a_stale_ledger_catches_up_with_the_history);
+  RUN_TEST(test_l19_52_a_current_ledger_is_untouched);
+  RUN_TEST(test_l19_52_folded_cache_is_compared_in_its_stored_form);
+  RUN_TEST(test_row21_turns_on_the_nvs_fallback_still_trip_the_cap);
   return UNITY_END();
 }

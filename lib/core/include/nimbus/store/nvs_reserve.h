@@ -124,6 +124,38 @@ enum class NvsAdmit : uint8_t {
 };
 NvsAdmit nvsAdmit(const NvsAdmitIn& in);
 
+// ---- probes the device could not read (prism row 24) -------------------------------
+// Under low heap nvs_open or nvs_get_stats can fail. A failed stored-size probe used to
+// read as "key absent", so an unchanged rewrite of a stored value looked like a new key,
+// was refused at the reserve as storage full and counted as pressure. A probe that
+// failed is UNKNOWN: the write then goes to the driver unchecked (it still refuses a
+// partition that truly has no room) and is never counted as a reserve refusal. The one
+// exception is a blob write with an unknown free count: it is refused, since a failed
+// multi-page blob rewrite strands the entries it wrote (see nvsAdmit).
+inline constexpr size_t kNvsUnknown = static_cast<size_t>(-1);
+enum class NvsGate : uint8_t {
+  Admit = 0,        // the reserve admitted it
+  AdmitUnchecked,   // a probe failed: the driver decides, nothing is counted
+  Refuse,           // refused by the reserve (counted, reported as storage full)
+};
+// `stored()` returns the entries the stored value takes (0 = absent, kNvsUnknown = the
+// probe failed); `available()` the free entries (kNvsUnknown = the probe failed). Each
+// is called at most once, and `available` only when nvsAdmitWrite would read it.
+template <typename StoredFn, typename AvailableFn>
+NvsGate nvsGateWrite(NvsClass cls, NvsValKind kind, size_t bytes, bool starved, StoredFn&& stored,
+                     AvailableFn&& available) {
+  const size_t old = stored();
+  if (old == kNvsUnknown) return NvsGate::AdmitUnchecked;
+  bool unknown = false;
+  const NvsAdmit a = nvsAdmitWrite(cls, kind, bytes, old, starved, [&] {
+    const size_t n = available();
+    unknown = n == kNvsUnknown;
+    return unknown ? 0 : n;
+  });
+  if (unknown) return kind == NvsValKind::Blob ? NvsGate::Refuse : NvsGate::AdmitUnchecked;
+  return a == NvsAdmit::Write ? NvsGate::Admit : NvsGate::Refuse;
+}
+
 // ---- the eviction plan -----------------------------------------------------------
 // Given the keys stored in the "solide" namespace, fills `out` with the indexes of the
 // ones the main-loop pass may erase, in eviction order (lowest evictOrder first, then
@@ -131,6 +163,10 @@ NvsAdmit nvsAdmit(const NvsAdmitIn& in);
 // (`fbRulesIsCloudCopy`, from fbSyncTs != 0); a local owner edit is never evicted.
 size_t nvsEvictionPlan(const char* const* keys, size_t n, bool fbRulesIsCloudCopy,
                        size_t* out, size_t outCap);
+// The key erased together with an evicted one, or nullptr (prism row 23): evicting the
+// cloud copy of the fallback rules clears its sync stamp too, or the device would keep
+// reporting cloud rules it no longer holds until the next cloud check.
+const char* nvsEvictionCompanion(const char* key);
 
 // True when this write does not grow NVS: an erase, or a value no larger (in entries)
 // than the one it replaces. Such writes never touch the reserve.

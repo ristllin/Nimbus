@@ -27,6 +27,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/store/write_pacing.h"
+
 void setUp() {}
 void tearDown() {}
 
@@ -314,6 +316,100 @@ static void test_staged_work_runs_only_at_the_poll_loop_top() {
   }
 }
 
+// ---- C2: dedupe markers and paced telemetry writes (nimbus/store/write_pacing.h) -----
+
+// The update notice: once per version per boot whatever the marker write does, and
+// never for the version the stored marker already names.
+static void test_update_notice_is_sent_once_per_version_per_boot() {
+  using nimbus::store::NoticeLatch;
+  for (int writeLands = 0; writeLands <= 1; ++writeLands) {
+    NoticeLatch latch;
+    std::string stored;   // the otaNotif marker in settings storage
+    int notices = 0;
+    // Two minutes after boot, then daily, then manual checks: same version each time.
+    for (int check = 0; check < 20; ++check) {
+      if (latch.claim("v4.6.0", stored)) {
+        ++notices;
+        if (writeLands) stored = "v4.6.0";
+      }
+    }
+    TEST_ASSERT_EQUAL_INT(1, notices);
+    // A newer version is announced once more.
+    for (int check = 0; check < 5; ++check)
+      if (latch.claim("v4.6.1", stored)) ++notices;
+    TEST_ASSERT_EQUAL_INT(2, notices);
+    // A restart with the marker stored: no notice; with the write refused: one per boot.
+    NoticeLatch nextBoot;
+    const int again = nextBoot.claim("v4.6.1", writeLands ? std::string("v4.6.1") : std::string()) ? 1 : 0;
+    TEST_ASSERT_EQUAL_INT(writeLands ? 0 : 1, again);
+  }
+  NoticeLatch l;
+  TEST_ASSERT_FALSE(l.claim("", ""));   // no version: nothing to tell
+}
+
+// The low-battery epoch's saved copy moves only when its write lands; a refused write
+// is retried, but not every tick.
+static void test_saved_mirror_moves_only_on_a_landed_write() {
+  using nimbus::store::SavedMirror;
+  SavedMirror m(0, 600000);
+  uint32_t now = 1000;
+  TEST_ASSERT_FALSE(m.due(0, now));
+  TEST_ASSERT_TRUE(m.due(1792700000u, now));
+  m.noteWrite(1792700000u, /*landed=*/false, now);
+  TEST_ASSERT_EQUAL_UINT32(0, m.saved());
+  int attempts = 1;
+  for (uint32_t t = now + 2000; t < now + 3600000u; t += 2000)   // an hour of power ticks
+    if (m.due(1792700000u, t)) { ++attempts; m.noteWrite(1792700000u, false, t); }
+  TEST_ASSERT_EQUAL_INT(6, attempts);   // once, then every ten minutes
+  m.noteWrite(1792700000u, true, now + 3600000u);
+  TEST_ASSERT_EQUAL_UINT32(1792700000u, m.saved());
+  TEST_ASSERT_FALSE(m.due(1792700000u, now + 3600001u));
+}
+
+// BATTMODEL-CHURN: a flapping full-charge anchor spends no writes; a real step or a
+// completed segment saves at most hourly; an owner action saves at once.
+static void test_battery_model_saves_are_paced() {
+  using nimbus::store::BattModelSavePacer;
+  BattModelSavePacer p;
+  p.seed(/*segments=*/3, /*anchor=*/4150);
+  int writes = 0;
+  uint32_t now = 0;
+  auto tick = [&](uint16_t seg, uint16_t anchor, bool owner = false) {
+    if (!p.due(seg, anchor, now, owner)) return;
+    ++writes;
+    p.noteSave(seg, anchor, /*landed=*/true, now);
+  };
+  // Three hours of an anchor flapping by a few millivolts every 30 s tick: no write.
+  for (int i = 0; i < 360; ++i, now += 30000) tick(3, (uint16_t)(4150 + (i % 2 ? 7 : -6)));
+  TEST_ASSERT_EQUAL_INT(0, writes);
+  // A real step saves (the first attempt of the boot may go at once) ...
+  tick(3, 4175);
+  TEST_ASSERT_EQUAL_INT(1, writes);
+  // ... and then nothing more within the hour, even for more steps or a segment.
+  for (int i = 0; i < 100; ++i, now += 30000) tick((uint16_t)(3 + (i > 50)), (uint16_t)(4175 + 25 * (i % 3)));
+  TEST_ASSERT_EQUAL_INT(1, writes);
+  now += BattModelSavePacer::kMinIntervalMs;
+  tick(4, 4175);
+  TEST_ASSERT_EQUAL_INT(2, writes);
+  // Over a simulated day of churn: at most one write per hour.
+  writes = 0;
+  for (int i = 0; i < 2880; ++i, now += 30000) tick((uint16_t)(4 + i / 300), (uint16_t)(4100 + (i * 37) % 120));
+  TEST_ASSERT_TRUE(writes <= 24);
+  TEST_ASSERT_TRUE(writes >= 10);   // real changes still persist
+  // An owner calibration saves at once, whatever the pace.
+  const int before = writes;
+  tick(p.savedSegments(), p.savedAnchorMv(), /*owner=*/true);
+  TEST_ASSERT_EQUAL_INT(before + 1, writes);
+  // A refused write keeps the saved values: the change is retried at the next slot.
+  BattModelSavePacer q;
+  q.seed(1, 4000);
+  TEST_ASSERT_TRUE(q.due(2, 4000, 0, false));
+  q.noteSave(2, 4000, /*landed=*/false, 0);
+  TEST_ASSERT_EQUAL_UINT16(1, q.savedSegments());
+  TEST_ASSERT_FALSE(q.due(2, 4000, 60000, false));
+  TEST_ASSERT_TRUE(q.due(2, 4000, BattModelSavePacer::kMinIntervalMs, false));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_comment_stripper);
@@ -321,5 +417,8 @@ int main(int, char**) {
   RUN_TEST(test_poll_task_lifecycle_has_one_owner);
   RUN_TEST(test_quiesce_is_factory_reset_only);
   RUN_TEST(test_staged_work_runs_only_at_the_poll_loop_top);
+  RUN_TEST(test_update_notice_is_sent_once_per_version_per_boot);
+  RUN_TEST(test_saved_mirror_moves_only_on_a_landed_write);
+  RUN_TEST(test_battery_model_saves_are_paced);
   return UNITY_END();
 }

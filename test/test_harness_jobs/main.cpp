@@ -47,11 +47,16 @@ using solide::ring::Status;
 // to simulate a reboot and assert re-attach.
 struct FakeStore : orch::JournalStore {
   std::map<int, std::string> slots;
+  bool refusePuts = false;   // a full file system (SPAWN-JOURNAL-DURABILITY legs)
   std::string get(int slot) override {
     auto it = slots.find(slot);
     return it == slots.end() ? std::string() : it->second;
   }
-  bool put(int slot, const std::string& v) override { slots[slot] = v; return true; }
+  bool put(int slot, const std::string& v) override {
+    if (refusePuts) return false;
+    slots[slot] = v;
+    return true;
+  }
   bool remove(int slot) override { slots.erase(slot); return true; }
   void clearNs() override { slots.clear(); }
 };
@@ -93,6 +98,8 @@ struct Rig {
   std::function<std::string(const std::string&)> modelChoices;
   // Context Fabric: recent-results spill recorder (nullable - legacy shape when unset).
   std::function<std::string(const char*, const char*, const std::string&, const std::string&)> spill;
+
+  bool withClock = false;   // wire nowString/nowEpoch (the finished-job record)
 
   std::unique_ptr<JobEngine> eng;
 
@@ -155,6 +162,10 @@ struct Rig {
       persistedTo.push_back(prj + "/" + name);
       return persistNote;   // default: no outcome line, keeps the parked text byte-exact
     };
+    if (withClock) {
+      d.nowString = [] { return std::string("2026-10-19 Sun 08:14 BST"); };
+      d.nowEpoch = [] { return 1792394040u; };
+    }
     eng.reset(new JobEngine(std::move(d)));
   }
 
@@ -2282,6 +2293,185 @@ static void test_l19_39_router_id_on_a_direct_provider_is_named_in_the_ledger() 
   for (const orch::ProviderSlot& slot : orch::kProviderSlots)
     TEST_ASSERT_EQUAL_MESSAGE(std::string(slot.slug) != "cumulo",
                               orch::routerIdOnDirectProvider(slot.slug, "openai/gpt-5.6"), slot.slug);
+// ---- wave 2: journal durability, the finished-job record (L19-35) --------------------
+
+// SPAWN-JOURNAL-DURABILITY: a started helper whose record did not store says so in
+// place of the plain ack, and its ledger line says a restart would lose it; a fan-out
+// on a full store gets one such line, not one per helper.
+static void test_a_helper_that_cannot_be_stored_says_it_will_not_survive_a_restart() {
+  Rig r;
+  r.store.refusePuts = true;
+  r.eng->enqueueSpawn(sp("a"), "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());   // it still runs (from RAM)
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  const std::string& ack = r.delivered[0].second;
+  TEST_ASSERT_TRUE(ack.find("will not survive a restart") != std::string::npos);
+  TEST_ASSERT_TRUE(ack.rfind("On it, but storage is full", 0) == 0);
+  TEST_ASSERT_TRUE(ack.find("On it.") == std::string::npos);   // replaced, not appended
+  TEST_ASSERT_TRUE(ack.find("[job0000 \xC2\xB7 anthropic/good-m]") != std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("journal record job0000 not stored"));
+  const std::string ledger = r.eng->spawnLedgerText("chat1");
+  TEST_ASSERT_TRUE(ledger.find("a restart would lose it") != std::string::npos);
+  // A second helper within ten minutes: no second line.
+  r.eng->enqueueSpawn(sp("b"), "chat1");
+  r.plat.ms += 3000;
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(2, (int)r.adapter.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  // A stored helper keeps the plain ack and a plain ledger line.
+  Rig ok;
+  ok.eng->enqueueSpawn(sp("c"), "chat1");
+  ok.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)ok.delivered.size());
+  TEST_ASSERT_TRUE(ok.delivered[0].second.rfind("On it.", 0) == 0);
+  TEST_ASSERT_TRUE(ok.eng->spawnLedgerText("chat1").find("restart") == std::string::npos);
+  // A quiet (scheduled) turn delivers nothing either way; its ledger line says it.
+  Rig quiet;
+  quiet.store.refusePuts = true;
+  orch::Spawn q = sp("d");
+  quiet.eng->enqueueSpawn(q, "chat1", /*quiet=*/true);
+  quiet.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)quiet.delivered.size());
+  TEST_ASSERT_TRUE(quiet.eng->spawnLedgerText("chat1").find("a restart would lose it") != std::string::npos);
+}
+
+// The counter-leg on the record: a helper stored in a full journal re-attaches after a
+// restart, one that was refused is gone (what the line warns about).
+static void test_a_refused_record_is_gone_after_a_restart_a_stored_one_reattaches() {
+  Rig r;
+  r.adapter.pollScript = {agent::JobState::Running};
+  r.eng->enqueueSpawn(sp("kept"), "chat1");
+  r.eng->pump();
+  r.store.refusePuts = true;
+  r.eng->enqueueSpawn(sp("lost"), "chat1");
+  r.plat.ms += 3000;
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(2, r.eng->activeJobCount());
+  r.store.refusePuts = false;
+  r.rebuildJournal();
+  r.build();
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+}
+
+// Tags restart at job0000 each boot: a spawn after a restart moves past every tag the
+// journal still holds, so it never takes over a restored record.
+static void test_a_new_boot_never_reuses_a_restored_or_finished_tag() {
+  Rig r;
+  r.adapter.pollScript = {agent::JobState::Running};
+  r.eng->enqueueSpawn(sp("first"), "chat1");
+  r.eng->pump();                                   // job0000, still running
+  r.rebuildJournal();
+  r.build();
+  r.eng->enqueueSpawn(sp("second"), "chat1");
+  r.plat.ms += 3000;
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(2, r.eng->activeJobCount());   // both live: no overwrite
+  TEST_ASSERT_EQUAL_STRING("job0001", r.adapter.dispatched.back().tag.c_str());
+  // Past a finished tag too.
+  Rig f;
+  f.adapter.pollScript = {agent::JobState::Done};
+  for (int i = 0; i < 3; ++i) {
+    f.eng->enqueueSpawn(sp("t"), "chat1");
+    f.plat.ms += 3000; f.eng->pump();              // dispatch
+    f.plat.ms += 3000; f.eng->pump();              // Done
+  }
+  f.rebuildJournal();
+  f.build();
+  f.eng->enqueueSpawn(sp("next"), "chat1");
+  f.plat.ms += 3000; f.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("job0003", f.adapter.dispatched.back().tag.c_str());
+}
+
+// L19-35: two helpers finish with saved results; after a restart the head's context
+// lists both (name, tag, project, file, time); this boot's jobs stay out of it.
+static void test_finished_jobs_are_listed_after_a_restart() {
+  Rig r;
+  r.withClock = true;
+  r.build();
+  r.adapter.pollScript = {agent::JobState::Done};
+  r.persistNote = "[saved: tides/tide-check-job0000.md]";
+  orch::Spawn a = sp("why are there tides");
+  a.name = "tide-check";
+  a.project = "tides";
+  r.eng->enqueueSpawn(a, "chat1");
+  r.eng->pump();
+  r.plat.ms += 3000; r.eng->pump();
+  r.persistNote = "[saved: tides/moon-phase-job0001.md]";
+  orch::Spawn b = sp("moon phase tonight");
+  b.name = "moon-phase";
+  b.project = "tides";
+  r.eng->enqueueSpawn(b, "chat1");
+  r.plat.ms += 3000; r.eng->pump();
+  r.plat.ms += 3000; r.eng->pump();
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL_STRING("", r.eng->finishedBeforeRestartText().c_str());   // same boot
+  r.rebuildJournal();
+  r.build();
+  const std::string t = r.eng->finishedBeforeRestartText();
+  TEST_ASSERT_TRUE(t.find("- moon-phase (job0001, project tides, saved as tides/moon-phase-job0001.md) "
+                          "finished 2026-10-19 Sun 08:14 BST\n") == 0);   // newest first
+  TEST_ASSERT_TRUE(t.find("- tide-check (job0000, project tides, saved as tides/tide-check-job0000.md) "
+                          "finished 2026-10-19 Sun 08:14 BST\n") != std::string::npos);
+  // A failed one is listed as ended without a result.
+  Rig e;
+  e.adapter.pollScript = {agent::JobState::Error};
+  e.eng->enqueueSpawn(sp("x"), "chat1");
+  e.eng->pump();
+  e.plat.ms += 3000; e.eng->pump();
+  e.rebuildJournal();
+  e.build();
+  TEST_ASSERT_TRUE(e.eng->finishedBeforeRestartText().find("(job0000) ended without a result") !=
+                   std::string::npos);
+}
+
+// Honest loss (subagents F4.4): a synchronous sub's result lived in the device's RAM,
+// so a job restored after a restart that its provider no longer knows is "lost when the
+// device restarted"; an asynchronous one keeps "expired or was not found".
+static void test_a_restored_sync_job_is_reported_lost_at_the_restart() {
+  for (const char* backend : {"mistral", "openai"}) {
+    Rig r;
+    r.adapter.backend = backend;
+    r.keyed.insert(backend);
+    r.adapter.pollScript = {agent::JobState::Running};
+    orch::Spawn s = sp("q");
+    s.provider = backend;
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+    r.delivered.clear();
+    r.rebuildJournal();
+    r.build();
+    r.adapter.pollErr = agent::FabricErr::NotFound;
+    r.plat.ms += 3000;
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    const bool sync = std::string(backend) == "mistral";
+    const std::string& m = r.delivered[0].second;
+    TEST_ASSERT_EQUAL(sync, m.find("was lost when the device restarted") != std::string::npos);
+    TEST_ASSERT_EQUAL(!sync, m.find("expired or was not found") != std::string::npos);
+    // Delivered once: the next boot neither polls nor reports it again.
+    r.delivered.clear();
+    r.rebuildJournal();
+    r.build();
+    TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+    r.plat.ms += 3000;
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  }
+  // A sync job that was never restored (same boot) and not found keeps the old words.
+  Rig n;
+  n.adapter.backend = "mistral";
+  n.keyed.insert("mistral");
+  n.adapter.pollErr = agent::FabricErr::NotFound;
+  orch::Spawn s = sp("q");
+  s.provider = "mistral";
+  n.eng->enqueueSpawn(s, "chat1");
+  n.eng->pump();
+  n.delivered.clear();
+  n.plat.ms += 3000; n.eng->pump();
+  TEST_ASSERT_TRUE(n.delivered.at(0).second.find("expired or was not found") != std::string::npos);
 }
 
 int main(int, char**) {
@@ -2358,6 +2548,11 @@ int main(int, char**) {
   RUN_TEST(test_l19_36_a_spill_that_fails_says_so);
   RUN_TEST(test_l19_36_a_reply_that_fits_is_not_spilled);
   RUN_TEST(test_l19_36_a_tail_note_that_cuts_keeps_the_whole_reply);
+  RUN_TEST(test_a_helper_that_cannot_be_stored_says_it_will_not_survive_a_restart);
+  RUN_TEST(test_a_refused_record_is_gone_after_a_restart_a_stored_one_reattaches);
+  RUN_TEST(test_a_new_boot_never_reuses_a_restored_or_finished_tag);
+  RUN_TEST(test_finished_jobs_are_listed_after_a_restart);
+  RUN_TEST(test_a_restored_sync_job_is_reported_lost_at_the_restart);
   UNITY_END();
   return 0;
 }

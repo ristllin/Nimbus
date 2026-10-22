@@ -4255,10 +4255,50 @@ static void runSpendCeilingTests() {
   RUN_TEST(test_scheduled_turns_run_in_the_background_role);
 }
 
+// L19-35: after a restart the turn context lists the jobs that finished before it (the
+// journal's finished ring), so the head does not run them again; with none, the
+// [ACTIVE SESSIONS] block is byte-identical to before.
+static void test_l19_35_finished_jobs_ride_the_turn_context_after_a_restart() {
+  {
+    Rig r(/*withSubFabric=*/true);
+    r.eng->handleMessage("hi there", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    TEST_ASSERT_TRUE(r.attempts[0].inputs.find("[ACTIVE SESSIONS]\nNo active jobs.") != std::string::npos);
+    TEST_ASSERT_TRUE(r.attempts[0].inputs.find("Finished before the device last restarted") ==
+                     std::string::npos);
+  }
+  Rig r(/*withSubFabric=*/true);
+  // What the previous boot left in the journal: two finished research jobs.
+  const char* tags[] = {"job0003", "job0004"};
+  const char* names[] = {"tide-check", "moon-phase"};
+  for (int i = 0; i < 2; ++i) {
+    orch::FinishedJob f{};
+    std::snprintf(f.tag, sizeof(f.tag), "%s", tags[i]);
+    std::snprintf(f.name, sizeof(f.name), "%s", names[i]);
+    std::snprintf(f.prj, sizeof(f.prj), "tides");
+    std::snprintf(f.artifact, sizeof(f.artifact), "tides/%s-%s.md", names[i], tags[i]);
+    std::snprintf(f.finishedAt, sizeof(f.finishedAt), "2026-10-19 Sun 08:1%d BST", i);
+    std::snprintf(f.chatId, sizeof(f.chatId), "1001");
+    f.seq = (uint32_t)i;
+    char buf[orch::kJournalSerializeBuf];
+    orch::serializeFinished(f, buf, sizeof(buf));
+    r.journalStore.slots[orch::kJournalFinishedSlot0 + i] = buf;
+  }
+  r.journal.begin(&r.journalStore);   // the restart: the journal loads its file
+  r.eng->handleMessage("what's the weather like", "Roy", "1001");
+  const std::string& in = r.attempts.at(0).inputs;
+  const size_t at = in.find("[ACTIVE SESSIONS]\nNo active jobs.\nFinished before the device last restarted");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("- moon-phase (job0004, project tides, saved as tides/moon-phase-job0004.md) "
+                           "finished 2026-10-19 Sun 08:11 BST\n- tide-check (job0003", at) != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("do not start them again unless the owner asks") != std::string::npos);
+}
+
 // The later lanes' suites, in merge order (main sits at the length gate).
 static void runLateLaneTests() {
   runLaneK2Tests();
   runSpendCeilingTests();
+  RUN_TEST(test_l19_35_finished_jobs_ride_the_turn_context_after_a_restart);   // lane C2
 }
 
 // R5, 5d of the token table: on a turn where the head can call models.list the

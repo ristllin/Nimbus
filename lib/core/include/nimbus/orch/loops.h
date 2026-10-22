@@ -296,6 +296,35 @@ void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec);
 // ceiling or a new month) instead of waiting its whole delay again. True on the first
 // skip of a run (the caller logs one line, never one per retry).
 bool onCeilingSkip(LoopRecord& l, uint64_t nowEpoch);
+
+// --- the at-most-once fire claim (C2: /data/loops.json written atomically) ----------
+// A fire is claimed by its ADVANCE (lastRun, nextRun, the fire counters), stored in
+// loops.json BEFORE the fire. When that write does not land the claim is undone and
+// the fire skipped (the next tick retries): a fire whose advance did not persist never
+// runs, so a restart can never fire the same occurrence twice.
+struct FireClaim {
+  uint64_t lastRun = 0, nextRun = 0;
+  uint16_t firesToday = 0;
+  uint16_t firesInWindow = 0;
+};
+// The state the claim changes, taken before the advance.
+inline FireClaim claimSnapshot(const LoopRecord& l, const DeviceCounters& dev) {
+  return FireClaim{l.lastRun, l.nextRun, l.firesToday, dev.firesInWindow};
+}
+// The advance itself: `nextRun` is the next occurrence the device computed.
+inline void claimFire(LoopRecord& l, DeviceCounters& dev, uint64_t nowEpoch, uint64_t nextRun) {
+  l.lastRun = nowEpoch;
+  l.nextRun = nextRun;
+  l.firesToday++;
+  dev.firesInWindow++;
+}
+// The advance did not persist: put everything back as it was before the claim.
+inline void undoClaim(LoopRecord& l, DeviceCounters& dev, const FireClaim& c) {
+  l.lastRun = c.lastRun;
+  l.nextRun = c.nextRun;
+  l.firesToday = c.firesToday;
+  dev.firesInWindow = c.firesInWindow;
+}
 // The clock just landed (boot-relative `oldNow` -> real `realNow`): the nextRun for
 // an armed one-shot Once that PRESERVES its remaining delay across the jump, instead
 // of resetting to the full interval. A Once that already failed a pre-sync fire

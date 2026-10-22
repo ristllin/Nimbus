@@ -1,6 +1,7 @@
 #pragma once
 // moved_store - a value that moved out of NVS into a flash file, and the migration
-// rule both moved stores follow (the usage ledger and the scratchpad, v4.5.14).
+// rule every moved store follows (the usage ledger and the scratchpad, v4.5.14; the
+// sub-agent journal and the Anthropic agent ids, v4.6; kMovedStores lists them all).
 //
 // Both were rewritten in NVS on every turn; on a full partition the writes failed and
 // most of a month's spend and every scratchpad change lived in RAM only. They now
@@ -30,6 +31,27 @@ namespace nimbus {
 namespace store {
 
 enum class MovedSource : uint8_t { None = 0, File, Nvs };
+
+// Every settings-storage (NVS) key that moved to a flash file, with its file. The host
+// tests run the four migration legs (file only, NVS only, both, neither) for every row,
+// and check at source level that no writer stores the NVS key again (test_nvs_full,
+// test_config_persist). A key that moves gets a row here in the same change.
+struct MovedKey {
+  const char* ns;     // NVS namespace
+  const char* key;    // NVS key (a prefix when `prefix`)
+  bool        prefix;
+  const char* path;   // the flash file that holds it now
+  const char* since;  // the release that moved it
+};
+inline constexpr MovedKey kMovedStores[] = {
+    {"solide", "usgLedger", false, "/data/usage_ledger.txt", "v4.5.14"},
+    {"orchmem", "scratchB", false, "/data/scratchpad.bin", "v4.5.14"},
+    {"orchmem", "scratch", false, "/data/scratchpad.bin", "v4.5.14"},   // the older copy
+    {"agjournal", "j", true, "/data/agjournal.json", "v4.6"},          // j0..j5
+    {"solide", "antEnv", false, "/data/ant_env.txt", "v4.6"},
+    {"solide", "antAgents", false, "/data/ant_agents.txt", "v4.6"},
+};
+inline constexpr size_t kMovedStoreCount = sizeof(kMovedStores) / sizeof(kMovedStores[0]);
 
 struct MovedLoad {
   MovedSource src = MovedSource::None;

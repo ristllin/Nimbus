@@ -110,6 +110,13 @@ struct NvsKv : NvsKvRaw {
 // setter can `return notePersist(ok, key);`.
 bool notePersist(bool ok, const char* key);
 
+// A FILE store's write (the usage ledger, the scratchpad, the per-model prices: flash
+// files, not settings storage) reports here (prism row 22): a failure still makes a
+// SaveScope answer 507 and is logged once a minute per key, but it is NOT a settings-
+// storage failure: it never raises the "settings storage is almost full" notice and
+// never lands in nvs.recentFails / nvs.fails. Returns the verdict unchanged.
+bool noteFilePersist(bool ok, const char* key);
+
 // A save route opens one of these BEFORE its first write and asks failed() before
 // it answers: true when any NVS write this task made since construction did not land
 // (including writes nested inside a setter). Routes then send the 507 storage_full
@@ -118,10 +125,11 @@ bool notePersist(bool ok, const char* key);
 class SaveScope {
  public:
   SaveScope();
-  bool failed() const;
+  bool failed() const;   // an NVS write (notePersist) or a file write (noteFilePersist)
 
  private:
   uint32_t  since_;
+  uint32_t  sinceFile_;
   uintptr_t task_;
 };
 

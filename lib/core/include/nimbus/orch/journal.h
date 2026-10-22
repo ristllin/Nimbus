@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/result_envelope.h"  // JobState + isTerminal
@@ -8,22 +9,30 @@
 // Ported and adapted from Nuage-Solide src/agent/journal.{h,cpp}
 // (Head Orchestrator v2). The LOGIC (add/find/complete/evict/gc/count/get, the
 // 6-record ceiling + tag dedupe + seen-eviction, and reboot re-attach) is made
-// portable here; the NVS Preferences I/O is hoisted behind a JournalStore seam,
-// exactly like OrchMemory's MemoryStore. The device implements JournalStore
-// against the "agjournal" NVS namespace (keys j0..j5); host tests use an
-// in-memory store.
+// portable here; the storage I/O is hoisted behind a JournalStore seam, exactly
+// like OrchMemory's MemoryStore. The device backs it with one flash file
+// (/data/agjournal.json, FileJournalStore below); until v4.5.16 it lived in the
+// "agjournal" NVS namespace (keys j0..j5), which the file store reads once to
+// migrate. Host tests use an in-memory store.
 //
 // Per-job journal. Persists enough state to resume polling after a reboot without
 // re-dispatching (avoids duplicate billing / duplicate work): at boot the device
 // re-attaches to any unfinished job by polling jobId alone (backend prefix before
 // ':' routes the adapter). The portable guarantee is only that loadAll() faithfully
 // restores every record with jobId byte-identical.
+//
+// It also keeps the last kJournalFinishedKeep FINISHED jobs (tag, name, project,
+// the file the result was saved to, when it finished) across restarts: before
+// them a restart left the head with an empty job table and its own note "waiting
+// for the research results", so it ran the same paid jobs again and re-sent their
+// reports (owner device, 19 Oct 2026).
 namespace nimbus {
 namespace orch {
 
-// Durable NVS shape - fixed-size char[] (not std::string) so the record
-// serializes to a compact, bounded JSON blob whose worst case fits the serialize
-// buffer. The sizes are the durable contract (device UI + restart depend on them).
+// Durable shape - fixed-size char[] (not std::string) so the record serializes to a
+// compact, bounded JSON blob whose worst case fits the serialize buffer. The sizes are
+// the durable contract (device UI + restart depend on them, and a rollback to an
+// NVS-journal release reads the same JSON).
 struct JobRecord {
   char     tag[24];       // device correlation id, "job0003" - the dedupe key, stable across reboot
   char     jobId[96];     // "backend:remoteId" - the durable re-attach key
@@ -39,17 +48,41 @@ struct JobRecord {
   uint32_t dispatchedAt = 0;     // millis() at dispatch (advisory; resets on reboot)
 };
 
-// Persistence seam. Slots are 0..kAgentMaxJobs-1. Device backs this with NVS
-// Preferences (namespace "agjournal", keys "j0".."j5"); tests use a std::map.
-// put and remove report whether they LANDED (a full NVS refuses a put); the journal
-// never erases a slot it still needs because of a write that did not land.
+// The finished-job ring: the last kJournalFinishedKeep jobs that reached a terminal
+// state. Its records live in store slots kJournalFinishedSlot0.. after the active ones.
+constexpr int kJournalFinishedKeep  = 8;
+constexpr int kJournalFinishedSlot0 = kAgentMaxJobs;
+constexpr int kJournalSlots         = kAgentMaxJobs + kJournalFinishedKeep;
+
+// Persistence seam. Slots are 0..kJournalSlots-1: 0..kAgentMaxJobs-1 hold the active
+// records, the rest the finished-job ring. The device backs it with one flash file
+// (FileJournalStore); tests use a std::map. put and remove report whether they
+// LANDED (a full file system refuses a put); the journal never erases a slot it still
+// needs because of a write that did not land.
 struct JournalStore {
   virtual ~JournalStore() = default;
   virtual std::string get(int slot) = 0;                 // "" if empty
   virtual bool        put(int slot, const std::string& v) = 0;
   virtual bool        remove(int slot) = 0;              // true when the slot is gone
-  virtual void        clearNs() = 0;                     // wipe the whole namespace
+  virtual void        clearNs() = 0;                     // wipe every slot
 };
+
+// One finished job, kept across restarts so the head knows the work is done.
+struct FinishedJob {
+  char     tag[24];          // "job0003"
+  char     name[24];         // the model's display name ("" = unnamed)
+  char     prj[25];          // the project the job ran under ("" = none)
+  char     artifact[96];     // "<project>/<file>" the result was saved to ("" = none)
+  char     finishedAt[32];   // local wall clock as the device shows it ("" = unset)
+  char     chatId[32];       // the chat that asked for it
+  uint32_t finishedEpoch = 0;   // Unix seconds (0 = the clock was not set)
+  uint32_t seq = 0;             // ring order across restarts (newest = highest)
+  bool     failed = false;      // ended in an error, a loss or a cancel
+};
+
+// Same contract as serializeRecord: nothing usable is written when it would not fit.
+size_t serializeFinished(const FinishedJob& f, char* buf, size_t sz);
+bool   deserializeFinished(const char* buf, FinishedJob& out);
 
 // Serialize buffer: worst-case record ~293 B with jobId[96]. The 384 B ceiling
 // leaves headroom; serialize() REFUSES to persist a record that would overflow it
@@ -69,6 +102,9 @@ class Journal {
   // Load all slots from the store. `store` is borrowed (device owns lifetime). Each
   // record remembers the store slot it came from (a slot left empty by an earlier gc
   // stays empty), and a second record with the same tag is dropped from the store.
+  // Every record loaded here is RESTORED (restored()); an active record whose tag is
+  // also in the finished ring was finished and delivered before the restart (finish()
+  // writes the ring first), so it loads as seen: a result is delivered once.
   void begin(JournalStore* store);
 
   // Dedupe by TAG: update in place if the tag exists, else take a free slot. If full
@@ -101,10 +137,34 @@ class Journal {
   // Total slots occupied (active + seen), for tests / diagnostics.
   int slotsUsed() const { return count_; }
 
+  // True when the record for `tag` was loaded by begin() (the job was started before
+  // this boot), false for one written since, or an unknown tag.
+  bool restored(const char* tag) const;
+
+  // ---- the finished-job ring (L19-35) ---------------------------------------------
+  // `tag` reached a terminal state: keep `f` in the ring (the oldest entry goes when
+  // it is full), then mark the active record seen. The ring entry lands FIRST, so a
+  // restart between the two writes still finds the job finished (begin() then loads
+  // it as seen). The RAM ring and record update either way; true only when both
+  // writes landed. An unknown tag still records `f` (a job whose record never landed).
+  // `final` (when not Unknown) is the record's terminal state, stored with the seen
+  // mark in the same write (one file rewrite, not two).
+  bool finish(const char* tag, const FinishedJob& f, JobState final = JobState::Unknown);
+  int  finishedCount() const { return finCount_; }
+  // Newest first. `beforeBoot` (optional) says whether it finished before this boot.
+  bool finished(int idx, FinishedJob& out, bool* beforeBoot = nullptr) const;
+  // The highest NNNN of a "jobNNNN" tag held anywhere in the journal (-1 = none), so
+  // a new boot never hands out a tag a restored or finished job still carries.
+  long highestTagNumber() const;
+
  private:
   int  findSlot(const char* tag) const;
   int  freeStoreSlot() const;   // lowest store slot no held record uses (-1 = none)
   bool saveSlot(int i);         // true when record i landed in its store slot
+  void loadFinished();          // begin(): the ring, oldest first
+  int  finishedSlotFor(const char* tag) const;   // ring index of `tag` (-1 = none)
+  int  finishedTarget();        // ring index a new entry takes (-1 = none)
+  bool saveFinished(int i);     // true when ring entry i landed in its store slot
 
   JournalStore* store_ = nullptr;
   JobRecord     records_[kAgentMaxJobs];
@@ -118,6 +178,66 @@ class Journal {
   // order they load (0,1,2,...), a stable within-session ordering.
   uint32_t      seq_[kAgentMaxJobs] = {};
   uint32_t      nextSeq_ = 0;
+  bool          restored_[kAgentMaxJobs] = {};   // RAM only: loaded by begin()
+
+  // The ring, in load order. Heap, reserved once (about 2 KB: PSRAM on the device,
+  // never static internal RAM).
+  struct FinEntry {
+    FinishedJob job;
+    int         slot = 0;           // its store slot
+    bool        beforeBoot = false; // loaded by begin()
+  };
+  std::vector<FinEntry> fin_;
+  int           finCount_ = 0;
+  uint32_t      nextFinSeq_ = 0;
+};
+
+// ---- the file store (agjournal off NVS, v4.6) ------------------------------------------
+// Every slot lives in ONE flash file, rewritten whole and atomically (tmp + rename) on
+// each change, so a crash leaves the previous image. The file is a JSON object keyed by
+// slot number, each value the record's own JSON: {"0":{...},"6":{...}}.
+//
+// Migration follows the moved-store rule (nimbus/store/moved_store.h): load the file;
+// when there is none, read the legacy NVS records (agjournal j0..j5) and write them to
+// the file at once; NVS is never written again; the NVS records are erased only on a
+// boot whose image was already marked valid, once the file reads back, so a rollback to
+// v4.5.16 or earlier still finds its in-flight jobs.
+std::string encodeJournalFile(const std::string (&slots)[kJournalSlots]);
+// False (slots untouched) when `blob` is not a journal image.
+bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlots]);
+
+struct JournalFileIo {   // the device binds LittleFS and Preferences; tests a fake
+  virtual ~JournalFileIo() = default;
+  virtual bool        readFile(std::string& out) = 0;        // true when the file exists
+  virtual bool        writeFileAtomic(const std::string& v) = 0;
+  virtual std::string readLegacySlot(int slot) = 0;          // NVS j<slot>, "" = absent
+  virtual bool        eraseLegacy() = 0;                     // true when the records are gone
+};
+
+enum class JournalSource : uint8_t { None = 0, File, Legacy };
+
+class FileJournalStore : public JournalStore {
+ public:
+  explicit FileJournalStore(JournalFileIo& io) : io_(io) {}
+  // Load the image (see above). A legacy load is written to the file here; when that
+  // write fails the records are still served from RAM and the NVS copy is untouched.
+  JournalSource load();
+  // Erase the legacy NVS records when the rule allows it. True when they were erased.
+  bool retireLegacy(bool imageValidAtBoot);
+  // Whether the last write landed (false after a write the file system refused).
+  bool durable() const { return durable_; }
+
+  std::string get(int slot) override;
+  bool        put(int slot, const std::string& v) override;
+  bool        remove(int slot) override;
+  void        clearNs() override;
+
+ private:
+  bool commit(int slot, const std::string& v);   // image with slot = v; kept on success
+  JournalFileIo& io_;
+  std::string    slots_[kJournalSlots];
+  bool           durable_ = true;   // the last write landed
+  bool           onDisk_ = false;   // the file holds exactly slots_
 };
 
 }  // namespace orch

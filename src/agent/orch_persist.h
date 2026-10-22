@@ -10,10 +10,12 @@
 //   - LittleFsMemoryStore : the model-memory blob on LittleFS (/data/orchmem.txt),
 //     matching Nuage-Solide orch_memory.cpp's path so a device upgrade keeps its
 //     memory.
-//   - NvsJournalStore : the per-slot journal in NVS via Preferences (namespace
-//     "agjournal", keys "j0".."j5"), matching Nuage-Solide journal.cpp so in-flight
-//     jobs survive a reboot AND a firmware upgrade (the compact JSON blob is the
-//     same shape).
+//   - FlashJournalStore : the sub-agent journal in one flash file
+//     (/data/agjournal.json, nimbus::orch::FileJournalStore), so in-flight jobs and
+//     the finished-job ring survive a restart without spending settings storage. It
+//     reads the legacy NVS records (namespace "agjournal", keys "j0".."j5", the
+//     Nuage-Solide layout) once to migrate, and erases them only on a boot whose
+//     image was already marked valid.
 namespace agent {
 
 class LittleFsMemoryStore : public nimbus::orch::MemoryStore {
@@ -23,13 +25,24 @@ class LittleFsMemoryStore : public nimbus::orch::MemoryStore {
   void        clearModel() override;
 };
 
-class NvsJournalStore : public nimbus::orch::JournalStore {
+// The device's journal file I/O: LittleFS for the file, the legacy NVS namespace
+// read-only (and erased once retired).
+class FlashJournalIo : public nimbus::orch::JournalFileIo {
  public:
-  void begin();   // open the Preferences namespace (idempotent)
-  std::string get(int slot) override;
-  bool        put(int slot, const std::string& v) override;
-  bool        remove(int slot) override;
-  void        clearNs() override;
+  bool        readFile(std::string& out) override;
+  bool        writeFileAtomic(const std::string& v) override;
+  std::string readLegacySlot(int slot) override;
+  bool        eraseLegacy() override;
+};
+
+// The I/O is a private base listed first, so it is constructed before the store that
+// keeps a reference to it (a member would not exist yet when the base is built).
+class FlashJournalStore : private FlashJournalIo, public nimbus::orch::FileJournalStore {
+ public:
+  FlashJournalStore() : nimbus::orch::FileJournalStore(static_cast<FlashJournalIo&>(*this)) {}
+  // Load the journal (file, else the legacy NVS records), then retire the legacy
+  // copy when the moved-store rule allows. Call once, after LittleFS is mounted.
+  void begin();
 };
 
 // v3.7.0 RBAC tenant table - /data/tenants.txt. A pre-v3.7 image ignores the

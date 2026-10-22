@@ -22,6 +22,7 @@
 #include "tls_arbiter.h"
 #include "nimbus/ota/ota_headroom.h"   // dedicated task or poll task (host-tested)
 #include "nimbus/ota/ota_logic.h"
+#include "nimbus/store/write_pacing.h"   // NoticeLatch - one update notice per version per boot
 #include "ota_pubkey.h"
 #include "usb_updater.h"          // nimbus::usbfw wire protocol + commit-order sequencer
 #include "config_nvs.h"           // notePersist: every guard write is reported
@@ -622,9 +623,13 @@ static void finishCheck() {
   g_latestNotes = g_manifest.notes;
   if (e == Eligibility::Newer || e == Eligibility::BlockedMinVersion) {
     g_state = State::Available;
-    // Owner notify (Telegram in Orch mode), once per version.
-    if (agent::store::otaNotifiedVersion() != g_latestVersion) {
-      (void)agent::store::setOtaNotifiedVersion(g_latestVersion);
+    // Owner notify (Telegram in Orch mode), once per version: the stored marker, and a
+    // per-boot latch so a marker write the settings storage refused cannot re-send the
+    // notice at every check (write_pacing.h).
+    static nimbus::store::NoticeLatch s_notified;
+    const std::string latest(g_latestVersion.c_str());
+    if (s_notified.claim(latest, std::string(agent::store::otaNotifiedVersion().c_str()))) {
+      (void)agent::store::setOtaNotifiedVersion(g_latestVersion);   // the latch covers a refusal
       fireEvent(EvAvailable, g_manifest.version, g_manifest.notes);
     }
   } else {

@@ -13,6 +13,8 @@
 #include "../sys/agent_log.h"
 #include "agent_config.h"         // ORCH_AUTO_TURN_MIN_HEAP
 #include "memory_subsystem.h"     // memory::clockSynced - the strict "clock is real" test
+#include "fs_atomic.h"            // writeFileAtomic - loops.json tmp + rename, with a verdict
+#include "nimbus/store/moved_store.h"   // FailureLog - one refused-write line a minute
 #include "nimbus/harness/dream.h"           // applyInterruptedToLoop - the dream's boot reconcile
 #include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError - a ceiling defer (lane DEF)
@@ -66,12 +68,16 @@ static std::string loadRaw() {
   f.close();
   return std::string(s.c_str(), s.length());
 }
-static void persist() {
-  std::string json = orch::dumpLoops(g_loops);
-  File f = LittleFS.open(kLoopPath, FILE_WRITE);
-  if (!f) { alog("loops: LittleFS write failed"); return; }
-  f.write((const uint8_t*)json.data(), json.size());
-  f.close();
+// Atomic (tmp + rename) and reported: a write the file system refuses keeps the
+// previous loops.json whole, and the fire path skips a fire whose advance did not land
+// (orch::claimFire). Every other caller's change is carried by the next write that
+// lands; a failure line is logged at most once a minute.
+static bool persist() {
+  static nimbus::store::FailureLog s_fail;
+  if (agent::writeFileAtomic(kLoopPath, orch::dumpLoops(g_loops), "loops", false)) return true;
+  if (const uint32_t n = s_fail.noteFailure(millis()))
+    alogf("loops: routines not saved (%u write(s) refused) - keeping the previous copy", (unsigned)n);
+  return false;
 }
 
 // "Wake-ups: ask me first" policy (CUM-27). Off by default = an agent-armed wakeup
@@ -88,10 +94,8 @@ static void loadWakeupMode() {
   g_wakeupsAskFirst = (s.length() > 0 && s[0] == '1');
 }
 static void persistWakeupMode() {
-  File f = LittleFS.open(kWakeupModePath, FILE_WRITE);
-  if (!f) { alog("loops: wakeup-mode write failed"); return; }
-  f.write((const uint8_t*)(g_wakeupsAskFirst ? "1" : "0"), 1);
-  f.close();
+  if (!agent::writeFileAtomic(kWakeupModePath, g_wakeupsAskFirst ? "1" : "0", "wakeup_mode"))
+    alog("loops: wakeup-mode write failed");
 }
 
 // ---- time helpers (the ONLY tz-aware code; libc, on tg_poll) --------------
@@ -119,16 +123,16 @@ static uint32_t curLocalDay(uint64_t epoch) {
 
 // Next-fire: Interval off epoch (boot-relative pre-sync = monotonic uptime);
 // Daily/Weekly off local civil (needs a valid clock).
-static void advanceNextRun(LoopRecord& l, uint64_t nowEpoch, bool clk) {
+static uint64_t nextRunFor(const LoopRecord& l, uint64_t nowEpoch, bool clk) {
   if (l.sched.kind == orch::SchedKind::Interval ||
-      l.sched.kind == orch::SchedKind::Once) {   // Once: armed for now+N; the
-                                                 // post-fire path retires it
-    l.nextRun = orch::nextIntervalEpoch(l.sched, nowEpoch);
-  } else if (clk) {
-    l.nextRun = civilToEpoch(orch::nextWallClockLocal(l.sched, nowCivilLocal(nowEpoch)));
-  } else {
-    l.nextRun = 0;   // recomputed on clock sync
-  }
+      l.sched.kind == orch::SchedKind::Once)   // Once: armed for now+N; the
+                                               // post-fire path retires it
+    return orch::nextIntervalEpoch(l.sched, nowEpoch);
+  if (clk) return civilToEpoch(orch::nextWallClockLocal(l.sched, nowCivilLocal(nowEpoch)));
+  return 0;   // recomputed on clock sync
+}
+static void advanceNextRun(LoopRecord& l, uint64_t nowEpoch, bool clk) {
+  l.nextRun = nextRunFor(l, nowEpoch, clk);
 }
 
 // Lane DEF: a fire deferred because paid calls are paused (orch::onCeilingSkip), not for
@@ -472,11 +476,14 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       alogf("loops: '%s' delivers to %s (%s is not available)", due->name.c_str(),
             orch::deliveryChannelLabel(dl.to), orch::deliveryChannelLabel(dl.from));
     prevLastRun = due->lastRun;   // so a memory defer can un-claim this "run"
-    due->lastRun = nowEpoch;
-    advanceNextRun(*due, nowEpoch, clk);
-    due->firesToday++;
-    g_dev.firesInWindow++;
-    persist();
+    const orch::FireClaim before = orch::claimSnapshot(*due, g_dev);
+    orch::claimFire(*due, g_dev, nowEpoch, nextRunFor(*due, nowEpoch, clk));
+    if (!persist()) {   // the advance did not land: never fire it (no double fire)
+      orch::undoClaim(*due, g_dev, before);
+      alogf("loops: '%s' not fired - its schedule could not be saved, retrying next tick",
+            due->name.c_str());
+      return;
+    }
     haveFire = true;
   }   // <-- lock RELEASED here: the (5-30 s) fire must not block the web reader.
   if (!haveFire) return;

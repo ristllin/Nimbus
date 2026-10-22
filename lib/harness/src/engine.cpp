@@ -490,14 +490,22 @@ const char* TurnEngine::channelOf(const std::string& chatId) {
 
 // [ACTIVE SESSIONS] body - byte-identical to the device jobsSummary() (same
 // journal source, reached through JobEngine::sessionInfos).
+// L19-35: after a restart the job table and the spawn ledger start empty, so the jobs
+// that finished before it follow (from the journal's finished ring): without them the
+// head read its own "waiting for the results" note and ran the same paid jobs again.
+// Nothing is added when none finished before this boot (the block stays byte-stable).
 std::string TurnEngine::jobsSummaryText() const {
   std::vector<orch::SessionInfo> infos =
       d_.jobs ? d_.jobs->sessionInfos() : std::vector<orch::SessionInfo>{};
-  if (infos.empty()) return "No active jobs.";
   std::string s;
+  if (infos.empty()) s = "No active jobs.";
   for (const auto& r : infos)
     s += r.id + " (" + r.provider + "/" + r.model + ") " + r.title + " [" + r.state + "]\n";
-  return s;
+  const std::string finished = d_.jobs ? d_.jobs->finishedBeforeRestartText() : std::string();
+  if (finished.empty()) return s;
+  if (infos.empty()) s += "\n";
+  return s + "Finished before the device last restarted (their results were already delivered "
+             "or reported; do not start them again unless the owner asks):\n" + finished;
 }
 
 // Lane L (subagents F6.2): which keyed sub-agent providers hold the device for

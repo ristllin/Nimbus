@@ -268,6 +268,41 @@ static void testJournalReattaches(ndtest::Ctx& c) {
   nimbus::orch::Journal j3;
   j3.begin(&store3);
   c.eqi(j3.count(), 0, "a delivered + compacted job is gone after the next restart");
+  c.eqi(j3.finishedCount(), 0, "markSeen alone records no finished job");
+  // The device's shape: one file, and the finished-job ring across a restart.
+  nimbus::orch::JobRecord r2{};
+  std::snprintf(r2.tag, sizeof r2.tag, "job0008");
+  std::snprintf(r2.jobId, sizeof r2.jobId, "openai:resp_def456");
+  c.ok(j3.write(r2), "a second job is journaled");
+  nimbus::orch::FinishedJob f{};
+  std::snprintf(f.artifact, sizeof f.artifact, "tides/tide-check-job0008.md");
+  c.ok(j3.finish("job0008", f), "its finished record and seen mark land");
+  std::string blob;
+  c.ok(fsutil::readFile(dir + "/agjournal.json", blob), "one journal file, like the device's");
+  FileJournalStore store4(dir);
+  nimbus::orch::Journal j4;
+  j4.begin(&store4);
+  nimbus::orch::FinishedJob fin{};
+  bool before = false;
+  c.ok(j4.count() == 0 && j4.finished(0, fin, &before) && before &&
+           std::string(fin.artifact) == "tides/tide-check-job0008.md",
+       "the finished job is listed after the restart, never active again");
+  // An earlier hosted release's per-slot file migrates once and is removed.
+  const std::string legacyDir = ndtest::scratchDir("fab-c") + "/legacy";
+  fsutil::mkdirs(legacyDir);
+  char rec[nimbus::orch::kJournalSerializeBuf];
+  nimbus::orch::JobRecord old{};
+  std::snprintf(old.tag, sizeof old.tag, "job0001");
+  std::snprintf(old.jobId, sizeof old.jobId, "openai:resp_old");
+  nimbus::orch::serializeRecord(old, rec, sizeof rec);
+  fsutil::writeFileAtomic(legacyDir + "/j2.json", rec);
+  FileJournalStore store5(legacyDir);
+  nimbus::orch::Journal j5;
+  j5.begin(&store5);
+  std::string gone;
+  c.ok(j5.count() == 1 && fsutil::readFile(legacyDir + "/agjournal.json", gone) &&
+           !fsutil::readFile(legacyDir + "/j2.json", gone),
+       "a per-slot record migrates to the file and the old file goes");
   ndtest::rmTree(ndtest::scratchDir("fab-c"));
 }
 

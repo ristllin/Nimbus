@@ -2063,8 +2063,9 @@ String setScratchFault(bool on) {
 
 // The scratchpad file: written atomically and read back (the moved-store rule), and
 // only when its bytes differ from the ones that last landed. A save that did not land
-// is reported to the persist ledger ("lfs_scratch"), so the scratchpad route answers
-// 507 and /api/state names it; the notes stay in RAM and the next persist tries again.
+// is reported on the file channel ("lfs_scratch", noteFilePersist), so the scratchpad
+// route answers 507 without raising the settings-storage notice; the notes stay in RAM
+// and the next persist tries again.
 // The result also reaches the scratchpad's own failing flag, so the tool result, the
 // turn's effect ledger and the prompt header all say when the notes are RAM only.
 bool persistScratchpad() {
@@ -2079,7 +2080,7 @@ bool persistScratchpad() {
             (unsigned)n, (unsigned)blob.size());
   }
   g_scratch.setSaveFailing(!ok);
-  return nimbus::sys::notePersist(ok, "lfs_scratch");
+  return nimbus::sys::noteFilePersist(ok, "lfs_scratch");   // a file, not settings storage
 }
 
 // The retrieval knobs stay in NVS (owner config, about 100 B): asked of the reserve

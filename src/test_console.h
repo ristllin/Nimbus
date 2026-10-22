@@ -223,6 +223,12 @@ struct Hooks {
   // partition must hold, study T7/B4). Lane O1 wires it. The immediate PANIC
   // forms run inline on the console task and need no hook.
   std::function<String(const String& kind)> panicArmTurn;
+  // BATTFLAP <n> [stepMv]: lane C2's bench seam for the battery-model save pacing
+  // (BATTMODEL-CHURN). Moves the full-charge anchor <n> times around its value
+  // (alternately +7 and -6 mV per cell, or +/- stepMv), each move through the paced
+  // telemetry save, then restores the model. Returns the saves made and the settings
+  // storage's free entries before and after.
+  std::function<String(int moves, int stepMv)> battFlap;
 };
 
 #if defined(NIMBUS_TEST)

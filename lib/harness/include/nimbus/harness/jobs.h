@@ -157,6 +157,8 @@ class JobEngine {
     // prior (a news verifier confidently mis-dated by six months, owner
     // 2026-07-24). Nullable for host tests / clockless callers.
     std::function<std::string()> nowString;
+    // Unix seconds for the finished-job record (L19-35; 0 = clock unset). Nullable.
+    std::function<uint32_t()> nowEpoch;
 
     // Rendered context block of the SPAWNING chat for the sub-agent brief
     // (Release B4): "[CONTEXT]\n<min(N msgs, C chars) window>". Sub-agents run
@@ -243,6 +245,9 @@ class JobEngine {
   // Aim the round-robin at the awaited tag + poll now (turn `await[0]`).
   void awaitTag(const std::string& firstTag);
   std::vector<nimbus::orch::SessionInfo> sessionInfos() const;
+  // L19-35: the jobs that finished before this boot (the journal's finished ring), one
+  // line each, newest first, for the turn context; "" when there are none.
+  std::string finishedBeforeRestartText() const;
 
   // Fresh sub-agent results parked for the next consolidation turn.
   bool hasFreshResults() const { return !fresh_.empty(); }
@@ -381,7 +386,14 @@ class JobEngine {
                              std::string& model);
   // L19-36: save a reply longer than the envelope whole to the card and end the
   // envelope with a marker naming the file and the real size. True when saved.
-  bool spillWholeReply(const nimbus::orch::JobRecord& rec, const std::string& whole, size_t dropped);
+  bool spillWholeReply(const nimbus::orch::JobRecord& rec, const std::string& whole, size_t dropped,
+                       std::string* savedPath = nullptr);
+  // L19-35: the job reached a terminal state: keep it in the journal's finished ring
+  // (with the file its result was saved to), then mark its record seen.
+  void finishJob(const nimbus::orch::JobRecord& rec, const std::string& artifact,
+                 nimbus::orch::JobState final);
+  // SPAWN-JOURNAL-DURABILITY: the ack for a job whose record did not store.
+  void deliverNotDurableAck(const PendingSpawn& p, const std::string& chatId, const std::string& suffix);
   std::string spawnProvider(const PendingSpawn& p) const;
   bool keylessToRouter(std::string& provider, std::string& model) const;
   // Validated coercion (subagents F5): the asked model when the provider lists
@@ -428,11 +440,12 @@ class JobEngine {
     std::string swapped;   // why the model that runs is not the one asked for ("" = none)
     LedgerState state = LedgerState::Queued;
     uint32_t atMs = 0;
+    bool notDurable = false;   // its journal record did not store: a restart loses it
   };
   std::vector<LedgerEntry, nimbus::orch::WorkingAllocator<LedgerEntry>> ledger_;
   void ledgerQueued(const PendingSpawn& p);
   void ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
-                     const std::string& model);
+                     const std::string& model, bool durable = true);
   void ledgerSwapped(const PendingSpawn& p, const std::string& why);
   LedgerEntry* queuedEntry(const PendingSpawn& p);   // this spawn's Queued row, or nullptr
   void ledgerRefused(const std::string& chatId, const std::string& name, const std::string& task,
@@ -460,6 +473,9 @@ class JobEngine {
   Tuning t_;
 
   uint32_t tagSeq_  = 0;
+  bool     tagSeeded_ = false;           // tagSeq_ moved past every tag the journal holds
+  uint32_t notDurableNoteMs_ = 0;        // the last "will not survive a restart" line
+  bool     notDurableNoted_ = false;
   int      rrIndex_ = 0;                 // round-robin poll cursor
   uint32_t nextPollAt_ = 0;              // global poll gate
   uint32_t pollBackoffMs_;               // AGENT_POLL_INTERVAL_MS baseline

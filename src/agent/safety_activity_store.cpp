@@ -16,6 +16,7 @@
 #include "../sys/errlog_fs.h"            // errlog::activeFs()/onSdTier() - the durable tier
 #include "../sys/errlog.h"               // errlog::kDir
 #include "nimbus/logring.h"              // core::LogRing::redact (portable redaction)
+#include "nimbus/store/persist.h"        // editDurably - the allowlist never outlives its write
 
 using nimbus::orch::SafetyEntry;
 using nimbus::orch::SafetyActivityLog;
@@ -90,6 +91,28 @@ void writeWhole(const char* path, const std::string& blob) {
   f.close();
   if (w != blob.size()) alogf("safety: short write %u/%u", (unsigned)w, (unsigned)blob.size());
 }
+
+// The allowlist's writer: atomic (tmp + rename on the same tier), so a crash or a full
+// card keeps the previous list whole, and reported, so a change that did not land is
+// put back in RAM (nimbus::store::editDurably) and the route answers 507.
+bool writeWholeAtomic(const char* path, const std::string& blob) {
+  if (agent::memory::erasing()) return false;   // factory-sweep barrier (see writeWhole)
+  ::fs::FS& fs = nimbus::errlog::activeFs();
+  fs.mkdir(nimbus::errlog::kDir);
+  const std::string tmp = std::string(path) + ".tmp";
+  ::File f = fs.open(tmp.c_str(), FILE_WRITE);
+  if (!f) { alogf("safety: durable open failed (%s)", path); return false; }
+  const size_t w = f.write((const uint8_t*)blob.data(), blob.size());
+  f.close();
+  if (w != blob.size() || !fs.rename(tmp.c_str(), path)) {
+    fs.remove(tmp.c_str());
+    alogf("safety: allowed list not saved (%u/%u) - keeping the previous copy", (unsigned)w,
+          (unsigned)blob.size());
+    return false;
+  }
+  return true;
+}
+bool persistAllow(const SafetyAllowlist& a) { return writeWholeAtomic(kAllowPath, a.serialize()); }
 
 void seedNextId() {
   uint32_t hi = 0;
@@ -254,28 +277,43 @@ ApproveResult approve(const std::string& id, AllowScope scope, std::string& msgO
   // Bind the rule to the gate that produced the entry, so this approval never quiets
   // another gate for the same principal/content (CUM-215 cross-gate binding).
   std::string outId;
-  const bool added = g_allow.add(scope, value, e->source, (uint32_t)time(nullptr), outId);
-  if (!added && outId.empty()) {
+  bool full = false;
+  const nimbus::store::DurableEdit ed = nimbus::store::editDurably(
+      g_allow,
+      [&](SafetyAllowlist& a) {
+        const bool added = a.add(scope, value, e->source, (uint32_t)time(nullptr), outId);
+        full = !added && outId.empty();
+        return added;   // an existing rule (outId set) needs no write
+      },
+      persistAllow);
+  if (full) {
     // Allowlist at capacity: nothing was stored. Do NOT mark the entry approved or
     // claim a rule exists (the item keeps being blocked until the owner revokes one).
     msgOut = "The allowed list is full. Revoke an item to allow another.";
     return ApproveResult::Full;
   }
-  // added==true (new rule) or added==false with outId set (already allowed): both mean
-  // the item is now allowed, so the entry is genuinely approved.
+  if (ed == nimbus::store::DurableEdit::Reverted) {
+    msgOut = nimbus::store::kFileSaveFailedMessage;   // nothing allowed, entry unchanged
+    return ApproveResult::NotSaved;
+  }
+  // A new rule that landed, or one already there (outId set): the item is allowed, so
+  // the entry is genuinely approved.
   g_log.approve(id);
-  writeWhole(kAllowPath, g_allow.serialize());
   writeWhole(kActivityPath, g_log.serialize());
   msgOut = "Approved. Similar items are now allowed.";
   return ApproveResult::Ok;
 }
 
-bool revokeAllow(const std::string& id) {
+RevokeResult revokeAllow(const std::string& id) {
   memory::Lock g;
   ensureLoaded();
-  if (!g_allow.revoke(id)) return false;
-  writeWhole(kAllowPath, g_allow.serialize());
-  return true;
+  switch (nimbus::store::editDurably(
+      g_allow, [&](SafetyAllowlist& a) { return a.revoke(id); }, persistAllow)) {
+    case nimbus::store::DurableEdit::Unchanged: return RevokeResult::NotFound;
+    case nimbus::store::DurableEdit::Reverted:  return RevokeResult::NotSaved;
+    case nimbus::store::DurableEdit::Saved:     break;
+  }
+  return RevokeResult::Ok;
 }
 
 // ---- deferred report (web task queues; a worker task does the TLS POST) --------

@@ -1,7 +1,10 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
+#include <vector>
 
 #include <ArduinoJson.h>
 
@@ -640,6 +643,124 @@ static void test_ceiling_skip_keeps_wakeups_and_logs_once() {
   }
 }
 
+// ---- C2: loops.json atomic write, a fire whose advance did not persist is skipped ----
+// A scheduler model built from the device's pieces: each tick evaluates the loop, and a
+// due fire is claimed by its advance, persisted to "loops.json" (a flaky store), and run
+// only when that write landed. Random restarts reload the last image that landed. The
+// property: every occurrence (keyed by the nextRun it was due at) runs at most once, and
+// a fire never runs without its advance on flash.
+namespace {
+struct FlakyFile {
+  std::string landed;    // what a restart reads
+  uint32_t rng = 1;
+  int failPct = 0;
+  bool write(const std::string& v) {
+    rng = rng * 1103515245u + 12345u;
+    if ((int)((rng >> 16) % 100) < failPct) return false;   // tmp + rename: old file stays
+    landed = v;
+    return true;
+  }
+};
+
+struct Run {
+  std::map<uint64_t, int> fires;   // occurrence (due nextRun) -> times run
+  int skipped = 0;
+};
+
+// `undo` = false is the counter-model: the advance is kept in RAM and the fire runs even
+// though the write failed (the pre-C2 device).
+Run simulate(uint32_t seed, int failPct, bool undo) {
+  FlakyFile f;
+  f.rng = seed;
+  f.failPct = failPct;
+  LoopCaps caps;
+  caps.minIntervalSec = 60;
+  caps.maxFiresPerDay = 1000;
+  caps.devFiresWindow = 1000;
+  std::vector<LoopRecord> loops(1);
+  LoopRecord& l0 = loops[0];
+  l0.id = "lp000001";
+  l0.sched.kind = SchedKind::Interval;
+  l0.sched.intervalSec = 60;
+  l0.nextRun = 1000;
+  f.landed = dumpLoops(loops);
+  DeviceCounters dev;
+  Run out;
+  uint64_t now = 1000;
+  uint32_t r = seed * 2654435761u;
+  for (int tick = 0; tick < 400; ++tick, now += 20) {
+    r = r * 1664525u + 1013904223u;
+    if ((r >> 24) % 23 == 0) {   // a restart: RAM state is what the file held
+      std::vector<LoopRecord> back;
+      TEST_ASSERT_TRUE(loadLoops(f.landed, back));
+      loops = back;
+      dev = DeviceCounters{};
+    }
+    LoopRecord& l = loops[0];
+    if (evaluate(l, dev, caps, now, /*clockValid=*/true, /*chatAllowed=*/true) != FireDecision::Fire)
+      continue;
+    const uint64_t occurrence = l.nextRun;
+    const FireClaim before = claimSnapshot(l, dev);
+    claimFire(l, dev, now, nextIntervalEpoch(l.sched, now));
+    if (!f.write(dumpLoops(loops))) {
+      if (undo) {
+        undoClaim(l, dev, before);
+        ++out.skipped;
+        continue;
+      }
+    }
+    out.fires[occurrence]++;
+  }
+  return out;
+}
+}  // namespace
+
+static void test_loops_json_a_fire_whose_advance_did_not_persist_is_skipped() {
+  int skippedTotal = 0, firedTotal = 0;
+  for (uint32_t seed = 1; seed <= 200; ++seed) {
+    const int failPct = (int)(seed % 5) * 20;   // 0..80 %
+    const Run run = simulate(seed, failPct, /*undo=*/true);
+    for (const auto& kv : run.fires) {
+      char msg[80];
+      std::snprintf(msg, sizeof(msg), "seed %u: occurrence %llu ran %d times", (unsigned)seed,
+                    (unsigned long long)kv.first, kv.second);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(1, kv.second, msg);
+      ++firedTotal;
+    }
+    skippedTotal += run.skipped;
+    if (failPct == 0) TEST_ASSERT_EQUAL_INT(0, run.skipped);
+  }
+  TEST_ASSERT_TRUE(skippedTotal > 0);   // the failure legs really were exercised
+  TEST_ASSERT_TRUE(firedTotal > 0);
+  // The counter-model fires an occurrence twice once a write fails and a restart
+  // reloads the old schedule: the class this guards.
+  bool doubled = false;
+  for (uint32_t seed = 1; seed <= 200 && !doubled; ++seed)
+    for (const auto& kv : simulate(seed, 60, /*undo=*/false).fires) doubled = doubled || kv.second > 1;
+  TEST_ASSERT_TRUE(doubled);
+}
+
+// undoClaim puts back exactly what claimFire changed.
+static void test_undo_claim_restores_the_record_and_counters() {
+  LoopRecord l;
+  l.lastRun = 11;
+  l.nextRun = 22;
+  l.firesToday = 3;
+  DeviceCounters dev;
+  dev.firesInWindow = 4;
+  const FireClaim c = claimSnapshot(l, dev);
+  claimFire(l, dev, 100, 160);
+  TEST_ASSERT_EQUAL_UINT64(100, l.lastRun);
+  TEST_ASSERT_EQUAL_UINT64(160, l.nextRun);
+  TEST_ASSERT_EQUAL_UINT16(4, l.firesToday);
+  TEST_ASSERT_EQUAL_UINT16(5, dev.firesInWindow);
+  undoClaim(l, dev, c);
+  TEST_ASSERT_EQUAL_UINT64(11, l.lastRun);
+  TEST_ASSERT_EQUAL_UINT64(22, l.nextRun);
+  TEST_ASSERT_EQUAL_UINT16(3, l.firesToday);
+  TEST_ASSERT_EQUAL_UINT16(4, dev.firesInWindow);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_civil_roundtrip);
@@ -669,5 +790,7 @@ int main() {
   RUN_TEST(test_reason_mappings_cover_every_case);
   RUN_TEST(test_once_rebase_preserves_retry_across_sync);
   RUN_TEST(test_ceiling_skip_keeps_wakeups_and_logs_once);
+  RUN_TEST(test_loops_json_a_fire_whose_advance_did_not_persist_is_skipped);
+  RUN_TEST(test_undo_claim_restores_the_record_and_counters);
   return UNITY_END();
 }

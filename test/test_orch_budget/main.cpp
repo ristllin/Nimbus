@@ -8,6 +8,13 @@
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/wire_limits.h"
+#include "nimbus/orch/journal.h"
+#include "nimbus/orch/usage_ledger.h"
+#include "nimbus/store/moved_store.h"
+#include "nimbus/store/nvs_reserve.h"
+#include "nimbus/store/persist.h"
+
+#include <cstring>
 
 using namespace nimbus::orch;
 
@@ -185,6 +192,138 @@ static void test_fold_input_fits_the_string_guard() {
   TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)foldDigestCap(kJsonStrGuard));
 }
 
+// ---- the settings-storage (NVS) budget model (C2) ------------------------------------
+// The plan's budget-model test (MASTER-PLAN lane C, critique A8: the v4.5.14 layout
+// could not pass it): a provisioned device plus every runtime writer at its worst case
+// - six journal records, a maximum-size usage ledger, a maximum-size scratchpad, the
+// Telegram names at their cap, the battery model, the OTA guard and notes - still
+// leaves the reserve free. The geometry is the real partition: 5 pages of 126 entries,
+// one page held back for garbage collection (504 usable entries).
+namespace nvsbudget {
+using nimbus::store::NvsClass;
+using nimbus::store::NvsValKind;
+
+constexpr size_t kUsable = 504;
+
+struct Val { const char* ns; const char* key; NvsValKind kind; size_t bytes; };
+
+// A provisioned desk device (sizes modeled on a real one in October 2026; the IDF's
+// own keys are the Wi-Fi radio calibration and station cache and the Bluetooth bonds).
+const Val kProvisioned[] = {
+    {"phy", "cal_data", NvsValKind::Blob, 1904},   {"nvs.net80211", "sta.apinfo", NvsValKind::Blob, 700},
+    {"nvs.net80211", "sta.pswd", NvsValKind::Blob, 65}, {"nvs.net80211", "sta.ssid", NvsValKind::Blob, 36},
+    {"nimble_bond", "our_sec_1", NvsValKind::Blob, 88}, {"nimble_bond", "peer_sec_1", NvsValKind::Blob, 88},
+    {"nimble_bond", "local_irk_1", NvsValKind::Blob, 23}, {"nimble_bond", "rpa_rec_1", NvsValKind::Blob, 14},
+    {"nimble_bond", "cccd_sec_1", NvsValKind::Blob, 16}, {"nimble_bond", "cccd_sec_2", NvsValKind::Blob, 16},
+    {"solide", "sysPrompt", NvsValKind::Str, 792},  {"solide", "connectors", NvsValKind::Str, 560},
+    {"solide", "mch_cumulo", NvsValKind::Str, 480}, {"solide", "mch_anthropic", NvsValKind::Str, 300},
+    {"solide", "mch_openai", NvsValKind::Str, 300}, {"solide", "mch_zai", NvsValKind::Str, 300},
+    {"solide", "mch_mistral", NvsValKind::Str, 300}, {"solide", "cloudCred", NvsValKind::Str, 198},
+    {"solide", "oaiKey", NvsValKind::Str, 165},     {"solide", "staNets", NvsValKind::Str, 129},
+    {"solide", "antKey", NvsValKind::Str, 109},     {"solide", "battCurve", NvsValKind::Str, 86},
+    {"solide", "cumuloKey", NvsValKind::Str, 59},   {"solide", "tgToken", NvsValKind::Str, 47},
+    {"solide", "cloudDevId", NvsValKind::Str, 37},  {"solide", "mistralKey", NvsValKind::Str, 33},
+    {"solide", "zaiKey", NvsValKind::Str, 49},      {"solide", "webTok", NvsValKind::Str, 24},
+    {"solide", "apPass", NvsValKind::Str, 10},      {"solide", "provPrio", NvsValKind::Str, 30},
+    {"solide", "tgAllow", NvsValKind::Str, 40},     {"solide", "tgOwners", NvsValKind::Str, 20},
+    {"solide", "devTz", NvsValKind::Str, 30},       {"solide", "tchCal", NvsValKind::Str, 16},
+    {"solide", "otaType", NvsValKind::Str, 10},     {"solide", "theme", NvsValKind::Str, 8},
+};
+constexpr size_t kProvisionedInts = 60;   // modes, levels, flags, radio settings (one entry each)
+
+// Every runtime writer at its worst case. A key that moved to a flash file (listed in
+// nimbus::store::kMovedStores) costs nothing here: that is the point of the moves.
+const Val kRuntime[] = {
+    {"agjournal", "j0", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"agjournal", "j1", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"agjournal", "j2", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"agjournal", "j3", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"agjournal", "j4", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"agjournal", "j5", NvsValKind::Str, nimbus::orch::kJournalSerializeBuf - 1},
+    {"solide", "usgLedger", NvsValKind::Str, nimbus::orch::UsageLedger::kSerializedMaxBytes},
+    {"orchmem", "scratchB", NvsValKind::Blob, 4200},
+    {"solide", "antAgents", NvsValKind::Str, 600},
+    {"solide", "antEnv", NvsValKind::Str, 40},
+    {"solide", "tgNames", NvsValKind::Str, nimbus::store::kTgNamesMaxBytes},
+    {"solide", "battModel", NvsValKind::Str, 87},
+    {"solide", "orchConv", NvsValKind::Str, 700},
+    {"solide", "otaNotes", NvsValKind::Str, 110},
+    {"solide", "otaNotif", NvsValKind::Str, 16},
+    {"solide", "otaPrev", NvsValKind::Int, 0},     {"solide", "otaPend", NvsValKind::Int, 0},
+    {"solide", "otaBoots", NvsValKind::Int, 0},    {"solide", "otaLast", NvsValKind::Int, 0},
+    {"solide", "tgOffset", NvsValKind::Int, 0},    {"solide", "lbPingEp", NvsValKind::Int, 0},
+    {"solide", "fbSyncTs", NvsValKind::Int, 0},    {"solide", "dreamScrHash", NvsValKind::Str, 20},
+    {"solide", "tgBotName", NvsValKind::Str, 32},  {"solide", "zaiBase", NvsValKind::Str, 40},
+    {"orchmem", "sdSeen", NvsValKind::Int, 0},
+    {"solide", "vfy_openai", NvsValKind::Str, 12}, {"solide", "vfy_anthropic", NvsValKind::Str, 12},
+    {"solide", "vfy_mistral", NvsValKind::Str, 12}, {"solide", "vfy_zai", NvsValKind::Str, 12},
+    {"solide", "vfy_cumulo", NvsValKind::Str, 12}, {"solide", "vfy_tavily", NvsValKind::Str, 12},
+    {"solide", "vrs_openai", NvsValKind::Str, 60},  {"solide", "vrs_anthropic", NvsValKind::Str, 60},
+    {"solide", "vrm_openai", NvsValKind::Int, 0},   {"solide", "vrm_anthropic", NvsValKind::Int, 0},
+};
+
+bool moved(const char* ns, const char* key) {
+  for (size_t i = 0; i < nimbus::store::kMovedStoreCount; ++i) {
+    const nimbus::store::MovedKey& m = nimbus::store::kMovedStores[i];
+    if (std::strcmp(m.ns, ns) != 0) continue;
+    if (m.prefix ? std::strncmp(m.key, key, std::strlen(m.key)) == 0 : std::strcmp(m.key, key) == 0) return true;
+  }
+  return false;
+}
+
+bool rowMatches(const nimbus::store::NvsKeyClass& r, const Val& v) {
+  if (std::strcmp(v.ns, r.ns) != 0) return false;
+  return r.prefix ? std::strncmp(v.key, r.key, std::strlen(r.key)) == 0 : std::strcmp(v.key, r.key) == 0;
+}
+
+// A runtime key is budgeted when it moved to a file, is counted above, or has no writer
+// left in the image (the older scratchpad copy, the unused orchestrator agent id).
+bool budgeted(const nimbus::store::NvsKeyClass& r) {
+  if (moved(r.ns, r.key) || std::strcmp(r.key, "scratch") == 0 || std::strcmp(r.key, "antOrchAg") == 0)
+    return true;
+  for (const Val& v : kRuntime)
+    if (rowMatches(r, v)) return true;
+  for (const Val& v : kProvisioned)
+    if (r.prefix && rowMatches(r, v)) return true;
+  return false;
+}
+
+size_t usedEntries(bool movesApplied) {
+  size_t used = kProvisionedInts;
+  for (const Val& v : kProvisioned) used += nimbus::store::nvsValueEntries(v.kind, v.bytes);
+  for (const Val& v : kRuntime) {
+    if (movesApplied && moved(v.ns, v.key)) continue;
+    used += nimbus::store::nvsValueEntries(v.kind, v.bytes);
+  }
+  return used;
+}
+}  // namespace nvsbudget
+
+static void test_nvs_budget_model_keeps_the_reserve() {
+  using namespace nvsbudget;
+  const size_t used = usedEntries(/*movesApplied=*/true);
+  TEST_ASSERT_TRUE(used < kUsable);
+  const size_t available = kUsable - used;
+  char msg[96];
+  std::snprintf(msg, sizeof(msg), "%u entries free with every runtime writer at its worst case",
+                (unsigned)available);
+  TEST_ASSERT_TRUE_MESSAGE(available >= nimbus::store::kNvsReserveEntries, msg);
+  // The counter-model: the v4.5.14 layout (journal, ledger, scratchpad and agent ids
+  // in settings storage) cannot keep the reserve on the same device.
+  const size_t old = usedEntries(/*movesApplied=*/false);
+  TEST_ASSERT_TRUE(old >= kUsable || kUsable - old < nimbus::store::kNvsReserveEntries);
+  // Every runtime (rebuildable or telemetry) key the firmware defines is budgeted
+  // above or moved: a new runtime writer must be counted here before it ships.
+  size_t rows = 0;
+  const nimbus::store::NvsKeyClass* table = nimbus::store::nvsKeyTable(&rows);
+  for (size_t i = 0; i < rows; ++i) {
+    const nimbus::store::NvsKeyClass& r = table[i];
+    if (r.cls != NvsClass::Rebuildable && r.cls != NvsClass::Telemetry) continue;
+    if (r.evictOrder > 0 && std::strcmp(r.key, "fbRules") != 0) continue;   // evicted under pressure
+    TEST_ASSERT_TRUE_MESSAGE(nvsbudget::budgeted(r), r.key);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anchor_identity_at_200k);
@@ -196,5 +335,6 @@ int main(int, char**) {
   RUN_TEST(test_mistral_128k_derivation);
   RUN_TEST(test_orchestrator_sizes_off_one_head_budget);
   RUN_TEST(test_fold_input_fits_the_string_guard);
+  RUN_TEST(test_nvs_budget_model_keeps_the_reserve);
   return UNITY_END();
 }

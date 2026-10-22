@@ -776,7 +776,7 @@ static void test_model_price_store_reports_lfs_mrates() {
   const std::string body = src.substr(s, src.find("\n}\n", s) - s);
   TEST_ASSERT_TRUE(body.find("setOwnerRateDurable(") != std::string::npos);
   TEST_ASSERT_TRUE(body.find("writeFileAtomic(kUsageMratesPath") != std::string::npos);
-  TEST_ASSERT_TRUE(body.find("notePersist(false, \"lfs_mrates\")") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("noteFilePersist(false, \"lfs_mrates\")") != std::string::npos);
   for (const char* nvs : {"putStr", "putOrClear", "putInt", "clearKey", "solide::memory"})
     TEST_ASSERT_TRUE_MESSAGE(body.find(nvs) == std::string::npos, nvs);
   const std::string web = readFile("src/net/webui.cpp");
@@ -1019,6 +1019,27 @@ static void test_eviction_plan_order_and_exclusions() {
   TEST_ASSERT_EQUAL_STRING("fbRules", keys[out[m2 - 1]]);
   // The output cap is respected.
   TEST_ASSERT_EQUAL_size_t(2, nvsEvictionPlan(keys, n, true, out, 2));
+  // Prism row 23: the cloud rules' sync stamp goes with them, and nothing else has a
+  // companion (fbSyncTs itself is never evicted on its own).
+  TEST_ASSERT_EQUAL_STRING("fbSyncTs", nvsEvictionCompanion("fbRules"));
+  size_t rows = 0;
+  const NvsKeyClass* table = nvsKeyTable(&rows);
+  for (size_t i = 0; i < rows; ++i) {
+    if (std::strcmp(table[i].key, "fbRules") == 0) continue;
+    TEST_ASSERT_NULL_MESSAGE(nvsEvictionCompanion(table[i].key), table[i].key);
+  }
+  TEST_ASSERT_NULL(nvsEvictionCompanion(nullptr));
+  TEST_ASSERT_EQUAL_UINT8(0, findNvsKeyClass("solide", "fbSyncTs")->evictOrder);
+  // The device pass erases the companion right after the key it belongs to.
+  const std::string st = readFile("src/agent/store.cpp");
+  const size_t ev = st.find("static uint32_t evictInOrder(");
+  TEST_ASSERT_TRUE(ev != std::string::npos);
+  const std::string body = st.substr(ev, st.find("\n}\n", ev) - ev);
+  TEST_ASSERT_TRUE(body.find("nimbus::store::nvsEvictionCompanion(k)") != std::string::npos);
+  const size_t pass = st.find("void nvsMaintain(uint32_t nowMs) {");
+  TEST_ASSERT_TRUE(pass != std::string::npos);
+  TEST_ASSERT_TRUE(st.substr(pass, st.find("\n}\n", pass) - pass).find("evictInOrder(keys, order, m, avail)") !=
+                   std::string::npos);
 }
 
 // The arithmetic matches the fake partition's (one header + data entries with the NUL).
@@ -1171,10 +1192,11 @@ static void test_growing_writes_read_stats_and_refuse_when_nothing_is_left() {
                                                              10, 0, false,
                                                              [] { return (size_t)5; }));
   // The device gate asks it the same way: every class, stats read, starved passed on.
+  // (Through nvsGateWrite since prism row 24: a probe that fails is unknown, never "no room".)
   const std::string guard = readFile("src/sys/nvs_guard.cpp");
-  TEST_ASSERT_TRUE(guard.find("nvsAdmitWrite(classifyNvsKey(ns, key), kind, bytes, "
-                              "storedEntries(ns, key),") != std::string::npos);
-  TEST_ASSERT_TRUE(guard.find("s_starved.load(), [] { return nvsAvailableEntries(); })") !=
+  TEST_ASSERT_TRUE(guard.find("nvsGateWrite(classifyNvsKey(ns, key), kind, bytes, s_starved.load(),") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(guard.find("[&] { return storedEntries(ns, key); }, [] { return availableProbe(); })") !=
                    std::string::npos);
 }
 
@@ -1581,12 +1603,13 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
   // files are at 0 (ota_update.cpp, store.cpp, connectors.cpp, the Telegram routes).
   // dream_subsystem.cpp (1) and telegram.cpp (2) lost their discards to lane M's
   // 19 Oct dream rewrite and lane A's offset rework, provider_verify.cpp (2) its NVS
-  // short-list and catalog writes to lane F's model store (the baseline only shrinks).
+  // short-list and catalog writes to lane F's model store (the baseline only shrinks);
+  // main.cpp lost two (24 -> 22) when C2 checked the battModel and lbPingEp writes.
   const std::map<std::string, size_t> baseline = {
       {"src/agent/memory_subsystem.cpp", 2},
       {"src/agent/orchestrator.cpp", 16},   {"src/agent/provider_verify.cpp", 6},
       {"src/agent/store_config.cpp", 1},
-      {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 24},
+      {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 22},
       {"src/net/cloud_mint.cpp", 2},        {"src/net/relay_client.cpp", 6},
       {"src/net/web_memory.cpp", 1},        {"src/net/webui.cpp", 91},
       {"src/test_console.cpp", 5},
@@ -1917,20 +1940,19 @@ static void test_scratchpad_failure_log_is_throttled_with_a_count() {
 // new (provider, tag) audit rows off only while it serves the legacy NVS copy
 // (flash unmounted); the file branch leaves them on (the ledger lives on LittleFS).
 static void test_new_tag_rows_follow_the_ledger_home() {
-  const std::string st = readFile("src/agent/store.cpp");
-  const size_t fb = st.find("if (LittleFS.totalBytes() == 0) {");   // the NVS fallback
+  // The ledger's home (nimbus/orch/ledger_home.h, prism row 21) is the one place that
+  // touches the switch: its NVS-fallback branch turns new tags off, the file branch
+  // never does, and the device's store.cpp no longer touches it at all.
+  const std::string home = readFile("lib/core/include/nimbus/orch/ledger_home.h");
+  const size_t fb = home.find("if (!fileUp) {");   // the NVS fallback
   TEST_ASSERT_TRUE(fb != std::string::npos);
-  const size_t fe = st.find("} else {", fb);
+  const size_t fe = home.find("const store::MovedLoad m = store::loadMoved(io);", fb);
   TEST_ASSERT_TRUE(fe != std::string::npos);
-  const std::string fallback = st.substr(fb, fe - fb);
-  TEST_ASSERT_TRUE(fallback.find("g_ledger.setAllowNewTags(false);") != std::string::npos);
-  // The file branch (from the else to the load's end) never disables new tags.
-  const size_t lm = st.find("loadModelsLocked();", fe);
-  TEST_ASSERT_TRUE(lm != std::string::npos);
-  const std::string fileBranch = st.substr(fe, lm - fe);
-  TEST_ASSERT_TRUE(fileBranch.find("setAllowNewTags") == std::string::npos);
-  // And the fallback is the only place in the file that touches the switch.
-  TEST_ASSERT_EQUAL_size_t(1, countOf(st, "setAllowNewTags"));
+  TEST_ASSERT_TRUE(home.substr(fb, fe - fb).find("L.setAllowNewTags(false);") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(1, countOf(home, "setAllowNewTags"));
+  const std::string st = readFile("src/agent/store.cpp");
+  TEST_ASSERT_EQUAL_size_t(0, countOf(st, "setAllowNewTags"));
+  TEST_ASSERT_TRUE(st.find("g_ledgerHome.ensure(g_ledger, LittleFS.totalBytes() != 0, io)") != std::string::npos);
 }
 
 // The device seam of both moves: the ledger and the scratchpad persist through the
@@ -1946,7 +1968,7 @@ static void test_moved_store_device_seams() {
   TEST_ASSERT_TRUE(persist.find("nimbus::store::persistMoved(io, s)") != std::string::npos);
   TEST_ASSERT_TRUE(persist.find("fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(persist.find("notePersist(ok, \"lfs_ledger\")") != std::string::npos);
+  TEST_ASSERT_TRUE(persist.find("noteFilePersist(ok, \"lfs_ledger\")") != std::string::npos);
   for (const char* nvs : {"putStr", "putOrClear", "AKEY_USAGE_LEDGER"})
     TEST_ASSERT_TRUE_MESSAGE(persist.find(nvs) == std::string::npos, nvs);
   TEST_ASSERT_TRUE(st.find("nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot())") != std::string::npos);
@@ -1960,7 +1982,7 @@ static void test_moved_store_device_seams() {
   TEST_ASSERT_TRUE(sp.find("nimbus::store::persistIfChanged(io, g_scratchLanded, blob)") !=
                   std::string::npos);
   TEST_ASSERT_TRUE(sp.find("g_scratchFailLog.noteFailure(millis())") != std::string::npos);
-  TEST_ASSERT_TRUE(sp.find("notePersist(ok, \"lfs_scratch\")") != std::string::npos);
+  TEST_ASSERT_TRUE(sp.find("noteFilePersist(ok, \"lfs_scratch\")") != std::string::npos);
   TEST_ASSERT_TRUE(sp.find("putBytes") == std::string::npos);
   // A boot whose file round-trips the loaded notes primes the fingerprint: the first
   // persist after it writes nothing until the notes change.
@@ -2032,6 +2054,266 @@ static void test_verdict_memo_writes_only_on_change() {
   TEST_ASSERT_TRUE(many.shouldWrite("h0", 1));
 }
 
+// ---- wave 2 (C2): probes that fail, the web token, the moved stores, zero new keys --
+
+// Prism row 24: a spy store whose probes fail. A stored-size probe that fails never
+// reads as "absent" (an unchanged rewrite refused as storage full), and a free-count
+// probe that fails never refuses a non-blob write; neither is counted as a refusal. A
+// blob write with an unknown free count is still refused (the IDF strand leak).
+struct SpyProbes {
+  size_t stored = 0, available = 0;
+  int storedCalls = 0, availableCalls = 0;
+  NvsGate gate(NvsClass cls, NvsValKind kind, size_t bytes, bool starved = false) {
+    return nvsGateWrite(cls, kind, bytes, starved, [&] { ++storedCalls; return stored; },
+                        [&] { ++availableCalls; return available; });
+  }
+};
+static void test_failed_probes_never_refuse_or_count() {
+  const NvsClass classes[] = {NvsClass::Critical, NvsClass::Owner, NvsClass::Rebuildable, NvsClass::Telemetry};
+  for (NvsClass cls : classes) {
+    // Stored size unavailable (nvs_open failed): unchecked, the free count is not read.
+    SpyProbes a;
+    a.stored = kNvsUnknown;
+    a.available = 0;
+    TEST_ASSERT_EQUAL_INT((int)NvsGate::AdmitUnchecked, (int)a.gate(cls, NvsValKind::Str, 40));
+    TEST_ASSERT_EQUAL_INT(0, a.availableCalls);
+    // Stats unavailable for a growing string write: unchecked, not refused.
+    SpyProbes b;
+    b.stored = 0;
+    b.available = kNvsUnknown;
+    TEST_ASSERT_EQUAL_INT((int)NvsGate::AdmitUnchecked, (int)b.gate(cls, NvsValKind::Str, 40));
+    TEST_ASSERT_EQUAL_INT(1, b.availableCalls);
+    // ... and for a blob write: refused (a failed multi-page blob rewrite strands entries).
+    SpyProbes c;
+    c.available = kNvsUnknown;
+    TEST_ASSERT_EQUAL_INT((int)NvsGate::Refuse, (int)c.gate(cls, NvsValKind::Blob, 1500));
+    // Known probes behave exactly like nvsAdmitWrite: refused at the reserve unless critical.
+    SpyProbes d;
+    d.available = kNvsReserveEntries;
+    const NvsGate g = d.gate(cls, NvsValKind::Str, 100);
+    TEST_ASSERT_EQUAL_INT(cls == NvsClass::Critical ? (int)NvsGate::Admit : (int)NvsGate::Refuse, (int)g);
+    // A non-growing rewrite of a stored value never reads the stats and always goes.
+    SpyProbes e;
+    e.stored = nvsValueEntries(NvsValKind::Str, 30);
+    e.available = 0;
+    TEST_ASSERT_EQUAL_INT((int)NvsGate::Admit, (int)e.gate(cls, NvsValKind::Str, 30));
+    TEST_ASSERT_EQUAL_INT(0, e.availableCalls);
+  }
+  // The device gate counts only real refusals, and tells an absent namespace or key
+  // (0) from a probe that failed (unknown).
+  const std::string g = readFile("src/sys/nvs_guard.cpp");
+  TEST_ASSERT_TRUE(g.find("if (open == ESP_ERR_NVS_NOT_FOUND) return 0;") != std::string::npos);
+  TEST_ASSERT_TRUE(g.find("if (open != ESP_OK) return kNvsUnknown;") != std::string::npos);
+  TEST_ASSERT_TRUE(g.find("if (g != NvsGate::Refuse) return true;") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(1, countOf(g, "s_refused.fetch_add(1);"));
+}
+
+// The web sign-in token: read once, a mint the storage refused still serves the boot,
+// an unreadable store mints nothing, a rotation replaces it only when it landed.
+static void test_web_token_is_read_once_and_stable_for_the_boot() {
+  int reads = 0, mints = 0, writes = 0;
+  auto mint = [&] { ++mints; return std::string("tok") + std::to_string(mints); };
+  {   // stored: read once, never minted
+    CachedToken t;
+    for (int i = 0; i < 50; ++i) {
+      const std::string v = t.get([&](std::string& o) { ++reads; o = "abc123"; return TokenRead::Value; }, mint,
+                                  [&](const std::string&) { ++writes; return true; });
+      TEST_ASSERT_EQUAL_STRING("abc123", v.c_str());
+    }
+    TEST_ASSERT_EQUAL_INT(1, reads);
+    TEST_ASSERT_EQUAL_INT(0, mints);
+    TEST_ASSERT_TRUE(t.persisted());
+  }
+  {   // absent and the storage refuses the write: ONE token for every request this boot
+    CachedToken t;
+    reads = mints = writes = 0;
+    std::set<std::string> seen;
+    for (int i = 0; i < 50; ++i)
+      seen.insert(t.get([&](std::string&) { ++reads; return TokenRead::Absent; }, mint,
+                        [&](const std::string&) { ++writes; return false; }));
+    TEST_ASSERT_EQUAL_size_t(1, seen.size());
+    TEST_ASSERT_EQUAL_INT(1, mints);
+    TEST_ASSERT_EQUAL_INT(1, writes);   // no write per request either
+    TEST_ASSERT_FALSE(t.persisted());
+  }
+  {   // unreadable store: nothing minted, nothing written, retried on the next call
+    CachedToken t;
+    mints = writes = 0;
+    TEST_ASSERT_TRUE(t.get([](std::string&) { return TokenRead::Unreadable; }, mint,
+                           [&](const std::string&) { ++writes; return true; }).empty());
+    TEST_ASSERT_EQUAL_INT(0, mints);
+    TEST_ASSERT_EQUAL_INT(0, writes);
+    TEST_ASSERT_EQUAL_STRING("good", t.get([](std::string& o) { o = "good"; return TokenRead::Value; }, mint,
+                                           [](const std::string&) { return true; }).c_str());
+  }
+  {   // a rotation that did not land keeps the old token in force
+    CachedToken t;
+    t.get([](std::string& o) { o = "old"; return TokenRead::Value; }, mint, [](const std::string&) { return true; });
+    TEST_ASSERT_FALSE(t.rotate("new", false));
+    TEST_ASSERT_EQUAL_STRING("old", t.get([](std::string&) { return TokenRead::Absent; }, mint,
+                                          [](const std::string&) { return true; }).c_str());
+    TEST_ASSERT_TRUE(t.rotate("new", true));
+    TEST_ASSERT_EQUAL_STRING("new", t.get([](std::string&) { return TokenRead::Absent; }, mint,
+                                          [](const std::string&) { return true; }).c_str());
+  }
+  // The device seam: webAuthToken goes through the cache, under a lock.
+  const std::string st = readFile("src/agent/store.cpp");
+  const size_t at = st.find("String webAuthToken() {");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string body = st.substr(at, st.find("\n}\n", at) - at);
+  TEST_ASSERT_TRUE(body.find("g_webTok.get(") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("std::lock_guard<std::mutex> lk(g_webTokMx);") != std::string::npos);
+}
+
+// tgNames: allow-listed ids only, one entry per id (the newest), under the byte cap.
+static void test_telegram_names_are_capped_to_the_allowlist() {
+  // Rename, re-add, and an id that is not allow-listed.
+  std::string n = capTelegramNames("", "111,222", "111", "Ann");
+  TEST_ASSERT_EQUAL_STRING("111:Ann", n.c_str());
+  n = capTelegramNames(n, "111,222", "222", "Bob");
+  n = capTelegramNames(n, "111,222", "111", "Annie");
+  TEST_ASSERT_EQUAL_STRING("222:Bob,111:Annie", n.c_str());
+  TEST_ASSERT_EQUAL_STRING("222:Bob,111:Annie", capTelegramNames(n, "111,222", "999", "Eve").c_str());
+  // A removed chat's name goes with it (the allowlist shrank); "" drops one name.
+  TEST_ASSERT_EQUAL_STRING("111:Annie", capTelegramNames(n, "111", "", "").c_str());
+  TEST_ASSERT_EQUAL_STRING("222:Bob", capTelegramNames(n, "111,222", "111", "").c_str());
+  // Malformed and duplicate stored entries are cleaned up.
+  TEST_ASSERT_EQUAL_STRING("111:B", capTelegramNames(" 111:A,,:x,noname,111:B ", "111", "", "").c_str());
+  // The property: over random renames of many chats, the sidecar never holds an id
+  // twice, never an id off the allowlist, never more than the cap, and always the newest.
+  std::mt19937 rng(7);
+  std::string allow, names;
+  for (int i = 0; i < 80; ++i) allow += (i ? "," : "") + std::to_string(100000000 + i);
+  for (int step = 0; step < 2000; ++step) {
+    const std::string id = std::to_string(100000000 + (int)(rng() % 100));   // some off the list
+    const std::string name(1 + rng() % 32, (char)('a' + rng() % 26));
+    names = capTelegramNames(names, allow, id, name);
+    TEST_ASSERT_TRUE(names.size() <= kTgNamesMaxBytes);
+    std::set<std::string> ids;
+    size_t s = 0;
+    while (s < names.size()) {
+      size_t e = names.find(',', s);
+      if (e == std::string::npos) e = names.size();
+      const std::string who = names.substr(s, names.find(':', s) - s);
+      TEST_ASSERT_TRUE_MESSAGE(ids.insert(who).second, "an id twice");
+      TEST_ASSERT_TRUE_MESSAGE(allow.find(who) != std::string::npos, "an id off the allowlist");
+      s = e + 1;
+    }
+    if (allow.find(id) != std::string::npos)
+      TEST_ASSERT_TRUE(names.size() >= id.size() + 1 + name.size() &&
+                       names.compare(names.size() - name.size(), name.size(), name) == 0);
+  }
+  // The device seam: rename and the allowlist shrink both go through the cap.
+  const std::string st = readFile("src/agent/store.cpp");
+  TEST_ASSERT_EQUAL_size_t(2, countOf(st, "nimbus::store::capTelegramNames("));
+}
+
+// The four migration legs for EVERY key that moved to a file (kMovedStores), through
+// the one rule every moved store follows; the journal's own file store runs the same
+// legs in test_orch_journal.
+static void test_every_moved_key_runs_the_four_migration_legs() {
+  using nimbus::store::MovedSource;
+  TEST_ASSERT_TRUE(kMovedStoreCount >= 6);
+  for (size_t i = 0; i < kMovedStoreCount; ++i) {
+    const MovedKey& k = kMovedStores[i];
+    char what[96];
+    std::snprintf(what, sizeof(what), "%s/%s -> %s", k.ns, k.key, k.path);
+    // Every moved key keeps its reserve-table row (a rollback image still writes it).
+    TEST_ASSERT_NOT_NULL_MESSAGE(findNvsKeyClass(k.ns, k.prefix ? (std::string(k.key) + "0").c_str() : k.key), what);
+    TEST_ASSERT_TRUE_MESSAGE(std::strncmp(k.path, "/data/", 6) == 0, what);
+    for (int leg = 0; leg < 4; ++leg) {   // 0 NVS only, 1 file only, 2 both, 3 neither
+      FakeMovedIo io;
+      io.nvsExists = leg == 0 || leg == 2;
+      if (io.nvsExists) io.nvs = "legacy";
+      io.fileExists = leg == 1 || leg == 2;
+      if (io.fileExists) io.file = "file";
+      const auto m = nimbus::store::loadMoved(io);
+      const MovedSource want = io.fileExists ? MovedSource::File : io.nvsExists ? MovedSource::Nvs : MovedSource::None;
+      TEST_ASSERT_EQUAL_INT_MESSAGE((int)want, (int)m.src, what);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(io.fileExists ? "file" : io.nvsExists ? "legacy" : "", m.value.c_str(), what);
+      // A persist writes the file only; a trial boot never retires; a valid boot retires
+      // the legacy copy once the file reads back.
+      TEST_ASSERT_TRUE_MESSAGE(nimbus::store::persistMoved(io, "next"), what);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(io.nvsExists ? "legacy" : "", io.nvs.c_str(), what);
+      TEST_ASSERT_FALSE_MESSAGE(nimbus::store::retireLegacy(io, false), what);
+      TEST_ASSERT_EQUAL_MESSAGE(leg == 0 || leg == 2, nimbus::store::retireLegacy(io, true), what);
+      TEST_ASSERT_FALSE_MESSAGE(io.nvsExists, what);
+      TEST_ASSERT_EQUAL_INT_MESSAGE((int)MovedSource::File, (int)nimbus::store::loadMoved(io).src, what);
+    }
+  }
+}
+
+// Zero new settings-storage keys (wave 2, C2): every key the firmware defines is one of
+// the keys v4.5.16 shipped. A new key fails here until it is a file instead, or the
+// owner rules otherwise (the reserve table may only shrink).
+static void test_zero_new_nvs_keys() {
+  // The AKEY_* definitions and the reserve table, frozen at v4.5.16 (98137e0d).
+  const std::regex def(R"re(#define\s+AKEY_\w+\s+"([^"]+)")re");
+  const std::vector<std::string> akeys = definedKeys("src/agent/agent_config.h", def);
+  TEST_ASSERT_TRUE(akeys.size() >= 100);
+  size_t rows = 0;
+  nvsKeyTable(&rows);
+  TEST_ASSERT_TRUE_MESSAGE(rows <= 133, "the reserve table grew: a new settings-storage key");
+  TEST_ASSERT_TRUE_MESSAGE(akeys.size() <= 116, "a new AKEY_ definition: a new settings-storage key");
+  // Every defined key has a row (the class guard), so the row count bounds the keys.
+  for (const auto& k : akeys) assertClassified("solide", k, "agent_config.h");
+  // No moved key is written to NVS again: the only store calls naming them are reads
+  // and the legacy erase (retire), in the files that own them.
+  const std::string st = readFile("src/agent/store.cpp");
+  for (const char* key : {"AKEY_USAGE_LEDGER", "AKEY_ANT_ENVID", "AKEY_ANT_AGENTMAP"}) {
+    for (const char* w : {"putStr(", "putOrClear(", "putStrShrinkSafe("}) {
+      const std::string call = std::string(w) + key;
+      TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(st, call), call.c_str());
+    }
+  }
+  const std::string op = readFile("src/agent/orch_persist.cpp");
+  TEST_ASSERT_EQUAL_size_t(0, countOf(op, "putString("));
+  TEST_ASSERT_EQUAL_size_t(0, countOf(op, "nvsAdmit("));
+}
+
+// The device seams of the wave-2 moves and pacing, pinned at source level.
+static void test_c2_device_seams() {
+  const std::string orch = readFile("src/agent/orchestrator.cpp");
+  TEST_ASSERT_TRUE(orch.find("static FlashJournalStore     g_journalStore;") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("NvsJournalStore") == std::string::npos);
+  const std::string op = readFile("src/agent/orch_persist.cpp");
+  TEST_ASSERT_TRUE(op.find("static const char* kJournalPath = \"/data/agjournal.json\";") != std::string::npos);
+  TEST_ASSERT_TRUE(op.find("retireLegacy(otaupd::imageValidAtBoot())") != std::string::npos);
+  // loops.json: atomic, with a verdict, and a fire whose advance did not land is skipped.
+  const std::string lp = readFile("src/agent/loops_subsystem.cpp");
+  TEST_ASSERT_TRUE(lp.find("FILE_WRITE") == std::string::npos);
+  TEST_ASSERT_TRUE(lp.find("agent::writeFileAtomic(kLoopPath, orch::dumpLoops(g_loops)") != std::string::npos);
+  const size_t claim = lp.find("orch::claimFire(*due, g_dev, nowEpoch,");
+  TEST_ASSERT_TRUE(claim != std::string::npos);
+  const std::string after = lp.substr(claim, 400);
+  TEST_ASSERT_TRUE(after.find("if (!persist()) {") != std::string::npos);
+  TEST_ASSERT_TRUE(after.find("orch::undoClaim(*due, g_dev, before);") != std::string::npos);
+  // battModel: paced on the telemetry tick, saved at once only for an owner action.
+  const std::string mn = readFile("src/main.cpp");
+  TEST_ASSERT_TRUE(mn.find("saveBattModel(/*ownerAction=*/false);") != std::string::npos);
+  TEST_ASSERT_TRUE(mn.find("g_battSave.due(st.segments, st.fullAnchorCellMv, now, ownerAction)") != std::string::npos);
+  TEST_ASSERT_TRUE(mn.find("g_lowBattSaved.noteWrite(ep, agent::store::setLowBattPingEpoch(ep), now);") !=
+                   std::string::npos);
+  // The update notice: once per version per boot.
+  const std::string ota = readFile("src/sys/ota_update.cpp");
+  TEST_ASSERT_TRUE(ota.find("s_notified.claim(latest,") != std::string::npos);
+  // File-store failures report on their own channel (prism row 22): never notePersist
+  // with an lfs_ key, and noteFilePersist never touches the NVS notice or ring.
+  for (const char* f : {"src/agent/store.cpp", "src/agent/memory_subsystem.cpp"}) {
+    const std::string t = readFile(f);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(t, "notePersist(ok, \"lfs_"), f);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, countOf(t, "notePersist(false, \"lfs_"), f);
+  }
+  const std::string cn = readFile("src/sys/config_nvs.cpp");
+  const size_t fp = cn.find("bool noteFilePersist(bool ok, const char* key) {");
+  TEST_ASSERT_TRUE(fp != std::string::npos);
+  const std::string fbody = cn.substr(fp, cn.find("\n}\n", fp) - fp);
+  TEST_ASSERT_TRUE(fbody.find("s_fileLedger.noteFailure(task, k);") != std::string::npos);
+  TEST_ASSERT_TRUE(fbody.find("s_recentFails") == std::string::npos);
+  TEST_ASSERT_TRUE(fbody.find("s_storageNotice") == std::string::npos);
+  TEST_ASSERT_TRUE(cn.find("s_fileLedger.failedSince(sinceFile_, task_)") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_reply_is_507_storage_full_never_ok);
@@ -2086,5 +2368,11 @@ int main(int, char**) {
   RUN_TEST(test_new_tag_rows_follow_the_ledger_home);
   RUN_TEST(test_2c_routes_report_storage_full);
   RUN_TEST(test_verdict_memo_writes_only_on_change);
+  RUN_TEST(test_failed_probes_never_refuse_or_count);
+  RUN_TEST(test_web_token_is_read_once_and_stable_for_the_boot);
+  RUN_TEST(test_telegram_names_are_capped_to_the_allowlist);
+  RUN_TEST(test_every_moved_key_runs_the_four_migration_legs);
+  RUN_TEST(test_zero_new_nvs_keys);
+  RUN_TEST(test_c2_device_seams);
   return UNITY_END();
 }

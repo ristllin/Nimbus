@@ -7,6 +7,9 @@
 
 #include "nimbus/config_store.h"
 #include "nimbus/profile.h"
+#include "nimbus/store/moved_store.h"
+
+#include <cstdio>
 
 // F10 persistence-CONTRACT regression (the HIL test spec).
 //
@@ -274,6 +277,54 @@ static void test_corrupt_blob_on_card_falls_back_to_defaults() {
   TEST_ASSERT_EQUAL(77, out.effective(Param::RingBrightness));
 }
 
+// ---- the stores that moved out of settings storage (C2) -----------------------------
+// For EVERY key in nimbus::store::kMovedStores, the device source names its flash file,
+// reads the legacy key only through the moved-store load (file, else NVS), and never
+// writes it again: the only NVS call that remains is the retire erase. The four
+// migration legs (file only, NVS only, both, neither) run per key in test_nvs_full and,
+// for the journal's own file store, in test_orch_journal.
+static std::string slurp(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return std::string();
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+static void test_every_moved_key_is_read_through_the_moved_store_rule() {
+  struct Owner { const char* key; const char* file; const char* nvsName; };
+  const Owner owners[] = {
+      {"usgLedger", "src/agent/store.cpp", "AKEY_USAGE_LEDGER"},
+      {"scratchB", "src/agent/memory_subsystem.cpp", "kScratchBKey"},
+      {"scratch", "src/agent/memory_subsystem.cpp", "kScratchKey"},
+      {"j", "src/agent/orch_persist.cpp", "kJournalNs"},
+      {"antEnv", "src/agent/store.cpp", "AKEY_ANT_ENVID"},
+      {"antAgents", "src/agent/store.cpp", "AKEY_ANT_AGENTMAP"},
+  };
+  TEST_ASSERT_EQUAL_size_t(sizeof(owners) / sizeof(owners[0]), nimbus::store::kMovedStoreCount);
+  for (size_t i = 0; i < nimbus::store::kMovedStoreCount; ++i) {
+    const nimbus::store::MovedKey& k = nimbus::store::kMovedStores[i];
+    const Owner& o = owners[i];
+    TEST_ASSERT_EQUAL_STRING(o.key, k.key);
+    const std::string src = slurp(o.file);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), o.file);
+    // The flash file is named in its owner's source.
+    TEST_ASSERT_TRUE_MESSAGE(src.find(std::string("\"") + k.path + "\"") != std::string::npos, k.path);
+    // No NVS writer names the legacy key (only reads and the retire erase remain).
+    for (const char* w : {"putStr(", "putOrClear(", "putStrShrinkSafe(", "putString(", "putBytes(",
+                          "setString("}) {
+      const std::string call = std::string(w) + o.nvsName;
+      TEST_ASSERT_TRUE_MESSAGE(src.find(call) == std::string::npos, call.c_str());
+    }
+    // It is loaded through the rule (loadMoved, or the journal file store's load()).
+    const bool rule = src.find("nimbus::store::loadMoved(") != std::string::npos ||
+                      src.find("JournalSource src = load();") != std::string::npos;
+    TEST_ASSERT_TRUE_MESSAGE(rule, o.file);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_with_sd_config_and_mode_both_persist);
@@ -281,5 +332,6 @@ int main() {
   RUN_TEST(test_sd_pulled_between_save_and_reboot_loses_config);
   RUN_TEST(test_no_backing_store_at_all_degrades_softly);
   RUN_TEST(test_corrupt_blob_on_card_falls_back_to_defaults);
+  RUN_TEST(test_every_moved_key_is_read_through_the_moved_store_rule);
   return UNITY_END();
 }

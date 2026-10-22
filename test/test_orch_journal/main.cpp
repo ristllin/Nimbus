@@ -447,6 +447,369 @@ static void test_begin_drops_a_duplicate_tag() {
   TEST_ASSERT_EQUAL_size_t(1, st2.slots.count(3));
 }
 
+// ---- wave 2: the journal file, the finished-job ring, delivered once ----------------
+
+// The device's journal file I/O over RAM: the file, the legacy NVS records, and the
+// failures a full file system or a torn write produce.
+struct FakeFileIo : JournalFileIo {
+  bool fileExists = false;
+  std::string file;
+  std::map<int, std::string> legacy;   // NVS j<slot>
+  bool failWrite = false;
+  int writes = 0, erases = 0;
+  bool readFile(std::string& out) override {
+    if (!fileExists) return false;
+    out = file;
+    return true;
+  }
+  bool writeFileAtomic(const std::string& v) override {
+    ++writes;
+    if (failWrite) return false;   // tmp + rename: the previous file stays
+    file = v;
+    fileExists = true;
+    return true;
+  }
+  std::string readLegacySlot(int slot) override {
+    auto it = legacy.find(slot);
+    return it == legacy.end() ? std::string() : it->second;
+  }
+  bool eraseLegacy() override {
+    ++erases;
+    legacy.clear();
+    return true;
+  }
+};
+
+static std::string recJson(const JobRecord& r) {
+  char buf[kJournalSerializeBuf];
+  serializeRecord(r, buf, sizeof(buf));
+  return buf;
+}
+
+static FinishedJob fin(const char* name, const char* prj, const char* art, bool failed = false) {
+  FinishedJob f{};
+  std::strncpy(f.name, name, sizeof(f.name) - 1);
+  std::strncpy(f.prj, prj, sizeof(f.prj) - 1);
+  std::strncpy(f.artifact, art, sizeof(f.artifact) - 1);
+  std::strncpy(f.finishedAt, "2026-10-22 Thu 21:14 BST", sizeof(f.finishedAt) - 1);
+  std::strncpy(f.chatId, "12345", sizeof(f.chatId) - 1);
+  f.finishedEpoch = 1792700000u;
+  f.failed = failed;
+  return f;
+}
+
+// The moved-store legs for the journal: file only, legacy NVS only, both, neither.
+static void test_journal_file_migration_legs() {
+  const std::string a = recJson(rec("job0003", "openai:resp_a"));
+  const std::string b = recJson(rec("job0004", "openai:resp_b"));
+  {   // legacy only: the records move to the file at once; NVS is never written
+    FakeFileIo io;
+    io.legacy[0] = a;
+    io.legacy[4] = b;
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::Legacy, (int)st.load());
+    TEST_ASSERT_TRUE(io.fileExists);
+    TEST_ASSERT_TRUE(st.durable());
+    TEST_ASSERT_EQUAL_size_t(2, io.legacy.size());   // kept until a valid-image boot
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(2, j.count());
+    TEST_ASSERT_TRUE(j.restored("job0003"));
+    // The next boot reads the file; on a trial boot the legacy copy stays, on a boot
+    // whose image was valid it goes.
+    FileJournalStore st2(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st2.load());
+    TEST_ASSERT_FALSE(st2.retireLegacy(/*imageValidAtBoot=*/false));
+    TEST_ASSERT_EQUAL_size_t(2, io.legacy.size());
+    TEST_ASSERT_TRUE(st2.retireLegacy(true));
+    TEST_ASSERT_TRUE(io.legacy.empty());
+    Journal j2;
+    j2.begin(&st2);
+    JobRecord out{};
+    TEST_ASSERT_TRUE(j2.get(1, out));
+    TEST_ASSERT_EQUAL_STRING("openai:resp_b", out.jobId);   // byte-identical re-attach key
+  }
+  {   // file only
+    FakeFileIo io;
+    std::string slots[kJournalSlots];
+    slots[2] = a;
+    io.file = encodeJournalFile(slots);
+    io.fileExists = true;
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st.load());
+    TEST_ASSERT_FALSE(st.retireLegacy(true));   // nothing to retire
+    TEST_ASSERT_EQUAL_INT(0, io.erases);
+    TEST_ASSERT_EQUAL_STRING(a.c_str(), st.get(2).c_str());
+  }
+  {   // both: the file wins, the stale legacy copy never re-attaches
+    FakeFileIo io;
+    std::string slots[kJournalSlots];
+    slots[0] = b;
+    io.file = encodeJournalFile(slots);
+    io.fileExists = true;
+    io.legacy[0] = a;
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st.load());
+    Journal j;
+    j.begin(&st);
+    JobRecord out{};
+    TEST_ASSERT_TRUE(j.get(0, out));
+    TEST_ASSERT_EQUAL_STRING("job0004", out.tag);
+    TEST_ASSERT_TRUE(st.retireLegacy(true));
+  }
+  {   // neither (a fresh device): nothing written until the first job
+    FakeFileIo io;
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::None, (int)st.load());
+    TEST_ASSERT_EQUAL_INT(0, io.writes);
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(0, j.count());
+    TEST_ASSERT_TRUE(j.write(rec("job0000", "anthropic:sesn_1")));
+    TEST_ASSERT_EQUAL_INT(1, io.writes);
+  }
+  {   // legacy only and the first file write fails: served from RAM, NVS untouched,
+      // and the next write that lands stores everything
+    FakeFileIo io;
+    io.legacy[1] = a;
+    io.failWrite = true;
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::Legacy, (int)st.load());
+    TEST_ASSERT_FALSE(st.durable());
+    TEST_ASSERT_FALSE(io.fileExists);
+    TEST_ASSERT_EQUAL_size_t(1, io.legacy.size());
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(1, j.count());
+    io.failWrite = false;
+    TEST_ASSERT_TRUE(j.write(rec("job0009", "openai:resp_9")));
+    std::string back[kJournalSlots];
+    TEST_ASSERT_TRUE(decodeJournalFile(io.file, back));
+    TEST_ASSERT_EQUAL_STRING(a.c_str(), back[1].c_str());   // the legacy record rode along
+  }
+}
+
+// A write the file system refuses leaves the previous image whole and reports false;
+// an unchanged slot already on disk needs no write.
+static void test_journal_file_write_is_atomic_and_reports() {
+  FakeFileIo io;
+  FileJournalStore st(io);
+  st.load();
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_TRUE(j.write(rec("job0001", "o:1")));
+  const std::string before = io.file;
+  io.failWrite = true;
+  TEST_ASSERT_FALSE(j.write(rec("job0002", "o:2")));
+  TEST_ASSERT_FALSE(st.durable());
+  TEST_ASSERT_EQUAL_STRING(before.c_str(), io.file.c_str());
+  TEST_ASSERT_EQUAL_INT(2, j.count());   // RAM still polls both this boot
+  io.failWrite = false;
+  const int w = io.writes;
+  TEST_ASSERT_TRUE(st.put(0, st.get(0)));   // the file already holds it
+  TEST_ASSERT_EQUAL_INT(w, io.writes);
+  // A reboot finds exactly what landed.
+  FileJournalStore st2(io);
+  st2.load();
+  Journal j2;
+  j2.begin(&st2);
+  TEST_ASSERT_EQUAL_INT(1, j2.count());
+  // A corrupt file reads as no file (the legacy copy, if any, is the fallback).
+  FakeFileIo bad;
+  bad.fileExists = true;
+  bad.file = "{not json";
+  FileJournalStore st3(bad);
+  TEST_ASSERT_EQUAL_INT((int)JournalSource::None, (int)st3.load());
+}
+
+// L19-35: the last 8 finished jobs, newest first, across a restart.
+static void test_finished_ring_keeps_the_last_eight_across_a_restart() {
+  FakeFileIo io;
+  FileJournalStore st(io);
+  st.load();
+  Journal j;
+  j.begin(&st);
+  char tag[16], name[16];
+  for (int i = 0; i < 11; ++i) {
+    std::snprintf(tag, sizeof(tag), "job%04d", i);
+    std::snprintf(name, sizeof(name), "task-%d", i);
+    TEST_ASSERT_TRUE(j.write(rec(tag, "o:x")));
+    TEST_ASSERT_TRUE(j.finish(tag, fin(name, "prj", "prj/out.md")));
+    j.gc();
+  }
+  TEST_ASSERT_EQUAL_INT(kJournalFinishedKeep, j.finishedCount());
+  FinishedJob f{};
+  bool before = true;
+  TEST_ASSERT_TRUE(j.finished(0, f, &before));
+  TEST_ASSERT_EQUAL_STRING("job0010", f.tag);
+  TEST_ASSERT_FALSE(before);   // this boot's
+  TEST_ASSERT_TRUE(j.finished(7, f));
+  TEST_ASSERT_EQUAL_STRING("job0003", f.tag);
+  TEST_ASSERT_FALSE(j.finished(8, f));
+  TEST_ASSERT_EQUAL_INT(0, j.count());
+  // Restart: the ring comes back in the same order, every entry from before the boot.
+  FileJournalStore st2(io);
+  st2.load();
+  Journal j2;
+  j2.begin(&st2);
+  TEST_ASSERT_EQUAL_INT(kJournalFinishedKeep, j2.finishedCount());
+  for (int i = 0; i < kJournalFinishedKeep; ++i) {
+    TEST_ASSERT_TRUE(j2.finished(i, f, &before));
+    std::snprintf(tag, sizeof(tag), "job%04d", 10 - i);
+    TEST_ASSERT_EQUAL_STRING(tag, f.tag);
+    TEST_ASSERT_TRUE(before);
+    TEST_ASSERT_EQUAL_STRING("prj/out.md", f.artifact);
+    TEST_ASSERT_EQUAL_STRING("2026-10-22 Thu 21:14 BST", f.finishedAt);
+    TEST_ASSERT_EQUAL_UINT32(1792700000u, f.finishedEpoch);
+  }
+  TEST_ASSERT_EQUAL(10, j2.highestTagNumber());
+  // A new finish after the restart is the newest and pushes out the oldest.
+  TEST_ASSERT_TRUE(j2.write(rec("job0011", "o:y")));
+  TEST_ASSERT_TRUE(j2.finish("job0011", fin("late", "", "", /*failed=*/true)));
+  TEST_ASSERT_TRUE(j2.finished(0, f, &before));
+  TEST_ASSERT_EQUAL_STRING("job0011", f.tag);
+  TEST_ASSERT_FALSE(before);
+  TEST_ASSERT_TRUE(f.failed);
+  TEST_ASSERT_TRUE(j2.finished(7, f));
+  TEST_ASSERT_EQUAL_STRING("job0004", f.tag);
+  // The record shape round-trips, and refuses an over-buffer serialize like a record.
+  // Every field at its maximum still fits the record buffer.
+  FinishedJob big = fin("n", "p", "a", true);
+  std::memset(big.tag, 't', sizeof(big.tag) - 1);
+  std::memset(big.name, 'n', sizeof(big.name) - 1);
+  std::memset(big.prj, 'p', sizeof(big.prj) - 1);
+  std::memset(big.artifact, 'x', sizeof(big.artifact) - 1);
+  std::memset(big.finishedAt, 'a', sizeof(big.finishedAt) - 1);
+  std::memset(big.chatId, 'c', sizeof(big.chatId) - 1);
+  big.seq = 0xFFFFFFFFu;
+  big.finishedEpoch = 0xFFFFFFFFu;
+  char buf[kJournalSerializeBuf];
+  TEST_ASSERT_TRUE(serializeFinished(big, buf, sizeof(buf)) + 1 <= sizeof(buf));
+  FinishedJob back{};
+  TEST_ASSERT_TRUE(deserializeFinished(buf, back));
+  TEST_ASSERT_EQUAL_STRING(big.artifact, back.artifact);
+  char tiny[16];
+  TEST_ASSERT_TRUE(serializeFinished(big, tiny, sizeof(tiny)) + 1 > sizeof(tiny));
+  TEST_ASSERT_EQUAL_CHAR(0, tiny[0]);
+}
+
+// Delivered once: finish() stores the ring entry before the seen mark, so over every
+// failure pattern a restart never brings back as active a job whose finished record
+// landed, and a job whose seen mark landed is never active again either.
+static void test_a_finished_job_is_never_active_after_any_restart() {
+  for (uint32_t seed = 1; seed <= 300; ++seed) {
+    FlakyStore st;
+    st.rng = seed;
+    st.failPutPct = (int)(seed % 4) * 25;   // 0, 25, 50, 75 %
+    Journal j;
+    j.begin(&st);
+    char tag[16];
+    for (int i = 0; i < 12; ++i) {
+      std::snprintf(tag, sizeof(tag), "job%04d", i);
+      if (!j.write(rec(tag, "o:x"))) continue;   // RAM-only: a restart loses it (said elsewhere)
+      j.finish(tag, fin("t", "", ""));
+      if (i % 3 == 2) j.gc();
+      // Restart now: no finished job comes back active.
+      Journal r;
+      r.begin(&st);
+      for (int k = 0; k < r.count(); ++k) {
+        JobRecord a{};
+        TEST_ASSERT_TRUE(r.get(k, a));
+        FinishedJob f{};
+        for (int n = 0; r.finished(n, f); ++n) {
+          char msg[64];
+          std::snprintf(msg, sizeof(msg), "seed %u: %s active after a restart", (unsigned)seed, a.tag);
+          TEST_ASSERT_TRUE_MESSAGE(std::strcmp(a.tag, f.tag) != 0, msg);
+        }
+      }
+    }
+  }
+}
+
+// The counter-test: without the finished entry, a job whose seen mark did not land
+// IS active again after a restart (what the ring prevents).
+static void test_without_the_finished_entry_a_restart_resurrects_the_job() {
+  FlakyStore st;
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_TRUE(j.write(rec("job0005", "openai:resp_5")));
+  st.failPutPct = 100;
+  TEST_ASSERT_FALSE(j.finish("job0005", fin("t", "", "")));   // neither landed
+  Journal r;
+  r.begin(&st);
+  TEST_ASSERT_EQUAL_INT(1, r.count());          // resurrected: polled and delivered again
+  // With only the ring entry landed (the seen mark refused), it loads as delivered.
+  FlakyStore st2;
+  Journal k;
+  k.begin(&st2);
+  TEST_ASSERT_TRUE(k.write(rec("job0006", "openai:resp_6")));
+  struct OnlyRing : JournalStore {
+    FlakyStore& inner;
+    explicit OnlyRing(FlakyStore& s) : inner(s) {}
+    std::string get(int s) override { return inner.get(s); }
+    bool put(int s, const std::string& v) override {
+      return s >= kJournalFinishedSlot0 ? inner.put(s, v) : false;
+    }
+    bool remove(int s) override { return inner.remove(s); }
+    void clearNs() override { inner.clearNs(); }
+  } ring(st2);
+  Journal k2;
+  k2.begin(&ring);
+  TEST_ASSERT_FALSE(k2.finish("job0006", fin("t", "", "")));   // the seen mark was refused
+  Journal r2;
+  r2.begin(&st2);
+  TEST_ASSERT_EQUAL_INT(0, r2.count());   // finished before the restart: not active
+  TEST_ASSERT_EQUAL_INT(1, r2.finishedCount());
+}
+
+// A finish with its terminal state is two writes (the ring entry, then the record with
+// its state and seen mark together), and the record reloads terminal and seen.
+static void test_finish_stores_the_terminal_state_with_the_seen_mark() {
+  struct Counting : FakeStore {
+    int puts = 0;
+    bool put(int slot, const std::string& v) override { ++puts; return FakeStore::put(slot, v); }
+  } st;
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_TRUE(j.write(rec("job0001", "o:1")));
+  st.puts = 0;
+  TEST_ASSERT_TRUE(j.finish("job0001", fin("t", "", "", true), JobState::Error));
+  TEST_ASSERT_EQUAL_INT(2, st.puts);
+  JobRecord back{};
+  TEST_ASSERT_TRUE(deserializeRecord(st.slots[0].c_str(), back));
+  TEST_ASSERT_EQUAL_INT((int)JobState::Error, (int)back.state);
+  TEST_ASSERT_TRUE(back.resultSeen);
+  // Without a state the record keeps its own.
+  TEST_ASSERT_TRUE(j.write(rec("job0002", "o:2", JobState::Running)));
+  TEST_ASSERT_TRUE(j.finish("job0002", fin("t", "", "")));
+  TEST_ASSERT_TRUE(deserializeRecord(st.slots[1].c_str(), back));
+  TEST_ASSERT_EQUAL_INT((int)JobState::Running, (int)back.state);
+  TEST_ASSERT_TRUE(back.resultSeen);
+}
+
+// restored() is true only for records the boot loaded; highestTagNumber covers active
+// and finished tags (a new boot's tags start past both).
+static void test_restored_and_highest_tag() {
+  FakeStore st;
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_EQUAL(-1, j.highestTagNumber());
+  TEST_ASSERT_TRUE(j.write(rec("job0012", "mistral:local_1")));
+  TEST_ASSERT_FALSE(j.restored("job0012"));
+  TEST_ASSERT_TRUE(j.write(rec("job0002", "o:2")));
+  TEST_ASSERT_TRUE(j.finish("job0002", fin("t", "", "")));
+  Journal r;
+  r.begin(&st);
+  TEST_ASSERT_TRUE(r.restored("job0012"));
+  TEST_ASSERT_FALSE(r.restored("nope"));
+  TEST_ASSERT_EQUAL(12, r.highestTagNumber());
+  TEST_ASSERT_TRUE(r.write(rec("job0013", "o:13")));
+  TEST_ASSERT_FALSE(r.restored("job0013"));
+  JobRecord odd = rec("custom-tag", "o:z");
+  TEST_ASSERT_TRUE(r.write(odd));
+  TEST_ASSERT_EQUAL(13, r.highestTagNumber());   // a tag of another shape is ignored
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_is_terminal);
@@ -466,5 +829,12 @@ int main() {
   RUN_TEST(test_write_verdicts_report_a_refused_store);
   RUN_TEST(test_no_active_record_lost_under_any_failure_pattern);
   RUN_TEST(test_begin_drops_a_duplicate_tag);
+  RUN_TEST(test_journal_file_migration_legs);
+  RUN_TEST(test_journal_file_write_is_atomic_and_reports);
+  RUN_TEST(test_finished_ring_keeps_the_last_eight_across_a_restart);
+  RUN_TEST(test_a_finished_job_is_never_active_after_any_restart);
+  RUN_TEST(test_without_the_finished_entry_a_restart_resurrects_the_job);
+  RUN_TEST(test_restored_and_highest_tag);
+  RUN_TEST(test_finish_stores_the_terminal_state_with_the_seen_mark);
   return UNITY_END();
 }

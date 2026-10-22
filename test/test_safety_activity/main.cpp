@@ -7,6 +7,7 @@
 
 #include "nimbus/orch/safety_activity.h"
 #include "nimbus/orch/moderation.h"
+#include "nimbus/store/persist.h"
 
 using namespace nimbus::orch;
 
@@ -603,6 +604,61 @@ static void test_enum_names_roundtrip() {
   TEST_ASSERT_FALSE(safetyVerdictFromName("nonsense", dummy));
 }
 
+// ---- C2: an allowlist change never outlives a write that did not land --------------
+// The device runs approve and revoke through nimbus::store::editDurably: over every
+// edit and write verdict, the RAM list equals what the next boot loads.
+static void test_allowlist_edits_are_reverted_when_the_write_fails() {
+  using nimbus::store::DurableEdit;
+  using nimbus::store::editDurably;
+  for (int failMask = 0; failMask < 64; ++failMask) {
+    SafetyAllowlist ram;
+    std::string disk = ram.serialize();   // what a restart loads
+    int n = 0;
+    auto persist = [&](const SafetyAllowlist& a) {
+      const bool ok = ((failMask >> (n++ % 6)) & 1) == 0;
+      if (ok) disk = a.serialize();
+      return ok;
+    };
+    std::string id;
+    const char* senders[] = {"tg:111", "tg:222", "tg:333"};
+    for (int step = 0; step < 6; ++step) {
+      DurableEdit ed;
+      if (step % 2 == 0) {
+        ed = editDurably(ram, [&](SafetyAllowlist& a) {
+          std::string out;
+          return a.add(AllowScope::Sender, senders[step / 2], "moderation", 1000u + step, out);
+        }, persist);
+      } else {
+        const std::string victim = ram.empty() ? std::string("nope") : ram.rules().front().id;
+        ed = editDurably(ram, [&](SafetyAllowlist& a) { return a.revoke(victim); }, persist);
+      }
+      // RAM always equals the stored list: a revoke that did not land is still allowed,
+      // an add that did not land is not.
+      SafetyAllowlist reloaded;
+      reloaded.loadAll(disk);
+      TEST_ASSERT_EQUAL_STRING(disk.c_str(), ram.serialize().c_str());
+      TEST_ASSERT_EQUAL_INT(reloaded.size(), ram.size());
+      (void)ed;
+    }
+  }
+  // The three verdicts.
+  SafetyAllowlist a;
+  std::string out;
+  TEST_ASSERT_EQUAL_INT((int)DurableEdit::Unchanged,
+                        (int)editDurably(a, [](SafetyAllowlist& x) { return x.revoke("nope"); },
+                                         [](const SafetyAllowlist&) { return true; }));
+  TEST_ASSERT_EQUAL_INT((int)DurableEdit::Reverted,
+                        (int)editDurably(a, [&](SafetyAllowlist& x) {
+                          return x.add(AllowScope::Sender, "tg:9", "moderation", 1, out);
+                        }, [](const SafetyAllowlist&) { return false; }));
+  TEST_ASSERT_TRUE(a.empty());
+  TEST_ASSERT_EQUAL_INT((int)DurableEdit::Saved,
+                        (int)editDurably(a, [&](SafetyAllowlist& x) {
+                          return x.add(AllowScope::Sender, "tg:9", "moderation", 1, out);
+                        }, [](const SafetyAllowlist&) { return true; }));
+  TEST_ASSERT_EQUAL_INT(1, a.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ring_newest_first);
@@ -636,5 +692,6 @@ int main(int, char**) {
   RUN_TEST(test_report_gate_needs_cumulo_key);
   RUN_TEST(test_report_outcome_from_http);
   RUN_TEST(test_enum_names_roundtrip);
+  RUN_TEST(test_allowlist_edits_are_reverted_when_the_write_fails);
   return UNITY_END();
 }

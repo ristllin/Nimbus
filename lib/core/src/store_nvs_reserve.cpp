@@ -146,8 +146,10 @@ const NvsKeyClass kTable[] = {
     {kNsSolide, "dreamScrHash", false, R, 3},
     {kNsSolide, "vfy_", true, R, 0},          // verify verdicts (the next verify)
     {kNsSolide, "mch_", true, R, 0},          // model choices: no file store yet, kept
-    {kNsSolide, "antEnv", false, R, 0},       // managed-agent ids: evicting orphans the
-    {kNsSolide, "antAgents", false, R, 0},    //   remote agents (they keep costing), kept
+    {kNsSolide, "antEnv", false, R, 0},       // managed-agent ids, legacy copies (the files
+    {kNsSolide, "antAgents", false, R, 0},    //   hold them since v4.6): evicting the only
+                                              //   copy before a migration would orphan the
+                                              //   remote agents (they keep costing), kept
     {kNsSolide, "antOrchAg", false, R, 0},
     {kNsSolide, "zaiBase", false, R, 0},      // the probed Z.ai host
     {kNsSolide, "tgBotName", false, R, 0},    // the bot's @name, from getMe
@@ -161,7 +163,8 @@ const NvsKeyClass kTable[] = {
     {kNsOrchmem, "scratch", false, T, 0},     // legacy copies: the scratchpad lives in a
     {kNsOrchmem, "scratchB", false, T, 0},    //   file now
     {kNsOrchmem, "sdSeen", false, T, 0},
-    {kNsJournal, "j", true, T, 0},            // sub-agent journal records
+    {kNsJournal, "j", true, T, 0},            // sub-agent journal records, legacy copies
+                                              //   (/data/agjournal.json since v4.6)
 };
 constexpr size_t kTableCount = sizeof(kTable) / sizeof(kTable[0]);
 
@@ -245,6 +248,10 @@ NvsAdmit nvsAdmit(const NvsAdmitIn& in) {
   const size_t growth = in.newEntries - in.oldEntries;   // > 0 here (not a shrink)
   if (in.available >= growth && in.available - growth >= keep) return NvsAdmit::Write;
   return NvsAdmit::RefuseReserve;
+}
+
+const char* nvsEvictionCompanion(const char* key) {
+  return key && std::strcmp(key, "fbRules") == 0 ? "fbSyncTs" : nullptr;
 }
 
 size_t nvsEvictionPlan(const char* const* keys, size_t n, bool fbRulesIsCloudCopy,

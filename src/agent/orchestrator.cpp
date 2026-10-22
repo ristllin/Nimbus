@@ -181,7 +181,7 @@ static portMUX_TYPE g_foldSpin = portMUX_INITIALIZER_UNLOCKED;   // console (mai
 // pattern as g_memEcho.
 static char (&g_foldEcho)[224] = ::nimbus::psramStatic<char[224]>();   // PSRAM (psram_static.h)
 static void publishFoldStatus(const std::string& chat);   // fwd (defined below)
-static NvsJournalStore       g_journalStore;
+static FlashJournalStore     g_journalStore;   // /data/agjournal.json (orch_persist.h)
 
 // Cross-task model-memory echo for the web UI. g_mem's std::string may be
 // reassigned mid-turn on THIS (poll) task; letting the AsyncTCP task copy it
@@ -670,6 +670,10 @@ static JobEngine::Deps buildJobDeps() {
                                       nimbus::orch::nsForChat(chatId, /*admin=*/false));
   };
   d.nowString = [] { return std::string(nimbus::hw::localTimeStr().c_str()); };
+  d.nowEpoch = [] {   // the finished-job record (L19-35); 0 before the clock syncs
+    const time_t t = time(nullptr);
+    return t > 1600000000 ? (uint32_t)t : 0u;
+  };
   // B4: the spawning chat's recent window rides the sub-agent brief - smaller
   // caps than the head's own window (the brief also carries task + skill capsule
   // and PendingSpawn.task is 1024 B... the CONTEXT block rides `instruction`

@@ -237,5 +237,78 @@ inline int evictLegacyCatalogs(Kv& kv) {
   return evicted;
 }
 
+// ---- a RAM change that never outlives a write that did not land (C2) -----------------
+// `mutate(state)` makes the change (false = nothing to change: an unknown id), then
+// `persist(state)` writes it. When the write does not land, `state` is put back exactly
+// as it was, so what the device enforces always equals what the next boot loads: the
+// safety allowlist's revoke used to stay revoked in RAM after a failed write and come
+// back after a restart, while the owner had been told it was gone.
+enum class DurableEdit : uint8_t { Unchanged = 0, Saved, Reverted };
+template <typename T, typename Mutate, typename Persist>
+DurableEdit editDurably(T& state, Mutate&& mutate, Persist&& persist) {
+  T before = state;
+  if (!mutate(state)) return DurableEdit::Unchanged;
+  if (persist(state)) return DurableEdit::Saved;
+  state = before;
+  return DurableEdit::Reverted;
+}
+
+// ---- the web sign-in token, read once and served from RAM (C2) -----------------------
+// Minted on first use and stored as a critical key. Before, every call re-read the
+// settings storage and, when the key read empty, minted and wrote a NEW token: on a
+// full partition (the write refused) every request then compared against a different
+// token and the web UI locked everyone out; a read that failed outright replaced a
+// good stored token. Now: one read per boot; a token the storage could not take still
+// serves the whole boot (stable for every request; a restart mints another); a store
+// that cannot be read mints nothing (requests fail closed until it can).
+enum class TokenRead : uint8_t { Absent = 0, Value, Unreadable };
+class CachedToken {
+ public:
+  // `read(out)` -> TokenRead; `mint()` -> a fresh token; `write(t)` -> landed.
+  template <typename ReadFn, typename MintFn, typename WriteFn>
+  std::string get(ReadFn&& read, MintFn&& mint, WriteFn&& write) {
+    if (!value_.empty()) return value_;
+    std::string t;
+    switch (read(t)) {
+      case TokenRead::Unreadable: return std::string();   // never overwrite what may exist
+      case TokenRead::Value:
+        if (!t.empty()) { value_ = t; persisted_ = true; return value_; }
+        break;
+      case TokenRead::Absent: break;
+    }
+    t = mint();
+    persisted_ = write(t);
+    value_ = t;
+    return value_;
+  }
+  // A rotation: the new token replaces the cached one only when its write landed.
+  bool rotate(const std::string& fresh, bool landed) {
+    if (landed) {
+      value_ = fresh;
+      persisted_ = true;
+    }
+    return landed;
+  }
+  bool persisted() const { return persisted_; }
+
+ private:
+  std::string value_;
+  bool        persisted_ = false;
+};
+
+// ---- the Telegram display-name sidecar, capped (C2) -----------------------------------
+// tgNames ("id:name,id:name") is owner config in settings storage with no cap of its own:
+// renames of any id once filled a bench device. It keeps only allow-listed ids, one
+// entry per id (the newest), under kTgNamesMaxBytes (the oldest entries go first).
+inline constexpr size_t kTgNamesMaxBytes = 1024;
+// The sidecar after setting `id`'s name to `name` ("" = drop it; `id` "" = only prune).
+// `allowlist` is the comma-separated allowlist. A name for an id not on it is not kept.
+std::string capTelegramNames(const std::string& names, const std::string& allowlist,
+                             const std::string& id, const std::string& name);
+
+// The answer for a change the device could not save to a flash or card FILE (not
+// settings storage): same 507 code, its own words (there is no key to remove).
+inline constexpr char kFileSaveFailedMessage[] = "Couldn't save the change. Try again.";
+
 }  // namespace store
 }  // namespace nimbus

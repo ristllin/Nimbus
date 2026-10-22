@@ -44,6 +44,7 @@
 #include <solide/solide.h>
 
 #include "nimbus/power/bright_cap.h"   // 60% LED safety cap (owner feature)
+#include "nimbus/store/write_pacing.h"  // battModel / lbPingEp writes that never repeat per tick
 
 #include "agent/adapters/adapter_factory.h"  // fabricInit
 #include "agent/adapters/audio_stt.h"        // Telegram voice-note + voice-input STT
@@ -520,12 +521,20 @@ static uint16_t battDivX100() { return nimbus::effectiveBattDivX100(agent::store
 // epd.sck>=0 e-ink proxy that would silently flip if the deprecated epd pins were
 // cleaned out of the board table (CUM-202).
 static bool battMonOn() { return agent::store::battMon(nimbus::battMonDefaultForThisBoard()); }
-static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count (persist on change)
+// BATTMODEL-CHURN: the battery model is saved at most hourly, and only for a completed
+// discharge segment or an anchor that moved by a real step (nimbus/store/write_pacing.h);
+// an owner action (calibrate, reset) saves at once. Seeded from the stored model.
+static nimbus::store::BattModelSavePacer g_battSave;
 // Low-battery ping gate (field 2026-08-11: the T1 edge re-fires on every wake-
-// sniff boot; the ping needs its own persisted memory). Loaded in setup().
+// sniff boot; the ping needs its own persisted memory). Loaded in setup(). The saved
+// copy moves only when its write lands (retried every ten minutes), and an RTC copy
+// carries the epoch across the low-battery sleep's wake boots even when the settings
+// storage refused it.
 static nimbus::power::AlertGate g_lowBattGate;
-static uint32_t g_lowBattSavedPingEp = 0;
-static uint16_t g_battSavedAnchor   = 0xFFFF;   // last-persisted full anchor mV (persist on change)
+static nimbus::store::SavedMirror g_lowBattSaved;
+static constexpr uint32_t kRtcLowBattMagic = 0x4C425045u;   // "LBPE": the copy below is set
+RTC_DATA_ATTR static uint32_t s_rtcLowBattMagic = 0;
+RTC_DATA_ATTR static uint32_t s_rtcLowBattPingEp = 0;
 
 // Apply the owner's battery chemistry + cell count + optional custom SoC curve to
 // the model. Defaults (chemistry "liion", board cells, no custom curve) reproduce
@@ -560,8 +569,7 @@ static void loadBattModel() {
     st.fullAnchorCellMv = (uint16_t)csv.substring(d + 1, e < 0 ? csv.length() : e).toInt();
   if (e >= 0) st.baselineRuntimeSec = (uint32_t)csv.substring(e + 1).toInt();
   g_battModel.load(st);
-  g_battSavedSegments = st.segments;
-  g_battSavedAnchor   = st.fullAnchorCellMv;
+  g_battSave.seed(st.segments, st.fullAnchorCellMv);
   // Durable pack evidence for the open-sense claim (battery_sense.h): a persisted
   // full-charge anchor or completed discharge segment is reachable ONLY through
   // valid samples (classifyTrend and the segment path both gate on Sample.valid),
@@ -571,15 +579,20 @@ static void loadBattModel() {
   // is deliberately NOT evidence - the drain-campaign tooling can seed it.
   if (st.fullAnchorCellMv != 0 || st.segments != 0) g_senseMissing.seedEverSawValid();
 }
-static void saveBattModel() {
+// The save itself goes through the store's reserve admission (battModel is telemetry:
+// refused below the reserve, never spending entries kept for the offset or the OTA
+// guard). `ownerAction` = calibrate / reset, which always saves; the telemetry tick
+// passes false and is paced by g_battSave.
+static void saveBattModel(bool ownerAction = true) {
   nimbus::power::BatteryModelState st = g_battModel.save();
+  const uint32_t now = millis();
+  if (!g_battSave.due(st.segments, st.fullAnchorCellMv, now, ownerAction)) return;
   char buf[88];
   snprintf(buf, sizeof buf, "%.3f,%u,%lu,%u,%u,%lu", st.learnedRatePctPerHr,
            (unsigned)st.segments, (unsigned long)st.baselineBandMs, (unsigned)st.healthPct,
            (unsigned)st.fullAnchorCellMv, (unsigned long)st.baselineRuntimeSec);
-  agent::store::setBatteryModelState(String(buf));
-  g_battSavedSegments = st.segments;
-  g_battSavedAnchor   = st.fullAnchorCellMv;
+  const bool landed = agent::store::setBatteryModelState(String(buf));
+  g_battSave.noteSave(st.segments, st.fullAnchorCellMv, landed, now);
 }
 
 // ---- Orchestrator mode state (plan §3.6) -----------------------------------
@@ -3496,8 +3509,14 @@ void setup() {
   applyBattChemConfig();   // chemistry + cells + optional custom SoC curve (owner settings)
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
-  g_lowBattSavedPingEp = agent::store::lowBattPingEpoch();
-  g_lowBattGate = nimbus::power::AlertGate(g_lowBattSavedPingEp);
+  {
+    const uint32_t stored = agent::store::lowBattPingEpoch();
+    g_lowBattSaved = nimbus::store::SavedMirror(stored);
+    // The RTC copy is the newest (it never fails to store); it survives the low-battery
+    // sleep's wake boots, a power-on clears it.
+    const bool rtc = s_rtcLowBattMagic == kRtcLowBattMagic;
+    g_lowBattGate = nimbus::power::AlertGate(rtc ? s_rtcLowBattPingEp : stored);
+  }
 
   // Boot-load persisted state before configuring anything. A fresh device (no
   // blob / no SD) leaves g_cfg at its defaults; loadMode falls back to Notifier.
@@ -4149,6 +4168,27 @@ void setup() {
       if (!agent::dream::requestDrill(std::string(agent::orchestrator::firstAllowedChat().c_str())))
         return String("DREAM already queued (one night runs; its result line follows)");
       return String("DREAM queued (the turn task runs the night; its result line follows)");
+    };
+    h.battFlap = [](int moves, int stepMv) -> String {                       // BATTFLAP (C2)
+      nimbus::store::NvsUsage before, after;
+      sys::nvsUsage(before);
+      const nimbus::power::BatteryModelState orig = g_battModel.save();
+      const uint16_t savedSegs = g_battSave.savedSegments(), savedAnchor = g_battSave.savedAnchorMv();
+      int saves = 0;
+      for (int i = 0; i < moves; ++i) {
+        nimbus::power::BatteryModelState st = orig;
+        const int d = stepMv ? (i % 2 ? stepMv : -stepMv) : (i % 2 ? 7 : -6);
+        st.fullAnchorCellMv = (uint16_t)(orig.fullAnchorCellMv + d);
+        g_battModel.load(st);
+        const uint16_t prevAnchor = g_battSave.savedAnchorMv();
+        saveBattModel(/*ownerAction=*/false);   // the telemetry tick's paced path
+        if (g_battSave.savedAnchorMv() != prevAnchor) ++saves;
+      }
+      g_battModel.load(orig);
+      sys::nvsUsage(after);
+      return String("BATTFLAP moves=") + moves + " step=" + stepMv + " saves=" + saves +
+             " freeBefore=" + (unsigned)(before.freeBytes / 32) + " freeAfter=" +
+             (unsigned)(after.freeBytes / 32) + " saved=" + savedSegs + "/" + savedAnchor;
     };
     h.ctxInfo = [](const String& chat) -> String {                           // CTX?
       if (!g_orchMode) return String("ERR ctx: Orchestrator mode only");
@@ -6065,13 +6105,12 @@ void loop() {
       const bool artificialLoad = g_highLoadActive || g_storageTargetMv != 0;
       g_battModel.update(now, g_power.last(), artificialLoad);
       g_battEstimate = g_battModel.estimate();
-      // Persist when a discharge segment completed OR the full-charge anchor moved
-      // (an owner BATTCAL/api-battcal or an auto-learned plateau) - else an auto-
-      // learned anchor never closing a segment is lost on reboot and two identical
-      // boards drift apart in displayed % (one calibrated, one not).
-      if (g_battEstimate.segments != g_battSavedSegments ||
-          g_battModel.fullAnchorMv() != g_battSavedAnchor)
-        saveBattModel();
+      // Persist when a discharge segment completed OR the full-charge anchor moved by
+      // a real step - else an auto-learned anchor never closing a segment is lost on
+      // reboot and two identical boards drift apart in displayed % (one calibrated, one
+      // not). At most hourly (BATTMODEL-CHURN: an anchor flapping by a few millivolts
+      // rewrote the value every tick); an owner BATTCAL saves at once on its own path.
+      saveBattModel(/*ownerAction=*/false);   // paced: see g_battSave
       // Durable SD discharge log (only while actually draining - bounds growth +
       // is the data the model learns from). No-op with no card / while demoted.
       if (g_battEstimate.chargeState == nimbus::power::ChargeState::Discharging &&
@@ -6098,9 +6137,12 @@ void loop() {
             g_battEstimate.chargeState == nimbus::power::ChargeState::Discharging,
             (uint32_t)time(nullptr)))
       lowBatteryPing();
-    if (g_lowBattGate.persistEpoch() != g_lowBattSavedPingEp) {
-      g_lowBattSavedPingEp = g_lowBattGate.persistEpoch();
-      agent::store::setLowBattPingEpoch(g_lowBattSavedPingEp);
+    {
+      const uint32_t ep = g_lowBattGate.persistEpoch();
+      s_rtcLowBattPingEp = ep;
+      s_rtcLowBattMagic = kRtcLowBattMagic;
+      if (g_lowBattSaved.due(ep, now))
+        g_lowBattSaved.noteWrite(ep, agent::store::setLowBattPingEpoch(ep), now);
     }
     // A DEEP drain deliberately suppresses the clean T2 shutdown so the pack runs to the
     // real cutoff (the campaign wants the full curve). Only reachable via the TEST-only

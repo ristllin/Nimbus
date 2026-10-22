@@ -33,7 +33,9 @@
 #include "nimbus/store/persist.h"          // CUM-479: write verdicts + catalog placement
 #include "nimbus/store/nvs_reserve.h"      // the reserve: key classes + eviction plan
 #include "nimbus/store/moved_store.h"      // the usage ledger's move out of NVS
+#include "nimbus/orch/ledger_home.h"       // where the ledger is served from (prism row 21)
 #include "loops_subsystem.h"               // live routine ids: deleted routines' ledger rows go
+#include "memory_subsystem.h"              // LoopLock: the main loop never waits (loop_guard.h)
 #include "../sys/ota_update.h"             // imageValidAtBoot - when the legacy ledger copy may go
 #include <ArduinoJson.h>
 #include "../sys/agent_log.h"              // alogc + errlog::cat - loud NVS-full seed hint (CUM-408)
@@ -213,16 +215,39 @@ bool   hasTavilyKey() { return tavilyKey().length() > 0; }
 // this one, the token's own definition and so the most authoritative of them; six
 // consecutive wake-runs read claims of this shape and told the owner to read a
 // durable token off a QR that has not carried one since CUM-45.
+//
+// Read ONCE per boot and served from RAM (nimbus::store::CachedToken, C2): a mint whose
+// write the settings storage refused still serves the whole boot, and a storage that
+// cannot be read mints nothing. The write is critical (it may use the reserve), and a
+// refusal raises the once-per-boot storage notice through notePersist.
+namespace {
+std::mutex                       g_webTokMx;
+nimbus::store::CachedToken       g_webTok;
+std::string mintWebToken() {
+  char buf[25];
+  for (int i = 0; i < 24; i += 8) snprintf(buf + i, 9, "%08x", (unsigned)esp_random());
+  buf[24] = 0;
+  return std::string(buf);
+}
+}  // namespace
+
 String webAuthToken() {
-  String t = getStrQuiet(AKEY_WEB_TOKEN, "");
-  if (t.length() == 0) {
-    char buf[25];
-    for (int i = 0; i < 24; i += 8) snprintf(buf + i, 9, "%08x", (unsigned)esp_random());
-    buf[24] = 0;
-    t = buf;
-    putStr(AKEY_WEB_TOKEN, t);
-  }
-  return t;
+  std::lock_guard<std::mutex> lk(g_webTokMx);
+  const std::string t = g_webTok.get(
+      [](std::string& out) {
+        if (!solide::memory::ok()) return nimbus::store::TokenRead::Unreadable;
+        if (!solide::memory::has(AKEY_WEB_TOKEN)) return nimbus::store::TokenRead::Absent;
+        out = getStrQuiet(AKEY_WEB_TOKEN, "").c_str();
+        return nimbus::store::TokenRead::Value;
+      },
+      mintWebToken,
+      [](const std::string& fresh) {
+        if (putStr(AKEY_WEB_TOKEN, String(fresh.c_str()))) return true;
+        alogc(nimbus::errlog::cat::kNvs,
+              "webtok: sign-in code not saved (storage full) - valid until the next restart");
+        return false;
+      });
+  return String(t.c_str());
 }
 
 // Rotate the token: mint a fresh 96-bit hardware-random value + persist it. Every
@@ -230,14 +255,16 @@ String webAuthToken() {
 // Owner-triggered from the web UI (already an authenticated action) - the device still
 // owns the value; there is no way to SET a chosen token, only to regenerate.
 String regenWebAuthToken() {
-  char buf[25];
-  for (int i = 0; i < 24; i += 8) snprintf(buf + i, 9, "%08x", (unsigned)esp_random());
-  buf[24] = 0;
+  const std::string fresh = mintWebToken();
   // A rotation that does not land leaves the OLD token in force: hand the old one
   // back, so the calling browser never swaps to a token the device will refuse
   // (POST /api/token/regen also answers 507 through its SaveScope).
-  if (!putStr(AKEY_WEB_TOKEN, buf)) return webAuthToken();
-  return String(buf);
+  const bool landed = putStr(AKEY_WEB_TOKEN, String(fresh.c_str()));
+  {
+    std::lock_guard<std::mutex> lk(g_webTokMx);
+    g_webTok.rotate(fresh, landed);
+  }
+  return landed ? String(fresh.c_str()) : webAuthToken();
 }
 
 // Per-device setup-AP passphrase. Generated (hardware-random, 10 chars from an
@@ -521,30 +548,13 @@ String  tgBotName()         { return getStrQuiet(AKEY_TG_BOTNAME, ""); }
 bool    setTgBotName(const String& v) { return putOrClear(AKEY_TG_BOTNAME, v); }
 bool    setTelegramNames(const String& v) { return putOrClear(AKEY_TG_NAMES, v); }
 bool    replaceTelegramName(const String& id, const String& name) {
-  // Rebuild the "id:name,..." sidecar dropping every EXACT-id entry, then append the
-  // new mapping. The old writer blind-appended on each approve, so a re-add with a
-  // new name never renamed (the reader matched the FIRST entry) and the blob grew
-  // unbounded (owner rename ask, 2026-07-16). Caller sanitizes `name`. Entries of
-  // chats no longer on the allowlist are dropped too, so the sidecar stays bounded by
-  // the allowlist (a removed chat's name is display data nobody can see).
-  String allow = String(",") + telegramAllowlist() + ",";
-  allow.replace(" ", "");
-  String nm = telegramNames(), out;
-  int s = 0;
-  while (s < (int)nm.length()) {
-    int e = nm.indexOf(',', s); if (e < 0) e = nm.length();
-    String entry = nm.substring(s, e); entry.trim();
-    s = e + 1;
-    if (!entry.length()) continue;
-    int colon = entry.indexOf(':');
-    String eid = colon > 0 ? entry.substring(0, colon) : entry;
-    if (eid == id) continue;              // drop every stale mapping for this id
-    eid.trim();
-    if (allow.indexOf(String(",") + eid + ",") < 0) continue;   // no longer allow-listed
-    out += (out.length() ? "," : "") + entry;
-  }
-  if (name.length()) out += (out.length() ? "," : "") + id + ":" + name;
-  return setTelegramNames(out);
+  // Rebuild the "id:name,..." sidecar (nimbus::store::capTelegramNames): one entry per
+  // id, only allow-listed ids, under a byte cap. The old writer blind-appended on each
+  // approve, so a re-add with a new name never renamed and the blob grew unbounded
+  // (owner rename ask, 2026-07-16). Caller sanitizes `name`.
+  const std::string out = nimbus::store::capTelegramNames(
+      telegramNames().c_str(), telegramAllowlist().c_str(), id.c_str(), name.c_str());
+  return setTelegramNames(String(out.c_str()));
 }
 bool    telegramPublic()    { return solide::memory::getBool(AKEY_TG_PUBLIC, false); }
 // Off is the default (an absent key reads false), so turning open access OFF is an
@@ -557,10 +567,82 @@ int32_t telegramOffset()    { return solide::memory::getInt(AKEY_TG_OFFSET, 0); 
 bool    setTelegramOffset(int32_t v) { return v == 0 ? clearKey(AKEY_TG_OFFSET) : putInt(AKEY_TG_OFFSET, v); }
 
 // ---- Anthropic managed-agents caches ----
-String antEnvId()      { return getStrQuiet(AKEY_ANT_ENVID, ""); }
-bool   setAntEnvId(const String& v)    { return putOrClear(AKEY_ANT_ENVID, v); }
-String antAgentMap()   { return getStrQuiet(AKEY_ANT_AGENTMAP, ""); }
-bool   setAntAgentMap(const String& v) { return putOrClear(AKEY_ANT_AGENTMAP, v); }
+// The environment id and the per-model agent map live in flash files since v4.6
+// (CUM-635): the map has one entry per distinct model and no cap, and every new model
+// rewrote it in settings storage. The moved-store rule (nimbus/store/moved_store.h):
+// read the file, else the legacy NVS key; write the file atomically and read it back;
+// erase the NVS copy on a boot whose image was already valid. Settings storage is
+// never written again. Before flash storage is mounted the legacy copy is served
+// read-only and a write is refused (the adapter keeps its ids in RAM and logs it).
+namespace {
+struct MovedValue {
+  const char* path;
+  const char* key;
+  std::string value;
+  bool        loaded = false;
+};
+std::mutex g_antMx;
+MovedValue g_antEnv{"/data/ant_env.txt", AKEY_ANT_ENVID};
+MovedValue g_antAgents{"/data/ant_agents.txt", AKEY_ANT_AGENTMAP};
+
+struct MovedValueIo {
+  MovedValue& m;
+  bool readFile(std::string& out) {
+    if (!LittleFS.exists(m.path)) return false;
+    File f = LittleFS.open(m.path, "r");
+    if (!f) return false;
+    String v = f.readString();
+    f.close();
+    out.assign(v.c_str(), v.length());
+    return true;
+  }
+  bool writeFileAtomic(const std::string& v) {
+    LittleFS.mkdir("/data");
+    return agent::writeFileAtomic(m.path, v, m.key, false);
+  }
+  bool readNvs(std::string& out) {
+    if (!solide::memory::has(m.key)) return false;
+    out = getStrQuiet(m.key, "").c_str();
+    return true;
+  }
+  bool eraseNvs() { return clearKey(m.key); }   // an erase: always lands
+};
+
+String movedGet(MovedValue& m) {
+  std::lock_guard<std::mutex> lk(g_antMx);
+  if (m.loaded) return String(m.value.c_str());
+  MovedValueIo io{m};
+  if (!flashMounted()) {   // not mounted yet: the legacy copy, read-only, not cached
+    std::string v;
+    io.readNvs(v);
+    return String(v.c_str());
+  }
+  const nimbus::store::MovedLoad got = nimbus::store::loadMoved(io);
+  m.value = got.value;
+  m.loaded = true;
+  if (got.src == nimbus::store::MovedSource::File &&
+      nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot()))
+    alogf("store: legacy settings-storage copy of %s removed (the file is in use)", m.key);
+  return String(m.value.c_str());
+}
+
+bool movedSet(MovedValue& m, const String& v) {
+  (void)movedGet(m);   // load first: a write never overwrites a file it did not read
+  std::lock_guard<std::mutex> lk(g_antMx);
+  if (!m.loaded) return nimbus::sys::noteFilePersist(false, m.key);   // not mounted
+  const std::string next(v.c_str(), v.length());
+  if (next == m.value) return true;
+  MovedValueIo io{m};
+  if (!nimbus::sys::noteFilePersist(nimbus::store::persistMoved(io, next), m.key)) return false;
+  m.value = next;
+  return true;
+}
+}  // namespace
+
+String antEnvId()      { return movedGet(g_antEnv); }
+bool   setAntEnvId(const String& v)    { return movedSet(g_antEnv, v); }
+String antAgentMap()   { return movedGet(g_antAgents); }
+bool   setAntAgentMap(const String& v) { return movedSet(g_antAgents, v); }
 String antOrchAgent()  { return getStrQuiet(AKEY_ANT_ORCHAGENT, ""); }
 bool   setAntOrchAgent(const String& v){ return putOrClear(AKEY_ANT_ORCHAGENT, v); }
 
@@ -888,6 +970,23 @@ static void usageMaintain(uint32_t nowMs) {
   if (!ids.empty()) noteLiveLoopIds(ids);
 }
 
+// Erase the planned keys in order until the reserve is back; updates `avail`. Returns
+// how many keys went.
+static uint32_t evictInOrder(const char* const* keys, const size_t* order, size_t m, size_t& avail) {
+  uint32_t evicted = 0;
+  for (size_t i = 0; i < m && avail < nimbus::store::kNvsReserveEntries; ++i) {
+    const char* k = keys[order[i]];
+    if (!clearKey(k)) continue;
+    if (strcmp(k, AKEY_FALLBACK_RULES) == 0) pcInvalidate();   // a cached provider key
+    // Its companion goes with it (prism row 23): no sync stamp for rules it no longer has.
+    const char* c = nimbus::store::nvsEvictionCompanion(k);
+    if (c && clearKey(c)) agent::alogcf(nimbus::errlog::cat::kNvs, "nvs: cleared %s with %s", c, k);
+    ++evicted;
+    avail = nimbus::sys::nvsAvailableEntries();
+  }
+  return evicted;
+}
+
 void nvsMaintain(uint32_t nowMs) {
   usageMaintain(nowMs);
   static uint32_t s_nextMs = 0;
@@ -927,14 +1026,7 @@ void nvsMaintain(uint32_t nowMs) {
 
   size_t order[kMaxCand];
   const size_t m = nimbus::store::nvsEvictionPlan(keys, n, fallbackSyncTs() != 0, order, kMaxCand);
-  uint32_t evicted = 0;
-  for (size_t i = 0; i < m && avail < kReserve; ++i) {
-    const char* k = keys[order[i]];
-    if (!clearKey(k)) continue;
-    if (strcmp(k, AKEY_FALLBACK_RULES) == 0) pcInvalidate();   // a cached provider key
-    ++evicted;
-    avail = nimbus::sys::nvsAvailableEntries();
-  }
+  const uint32_t evicted = evictInOrder(keys, order, m, avail);
   if (evicted) {
     nimbus::sys::noteNvsEvicted(evicted);
     agent::alogcf(nimbus::errlog::cat::kNvs,
@@ -958,7 +1050,15 @@ bool setTelegramToken(const String& v)     { return putOrClear(AKEY_TG_TOKEN, v)
 // Shrink-safe: removing a chat must land even on a full NVS (a dropped removal would
 // leave that chat allowed). The worst case of the erase-then-write path is an EMPTY
 // allowlist - nobody allowed, fail-closed.
-bool setTelegramAllowlist(const String& v) { return putStrShrinkSafe(AKEY_TG_ALLOWLIST, v); }
+bool setTelegramAllowlist(const String& v) {
+  if (!putStrShrinkSafe(AKEY_TG_ALLOWLIST, v)) return false;
+  // A removed chat's display name goes too (the sidecar keeps allow-listed ids only); a
+  // prune only shrinks the value, so it lands on a full partition.
+  const String names = telegramNames();
+  const std::string pruned = nimbus::store::capTelegramNames(names.c_str(), v.c_str(), "", "");
+  if (pruned != names.c_str()) (void)setTelegramNames(String(pruned.c_str()));   // display only
+  return true;
+}
 bool setTtsEnabled(bool v)                 { return putBoolDef(AKEY_TTS_ENABLED, v, TTS_ENABLED_DEFAULT); }
 bool setOrchToolLoop(bool v)               { return putBoolDef(AKEY_ORCH_TOOLLOOP, v, true); }
 bool setCodeSandbox(bool v)                { return putBoolDef(AKEY_CODE_SANDBOX, v, false); }
@@ -1288,6 +1388,24 @@ std::string readFileQuiet(const char* path) {
   return std::string(s.c_str(), s.length());
 }
 
+// L19-52: once per boot, as soon as the clock is set, the month's counters are caught
+// up with the daily history (UsageLedger::reconcileWithHistory); a current ledger is
+// untouched. True when a counter moved (the ledger is then marked for the next persist).
+uint32_t currentDayKey();
+bool g_ledgerReconciled = false;
+bool reconcileLedgerLocked() {   // caller holds g_ledgerMx, the ledger is loaded
+  if (g_ledgerReconciled) return false;
+  const uint32_t today = currentDayKey();
+  if (!today) return false;   // undated: retried once the clock is set (usageMaintain)
+  g_ledgerReconciled = true;
+  const size_t moved = g_ledger.reconcileWithHistory(histLocked(), today);
+  if (!moved) return false;
+  g_ledgerState.markDirty(millis());
+  alogf("usage: %u provider counter(s) were behind the daily history - caught up",
+        (unsigned)moved);
+  return true;
+}
+
 void loadModelsLocked() {  // caller holds g_ledgerMx
   if (g_modelsLoaded || LittleFS.totalBytes() == 0) return;   // 0 = not mounted yet
   auto& M = g_ledger.models();
@@ -1299,6 +1417,9 @@ void loadModelsLocked() {  // caller holds g_ledgerMx
   // and when they disagree the provider's spend since tracking began is priced at its
   // highest known price, never a cheaper one (gate G1, G3, M1).
   const auto settled = g_ledger.settleModels(histLocked());
+  // L19-52: counters loaded from a stale copy catch up with the daily history (spend
+  // whose model is no longer known, priced at the provider's highest known price).
+  const bool caughtUp = reconcileLedgerLocked();
   // Stored now, so it outlives what made it true: tracking inferred or started (a
   // later boot may see different history), and counters the file described that are
   // gone (a later boot may no longer see it, gate M1). When that write fails after
@@ -1308,7 +1429,7 @@ void loadModelsLocked() {  // caller holds g_ledgerMx
   // load's result, the next record writes it first (ModelLedger::spendFileFirst), and
   // while one is there that lacks it, history buckets name no model (historyKey).
   bool current = true;
-  if (settled.mustStore() &&
+  if ((settled.mustStore() || caughtUp) &&
       !agent::writeFileAtomic(kUsageModelsPath, M.serializeSpend(), "usage_models", false)) {
     current = false;
     if (settled.removable) LittleFS.remove(kUsageModelsPath);
@@ -1330,27 +1451,25 @@ void logUsageFileFailure(const char* what) {
   alogf("usage: %s write failed - keeping the previous copy", what);
 }
 
+// Where the ledger is served from (nimbus/orch/ledger_home.h, prism row 21): while
+// flash storage is not mounted (early boot, Notifier mode, a failed mount) the legacy
+// NVS copy, read ONCE and then kept counting in RAM (so a monthly cap still trips); once
+// it is mounted, the file (else the legacy key), plus the spend counted meanwhile. An
+// early read can never pass for the stored ledger and overwrite the file: nothing is
+// persisted until the file store was read (g_ledgerLoaded).
+nimbus::orch::LedgerHome g_ledgerHome;
+
 nimbus::orch::UsageLedger& ledgerLocked() {  // caller holds g_ledgerMx
   if (!g_ledgerLoaded) {
     LedgerIo io;
-    if (LittleFS.totalBytes() == 0) {
-      // Flash storage not mounted yet (or Notifier mode): serve the legacy NVS copy
-      // read-only and load again once it is mounted, so an early read can never pass
-      // for the stored ledger and later overwrite the file.
-      std::string v;
-      io.readNvs(v);
-      g_ledger.deserialize(v);
-      // Still on the NVS fallback: no new (provider, tag) audit row may grow it (lane
-      // T; per-host filing creates pairs a single-host turn never did). New tags are
-      // allowed again in the file branch below (usgLedger lives on LittleFS there).
-      g_ledger.setAllowNewTags(false);
-    } else {
-      const nimbus::store::MovedLoad m = nimbus::store::loadMoved(io);
-      g_ledger.deserialize(m.value);
+    using Step = nimbus::orch::LedgerHome::Step;
+    const Step st = g_ledgerHome.ensure(g_ledger, LittleFS.totalBytes() != 0, io);
+    if (st == Step::File || st == Step::Merged) {
       g_ledgerLoaded = true;
-      // Spend that so far lives only in NVS goes to the file at the next persist.
-      if (m.src == nimbus::store::MovedSource::Nvs) g_ledgerState.markDirty(millis());
-      if (m.src == nimbus::store::MovedSource::File &&
+      // Spend that so far lives only in NVS or RAM goes to the file at the next persist.
+      if (st == Step::Merged || g_ledgerHome.source() == nimbus::store::MovedSource::Nvs)
+        g_ledgerState.markDirty(millis());
+      if (g_ledgerHome.source() == nimbus::store::MovedSource::File &&
           nimbus::store::retireLegacy(io, otaupd::imageValidAtBoot()))
         alogf("usage: legacy settings-storage copy of the ledger removed (the file is in use)");
     }
@@ -1372,7 +1491,7 @@ bool keepLedgerTag(const std::string& tag) {
 
 bool persistLedgerLocked() {  // caller holds g_ledgerMx
   // Never write before the stored ledger was read (flash storage not mounted).
-  if (!g_ledgerLoaded) return notePersist(false, "lfs_ledger");
+  if (!g_ledgerLoaded) return nimbus::sys::noteFilePersist(false, "lfs_ledger");
   // The byte guard: the serialized ledger stays under 3,800 B (a deleted routine's
   // row goes first, then the smallest rows).
   g_ledger.fitSerialized(nimbus::orch::UsageLedger::kSerializedMaxBytes, keepLedgerTag);
@@ -1380,8 +1499,9 @@ bool persistLedgerLocked() {  // caller holds g_ledgerMx
   LedgerIo io;
   const bool ok = nimbus::store::persistMoved(io, s);
   g_ledgerState.noteWrite(ok, millis());
-  // Reported like an NVS write: an owner budget edit that did not store answers 507.
-  notePersist(ok, "lfs_ledger");
+  // A file-store verdict (prism row 22): an owner budget edit that did not store answers
+  // 507, but a file failure is not a settings-storage one (no NVS notice, no recentFails).
+  nimbus::sys::noteFilePersist(ok, "lfs_ledger");
   // Rides the next spend-file write: a load can then tell a spend file that is only
   // behind the stored counters (rows kept) from one that may be ahead (gate G1, G3),
   // and, from the totals a landed write stored, re-created counters from ones that
@@ -1749,7 +1869,7 @@ nimbus::orch::RateEdit setModelRate(const String& provider, const char* model,
   }
   // CUM-479: report a store failure to the persist ledger, so the route's SaveScope
   // answers 507 storage_full instead of {"ok":true} over a dropped price.
-  if (r == RateEdit::WriteFailed) notePersist(false, "lfs_mrates");
+  if (r == RateEdit::WriteFailed) nimbus::sys::noteFilePersist(false, "lfs_mrates");
   return r;
 }
 
@@ -1843,13 +1963,23 @@ bool usageLedgerSaved() {
   return g_ledgerState.saved();
 }
 
+// Both run on the main loop (usageMaintain), which never waits (loop_guard.h): the card
+// lock is tried first (LoopLock, the rule for every flash write the loop makes), then
+// the ledger lock is tried, never awaited; a busy turn moves the work to a later pass.
 void retryUsageLedger() {
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
-  if (g_ledgerLoaded && g_ledgerState.retryDue(millis())) persistLedgerLocked();
+  agent::memory::LoopLock g(0);
+  if (!g) return;
+  std::unique_lock<std::mutex> lk(g_ledgerMx, std::try_to_lock);
+  if (!lk || !g_ledgerLoaded) return;
+  // L19-52: a load before the clock was set reconciles here once it is.
+  if (reconcileLedgerLocked() || g_ledgerState.retryDue(millis())) persistLedgerLocked();
 }
 
 void noteLiveLoopIds(const std::vector<std::string>& ids) {
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  agent::memory::LoopLock g(0);
+  if (!g) return;   // the next 6 h pass prunes
+  std::unique_lock<std::mutex> lk(g_ledgerMx, std::try_to_lock);
+  if (!lk) return;
   g_liveLoopTags.clear();
   for (const auto& id : ids) g_liveLoopTags.push_back("loop:" + id);
   if (g_ledgerLoaded && g_ledger.pruneTags(keepLedgerTag)) persistLedgerLocked();

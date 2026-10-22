@@ -1,11 +1,13 @@
 #include "orch_persist.h"
 #include "../sys/agent_log.h"
-#include "../sys/config_nvs.h"  // notePersist + the NVS reserve (nvsAdmit)
+#include "../sys/config_nvs.h"  // notePersist: the legacy journal erase is reported
+#include "../sys/ota_update.h"  // imageValidAtBoot - when the legacy journal may go
 #include "fs_atomic.h"          // writeFileAtomic - tmp + rename, honors erasing()
 
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <nvs.h>         // the legacy journal records: read-only, quiet when absent
 
 // Device persistence for the portable orchestrator seams. Paths + NVS layout match
 // Nuage-Solide (orch_memory.cpp / journal.cpp) so state survives a firmware upgrade.
@@ -64,10 +66,12 @@ void LittleFsMemoryStore::clearModel() {
   LittleFS.remove(kMemPath);
 }
 
-// ---- NvsJournalStore --------------------------------------------------------
+// ---- FlashJournalStore --------------------------------------------------------
+// The journal lives in /data/agjournal.json (nimbus::orch::FileJournalStore). The
+// legacy NVS records are only READ here (once, to migrate) and erased once retired:
+// no journal write ever spends settings-storage entries again.
 
-static Preferences s_prefs;
-static bool        s_prefsOpen = false;
+static const char* kJournalPath = "/data/agjournal.json";
 static const char* kJournalNs = "agjournal";
 
 static void slotKey(int slot, char out[4]) {
@@ -76,49 +80,60 @@ static void slotKey(int slot, char out[4]) {
   out[2] = 0;
 }
 
-void NvsJournalStore::begin() {
-  if (s_prefsOpen) return;
-  s_prefsOpen = s_prefs.begin(kJournalNs, false);
-  if (!s_prefsOpen) alog("journal: NVS open failed");
+bool FlashJournalIo::readFile(std::string& out) {
+  if (!flashMounted() || !LittleFS.exists(kJournalPath)) return false;   // no [E] open line
+  File f = LittleFS.open(kJournalPath, FILE_READ);
+  if (!f) return false;
+  String s = f.readString();
+  f.close();
+  out.assign(s.c_str(), s.length());
+  return true;
 }
 
-std::string NvsJournalStore::get(int slot) {
-  if (!s_prefsOpen) return "";
+bool FlashJournalIo::writeFileAtomic(const std::string& v) {
+  LittleFS.mkdir("/data");
+  return agent::writeFileAtomic(kJournalPath, v, "agjournal");
+}
+
+// Read-only through the IDF API, which (unlike Preferences) logs nothing for a
+// namespace or key that is absent: a fresh device reads all six here on every boot
+// until its first sub-agent creates the file.
+std::string FlashJournalIo::readLegacySlot(int slot) {
+  nvs_handle_t h;
+  if (nvs_open(kJournalNs, NVS_READONLY, &h) != ESP_OK) return "";   // nothing to migrate
   char key[4]; slotKey(slot, key);
-  String v = s_prefs.getString(key, "");
-  return std::string(v.c_str(), v.length());
+  std::string v;
+  size_t len = 0;
+  if (nvs_get_str(h, key, nullptr, &len) == ESP_OK && len > 1) {
+    v.resize(len);
+    if (nvs_get_str(h, key, &v[0], &len) == ESP_OK) v.resize(len - 1);   // drop the NUL
+    else v.clear();
+  }
+  nvs_close(h);
+  return v;
 }
 
-// The failure label in the persist ledger and /api/state nvs.recentFails: the
-// namespace and the slot, so a refused journal write is recognisable ("agjournal.j3").
-static void failKey(int slot, char out[16]) {
-  snprintf(out, 16, "%s.j%d", kJournalNs, slot);
+// An erase only frees entries, so it lands on a full partition too. A namespace that
+// was never created is left uncreated (a read-write open would add its entry).
+bool FlashJournalIo::eraseLegacy() {
+  nvs_handle_t h;
+  if (nvs_open(kJournalNs, NVS_READONLY, &h) != ESP_OK) return true;   // nothing left
+  nvs_close(h);
+  Preferences p;
+  if (!p.begin(kJournalNs, /*readOnly=*/false)) return false;
+  const bool ok = nimbus::sys::notePersist(p.clear(), kJournalNs);
+  p.end();
+  return ok;
 }
 
-// A record write asks the NVS reserve first (journal records are runtime state: on a
-// filling device they are refused before the Telegram offset or the OTA guard would
-// be) and reports a write that did not land, so the job stays polled from RAM and the
-// refusal is visible.
-bool NvsJournalStore::put(int slot, const std::string& v) {
-  char key[4]; slotKey(slot, key);
-  char fk[16]; failKey(slot, fk);
-  const bool admitted =
-      s_prefsOpen && nimbus::sys::nvsAdmit(kJournalNs, key, nimbus::store::NvsValKind::Str, v.size());
-  return nimbus::sys::notePersist(admitted && s_prefs.putString(key, v.c_str()) == v.size(), fk);
-}
-
-// An erase only frees entries; an absent slot is already removed.
-bool NvsJournalStore::remove(int slot) {
-  if (!s_prefsOpen) return false;
-  char key[4]; slotKey(slot, key);
-  if (!s_prefs.isKey(key)) return true;
-  char fk[16]; failKey(slot, fk);
-  return nimbus::sys::notePersist(s_prefs.remove(key), fk);
-}
-
-void NvsJournalStore::clearNs() {
-  if (!s_prefsOpen) return;
-  nimbus::sys::notePersist(s_prefs.clear(), kJournalNs);   // wipe the whole agjournal namespace
+void FlashJournalStore::begin() {
+  using nimbus::orch::JournalSource;
+  const JournalSource src = load();
+  if (src == JournalSource::Legacy)
+    alogf("journal: moved the sub-agent records to flash (%s)",
+          durable() ? "saved" : "not saved yet - kept in settings storage");
+  if (src == JournalSource::File && retireLegacy(otaupd::imageValidAtBoot()))
+    alog("journal: legacy settings-storage copy removed (the file is in use)");
 }
 
 }  // namespace agent

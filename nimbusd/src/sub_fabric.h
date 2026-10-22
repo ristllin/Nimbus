@@ -18,10 +18,11 @@
 //   SubAdapter        one ManagedAgentAdapter per backend; every call resolves
 //                     the rig's CURRENT deps/key/model, so an in-app key or model
 //                     change applies to the next dispatch with no re-register.
-//   FileJournalStore  the JournalStore seam over files under the instance volume
-//                     (<mem>/journal/j<slot>.json), the hosted twin of the
-//                     device's NVS "agjournal" namespace: an unfinished job
-//                     re-attaches after a restart instead of being re-dispatched.
+//   FileJournalStore  the device's journal file (nimbus::orch::FileJournalStore)
+//                     under the instance volume (<mem>/journal/agjournal.json), the
+//                     same shape as the device's /data/agjournal.json: an unfinished
+//                     job re-attaches after a restart instead of being re-dispatched,
+//                     and the finished-job ring tells the head what already finished.
 #include <cerrno>
 #include <cstdio>
 #include <functional>
@@ -65,30 +66,47 @@ class SubAdapter : public agent::ManagedAgentAdapter {
   Ops ops_;
 };
 
-// JournalStore over one small file per slot. Writes are atomic (tmp + rename), so a
-// crash mid-write leaves the previous record, never a torn one; put and remove report
-// whether they landed (the journal keeps a record it could not store or erase).
-class FileJournalStore : public nimbus::orch::JournalStore {
+// The journal file on the instance volume, the hosted twin of the device's flash
+// file. Writes are atomic (tmp + rename), so a crash mid-write leaves the previous
+// image, never a torn one; put and remove report whether they landed. The per-slot
+// files of earlier hosted releases (j<slot>.json) are read once to migrate and removed
+// once the new file reads back (a hosted instance has no trial boot to roll back from).
+class PosixJournalIo : public nimbus::orch::JournalFileIo {
  public:
-  explicit FileJournalStore(std::string dir) : dir_(std::move(dir)) {}
-  std::string get(int slot) override {
-    std::string v;
-    return fsutil::readFile(path(slot), v) ? v : std::string();
+  explicit PosixJournalIo(std::string dir) : dir_(std::move(dir)) {}
+  bool readFile(std::string& out) override { return fsutil::readFile(file(), out); }
+  bool writeFileAtomic(const std::string& v) override {
+    return fsutil::mkdirs(dir_) && fsutil::writeFileAtomic(file(), v);
   }
-  bool put(int slot, const std::string& v) override {
-    return fsutil::mkdirs(dir_) && fsutil::writeFileAtomic(path(slot), v);
+  std::string readLegacySlot(int slot) override {
+    std::string v;
+    return fsutil::readFile(legacy(slot), v) ? v : std::string();
   }
   // Gone means gone: a slot file that never existed is as removed as a deleted one.
-  bool remove(int slot) override {
-    return std::remove(path(slot).c_str()) == 0 || errno == ENOENT;
-  }
-  void clearNs() override {
-    for (int i = 0; i < nimbus::orch::kAgentMaxJobs; i++) remove(i);
+  bool eraseLegacy() override {
+    bool ok = true;
+    for (int i = 0; i < nimbus::orch::kAgentMaxJobs; i++)
+      ok = (std::remove(legacy(i).c_str()) == 0 || errno == ENOENT) && ok;
+    return ok;
   }
 
  private:
-  std::string path(int slot) const { return dir_ + "/j" + std::to_string(slot) + ".json"; }
+  std::string file() const { return dir_ + "/agjournal.json"; }
+  std::string legacy(int slot) const { return dir_ + "/j" + std::to_string(slot) + ".json"; }
   std::string dir_;
+};
+
+// The I/O is a private base listed first, so it exists before the store that keeps a
+// reference to it.
+class FileJournalStore : private PosixJournalIo, public nimbus::orch::FileJournalStore {
+ public:
+  // Loads at once: the journal's begin() reads the slots right after construction.
+  explicit FileJournalStore(std::string dir)
+      : PosixJournalIo(std::move(dir)),
+        nimbus::orch::FileJournalStore(static_cast<PosixJournalIo&>(*this)) {
+    load();
+    retireLegacy(/*imageValidAtBoot=*/true);
+  }
 };
 
 }  // namespace nimbusd

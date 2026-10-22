@@ -446,6 +446,37 @@ class UsageLedger {
   const ProviderBudget* find(const std::string& name) const;
   const std::vector<ProviderBudget>& entries() const { return entries_; }
 
+  // ---- catching the counters up (C2) -----------------------------------------------
+  // Spend whose model is not known any more, added to `name`'s counters for `periodKey`
+  // through the same fold rules as a record (rolling the counters first like a record),
+  // plus `calls` billable calls. Once tracking has started it is lost spend (its track's
+  // `lost`, priced at otherRate: never cheaper than any model it may have been), so the
+  // rows, earlier usage and lost spend still add up to the counters.
+  void addSpend(const std::string& name, const TokenDelta& d, uint32_t calls, uint32_t periodKey);
+  // L19-52: per provider, what the daily history holds for the provider's CURRENT period
+  // (the history day of `todayKey`, UTC) beyond its counters; empty when every counter
+  // is current. A counter ahead of the history is never lowered (the history can miss
+  // spend: its write may not have landed). `todayKey` 0 (clock unset): empty.
+  struct HistoryGap {
+    std::string name;
+    TokenDelta  d;
+    uint32_t    calls = 0;
+    uint32_t    periodKey = 0;
+  };
+  std::vector<HistoryGap> historyGaps(const UsageHistory& h, uint32_t todayKey) const;
+  bool countersBehind(const UsageHistory& h, uint32_t todayKey) const {
+    return !historyGaps(h, todayKey).empty();
+  }
+  // Add every gap (addSpend). A ledger loaded from a stale copy (a usgLedger write that
+  // did not land, the 19 Oct counters lost between 05:01Z and 08:32Z) then matches the
+  // history totals; a current ledger is untouched. Returns how many providers moved.
+  size_t reconcileWithHistory(const UsageHistory& h, uint32_t todayKey);
+  // Prism row 21: spend recorded into `now` since it was `base` (a ledger served from
+  // the legacy NVS copy while the file store was not mounted), added to this ledger
+  // (the file's): per provider, the period spend `now` holds beyond `base`, all of it
+  // when `now` rolled to a new period.
+  void mergeSpendSince(const UsageLedger& base, const UsageLedger& now);
+
   // Compact, self-describing round-trippable form for NVS. One entry per ';'-group,
   // fields '|'-separated: name|periodKey|tokens|calls|tokenLimit|callLimit|resetDay
   // [|tokensIn|tokensOut|totalIn|totalOut|totalCalls|centsPerMIn|centsPerMOut|

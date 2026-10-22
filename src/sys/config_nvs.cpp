@@ -108,6 +108,23 @@ bool notePersist(bool ok, const char* key) {
   return false;
 }
 
+// File-store failures (prism row 22): their own ledger, so a SaveScope still sees them,
+// but no settings-storage notice and no nvs.recentFails entry.
+static nimbus::store::PersistLedger s_fileLedger;
+
+bool noteFilePersist(bool ok, const char* key) {
+  if (ok) return true;
+  const char* k = key ? key : "?";
+  const uint32_t now = millis();
+  const uintptr_t task = currentTask();
+  portENTER_CRITICAL(&s_ledgerMux);
+  s_fileLedger.noteFailure(task, k);
+  const bool log = shouldLogLocked(k, now);
+  portEXIT_CRITICAL(&s_ledgerMux);
+  if (log) agent::alogf("flash: write FAILED [%s] - keeping the previous copy", k);
+  return false;
+}
+
 size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max) {
   portENTER_CRITICAL(&s_ledgerMux);
   const size_t n = s_recentFails.snapshot(out, max);
@@ -117,15 +134,16 @@ size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max) {
 
 bool takeStorageNotice() { return s_storageNotice.take(); }
 
-SaveScope::SaveScope() : since_(0), task_(currentTask()) {
+SaveScope::SaveScope() : since_(0), sinceFile_(0), task_(currentTask()) {
   portENTER_CRITICAL(&s_ledgerMux);
   since_ = s_ledger.seq();
+  sinceFile_ = s_fileLedger.seq();
   portEXIT_CRITICAL(&s_ledgerMux);
 }
 
 bool SaveScope::failed() const {
   portENTER_CRITICAL(&s_ledgerMux);
-  const bool f = s_ledger.failedSince(since_, task_);
+  const bool f = s_ledger.failedSince(since_, task_) || s_fileLedger.failedSince(sinceFile_, task_);
   portEXIT_CRITICAL(&s_ledgerMux);
   return f;
 }

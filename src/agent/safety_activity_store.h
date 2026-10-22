@@ -60,6 +60,7 @@ enum class ApproveResult : uint8_t {
   NotFound,   // unknown entry id
   Rejected,   // bad scope for this entry, or an empty/catch-all derived value
   Full,       // allowlist at capacity: nothing stored, entry NOT marked approved
+  NotSaved,   // the allowlist file write did not land: nothing changed (RAM put back)
 };
 
 // Approve an entry: add ONE scoped allow-rule derived from the entry (scope =
@@ -69,8 +70,11 @@ enum class ApproveResult : uint8_t {
 // NotFound for an unknown id, and Rejected for a bad scope / empty derived value.
 ApproveResult approve(const std::string& id, nimbus::orch::AllowScope scope, std::string& msgOut);
 
-// Revoke an allow-rule by id. false when unknown. Persists.
-bool revokeAllow(const std::string& id);
+// Revoke an allow-rule by id and persist it atomically. When the write does not land
+// the rule stays (RAM put back), so a revoke the owner was told about never comes back
+// after a restart.
+enum class RevokeResult : uint8_t { Ok = 0, NotFound, NotSaved };
+RevokeResult revokeAllow(const std::string& id);
 
 // Outcome of a report REQUEST from the web task (the actual POST runs later on a
 // worker task, never on the AsyncTCP task - a TLS acquire+handshake there could

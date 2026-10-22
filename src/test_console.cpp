@@ -491,6 +491,32 @@ void parkTest(String arg) {
   Serial.printf("PARK? providers=%u\n", (unsigned)n);
 }
 
+// FLSTAT <path>: lane C2's bench seam for the stores that moved out of settings
+// storage. Stats a file on the internal flash (LittleFS, never the card, which FSTAT
+// reads when one is mounted): "FLSTAT <path> exists=<0|1> bytes=<n>".
+void flashStat(String path) {
+  path.trim();
+  bool exists = LittleFS.exists(path.c_str());
+  size_t bytes = 0;
+  if (exists) {
+    File f = LittleFS.open(path.c_str(), FILE_READ);
+    exists = (bool)f;
+    if (f) { bytes = f.size(); f.close(); }
+  }
+  Serial.printf("FLSTAT %s exists=%d bytes=%u\n", path.c_str(), int(exists), (unsigned)bytes);
+  Serial.flush();
+}
+
+// BATTFLAP <n> [stepMv] (lane C2, BATTMODEL-CHURN): see Hooks::battFlap.
+void battFlap(String arg) {
+  arg.trim();
+  const int sp = arg.indexOf(' ');
+  const int n = arg.toInt();
+  const int step = sp > 0 ? arg.substring(sp + 1).toInt() : 0;
+  if (n <= 0 || n > 1000) { reply("BATTFLAP usage: BATTFLAP <1..1000> [stepMv]"); return; }
+  reply(s_h.battFlap ? s_h.battFlap(n, step) : String("ERR battflap unavailable"));
+}
+
 // SPENDSET's count seeds (prov, day, the overall count); false when it printed the usage.
 static bool spendSeed(const String& arg) {
   if (arg.startsWith("prov ")) {
@@ -2085,6 +2111,8 @@ void dispatch(String line) {
     spendSet(line.substring(8));
     return;
   }
+  if (line.startsWith("FLSTAT ")) { flashStat(line.substring(7)); return; }
+  if (line.startsWith("BATTFLAP")) { battFlap(line.substring(8)); return; }
   if (line.startsWith("TGINJECT ")) {
     tgInject(line.substring(9));
     return;

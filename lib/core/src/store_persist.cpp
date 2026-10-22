@@ -1,5 +1,8 @@
 #include "nimbus/store/persist.h"
 
+#include <utility>
+#include <vector>
+
 namespace nimbus {
 namespace store {
 
@@ -100,6 +103,68 @@ std::string catalogCachePath(const char* slug) {
 std::string legacyCatalogKey(const char* slug) {
   if (!isCatalogSlug(slug)) return {};
   return std::string("mcat_") + slug;
+}
+
+namespace {
+std::string trimmed(const std::string& v) {
+  const size_t a = v.find_first_not_of(" \t");
+  if (a == std::string::npos) return std::string();
+  const size_t b = v.find_last_not_of(" \t");
+  return v.substr(a, b - a + 1);
+}
+// Split a comma-separated list into trimmed, non-empty items.
+std::vector<std::string> splitList(const std::string& csv) {
+  std::vector<std::string> out;
+  size_t s = 0;
+  while (s <= csv.size()) {
+    size_t e = csv.find(',', s);
+    if (e == std::string::npos) e = csv.size();
+    const std::string item = trimmed(csv.substr(s, e - s));
+    if (!item.empty()) out.push_back(item);
+    s = e + 1;
+  }
+  return out;
+}
+}  // namespace
+
+namespace {
+using NameList = std::vector<std::pair<std::string, std::string>>;   // oldest first
+bool onList(const std::vector<std::string>& list, const std::string& who) {
+  for (const auto& a : list)
+    if (a == who) return true;
+  return false;
+}
+// A later entry for the same id replaces an earlier one; "" drops it; an id off the
+// allowlist is never kept.
+void putName(NameList& kept, const std::vector<std::string>& allow, const std::string& who,
+             const std::string& nm) {
+  for (auto it = kept.begin(); it != kept.end(); ++it)
+    if (it->first == who) { kept.erase(it); break; }
+  if (!nm.empty() && onList(allow, who)) kept.emplace_back(who, nm);
+}
+std::string renderNames(const NameList& kept) {
+  std::string out;
+  for (const auto& kv : kept) out += (out.empty() ? "" : ",") + kv.first + ":" + kv.second;
+  return out;
+}
+}  // namespace
+
+std::string capTelegramNames(const std::string& names, const std::string& allowlist,
+                             const std::string& id, const std::string& name) {
+  const std::vector<std::string> allow = splitList(allowlist);
+  NameList kept;
+  for (const auto& entry : splitList(names)) {
+    const size_t colon = entry.find(':');
+    if (colon == 0 || colon == std::string::npos) continue;   // no id, or no name
+    putName(kept, allow, trimmed(entry.substr(0, colon)), entry.substr(colon + 1));
+  }
+  if (!id.empty()) putName(kept, allow, id, name);
+  std::string out = renderNames(kept);
+  while (out.size() > kTgNamesMaxBytes && kept.size() > 1) {   // the newest always stays
+    kept.erase(kept.begin());
+    out = renderNames(kept);
+  }
+  return out.size() > kTgNamesMaxBytes ? std::string() : out;
 }
 
 }  // namespace store

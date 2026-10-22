@@ -538,7 +538,7 @@ JobEngine::LedgerEntry* JobEngine::queuedEntry(const PendingSpawn& p) {
 }
 
 void JobEngine::ledgerStarted(const PendingSpawn& p, const char* tag, const std::string& provider,
-                              const std::string& model) {
+                              const std::string& model, bool durable) {
   LedgerEntry* e = queuedEntry(p);
   if (!e) return;
   e->state = LedgerState::Running;
@@ -546,6 +546,7 @@ void JobEngine::ledgerStarted(const PendingSpawn& p, const char* tag, const std:
   e->provider = provider;
   e->model = model;
   e->atMs = nowMs();
+  e->notDurable = !durable;
 }
 
 void JobEngine::ledgerSwapped(const PendingSpawn& p, const std::string& why) {
@@ -588,6 +589,11 @@ void JobEngine::noteSpawnIntentRefused(const std::string& chatId, const std::str
   noteSpawnRefused(chatId, name.c_str(), task, reason);
 }
 
+// SPAWN-JOURNAL-DURABILITY: a running job whose record did not store says so.
+static const char* notDurableNote(bool notDurable) {
+  return notDurable ? "; its record could not be stored, so a restart would lose it" : "";
+}
+
 // One ledger line: who, then what became of it.
 std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
   const unsigned mins = (unsigned)((now - e.atMs) / 60000u);
@@ -597,7 +603,7 @@ std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
   std::string line = "- " + who + ": ";
   switch (e.state) {
     case LedgerState::Queued:    line += "queued, not started yet; it starts when a slot frees"; break;
-    case LedgerState::Running:   line += "running, started " + ago; break;
+    case LedgerState::Running:   line += "running, started " + ago + notDurableNote(e.notDurable); break;
     case LedgerState::Done:      line += "finished " + ago + "; its result came back as a fresh result"; break;
     case LedgerState::Failed:    line += "failed " + ago + (e.reason.empty() ? "" : " - " + e.reason); break;
     case LedgerState::Refused:   line += "did not start (" + ago + ") - " + e.reason; break;
@@ -1018,19 +1024,29 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
 // envelope with the spill marker. True when the card holds it; false keeps the
 // envelope's honest "could not be saved" marker.
 static const char kSpillProject[] = "results";
-bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& whole, size_t dropped) {
+// The ack that replaces "On it." when a started helper's journal record did not store.
+static const char kNotDurableAck[] =
+    "On it, but storage is full, so this helper will not survive a restart.";
+// The "<project>/<file>" of a persistResult outcome line "[saved: <project>/<file>]",
+// or "" for any other outcome.
+static std::string savedPathOf(const std::string& note) {
+  const std::string saved = "[saved: ";
+  if (note.rfind(saved, 0) != 0 || note.size() <= saved.size() + 1) return std::string();
+  return note.substr(saved.size(), note.size() - saved.size() - 1);
+}
+
+bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& whole, size_t dropped,
+                                std::string* savedPath) {
   std::string path, why = "no file store";
   if (d_.persistResult) {
     const char* prj = rec.prj[0] ? rec.prj : kSpillProject;
     std::string text = whole;
     if (dropped) text += "\n[the reply continued for " + std::to_string(dropped) + " more bytes that were not kept]";
     const std::string note = d_.persistResult(prj, rec.name, rec.tag, text, rec.chatId);
-    const std::string saved = "[saved: ";
-    if (note.rfind(saved, 0) == 0 && note.size() > saved.size() + 1)
-      path = note.substr(saved.size(), note.size() - saved.size() - 1);
-    else
-      why = note;
+    path = savedPathOf(note);
+    if (path.empty()) why = note;
   }
+  if (savedPath) *savedPath = path;
   orch::endWithSpillMarker(env_ref(), path, whole.size() + dropped, path.empty() ? why : std::string());
   hlog::logf("orchestrator: %s reply was %u B - %s", rec.tag, (unsigned)(whole.size() + dropped),
              path.empty() ? ("not saved: " + why).c_str() : ("saved whole as " + path).c_str());
@@ -1040,6 +1056,14 @@ bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& w
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (!d_.fabric) return;
   std::string chatId = p.chatId;
+  // Tags restart at job0000 each boot: first move past every tag a restored or
+  // finished job still carries, so a new job never takes over a restored record (the
+  // journal dedupes by tag) or reads as one that already finished.
+  if (!tagSeeded_ && d_.journal) {
+    const long hi = d_.journal->highestTagNumber();
+    if (hi >= (long)tagSeq_) tagSeq_ = (uint32_t)hi + 1;
+    tagSeeded_ = true;
+  }
   char tag[24];
   snprintf(tag, sizeof(tag), "job%04lu", (unsigned long)(tagSeq_++));
 
@@ -1146,13 +1170,13 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   rec.state        = orch::JobState::Queued;
   rec.resultSeen   = false;
   rec.dispatchedAt = nowMs();
-  // A record the store refused (a full NVS) is still held in RAM, so the job is polled
-  // this run and only a restart loses it; the refusal is in nvs.recentFails.
-  if (d_.journal && !d_.journal->write(rec))
-    hlog::logf("orchestrator: journal record %s not stored", tag);
+  // A record the store refused (a full file system) is still held in RAM, so the job is
+  // polled this run and only a restart loses it: the ledger and the owner say so.
+  const bool durable = !d_.journal || d_.journal->write(rec);
+  if (!durable) hlog::logf("orchestrator: journal record %s not stored", tag);
 
   hlog::logf("orchestrator: spawned %s -> %s (%s/%s)", tag, jobId, rec.backend, rec.model);
-  ledgerStarted(p, tag, rec.backend, rec.model);
+  ledgerStarted(p, tag, rec.backend, rec.model, durable);
   if (d_.hooks.onSpawn) {   // lifecycle observer (after the journal write - the job is real)
     SpawnEv ev;
     ev.tag = tag;
@@ -1168,10 +1192,61 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   // turns keep the ack for the FIRST TWO live spawns (reassuring); past that a
   // fan-out's acks are thread spam (a 12-spawn wave = 12 messages) - the head's
   // own turn reply already told the owner what it started.
-  if (!p.quiet && activeCount() <= 2)
-    deliver(chatId, std::string(p.note) + "  [" + (p.name[0] ? std::string(p.name) : std::string(tag)) +
-            " \xC2\xB7 " + rec.backend + "/" + rec.model + "]");
+  const std::string suffix = "  [" + (p.name[0] ? std::string(p.name) : std::string(tag)) +
+                             " \xC2\xB7 " + rec.backend + "/" + rec.model + "]";
+  if (!durable)
+    deliverNotDurableAck(p, chatId, suffix);
+  else if (!p.quiet && activeCount() <= 2)
+    deliver(chatId, std::string(p.note) + suffix);
   emitJobState(tag, rec.backend, orch::JobState::Queued);
+}
+
+// SPAWN-JOURNAL-DURABILITY: a helper whose record did not store runs from RAM, and a
+// restart while it runs loses it with no result and no message. The owner hears that
+// once, in place of the plain ack, and at most every ten minutes (a fan-out on a full
+// store is one line, not one per helper). A quiet (scheduled) turn delivers nothing:
+// its ledger line says it.
+void JobEngine::deliverNotDurableAck(const PendingSpawn& p, const std::string& chatId,
+                                     const std::string& suffix) {
+  static constexpr uint32_t kNoteEveryMs = 10u * 60u * 1000u;
+  if (p.quiet) return;
+  const uint32_t now = nowMs();
+  if (notDurableNoted_ && (uint32_t)(now - notDurableNoteMs_) < kNoteEveryMs) return;
+  notDurableNoted_ = true;
+  notDurableNoteMs_ = now;
+  deliver(chatId, std::string(kNotDurableAck) + suffix);
+}
+
+// L19-35: the finished-job record, then the seen mark (Journal::finish orders them).
+void JobEngine::finishJob(const orch::JobRecord& rec, const std::string& artifact, orch::JobState final) {
+  if (!d_.journal) return;
+  orch::FinishedJob f{};
+  strncpy(f.name, rec.name, sizeof(f.name) - 1);
+  strncpy(f.prj, rec.prj, sizeof(f.prj) - 1);
+  strncpy(f.artifact, artifact.c_str(), sizeof(f.artifact) - 1);
+  strncpy(f.chatId, rec.chatId, sizeof(f.chatId) - 1);
+  if (d_.nowString) strncpy(f.finishedAt, d_.nowString().c_str(), sizeof(f.finishedAt) - 1);
+  f.finishedEpoch = d_.nowEpoch ? d_.nowEpoch() : 0;
+  f.failed = final != orch::JobState::Done;
+  if (!d_.journal->finish(rec.tag, f, final))
+    hlog::logf("orchestrator: finished record %s not stored", rec.tag);
+}
+
+std::string JobEngine::finishedBeforeRestartText() const {
+  if (!d_.journal) return std::string();
+  std::string out;
+  orch::FinishedJob f;
+  bool before = false;
+  for (int i = 0; d_.journal->finished(i, f, &before); i++) {
+    if (!before) continue;   // this boot's jobs are in the spawn ledger
+    out += "- " + std::string(f.name[0] ? f.name : f.tag) + " (" + f.tag;
+    if (f.prj[0]) out += ", project " + std::string(f.prj);
+    if (f.artifact[0]) out += ", saved as " + std::string(f.artifact);
+    out += f.failed ? ") ended without a result" : ") finished";
+    if (f.finishedAt[0]) out += " " + std::string(f.finishedAt);
+    out += "\n";
+  }
+  return out;
 }
 
 // ---- the pump (the JOB parts of the device's pollJobs) ----------------------
@@ -1280,12 +1355,18 @@ int JobEngine::pump() {
                (int)env_ref().state, (unsigned)hBefore, (unsigned)freeHeap());
 
     if (err == FabricErr::NotFound) {   // expired / unknown remote job: terminal
-      d_.journal->update(rec.tag, orch::JobState::Error);
-      deliver(rec.chatId, std::string("Job [") + jobLabel(rec) + "] expired or was not found.");
-      ledgerFinished(rec.tag, LedgerState::Failed, "it expired or was not found on its provider");
-      fireResult(rec.tag, orch::JobState::Error, rec.chatId, "expired");
+      // A synchronous sub's result lived in the device's RAM, so a job restored after a
+      // restart cannot be collected: say that, not "expired" (subagents F4.4).
+      const bool lost = d_.journal->restored(rec.tag) && backendRunsSync(rec.backend);
+      deliver(rec.chatId, lost ? std::string("The result of [") + jobLabel(rec) +
+                                     "] was lost when the device restarted, so it will not arrive."
+                               : std::string("Job [") + jobLabel(rec) + "] expired or was not found.");
+      ledgerFinished(rec.tag, LedgerState::Failed,
+                     lost ? "its result was lost when the device restarted"
+                          : "it expired or was not found on its provider");
+      fireResult(rec.tag, orch::JobState::Error, rec.chatId, lost ? "lost at restart" : "expired");
       emitJobState(rec.tag, rec.backend, orch::JobState::Error);
-      d_.journal->markSeen(rec.tag);
+      finishJob(rec, std::string(), orch::JobState::Error);
       watchClear(rec.tag);
       scheduleReap(rec.tag, attnHoldMs_);  // red is a CTA: hold, then clear - never forever
       return d_.journal->count();
@@ -1306,7 +1387,6 @@ int JobEngine::pump() {
             "] lost: no response from " + rec.backend +
             " for 15 minutes - giving up. Its work may still finish remotely, "
             "but the result won't reach this device.";
-        d_.journal->update(rec.tag, orch::JobState::Error);
         // Same owner-delivery discipline as a normal sub failure (W19): while
         // other work runs, the failure joins the fresh results so the final
         // synthesis reports it; alone, it IS the report.
@@ -1320,7 +1400,7 @@ int JobEngine::pump() {
         fireResult(rec.tag, orch::JobState::Error, rec.chatId, "lost contact");
         ledgerFinished(rec.tag, LedgerState::Failed, "its provider stopped answering about it");
         emitJobState(rec.tag, rec.backend, orch::JobState::Error);
-        d_.journal->markSeen(rec.tag);
+        finishJob(rec, std::string(), orch::JobState::Error);
         watchClear(rec.tag);
         scheduleReap(rec.tag, attnHoldMs_);
         return d_.journal->count();
@@ -1349,7 +1429,9 @@ int JobEngine::pump() {
       }
     }
 
-    d_.journal->update(rec.tag, env_ref().state);
+    // Done and Error are stored with the seen mark below (finishJob): one write, not two.
+    if (env_ref().state != orch::JobState::Done && env_ref().state != orch::JobState::Error)
+      (void)d_.journal->update(rec.tag, env_ref().state);
     // Spend attribution (spawn:<backend>): terminal polls only, so each job
     // records at most once (markSeen removes it from the poll set after this).
     if (orch::isTerminal(env_ref().state) && d_.recordSpawnUsage) {
@@ -1365,7 +1447,9 @@ int JobEngine::pump() {
     const bool done = env_ref().state == orch::JobState::Done;
     // L19-36: a reply longer than the envelope is saved whole to the card first, and
     // the envelope ends with a marker naming that file and its real size.
-    const bool spilled = done && !overflow.empty() && spillWholeReply(rec, overflow, overflowDropped);
+    std::string artifact;   // the file the result was saved to, for the finished record
+    const bool spilled =
+        done && !overflow.empty() && spillWholeReply(rec, overflow, overflowDropped, &artifact);
     bool unverified = false;
     std::string reply = done ? deliveredReply(rec, unverified) : std::string();
     fireResult(rec.tag, env_ref().state, rec.chatId,
@@ -1380,7 +1464,6 @@ int JobEngine::pump() {
       // fallback (60 s after the batch drains) delivers the raw results - never lost.
       emitJobState(rec.tag, rec.backend, orch::JobState::Done);
       ledgerFinished(rec.tag, LedgerState::Done);
-      d_.journal->markSeen(rec.tag);
       watchClear(rec.tag);
       scheduleReap(rec.tag);   // collapse the Done arc off the ring after a short grace
       // v4.0.0 auto-persist: a run-tagged job's FULL reply becomes a durable
@@ -1389,6 +1472,7 @@ int JobEngine::pump() {
       // outcome line rides the fresh result so the planner KNOWS what saved.
       if (rec.prj[0] && d_.persistResult && !spilled) {   // a spilled reply is saved already
         std::string note = d_.persistResult(rec.prj, rec.name, rec.tag, reply, rec.chatId);
+        artifact = savedPathOf(note);
         if (!note.empty()) reply += "\n" + note;
       }
       // v4.1 provider file capture: a run that produced a binary FILE (e.g. a
@@ -1407,6 +1491,9 @@ int JobEngine::pump() {
           if (!note.empty()) reply += "\n" + note;
         }
       }
+      // L19-35: finished (with the file it saved to) and seen, both stored before the
+      // result is parked: a restart from here on never runs or delivers it again.
+      finishJob(rec, artifact, orch::JobState::Done);
       // Owning tenant = the SPAWNING chat's namespace, so a sub-agent result is
       // readable only by that chat (and admins) - same boundary as the memory tools.
       addFreshResult(rec.tag, jobLabel(rec).c_str(), reply,
@@ -1431,7 +1518,7 @@ int JobEngine::pump() {
         deliver(rec.chatId, failText);
       }
       emitJobState(rec.tag, rec.backend, orch::JobState::Error);
-      d_.journal->markSeen(rec.tag);
+      finishJob(rec, std::string(), orch::JobState::Error);
       watchClear(rec.tag);
       scheduleReap(rec.tag, attnHoldMs_);  // red is a CTA: hold the attention window, then clear
     } else {
@@ -1457,10 +1544,9 @@ bool JobEngine::cancel(const char* tagOrJobId) {
     if (!d_.journal->get(i, rec)) continue;
     if (strcmp(rec.tag, tagOrJobId) == 0 || strcmp(rec.jobId, tagOrJobId) == 0) {
       d_.fabric->cancel(rec.jobId);
-      d_.journal->update(rec.tag, orch::JobState::Cancelled);
       ledgerFinished(rec.tag, LedgerState::Cancelled);
       emitJobState(rec.tag, rec.backend, orch::JobState::Cancelled);
-      d_.journal->markSeen(rec.tag);
+      finishJob(rec, std::string(), orch::JobState::Cancelled);
       watchClear(rec.tag);
       return true;
     }
