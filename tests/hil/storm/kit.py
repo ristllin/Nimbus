@@ -317,6 +317,7 @@ class StormBench:
         self.started = time.time()
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
         self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
+        self.windows: List[Tuple[str, List[str]]] = []  # (log source, lines) of each closed window
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
 
     # ---- reads --------------------------------------------------------------------
@@ -745,13 +746,14 @@ class StormBench:
             # No leg needs more than a dozen turns: a skip at the hourly ceiling means the
             # unit's hour was used up before the leg, not by its storm.
             metrics.blocked_by = CEILING_BLOCKED
-        metrics.extra.setdefault("logSource", self.tap.source)
+        metrics.extra.setdefault("logSource", ",".join(src for src, _ in self.windows) or self.tap.source)
         rec = g.evidence_record(
             g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, time.time()), metrics, bounds
         )
         path = g.write_evidence(EVIDENCE_DIR, rec)
         with open(path[: -len(".json")] + ".log", "w", encoding="utf-8") as f:
-            f.write("\n".join(self.tap.graded_lines()) + "\n")  # the device log the leg was graded from
+            for k, (src, lines) in enumerate(self.windows):  # the device log each window was graded from
+                f.write(f"# window {k + 1} ({src})\n" + "\n".join(lines) + "\n")
         records = g.load_evidence(EVIDENCE_DIR)
         control = g.metrics_of(g.latest(records, leg, g.CONTROL))
         candidate = g.metrics_of(g.latest(records, leg, g.CANDIDATE))
@@ -897,6 +899,7 @@ class Window:
     def close(self) -> "Window":
         self.bench.tap.poll()
         self.lines = self.bench.tap.parsed()
+        self.bench.windows.append((self.bench.tap.source, list(self.bench.tap.graded_lines())))
         self.rows = g.new_rows(self.rows_before, self.bench.chat_rows())
         self.mock_requests = (len(self.bench.mock.completions()) - self.mock_before) if self.bench.mock else 0
         out = self.bench.outbound()
