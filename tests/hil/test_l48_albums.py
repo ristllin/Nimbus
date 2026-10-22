@@ -60,6 +60,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pytest
 
 import tg_archive_bench as tb
+from device import command_line_problem
 
 CHAT_DEFAULT = 4848484848  # a synthetic owner chat for the injected pages
 INJECT_DONE = "telegram: injected page:"
@@ -68,6 +69,8 @@ GUARD_RE = re.compile(
     r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+) holding=(\d)(?: booted=(\d))?(?: kept=(\d))?"
 )
 STAGE_PROJECT = "l48"  # the Files store project the photos are staged in (removed afterwards)
+PACE_BYTES = 64  # a long console line is written in pieces this size...
+PACE_GAP_S = 0.01  # ...this far apart (6.4 KB/s: the 1.5 KB receive buffer covers a 240 ms loop pass)
 SETTLE_UPTIME_MS = 30000
 HEAPTRACE_RE = re.compile(
     r"transport: heaptrace (?P<target>\S+) body=(?P<body>\d+) pre=(?P<pre_f>\d+)/(?P<pre_l>\d+) "
@@ -200,11 +203,34 @@ def _lines_until(device, done: str, timeout: float) -> List[str]:
             return out
 
 
+def paced_chunks(line: str, size: int = PACE_BYTES) -> List[bytes]:
+    """One console line (with its newline) cut into the pieces it is written in."""
+    data = (line + "\n").encode("utf-8")
+    return [data[i : i + size] for i in range(0, len(data), size)]
+
+
+def _cmd_paced(device, line: str, expect: str, timeout: float) -> str:
+    """``device.cmd`` for a long line, written in small paced pieces. The console's
+    receive buffer holds 1.5 KB and its loop drains 256 B a pass: a 3.3 KB page
+    written at USB speed overflowed it on unit L (22 Oct), lost bytes with its newline
+    among them, and was never answered."""
+    problem = command_line_problem(line)
+    if problem:
+        raise AssertionError(problem)
+    device.drain(quiet=0.2)
+    ser = device._require_open()
+    for piece in paced_chunks(line):
+        ser.write(piece)
+        ser.flush()
+        time.sleep(PACE_GAP_S)
+    return device.expect(expect, timeout=timeout)
+
+
 def _inject(device, page: str, timeout: float = 900.0) -> List[str]:
     """TGINJECT one page and return the console lines until it has run (the album's
     downloads, descriptions and turn all happen before the summary line)."""
     for _ in range(30):
-        line = device.cmd("TGINJECT " + page, "TGINJECT", timeout=15.0)
+        line = _cmd_paced(device, "TGINJECT " + page, "TGINJECT", timeout=15.0)
         if "busy" not in line:
             break
         time.sleep(3.0)
@@ -305,9 +331,15 @@ def stage(net):
 @pytest.mark.net
 @pytest.mark.agent
 def test_l48_album_of_three_is_one_turn(device, net, owner_chat, stage):
+    """The baseline is read after one single-photo turn on the same boot: the first turn
+    after a boot sets the poll task's stack low-water mark and the long-lived buffers, so
+    a baseline read before any turn (16 KB free on 22 Oct) compares a cold device."""
+    warm = stage(1, 120000, seed=4800)
+    uid = tb.first_update_id() + 4800
+    _inject(device, album_page(uid - 10, owner_chat, warm, caption="warm up, reply ok"))
+    time.sleep(10.0)
     items = stage(3, 120000, seed=4801)
     base = _state(net)
-    uid = tb.first_update_id() + 4800
     lines = _inject(device, album_page(uid, owner_chat, items, caption="All of this for dinner", group="L48A"))
     fetched = [ln for ln in lines if "telegram: attachment downloaded" in ln]
     described = [ln for ln in lines if re.search(r"telegram: media \d/3 describing", ln)]
@@ -545,8 +577,6 @@ def test_host_staged_pages_fit_one_console_line():
     """The largest page a leg injects (ten photos plus one, staged paths, a 10-digit
     chat, the largest update ids) rides one console line: a longer line is cut and the
     leg would wait out a turn that never comes."""
-    from device import command_line_problem
-
     items = [(stage_path(f"p4821_{i}.jpg"), 99999999) for i in range(11)]
     page = eleven_page(999999999, 9999999999, items)
     body = json.loads(page)
@@ -556,3 +586,12 @@ def test_host_staged_pages_fit_one_console_line():
     assert len(page) < 3600, f"{len(page)} B leaves too little room under the console's line"
     big = album_page(999999999, 9999999999, items[:3], caption="All of this for dinner", group="L48A", text="x" * 64)
     assert command_line_problem("TGINJECT " + big) is None
+
+
+@pytest.mark.host
+def test_host_paced_chunks():
+    page = "TGINJECT " + "x" * 3300
+    pieces = paced_chunks(page)
+    assert b"".join(pieces) == (page + "\n").encode()
+    assert all(len(p) <= PACE_BYTES for p in pieces) and pieces[-1].endswith(b"\n")
+    assert len(pieces) * PACE_GAP_S < 1.0, "a full page is written in under a second"
