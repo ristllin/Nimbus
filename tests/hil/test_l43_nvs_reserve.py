@@ -24,8 +24,9 @@ Legs (unit L, the fill unit, on the TEST build: ``NVSFILL``, ``TURN``, ``OTASIM`
   reserve+1 the operator sends one message; the Telegram offset lands (no
   ``tgOffset`` in ``nvs.recentFails``) while a save answers 507.
 * ``test_l43_spawn_routine_restart_at_reserve`` (hil + net + agent, about $0.06 on
-  ``claude-haiku-5-5``; v4.6, lane C2): at reserve+1 a turn spawns two sub-agents and
-  a routine fires; then the device restarts. Every moved store is a file in /data
+  ``claude-haiku-5-5``; v4.6, lane C2): at reserve+1 a turn spawns two sub-agents, the
+  device restarts, and a routine fires (after the restart: a fragmented heap defers
+  routine fires). Every moved store is a file in /data
   (``FLSTAT``: the sub-agent journal, routines, the usage ledger, the managed-agent
   ids), nothing new is refused in ``nvs.recentFails`` (no ``agjournal.*``, no file
   key), the settings storage did not shrink, and the jobs finish.
@@ -308,15 +309,8 @@ def assert_on_flash(device, paths, when: str) -> None:
         assert flash_file(device, path) > 0, f"{path} is not on flash {when}"
 
 
-def start_routine_and_spawns(device, net) -> None:
-    """A routine that fires in two minutes, and a turn that spawns two helpers."""
-    sched = '{"kind":"once","in_seconds":120}'
-    r = net.post(
-        "/api/loops",
-        {"action": "create", "name": "l43 routine", "prompt": "Reply with exactly: routine ping", "schedule": sched},
-        timeout=8.0,
-    )
-    assert r.status_code == 200, f"routine create: HTTP {r.status_code} {r.text[:120]}"
+def start_spawns(device, net) -> None:
+    """A turn that spawns two helpers; both finish."""
     device.drain(quiet=0.3)
     device.turn(
         "Spawn two sub-agents now, each answering in one sentence: the chemical symbol for gold, "
@@ -324,7 +318,28 @@ def start_routine_and_spawns(device, net) -> None:
     )
     assert count_spawns(device, 2, 180) >= 1, "the turn spawned no sub-agent (nothing to judge)"
     assert jobs_drained(net, 300), "the jobs did not finish"
-    device.expect_re(r"loops: fired 'l43 routine'", timeout=240.0)
+
+
+def routine_fired(net, name: str) -> bool:
+    """A one-time routine retires after its fire (or records a run)."""
+    loops = net.get_json("/api/loops", timeout=8.0) or []
+    mine = [lp for lp in loops if lp.get("name") == name]
+    return not mine or int(mine[0].get("lastRun", 0) or 0) > 0
+
+
+def fire_routine(net) -> None:
+    """A routine that fires in two minutes (one cheap scheduled turn); waits for the fire."""
+    sched = '{"kind":"once","in_seconds":120}'
+    r = net.post(
+        "/api/loops",
+        {"action": "create", "name": "l43 routine", "prompt": "Reply with exactly: routine ping", "schedule": sched},
+        timeout=8.0,
+    )
+    assert r.status_code == 200, f"routine create: HTTP {r.status_code} {r.text[:120]}"
+    assert wait_until(lambda: any(lp.get("name") == "l43 routine" for lp in net.get_json("/api/loops") or []), 60), (
+        "the routine was not created"
+    )
+    assert wait_until(lambda: routine_fired(net, "l43 routine"), 420, every=10.0), "the routine did not fire"
 
 
 @pytest.mark.hil
@@ -336,18 +351,20 @@ def test_l43_spawn_routine_restart_at_reserve(device, net, orch, secrets):
     use_haiku(net)
     st0 = fill_to_reserve_plus_one(device, net)
     free0, fails0 = free_entries(st0), set(failed_keys(st0))
-    start_routine_and_spawns(device, net)
+    start_spawns(device, net)
     st = state(net)
     assert_no_new_store_failures(st, fails0)
     assert free_entries(st) >= free0 - 1, f"the settings storage shrank: {free0} -> {free_entries(st)}"
-    assert_on_flash(device, MOVED_FILES, "after the spawn and the routine")
+    assert_on_flash(device, ("/data/agjournal.json", "/data/usage_ledger.txt"), "after the spawn")
     # The managed-agent ids exist once an Anthropic sub ran through managed agents.
     ant = [flash_file(device, p) for p in ANT_FILES]
     restart(device, net)
+    # The routine fires after the restart (a fresh heap: a fragmented one defers fires).
+    fire_routine(net)
     st = state(net)
     assert_no_new_store_failures(st, set())
     assert free_entries(st) >= free0 - 1, f"the settings storage shrank across the restart: {free_entries(st)}"
-    assert_on_flash(device, MOVED_FILES, "after the restart")
+    assert_on_flash(device, MOVED_FILES, "after the restart and the routine")
     assert [flash_file(device, p) for p in ANT_FILES] == ant
     assert device.ping(timeout=6.0)
 
