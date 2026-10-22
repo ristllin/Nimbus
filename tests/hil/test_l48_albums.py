@@ -38,8 +38,8 @@ Unit L (the fill unit, TEST build):
   the restart keeps the count (the guard record survives it). The store is freed in a
   ``finally``.
 * ``test_l48_guard_is_fresh_after_a_flash``: the first boot of a newly flashed image
-  starts a fresh guard record and counts nothing (a fresh device); run it alone right
-  after the flash, before any other leg (it reads that boot without restarting it).
+  starts a fresh guard record and counts nothing (a fresh device); read from the durable
+  log over HTTP (that boot is over before a console could watch it).
 
 Human gate (manual, H2-1 to H2-4): a real 3-photo album from the phone gets one reply
 covering all three; a text 2 s after an album joins it; a text 20 s after gets its own
@@ -109,6 +109,45 @@ def guard_counts(line: str) -> Dict[str, int]:
     return {k: -1 if v is None else int(v) for k, v in zip(keys, m.groups())}
 
 
+BOOT_RE = re.compile(r"\bboot: n=\d+ .*?\bbuild=(\S+)")
+
+
+def log_files_oldest_first(names: Iterable[str]) -> List[str]:
+    """The durable log's files, oldest first: ``nimbus.log.<n>`` from the highest n
+    down, then the active ``nimbus.log``."""
+    rotated = sorted(
+        (n for n in names if re.fullmatch(r"nimbus\.log\.\d+", n)), key=lambda n: -int(n.rsplit(".", 1)[1])
+    )
+    return rotated + [n for n in names if n == "nimbus.log"]
+
+
+def first_boot_guard_line(text: str, build: str) -> Optional[str]:
+    """The ``storm guard`` line of the first boot of ``build`` in a durable log, or None
+    (no boot of that build, or its first boot logged no guard line)."""
+    in_first = False
+    for line in text.splitlines():
+        m = BOOT_RE.search(line)
+        if m:
+            if in_first:
+                return None
+            in_first = m.group(1) == build
+            continue
+        if in_first and "telegram: storm guard" in line:
+            return line
+    return None
+
+
+def photo_near(target_bytes: int, seed: int) -> bytes:
+    """A noise JPEG of at least ``target_bytes``, grown from a small frame (the bench
+    helper starts at 600 px, about 320 KB, whatever the target)."""
+    side = 160
+    while True:
+        data = tb.noise_jpeg(side, side * 3 // 4, seed)
+        if len(data) >= target_bytes:
+            return data
+        side = int(side * 1.1) + 1
+
+
 def stage_path(name: str) -> str:
     """The card path of a photo staged in the Files store (what ``LOCAL_`` names)."""
     return f"/mem/files/{STAGE_PROJECT}/{name}"
@@ -158,11 +197,13 @@ def album_page(
 
 
 def eleven_page(uid: int, chat: int, items: List[Tuple[str, int]]) -> str:
-    """A 10-photo album plus one lone photo in one page. Each photo carries only the
-    rendition the device keeps (no thumbnail): with the thumbnails the page is longer
-    than one console line."""
+    """A 10-photo album plus one lone photo in one page, each captioned with the page's
+    first update id (``eleven <uid>``, ``lone <uid>``) so its turns are found among
+    earlier runs'. Each photo carries only the rendition the device keeps (no
+    thumbnail): with the thumbnails the page is longer than one console line."""
     lone = tb.local_photo_update(uid + 10, chat, items[10][0], items[10][1])
-    ups = album_updates(uid, chat, items[:10], group="L48C") + [lone]
+    lone["message"]["caption"] = f"lone {uid}"
+    ups = album_updates(uid, chat, items[:10], caption=f"eleven {uid}", group="L48C") + [lone]
     for u in ups:
         u["message"]["photo"] = u["message"]["photo"][-1:]
     return tb.page(ups)
@@ -292,11 +333,24 @@ def owner_chat(device, net):
     _settle(net)
     before = _http(lambda: net.get("/api/orch", timeout=8.0), "reading the allowlist").json().get("tgAllow", "")
     chat = _chat()
+    _clear_chat_files(net, chat)
     _http(lambda: net.post("/api/orch", {"tgAllow": str(chat)}, timeout=8.0), "setting the allowlist")
     try:
         yield chat
     finally:
         _http(lambda: net.post("/api/orch", {"tgAllow": before}, timeout=8.0), "restoring the allowlist")
+        _clear_chat_files(net, chat)
+
+
+def _clear_chat_files(net, chat: int) -> None:
+    """Remove the photos earlier injected turns stored for the synthetic chat (project
+    ``chat-<id>``): they count against that sender's 8 MB limit, and on 22 Oct the 26th
+    staged photo of a bench run was refused for it ("over the sender's storage limit").
+    Only the synthetic chat: a real test chat's files are left alone."""
+    if chat != CHAT_DEFAULT:
+        return
+    r = net.post(f"/api/files/rmproject?project=chat-{chat}&confirm=DELETE", {}, timeout=20.0)
+    print(f"cleared chat-{chat}: HTTP {r.status_code} {r.text[:60]}")
 
 
 @pytest.fixture
@@ -308,7 +362,7 @@ def stage(net):
     def put(n: int, size: int, seed: int) -> List[Tuple[str, int]]:
         items = []
         for i in range(n):
-            data = tb.jpeg_near(size, seed=seed + i)
+            data = photo_near(size, seed=seed + i)
             name = f"p{seed}_{i}.jpg"
             url = f"http://{net.ip}/api/files/upload?project={STAGE_PROJECT}&name={name}"
             files = {"file": (name, data, "image/jpeg")}
@@ -340,7 +394,8 @@ def test_l48_album_of_three_is_one_turn(device, net, owner_chat, stage):
     time.sleep(10.0)
     items = stage(3, 120000, seed=4801)
     base = _state(net)
-    lines = _inject(device, album_page(uid, owner_chat, items, caption="All of this for dinner", group="L48A"))
+    caption = f"All of this for dinner {uid}"
+    lines = _inject(device, album_page(uid, owner_chat, items, caption=caption, group="L48A"))
     fetched = [ln for ln in lines if "telegram: attachment downloaded" in ln]
     described = [ln for ln in lines if re.search(r"telegram: media \d/3 describing", ln)]
     summary = lines[-1]
@@ -348,12 +403,12 @@ def test_l48_album_of_three_is_one_turn(device, net, owner_chat, stage):
     assert len(fetched) == 3, f"expected 3 downloads, got {len(fetched)}"
     assert len(described) in (0, 3), f"expected 3 descriptions (or none without a captioner): {described}"
     assert "3 messages batched into 1 turn" in summary, summary
-    rows = _wait(lambda: album_turn_rows(_episodic(net), 3), 120)
+    rows = _wait(lambda: [r for r in album_turn_rows(_episodic(net), 3) if caption in r["text"]], 120)
     assert len(rows) == 1, f"expected exactly one turn for the album, got {len(rows)}"
     got = labels_in(rows[0]["text"])
     assert [(k, n) for k, n, _ in got] == [(1, 3), (2, 3), (3, 3)], got
     assert all(ref for _, _, ref in got), "every fetched photo carries its content hash"
-    assert "They wrote: All of this for dinner" in rows[0]["text"]
+    assert f"They wrote: {caption}" in rows[0]["text"]
 
     def settled():
         s = _state(net)
@@ -395,10 +450,11 @@ def test_l48_eleven_photos_are_two_turns(device, net, owner_chat, stage):
     assert "10 messages batched into 1 turn" in lines[-1] and "resumes next cycle" in lines[-1], lines[-1]
     second = _lines_until(device, INJECT_DONE, 600)
     assert "1 message batched into 1 turn" in second[-1], second[-1]
-    tens = _wait(lambda: album_turn_rows(_episodic(net), 10), 120)
-    ones = album_turn_rows(_episodic(net), 1)
-    assert len(tens) == 1 and len(labels_in(tens[0]["text"])) == 10
-    assert any(items[10][0] not in r["text"] for r in ones)  # the 11th ran as its own turn
+    tens = _wait(lambda: [r for r in album_turn_rows(_episodic(net), 10) if f"eleven {uid}" in r["text"]], 120)
+    ones = [r for r in album_turn_rows(_episodic(net), 1) if f"lone {uid}" in r["text"]]
+    assert len(tens) == 1 and len(labels_in(tens[0]["text"])) == 10, tens
+    assert f"lone {uid}" not in tens[0]["text"], "the 11th photo must not ride the 10-photo turn"
+    assert len(ones) == 1, f"the 11th photo runs as its own turn: {ones}"
 
 
 def trace_summary(traces: List[Dict[str, int]]) -> Dict[str, int]:
@@ -423,7 +479,9 @@ def test_l48_ten_photos_against_one(device, net, owner_chat, stage):
     for r in range(3):
         for name, items in (("one", one), ("ten", ten)):
             uid = tb.first_update_id() + 4900 + 20 * r + (0 if name == "one" else 10)
-            traces = head_traces(_inject(device, album_page(uid, owner_chat, items, group=f"L48D{r}{name}")))
+            lines = _inject(device, album_page(uid, owner_chat, items, group=f"L48D{r}{name}"))
+            print(f"run {r} {name}: {lines[-1]}")
+            traces = head_traces(lines)
             assert traces, f"no head exchange traced in run {r} ({name})"
             runs[name].append(trace_summary(traces))
     for name in ("one", "ten"):
@@ -474,27 +532,32 @@ def test_l48_storm_one_turn_for_fifty_pages(device, net, owner_chat):
 
 
 @pytest.mark.hil
-def test_l48_guard_is_fresh_after_a_flash(allow_hardware, port):
+@pytest.mark.net
+def test_l48_guard_is_fresh_after_a_flash():
     """The first boot of a newly flashed image rebuilds the guard record (the previous
-    image's build id differs), so it counts nothing. The guard boots in begin(), so any
-    restart after the flash (the ``device`` fixture restarts the board when a session
-    opens) is already a second boot that keeps the rebuilt record: this leg opens its
-    own console without a reset and reads the boot it finds (``TGGUARD?`` ``kept=0``).
-    Run it alone, first, right after the flash; on a later boot it skips."""
-    if not allow_hardware:
-        pytest.skip("hardware gated: pass --allow-hardware")
-    from device import Device
+    image's build id differs), so it counts nothing. That boot is over before any
+    console can watch it (the flash's own restart starts it, and opening unit L's port
+    restarts the board again), so the leg reads it from the durable log over HTTP only,
+    with no fixture that would touch the device: the guard line of the first boot whose
+    boot record names the running build. Needs NIMBUS_TEST_IP and NIMBUS_TEST_TOKEN;
+    skips when that boot has rotated out of the log."""
+    import requests
 
-    dev = Device(port=port).open()
-    try:
-        g = _guard(dev, timeout=60.0)
-        up = int(dev.status(timeout=10.0).group("up"))
-    finally:
-        dev.close()
-    print(f"uptime {up}: {g}")
-    if g["kept"] == 1:
-        pytest.skip("not the first boot of this image: run this leg alone right after the flash")
-    assert g["kept"] == 0 and g["dups"] == 0 and g["tries"] == 0 and g["poison"] == 0, g
+    ip, tok = os.environ.get("NIMBUS_TEST_IP"), os.environ.get("NIMBUS_TEST_TOKEN")
+    if not (ip and tok):
+        pytest.skip("reads the durable log over HTTP: set NIMBUS_TEST_IP and NIMBUS_TEST_TOKEN")
+    hdr, base = {"X-Nimbus-Token": tok}, f"http://{ip}"
+    build = requests.get(base + "/api/state", headers=hdr, timeout=8).json()["build"]
+    names = [f["name"] for f in requests.get(base + "/api/errlog?list=1", headers=hdr, timeout=8).json()["files"]]
+    text = ""
+    for name in log_files_oldest_first(names):
+        q = "" if name == "nimbus.log" else f"?file={name}"
+        text += requests.get(base + "/api/errlog" + q, headers=hdr, timeout=30).text
+    line = first_boot_guard_line(text, build)
+    print(f"build {build}: {line}")
+    if line is None:
+        pytest.skip(f"the first boot of {build} is no longer in the durable log")
+    assert "storm guard fresh" in line and "page tries 0" in line and "duplicates 0" in line, line
 
 
 # ---- host tests for the helpers -------------------------------------------------------
@@ -581,6 +644,8 @@ def test_host_staged_pages_fit_one_console_line():
     page = eleven_page(999999999, 9999999999, items)
     body = json.loads(page)
     assert len(body["result"]) == 11 and body["result"][10]["message"].get("media_group_id") is None
+    assert body["result"][0]["message"]["caption"] == "eleven 999999999"
+    assert body["result"][10]["message"]["caption"] == "lone 999999999"
     assert body["result"][0]["message"]["photo"][-1]["file_id"] == "LOCAL_/mem/files/l48/p4821_0.jpg"
     assert command_line_problem("TGINJECT " + page) is None, len(page)
     assert len(page) < 3600, f"{len(page)} B leaves too little room under the console's line"
@@ -595,3 +660,26 @@ def test_host_paced_chunks():
     assert b"".join(pieces) == (page + "\n").encode()
     assert all(len(p) <= PACE_BYTES for p in pieces) and pieces[-1].endswith(b"\n")
     assert len(pieces) * PACE_GAP_S < 1.0, "a full page is written in under a second"
+
+
+@pytest.mark.host
+def test_host_first_boot_guard_line():
+    log = "\n".join(
+        [
+            "0 92 boot boot: n=747 fw=v4.5.16 build=v4.5.16-1-g13e56dbe reason=crash(watchdog)(0x07)",
+            "29 8836 - telegram: storm guard fresh (reset 6, page tries 0, duplicates 0)",
+            "0 92 boot boot: n=748 fw=v4.5.16 build=v4.5.16-9-g4276e945 reason=crash(watchdog)(0x07)",
+            "6 4141 - [sd] mounted",
+            "23 5829 - telegram: storm guard fresh (reset 6, page tries 0, duplicates 0)",
+            "0 92 boot boot: n=749 fw=v4.5.16 build=v4.5.16-9-g4276e945 reason=usb(0x15)",
+            "23 2618 - telegram: storm guard kept (reset 11, page tries 0, duplicates 0)",
+        ]
+    )
+    assert "n=" not in first_boot_guard_line(log, "v4.5.16-9-g4276e945")
+    assert first_boot_guard_line(log, "v4.5.16-9-g4276e945").startswith("23 5829")
+    assert first_boot_guard_line(log, "v4.5.16-1-g13e56dbe").startswith("29 8836")
+    assert first_boot_guard_line(log, "v9") is None
+    cut = log.replace("23 5829 - telegram: storm guard fresh (reset 6, page tries 0, duplicates 0)\n", "")
+    assert first_boot_guard_line(cut, "v4.5.16-9-g4276e945") is None, "a first boot without its line is not a later one"
+    names = ["nimbus.log", "nimbus.log.1", "nimbus.log.3", "nimbus.log.2"]
+    assert log_files_oldest_first(names) == ["nimbus.log.3", "nimbus.log.2", "nimbus.log.1", "nimbus.log"]
