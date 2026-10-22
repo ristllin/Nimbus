@@ -4,8 +4,12 @@ Two legs, run by the bench operator on a fill unit (never a production device):
 
 * ``test_b1_failure_provenance`` - a forced head 400 during the console ``DREAM``
   drill must leave the FIRST cause in every place a failure shows: the ``ev:error``
-  row, the turn-end row (present, at most 256 B), the ``ev:dream`` row,
-  ``/api/loops`` ``lastErr`` and ``device.status`` ``lastFail``. The faulted
+  row, the turn-end row (present, at most 256 B), the ``ev:dream`` row, the dream's
+  own status (``/api/state`` ``dream.err``) and ``device.status`` ``lastFail``. The
+  drill is not a scheduled fire, so it leaves the routine record (``/api/loops``)
+  as it was: the record's ``lastErr`` is written by the scheduler's fire and by the
+  boot reconcile of an interrupted night (host-tested in test_harness_dream_night;
+  the reconcile on hardware in test_l58_dream_quiet). The faulted
   requests bill nothing, so the settings store (NVS) must not change: STATUS
   ``nvs=`` / ``nvsfree=`` / ``nvsfail=`` are compared here, and the operator diffs
   raw NVS dumps taken before and after (``esptool read-flash 0x9000 0x6000``).
@@ -178,6 +182,37 @@ def dream_never_fired_reason(tail: List[str], waited_s: float) -> str:
     return f"{why}\nlast 20 lines:\n    {last}"
 
 
+# ---- B1 dream surfaces (host-tested) ----------------------------------------------
+# The routine record fields a scheduled fire moves; a console drill moves none of them.
+LOOP_FIRE_FIELDS = ("lastRun", "lastResult", "consecFails", "firesToday", "tokensToday", "lastErr")
+
+
+def dream_loop(loops) -> Optional[dict]:
+    """The reserved dream routine from a GET /api/loops answer (a list, or {"loops": [...]})."""
+    items = loops if isinstance(loops, list) else loops.get("loops", [])
+    return next((x for x in items if x.get("id") == "dream"), None)
+
+
+def drill_moved_loop(before: Optional[dict], after: Optional[dict]) -> Optional[str]:
+    """Why the drill moved the dream routine record, or None. A drill is not a
+    scheduled fire: it must not claim a run, burn a daily fire or roll the breaker."""
+    if before is None or after is None:
+        return f"the dream routine is missing from /api/loops (before={before}, after={after})"
+    moved = {k: (before.get(k), after.get(k)) for k in LOOP_FIRE_FIELDS if before.get(k) != after.get(k)}
+    return f"the drill moved the dream routine record: {moved}" if moved else None
+
+
+def drill_status_reason(dream: dict) -> Optional[str]:
+    """Why /api/state ``dream`` does not report the drill's failure, or None."""
+    if not dream.get("known"):
+        return f"/api/state reports no dream since boot: {dream}"
+    if dream.get("last") != "failed":
+        return f"/api/state dream.last is {dream.get('last')!r}, want 'failed': {dream}"
+    if not dream.get("err"):
+        return f"/api/state dream.err is empty for a failed night: {dream}"
+    return None
+
+
 def _watch(device, seconds: float) -> List[str]:
     """Every line the device logs for ``seconds`` (bounded)."""
     seen: List[str] = []
@@ -218,6 +253,7 @@ def test_b1_failure_provenance(device):
     if down:
         pytest.fail(f"B1 cannot run: {down}")
     before = _nvs(device)
+    loop_before = dream_loop(s.get(f"http://{ip}/api/loops", timeout=10).json())
     _provfault(device, f"api.anthropic.com 400 {ANTHROPIC_400}")
     fired, never = "", None
     try:
@@ -244,11 +280,12 @@ def test_b1_failure_provenance(device):
     assert len(end.encode()) <= TURN_END_ROW_MAX, f"turn-end row over {TURN_END_ROW_MAX} B: {end}"
     assert '"ok":false' in end and "anthropic" in end, f"turn-end row lacks the cause: {end}"
 
-    loops = s.get(f"http://{ip}/api/loops", timeout=10).json()
-    items = loops if isinstance(loops, list) else loops.get("loops", [])
-    dream_rec = next((x for x in items if "dream" in str(x.get("name", "")).lower()), None)
-    assert dream_rec and dream_rec.get("lastErr"), f"loops lastErr missing: {dream_rec}"
-    assert "anthropic" in dream_rec["lastErr"], f"loops lastErr does not name the first cause: {dream_rec}"
+    night = s.get(f"http://{ip}/api/state", timeout=10).json().get("dream", {})
+    why = drill_status_reason(night)
+    assert why is None, why
+    assert "anthropic" in night["err"] or FIRST_CAUSE[:20] in night["err"], f"dream.err lacks the cause: {night}"
+    moved = drill_moved_loop(loop_before, dream_loop(s.get(f"http://{ip}/api/loops", timeout=10).json()))
+    assert moved is None, moved
 
     st = _mcp(s, ip, "device.status", {})
     m = re.search(r'"lastFail":(\{.*?\}|null)', st)

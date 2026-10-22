@@ -14,7 +14,10 @@ import pytest
 from test_turn_record_bench import (
     EPIQ_PREVIEW_CHARS,
     NOT_MOUNTED,
+    dream_loop,
     dream_never_fired_reason,
+    drill_moved_loop,
+    drill_status_reason,
     epiq_rows_from_lines,
     find_row,
     storage_down_reason,
@@ -90,3 +93,60 @@ def test_dream_timeout_reason_names_the_cause_and_the_tail():
     # Old errors early in the session do not count once the log has moved on.
     stale = [MOUNT_ERR] * 5 + ["ORCH alive sta=1"] * 60
     assert "not mounted" not in dream_never_fired_reason(stale, 240)
+
+
+# ---- B1 dream surfaces ---------------------------------------------------------------
+# The record B1 read on unit L (22 Oct 2026): the 21 Oct scheduled fire, then a boot
+# reconcile that marked it failed. The drill had moved nothing, and the leg read it as
+# the drill's own record.
+LOOP = {
+    "id": "dream",
+    "name": "Dream",
+    "lastRun": 1792553405,
+    "lastResult": "fail",
+    "firesToday": 1,
+    "tokensToday": 3254,
+    "consecFails": 2,
+    "nextRun": 1792639800,
+}
+
+
+def test_the_dream_routine_is_found_by_id_in_either_answer_shape():
+    other = {"id": "lp1", "name": "Daydream digest"}
+    assert dream_loop([other, LOOP]) == LOOP
+    assert dream_loop({"loops": [other, LOOP]}) == LOOP
+    assert dream_loop([other]) is None
+
+
+def test_a_drill_that_leaves_the_routine_record_alone_passes():
+    after = dict(LOOP, nextRun=LOOP["nextRun"] + 60)  # nextRun is the scheduler's, not a fire field
+    assert drill_moved_loop(LOOP, after) is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("lastRun", 1792612402),
+        ("lastResult", "ok"),
+        ("consecFails", 3),
+        ("firesToday", 2),
+        ("tokensToday", 4000),
+        ("lastErr", "anthropic: messages HTTP 400"),
+    ],
+)
+def test_a_drill_that_moves_the_routine_record_fails(field, value):
+    why = drill_moved_loop(LOOP, dict(LOOP, **{field: value}))
+    assert why and field in why
+
+
+def test_a_missing_dream_routine_fails():
+    assert "missing" in drill_moved_loop(None, LOOP)
+    assert "missing" in drill_moved_loop(LOOP, None)
+
+
+def test_the_dream_status_must_report_the_failed_drill():
+    ok = {"known": True, "last": "failed", "cause": "provider-4xx", "err": "anthropic: messages HTTP 400: The request"}
+    assert drill_status_reason(ok) is None
+    assert "no dream since boot" in drill_status_reason({"known": False})
+    assert "want 'failed'" in drill_status_reason(dict(ok, last="ok"))
+    assert "empty" in drill_status_reason(dict(ok, err=""))

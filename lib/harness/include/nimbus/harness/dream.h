@@ -344,11 +344,13 @@ struct InterruptedNight {
 // night's streak or attempts are touched) and always names a started attempt (an
 // attempt of 0 reads as 1).
 InterruptedNight reconcileBoot(DreamState& st, const NightClock& c);
+// The cause of a night the restart cut short: the dream's lastErr, the routine
+// record's lastErr and /api/state dream.err all carry this sentence.
+inline constexpr const char* kRestartedError = "the device restarted during this run";
 // The loop-record half of that outcome (the scheduler's post-fire write never
-// ran): lastResult fail and consecFails +1, once - the caller clears the marker
-// durably first - plus nextRun at the retry (0 = keep the boot's next slot). The
-// lastErr sentence itself rides the dream's own surface until loops.json grows
-// lane T's lastErr field.
+// ran): lastResult fail with lastErr kRestartedError, and consecFails +1, once -
+// the caller clears the marker durably first - plus nextRun at the retry (0 = keep
+// the boot's next slot).
 void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
                            uint32_t retryAfterSec);
 

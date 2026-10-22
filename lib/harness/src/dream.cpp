@@ -667,7 +667,7 @@ InterruptedNight reconcileBoot(DreamState& st, const NightClock& c) {
   st.attemptsTonight = st.inflightAttempt;
   r.outcome = DreamOutcome::Failed;
   r.cause = "restarted";
-  r.error = "the device restarted during this run";
+  r.error = kRestartedError;
   r.attempt = st.inflightAttempt;
   r.stateSaved = true;   // the caller persists before applying anything
   // Retry while the marker's night is still the current local night and its
@@ -698,6 +698,10 @@ InterruptedNight reconcileBoot(DreamState& st, const NightClock& c) {
 void applyInterruptedToLoop(nimbus::orch::LoopRecord& l, uint64_t nowEpoch,
                             uint32_t retryAfterSec) {
   l.lastResult = nimbus::orch::LastResult::Fail;
+  // The cause rides the record like a scheduled fire's (onFireResult +
+  // noteFireError): a failed record never reads without one, and never keeps an
+  // older night's cause.
+  nimbus::orch::noteFireError(l, false, kRestartedError);
   if (l.consecFails < 255) l.consecFails++;   // the post-fire outcome write never ran
   if (retryAfterSec) l.nextRun = nowEpoch + retryAfterSec;
 }

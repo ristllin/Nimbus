@@ -221,7 +221,8 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
     clears it with its outcome. A boot that finds the marker without an outcome
     reconciles it: the night's verdict is fail ("the device restarted during this
     run"), one timeline row says the dream was interrupted, the failing-night streak
-    and the routine's failure count move exactly once, and the interrupted attempt
+    and the routine's failure count move exactly once (the routine record's
+    `lastErr` names the restart, never an older night's cause), and the interrupted attempt
     is one of the bounded retries - the routine runs again inside the night's window
     while it is still before 07:00 local. The reconcile waits until internal storage
     is mounted, the clock is set and the timeline and routine records are up. A state

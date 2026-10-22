@@ -1855,6 +1855,66 @@ static void test_memory_write_counters_on_the_registry_path() {
   TEST_ASSERT_EQUAL(2, (int)d.failed);
 }
 
+// The class rule for the routine record /api/loops reads: every write that records
+// a failed dream leaves its cause in lastErr. Two writers exist: the scheduler's
+// post-fire write (onFireResult + noteFireError with the night's FireOutcome) and the
+// boot reconcile of a night the restart cut short (applyInterruptedToLoop). The
+// reconcile used to set lastResult fail with no cause (or keep an older night's), so
+// /api/loops showed a failed dream that named nothing (unit L, 22 Oct 2026).
+static void test_every_failed_loop_record_names_its_cause() {
+  // The scheduler's write, over the ways a night's turn fails (an empty cause too).
+  const char* const causes[] = {"chat HTTP 503: down", "messages HTTP 400: credit balance is too low",
+                                "network: connect failed", "no text in the reply", ""};
+  for (const char* cause : causes) {
+    Night n;
+    n.turn = [cause] { return failWith(cause); };
+    dream::NightResult res = dream::runNight(n.deps(), clockAt(9, 210), false);
+    TEST_ASSERT_FALSE(res.fire.ok);
+    orch::LoopRecord loop = dream::reservedLoopRecord();
+    orch::onFireResult(loop, res.fire.ok, res.fire.tokens, 0, clockAt(9, 210).epoch);
+    orch::noteFireError(loop, res.fire.ok, res.fire.error);
+    TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)loop.lastResult);
+    TEST_ASSERT_FALSE_MESSAGE(loop.lastErr.empty(), cause);
+    if (*cause) TEST_ASSERT_TRUE_MESSAGE(loop.lastErr.find(cause) != std::string::npos, loop.lastErr.c_str());
+  }
+
+  // The reconcile's write, after an older night that failed for another cause and
+  // on a record whose last fire was ok: the restart is the cause either way.
+  Night crashed;
+  crashed.crash = true;
+  crashed.turn = [] { return failWith("chat HTTP 503: down"); };
+  dream::runNight(crashed.deps(), clockAt(9, 210), false);
+  dream::DreamState st = crashed.crashedFile;
+  dream::InterruptedNight v = dream::reconcileBoot(st, clockAt(9, 230));
+  TEST_ASSERT_TRUE(v.interrupted);
+  TEST_ASSERT_EQUAL_STRING(dream::kRestartedError, v.report.error.c_str());
+
+  orch::LoopRecord older = dream::reservedLoopRecord();
+  orch::onFireResult(older, false, orch::TokenUsage{}, 0, clockAt(8, 210).epoch);
+  orch::noteFireError(older, false, "chat HTTP 503: down");
+  orch::LoopRecord okBefore = dream::reservedLoopRecord();
+  orch::onFireResult(okBefore, true, orch::TokenUsage{}, 7, clockAt(8, 210).epoch);
+  orch::noteFireError(okBefore, true, "");
+  TEST_ASSERT_TRUE(okBefore.lastErr.empty());
+  for (orch::LoopRecord* loop : {&older, &okBefore}) {
+    dream::applyInterruptedToLoop(*loop, clockAt(9, 230).epoch, v.report.retryAfterSec);
+    TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)loop->lastResult);
+    TEST_ASSERT_EQUAL_STRING(dream::kRestartedError, loop->lastErr.c_str());
+  }
+
+  // The cause survives loops.json (the file /api/loops is read from) and an ok fire
+  // clears it again.
+  std::vector<orch::LoopRecord> back;
+  TEST_ASSERT_TRUE(orch::loadLoops(orch::dumpLoops({older}), back));
+  TEST_ASSERT_EQUAL(1, (int)back.size());
+  TEST_ASSERT_EQUAL((int)orch::LastResult::Fail, (int)back[0].lastResult);
+  TEST_ASSERT_EQUAL_STRING(dream::kRestartedError, back[0].lastErr.c_str());
+  orch::onFireResult(back[0], true, orch::TokenUsage{}, 9, clockAt(10, 210).epoch);
+  orch::noteFireError(back[0], true, "");
+  const std::string okJson = orch::dumpLoops(back);
+  TEST_ASSERT_TRUE_MESSAGE(okJson.find("lastErr") == std::string::npos, okJson.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
@@ -1891,5 +1951,6 @@ int main(int, char**) {
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);
+  RUN_TEST(test_every_failed_loop_record_names_its_cause);
   return UNITY_END();
 }
