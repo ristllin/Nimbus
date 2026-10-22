@@ -374,10 +374,11 @@ def test_head_custom_turn(custom_backend):
         except Exception:  # noqa: BLE001 - the echo is advisory; turn still fires
             pass
 
-        deadline = time.time() + 90.0
-        while time.time() < deadline and not requests_for_turn(be.server.requests_for("mock-toolloop"), ask):
-            time.sleep(0.5)
-        got = requests_for_turn(be.server.requests_for("mock-toolloop"), ask)
+        deadline, got = time.time() + 90.0, []
+        while time.time() < deadline and not got:
+            got = requests_for_turn(be.server.requests_for("mock-toolloop"), ask)
+            if not got:
+                time.sleep(0.5)
         assert got, (
             "the device never POSTed the HEAD turn to the mock - "
             "orchHost=custom did not route (head-custom path broken?)"

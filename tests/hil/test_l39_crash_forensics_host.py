@@ -515,6 +515,16 @@ def test_a_crash_boot_the_console_missed_is_judged_over_the_lan_and_the_console_
     assert dev.calls[-3:] == ["close", "bus_reset", "reopen"]
 
 
+def test_a_console_that_does_not_come_back_fails_loudly_at_the_reboot():
+    """The crash boot answered over the LAN but the bus reset did not win the console
+    back: fail here, naming the wedge, not at the next leg's first command."""
+    dev = _SilentDevice()
+    dev._transcript = ["entry 0x403c88b8"]
+    dev.ping = lambda timeout=3.0: False
+    with pytest.raises(l39.ExpectTimeout, match="USB wedge"):
+        l39._await_crash_reboot(dev, _StateNet(277), "192.0.2.1", 276, 10.0)
+
+
 def test_a_silent_console_with_no_new_boot_is_still_a_failure(monkeypatch):
     monkeypatch.setattr(l39, "_new_boot_seen", lambda net, ip, before_n, budget_s: False)
     with pytest.raises(l39.ExpectTimeout):

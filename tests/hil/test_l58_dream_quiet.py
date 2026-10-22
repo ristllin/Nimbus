@@ -58,7 +58,7 @@ from typing import Optional
 import pytest
 
 from device import Device, ExpectTimeout
-from test_l39_crash_forensics import _new_boot_seen, console_after_silent_boot
+from test_l39_crash_forensics import console_after_silent_boot, host_link_dropped
 from test_turn_record_bench import _epiq
 
 pytestmark = [pytest.mark.hil, pytest.mark.agent]
@@ -215,7 +215,7 @@ def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
         )
         # The owner turn must END before the drill: "orchestrator: turn" also matches
         # the turn's start line, so the night used to queue behind a running turn.
-        orch.expect("turn end:", timeout=180.0)
+        orch.expect("turn end:", timeout=420.0)  # failing memory tools can stretch the owner turn
         orch.drain(quiet=2.0)
         window = _drill(orch, timeout=480.0)  # every memory write of the night fails and may be retried
     finally:
@@ -285,7 +285,7 @@ def _await_armed_panic_reboot(
     try:
         dev.wait_ready(timeout=90.0)
     except ExpectTimeout:
-        if net is None or not _new_boot_seen(net, ip, before_n, 60.0):
+        if not host_link_dropped(net, ip, before_n):
             raise
         raise SilentConsole(line) from None
     return line

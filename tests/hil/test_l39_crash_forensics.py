@@ -381,6 +381,12 @@ def _new_boot_seen(net, ip: str, before_n: Optional[int], budget_s: float) -> bo
     return value is not None and value > before_n
 
 
+def host_link_dropped(net, ip: str, before_n: Optional[int], budget_s: float = 60.0) -> bool:
+    """A console that went silent where a reboot should answer is the host link, not
+    the board, once a boot newer than ``before_n`` answers over the LAN."""
+    return net is not None and _new_boot_seen(net, ip, before_n, budget_s)
+
+
 def console_after_silent_boot(device) -> bool:
     """Win the console back after a reboot the host link missed. On the S3's native
     USB the console can stay silent after a panic reset while the board boots and
@@ -427,10 +433,15 @@ def _await_crash_reboot(device, net, ip: str, before_n: Optional[int], timeout: 
         # A silent console after the reset is the host link, not the board, once a
         # new boot answers over the LAN: judge the crash there (the report is read
         # over HTTP anyway) and win the console back for the next leg.
-        if not _new_boot_seen(net, ip, before_n, 60.0):
+        if not host_link_dropped(net, ip, before_n):
             raise
         print("[L39] the console stayed silent after the reset; the new boot answered over the LAN")
-        console_after_silent_boot(device)
+        if not console_after_silent_boot(device):
+            raise ExpectTimeout(
+                "the console after a bus reset (the crash boot answers over the LAN; a USB wedge: "
+                "tools/usb_reset.py --skip <other unit MAC> --any)",
+                device._transcript,
+            ) from None
         return None
 
 

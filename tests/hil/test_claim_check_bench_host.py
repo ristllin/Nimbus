@@ -169,7 +169,7 @@ class FakeUnit:
         self.requests.append(self.model)
         reply = {"mock-claim-saved": SAVED_REPLY, "mock-claim-durable": DURABLE_REPLY}.get(self.model, "mock says hi")
         if self.model == "mock-claim-saved":
-            fact = CLAIM_TURNS["mock-claim-saved"]["mem_write"][0]["content"]
+            fact = NOTE
             if fact in self.stored.values():  # a duplicate: already saved, the reply is true
                 pass
             elif self.embed_fail:  # queued (or coalesced with a queued copy), not saved yet
