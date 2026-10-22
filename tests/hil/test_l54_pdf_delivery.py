@@ -55,10 +55,6 @@ except ImportError:  # pragma: no cover
     requests = None
 
 ROUTES = {"openai", "anthropic", "device", "nostore", "nocapture", "sandboxoff", "nokey"}
-PDF_PROMPT = (
-    "Make a one-page PDF titled 'Bench check' with two short paragraphs about the moon and a "
-    "two-row table of its distance and diameter, save it, and tell me the file name."
-)
 
 
 def _lan():
@@ -303,23 +299,37 @@ def test_archive_routes_answer_busy_through_the_relay_during_a_turn(device):
 # ---- the settings store (unit L) ------------------------------------------------------
 
 
+# Filled the way test_l43_nvs_reserve.py fills it: erase the filler keys, then ONE
+# NVSFILL sized from /api/state. NVSFILL n rewrites the keys k0..k{n-1} in place, so
+# repeating a small fill never takes more space (the first bench run looped
+# "NVSFILL 64" forty times and never got past the first 64 entries).
+LEAVE_FREE = 10  # entries left free: under the reserve, as on 19 Oct
+
+
+def _health_row(s, ip, key):
+    h = s.get(_url(ip, "/api/health"), timeout=15).json()
+    return h, next((c for c in h["components"] if c["key"] == key), None)
+
+
 @pytest.mark.hil
 def test_full_settings_store_shows_the_row_then_clears(device):
+    from test_l43_nvs_reserve import RESERVE, free_entries, nvs_fill, nvs_free
+
     ip, s = _lan()
     try:
-        for _ in range(40):
-            out = device.cmd("NVSFILL 64", expect="NVSFILL", timeout=20.0)
-            if "full=1" in out:
-                break
-        h = s.get(_url(ip, "/api/health"), timeout=15).json()
-        row = next((c for c in h["components"] if c["key"] == "nvs"), None)
+        nvs_free(device)
+        st = s.get(_url(ip, "/api/state"), timeout=15).json()
+        nvs_fill(device, max(0, free_entries(st) - LEAVE_FREE))
+        free = free_entries(s.get(_url(ip, "/api/state"), timeout=15).json())
+        assert free < RESERVE, f"the fill left {free} free entries, not under the reserve of {RESERVE}"
+        h, row = _health_row(s, ip, "nvs")
         assert row and row["state"] == "degraded", h["components"]
+        assert f"under the reserve of {RESERVE}" in row["detail"], row["detail"]
         assert "entries free" in row["detail"]
         assert h["degraded"] >= 1  # the Home panel is amber
     finally:
-        device.cmd("NVSFILL 0", expect="NVSFILL", timeout=20.0)
-    h = s.get(_url(ip, "/api/health"), timeout=15).json()
-    row = next((c for c in h["components"] if c["key"] == "nvs"), None)
+        nvs_free(device)
+    h, row = _health_row(s, ip, "nvs")
     # Freed: the row is gone, or (a save failed while full) it no longer says "under the reserve".
     assert row is None or "under the reserve" not in row["detail"], row
 
@@ -372,33 +382,84 @@ def test_device_pdf_writer_saves_a_real_pdf_and_refuses_oversize():
             s.post(_url(ip, "/api/files/rm"), data={"project": "l54", "name": name}, timeout=10)
 
 
+# Each route asks for its own file name and deletes it first, so a file left by an
+# earlier run (or by another route: the first bench run reused one name for every
+# route) can never pass for this run's result. The prompt names the route's
+# mechanism, so the leg exercises that route rather than whichever the head prefers.
+RECIPE_PROJECT = "l54"
+ROUTE_HOW = {
+    "openai": "Make it in an openai sub-agent's code sandbox (code_interpreter), not with the device's own writer.",
+    "anthropic": "Make it in an anthropic sub-agent's sandbox, not with the device's own writer.",
+    "device": "Make it with the device's own PDF writer (files.pdf).",
+}
+MADE_BY = {  # the log line each route writes for a PDF, naming "<project>/<name>"
+    "openai": r"files: captured (\S+/\S+\.pdf) \(\d+ B\) from openai",
+    "anthropic": r"files: captured (\S+/\S+\.pdf) \(\d+ B\) from anthropic",
+    "device": r"files: wrote (\S+/\S+\.pdf) \(\d+ B, \d+ pages?\) with the device PDF writer",
+}
+
+
+def recipe_prompt(route: str, name: str) -> str:
+    return (
+        "Make a one-page PDF titled 'Bench check' with two short paragraphs about the moon and a two-row "
+        f"table of its distance and diameter. Save it in project {RECIPE_PROJECT} as {name}, and tell me the "
+        f"file name. {ROUTE_HOW[route]}"
+    )
+
+
+def _pdf_versions(s, ip):
+    """Every PDF under Files as "<project>/<name>" -> (bytes, createdAt): a rewrite
+    of an existing name shows as a changed value, not as nothing new."""
+    files = s.get(_url(ip, "/api/files/list"), timeout=20).json()
+    rows = files.get("files", files) if isinstance(files, dict) else files
+    return {
+        f"{f.get('project')}/{f.get('name')}": (f.get("bytes"), f.get("createdAt"))
+        for f in rows
+        if str(f.get("name", "")).lower().endswith(".pdf")
+    }
+
+
 @pytest.mark.agent
 @pytest.mark.net
 def test_pdf_recipe_end_to_end():
     from webrig import chat_turn
 
     want = os.environ.get("NIMBUS_L54_ROUTE")
-    if want not in ("openai", "anthropic", "device"):
+    if want not in ROUTE_HOW:
         pytest.skip("set NIMBUS_L54_ROUTE to the route this unit is set up for (openai, anthropic or device)")
     ip, s = _lan()
     o = s.get(_url(ip, "/api/orch"), timeout=15).json()
     assert o.get("pdfRoute") == want, f"the unit's PDF route is {o.get('pdfRoute')}, not {want}"
+    name = f"bench-{want}-{int(time.time())}.pdf"
+    s.post(_url(ip, "/api/files/rm"), data={"project": RECIPE_PROJECT, "name": name}, timeout=10)
+    before = _pdf_versions(s, ip)
+    asked = f"{RECIPE_PROJECT}/{name}"
+    assert asked not in before, f"{asked} is still under Files after the delete"
     st0 = s.get(_url(ip, "/api/state"), timeout=15).json()
-    before = _pdfs(s, ip)
-    reply = chat_turn(s, ip, PDF_PROMPT, timeout_s=420.0)
-    # A sub-agent route lands its file after the turn (the job finishes later).
+    made = re.compile(MADE_BY[want])
+    seen = set(made.findall(s.get(_url(ip, "/api/log"), timeout=20).text))  # lines from before this run
+    reply = chat_turn(s, ip, recipe_prompt(want, name), timeout_s=420.0)
+    # A sub-agent route lands its file after the turn (the job finishes later). The
+    # log is a ring, so it is read on every pass: a capture line is kept even when
+    # the ring rolls past it before the wait ends.
     deadline = time.time() + 600
-    new = set()
-    while time.time() < deadline and not new:
-        new = _pdfs(s, ip) - before
-        if not new:
-            time.sleep(10)
+    new, made_now = {}, set()
+    while time.time() < deadline:
+        made_now |= set(made.findall(s.get(_url(ip, "/api/log"), timeout=20).text)) - seen
+        now = _pdf_versions(s, ip)
+        new = {n: v for n, v in now.items() if before.get(n) != v}  # new, or rewritten since
+        if made_now & set(new):  # this route's line names a file that is new
+            break
+        time.sleep(10)
     assert new, f"no new PDF under Files; reply: {reply[:300]!r}"
-    log = s.get(_url(ip, "/api/log"), timeout=20).text
-    if want == "device":
-        assert "with the device PDF writer" in log
-    else:
-        assert re.search(rf"files: captured \S+ \(\d+ B\) from {want}", log), "no capture line in the log"
+    assert made_now, f"no {want} line for a PDF in the log ({MADE_BY[want]}); new files: {sorted(new)}"
+    assert made_now & set(new), f"the {want} line names {sorted(made_now)}, the new files are {sorted(new)}"
+    got = sorted(made_now & set(new))[0]
+    project, fname = got.split("/", 1)
+    pdf = s.get(_url(ip, "/api/files/dl"), params={"project": project, "name": fname}, timeout=30)
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF"), pdf.content[:16]
+    if got != asked:
+        print(f"[l54] the PDF was saved as {got}, not the asked {asked}")
     st1 = s.get(_url(ip, "/api/state"), timeout=15).json()
     assert st1["nvs"]["fails"] == st0["nvs"]["fails"], "a settings save failed during the PDF run"
 
@@ -418,7 +479,7 @@ def test_pdf_request_without_an_sd_card_says_so():
     assert o.get("pdfRoute") == "nostore", o.get("pdfRoute")
     made = re.compile(r"files: captured \S+\.pdf|with the device PDF writer")
     made0 = len(made.findall(s.get(_url(ip, "/api/log"), timeout=20).text))
-    reply = chat_turn(s, ip, PDF_PROMPT, timeout_s=420.0)
+    reply = chat_turn(s, ip, recipe_prompt("device", f"bench-nostore-{int(time.time())}.pdf"), timeout_s=420.0)
     assert re.search(r"\bSD\b|card", reply, re.I), f"the reply does not say why: {reply[:300]!r}"
     made1 = len(made.findall(s.get(_url(ip, "/api/log"), timeout=20).text))
     assert made1 <= made0, "a PDF was made with no SD card"

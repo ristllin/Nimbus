@@ -36,7 +36,6 @@ PDFs, connectors and the web page:
 - **A file that cannot be sent says so.** When a file queued for Telegram fails to upload, the chat gets one line naming it and saying it is still under Files, instead of silence.
 - **Lighter page loads through the cloud.** The page and its script now load as two smaller responses, so the page fits the cloud link with room to grow.
 
-
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

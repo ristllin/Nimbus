@@ -16,11 +16,10 @@ async function fixtures(page) {
   if (ON_DEVICE) return;
   const json = (body) => (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   await page.route('**/api/state', json({ ...STATE, nvs: { ok: true, used: 20160, free: 0, total: 20160, low: true, fails: 266, lastFail: 'usgLedger', recentFails: [] }, nvsReserve: { entries: 16, refused: 12, evicted: 3, starved: true } }));
-  await page.route('**/api/health', json({ ok: 9, degraded: 3, absent: 1, components: [
+  await page.route('**/api/health', json({ ok: 9, degraded: 2, absent: 1, components: [
     { key: 'wifi', label: 'Wi-Fi', state: 'ok', detail: 'connected -58 dBm' },
     { key: 'nvs', label: 'Settings storage', state: 'degraded', detail: "266 saves failed since start, last usgLedger, 0 entries free (under the reserve of 16); the reserve cannot be restored. Remove connectors you don't use to free space." },
-    { key: 'provider_openai', label: 'Provider openai', state: 'degraded', detail: 'out of credit (HTTP 429) for 90 min; turns skip it until it answers again' },
-    { key: 'provider_anthropic', label: 'Provider anthropic', state: 'degraded', detail: 'out of credit (HTTP 400) for 3 h; turns skip it until it answers again' }] }));
+    { key: 'providers', label: 'Providers', state: 'degraded', detail: 'openai says the account is out of credit (HTTP 429); it is checked again in 10 minutes; anthropic says the account is out of credit (HTTP 400); it is checked again in 10 minutes' }] }));
   await page.route('**/api/orch', json({ ...ORCH, codeSbx: 1, pdfRoute: 'openai' }));
   await page.route('**/api/connectors', json({
     configured: [{ name: 'gcal', type: 'gcal', prov: 'mistral', kind: 'connector', en: 1, auth: 2, ws: 'unchecked' },
