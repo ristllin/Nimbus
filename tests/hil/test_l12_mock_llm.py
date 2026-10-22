@@ -382,9 +382,17 @@ def test_salvage_on_bad_json(custom_backend):
     got = be.server.wait_for_request("mock-badjson", count=1, timeout=SPAWN_WAIT_S)
     assert got, "the device never POSTed to the mock"
 
-    # dispatchSpawn: FabricErr::ParseFail -> spawnRefusal's ParseFail words
-    # (lib/harness/src/jobs.cpp) to the serial chat.
-    be.device.expect("The agent on custom answered, but I couldn't read its result", timeout=90.0)
+    # dispatchSpawn: the failed sub's honest words (spawnRefusal, lib/harness/src/
+    # jobs.cpp) reach the serial chat: ParseFail "answered, but I couldn't read its
+    # result" when the cut body parses to no content; Timeout "didn't respond in time"
+    # when the transport reads the cut body as no complete answer. Never silence.
+    try:
+        be.device.expect_re(
+            r"The agent on custom (answered, but I couldn't read its result|didn't respond in time)", timeout=90.0
+        )
+    except Exception:  # noqa: BLE001 - report what the console did say about the sub
+        seen = [ln for ln in be.device._transcript if "custom" in ln or "spawn" in ln]
+        pytest.fail(f"no honest failure line for the cut sub answer; console said: {seen[-12:]}")
 
     # The truncated body must never surface to the owner.
     marker = BADJSON_BODY.decode()[:20]

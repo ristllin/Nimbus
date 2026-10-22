@@ -169,16 +169,18 @@ def test_failed_quiet_dream_sends_nothing_and_says_failed(orch: Device):
 
 
 def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
-    orch.turn(
-        "Please remember for later: my sister Anna's birthday is on 3 March, and I work from home on Fridays now."
-    )
-    # The owner turn must END before memory fails: "orchestrator: turn" also matches
-    # the turn's start line, so the fault used to land mid-turn and the night queued
-    # behind a turn whose memory tools kept failing (the 240 s wait ran out).
-    orch.expect("turn end:", timeout=180.0)
-    orch.drain(quiet=2.0)
+    # Memory fails from BEFORE the owner turn, so the day's facts are not stored by
+    # the turn itself and the night has something to write; its writes then fail too.
+    # The owner turn must END before the drill: "orchestrator: turn" also matches the
+    # turn's start line, so the night used to queue behind a turn still running and
+    # the 240 s wait ran out.
     orch.cmd("FAULT memory on", "FAULT memory=1", timeout=5.0)
     try:
+        orch.turn(
+            "Please remember for later: my sister Anna's birthday is on 3 March, and I work from home on Fridays now."
+        )
+        orch.expect("turn end:", timeout=420.0)  # failing memory tools can stretch the owner turn
+        orch.drain(quiet=2.0)
         window = _drill(orch, timeout=480.0)  # every memory write of the night fails and is retried by the model
     finally:
         orch.cmd("FAULT clear", "FAULT cleared", timeout=5.0)
@@ -186,14 +188,17 @@ def test_failed_writes_make_the_night_degraded_with_counts(orch: Device):
     rows = _dream_rows(orch)
     assert rows, "no ev:dream row was written"
     newest = rows[0]
-    assert not newest.startswith("Nightly dream ok"), newest
+    m = re.search(r"(\d+) of (\d+) memories stored \(.*?(\d+) failed\)", newest)
+    assert m, f"the dream row carries no write counts: {newest}"
+    attempted, failed = int(m.group(2)), int(m.group(3))
     if newest.startswith("Nightly dream degraded"):
-        m = re.search(r"(\d+) failed\)", newest)
-        assert m and int(m.group(1)) >= 1, newest
-    else:
-        # The model chose not to write (allowed on a short day): the row still
-        # reports the counts and is not "ok" with writes that failed.
-        assert "memories stored" in newest, newest
+        assert failed >= 1, newest
+        return
+    # Any other night must not hide a failed write behind "ok".
+    assert failed == 0, f"a night with failed writes did not say degraded: {newest}"
+    if attempted == 0:
+        pytest.skip(f"the model wrote nothing tonight, so the degraded path did not run (allowed): {newest}")
+    pytest.fail(f"writes were attempted with memory failing, yet none failed: {newest}")
 
 
 def test_dream_writes_no_nvs(orch: Device):
