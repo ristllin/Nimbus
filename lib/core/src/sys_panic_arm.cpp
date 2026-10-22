@@ -1,6 +1,6 @@
 #include "nimbus/sys/panic_arm.h"
 
-#include <sstream>
+#include <cctype>
 
 namespace nimbus::sys {
 
@@ -28,12 +28,21 @@ static bool parseRound(const std::string& tok, int& round) {
   return true;
 }
 
+// The next whitespace-separated token of `s` from `pos` ("" at the end). Hand-rolled
+// on purpose: an std::istringstream links the libstdc++ locale, about 3.5 KB of
+// static internal RAM on the device for a two-word parser.
+static std::string nextToken(const std::string& s, size_t& pos) {
+  while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+  const size_t start = pos;
+  while (pos < s.size() && !std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+  return s.substr(start, pos - start);
+}
+
 bool parsePanicArm(const std::string& spec, PanicArm& out) {
   PanicArm arm;
   bool haveKind = false, haveRound = false;
-  std::istringstream in(spec);
-  std::string tok;
-  while (in >> tok) {
+  size_t pos = 0;
+  for (std::string tok = nextToken(spec, pos); !tok.empty(); tok = nextToken(spec, pos)) {
     PanicKind k = PanicKind::None;
     if (tok == "nullptr") k = PanicKind::NullStore;
     else if (tok == "abort") k = PanicKind::Abort;

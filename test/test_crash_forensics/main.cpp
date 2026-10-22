@@ -828,6 +828,9 @@ static void test_panic_arm_spec_grammar() {
   TEST_ASSERT_EQUAL_INT(7, a.round);
   TEST_ASSERT_TRUE(parsePanicArm("round=0", a));
   TEST_ASSERT_EQUAL(PanicKind::NullStore, a.kind);
+  TEST_ASSERT_TRUE(parsePanicArm("\tabort\tround=3\n", a));   // any whitespace separates
+  TEST_ASSERT_EQUAL(PanicKind::Abort, a.kind);
+  TEST_ASSERT_EQUAL_INT(3, a.round);
   const char* bad[] = {"twdt", "oom", "abort abort", "round=", "round=51", "round=-1", "round=1 round=2",
                        "round=x", "nullptr extra", "ROUND=1", "round=100"};
   for (const char* b : bad) {
