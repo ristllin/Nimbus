@@ -43,6 +43,8 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 | Provider model list (`GET /api/models`, the short list, the model checks) | LittleFS file `/data/models_<provider>.txt` | The model store: every verify rewrites it. Up to 160 models and 20 KB per provider, about 85 B a model, with the fetch time and the short list in its header. Nothing about the model list is written to NVS (before v4.6 the short list lived in NVS as `mch_<provider>`, about 832 B on a device with five providers) |
 | Usage ledger | LittleFS file `/data/usage_ledger.txt` | Owner spend history and budgets per provider, at most 12 providers and 48 attribution rows, and always under 3,800 B (a deleted routine's rows go first, then the smallest; provider counters never). Until v4.5.13 it lived in NVS as `usgLedger`, rewritten after every turn, and on a full partition most of a month's spend was lost. The move follows the rule below. Per-model prices left it unchanged, byte for byte: everything per model lives in the files below. OpenAI's cached and cache-written tokens are split out of its input in memory and in the files below, but the ledger keeps OpenAI's input with them included and its cache fields 0, so it does not grow; the split is restored from the per-model file at boot. While flash is unmounted and the ledger is served from its legacy NVS copy, a turn adds no new (provider, tag) attribution row: spend is still counted in the provider's totals and the files below |
 | Scratchpad | LittleFS file `/data/scratchpad.bin` | The assistant's working notes. Until v4.5.13 the `orchmem` key `scratchB` (and the older `scratch`); the same rule below |
+| Sub-agent journal | LittleFS file `/data/agjournal.json` | The helpers that are running (at most 6, each with the id the device re-attaches to after a restart) and the last 8 that finished (name, project, the file the result was saved to, when). Until v4.5.16 the running ones lived in the `agjournal` NVS namespace (`j0`..`j5`), where a full partition refused a started helper's record and a restart then lost it silently. One file, rewritten atomically on each change; the same rule below (the legacy records are read once at the first boot and written to the file at once). See [Orchestrator storage](../orchestrator-storage.md#the-sub-agent-journal) |
+| Managed-agent ids | LittleFS files `/data/ant_env.txt`, `/data/ant_agents.txt` | The Anthropic environment id and the per-model agent map (one entry per model a sub-agent has run on). Until v4.5.16 the NVS keys `antEnv` and `antAgents`; the map has no cap, so each new model grew it in NVS. The same rule below; before flash is mounted the legacy copy is read only |
 | Mistral workspace answer | LittleFS file `/data/mistral_ws.txt` | Which Studio connectors the Mistral key's workspace lists, from the last check that landed, so a restart or a check that cannot finish keeps a confirmed connector usable. Tagged with a short SHA-256 fingerprint of the key it was learned with (never the key); read only under that key, and removed when the Mistral key changes. Written only when a fresh answer differs from the stored one. Never in NVS |
 | Per-model spend | LittleFS file `/data/usage_models.txt` | Which models each provider's spend went to this period and all time. At most 32 rows, 8 named models per provider: a new model takes over that provider's oldest model with no spend this period, otherwise it folds into the provider's "other models" row, which is priced at the provider's highest known price; a provider with no row always gets one (another provider's smallest row folds into its own "other models"). Tracking starts at the first boot of a release with per-model prices, and the file is written then, before any turn records. The file marks that, whether the latest ledger write did not land, and keeps, per provider, the spend from before tracking started (earlier usage, priced at your default for that provider, else the highest price you set for one of its models, else the built-in default), spend whose model was lost, and the provider's all-time totals as of the latest ledger write that landed, with the part of them from before that write's billing period. At boot the rows must add up to the provider counters in the ledger file. Counters holding less all-time spend than that write did, or less than its spend from before its period plus their spend this period, were re-created (a settings-only reset, on this release or an earlier one): the file then describes none of them, and all of that provider's spend this period is priced at its highest known price. When the rows do not add up and the history shows an earlier release recorded since the latest turn a row recorded (it rewrites the history without models), that provider's spend this period is priced the same way. Otherwise, when the file is only behind the counters (one of its writes did not land) the rows stay and what they miss is priced at the provider's highest known price; when it may be ahead of them (a ledger write did not land), that provider's spend since tracking began loses its model and is priced at the provider's highest known price, never a cheaper one. If this file and the history are both gone while the ledger still counts spend (Erase Storage on a device with no SD card erases `/data`), the period's spend is priced the same way. What a boot decides about re-created or vanished counters is written to the file at once. While the file on flash lacks what the boot decided (none is there, or that write failed), a turn writes it before its ledger write, and while a stale file is there the turn's history bucket names no model. When that write at boot fails, the file is removed only while the history shows tracking started (the next boot then prices the period's spend at the highest known price); otherwise it stays. Rewritten after each turn once tracking has started |
 | Your model prices | LittleFS file `/data/usage_mrates.txt` | The prices you enter per model on the Usage page, at most 32 rows. Written only when you save a price; a write that does not land answers 507 like an NVS save (failure key `lfs_mrates`) and changes nothing |
@@ -50,9 +52,11 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 | Daily usage history | LittleFS file `/data/usage_hist.txt` | One bucket per day, provider and model (plus prompt-cache counts since per-model prices), at most 12 per day and 720 in all (60 days). Written atomically (a copy, then a rename) after each turn |
 | Monthly spend ceiling | LittleFS file `/data/spend_ceiling.txt` | One line: the ceiling (default 20 USD, and whether the owner set it), the calendar month it counts (device time zone, UTC when unset), this month's estimate across all providers, whether paid calls are paused, and which channels were already told about this pause and about the ceiling itself after the update. Written after each turn that billed something and on each change; never NVS, so a full settings store neither loses the count nor lifts a pause. A write that does not land keeps the state in memory (the pause holds) and is retried every minute. See [Monthly spend ceiling](../spend-ceiling.md) |
 
-**The moved stores (v4.5.14).** The usage ledger and the scratchpad were the two
-values rewritten in NVS on every turn. They now live in flash files, and every boot
-follows one rule:
+**The moved stores (v4.5.14, v4.6).** The usage ledger and the scratchpad were the two
+values rewritten in NVS on every turn; the sub-agent journal and the managed-agent ids
+followed in v4.6. They now live in flash files (`kMovedStores` in
+`lib/core/include/nimbus/store/moved_store.h` lists every one), and every boot follows
+one rule:
 
 - Load the file; only when there is no file, load the legacy NVS key.
 - Save by writing the file atomically (a copy, then a rename) and reading it back; the
@@ -63,11 +67,25 @@ follows one rule:
   values in NVS.
 
 A ledger save that does not land leaves the ledger marked unsaved: every later turn
-retries (each rewrites the whole file), the main loop retries once a minute, and
-`/api/state` shows `usageSaved: false` until one lands. A scratchpad save that does not
-land keeps the notes in RAM until restart and is reported as `lfs_scratch` (the
-change result says "kept until restart only (saving failed)"); a full NVS partition
-does not affect it. The file itself is written only when the notes actually change
+retries (each rewrites the whole file), the main loop retries once a minute (it never
+waits for a busy lock: a pass that finds one skips), and `/api/state` shows
+`usageSaved: false` until one lands. A scratchpad save that does not land keeps the
+notes in RAM until restart and is reported as `lfs_scratch` (the change result says
+"kept until restart only (saving failed)"); a full NVS partition does not affect it.
+A file write that does not land (`lfs_ledger`, `lfs_scratch`, `lfs_mrates`, the
+managed-agent ids) makes a save route answer 507 like an NVS write, but it is not a
+settings-storage failure: it never raises the "storage is almost full" notice and never
+appears in `nvs.recentFails` or `nvs.fails`.
+
+While flash is not mounted (early boot, or a mount that failed) the ledger is served
+from its legacy NVS copy, read once; the spend of later turns keeps counting in RAM, so
+a monthly cap still trips. When flash comes up, the file is loaded and the spend
+counted meanwhile is added to it. At the first boot with a set clock, the month's
+counters are compared with the daily history (`/data/usage_hist.txt`): a provider
+whose counters hold less than the history's days of the current period (a ledger
+loaded from an older copy, after a write that did not land) is caught up to the
+history's totals; the spend added is priced at that provider's highest known price.
+A counter ahead of the history is never lowered. The file itself is written only when the notes actually change
 (the device remembers the bytes that last landed), so a turn with no edit writes no
 flash.
 
@@ -79,8 +97,8 @@ one):
 |---|---|---|
 | Critical | `tgOffset`, the OTA guard (`otaPend`, `otaBoots`, `otaPrev`, `otaLast`), `webTok`, `apPass`, the cloud credential (`cloudDevId`, `cloudCred`, `cloudHost`), `otaType`, `embLocked` | Always written |
 | Owner config | Provider keys, routing, connectors, Telegram allowlist and owners, Wi-Fi, every setting a person saves | Refused, unless the device is starved (then refused only below the floor of 8) |
-| Rebuildable | `vfy_*`, `vrs_*`, `vrm_*`, `mch_*`, `antEnv`, `antAgents`, `dreamScrHash`, `zaiBase`, `tgBotName` | Refused |
-| Telemetry | `orchConv`, `otaNotif`, `otaNotes`, `battModel`, `lbPingEp`, the `agjournal` records, the legacy `usgLedger` and `scratchB` copies | Refused |
+| Rebuildable | `vfy_*`, `vrs_*`, `vrm_*`, `mch_*`, the legacy `antEnv` and `antAgents` copies, `dreamScrHash`, `zaiBase`, `tgBotName` | Refused |
+| Telemetry | `orchConv`, `otaNotif`, `otaNotes`, `battModel`, `lbPingEp`, the legacy `agjournal` records and `usgLedger` and `scratchB` copies | Refused |
 
 A write that would leave fewer than **24 free entries** is refused unless its key is
 critical, and the refusal is reported like any failed write (a save route answers 507,
@@ -89,8 +107,10 @@ never refused, so removing a key or connector always works. A refusal asks the
 **eviction pass**, which runs on the main loop (never inside a web request, at most
 every 30 s): it erases rebuildable caches in a fixed order (`vrs_*` and `vrm_*`, then
 any legacy `mcat_*`, then `dreamScrHash`, then `fbRules` only while it is a cloud copy,
-`fbSyncTs` set) until 24 entries are free again. It never erases `antEnv` or
-`antAgents` (that would orphan managed agents that keep costing money) or `mch_*`.
+`fbSyncTs` set; its `fbSyncTs` is cleared with it, so the device stops reporting cloud
+rules it no longer holds) until 24 entries are free again. It never erases `antEnv` or
+`antAgents` (on a device not yet migrated they are the only copy, and losing them would
+orphan managed agents that keep costing money) or `mch_*`.
 When eviction cannot restore the reserve the device is **starved**: owner-config
 writes are accepted again and only rebuildable and telemetry writes stay refused, said
 once per boot in the device log, so a full device never answers 507 to every save.
@@ -104,7 +124,30 @@ and the Telegram position (1), with one to spare.
 
 Before any write that grows a value, the gate reads the partition's free entries
 (`nvs_get_stats`), critical keys included: a write whose value cannot fit at all is
-refused for every class, reported the same way.
+refused for every class, reported the same way. When the gate itself cannot read the
+partition (opening the namespace or reading the stats fails, for example under low
+memory), the write goes to the driver unchecked and is not counted as a reserve
+refusal, so an unchanged rewrite is never mistaken for a new key; the one exception is
+a blob write, which is refused when the free entries cannot be read (see below).
+
+**Writes that never repeat per tick.** Three markers used to rewrite NVS far more often
+than their meaning changed:
+
+- `battModel` (the battery model) is saved at most once an hour, and only for a
+  completed discharge segment or a full-charge anchor that moved by at least 20 mV per
+  cell; a calibration or reset by the owner saves at once. A save that does not land
+  is retried at the next allowed slot. Before this, an anchor moving by a few
+  millivolts on a desk-powered unit rewrote the value every telemetry tick and spent
+  about 1.2 KB of free entries in three hours.
+- `otaNotif` (the "update available" notice marker): the notice is sent at most once
+  per version per boot even when the marker's write is refused.
+- `lbPingEp` (the low-battery ping epoch): its saved copy moves only when the write
+  lands (a refused write is retried every ten minutes), and a copy in RTC memory
+  carries it across the low-battery sleep's wake boots.
+
+The web sign-in token (`webTok`) is read once per boot and served from RAM: a token
+the partition could not store still serves the whole boot (a restart then mints
+another), and a partition that cannot be read mints nothing.
 
 **Blobs must fit their whole span (a driver defect, and the pinned toolchain).** A
 blob is the one value type that can span NVS pages, and the NVS driver in the
@@ -288,7 +331,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.6`, `ANT_MODEL` =
 | `tgToken` | string | `""` | Telegram bot token | **No - WRITE-ONLY.** UI exposes only `hasTg` (a boolean); the token is never read back into the UI |
 | `tgAllow` | string | `""` | Allowlisted chat ids (comma-separated) | Yes |
 | `tgOwners` | string | `""` | Owner chat ids (comma-separated subset of `tgAllow`); empty means the first allow entry is owner. | Yes |
-| `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). Only allow-listed chats keep a name: a rename of any other id is refused, and each rename drops the names of chats no longer on the allowlist. | Yes |
+| `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). Only allow-listed chats keep a name, one per chat, and the sidecar stays under 1,024 B (the oldest names go first): a rename of any other id is refused, and removing a chat from the allowlist drops its name. | Yes |
 | `tgBotName` | string | `""` | The connected bot's `@username` (from getMe), display only. | Yes |
 | `tgPublic` | bool | `false` | Open access: accept anyone who messages the bot. Default off. | Yes |
 | `tgOffset` | int | `0` | Telegram long-poll offset: a copy of the one in use, read once when the Telegram task starts. While the device runs, the offset in RAM is the truth and only moves forward, so a write that does not land (a full NVS) never makes Telegram serve a page again; a restart right after a page can repeat that one page. Written once per new page, and after each turn of a page that holds a command, so a restart repeats at most the turn in progress, never a finished command; while a write is owed and failing, a page gets one attempt and the write is retried at most once a minute, so it lands within a minute of room appearing (`tgOffsetSaved` in `/api/state` reads `false` meanwhile). A token change resets it to `0`, stored as an erase, which lands on a full NVS too | Yes (internal) |
@@ -431,8 +474,8 @@ fixed per gate (see [security.md](../security.md)). Default off.
 
 | Key | Type | Default | Holds |
 |---|---|---|---|
-| `antEnv` | string | `""` | Managed-agents environment id |
-| `antAgents` | string | `""` | Agent map cache |
+| `antEnv` | string | `""` | Managed-agents environment id. Legacy since v4.6: read once to migrate to `/data/ant_env.txt`, erased on a boot whose image was already valid |
+| `antAgents` | string | `""` | Agent map cache. Legacy since v4.6: `/data/ant_agents.txt`, same migration |
 | `antOrchAg` | string | `""` | Orchestrator agent id |
 
 ### Provider verify cache (`src/agent/store.cpp`, written by `provider_verify`)

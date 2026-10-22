@@ -64,6 +64,27 @@ Spend ceiling and default models:
 - **A release check on internal memory.** A release image whose static internal RAM
   grows past its recorded ceiling now fails the release gate.
 
+Settings storage and helpers:
+
+- **Helpers survive a full settings storage.** A helper's record now lives in a file in
+  flash instead of the small settings storage, so a restart while it runs no longer loses
+  it silently. If the file cannot be written, you hear "On it, but storage is full, so
+  this helper will not survive a restart." instead of a plain "On it."
+- **Finished work is not run again after a restart.** The device remembers the last 8
+  helpers that finished (name, project, the file the result went to, when), and the
+  assistant sees them after a restart, so it no longer starts the same research again and
+  sends its report twice. A helper whose result was lost in a restart is reported as lost,
+  not "expired".
+- **Less churn in the settings storage.** The battery model is saved at most once an
+  hour instead of every few minutes, the "update available" message is sent once per
+  version even when its note cannot be saved, the managed-agent ids moved to flash files,
+  and Telegram display names keep only allowed chats. A routine fires only after its next
+  time was saved, so a restart cannot fire it twice.
+- **Spend counts survive a stale copy.** At start the month's spend counters are checked
+  against the daily history and caught up when they were behind.
+- **Honest saves.** Removing a safety exception that could not be saved now says so and
+  keeps it (before, it came back after a restart), and a flash write that fails no longer
+  shows as a full settings storage.
 Models:
 
 - **The whole model list, kept up to date.** Each provider's model list is read whole and kept in flash, up to 160 models per provider: the Cumulo list (about 95 KB) used to stop at 64 KB and fall back to 12 models. Each model shows its price or "price unknown", one model's two spellings take one place, models past their shutdown date are left out, and the list says how old it is. Nothing about it is kept in settings storage any more, which frees room there.

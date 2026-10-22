@@ -63,7 +63,9 @@ Rule of thumb:
 | Scratchpad (goal tiers) | **LittleFS** | `/data/scratchpad.bin` (~4 KB; the `orchmem` NVS copy until v4.5.14) | unchanged |
 | Usage ledger (spend and budgets) | **LittleFS** | `/data/usage_ledger.txt` (the `usgLedger` NVS key until v4.5.14) | unchanged |
 | Provider park (out-of-credit and refused-key parks, their re-check times, the once-per-episode billing notice and the daily spend warning, per provider) | **LittleFS** | `/data/provpark.txt` (a few lines; rewritten whole on every change) | unchanged |
-| Journal | NVS (6 slots `agjournal/j0..j5`) - the SD day-stream was PLANNED, never built | - | same NVS |
+| Sub-agent journal (running helpers and the last 8 finished) | **LittleFS** | `/data/agjournal.json` (the `agjournal` NVS slots `j0..j5` until v4.5.16; see [the sub-agent journal](#the-sub-agent-journal)) | unchanged |
+| Managed-agent ids (Anthropic environment and agent map) | **LittleFS** | `/data/ant_env.txt`, `/data/ant_agents.txt` (the `antEnv` and `antAgents` NVS keys until v4.5.16) | unchanged |
+| Routines | **LittleFS** | `/data/loops.json` (written atomically; a routine fires only after its next slot was saved) | unchanged |
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
 | Provider model lists (the model store, rebuilt by every verify) | **LittleFS** | `/data/models_<provider>.txt` (see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
@@ -541,7 +543,34 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   - `hydrate()` read the day-streams back (hydrate()>0 → migration skipped, no double-
   migrate), and a post-restart query still returns all 37 rows. Durability confirmed.
 
-**Not built:** the journal stays in its six NVS slots; there is no SD day-stream for it (see the journal row in section 1).
+### The sub-agent journal
+
+The journal (`/data/agjournal.json`, `lib/core/src/orch_journal.cpp`) holds what a
+restart must not lose about helpers (sub-agents):
+
+- **Running helpers**, at most 6: the id the device polls (`backend:remoteId`), the
+  chat, the project and the model. After a restart the device polls each one again
+  instead of starting it twice. A helper on a synchronous provider (Mistral, Z.ai,
+  Cumulo, a custom endpoint) ran inside the device, so its result lived in memory: after
+  a restart its owner hears "the result of [name] was lost when the device restarted",
+  not "expired".
+- **The last 8 finished helpers**: tag, name, project, the file the result was saved
+  to, and when it finished. A finished entry is stored before the running record is
+  marked delivered, so a restart between the two never delivers a result twice. After
+  a restart these are listed in the assistant's turn context ("Finished before the
+  device last restarted"), so it does not run the same work again on the strength of
+  its own note that it was waiting for results.
+- A new boot's job tags start after every tag the journal still holds.
+
+The file is rewritten whole and atomically on each change. A write that does not land
+(flash full, or not mounted) keeps the helper running from memory; the owner hears
+"On it, but storage is full, so this helper will not survive a restart." in place of
+the plain acknowledgement (at most once every ten minutes), and the assistant's job
+list says the same. Until v4.5.16 the running records lived in the `agjournal` NVS
+namespace, where a full settings store refused them silently; the first boot of v4.6
+reads them once, writes the file, and erases the NVS records on a boot whose image was
+already valid. The hosted instance keeps the same file under its volume
+(`<mem>/journal/agjournal.json`).
 
 ## 5c. SD quota and supported-card truth
 
