@@ -33,6 +33,7 @@
 #include "sys/errlog_fs.h"   // setSuspended - the factory sweep's durable-log barrier; attachStorage
 #include "sys/crash_report.h"   // boot record, core dump reader, crash notice (crash forensics)
 #include "nimbus/sys/reset_reason.h"   // the one reset-reason table
+#include "sys/loop_watch.h"               // every loop pass timed against the task watchdog
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
@@ -5415,6 +5416,7 @@ static bool runFactoryResetStep(nimbus::orch::ResetStep step) {
 
 void loop() {
   esp_task_wdt_reset();
+  nimbus::loopwatch::notePass();       // a slow pass names itself before the watchdog must
   nimbus::heapwatch::pump(millis());   // alloc-failure lines + the 1 Hz low-water ladder
   nimbus::crash::breadcrumbTick();   // RTC breadcrumb: uptime + heap low-water every 5 s
 #ifdef NIMBUS_NOTIFIER_DEBUG

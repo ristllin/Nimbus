@@ -1128,6 +1128,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
   {"tools-and-commands#contributor-tools-console-commands-3", "Contributor tools - Console commands (3/7)",
    R"NIMBUSDOC(| `CAPTEST <tokens>` / `CAPTEST 0` | Cap the first attempt of every provider request at that many output tokens, so a cut reply and its retry with more room run on demand. Replies `CAPTEST <tokens>`; `CAPTEST 0` ends the cap and replies `CAPTEST off`. A restart also ends it. |
 | `PROVFAULT <host> <status> <json>` / `PROVFAULT off` | Answer every request to one provider API host (for example `api.anthropic.com`) with a set HTTP status (100-599) and error body, such as a credit or overload error, without sending anything, until `PROVFAULT off`. Replies `PROVFAULT <host> <status> armed (<n> B body)`. |
+| `TOOLSTALL <ms>` / `TOOLSTALL 0` | Make the next tool call hold the card lock for that long (0 to 120000 ms) before it runs, the way a slow tool does, to show the main loop keeps running. Replies `TOOLSTALL armed <ms> ms`; the call logs `TOOLSTALL: <tool> holds the card lock for <ms> ms`. |
+| `LOOPGUARD?` | The main loop's card-lock counters: `blocking=` (times the loop waited for the lock; must stay 0), the `caller=` of the last one, `busy=` (passes that skipped card work while a tool held the lock), `parked=`/`dropped=` timeline events, `longHolds=`, `longestHoldMs=` and `tool=` (tool calls that held the lock 3 s or more), `maxPassMs=` and `slowPasses=` (loop passes of 2 s or more). |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
 | `REBOOT` | Software restart - the only sanctioned way to restart from the host. |

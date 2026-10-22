@@ -92,6 +92,18 @@ totals (`X-Log-Durable-Skipped`, `X-Log-Durable-Bytes`) are returned as headers 
 every line during a heavy-churn incident, read the RAM ring (`GET /api/log`)
 continuously rather than relying on the durable log alone.
 
+**The main loop never waits for the card lock.** The loop is the only task the 8 s task
+watchdog watches, and a turn holds the card lock for the whole of each tool call, which
+can include a provider round trip (an embedding) or a long card scan. So every piece of
+card work the loop does (the SD health probe, the held timeline rows, the battery
+history row, a timeline event such as an SD edge) tries for the lock for at most 20 ms
+and, when a tool holds it, skips that pass or parks the event for a later one. A tool
+call that holds the lock for 3 s or more is named in the durable log
+(`memory: tool <name> held the card lock for <ms> ms`), and a loop pass of 2 s or more
+is logged too (`loop: one pass took <ms> ms ...`). Earlier firmware waited for the
+lock there, so a tool call that held it past 8 s stopped the loop and the watchdog
+restarted the device.
+
 **No line is lost before storage mounts.** The first lines of a boot (the boot record,
 the HAL and network lines, an `[sd] mount FAILED` diagnosis) are emitted about a second
 before any filesystem is mounted. They wait in a bounded early backlog (24 lines or
@@ -185,7 +197,11 @@ crash-why: Stack canary watchpoint triggered (tg_poll)
 Device events captured before the clock syncs (a power-on boot has no time until SNTP
 answers) wait in a 16-row / 4 KB file on the data store instead of RAM, so an offline
 boot or an early crash loop no longer loses its boot row: the first sync on any later
-boot writes them, labelled with the boot that captured them.
+boot writes them, labelled with the boot that captured them ("from boot n=12, clock
+never synced", or "from an earlier boot" when that boot's number was not recorded).
+The file is rewritten through a temporary copy and a rename, so a restart in the middle
+of a write keeps every row already held, and the rows the syncing boot added itself are
+told apart by their place at the end of the file, never by their boot number.
 
 ## 2. VDB - working set in PSRAM, durable on SD
 

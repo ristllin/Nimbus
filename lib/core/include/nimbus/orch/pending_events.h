@@ -53,18 +53,24 @@ std::string appendPendingEvent(const std::string& content, const PendingEvent& e
 
 // The row text written at sync. This boot's rows keep the existing suffix
 // " [pre-sync, stamped at first clock sync]"; rows from an earlier boot say which boot
-// and that its clock never synced.
-std::string stampedPendingText(const PendingEvent& e, uint32_t currentBoot);
+// and that its clock never synced, or "an earlier boot" when its number was not
+// recorded (its boot-counter write failed). Whether a row is this boot's is decided by
+// the caller (planPendingFlush), never from the boot number: a number of 0 or one that
+// repeats used to label an earlier boot's row as this boot's own (CUM-714).
+std::string stampedPendingText(const PendingEvent& e, bool thisBoot);
 
 // The extra row written when rows were dropped ("" when none were).
 std::string droppedPendingText(uint32_t dropped);
 
 // The timeline rows the first sync writes, in order: the dropped-count row (if any),
-// then every held row oldest first, each with its stamped text.
+// then every held row oldest first, each with its stamped text. `ownTail` is how many
+// rows this boot appended to the file: rows are only ever appended at the end (the
+// bounds drop the oldest from the front), so exactly the last `ownTail` rows (at most
+// all of them) are this boot's and every other row is an earlier boot's.
 struct StampedRow {
   std::string ev;
   std::string text;
 };
-std::vector<StampedRow> planPendingFlush(const PendingFile& f, uint32_t currentBoot);
+std::vector<StampedRow> planPendingFlush(const PendingFile& f, size_t ownTail);
 
 }  // namespace nimbus::orch

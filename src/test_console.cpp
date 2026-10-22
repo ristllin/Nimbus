@@ -37,6 +37,7 @@
 #include "nimbus/tts_catalog.h"        // SPKSAY - provider -> speaker format routing
 #include "nimbus/orch/media.h"         // validMusicName
 #include <esp_heap_caps.h>            // HEAPINFO? - per-capability heap picture (CUM-448)
+#include "sys/loop_watch.h"           // LOOPGUARD? - loop pass timing (loop_guard.h)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>             // TASKS? - task stack high-water map (CUM-448)
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
@@ -1933,6 +1934,33 @@ void dispatch(String line) {
     }
     reply(s_h.audioInject ? s_h.audioInject(path)
                           : String("AUDIOINJECT: not wired in this build (voice owner)"));
+    return;
+  }
+
+  if (line.startsWith("TOOLSTALL ")) {
+    // TOOLSTALL <ms>: the next tool dispatch holds the card lock for <ms> before it
+    // runs, the way a slow tool does (the HIL stall leg). 0 disarms.
+    const long ms = line.substring(10).toInt();
+    if (ms < 0 || ms > 120000) { reply("TOOLSTALL usage: TOOLSTALL <0..120000 ms>"); return; }
+    agent::memory::testArmToolStall((uint32_t)ms);
+    reply(String("TOOLSTALL armed ") + ms + " ms");
+    return;
+  }
+  if (line == "LOOPGUARD?") {
+    // LOOPGUARD?: the loop guard counters (nimbus/sys/loop_guard.h). blocking= must
+    // stay 0: a blocking card-lock take on the watched loop is the watchdog bug class.
+    const agent::memory::LoopGuardStats g = agent::memory::loopGuardStats();
+    const nimbus::sys::LoopPassMonitor& p = nimbus::loopwatch::passes();
+    char buf[200];
+    snprintf(buf, sizeof buf,
+             "LOOPGUARD blocking=%u caller=0x%08x busy=%u parked=%u dropped=%u longHolds=%u "
+             "longestHoldMs=%u tool=%s maxPassMs=%u slowPasses=%u",
+             (unsigned)g.watchedBlockingTakes, (unsigned)g.lastBlockingCaller,
+             (unsigned)g.loopBusySkips, (unsigned)g.parkedEvents, (unsigned)g.droppedEvents,
+             (unsigned)g.longHolds, (unsigned)g.longestHoldMs,
+             g.longestHoldTool[0] ? g.longestHoldTool : "-", (unsigned)p.maxPassMs(),
+             (unsigned)p.slowPasses());
+    reply(buf);
     return;
   }
 

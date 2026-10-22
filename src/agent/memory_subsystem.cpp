@@ -50,6 +50,12 @@
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
+#include "nimbus/sys/loop_guard.h"        // the loop never waits for the card lock
+#include "nimbus/sys/boot_record.h"       // fieldValue: a tool name is model text
+
+// The Arduino core's loop task (setup() and loop() run on it); the core defines it in
+// its main.cpp and no header declares it.
+extern TaskHandle_t loopTaskHandle;
 
 namespace agent {
 namespace memory {
@@ -470,8 +476,140 @@ bool eraseAllPrivateData() {
   return true;
 }
 
-void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
+// ---- loop guard (nimbus/sys/loop_guard.h) ------------------------------------
+namespace {
+LoopGuardStats g_loopGuard;                     // counters, read by loopGuardStats()
+portMUX_TYPE g_loopGuardMux = portMUX_INITIALIZER_UNLOCKED;
+nimbus::sys::LockHoldMonitor g_holdMon;         // under the card lock (the holder updates it)
+bool g_blockingTakeLogged = false;
+
+// The loop task, while the task watchdog watches it (setup() and the flows that pause
+// the watchdog, like hold-to-talk recording, may block as before).
+bool onWatchedTask() {
+  return loopTaskHandle && xTaskGetCurrentTaskHandle() == loopTaskHandle &&
+         esp_task_wdt_status(nullptr) == ESP_OK;
+}
+bool ownsCardLock() {
+  return g_memMux && xSemaphoreGetMutexHolder(g_memMux) == xTaskGetCurrentTaskHandle();
+}
+}  // namespace
+
+void lock() {
+  if (!g_memMux) return;
+  if (onWatchedTask() && !ownsCardLock()) {
+    // A blocking take on the watched loop: the bug class loop_guard.h describes. Count
+    // it and name the caller once per boot; the take itself still happens (callers
+    // assume the lock is held), and the watchdog stays the backstop.
+    const uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    portENTER_CRITICAL(&g_loopGuardMux);
+    g_loopGuard.watchedBlockingTakes++;
+    g_loopGuard.lastBlockingCaller = caller;
+    portEXIT_CRITICAL(&g_loopGuardMux);
+    if (!g_blockingTakeLogged) {
+      g_blockingTakeLogged = true;
+      alogf("memory: the main loop waited for the card lock (caller 0x%08x)", (unsigned)caller);
+    }
+  }
+  xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY);
+}
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
+
+LoopLock::LoopLock(uint32_t maxWaitMs) {
+  const uint32_t waitMs = nimbus::sys::lockWaitMs(onWatchedTask(), ownsCardLock(), maxWaitMs);
+  if (waitMs == UINT32_MAX) {
+    lock();
+    held_ = true;
+    return;
+  }
+  held_ = tryLock(waitMs);
+  if (held_) return;
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_loopGuard.loopBusySkips++;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+}
+
+LoopLock::~LoopLock() {
+  if (held_) unlock();
+}
+
+LoopGuardStats loopGuardStats() {
+  portENTER_CRITICAL(&g_loopGuardMux);
+  const LoopGuardStats s = g_loopGuard;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  return s;
+}
+
+// The holder side: called by handleMcp while it still holds the card lock, so the line
+// reaches the durable log (its writer takes the same lock and re-enters).
+static void noteToolHold(const std::string& tool, uint32_t holdMs) {
+  if (!g_holdMon.note(tool, holdMs)) return;
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_loopGuard.longHolds = g_holdMon.longHolds();
+  g_loopGuard.longestHoldMs = g_holdMon.longestMs();
+  const std::string what = nimbus::sys::fieldValue(g_holdMon.longestWhat(), 31);   // model text
+  strlcpy(g_loopGuard.longestHoldTool, what.c_str(), sizeof g_loopGuard.longestHoldTool);
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  alog(nimbus::sys::longHoldLine(tool, holdMs).c_str());
+}
+
+// Timeline events the main loop could not write because the card lock was busy (a
+// turn's tool call held it). Fixed slots copied under a spinlock (no allocation in the
+// critical section); the next tickSdHealth pass that gets the lock writes them. A full
+// park drops the newest and counts it.
+namespace {
+struct ParkedEvent {
+  char ev[16];
+  char text[120];
+};
+constexpr size_t kParkedEvents = 4;
+ParkedEvent g_parked[kParkedEvents];
+size_t g_parkedCount = 0;
+}  // namespace
+
+static void parkEvent(const char* ev, const String& text) {
+  portENTER_CRITICAL(&g_loopGuardMux);
+  if (g_parkedCount < kParkedEvents) {
+    ParkedEvent& p = g_parked[g_parkedCount++];
+    strlcpy(p.ev, ev ? ev : "misc", sizeof p.ev);
+    strlcpy(p.text, text.c_str(), sizeof p.text);
+    g_loopGuard.parkedEvents++;
+  } else {
+    g_loopGuard.droppedEvents++;
+  }
+  portEXIT_CRITICAL(&g_loopGuardMux);
+}
+
+// Caller holds the card lock (tickSdHealth's LoopLock): captureEvent re-enters it.
+static void drainParkedEvents() {
+  for (;;) {
+    ParkedEvent one;
+    portENTER_CRITICAL(&g_loopGuardMux);
+    const bool have = g_parkedCount > 0;
+    if (have) {
+      one = g_parked[0];
+      for (size_t i = 1; i < g_parkedCount; ++i) g_parked[i - 1] = g_parked[i];
+      --g_parkedCount;
+    }
+    portEXIT_CRITICAL(&g_loopGuardMux);
+    if (!have) return;
+    captureEvent(one.ev, String(one.text));
+  }
+}
+
+#ifdef NIMBUS_TEST
+namespace {
+volatile uint32_t g_toolStallMs = 0;
+}  // namespace
+void testArmToolStall(uint32_t ms) { g_toolStallMs = ms; }
+// Under handleMcp's card lock: hold it for the armed time, once, like a slow tool.
+static void testToolStallPoint(const std::string& tool) {
+  const uint32_t ms = g_toolStallMs;
+  if (!ms) return;
+  g_toolStallMs = 0;
+  alogf("TOOLSTALL: %s holds the card lock for %u ms", tool.c_str(), (unsigned)ms);
+  vTaskDelay(pdMS_TO_TICKS(ms));
+}
+#endif
 
 // The card lock exists from the top of setup(), in BOTH modes (crash forensics F1):
 // the durable log attaches to the SD card at its mount, long before begin(), and a
@@ -1417,8 +1555,10 @@ bool promoteSd() {
   // tickSdHealth() also probes the SD/SPI bus - tearing the bus down (end()/begin()) or
   // probing it from two tasks at once corrupts the transfer (prism HIGH). The SD driver
   // is not re-entrant; Lock (recursive) is the one mutex serializing SD access. SD I/O is
-  // bounded (unlike a TLS embed), so holding it here is safe.
-  Lock g;
+  // bounded (unlike a TLS embed), so holding it here is safe. From the menu (the main
+  // loop) a busy lock answers "not promoted" instead of waiting (loop_guard.h).
+  LoopLock g;
+  if (!g) return false;
   // Attempt a real re-mount first (a physical pull leaves stale handles); then a
   // write probe confirms the card answers before we clear the latch. end() clears
   // the driver's idempotent "already mounted" latch so begin() actually re-probes
@@ -1441,7 +1581,8 @@ void appendBatteryHistory(uint32_t hours, uint16_t mv, uint8_t pct, const char* 
   // BatteryModel learns time-to-empty/health from - the owner's "track estimations
   // over time to improve prediction".
   if (!g_begun || !effHaveSd()) return;
-  Lock g;
+  LoopLock g;   // runs on the main loop: a busy card lock skips this one row
+  if (!g) return;
   g_fs->mkdir("/mem/battery");
   char path[40];
   snprintf(path, sizeof path, "/mem/battery/d%lu.jsonl", (unsigned long)(hours / 24));
@@ -1467,6 +1608,14 @@ bool forceSdProbe() {
 }
 
 void tickSdHealth(uint32_t nowMs) {
+  // Runs on the main loop every pass. A turn can hold the card lock across a whole
+  // tool dispatch (a provider round trip, a card scan), so the loop only tries for
+  // it: busy means this pass skips, and the next pass retries (loop_guard.h). The
+  // guard also serializes the probe with promoteSd()'s end()/begin() on the web task
+  // and the debounce read-modify-write with the web and Telegram tasks (prism).
+  LoopLock g(0);   // every pass retries, so this one never waits at all
+  if (!g) return;
+  drainParkedEvents();    // timeline events the loop parked while the lock was busy
   flushPendingEvents();   // pre-SNTP timeline rows flush once the clock syncs
   if (!g_haveSd) return;   // no card at boot: nothing to demote/promote
   // Probe cadence: slow when healthy (idle detection of a pull), fast when lost
@@ -1474,8 +1623,6 @@ void tickSdHealth(uint32_t nowMs) {
   const uint32_t interval = sdLost() ? 4000u : 20000u;   // benign single-bool read
   if (g_lastSdProbeMs != 0 && nowMs - g_lastSdProbeMs < interval) return;
   g_lastSdProbeMs = nowMs;
-  Lock g;   // hold across the probe: serializes the SD bus vs promoteSd()'s end()/begin()
-            // on the web task (prism) + the debounce RMW vs the web/Telegram tasks
   const bool ok = probeSdWrite();
   applySdEdge(g_sdHealth.note(ok));
 }
@@ -2186,10 +2333,17 @@ static bool s_pendingFileMaybe = true;
 // without it, then deletes the file; anyone else skips the file meanwhile, so no row
 // is written twice. (Delete-after-write keeps a reset mid-flush from losing rows.)
 static bool s_pendingFlushOwned = false;
+// Rows THIS boot appended to the file (CUM-714). Rows are only ever appended at the
+// end, so the flush labels exactly the last s_heldThisBoot rows as this boot's own and
+// every other row as an earlier boot's, whatever boot numbers they carry.
+static size_t s_heldThisBoot = 0;
 
-// Caller holds the Lock.
+// Caller holds the Lock. The file is rewritten through a .tmp sibling and a rename
+// (writeBlobAtomicOn), so a reset right between the remove and the rename leaves only
+// the .tmp: read it then, and no earlier boot's row is lost.
 static std::string readPendingEvFile() {
   File f = g_fs->open(pendingEvPath(), FILE_READ);
+  if (!f) f = g_fs->open((std::string(pendingEvPath()) + ".tmp").c_str(), FILE_READ);
   if (!f) return {};
   std::string out;
   uint8_t buf[256];
@@ -2212,33 +2366,36 @@ static bool holdPendingEvent(const char* ev, const String& text) {
   e.ev = ev ? ev : "misc";
   e.text = std::string(text.c_str());
   const std::string body = nimbus::orch::appendPendingEvent(readPendingEvFile(), e);
-  File f = g_fs->open(pendingEvPath(), FILE_WRITE);
-  if (!f) return false;
-  const size_t n = f.write((const uint8_t*)body.data(), body.size());
-  f.close();
+  // Whole-file rewrite through a .tmp + rename: a reset mid-write keeps the previous
+  // rows, and a false return means the file did not change, so the caller's RAM
+  // fallback never writes the same row twice (CUM-714).
+  if (!writeBlobAtomicOn(*g_fs, pendingEvPath(), body)) return false;
   s_pendingFileMaybe = true;
-  return n == body.size();
+  ++s_heldThisBoot;
+  return true;
+}
+
+// One-shot at first sync (Release C3): heal ANY vector stamped with the
+// boot-relative clock (a write/update/unpin/boost that ran in the WiFi-up-
+// but-SNTP-pending window) - real epoch-hours are ~495k, boot-relative are
+// tiny, so <400000 cleanly identifies them. Without this they all expire the
+// instant the clock becomes real. Caller holds the Lock.
+static void healPreSyncStampsOnce() {
+  static bool s_stampsHealed = false;
+  if (s_stampsHealed) return;
+  s_stampsHealed = true;
+  int n = g_vec.restampPreSync(400000, nowHours());
+  if (n) {
+    persistVectors();
+    alogf("memory: re-stamped %d pre-sync vector(s) at first clock sync", n);
+  }
 }
 
 void flushPendingEvents() {
   if (!g_begun || !clockSynced()) return;
-  // One-shot at first sync (Release C3): heal ANY vector stamped with the
-  // boot-relative clock (a write/update/unpin/boost that ran in the WiFi-up-
-  // but-SNTP-pending window) - real epoch-hours are ~495k, boot-relative are
-  // tiny, so <400000 cleanly identifies them. Without this they all expire the
-  // instant the clock becomes real.
-  {
-    static bool s_stampsHealed = false;
-    if (!s_stampsHealed) {
-      s_stampsHealed = true;
-      Lock g;
-      int n = g_vec.restampPreSync(400000, nowHours());
-      if (n) {
-        persistVectors();
-        alogf("memory: re-stamped %d pre-sync vector(s) at first clock sync", n);
-      }
-    }
-  }
+  LoopLock loopGuard;   // the power-off path calls this from the main loop
+  if (!loopGuard) return;   // busy: the rows stay held for the next flush
+  healPreSyncStampsOnce();
   std::vector<std::pair<std::string, std::string>> pend;
   nimbus::orch::PendingFile held;
   bool own = false;
@@ -2254,7 +2411,7 @@ void flushPendingEvents() {
   }
   if (held.rows.empty() && !held.dropped && pend.empty()) return;
   captureSession("system", "device", "Device timeline");
-  for (const auto& r : nimbus::orch::planPendingFlush(held, nimbus::errlog::bootNumber()))
+  for (const auto& r : nimbus::orch::planPendingFlush(held, s_heldThisBoot))
     captureMessage("system", "system", nimbus::orch::MsgKind::Log, String(r.text.c_str()), "",
                    String("ev:") + r.ev.c_str());
   for (auto& e : pend)
@@ -2266,13 +2423,22 @@ void flushPendingEvents() {
   if (own) {
     Lock g;
     g_fs->remove(pendingEvPath());
+    g_fs->remove((std::string(pendingEvPath()) + ".tmp").c_str());
     s_pendingFileMaybe = false;
     s_pendingFlushOwned = false;
+    s_heldThisBoot = 0;
   }
 }
 
 void captureEvent(const char* ev, const String& text) {
   if (!g_begun) return;
+  // The main loop captures some events itself (an SD edge, a mode switch): when the
+  // card lock is busy there, the event is parked and written by a later pass.
+  LoopLock loopGuard;
+  if (!loopGuard) {
+    parkEvent(ev, text);
+    return;
+  }
   if (!clockSynced()) {
     Lock g;
     if (!holdPendingEvent(ev, text) && s_pendingEv.size() < 8)
@@ -2609,7 +2775,13 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // nested applyConfig/persist* below re-enter safely. (A memory.write tool embeds via
   // TLS while holding this - a rare, brief stall for a concurrent turn, never a
   // deadlock; the poll task already tolerates multi-second long-poll waits.)
+  // The main loop never waits for this lock (LoopLock), so a slow tool here no longer
+  // stalls it; a hold of kLongHoldMs or more is still named in the log (noteToolHold).
   Lock g;
+  const uint32_t heldFrom = millis();
+#ifdef NIMBUS_TEST
+  if (isToolCall) testToolStallPoint(name);
+#endif
   std::string resp = g_reg.handleRpc(jsonRpcRequest, who);
   // Persist ONLY after a MUTATING tools/call (dirty-flag discipline); a faulted
   // write was refused and changed nothing.
@@ -2621,6 +2793,7 @@ std::string handleMcp(const std::string& jsonRpcRequest,
     if (name != "memory.scratchpad") persistScratchpad();
     if (name == "memory.config") persistMemConfig();   // survive reboot (was silently lost)
   }
+  if (isToolCall) noteToolHold(name, millis() - heldFrom);
   return resp;
 }
 

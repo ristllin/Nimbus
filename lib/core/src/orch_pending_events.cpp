@@ -111,11 +111,10 @@ std::string appendPendingEvent(const std::string& content, const PendingEvent& e
   return out;
 }
 
-std::string stampedPendingText(const PendingEvent& e, uint32_t currentBoot) {
-  const bool earlier = e.bootNo != 0 && currentBoot != 0 && e.bootNo != currentBoot;
-  if (!earlier) return e.text + " [pre-sync, stamped at first clock sync]";
-  return e.text + " [from boot n=" + std::to_string(e.bootNo) +
-         ", clock never synced; stamped at first clock sync]";
+std::string stampedPendingText(const PendingEvent& e, bool thisBoot) {
+  if (thisBoot) return e.text + " [pre-sync, stamped at first clock sync]";
+  const std::string from = e.bootNo ? "boot n=" + std::to_string(e.bootNo) : std::string("an earlier boot");
+  return e.text + " [from " + from + ", clock never synced; stamped at first clock sync]";
 }
 
 std::string droppedPendingText(uint32_t dropped) {
@@ -124,10 +123,12 @@ std::string droppedPendingText(uint32_t dropped) {
          " earlier device event(s) were dropped while the clock was not set";
 }
 
-std::vector<StampedRow> planPendingFlush(const PendingFile& f, uint32_t currentBoot) {
+std::vector<StampedRow> planPendingFlush(const PendingFile& f, size_t ownTail) {
   std::vector<StampedRow> out;
   if (f.dropped) out.push_back({"misc", droppedPendingText(f.dropped)});
-  for (const auto& e : f.rows) out.push_back({e.ev, stampedPendingText(e, currentBoot)});
+  const size_t firstOwn = ownTail >= f.rows.size() ? 0 : f.rows.size() - ownTail;
+  for (size_t i = 0; i < f.rows.size(); ++i)
+    out.push_back({f.rows[i].ev, stampedPendingText(f.rows[i], i >= firstOwn)});
   return out;
 }
 

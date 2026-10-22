@@ -14,6 +14,7 @@
 #include "nimbus/orch/vector_archive.h"
 #include "nimbus/orch/vector_memory.h"
 #include "memory_restore.h"   // CUM-406: restore report types (portable, Arduino-free)
+#include "nimbus/sys/loop_guard.h"   // kLoopLockWaitMs: LoopLock's longest try
 
 // memory_subsystem - the device integration hub for the orchestrator "World"
 // memory (Part B). It owns the portable engines (VectorMemory + Scratchpad +
@@ -93,6 +94,45 @@ struct Lock {
   Lock(const Lock&) = delete;
   Lock& operator=(const Lock&) = delete;
 };
+
+// The loop's way into the card lock (nimbus/sys/loop_guard.h). A turn holds the lock
+// across a whole tool dispatch, which can include a provider round trip, so a task
+// the watchdog watches (the main loop) must never wait for it: on such a task LoopLock
+// tries for at most kLoopLockWaitMs and reports busy; on any other task, or when the
+// caller already holds the lock, it acquires like Lock. Every nested Lock under a held
+// LoopLock re-enters the recursive mutex at once. Use it as
+//   LoopLock g; if (!g) return;   // busy: skip, a later pass retries
+// (LoopLock g(0) for work the loop retries every pass: it never waits at all).
+// test_loop_guard checks that every storage call the loop makes opens with one.
+class LoopLock {
+ public:
+  explicit LoopLock(uint32_t maxWaitMs = nimbus::sys::kLoopLockWaitMs);
+  ~LoopLock();
+  explicit operator bool() const { return held_; }
+  LoopLock(const LoopLock&) = delete;
+  LoopLock& operator=(const LoopLock&) = delete;
+
+ private:
+  bool held_ = false;
+};
+
+// Loop guard counters (test console LOOPGUARD?, the HIL stall leg).
+struct LoopGuardStats {
+  uint32_t watchedBlockingTakes = 0;   // blocking lock() calls on a watched task (a bug)
+  uintptr_t lastBlockingCaller = 0;    // return address of the last one (addr2line)
+  uint32_t loopBusySkips = 0;          // LoopLock found the lock busy and skipped
+  uint32_t parkedEvents = 0;           // timeline events parked while the lock was busy
+  uint32_t droppedEvents = 0;          // parked events lost because the park was full
+  uint32_t longHolds = 0;              // tool dispatches that held the lock >= kLongHoldMs
+  uint32_t longestHoldMs = 0;
+  char longestHoldTool[32] = {};
+};
+LoopGuardStats loopGuardStats();
+#ifdef NIMBUS_TEST
+// TOOLSTALL: the next tool dispatch holds the card lock for `ms` before it runs (the
+// HIL stall leg's stand-in for a slow tool). 0 disarms.
+void testArmToolStall(uint32_t ms);
+#endif
 
 // Non-blocking variant of lock() for latency-sensitive callers (CUM-401 ruling): try
 // to take the recursive card lock, waiting at most timeoutMs. Returns true if acquired

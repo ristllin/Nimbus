@@ -95,7 +95,7 @@ static void test_rows_survive_resets_until_a_clock_exists() {
   file = appendPendingEvent(file, ev(12, 950, "boot", "Booted B reason=brownout"));
   // reset before sync
   file = appendPendingEvent(file, ev(13, 1000, "boot", "Booted C reason=power-on"));
-  const std::vector<StampedRow> rows = planPendingFlush(parsePendingFile(file), 13);
+  const std::vector<StampedRow> rows = planPendingFlush(parsePendingFile(file), 1);   // C held one row
   TEST_ASSERT_EQUAL_UINT(4, (unsigned)rows.size());
   TEST_ASSERT_EQUAL_STRING("Booted A reason=power-on [from boot n=11, clock never synced; stamped at first clock sync]",
                            rows[0].text.c_str());
@@ -109,7 +109,7 @@ static void test_rows_survive_resets_until_a_clock_exists() {
 static void test_flush_reports_dropped_count() {
   std::string file;
   for (uint32_t i = 0; i < 20; ++i) file = appendPendingEvent(file, ev(2, i, "boot", "b" + std::to_string(i)));
-  const std::vector<StampedRow> rows = planPendingFlush(parsePendingFile(file), 3);
+  const std::vector<StampedRow> rows = planPendingFlush(parsePendingFile(file), 0);   // all from boot 2
   TEST_ASSERT_EQUAL_UINT(1 + kPendingEvMaxRows, (unsigned)rows.size());
   TEST_ASSERT_EQUAL_STRING("4 earlier device event(s) were dropped while the clock was not set",
                            rows[0].text.c_str());
@@ -120,10 +120,58 @@ static void test_flush_reports_dropped_count() {
 // boot flush at once. An unknown boot number never claims "from boot n=0".
 static void test_synced_boot_and_unknown_boot_numbers() {
   const PendingEvent fromEarlier = ev(5, 10, "boot", "x");
-  TEST_ASSERT_TRUE(stampedPendingText(fromEarlier, 6).find("from boot n=5") != std::string::npos);
-  TEST_ASSERT_TRUE(stampedPendingText(ev(0, 10, "boot", "x"), 6).find("[pre-sync") != std::string::npos);
-  TEST_ASSERT_TRUE(stampedPendingText(ev(5, 10, "boot", "x"), 0).find("[pre-sync") != std::string::npos);
+  TEST_ASSERT_TRUE(stampedPendingText(fromEarlier, false).find("from boot n=5") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("x [from an earlier boot, clock never synced; stamped at first clock sync]",
+                           stampedPendingText(ev(0, 10, "boot", "x"), false).c_str());
+  TEST_ASSERT_TRUE(stampedPendingText(ev(5, 10, "boot", "x"), true).find("[pre-sync") != std::string::npos);
+  TEST_ASSERT_TRUE(stampedPendingText(ev(0, 10, "boot", "x"), true).find("[pre-sync") != std::string::npos);
   TEST_ASSERT_TRUE(planPendingFlush(PendingFile(), 4).empty());   // nothing held: nothing written
+}
+
+// CUM-714 (bench, 22 Oct 2026): three offline boots 463, 464, 465 flushed as one "from
+// boot n=463" row and TWO "[pre-sync]" rows: boot 464's row read as the syncing boot's
+// own. Ownership is positional now, never inferred from the boot number. The class,
+// over every split of a file between earlier boots and this boot, and over the boot
+// numbers that fooled the old rule (0, and this boot's own number on an earlier row):
+// exactly the last `ownTail` rows are this boot's, every other row names an earlier
+// boot, and nothing is lost or written twice.
+static void test_ownership_is_positional_for_every_split() {
+  const uint32_t trickyNumbers[] = {0u, 465u, 463u, 7u};
+  for (uint32_t tricky : trickyNumbers) {
+    for (size_t earlier = 0; earlier <= 5; ++earlier) {
+      for (size_t own = 0; own <= 4; ++own) {
+        std::string file;
+        for (size_t i = 0; i < earlier; ++i)
+          file = appendPendingEvent(file, ev(i % 2 ? tricky : 460 + (uint32_t)i, (uint32_t)i, "boot", "e" + std::to_string(i)));
+        for (size_t i = 0; i < own; ++i)
+          file = appendPendingEvent(file, ev(i % 2 ? 0 : 465, 900 + (uint32_t)i, "boot", "o" + std::to_string(i)));
+        const PendingFile f = parsePendingFile(file);
+        const std::vector<StampedRow> rows = planPendingFlush(f, own);
+        TEST_ASSERT_EQUAL_UINT((unsigned)(earlier + own), (unsigned)rows.size());
+        for (size_t i = 0; i < rows.size(); ++i) {
+          const bool presync = rows[i].text.find("[pre-sync") != std::string::npos;
+          const bool from = rows[i].text.find("[from ") != std::string::npos;
+          TEST_ASSERT_TRUE(presync != from);
+          TEST_ASSERT_EQUAL(i >= earlier, presync);
+          TEST_ASSERT_EQUAL_STRING((i < earlier ? "e" + std::to_string(i) : "o" + std::to_string(i - earlier)).c_str(),
+                                   rows[i].text.substr(0, rows[i].text.find(' ')).c_str());
+        }
+      }
+    }
+  }
+  // The 22 Oct shape: 464's row carries no number and the syncing boot is 465.
+  std::string file;
+  file = appendPendingEvent(file, ev(463, 2100, "boot", "Booted"));
+  file = appendPendingEvent(file, ev(0, 2200, "boot", "Booted"));
+  file = appendPendingEvent(file, ev(465, 2300, "boot", "Booted"));
+  const std::vector<StampedRow> rows = planPendingFlush(parsePendingFile(file), 1);
+  TEST_ASSERT_EQUAL_UINT(3, (unsigned)rows.size());
+  TEST_ASSERT_TRUE(rows[0].text.find("[from boot n=463,") != std::string::npos);
+  TEST_ASSERT_TRUE(rows[1].text.find("[from an earlier boot,") != std::string::npos);
+  TEST_ASSERT_TRUE(rows[2].text.find("[pre-sync") != std::string::npos);
+  // More own rows than the file kept (the bounds dropped some): all kept rows are own.
+  const std::vector<StampedRow> all = planPendingFlush(parsePendingFile(file), 99);
+  for (const auto& r : all) TEST_ASSERT_TRUE(r.text.find("[pre-sync") != std::string::npos);
 }
 
 int main(int, char**) {
@@ -133,6 +181,7 @@ int main(int, char**) {
   RUN_TEST(test_corrupt_lines_skipped);
   RUN_TEST(test_bounds_rows_and_bytes);
   RUN_TEST(test_rows_survive_resets_until_a_clock_exists);
+  RUN_TEST(test_ownership_is_positional_for_every_split);
   RUN_TEST(test_flush_reports_dropped_count);
   RUN_TEST(test_synced_boot_and_unknown_boot_numbers);
   return UNITY_END();
