@@ -67,6 +67,7 @@
 #include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 #include "nimbus/test_ballast.h"       // FAULT sram_ballast - multi-block ballast (host-tested)
+#include "agent/adapters/image_vision.h"  // VISIONCHECK - one caption request through the park (L19-8)
 
 namespace nimbus::tc {
 namespace {
@@ -412,6 +413,36 @@ void provFault(String arg) {
   if (status < 100 || status > 599) { reply("PROVFAULT status must be 100..599"); return; }
   agent::providers::setTestStatusOverride(std::string(host.c_str()), status, std::string(body.c_str()));
   Serial.printf("PROVFAULT %s %d armed (%u B body)\n", host.c_str(), status, (unsigned)body.length());
+  Serial.flush();
+}
+
+// UNSENT <api-host> | UNSENT off (L19-14): every request to that API host fails as
+// "not sent" - its first write left 0 bytes - with nothing sent, so the Unsent class
+// (at most one resend once the largest block recovers, no host switch, one honest
+// reply) runs on demand. PROVFAULT off clears it too (it is the same override).
+void unsentTest(String arg) {
+  arg.trim();
+  if (arg == "off") {
+    agent::providers::clearTestStatusOverride();
+    reply("UNSENT off");
+    return;
+  }
+  if (!arg.length() || arg.indexOf(' ') >= 0) { reply("UNSENT usage: UNSENT <api-host> | off"); return; }
+  agent::providers::setTestStatusOverride(std::string(arg.c_str()), agent::providers::kTestUnsentStatus, "");
+  reply(String("UNSENT ") + arg + " armed");
+}
+
+// VISIONCHECK <path on the card> (L19-8): one photo caption through the real
+// caption step (its provider walk and the one per-provider park), so a bench leg sees
+// which provider it asked, or why it asked none, without a Telegram photo. The
+// request may take seconds on the console's loop task, so the watchdog lets go of
+// the loop for that one call (as SPKSAY and MICREC do).
+void visionCheck(String path) {
+  path.trim();
+  esp_task_wdt_delete(nullptr);
+  const String d = agent::vision::describeImage(path.c_str(), "image/jpeg", &solide::storage::activeFs(), "");
+  esp_task_wdt_add(nullptr);
+  Serial.printf("VISIONCHECK described=%u why=%s\n", (unsigned)d.length(), agent::vision::failWords().c_str());
   Serial.flush();
 }
 
@@ -1931,6 +1962,14 @@ void dispatch(String line) {
   }
   if (line.startsWith("TGINJECT ")) {
     tgInject(line.substring(9));
+    return;
+  }
+  if (line.startsWith("UNSENT ")) {
+    unsentTest(line.substring(7));
+    return;
+  }
+  if (line.startsWith("VISIONCHECK ")) {
+    visionCheck(line.substring(12));
     return;
   }
   if (line.startsWith("AUDIOINJECT ")) {

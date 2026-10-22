@@ -7,12 +7,14 @@
 
 #include "../store.h"
 #include "../agent_config.h"   // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
+#include "../provider_gate.h"  // the one per-provider park (L19-8)
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
 #include "nimbus/orch/reply_text.h"
 #include "../../sys/net_util.h"
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/fetch_policy.h"
+#include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
 
 namespace agent {
 namespace urlfetch {
@@ -161,38 +163,80 @@ uint64_t httpsGetStream(const std::string& url,
 
 // ---- AI scan verdict ---------------------------------------------------------
 // One minimal chat completion, provider-switched (the image_vision pattern:
-// same wire shape, different host/model). Cheap models on purpose.
+// same wire shape, different host/model). Cheap models on purpose: the scan model
+// per provider is kScanModel* (the Anthropic one moved off claude-haiku-4-5, whose
+// retirement floor passed on 15 Oct 2026).
+namespace {
+constexpr const char* kScanModelOpenAI = "gpt-5.6-luna";
+constexpr const char* kScanModelMistral = "mistral-small-latest";
+constexpr const char* kScanModelAnthropic = "claude-haiku-5-5";
+
+// `routed` (x1 §1b): when set the scan travels through the Cumulo router -
+// hostBuf/pathBuf back the dynamic host+path, and auth is Bearer with the router
+// key even for the anthropic body shape (the router injects the real key).
+struct ScanProv {
+  const char* host = nullptr;
+  const char* path = nullptr;
+  const char* model = nullptr;
+  String key;
+  bool anthropic = false;
+  bool routed = false;
+  String hostBuf, pathBuf;
+  std::string slug;   // the provider the park knows it by
+};
+
+std::string scanKeyOf(const std::string& name) {
+  if (name == "openai") return store::openaiKey().c_str();
+  if (name == "mistral") return store::mistralKey().c_str();
+  if (name == "anthropic") return store::anthropicKey().c_str();
+  if (name == "cumulo") return store::cumuloKey().c_str();
+  return std::string();
+}
+
+// Cumulo-only device: route the scan through /router/<upstream>. Upstream from the
+// cumulo model selection (default/unknown -> openai, which the router always
+// carries); each upstream keeps a cheap scan model.
+void routeScanViaCumulo(ScanProv& p) {
+  String sel = store::orchModel("cumulo");
+  int ms = sel.indexOf('/');
+  String up = ms > 0 ? sel.substring(0, ms) : String("openai");
+  if (up == "mistral")        { p.model = kScanModelMistral;   p.anthropic = false; p.pathBuf = "/router/mistral/v1/chat/completions"; }
+  else if (up == "anthropic") { p.model = kScanModelAnthropic; p.anthropic = true;  p.pathBuf = "/router/anthropic/v1/messages"; }
+  else                        { p.model = kScanModelOpenAI;    p.anthropic = false; p.pathBuf = "/router/openai/v1/chat/completions"; }
+  String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
+  int sch = base.indexOf("://"); if (sch >= 0) base = base.substring(sch + 3);
+  int sl = base.indexOf('/');    if (sl >= 0) base = base.substring(0, sl);
+  p.hostBuf = base; p.host = p.hostBuf.c_str(); p.path = p.pathBuf.c_str();
+  p.key = store::cumuloKey(); p.routed = true;
+}
+
+// The first keyed provider the one park leaves open (openai, mistral, anthropic,
+// then the Cumulo router). False with `reason` when none is: no key at all, or
+// every keyed provider closed (out of credit, a refused key, paused).
+bool resolveScan(ScanProv& p, std::string& reason) {
+  const nimbus::orch::ProviderPick pick = nimbus::orch::pickOpenProvider(
+      {"openai", "mistral", "anthropic", "cumulo"}, scanKeyOf, nimbus::orch::PaidSeam::UrlFetch,
+      (uint32_t)millis());
+  if (pick.provider.empty()) {
+    reason = pick.closedWhy.empty() ? std::string("no provider key for the scan") : "scan: " + pick.closedWhy;
+    return false;
+  }
+  if (!pick.closedWhy.empty())
+    alogf("fetch: scan skipped a closed provider (%s) - asking %s", pick.closedWhy.c_str(), pick.provider.c_str());
+  p.slug = pick.provider;
+  if (p.slug == "openai")         { p.host = "api.openai.com";    p.path = "/v1/chat/completions"; p.model = kScanModelOpenAI; }
+  else if (p.slug == "mistral")   { p.host = "api.mistral.ai";    p.path = "/v1/chat/completions"; p.model = kScanModelMistral; }
+  else if (p.slug == "anthropic") { p.host = "api.anthropic.com"; p.path = "/v1/messages"; p.model = kScanModelAnthropic; p.anthropic = true; }
+  else { routeScanViaCumulo(p); return true; }
+  p.key = String(scanKeyOf(p.slug).c_str());
+  return true;
+}
+}  // namespace
+
 int scanVerdict(const std::string& headText, const std::string& url,
                 const std::string& name, std::string& reason) {
-  // `routed` (x1 §1b): when set the scan travels through the Cumulo router -
-  // hostBuf/pathBuf back the dynamic host+path, and auth is Bearer with the router
-  // key even for the anthropic body shape (the router injects the real key).
-  struct Prov { const char* host; const char* path; const char* model; String key;
-                bool anthropic; bool routed; String hostBuf; String pathBuf; };
-  Prov p{};
-  if (store::openaiKey().length())
-    p = {"api.openai.com", "/v1/chat/completions", "gpt-5.6-luna", store::openaiKey(), false, false, {}, {}};
-  else if (store::mistralKey().length())
-    p = {"api.mistral.ai", "/v1/chat/completions", "mistral-small-latest", store::mistralKey(), false, false, {}, {}};
-  else if (store::anthropicKey().length())
-    p = {"api.anthropic.com", "/v1/messages", "claude-haiku-4-5-20251001", store::anthropicKey(), true, false, {}, {}};
-  else if (store::cumuloKey().length()) {
-    // Cumulo-only device: route the scan through /router/<upstream>. Upstream from
-    // the cumulo model selection (default/unknown -> openai, which the router
-    // always carries); each upstream keeps a cheap scan model.
-    String sel = store::orchModel("cumulo");
-    int ms = sel.indexOf('/');
-    String up = ms > 0 ? sel.substring(0, ms) : String("openai");
-    if (up == "mistral")        { p.model = "mistral-small-latest";      p.anthropic = false; p.pathBuf = "/router/mistral/v1/chat/completions"; }
-    else if (up == "anthropic") { p.model = "claude-haiku-4-5-20251001"; p.anthropic = true;  p.pathBuf = "/router/anthropic/v1/messages"; }
-    else                        { up = "openai"; p.model = "gpt-5.6-luna"; p.anthropic = false; p.pathBuf = "/router/openai/v1/chat/completions"; }
-    String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
-    int sch = base.indexOf("://"); if (sch >= 0) base = base.substring(sch + 3);
-    int sl = base.indexOf('/');    if (sl >= 0) base = base.substring(0, sl);
-    p.hostBuf = base; p.host = p.hostBuf.c_str(); p.path = p.pathBuf.c_str();
-    p.key = store::cumuloKey(); p.routed = true;
-  }
-  else { reason = "no provider key for the scan"; return -1; }
+  ScanProv p;
+  if (!resolveScan(p, reason)) return -1;
 
   std::string prompt =
       "You are a download safety scanner on a small personal device. The owner's "
@@ -228,7 +272,12 @@ int scanVerdict(const std::string& headText, const std::string& url,
   tlsSetup(c);
   c.setHandshakeTimeout(15);
   c.setConnectionTimeout(15000);
-  if (!c.connect(p.host, 443)) { arbiter::releaseWork(); reason = "scan connect failed"; return -1; }
+  if (!c.connect(p.host, 443)) {
+    arbiter::releaseWork();
+    gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
+    reason = "scan connect failed";
+    return -1;
+  }
   c.printf("POST %s HTTP/1.0\r\nHost: %s\r\n", p.path, p.host);
   if (p.anthropic && !p.routed) {
     c.printf("x-api-key: %s\r\nanthropic-version: 2023-06-01\r\n", p.key.c_str());
@@ -244,12 +293,28 @@ int scanVerdict(const std::string& headText, const std::string& url,
 
   const uint32_t deadline = millis() + 30000;
   String line;
-  if (!readLine(c, line, deadline)) { tlsClose(c); arbiter::releaseWork(); reason = "scan: no response"; return -1; }
+  if (!readLine(c, line, deadline)) {
+    tlsClose(c);
+    arbiter::releaseWork();
+    gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
+    reason = "scan: no response";
+    return -1;
+  }
+  int status = 0;
+  { int sp = line.indexOf(' '); if (sp > 0) status = line.substring(sp + 1).toInt(); }
   while (readLine(c, line, deadline) && line.length() > 0) {}
   JsonDocument resp;
   DeserializationError je = deserializeJson(resp, c);
   tlsClose(c);
   arbiter::releaseWork();
+  if (status < 200 || status >= 300) {   // a refusal: the park learns it; the scan fails closed
+    std::string said;
+    if (!je) serializeJson(resp, said);
+    gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, status, said.c_str());
+    reason = "scan: " + nimbus::orch::providerErrLine(p.slug.c_str(), status, nimbus::orch::providerErrorText(said));
+    return -1;
+  }
+  gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, status, "");
   if (je) { reason = "scan: bad response"; return -1; }
   // The content may be a chunk list (a reasoning model's thinking, then its text).
   const std::string answer = p.anthropic ? nimbus::orch::messagesContentText(resp["content"])

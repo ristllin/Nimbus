@@ -426,13 +426,14 @@ static size_t antMessageLen(JsonObjectConst ev) {
 
 // Append one agent.message's text blocks to the reply. Messages after the first
 // are separated by a blank line. The writer cuts on a character boundary with a
-// visible marker when the 16 KB envelope is full (a raw byte cut split characters).
+// visible marker when the 16 KB envelope is full (a raw byte cut split characters)
+// and keeps every later block for the spill (L19-36), so all of them are fed.
 static void antAppendMessage(JsonObjectConst ev, wire::ReplyWriter& w) {
   if (w.used && antMessageLen(ev)) w.append("\n\n", 2);
   for (JsonObjectConst c : ev["content"].as<JsonArrayConst>()) {
     if (strcmp(c["type"] | "", "text") != 0) continue;
     const char* t = c["text"] | "";
-    if (!w.append(t, strlen(t))) return;
+    w.append(t, strlen(t));
   }
 }
 
@@ -447,10 +448,11 @@ static void antAppendMessage(JsonObjectConst ev, wire::ReplyWriter& w) {
 // the longest, never under kAntNarrationMin, never over kAntNarrationMax); a long
 // earlier message is part of the
 // work (a report written over several requests) and is kept, in order. A
-// one-message run is unchanged. Bounded by the envelope; never allocates.
+// one-message run is unchanged. Bounded by the envelope (a longer artifact goes to
+// the overflow record whole, L19-36).
 static const size_t kAntNarrationMin = 240;
 static const size_t kAntNarrationMax = 600;
-static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
+static void antArtifactText(JsonArrayConst events, char* out, size_t cap, const std::string& tailNote) {
   int at = -1, idx = 0;
   size_t best = 0;
   for (JsonObjectConst ev : events) {
@@ -469,8 +471,32 @@ static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
     if (strcmp(ev["type"] | "", "agent.message") != 0) continue;
     if (before && antMessageLen(ev) < narration) continue;   // short working note
     antAppendMessage(ev, w);
-    if (w.cut) return;
   }
+  if (!tailNote.empty()) w.appendTail(tailNote);   // the one channel for what it reports
+}
+
+// L19-37: the sandbox path the run's last agent.message names for its deliverable
+// ("/mnt/session/outputs/<file>"), "" when it names none. The managed agent writes a
+// long report to its sandbox and then summarises; on 19 Oct the device synthesised
+// from the 6 KB summary while the report stayed in the sandbox.
+static std::string antSandboxOutput(JsonArrayConst events) {
+  static const char kOutputs[] = "/mnt/session/outputs/";
+  std::string found;
+  for (JsonObjectConst ev : events) {
+    if (strcmp(ev["type"] | "", "agent.message") != 0) continue;
+    for (JsonObjectConst c : ev["content"].as<JsonArrayConst>()) {
+      const char* t = c["text"] | "";
+      const char* at = strstr(t, kOutputs);
+      if (!at) continue;
+      // Printable ASCII only (agent text may carry control bytes or invisible
+      // characters): the path rides a log line and the owner's reply.
+      size_t n = strlen(kOutputs);
+      while ((unsigned char)at[n] > 0x20 && (unsigned char)at[n] < 0x7f && !strchr("`'\")]>,;", at[n]) && n < 160) n++;
+      while (n > strlen(kOutputs) && strchr(".:", at[n - 1])) n--;   // a sentence's own full stop
+      if (n > strlen(kOutputs)) found.assign(at, n);   // the LAST message that names one wins
+    }
+  }
+  return found;
 }
 
 // Provenance from the session's own event list: every agent.tool_use,
@@ -520,8 +546,6 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   if (code != 200)               { logCallFail("poll", code, doc); return FabricErr::RemoteFail; }
 
   bool done = false, errored = false;
-  antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply));
-  antCountRuns(doc["data"].as<JsonArrayConst>(), env);
   for (JsonObject ev : doc["data"].as<JsonArray>()) {
     const char* type = ev["type"] | "";
     if (!strcmp(type, "session.status_idle")) {
@@ -531,6 +555,19 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
       strncpy(env.error, ev["error"]["message"] | "agent error", sizeof(env.error) - 1);
     }
   }
+  // L19-37: a finished run whose deliverable stayed in its sandbox (no file was
+  // captured into artifacts[]) says so, so its summary is never taken as the report.
+  std::string sandboxNote;
+  if (done && !errored && env.artifactCount == 0) {
+    const std::string path = antSandboxOutput(doc["data"].as<JsonArrayConst>());
+    if (!path.empty()) {
+      sandboxNote = "\n[report left in the sandbox, not retrieved: " + path +
+                    " - this reply is the agent's summary, not the report]";
+      hlog::logf("anthropic: %s left its report in the sandbox (%s), not retrieved", sid, path.c_str());
+    }
+  }
+  antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply), sandboxNote);
+  antCountRuns(doc["data"].as<JsonArrayConst>(), env);
 
   if (errored)    env.state = JobState::Error;
   else if (done)  { env.state = JobState::Done; if (!env.reply[0]) strncpy(env.reply, "(done)", sizeof(env.reply)-1); }
@@ -997,7 +1034,7 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
   outJson = res.finalTurn;
   convId  = "messages";   // stateless marker (state lives in the turn's memory field)
   return true;

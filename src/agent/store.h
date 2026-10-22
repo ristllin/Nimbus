@@ -407,6 +407,9 @@ void   recordProviderTokens(const String& provider, const nimbus::orch::TokenDel
 void   recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag);
 void   recordProviderCall(const String& provider);                     // per search call
 bool   providerOverBudget(const String& provider);                     // gate before spend
+// CUM-708: the ledger's ranking price of a model (micro-USD per 1M in + out; UINT64_MAX
+// when unpriced) - what the spawn-model fallback picks the cheapest by.
+uint64_t modelRankPrice(const std::string& provider, const std::string& model);
 [[nodiscard]] bool   setProviderBudget(const String& provider, uint64_t tokenLimit,
                          uint32_t callLimit, uint8_t resetDay,
                          uint64_t centsLimit = 0);                      // owner web edit (W16: + $ cap in cents)

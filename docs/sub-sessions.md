@@ -143,6 +143,8 @@ this order:
 
 [ATTACHED: <project>/<name>]
 <the document's full text - device-supplied, ≤24 KB across all attachments>
+
+[Reply size: the first 16 KB of your reply reaches the head directly; a longer reply is saved whole as a file the head can read, so finish your full report and do not pad or repeat it.]
 ```
 
 - **Now-header**: providers give spawned agents no clock, so the brief anchors
@@ -168,6 +170,8 @@ this order:
   missing or unreadable becomes an explicit `not found or unreadable` note
   rather than a silent omission. Naming a document only in the task text
   attaches nothing.
+- **Reply size**: the last line states the reply cap, so a sub-agent knows a long
+  report is kept whole rather than cut (see Results below).
 
 Each backend adds its own system prompt around the brief - e.g. OpenAI:
 *"You are an autonomous research agent. Complete the task fully and reply with
@@ -221,6 +225,16 @@ which provider hosts which connector.
    then Z.ai), so a device with one key runs a spawn that names no provider on
    that key instead of refusing it.
 
+A provider the one per-provider park holds closed (out of credit or a refused key
+learned on any seam, or paused; [provider-wire.md](provider-wire.md)) gets no
+spawn: the order skips it, and a spawn that names it (or a connector routed to it)
+moves to the first open provider, logged `spawn moved openai -> anthropic (...)`
+and noted in the spawn ledger. A connector task cannot move, and with nothing open
+the spawn is refused with the reason: *"Couldn't start that agent: openai says the
+account is out of credit (HTTP 429); it is checked again in 12 minutes."* A
+sub-agent request that the provider refuses for billing or with a refused key
+closes that provider for every seam too.
+
 **A provider with no key of its own runs on the Cumulo router** when the
 Cumulo key is set and the router offers that provider's model: the spawn's
 `<provider>/<model>` selector, else the selector of that provider's sub-model
@@ -262,10 +276,23 @@ always-on web search, not on a dedicated deep-research model.
 
 The device polls round-robin every ~15 s on the `tg_poll` task. The result
 envelope carries up to **16 KB** of reply (PSRAM-backed, v4.0.0 -
-large enough for a sub-agent to return a whole document); a longer reply is cut on
-a character boundary and ends with a visible `[cut at 16 KB]` marker (a note
-about uncaptured files is kept whole). Token usage is filled only by
-OpenAI (the Anthropic events poll returns no usage object - honest zeros).
+large enough for a sub-agent to return a whole document). A **longer reply is kept
+whole**: the writer every adapter uses holds the full text when it cuts the
+envelope (up to 256 KB), the job engine saves it to the card as a file in the job's
+project (or `results` when the spawn named none), and the envelope ends with a
+marker naming that file and the reply's real size, for example `[cut at 16 KB: the
+whole reply, 40960 bytes, is saved as research/report-job0003.md; read the rest
+with files.read from an offset]`. If the card cannot take it the marker says the
+rest could not be saved, and why; the cut is never presented as the whole report.
+(A note about uncaptured files is kept whole either way.) Token usage is filled only by
+OpenAI (the Anthropic events poll returns no usage object - honest zeros). An
+OpenAI background run that ends `incomplete` keeps the text it wrote, marked
+`[the agent stopped before it finished (<reason>): this is its partial answer]`;
+with no text it fails with that reason.
+An Anthropic managed agent that names its deliverable under
+`/mnt/session/outputs/` and has no file captured into the result ends with
+`[report left in the sandbox, not retrieved: <path> - this reply is the agent's
+summary, not the report]`, so its summary is never taken for the report.
 An Anthropic sub-agent's working notes ("I'll start with...", said before each
 tool call) arrive as their own short messages, so the reply - and the file it is
 saved to - is the run's longest message plus anything after it; short notes before
@@ -456,7 +483,7 @@ battery-lab's host-side tool, not firmware.)
 |---|---|---|
 | active job records (tag, provider jobId, model, chat, state) | **NVS** namespace `agjournal`, 6 slots, ~200 B each | yes - the device re-attaches and resumes polling (anthropic/openai only; mistral/custom caches are RAM) |
 | spawn + result trace rows (`ev:spawn` / `ev:subresult`, the glass-box disclosure) | episodic store, the **spawning chat's** session, kind=log | yes (SD day-streams) |
-| the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; the full reply in the `ev:subresult` row | via episodic / vector memory |
+| the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; the full reply in the `ev:subresult` row; a reply longer than the envelope saved whole as a file in the job's project (or `results`) | via episodic / vector memory; the file via `files.read` |
 | the sub-agent's internal transcript | **not stored** - provider-side only | - |
 | pending spawn queue, fresh results awaiting synthesis | RAM | no - lost on restart (results already delivered per-job survive as chat messages) |
 

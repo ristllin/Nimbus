@@ -338,7 +338,9 @@ struct LowHeapFabric {
     unsent.expectHost = "api.openai.com";
     unsent.expectPathContains = "/v1/responses";
     unsent.status = 0;
-    unsent.err = "head write failed";
+    // A cut mid-body (CUM-477): part of the request left. A first write that left
+    // 0 bytes is the Unsent class instead (L19-14, its own tests below).
+    unsent.err = "request body truncated: write failed after 4096 of 9000 bytes";
     d.http.script.push_back(unsent);
     pd = d.contract();
     // Healthy until the failed write, then 9940 until the heap recovers.
@@ -476,11 +478,34 @@ static void test_cum477_fabric_allocates_nothing_per_listed_host() {
   TEST_ASSERT_LESS_THAN_size_t(many.size() * sizeof(orch::HeadStepFn), largest);
 }
 
+
+// CUM-621: a round still cut after its in-step retry hands back the cut orch_turn
+// it carried, so the engine salvages the finished part with its honest marker
+// instead of sending the bare cut line (the other hosts are not asked: Cut switches,
+// but a single-host list has nowhere to go).
+static void test_cum621_a_cut_hands_back_its_partial_turn() {
+  FakeProviderDeps d;
+  const std::string cut =
+      "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_fin\",\"name\":\"orch_turn\","
+      "\"input\":{\"reply\":\"Here is the first half of the plan\"}}],\"stop_reason\":\"max_tokens\"}";
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // the retry with more room
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err, rig.ht, nullptr, nullptr));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)nimbus::orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Here is the first half of the plan\"}", out.c_str());
+  TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());   // nothing from a cut response runs
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
+  RUN_TEST(test_cum621_a_cut_hands_back_its_partial_turn);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_fabric_reports_every_failed_host_in_order);
   RUN_TEST(test_failure_after_billed_rounds_files_them);

@@ -109,6 +109,7 @@ struct Rig {
   // L19-28: what the fabric loop reports back as the turn's transcript brief
   // ("" = the loop hands back no brief, so the turn reads as single-shot).
   std::string fabricBrief;
+  int fabricDispatch = 0;   // tools the scripted fabric runs (ht.dispatch) before its visits
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -378,6 +379,13 @@ struct Rig {
     // L19-28: the rig can hand back a transcript brief, so a scripted fabric
     // turn reads as a loop turn.
     if (!fabricBrief.empty() && ht.onBrief) ht.onBrief(fabricBrief);
+    for (int i = 0; i < fabricDispatch && ht.dispatch; ++i) {
+      orch::HeadToolCall c;
+      c.id = "t" + std::to_string(i);
+      c.name = "memory_search";
+      c.argsJson = "{\"query\":\"x\"}";
+      toolResults.push_back(ht.dispatch(c));
+    }
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
     if (fabricSwitch && hl.size() > 1) {
       fileSpend(spend, hl[0], 50, 10, fabricFirstEcho);
@@ -1068,7 +1076,7 @@ static void test_cum544_all_timeouts_say_no_answer_in_time() {
   // it; a timeout is in transit, so asking again is offered.
   TEST_ASSERT_EQUAL_STRING(
       "That didn't finish - zai did not answer in time; openai also failed. "
-      "Nothing is still running; ask again to retry.",
+      "Your message was not answered. Nothing is still running; ask again to retry.",
       r.lastText().c_str());
   TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
 
@@ -1165,9 +1173,11 @@ static void test_rate_limit_reply_names_the_window() {
     for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {limited};
     TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
     // The same-host retry and the failover ladder still ran BEFORE the reply:
-    // anthropic twice, then both alternates, each with its switch notice.
+    // anthropic twice, then both alternates. Their switch notices are held and the
+    // failed turn sends ONE message (L19-13 d).
     TEST_ASSERT_EQUAL_MESSAGE(4, (int)r.attempts.size(), c.err);
-    TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("switching to openai"), c.err);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("switching to openai"), c.err);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.err);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::rateLimitReply(c.want), r.lastText().c_str(), c.err);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("rate-limited this device"), c.err);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("That didn't finish -"), c.err);
@@ -1311,7 +1321,7 @@ static void test_billing_park_lifecycle_on_the_ladder_and_the_fold() {
   r.eng->handleMessage("new key", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, r.attemptsOn("anthropic"));
   TEST_ASSERT_EQUAL(2, r.countDelivered("out of credit"));
-  TEST_ASSERT_TRUE(LogCapture::contains("fabric: anthropic un-parked (its key or model changed)"));
+  TEST_ASSERT_TRUE(LogCapture::contains("fabric: anthropic un-parked (its key changed)"));
 }
 
 // A probe that is answered ends the park and its episode: the host serves again, and
@@ -3574,6 +3584,11 @@ static std::vector<ExitCase> exitCases() {
                  r.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request",
                                             0, "", 0, 0}};
                }});
+  // L19-14: the device could not send its request (its first write left 0 bytes).
+  v.push_back({"unsent", "anthropic", "unsent", [](Rig& r) {
+                 r.scripts["anthropic"] = {{false, "", "unsent: the device could not finish sending its request",
+                                            0, "", 0, 0}};
+               }});
   // Lane K's billing reply (the refusal is not a rate limit): its own exit.
   v.push_back({"billing", "anthropic", "credit balance is too low",
                failAll("messages HTTP 400: Your credit balance is too low to access the Anthropic API.")});
@@ -3593,7 +3608,7 @@ static std::vector<ExitCase> exitCases() {
                  bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
                  r.scripts["anthropic"] = {bad};
                }});
-  ExitCase sched = v[5];   // the same exit reached by a scheduled fire (ladder exhausted)
+  ExitCase sched = v[6];   // the same exit reached by a scheduled fire (ladder exhausted)
   sched.exitName = "generic (scheduled fire)";
   sched.scheduled = true;
   v.push_back(sched);
@@ -3634,7 +3649,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   // The class guard: one table row per distinct failed exit in the engine.
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
-  const char* names[] = {"budget", "cut", "low memory", "billing", "429", "generic", "parse"};
+  const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
@@ -3659,7 +3674,8 @@ static void test_owner_notice_names_the_first_cause() {
   TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
   const std::string want = "That didn't finish - " +
                            orch::stepErrCause(orch::StepErr::BadRequest, "anthropic", 400) +
-                           "; openai and mistral also failed. Nothing is still running.";
+                           "; openai and mistral also failed. Your message was not answered. "
+                           "Nothing is still running.";
   TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("chat HTTP 400", r.hookEnds.back().error.c_str());   // still the last
   TEST_ASSERT_NOT_NULL(std::strstr(r.hookEnds.back().chain->first()->text.c_str(), "not valid JSON"));
@@ -3730,9 +3746,9 @@ static void test_failure_notice_names_helpers_still_running() {
   m.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request", 0, "", 0, 0}};
   TEST_ASSERT_FALSE(m.eng->runTurn("inputs", "1001", ""));
   TEST_ASSERT_EQUAL_STRING(
-      "That didn't finish - the device ran out of working memory for this request. 1 helper is "
-      "still working; its result will arrive when it finishes. Try a shorter question or wait a "
-      "minute.",
+      "That didn't finish - the device ran out of working memory for this request. Your message "
+      "was not answered. 1 helper is still working; its result will arrive when it finishes. Try a "
+      "shorter question or wait a minute.",
       m.lastText().c_str());
 }
 
@@ -3935,6 +3951,103 @@ static void runBillingParkTests() {
   RUN_TEST(test_billing_notice_latch_is_shared_and_kept_by_quiet_turns);
 }
 
+
+// ---- L19-13 d/e, L19-14: one honest owner message per failed turn ----------------
+
+// d: a two-switch failure on the fabric sends exactly ONE message (it used to send
+// two causeless "switching to" notices and then the failure notice).
+static void test_l19_13_two_switch_failure_sends_one_message() {
+  Rig r;
+  r.cfg.midFail = true;
+  r.fabricVisits = {{0, 0, "network"}, {0, 0, "network"}, {0, 0, "network"}};
+  r.fabricOk = false;
+  r.fabricErr = "network";
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
+  TEST_ASSERT_TRUE(r.lastText().rfind("That didn't finish - ", 0) == 0);
+  // e: every host failed before anything ran: the message was not answered.
+  TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("Your message was not answered."), r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.hookEnds.back().fallback);   // no host billed: never a fallback
+  TEST_ASSERT_TRUE(LogCapture::contains("switch notice(s) folded into the final notice"));
+}
+
+// d: a billing switch in a failed turn: the notice's one next step rides the final
+// message (and its once-per-episode latch is taken).
+static void test_l19_13_failed_billing_switch_folds_the_credit_line() {
+  Rig r;
+  r.cfg.midFail = true;
+  agent::providers::setTestFabricSwitch({"anthropic", "openai", orch::StepErr::Billing, 400, false});
+  r.fabricVisits = {{0, 0, "messages HTTP 400: Your credit balance is too low"}, {0, 0, "network"}};
+  r.fabricOk = false;
+  r.fabricErr = "network";
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("Add credit on anthropic's billing page."), r.lastText().c_str());
+  TEST_ASSERT_FALSE(orch::billingNoticeDue("anthropic"));   // the latch was taken with it
+  orch::billingEpisodeEnd("anthropic");
+  agent::providers::setTestFabricSwitch({});
+}
+
+// d, counter-test: a switched turn that is served still sends its reply exactly once
+// (the held switch notice goes out just before it).
+static void test_l19_13_switched_success_sends_its_reply_once() {
+  Rig r;
+  r.cfg.midFail = true;
+  r.fabricVisits = {{50, 10, "network"}, {100, 20, ""}};
+  r.fabricOk = true;
+  TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, r.countDelivered("hello there"));
+  TEST_ASSERT_EQUAL(1, r.countDelivered("switching to"));
+  TEST_ASSERT_TRUE(r.delivered.back().second.find("hello there") != std::string::npos);
+}
+
+// d: the single-shot ladder (two failover notices, then failure) also sends one.
+static void test_l19_13_ladder_failure_sends_one_message() {
+  Rig r;
+  for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {{false, "", "network", 0, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_TRUE(r.attempts.size() >= 3);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+}
+
+// L19-14: a request the device could not send gets its own honest words, the same
+// whatever the totals said, and no failover; with tools already run the message
+// keeps the work instead of "not answered".
+static void test_l19_14_unsent_reply_keeps_the_work() {
+  Rig r;
+  r.scripts["anthropic"] = {{false, "", "unsent: the device could not finish sending its request", 0, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // no same-host retry, no failover
+  TEST_ASSERT_EQUAL_STRING("That didn't finish - the device could not finish sending its request (memory is "
+                           "tight). Your message was not answered. Nothing is still running; try again in a "
+                           "minute.",
+                           r.lastText().c_str());
+  Rig w;
+  w.cfg.midFail = true;
+  w.fabricDispatch = 2;
+  w.fabricBrief = "[user] hi\n[tool] memory_search {}\n[result] memory_search 3 hits\n"
+                  "[tool] memory_write {}\n[result] memory_write saved\n";
+  w.fabricVisits = {{100, 20, ""}};
+  w.fabricOk = false;
+  w.fabricErr = "unsent: the device could not finish sending its request";
+  TEST_ASSERT_FALSE(w.eng->runTurn("inputs", "1001", "hi"));
+  TEST_ASSERT_EQUAL(1, (int)w.delivered.size());
+  TEST_ASSERT_TRUE_MESSAGE(w.anyDelivered("Already done this turn: memory_search, memory_write."),
+                           w.lastText().c_str());
+  TEST_ASSERT_FALSE(w.anyDelivered("not answered"));
+}
+
+// Lane K2 (L19-13 d/e, L19-14): one honest owner message per failed turn.
+static void runLaneK2Tests() {
+  RUN_TEST(test_recall_outage_is_announced_not_silent);
+  RUN_TEST(test_l19_13_two_switch_failure_sends_one_message);
+  RUN_TEST(test_l19_13_failed_billing_switch_folds_the_credit_line);
+  RUN_TEST(test_l19_13_switched_success_sends_its_reply_once);
+  RUN_TEST(test_l19_13_ladder_failure_sends_one_message);
+  RUN_TEST(test_l19_14_unsent_reply_keeps_the_work);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
@@ -4051,7 +4164,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
-  RUN_TEST(test_recall_outage_is_announced_not_silent);
+  runLaneK2Tests();   // (and the recall-outage test, kept in order; main sits at the length gate)
   UNITY_END();
   return 0;
 }

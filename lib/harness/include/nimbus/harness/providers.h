@@ -9,6 +9,7 @@
 #include "nimbus/harness/head_tools.h"  // HeadTools - the multi-turn tool-use loop glue
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
+#include "nimbus/orch/provider_park.h"  // the one per-provider park (the host park's store)
 #include "nimbus/orch/token_usage.h"
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - per-host spend of a fabric turn
 #include "nimbus/orch/wire_limits.h"    // kJsonStrGuard, foldDigestCap - the string ceilings
@@ -211,19 +212,27 @@ nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 // the kind (fabricRuleFor): one same-host resend only for a cause in transit
 // (Transport, RateLimited, ServerError); an immediate switch for a refusal of this
 // request on this host (Timeout, Rejected, Cut, Auth, Billing); neither for a
-// request that is unreadable anywhere (BadRequest) or a device short of memory
-// (LowMemory). A billing or auth refusal also PARKS the host for this boot: later
-// turns start on the next host with no request, retry or notice spent on it, until
-// its key or model changes, a request there succeeds, or kParkProbeMs passes (then
-// one probe request; a second refusal re-parks it quietly). RAM only, no NVS.
-inline constexpr uint32_t kParkProbeMs = 30u * 60u * 1000u;
-// Why a host is parked (hostParked). kind None = not parked.
+// request that is unreadable anywhere (BadRequest) or a device that could not make
+// or send it (LowMemory, Unsent). A billing or auth refusal also PARKS the host:
+// later turns start on the next host with no request, retry or notice spent on it,
+// until its key changes, a request there succeeds, or kParkProbeMs passes (then one
+// probe request; a second refusal re-parks it quietly).
+//
+// The park is the Chat seam of the one per-provider park (nimbus/orch/provider_park.h):
+// a refusal learned on any seam (embeddings, the caption step, a spawn, speech, the
+// download scan) parks the host here too, and the state is kept on flash across a
+// restart. A PAUSED host (the pause switch: the owner, the spend ceiling) is never
+// asked at all, not even when every host is closed.
+inline constexpr uint32_t kParkProbeMs = nimbus::orch::ProviderPark::kRecheckMs;
+// Why a host is parked (hostParked). kind None = not parked; kind Paused = the pause
+// switch holds it (`paused` = its causes, provider_park.h PauseCause).
 struct HostPark {
   nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;
   int httpStatus = 0;
+  uint8_t paused = 0;
 };
-// Parked now? `why` (optional) receives the refusal that parked it. A host whose
-// key or model changed since is un-parked here.
+// Closed now? `why` (optional) receives the refusal or pause that closed it. A host
+// whose key changed since it was parked is open again (a new start).
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why = nullptr);
 void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
               int httpStatus);
@@ -232,7 +241,7 @@ void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::Ste
 void noteHostFailed(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
                     int httpStatus);
 void unparkHost(const std::string& host);   // a request there succeeded
-void clearHostParks();                      // tests
+void clearHostParks();                      // tests: every park, latch and pause
 
 // The last provider switch the fabric made (or a parked head it started past),
 // read by the engine's notify callback for the owner notice. Single-task by
@@ -254,9 +263,14 @@ void setTestFabricSwitch(const FabricSwitch& sw);
 // ("api.anthropic.com") is answered locally with `status` and `body` - nothing is
 // sent - until cleared. The test console wires it. Defined only in test and host
 // builds (NIMBUS_TEST / NIMBUS_NATIVE): the production image has neither the
-// setter nor the check. Paired with setTestFirstAttemptCap (output_caps.h).
-void setTestStatusOverride(const std::string& host, int status, const std::string& body);
-void clearTestStatusOverride();
+// setter nor the check. Paired with setTestFirstAttemptCap (output_caps.h). Both
+// return true when the override took effect: one signature for every declaration
+// (a void here and a bool in another header is two functions with one mangled name).
+bool setTestStatusOverride(const std::string& host, int status, const std::string& body);
+bool clearTestStatusOverride();
+// The override status for "the request could not be sent": the first write left 0
+// bytes (L19-14), so the step fails Unsent with no request to the provider.
+inline constexpr int kTestUnsentStatus = -1;
 bool testStatusOverride(const std::string& host, int& status, std::string& body);
 
 // Spend (lane T): each host bills into its own counter, and on EVERY exit each host

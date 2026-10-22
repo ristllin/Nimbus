@@ -57,23 +57,45 @@ OutputCap anthropicCap(const std::string& model, RoundKind kind) {
   return c;
 }
 
-OutputCap mistralCap() {
+OutputCap mistralCap(const std::string& model) {
   OutputCap c;
   // About 60 s of output at the slowest measured Mistral rate (65 tok/s, Lumi
   // 13-14 Oct), inside the 120 s round ceiling; the retry gets half again.
   c.maxTokens = 4096;
   c.retryTokens = 6144;
+  // A head round answers; it does not reason (Mistral documents "high" and
+  // "none"). Only models that take the field get it, and the cut retry keeps it.
+  const bool effort = mistralTakesEffort(model);
+  c.effort = effort ? "none" : "";
+  c.retryEffort = c.effort;
   return c;
 }
 
-uint32_t clampToTime(uint32_t tokens, uint32_t roundMs, uint32_t rate) {
-  if (tokens == 0 || roundMs == 0) return tokens;
-  const uint32_t kPrefillMs = 10000;   // connect, TLS, upload and prompt prefill
-  const uint32_t kFloor = 2048;        // a final round still gets room for a whole turn
+// The tokens a generation at `rate` can produce inside `roundMs` (connect, TLS, the
+// upload and the prompt prefill take the first 10 s). 0 = no time clamp.
+uint32_t timeFit(uint32_t roundMs, uint32_t rate) {
+  if (roundMs == 0) return 0;
+  const uint32_t kPrefillMs = 10000;
   const uint32_t genMs = roundMs > kPrefillMs ? roundMs - kPrefillMs : 0;
-  uint32_t fit = (uint32_t)((uint64_t)genMs * rate / 1000);
-  if (fit < kFloor) fit = kFloor;
-  return tokens < fit ? tokens : fit;
+  return (uint32_t)((uint64_t)genMs * rate / 1000);
+}
+
+uint32_t atMost(uint32_t a, uint32_t b) { return a < b ? a : b; }
+uint32_t atLeast(uint32_t a, uint32_t b) { return a > b ? a : b; }
+
+// L19-44: the time clamp keeps the retry ROOMIER than the first attempt. Clamping
+// both caps to the same fit collapsed them (a full 120 s round on claude-opus-5:
+// 5,500 and 5,500), so the retry after a cut changed only the effort and a Claude
+// id that takes no effort had no retry at all; under 50 s the cap fell below
+// v4.5.13's 3,000. Now the first attempt takes three quarters of what the round's
+// time allows, never under kFirstFloor; the retry takes the whole fit and at least
+// a third more than the first attempt; both stay inside the table's own caps.
+constexpr uint32_t kFirstFloor = 3000;
+void clampToTime(OutputCap& c, uint32_t roundMs, uint32_t rate) {
+  if (!roundMs || !c.maxTokens) return;   // no deadline, or no cap sent
+  const uint32_t fit = timeFit(roundMs, rate);   // 0 for a round under the prefill: the floors hold
+  c.maxTokens = atMost(c.maxTokens, atLeast(kFirstFloor, fit / 4 * 3));
+  if (c.retryTokens) c.retryTokens = atMost(c.retryTokens, atLeast(fit, c.maxTokens / 3 * 4));
 }
 
 }  // namespace
@@ -102,6 +124,17 @@ bool anthropicTakesEffort(const std::string& model) {
   return false;
 }
 
+bool mistralTakesEffort(const std::string& model) {
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  static const char* const kReasoning[] = {
+      "mistral-small-latest", "mistral-small-26", "mistral-medium", "magistral-", "mistral-large-4",
+      "mistral-vibe-cli", "labs-leanstral", "glm-", "zai-glm",
+  };
+  for (const char* p : kReasoning)
+    if (startsWith(m, p)) return true;
+  return false;
+}
+
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model) {
   // Floors about 25-30% under the rates measured live on 18 Oct over a whole
   // non-streamed request (evidence/rate-probe.json in the lane notes): Haiku 5.5
@@ -127,14 +160,12 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
                        uint32_t roundMs) {
   OutputCap c;
   if (host == "anthropic") c = anthropicCap(model, kind);
-  else if (host == "mistral") c = mistralCap();
+  else if (host == "mistral") c = mistralCap(model);
   // OpenAI: no max_output_tokens - reasoning tokens count toward it and would
   // starve the answer; completeness is read from status:"incomplete" instead.
   // Custom / Z.ai: the head sends no cap either; finish_reason "length" is read.
   else return c;
-  const uint32_t rate = slowestTokensPerSecond(host, model);
-  c.maxTokens = clampToTime(c.maxTokens, roundMs, rate);
-  c.retryTokens = clampToTime(c.retryTokens, roundMs, rate);
+  clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   if (g_testFirstAttemptCap && c.maxTokens) c.maxTokens = g_testFirstAttemptCap;
 #endif
@@ -142,7 +173,10 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
 }
 
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
-void setTestFirstAttemptCap(uint32_t tokens) { g_testFirstAttemptCap = tokens; }
+bool setTestFirstAttemptCap(uint32_t tokens) {
+  g_testFirstAttemptCap = tokens;
+  return true;
+}
 uint32_t testFirstAttemptCap() { return g_testFirstAttemptCap; }
 #endif
 

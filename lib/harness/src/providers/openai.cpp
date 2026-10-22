@@ -153,6 +153,7 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   JsonDocument filter;
   filter["status"] = true;
   filter["error"]["message"] = true;
+  filter["incomplete_details"]["reason"] = true;   // CUM-619: why it stopped early
   filter["usage"] = true;   // real sub-session token usage -> spawn attribution
   JsonObject outItem  = filter["output"].add<JsonObject>();    // applies to all output items
   outItem["type"] = true;   // "*_call" items: the tools the sub actually ran (provenance)
@@ -175,6 +176,12 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   if (code != 200)               { hlog::logf("%s: poll HTTP %d", backend, code); return FabricErr::RemoteFail; }
 
   env.state = mapStatus(doc["status"] | "");
+  // CUM-619: a run that ended "incomplete" (its output limit, a content filter) keeps
+  // the text it wrote, delivered as a partial answer with an honest marker; it used
+  // to lose it all and report only "agent failed".
+  const bool incomplete = !strcmp(doc["status"] | "", "incomplete");
+  const std::string stopWhy = doc["incomplete_details"]["reason"] | "no reason given";
+  if (incomplete) env.state = JobState::Done;
   // Provenance from OpenAI's own record: every output item whose type ends in
   // "_call" is a tool the sub ran (web_search_call, mcp_call, code_interpreter_call,
   // file_search_call, function_call, ...); web_search_call is a web run.
@@ -233,6 +240,15 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
         w.append(t, strlen(t));   // cut UTF-8-safe with a visible marker at 16 KB
       }
     }
+    if (incomplete && !w.used) {   // nothing written: an honest failure, with the reason
+      env.state = JobState::Error;
+      env.reply[0] = 0;
+      snprintf(env.error, sizeof(env.error), "the agent stopped before it finished (%s)",
+               wire::oneLine(stopWhy).substr(0, 60).c_str());
+      return FabricErr::Ok;
+    }
+    if (incomplete) w.appendTail("\n[the agent stopped before it finished (" + wire::oneLine(stopWhy).substr(0, 60) +
+                                 "): this is its partial answer]");
     if (dropped > 0) {
       char note[96];
       snprintf(note, sizeof(note),
@@ -597,7 +613,7 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
   outJson = res.finalTurn;
   convId  = "responses";   // stateless marker - the device owns the turn's state
   return true;

@@ -8,7 +8,6 @@
     {"id": "gpt-4o-mini", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "router vision default; R1 replaces the captioner"},
     {"id": "pixtral-12b-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"},
     {"id": "claude-3-5-haiku-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"},
-    {"id": "claude-haiku-4-5-20251001", "file": "src/agent/adapters/url_fetch.cpp", "lane": "K2", "why": "url scan model past its retirement floor"},
     {"id": "claude-haiku-4-5", "file": "lib/core/include/nimbus/orch/model_choices.h", "lane": "F", "why": "cold-start list; the model store replaces it"}
   ],
   "keys": [
@@ -16,6 +15,8 @@
     {"id": "dall-e-3", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},
     {"id": "gpt-4o", "file": "lib/core/src/model_catalog.cpp", "why": "family prefix used to classify catalog rows"},
     {"id": "gpt-4o", "file": "lib/core/src/orch_compact.cpp", "why": "context-window family prefix"},
-    {"id": "claude-haiku-5-5:long", "file": "lib/core/include/nimbus/orch/model_price_defaults.h", "why": "ledger key of the over-100K price tier; never sent"}
+    {"id": "claude-haiku-5-5:long", "file": "lib/core/include/nimbus/orch/model_price_defaults.h", "why": "ledger key of the over-100K price tier; never sent"},
+    {"id": "mistral-large-4", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"},
+    {"id": "mistral-small-26", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"}
   ]
 }

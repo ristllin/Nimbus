@@ -15,6 +15,7 @@
 #include "fs_atomic.h"                // flashMounted() - internal storage row
 #include "dream_subsystem.h"          // status() - did the last night save its state
 #include "nimbus/fault.h"
+#include "nimbus/orch/provider_park.h"  // the one per-provider park - the Providers row (L19-8)
 
 namespace agent::health {
 
@@ -27,6 +28,34 @@ volatile uint32_t s_lbWhenMs = 0;
 const char* kOk = "ok", *kDegraded = "degraded", *kAbsent = "absent", *kUnknown = "unknown";
 
 struct Row { const char* key; const char* label; const char* state; String detail; };
+
+// The Providers row (L19-8): every provider the one park holds closed - out of
+// credit, a refused key, or paused - with when it is checked again. Degraded while
+// any is closed; ok when every provider is open to every seam.
+Row providersRow() {
+  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
+  const size_t n = nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders,
+                                                         (uint32_t)millis());
+  String d;
+  const uint8_t all = nimbus::orch::providerPark().pausedBy(nimbus::orch::kPauseAllProviders);
+  if (all) {
+    d = "paid requests to every provider are paused";
+    if (all & nimbus::orch::kPauseSpendCeiling) d += ": the monthly spend limit is reached";
+  }
+  for (size_t i = 0; i < n && !all; i++) {
+    nimbus::orch::ParkVerdict v;
+    v.open = e[i].kind == nimbus::orch::ParkKind::None && !e[i].paused;
+    if (v.open) continue;
+    v.kind = e[i].kind;
+    v.paused = e[i].paused;
+    v.httpStatus = e[i].httpStatus;
+    v.recheckInMs = e[i].recheckInMs;
+    if (d.length()) d += "; ";
+    d += nimbus::orch::parkWords(e[i].provider, v).c_str();
+  }
+  if (!d.length()) return {"providers", "Providers", kOk, String("every provider open")};
+  return {"providers", "Providers", kDegraded, d};
+}
 
 // Per-capability evidence from the SINGLE tests too (owner 2026-07-16: pressing
 // "Mic test"/"Speaker test" left the rows Unknown forever - only the loopback fed
@@ -97,7 +126,7 @@ std::string reportJson(const Env& env) {
   using nimbus::fault::Cap;
   const nimbus::hw::HalHealth& hal = nimbus::hw::halHealth();
 
-  Row rows[16];
+  Row rows[18];
   int n = 0;
 
   // LED ring + color panel: HAL begin-result AND not fault-injected. CUM-514: a
@@ -214,6 +243,8 @@ std::string reportJson(const Env& env) {
                        : (tgRejected ? "Telegram token rejected - set a new bot token"
                                      : "configured")};
   }
+
+  rows[n++] = providersRow();
 
   // Durable error log (CUM-407/CUM-409): surface the flash-wear byte count and any
   // lines the durable log dropped under card-lock contention. Degraded only when lines

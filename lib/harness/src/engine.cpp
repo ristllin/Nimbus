@@ -132,6 +132,31 @@ std::string afterFailure(int activeJobs, const std::string& advice) {
   a[0] = (char)toupper((unsigned char)a[0]);
   return out + ". " + a + ".";
 }
+
+// L19-14: what a failed turn had already done, from its transcript brief (one
+// "[result] <tool> ..." line per tool that ran): "Already done this turn:
+// memory_write, web_search (2)." so the owner keeps the work, not just the failure.
+std::string workDoneLine(const std::string& brief) {
+  std::vector<std::pair<std::string, int>> ran;
+  size_t at = 0;
+  while ((at = brief.find("[result] ", at)) != std::string::npos) {
+    at += 9;
+    const size_t end = brief.find_first_of(" \n", at);
+    const std::string name = brief.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    if (name.empty()) continue;
+    bool seen = false;
+    for (auto& r : ran)
+      if (r.first == name) { r.second++; seen = true; }
+    if (!seen && ran.size() < 8) ran.push_back({name, 1});
+  }
+  if (ran.empty()) return std::string();
+  std::string out = "Already done this turn: ";
+  for (size_t i = 0; i < ran.size(); ++i) {
+    out += (i ? ", " : "") + ran[i].first;
+    if (ran[i].second > 1) out += " (" + std::to_string(ran[i].second) + ")";
+  }
+  return out + ".";
+}
 }  // namespace
 
 namespace orch = nimbus::orch;
@@ -279,6 +304,48 @@ void TurnEngine::deliverBillingNotice(const std::string& chatId, const std::stri
     hlog::logf("orchestrator: %s billing notice already given this episode", host.c_str());
     return;
   }
+  deliver(chatId, text);
+}
+
+void TurnEngine::holdNotice(const std::string& text, const std::string& billingHost) {
+  if (!billingHost.empty() && !holdingNotices() && !nimbus::orch::billingNoticeDue(billingHost.c_str())) {
+    hlog::logf("orchestrator: %s billing notice already given this episode", billingHost.c_str());
+    return;
+  }
+  heldNotices_.push_back(HeldNotice{text, billingHost});
+}
+
+void TurnEngine::flushHeldNotices(const std::string& chatId) {
+  std::vector<HeldNotice> held;
+  held.swap(heldNotices_);
+  for (const HeldNotice& n : held) deliver(chatId, n.text);
+}
+
+std::string TurnEngine::foldHeldNotices() {
+  std::string out;
+  for (const HeldNotice& n : heldNotices_) {
+    if (n.billingHost.empty()) continue;   // a switch notice: its cause is in the final notice
+    const std::string line = "Add credit on " + n.billingHost + "'s billing page.";
+    if (out.find(line) == std::string::npos) out += (out.empty() ? "" : " ") + line;
+  }
+  if (!heldNotices_.empty())
+    hlog::logf("orchestrator: %u switch notice(s) folded into the final notice", (unsigned)heldNotices_.size());
+  heldNotices_.clear();
+  return out;
+}
+
+void TurnEngine::deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
+                                const std::string& advice, bool nothingRan) {
+  std::string text = head;
+  if (nothingRan) {
+    text += " Your message was not answered.";
+  } else {
+    const std::string work = workDoneLine(lastBrief_);
+    if (!work.empty()) text += " " + work;
+  }
+  text += " " + afterFailure(activeJobs, advice);
+  const std::string fold = foldHeldNotices();
+  if (!fold.empty() && text.find("Add credit") == std::string::npos) text += " " + fold;
   deliver(chatId, text);
 }
 
@@ -663,6 +730,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnFileSend_ = telegram && (!isTelegramChat(chatId) || telegramOn(std::string()));
   toolReplied_ = false;
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
+  heldNotices_.clear();   // L19-13 d: this turn's switch notices start empty
   // Lane L: sub-agent results folded into this turn are external content (the
   // leak-repair gate reads it); a tool that returns external content sets it too.
   externalContentSeen_ = freshInTurn_;
@@ -1276,8 +1344,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
                  orch::stepErrSlug(why.kind), alt.c_str());
       if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
-        deliverBillingNotice(chatId, host, "\xE2\x9A\xA0\xEF\xB8\x8F " +
-                                               orch::billingNotice(host, why.httpStatus, alt));
+        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::billingNotice(host, why.httpStatus, alt), host);
       switchPath += " -> " + alt;
       noteSwitch(errorClassOf(why.kind));
       host = alt;
@@ -1302,11 +1369,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           // seam); a turn that merely started past a parked head says nothing new.
           const providers::FabricSwitch& sw = providers::lastFabricSwitch();
           const std::string warn = "\xE2\x9A\xA0\xEF\xB8\x8F ";
+          // L19-13 d: held until the turn ends (one message for a failed turn).
           if (sw.kind == orch::StepErr::Billing) {
-            deliverBillingNotice(chatId, from, warn + orch::billingNotice(from, sw.httpStatus, to));
+            holdNotice(warn + orch::billingNotice(from, sw.httpStatus, to), from);
           } else if (!sw.parkedStart) {
-            deliver(chatId, warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) +
-                                " - switching to " + to + ". Your progress this turn carries over.");
+            holdNotice(warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) + " - switching to " + to +
+                       ". Your progress this turn carries over.");
           }
           // The next turn's [FALLBACK] note (lane T) names whose turn this was, the
           // whole path and why the host it left failed: the fabric's typed record of
@@ -1337,7 +1405,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // low-memory reply below fire.
   auto isLowMem = [](const std::string& e) {
     return e.find("low memory") != std::string::npos ||
-           e.find("out of memory") != std::string::npos;
+           e.find("out of memory") != std::string::npos ||
+           e.rfind("unsent:", 0) == 0;   // L19-14: the device could not send it (same on every host)
   };
   if (!ok && *loopDispatched > 0)
     hlog::logf("orchestrator: loop ran %d tool(s) before failing - skipping retry/failover",
@@ -1388,10 +1457,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const std::string notice = std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) +
                                  fb + " (your recent messages carry over; the provider-side thread restarts).";
       const orch::StepErr failKind = orch::classifyStepError(err);
-      if (failKind == orch::StepErr::Billing)
-        deliverBillingNotice(chatId, host, notice);
-      else
-        deliver(chatId, notice);
+      holdNotice(notice, failKind == orch::StepErr::Billing ? host : std::string());   // L19-13 d
       // Record the switch as a model-facing context note for the next turn.
       switchPath += " -> " + fb;
       noteSwitch(errorClassOf(failKind));
@@ -1423,7 +1489,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (orch::isCutError(err)) {
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
-      deliver(chatId, so.text);
+      const std::string fold = foldHeldNotices();   // L19-13 d: one message
+      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold);
       // A notice a quiet turn held never reached the owner, so it is no history row either.
       if (!holdingNotices()) captureAssistantRow(chatId, so.text, "reply");
       err = "cut: " + err;
@@ -1443,9 +1510,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // wrong-provider fallback. (Device copy: no em dash, no space-hyphen-space.)
     // CUM-477: the copy names what happened and the two things that help.
     const int activeJobs = d_.jobs ? d_.jobs->activeCount() : 0;
+    // L19-13 e: every host failed before anything ran - the message itself went
+    // unanswered, and the owner is told so (the turn-end row is tagged with its id).
+    const bool nothingRan = *loopDispatched == 0;
+    if (orch::classifyStepError(err) == orch::StepErr::Unsent) {
+      // L19-14: the device could not send its request - its fault, not a provider's.
+      deliverFailure(chatId, "That didn't finish - " + orch::stepErrCause(orch::StepErr::Unsent, host, 0) + ".",
+                     activeJobs, "try again in a minute", nothingRan);
+      if (tf.chain.empty()) tf.chain.noteDevice(err.c_str());
+      fireTurnEnd(false, 0);
+      return false;
+    }
     if (isLowMem(err)) {
-      deliver(chatId, "That didn't finish - the device ran out of working memory for this "
-                      "request. " + afterFailure(activeJobs, "try a shorter question or wait a minute"));
+      deliverFailure(chatId, "That didn't finish - the device ran out of working memory for this request.",
+                     activeJobs, "try a shorter question or wait a minute", nothingRan);
       if (tf.chain.empty()) tf.chain.noteDevice(("low memory: " + err).c_str());
       fireTurnEnd(false, 0);
       return false;
@@ -1453,8 +1531,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // A billing refusal is not a rate limit (OpenAI's "no credits" comes as a
     // 429): waiting never helps, credit does.
     if (orch::classifyStepError(err) == orch::StepErr::Billing) {
-      deliver(chatId, "That didn't finish - the provider says the account is out of credit. "
-                      "Add credit on its billing page, or switch providers. Nothing is still running.");
+      deliverFailure(chatId, "That didn't finish - the provider says the account is out of credit. "
+                             "Add credit on its billing page, or switch providers.", activeJobs, "", nothingRan);
       fireTurnEnd(false, 0);
       return false;
     }
@@ -1463,7 +1541,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // is only true for a per-minute window; a spent daily quota or a plan that
     // allows 0 requests gets its own honest reply.
     if (has("HTTP 429")) {
-      deliver(chatId, rateLimitReply(rateLimitFromError(err)));
+      const std::string fold = foldHeldNotices();   // L19-13 d: one message
+      const std::string rl = rateLimitReply(rateLimitFromError(err));
+      deliver(chatId, fold.empty() ? rl : rl + " " + fold);
       fireTurnEnd(false, 0);
       return false;
     }
@@ -1482,11 +1562,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     for (size_t i = 0; i < alsoFailed.size(); ++i)
       also += (i == 0 ? "" : (i + 1 == alsoFailed.size() ? " and " : ", ")) + alsoFailed[i];
     if (!also.empty()) cause += "; " + also + " also failed";
-    deliver(chatId, "That didn't finish - " + cause + ". " +
-                        afterFailure(activeJobs, oc.transient ? "ask again to retry" : ""));
+    deliverFailure(chatId, "That didn't finish - " + cause + ".", activeJobs,
+                   oc.transient ? "ask again to retry" : "", nothingRan);
     fireTurnEnd(false, 0);
     return false;
   }
+  flushHeldNotices(chatId);   // L19-13 d: a served turn says what it held, before its reply
   if (d_.cfg.provider.setConvId) {
     // Re-read at write time (a web convReset may have cleared the slot mid-turn)
     // and upsert only THIS chat's entry - other chats' threads stay intact.

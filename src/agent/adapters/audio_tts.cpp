@@ -7,12 +7,14 @@
 #include "../../sys/net_util.h"      // tlsClose
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "../agent_config.h"         // CUMULO_HOST_DEFAULT
+#include "../provider_gate.h"        // the one per-provider park (L19-8)
 #include "../store.h"
 #include "../../sys/agent_log.h"
 #include "b64_stream.h"              // shared base64 socket->file stream decoder
 #include "nimbus/tts_catalog.h"     // core::speakerTtsFormat (host-tested playback format)
 #include "nimbus/orch/voice_route.h" // voiceActiveProvider / voiceRouteFor (host-tested routing)
 #include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
+#include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
 
 namespace agent {
 namespace tts {
@@ -35,7 +37,8 @@ String bareHost(String h) {
 // viaCumuloRouter pattern, CUM-302). `mistral` is the WIRE shape: a direct Mistral
 // call emits base64 MP3 and ignores response_format; openai AND cumulo (openai
 // upstream) are raw-binary + response_format-honoring, so cumulo has mistral=false.
-struct TtsProvider { bool mistral; String host; const char* path; const char* model; String key; String voice; };
+struct TtsProvider { bool mistral; String host; const char* path; const char* model; String key; String voice;
+                     std::string slug; };   // the provider the park knows it by
 TtsProvider resolve(const char* voice) {
   const String cfg = store::ttsProvider();
   const String eff = activeProvider();
@@ -60,10 +63,13 @@ TtsProvider resolve(const char* voice) {
     String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
     p.host = bareHost(base);
     p.key = store::cumuloKey();
+    p.slug = "cumulo";
   } else if (eff == "openai") {
     p.host = "api.openai.com"; p.key = store::openaiKey();
+    p.slug = "openai";
   } else {  // mistral
     p.host = "api.mistral.ai"; p.key = store::mistralKey();
+    p.slug = "mistral";
   }
   return p;
 }
@@ -105,6 +111,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     return 0;
   }
   if (prov.key.length() == 0) { alogf("tts: no key for provider %s", store::ttsProvider().c_str()); return 0; }
+  // L19-8: a provider the one park closed (out of credit or a refused key learned on
+  // any seam, or paused) gets no request; the turn's text reply still reaches the owner.
+  if (!gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key).open) return 0;
 
   JsonDocument doc;
   doc["model"] = prov.model;
@@ -131,7 +140,12 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
-  if (!connected) { arbiter::releaseWork(); alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap()); return 0; }
+  if (!connected) {
+    arbiter::releaseWork();
+    gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, 0, "");
+    alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap());
+    return 0;
+  }
 
   c.printf("POST %s HTTP/1.0\r\n", prov.path);
   c.printf("Host: %s\r\n", prov.host.c_str());
@@ -160,6 +174,7 @@ size_t synthesizeToFile(const String& text, const char* outPath,
       if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
     }
     tlsClose(c); arbiter::releaseWork();
+    gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, errb);
     // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
     // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
     bool jok = false;
@@ -168,10 +183,12 @@ size_t synthesizeToFile(const String& text, const char* outPath,
       alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
             code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
     else
-      alogf("tts: %s HTTP %d: %.100s", store::ttsProvider().c_str(), status, errb);
+      alogf("tts: %s", nimbus::orch::providerErrLine(prov.slug.c_str(), status,
+                                                     nimbus::orch::providerErrorText(errb)).c_str());
     return 0;
   }
 
+  gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, "");
   File f = LittleFS.open(outPath, FILE_WRITE);
   if (!f) { tlsClose(c); arbiter::releaseWork(); alog("tts: fs open fail"); return 0; }
   size_t total = 0;

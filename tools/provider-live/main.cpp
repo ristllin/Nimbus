@@ -15,6 +15,12 @@
 //   utf8           a tool result carrying a torn UTF-8 character: repaired, 200
 //   error-surface  an unknown model id: a typed Rejected, no same-host retry, a
 //                  switch to the second host given as --then=<host>:<model>
+//   mistral-effort a tool turn on a Mistral head: reasoning_effort "none" on every
+//                  round exactly when the model can reason (CUM-616), all 200
+//   long-report    a real sub-agent (anthropic managed agent on <model>) asked for a
+//                  report past the 16 KB envelope through the real JobEngine: the
+//                  whole reply is saved (L19-36), the envelope's marker names it, and a
+//                  real head turn on the same model cites the file for the full text
 // Keys come by NAME from NIMBUS_ENV_FILE; nothing is printed but usage numbers.
 #include <curl/curl.h>
 
@@ -27,9 +33,13 @@
 #include <string>
 #include <vector>
 
+#include <thread>
+
+#include "nimbus/harness/jobs.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/journal.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/transcript.h"
 
@@ -387,6 +397,118 @@ void scErrorSurface(Ctx& c) {
   c.r.check("turn ok on the second host", c.r.ok);
 }
 
+// CUM-616: a Mistral head that can reason gets reasoning_effort "none" on every
+// round; one that cannot gets no field (it would answer 400 code 3051).
+void scMistralEffort(Ctx& c) {
+  int sw = 0;
+  fabric(c.rig, {c.host}, "Search your memory for my bike with the memory_search tool, then tell me its color "
+                          "in one short sentence.", c.r, &sw);
+  const bool wants = agent::providers::mistralTakesEffort(c.model);
+  bool every = !c.rig.http.calls.empty(), none = true;
+  for (const auto& call : c.rig.http.calls) {
+    const bool has = call.body.find("\"reasoning_effort\":\"none\"") != std::string::npos;
+    every = every && has;
+    none = none && call.body.find("reasoning_effort") == std::string::npos;
+  }
+  c.r.check("every request 200", allStatus200(c.rig));
+  c.r.check("turn ok", c.r.ok);
+  c.r.check("the tool ran", !c.rig.dispatched.empty());
+  c.r.check(wants ? "reasoning_effort none on every round" : "no reasoning_effort field", wants ? every : none);
+  c.r.check("no refusal retry", !anyLog("refused reasoning_effort"));
+}
+
+// ---- L19-36: a real sub-agent's long report is kept whole ----------------------------
+struct RamJournal : nimbus::orch::JournalStore {
+  std::map<int, std::string> slots;
+  std::string get(int s) override { auto it = slots.find(s); return it == slots.end() ? "" : it->second; }
+  bool put(int s, const std::string& v) override { slots[s] = v; return true; }
+  bool remove(int s) override { slots.erase(s); return true; }
+  void clearNs() override { slots.clear(); }
+};
+struct AntSub : agent::ManagedAgentAdapter {
+  agent::providers::ProviderDeps* pd = nullptr;
+  std::string model;
+  const char* backendId() const override { return "anthropic"; }
+  agent::Capabilities capabilities() const override { return {}; }
+  agent::FabricErr dispatch(const agent::Directive& d, char out[72]) override {
+    return agent::providers::antDispatch(*pd, model.c_str(), d, out);
+  }
+  agent::FabricErr poll(const char* id, agent::ResultEnvelope& env) override {
+    return agent::providers::antPoll(*pd, id, env);
+  }
+  agent::FabricErr cancel(const char* id) override { return agent::providers::antCancel(*pd, id); }
+};
+
+void scLongReport(Ctx& c) {
+  auto& pd = c.rig.pd;
+  std::string envId, agents;
+  pd.antEnvId = [&] { return envId; };
+  pd.setAntEnvId = [&](const std::string& v) { envId = v; };
+  pd.antAgentMap = [&] { return agents; };
+  pd.setAntAgentMap = [&](const std::string& v) { agents = v; };
+  AntSub sub;
+  sub.pd = &pd;
+  sub.model = c.model;
+  agent::HeavyFabric fab;
+  fab.registerAdapter(&sub);
+  RamJournal store;
+  nimbus::orch::Journal journal;
+  journal.begin(&store);
+  std::map<std::string, std::string> files;   // "<project>/<doc>" -> text (the card)
+  std::string envelope;
+  agent::JobEngine::Deps d;
+  d.platform.nowMs = [] { return nowMs(); };
+  d.platform.freeHeap = [] { return (uint32_t)4u * 1024u * 1024u; };
+  d.fabric = &fab;
+  d.journal = &journal;
+  d.deliver = [](const std::string&, const std::string&) { return true; };
+  d.subPriority = [] { return std::string("anthropic"); };
+  d.providerHasKey = [](const std::string& p) { return p == "anthropic"; };
+  d.subModel = [&c](const std::string&) { return c.model; };
+  d.modelIsValid = [](const std::string&, const std::string&) { return true; };
+  d.persistResult = [&files](const std::string& prj, const std::string& name, const std::string& tag,
+                             const std::string& text, const std::string&) {
+    const std::string doc = name + "-" + tag + ".md";
+    files[prj + "/" + doc] = text;
+    return "[saved: " + prj + "/" + doc + "]";
+  };
+  d.hooks.onResult = [&envelope](const agent::ResultEv& ev) { if (ev.terminal) envelope = ev.reply; };
+  agent::JobEngine::Tuning t;
+  t.pollIntervalMs = 5000;
+  agent::JobEngine jobs(std::move(d), t);
+  nimbus::orch::Spawn sp;
+  sp.task = "Write a detailed report of about 4,500 words on the history of the bicycle, in plain paragraphs "
+            "under section headings. Reply with the WHOLE report as your answer; do not save it to a file.";
+  sp.provider = "anthropic";
+  sp.model = c.model;
+  sp.category = "research";
+  sp.project = "k2live";
+  sp.name = "bike";
+  jobs.enqueueSpawn(sp, "lab");
+  const uint32_t deadline = nowMs() + 900000;
+  while (nowMs() < deadline && envelope.empty()) {
+    jobs.pump();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+  }
+  const std::string path = files.empty() ? std::string() : files.begin()->first;
+  const std::string whole = files.empty() ? std::string() : files.begin()->second;
+  c.r.check("the sub finished", !envelope.empty());
+  c.r.check("the reply was longer than the envelope", whole.size() > 16384);
+  c.r.check("the envelope names the saved file", !path.empty() && envelope.find("is saved as " + path) != std::string::npos);
+  c.r.check("real text at offset 20000", whole.size() > 20200 && whole.substr(20000, 200).find("[cut at") == std::string::npos);
+  // The head: a real turn on the same model reads the result and must say where the
+  // whole report is.
+  c.rig.models["anthropic"] = c.model;
+  int sw = 0;
+  const std::string user = "[FRESH RESULTS]\n[bike] " + envelope.substr(envelope.size() > 1500 ? envelope.size() - 1500 : 0) +
+                           "\n\n[USER] Summarize that helper's report in two sentences and tell me exactly where I can "
+                           "read the full text.";
+  fabric(c.rig, {"anthropic"}, user, c.r, &sw);
+  const std::string doc = path.substr(path.find('/') + 1);
+  c.r.check("the head cites the file", c.r.ok && !doc.empty() && c.r.out.find(doc) != std::string::npos);
+  std::fprintf(stderr, "long-report: %zu B saved as %s; head: %.300s\n", whole.size(), path.c_str(), c.r.out.c_str());
+}
+
 struct Scenario {
   const char* name;
   void (*run)(Ctx&);
@@ -394,7 +516,8 @@ struct Scenario {
 const Scenario kScenarios[] = {
     {"final-cap", scFinalCap},   {"final-stall", scFinalStall}, {"single-shot", scSingleShot},
     {"fold", scFold},            {"cut-retry", scCutRetry},     {"parity", scParity},
-    {"utf8", scUtf8},            {"error-surface", scErrorSurface},
+    {"utf8", scUtf8},            {"error-surface", scErrorSurface}, {"mistral-effort", scMistralEffort},
+    {"long-report", scLongReport},
 };
 
 }  // namespace

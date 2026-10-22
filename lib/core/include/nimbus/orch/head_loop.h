@@ -67,8 +67,13 @@ enum class StepErr : uint8_t {
   Rejected,     // this host refused this request for its model (another 4xx, a refusal);
                 // another host may accept it
   Cut,          // the answer was cut at the output limit after the in-step headroom retry
+  Unsent,       // the device could not send the request: its first write left 0 bytes (the
+                // head, or the first body slice). The device's fault, the same on every host:
+                // one resend once the largest free block recovers, never a host switch
+  Paused,       // every host the turn could use is paused (provider_park.h's pause switch:
+                // the owner's pause or the spend ceiling): no request was made
 };
-inline constexpr int kStepErrCount = 11;
+inline constexpr int kStepErrCount = 13;
 const char* stepErrSlug(StepErr k);   // "transport", "timeout", ... ("none")
 
 // What the fabric does after a failed step of this kind. A kind that neither

@@ -4,8 +4,9 @@
 #include <string>
 
 // billing_refusal - ONE table for "the provider refused because the account is out
-// of credit or quota", shared by the chat head (the fabric's Billing step error)
-// and the embedding seam, so a new provider token is added once for both.
+// of credit or quota", shared by every paid seam (the chat head's Billing step
+// error, embeddings, the caption step, spawns, speech, the download scan) through
+// the one provider park, so a new provider token is added once for all of them.
 //
 // A billing refusal is permanent until the owner adds credit or changes the key:
 // retrying it on the same host costs a request every time and can never succeed.
@@ -21,7 +22,8 @@
 //   - OpenAI embeddings: 429 code "credit_balance_exhausted";
 //   - Mistral: 402 Payment Required; the Cumulo router: 402 with
 //     insufficient_credits, insufficient_credits_for_call, budget_exceeded,
-//     credits_or_subscription_required, and 4xx funding_cap_reached.
+//     credits_or_subscription_required, 4xx funding_cap_reached, and its monthly
+//     cap as 429 ceiling_reached.
 // Every 402 is billing whatever its body says.
 namespace nimbus {
 namespace orch {
@@ -39,6 +41,7 @@ inline constexpr const char* kBillingTokens[] = {
     "budget_exceeded",
     "credits_or_subscription_required",
     "billing_hard_limit_reached",
+    "ceiling_reached",   // the Cumulo router's monthly cap (HTTP 429)
 };
 
 namespace detail {
@@ -67,54 +70,15 @@ inline bool isBillingRefusal(int status, const std::string& text) {
 }
 
 // One owner notice per billing episode per provider, shared by every seam that
-// meets the refusal (chat turns, embeddings): the first seam to see it sends the
-// notice, the rest stay quiet until the episode ends (a request at that provider
-// succeeds again, or its key or model changes). RAM only - a restart re-arms it,
-// which costs at most one more notice. Single-task by design (AGENTS.md), so a
-// plain table needs no lock.
-namespace detail {
-struct BillingEpisodes {
-  static constexpr size_t kMax = 6;
-  char provider[kMax][16] = {};
-  bool noticed[kMax] = {};
-  int find(const char* p) const {
-    for (size_t i = 0; i < kMax; i++)
-      if (provider[i][0] && std::strncmp(provider[i], p, sizeof(provider[i]) - 1) == 0) return (int)i;
-    return -1;
-  }
-};
-inline BillingEpisodes& billingEpisodes() {
-  static BillingEpisodes e;
-  return e;
-}
-}  // namespace detail
-
+// meets the refusal (chat turns, embeddings, the caption step, spawns, speech, the
+// download scan): the first seam to see it sends the notice, the rest stay quiet
+// until the episode ends (a request at that provider succeeds again, or its key
+// changes). The latch lives in the one provider park (provider_park.h), which keeps
+// it on flash, so a restart no longer re-sends the notice.
 // True exactly once per episode: the caller that gets true sends the notice.
-inline bool billingNoticeDue(const char* provider) {
-  detail::BillingEpisodes& e = detail::billingEpisodes();
-  int i = e.find(provider);
-  if (i < 0) {
-    for (size_t k = 0; k < detail::BillingEpisodes::kMax && i < 0; k++)
-      if (!e.provider[k][0]) i = (int)k;
-    if (i < 0) i = 0;   // table full: reuse the first slot (bounded, never grows)
-    std::strncpy(e.provider[i], provider, sizeof(e.provider[i]) - 1);
-    e.provider[i][sizeof(e.provider[i]) - 1] = 0;
-    e.noticed[i] = false;
-  }
-  if (e.noticed[i]) return false;
-  e.noticed[i] = true;
-  return true;
-}
-
+bool billingNoticeDue(const char* provider);
 // The episode is over: the next refusal at this provider notices again.
-inline void billingEpisodeEnd(const char* provider) {
-  detail::BillingEpisodes& e = detail::billingEpisodes();
-  const int i = e.find(provider);
-  if (i >= 0) {
-    e.provider[i][0] = 0;
-    e.noticed[i] = false;
-  }
-}
+void billingEpisodeEnd(const char* provider);
 
 // The owner-facing words for a billing refusal, plain and with the one next step.
 // `next` is the provider the turn moves to ("" = none).

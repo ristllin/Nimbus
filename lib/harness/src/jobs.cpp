@@ -7,6 +7,7 @@
 
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/rate_limit.h" // rateLimitReply - a refused spawn names its window
+#include "nimbus/harness/reply_overflow.h"  // the whole reply the envelope cut (L19-36)
 #include "nimbus/harness/skill_md.h"   // composeSkillInjection - per-spawn capsule
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
@@ -14,8 +15,10 @@
 #include "nimbus/orch/sub_provenance.h"   // liveTask, the unverified rule, [tools: n] (lane S)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/model_choices.h"  // modelInChoices, cheapestChoice - validated spawn-model coercion
+#include "nimbus/orch/provider_park.h"  // the one per-provider park: a closed provider gets no spawn
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
+#include "nimbus/orch/usage_ledger.h"   // cheapestByEffectivePrice - the ledger's price (CUM-708)
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
 
 // Lifted from src/agent/orchestrator.cpp (Stage F). Every owner-visible string,
@@ -230,25 +233,50 @@ void JobEngine::reapDone() {
 // The Cumulo router: one key that carries every upstream it lists (CUM-541).
 static const char kRouterSlug[] = "cumulo";
 
+// L19-8: the one per-provider park closes a provider for spawns too (out of credit
+// or a refused key, learned on any seam, or the pause switch). The spawn seam has no
+// key text at hand, so a key change reaches it through the seams that do.
+static bool spawnSeamOpen(const std::string& provider, uint32_t nowMs, std::string* why = nullptr) {
+  const orch::ParkVerdict v =
+      orch::providerPark().available(provider.c_str(), orch::PaidSeam::Spawn, 0, nowMs);
+  if (!v.open && why) *why = orch::parkWords(provider.c_str(), v);
+  return v.open;
+}
+
 // First key'd provider in subPriority order, then the router keys this device
 // holds (Cumulo, then Z.ai; the head's own fallback order, routerFallbackHost),
 // so a one-key device runs a spawn that names no provider on that key instead of
-// refusing it. "" if none is configured.
-std::string JobEngine::firstSubProvider() const {
+// refusing it. A provider the park closed is skipped (L19-8). "" if none is open.
+std::string JobEngine::firstSubProvider() const { return firstSubProvider(nullptr); }
+
+// trim (matches Arduino String::trim on the device)
+static std::string trimmedSlug(std::string p) {
+  while (!p.empty() && isspace((unsigned char)p.front())) p.erase(p.begin());
+  while (!p.empty() && isspace((unsigned char)p.back())) p.pop_back();
+  return p;
+}
+
+// A keyed provider the park leaves open runs the spawn; a closed one keeps its words.
+bool JobEngine::subProviderRuns(const std::string& p, std::string* closedWhy) const {
+  if (p.empty() || !hasKey(p)) return false;
+  std::string why;
+  if (spawnSeamOpen(p, nowMs(), &why)) return true;
+  if (closedWhy && closedWhy->empty()) *closedWhy = why;
+  return false;
+}
+
+std::string JobEngine::firstSubProvider(std::string* closedWhy) const {
   std::string prio = d_.subPriority ? d_.subPriority() : std::string();
   size_t start = 0;
   while (start < prio.length()) {
     size_t comma = prio.find(',', start);
     if (comma == std::string::npos) comma = prio.length();
-    std::string p = prio.substr(start, comma - start);
-    // trim (matches Arduino String::trim on the device)
-    while (!p.empty() && isspace((unsigned char)p.front())) p.erase(p.begin());
-    while (!p.empty() && isspace((unsigned char)p.back())) p.pop_back();
-    if (p.length() && hasKey(p)) return p;
+    const std::string p = trimmedSlug(prio.substr(start, comma - start));
+    if (subProviderRuns(p, closedWhy)) return p;
     start = comma + 1;
   }
   for (const char* r : {kRouterSlug, "zai"})
-    if (hasKey(r)) return r;
+    if (subProviderRuns(r, closedWhy)) return r;
   return "";
 }
 
@@ -844,7 +872,7 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
         ledgerSwapped(p, provider + " does not offer " + asked + "; runs on its sub-agent default " + sub);
     } else {
       const std::string why = unlistedWhy(provider, asked, sub);
-      model = nimbus::orch::cheapestChoice(provider.c_str(), list);
+      model = nimbus::orch::cheapestByEffectivePrice(provider.c_str(), list);   // CUM-708: the ledger's price
       if (model.empty()) {
         refuseUnpricedModel(p, provider, asked, sub, why);
         return false;
@@ -877,11 +905,40 @@ void JobEngine::refuseUnpricedModel(const PendingSpawn& p, const std::string& pr
                          "that provider's [AVAILABLE MODELS] entry");
 }
 
+// L19-8: a spawn whose provider the park closed (named by the head, or a connector's
+// host) sends it nothing. It moves to the first open sub provider, its model left to
+// the coercion there; a connector task cannot move (its connector lives on that
+// provider) and nothing open is left either way: refused, with the park's words.
+bool JobEngine::moveOffClosedProvider(const PendingSpawn& p, const std::string& host,
+                                      std::string& provider, std::string& model) {
+  std::string why;
+  if (spawnSeamOpen(provider, nowMs(), &why)) return true;
+  const std::string alt = host.empty() ? firstSubProvider() : std::string();
+  if (alt.empty()) {
+    hlog::logf("orchestrator: spawn refused (%s)", why.c_str());
+    deliver(p.chatId, "Couldn't start that agent: " + why + ".");
+    noteSpawnRefused(p.chatId, p.name, p.task, why);
+    return false;
+  }
+  hlog::logf("orchestrator: spawn moved %s -> %s (%s)", provider.c_str(), alt.c_str(), why.c_str());
+  ledgerSwapped(p, why + "; runs on " + alt);
+  provider = alt;
+  model.clear();
+  return true;
+}
+
 bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
                            ManagedAgentAdapter*& a) {
   const std::string chatId = p.chatId;
   provider = spawnProvider(p);
   if (provider.length() == 0) {
+    std::string closedWhy;   // keyed providers exist, but the park closed every one (L19-8)
+    firstSubProvider(&closedWhy);
+    if (!closedWhy.empty()) {
+      deliver(chatId, "Couldn't start that agent: " + closedWhy + ".");
+      noteSpawnRefused(chatId, p.name, p.task, closedWhy);
+      return false;
+    }
     deliver(chatId, "No provider is configured to run that agent.");
     noteSpawnRefused(chatId, p.name, p.task, "no provider with a key can run it");
     return false;
@@ -889,6 +946,7 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
   model = p.model;
   // A connector task never moves to (or runs on) the router: refuseConnector.
   const std::string host = connectorHost(p);
+  if (!moveOffClosedProvider(p, host, provider, model)) return false;
   const bool keyless = d_.providerHasKey && !d_.providerHasKey(provider);
   const bool routed = keyless && host.empty() && keylessToRouter(provider, model);
   a = d_.fabric->adapterFor(provider.c_str());
@@ -907,6 +965,30 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
     return false;
   }
   return coerceSpawnModel(p, provider, model);
+}
+
+// L19-36: save the whole reply (`whole`, longer than the envelope) to the job's
+// project on the card, or to kSpillProject when the spawn named none, then end the
+// envelope with the spill marker. True when the card holds it; false keeps the
+// envelope's honest "could not be saved" marker.
+static const char kSpillProject[] = "results";
+bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& whole, size_t dropped) {
+  std::string path, why = "no file store";
+  if (d_.persistResult) {
+    const char* prj = rec.prj[0] ? rec.prj : kSpillProject;
+    std::string text = whole;
+    if (dropped) text += "\n[the reply continued for " + std::to_string(dropped) + " more bytes that were not kept]";
+    const std::string note = d_.persistResult(prj, rec.name, rec.tag, text, rec.chatId);
+    const std::string saved = "[saved: ";
+    if (note.rfind(saved, 0) == 0 && note.size() > saved.size() + 1)
+      path = note.substr(saved.size(), note.size() - saved.size() - 1);
+    else
+      why = note;
+  }
+  orch::endWithSpillMarker(env_ref(), path, whole.size() + dropped, path.empty() ? why : std::string());
+  hlog::logf("orchestrator: %s reply was %u B - %s", rec.tag, (unsigned)(whole.size() + dropped),
+             path.empty() ? ("not saved: " + why).c_str() : ("saved whole as " + path).c_str());
+  return !path.empty();
 }
 
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
@@ -942,6 +1024,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     std::string cctx = d_.chatContext(p.chatId);
     if (!cctx.empty()) instruction += "\n\n" + cctx;
   }
+  instruction += kSubReplyCapNote;   // L19-36: the sub knows the reply cap
   // v4.0.0 attachments: splice each referenced doc's CONTENT into the brief
   // (the model references by name - cheap output tokens; the firmware supplies
   // the bytes). Total budget 24 KB, UTF-8-safe clip, honest not-found notes.
@@ -1143,6 +1226,10 @@ int JobEngine::pump() {
     memset(&env_ref(), 0, sizeof(nimbus::orch::ResultEnvelope));
     uint32_t hBefore = freeHeap();
     FabricErr err = d_.fabric->poll(rec.jobId, env_ref());
+    // L19-36: the whole reply when the 16 KB envelope cut it ("" when it fit); taken
+    // after every poll so a Running poll's copy never outlives it.
+    size_t overflowDropped = 0;
+    const std::string overflow = providers::takeReplyOverflow(&overflowDropped);
     hlog::logf("orchestrator: poll %s err=%d state=%d heap %u->%u", rec.tag, (int)err,
                (int)env_ref().state, (unsigned)hBefore, (unsigned)freeHeap());
 
@@ -1224,6 +1311,9 @@ int JobEngine::pump() {
       d_.recordSpawnUsage(rec.backend, rec.model, env_ref().promptTokens,
                           env_ref().completionTokens);
     const bool done = env_ref().state == orch::JobState::Done;
+    // L19-36: a reply longer than the envelope is saved whole to the card first, and
+    // the envelope ends with a marker naming that file and its real size.
+    const bool spilled = done && !overflow.empty() && spillWholeReply(rec, overflow, overflowDropped);
     bool unverified = false;
     std::string reply = done ? deliveredReply(rec, unverified) : std::string();
     fireResult(rec.tag, env_ref().state, rec.chatId,
@@ -1245,7 +1335,7 @@ int JobEngine::pump() {
       // doc in its project - how "sub-agents write documents" actually works
       // (they have no device tools; the head persists on their behalf). The
       // outcome line rides the fresh result so the planner KNOWS what saved.
-      if (rec.prj[0] && d_.persistResult) {
+      if (rec.prj[0] && d_.persistResult && !spilled) {   // a spilled reply is saved already
         std::string note = d_.persistResult(rec.prj, rec.name, rec.tag, reply, rec.chatId);
         if (!note.empty()) reply += "\n" + note;
       }

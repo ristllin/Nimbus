@@ -170,6 +170,35 @@ struct RowPrice {
 
 class UsageHistory;   // below
 
+// ---- the default daily spend warning (L19-2) ---------------------------------------
+// Token, call and cents limits default to 0 (none), and on 19 Oct 2026 nothing told
+// the owner that one morning cost about 80 USD. So every provider has a daily warning
+// threshold by default: the larger of kDailyWarnFloorCents and kDailyWarnMedianFactor
+// times the median of that provider's spending days over the last
+// kDailyWarnHistoryDays full days of the usage history (a fresh device: the floor).
+// The owner's own limit replaces the default: a provider with a cents limit set warns
+// at that limit. When a day's total crosses the threshold the owner gets exactly one
+// plain notice per provider per day (the latch lives in the provider park, on flash).
+inline constexpr uint64_t kDailyWarnFloorCents = 500;   // 5 USD
+inline constexpr uint32_t kDailyWarnMedianFactor = 3;
+inline constexpr uint32_t kDailyWarnHistoryDays = 30;
+
+struct DailyWarn {
+  uint64_t spentCents = 0;       // today's total for the provider (the history's day)
+  uint64_t thresholdCents = 0;   // where it warns
+  uint64_t medianCents = 0;      // the median spending day (0 = no history)
+  bool     ownerLimit = false;   // the threshold is the owner's own limit
+  bool     crossed() const { return spentCents > 0 && spentCents >= thresholdCents; }
+};
+
+// Days since the epoch of a calendar date (the day key the latch uses: the device's
+// local date). 0 for a date before 1970.
+uint32_t civilDayKey(int year, int month, int day);
+
+// The plain owner notice: "anthropic has cost about $12.40 today, past its daily
+// warning of $5.00 ... Spending continues; set a limit in Usage & Budget to cap it."
+std::string dailyWarnNotice(const std::string& prov, const DailyWarn& w);
+
 // ---- one turn's spend in ledger tokens (owner ruling R4) ---------------------------
 // The ONE place that knows what each provider's usage counts mean. It takes a
 // SpendSlot (one provider's billed responses), never a bare TokenUsage, so a sum of
@@ -339,6 +368,23 @@ class UsageLedger {
   // False only when every part of the provider's spend resolves to no price at all
   // (e.g. a custom model the owner never priced).
   bool anyPriced(const std::string& name) const;
+  // CUM-708: the price a model is RANKED by when the device picks the cheapest one
+  // (the spawn-model fallback): input plus output, micro-USD per 1M tokens, from the
+  // same tiers this ledger charges (the owner's model price, the Cumulo router's, the
+  // owner's provider rate, the built-in model row). UINT64_MAX when only the
+  // provider-wide estimate prices it (fail-closed money: an unknown model may cost
+  // more than any priced one, so it is never the cheapest).
+  uint64_t rankPrice(const std::string& prov, const char* model) const;
+  // L19-2: what `prov` spent on history day `dayKey`, in cents: each of the day's
+  // buckets at the price this ledger charges its model (rowRate; an unattributed
+  // bucket at residualRate, calls at callRate), one floor to cents.
+  uint64_t priceDay(const UsageHistory& h, const std::string& prov, uint32_t dayKey) const;
+  // The median of priceDay over the `days` full days before `todayKey` on which
+  // `prov` spent anything (0 when it spent nothing in that window).
+  uint64_t medianDayCents(const UsageHistory& h, const std::string& prov, uint32_t todayKey,
+                          uint32_t days = kDailyWarnHistoryDays) const;
+  // Today's spend and the threshold it is held to (see DailyWarn).
+  DailyWarn dailyWarnCheck(const UsageHistory& h, const std::string& prov, uint32_t todayKey) const;
   // A model row counts toward its provider's period only when it belongs to exactly
   // that period. Rows recorded before the clock synced carry into the first real
   // period with their provider (recordTokens rolls every row to its provider's
@@ -420,6 +466,22 @@ class UsageLedger {
 };
 static_assert(ModelLedger::kMaxTracks >= UsageLedger::kMaxProviders,
               "every provider entry needs room for its model-tracking record");
+
+// CUM-708: the cheapest of the comma-separated `csv` models of provider `slug` by the
+// effective price the ledger uses (UsageLedger::rankPrice through the registered
+// source; with none registered, the built-in table, cheapestChoice). The earlier item
+// wins a tie; "" when no item is priced. The device registers its ledger once.
+using RankPriceFn = std::function<uint64_t(const std::string& prov, const std::string& model)>;
+void setRankPriceSource(RankPriceFn fn);
+std::string cheapestByEffectivePrice(const char* slug, const std::string& csv);
+
+// L19-2: whether the daily spend warning for `prov` is due now: today's spend
+// (history day `todayKey`) crossed its threshold and the owner was not told yet on
+// the device's local date `localDayKey`. True takes the latch (kept on flash by the
+// provider park, so a restart does not repeat it) and fills `notice`; the caller
+// sends it. A caller that cannot reach the owner right now must not call it.
+bool dailyWarnDue(const UsageLedger& L, const UsageHistory& h, const std::string& prov, uint32_t todayKey,
+                  uint32_t localDayKey, std::string& notice);
 
 // ---- daily usage history (the graphs' time series) ----------------------------
 // One bucket per (UTC day, provider, model): prompt/completion tokens, calls and

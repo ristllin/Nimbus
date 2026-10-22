@@ -1,5 +1,10 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <string>
+
+#include "nimbus/mem_cap.h"   // utf8CapLen - cut the reply on a character boundary
 
 // Ported and adapted from Nuage-Solide src/agent/result_envelope.h
 // (Head Orchestrator v2). Arduino-free: the fixed char[] fields are plain POD so
@@ -86,6 +91,42 @@ struct ResultEnvelope {
   Artifact artifacts[kMaxArtifacts] = {};
   int      artifactCount = 0;
 };
+
+// ---- the spill marker (L19-36) ------------------------------------------------------
+// The marker a provider adapter's reply writer puts at the end of a reply the 16 KB
+// envelope cut (providers/wire.h ReplyWriter). The writer keeps the whole reply aside,
+// the job engine saves it to the card, and endWithSpillMarker turns this marker into
+// one that names the saved file and the reply's real size.
+inline constexpr const char* kEnvelopeCutMarker = "\n[cut at 16 KB]";
+
+// The marker that ends a spilled reply: where the whole reply is (`path`, its real
+// size `realBytes`) and how to read the rest; or, `path` empty, that the rest could
+// not be saved and why (`why`).
+inline std::string spillMarker(const std::string& path, size_t realBytes, const std::string& why) {
+  if (path.empty())
+    return "\n[cut at 16 KB: the rest of the reply could not be saved" + (why.empty() ? std::string() : " (" + why + ")") +
+           "]";
+  return "\n[cut at 16 KB: the whole reply, " + std::to_string(realBytes) + " bytes, is saved as " + path +
+         "; read the rest with files.read from an offset]";
+}
+
+// Replace the reply's cut marker with spillMarker(...), keeping any note after it and
+// cutting the reply text further, on a character boundary, to make room. False (the
+// reply untouched) when the reply carries no cut marker.
+inline bool endWithSpillMarker(ResultEnvelope& env, const std::string& path, size_t realBytes,
+                               const std::string& why = std::string()) {
+  const std::string reply(env.reply);
+  const size_t at = reply.rfind(kEnvelopeCutMarker);
+  if (at == std::string::npos) return false;
+  const std::string tail = reply.substr(at + std::strlen(kEnvelopeCutMarker));
+  const std::string mark = spillMarker(path, realBytes, why);
+  const size_t cap = sizeof(env.reply) - 1;
+  if (mark.size() + tail.size() >= cap) return false;
+  const int keep = utf8CapLen(reply.c_str(), (int)at, (int)(cap - mark.size() - tail.size()));
+  const std::string out = reply.substr(0, (size_t)keep) + mark + tail;
+  std::memcpy(env.reply, out.c_str(), out.size() + 1);
+  return true;
+}
 
 }  // namespace orch
 }  // namespace nimbus

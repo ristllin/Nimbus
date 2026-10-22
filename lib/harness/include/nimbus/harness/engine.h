@@ -432,6 +432,22 @@ class TurnEngine {
   // with the embedding seam), held without taking the latch on a quiet turn.
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);
+  // L19-13 d: a provider-switch notice raised while a turn runs is HELD, not sent:
+  // a turn that fails folds what it held into its ONE final notice (the owner got
+  // three messages per failed turn on 19 Oct), a turn that is served sends it just
+  // before its reply. `billingHost` names the provider of a billing notice: its
+  // once-per-episode latch is taken when it is held (a quiet turn leaves it armed).
+  void holdNotice(const std::string& text, const std::string& billingHost = std::string());
+  void flushHeldNotices(const std::string& chatId);
+  // The held notices' share of a failed turn's final notice: one "add credit" line
+  // per provider that refused for billing ("" when none). Clears the hold.
+  std::string foldHeldNotices();
+  // L19-13 d/e, L19-14: the one owner message of a failed turn: `head` ("That didn't
+  // finish - <cause>."), then "Your message was not answered." when nothing ran, or
+  // what the turn already did, then the running-helpers line with `advice`, then the
+  // folded notices.
+  void deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
+                      const std::string& advice, bool nothingRan);
   // Lane L: an answer that was not applied (cut or unreadable) but whose
   // salvaged text claims sub-agents: the ledger line and the head's note, as
   // apply gives a promise without a spawn.
@@ -471,6 +487,11 @@ class TurnEngine {
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
+  struct HeldNotice {
+    std::string text;
+    std::string billingHost;   // "" = a switch notice; else the provider that refused for billing
+  };
+  std::vector<HeldNotice> heldNotices_;   // this turn's switch notices (L19-13 d)
   std::string heldReply_;               // the dream turn's output, held (FireOutcome.held)
   // True while a quiet scheduled turn runs: every engine notice is held (deliver)
   // and the one-notice billing latch is left armed (lane M x lane K).

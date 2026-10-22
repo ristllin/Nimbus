@@ -6,9 +6,9 @@
 #include <functional>
 
 #include "nimbus/harness/log.h"
-#include "nimbus/orch/billing_refusal.h"   // billingEpisodeEnd - one notice per episode
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/provider_park.h"   // the one per-provider park every seam shares
 #include "nimbus/orch/transcript.h"
 
 namespace agent {
@@ -73,15 +73,49 @@ Resend resendVerdict(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg, bo
 }
 
 constexpr const char* kUnsentLowMem = "low memory: the device could not send the request";
+constexpr const char* kUnsentDevice = "unsent: the device could not finish sending its request";
+
+// L19-14: the largest free internal block a resend of a request whose FIRST write
+// left 0 bytes waits for. On 19 Oct the device failed slice 0 at a 7,156 B largest
+// block with total free above the old resend threshold (16,096 B), resent 1.7 s later
+// under the same conditions and failed again, then walked both host switches with
+// ever larger bodies. A 4,096 B body slice and its TLS record need room above it.
+constexpr uint32_t kUnsentResendLargest = 10240;
 
 // Memory - not the network - is the reason a send failed: total free heap is below
 // the round floor. Neither the largest block nor the transport's starved-start tag
 // alone counts: a Freenove board idles near the block floor, and CUM-404 v2 forbids
 // turning its genuine outages into fake low-memory failures (which skip failover).
 // A total that stayed low for the whole wait is Resend::StayedLow, read at the call
-// site.
+// site. (A first write that left 0 bytes is the exception: Unsent, below.)
 bool memoryShort(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
   return cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap;
+}
+
+// The heap a resend of an unsent-at-start request needs: the largest block at
+// kUnsentResendLargest (when the device reports it) and total free past the resend
+// threshold.
+bool blockRecovered(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  if (pd.largestBlock && pd.largestBlock() < kUnsentResendLargest) return false;
+  return !totalBelowResendFloor(pd, cfg);
+}
+
+// Wait (bounded, when a delay seam exists) for blockRecovered.
+bool waitForBlock(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  for (uint32_t waited = 0; !blockRecovered(pd, cfg); waited += kHeapPollMs) {
+    if (!pd.delayMs || waited >= kHeapRecoverMs) return false;
+    pd.delayMs(kHeapPollMs);
+  }
+  return true;
+}
+
+unsigned largestNow(const ProviderDeps& pd) { return pd.largestBlock ? (unsigned)pd.largestBlock() : 0u; }
+
+// A request the device could not send is the device's fault: the same on every host.
+void markUnsent(orch::HeadStep& sr) {
+  sr.error = kUnsentDevice;
+  sr.kind = orch::StepErr::Unsent;
+  sr.httpStatus = 0;
 }
 
 // What is left of a round's budget after `t0` (UINT32_MAX = no deadline).
@@ -102,6 +136,30 @@ void typeStep(orch::HeadStep& sr) {
 }
 }  // namespace
 
+namespace {
+// L19-14: the first write left 0 bytes (the head, or the first body slice). The
+// totals at that instant decide nothing (a few hundred bytes flipped the old verdict
+// between "network" and "low memory"): it is Unsent, resent at most once and only
+// after the largest block recovers, and it never switches host.
+orch::HeadStep resendUnsentAtStart(const ResendCtx* ctx, orch::HeadStep sr, bool allowTools,
+                                   const std::vector<orch::HeadToolResult>& prior, uint32_t budgetLeftMs,
+                                   const std::string& capReason) {
+  const ProviderDeps& pd = *ctx->pd;
+  const unsigned largestAt = largestNow(pd);
+  if (!waitForBlock(pd, *ctx->cfg)) {
+    hlog::logf("%s: request not sent (first write, largest block %u) - the block did not recover, "
+               "no resend", ctx->who, largestAt);
+    markUnsent(sr);
+    return sr;
+  }
+  hlog::logf("%s: request not sent (first write, largest block %u) - one same-host resend after "
+             "the block recovered (largest %u)", ctx->who, largestAt, largestNow(pd));
+  orch::HeadStep sr2 = (*ctx->inner)(allowTools, prior, budgetLeftMs, capReason);
+  if (!sr2.ok && wire::lastExchange().unsent) markUnsent(sr2);
+  return sr2;
+}
+}  // namespace
+
 orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
   // One pointer: the closure fits std::function's inline storage, so wrapping the
   // step allocates nothing on the turn path (copying ProviderDeps would copy
@@ -114,6 +172,8 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
     orch::HeadStep sr = (*ctx->inner)(allowTools, prior, budgetMs, capReason);
     if (sr.ok || !wire::lastExchange().unsent) return sr;
     ctx->settled = true;
+    if (wire::lastExchange().unsentAtStart)
+      return resendUnsentAtStart(ctx, sr, allowTools, prior, budgetLeft(pd, budgetMs, t0), capReason);
     const unsigned heapAt = heapNow(pd);
     const bool shortAtFailure = memoryShort(pd, *ctx->cfg);
     const Resend verdict = resendVerdict(pd, *ctx->cfg, wire::lastExchange().lowMem);
@@ -148,100 +208,66 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
   };
 }
 
-// ---- the host park (billing / auth refusals) ------------------------------------
+// ---- the host park: the chat seam of the one per-provider park ------------------
+// The fabric's park API (providers.h) is the Chat seam of nimbus::orch::providerPark()
+// (provider_park.h): a billing or key refusal learned on ANY seam (embeddings, the
+// caption step, a spawn, speech, the download scan) closes the host for chat turns
+// too, and a chat refusal closes it for every other seam. The park remembers the
+// key it was learned under; a new key is a new start.
 
 namespace {
-struct ParkSlot {
-  char host[16] = {};
-  size_t fp = 0;             // fingerprint of the key + model + route it was parked under
-  orch::StepErr kind = orch::StepErr::None;
-  int httpStatus = 0;
-  uint32_t sinceMs = 0;
-  bool probing = false;      // kParkProbeMs passed: the next request is the probe
-};
-ParkSlot g_parks[6];         // every head host (the fabric's three, custom, cumulo, zai); fixed
 FabricSwitch g_lastSwitch;
 
-size_t parkFingerprint(const ProviderDeps& pd, const std::string& host) {
-  const std::string k = pd.key ? pd.key(host.c_str()) : std::string();
-  const std::string m = pd.orchModel ? pd.orchModel(host.c_str()) : std::string();
-  const std::string r = pd.routerBase ? pd.routerBase() : std::string();
-  return std::hash<std::string>()(k + '\x1f' + m + '\x1f' + r);
-}
-ParkSlot* findPark(const std::string& host) {
-  for (ParkSlot& p : g_parks)
-    if (p.host[0] && host == p.host) return &p;
-  return nullptr;
-}
 uint32_t nowOf(const ProviderDeps& pd) { return pd.nowMs ? pd.nowMs() : 0; }
+uint32_t keyFpOf(const ProviderDeps& pd, const std::string& host) {
+  return orch::parkKeyFingerprint(pd.key ? pd.key(host.c_str()) : std::string());
+}
+orch::StepErr stepKindOf(const orch::ParkVerdict& v) {
+  if (v.paused) return orch::StepErr::Paused;
+  return v.kind == orch::ParkKind::Billing ? orch::StepErr::Billing : orch::StepErr::Auth;
+}
+orch::ParkKind parkKindOf(orch::StepErr k) {
+  if (k == orch::StepErr::Billing) return orch::ParkKind::Billing;
+  if (k == orch::StepErr::Auth) return orch::ParkKind::Auth;
+  return orch::ParkKind::None;
+}
 }  // namespace
 
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why) {
-  ParkSlot* p = findPark(host);
-  if (!p || p->probing) return false;
-  if (p->fp != parkFingerprint(pd, host)) {   // key or model changed: a new start
-    hlog::logf("fabric: %s un-parked (its key or model changed)", host.c_str());
-    nimbus::orch::billingEpisodeEnd(host.c_str());
-    *p = ParkSlot();
-    return false;
-  }
-  if (nowOf(pd) - p->sinceMs >= kParkProbeMs) {
-    p->probing = true;   // one probe request; a second refusal re-parks it quietly
-    return false;
-  }
-  if (why) *why = HostPark{p->kind, p->httpStatus};
+  const orch::ParkVerdict v =
+      orch::providerPark().available(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
+  if (v.probe) hlog::logf("fabric: %s re-check due - one probe request", host.c_str());
+  if (v.keyChanged) hlog::logf("fabric: %s un-parked (its key changed)", host.c_str());
+  if (v.open) return false;
+  if (why) *why = HostPark{stepKindOf(v), v.httpStatus, v.paused};
   return true;
 }
 
 void parkHost(const ProviderDeps& pd, const std::string& host, orch::StepErr kind, int httpStatus) {
-  ParkSlot* p = findPark(host);
-  if (!p) {
-    for (ParkSlot& q : g_parks)
-      if (!q.host[0]) { p = &q; break; }
-    if (!p) p = &g_parks[0];
-    *p = ParkSlot();
-    snprintf(p->host, sizeof(p->host), "%s", host.c_str());
-  }
-  p->fp = parkFingerprint(pd, host);
-  p->kind = kind;
-  p->httpStatus = httpStatus;
-  p->sinceMs = nowOf(pd);
-  p->probing = false;
-  hlog::logf("fabric: %s parked (%s, HTTP %d) until its key or model changes", host.c_str(),
-             orch::stepErrSlug(kind), httpStatus);
+  orch::providerPark().park(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), parkKindOf(kind),
+                            httpStatus, nowOf(pd));
+  hlog::logf("fabric: %s parked (%s, HTTP %d) until its key changes or a re-check succeeds",
+             host.c_str(), orch::stepErrSlug(kind), httpStatus);
 }
 
 // A failed round on `host`: a billing or auth refusal parks it; any other failure
-// of the one PROBE request after kParkProbeMs re-arms the park it already had
+// of the one PROBE request after the re-check time re-arms the park it already had
 // (the refusal it was parked for was never answered otherwise - a 503 or a
-// timeout on the probe must not silently un-park it for the rest of the boot).
+// timeout on the probe must not silently un-park it).
 void noteHostFailed(const ProviderDeps& pd, const std::string& host, orch::StepErr kind, int httpStatus) {
   if (orch::fabricRuleFor(kind).parkHost) {
     parkHost(pd, host, kind, httpStatus);
     return;
   }
-  ParkSlot* p = findPark(host);
-  if (!p || !p->probing) return;
-  p->probing = false;
-  p->sinceMs = nowOf(pd);
-  hlog::logf("fabric: %s probe failed (%s) - stays parked (%s)", host.c_str(), orch::stepErrSlug(kind),
-             orch::stepErrSlug(p->kind));
+  orch::providerPark().noteFailure(host.c_str(), nowOf(pd));
 }
 
 void unparkHost(const std::string& host) {
-  ParkSlot* p = findPark(host);
-  if (!p) return;
-  hlog::logf("fabric: %s answered again - un-parked", host.c_str());
-  nimbus::orch::billingEpisodeEnd(host.c_str());
-  *p = ParkSlot();
+  if (orch::providerPark().noteSuccess(host.c_str(), orch::PaidSeam::Chat))
+    hlog::logf("fabric: %s answered again - un-parked", host.c_str());
 }
 
-void clearHostParks() {
-  for (ParkSlot& p : g_parks) {
-    if (p.host[0]) nimbus::orch::billingEpisodeEnd(p.host);
-    p = ParkSlot();
-  }
-}
+void clearHostParks() { orch::providerPark().clear(); }
 
 const FabricSwitch& lastFabricSwitch() { return g_lastSwitch; }
 void setTestFabricSwitch(const FabricSwitch& sw) { g_lastSwitch = sw; }
@@ -258,11 +284,15 @@ struct TestOverride {
 TestOverride g_testOverride;
 }  // namespace
 
-void setTestStatusOverride(const std::string& host, int status, const std::string& body) {
+bool setTestStatusOverride(const std::string& host, int status, const std::string& body) {
   g_testOverride = TestOverride{host, status, body};
   hlog::logf("provider: TEST override on %s -> HTTP %d", host.c_str(), status);
+  return true;
 }
-void clearTestStatusOverride() { g_testOverride = TestOverride(); }
+bool clearTestStatusOverride() {
+  g_testOverride = TestOverride();
+  return true;
+}
 bool testStatusOverride(const std::string& host, int& status, std::string& body) {
   if (g_testOverride.status == 0 || g_testOverride.host != host) return false;
   status = g_testOverride.status;
@@ -319,17 +349,31 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     return nullptr;
   };
 
-  // A parked head (billing or auth refusal earlier this boot) is not asked again:
-  // the turn starts on the first host that is not parked - no request, retry or
-  // notice spent on it. When every host is parked the first one is tried anyway
-  // (the provider decides; the owner was already told).
+  // A parked head (a billing or key refusal learned on any seam) is not asked again:
+  // the turn starts on the first host that is open - no request, retry or notice
+  // spent on it. When every host is closed the first one closed by a refusal is
+  // tried anyway (the provider decides; the owner was already told) - but a PAUSED
+  // host is never asked (the pause switch: the owner's pause, the spend ceiling).
   auto nextUnparked = [&](size_t from) -> size_t {
     for (size_t i = from; i < hostCount; i++)
       if (!hostParked(pd, hostList[i])) return i;
     return hostCount;
   };
+  auto firstUnpaused = [&]() -> size_t {
+    for (size_t i = 0; i < hostCount; i++) {
+      HostPark why;
+      if (!hostParked(pd, hostList[i], &why) || !why.paused) return i;
+    }
+    return hostCount;
+  };
   size_t hostIdx = nextUnparked(0);
-  if (hostIdx >= hostCount) hostIdx = 0;
+  if (hostIdx >= hostCount) hostIdx = firstUnpaused();
+  if (hostIdx >= hostCount) {
+    err = "paused: paid requests to " + hostList[0] + " are paused";
+    hlog::logf("fabric: every host is paused - no request");
+    if (ht.onStepError) ht.onStepError(hostList[0], err);
+    return false;
+  }
   int    switches = 0;
   const int kMaxSwitches = 2;
   orch::HeadStepFn cur = makeStep(hostIdx);
@@ -439,7 +483,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
   outJson = res.finalTurn;
   return true;
 }

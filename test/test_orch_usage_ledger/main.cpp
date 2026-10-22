@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 
 #include "nimbus/orch/model_price_defaults.h"
+#include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
 #include "nimbus/orch/turn_spend.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h"
@@ -2778,6 +2779,143 @@ static void test_ledger_legacy_nvs_spend_moves_to_the_file_on_retry() {
   TEST_ASSERT_EQUAL_UINT64(5000, storedTotalIn(io, "openai"));
 }
 
+
+// ---- L19-2: the default daily spend warning -----------------------------------------
+using nimbus::orch::civilDayKey;
+using nimbus::orch::DailyWarn;
+using nimbus::orch::dailyWarnDue;
+using nimbus::orch::kDailyWarnFloorCents;
+using nimbus::orch::providerPark;
+using nimbus::orch::TokenDelta;
+using nimbus::orch::UsageHistory;
+using nimbus::orch::UsageLedger;
+// One provider priced at the owner's provider rates ($1/M in, $10/M out): 500,000
+// output tokens are exactly $5.00.
+namespace l19_2 {
+constexpr uint32_t kToday = 20383;   // 2025-10-22 in days since the epoch
+constexpr uint32_t kLocal = 20383;
+
+UsageLedger ledger() {
+  UsageLedger L;
+  L.setRates("acme", 100, 1000, 0);
+  return L;
+}
+void spend(UsageHistory& h, uint32_t day, uint64_t outTokens) {
+  TokenDelta d;
+  d.out = outTokens;
+  h.record("acme", "", day, d, 0);
+}
+bool due(const UsageLedger& L, const UsageHistory& h, uint32_t localDay, std::string* notice = nullptr) {
+  std::string n;
+  const bool r = dailyWarnDue(L, h, "acme", kToday, localDay, n);
+  if (notice) *notice = n;
+  return r;
+}
+}  // namespace l19_2
+
+// A fresh device (no history): the $5 floor. Below it no notice; at it exactly one;
+// a second crossing the same day none; the next day may warn again.
+static void test_l19_2_fresh_device_uses_the_floor_and_warns_once_a_day() {
+  using namespace l19_2;
+  providerPark().clear();
+  UsageLedger L = ledger();
+  UsageHistory h;
+  spend(h, kToday, 499000);
+  TEST_ASSERT_EQUAL_UINT64(499, L.priceDay(h, "acme", kToday));
+  TEST_ASSERT_EQUAL_UINT64(kDailyWarnFloorCents, L.dailyWarnCheck(h, "acme", kToday).thresholdCents);
+  TEST_ASSERT_FALSE(due(L, h, kLocal));                 // below: none
+  spend(h, kToday, 1000);
+  std::string notice;
+  TEST_ASSERT_TRUE(due(L, h, kLocal, &notice));         // crossing: one
+  TEST_ASSERT_EQUAL_STRING("acme has cost about $5.00 today, past its daily warning of $5.00. "
+                           "Spending continues; set a limit in Usage & Budget to cap it.", notice.c_str());
+  spend(h, kToday, 900000);
+  TEST_ASSERT_FALSE(due(L, h, kLocal));                 // a second crossing the same day: none
+  TEST_ASSERT_TRUE(due(L, h, kLocal + 1));              // the next local day warns again
+  providerPark().clear();
+}
+
+// With history the threshold is three times the median spending day of the last 30
+// full days (days with no spend and days older than 30 do not count).
+static void test_l19_2_threshold_is_three_times_the_usual_day() {
+  using namespace l19_2;
+  providerPark().clear();
+  UsageLedger L = ledger();
+  UsageHistory h;
+  for (uint32_t back = 1; back <= 30; back += 2) spend(h, kToday - back, 1000000);   // $10 every other day
+  spend(h, kToday - 31, 90000000);                                                     // outside the window
+  const DailyWarn w0 = L.dailyWarnCheck(h, "acme", kToday);
+  TEST_ASSERT_EQUAL_UINT64(1000, w0.medianCents);
+  TEST_ASSERT_EQUAL_UINT64(3000, w0.thresholdCents);
+  spend(h, kToday, 2500000);   // $25
+  TEST_ASSERT_FALSE(due(L, h, kLocal));
+  spend(h, kToday, 500000);    // $30
+  std::string notice;
+  TEST_ASSERT_TRUE(due(L, h, kLocal, &notice));
+  TEST_ASSERT_TRUE(notice.find("(three times a usual day)") != std::string::npos);
+  providerPark().clear();
+}
+
+// The owner's own limit replaces the default, and raising it moves the threshold.
+static void test_l19_2_owner_limit_replaces_and_moves_the_threshold() {
+  using namespace l19_2;
+  providerPark().clear();
+  UsageLedger L = ledger();
+  UsageHistory h;
+  spend(h, kToday, 2500000);   // $25 today
+  L.setLimits("acme", 0, 0, 1, 4000);   // the owner's $40
+  DailyWarn w = L.dailyWarnCheck(h, "acme", kToday);
+  TEST_ASSERT_TRUE(w.ownerLimit);
+  TEST_ASSERT_EQUAL_UINT64(4000, w.thresholdCents);
+  TEST_ASSERT_FALSE(due(L, h, kLocal));
+  L.setLimits("acme", 0, 0, 1, 2000);   // lowered to $20: crossed
+  TEST_ASSERT_TRUE(due(L, h, kLocal));
+  L.setLimits("acme", 0, 0, 1, 6000);   // raised: the threshold moves with it
+  TEST_ASSERT_EQUAL_UINT64(6000, L.dailyWarnCheck(h, "acme", kToday).thresholdCents);
+  TEST_ASSERT_FALSE(L.dailyWarnCheck(h, "acme", kToday).crossed());
+  providerPark().clear();
+}
+
+// The latch is per provider: another provider crossing the same day still warns.
+static void test_l19_2_latch_is_per_provider() {
+  using namespace l19_2;
+  providerPark().clear();
+  UsageLedger L = ledger();
+  L.setRates("other", 100, 1000, 0);
+  UsageHistory h;
+  spend(h, kToday, 600000);
+  TokenDelta d;
+  d.out = 600000;
+  h.record("other", "", kToday, d, 0);
+  std::string n;
+  TEST_ASSERT_TRUE(dailyWarnDue(L, h, "acme", kToday, kLocal, n));
+  TEST_ASSERT_TRUE(dailyWarnDue(L, h, "other", kToday, kLocal, n));
+  TEST_ASSERT_FALSE(dailyWarnDue(L, h, "other", kToday, kLocal, n));
+  TEST_ASSERT_EQUAL_UINT32(20383, civilDayKey(2025, 10, 22));
+  TEST_ASSERT_EQUAL_UINT32(0, civilDayKey(1969, 12, 31));
+  providerPark().clear();
+}
+
+
+// ---- CUM-708: the spawn-model fallback ranks by the price the ledger charges ------
+// The owner priced claude-opus-5 below claude-haiku-5-5 (their own negotiated rate):
+// the built-in table alone still says haiku; ranked by the ledger, opus. A model
+// with no price of its own is never the cheapest (fail-closed money).
+static void test_cum708_cheapest_by_the_ledger_price() {
+  using nimbus::orch::cheapestByEffectivePrice;
+  using nimbus::orch::setRankPriceSource;
+  const std::string list = "claude-opus-5,claude-haiku-5-5,claude-unknown-9";
+  setRankPriceSource(nullptr);
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", cheapestByEffectivePrice("anthropic", list).c_str());
+  UsageLedger L;
+  L.models().setOwnerRate("anthropic", "claude-opus-5", 10000, 20000);   // $0.01 / $0.02
+  setRankPriceSource([&L](const std::string& p, const std::string& m) { return L.rankPrice(p, m.c_str()); });
+  TEST_ASSERT_EQUAL_STRING("claude-opus-5", cheapestByEffectivePrice("anthropic", list).c_str());
+  TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, L.rankPrice("anthropic", "claude-unknown-9"));
+  TEST_ASSERT_EQUAL_STRING("", cheapestByEffectivePrice("anthropic", "claude-unknown-9").c_str());
+  setRankPriceSource(nullptr);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -2854,5 +2992,10 @@ int main() {
   RUN_TEST(test_on_the_nvs_fallback_a_new_tag_is_still_refused);
   RUN_TEST(test_ledger_dirty_and_retry_never_loses_spend);
   RUN_TEST(test_ledger_legacy_nvs_spend_moves_to_the_file_on_retry);
+  RUN_TEST(test_l19_2_fresh_device_uses_the_floor_and_warns_once_a_day);
+  RUN_TEST(test_l19_2_threshold_is_three_times_the_usual_day);
+  RUN_TEST(test_l19_2_owner_limit_replaces_and_moves_the_threshold);
+  RUN_TEST(test_l19_2_latch_is_per_provider);
+  RUN_TEST(test_cum708_cheapest_by_the_ledger_price);
   return UNITY_END();
 }

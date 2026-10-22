@@ -597,6 +597,84 @@ static void test_refused_poll_logs_reason() {
   TEST_ASSERT_TRUE(LogCapture::contains("anthropic: poll HTTP 500: api_error: Internal server error"));
 }
 
+
+// ---- L19-37: a deliverable left in the managed agent's sandbox -------------------
+// The run's last agent.message names a file under /mnt/session/outputs and carries a
+// 2 KB summary (the 19 Oct car-seat job: the device synthesised from the summary
+// while the report stayed in the sandbox). With no file captured into artifacts[]
+// the reply says so, so the summary is never presented as the report.
+static std::string sandboxDoneEvents(const char* path) {
+  std::string summary = "Summary of the crash-test research. ";
+  while (summary.size() < 2048) summary += "Key finding: seat rated well in side-impact tests. ";
+  JsonDocument d;
+  JsonArray data = d["data"].to<JsonArray>();
+  JsonObject m = data.add<JsonObject>();
+  m["type"] = "agent.message";
+  JsonObject c = m["content"].add<JsonObject>();
+  c["type"] = "text";
+  c["text"] = path ? "The full report is saved to " + std::string(path) + ".\n\n" + summary : summary;
+  JsonObject idle = data.add<JsonObject>();
+  idle["type"] = "session.status_idle";
+  idle["stop_reason"]["type"] = "end_turn";
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+static void checkSandboxNote(const std::string& events, const char* path, const char* summaryStart) {
+  Recorded r;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200, events});
+  auto pd = d.contract();
+  const std::string job = "anthropic:" + r.sessionId;
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, job.c_str(), env));
+  TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
+  TEST_ASSERT_EQUAL(0, env.artifactCount);
+  const std::string reply = env.reply;
+  const std::string note = std::string("[report left in the sandbox, not retrieved: ") + path +
+                           " - this reply is the agent's summary, not the report]";
+  TEST_ASSERT_TRUE_MESSAGE(reply.size() > note.size() && reply.compare(reply.size() - note.size(), note.size(), note) == 0,
+                           reply.substr(reply.size() > 300 ? reply.size() - 300 : 0).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(reply.find(summaryStart) != std::string::npos, reply.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("left its report in the sandbox"));
+}
+
+static void test_l19_37_sandbox_report_is_declared_not_retrieved() {
+  // RECORDED 22 Oct (nimbus-lab sub --record, claude-haiku-5-5): the agent wrote
+  // its report to /mnt/session/outputs/bicycle_report.md with bash and replied
+  // with a short summary naming the path. On today's code that summary passed as
+  // the complete result.
+  checkSandboxNote(fixture("session_events_list_sandbox_done_200.json"), "/mnt/session/outputs/bicycle_report.md",
+                   "The report is saved at");
+  // The 19 Oct shape: a 2 KB summary under the path.
+  checkSandboxNote(sandboxDoneEvents("/mnt/session/outputs/car_seat_crash_tests.md"),
+                   "/mnt/session/outputs/car_seat_crash_tests.md", "Summary of the crash-test research.");
+}
+
+// The path rides a log line and the owner's reply: it stops at a control byte or a
+// non-ASCII byte (an escape sequence or an invisible character never gets through).
+static void test_l19_37_sandbox_path_is_printable_ascii_only() {
+  checkSandboxNote(sandboxDoneEvents("/mnt/session/outputs/report.md\x1b[31mred\u202edoc"),
+                   "/mnt/session/outputs/report.md", "Summary of the crash-test research.");
+}
+
+// Counter-tests: a run that names no sandbox file, and a run still working, carry no note.
+static void test_l19_37_no_sandbox_path_no_note() {
+  Recorded r;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200, sandboxDoneEvents(nullptr)});
+  d.http.script.push_back({"api.anthropic.com", "/events?types[]=agent.message", 200,
+                           fixture("session_events_list_done_200.json")});
+  auto pd = d.contract();
+  const std::string job = "anthropic:" + r.sessionId;
+  for (int i = 0; i < 2; i++) {
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)FabricErr::Ok, (int)providers::antPoll(pd, job.c_str(), env));
+    TEST_ASSERT_TRUE(std::string(env.reply).find("not retrieved") == std::string::npos);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_cold_dispatch_golden_requests);
@@ -618,6 +696,9 @@ int main(int, char**) {
   RUN_TEST(test_oversized_session_id_refused_before_turn);
   RUN_TEST(test_poll_idle_stop_reasons);
   RUN_TEST(test_refused_poll_logs_reason);
+  RUN_TEST(test_l19_37_sandbox_report_is_declared_not_retrieved);
+  RUN_TEST(test_l19_37_sandbox_path_is_printable_ascii_only);
+  RUN_TEST(test_l19_37_no_sandbox_path_no_note);
   UNITY_END();
   return 0;
 }

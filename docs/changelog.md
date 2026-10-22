@@ -16,6 +16,15 @@ installs it when you approve ([how updates work](ota.md)).
 - **One download per photo.** The Telegram archive and the assistant used to download the same photo and voice note twice; they now share one download.
 - **Late messages show their time.** A message or photo that arrives late, or is delivered again, carries the time it was sent, so the assistant does not take it for a new one.
 
+Provider failures, spend and long reports:
+
+- **An out-of-credit provider is set aside everywhere.** When a provider refuses for credit or rejects its key, every part of the device stops asking it: replies, background helpers, memory, photo descriptions, speech and the download check. It is asked again after 30 minutes or when its key changes, and you are told once. This now holds across a restart, so a restart no longer costs one more refused request or a second message.
+- **One message when a turn fails.** A failed turn used to send a "switching to" message for each provider it tried and then a failure message. It now sends one message that names the first cause, says when your message was not answered, and lists what the turn had already done.
+- **A daily spend warning.** Each provider warns you once a day when its spend passes 5 USD or three times your usual day, whichever is larger (or the limit you set for it).
+- **Long reports arrive whole.** A helper's report longer than 16 KB was cut and passed on as if complete. The whole report is now saved as a file in its project, and the reply says where; a report left in a helper's sandbox is marked as not retrieved, and a helper that stopped early keeps its partial answer.
+- **A cut answer gets more room.** When a long tool call late in a turn is cut, the one retry now always has more room than the first attempt, so it is not cut twice and handed to another provider.
+- **A request the device could not send is not blamed on the provider.** It is resent once only after memory recovers, never switched to another provider, and the reply says the device was short of memory.
+
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

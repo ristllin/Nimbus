@@ -37,6 +37,12 @@ bool available();
 String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
                      const String& caption);
 
+// Why the last describeImage (or available()) gave no description, in plain words
+// for the caption label: "openai says the account is out of credit (HTTP 429); it is
+// checked again in 12 minutes" when every keyed provider is closed by the one
+// per-provider park, or the refusal the request met. "" after a success.
+String failWords();
+
 // Bytes of image the adapter will encode. Larger images are refused rather than
 // truncated (a torn JPEG describes as garbage). Matches tg::kPhotoBudget.
 constexpr size_t kMaxImageBytes = 512u * 1024;

@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstring>
+
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -256,7 +258,8 @@ static void test_spawn_injects_resolved_capsule() {
   r.capsules["deep-research"] = "Always cite sources.";
   r.spawn("find the truth", "deep-research");
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
-  TEST_ASSERT_EQUAL_STRING("[SKILL: deep-research]\nAlways cite sources.\n\n---\nfind the truth",
+  TEST_ASSERT_EQUAL_STRING((std::string("[SKILL: deep-research]\nAlways cite sources.\n\n---\nfind the truth") +
+                            agent::kSubReplyCapNote).c_str(),
                            r.adapter.dispatched[0].instruction.c_str());
   // The skill string STILL rides Directive.skill (provider hint preserved).
   TEST_ASSERT_EQUAL_STRING("deep-research", r.adapter.dispatched[0].skill.c_str());
@@ -267,7 +270,8 @@ static void test_spawn_empty_resolve_keeps_hint_passthrough() {
   Rig r;   // resolver wired but knows no capsules
   r.spawn("find the truth", "web");
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
-  TEST_ASSERT_EQUAL_STRING("find the truth", r.adapter.dispatched[0].instruction.c_str());
+  TEST_ASSERT_EQUAL_STRING((std::string("find the truth") + agent::kSubReplyCapNote).c_str(),
+                           r.adapter.dispatched[0].instruction.c_str());
   TEST_ASSERT_EQUAL_STRING("web", r.adapter.dispatched[0].skill.c_str());
 }
 
@@ -275,7 +279,8 @@ static void test_spawn_no_resolver_is_pre_p2_behavior() {
   Rig r(/*withResolver=*/false);
   r.spawn("find the truth", "deep-research");
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
-  TEST_ASSERT_EQUAL_STRING("find the truth", r.adapter.dispatched[0].instruction.c_str());
+  TEST_ASSERT_EQUAL_STRING((std::string("find the truth") + agent::kSubReplyCapNote).c_str(),
+                           r.adapter.dispatched[0].instruction.c_str());
   TEST_ASSERT_EQUAL_STRING("deep-research", r.adapter.dispatched[0].skill.c_str());
 }
 
@@ -284,7 +289,8 @@ static void test_spawn_without_skill_never_calls_resolver() {
   r.capsules["deep-research"] = "unused";
   r.spawn("plain task", nullptr);
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
-  TEST_ASSERT_EQUAL_STRING("plain task", r.adapter.dispatched[0].instruction.c_str());
+  TEST_ASSERT_EQUAL_STRING((std::string("plain task") + agent::kSubReplyCapNote).c_str(),
+                           r.adapter.dispatched[0].instruction.c_str());
   TEST_ASSERT_EQUAL(0, (int)r.resolved.size());
 }
 
@@ -294,7 +300,7 @@ static void test_spawn_capsule_capped_at_4k() {
   r.spawn("task", "big");
   const std::string& ins = r.adapter.dispatched[0].instruction;
   TEST_ASSERT_TRUE(ins.find("[skill capsule truncated at 4096 bytes]") != std::string::npos);
-  TEST_ASSERT_TRUE(ins.size() < 4300);   // 4 KB capsule + framing, never 6 KB
+  TEST_ASSERT_TRUE(ins.size() < 4300 + strlen(agent::kSubReplyCapNote));   // 4 KB capsule + framing, never 6 KB
 }
 
 // ---- v4.0.0 attach splicing (the deep-research report path) -------------

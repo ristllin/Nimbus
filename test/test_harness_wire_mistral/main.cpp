@@ -1,9 +1,12 @@
 #include <unity.h>
 
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: the real Mistral attach + identity probe
@@ -1177,6 +1180,87 @@ static void test_loop_429_zero_per_minute_plan() {
   TEST_ASSERT_EQUAL((int)agent::RateLimit::NotAllowed, (int)agent::rateLimitFromError(err));
 }
 
+
+// ---- CUM-616: reasoning_effort "none" on Mistral heads that can reason ----------
+// Recorded 22 Oct (evidence/mistral-effort-probe.jsonl): mistral-large-latest and
+// ministral-8b-latest refuse the field with this body; small, medium and magistral
+// accept it.
+static const char* kEffortRefused =
+    "{\"object\":\"error\",\"message\":\"reasoning_effort is not enabled for this model\","
+    "\"type\":\"invalid_request_invalid_args\",\"param\":null,\"code\":\"3051\",\"raw_status_code\":400}";
+
+static bool runMistralHead(FakeProviderDeps& d, const std::string& model, std::string& err) {
+  auto pd = d.contract();
+  pd.orchModel = [model](const char*) { return model; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out;
+  return providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr);
+}
+
+static void test_cum616_effort_none_only_on_models_that_reason() {
+  for (const char* m : {"mistral-small-latest", "mistral-medium-latest", "magistral-medium-latest"}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(runMistralHead(d, m, err), err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "\"reasoning_effort\":\"none\""), m);
+  }
+  for (const char* m : {"mistral-large-latest", "ministral-8b-latest", "codestral-latest"}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(runMistralHead(d, m, err), err.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, 0, "reasoning_effort"), m);
+  }
+}
+
+// A refusal of the field (the recorded 400 code 3051, or a 422) is retried ONCE
+// without it, and the model is remembered: the next round sends no field.
+static void test_cum616_refused_effort_retried_once_without_it() {
+  for (int status : {400, 422}) {
+    const std::string model = status == 400 ? "mistral-small-2603" : "mistral-medium-2604";
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", status, kEffortRefused});
+    d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatToolCallBody("memory_search", "tc1tc1tc1")});
+    d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(runMistralHead(d, model, err), err.c_str());
+    TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"reasoning_effort\":\"none\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 1, "reasoning_effort"));   // the one retry
+    TEST_ASSERT_FALSE(bodyHas(d, 2, "reasoning_effort"));   // remembered for this boot
+    TEST_ASSERT_TRUE(LogCapture::contains("refused reasoning_effort"));
+  }
+  // Another 400 is not an effort refusal: no retry, the round fails as before.
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 400, "{\"message\":\"Invalid model\"}"});
+  std::string err;
+  TEST_ASSERT_FALSE(runMistralHead(d, "magistral-small-latest", err));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+}
+
+// The class: the table agrees with the recorded /v1/models capabilities.reasoning
+// bit for EVERY chat model Mistral lists (a new model with no table row fails here).
+static void test_cum616_effort_table_matches_the_recorded_model_list() {
+  std::ifstream f("test/support/fixtures/models_2026-10/mistral.json");
+  TEST_ASSERT_TRUE(f.good());
+  const std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  JsonDocument doc;
+  TEST_ASSERT_FALSE(deserializeJson(doc, raw));
+  int checked = 0;
+  for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+    JsonObjectConst cap = m["capabilities"];
+    if (!(cap["completion_chat"] | false) || !(cap["function_calling"] | false)) continue;
+    const char* id = m["id"] | "";
+    TEST_ASSERT_EQUAL_MESSAGE((bool)(cap["reasoning"] | false), providers::mistralTakesEffort(id), id);
+    TEST_ASSERT_EQUAL_MESSAGE(providers::mistralTakesEffort(std::string("mistral/") + id),
+                              providers::mistralTakesEffort(id), id);
+    checked++;
+  }
+  TEST_ASSERT_TRUE(checked > 10);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -1212,6 +1296,9 @@ int main(int, char**) {
   RUN_TEST(test_head_429_carries_the_quota_window);
   RUN_TEST(test_sub_429_names_the_quota_window);
   RUN_TEST(test_loop_429_zero_per_minute_plan);
+  RUN_TEST(test_cum616_effort_none_only_on_models_that_reason);
+  RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
+  RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   UNITY_END();
   return 0;
 }

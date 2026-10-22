@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -456,9 +457,9 @@ static void test_loop_sibling_after_orch_turn_is_dispatched_once() {
 }
 
 // One antLoopStep round over a scripted /v1/messages response.
-static nimbus::orch::HeadStep stepOver(const std::string& body, const char* user) {
+static nimbus::orch::HeadStep stepOver(const std::string& body, const char* user, int answers = 1) {
   FakeProviderDeps d;
-  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, body});
+  for (int i = 0; i < answers; i++) d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, body});
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
@@ -513,15 +514,18 @@ static void test_loop_call_cut_by_max_tokens_never_runs() {
     TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
     TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
     TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
+    // CUM-621: the per-host loop hands the cut orch_turn back for the salvage.
+    if (blocks != cut) TEST_ASSERT_EQUAL_STRING("{\"reply\":\"saved\"}", out.c_str());
   }
   // A complete call before a trailing orch_turn, in a response that says
-  // max_tokens: the step is cut (no retry left for an unknown family) - not
-  // finished, no calls, the orch_turn kept for the reply salvage.
+  // max_tokens: retried once with more room (every family has a retry since
+  // L19-44), still cut, the step is cut - not finished, no calls, the orch_turn
+  // kept for the reply salvage.
   const nimbus::orch::HeadStep st = stepOver(
       "{\"content\":[" +
           std::string("{\"type\":\"tool_use\",\"id\":\"tu_mw\",\"name\":\"memory_write\",\"input\":{\"content\":\"x\"}},") +
           fin + "],\"stop_reason\":\"max_tokens\"}",
-      "hi");
+      "hi", 2);
   TEST_ASSERT_FALSE(st.ok);
   TEST_ASSERT_FALSE(st.finished);
   TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)st.kind);
@@ -801,8 +805,9 @@ static void test_fold_request_has_its_own_budget_and_no_tool() {
   // The summary comes back as prose; the engine reads it as the reply.
   TEST_ASSERT_EQUAL_STRING("1. Owner intent: plan the trip.", out.c_str());
   // Its own budget from the table: Opus at its slowest rate fits 5500 tokens in
-  // the 120 s round, at low effort (a summary needs little thinking).
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":5500,\"output_config\":{\"effort\":\"low\"}"));
+  // the 120 s round; the first attempt takes three quarters of that (the retry
+  // keeps the rest, L19-44), at low effort (a summary needs little thinking).
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":4125,\"output_config\":{\"effort\":\"low\"}"));
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));        // no 10 KB schema on the fold
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tool_choice\""));
 }
@@ -840,6 +845,50 @@ static void test_single_shot_prose_answer_is_accepted() {
   TEST_ASSERT_EQUAL_STRING("It is 7 pm.", out.c_str());
 }
 
+
+// L19-44: under the round's time clamp the retry after a cut keeps MORE room than
+// the first attempt, for every Claude family (a no-effort id included), every
+// capped round kind and every round length - a full 120 s round on claude-opus-5
+// used to collapse both caps to 5,500, so the retry was effort-only and a no-effort
+// id had none; under 50 s the cap fell below v4.5.13's 3,000.
+static void test_cap_table_rows_retry_keeps_more_room_under_the_clamp() {
+  static const char* const kFamilies[] = {
+      "claude-haiku-5-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-5",
+      "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-4-8", "claude-sonnet-4-6",
+      "claude-haiku-4-5",          // takes no effort
+      "claude-3-5-haiku-latest",   // takes no effort, old id shape
+      "model-anthropic",           // unknown: the slowest tier, no effort
+  };
+  // 8 s is the floor a near-exhausted final round still gets (kMinRoundMs): shorter
+  // than the prefill, so the floors alone hold there.
+  for (uint32_t roundMs : {8000u, 40000u, 60000u, 120000u}) {
+    for (const char* id : kFamilies) {
+      for (providers::RoundKind kind : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
+                                        providers::RoundKind::SingleShot, providers::RoundKind::Fold}) {
+        const providers::OutputCap c = providers::outputCapFor("anthropic", id, kind, roundMs);
+        char what[128];
+        snprintf(what, sizeof(what), "%s %s at %u ms: %u then %u", id, providers::roundKindSlug(kind),
+                 (unsigned)roundMs, (unsigned)c.maxTokens, (unsigned)c.retryTokens);
+        TEST_ASSERT_TRUE_MESSAGE(c.hasRetry(), what);
+        TEST_ASSERT_TRUE_MESSAGE(c.retryTokens > c.maxTokens, what);
+        TEST_ASSERT_TRUE_MESSAGE(c.retryTokens * 3 >= c.maxTokens * 4, what);   // at least a third more
+        TEST_ASSERT_TRUE_MESSAGE(c.maxTokens >= 3000, what);                     // never under v4.5.13's cap
+      }
+    }
+  }
+  // The full round on opus (the 19 Oct case): 4,125 first, 5,500 on the retry.
+  const providers::OutputCap opus =
+      providers::outputCapFor("anthropic", "claude-opus-5", providers::RoundKind::ToolRound, 120000);
+  TEST_ASSERT_EQUAL(4125, (int)opus.maxTokens);
+  TEST_ASSERT_EQUAL(5500, (int)opus.retryTokens);
+  // Mistral keeps the same shape.
+  for (uint32_t roundMs : {40000u, 60000u, 120000u}) {
+    const providers::OutputCap m =
+        providers::outputCapFor("mistral", "mistral-large-latest", providers::RoundKind::ToolRound, roundMs);
+    TEST_ASSERT_TRUE(m.hasRetry() && m.retryTokens > m.maxTokens && m.maxTokens >= 3000);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_fold_request_has_its_own_budget_and_no_tool);
@@ -869,6 +918,7 @@ int main(int, char**) {
   RUN_TEST(test_cum514_artifact_keeps_a_long_earlier_section);
   RUN_TEST(test_cum514_short_report_still_drops_notes);
   RUN_TEST(test_sub_cancel_sends_interrupt);
+  RUN_TEST(test_cap_table_rows_retry_keeps_more_room_under_the_clamp);
   UNITY_END();
   return 0;
 }

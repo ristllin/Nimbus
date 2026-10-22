@@ -18,6 +18,7 @@
 
 #include "agent_config.h"
 #include "fs_atomic.h"                     // writeFileAtomic - the usage files (tmp + rename)
+#include "provider_gate.h"                // the daily spend notice (L19-2)
 #include "nimbus/orch/model_choices.h"     // effectiveModelChoices - the priceable models
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/usage_ledger.h"
@@ -1508,8 +1509,30 @@ void noteLiveLoopIds(const std::vector<std::string>& ids) {
   if (g_ledgerLoaded && g_ledger.pruneTags(keepLedgerTag)) persistLedgerLocked();
 }
 
+// L19-2: the default daily spend warning. Run at the start of every turn (through
+// providerOverBudget, the turn's budget gate): when today's spend at `provider`
+// crosses its threshold (nimbus::orch::DailyWarn), the owner hears once that day.
+// Priced from the usage history's day; latched on the device's local date.
+static void checkDailySpend(const String& provider) {
+  const time_t now = time(nullptr);
+  const uint32_t day = currentDayKey();
+  if (!day || !agent::gate::ownerReachable()) return;   // undated, or nobody to tell now
+  struct tm tmv;
+  localtime_r(&now, &tmv);
+  const uint32_t localDay = nimbus::orch::civilDayKey(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+  std::string notice;
+  bool due;
+  {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    due = nimbus::orch::dailyWarnDue(ledgerLocked(), histLocked(), std::string(provider.c_str()), day, localDay,
+                                     notice);
+  }
+  if (due) agent::gate::sendOwnerNotice(provider.c_str(), String(notice.c_str()));
+}
+
 bool providerOverBudget(const String& provider) {
   if (provider.length() == 0) return false;
+  checkDailySpend(provider);
   std::lock_guard<std::mutex> lk(g_ledgerMx);
   // Dated form (prism: the forever-gated wedge) - a stale periodKey reads as a
   // FRESH period, so "wait for the reset day" actually comes true even though
@@ -1531,6 +1554,13 @@ bool setProviderBudget(const String& provider, uint64_t tokenLimit,
   const nimbus::orch::UsageLedger before = L;
   L.setLimits(std::string(provider.c_str()), tokenLimit, callLimit, resetDay, centsLimit);
   return persistOrRevertLocked(before);
+}
+
+// CUM-708: the ledger's price for ranking `model` of `provider` (rankPrice): the
+// owner's and the Cumulo router's prices count, not only the built-in table.
+uint64_t modelRankPrice(const std::string& provider, const std::string& model) {
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  return ledgerLocked().rankPrice(provider, model.c_str());
 }
 
 String providerBudgetJson() {
@@ -1555,6 +1585,13 @@ String providerBudgetJson() {
     out += ",\"callLimit\":";   out += String(e.callLimit);
     out += ",\"resetDay\":";    out += String(e.resetDay);
     out += ",\"over\":";        out += (L.overBudget(e.name) ? "true" : "false");
+    // L19-2: today's spend and the daily warning threshold it is held to.
+    const uint32_t day = currentDayKey();
+    if (day) {
+      const nimbus::orch::DailyWarn w = L.dailyWarnCheck(histLocked(), e.name, day);
+      out += ",\"todayCents\":";  out += String((double)w.spentCents, 0);
+      out += ",\"warnCents\":";   out += String((double)w.thresholdCents, 0);
+    }
     out += "}";
   }
   out += "]";

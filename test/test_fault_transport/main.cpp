@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -238,6 +239,93 @@ static void test_decorator_drives_fabric_failover() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
 }
 
+
+// ---- L19-14: a request the device could not send is the device's fault ----------
+// A write whose first slice left 0 bytes, on every host, with total free at or above
+// the old 16 KB resend threshold and the largest block under 7 KB (the 19 Oct storm:
+// 0/62392 at a 7,156 B block): at most 2 requests, 0 switches, kind Unsent. On the
+// old rule this sent 6 requests and switched twice (one resend per host plus the
+// fabric's own retry, then both switches with ever larger bodies).
+namespace l19_14 {
+struct Rig {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  agent::providers::ProviderDeps pd;
+  FaultPlan plan;
+  std::unique_ptr<FaultInjectingTransport> ft;
+  int switches = 0, delays = 0;
+  std::vector<std::string> failed;
+  Rig(uint32_t totalFree, uint32_t largest, bool recovers = false) {
+    d.heap = totalFree;
+    d.largest = largest;
+    pd = d.contract();
+    FaultRule r;
+    r.host = "*";
+    r.from = 1;
+    r.to = recovers ? 1 : 0;   // recovers: only the first request fails
+    r.status = 0;
+    r.err = "request body truncated: write failed after 0 of 62392 bytes";
+    plan.add(r);
+    ft.reset(new FaultInjectingTransport(&d.http, &plan));
+    pd.http = ft.get();
+    pd.delayMs = [this, recovers](uint32_t ms) {
+      delays++;
+      d.now += ms;
+      if (recovers) d.largest = 20000;   // the block comes back during the wait
+    };
+    d.fillTools(rig);
+    rig.ht.cfg.roundMinHeap = 12000;   // ORCH_LOOP_MIN_HEAP on the device
+    rig.ht.onStepError = [this](const std::string& h, const std::string& e) { failed.push_back(h + "|" + e); };
+  }
+  bool run(std::string& out, std::string& err) {
+    return agent::providers::runFabricLoop(pd, {"anthropic", "openai", "mistral"}, "SYS", "USER", out, err,
+                                           rig.ht, nullptr,
+                                           [this](const std::string&, const std::string&) { switches++; });
+  }
+  uint32_t requests() const { return plan.injected() + (uint32_t)d.http.seen.size(); }
+};
+}  // namespace l19_14
+
+static void test_l19_14_slice0_on_every_host_is_unsent_no_switch() {
+  l19_14::Rig r(17000, 6000);
+  std::string out, err;
+  TEST_ASSERT_FALSE(r.run(out, err));
+  TEST_ASSERT_TRUE_MESSAGE(r.requests() <= 2, std::to_string(r.requests()).c_str());
+  TEST_ASSERT_EQUAL(0, r.switches);
+  TEST_ASSERT_EQUAL_STRING("unsent: the device could not finish sending its request", err.c_str());
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Unsent, (int)nimbus::orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL(1, (int)r.failed.size());   // one honest failure, on the first host
+  TEST_ASSERT_TRUE(r.delays <= 31);              // a bounded wait for the block
+}
+
+// The verdict does not flip on a few hundred bytes of total free: 15 K and 17 K give
+// the same kind and the same words (the old rule: "low memory" at one, "network" and
+// two switches at the other).
+static void test_l19_14_same_kind_at_15k_and_17k() {
+  std::string e15, e17, out;
+  l19_14::Rig a(15000, 6000), b(17000, 6000);
+  TEST_ASSERT_FALSE(a.run(out, e15));
+  TEST_ASSERT_FALSE(b.run(out, e17));
+  TEST_ASSERT_EQUAL_STRING(e15.c_str(), e17.c_str());
+  TEST_ASSERT_EQUAL(0, a.switches + b.switches);
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Unsent, (int)nimbus::orch::classifyStepError(e15));
+}
+
+// The largest block comes back during the bounded wait: ONE resend on the same host
+// serves the round; still no switch.
+static void test_l19_14_one_resend_after_the_block_recovers() {
+  l19_14::Rig r(17000, 6000, /*recovers=*/true);
+  r.d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+                             "{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"orch_turn\","
+                             "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"tool_use\"}"});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.requests());
+  TEST_ASSERT_EQUAL(0, r.switches);
+  TEST_ASSERT_TRUE(r.delays >= 1);
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains("one same-host resend after the block recovered"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_single_range_and_alias);
@@ -252,5 +340,8 @@ int main(int, char**) {
   RUN_TEST(test_execjson_transport_fault_returns_zero);
   RUN_TEST(test_clear_resets_rules_and_counters);
   RUN_TEST(test_decorator_drives_fabric_failover);
+  RUN_TEST(test_l19_14_slice0_on_every_host_is_unsent_no_switch);
+  RUN_TEST(test_l19_14_same_kind_at_15k_and_17k);
+  RUN_TEST(test_l19_14_one_resend_after_the_block_recovers);
   return UNITY_END();
 }

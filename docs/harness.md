@@ -145,7 +145,24 @@ Model routing: the head host comes from `orchHost` (or the first
 `orch_model` action (validated against the choice list, key required), but
 keys, priority order and routing stay owner-only, both structurally (no setter
 exists in the config contract) and by protected-key refusal. Failover walks up
-to 2 keyed alternates with an owner notice; a fresh provider thread each time.
+to 2 keyed alternates; a fresh provider thread each time. A failed turn sends the
+owner ONE message (switch notices are held and folded into it).
+
+**One gate per provider for every paid seam.** Before any request, the chat head,
+sub-agent spawns, embeddings, the photo caption step, speech, the download scan and
+image generation ask the one per-provider park
+(`nimbus::orch::providerPark().available(provider, seam, ...)`): a provider closed
+by a billing refusal or a refused key - learned on any seam - or held by the pause
+switch gets no request. The park lives in `lib/core` and is saved to a flash file by
+the device (`src/agent/provider_gate.cpp`), so it survives a restart; the spend
+ceiling freezes paid calls through the same pause switch.
+
+**Daily spend warning.** Each provider has a default daily warning threshold: the
+larger of 5 USD and three times its median spending day over the last 30 days of
+the usage history (a fresh device: 5 USD), or the owner's own cents limit when one
+is set. The turn's budget gate checks it, and when a day's spend at a provider
+crosses it the owner gets one plain message for that provider that day (never from
+a quiet background turn; the next owner turn says it).
 
 ## Lifecycle 4 - the self-driving layers
 

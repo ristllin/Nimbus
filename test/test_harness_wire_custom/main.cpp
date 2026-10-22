@@ -689,7 +689,7 @@ static void test_cum477_custom_head_heap_that_stays_low_is_memory() {
   d.custBase = "https://api.z.ai";
   d.custJsonMode = "object";
   d.heap = 9000;   // under the round floor, and no way to wait for it
-  d.http.script.push_back(harness_test::transportCut(0, "head write failed"));
+  d.http.script.push_back(harness_test::transportCut(0, "request body truncated: write failed after 4096 of 9000 bytes"));
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
@@ -697,6 +697,23 @@ static void test_cum477_custom_head_heap_that_stays_low_is_memory() {
   TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
   TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
   TEST_ASSERT_EQUAL_STRING("low memory: the device could not send the request", err.c_str());
+}
+// L19-14: a first write that left 0 bytes is the device's fault whatever the totals
+// say: Unsent, no resend while the largest block stays short, sent once.
+static void test_l19_14_custom_head_first_write_failure_is_unsent() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custJsonMode = "object";
+  d.heap = 9000;
+  d.http.script.push_back(harness_test::transportCut(0, "head write failed"));
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("unsent: the device could not finish sending its request", err.c_str());
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Unsent, (int)nimbus::orch::classifyStepError(err));
 }
 
 int main(int, char**) {
@@ -726,6 +743,7 @@ int main(int, char**) {
   RUN_TEST(test_cum477_custom_head_resend_resumes_at_the_unsent_attempt);
   RUN_TEST(test_cum477_custom_head_never_resends_what_went_out);
   RUN_TEST(test_cum477_custom_head_heap_that_stays_low_is_memory);
+  RUN_TEST(test_l19_14_custom_head_first_write_failure_is_unsent);
   UNITY_END();
   return 0;
 }

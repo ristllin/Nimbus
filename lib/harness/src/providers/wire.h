@@ -12,6 +12,8 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/harness/reply_overflow.h"   // the whole text of a reply the envelope cut (L19-36)
+#include "nimbus/orch/provider_error.h"   // providerErrLine, oneLineText - the one error-line shape (CUM-620)
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
@@ -26,7 +28,8 @@ namespace wire {
 // concurrency), so one static record read right after a failed step is exact;
 // exchange() resets it on entry, so a step that fails before reaching the
 // transport never inherits an older call's flags. `unsent`: the request never
-// fully left the device (short head/body write) - a resend duplicates nothing.
+// fully left the device (short head/body write) - a resend duplicates nothing;
+// `unsentAtStart`: its first write left 0 bytes (the device's fault, L19-14).
 // `lowMem`: the transport tagged the failure as memory pressure. `noResponse`:
 // the request went out and no status line came back (deadline or peer close).
 // `partial`: a 2xx whose body did not parse whole (cut mid-body by the deadline or
@@ -39,6 +42,7 @@ namespace wire {
 // outage must still fail over.
 struct LastExchange {
   bool unsent = false;
+  bool unsentAtStart = false;   // ...and its FIRST write left 0 bytes (L19-14: Unsent)
   bool lowMem = false;
   bool noResponse = false;
   bool partial = false;
@@ -82,6 +86,46 @@ inline FabricErr subTransportErr(const ProviderDeps& pd, uint32_t sentAtMs, uint
   return elapsedMs >= (deadlineMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
 }
 
+// ---- the one per-provider park, fed by every harness request (L19-8) -------------
+// The provider a request host belongs to: the four API hosts, the Cumulo router (a
+// routed request's host is the router's), else "" (a LAN endpoint, a test host).
+inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& host) {
+  if (host == "api.anthropic.com") return "anthropic";
+  if (host == "api.openai.com") return "openai";
+  if (host == "api.mistral.ai") return "mistral";
+  if (host == "api.z.ai" || host == "open.bigmodel.cn") return "zai";
+  std::string base = pd.routerBase ? pd.routerBase() : std::string();
+  const size_t sch = base.find("://");
+  if (sch != std::string::npos) base = base.substr(sch + 3);
+  base = base.substr(0, base.find_first_of("/:"));
+  return !base.empty() && base == host ? "cumulo" : std::string();
+}
+
+// An answered request that refused for billing (every 402, the shared token table)
+// or with a refused key (401) closes the provider for EVERY seam, whatever called
+// it: the head, a fold, a sub-agent dispatch or poll. One place, so no adapter can
+// forget. A 403 is left to the typed seams (it may name one model or endpoint), and
+// a success is noted only where a model call succeeded (a free session poll that
+// answers 200 says nothing about the account's credit).
+inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, int status,
+                            const JsonDocument& doc) {
+  if (status < 400) return;
+  const std::string prov = parkProviderOf(pd, host);
+  if (prov.empty()) return;
+  std::string text;
+  serializeJson(doc, text);
+  const nimbus::orch::ParkKind kind = nimbus::orch::parkKindFor(status, text);
+  if (kind == nimbus::orch::ParkKind::None || (kind == nimbus::orch::ParkKind::Auth && status != 401))
+    return;
+  const std::string key = prov == "cumulo" ? (pd.routerKey ? pd.routerKey() : std::string())
+                                           : (pd.key ? pd.key(prov.c_str()) : std::string());
+  nimbus::orch::providerPark().park(prov.c_str(), nimbus::orch::PaidSeam::Chat,
+                                    nimbus::orch::parkKeyFingerprint(key), kind, status,
+                                    pd.nowMs ? pd.nowMs() : 0);
+  hlog::logf("provider: %s parked for every seam (%s, HTTP %d)", prov.c_str(),
+             nimbus::orch::parkKindSlug(kind), status);
+}
+
 // One provider REST exchange through the transport: complete request in, HTTP
 // status out, response body filter-parsed into `doc` (the same bounded-memory
 // ArduinoJson filter reads the pre-split adapters did from the socket - now
@@ -104,9 +148,15 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   {   // test and host builds only: the bench's scripted provider answer
     int ovStatus = 0;
     std::string ovBody;
+    if (testStatusOverride(host, ovStatus, ovBody) && ovStatus == kTestUnsentStatus) {
+      lastExchange().unsent = lastExchange().unsentAtStart = true;
+      hlog::logf("provider: TEST override: request to %s%s not sent (first write)", host, path.c_str());
+      return 0;
+    }
     if (testStatusOverride(host, ovStatus, ovBody)) {
       deserializeJson(doc, ovBody, DeserializationOption::Filter(filter));
       hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
+      noteParkRefusal(pd, host, ovStatus, doc);
       return ovStatus;
     }
   }
@@ -131,10 +181,15 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
   lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
+  noteParkRefusal(pd, host, status, doc);
   if (status == 0) {
     LastExchange& last = lastExchange();
     last.unsent = terr.find("body truncated") != std::string::npos ||
                   terr.find("head write failed") != std::string::npos;
+    // The request head, or the first body slice ("write failed after 0 of N bytes"):
+    // nothing reached the provider, and the device could not write at all.
+    last.unsentAtStart = terr.find("head write failed") != std::string::npos ||
+                         terr.find("after 0 of ") != std::string::npos;
     last.lowMem = terr.find("low memory") != std::string::npos;
     last.noResponse = terr.find("no response") != std::string::npos;
   }
@@ -171,19 +226,12 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
 // A provider's error message as one log-safe line: control bytes become spaces
 // (provider text can never forge a second log line, or reach the owner's reply
 // with them), capped at 300 bytes on a character boundary.
-inline std::string oneLine(std::string s) {
-  for (char& c : s)
-    if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
-  if (s.size() > 300) s.resize((size_t)nimbus::utf8CapLen(s.data(), (int)s.size(), 300));
-  return s;
-}
+inline std::string oneLine(std::string s) { return nimbus::orch::oneLineText(std::move(s)); }
 
 // "<what> HTTP <status>[: <provider message>]" - the one shape every adapter's
 // error line takes (classifyStepError reads the status back from it).
 inline std::string httpErrLine(const char* what, int code, const std::string& msg) {
-  std::string e = std::string(what) + " HTTP " + std::to_string(code);
-  if (!msg.empty()) e += ": " + oneLine(msg);
-  return e;
+  return nimbus::orch::providerErrLine(what, code, msg);   // the one helper (CUM-620)
 }
 
 // F25 + the one time policy: a round's socket timeout is the turn's remaining
@@ -232,6 +280,15 @@ inline void httpFailure(nimbus::orch::HeadStep& out, int code, const std::string
   out.error = error;
   out.httpStatus = code;
   out.kind = nimbus::orch::classifyHttpStatus(code, providerText);
+}
+
+// A loop that ended without a final turn: `err` names why, and a cut keeps what it
+// wrote (CUM-621): the engine salvages the finished part of the cut orch_turn with
+// its honest marker (lane L) instead of the bare cut line. Always false.
+inline bool loopFailed(const nimbus::orch::HeadOutcome& res, std::string& outJson, std::string& err) {
+  err = res.error.empty() ? std::string("loop failed") : res.error;
+  if (!res.partialTurn.empty()) outJson = res.partialTurn;
+  return false;
 }
 
 // A cut that survived the in-step headroom retry: never finished, never
@@ -508,25 +565,35 @@ inline bool serializeChecked(const JsonDocument& d, std::string& out, std::strin
 // fits, else cut on a character boundary with a visible "[cut at 16 KB]" marker
 // inside the buffer, and repaired when the provider text was not valid UTF-8. A
 // raw byte cut used to split a character that then rode the next head prompt.
-// Appends in pieces (several agent messages, a closing note) and stops cleanly at
-// the first piece that does not fit.
-inline constexpr const char* kReplyCutMarker = "\n[cut at 16 KB]";
+// Appends in pieces (several agent messages, a closing note); the first piece that
+// does not fit ends the buffer with the marker. L19-36: from that piece on, the
+// writer keeps the WHOLE reply in the overflow record (reply_overflow.h), so a
+// caller keeps feeding it every piece even after append() returns false, and the
+// job engine spills it to the card (the envelope used to be the only copy).
+inline constexpr const char* kReplyCutMarker = nimbus::orch::kEnvelopeCutMarker;   // "\n[cut at 16 KB]"
 struct ReplyWriter {
   char* out;
   size_t cap;        // sizeof the buffer, NUL included
   size_t used = 0;
   size_t textEnd = 0;   // where the reply text ends (a marker or a tail may follow)
   bool cut = false;
-  ReplyWriter(char* o, size_t c) : out(o), cap(c) { if (cap) out[0] = 0; }
+  ReplyWriter(char* o, size_t c) : out(o), cap(c) {
+    if (cap) out[0] = 0;
+    replyOverflowReset();
+  }
   // Append `n` bytes of `s`; false once the buffer is full (the marker is in).
   bool append(const char* s, size_t n) {
-    if (cut || cap == 0) return false;
+    if (cap == 0) return false;
     std::string fixed;
     if (!nimbus::utf8Valid(s, n)) {
       fixed.assign(s, n);
       nimbus::utf8Repair(fixed);
       s = fixed.data();
       n = fixed.size();
+    }
+    if (cut) {
+      replyOverflowAppend(s, n);
+      return false;
     }
     if (used + n <= cap - 1) {
       memcpy(out + used, s, n);
@@ -535,6 +602,8 @@ struct ReplyWriter {
       out[used] = 0;
       return true;
     }
+    replyOverflowStart(out, textEnd);   // the reply so far, before any tail
+    replyOverflowAppend(s, n);
     const size_t mk = strlen(kReplyCutMarker);
     size_t room = cap - 1 > used + mk ? cap - 1 - used - mk : 0;
     if (room == 0) {   // no room left after what is in: back the text up for the marker
@@ -565,6 +634,7 @@ struct ReplyWriter {
       out[used] = 0;
       return;
     }
+    if (!cut) replyOverflowStart(out, textEnd);   // the tail cuts the reply: keep it whole (L19-36)
     const size_t mk = strlen(kReplyCutMarker);
     const size_t text = textEnd;   // the reply text, before any marker or earlier tail
     const size_t room = target > mk ? target - mk : 0;

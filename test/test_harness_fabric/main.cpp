@@ -254,18 +254,20 @@ static void test_low_memory_with_evidence_ends_as_memory_without_a_switch() {
   TEST_ASSERT_EQUAL(0, s.notifies);
 }
 
-// CUM-404 v2 counter-test: the same write failure with NO allocation evidence, on a
-// board whose largest block sat at 5,200 B (a CYD/Freenove idles there; just above
-// the 5,000 B start floor, so no starved tag) and whose total free is healthy, is a
-// network failure: it still fails over and the next provider serves the round. The
-// largest block alone never makes a failure "low memory".
+// CUM-404 v2 counter-test: a write failure part-way through the body with NO
+// allocation evidence, on a board whose largest block sat at 5,200 B (a CYD/Freenove
+// idles there; just above the 5,000 B start floor, so no starved tag) and whose total
+// free is healthy, is a network failure: it still fails over and the next provider
+// serves the round. The largest block alone never makes a failure "low memory".
+// (A FIRST write that left 0 bytes is the device's fault since L19-14: Unsent, no
+// switch - test_fault_transport.)
 static void test_no_evidence_still_fails_over_cum404_counter_test() {
   EvidenceRig r;
   r.d.largest = 5200;
   r.d.http.script.push_back(
-      harness_test::transportCut(0, "request body truncated: write failed after 0 of 71508 bytes"));
+      harness_test::transportCut(0, "request body truncated: write failed after 4096 of 71508 bytes"));
   r.d.http.script.push_back(
-      harness_test::transportCut(0, "request body truncated: write failed after 0 of 71508 bytes"));
+      harness_test::transportCut(0, "request body truncated: write failed after 4096 of 71508 bytes"));
   r.d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antDoneBody()});
   std::string out, err;
   TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());

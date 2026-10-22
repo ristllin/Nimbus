@@ -9,6 +9,7 @@
 #include "nimbus/voice_flow.h"         // SttResult + the hold-to-talk error taxonomy (CUM-456)
 #include "http_multipart.h"
 #include "../agent_config.h"           // CUMULO_HOST_DEFAULT
+#include "../provider_gate.h"          // the one per-provider park (L19-8)
 #include "../store.h"
 #include "../../sys/agent_log.h"
 #include "../../sys/heap_watch.h"   // activity tag: speech-to-text
@@ -92,6 +93,24 @@ static void wavHeader(uint8_t h[44], uint32_t dataBytes, uint32_t sampleRate) {
   memcpy(h + 36, "data", 4); p32(40, dataBytes);
 }
 
+// L19-8: a provider the one park closed (out of credit or a refused key learned on
+// any seam, or paused) gets no upload; the mic line says why.
+static bool closedByPark(const SttProvider& prov, nimbus::voice::SttResult& out) {
+  const nimbus::orch::ParkVerdict gv = gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Stt, prov.key);
+  if (gv.open) return false;
+  out.kind = nimbus::voice::SttResult::Kind::Refused;
+  out.refusal = nimbus::orch::parkShortWords(prov.slug.c_str(), gv);
+  return true;
+}
+
+// The upload's answer, for the park: a billing or key refusal closes the provider for
+// every seam; a success ends an episode.
+static void noteToPark(const SttProvider& prov, bool ok, const String& err, const String& resp) {
+  int st = 0;
+  if (!ok) nimbus::voice::sttKindForError(std::string(err.c_str()), &st);
+  gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Stt, prov.key, ok ? 200 : st, resp.c_str());
+}
+
 // Shared transcription core: multipart POST (optionally with inline prefix bytes
 // ahead of the on-disk file) -> parse {"text":...}. Returns a structured result so
 // the mic path can tell the owner WHICH thing failed (CUM-456): no network, a
@@ -114,6 +133,8 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
     return out;
   }
 
+  if (closedByPark(prov, out)) return out;
+
   size_t fsz = 0;
   { File f = LittleFS.open(localPath, FILE_READ); if (f) { fsz = f.size(); f.close(); } }
   STTDIAG("host=%s path=%s model=%s file=%s size=%u (+%u prefix) mime=%s",
@@ -131,6 +152,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
                          mime && mime[0] ? mime : "audio/ogg", localPath, resp, err, opt);
   STTDIAG("http ok=%d err='%s' respLen=%u resp='%.160s'",
           ok ? 1 : 0, err.c_str(), (unsigned)resp.length(), resp.c_str());
+  noteToPark(prov, ok, err, resp);
   if (!ok) {
     // A router refusal is JSON {error:<code>} with 4xx (funding_cap_reached,
     // rate_limited, audio_duration_unknown, unsupported_media_type - the CUM-376

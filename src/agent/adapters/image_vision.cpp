@@ -12,7 +12,13 @@
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "nimbus/orch/reply_text.h"
 #include "../agent_config.h"         // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
+#include "../orchestrator.h"          // inScheduledTurn, firstAllowedChat - the billing notice
+#include "../provider_gate.h"         // the one per-provider park (L19-8)
+#include "../telegram.h"              // send - the billing notice
+#include "nimbus/orch/billing_refusal.h"  // billingNoticeDue, billingNotice - one notice per episode
 #include "../store.h"
+#include "nimbus/harness/providers.h"  // testStatusOverride - the bench's scripted answer (test builds)
+#include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
 
 namespace agent {
 namespace vision {
@@ -63,37 +69,64 @@ bool resolveCumulo(Provider& p) {
   return true;
 }
 
-bool resolve(Provider& p) {
-  // Follow the configured priority so the device uses the key the owner
-  // actually wants spent, rather than whichever we happened to check first.
+// Why the last caption attempt had no description: the park's words when every
+// keyed provider was closed, or the refusal it met (L19-8). "" after a success.
+String g_failWords;
+
+// The key a vision request to `name` would carry ("" = it cannot look at a picture).
+std::string visionKeyOf(const std::string& name) {
+  if (name == "openai") return store::openaiKey().c_str();
+  if (name == "mistral") return store::mistralKey().c_str();
+  if (name == "anthropic") return store::anthropicKey().c_str();
+  if (name == "cumulo") {
+    Provider probe;
+    return resolveCumulo(probe) ? std::string(store::cumuloKey().c_str()) : std::string();
+  }
+  return std::string();
+}
+
+bool resolveNamed(const std::string& name, Provider& p) {
+  if (name == "openai") {
+    p = {"api.openai.com", "/v1/chat/completions", "gpt-4o-mini", store::openaiKey(), false};
+  } else if (name == "mistral") {
+    p = {"api.mistral.ai", "/v1/chat/completions", "pixtral-12b-latest", store::mistralKey(), false};
+  } else if (name == "anthropic") {
+    p = {"api.anthropic.com", "/v1/messages", "claude-3-5-haiku-latest", store::anthropicKey(), true};
+  } else {
+    return name == "cumulo" && resolveCumulo(p);
+  }
+  return true;
+}
+
+// Follow the configured priority so the device uses the key the owner actually
+// wants spent, rather than whichever we happened to check first; then the router
+// when a Cumulo key is present, so a Cumulo-only device whose priority omits cumulo
+// still gets vision instead of a silent nothing. A provider the park closed (out of
+// credit or a refused key learned on any seam, or paused) is skipped with no
+// request (L19-8); `slug` names the provider picked.
+bool resolve(Provider& p, std::string& slug) {
   String prio = store::providerPriority();
   if (!prio.length()) prio = "openai,mistral,anthropic";
+  std::vector<std::string> order;
   int s = 0;
   while (s < (int)prio.length()) {
     int e = prio.indexOf(',', s); if (e < 0) e = prio.length();
     String name = prio.substring(s, e); name.trim();
     s = e + 1;
-    if (name == "openai" && store::openaiKey().length()) {
-      p = {"api.openai.com", "/v1/chat/completions", "gpt-4o-mini",
-           store::openaiKey(), false};
-      return true;
-    }
-    if (name == "mistral" && store::mistralKey().length()) {
-      p = {"api.mistral.ai", "/v1/chat/completions", "pixtral-12b-latest",
-           store::mistralKey(), false};
-      return true;
-    }
-    if (name == "anthropic" && store::anthropicKey().length()) {
-      p = {"api.anthropic.com", "/v1/messages", "claude-3-5-haiku-latest",
-           store::anthropicKey(), true};
-      return true;
-    }
-    if (name == "cumulo" && resolveCumulo(p)) return true;
+    if (name.length()) order.push_back(name.c_str());
   }
-  // No direct (or priority-listed cumulo) key matched: fall back to the router if
-  // a Cumulo key is present, so a Cumulo-only device whose priority omits cumulo
-  // still gets vision instead of a silent nothing.
-  return resolveCumulo(p);
+  order.push_back("cumulo");
+  const nimbus::orch::ProviderPick pick =
+      nimbus::orch::pickOpenProvider(order, visionKeyOf, nimbus::orch::PaidSeam::Vision, (uint32_t)millis());
+  if (pick.provider.empty()) {
+    g_failWords = pick.closedWhy.c_str();
+    if (g_failWords.length()) alogf("vision: no provider open - %s", g_failWords.c_str());
+    return false;
+  }
+  if (!pick.closedWhy.empty())
+    alogf("vision: skipped a closed provider (%s) - asking %s", pick.closedWhy.c_str(), pick.provider.c_str());
+  slug = pick.provider;
+  return resolveNamed(pick.provider, p);
 }
 
 const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -135,6 +168,33 @@ void appendEscaped(String& dst, const String& src, size_t maxLen) {
   }
 }
 
+// L19-3: a billing refusal on the caption step tells the owner once per episode
+// (the latch is shared with every seam and kept on flash); a quiet background turn
+// leaves it for the next owner turn.
+void tellOwnerOutOfCredit(const std::string& slug, int status) {
+  if (orchestrator::inScheduledTurn()) return;
+  const String owner = orchestrator::firstAllowedChat();
+  if (!owner.length() || !nimbus::orch::billingNoticeDue(slug.c_str())) return;
+  const std::string words = nimbus::orch::billingNotice(slug, status, "") +
+                            " Until then, photos are described by another provider when one has a key.";
+  agent::telegram::send(owner, String(words.c_str()), /*block=*/false);
+}
+
+// A refused caption request: the park learns it (a billing or key refusal closes the
+// provider for every seam, the next photo walks on with no request to it), and the
+// caption step keeps the reason to show.
+void noteRefusal(const std::string& slug, const Provider& prov, int status, const char* body) {
+  const nimbus::orch::ParkKind k =
+      gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, status, body);
+  if (k == nimbus::orch::ParkKind::Billing) {
+    tellOwnerOutOfCredit(slug, status);
+    g_failWords = (slug + " says the account is out of credit").c_str();
+  } else if (k == nimbus::orch::ParkKind::Auth)
+    g_failWords = (slug + " refused the key").c_str();
+  else
+    g_failWords = nimbus::orch::providerErrLine(slug.c_str(), status, nimbus::orch::providerErrorText(body)).c_str();
+}
+
 const char* kPrompt =
     "Describe this image for someone who cannot see it. Be specific and "
     "concrete: what it shows, any text that appears in it, and anything "
@@ -145,14 +205,30 @@ const char* kPrompt =
 
 bool available() {
   Provider p;
-  return resolve(p);
+  std::string slug;
+  return resolve(p, slug);
 }
+
+String failWords() { return g_failWords; }
 
 String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
                      const String& caption) {
   nimbus::heapwatch::Scope describing(nimbus::heapwatch::kVision);
   Provider prov;
-  if (!path || !*path || !resolve(prov)) return String();
+  std::string slug;
+  g_failWords = "";
+  if (!path || !*path || !resolve(prov, slug)) return String();
+#ifdef NIMBUS_TEST
+  {   // the bench's scripted provider answer (PROVFAULT): the refusal path, no upload
+    int ovStatus = 0;
+    std::string ovBody;
+    if (agent::providers::testStatusOverride(std::string(prov.host), ovStatus, ovBody) && ovStatus >= 300) {
+      alogf("vision: TEST override answered %s with HTTP %d", prov.host, ovStatus);
+      noteRefusal(slug, prov, ovStatus, ovBody.c_str());
+      return String();
+    }
+  }
+#endif
 
   ::fs::FS& fsRef = sourceFs ? *sourceFs : (::fs::FS&)LittleFS;
   File f = fsRef.open(path, FILE_READ);
@@ -246,6 +322,7 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
   }
   if (!connected) {
     free(b64); arbiter::releaseWork();
+    gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, 0, "");
     alogf("vision: connect %s failed", prov.host);
     return String();
   }
@@ -310,9 +387,12 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
   arbiter::releaseWork();
 
   if (status < 200 || status >= 300) {
-    alogf("vision: HTTP %d: %.120s", status, body.c_str());
+    alogf("vision: %s",
+          nimbus::orch::providerErrLine("caption", status, nimbus::orch::providerErrorText(body.c_str())).c_str());
+    noteRefusal(slug, prov, status, body.c_str());
     return String();
   }
+  gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, status, "");
 
   JsonDocument doc;
   if (deserializeJson(doc, body)) { alog("vision: unparseable reply"); return String(); }

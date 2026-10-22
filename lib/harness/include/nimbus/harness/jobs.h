@@ -32,6 +32,13 @@
 // no longer exists (vector capacity is reserved up front).
 namespace agent {
 
+// L19-36: the sentence every sub-agent brief ends with: the reply cap, stated (the
+// sub was never told one existed, and wrote reports past it that reached the head
+// cut, presented as complete).
+inline constexpr const char* kSubReplyCapNote =
+    "\n\n[Reply size: the first 16 KB of your reply reaches the head directly; a longer reply is "
+    "saved whole as a file the head can read, so finish your full report and do not pad or repeat it.]";
+
 // A stable ring key from a job tag (FNV-1a) - the attention Router keys jobs by a
 // uint32, not a string, so hash the tag into that key space. Exposed so the
 // device glue can key its head-turn arc ("head") on the same hash.
@@ -357,6 +364,13 @@ class JobEngine {
   // False when it cannot start; the owner was told why and the head noted it.
   bool routeSpawn(const PendingSpawn& p, std::string& provider, std::string& model,
                   ManagedAgentAdapter*& adapter);
+  // L19-8: a provider the one park closed gets no spawn: move to the first open
+  // sub provider, or refuse with the park's words. False when refused.
+  bool moveOffClosedProvider(const PendingSpawn& p, const std::string& host, std::string& provider,
+                             std::string& model);
+  // L19-36: save a reply longer than the envelope whole to the card and end the
+  // envelope with a marker naming the file and the real size. True when saved.
+  bool spillWholeReply(const nimbus::orch::JobRecord& rec, const std::string& whole, size_t dropped);
   std::string spawnProvider(const PendingSpawn& p) const;
   bool keylessToRouter(std::string& provider, std::string& model) const;
   // Validated coercion (subagents F5): the asked model when the provider lists
@@ -420,6 +434,9 @@ class JobEngine {
   void emitJobState(const char* tag, const char* backend, nimbus::orch::JobState st);
   void emitJobCleared(uint32_t key);
   std::string firstSubProvider() const;
+  // ...and the park's words for the first keyed provider it skipped as closed.
+  std::string firstSubProvider(std::string* closedWhy) const;
+  bool subProviderRuns(const std::string& provider, std::string* closedWhy) const;
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
 

@@ -19,6 +19,7 @@
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
 #include "nimbus/orch/journal.h"
 #include "nimbus/orch/provider_slots.h"   // kProviderSlots - the one-key spawn class test
+#include "../../lib/harness/src/providers/wire.h"   // ReplyWriter - the writer every adapter uses (L19-36)
 
 // Stage F suite - the sub-agent job machinery, host-tested for the first time:
 // the one-dispatch-per-cycle gate (+2500/+1500 timers), the job-limit and
@@ -78,6 +79,8 @@ struct Rig {
   struct SpawnUsage { std::string backend; std::string model; uint32_t in, out; };
   std::vector<SpawnUsage> spawnUsage;                      // recordSpawnUsage recorder
   std::vector<std::string> persisted;                      // persistResult texts (project runs)
+  std::vector<std::string> persistedTo;                    // persistResult project/name pairs (L19-36)
+  std::string persistNote;                                 // persistResult's outcome line ("" = none)
   std::function<std::string(const std::string&)> chatContext;  // B4 (nullable)
   // CUM-541: the models each provider accepts (modelIsValid). Unset = the good-*
   // rule below; the Cumulo router's list is "<upstream>/<model>" selectors.
@@ -141,10 +144,11 @@ struct Rig {
                                 uint32_t out) {
       spawnUsage.push_back({b, m, in, out});
     };
-    d.persistResult = [this](const std::string&, const std::string&, const std::string&,
+    d.persistResult = [this](const std::string& prj, const std::string& name, const std::string&,
                              const std::string& text, const std::string&) {
       persisted.push_back(text);
-      return std::string();   // no outcome line: keeps the parked text byte-exact
+      persistedTo.push_back(prj + "/" + name);
+      return persistNote;   // default: no outcome line, keeps the parked text byte-exact
     };
     eng.reset(new JobEngine(std::move(d)));
   }
@@ -275,7 +279,9 @@ static void test_short_sso_task_spawn_round_trips() {
   r.eng->enqueueSpawn(sp("web_search"), "chat1");   // 10 B - inside SSO
   r.eng->pump();
   TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
-  TEST_ASSERT_EQUAL_STRING("web_search", r.adapter.dispatched[0].instruction.c_str());
+  TEST_ASSERT_EQUAL_STRING("web_search", r.adapter.dispatched[0].task.c_str());
+  // The brief leads with it (the reply-cap sentence follows, L19-36).
+  TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched[0].instruction.rfind("web_search\n\n[Reply size:", 0));
 }
 
 static void test_spawn_ack_message_bytes() {
@@ -1988,6 +1994,122 @@ static void test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal() {
   }
 }
 
+
+// ---- L19-36: a sub-agent reply longer than the envelope is kept whole -------------
+// An adapter that writes its reply the way every real adapter does (wire::ReplyWriter,
+// in pieces).
+struct LongReplyAdapter : FakeAdapter {
+  std::string text;
+  agent::FabricErr poll(const char*, agent::ResultEnvelope& env) override {
+    env.state = agent::JobState::Done;
+    agent::providers::wire::ReplyWriter w(env.reply, sizeof(env.reply));
+    for (size_t i = 0; i < text.size(); i += 1000) w.append(text.data() + i, std::min<size_t>(1000, text.size() - i));
+    return agent::FabricErr::Ok;
+  }
+};
+
+static std::string longReport(size_t n) {
+  std::string t;
+  for (int i = 0; t.size() < n; ++i) t += "Section " + std::to_string(i) + ": findings and sources. ";
+  t.resize(n);
+  return t;
+}
+
+static void test_l19_36_a_long_reply_is_spilled_whole_with_a_marker() {
+  Rig r;
+  LongReplyAdapter oai;
+  oai.backend = "openai";
+  oai.text = longReport(40 * 1024);
+  r.fabric.registerAdapter(&oai);
+  r.keyed.insert("openai");
+  r.persistNote = "[saved: research/report-job0000.md]";
+  orch::Spawn s = sp();
+  s.provider = "openai";
+  s.project = "research";
+  s.name = "report";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();                         // dispatch
+  TEST_ASSERT_EQUAL(1, (int)oai.dispatched.size());
+  // The brief states the cap.
+  TEST_ASSERT_TRUE(oai.dispatched[0].instruction.find("the first 16 KB of your reply reaches the head") !=
+                   std::string::npos);
+  r.plat.ms += 60000;
+  r.eng->pump();                         // the terminal poll
+  // The card holds the whole 40 KB reply, once (not the 16 KB envelope too).
+  TEST_ASSERT_EQUAL(1, (int)r.persisted.size());
+  TEST_ASSERT_EQUAL(40 * 1024, (int)r.persisted[0].size());
+  TEST_ASSERT_EQUAL_STRING(oai.text.c_str(), r.persisted[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("research/report", r.persistedTo[0].c_str());
+  // A read at offset 20,000 returns real report text (no marker, nothing lost).
+  TEST_ASSERT_EQUAL_STRING(oai.text.substr(20000, 200).c_str(), r.persisted[0].substr(20000, 200).c_str());
+  // The envelope ends with the marker naming the file and the real size.
+  TEST_ASSERT_FALSE(r.hookResults.empty());
+  const std::string& env = r.hookResults.back().reply;
+  const std::string mark = "[cut at 16 KB: the whole reply, 40960 bytes, is saved as research/report-job0000.md; "
+                           "read the rest with files.read from an offset]";
+  TEST_ASSERT_TRUE_MESSAGE(env.size() >= mark.size() && env.compare(env.size() - mark.size(), mark.size(), mark) == 0,
+                           env.substr(env.size() > 300 ? env.size() - 300 : 0).c_str());
+  TEST_ASSERT_TRUE(env.size() < 16384);
+  TEST_ASSERT_TRUE(env.find("\n[cut at 16 KB]") == std::string::npos);   // the bare marker is gone
+  TEST_ASSERT_TRUE(LogCapture::contains("reply was 40960 B - saved whole as research/report-job0000.md"));
+}
+
+// No project named and no card: the envelope says the rest could not be saved, and
+// the reply that fits is still delivered (never presented as complete).
+static void test_l19_36_a_spill_that_fails_says_so() {
+  Rig r;
+  LongReplyAdapter oai;
+  oai.backend = "openai";
+  oai.text = longReport(20 * 1024);
+  r.fabric.registerAdapter(&oai);
+  r.keyed.insert("openai");
+  r.persistNote = "[persist FAILED: no SD card]";
+  orch::Spawn s = sp();
+  s.provider = "openai";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  r.plat.ms += 60000;
+  r.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("results/", r.persistedTo[0].substr(0, 8).c_str());   // the default project
+  const std::string& env = r.hookResults.back().reply;
+  TEST_ASSERT_TRUE_MESSAGE(env.find("[cut at 16 KB: the rest of the reply could not be saved "
+                                    "([persist FAILED: no SD card])]") != std::string::npos,
+                           env.substr(env.size() - 200).c_str());
+}
+
+// Counter-test: a reply that fits is not spilled and carries no marker.
+static void test_l19_36_a_reply_that_fits_is_not_spilled() {
+  Rig r;
+  LongReplyAdapter oai;
+  oai.backend = "openai";
+  oai.text = longReport(8 * 1024);
+  r.fabric.registerAdapter(&oai);
+  r.keyed.insert("openai");
+  orch::Spawn s = sp();
+  s.provider = "openai";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  r.plat.ms += 60000;
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)r.persisted.size());
+  TEST_ASSERT_TRUE(r.hookResults.back().reply.find("[cut at 16 KB") == std::string::npos);
+}
+
+
+// A note appended whole after a reply that fit can still cut the reply text (the note
+// must never be what is dropped): the cut text is kept whole for the spill too.
+static void test_l19_36_a_tail_note_that_cuts_keeps_the_whole_reply() {
+  agent::ResultEnvelope env{};
+  const std::string text(sizeof(env.reply) - 20, 'r');   // fits on its own
+  agent::providers::wire::ReplyWriter w(env.reply, sizeof(env.reply));
+  TEST_ASSERT_TRUE(w.append(text));
+  w.appendTail("\n[note: 2 more generated file(s) beyond the 3-file capture limit were NOT captured]");
+  const std::string whole = agent::providers::takeReplyOverflow();
+  TEST_ASSERT_EQUAL_STRING(text.c_str(), whole.c_str());
+  TEST_ASSERT_TRUE(std::string(env.reply).find("[cut at 16 KB]") != std::string::npos);
+  TEST_ASSERT_TRUE(std::string(env.reply).find("NOT captured]") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -2053,6 +2175,10 @@ int main(int, char**) {
   RUN_TEST(test_hooks_spawn_and_result_fire);
   RUN_TEST(test_spawn_usage_recorded_once_on_terminal_poll);
   RUN_TEST(test_spawn_usage_not_invented_when_provider_reports_none);
+  RUN_TEST(test_l19_36_a_long_reply_is_spilled_whole_with_a_marker);
+  RUN_TEST(test_l19_36_a_spill_that_fails_says_so);
+  RUN_TEST(test_l19_36_a_reply_that_fits_is_not_spilled);
+  RUN_TEST(test_l19_36_a_tail_note_that_cuts_keeps_the_whole_reply);
   UNITY_END();
   return 0;
 }

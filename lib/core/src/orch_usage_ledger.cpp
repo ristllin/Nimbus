@@ -5,7 +5,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "nimbus/orch/model_choices.h"   // cheapestChoice - the built-in ranking (CUM-708)
 #include "nimbus/orch/model_price_defaults.h"
+#include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
 
 namespace nimbus {
 namespace orch {
@@ -624,6 +626,143 @@ bool UsageLedger::anyPriced(const std::string& name) const {
   PriceSummary s;
   priceProvider(name, &s);
   return s.anyPriced;
+}
+
+// ---- CUM-708: rank models by the price the ledger charges --------------------------
+
+uint64_t UsageLedger::rankPrice(const std::string& prov, const char* model) const {
+  const EffRate r = effectiveRate(prov, model);
+  auto priced = [](RateSrc s) { return s != RateSrc::None && s != RateSrc::BuiltinProv; };
+  if (!priced(r.srcIn) || !priced(r.srcOut)) return UINT64_MAX;
+  return r.in > UINT64_MAX - r.out ? UINT64_MAX - 1 : r.in + r.out;
+}
+
+namespace {
+RankPriceFn& rankSource() {
+  static RankPriceFn fn;
+  return fn;
+}
+}  // namespace
+
+void setRankPriceSource(RankPriceFn fn) { rankSource() = std::move(fn); }
+
+std::string cheapestByEffectivePrice(const char* slug, const std::string& csv) {
+  if (!rankSource()) return cheapestChoice(slug, csv);
+  std::string best;
+  uint64_t bestCost = UINT64_MAX;
+  size_t at = 0;
+  while (at <= csv.size()) {
+    size_t end = csv.find(',', at);
+    if (end == std::string::npos) end = csv.size();
+    std::string m = csv.substr(at, end - at);
+    while (!m.empty() && m.front() == ' ') m.erase(m.begin());
+    while (!m.empty() && m.back() == ' ') m.pop_back();
+    if (!m.empty()) {
+      const uint64_t cost = rankSource()(slug ? slug : "", m);
+      if (cost < bestCost) {
+        best = m;
+        bestCost = cost;
+      }
+    }
+    at = end + 1;
+  }
+  return best;
+}
+
+// ---- the default daily spend warning (L19-2) ---------------------------------------
+
+namespace {
+// One history bucket at the price the ledger charges its model (an unattributed
+// bucket at the residual rate, calls at the call rate).
+void addBucket(const UsageLedger& L, MicroSum& m, const DayUsage& e) {
+  TokenDelta t;
+  t.in = e.tokIn;
+  t.out = e.tokOut;
+  t.cacheR = e.cacheR;
+  t.cacheW = e.cacheW;
+  m.addTokens(t, e.model[0] ? L.rowRate(e.prov, e.model) : L.residualRate(e.prov));
+  if (e.calls) m.addCalls(e.calls, L.callRate(e.prov));
+}
+}  // namespace
+
+uint64_t UsageLedger::priceDay(const UsageHistory& h, const std::string& prov, uint32_t dayKey) const {
+  MicroSum m;
+  for (const DayUsage& e : h.entries())
+    if (e.dayKey == dayKey && e.prov == prov) addBucket(*this, m, e);
+  return m.take();
+}
+
+uint64_t UsageLedger::medianDayCents(const UsageHistory& h, const std::string& prov, uint32_t todayKey,
+                                     uint32_t days) const {
+  // One pass over the history (it runs at the start of every turn): each of the
+  // `days` days before today sums its buckets at their prices.
+  std::vector<MicroSum> day(days + 1);
+  for (const DayUsage& e : h.entries())
+    if (e.prov == prov && e.dayKey < todayKey && todayKey - e.dayKey <= days)
+      addBucket(*this, day[todayKey - e.dayKey], e);
+  std::vector<uint64_t> spent;
+  for (uint32_t back = 1; back <= days; ++back) {
+    const uint64_t c = day[back].take();
+    if (c) spent.push_back(c);
+  }
+  if (spent.empty()) return 0;
+  std::sort(spent.begin(), spent.end());
+  const size_t n = spent.size();
+  return n % 2 ? spent[n / 2] : (spent[n / 2 - 1] + spent[n / 2]) / 2;
+}
+
+DailyWarn UsageLedger::dailyWarnCheck(const UsageHistory& h, const std::string& prov, uint32_t todayKey) const {
+  DailyWarn w;
+  w.spentCents = priceDay(h, prov, todayKey);
+  const ProviderBudget* e = find(prov);
+  if (e && e->centsLimit) {   // the owner's own limit replaces the default
+    w.thresholdCents = e->centsLimit;
+    w.ownerLimit = true;
+    return w;
+  }
+  w.medianCents = medianDayCents(h, prov, todayKey);
+  const uint64_t usual = w.medianCents > UINT64_MAX / kDailyWarnMedianFactor
+                             ? UINT64_MAX
+                             : w.medianCents * kDailyWarnMedianFactor;
+  w.thresholdCents = usual > kDailyWarnFloorCents ? usual : kDailyWarnFloorCents;
+  return w;
+}
+
+uint32_t civilDayKey(int year, int month, int day) {
+  // Days from 1970-01-01 (the proleptic Gregorian civil-from-days inverse).
+  year -= month <= 2;
+  const long era = (year >= 0 ? year : year - 399) / 400;
+  const long yoe = year - era * 400;
+  const long doy = (153L * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const long days = era * 146097 + doe - 719468;
+  return days > 0 ? (uint32_t)days : 0u;
+}
+
+namespace {
+std::string dollars(uint64_t cents) {
+  char b[32];
+  snprintf(b, sizeof(b), "$%llu.%02u", (unsigned long long)(cents / 100), (unsigned)(cents % 100));
+  return b;
+}
+}  // namespace
+
+bool dailyWarnDue(const UsageLedger& L, const UsageHistory& h, const std::string& prov, uint32_t todayKey,
+                  uint32_t localDayKey, std::string& notice) {
+  if (!todayKey || !localDayKey || providerPark().warnedOn(prov.c_str(), localDayKey)) return false;
+  const DailyWarn w = L.dailyWarnCheck(h, prov, todayKey);
+  if (!w.crossed() || !providerPark().dailyWarningDue(prov.c_str(), localDayKey)) return false;
+  notice = dailyWarnNotice(prov, w);
+  return true;
+}
+
+std::string dailyWarnNotice(const std::string& prov, const DailyWarn& w) {
+  std::string s = prov + " has cost about " + dollars(w.spentCents) + " today, past its daily warning of " +
+                  dollars(w.thresholdCents);
+  if (w.ownerLimit) s += " (the limit you set)";
+  else if (w.thresholdCents > kDailyWarnFloorCents) s += " (three times a usual day)";
+  s += ". Spending continues; set a limit in Usage & Budget to cap it.";
+  return s;
 }
 
 namespace {

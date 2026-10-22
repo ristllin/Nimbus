@@ -10,6 +10,8 @@
 #include "nimbus/orch/embedding.h"       // portable build/parse (host-tested)
 #include "nimbus/orch/vector_memory.h"   // quantize
 #include "nimbus/audio_req.h"            // core::parseErrorCode (host-tested refusal parse)
+#include "nimbus/harness/providers.h"    // testStatusOverride - the bench's scripted answer (test builds)
+#include "../provider_gate.h"            // the one per-provider park (L19-8)
 
 namespace agent {
 namespace embeddings {
@@ -48,6 +50,32 @@ bool resolveProvider(const String& provider, String& host, String& path, String&
   }
   return key.length() > 0;
 }
+
+// A non-200 answer: the err token the memory engines classify (classifyEmbedFail),
+// and the park told (a billing or key refusal closes the provider for every seam).
+void failFromStatus(const String& provider, const String& key, int code, const char* body, String& err) {
+  gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, code, body);
+  if (code == 401 || code == 403) { err = "key rejected"; return; }
+  err = String("HTTP ") + code;
+  // A non-200 body may be a router/provider refusal {"error":"<code>"}. Append
+  // the machine code (bounded, secret-safe: parseErrorCode returns only the code
+  // field, and the memory tools echo just the numeric status unless it is a known
+  // refusal code) so funding_cap_reached / rate_limited / endpoint_not_allowed map
+  // to plain words upstream.
+  bool jok = false;
+  std::string rc = core::parseErrorCode(body, &jok);
+  if (jok && !rc.empty()) { if (rc.size() > 48) rc.resize(48); err += String(" ") + rc.c_str(); }
+  alogf("embed: HTTP %d %s", code, rc.c_str());
+}
+
+// The park closed this provider (out of credit or a refused key learned on any seam,
+// or the pause switch): no request, and an err token the memory engines read as the
+// same class the refusal itself would have been.
+String closedToken(const nimbus::orch::ParkVerdict& v) {
+  if (v.paused) return "paused";
+  if (v.kind == nimbus::orch::ParkKind::Auth) return "key rejected";
+  return "HTTP 402 parked";   // every 402 reads as billing (OutOfCredit), whatever its body
+}
 }  // namespace
 
 bool available() {
@@ -66,6 +94,19 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
   if (!resolveProvider(provider, host, path, key)) { err = "no embeddings key for " + provider; return {}; }
   if (text.length() == 0) { err = "empty text"; return {}; }
   if (model.length() == 0) { err = "no model"; return {}; }
+  const nimbus::orch::ParkVerdict gv = gate::check(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key);
+  if (!gv.open) { err = closedToken(gv); return {}; }
+#ifdef NIMBUS_TEST
+  {   // the bench's scripted provider answer (PROVFAULT): the refusal path, no network
+    int ovStatus = 0;
+    std::string ovBody;
+    if (agent::providers::testStatusOverride(std::string(host.c_str()), ovStatus, ovBody) && ovStatus >= 300) {
+      alogf("embed: TEST override answered %s with HTTP %d", host.c_str(), ovStatus);
+      failFromStatus(provider, key, ovStatus, ovBody.c_str(), err);
+      return {};
+    }
+  }
+#endif
 
   // Provider-aware body (CUM-469): mistral gets {model, input} - its schema has no
   // `dimensions`, which is why the one OpenAI-shaped body 422'd on every call.
@@ -96,6 +137,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     }
     if (!connected) {
       arbiter::releaseWork();
+      gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, 0, "");
       err = "connect failed";
       alogf("embed: connect %s failed x3 heap=%u", host.c_str(), ESP.getFreeHeap());
       return {};
@@ -147,25 +189,17 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     // No status line parsed: separate a read timeout (deadline exceeded) from the
     // provider dropping the connection, so the memory tools can say which (CUM-435).
     if (code == 0) {
+      gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, 0, "");
       const bool deadlinePassed = (int32_t)(millis() - deadline) >= 0;
       err = deadlinePassed ? "timeout" : "connect failed";
       alogf("embed: no status (%s) heap=%u", err.c_str(), ESP.getFreeHeap());
       return {};
     }
-    if (code == 401 || code == 403) { err = "key rejected"; return {}; }
     if (code != 200) {
-      err = String("HTTP ") + code;
-      // A non-200 body may be a router/provider refusal {"error":"<code>"}. Append
-      // the machine code (bounded, secret-safe: parseErrorCode returns only the code
-      // field, and the memory tools echo just the numeric status unless it is a known
-      // refusal code) so funding_cap_reached / rate_limited / endpoint_not_allowed map
-      // to plain words upstream.
-      bool jok = false;
-      std::string rc = core::parseErrorCode(bodyResp.c_str(), &jok);
-      if (jok && !rc.empty()) { if (rc.size() > 48) rc.resize(48); err += String(" ") + rc.c_str(); }
-      alogf("embed: HTTP %d %s", code, rc.c_str());
+      failFromStatus(provider, key, code, bodyResp.c_str(), err);
       return {};
     }
+    gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, code, "");
 
     std::vector<float> floats;
     std::string perr;

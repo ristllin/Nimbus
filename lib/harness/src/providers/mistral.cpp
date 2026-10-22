@@ -305,12 +305,37 @@ struct MisLoopReq {
   const HeadTools* ht;
   bool allowTools;
   uint32_t maxTokens;
+  const char* effort;   // reasoning_effort ("" = the field is not sent)
 };
+
+// CUM-616: a model the table says reasons but that refused reasoning_effort (400
+// code 3051 "reasoning_effort is not enabled for this model"; Mistral documents a 422
+// for a bad value) is remembered for this boot, so later rounds do not pay the
+// refusal again. Bounded; RAM only.
+namespace {
+char g_misNoEffort[4][48] = {};
+bool misEffortRefusedBefore(const std::string& model) {
+  for (const auto& m : g_misNoEffort)
+    if (m[0] && model == m) return true;
+  return false;
+}
+void misRememberNoEffort(const std::string& model) {
+  if (misEffortRefusedBefore(model)) return;
+  static size_t next = 0;
+  snprintf(g_misNoEffort[next++ % 4], sizeof(g_misNoEffort[0]), "%s", model.c_str());
+}
+// A refusal of the reasoning_effort field itself: retried once without it.
+bool misRefusedEffort(int code, const std::string& text) {
+  return (code == 400 || code == 422) &&
+         (text.find("reasoning_effort") != std::string::npos || text.find("3051") != std::string::npos);
+}
+}  // namespace
 static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& tr, const MisLoopReq& a,
                         std::string& body, std::string& err) {
   JsonDocument req = makeDoc(pd);
   req["model"] = pd.orchModel ? pd.orchModel("mistral") : std::string();
   if (a.maxTokens) req["max_tokens"] = a.maxTokens;
+  if (a.effort && *a.effort) req["reasoning_effort"] = a.effort;
   {
     JsonArray msgs = req["messages"].to<JsonArray>();
     // A split prompt (prompt_layout.h): the system message is the static block
@@ -465,11 +490,13 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     filter["usage"] = true;   // whole usage object -> per-round token accounting
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+    bool effortRetried = false;   // the one retry without reasoning_effort (CUM-616)
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+      const char* effort = misEffortRefusedBefore(model) ? "" : (attempt ? cap.retryEffort : cap.effort);
       std::string body;
-      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens}, body, out.error)) {
+      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens, effort}, body, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -480,6 +507,15 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
                                 resp, filter, roundMs, &quota);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200 && *effort && !effortRetried &&
+          misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
+        hlog::logf("orchTurn(mistral-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",
+                   model.c_str(), code);
+        misRememberNoEffort(model);
+        effortRetried = true;
+        --attempt;   // the same attempt again, without the field
+        continue;
+      }
       if (code != 200) {
         const std::string em = mistralErrText(resp);
         const std::string e = mistralHttpErr("chat", code, quota, em);
@@ -536,7 +572,7 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
   outJson = res.finalTurn;
   convId  = "chat";   // stateless marker - the device owns the turn's state
   return true;

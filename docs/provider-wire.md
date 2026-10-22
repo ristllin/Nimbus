@@ -161,8 +161,16 @@ serves:
   `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
   `output_config.effort` pinned (medium; low for the fold) on the families that
   accept it, clamped so a generation at the family's slowest measured rate still
-  finishes inside the round's 120 s; Mistral rounds get 4,096; OpenAI sends no
-  output cap (reasoning would starve the answer). Every adapter reads
+  finishes inside the round's 120 s; Mistral rounds get 4,096, and a Mistral head
+  that can reason (the models whose `/v1/models` entry says
+  `capabilities.reasoning`: Small 2603+, Medium, Magistral, Large 4) gets
+  `reasoning_effort:"none"`, retried once without the field if the model refuses it
+  (HTTP 400 code 3051, or 422); OpenAI sends no output cap (reasoning would starve
+  the answer). Under the time clamp the first attempt takes three quarters of what
+  the round's time allows (never under 3,000 tokens) and the retry after a cut the
+  whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
+  then 5,500, so every capped round, a Claude id that takes no effort included, has a
+  retry with more room. Every adapter reads
   completeness - Anthropic `stop_reason:"max_tokens"`, Mistral
   `finish_reason:"length"` (or tool arguments that do not parse), OpenAI
   `status:"incomplete"`, the custom head `finish_reason:"length"` - and a cut
@@ -212,6 +220,8 @@ retry and failover happen INSIDE a single logical round:
    | Rejected (another 4xx: unknown model, a parameter the model refuses, a refusal), Cut (still cut after the in-step retry) | no | yes | no |
    | Auth (401/403), Billing (out of credit or quota) | no | yes | yes |
    | BadRequest (the body is unreadable, or refused before the send), LowMemory | no | no | never |
+   | Unsent (the device's first write left 0 bytes: the request head, or the first body slice) | once, only after the largest free block recovers (bounded wait) | no | never |
+   | Paused (every host the turn could use is held by the pause switch) | no request at all | no | never |
 
 3. A switch walks to the next keyed host that is not parked and re-runs the SAME
    round on the shared transcript. Up to two switches; the host list is the
@@ -220,14 +230,40 @@ retry and failover happen INSIDE a single logical round:
 
 Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A
-**parked** host (a billing or auth refusal, RAM only) is skipped at the start of
-later turns - no request, retry or notice spent on it - until its key or model
-changes, a request there succeeds, or 30 minutes pass (then one probe request).
-The owner notice names the cause and its HTTP status ("anthropic says the
-account is out of credit (HTTP 400)... until then, openai answers"; "mistral did
-not answer in time - switching to anthropic"); a billing refusal is told once per
-episode, shared with the embedding seam. Turn-end bookkeeping attributes to the
-host that finished. Every request's deadline comes from one policy: 120 s for
+**parked** host is skipped at the start of later turns - no request, retry or
+notice spent on it - until its key changes, a request there succeeds, or 30
+minutes pass (then one probe request). With every host closed the first one closed
+by a refusal is asked anyway; a **paused** host is never asked.
+
+**One park per provider, for every paid seam.** The park
+(`lib/core/include/nimbus/orch/provider_park.h`) is shared by the chat head, the
+fold, sub-agent spawns, embeddings, the photo caption step, speech to text, text
+to speech, the download scan and image generation. A billing refusal or a refused
+key (401) learned on ANY of them closes that provider for all of them (a 403 only
+for the seam that met it, since it can name one model or endpoint); a rate limit,
+a server error, a timeout or a network failure closes nothing. Every harness
+request feeds it on its way back (`wire::exchange`), so a refused sub-agent
+dispatch or poll parks the provider too. The record keeps the refusal, its HTTP
+status, the seams it closes, when it parked and when it is checked again; it is
+saved to a flash file (`/data/provpark.txt`, never NVS) with the re-check time on
+the wall clock when it is set, so a restart neither sends one more doomed request
+nor repeats the owner notice. The **pause switch** on the same record holds a
+provider (or every provider) off every seam until the cause that set it lifts it -
+the spend ceiling uses it; the pause itself is not saved by the park (its owner
+re-applies it at boot). The health report's **Providers** row lists every closed
+provider and when it is checked again.
+
+The owner hears **one message per failed turn**: a switch notice raised while the
+turn runs is held, and a turn that fails folds it into its final notice (a billing
+refusal's next step becomes "Add credit on <provider>'s billing page."), while a
+turn that is served sends it just before its reply. The final notice names the
+first cause (stepErrCause), offers asking again only for a cause in transit, says
+"Your message was not answered." when every host failed before anything ran, and
+lists what the turn had already done when tools ran ("Already done this turn:
+memory_write, web_search (2)."). A request the device could not send at all reads
+"the device could not finish sending its request (memory is tight)", never a
+provider's fault. The billing notice is told once per episode across every seam.
+Turn-end bookkeeping attributes to the host that finished. Every request's deadline comes from one policy: 120 s for
 every head round and every synchronous sub (Z.ai keeps its 50 s, under its
 gateway cut), clamped to the turn's remaining budget.
 
@@ -256,13 +292,15 @@ per-host loops could not carry a turn across providers.)
    spawn, a message). The owner gets an honest error instead.
 3. A provider over its monthly token budget is skipped at turn entry (the
    budget gate picks the first keyed, under-budget alternate).
-4. The park above holds here too, in the same RAM store: a billing or auth
+4. The park above holds here too (the same per-provider park): a billing or auth
    refusal parks the host, a parked head is skipped at turn entry (the turn
    starts on the first alternate that is not parked, and the next turn's
    `[FALLBACK]` note names the head it started past), a parked alternate is
    never a failover target, and the billing notice is told once per episode on
    every path. With every host parked the head is asked anyway. The context fold
    skips parked hosts the same way, and its answers and failures feed the park.
+   Failover notices are held and folded into the one final notice like the
+   fabric's.
 5. Provider switches always start a fresh provider-side thread; continuity
    comes from the device's own layers (recent-conversation window, per-chat
    running memory, vector recall) - see

@@ -12,6 +12,10 @@
 //   8. sub-agent provenance is counted from each provider's own run record.
 #include <unity.h>
 
+#include <type_traits>
+
+#include "nimbus/orch/provider_error.h"
+
 #include <cstring>
 #include <string>
 #include <vector>
@@ -150,6 +154,17 @@ static void test_tool_choice_never_forced_any_model_any_path() {
   TEST_ASSERT_EQUAL_STRING("forced tool_choice", antRequestProblem(forced, "claude-sonnet-5-5").c_str());
 }
 
+// The bench seams have ONE signature everywhere (bool, CUM-620). A second
+// declaration with another return type in any header this file includes would not
+// compile, and these pin the type here.
+static_assert(std::is_same<decltype(&providers::setTestFirstAttemptCap), bool (*)(uint32_t)>::value,
+              "setTestFirstAttemptCap returns bool");
+static_assert(std::is_same<decltype(&providers::setTestStatusOverride),
+                           bool (*)(const std::string&, int, const std::string&)>::value,
+              "setTestStatusOverride returns bool");
+static_assert(std::is_same<decltype(&providers::clearTestStatusOverride), bool (*)()>::value,
+              "clearTestStatusOverride returns bool");
+
 // ---- 2. the output-cap table ----------------------------------------------------------
 
 // A retry body differs from the first attempt's. The counter-test feeds it two
@@ -232,7 +247,7 @@ static void test_cap_table_rows() {
       // Time: at the family's slowest rate the cap finishes inside the round.
       const uint32_t rate = providers::slowestTokensPerSecond("anthropic", id);
       TEST_ASSERT_TRUE((uint64_t)c.maxTokens * 1000 / rate <= 120000);
-      if (c.hasRetry()) TEST_ASSERT_TRUE(c.retryTokens > c.maxTokens || strcmp(c.retryEffort, c.effort));
+      TEST_ASSERT_TRUE(c.hasRetry() && c.retryTokens > c.maxTokens);   // L19-44: always more room
     }
     const providers::OutputCap m = providers::outputCapFor("mistral", "mistral-small-latest", kind, 120000);
     TEST_ASSERT_TRUE(m.maxTokens > 0 && m.hasRetry() && m.retryTokens > m.maxTokens);
@@ -755,11 +770,67 @@ static void test_test_status_override_answers_locally() {
   TEST_ASSERT_TRUE(LogCapture::contains("TEST override answered api.anthropic.com/v1/messages with HTTP 400"));
 }
 
+// The bench's UNSENT verb (L19-14): the override status kTestUnsentStatus makes a
+// request "not sent" (its first write left 0 bytes) with nothing sent anywhere: the
+// fabric ends Unsent on the first host with no switch.
+static void test_test_unsent_override_is_unsent_with_no_switch() {
+  FakeProviderDeps d;   // no script: any real request would fail loudly
+  providers::setTestStatusOverride("api.anthropic.com", providers::kTestUnsentStatus, "");
+  d.heap = 17000;
+  d.largest = 6000;
+  providers::ProviderDeps pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  int switches = 0;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, nullptr,
+                                           [&](const std::string&, const std::string&) { switches++; });
+  providers::clearTestStatusOverride();
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL((int)StepErr::Unsent, (int)orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL(0, switches);
+  TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("TEST override: request to api.anthropic.com/v1/messages not sent"));
+}
+
+
+// CUM-620: ONE helper builds every provider error line, on the harness heads and the
+// device seams alike: the provider's text from every body shape, one log-safe line,
+// and a status the typed classifier reads back.
+static void test_cum620_one_error_line_for_every_seam() {
+  struct Shape { const char* body; const char* want; };
+  const Shape shapes[] = {
+      {"{\"error\":{\"message\":\"bad key\",\"type\":\"auth\"}}", "bad key"},          // OpenAI, Anthropic
+      {"{\"error\":\"funding_cap_reached\"}", "funding_cap_reached"},                         // the Cumulo router
+      {"{\"message\":\"Invalid model: x\"}", "Invalid model: x"},                             // Mistral
+      {"{\"message\":{\"detail\":[{\"msg\":\"field required\"}]}}", "field required"},    // Mistral 422
+      {"{\"detail\":\"There was an error parsing the body\"}", "There was an error parsing the body"},
+      {"{\"detail\":[{\"msg\":\"a\"},{\"msg\":\"b\"}]}", "a; b"},
+      {"<html>502 Bad Gateway</html>", ""},                                                     // never the raw body
+      {"", ""},
+  };
+  for (const Shape& sh : shapes)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(sh.want, orch::providerErrorText(sh.body).c_str(), sh.body);
+  // One line: provider text cannot forge a second log line; bounded on a character.
+  const std::string forged = orch::providerErrLine("caption", 400, "bad\nfabric: forged line");
+  TEST_ASSERT_EQUAL_STRING("caption HTTP 400: bad fabric: forged line", forged.c_str());
+  TEST_ASSERT_TRUE(orch::providerErrLine("x", 400, std::string(1000, 'a')).size() <= 320);
+  TEST_ASSERT_EQUAL_STRING("chat HTTP 429 [rl:day-utc]: limit",
+                           orch::providerErrLine("chat", 429, "limit", "[rl:day-utc]").c_str());
+  // The typed classifier reads every status back from the line.
+  for (int st = 400; st < 600; st++) {
+    int got = 0;
+    orch::classifyStepError(orch::providerErrLine("messages", st, "x"), &got);
+    TEST_ASSERT_EQUAL(st, got);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_tool_choice_never_forced_any_model_any_path);
   RUN_TEST(test_cap_table_gate_and_retry_every_adapter_kind_family);
   RUN_TEST(test_cap_table_rows);
+  RUN_TEST(test_cum620_one_error_line_for_every_seam);
   RUN_TEST(test_step_errors_typed_from_recorded_answers);
   RUN_TEST(test_fabric_rule_table_request_counts);
   RUN_TEST(test_billing_park_skips_later_turns_until_the_key_changes);
@@ -773,5 +844,6 @@ int main(int, char**) {
   RUN_TEST(test_mistral_reason_text_every_shape_both_paths);
   RUN_TEST(test_sub_provenance_counts_per_provider);
   RUN_TEST(test_test_status_override_answers_locally);
+  RUN_TEST(test_test_unsent_override_is_unsent_with_no_switch);
   return UNITY_END();
 }

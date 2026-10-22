@@ -60,6 +60,8 @@ const char* stepErrSlug(StepErr k) {
     case StepErr::ServerError: return "server_error";
     case StepErr::Rejected:    return "rejected";
     case StepErr::Cut:         return "cut";
+    case StepErr::Unsent:      return "unsent";
+    case StepErr::Paused:      return "paused";
   }
   return "none";
 }
@@ -68,7 +70,9 @@ const char* stepErrSlug(StepErr k) {
 // transit (a cut connection, an overloaded server, a short rate window); a refusal
 // of THIS request (its content, its key, its account, its model) comes back
 // identical, so it switches at once - or, when the request itself is what is
-// wrong (BadRequest) or the device is (LowMemory), fails without burning a switch.
+// wrong (BadRequest) or the device is (LowMemory, Unsent), fails without burning a
+// switch. Unsent had its one resend in the step wrapper already (resendUnsentOnce).
+// Paused is never a request's answer: it names a turn no host could take.
 FabricRule fabricRuleFor(StepErr k) {
   switch (k) {
     case StepErr::Transport:
@@ -80,7 +84,9 @@ FabricRule fabricRuleFor(StepErr k) {
     case StepErr::Auth:
     case StepErr::Billing:     return {false, true, true};
     case StepErr::BadRequest:
-    case StepErr::LowMemory:   return {false, false, false};
+    case StepErr::LowMemory:
+    case StepErr::Unsent:
+    case StepErr::Paused:      return {false, false, false};
     case StepErr::None:        break;
   }
   return {true, true, false};   // an untyped failure: the pre-typing behavior
@@ -133,10 +139,14 @@ bool isTimeoutError(const std::string& err) { return err.rfind("timeout:", 0) ==
 StepErr classifyStepError(const std::string& err, int* httpStatus) {
   const int st = httpStatusIn(err);
   if (httpStatus) *httpStatus = st;
-  if (err.rfind("low memory", 0) == 0 || err.find("out of memory") != std::string::npos)
-    return StepErr::LowMemory;
-  if (isTimeoutError(err)) return StepErr::Timeout;
-  if (err.rfind("network", 0) == 0) return StepErr::Transport;
+  // The device's own lines, by their leading token.
+  static const struct { const char* prefix; StepErr kind; } kDevice[] = {
+      {"unsent:", StepErr::Unsent},     {"paused:", StepErr::Paused}, {"low memory", StepErr::LowMemory},
+      {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport},
+  };
+  for (const auto& d : kDevice)
+    if (err.rfind(d.prefix, 0) == 0) return d.kind;
+  if (err.find("out of memory") != std::string::npos) return StepErr::LowMemory;
   if (err == "schema parse" || err.rfind("request field over", 0) == 0 ||
       err.rfind("request text is not valid UTF-8", 0) == 0)
     return StepErr::BadRequest;
@@ -161,6 +171,8 @@ std::string stepErrCause(StepErr k, const std::string& host, int httpStatus) {
     case StepErr::ServerError: return host + " had a server error" + st;
     case StepErr::Rejected:    return host + " refused the request" + st;
     case StepErr::Cut:         return host + " ran out of room for its answer";
+    case StepErr::Unsent:      return "the device could not finish sending its request (memory is tight)";
+    case StepErr::Paused:      return "paid requests to " + host + " are paused";
     case StepErr::None:        break;
   }
   return host + " hit trouble";

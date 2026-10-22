@@ -224,3 +224,17 @@ def test_repo_tree_is_lint_clean():
     assert hits, "the scan found no ids at all - the scanner is broken"
     assert not unallowed, "\n".join(f"{f.file}:{f.line} {f.model}: {f.reasons}" for f in unallowed)
     assert not stale, stale
+
+
+def test_url_fetch_scan_is_off_retired_models():
+    """The download scan (src/agent/adapters/url_fetch.cpp) sends no retired model and
+    needs no allowlist entry: on 22 Oct 2026 it still sent claude-haiku-4-5-20251001,
+    past that model's retirement floor, under an allowlist entry naming lane K2."""
+    rel = "src/agent/adapters/url_fetch.cpp"
+    allow = json.loads((lint.REPO / "tools/model_id_allowlist.json").read_text())
+    assert not [e for e in allow.get("allow", []) if e.get("file") == rel], "url_fetch.cpp is still allowlisted"
+    unallowed, _stale, hits = lint.lint()
+    assert [h for h in hits if h.file == rel], "the scan found no model id in url_fetch.cpp"
+    assert not [f for f in unallowed if f.file == rel]
+    retired = {r["id"] for r in allow.get("retired", [])}
+    assert not [h for h in hits if h.file == rel and any(h.model.startswith(r) for r in retired)]

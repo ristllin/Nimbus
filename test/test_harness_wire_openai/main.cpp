@@ -902,6 +902,38 @@ static void test_cum477_tagged_low_memory_reaches_the_single_shot_head() {
   TEST_ASSERT_EQUAL_STRING("network", err.c_str());
 }
 
+
+// CUM-619: a background sub that ended "incomplete" keeps the text it wrote, as a
+// partial answer with an honest marker (it used to lose everything and report only
+// "agent failed"); with no text it fails with the reason.
+static void test_cum619_incomplete_sub_keeps_its_partial_answer() {
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/responses/resp_9", 200,
+        "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+        "\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Findings so far: three sources agree.\"}]}]}"});
+    auto pd = d.contract();
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,
+                      (int)providers::oaiPoll(pd, "h", "k", "openai", "openai:resp_9", env));
+    TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
+    TEST_ASSERT_EQUAL_STRING("Findings so far: three sources agree.\n[the agent stopped before it finished "
+                             "(max_output_tokens): this is its partial answer]",
+                             env.reply);
+  }
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/responses/resp_9", 200,
+        "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"},\"output\":[]}"});
+    auto pd = d.contract();
+    agent::ResultEnvelope env{};
+    providers::oaiPoll(pd, "h", "k", "openai", "openai:resp_9", env);
+    TEST_ASSERT_EQUAL((int)agent::JobState::Error, (int)env.state);
+    TEST_ASSERT_EQUAL_STRING("the agent stopped before it finished (content_filter)", env.error);
+    TEST_ASSERT_EQUAL_STRING("", env.reply);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -924,6 +956,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_error_mapping);
   RUN_TEST(test_sub_dispatch_429_names_the_window);
   RUN_TEST(test_sub_poll_states);
+  RUN_TEST(test_cum619_incomplete_sub_keeps_its_partial_answer);
   RUN_TEST(test_sub_poll_captures_container_file_citation);
   RUN_TEST(test_over_cap_repeat_citations_count_once);
   RUN_TEST(test_sub_poll_no_annotations_no_artifacts);
