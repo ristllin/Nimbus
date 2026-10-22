@@ -32,16 +32,19 @@ MOVED = {
 
 def declared_in_psram(src: str, name: str) -> bool:
     """True iff `name` is declared as a reference bound to psramStatic storage."""
-    ref = re.compile(r"(?:\(\s*&\s*" + name + r"\s*\)\s*\[[^\]]*\]|&\s*" + name + r")\s*=\s*(?:::)?nimbus::psramStatic<")
+    ref = re.compile(
+        r"(?:\(\s*&\s*" + name + r"\s*\)\s*\[[^\]]*\]|&\s*" + name + r")\s*=\s*(?:::)?nimbus::psramStatic<"
+    )
     return bool(ref.search(src))
 
 
 def declared_inline(src: str, name: str) -> bool:
     """True iff `name` is (also) declared as an inline array or object in internal RAM."""
     decl = re.compile(
-        r"^\s*(?:static\s+)?(?:const\s+)?[A-Za-z_][\w:]*\s+"   # the type
-        r"(?:\w+\s*(?:\[[^\]]*\])?\s*,\s*)*"                 # earlier names in the same declaration
-        + name + r"\s*(?:\[[^\]]*\])?\s*[;,]"
+        r"^\s*(?:static\s+)?(?:const\s+)?[A-Za-z_][\w:]*\s+"  # the type
+        r"(?:\w+\s*(?:\[[^\]]*\])?\s*,\s*)*"  # earlier names in the same declaration
+        + name
+        + r"\s*(?:\[[^\]]*\])?\s*[;,]"
     )
     for line in src.splitlines():
         if decl.search(re.sub(r"=\s*\{[^}]*\}", "", line)):
@@ -71,7 +74,9 @@ def test_the_guard_sees_the_shapes_it_bans():
     assert not declared_inline("  strncpy(g_voice.fileId, x, sizeof(g_voice.fileId) - 1);", "g_voice")
     assert not declared_inline("  for (int i = 0; i < n; i++) snap[i] = s_pending[i];", "s_pending")
     assert not declared_inline("static Pending (&s_pending)[5] = ::nimbus::psramStatic<Pending[5]>();", "s_pending")
-    assert declared_in_psram("static char (&g_memEcho)[N + 1] =\n    ::nimbus::psramStatic<char[N + 1]>();", "g_memEcho")
+    assert declared_in_psram(
+        "static char (&g_memEcho)[N + 1] =\n    ::nimbus::psramStatic<char[N + 1]>();", "g_memEcho"
+    )
     assert declared_in_psram("static PendingVoice& g_voice = ::nimbus::psramStatic<PendingVoice>();", "g_voice")
     assert not declared_in_psram("static char g_memEcho[1201] = {};", "g_memEcho")
 
@@ -93,7 +98,7 @@ def test_built_image_holds_only_references():
             parts = line.split()
             if len(parts) < 4 or parts[2] not in "bBdD":
                 continue
-            name = " ".join(parts[3:])   # demangled names carry "(anonymous namespace)"
+            name = " ".join(parts[3:])  # demangled names carry "(anonymous namespace)"
             leaf = name.rsplit("::", 1)[-1]
             if leaf in names and name.startswith(("agent::orchestrator", "agent::telegram", "agent::connectors")):
                 seen[leaf] = max(seen.get(leaf, 0), int(parts[1], 16))
