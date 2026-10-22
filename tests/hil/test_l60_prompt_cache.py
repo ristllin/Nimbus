@@ -45,6 +45,7 @@ from webrig import LogFollower, chat_turn, ip_tok_or_skip, make_session, require
 pytestmark = [pytest.mark.net, pytest.mark.agent]
 
 _S = None
+RUN = time.strftime("%H%M%S", time.gmtime())  # makes this run's lunch a new row: the file outlives the run
 SPEND_LINE = re.compile(r"turn spend: ok \S+ \| anthropic/\S+ in=(\d+) out=(\d+) cR=(\d+) cW=(\d+) n=(\d+)")
 SPLIT = "[----- cached blocks end; per-turn block -----]\n"
 
@@ -56,12 +57,15 @@ def _chat(ip: str, text: str, timeout_s: int = 150):
     return reply, follow.text
 
 
-def _turn_usage(log: str) -> dict:
+def _turn_usage(log: str, one_request: bool = True) -> dict:
+    """The turn's Anthropic usage. The measured turn must be one request, so its
+    usage IS round 0; a warm-up turn may take more (it is only printed)."""
     hits = SPEND_LINE.findall(log)
     assert hits, "no 'turn spend: ok ... anthropic/' line in /api/log for the turn"
     i, o, r, w, n = (int(x) for x in hits[-1])
-    assert n == 1, f"the turn made {n} Anthropic requests - the round-0 check needs a one-request turn, re-run"
-    return {"in": i, "out": o, "cacheR": r, "cacheW": w, "total": i + r + w}
+    if one_request:
+        assert n == 1, f"the turn made {n} Anthropic requests - the round-0 check needs a one-request turn, re-run"
+    return {"in": i, "out": o, "cacheR": r, "cacheW": w, "total": i + r + w, "requests": n}
 
 
 def _per_turn_text(ip: str) -> str:
@@ -115,7 +119,7 @@ def board():
 def test_l60_second_turn_reads_the_static_prefix(board):
     ip, model = board
     _, log1 = _chat(ip, "In one short line and without tools: name a light lunch.")
-    first = _turn_usage(log1)
+    first = _turn_usage(log1, one_request=False)
     time.sleep(60)  # a minute apart: the minute clock changed, the static block did not
     _, log2 = _chat(ip, "Thanks. One more one-line idea, again without tools.")
     second = _turn_usage(log2)
@@ -140,7 +144,7 @@ def test_l60_replayed_turn_hits_the_prefix_cache(board):
     ip, model = board
     text = "thanks, same again"  # three words, the same on both turns
     _, log1 = _chat(ip, text)
-    first = _turn_usage(log1)
+    first = _turn_usage(log1, one_request=False)
     hist1 = _history_line(ip)
     time.sleep(30)  # the replay gap of the 19 Oct incident
     _, log2 = _chat(ip, text)
@@ -170,7 +174,7 @@ def test_l60_food_log_turn_appends_in_three_requests(board):
     reply, log = _chat(
         ip,
         "Log my lunch to l60-bench/food-log.csv (columns date,meal,kcal,protein_g): "
-        "lentil soup with bread, about 520 kcal and 24 g protein.",
+        f"lentil soup with bread (bench run {RUN}), about 520 kcal and 24 g protein.",
         timeout_s=200,
     )
     rounds = re.findall(r"headloop round=(\d+)", log)

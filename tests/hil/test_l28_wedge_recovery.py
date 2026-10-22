@@ -244,3 +244,12 @@ def test_select_targets_empty_skip_is_refused():
     # An empty --skip would protect nothing and reset both boards - refuse it.
     sel, err = usb_reset.select_targets(["AAAA", "BBBB"], skip="")
     assert sel == [] and err
+
+
+def test_bus_reset_falls_back_to_skipping_the_other_board_with_any():
+    from device import bus_reset_argvs
+
+    tries = bus_reset_argvs("u.py", "14:C1", "28:84")
+    assert tries == [["python3", "u.py", "--serial", "14:C1"], ["python3", "u.py", "--skip", "28:84", "--any"]]
+    assert bus_reset_argvs("u.py", None, "28:84") == [["python3", "u.py", "--skip", "28:84", "--any"]]
+    assert bus_reset_argvs("u.py", None, None) == [["python3", "u.py"]]  # one board: the sole match

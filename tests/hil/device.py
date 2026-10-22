@@ -347,6 +347,21 @@ class _BootResult:
         self.reset_at = reset_at
 
 
+def bus_reset_argvs(script: str, target_serial: "Optional[str]", skip_serial: "Optional[str]") -> List[List[str]]:
+    """The usb_reset.py invocations a bus reset tries, in order. A wedged S3 often
+    enumerates with NO readable serial (or under its app's own CDC product id), so
+    naming the target's MAC finds nothing; the fallback then skips the healthy
+    board's MAC with ``--any`` (the charter's recovery). The other board is never
+    the target either way."""
+    base = ["python3", script]
+    tries = []
+    if target_serial:
+        tries.append(base + ["--serial", target_serial])
+    if skip_serial:
+        tries.append(base + ["--skip", skip_serial, "--any"])
+    return tries or [base]
+
+
 class Device:
     """Serial link to one Nimbus device.
 
@@ -414,16 +429,13 @@ class Device:
         script = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "usb_reset.py")
         skip_serial = skip_serial or os.environ.get("NIMBUS_HIL_OTHER_SERIAL")
         target_serial = target_serial or os.environ.get("NIMBUS_HIL_TARGET_SERIAL")
-        argv = ["python3", script]
-        if target_serial:
-            argv += ["--serial", target_serial]
-        elif skip_serial:
-            argv += ["--skip", skip_serial]
-        try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=25)
-            return r.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
+        for argv in bus_reset_argvs(script, target_serial, skip_serial):
+            try:
+                if subprocess.run(argv, capture_output=True, text=True, timeout=25).returncode == 0:
+                    return True
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return False
 
     @staticmethod
     def _open_quiet(port: str, baud: int):
@@ -1001,6 +1013,17 @@ class Device:
                 # of who read the beacon), or the board is silent/bricked.
                 if self.ping():
                     return _BootResult(None, None, scan.saw_reset, True, reset_at)
+                # On a board whose port open itself resets the chip (unit A: boot
+                # reason usb 0x15), the reopen after a restart can start a second boot
+                # that drops the handle we just opened: the stream goes silent while
+                # the board is fine. Re-attach once before calling it silent.
+                try:
+                    self.reopen_after_reenumerate(drain_boot=False)
+                except DeviceError:
+                    pass
+                else:
+                    if self.ping():
+                        return _BootResult(None, None, scan.saw_reset, True, reset_at)
                 if time.time() >= hard_deadline:
                     raise ExpectTimeout("READY beacon (boot did not settle within the ceiling)", self._transcript)
                 raise ExpectTimeout("READY beacon", self._transcript)
