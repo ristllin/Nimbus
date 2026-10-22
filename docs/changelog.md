@@ -33,6 +33,7 @@ PDFs, connectors and the web page:
 - **Sign-in and key minting work from the web page again.** The MCP sign-in buttons and the Cloud access key mint were answered by the wrong handler; they now reach their own.
 - **The web page.** Switches under Tool use save the moment you flip them and are no longer reset by the page's refresh; the Primary provider saves on change; a card you have not saved keeps your edits when another card saves; the "?" next to each setting opens its own help; a slow voice list can no longer overwrite the voice you just picked; Mistral's console is called Mistral Studio everywhere.
 - **New on the web page.** A banner on Home when the settings storage is almost full, and a Health row that says how full it is and which saves failed; a turn that switched providers names each one under its reply; the chat says when older history is still being indexed and can load older messages; and a Telegram archive view under Memory to browse by chat and day, open an item and export a day as a ZIP.
+- **A file that cannot be sent says so.** When a file queued for Telegram fails to upload, the chat gets one line naming it and saying it is still under Files, instead of silence.
 - **Lighter page loads through the cloud.** The page and its script now load as two smaller responses, so the page fits the cloud link with room to grow.
 
 

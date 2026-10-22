@@ -1,8 +1,9 @@
 """L54 - PDF delivery, the web page batch, connector honesty and the archive view.
 
-Bench legs for program-2026-10-18 lane B (unit A: SD card, cloud-paired, test build;
-unit L for the settings-store fill). LAN legs need ``NIMBUS_TEST_IP`` and
-``NIMBUS_TEST_TOKEN``; the console legs need the board on its port.
+Bench legs for program-2026-10-18 lane B: one unit with an SD card, the test build,
+Orchestrator mode, cloud-paired. LAN legs need ``NIMBUS_TEST_IP`` and
+``NIMBUS_TEST_TOKEN``; the console legs (``hil``) need the board on its port
+(``--port`` or ``NIMBUS_PORT``).
 
 Routes and the page (no spend, ``net``):
   * the page is two responses: ``GET /`` carries a relative ``<script src="app.js">``

@@ -1813,6 +1813,10 @@ static void drainMedia() {
   bool ok = httpmp::post(TG_HOST, TG_PORT, path, "", fields, field, base, mime, m.path, resp, err,
                          opt);
   alogf("telegram: %s %s (%s)", method, ok ? "ok" : "FAIL", ok ? "" : err.c_str());
+  // A stored file that could not go out stays under Files: say so in the chat, so a
+  // "queued for Telegram delivery" never ends in silence (one short notice through
+  // the archived direct send, on this task, after the failed upload closed its socket).
+  if (!ok && m.sd) sendNow(m.chatId, (String("Couldn't send ") + base + ". It's saved under Files.").c_str());
 }
 
 // ---- pollTask ---------------------------------------------------------------

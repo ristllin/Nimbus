@@ -745,7 +745,9 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 - `files.share` is owner-controlled and read-only; guests cannot share.
 - `files.send` is a turn-output tool - refused from the LAN `/mcp` path. A file
   another person owns is invisible: the refusal deliberately matches "not found"
-  so its existence is not disclosed.
+  so its existence is not disclosed. The call answers "queued <project>/<name> for
+  Telegram delivery"; the upload runs on the next Telegram poll, and if it fails the chat
+  gets "Couldn't send <name>. It's saved under Files."
 - `image.generate` uses OpenAI **gpt-image-1**, which returns the image inline
   (the dall-e models hand back a URL the device cannot re-fetch). The image is
   decoded in PSRAM during the download and written to the SD card under a brief
