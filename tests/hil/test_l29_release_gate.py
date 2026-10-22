@@ -73,13 +73,20 @@ def panel_power_verdict(rddpm: int, rddst: int, madctl_expect: int) -> str:
     return ""
 
 
-def _require_wifi(device) -> None:
+def _require_wifi(net) -> None:
     """Skip loudly if the board is not on Wi-Fi (the tunnel/loopback legs need the
-    local web server reachable at its STA IP)."""
-    m = device.status()
-    line = m.string
-    if "wifi=1" not in line and "ip=" not in line:
-        pytest.skip("device is not on Wi-Fi; the tunnel-serving legs need the STA up")
+    local web server reachable at its STA IP). The first leg of a session runs while
+    the boot the session fixture's reset started is still going (one 3 s STATUS timed
+    out into it on unit L, 3 of 3 runs), so this waits through the shared
+    Net.wait_station: STATUS is polled until the console answers (up to 60 s) and the
+    station is up. (The old check never skipped: every STATUS line carries "ip=".) A
+    console that never answers is not a station that is down: that fails, by name."""
+    seen = net.wait_station()
+    if seen.ip:
+        return
+    if seen.mode is None:
+        pytest.fail("the console did not answer STATUS within 60 s of the session reset (USB-CDC wedge?)")
+    pytest.skip("device is not on Wi-Fi; the tunnel-serving legs need the STA up")
 
 
 def _board_family(device) -> str:
@@ -101,8 +108,8 @@ def _board_family(device) -> str:
 # ============================================================================
 @pytest.mark.net
 class TestTunnelLoopback:
-    def test_cloudloop_serves_the_local_page(self, device):
-        _require_wifi(device)
+    def test_cloudloop_serves_the_local_page(self, device, net):
+        _require_wifi(net)
         # CLOUDLOOP <path> -> <status>\n<body preview>
         m = device.cmd_re(
             "CLOUDLOOP /api/state",
@@ -119,8 +126,8 @@ class TestTunnelLoopback:
         body = device.expect("{", timeout=3.0)
         assert '"' in body, "loopback returned a 200 with no page body"
 
-    def test_cloudloop_serves_the_ui_root(self, device):
-        _require_wifi(device)
+    def test_cloudloop_serves_the_ui_root(self, device, net):
+        _require_wifi(net)
         m = device.cmd_re("CLOUDLOOP /", r"CLOUDLOOP\s+/\s+->\s+(-?\d+)", timeout=20.0)
         assert int(m.group(1)) == 200, "the device UI root did not serve over the loopback path"
 
