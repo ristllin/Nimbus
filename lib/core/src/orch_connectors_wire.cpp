@@ -2,6 +2,8 @@
 
 #include <cstring>   // std::strcmp (provider match, connector tools[] scan)
 
+#include "nimbus/util/sha256.h"   // mistralKeyTag: a key fingerprint, never the key
+
 namespace nimbus {
 namespace orch {
 
@@ -54,24 +56,24 @@ static const KnownConnector kKnown[] = {
      "Find, create, and update issues and projects.", "linear", ""},
     // Mistral hosted built-ins - no secret on device (authenticated in Studio).
     {"web_search", "Web Search (Mistral built-in)", "mistral", "builtin", "",
-     "None - enable in Mistral Studio",
+     "None - runs with your Mistral key",
      "Hosted web search with citations, on your own turns.", "mistral-builtins", ""},
+    // The Code sandbox switch (Assistant > Tools) is its only control
+    // (applyCodeSandbox): the web page shows no card for it. The entry stays for
+    // the caps line and the docs anchor.
     {"code_interpreter", "Code Interpreter (hosted Python)", "mistral,openai", "builtin", "",
-     "None - Mistral: enable in Studio; OpenAI: no setup",
-     "Hosted sandboxed Python; can produce files. To deliver one, start a "
-     "sub-agent with a project: add a spawn item (op spawn, a task, a project "
-     "name) to the session_ops list of your orch_turn reply - session_ops is a "
-     "reply field, never a tool to call. The file it writes is captured to the "
-     "file store, then you deliver it to the owner.",
+     "None - turn on Code sandbox under Tools",
+     "Hosted Python that can make files such as charts and PDFs. Turn it on with "
+     "Code sandbox under Tools.",
      "mistral-builtins",
      "Mistral: images/text output only - its sandbox ERRORS on PDF/CSV files. "
-     "OpenAI: full file output INCLUDING PDF. For a PDF, spawn the sub-agent on "
-     "openai with a project."},
+     "OpenAI: full file output INCLUDING PDF. For a PDF use the route the "
+     "TO DELIVER A PDF line names."},
     {"image_generation", "Image Generation (Mistral built-in)", "mistral", "builtin", "",
-     "None - enable in Mistral Studio",
+     "None - runs with your Mistral key",
      "Hosted image generation.", "mistral-builtins", ""},
     {"document_library", "Document Library (Mistral built-in)", "mistral", "builtin", "",
-     "None - enable in Mistral Studio",
+     "None - uses the Libraries you make in Mistral Studio",
      "Hosted RAG over your Studio document library.", "mistral-builtins", ""},
 };
 
@@ -281,11 +283,22 @@ bool forwardsToProviderHead(const ConnectorInfo& c, const char* head) {
   // the device (CUM-61: it only 424s the head). Keyed on url PRESENCE, not kind, so
   // the connector-with-empty-connector_id path cannot smuggle a LAN url past it.
   if (!c.url.empty() && !urlRoutableToProviderHead(c.url)) return false;
+  // A remote MCP server with NO url is nothing to dial: on the OpenAI wire it went
+  // out as server_url "" on every request (the old Code Interpreter card saved as
+  // openai did exactly this). Mistral reads a non-built-in entry as a Studio
+  // connector by name, so only the URL-addressed heads refuse it.
+  if (c.kind == "mcp" && c.url.empty() && std::strcmp(head, "mistral") != 0) return false;
   return true;
 }
 
 std::string connectorConfigError(const ConnectorInfo& c) {
-  if (c.url.empty()) return "";                          // no dialed URL to validate
+  if (c.url.empty()) {
+    // An MCP server needs its address (Mistral reads a non-built-in entry as a
+    // Studio connector by name, so it is exempt).
+    if (c.kind == "mcp" && c.prov != "mistral")
+      return "MCP server \"" + c.name + "\" has no URL. Add its https address, or remove it.";
+    return "";
+  }
   if (urlRoutableToProviderHead(c.url)) return "";       // reachable from a cloud head: fine
   // A device-dialed server is dialed by the device itself, so a private URL is
   // expected and safe there - not a config error. The trap is a NON-device-dialed
@@ -298,6 +311,78 @@ std::string connectorConfigError(const ConnectorInfo& c) {
          "provider's cloud can't reach. Use a public https address, or have the "
          "device connect to it directly: add \"dev\":1 to its entry under Advanced "
          "- edit raw JSON, save, then approve it on its card.";
+}
+
+// ---- Code sandbox and file delivery (one rule) --------------------------------
+static bool isCodeInterpreter(const ConnectorInfo& c) {
+  return (c.type.empty() ? c.name : c.type) == "code_interpreter" || c.name == "code_interpreter";
+}
+
+void applyCodeSandbox(std::vector<ConnectorInfo>& cs, bool on) {
+  std::vector<ConnectorInfo> kept;
+  kept.reserve(cs.size() + 2);
+  for (ConnectorInfo& c : cs)
+    if (!isCodeInterpreter(c)) kept.push_back(std::move(c));
+  if (on) {
+    // provMatches() is an EXACT provider match, so one entry per provider that
+    // hosts a code_interpreter, never a comma list that would match neither.
+    for (const char* prov : {"openai", "mistral"}) {
+      ConnectorInfo sb;
+      sb.name = sb.type = "code_interpreter";
+      sb.prov = prov;
+      sb.kind = "builtin";
+      sb.enabled = true;
+      sb.auth = -1;   // built-ins authenticate provider-side
+      kept.push_back(std::move(sb));
+    }
+  }
+  cs.swap(kept);
+}
+
+bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* head) {
+  // Mirrors the attach builders exactly: an enabled built-in forwarded to `head`.
+  for (const ConnectorInfo& c : cs)
+    if (c.kind == "builtin" && isCodeInterpreter(c) && forwardsToProviderHead(c, head)) return true;
+  return false;
+}
+
+PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
+  PdfRoute r;
+  const bool capture = ps.fileCapture && ps.fileStoreReady;
+  if (capture && ps.openaiKeyed && codeInterpreterOnWire(cs, "openai")) {
+    r.path = PdfPath::OpenAiSandbox;
+    r.slug = "openai";
+  } else if (capture && ps.anthropicKeyed) {
+    r.path = PdfPath::AnthropicSandbox;
+    r.slug = "anthropic";
+  } else if (ps.pdfWriter && ps.fileStoreReady) {
+    r.path = PdfPath::DeviceWriter;
+    r.slug = "device";
+  } else if (!ps.fileStoreReady) {
+    r.blocker = "this device has no SD card, so it cannot keep a generated file (the owner "
+                "inserts one)";
+    r.slug = "nostore";
+  } else if (!ps.fileCapture) {
+    r.blocker = "this instance cannot collect a file a sub-agent builds";
+    r.slug = "nocapture";
+  } else if (ps.openaiKeyed) {
+    r.blocker = "openai's Code Interpreter is off (the owner turns on Code sandbox on the "
+                "device web page, Assistant > Tools > Tool use)";
+    r.slug = "sandboxoff";
+  } else {
+    r.blocker = "it needs the owner's own OpenAI or Anthropic API key (a Cumulo or Mistral "
+                "key cannot bring a PDF back)";
+    r.slug = "nokey";
+  }
+  return r;
+}
+
+const char* pdfRouteProvider(const PdfRoute& r) {
+  switch (r.path) {
+    case PdfPath::OpenAiSandbox:    return "openai";
+    case PdfPath::AnthropicSandbox: return "anthropic";
+    default:                        return "";
+  }
 }
 
 // ---- attach builders ---------------------------------------------------------
@@ -552,6 +637,71 @@ bool noteMistralWorkspaceProbe(MistralWorkspace& ws, const char* body) {
   return true;
 }
 
+// ---- the last good workspace answer on flash ------------------------------------
+namespace {
+constexpr char kWsDumpHeader[] = "nimbus-mistral-ws 1";
+void dumpIdSet(std::string& out, const char* tag, const std::string& set) {
+  size_t at = 1;   // a set is "\nid\nid\n"
+  while (at < set.size()) {
+    const size_t nl = set.find('\n', at);
+    if (nl == std::string::npos) break;
+    if (nl > at) out += std::string(tag) + " " + set.substr(at, nl - at) + "\n";
+    at = nl + 1;
+  }
+}
+}  // namespace
+
+std::string mistralKeyTag(const std::string& key) {
+  if (key.empty()) return "";
+  nimbus::crypto::Sha256 h;
+  h.update(key);
+  uint8_t d[nimbus::crypto::Sha256::kDigestLen];
+  h.final(d);
+  static const char* hex = "0123456789abcdef";
+  std::string tag;
+  for (int i = 0; i < 6; i++) {   // 48 bits: tells keys apart, says nothing about them
+    tag += hex[d[i] >> 4];
+    tag += hex[d[i] & 15];
+  }
+  return tag;
+}
+
+std::string dumpMistralWorkspace(const MistralWorkspace& ws, const std::string& keyTag) {
+  std::string out = std::string(kWsDumpHeader) + "\nkey " + keyTag + "\n";
+  dumpIdSet(out, "listed", ws.listed);
+  dumpIdSet(out, "signed", ws.signedIn);
+  return out;
+}
+
+bool loadMistralWorkspace(const std::string& text, const std::string& keyTag,
+                          MistralWorkspace& ws) {
+  if (keyTag.empty()) return false;
+  std::vector<std::string> listed, signedIn;
+  bool header = false, keyOk = false;
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t nl = text.find('\n', at);
+    if (nl == std::string::npos) nl = text.size();
+    const std::string line = text.substr(at, nl - at);
+    at = nl + 1;
+    if (!header) {
+      if (line != kWsDumpHeader) return false;
+      header = true;
+    } else if (line.rfind("key ", 0) == 0) {
+      keyOk = line.substr(4) == keyTag;
+    } else if (line.rfind("listed ", 0) == 0) {
+      listed.push_back(line.substr(7));
+    } else if (line.rfind("signed ", 0) == 0) {
+      signedIn.push_back(line.substr(7));
+    }
+  }
+  if (!header || !keyOk) return false;
+  ws.listed = toIdSet(listed);
+  ws.signedIn = toIdSet(signedIn);
+  ws.probed = true;
+  return true;
+}
+
 bool isMistralStudioConnector(const ConnectorInfo& c) {
   return c.prov == "mistral" && c.kind == "connector";
 }
@@ -595,6 +745,10 @@ std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const
 }
 
 // ---- connector provenance (CUM-536) -------------------------------------------
+
+bool isFileSkill(const std::string& skill) {
+  return skill == "code_interpreter" || skill == "deliver-pdf";
+}
 
 bool isProviderBuiltinTool(const std::string& name) {
   return name == "web_search" || name == "web_search_premium" || name == "code_interpreter" ||
@@ -1097,6 +1251,12 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bo
       if (c.name == "document_library") continue;
       d["tools"].add<JsonObject>()["type"] = c.name;
     } else {
+      // A Studio connector the workspace answer does NOT list stays off the wire:
+      // Mistral silently ignores an id its workspace does not offer, so the sub
+      // would run without it and guess. The catalog says the same (connectorRowNote).
+      // An UNCHECKED one still rides (the check may not have landed yet) and the
+      // catalog calls it unconfirmed.
+      if (c.workspace == ConnectorInfo::Workspace::NotListed) continue;
       JsonObject t = d["tools"].add<JsonObject>();
       t["type"] = "connector";
       // The Mistral workspace id (shared mistralConnectorId, also used by the
@@ -1110,6 +1270,12 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bo
       }
     }
   }
+}
+
+int mistralWireToolCount(const std::vector<ConnectorInfo>& cs) {
+  JsonDocument d;
+  attachMistralWire(d, cs);
+  return (int)d["tools"].size();
 }
 
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
@@ -1143,16 +1309,28 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
     // Fail-closed, but honest about WHY: an unchecked workspace is not the same
     // next step as a connector the workspace does not offer, and a check that is
     // running right now (a save or restart queued it) settles both.
-    if (probePending && (c.workspace == W::Unprobed || c.workspace == W::NotListed))
-      return " (not usable yet: the Mistral workspace check is running now, so try "
-             "again in a minute rather than sending the owner to Mistral)";
+    // The note says what the wire does (attachMistralWire): an unchecked Studio
+    // connector still rides mistral sub-agents, a not-listed one does not.
     if (c.workspace == W::Unprobed)
-      return " (not usable yet: the Mistral workspace has not been checked; it is "
-             "checked after a restart, when a connector is saved, and when the "
-             "Mistral key is verified or saved)";
-    // A Mistral Studio connector / hosted built-in has NO device credential: it
-    // is authorized in the owner's Mistral account and referenced by name here,
-    // so "add a credential" is the wrong instruction - point at Mistral instead.
+      return probePending
+                 ? " (unconfirmed: the Mistral workspace check is running now. It still "
+                   "rides mistral sub-agents, so you may try it through one; if the result "
+                   "says the connector was not called, say it is not connected yet)"
+                 : " (unconfirmed: the Mistral workspace has not been checked yet. It still "
+                   "rides mistral sub-agents, so you may try it through one; if the result "
+                   "says the connector was not called, tell the owner to connect it in "
+                   "Mistral Studio)";
+    if (c.workspace == W::NotListed)
+      return probePending
+                 ? " (not attached: the last Mistral workspace check did not list it, and a "
+                   "new check is running now, so try again in a minute rather than sending "
+                   "the owner to Mistral)"
+                 : " (not attached: the owner's Mistral workspace does not offer it, so it "
+                   "is NOT sent to mistral sub-agents; tell the owner to connect it in "
+                   "Mistral Studio, then press Check now on its card)";
+    // A Mistral hosted built-in has NO device credential: it is authorized in the
+    // owner's Mistral account and referenced by name here, so "add a credential" is
+    // the wrong instruction - point at Mistral instead.
     if (!std::strcmp(prov, "mistral") && c.kind != "mcp")
       return " (not usable until the owner enables it in their Mistral Studio account)";
     return " (NO credential - not usable until the owner adds one)";
@@ -1243,8 +1421,13 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   int kn = 0;
   const KnownConnector* kk = knownConnectors(kn);
   std::string capsBlock;
+  bool ciCaps = false;   // the code_interpreter line once, not once per provider
   for (const ConnectorInfo& c : cs) {
     if (!c.enabled) continue;
+    if (isCodeInterpreter(c)) {
+      if (ciCaps) continue;
+      ciCaps = true;
+    }
     const char* caps = nullptr;
     for (int i = 0; i < kn; i++)
       if (c.type == kk[i].id || c.name == kk[i].id) { caps = kk[i].caps; break; }
@@ -1287,6 +1470,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     for (int i = 0; i < kn; i++) {
       const std::string id = kk[i].id;
       if (id == "document_library") continue;   // needs library-id plumbing
+      if (id == "code_interpreter") continue;   // the Code sandbox switch, not a card
       if (!keyedFor(kk[i].providers)) continue; // no keyed provider can run it
       bool have = false, en = false;
       for (const ConnectorInfo& c : cs)
@@ -1352,7 +1536,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   // line was false in the API-write sense. The true limit is clone/build/run.
   out += "For CODING tasks: an anthropic sub has a real sandbox (writes AND runs "
          "code, bash + files); openai/mistral subs run Python via code_interpreter "
-         "when it is enabled. The github connector works the GitHub API - issues/"
+         "when the CODE SANDBOX line says so. The github connector works the GitHub API - issues/"
          "PRs/code search, and with a repo-scoped PAT it can CREATE repositories "
          "and push file contents - but it cannot clone, build, or run a repo.\n";
 
@@ -1381,73 +1565,58 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
            "to ONE focused lookup and split a big ask across several waves.\n";
   }
 
-  // PDF/binary delivery. The device cannot render a PDF, but a sub CAN produce one
-  // in its provider sandbox and the firmware captures the generated file - so
-  // "I can't make PDFs" is FALSE and was said on hardware twice. State the recipe
-  // where the model plans decomposition, not only as a per-connector footnote.
-  // ⚠ The recipe is only true when an OpenAI-reachable code_interpreter is
-  // ENABLED. Live (Board 1, 2026-08-09) the first version of this block promised
-  // the openai PDF path on a board whose only code_interpreter was registered
-  // under mistral: the model dutifully spawned on openai, the sub had no sandbox,
-  // it returned prose ("I can produce a Markdown layout so you can convert it")
-  // and a retry sub came back "(completed, no text output)". Promising a
-  // capability the board is not configured for is the same class of lie this
-  // whole block exists to remove - so gate on the connector, not just the key.
-  bool openaiCodeInterp = false;
-  for (const ConnectorInfo& c : cs) {
-    if (!c.enabled) continue;
-    if ((c.type.empty() ? c.name : c.type) != "code_interpreter") continue;
-    // kind==builtin mirrors attachOpenAIWire exactly (prism): a custom MCP or
-    // credential-less connector merely NAMED code_interpreter never attaches a
-    // sandbox, so it must not light the PDF recipe either.
-    if (c.kind != "builtin") continue;
-    if (provMatches(c, "openai")) { openaiCodeInterp = true; break; }
+  // PDF/binary delivery and the code sandbox, from ONE rule (pdfRoute, critique B1).
+  // "I can't make PDFs" was said on hardware while a route existed, and the opposite
+  // lie was told too: Board 1 (2026-08-09) promised the openai path on a board whose
+  // only code_interpreter was registered under mistral, and Lumi (Oct 2026) printed
+  // "not possible", "CODE SANDBOX: available" and "OpenAI: full file output" in one
+  // prompt. Every line below reads the same route, so they cannot disagree. The
+  // PROCEDURE lives in the deliver-pdf skill (owner-editable, no OTA to fix a
+  // recipe); the catalog carries only the config-gated DISCLOSURE.
+  const PdfRoute pdf = pdfRoute(cs, ps);
+  switch (pdf.path) {
+    case PdfPath::OpenAiSandbox:
+      out += "TO DELIVER A PDF (or other generated document): POSSIBLE on this device "
+             "through an openai sub's code_interpreter. Do NOT say you cannot produce a "
+             "PDF and do not downgrade to markdown - read the deliver-pdf skill (skill.get) "
+             "and follow it.\n";
+      break;
+    case PdfPath::AnthropicSandbox:
+      out += "TO DELIVER A PDF (or other generated document): POSSIBLE on this device "
+             "through an anthropic sub's sandbox (the sub saves the file under "
+             "/mnt/session/outputs/ and the device collects it). Do NOT say you cannot "
+             "produce a PDF and do not downgrade to markdown - read the deliver-pdf skill "
+             "(skill.get) and follow it.\n";
+      break;
+    case PdfPath::DeviceWriter:
+      out += "TO DELIVER A PDF (or other generated document): POSSIBLE on this device "
+             "with its own PDF writer (files.pdf: headings, text and simple tables; no "
+             "charts or images). Do NOT downgrade to markdown - read the deliver-pdf "
+             "skill (skill.get) and follow it.\n";
+      break;
+    case PdfPath::None:
+      out += std::string("TO DELIVER A PDF: not possible right now - ") + pdf.blocker +
+             ". Offer markdown or text and tell the owner exactly that. Do not spawn a "
+             "sub to 'make a PDF': it cannot bring the file back.\n";
+      break;
   }
-  if (ps.openaiKeyed && openaiCodeInterp) {
-    // W15 (owner): the PROCEDURE lives in the deliver-pdf SKILL (owner-editable,
-    // no OTA to fix a recipe); the catalog carries only this config-gated
-    // DISCLOSURE. The honest negative stays ambient - the field failures were
-    // the model claiming inability, and a skill can't correct a belief that
-    // never goes looking.
-    out += "TO DELIVER A PDF (or other generated document): POSSIBLE on this "
-           "device. Do NOT say you cannot produce a PDF and do not downgrade to "
-           "markdown - read the deliver-pdf skill (skill.get) and follow it.\n";
-  } else if (ps.openaiKeyed) {
-    out += "TO DELIVER A PDF: not possible right now - openai is the PDF path but "
-           "its Code Interpreter is not enabled on this device, so no sub can "
-           "render a file. Offer markdown or text, and tell the owner PDF needs "
-           "Code Interpreter enabled for OpenAI on the device's web page. Do not "
-           "spawn a sub to 'make a PDF' - it has no sandbox and will return "
-           "prose.\n";
+  const bool oaiSbx = ps.openaiKeyed && codeInterpreterOnWire(cs, "openai");
+  const bool misSbx = ps.mistralKeyed && codeInterpreterOnWire(cs, "mistral");
+  if (oaiSbx || misSbx) {
+    const char* which = "mistral";
+    if (oaiSbx && misSbx) which = "openai and mistral";
+    else if (oaiSbx) which = "openai";
+    out += std::string("CODE SANDBOX: available on ") + which +
+           " sub-agents (hosted code_interpreter): you can run code to build files";
+    out += pdf.path == PdfPath::OpenAiSandbox || pdf.path == PdfPath::AnthropicSandbox
+               ? "; finished files land under Files on the device.\n"
+               : ", but this device cannot collect them yet (see the PDF line).\n";
   } else {
-    // Precise wording (prism): an anthropic sub CAN build a file in its sandbox
-    // - but a sub returns text only and file CAPTURE exists for mistral/openai
-    // (provider_file_fetch), so nothing can DELIVER it. Saying "can't generate"
-    // 40 lines below "anthropic subs have file read/write" invites the model to
-    // argue with its own prompt.
-    out += "TO DELIVER A PDF: not possible right now - no keyed provider can "
-           "get a generated file BACK to this device (openai's sandbox is the "
-           "capture path and it has no key; an anthropic sub can build files "
-           "in its sandbox but returns text only). Offer markdown or text and "
-           "say plainly that PDF delivery needs an OpenAI key.\n";
-  }
-
-  // Code sandbox availability (CUM-49): tell the model whether it can run code to
-  // build files, and the owner-facing way to turn it on when it is off.
-  {
-    bool sandbox = ps.openaiKeyed && openaiCodeInterp;   // must be KEYED to actually run
-    for (const ConnectorInfo& c : cs) {
-      if (!c.enabled || c.kind != "builtin") continue;
-      if ((c.type.empty() ? c.name : c.type) != "code_interpreter") continue;
-      if (provMatches(c, "mistral") && ps.mistralKeyed) sandbox = true;
-    }
-    if (sandbox)
-      out += "CODE SANDBOX: available - you can run code to build files; finished "
-             "files land under Files on the device (via the provider Files API).\n";
-    else
-      out += "CODE SANDBOX: off. To enable it, the owner turns on Code sandbox on the "
-             "device web page (Assistant > Tools > Tool use); it needs an OpenAI "
-             "key (or Mistral where supported).\n";
+    out += "CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code "
+           "sandbox on the device web page (Assistant > Tools > Tool use); it runs on an "
+           "OpenAI or Mistral key.";
+    if (ps.anthropicKeyed) out += " An anthropic sub always has its own sandbox.";
+    out += "\n";
   }
 
   bool anyEnabled = false;
@@ -1470,6 +1639,15 @@ std::string knownCatalogJson() {
     o["providers"] = k[i].providers;
     o["kind"] = k[i].kind;
     o["cid"] = k[i].connectorId;
+    // The id the card prefills when the owner picks Mistral: Mistral's own
+    // workspace id (gcal -> google_calendar), never the OpenAI connector id above.
+    if (std::strstr(k[i].providers, "mistral") && std::strcmp(k[i].kind, "builtin") != 0) {
+      ConnectorInfo ci;
+      ci.name = ci.type = k[i].id;
+      ci.prov = "mistral";
+      ci.kind = "connector";
+      o["mcid"] = mistralConnectorId(ci);
+    }
     o["cred"] = k[i].credentialLabel;
     o["desc"] = k[i].oneLine;
     o["docs"] = k[i].docsSlug;

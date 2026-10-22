@@ -131,6 +131,14 @@ class JobEngine {
     // Device wires this to the connectors registry; nullable => no routing.
     std::function<std::string(const std::string& skill)> connectorProvider;
 
+    // Where a FILE task (skill "code_interpreter" or "deliver-pdf", no explicit
+    // provider) runs: the provider of the device's PDF route ("openai" for its
+    // code_interpreter, "anthropic" for a sandbox whose outputs the device
+    // collects, "" when no sandbox route exists). Mistral's sandbox errors on PDF,
+    // so a file task never lands there by default (critique A7). Nullable: then
+    // openai when keyed, else the usual routing.
+    std::function<std::string()> fileSpawnProvider;
+
     // Dynamic-skill capsule resolver (roadmap P2: "the skill field becomes a
     // real injection, not just a provider hint"). Given a Directive's skill id,
     // return the capsule body to PREPEND to the sub-agent instruction - or ""

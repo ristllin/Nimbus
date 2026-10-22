@@ -115,7 +115,7 @@ static void testProbeFlipsAndKeeps(ndtest::Ctx& c) {
 
   // Fail-closed before any answer, and the catalog says why.
   c.eqi(authOf(rig, "gcal"), 2, "unprobed: gcal is NOT usable (fail-closed)");
-  c.ok(has(rig.connectorsCatalog(), "gcal (not usable yet: the Mistral workspace has not been checked"),
+  c.ok(has(rig.connectorsCatalog(), "gcal (unconfirmed: the Mistral workspace has not been checked"),
        "unprobed: the catalog says the workspace was not checked (not 'enable it in Mistral')");
   c.ok(!rig.workspaceProbed(), "no workspace answer yet");
 
@@ -140,8 +140,8 @@ static void testProbeFlipsAndKeeps(ndtest::Ctx& c) {
   c.ok(has(cat, "gcal (usable: always try it first."),
        "the catalog carries the not-signed-in hint for gcal");
   c.ok(!has(cat, "gcal (not usable"), "the hint never gates: gcal is not called unusable");
-  c.ok(has(cat, "ghost (not usable until the owner enables it in their Mistral Studio account)"),
-       "the unlisted connector points the owner at Mistral");
+  c.ok(has(cat, "ghost (not attached: the owner's Mistral workspace does not offer it"),
+       "the unlisted connector points the owner at Mistral and is not sent");
 
   c.ok(!rig.refreshMistralWorkspace(), "a 401 is no signal");
   c.eqi(rig.workspaceProbe().status, 401, "the probe outcome records the 401");
@@ -275,7 +275,11 @@ static void checkSurfacesAgree(ndtest::Ctx& c, WebApi& api, const std::string& c
   for (const char* n : {"gcal", "notion", "slack", "ghost"}) {
     const int a = badgeAuthOf(conns, n);
     const std::string av = availabilityOf(tools, n);
-    const bool catalogUsable = !has(cat, std::string(n) + " (not usable");
+    // The row names every not-usable state: no credential, not attached (the
+    // workspace does not offer it) or unconfirmed (not checked yet).
+    const bool catalogUsable = !has(cat, std::string(n) + " (not usable") &&
+                               !has(cat, std::string(n) + " (not attached") &&
+                               !has(cat, std::string(n) + " (unconfirmed");
     const bool usable = a == 1;
     // Studio connectors ride sub-agents on a hosted instance, so usable reads
     // "subsessions-only" even with mistral as the head.

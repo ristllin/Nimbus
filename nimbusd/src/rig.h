@@ -719,8 +719,13 @@ class NimbusdRig {
   // The parsed registry with auth + the workspace hint stamped: the ONE view the
   // model catalog, GET /api/connectors and /api/tools all read (device parity:
   // connectors.cpp portableList).
+  // A Virtual Nimbus has no provider-file capture, so the hosted code_interpreter
+  // stays off its wires (a file it built could never come back) and the web page
+  // hides the Code sandbox switch; any stored Code Interpreter card is dropped the
+  // same way the device drops it (applyCodeSandbox, wf_plan 3).
   std::vector<nimbus::orch::ConnectorInfo> connectorsView() const {
     auto cs = conns_.parsed();
+    nimbus::orch::applyCodeSandbox(cs, false);
     std::lock_guard<std::mutex> lk(wsMu_);
     nimbus::orch::applyConnectorAuth(cs, ws_);
     return cs;
@@ -734,6 +739,12 @@ class NimbusdRig {
     ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
     ps.currentHost = hostBadge();
     ps.mistralHeadCarriesStudio = false;   // Studio connectors ride subs only (headDeps)
+    // The durable volume keeps files (the SD role, web_api.h mem/stats), but no
+    // capture path brings a sub-agent's file back and files.pdf is not registered:
+    // the PDF line says so instead of promising a file (pdfRoute).
+    ps.fileStoreReady = true;
+    ps.fileCapture = false;
+    ps.pdfWriter = false;
     return ps;
   }
   // The "[PROVIDERS & CONNECTORS]" block exactly as the next turn's context gets it
@@ -1891,17 +1902,19 @@ class NimbusdRig {
     // Connector attach seams (CUM-424): BYOK heads advertise the instance's
     // configured connectors exactly as a device with direct keys does
     // (builtinsOnly=false; the portable guard already keeps disabled, wrong-prov
-    // and private-URL entries off the wire). The cumulo router head overrides
+    // and private-URL entries off the wire). They read connectorsView(): no
+    // code_interpreter (no capture here) and no Studio connector the workspace
+    // answer does not list, the same view the catalog describes. The cumulo router head overrides
     // these with builtinsOnly=true (routerHeadDeps): router lanes carry no private
     // connectors, the same boundary the device draws on shared keys.
     pd.attachOpenAI = [this](JsonDocument& doc) {
-      nimbus::orch::attachOpenAIWire(doc, conns_.parsed(), bearerFn(), false);
+      nimbus::orch::attachOpenAIWire(doc, connectorsView(), bearerFn(), false);
     };
     pd.attachMistral = [this](JsonDocument& doc) {
-      nimbus::orch::attachMistralWire(doc, conns_.parsed(), false);
+      nimbus::orch::attachMistralWire(doc, connectorsView(), false);
     };
     pd.attachAnthropic = [this](JsonDocument& doc) {
-      nimbus::orch::attachAnthropicWire(doc, conns_.parsed(), bearerFn(), false);
+      nimbus::orch::attachAnthropicWire(doc, connectorsView(), bearerFn(), false);
     };
     return pd;
   }
@@ -1917,7 +1930,7 @@ class NimbusdRig {
   agent::providers::ProviderDeps headProviderDeps() {
     auto pd = providerDeps();
     pd.attachMistral = [this](JsonDocument& doc) {
-      nimbus::orch::attachMistralWire(doc, conns_.parsed(), /*builtinsOnly=*/true);
+      nimbus::orch::attachMistralWire(doc, connectorsView(), /*builtinsOnly=*/true);
     };
     return pd;
   }
@@ -1939,13 +1952,13 @@ class NimbusdRig {
     pd.key = [this](const char*) { return cumuloKey(); };
     pd.orchModel = [model](const char*) { return model; };
     pd.attachOpenAI = [this](JsonDocument& doc) {
-      nimbus::orch::attachOpenAIWire(doc, conns_.parsed(), nullptr, /*builtinsOnly=*/true);
+      nimbus::orch::attachOpenAIWire(doc, connectorsView(), nullptr, /*builtinsOnly=*/true);
     };
     pd.attachMistral = [this](JsonDocument& doc) {
-      nimbus::orch::attachMistralWire(doc, conns_.parsed(), /*builtinsOnly=*/true);
+      nimbus::orch::attachMistralWire(doc, connectorsView(), /*builtinsOnly=*/true);
     };
     pd.attachAnthropic = [this](JsonDocument& doc) {
-      nimbus::orch::attachAnthropicWire(doc, conns_.parsed(), nullptr, /*builtinsOnly=*/true);
+      nimbus::orch::attachAnthropicWire(doc, connectorsView(), nullptr, /*builtinsOnly=*/true);
     };
     return pd;
   }
@@ -2469,6 +2482,11 @@ class NimbusdRig {
       return m == subModelFor(p) || catalogHas(verify_.get(p).models, m, nimbus::orch::RoleSubAgent);
     };
     jd.connectorProvider = [this](const std::string& skill) { return connectorProviderFor(skill); };
+    // A file task follows the same PDF rule as the device: no capture here, so no
+    // sandbox route, and it never lands on OpenAI only because a key is set.
+    jd.fileSpawnProvider = [this] {
+      return std::string(nimbus::orch::pdfRouteProvider(nimbus::orch::pdfRoute(connectorsView(), providerState())));
+    };
     jd.nowString = [] { return localNowString(); };
     jd.chatContext = [this](const std::string& chat) { return spawnContext(chat); };
     // The report turn for a chat the owner removed or revoked meanwhile never runs:

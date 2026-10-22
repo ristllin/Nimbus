@@ -1,6 +1,8 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <cstdint>
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -121,7 +123,49 @@ struct ProviderState {
   // connector save or at boot), so an unchecked Studio connector reads "being
   // checked" instead of "not checked".
   bool mistralProbePending = false;
+  // The file store can keep a generated file: an SD card on the device, the
+  // durable volume on a Virtual Nimbus. Every file route below needs it.
+  bool fileStoreReady = false;
+  // Provider-file capture is wired (the device's provider_file_fetch). A Virtual
+  // Nimbus has none yet, so it never promises a file a sub-agent builds.
+  bool fileCapture = true;
+  // The device's own PDF writer (the files.pdf tool: headings, text and simple
+  // tables, no charts) is registered.
+  bool pdfWriter = false;
 };
+
+// --- Code sandbox and file delivery: ONE rule (wf_plan 3 and 4a) ---------------
+// The Code sandbox switch (Assistant > Tools) is the only control for the hosted
+// code_interpreter: it is never a connector card. applyCodeSandbox removes every
+// stored code_interpreter entry (a card for any provider, enabled or not, built-in
+// or an empty-URL MCP entry - each of these once hid OpenAI's sandbox or rode the
+// OpenAI wire as server_url "") and, when `on`, adds the built-in for openai and
+// mistral, the two providers that host one. Every connector list a wire is built
+// from passes through it (device, Cumulo-routed head with on=false, Virtual Nimbus).
+void applyCodeSandbox(std::vector<ConnectorInfo>& cs, bool on);
+
+// Whether the list puts code_interpreter on `head`'s wire ("openai" | "mistral").
+bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* head);
+
+// How a PDF (or another generated document) can reach the owner on this device, in
+// the order tried: an openai sub's code_interpreter (needs an OpenAI key and the
+// Code sandbox switch), an anthropic sub's sandbox (needs an Anthropic key; the sub
+// saves the file under /mnt/session/outputs/), else the device's own PDF writer.
+// Both sandbox routes need capture and every route needs the file store. The PDF
+// line, the CODE SANDBOX line, the code_interpreter caps line, the web status line
+// and the spawn routing of a file task all read this one rule, so they can never
+// disagree (critique B1).
+enum class PdfPath : uint8_t { None, OpenAiSandbox, AnthropicSandbox, DeviceWriter };
+struct PdfRoute {
+  PdfPath path = PdfPath::None;
+  const char* blocker = "";   // model-facing reason when path == None ("" otherwise)
+  const char* slug = "";      // machine slug for the web status line (frozen once shipped):
+                              // openai | anthropic | device | nostore | nocapture | sandboxoff | nokey
+};
+PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps);
+// The provider a file task's sub-agent runs on for this route ("" = none: the
+// device writer needs no sub, and None has no route).
+const char* pdfRouteProvider(const PdfRoute& r);
 
 // A known connector the UI can describe / link even before it is configured.
 struct KnownConnector {
@@ -375,6 +419,37 @@ bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs);
 // connector is listed, nothing is queued. The same rule a Virtual Nimbus applies
 // on a connectors write.
 bool mistralWorkspaceStale(const std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws);
+
+// A spawn skill that asks a sub-agent to BUILD A FILE ("code_interpreter", or the
+// "deliver-pdf" playbook's id). Such a spawn runs where the file can come back
+// (pdfRoute) and an anthropic sub is told where to save it.
+bool isFileSkill(const std::string& skill);
+
+// --- the last good workspace answer, kept on flash -----------------------------
+// A restart used to drop every confirmed Studio connector back to "not checked"
+// until a ~300 KB probe landed again, which on a busy device could take the whole
+// uptime (Lumi, 21 Oct: no probe finished on any boot). The device keeps the last
+// good answer in a small file, loads it at start and writes it only when a fresh
+// answer lands; a failed check never replaces it. The file names the key it was
+// learned under by a short SHA-256 tag (never the key itself), so an answer learned
+// under one Mistral key is never read under another.
+std::string mistralKeyTag(const std::string& key);
+std::string dumpMistralWorkspace(const MistralWorkspace& ws, const std::string& keyTag);
+// Fills `ws` (probed) from a dump learned under `keyTag`; false (and `ws`
+// untouched) for any other key, an empty tag, or a file that is not a dump.
+bool loadMistralWorkspace(const std::string& text, const std::string& keyTag,
+                          MistralWorkspace& ws);
+
+// How many tools a Mistral request carries from this set: exactly what
+// attachMistralWire adds (built-ins and Studio connectors).
+int mistralWireToolCount(const std::vector<ConnectorInfo>& cs);
+// The slow re-check: while an enabled Studio connector is unconfirmed, the device
+// queues a fresh workspace check this often instead of giving up after the probe
+// queue's few quick tries (the old behaviour left it "not checked" until a restart).
+constexpr uint32_t kWorkspaceRecheckMs = 30u * 60u * 1000u;
+// Above this many, the web page warns that Mistral turns get slow: each one rides
+// the synchronous Conversations call, which the device stops waiting for at ~60 s.
+constexpr int kMistralToolsAdvised = 2;
 
 // The web card's workspace state for one connector, as a machine slug the page
 // maps to a badge (CUM-537):

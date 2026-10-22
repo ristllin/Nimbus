@@ -73,6 +73,7 @@ struct Rig {
   bool turnInFlight = false;
   bool synthConsumes = true;   // synthesize consumes the fresh results (turn ran)
   std::set<std::string> keyed{"anthropic", "openai"};
+  std::function<std::string()> fileRoute;   // the device PDF route provider (nullable)
   std::map<std::string, std::string> connectorProv;  // skill -> hosting provider
   std::vector<agent::SpawnEv> hookSpawns;                  // HookRecorder
   std::vector<agent::ResultEv> hookResults;
@@ -133,6 +134,7 @@ struct Rig {
       auto it = connectorProv.find(skill);
       return it == connectorProv.end() ? std::string() : it->second;
     };
+    if (fileRoute) d.fileSpawnProvider = fileRoute;
     d.synthesize = [this](const std::string& chat) {
       synthChats.push_back(chat);
       if (synthConsumes) (void)eng->takeFreshResults();
@@ -2110,6 +2112,76 @@ static void test_l19_36_a_tail_note_that_cuts_keeps_the_whole_reply() {
   TEST_ASSERT_TRUE(std::string(env.reply).find("NOT captured]") != std::string::npos);
 }
 
+// critique A7 + OA-107: a file task with no explicit provider runs where its file can
+// come back. On Lumi a stored Code Interpreter card made such a spawn land on
+// Mistral, whose sandbox errors on PDF.
+static void test_file_task_prefers_the_pdf_route() {
+  struct Case { const char* route; const char* keys; const char* want; };
+  const Case cases[] = {
+      {"openai", "openai,mistral,anthropic", "openai"},
+      {"anthropic", "openai,mistral,anthropic", "anthropic"},   // the route outranks key order
+      {"", "mistral,anthropic", "anthropic"},   // no sandbox route: the sub-priority default,
+                                                // never the stored card's provider
+      {"openai", "anthropic", "anthropic"},     // route provider unkeyed: the sub-priority default
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    FakeAdapter openai; openai.backend = "openai";
+    FakeAdapter mistral; mistral.backend = "mistral";
+    r.fabric.registerAdapter(&openai);
+    r.fabric.registerAdapter(&mistral);
+    std::string keys = c.keys;
+    r.keyed.clear();
+    for (const char* k : {"openai", "mistral", "anthropic"})
+      if (keys.find(k) != std::string::npos) r.keyed.insert(k);
+    r.connectorProv["code_interpreter"] = "mistral";   // the stored card Lumi had
+    const std::string route = c.route;
+    r.fileRoute = [route] { return route; };
+    r.build();
+    orch::Spawn s = sp();
+    s.provider = "";
+    s.skill = "code_interpreter";
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    const std::string got = openai.dispatched.size()  ? "openai"
+                          : mistral.dispatched.size() ? "mistral"
+                          : r.adapter.dispatched.size() ? "anthropic" : "";
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.want, got.c_str(), c.route);
+  }
+}
+
+// Without the device dependency (a rig that does not wire it), openai when keyed;
+// an explicit provider always wins; a non-file skill is untouched.
+static void test_file_task_defaults_and_explicit_provider() {
+  {
+    Rig r;
+    FakeAdapter openai; openai.backend = "openai";
+    r.fabric.registerAdapter(&openai);
+    r.keyed.insert("openai");
+    r.keyed.insert("anthropic");
+    orch::Spawn s = sp();
+    s.provider = "";
+    s.skill = "deliver-pdf";
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(1, (int)openai.dispatched.size());
+  }
+  {
+    Rig r;
+    FakeAdapter openai; openai.backend = "openai";
+    r.fabric.registerAdapter(&openai);
+    r.keyed.insert("openai");
+    r.fileRoute = [] { return std::string("openai"); };
+    r.build();
+    orch::Spawn s = sp();   // explicit anthropic
+    s.skill = "code_interpreter";
+    r.eng->enqueueSpawn(s, "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(1, (int)r.adapter.dispatched.size());
+    TEST_ASSERT_EQUAL(0, (int)openai.dispatched.size());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -2136,6 +2208,8 @@ int main(int, char**) {
   RUN_TEST(test_connector_routing_explicit_hint_wins);
   RUN_TEST(test_connector_routing_falls_through);
   RUN_TEST(test_connector_routing_unkeyed_falls_through);
+  RUN_TEST(test_file_task_prefers_the_pdf_route);
+  RUN_TEST(test_file_task_defaults_and_explicit_provider);
   RUN_TEST(test_model_coercion_to_sub_default);
   RUN_TEST(test_one_key_spawn_openai_runs_on_router);
   RUN_TEST(test_one_key_spawn_anthropic_runs_on_router);

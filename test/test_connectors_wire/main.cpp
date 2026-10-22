@@ -577,7 +577,7 @@ static void test_code_sandbox_availability_key_gated() {
   std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin")};
   ProviderState off;                          // no provider keyed
   std::string toff = catalogText(cs, off);
-  TEST_ASSERT_TRUE(toff.find("CODE SANDBOX: off") != std::string::npos);
+  TEST_ASSERT_TRUE(toff.find("CODE SANDBOX: the hosted code_interpreter is off") != std::string::npos);
   TEST_ASSERT_TRUE(toff.find("CODE SANDBOX: available") == std::string::npos);
   ProviderState on;
   on.openaiKeyed = true;                      // now a keyed provider can run it
@@ -689,6 +689,7 @@ static void test_catalog_full_golden() {
   ps.openaiKeyed = ps.anthropicKeyed = ps.mistralKeyed = true;
   ps.openaiVerified = ps.anthropicVerified = ps.mistralVerified = 1;
   ps.currentHost = "mistral";
+  ps.fileStoreReady = true;   // an SD card: the file routes can run
   checkTextGolden("orch_catalog_full.txt", catalogText(cs, ps));
 }
 
@@ -737,6 +738,7 @@ static void test_pdf_recipe_is_stated_and_routed_to_openai() {
   ProviderState ps;
   ps.openaiKeyed = ps.mistralKeyed = true;
   ps.currentHost = "mistral";
+  ps.fileStoreReady = true;
   const std::string t = catalogText(cs, ps);
   TEST_ASSERT_TRUE_MESSAGE(t.find("TO DELIVER A PDF") != std::string::npos,
                            "the PDF recipe must be present");
@@ -747,8 +749,9 @@ static void test_pdf_recipe_is_stated_and_routed_to_openai() {
   ProviderState nokey;
   nokey.mistralKeyed = true;
   nokey.currentHost = "mistral";
+  nokey.fileStoreReady = true;
   const std::string t2 = catalogText(cs, nokey);
-  TEST_ASSERT_TRUE(t2.find("needs an OpenAI key") != std::string::npos);
+  TEST_ASSERT_TRUE(t2.find("own OpenAI or Anthropic API key") != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(t2.find("Spawn on openai with a project") == std::string::npos,
                            "must not advertise a PDF path that has no key");
 }
@@ -764,10 +767,11 @@ static void test_pdf_recipe_requires_an_openai_reachable_code_interpreter() {
   ProviderState ps;
   ps.openaiKeyed = ps.mistralKeyed = true;
   ps.currentHost = "mistral";
+  ps.fileStoreReady = true;
   const std::string t = catalogText(mistralOnly, ps);
   TEST_ASSERT_TRUE_MESSAGE(t.find("not possible right now") != std::string::npos,
                            "must admit PDF is unavailable when openai has no sandbox");
-  TEST_ASSERT_TRUE_MESSAGE(t.find("Code Interpreter enabled for OpenAI") != std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(t.find("openai's Code Interpreter is off") != std::string::npos,
                            "must name the exact thing the owner has to enable");
   TEST_ASSERT_TRUE_MESSAGE(t.find("Spawn on openai with a project") == std::string::npos,
                            "must NOT advertise the openai PDF recipe with no openai sandbox");
@@ -1075,11 +1079,16 @@ static void test_workspace_unlisted_or_inactive_is_refused() {
   nimbus::orch::applyConnectorAuth(cs, ws);
   ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
   const std::string t = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(t.find("slack (not usable until the owner enables it in their Mistral "
-                          "Studio account)") != std::string::npos);
-  TEST_ASSERT_TRUE(t.find("notion (not usable until the owner enables it") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("slack (not attached: the owner's Mistral workspace does not "
+                          "offer it") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("notion (not attached: the owner's Mistral workspace does not offer it")
+                   != std::string::npos);
   for (const ConnectorInfo& c : cs)
     TEST_ASSERT_EQUAL((int)CapScope::Unavailable, (int)connectorScope(c, ps));
+  // 22 Oct honesty: the wire agrees - neither rides a Mistral request.
+  JsonDocument d;
+  attachMistralWire(d, cs);
+  TEST_ASSERT_EQUAL(0, (int)d["tools"].size());
 }
 
 // Fail-closed: before any workspace answer a Studio connector is NOT usable, and the
@@ -1092,9 +1101,14 @@ static void test_workspace_unprobed_is_fail_closed() {
   TEST_ASSERT_EQUAL((int)W::Unprobed, (int)cs[0].workspace);
   ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
   const std::string t = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(t.find("gcal (not usable yet: the Mistral workspace has not been checked")
+  TEST_ASSERT_TRUE(t.find("gcal (unconfirmed: the Mistral workspace has not been checked yet")
                    != std::string::npos);
   TEST_ASSERT_EQUAL((int)CapScope::Unavailable, (int)connectorScope(cs[0], ps));
+  // 22 Oct honesty: unconfirmed still rides (the catalog says so), by its Mistral id.
+  JsonDocument d;
+  attachMistralWire(d, cs);
+  TEST_ASSERT_EQUAL(1, (int)d["tools"].size());
+  TEST_ASSERT_EQUAL_STRING("google_calendar", d["tools"][0]["connector_id"] | "");
 }
 
 // A non-parseable / wrong-shape body is "no signal", never "nothing listed": the
@@ -1887,7 +1901,7 @@ static void test_cum537_catalog_row_says_check_is_running() {
   ps.currentHost = "mistral";
   ps.mistralProbePending = true;
   const std::string running = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(running.find("gcal (not usable yet: the Mistral workspace check is running "
+  TEST_ASSERT_TRUE(running.find("gcal (unconfirmed: the Mistral workspace check is running "
                                 "now") != std::string::npos);
   // ...and for a connector the last answer did not list while a re-check runs.
   std::vector<ConnectorInfo> unl = {mk("gcal", "mistral", "connector", "", "connector_googlecalendar")};
@@ -1895,8 +1909,368 @@ static void test_cum537_catalog_row_says_check_is_running() {
   TEST_ASSERT_TRUE(catalogText(unl, ps).find("check is running now") != std::string::npos);
   ps.mistralProbePending = false;
   const std::string idle = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(idle.find("checked after a restart, when a connector is saved, and when the "
-                             "Mistral key is verified or saved") != std::string::npos);
+  TEST_ASSERT_TRUE(idle.find("gcal (unconfirmed: the Mistral workspace has not been checked "
+                             "yet") != std::string::npos);
+  TEST_ASSERT_TRUE(idle.find("check is running") == std::string::npos);
+}
+
+
+// ---- 22 Oct 2026: Mistral connector honesty ----------------------------------
+using nimbus::orch::dumpMistralWorkspace;
+using nimbus::orch::loadMistralWorkspace;
+using nimbus::orch::mistralKeyTag;
+using nimbus::orch::mistralWireToolCount;
+
+// (3) The class rule: for every workspace state and check state, the catalog row and
+// the wire agree. A row that says "not attached" never rides; one that rides is never
+// called not attached. Every Studio connector of the catalog is covered.
+static void test_honesty_wire_matches_catalog_for_every_state() {
+  const char* listings[] = {
+      nullptr,                                                         // never checked
+      "[{\"id\":\"u9\",\"name\":\"other\",\"active\":true}]",               // checked, not listed
+      "[{\"id\":\"u1\",\"name\":\"google_calendar\",\"active\":true},"
+      "{\"name\":\"notion\"},{\"name\":\"slack\"},{\"name\":\"gmail\"},"
+      "{\"name\":\"github_app\"},{\"name\":\"google_drive_mcp\"},{\"name\":\"linear\"}]",  // listed
+  };
+  int kn = 0;
+  const nimbus::orch::KnownConnector* kk = knownConnectors(kn);
+  int checked = 0;
+  for (int li = 0; li < 3; li++) {
+    const char* listing = listings[li];
+    for (int pending = 0; pending < 2; pending++) {
+      for (int i = 0; i < kn; i++) {
+        if (!std::strstr(kk[i].providers, "mistral") || !std::strcmp(kk[i].kind, "builtin")) continue;
+        std::vector<ConnectorInfo> cs = {mk(kk[i].id, "mistral", "connector")};
+        const nimbus::orch::MistralWorkspace ws =
+            listing ? wsListing(listing) : nimbus::orch::MistralWorkspace();
+        nimbus::orch::applyConnectorAuth(cs, ws);
+        ProviderState ps;
+        ps.mistralKeyed = true;
+        ps.currentHost = "anthropic";
+        ps.mistralProbePending = pending != 0;
+        const std::string t = catalogText(cs, ps);
+        JsonDocument d;
+        attachMistralWire(d, cs);
+        const bool rides = d["tools"].size() == 1;
+        const bool saysOff = t.find(std::string(kk[i].id) + " (not attached") != std::string::npos;
+        char msg[96];
+        std::snprintf(msg, sizeof msg, "%s listing=%d pending=%d", kk[i].id, li, pending);
+        TEST_ASSERT_TRUE_MESSAGE(rides != saysOff, msg);
+        // An unconfirmed connector that rides is named as unconfirmed.
+        if (rides && cs[0].auth == 2)
+          TEST_ASSERT_TRUE_MESSAGE(t.find(std::string(kk[i].id) + " (unconfirmed") != std::string::npos, msg);
+        checked++;
+      }
+    }
+  }
+  TEST_ASSERT_GREATER_OR_EQUAL(36, checked);   // 6 Studio connectors x 3 listings x 2
+}
+
+// (1) The last good answer survives a restart: a dump loads back under the same key,
+// never under another key, an empty key, or from a file that is not a dump.
+static void test_honesty_workspace_dump_round_trip() {
+  const auto ws = wsListing("[{\"id\":\"u-1 x\",\"name\":\"google_calendar\",\"active\":true,"
+                            "\"is_authenticated\":true},{\"name\":\"notion\"}]");
+  const std::string tag = mistralKeyTag("sk-test" "-0001");
+  TEST_ASSERT_EQUAL(12, (int)tag.size());
+  TEST_ASSERT_TRUE(tag.find("sk") == std::string::npos);   // a fingerprint, not the key
+  const std::string dump = dumpMistralWorkspace(ws, tag);
+  nimbus::orch::MistralWorkspace back;
+  TEST_ASSERT_TRUE(loadMistralWorkspace(dump, tag, back));
+  TEST_ASSERT_TRUE(back.probed);
+  TEST_ASSERT_EQUAL_STRING(ws.listed.c_str(), back.listed.c_str());
+  TEST_ASSERT_EQUAL_STRING(ws.signedIn.c_str(), back.signedIn.c_str());
+  TEST_ASSERT_TRUE(back.isListed("u-1 x"));
+  TEST_ASSERT_TRUE(back.isSignedIn("google_calendar"));
+  // The same connector reads usable after the "restart".
+  std::vector<ConnectorInfo> cs = {mk("gcal", "mistral", "connector", "", "connector_googlecalendar")};
+  nimbus::orch::applyConnectorAuth(cs, back);
+  TEST_ASSERT_EQUAL(1, cs[0].auth);
+  // Never under another key, an empty tag, or from garbage.
+  nimbus::orch::MistralWorkspace other;
+  TEST_ASSERT_FALSE(loadMistralWorkspace(dump, mistralKeyTag("sk-test" "-0002"), other));
+  TEST_ASSERT_FALSE(other.probed);
+  TEST_ASSERT_FALSE(loadMistralWorkspace(dump, "", other));
+  TEST_ASSERT_FALSE(loadMistralWorkspace("listed google_calendar\n", tag, other));
+  TEST_ASSERT_FALSE(loadMistralWorkspace("", tag, other));
+  TEST_ASSERT_EQUAL_STRING("", mistralKeyTag("").c_str());
+  // An empty (probed, nothing listed) answer round-trips as probed and empty.
+  nimbus::orch::MistralWorkspace empty;
+  empty.probed = true;
+  empty.listed = empty.signedIn = "\n";
+  TEST_ASSERT_TRUE(loadMistralWorkspace(dumpMistralWorkspace(empty, tag), tag, back));
+  TEST_ASSERT_TRUE(back.probed);
+  TEST_ASSERT_FALSE(back.isListed("google_calendar"));
+}
+
+// (4) The card prefills Mistral's own id when the owner picks Mistral.
+static void test_honesty_known_catalog_carries_the_mistral_id() {
+  JsonDocument d;
+  TEST_ASSERT_FALSE(deserializeJson(d, knownCatalogJson()));
+  int seen = 0;
+  for (JsonObjectConst k : d.as<JsonArrayConst>()) {
+    const std::string id = k["id"] | "";
+    if (id == "gcal") { TEST_ASSERT_EQUAL_STRING("google_calendar", k["mcid"] | ""); seen++; }
+    if (id == "github") { TEST_ASSERT_EQUAL_STRING("github_app", k["mcid"] | ""); seen++; }
+    if (id == "gdrive") { TEST_ASSERT_EQUAL_STRING("google_drive_mcp", k["mcid"] | ""); seen++; }
+    if (id == "notion") { TEST_ASSERT_EQUAL_STRING("notion", k["mcid"] | ""); seen++; }
+    if (id == "web_search" || id == "code_interpreter") TEST_ASSERT_TRUE(k["mcid"].isNull());
+    // The OpenAI id stays where it was, for the OpenAI choice.
+    if (id == "gcal") TEST_ASSERT_EQUAL_STRING("connector_googlecalendar", k["cid"] | "");
+  }
+  TEST_ASSERT_EQUAL(4, seen);
+}
+
+// (5) The count the web page warns on is what a Mistral request really carries.
+static void test_honesty_mistral_tool_count() {
+  std::vector<ConnectorInfo> cs = {mk("web_search", "mistral", "builtin"),
+                                   mk("gcal", "mistral", "connector"),
+                                   mk("notion", "mistral", "connector"),
+                                   mk("document_library", "mistral", "builtin"),   // never attached
+                                   mk("github", "openai", "mcp", "https://x.example/mcp"),
+                                   mk("slack", "mistral", "connector", "", "", /*en=*/false)};
+  TEST_ASSERT_EQUAL(3, mistralWireToolCount(cs));
+  TEST_ASSERT_TRUE(mistralWireToolCount(cs) > nimbus::orch::kMistralToolsAdvised);
+  // A not-listed connector does not count: it does not ride.
+  nimbus::orch::applyConnectorAuth(cs, wsListing("[{\"name\":\"google_calendar\"}]"));
+  TEST_ASSERT_EQUAL(2, mistralWireToolCount(cs));
+  TEST_ASSERT_EQUAL(0, mistralWireToolCount({}));
+}
+
+
+// ---- wf_plan 3 / critique B1: the Code sandbox and PDF rule -------------------
+using nimbus::orch::applyCodeSandbox;
+using nimbus::orch::codeInterpreterOnWire;
+using nimbus::orch::pdfRoute;
+using nimbus::orch::PdfPath;
+
+static bool wireHasCodeInterpreter(const std::vector<ConnectorInfo>& cs, const char* head) {
+  JsonDocument d;
+  if (!std::strcmp(head, "openai")) attachOpenAIWire(d, cs, nullptr);
+  else attachMistralWire(d, cs);
+  for (JsonObjectConst t : d["tools"].as<JsonArrayConst>())
+    if (!std::strcmp(t["type"] | "", "code_interpreter")) return true;
+  return false;
+}
+
+// The toggle is the only control: every stored code_interpreter entry (a card on
+// either provider, enabled or not, built-in or the empty-URL MCP entry the old card
+// saved) is removed; "on" adds the built-in for openai and mistral, "off" leaves none.
+static void test_apply_code_sandbox_is_the_only_control() {
+  std::vector<ConnectorInfo> stored = {
+      mk("code_interpreter", "mistral", "builtin"),                    // Lumi's card
+      mk("code_interpreter", "openai", "mcp", "", "", true),          // the empty-URL entry
+      mk("code_interpreter", "openai", "builtin", "", "", false),     // a disabled card
+      mk("notion", "mistral", "connector")};
+  std::vector<ConnectorInfo> on = stored;
+  applyCodeSandbox(on, true);
+  int ci = 0;
+  for (const ConnectorInfo& c : on)
+    if (c.name == "code_interpreter") {
+      ci++;
+      TEST_ASSERT_EQUAL_STRING("builtin", c.kind.c_str());
+      TEST_ASSERT_TRUE(c.enabled);
+    }
+  TEST_ASSERT_EQUAL(2, ci);
+  TEST_ASSERT_TRUE(wireHasCodeInterpreter(on, "openai"));
+  TEST_ASSERT_TRUE(wireHasCodeInterpreter(on, "mistral"));
+  // The empty-URL MCP entry never reaches the OpenAI wire as server_url "".
+  JsonDocument d;
+  attachOpenAIWire(d, on, nullptr);
+  for (JsonObjectConst t : d["tools"].as<JsonArrayConst>())
+    TEST_ASSERT_TRUE(t["server_url"].isNull());
+  std::vector<ConnectorInfo> off = stored;
+  applyCodeSandbox(off, false);
+  TEST_ASSERT_EQUAL(1, (int)off.size());
+  TEST_ASSERT_EQUAL_STRING("notion", off[0].name.c_str());
+  TEST_ASSERT_FALSE(wireHasCodeInterpreter(off, "openai"));
+  TEST_ASSERT_FALSE(wireHasCodeInterpreter(off, "mistral"));
+  // Fresh device: no connector blob at all.
+  std::vector<ConnectorInfo> fresh;
+  applyCodeSandbox(fresh, false);
+  TEST_ASSERT_EQUAL(0, (int)fresh.size());
+  applyCodeSandbox(fresh, true);
+  TEST_ASSERT_EQUAL(2, (int)fresh.size());
+}
+
+// Lumi's exact shape (Oct 2026): Code sandbox ON, a Code Interpreter card saved as a
+// Mistral built-in, every provider keyed, an SD card. The old rule skipped OpenAI's
+// sandbox because ANY code_interpreter card existed; now the PDF line says POSSIBLE
+// through openai and the sandbox line agrees.
+static void test_lumi_config_attaches_openai_sandbox() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "mistral", "builtin"),
+                                   mk("gcal", "mistral", "connector")};
+  applyCodeSandbox(cs, true);
+  ProviderState ps;
+  ps.openaiKeyed = ps.anthropicKeyed = ps.mistralKeyed = true;
+  ps.currentHost = "openai";
+  ps.fileStoreReady = true;
+  TEST_ASSERT_TRUE(wireHasCodeInterpreter(cs, "openai"));
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("TO DELIVER A PDF (or other generated document): POSSIBLE on this device "
+                          "through an openai sub") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: available on openai and mistral") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("not possible") == std::string::npos);
+}
+
+// The grid (critique B1): toggle x stored card (none, mistral, openai, both) x card
+// enabled x card kind (built-in, empty-URL MCP) x keys x file store x capture x writer.
+// For every cell: the PDF line says POSSIBLE exactly when a capture path exists
+// (computed here from the WIRE the builders produce, not from the rule under test),
+// names the route that exists, and the CODE SANDBOX line never contradicts it.
+struct GridKeys { const char* name; bool oai, ant, mis; };
+static const GridKeys kGridKeys[] = {{"openai", true, false, false},  {"mistral", false, false, true},
+                                     {"anthropic", false, true, false}, {"cumulo-only", false, false, false},
+                                     {"all", true, true, true},         {"openai+mistral", true, false, true}};
+struct GridCell {
+  int toggle, card, en, kind, keys, store, capture, writer;
+  // Decode one cell number (mixed radix) into the dimensions above.
+  explicit GridCell(int n) {
+    int* dims[] = {&toggle, &card, &en, &kind, &keys, &store, &capture, &writer};
+    const int radix[] = {2, 4, 2, 2, 6, 2, 2, 2};
+    for (int i = 7; i >= 0; i--) { *dims[i] = n % radix[i]; n /= radix[i]; }
+  }
+};
+static constexpr int kGridCells = 2 * 4 * 2 * 2 * 6 * 2 * 2 * 2;
+
+static std::vector<ConnectorInfo> gridConnectors(const GridCell& g) {
+  std::vector<ConnectorInfo> cs;
+  const char* kd = g.kind ? "mcp" : "builtin";
+  if (g.card == 1 || g.card == 3) cs.push_back(mk("code_interpreter", "mistral", kd, "", "", g.en != 0));
+  if (g.card == 2 || g.card == 3) cs.push_back(mk("code_interpreter", "openai", kd, "", "", g.en != 0));
+  applyCodeSandbox(cs, g.toggle != 0);
+  return cs;
+}
+
+static ProviderState gridState(const GridCell& g) {
+  const GridKeys& k = kGridKeys[g.keys];
+  ProviderState ps;
+  ps.openaiKeyed = k.oai;
+  ps.anthropicKeyed = k.ant;
+  ps.mistralKeyed = k.mis;
+  ps.currentHost = k.oai ? "openai" : k.ant ? "anthropic" : k.mis ? "mistral" : "";
+  ps.fileStoreReady = g.store != 0;
+  ps.fileCapture = g.capture != 0;
+  ps.pdfWriter = g.writer != 0;
+  return ps;
+}
+
+static bool has(const std::string& t, const char* needle) { return t.find(needle) != std::string::npos; }
+
+// The PDF line: POSSIBLE exactly when a route exists, naming the first that does.
+static void checkGridPdfLine(const std::string& t, bool viaOai, bool viaAnt, bool viaDev,
+                             const char* label) {
+  const bool possible = has(t, "TO DELIVER A PDF (or other generated document): POSSIBLE");
+  TEST_ASSERT_EQUAL_MESSAGE(viaOai || viaAnt || viaDev, possible, label);
+  TEST_ASSERT_EQUAL_MESSAGE(!possible, has(t, "TO DELIVER A PDF: not possible right now"), label);
+  if (viaOai) TEST_ASSERT_TRUE_MESSAGE(has(t, "through an openai sub"), label);
+  else if (viaAnt) TEST_ASSERT_TRUE_MESSAGE(has(t, "through an anthropic sub"), label);
+  else if (viaDev) TEST_ASSERT_TRUE_MESSAGE(has(t, "with its own PDF writer"), label);
+}
+
+// The sandbox and caps lines follow the wire and keys, and never contradict the PDF line.
+static void checkGridSandboxLines(const std::string& t, bool sbx, bool anyWire, bool canCollect,
+                                  const char* label) {
+  TEST_ASSERT_EQUAL_MESSAGE(sbx, has(t, "CODE SANDBOX: available"), label);
+  TEST_ASSERT_EQUAL_MESSAGE(!sbx, has(t, "CODE SANDBOX: the hosted code_interpreter is off"), label);
+  if (has(t, "through an openai sub")) TEST_ASSERT_TRUE_MESSAGE(sbx, label);
+  if (has(t, "finished files land under Files")) TEST_ASSERT_TRUE_MESSAGE(canCollect, label);
+  const size_t c1 = t.find("  - code_interpreter:");
+  TEST_ASSERT_EQUAL_MESSAGE(anyWire, c1 != std::string::npos, label);
+  if (c1 != std::string::npos)
+    TEST_ASSERT_TRUE_MESSAGE(t.find("  - code_interpreter:", c1 + 1) == std::string::npos, label);
+}
+
+static void checkGridCell(const GridCell& g) {
+  const std::vector<ConnectorInfo> cs = gridConnectors(g);
+  const ProviderState ps = gridState(g);
+  const GridKeys& k = kGridKeys[g.keys];
+  const bool oaiWire = wireHasCodeInterpreter(cs, "openai");
+  const bool misWire = wireHasCodeInterpreter(cs, "mistral");
+  const bool collect = g.store && g.capture;
+  const bool viaOai = k.oai && oaiWire && collect;
+  const bool viaAnt = k.ant && collect;
+  const bool viaDev = g.writer && g.store;
+  char label[160];
+  std::snprintf(label, sizeof label, "toggle=%d card=%d en=%d kind=%d keys=%s store=%d cap=%d wr=%d",
+                g.toggle, g.card, g.en, g.kind, k.name, g.store, g.capture, g.writer);
+  const std::string t = catalogText(cs, ps);
+  checkGridPdfLine(t, viaOai, viaAnt, viaDev, label);
+  checkGridSandboxLines(t, (k.oai && oaiWire) || (k.mis && misWire), oaiWire || misWire,
+                        viaOai || viaAnt, label);
+  // pdfRoute agrees with the text (the web status line and spawn routing read it).
+  const nimbus::orch::PdfRoute r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_MESSAGE(viaOai || viaAnt || viaDev, r.path != PdfPath::None, label);
+  TEST_ASSERT_TRUE_MESSAGE(r.slug[0] != 0, label);
+}
+
+static void test_pdf_and_sandbox_lines_grid() {
+  for (int n = 0; n < kGridCells; n++) checkGridCell(GridCell(n));
+  TEST_MESSAGE(("grid: " + std::to_string(kGridCells) + " cells").c_str());
+}
+
+// The route's provider is what a file task's sub-agent runs on.
+static void test_pdf_route_provider_and_slugs() {
+  std::vector<ConnectorInfo> cs;
+  applyCodeSandbox(cs, true);
+  ProviderState ps;
+  ps.fileStoreReady = true;
+  ps.openaiKeyed = true;
+  TEST_ASSERT_EQUAL_STRING("openai", nimbus::orch::pdfRouteProvider(pdfRoute(cs, ps)));
+  ps.openaiKeyed = false;
+  ps.anthropicKeyed = true;
+  TEST_ASSERT_EQUAL_STRING("anthropic", nimbus::orch::pdfRouteProvider(pdfRoute(cs, ps)));
+  ps.anthropicKeyed = false;
+  ps.pdfWriter = true;
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::pdfRouteProvider(pdfRoute(cs, ps)));
+  TEST_ASSERT_EQUAL_STRING("device", pdfRoute(cs, ps).slug);
+  ps.fileStoreReady = false;
+  TEST_ASSERT_EQUAL_STRING("nostore", pdfRoute(cs, ps).slug);
+  ps.fileStoreReady = true;
+  ps.pdfWriter = false;
+  TEST_ASSERT_EQUAL_STRING("nokey", pdfRoute(cs, ps).slug);
+  ps.openaiKeyed = true;
+  std::vector<ConnectorInfo> none;
+  TEST_ASSERT_EQUAL_STRING("sandboxoff", pdfRoute(none, ps).slug);
+  ps.fileCapture = false;
+  TEST_ASSERT_EQUAL_STRING("nocapture", pdfRoute(cs, ps).slug);
+  TEST_ASSERT_TRUE(nimbus::orch::isFileSkill("code_interpreter"));
+  TEST_ASSERT_TRUE(nimbus::orch::isFileSkill("deliver-pdf"));
+  TEST_ASSERT_FALSE(nimbus::orch::isFileSkill("notion"));
+}
+
+// The catalog never advertises Code Interpreter as a card to add or re-enable: the
+// Code sandbox switch is its control.
+static void test_code_interpreter_is_never_a_card_to_add() {
+  std::vector<ConnectorInfo> cs = {mk("web_search", "mistral", "builtin")};
+  ProviderState ps;
+  ps.openaiKeyed = ps.mistralKeyed = true;
+  const std::string t = catalogText(cs, ps);
+  const size_t nc = t.find("Not configured");
+  TEST_ASSERT_TRUE(nc != std::string::npos);
+  TEST_ASSERT_TRUE(t.substr(nc, t.find('\n', nc) - nc).find("code_interpreter") == std::string::npos);
+}
+
+
+// Empty-URL MCP entries (wf_plan 3): never on the OpenAI or Anthropic wire, refused
+// at save with the next step; Mistral reads a non-built-in entry by name (exempt).
+static void test_empty_url_mcp_entries_are_rejected() {
+  const ConnectorInfo oai = mk("tool", "openai", "mcp");
+  const ConnectorInfo any = mk("tool", "any", "mcp");
+  const ConnectorInfo ant = mk("tool", "anthropic", "mcp");
+  const ConnectorInfo mis = mk("notion", "mistral", "mcp");
+  TEST_ASSERT_FALSE(forwardsToProviderHead(oai, "openai"));
+  TEST_ASSERT_FALSE(forwardsToProviderHead(any, "openai"));
+  TEST_ASSERT_FALSE(forwardsToProviderHead(ant, "anthropic"));
+  TEST_ASSERT_TRUE(forwardsToProviderHead(mis, "mistral"));
+  TEST_ASSERT_TRUE(connectorConfigError(oai).find("has no URL") != std::string::npos);
+  TEST_ASSERT_TRUE(connectorConfigError(any).find("has no URL") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", connectorConfigError(mis).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorConfigError(mk("web_search", "mistral", "builtin")).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorConfigError(mk("gmail", "openai", "connector", "", "connector_gmail")).c_str());
+  JsonDocument d;
+  attachOpenAIWire(d, {oai, any}, nullptr);
+  TEST_ASSERT_EQUAL(0, (int)d["tools"].size());
 }
 
 int main() {
@@ -1979,5 +2353,15 @@ int main() {
   RUN_TEST(test_cum537_save_queues_probe_only_when_stale);
   RUN_TEST(test_cum537_card_state_never_says_connect_while_unchecked);
   RUN_TEST(test_cum537_catalog_row_says_check_is_running);
+  RUN_TEST(test_honesty_wire_matches_catalog_for_every_state);
+  RUN_TEST(test_honesty_workspace_dump_round_trip);
+  RUN_TEST(test_honesty_known_catalog_carries_the_mistral_id);
+  RUN_TEST(test_honesty_mistral_tool_count);
+  RUN_TEST(test_apply_code_sandbox_is_the_only_control);
+  RUN_TEST(test_lumi_config_attaches_openai_sandbox);
+  RUN_TEST(test_pdf_and_sandbox_lines_grid);
+  RUN_TEST(test_pdf_route_provider_and_slugs);
+  RUN_TEST(test_code_interpreter_is_never_a_card_to_add);
+  RUN_TEST(test_empty_url_mcp_entries_are_rejected);
   return UNITY_END();
 }

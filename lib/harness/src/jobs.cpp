@@ -11,7 +11,7 @@
 #include "nimbus/harness/skill_md.h"   // composeSkillInjection - per-spawn capsule
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
-#include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
+#include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536), isFileSkill
 #include "nimbus/orch/sub_provenance.h"   // liveTask, the unverified rule, [tools: n] (lane S)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/model_choices.h"  // modelInChoices, cheapestChoice - validated spawn-model coercion
@@ -808,6 +808,15 @@ bool JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
 // instead of struggling on-device.
 std::string JobEngine::spawnProvider(const PendingSpawn& p) const {
   if (p.provider[0]) return std::string(p.provider);
+  // A file task runs where its file can come back (the device's PDF route), never
+  // on the sub-priority default that may be Mistral (critique A7).
+  // code_interpreter is the Code sandbox switch, not a connector, so a stored card's
+  // provider never routes it; with no sandbox route the sub-priority default runs.
+  if (p.skill[0] && nimbus::orch::isFileSkill(p.skill)) {
+    const std::string fp = d_.fileSpawnProvider ? d_.fileSpawnProvider()
+                                                : std::string(hasKey("openai") ? "openai" : "");
+    return !fp.empty() && hasKey(fp) ? fp : firstSubProvider();
+  }
   if (p.skill[0] && d_.connectorProvider) {
     std::string cp = d_.connectorProvider(p.skill);
     // Only accept the connector's provider if it's actually key'd - otherwise fall

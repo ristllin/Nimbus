@@ -138,20 +138,27 @@ const Part kToolsGuide[] = {
 const Part kDeliverPdf[] = {
     {Side::Both,
      "How to deliver a PDF (or any generated document) to the owner.\n"
-     "The device cannot render documents itself; a sub-agent builds one in its\n"
-     "provider sandbox and the device captures the file. The working recipe:\n"
-     "1. Spawn ONE sub-agent on openai WITH A PROJECT:\n"
-     "   session_ops: {op:\"spawn\", provider:\"openai\", project:\"<short-slug>\",\n"
-     "   task:\"...\"}. The project field is what routes the captured file into\n"
-     "   the device file store - no project, no capture.\n"
+     "1. Read the TO DELIVER A PDF line in [SUB-AGENT CAPABILITIES]: it names the\n"
+     "   route this device has right now, or exactly why there is none.\n"
+     "2. Follow that route:\n"
+     "   - through an openai sub: spawn ONE sub-agent with a project:\n"
+     "     session_ops: {op:\"spawn\", provider:\"openai\", skill:\"code_interpreter\",\n"
+     "     project:\"<short-slug>\", task:\"...\"}. In the task, tell the sub to\n"
+     "     gather/prepare the content, then 'use Python code_interpreter to render\n"
+     "     <name>.pdf, save it as a file, and output the file'.\n"
+     "   - through an anthropic sub: the same spawn with provider:\"anthropic\"; in\n"
+     "     the task, tell it to render <name>.pdf and save it under\n"
+     "     /mnt/session/outputs/.\n"
+     "   - with the device's own PDF writer: call files.pdf {project, name, title,\n"
+     "     text} yourself with the finished text (# headings, - bullets,\n"
+     "     | table | rows |). Text and simple tables only, no charts or images.\n"
+     "   A sub not told to output a file returns prose. A captured file with no\n"
+     "   project lands in the \"files\" project.\n"
      "   To put a log or CSV from the file store in the task, read only its end\n"
      "   with files.read {project, name, tail: N} - never the whole file.\n"
-     "2. In the task, tell the sub EXPLICITLY to gather/prepare the content, then\n"
-     "   'use Python code_interpreter to render <name>.pdf, save it as a file,\n"
-     "   and output the file'. A sub not told to output a file returns prose.\n"
-     "3. When the sub finishes, its result includes a note naming the saved file\n"
-     "   (project/name). NO note = NO file landed - say so honestly and retry or\n"
-     "   explain; NEVER invent a filename or claim a stale file as new output.\n"},
+     "3. The result carries a note naming the saved file (project/name). NO note =\n"
+     "   NO file landed - say so honestly and retry or explain; NEVER invent a\n"
+     "   filename or claim a stale file as new output.\n"},
     {Side::FileSend,
      "4. Deliver with files.send {project, name}. It queues for Telegram; if it\n"
      "   reports the media queue busy, retry on your next turn.\n"},
@@ -159,10 +166,9 @@ const Part kDeliverPdf[] = {
      "4. Tell the owner the saved file's name (project/name): they open it from the\n"
      "   Files list on the device web page.\n"},
     {Side::Both,
-     "Provider limits: mistral's sandbox ERRORS on PDF/CSV (images/text only);\n"
-     "an anthropic sub can build files in its sandbox but nothing can capture\n"
-     "them back - openai is the only delivery path. Do not silently downgrade\n"
-     "the owner to markdown: if PDF is unavailable, say exactly why.\n"},
+     "Provider limits: mistral's sandbox ERRORS on PDF/CSV (images/text only), so a\n"
+     "PDF never goes there. If the PDF line says it is not possible, tell the owner\n"
+     "exactly why; do not silently downgrade to markdown.\n"},
 };
 
 // Logging a row (the meal-photo addendum, and any tracker): files.append writes
@@ -213,8 +219,9 @@ const Entry kEntries[] = {
       "Which tool to reach for, per job - read when a task needs tools you rarely use."},
      NIMBUS_PARTS(kToolsGuide)},
     {{"deliver-pdf", "Deliver a PDF or generated document to the owner",
-      "Build a PDF via an openai sub's code_interpreter and deliver it to the owner - read "
-      "BEFORE promising, refusing, or downgrading a PDF/document request."},
+      "Build a PDF the way the TO DELIVER A PDF line says (an openai or anthropic sub, or the "
+      "device's own writer) and deliver it - read BEFORE promising, refusing, or downgrading a "
+      "PDF/document request."},
      NIMBUS_PARTS(kDeliverPdf)},
     {{"log-rows", "Log a row to a CSV or log file (food log, ledger)",
       "Add rows to a log with files.append and read its end with files.read tail - read "
