@@ -24,6 +24,7 @@ looking at the glass are all in scope.
 | Settings lost across an update (CUM-237) | the OTA flow writes only its own bookkeeping keys, never an owner's Wi-Fi / provider key / touch cal / theme | `check_ota_preserves_nvs.py`, plus the provision -> OTA -> power-cycle -> read-NVS bench leg |
 | N7 internal-SRAM win regressed (CUM-24) | the Telegram `tg_poll` TLS staging buffers stay PSRAM pointer handles, not inline internal `.bss` (the ~6.7 KB win merged as 2598499) | `check_sram_staging.py`, `test_sram_staging.py` |
 | Static internal RAM grows silently release to release (v4.5.14 grew it 4.5 KB, found only by a bench A/B) | `.dram0.bss` + `.dram0.data` of each of the four release images at or under its recorded ceiling (baseline v4.5.15 plus 1 KB); raising a ceiling needs a bench heap A/B | `check_static_dram.py`, `static_dram_ceilings.json`, `test_static_dram.py` |
+| A storm the device feeds itself: the same message taken in again and again, a refusing provider asked again and again, a notice per attempt (the 19 and 21 Oct 2026 storms) | the storm-suite step: every storm leg passed on the candidate after its commit, and has a v4.5.13 control run | `check_storm_evidence.py`, `tests/hil/storm/`, `test_release_gate.py` |
 | A test build's crash switch ships in a release image | the ELF scan for the test console's crash switches runs on all four release images (even with `--identity-only`), behind the source guard that keeps every use inside `#ifdef NIMBUS_TEST` | `check_elf_symbols.py`, `test_panic_guard.py`, `test_release_gate.py` (workflow wiring) |
 
 ## Running it
@@ -40,6 +41,18 @@ python3 tests/release_gate/run_host_legs.py            # one verdict across ever
 touch, boot-loop) and the source-guard checks into a single PASS/FAIL, and
 `tests/release_gate/MANIFEST.md` maps every failure class to its host or bench leg
 with the exact bench procedure.
+
+Storm-suite step (the storm legs' evidence for this release candidate; no network):
+
+```
+python3 tools/release_gate/run_gate.py --storm-evidence <dir> --candidate <sha>
+python3 tools/release_gate/check_storm_evidence.py --evidence <dir> --candidate <sha>   # the step alone
+```
+
+It fails the gate when any of the eight legs has no run on the candidate, only runs older
+than the candidate's commit, a newest run that did not pass, or no run on the v4.5.13
+control image. The legs, how to run one and where the evidence goes are in
+`docs/testing-tiers.md` ("Storm tier").
 
 Full battery (prints the exact hardware and cloud commands to run and paste):
 

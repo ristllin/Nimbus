@@ -352,3 +352,118 @@ def test_ota_real_source_passes():
         hdr = fh.read()
     ok, msgs = otanvs.audit(src, hdr)
     assert ok, msgs
+
+
+# --- storm suite evidence (STORM-E2E) -----------------------------------------
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
+
+import check_storm_evidence as storm  # noqa: E402
+
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_CANDIDATE = "eb50beb8c0ffee00"
+_COMMIT_TIME = 1_792_000_000.0
+
+
+def _record(leg, role="candidate", commit=_CANDIDATE, finished=_COMMIT_TIME + 600, grade="PASS"):
+    return {
+        "schema": storm.SCHEMA,
+        "leg": leg,
+        "role": role,
+        "commit": commit if role == "candidate" else "c1ab939e",
+        "finished": finished,
+        "grade": grade if role == "candidate" else "RECORDED",
+        "verdicts": {"usable": {"status": "PASS" if grade == "PASS" else grade}},
+    }
+
+
+def _full_set(**over):
+    out = []
+    for leg in storm.LEGS:
+        out.append(_record(leg, role="control", finished=_COMMIT_TIME - 86400))
+        out.append(_record(leg, **over))
+    return out
+
+
+def _write(tmp_path, records):
+    for i, r in enumerate(records):
+        (tmp_path / f"{r['leg']}-{r['role']}-{i}.json").write_text(_json.dumps(r))
+    return str(tmp_path)
+
+
+def _gate(tmp_path, records):
+    d = _write(tmp_path, records)
+    return storm.main(["--evidence", d, "--candidate", _CANDIDATE, "--candidate-time", str(_COMMIT_TIME)])
+
+
+def test_storm_gate_fails_with_no_evidence(tmp_path):
+    assert _gate(tmp_path, []) == 1
+
+
+def test_storm_gate_fails_without_an_evidence_directory(tmp_path):
+    missing = str(tmp_path / "nowhere")
+    assert storm.main(["--evidence", missing, "--candidate", _CANDIDATE, "--candidate-time", "1"]) == 1
+
+
+def test_storm_gate_fails_on_evidence_older_than_the_candidate_commit(tmp_path):
+    assert _gate(tmp_path, _full_set(finished=_COMMIT_TIME - 60)) == 1
+    verdict = storm.check(_full_set(finished=_COMMIT_TIME - 60), _CANDIDATE, _COMMIT_TIME)
+    assert all("older than its commit" in v for v in verdict.values())
+
+
+def test_storm_gate_fails_with_one_leg_missing(tmp_path):
+    records = [r for r in _full_set() if not (r["leg"] == "e_low_heap" and r["role"] == "candidate")]
+    assert _gate(tmp_path, records) == 1
+    verdict = storm.check(records, _CANDIDATE, _COMMIT_TIME)
+    assert [leg for leg, why in verdict.items() if why] == ["e_low_heap"]
+
+
+def test_storm_gate_fails_on_another_commit_a_failed_leg_or_no_control(tmp_path):
+    assert storm.check(_full_set(commit="0123456789ab"), _CANDIDATE, _COMMIT_TIME)["a_settings_full"]
+    failed = _full_set()
+    failed[3] = _record(storm.LEGS[1], grade="FAIL")
+    assert "graded FAIL" in storm.check(failed, _CANDIDATE, _COMMIT_TIME)[storm.LEGS[1]]
+    no_control = [r for r in _full_set() if not (r["leg"] == "h_false_claim" and r["role"] == "control")]
+    assert "control image" in storm.check(no_control, _CANDIDATE, _COMMIT_TIME)["h_false_claim"]
+
+
+def test_storm_gate_reads_the_newest_fresh_run(tmp_path):
+    records = _full_set()
+    records.append(_record("b_page_reserved", grade="FAIL", finished=_COMMIT_TIME + 300))  # older failure
+    assert _gate(tmp_path, records) == 0
+    records.append(_record("b_page_reserved", grade="FAIL", finished=_COMMIT_TIME + 900))  # newer failure
+    assert storm.check(records, _CANDIDATE, _COMMIT_TIME)["b_page_reserved"]
+
+
+def test_storm_gate_passes_with_fresh_evidence_for_every_leg(tmp_path):
+    assert _gate(tmp_path, _full_set()) == 0
+
+
+def test_storm_gate_commit_names_match_by_prefix():
+    assert storm.same_commit("eb50beb8", _CANDIDATE)
+    assert not storm.same_commit("eb50beb", "eb50be")  # under 7 digits never matches
+    assert not storm.same_commit("eb50beb9", _CANDIDATE)
+
+
+def test_storm_gate_legs_match_the_suite():
+    """The gate's leg list, the suite's grading list and the leg files are one set: a
+    new leg with no gate entry, or a gate entry with no leg, fails here."""
+    import sys
+
+    sys.path.insert(0, _os.path.join(_ROOT, "tests", "hil", "storm"))
+    import grading
+
+    assert tuple(storm.LEGS) == tuple(grading.LEGS)
+    files = sorted(
+        n[len("test_storm_") : -len(".py")]
+        for n in _os.listdir(_os.path.join(_ROOT, "tests", "hil", "storm"))
+        if n.startswith("test_storm_") and n.endswith(".py") and n != "test_storm_grading_host.py"
+    )
+    assert files == sorted(storm.LEGS)
+
+
+def test_run_gate_storm_step_needs_both_arguments(capsys):
+    import run_gate
+
+    assert run_gate.main(["--host-only", "--candidate", _CANDIDATE]) == 1
+    assert "pass both --storm-evidence and --candidate" in capsys.readouterr().out

@@ -10,6 +10,7 @@ silently omitted.
 Usage:
     python3 tools/release_gate/run_gate.py            # host checks + print the battery
     python3 tools/release_gate/run_gate.py --host-only
+    python3 tools/release_gate/run_gate.py --storm-evidence DIR --candidate SHA   # + the storm suite
 Exit 0 = host-checkable gates passed; exit 1 = a host gate failed (release blocked).
 """
 
@@ -28,6 +29,7 @@ import check_elf_symbols
 import check_ota_preserves_nvs
 import check_sram_staging
 import check_static_dram
+import check_storm_evidence
 import check_test_console_guard
 import model_id_lint
 
@@ -88,6 +90,23 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   pytest tests/hil/test_l50_model_refresh.py -m net --allow-hardware
 """
 
+# The storm suite (STORM-E2E): eight storm legs on both bench units, each first on the
+# v4.5.13 control image, then on the release candidate. The gate step below reads the
+# legs' evidence and blocks the tag unless every leg passed on this candidate after its
+# commit; run_gate.py --storm-evidence DIR --candidate SHA runs it with the host checks.
+STORM_BATTERY = """\
+STORM SUITE (bench, both units, SD tier; docs/testing-tiers.md "Storm tier"; paste the real output):
+  # unit L: a settings store full, b page re-served, g file store full; unit A: c provider
+  #   refusing, d deterministic error, e low memory, f restart mid-turn, h false claim.
+  # Each leg runs on the v4.5.13 control image, then on the candidate, and writes evidence:
+  NIMBUS_STORM_EVIDENCE=<dir> NIMBUS_STORM_UNIT=L pytest tests/hil/storm -m "hil or net" --allow-hardware \\
+      -k "storm_a or storm_b or storm_g"
+  NIMBUS_STORM_EVIDENCE=<dir> NIMBUS_STORM_UNIT=A pytest tests/hil/storm -m "hil or net" --allow-hardware \\
+      -k "storm_c or storm_d or storm_e or storm_f or storm_h"
+  # The gate step (fails unless every leg passed on this candidate after its commit):
+  python3 tools/release_gate/run_gate.py --storm-evidence <dir> --candidate <sha>
+"""
+
 CLOUD_BATTERY = """\
 CLOUD (in the cumulo repo; paste the real output):
   pnpm test                                        # unit + integration
@@ -128,14 +147,26 @@ def run_host_checks() -> bool:
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Firmware release gate runner (CUM-174)")
     ap.add_argument("--host-only", action="store_true", help="run only the host checks")
+    ap.add_argument("--storm-evidence", help="the storm suite's evidence directory for this candidate")
+    ap.add_argument("--candidate", help="the release candidate's commit (with --storm-evidence)")
     args = ap.parse_args(argv)
 
     host_ok = run_host_checks()
+    if args.storm_evidence or args.candidate:
+        print()
+        if not (args.storm_evidence and args.candidate):
+            print("storm suite: FAIL - pass both --storm-evidence and --candidate")
+            host_ok = False
+        else:
+            print("STORM SUITE - evidence for every leg on the candidate")
+            rc = check_storm_evidence.main(["--evidence", args.storm_evidence, "--candidate", args.candidate])
+            host_ok = host_ok and rc == 0
 
     if not args.host_only:
         print()
         print(HARDWARE_BATTERY)
         print(PROGRAM_2026_10_18_BATTERY)
+        print(STORM_BATTERY)
         print(CLOUD_BATTERY)
         print(
             "BLOCK CONDITION: do not cut a release tag or flash clients until every\n"
