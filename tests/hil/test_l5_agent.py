@@ -127,59 +127,74 @@ def test_agent_turn_live(device, secrets, require_secret):
 @pytest.mark.agent
 @pytest.mark.net
 def test_telegram_roundtrip(device, secrets, require_secret):
-    """telegram_roundtrip (F18): with the DEDICATED test bot token, provision it on the
-    device, join the LAN, send a message to the bot from the test chat via the Telegram
-    HTTP API, and assert the device replies (round-trip).
+    """telegram_roundtrip (F18): with the DEDICATED test bot token on the device, a
+    message from the test chat gets the device's reply delivered to that chat.
 
-    getMe must succeed first (the bot was never even connected - F18), then we send a
-    message and poll getUpdates for the device's reply. Uses the dedicated bot ONLY -
-    sharing a production bot's token would fight it for getUpdates."""
+    getMe must succeed first (the bot was never even connected - F18). Telegram never
+    shows a bot its own messages, so the old leg's sendMessage from the bot itself
+    could never reach the device's poll; the inbound message is fed into the real
+    receive path with TGINJECT (the page Telegram would serve), and the reply's
+    delivery is read from the device's own Telegram record (/api/tg/archive: an
+    outbound row, status ok). Uses the dedicated bot ONLY, and clears its token after."""
+    import os
+
+    import tg_archive_bench as tb
+
     require_secret(secrets.require_test_telegram)
     require_secret(secrets.require_sta)
     try:
         import requests
     except ImportError:
         pytest.skip("requests not installed")
+    ip, webtok = os.environ.get("NIMBUS_TEST_IP"), os.environ.get("NIMBUS_TEST_TOKEN")
+    if not ip or not webtok:
+        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN to read the device's Telegram record")
+    token, chat = secrets.tg_test_token, secrets.tg_test_chat
+    me = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10.0).json()
+    assert me.get("ok") is True, "getMe failed for the test bot"
+    hdr = {"X-Nimbus-Token": webtok}
+    day = time.strftime("%Y-%m-%d", time.gmtime())
 
-    token = secrets.tg_test_token
-    chat = secrets.tg_test_chat
-    api = f"https://api.telegram.org/bot{token}"
-
-    me = requests.get(f"{api}/getMe", timeout=10.0).json()
-    assert me.get("ok") is True, f"getMe failed for the test bot: {me}"
+    def outbound():
+        rows, start = [], 0
+        while True:
+            page = requests.get(
+                f"http://{ip}/api/tg/archive",
+                headers=hdr,
+                timeout=15,
+                params={"chat": str(chat), "day": day, "limit": 200, "from": start},
+            ).json()
+            rows += [r for r in page.get("rows", []) if r.get("dir") == "out"]
+            if not page.get("more"):
+                return rows
+            start = page["next"]
 
     device.ensure_mode(1)
-    device.reset()
-    mode, _ip = device.wait_ready(timeout=25.0)
-    assert mode in (1, None), f"expected Orchestrator boot, got mode={mode}"  # None: beacon missed, board answered PING
-    push_key(device, "tgToken", token)
-    push_key(device, "tgAllow", chat)
-    device.send("REBOOT")  # telegram::begin() spawns the poll task at boot
-    device.wait_reboot(timeout=25.0)
-    device.wifi(secrets.sta_ssid, secrets.sta_pass)
-    device.expect_re(r"WIFI_GOT_IP\s+\d+\.\d+\.\d+\.\d+", timeout=25.0)
-
-    # Drain any backlog so we only match the device's fresh reply.
-    baseline = requests.get(f"{api}/getUpdates", params={"offset": -1, "timeout": 0}, timeout=15.0).json()
-    last_update = baseline["result"][-1]["update_id"] if baseline.get("result") else 0
-
-    marker = f"nimbus-hil-{int(time.time())}"
-    sent = requests.post(f"{api}/sendMessage", data={"chat_id": chat, "text": f"ping {marker}"}, timeout=10.0).json()
-    assert sent.get("ok") is True, f"sendMessage failed: {sent}"
-
-    deadline = time.time() + 60.0
-    device_reply = None
-    while time.time() < deadline:
-        upd = requests.get(f"{api}/getUpdates", params={"offset": last_update + 1, "timeout": 20}, timeout=30.0).json()
-        for u in upd.get("result", []):
-            last_update = max(last_update, u["update_id"])
-            msg = u.get("message") or u.get("channel_post") or {}
-            frm = msg.get("from", {})
-            if frm.get("is_bot") and str(msg.get("chat", {}).get("id")) == str(chat):
-                device_reply = msg.get("text", "")
-        if device_reply is not None:
-            break
-    assert device_reply is not None, "the device bot never replied within 60 s - Telegram round-trip failed (F18)"
+    r = requests.post(
+        f"http://{ip}/api/orch", headers=hdr, data={"tgToken": str(token), "tgAllow": str(chat)}, timeout=10
+    )
+    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
+    try:
+        before = len(outbound())
+        uid = tb.first_update_id() + 7
+        device.cmd(
+            "TGINJECT " + tb.page([tb.text_update(uid, int(str(chat)), "Reply with the single word: pong")]),
+            "TGINJECT",
+            timeout=10.0,
+        )
+        deadline, rows = time.time() + 90.0, []
+        while time.time() < deadline:
+            rows = outbound()[before:]
+            if rows:
+                break
+            time.sleep(3.0)
+        assert rows, "the device never sent a reply to the test chat (F18)"
+        assert rows[-1].get("st") == "ok", (
+            f"the device's reply to the test chat was not delivered (status {rows[-1].get('st')!r}); "
+            "if Telegram says 'chat not found', the test chat has never started the test bot"
+        )
+    finally:
+        requests.post(f"http://{ip}/api/orch", headers=hdr, data={"clr_tgToken": "1"}, timeout=10)
 
 
 # ---- graceful_degradation (F11 corollary) ----------------------------------
