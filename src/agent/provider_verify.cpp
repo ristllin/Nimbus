@@ -211,6 +211,7 @@ void queueWorkspaceProbeIfStale(uint32_t delayMs) {
 static void rearmWorkspaceProbe(uint32_t gen, const char* why, bool countsTry) {
   using R = WorkspaceProbeQueue::Rearm;
   const R r = g_wsq.rearm(gen, (uint32_t)millis(), countsTry);
+  agent::connectors::noteWorkspaceCheckMiss(why);   // the card shows why (22 Oct honesty)
   alogf("verify: mistral workspace probe did not run (%s)%s", why,
         r == R::Retry ? " - will retry in 2 min" : r == R::Newer ? " - a newer check is queued" : "");
 }

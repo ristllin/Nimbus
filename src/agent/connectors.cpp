@@ -9,6 +9,11 @@
 #include "../sys/net_util.h"
 #include "../sys/tls_arbiter.h"
 #include "../sys/psram_static.h"   // the large OAuth handoff buffers live in PSRAM
+#include "fs_atomic.h"              // writeFileAtomic, flashMounted: the last good workspace answer
+#include "files_subsystem.h"         // files::available - the file routes need an SD card
+#include "pdf_tool.h"                // the device PDF writer (one of the PDF routes)
+
+#include <LittleFS.h>
 
 #include "nimbus/orch/connectors_wire.h"     // portable attach builders + catalog
 #include "nimbus/orch/mcp_client.h"          // portable JSON-RPC + Streamable HTTP framing
@@ -20,6 +25,8 @@
 #include <WiFiClientSecure.h>
 
 #include "nimbus/orch/mcp_oauth.h"           // portable OAuth 2.1 decision layer
+#include "nimbus/orch/oauth_step_runner.h"   // network steps run off the watched loop
+#include "../sys/heap_watch.h"               // spawnGate, Scope - the step worker
 #include "nimbus/store/persist.h"            // kStorageFullMessage - a refresh token that did not store
 #include <esp_system.h>   // esp_random - retry jitter source
 #include <cstring>        // strcmp - non-allocating state compare in the OAuth callback
@@ -115,6 +122,45 @@ struct WsLock {
   WsLock& operator=(const WsLock&) = delete;
 };
 
+// 22 Oct honesty (1): the last good workspace answer lives in a small flash file, so
+// a restart or a check that cannot finish never drops a confirmed connector back to
+// "not checked" (Lumi, 21 Oct: no check finished on any boot, so the head heard "not
+// usable yet" every turn). Loaded once, on the first read after the file area is
+// mounted, and only under the key it was learned with (a SHA-256 tag, never the key);
+// written only when a fresh answer differs from the last one written.
+constexpr char kWsPath[] = "/data/mistral_ws.txt";
+constexpr size_t kWsFileMax = 16 * 1024;   // a torn or foreign file is never read whole
+static bool s_wsFileLoaded = false;        // guarded by s_wsMux
+static std::string s_wsLastDump;           // what the file holds now ("" = unknown)
+
+// Call with s_wsMux held.
+void ensureWsLoadedLocked() {
+  if (s_wsFileLoaded || s_ws.probed || !flashMounted()) return;
+  s_wsFileLoaded = true;
+  File f = LittleFS.open(kWsPath, FILE_READ);
+  if (!f) return;
+  String text;
+  if (f.size() <= kWsFileMax) text = f.readString();
+  f.close();
+  const std::string dump(text.c_str(), text.length());
+  const std::string tag = nimbus::orch::mistralKeyTag(store::mistralKey().c_str());
+  if (nimbus::orch::loadMistralWorkspace(dump, tag, s_ws)) {
+    s_wsLastDump = dump;
+    alog("connectors: Mistral workspace answer restored from flash");
+  } else {
+    alog("connectors: stored Mistral workspace answer ignored (other key or unreadable)");
+  }
+}
+
+// 22 Oct honesty (2): why the last automatic check did not land ("" = it did, or
+// none failed since boot), as a slug the card turns into words, and when.
+static char s_wsMiss[12] = "";
+static uint32_t s_wsMissMs = 0;
+// The slow re-check: while an enabled Studio connector is unconfirmed, a fresh check
+// is queued every kWorkspaceRecheckMs (the probe queue itself gives up after a few
+// quick tries). s_wsRecheckAt is the next one (millis), 0 until the first pump.
+static uint32_t s_wsRecheckAt = 0;
+
 // POST a form-encoded refresh grant to the token URL, parse {access_token,
 // expires_in}. One bounded TLS exchange under the work arbiter (same discipline
 // as the provider adapters). Returns "" on any failure (attach proceeds unauth'd
@@ -208,12 +254,44 @@ bool noteMistralConnectorsProbe(const char* v1ConnectorsBody, uint32_t generatio
   nimbus::orch::MistralWorkspace fresh;
   if (!nimbus::orch::noteMistralWorkspaceProbe(fresh, v1ConnectorsBody))
     return false;   // unparseable body (HTTP/transient error): keep the last good answer
-  WsLock lk;
-  if (generation != s_wsGen) return false;   // the key changed mid-probe: stale answer
-  s_ws.listed.swap(fresh.listed);     // a full replace: removed in Mistral => drops out
-  s_ws.signedIn.swap(fresh.signedIn);
-  s_ws.probed = true;
+  std::string dump;
+  {
+    WsLock lk;
+    if (generation != s_wsGen) return false;   // the key changed mid-probe: stale answer
+    s_ws.listed.swap(fresh.listed);     // a full replace: removed in Mistral => drops out
+    s_ws.signedIn.swap(fresh.signedIn);
+    s_ws.probed = true;
+    s_wsFileLoaded = true;              // the fresh answer outranks any stored one
+    s_wsMiss[0] = 0;
+    dump = nimbus::orch::dumpMistralWorkspace(
+        s_ws, nimbus::orch::mistralKeyTag(store::mistralKey().c_str()));
+    if (dump == s_wsLastDump) dump.clear();   // unchanged: no flash write
+  }
+  // Written outside the lock (flash I/O); a failed write keeps the answer in RAM.
+  if (!dump.empty() && writeFileAtomic(kWsPath, dump, "mistral workspace")) {
+    WsLock lk;
+    s_wsLastDump = dump;
+  }
   return true;
+}
+
+void noteWorkspaceCheckMiss(const char* why) {
+  const char* slug = "noanswer";
+  if (!strcmp(why, "a turn is running")) slug = "busy";
+  else if (!strcmp(why, "tls busy")) slug = "network";
+  else if (!strcmp(why, "low memory") || strstr(why, "worker")) slug = "memory";
+  WsLock lk;
+  strlcpy(s_wsMiss, slug, sizeof(s_wsMiss));
+  s_wsMissMs = millis();
+}
+
+void pumpWorkspaceRecheck() {
+  const uint32_t now = millis();
+  if (!s_wsRecheckAt) { s_wsRecheckAt = now + nimbus::orch::kWorkspaceRecheckMs; return; }
+  if ((int32_t)(now - s_wsRecheckAt) < 0) return;
+  s_wsRecheckAt = now + nimbus::orch::kWorkspaceRecheckMs;
+  if (provider_verify::workspaceProbePending()) return;   // one is queued or running already
+  provider_verify::queueWorkspaceProbeIfStale(0);          // no key / nothing unconfirmed: no-op
 }
 
 // W12: the honest per-connector credential state, one place so the model catalog,
@@ -223,6 +301,7 @@ bool noteMistralConnectorsProbe(const char* v1ConnectorsBody, uint32_t generatio
 int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c) {
   const int8_t oauth = c.hasOauth ? authStateOf(c.name.c_str()) : (int8_t)-1;
   WsLock lk;
+  ensureWsLoadedLocked();
   return nimbus::orch::connectorAuthFor(c, s_ws, oauth);
 }
 
@@ -231,9 +310,15 @@ void resetMistralConnectorsProbe() {
   // (auth=2) until the next verify re-probes. Called on a Mistral key change so a
   // connector listed under the OLD key's workspace can never read usable under a new
   // key before the fresh probe lands.
-  WsLock lk;
-  s_ws = nimbus::orch::MistralWorkspace();
-  s_wsGen++;
+  {
+    WsLock lk;
+    s_ws = nimbus::orch::MistralWorkspace();
+    s_wsGen++;
+    s_wsFileLoaded = true;   // the stored answer belongs to the old key: never load it
+    s_wsLastDump.clear();
+    s_wsMiss[0] = 0;
+  }
+  if (flashMounted()) LittleFS.remove(kWsPath);
 }
 
 bool wantsMistralWorkspaceProbe() {
@@ -248,11 +333,13 @@ bool mistralWorkspaceStale() {
   std::vector<nimbus::orch::ConnectorInfo> cs;
   nimbus::orch::parseConnectorsJson(blob.c_str(), cs, kMaxConnectors);
   WsLock lk;
+  ensureWsLoadedLocked();
   return nimbus::orch::mistralWorkspaceStale(cs, s_ws);
 }
 
 const char* studioCardState(const nimbus::orch::ConnectorInfo& c, bool probePending) {
   WsLock lk;
+  ensureWsLoadedLocked();
   return nimbus::orch::studioCardState(c, s_ws, probePending);
 }
 
@@ -303,34 +390,15 @@ std::vector<nimbus::orch::ConnectorInfo> portableList() {
   // portable presence flags by the shared rule.
   {
     WsLock lk;
+    ensureWsLoadedLocked();
     nimbus::orch::applyConnectorAuth(out, s_ws, [](const nimbus::orch::ConnectorInfo& c) {
       return authStateOf(c.name.c_str());
     });
   }
-  // Assistant > Tools "Code sandbox" (CUM-49): inject the code_interpreter builtin
-  // when the toggle is on, so the OpenAI/Mistral sandbox is enabled without an
-  // explicit connector card. Skipped if a code_interpreter card is already present.
-  if (store::codeSandbox()) {
-    bool have = false;
-    for (const auto& e : out)
-      if ((e.type.empty() ? e.name : e.type) == "code_interpreter" && e.kind == "builtin")
-        have = true;
-    if (!have) {
-      // provMatches() is an EXACT provider match, so inject one entry per provider
-      // (openai + mistral, the two with a code_interpreter builtin) rather than a
-      // comma list that would match neither.
-      for (const char* prov : {"openai", "mistral"}) {
-        nimbus::orch::ConnectorInfo sb;
-        sb.name = "code_interpreter";
-        sb.type = "code_interpreter";
-        sb.prov = prov;
-        sb.kind = "builtin";
-        sb.enabled = true;
-        sb.auth = -1;   // builtins authenticate provider-side
-        out.push_back(std::move(sb));
-      }
-    }
-  }
+  // Assistant > Tools "Code sandbox" is the ONLY control for the hosted
+  // code_interpreter (wf_plan 3): any stored card is dropped and the toggle adds
+  // the openai + mistral built-ins (portable, host-tested applyCodeSandbox).
+  nimbus::orch::applyCodeSandbox(out, store::codeSandbox());
   return out;
 }
 
@@ -402,11 +470,25 @@ void attachAnthropic(JsonDocument& agentBody) {
 
 // ---- catalog ------------------------------------------------------------------
 
-String catalog() {
+// The keys and the file-route inputs every surface shares: an SD card keeps the
+// file, the device has provider-file capture, and its own PDF writer.
+static nimbus::orch::ProviderState routeState() {
   nimbus::orch::ProviderState ps;
   ps.openaiKeyed    = store::hasOpenaiKey();
   ps.anthropicKeyed = store::hasAnthropicKey();
   ps.mistralKeyed   = store::hasMistralKey();
+  ps.fileStoreReady = files::available();
+  ps.fileCapture    = true;
+  ps.pdfWriter      = pdf_tool::available();
+  return ps;
+}
+
+nimbus::orch::PdfRoute pdfRoute() {
+  return nimbus::orch::pdfRoute(portableList(), routeState());
+}
+
+String catalog() {
+  nimbus::orch::ProviderState ps = routeState();   // keys + the file-route inputs
   ps.openaiVerified    = store::verifyResult("openai");
   ps.anthropicVerified = store::verifyResult("anthropic");
   ps.mistralVerified   = store::verifyResult("mistral");
@@ -424,6 +506,72 @@ String catalog() {
 String knownCatalog() {
   return nimbus::orch::knownCatalogJson().c_str();
 }
+
+// Removes every Code Interpreter card from `arr`; `wasOn` is set when one was enabled.
+static bool stripCodeInterpreterCards(JsonArray arr, bool& wasOn) {
+  bool removed = false;
+  for (size_t i = arr.size(); i-- > 0;) {
+    JsonObjectConst c = arr[i];
+    const char* ty = c["type"] | "";
+    const char* nm = c["name"] | "";
+    if (strcmp(ty[0] ? ty : nm, "code_interpreter") != 0 && strcmp(nm, "code_interpreter") != 0)
+      continue;
+    wasOn = wasOn || (c["en"] | 0) != 0;
+    arr.remove(i);
+    removed = true;
+  }
+  return removed;
+}
+
+bool migrateCodeInterpreterCards() {
+  String blob = store::connectorsJson();
+  if (!blob.length() || blob.indexOf("code_interpreter") < 0) return false;   // nothing to do
+  JsonDocument d;
+  if (deserializeJson(d, blob) || !d.is<JsonArray>()) return false;
+  bool wasOn = false;
+  if (!stripCodeInterpreterCards(d.as<JsonArray>(), wasOn)) return false;
+  // An enabled card meant "give me a sandbox": carry that into the one switch FIRST,
+  // so a switch that cannot be stored keeps the card (the next boot retries) rather
+  // than losing the sandbox the owner had.
+  if (wasOn && !store::codeSandbox() && !store::setCodeSandbox(true)) {
+    alog("connectors: Code Interpreter card kept: the Code sandbox switch did not store (retried next boot)");
+    return false;
+  }
+  String out;
+  serializeJson(d, out);
+  // A smaller blob: the shrink-safe write lands even on a full store. Should it not,
+  // the stored card is still dropped at every attach (applyCodeSandbox) and this
+  // runs again next boot.
+  if (!store::setConnectorsJson(out)) {
+    alog("connectors: Code Interpreter card migration did not store (retried next boot)");
+    return false;
+  }
+  // Mistral pins tools at conversation creation; a reset that does not store only
+  // keeps the old conversation (and its tools) until it resets on its own.
+  (void)store::setOrchConvId("");
+  alogf("connectors: Code Interpreter card removed (the Code sandbox switch is %s)",
+        store::codeSandbox() ? "on" : "off");
+  return true;
+}
+
+void webStatusInto(JsonObject out) {
+  const uint32_t now = millis();
+  {
+    WsLock lk;
+    if (s_wsMiss[0]) {
+      out["wsMiss"] = (const char*)s_wsMiss;
+      out["wsMissAgeS"] = (now - s_wsMissMs) / 1000;
+    }
+  }
+  if (store::hasMistralKey() && mistralWorkspaceStale() && s_wsRecheckAt) {
+    const int32_t remainMs = (int32_t)(s_wsRecheckAt - now);
+    out["wsRecheckS"] = remainMs > 0 ? remainMs / 1000 : 0;
+  }
+  out["mistralTools"] = nimbus::orch::mistralWireToolCount(portableList());
+  out["mistralToolsAdvised"] = nimbus::orch::kMistralToolsAdvised;
+}
+
+const char* pdfRouteSlug() { return pdfRoute().slug; }
 
 // ---- outbound MCP client (N4) ------------------------------------------------
 
@@ -1164,7 +1312,8 @@ String randHex(int bytes) {
   return s;
 }
 
-// The single-flight flow, OWNED by the main-loop pump (never touched off it).
+// The single-flight flow. The main-loop pump owns it between steps; while a step
+// worker runs (s_runner.busy()) the worker owns it and the pump leaves it alone.
 enum class Phase : uint8_t { Idle, DiscoverPR, DiscoverAS, Register, ShowConsent, HaveCode, Done, Failed };
 struct Flow {
   bool     active = false;
@@ -1185,7 +1334,8 @@ struct Flow {
   String   error;
   uint32_t nextStepMs = 0;
 };
-Flow s_flow;  // main-loop-owned
+Flow s_flow;  // main-loop-owned, lent to the step worker while it runs
+nimbus::orch::OauthStepRunner s_runner;   // starts each network step off the loop
 
 // Cross-task handoff (AsyncTCP web task <-> main-loop pump), fixed buffers only so
 // the critical section never allocates. Strings live only in s_flow / snapshot.
@@ -1519,7 +1669,49 @@ String statusJson() {
   return out;
 }
 
+namespace {
+// The steps that talk to the network, run only on the step worker.
+bool networkStep(Phase p) {
+  return p == Phase::DiscoverPR || p == Phase::DiscoverAS || p == Phase::Register ||
+         p == Phase::HaveCode;
+}
+
+void runStep() {
+  switch (s_flow.phase) {
+    case Phase::DiscoverPR: stepDiscoverPR(); break;
+    case Phase::DiscoverAS: stepDiscoverAS(); break;
+    case Phase::Register:   stepRegister();   break;
+    case Phase::HaveCode:   stepExchange();   break;
+    default: break;
+  }
+  publish();
+}
+
+// The worker: one step, off the watched main loop, then it deletes itself. Its
+// stack is internal RAM (the step reads flash and NVS), gated like the verify's.
+constexpr uint32_t kStepStackBytes = 8192;
+void stepTask(void*) {
+  {
+    nimbus::heapwatch::Scope worker(nimbus::heapwatch::kWorker);
+    runStep();
+  }
+  s_runner.done();
+  vTaskDelete(nullptr);
+}
+
+bool spawnStepWorker() {
+  if (nimbus::heapwatch::spawnGate(kStepStackBytes, "oauth") != nimbus::heapwatch::SpawnVerdict::Ok)
+    return false;   // a turn in flight or low memory: the runner asks again later
+  return xTaskCreate(stepTask, "mcpoauth", kStepStackBytes, nullptr, 1, nullptr) == pdPASS;
+}
+}  // namespace
+
 void pump() {
+  // This is the connectors subsystem's one main-loop hook, so it also runs the slow
+  // Mistral workspace re-check (a timestamp compare on most passes).
+  pumpWorkspaceRecheck();
+  // A step worker owns the flow: requests wait in their slots until it is done.
+  if (s_runner.busy()) return;
   // Drain the cross-task requests first (cheap, always).
   bool doStart, doCode, doCancel;
   char name[64], redir[128], code[600], state[64];
@@ -1547,15 +1739,9 @@ void pump() {
   if (!s_flow.active) return;
   if ((int32_t)(millis() - s_flow.nextStepMs) < 0) return;   // throttle
   if (WiFi.status() != WL_CONNECTED) { s_flow.nextStepMs = millis() + 2000; return; }
-
-  switch (s_flow.phase) {
-    case Phase::DiscoverPR: stepDiscoverPR(); break;
-    case Phase::DiscoverAS: stepDiscoverAS(); break;
-    case Phase::Register:   stepRegister();   break;
-    case Phase::HaveCode:   stepExchange();   break;
-    default: /* ShowConsent / Done / Failed / Idle: nothing to do here */ break;
-  }
-  publish();
+  // ShowConsent / Done / Failed / Idle: nothing to do. A network step never runs
+  // here (the watched loop): the worker runs it (test_oauth_step_runner).
+  s_runner.pump(networkStep(s_flow.phase), millis(), spawnStepWorker);
 }
 
 }  // namespace oauth

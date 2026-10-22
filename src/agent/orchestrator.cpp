@@ -35,6 +35,7 @@
 #include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
 #include "nimbus/tts_catalog.h"         // core::speakerTtsFormat - provider -> speaker format (host-tested)
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
+#include "pdf_tool.h"                        // files.pdf - the device PDF writer
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
 #include <LittleFS.h>
 #include <atomic>                       // voiceTurnSeq - hold-to-talk completion edge
@@ -689,6 +690,10 @@ static JobEngine::Deps buildJobDeps() {
     block += dream::buildEpisodicDigest(rows, headBudget().briefBytes);
     return block;
   };
+  // A file task runs where its file can come back: the device's PDF route.
+  d.fileSpawnProvider = [] {
+    return std::string(nimbus::orch::pdfRouteProvider(connectors::pdfRoute()));
+  };
   // Connector-aware routing: a spawn whose skill names an enabled connector routes
   // to the provider that hosts it (e.g. a Notion task -> mistral), so heavy
   // connector work runs on lab compute. Empty/ambiguous ("any") -> no override.
@@ -901,27 +906,17 @@ static agent::router_refusal::RouterTap& cumuloTap() {
 // CUM-242 x1 item 2: the connector list a CUMULO-routed head advertises. It runs
 // under the shared router org key, so the owner's PRIVATE connectors (remote MCP,
 // first-party) must NOT ride the request - only the generic provider built-ins.
-// The attach builders filter with builtinsOnly=true; this rebuilds the same
-// portable list connectors.cpp feeds them (blob parse + the code-sandbox builtin
-// injection) so an enabled built-in still attaches over the router. No secrets
-// (built-ins authenticate provider-side, so no bearer is resolved).
+// The attach builders filter with builtinsOnly=true; this rebuilds the portable
+// list from the blob so an enabled built-in still attaches over the router, minus
+// code_interpreter (below). No secrets (built-ins authenticate provider-side, so
+// no bearer is resolved).
 static std::vector<nimbus::orch::ConnectorInfo> cumuloRouteConnectors() {
   std::vector<nimbus::orch::ConnectorInfo> cs;
   nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs,
                                     connectors::kMaxConnectors, nullptr);
-  if (store::codeSandbox()) {
-    bool have = false;
-    for (const auto& e : cs)
-      if ((e.type.empty() ? e.name : e.type) == "code_interpreter" && e.kind == "builtin")
-        have = true;
-    if (!have)
-      for (const char* prov : {"openai", "mistral"}) {
-        nimbus::orch::ConnectorInfo sb;
-        sb.name = "code_interpreter"; sb.type = "code_interpreter";
-        sb.prov = prov; sb.kind = "builtin"; sb.enabled = true; sb.auth = -1;
-        cs.push_back(std::move(sb));
-      }
-  }
+  // No code_interpreter over the router (wf_plan 3, Q8): a file it built could not
+  // come back (no router capture path yet), so it would only cost container time.
+  nimbus::orch::applyCodeSandbox(cs, false);
   return cs;
 }
 
@@ -1700,10 +1695,14 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
     };
     memory::registry().setUnknownToolHints(hints);
   }
-  // CUM-537: the Mistral workspace answer lives in RAM, so after every restart a
-  // Studio connector read "not checked" until someone re-verified the Mistral key.
-  // Queue the probe once, 90 s out so the first turns after a restart (queued
-  // Telegram messages) get the work slot first; the pump runs it when idle.
+  // wf_plan 3: a stored Code Interpreter card moves into the Code sandbox switch
+  // (once; a no-op on every later boot), and the device PDF writer is registered.
+  connectors::migrateCodeInterpreterCards();
+  pdf_tool::registerTool(memory::registry());
+  // CUM-537: queue a workspace probe once, 90 s out so the first turns after a
+  // restart (queued Telegram messages) get the work slot first; the pump runs it
+  // when idle. A stored answer (the last good one, kept on flash) covers the wait,
+  // so a confirmed connector stays usable across the restart.
   provider_verify::queueWorkspaceProbeIfStale(90000);
   // Per-model prices: an upgraded device with a verified Cumulo key has no router
   // prices until a Cumulo verify fetches them; ask for one, after the probe above.

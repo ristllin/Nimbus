@@ -4,7 +4,7 @@
 
 // Forward declaration so the outbound-MCP sync() can take the registry by
 // reference without this widely-included header pulling the whole registry TU.
-namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; } }
+namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; } }
 
 // connectors - per-provider external-tool wiring (Phase C). The OWNER configures
 // connectors once (web UI -> one NVS JSON blob, store::connectorsJson); the
@@ -114,6 +114,32 @@ int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c);
 // next verify re-probes). Call on a Mistral key change so a connector listed under the
 // previous key's workspace cannot read usable under a new key.
 void resetMistralConnectorsProbe();
+
+// 22 Oct honesty (2): the automatic workspace check (probe queue) did not land, with
+// the reason provider_verify logs ("low memory", "a turn is running", "tls busy",
+// "no answer", ...). The card shows it as plain words until a check lands.
+void noteWorkspaceCheckMiss(const char* why);
+// The slow re-check: while an enabled Studio connector is unconfirmed, queue a fresh
+// workspace check every 30 minutes (the probe queue gives up after a few quick
+// tries). Called on every main-loop pass from mcp::oauth::pump().
+void pumpWorkspaceRecheck();
+// The connectors card's live status for GET /api/connectors: the last check miss
+// (wsMiss slug + wsMissAgeS), seconds to the next slow re-check (wsRecheckS), and how
+// many tools a Mistral request carries (mistralTools, warned on above
+// mistralToolsAdvised).
+void webStatusInto(JsonObject out);
+
+// wf_plan 3: the one-time move of any stored Code Interpreter card into the Code
+// sandbox switch (critique B2). Removes every code_interpreter entry from the blob
+// (a smaller, shrink-safe write) and, when one was enabled, turns the switch on.
+// Called at Orchestrator start; true when it changed the blob.
+bool migrateCodeInterpreterCards();
+
+// How a PDF can reach the owner right now (the portable pdfRoute over the live
+// connector list, keys, SD card and capture): the spawn routing of a file task,
+// the Tools status line (pdfRouteSlug) and the catalog's PDF line read one rule.
+nimbus::orch::PdfRoute pdfRoute();
+const char* pdfRouteSlug();
 
 // Attach enabled connectors to a provider request body (call before serialize):
 //   OpenAI (head + sub dispatch): tools[] += {type:"mcp", server_label/url or
