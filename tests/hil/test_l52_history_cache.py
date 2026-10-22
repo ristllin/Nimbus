@@ -9,8 +9,8 @@ needs new content, and the bytes are append-only between boundaries - across a
 restart too (the overflow shift is kept with the fold state).
 
 Legs (the message-level caching lane extends this file with its cache legs):
-  1. Storm, deterministic: ``HISTADD`` captures 200 copies of one message in the web
-     chat (no turn, no provider call), then one distinct turn: the history holds
+  1. Storm, deterministic: ``HISTADD`` (50 rows per line) captures 200 copies of one
+     message in the web chat (no turn, no provider call), then one distinct turn: the history holds
      ONE ``(x200)`` row, the earlier distinct owner message and its reply, and no
      more than one fold ran.
   2. Storm over Telegram, the real receive path (``TGINJECT``; needs the owner chat
@@ -79,14 +79,29 @@ def _folds(session, ip: str, chat: str) -> int:
     return sum(1 for m in r.json().get("messages", []) if "ev:compact" in m.get("tags", ""))
 
 
+def _histadd(dev: Device, chat: str, total: int, text: str) -> None:
+    """HISTADD in lines of at most 50 rows (the console's per-line cap), retrying a
+    line the card lock refused (a turn held it; nothing was written)."""
+    left = total
+    deadline = time.time() + 120.0
+    while left > 0:
+        n = min(50, left)
+        line = dev.cmd(f"HISTADD {chat} {n} {text}", "HISTADD", timeout=15.0)
+        if "busy" in line:
+            assert time.time() < deadline, f"HISTADD stayed busy: {line}"
+            time.sleep(2.0)
+            continue
+        assert f"n={n}" in line, line
+        left -= n
+
+
 def test_storm_collapses_to_one_row(device: Device, net):
     s, ip = _web(net)
     assert "HISTV2 1" in device.cmd("HISTV2 1", "HISTV2", timeout=5.0)
     folds0 = _folds(s, ip, "web")
     seed = chat_turn(s, ip, f"{RUN} seed: my locker code is 4417. Reply with just OK.")
     assert seed, "the seed turn got no reply"
-    line = device.cmd(f"HISTADD web 200 hello? {RUN}", "HISTADD", timeout=30.0)
-    assert "n=200" in line, line
+    _histadd(device, "web", 200, f"hello? {RUN}")
     answer = chat_turn(s, ip, f"{RUN}: what is my locker code? Reply with the number only.")
     hist = _history(_dump(s, ip))
     assert hist.count(f"hello? {RUN}") == 1, f"the storm is not one row:\n{hist[-1500:]}"

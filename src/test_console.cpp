@@ -1991,7 +1991,9 @@ void dispatch(String line) {
   if (line.startsWith("HISTADD ")) {
     // HISTADD <chat> <n> <text>: capture <n> owner rows of <text> in <chat>, as a
     // replay storm leaves them (the history's xN collapse, L19-26), with no turn
-    // and no provider call. n is capped at 500.
+    // and no provider call. The console runs on the watched main loop, so the card
+    // lock is only tried (busy = nothing written, retry) and n is capped at 50 per
+    // line to keep the pass short; repeat the line for a bigger storm.
     String rest = line.substring(8);
     rest.trim();
     const int a = rest.indexOf(' ');
@@ -2000,8 +2002,10 @@ void dispatch(String line) {
     const String chat = rest.substring(0, a);
     int n = rest.substring(a + 1, b).toInt();
     if (n < 1) n = 1;
-    if (n > 500) n = 500;
+    if (n > 50) n = 50;
     const String text = rest.substring(b + 1);
+    agent::memory::LoopLock held;
+    if (!held) { reply("HISTADD busy: a turn holds the card - retry"); return; }
     for (int i = 0; i < n; i++)
       agent::memory::captureMessage(chat.c_str(), "user", nimbus::orch::MsgKind::Message, text, "",
                                     String("from:bench"));
