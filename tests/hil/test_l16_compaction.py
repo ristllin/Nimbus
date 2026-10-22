@@ -102,8 +102,10 @@ def test_fold_cycle_end_to_end(board):
     url, _ = _api(ip, tok, "/api/lastturn")
     dump = _S.get(url, timeout=15).text
     assert "## CONVERSATION SUMMARY" in dump, "§5a section missing from the live prompt"
-    idx_sum = dump.find("## CONVERSATION SUMMARY")
-    idx_win = dump.find("## RECENT CONVERSATION")
+    # The dump opens with a section legend that names every "## " heading (L19-28),
+    # so the sections themselves are the LAST occurrence of each heading.
+    idx_sum = dump.rfind("## CONVERSATION SUMMARY")
+    idx_win = dump.rfind("## RECENT CONVERSATION")
     assert idx_sum != -1 and idx_win != -1 and idx_sum < idx_win, "§5a not above the window"
     assert MARKER in dump[idx_sum:idx_win], "marker not in the §5a summary"
     # Window slice ends at the NEXT section header, whatever it is - a named

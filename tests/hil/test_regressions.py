@@ -27,27 +27,38 @@ from test_l5_agent import (
 )
 
 
-# ---- R_F8 - SSID case-correction (F8) --------------------------------------
+# ---- R_F8 - a network name in the wrong case (F8) --------------------------
 @pytest.mark.net
 def test_R_F8_ssid_case(device, net, secrets, require_secret):
-    """F8: provisioning the SSID in the WRONG CASE (lower-cased) must still connect,
-    because the firmware scan-corrects the case (a lowercased SSID vs its real mixed-case name).
-    Vacuous if the known-good SSID is already all-lowercase -> LOUD skip."""
+    """F8: provisioning the network name in the WRONG CASE (lower-cased).
+
+    The firmware compares SSIDs exactly (802.11 names are octet strings; no release
+    since v4.1.8 case-corrects a typed name), so the honest contract is: the join
+    reports NO_AP_FOUND (201) promptly instead of hanging, then the device rejoins its
+    stored network on its own. The old leg demanded a case-correction that does not
+    exist and, with a patient join wait, would pass vacuously on that rejoin. The
+    wrong-case entry the provisioning saved is forgotten afterwards (it polluted the
+    unit's network list). Vacuous if the known-good SSID is already all-lowercase."""
     require_secret(secrets.require_sta)
     ssid = secrets.sta_ssid
     if ssid.lower() == ssid:
         pytest.skip(
-            f"SSID {ssid!r} is already lowercase; case-correction is vacuous "
+            "the test SSID is already lowercase, so a wrong-case name cannot be made "
             "- provide a mixed-case NIMBUS_TEST_STA_SSID to test F8"
         )
     device.reset()
     device.wait_ready(timeout=20.0)
     net.provision(ssid.lower(), secrets.sta_pass)  # deliberately wrong case
     try:
-        ip = net.wait_got_ip(timeout=30.0)
-    except WifiAuthFailure as exc:
-        pytest.fail(f"lower-cased SSID did not case-correct + connect (reason={exc.reason}) - F8 regression")
-    assert ip, "case-corrected SSID connected but no IP reported"
+        reason = net.wait_disconnect_reason(timeout=25.0)  # also proves PING still answers
+        assert reason == 201, f"a wrong-case network name should read NO_AP_FOUND (201), got reason={reason}"
+        ip = net.wait_got_ip(timeout=90.0)  # the stored, correctly named network
+        assert ip, "the device did not rejoin its stored network after the wrong-case name"
+    finally:
+        try:
+            net.post("/api/wifi", {"action": "forget", "ssid": ssid.lower()}, timeout=8.0)
+        except Exception:  # noqa: BLE001 - best effort; a stray entry never matches a scan
+            pass
 
 
 # ---- R_F9 - wrong-password reason surfaced, no hang (F9) --------------------

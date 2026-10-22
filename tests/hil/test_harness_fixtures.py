@@ -458,6 +458,16 @@ def test_wait_got_ip_still_raises_on_a_real_failure(clock):
 
 
 @pytest.mark.host
+def test_wait_got_ip_rides_out_a_refusal_followed_by_the_ip(clock):
+    # The bench shape (unit A, 22 Oct): a provisioning command draws one refusal from
+    # the access point, then the IP a second later. That is a join, not a failure.
+    for reason in (2, 203):
+        dev, n = scripted(Console([]))
+        dev.queue = ["WIFI_DISCONNECTED reason=8", f"WIFI_DISCONNECTED reason={reason}", f"WIFI_GOT_IP {IP}"]
+        assert n.wait_got_ip() == IP
+
+
+@pytest.mark.host
 def test_wait_got_ip_times_out_rather_than_failing_on_reason_8_alone(clock):
     dev, n = scripted(Console([]))
     dev.queue = ["WIFI_DISCONNECTED reason=8"]

@@ -77,7 +77,9 @@ PAGES = {
 }
 
 # Which legs run text through now (A-independent) vs need the full receive hook.
-TEXT_LIKE = {"text", "command", "edited"}
+# An edited message is not one of them: by design it carries ids and the edit time
+# only and is handled, never run as a new message (tg_updates.h, Update::edited).
+TEXT_LIKE = {"text", "command"}
 
 
 def _raw_hook_present(dev: Device) -> bool:
@@ -114,6 +116,9 @@ def test_inbound_shape_takes_the_right_action(device: Device, shape):
     if shape in TEXT_LIKE:
         # Text and commands run through the public inject queue even before lane R.
         assert "injected=1" in line or "text=1" in line, f"{shape}: not injected: {line}"
+        return
+    if shape == "edited":
+        assert "queued" in line and "text=0" in line, f"an edit must be handled, not run as a new message: {line}"
         return
     if "receive hook" in line:
         pytest.skip(f"{shape}: full raw-update hook not wired yet (lane R)")

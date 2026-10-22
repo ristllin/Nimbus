@@ -179,15 +179,26 @@ class Net:
                 return m
 
     def wait_got_ip(self, timeout: float = JOIN_TIMEOUT_S) -> str:
-        """Wait for ``WIFI_GOT_IP <ip>``. If a ``WIFI_DISCONNECTED reason=<n>``
-        arrives first, raise WifiAuthFailure(reason) (feeds F9) - except the
-        device's own disconnect (reason 8), which only means a join is starting.
-        On success caches + returns the LAN IP."""
-        m = self._next_reason(rf"{_GOT_IP}|{_DISCONNECTED}", time.monotonic() + timeout)
-        if m.group("got"):
-            self.ip = m.group("got")
-            return self.ip
-        raise WifiAuthFailure(int(m.group("reason")))
+        """Wait for ``WIFI_GOT_IP <ip>``; on success cache + return the LAN IP. A
+        ``WIFI_DISCONNECTED reason=<n>`` on the way is not the verdict: re-joining an
+        access point right after a provisioning command often draws one refusal
+        (reason 2 or 203 seen on the bench) before the IP arrives a second later.
+        Only when no IP arrives by ``timeout`` does the last reason become the
+        failure, WifiAuthFailure(reason) (feeds F9); with no reason at all it is a
+        timeout. The device's own disconnect (reason 8) never counts."""
+        deadline = time.monotonic() + timeout
+        last = None
+        while True:
+            try:
+                m = self._next_reason(rf"{_GOT_IP}|{_DISCONNECTED}", deadline)
+            except ExpectTimeout:
+                if last is None:
+                    raise
+                raise WifiAuthFailure(last) from None
+            if m.group("got"):
+                self.ip = m.group("got")
+                return self.ip
+            last = int(m.group("reason"))
 
     def wait_disconnect_reason(self, timeout: float = 25.0) -> int:
         """Wait for ``WIFI_DISCONNECTED reason=<n>`` and return the int reason
