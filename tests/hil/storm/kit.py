@@ -527,11 +527,15 @@ class StormBench:
         {"usable", "usable_s", "reply"}. An honest refusal (any reply) counts as usable;
         silence does not."""
         before = self.chat_rows()
+        sent_before = len(self.outbound() or [])
         t0 = time.time()
         self.inject(text, update_id, timeout=timeout)
         end = t0 + timeout
         while time.time() < end:
             rows = [r for r in g.new_rows(before, self.chat_rows()) if r.get("role") == "assistant"]
+            # In bot mode a reply that went to Telegram counts too: a failed turn's honest
+            # refusal is sent to the chat, never written to its history.
+            rows += (self.outbound() or [])[sent_before:]
             if rows:
                 return {"usable": True, "usable_s": time.time() - t0, "reply": rows[-1].get("text", "")}
             time.sleep(3.0)
@@ -731,11 +735,12 @@ class Window:
         return self
 
     def notices(self, notice_re) -> int:
-        """Owner notices of the window, on the owner's channel: the Telegram record in bot
-        mode (every outbound text that is not the expected answer), else the chat's
-        history notices plus the notices the device logged as queued."""
+        """Owner notices of the window, on the owner's channel: in bot mode the Telegram
+        record (every outbound text with the leg's notice words: a failed turn's notice is
+        sent to the chat and never written to its history), else the chat's history
+        notices plus the notices the device logged as queued."""
         if self.sent is not None:
-            return sum(1 for r in self.sent if not ANSWER_RE.search(str(r.get("text") or "")))
+            return sum(1 for r in self.sent if notice_re.search(str(r.get("text") or "")))
         return len(self.replies(notice_re)["notices"]) + len(g.log_notices(self.lines))
 
     def replies(self, notice_re) -> dict:
