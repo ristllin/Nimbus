@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.5.15 - Working memory is back
+
+A fix release on top of v4.5.14, found by the release test runs on two bench devices before v4.5.14 reached any desk device.
+
+- **Working memory is back.** v4.5.14 started with about 4.5 KB less free working memory than v4.5.13, so every message had that much less room before the device refused it. Twelve long-lived buffers (the web memory echo, the system message prompt, the connector sign-in handoff and the pending Telegram voice, attachment and media slots) now live in the device's large external memory. Each request now starts with slightly more free working memory than on v4.5.13: on the test device 26.3 KB against 26.1 KB, and 42.5 KB against 42.2 KB at idle.
+- **A night cut short by a restart says so.** When a restart interrupted the nightly upkeep, its routine record showed a failure with no reason. It now reads "the device restarted during this run".
+- **A crash is not blamed on an older crash.** When the newest crash left no saved report, the boot row named the cause of an earlier one. It now says the cause is unknown.
+
 ## v4.5.14 - No repeated messages, no silent losses, a reason for every failure
 
 Found on a desk device between 13 and 21 Oct, and reproduced on a bench device before each fix. Its small settings storage filled up on 14 Oct, and from then on several things went wrong together:
