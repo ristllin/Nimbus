@@ -51,7 +51,15 @@ LOG_LINE_RE = re.compile(r"^\s*(?P<seq>\d+)\s+(?P<ms>\d+)\s+(?P<tag>\S+)\s(?P<te
 # A paid head turn ended (both images log it): "turn end: ok host=anthropic tokens in=.. out=..".
 TURN_END_RE = re.compile(
     r"\bturn end: (?P<outcome>\S+) host=(?P<host>\S+)(?: tokens in=(?P<tin>\d+) out=(?P<tout>\d+))?"
+    r"(?:.*?\bsrc=(?P<src>\S+))?"
 )
+# Turns the device starts on its own (a helper's synthesis, a routine, the nightly
+# upkeep): they belong to whatever started them, not to the inbound storm a leg drives
+# (on a shared bench unit, an earlier lane's helper may finish inside a leg's window).
+BACKGROUND_SOURCES = ("synthesis", "loop", "dream")
+# Requests per turn as the device bills them: "turn spend: ok owner | anthropic/<model> ... n=3".
+TURN_SPEND_RE = re.compile(r"\bturn spend: \S+ (?P<src>\S+) \| (?P<rows>.*)$")
+SPEND_N_RE = re.compile(r"\bn=(\d+)")
 # The provider answered on the device's behalf (PROVFAULT): a request that never left.
 OVERRIDE_RE = re.compile(r"provider: TEST override answered (?P<host>[^/\s]+)\S* with HTTP (?P<status>\d+)")
 PARKED_RE = re.compile(r"provider: (?P<host>\S+) parked for every seam")
@@ -129,14 +137,39 @@ def turn_ends(lines: Iterable[LogLine]) -> List[dict]:
                     "host": m.group("host"),
                     "tin": int(m.group("tin") or 0),
                     "tout": int(m.group("tout") or 0),
+                    "src": m.group("src") or "",
                 }
             )
     return out
 
 
 def paid_turns(lines: Iterable[LogLine]) -> int:
-    """Head turns that reached a provider: a turn that ended with no host ran nothing."""
-    return sum(1 for t in turn_ends(lines) if t["host"] not in ("none", "-", ""))
+    """Inbound head turns that reached a provider: a turn that ended with no host ran
+    nothing, and a turn the device started on its own is not the storm's."""
+    return sum(1 for t in turn_ends(lines) if t["host"] not in ("none", "-", "") and t["src"] not in BACKGROUND_SOURCES)
+
+
+def billed_requests(lines: Iterable[LogLine]) -> int:
+    """Provider requests of the inbound turns as the device bills them (the n= of each
+    host on a 'turn spend:' line); 0 on an image that logs no spend lines."""
+    total = 0
+    for ln in lines:
+        m = TURN_SPEND_RE.search(ln.text)
+        if m and m.group("src") not in BACKGROUND_SOURCES:
+            total += sum(int(n) for n in SPEND_N_RE.findall(m.group("rows")))
+    return total
+
+
+def rows_per_turn(rows: Iterable[dict]) -> Dict[str, int]:
+    """Assistant messages per turn (the 'turn:' tag of each message): one turn should
+    reach the owner as one message."""
+    out: Dict[str, int] = {}
+    for r in rows:
+        if r.get("role") != "assistant":
+            continue
+        tag = next((t for t in str(r.get("tags") or "").split(",") if t.startswith("turn:")), "turn:?")
+        out[tag] = out.get(tag, 0) + 1
+    return out
 
 
 def override_requests(lines: Iterable[LogLine]) -> Dict[str, int]:

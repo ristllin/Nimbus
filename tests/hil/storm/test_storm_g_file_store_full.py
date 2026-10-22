@@ -12,9 +12,10 @@ message. Every bench project, and the files the photos left in the owner chat's
 project, are removed afterwards. Every other provider key is cleared. Unit L.
 
 Bounds on the release candidate: at most one turn per photo, each photo read once
-(no repeated download), exactly one owner notice that the store is full across the
-five photos, no log line repeated more than 5 times, the fresh message answered within
-180 s.
+(no repeated download), the owner told that the store is full, and every turn reaching
+the owner as exactly one message (a photo answered twice, or a notice repeated on its
+own, is a second message), no log line repeated more than 5 times, the fresh message
+answered within 180 s.
 
 Run: NIMBUS_STORM_UNIT=L python3 -m pytest tests/hil/storm/test_storm_g_file_store_full.py --allow-hardware -s
 """
@@ -106,6 +107,16 @@ def _photos(storm, uid: int, staged: tuple) -> None:
         storm.tap.poll()
 
 
+def told_once_per_turn(w) -> int:
+    """0 when the owner was never told the store is full; otherwise the most messages any
+    one turn of the window sent (exactly 1 is told once: a reply per photo is an answer,
+    a second message from the same turn is a repeat)."""
+    if not w.notices(NOTICE_RE):
+        return 0
+    per_turn = g.rows_per_turn(w.rows)
+    return max(per_turn.values()) if per_turn else 1
+
+
 def test_storm_g_file_store_full(storm):
     import tg_archive_bench as tb
 
@@ -136,13 +147,21 @@ def test_storm_g_file_store_full(storm):
         paid_turns=g.paid_turns(w.lines),
         provider_requests=w.requests(),
         parked_requests=0,
-        notices=w.notices(NOTICE_RE),
+        notices=told_once_per_turn(w),
         identical_peak=max(peak, len(downloads) - PHOTOS + 1 if downloads else 0),
         identical_line=line[:160],
         usable=probe["usable"],
         usable_s=probe["usable_s"],
     )
-    m.extra.update({"fill": fill, "downloads": len(downloads), "replies": replies, "probeReply": probe["reply"][:200]})
+    m.extra.update(
+        {
+            "fill": fill,
+            "downloads": len(downloads),
+            "replies": replies,
+            "messagesPerTurn": g.rows_per_turn(w.rows),
+            "probeReply": probe["reply"][:200],
+        }
+    )
     if storm.control:
         m.notes.append(
             "v4.5.13 has no raw page inject, so its five owner messages are text asking for a note to be kept; "

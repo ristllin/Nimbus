@@ -665,14 +665,6 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
     return m
 
 
-HEAD_REQUEST_RE = re.compile(r"transport: heaptrace api\.anthropic\.com")
-
-
-def _head_requests(lines: List[g.LogLine]) -> int:
-    """Head requests to Anthropic in a window: one heap trace per exchange."""
-    return sum(1 for ln in lines if HEAD_REQUEST_RE.search(ln.text))
-
-
 GUARD_RE = re.compile(r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+)")
 
 
@@ -754,7 +746,7 @@ class Window:
         PROVFAULT-answered and the real head exchanges on the candidate."""
         if self.bench.control:
             return self.mock_requests
-        return g.override_requests(self.lines).get(host, 0) + _head_requests(self.lines)
+        return g.override_requests(self.lines).get(host, 0) + g.billed_requests(self.lines)
 
 
 def owner_turn(bench: StormBench, text: str, uid: int, timeout: float = 240.0) -> None:

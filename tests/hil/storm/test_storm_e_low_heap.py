@@ -56,7 +56,10 @@ DREAM_DONE_RE = re.compile(r"dream: \S+.* tokens=\d+|dream: skipped tonight|drea
 def _dream(storm, timeout: float = 420.0) -> str:
     """The upkeep drill. v4.5.13 runs it on the console and answers when it is done; the
     candidate queues it for the turn task and logs a result line."""
-    out = storm.verb("DREAM", "DREAM", timeout=timeout).strip()
+    try:
+        out = storm.verb("DREAM", "DREAM", timeout=timeout).strip()
+    except Exception as e:  # noqa: BLE001 - an upkeep that never answers is the finding, not a crash
+        return f"DREAM gave no answer within {timeout:.0f} s ({type(e).__name__})"
     if "queued" not in out:
         return out
     end = time.time() + timeout
@@ -105,8 +108,12 @@ def test_storm_e_low_heap(storm):
             "zeroByteWrites": zero[:5],
             "zeroByteWriteCount": len(zero),
             "dream": dream[:300],
+            "dreamFinished": "no answer" not in dream and "no result line" not in dream,
             "replies": replies,
             "probeReply": probe["reply"][:200],
         }
     )
+    if not m.extra["dreamFinished"]:
+        m.notes.append(f"the upkeep did not finish under low memory: {dream[:120]}")
+        m.usable = m.usable and storm.control  # on the candidate a hung upkeep fails usable
     kit.assert_graded(storm.finish(LEG, m, BOUNDS))

@@ -92,7 +92,10 @@ CANDIDATE_LOG = "\n".join(
         "11 1100 - orchestrator: turn host=anthropic (conv=0 heap=30000)",
         "12 2000 - transport: heaptrace api.anthropic.com/v1/messages body=9000 pre=1/1 conn=1/1 wrote=1/1 done=1/1 "
         "fail=none af=0 min=1 at=1 ms=1",
-        "13 2100 - turn end: ok host=anthropic tokens in=900 out=4 tools=0 reply=4B",
+        "13 2050 - turn spend: ok owner | anthropic/claude-haiku-5-5 in=4 out=349 cR=0 cW=18049 n=1",
+        "13 2100 - turn end: ok host=anthropic tokens in=900 out=4 tools=0 reply=4B src=owner",
+        "13 2200 - turn spend: ok synthesis | anthropic/claude-haiku-5-5 in=10 out=2223 cR=21697 cW=37243 n=3",
+        "13 2300 - turn end: ok host=anthropic tokens in=10 out=2223 tools=2 reply=720B src=synthesis",
         "14 2200 - telegram: injected page: 1 message batched into 1 turn",
     ]
     + [f"{15 + k} {3000 + k} - telegram: 1 duplicate dropped ({k + 1} since the guard was cleared)" for k in range(49)]
@@ -108,7 +111,7 @@ def test_a_candidate_shaped_replay_passes():
     peak, line = g.identical_peak(lines, ignore=kit.DRIVE_LINES)
     m = g.Metrics(
         paid_turns=g.paid_turns(lines),
-        provider_requests=kit._head_requests(lines),
+        provider_requests=g.billed_requests(lines),
         parked_requests=0,
         notices=len(g.log_notices(lines)),
         identical_peak=peak,
@@ -316,3 +319,32 @@ def test_a_multi_episode_leg_is_graded_by_its_worst_episode_and_serializes(tmp_p
     bad.extra["episodes"] = [{k: v for k, v in vars(e).items() if k not in ("extra", "notes")} for e in (good, bad)]
     rec = g.evidence_record(g.RunId("c_provider_refusing", g.CANDIDATE, "v", "eb50beb8", "A", 1.0, 2.0), bad, b)
     assert g.write_evidence(str(tmp_path), rec).endswith(".json") and rec["grade"] == g.FAIL
+
+
+def test_background_turns_are_not_the_storm():
+    """A helper's synthesis that finishes inside a leg's window (an earlier lane's job on
+    a shared unit, unit L 22 Oct) is neither a paid turn of the storm nor its requests."""
+    log = "\n".join(
+        [
+            "1 1 - turn spend: ok owner | anthropic/m in=1 out=1 cR=0 cW=0 n=2 | mistral/s in=1 out=1 n=1",
+            "2 2 - turn end: ok host=anthropic tokens in=1 out=1 tools=0 reply=2B src=owner",
+            "3 3 - turn spend: ok synthesis | anthropic/m in=1 out=1 n=4",
+            "4 4 - turn end: ok host=anthropic tokens in=1 out=1 tools=2 reply=9B src=synthesis",
+            "5 5 - turn end: ok host=custom tokens in=0 out=0 tools=0 reply=12B",  # v4.5.13: no src
+            "6 6 - turn spend: ok dream | anthropic/m in=1 out=1 n=7",
+        ]
+    )
+    lines = g.parse_log(log)
+    assert g.paid_turns(lines) == 2
+    assert g.billed_requests(lines) == 3
+
+
+def test_messages_per_turn():
+    rows = [
+        {"role": "assistant", "tags": "fx:none,out:reply,turn:m1"},
+        {"role": "assistant", "tags": "out:ask,turn:m1"},
+        {"role": "assistant", "tags": "turn:m2"},
+        {"role": "user", "tags": "turn:m2"},
+        {"role": "assistant"},
+    ]
+    assert g.rows_per_turn(rows) == {"turn:m1": 2, "turn:m2": 1, "turn:?": 1}
