@@ -490,13 +490,44 @@ Leg legRouterId(HRig& rig, const std::string& host) {
 
 }  // namespace
 
-int cmdModelsLive(const Env& env, LaneLOptions o, const std::string& leg) {
+namespace {
+LaneHOpts headOpts(const LaneLOptions& o) {
   LaneHOpts h;
   h.headHost = o.headHost;
+  // The lane L default head model is Anthropic's; another head takes its own cheapest.
   h.headModel = (o.headHost != "anthropic" && o.headModel == "claude-haiku-5-5") ? labDefaultModel(o.headHost)
                                                                                    : o.headModel;
   h.effort = o.effort;
   h.verbose = o.verbose;
+  return h;
+}
+
+int report(const std::vector<Leg>& legs, const std::string& outPath) {
+  int failed = 0;
+  JsonDocument out;
+  for (const auto& l : legs) {
+    std::printf("  %s %s - %s\n", l.pass ? "PASS" : "FAIL", l.name.c_str(), l.detail.c_str());
+    failed += l.pass ? 0 : 1;
+    JsonObject o = out["legs"].add<JsonObject>();
+    o["name"] = l.name;
+    o["pass"] = l.pass;
+    o["detail"] = l.detail;
+  }
+  if (!outPath.empty()) {
+    std::string s;
+    serializeJson(out, s);
+    if (FILE* f = std::fopen(outPath.c_str(), "w")) {
+      std::fputs(s.c_str(), f);
+      std::fclose(f);
+    }
+  }
+  std::printf("models-live: %d of %zu legs passed\n", (int)legs.size() - failed, legs.size());
+  return failed ? 1 : 0;
+}
+}  // namespace
+
+int cmdModelsLive(const Env& env, LaneLOptions o, const std::string& leg) {
+  const LaneHOpts h = headOpts(o);
   if (env.providerKey(h.headHost).empty()) {
     std::fprintf(stderr, "no key for %s\n", h.headHost.c_str());
     return 2;
@@ -520,26 +551,7 @@ int cmdModelsLive(const Env& env, LaneLOptions o, const std::string& leg) {
       printUsage(r.http().inner);
     }
   }
-  int failed = 0;
-  JsonDocument out;
-  for (const auto& l : legs) {
-    std::printf("  %s %s - %s\n", l.pass ? "PASS" : "FAIL", l.name.c_str(), l.detail.c_str());
-    failed += l.pass ? 0 : 1;
-    JsonObject o2 = out["legs"].add<JsonObject>();
-    o2["name"] = l.name;
-    o2["pass"] = l.pass;
-    o2["detail"] = l.detail;
-  }
-  if (!o.out.empty()) {
-    std::string s;
-    serializeJson(out, s);
-    if (FILE* f = std::fopen(o.out.c_str(), "w")) {
-      std::fputs(s.c_str(), f);
-      std::fclose(f);
-    }
-  }
-  std::printf("models-live: %d of %zu legs passed\n", (int)legs.size() - failed, legs.size());
-  return failed ? 1 : 0;
+  return report(legs, o.out);
 }
 
 }  // namespace lab

@@ -28,7 +28,6 @@ The page leg ("Updated <time>" after opening a dropdown) is the web harness spec
 
 from __future__ import annotations
 
-import os
 import re
 import time
 
@@ -39,7 +38,7 @@ from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 _S = None
 SLUGS = ("cumulo", "openai", "anthropic", "mistral", "zai")
-REFRESH_DONE_S = 120   # a refresh is one GET /v1/models, queued behind any verify
+REFRESH_DONE_S = 120  # a refresh is one GET /v1/models, queued behind any verify
 
 
 def _serial_lines(device, window_s: float) -> list:
@@ -66,7 +65,7 @@ def _refresh(ip: str, prov: str) -> dict:
 
 
 def _keyed(ip: str) -> list:
-    provs = (_S.get(f"http://{ip}/api/orch", timeout=10).json().get("providers") or {})
+    provs = _S.get(f"http://{ip}/api/orch", timeout=10).json().get("providers") or {}
     return [p for p in SLUGS if (provs.get(p) or {}).get("hasKey") and (provs.get(p) or {}).get("verify") != 0]
 
 
@@ -183,8 +182,42 @@ def test_l50h_two_refresh_asks_in_the_window_start_one_refresh(board, device):
     c = _refresh(board, prov)
     assert c.get("refresh") == "recent", f"an ask after the refresh, inside the hour: {c}"
     assert int(c.get("fetchedAt") or 0) == fetched
-    print(f"\n[L50h] {prov}: asks {a.get('refresh')}/{b.get('refresh')}/{c.get('refresh')}, "
-          f"one start, fetchedAt {before} -> {fetched}")
+    print(
+        f"\n[L50h] {prov}: asks {a.get('refresh')}/{b.get('refresh')}/{c.get('refresh')}, "
+        f"one start, fetchedAt {before} -> {fetched}"
+    )
+
+
+def _start_turn(device, ip: str, text: str) -> tuple:
+    """Post a web-chat turn and wait until it runs on the device; (turn id, lines so far)."""
+    device.drain(quiet=0.3)
+    r = _S.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
+    assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
+    turn = str(r.json().get("turn") or "")
+    lines = []
+    deadline = time.time() + 20
+    while time.time() < deadline and not any("turn host=" in l for l in lines):
+        lines += _serial_lines(device, 0.5)
+    assert any("turn host=" in l for l in lines), "the web-chat turn did not start within 20 s"
+    return turn, lines
+
+
+def _queue_one(ip: str, cands: list) -> tuple:
+    """Ask a refresh of the first candidate not refreshed within the hour; (provider, answer)."""
+    for p in cands:
+        ask = _refresh(ip, p)
+        if ask.get("refresh") == "queued":
+            return p, ask
+    pytest.skip(f"every keyed provider was refreshed within the hour ({cands})")
+
+
+def _finish_turn(device, ip: str, turn: str, lines: list) -> None:
+    deadline = time.time() + 150
+    while time.time() < deadline:
+        lines += _serial_lines(device, 2.0)
+        if _S.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json().get("done"):
+            return
+    pytest.fail("the turn did not finish")
 
 
 @pytest.mark.hil
@@ -192,39 +225,16 @@ def test_l50h_two_refresh_asks_in_the_window_start_one_refresh(board, device):
 @pytest.mark.agent
 def test_l50h_a_refresh_asked_during_a_turn_runs_after_it(board, device):
     keyed = _keyed(board)
-    cand = [p for p in keyed if p != "anthropic"] or keyed
-    prov, ask = None, None
-    device.drain(quiet=0.3)
-    r = _S.post(f"http://{board}/api/chat",
-                data={"text": "Count from 1 to 30 in words, one per line, then say done."}, timeout=10)
-    assert r.status_code == 200
-    turn = str(r.json().get("turn") or "")
-    lines = []
-    deadline = time.time() + 20
-    while time.time() < deadline and not any("turn host=" in l for l in lines):
-        lines += _serial_lines(device, 0.5)   # wait until the turn is running on the device
-    assert any("turn host=" in l for l in lines), "the web-chat turn did not start within 20 s"
-    for p in cand:   # a provider not refreshed within the hour
-        ask = _refresh(board, p)
-        if ask.get("refresh") == "queued":
-            prov = p
-            break
-    if prov is None:
-        pytest.skip(f"every keyed provider was refreshed within the hour ({cand})")
-    deadline = time.time() + 150
-    done = False
-    while time.time() < deadline and not done:
-        lines += _serial_lines(device, 2.0)
-        done = bool(_S.get(f"http://{board}/api/chat", params={"turn": turn}, timeout=10).json().get("done"))
-    assert done, "the turn did not finish"
-    before = int(ask.get("fetchedAt") or 0)
-    _, more = _wait_done(board, prov, before, device)
-    lines += more
-    text = "\n".join(lines)
+    cands = [p for p in keyed if p != "anthropic"] or keyed
+    turn, lines = _start_turn(device, board, "Count from 1 to 30 in words, one per line, then say done.")
+    prov, ask = _queue_one(board, cands)
+    _finish_turn(device, board, turn, lines)
+    _, more = _wait_done(board, prov, int(ask.get("fetchedAt") or 0), device)
+    text = "\n".join(lines + more)
     i_start = text.find(f"models: {prov} list refresh started")
-    i_end = text.rfind("turn spend:", 0, i_start if i_start >= 0 else len(text))
-    i_turn = text.find("turn host=")
     assert i_start >= 0, f"no refresh start line for {prov}"
+    i_end = text.rfind("turn spend:", 0, i_start)
+    i_turn = text.find("turn host=")
     assert i_turn >= 0 and i_end > i_turn, "the turn's start and end lines were not both seen before the refresh"
     print(f"\n[L50h] {prov} refresh asked mid-turn started after the turn ended")
 
@@ -242,7 +252,8 @@ def test_l50h_switch_to_sonnet_5_5_applies(board, device):
         after = _S.get(f"http://{board}/api/orch", timeout=10).json()
         got = ((after.get("providers") or {}).get("anthropic") or {}).get("orchModel")
         assert after.get("orchHost") == "anthropic" and got == "claude-sonnet-5-5", (
-            f"switch did not apply: host={after.get('orchHost')} model={got}; reply: {reply[:200]}")
+            f"switch did not apply: host={after.get('orchHost')} model={got}; reply: {reply[:200]}"
+        )
         print(f"\n[L50h] switched: anthropic / {got}; reply: {reply[:160]}")
     finally:
         _S.post(f"http://{board}/api/orch", data={"orchM_anthropic": model0}, timeout=10)
