@@ -272,7 +272,8 @@ static void test_reset_reason_hook() {
   TEST_ASSERT_TRUE(bg.find("if (g_pubBooted) return;") <
                    bg.find("g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId())"));
   TEST_ASSERT_TRUE(bg.find("g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId())") <
-                   bg.find("publishGuard();"));
+                   bg.find("g_pubKept = kept;"));
+  TEST_ASSERT_TRUE(bg.find("g_pubKept = kept;") < bg.find("publishGuard();"));
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "g_guard.boot(").size());
   TEST_ASSERT_TRUE(bodyOf(code(), "void pollTask(void*) {").find("g_guard.boot(") == std::string::npos);
   TEST_ASSERT_TRUE(code().find("RTC_NOINIT_ATTR nimbus::net::TgGuardStore s_guardRtc;") != std::string::npos);

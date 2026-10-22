@@ -497,12 +497,13 @@ void tzCheck(const String& tz, long long epoch) {
 // TGGUARD?: the Telegram storm breakers since their RTC record was cleared (lane D):
 // duplicates dropped, turns skipped at the hourly ceiling, pages acked unprocessed by
 // the poison guard, crash resets counted against the page in flight, and whether a
-// page is held for the rest of an album. The bench storm legs read these.
+// page is held for the rest of an album; whether the record has been read this boot
+// and whether that boot found it intact. The bench storm legs read these.
 void tgGuardStatus() {
   const agent::telegram::GuardStatus g = agent::telegram::guardStatus();
-  Serial.printf("TGGUARD dups=%u ceiling=%u poison=%u tries=%u holding=%d booted=%d\n", (unsigned)g.dupDrops,
-                (unsigned)g.ceilingDrops, (unsigned)g.poisonAcks, (unsigned)g.tries, int(g.holding),
-                int(g.booted));
+  Serial.printf("TGGUARD dups=%u ceiling=%u poison=%u tries=%u holding=%d booted=%d kept=%d\n",
+                (unsigned)g.dupDrops, (unsigned)g.ceilingDrops, (unsigned)g.poisonAcks, (unsigned)g.tries,
+                int(g.holding), int(g.booted), int(g.kept));
   Serial.flush();
 }
 

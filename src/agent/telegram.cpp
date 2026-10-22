@@ -216,6 +216,7 @@ volatile uint32_t g_pubPoisonAcks = 0;
 volatile uint8_t  g_pubTries = 0;
 volatile bool     g_pubHolding = false;
 volatile bool     g_pubBooted = false;   // the record was read this boot (begin())
+volatile bool     g_pubKept = false;     // ...and found intact (false: rebuilt)
 // CUM-308: a token verified once (getMe) can be REVOKED later while the poll loop
 // keeps running - Telegram then 401s every getUpdates while the cached verdict
 // still reads "verified". This debounces consecutive poll auth failures (401/403,
@@ -1638,6 +1639,7 @@ static void publishGuard() {
 static void bootGuard() {
   if (g_pubBooted) return;
   const bool kept = g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId());
+  g_pubKept = kept;
   publishGuard();
   alogf("telegram: storm guard %s (reset %d, page tries %u, duplicates %u)", kept ? "kept" : "fresh",
         g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
@@ -2414,6 +2416,7 @@ GuardStatus guardStatus() {
   g.tries = g_pubTries;
   g.holding = g_pubHolding;
   g.booted = g_pubBooted;
+  g.kept = g_pubKept;
   return g;
 }
 

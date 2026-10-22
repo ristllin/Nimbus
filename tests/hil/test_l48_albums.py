@@ -64,7 +64,9 @@ import tg_archive_bench as tb
 CHAT_DEFAULT = 4848484848  # a synthetic owner chat for the injected pages
 INJECT_DONE = "telegram: injected page:"
 LABEL_RE = re.compile(r"\[image (\d+)/(\d+)(?: ref=([0-9a-f]{16}))?")
-GUARD_RE = re.compile(r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+) holding=(\d)(?: booted=(\d))?")
+GUARD_RE = re.compile(
+    r"TGGUARD dups=(\d+) ceiling=(\d+) poison=(\d+) tries=(\d+) holding=(\d)(?: booted=(\d))?(?: kept=(\d))?"
+)
 STAGE_PROJECT = "l48"  # the Files store project the photos are staged in (removed afterwards)
 SETTLE_UPTIME_MS = 30000
 HEAPTRACE_RE = re.compile(
@@ -95,11 +97,12 @@ def album_turn_rows(rows: Iterable[dict], n: int) -> List[dict]:
 
 
 def guard_counts(line: str) -> Dict[str, int]:
-    """The counters of a ``TGGUARD`` reply; ``booted`` is -1 when the build predates it."""
+    """The counters of a ``TGGUARD`` reply; ``booted`` and ``kept`` are -1 when the build
+    predates them."""
     m = GUARD_RE.search(line or "")
     if not m:
         raise ValueError(f"not a TGGUARD line: {line!r}")
-    keys = ("dups", "ceiling", "poison", "tries", "holding", "booted")
+    keys = ("dups", "ceiling", "poison", "tries", "holding", "booted", "kept")
     return {k: -1 if v is None else int(v) for k, v in zip(keys, m.groups())}
 
 
@@ -425,6 +428,7 @@ def test_l48_storm_one_turn_for_fifty_pages(device, net, owner_chat):
                 mid = _guard(device)
                 print(f"after the restart: {mid}")
                 assert mid["booted"] == 1, f"the guard did not report its boot: {mid}"
+                assert mid["kept"] == 1, f"the restart rebuilt the guard record: {mid}"
                 assert mid["dups"] == before["dups"] + 24, f"the restart lost the duplicate count: {mid}"
             lines = _inject(device, page, timeout=300)
             notices += sum("guard notice (duplicate)" in ln for ln in lines)
@@ -440,14 +444,16 @@ def test_l48_storm_one_turn_for_fifty_pages(device, net, owner_chat):
 @pytest.mark.hil
 def test_l48_guard_is_fresh_after_a_flash(device):
     """Run first after flashing a new image: the guard record from the previous image is
-    rebuilt (its build id differs), so the first boot counts nothing."""
+    rebuilt (its build id differs), so the first boot counts nothing. The guard boots
+    before the READY beacon, so its boot line is read from what the reboot consumed; the
+    verdict comes from ``TGGUARD?`` (``kept=0``)."""
     device.reboot_and_confirm()
-    line = device.expect("telegram: storm guard", timeout=60.0)
     g = _guard(device)
-    print(line, g)
-    if "kept" in line:
+    seen = [ln for ln in device._transcript if "telegram: storm guard" in ln]
+    print(seen[-1] if seen else "(boot line not captured)", g)
+    if g["kept"] == 1:
         pytest.skip("not the first boot of this image: run this leg right after the flash")
-    assert "fresh" in line and g["dups"] == 0 and g["tries"] == 0 and g["poison"] == 0, (line, g)
+    assert g["kept"] == 0 and g["dups"] == 0 and g["tries"] == 0 and g["poison"] == 0, g
 
 
 # ---- host tests for the helpers -------------------------------------------------------
@@ -473,16 +479,18 @@ def test_host_labels_and_album_rows():
 
 @pytest.mark.host
 def test_host_guard_counts():
-    assert guard_counts("TGGUARD dups=49 ceiling=0 poison=0 tries=0 holding=0 booted=1") == {
+    assert guard_counts("TGGUARD dups=49 ceiling=0 poison=0 tries=0 holding=0 booted=1 kept=1") == {
         "dups": 49,
         "ceiling": 0,
         "poison": 0,
         "tries": 0,
         "holding": 0,
         "booted": 1,
+        "kept": 1,
     }
-    assert guard_counts("TGGUARD dups=0 ceiling=0 poison=0 tries=0 holding=0 booted=0")["booted"] == 0
-    assert guard_counts("TGGUARD dups=3 ceiling=0 poison=0 tries=0 holding=1")["booted"] == -1
+    assert guard_counts("TGGUARD dups=0 ceiling=0 poison=0 tries=0 holding=0 booted=0 kept=0")["booted"] == 0
+    old = guard_counts("TGGUARD dups=3 ceiling=0 poison=0 tries=0 holding=1")
+    assert old["booted"] == -1 and old["kept"] == -1
     with pytest.raises(ValueError):
         guard_counts("ERR unknown 'TGGUARD?'")
 
