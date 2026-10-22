@@ -425,3 +425,5 @@ def storm(device, net, request):
         yield bench
     finally:
         mock.stop()
+        if "bench" in locals():
+            bench.console.close()  # the device's own line reader back for the next leg

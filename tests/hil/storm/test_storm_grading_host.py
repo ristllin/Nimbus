@@ -377,3 +377,34 @@ def test_the_log_tap_takes_only_newer_lines():
     assert tap.take(read) == ["3 900 - boot line of the new boot", "4 1200 - next line"]
     assert tap.take(read) == []  # read again: nothing new
     assert tap.take(read + ["5 1300 - a newer line"]) == ["5 1300 - a newer line"]
+
+
+class _FakeDevice:
+    """A console that yields queued lines through the device's reader."""
+
+    def __init__(self, lines):
+        self.queue = list(lines)
+        self._ser = object()
+
+    def _readline(self, deadline):
+        return self.queue.pop(0) if self.queue else None
+
+
+def test_the_console_tap_records_what_the_harness_reads_and_pumps_the_rest():
+    dev = _FakeDevice(["[agent] turn end: ok host=anthropic tokens in=1 out=1 tools=0 reply=2B src=owner"])
+    tap = kit.LogTap(net=None, console=kit.ConsoleTap(dev))
+    tap._read = lambda: []  # no durable log over HTTP (a card that dropped out)
+    tap.arm()
+    dev.queue += ["TGINJECT parsed=1 queued", "[agent] telegram: guard notice (duplicate) queued for the owner"]
+    assert dev._readline(0) == "TGINJECT parsed=1 queued"  # a command reads its reply: still recorded
+    tap.poll()
+    assert tap.source == "console"
+    assert [ln.text for ln in tap.parsed()] == [
+        "TGINJECT parsed=1 queued",
+        "[agent] telegram: guard notice (duplicate) queued for the owner",
+    ]
+    assert len(g.log_notices(tap.parsed())) == 1
+    tap.restarted(5000)  # a restart: the console missed the boot, the window reads the durable log
+    assert tap.source == "http"
+    tap.console.close()
+    assert "_readline" not in vars(dev) or dev._readline.__name__ != "record"

@@ -142,6 +142,55 @@ def first_update_id() -> int:
     return int(env) if env else 910000000 + (int(time.time()) % 900000) * 100
 
 
+class ConsoleTap:
+    """Every console line the harness reads during a leg (the device's log is mirrored
+    to its console as it is written), kept by wrapping the device's line reader, and
+    pulled in between commands by ``pump()``. It does not depend on the card: when unit
+    A's card dropped out under the memory ballast, the durable log went quiet over HTTP
+    while the console kept every line. A restart loses the lines printed before the
+    console is back, so a window with a restart is ``broken`` and reads the HTTP log."""
+
+    def __init__(self, device):
+        self.device = device
+        self.lines: List[str] = []
+        self.start = 0
+        self.broken = False
+        self._orig = getattr(device, "_readline", None)
+        if self._orig is not None:
+
+            def record(deadline, _orig=self._orig):
+                line = _orig(deadline)
+                if line is not None:
+                    self.lines.append(line)
+                return line
+
+            self._wrapper = record
+            device._readline = record
+
+    def close(self) -> None:
+        if self._orig is not None and getattr(self.device, "_readline", None) is self._wrapper:
+            del self.device._readline  # back to the class's own reader
+
+    def mark(self) -> None:
+        self.start, self.broken = len(self.lines), False
+
+    def pump(self, budget: int = 2000) -> List[str]:
+        n = len(self.lines)
+        try:
+            if getattr(self.device, "_ser", None) is None:
+                self.broken = True
+                return []
+            for _ in range(budget):
+                if self.device._readline(time.time() + 0.05) is None:
+                    break
+        except Exception:  # noqa: BLE001 - a lost console: the window reads the HTTP log
+            self.broken = True
+        return self.lines[n:]
+
+    def since_mark(self) -> List[str]:
+        return self.lines[self.start :]
+
+
 class LogTap:
     """New device-log lines since the tap was armed, read over HTTP
     (``/api/errlog/recent``), in order, each once.
@@ -153,9 +202,10 @@ class LogTap:
     the start of a read. A restart the leg makes or expects (``restarted()``) starts the
     count again for the new boot."""
 
-    def __init__(self, net, window: int = 16000):
+    def __init__(self, net, window: int = 16000, console: Optional[ConsoleTap] = None):
         self.net = net
         self.window = window
+        self.console = console
         self.last = (-1, -1)  # (line number, uptime ms) of the newest line taken
         self.lines: List[str] = []
         self.skipped = 0  # older or cut lines a read returned
@@ -174,6 +224,9 @@ class LogTap:
         return (int(m.group("seq")), int(m.group("ms"))) if m else None
 
     def arm(self) -> "LogTap":
+        if self.console:
+            self.console.pump()
+            self.console.mark()
         keys = [k for k in map(self._key, self._read()) if k]
         self.last = max(keys) if keys else (-1, -1)
         self.lines = []
@@ -183,7 +236,10 @@ class LogTap:
         """The unit restarted (seen at ``uptime_ms``): the next boot's lines start from
         line 0 again. A read right after a restart still holds the previous boot's tail
         first, so until a new-boot line is taken only the lines after the read's last boot
-        boundary count, and none stamped later than the unit has been up."""
+        boundary count, and none stamped later than the unit has been up. The console
+        missed the boot, so the window reads the durable log."""
+        if self.console:
+            self.console.broken = True
         self.last = (-1, -1)
         self.new_boot = (time.time(), uptime_ms)
 
@@ -218,10 +274,24 @@ class LogTap:
         return new
 
     def poll(self) -> List[str]:
-        return self.take(self._read())
+        """New lines from both sources (the console's and the durable log's), for the
+        waits that only look for a pattern."""
+        fresh = self.console.pump() if self.console else []
+        return fresh + self.take(self._read())
+
+    @property
+    def source(self) -> str:
+        if self.console and not self.console.broken and self.console.since_mark():
+            return "console"
+        return "http"
+
+    def graded_lines(self) -> List[str]:
+        """The lines a window is graded on: the console's when it saw the whole window,
+        else the durable log's (a restart or a lost console)."""
+        return self.console.since_mark() if self.source == "console" else self.lines
 
     def parsed(self) -> List[g.LogLine]:
-        return g.parse_log("\n".join(self.lines))
+        return g.parse_log("\n".join(self.graded_lines()))
 
 
 class StormBench:
@@ -242,7 +312,8 @@ class StormBench:
         self.commit = commit_of(self.build)
         self.role = g.CONTROL if CONTROL_BUILD_RE.match(self.build) else g.CANDIDATE
         self.unit = UNIT
-        self.tap = LogTap(net)
+        self.console = ConsoleTap(device)
+        self.tap = LogTap(net, console=self.console)
         self.started = time.time()
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
         self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
@@ -663,12 +734,13 @@ class StormBench:
             # No leg needs more than a dozen turns: a skip at the hourly ceiling means the
             # unit's hour was used up before the leg, not by its storm.
             metrics.blocked_by = CEILING_BLOCKED
+        metrics.extra.setdefault("logSource", self.tap.source)
         rec = g.evidence_record(
             g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, time.time()), metrics, bounds
         )
         path = g.write_evidence(EVIDENCE_DIR, rec)
         with open(path[: -len(".json")] + ".log", "w", encoding="utf-8") as f:
-            f.write("\n".join(self.tap.lines) + "\n")  # the device log the leg was graded from
+            f.write("\n".join(self.tap.graded_lines()) + "\n")  # the device log the leg was graded from
         records = g.load_evidence(EVIDENCE_DIR)
         control = g.metrics_of(g.latest(records, leg, g.CONTROL))
         candidate = g.metrics_of(g.latest(records, leg, g.CANDIDATE))
