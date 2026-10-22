@@ -541,17 +541,20 @@ static void test_journal_file_migration_legs() {
     TEST_ASSERT_EQUAL_INT(0, io.erases);
     TEST_ASSERT_EQUAL_STRING(a.c_str(), st.get(2).c_str());
   }
-  {   // both: the file wins, the stale legacy copy never re-attaches
+  {   // both, the NVS copy already in the file (the migration's own copy): the file
+      // wins, nothing is duplicated, the NVS copy retires on a valid boot. (Running NVS
+      // records the file lacks are merged: test_journal_file_merges_records_...)
     FakeFileIo io;
     std::string slots[kJournalSlots];
     slots[0] = b;
     io.file = encodeJournalFile(slots);
     io.fileExists = true;
-    io.legacy[0] = a;
+    io.legacy[0] = b;
     FileJournalStore st(io);
     TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st.load());
     Journal j;
     j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(1, j.count());
     JobRecord out{};
     TEST_ASSERT_TRUE(j.get(0, out));
     TEST_ASSERT_EQUAL_STRING("job0004", out.tag);
@@ -587,6 +590,58 @@ static void test_journal_file_migration_legs() {
     TEST_ASSERT_TRUE(decodeJournalFile(io.file, back));
     TEST_ASSERT_EQUAL_STRING(a.c_str(), back[1].c_str());   // the legacy record rode along
   }
+}
+
+// A rollback, then this release again: the file is older than the NVS records the
+// earlier release wrote meanwhile. A running NVS record the file lacks is added (never
+// orphaned), a delivered one is not, one already held is not duplicated, and a tag the
+// file uses for another job is renumbered; the NVS copy then retires on a valid boot.
+static void test_journal_file_merges_records_an_earlier_release_left() {
+  FakeFileIo io;
+  std::string slots[kJournalSlots];
+  slots[0] = recJson(rec("job0000", "openai:resp_old"));             // from before the rollback
+  FinishedJob f = fin("t", "", "");
+  std::strncpy(f.tag, "job0001", sizeof(f.tag) - 1);
+  char buf[kJournalSerializeBuf];
+  serializeFinished(f, buf, sizeof(buf));
+  slots[kJournalFinishedSlot0] = buf;
+  io.file = encodeJournalFile(slots);
+  io.fileExists = true;
+  io.legacy[0] = recJson(rec("job0000", "anthropic:sesn_new"));      // tag clash, another job
+  io.legacy[1] = recJson(rec("job0002", "openai:resp_old"));         // already in the file
+  io.legacy[2] = recJson(rec("job0003", "openai:resp_done", JobState::Done, /*seen=*/true));
+  FileJournalStore st(io);
+  TEST_ASSERT_EQUAL_INT((int)JournalSource::Merged, (int)st.load());
+  TEST_ASSERT_TRUE(st.durable());
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_EQUAL_INT(2, j.count());   // the file's job and the merged one
+  JobRecord a{}, b{};
+  TEST_ASSERT_TRUE(j.get(0, a));
+  TEST_ASSERT_TRUE(j.get(1, b));
+  TEST_ASSERT_EQUAL_STRING("openai:resp_old", a.jobId);
+  TEST_ASSERT_EQUAL_STRING("anthropic:sesn_new", b.jobId);
+  TEST_ASSERT_EQUAL_STRING("job0002", b.tag);   // renumbered past job0000 and job0001
+  TEST_ASSERT_TRUE(j.restored("job0002"));
+  // The next boot reads the merged file and retires the NVS copy on a valid image.
+  FileJournalStore st2(io);
+  TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st2.load());
+  TEST_ASSERT_TRUE(st2.retireLegacy(true));
+  TEST_ASSERT_TRUE(io.legacy.empty());
+  // Six running jobs in the file: a seventh from NVS cannot be added (the file's stay).
+  FakeFileIo full;
+  std::string six[kJournalSlots];
+  char tag[16], jid[24];
+  for (int i = 0; i < kAgentMaxJobs; ++i) {
+    std::snprintf(tag, sizeof(tag), "job%04d", i);
+    std::snprintf(jid, sizeof(jid), "openai:resp_%d", i);
+    six[i] = recJson(rec(tag, jid));
+  }
+  full.file = encodeJournalFile(six);
+  full.fileExists = true;
+  full.legacy[0] = recJson(rec("job0009", "openai:resp_9"));
+  FileJournalStore st3(full);
+  TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st3.load());
 }
 
 // A write the file system refuses leaves the previous image whole and reports false;
@@ -831,6 +886,7 @@ int main() {
   RUN_TEST(test_begin_drops_a_duplicate_tag);
   RUN_TEST(test_journal_file_migration_legs);
   RUN_TEST(test_journal_file_write_is_atomic_and_reports);
+  RUN_TEST(test_journal_file_merges_records_an_earlier_release_left);
   RUN_TEST(test_finished_ring_keeps_the_last_eight_across_a_restart);
   RUN_TEST(test_a_finished_job_is_never_active_after_any_restart);
   RUN_TEST(test_without_the_finished_entry_a_restart_resurrects_the_job);

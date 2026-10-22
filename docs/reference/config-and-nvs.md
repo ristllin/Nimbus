@@ -58,7 +58,9 @@ followed in v4.6. They now live in flash files (`kMovedStores` in
 `lib/core/include/nimbus/store/moved_store.h` lists every one), and every boot follows
 one rule:
 
-- Load the file; only when there is no file, load the legacy NVS key.
+- Load the file; only when there is no file, load the legacy NVS key. (The sub-agent
+  journal also adds a running NVS record the file lacks, left by an earlier release
+  after a rollback, so a job that may still be billing is never dropped.)
 - Save by writing the file atomically (a copy, then a rename) and reading it back; the
   save counts only when the read-back matches. NVS is never written again.
 - Erase the legacy NVS copy only on a boot whose image was already valid when it

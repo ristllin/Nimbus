@@ -38,10 +38,11 @@ Legs (unit L, the fill unit, on the TEST build: ``NVSFILL``, ``TURN``, ``OTASIM`
   turn's context (``/api/lastturn``) lists both finished jobs and the turn starts no
   helper. The counter-leg (the record removed: the head re-runs the work) is the live
   harness-lab scenario ``finished-jobs``.
-* ``test_l43_battmodel_flap_spends_nothing`` (hil; BATTMODEL-CHURN): ``BATTFLAP 200``
-  moves the battery model's full-charge anchor by a few millivolts 200 times through
-  the paced save: no save, no settings-storage entry spent, both on a roomy store and
-  at reserve+1; a real step saves at most once.
+* ``test_l43_battmodel_flap_spends_nothing`` (hil; BATTMODEL-CHURN): after one warm-up
+  move (the boot's first save may go at once), ``BATTFLAP 200`` moves the battery
+  model's full-charge anchor by a few millivolts 200 times through the paced save: no
+  save, no settings-storage entry spent, both on a roomy store and at reserve+1; a real
+  step saves at most once.
 * ``test_l43_otasim_rollback_at_reserve`` (hil): at reserve+1 the bad-image drill
   (``OTASIM arm`` + ``OTASIM crash``) still rolls back within 3 boots.
 * ``test_l43_ota_rc1_to_rc2`` (hil + manual, ``NIMBUS_L43_OTA_BASE`` = a bench OTA
@@ -413,6 +414,10 @@ def test_l43_battmodel_flap_spends_nothing(device, net, orch):
         )
         return {k: int(v) for k, v in line.groupdict().items()}
 
+    # The first move of a boot may save once (a model never stored, or a change pending
+    # since the boot); after it, flapping by a few millivolts saves nothing.
+    warm = flap(1)
+    assert warm["saves"] <= 1, f"one move saved more than once: {warm}"
     roomy = flap(200)
     assert roomy["saves"] == 0, f"a flapping anchor saved the model: {roomy}"
     assert roomy["b"] >= roomy["a"], f"a flapping anchor spent entries: {roomy}"

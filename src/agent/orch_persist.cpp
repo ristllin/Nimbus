@@ -132,6 +132,11 @@ void FlashJournalStore::begin() {
   if (src == JournalSource::Legacy)
     alogf("journal: moved the sub-agent records to flash (%s)",
           durable() ? "saved" : "not saved yet - kept in settings storage");
+  // Running records an earlier release left in NVS after this file (a rollback, then an
+  // update back): added to the file; the NVS copy goes on a later boot.
+  if (src == JournalSource::Merged)
+    alogf("journal: added running records an earlier release left in settings storage (%s)",
+          durable() ? "saved" : "not saved yet");
   if (src == JournalSource::File && retireLegacy(otaupd::imageValidAtBoot()))
     alog("journal: legacy settings-storage copy removed (the file is in use)");
 }

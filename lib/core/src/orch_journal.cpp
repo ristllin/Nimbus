@@ -379,11 +379,79 @@ bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlo
   return true;
 }
 
+namespace {
+long highestTagIn(const std::string (&slots)[kJournalSlots]) {
+  long hi = -1;
+  for (int s = 0; s < kJournalSlots; s++) {
+    if (slots[s].empty()) continue;
+    JobRecord r;
+    FinishedJob f;
+    const char* tag = nullptr;
+    if (s < kAgentMaxJobs && deserializeRecord(slots[s].c_str(), r)) tag = r.tag;
+    if (s >= kJournalFinishedSlot0 && deserializeFinished(slots[s].c_str(), f)) tag = f.tag;
+    const long n = tag ? tagNumber(tag) : -1;
+    if (n > hi) hi = n;
+  }
+  return hi;
+}
+
+// The active slot a merged record takes: an empty one, else one holding a delivered record.
+int mergeTarget(const std::string (&slots)[kJournalSlots]) {
+  for (int s = 0; s < kAgentMaxJobs; s++)
+    if (slots[s].empty()) return s;
+  for (int s = 0; s < kAgentMaxJobs; s++) {
+    JobRecord r;
+    if (!deserializeRecord(slots[s].c_str(), r) || r.resultSeen) return s;
+  }
+  return -1;
+}
+
+// Whether the image already holds remote job `jobId` (an active slot), and whether `tag`
+// is taken by any record in it.
+void imageHolds(const std::string (&slots)[kJournalSlots], const JobRecord& r, bool& held,
+                bool& tagTaken) {
+  held = tagTaken = false;
+  for (int k = 0; k < kJournalSlots; k++) {
+    JobRecord f;
+    FinishedJob fin;
+    if (k < kAgentMaxJobs && deserializeRecord(slots[k].c_str(), f)) {
+      held = held || std::strcmp(f.jobId, r.jobId) == 0;
+      tagTaken = tagTaken || std::strcmp(f.tag, r.tag) == 0;
+    } else if (k >= kJournalFinishedSlot0 && deserializeFinished(slots[k].c_str(), fin)) {
+      tagTaken = tagTaken || std::strcmp(fin.tag, r.tag) == 0;
+    }
+  }
+}
+}  // namespace
+
+int FileJournalStore::mergeLegacy() {
+  int merged = 0;
+  for (int s = 0; s < kAgentMaxJobs; s++) {
+    const std::string v = io_.readLegacySlot(s);
+    JobRecord r;
+    if (v.empty() || !deserializeRecord(v.c_str(), r) || r.resultSeen) continue;
+    bool held = false, tagTaken = false;
+    imageHolds(slots_, r, held, tagTaken);
+    const int target = held ? -1 : mergeTarget(slots_);
+    if (target < 0) continue;   // already held, or six running jobs: the file's stay
+    if (tagTaken) std::snprintf(r.tag, sizeof(r.tag), "job%04ld", highestTagIn(slots_) + 1);
+    char buf[kJournalSerializeBuf];
+    if (serializeRecord(r, buf, sizeof(buf)) + 1 > sizeof(buf)) continue;
+    slots_[target] = buf;
+    merged++;
+  }
+  return merged;
+}
+
 JournalSource FileJournalStore::load() {
   for (auto& v : slots_) v.clear();
   std::string blob;
   onDisk_ = io_.readFile(blob) && decodeJournalFile(blob, slots_);
-  if (onDisk_) return JournalSource::File;
+  if (onDisk_) {
+    if (mergeLegacy() == 0) return JournalSource::File;
+    durable_ = onDisk_ = io_.writeFileAtomic(encodeJournalFile(slots_));
+    return JournalSource::Merged;
+  }
   bool any = false;
   for (int s = 0; s < kAgentMaxJobs; s++) {
     slots_[s] = io_.readLegacySlot(s);

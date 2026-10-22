@@ -214,13 +214,20 @@ struct JournalFileIo {   // the device binds LittleFS and Preferences; tests a f
   virtual bool        eraseLegacy() = 0;                     // true when the records are gone
 };
 
-enum class JournalSource : uint8_t { None = 0, File, Legacy };
+// File: the file, nothing left in NVS to merge. Merged: the file, plus running records an
+// earlier release wrote to NVS after it (a rollback from this release, then an update
+// back), added to it. Legacy: no file, the NVS records.
+enum class JournalSource : uint8_t { None = 0, File, Legacy, Merged };
 
 class FileJournalStore : public JournalStore {
  public:
   explicit FileJournalStore(JournalFileIo& io) : io_(io) {}
   // Load the image (see above). A legacy load is written to the file here; when that
   // write fails the records are still served from RAM and the NVS copy is untouched.
+  // When both exist, a running NVS record the file does not hold (same remote job id)
+  // is added to it: an earlier release wrote it after the file (a rollback, then this
+  // release again), and dropping it would orphan a job that may still be billing. A tag
+  // the file already uses for another job is renumbered past every tag in either.
   JournalSource load();
   // Erase the legacy NVS records when the rule allows it. True when they were erased.
   bool retireLegacy(bool imageValidAtBoot);
@@ -234,6 +241,7 @@ class FileJournalStore : public JournalStore {
 
  private:
   bool commit(int slot, const std::string& v);   // image with slot = v; kept on success
+  int  mergeLegacy();                            // load(): running NVS records the file lacks
   JournalFileIo& io_;
   std::string    slots_[kJournalSlots];
   bool           durable_ = true;   // the last write landed

@@ -569,7 +569,9 @@ the plain acknowledgement (at most once every ten minutes), and the assistant's 
 list says the same. Until v4.5.16 the running records lived in the `agjournal` NVS
 namespace, where a full settings store refused them silently; the first boot of v4.6
 reads them once, writes the file, and erases the NVS records on a boot whose image was
-already valid. The hosted instance keeps the same file under its volume
+already valid. If an earlier release ran after the file was created (a rollback, then an
+update back), a running record it left in NVS is added to the file, never dropped: that
+job may still be running and billing. The hosted instance keeps the same file under its volume
 (`<mem>/journal/agjournal.json`).
 
 ## 5c. SD quota and supported-card truth
