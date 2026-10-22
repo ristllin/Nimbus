@@ -48,13 +48,16 @@ def _push_key(device, nvs_key: str, value: str) -> None:
         pass  # not every build acks; the real proof is the reply downstream
 
 
-def _provision(device, secrets) -> None:
+def _provision(device, secrets) -> str:
+    """Push the keys and join Wi-Fi; returns the LAN IP from the one ``WIFI_GOT_IP``
+    line the join prints. That line is read here, so no caller may wait for it again
+    (the backstop leg did, and timed out on a station that was up: v4.5.14 release run)."""
     if secrets.openai_key:
         _push_key(device, "oaiKey", secrets.openai_key)
     if secrets.anthropic_key:
         _push_key(device, "antKey", secrets.anthropic_key)
     device.wifi(secrets.sta_ssid, secrets.sta_pass)
-    device.expect_re(r"WIFI_GOT_IP\s+\d+\.\d+\.\d+\.\d+", timeout=25.0)
+    return device.expect_re(r"WIFI_GOT_IP\s+(\d+\.\d+\.\d+\.\d+)", timeout=25.0).group(1)
 
 
 def _wait_ring_dark(device, window: float) -> "tuple[bool, object]":
@@ -113,8 +116,8 @@ def test_ring_backstop_counter_is_zero_on_a_healthy_turn(device, secrets, requir
     reaper); a healthy turn keeps it 0 (CUM-11/CUM-221 acceptance metric)."""
     require_secret(secrets.require_provider_keys)
     device.ensure_mode(1)
-    _provision(device, secrets)
-    ip = net.wait_got_ip(timeout=25.0)
+    ip = _provision(device, secrets)
+    net.ip = ip
 
     before = net.get_json("/api/state", ip=ip).get("ringBackstopFires", 0)
     device.turn("Reply with exactly the single word: pong")
