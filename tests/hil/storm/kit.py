@@ -111,6 +111,22 @@ def text_page(update_id: int, chat: int, text: str, date: int) -> str:
     return json.dumps({"ok": True, "result": [{"update_id": update_id, "message": msg}]}, separators=(",", ":"))
 
 
+def drain_bot_queue(token: str) -> int:
+    """Confirm the updates waiting in the test bot's queue (stale bench messages that a
+    unit polling the bot would answer inside the leg's window). Only under locks/tg-bot:
+    no other poller is running. Returns how many there were; never prints their content."""
+    import requests
+
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    try:
+        ups = requests.get(url, params={"timeout": 0}, timeout=15).json().get("result", [])
+        if ups:
+            requests.get(url, params={"offset": ups[-1]["update_id"] + 1, "timeout": 0}, timeout=15)
+        return len(ups)
+    except Exception:  # noqa: BLE001 - the URL holds the token: report nothing of the error
+        return -1
+
+
 def port_mac(port: Optional[str]) -> str:
     """The MAC a serial port's USB serial number names (the ESP32-S3's own), or ''."""
     try:
@@ -229,6 +245,7 @@ class StormBench:
         self.tap = LogTap(net)
         self.started = time.time()
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
+        self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
 
     # ---- reads --------------------------------------------------------------------
@@ -306,9 +323,13 @@ class StormBench:
                 import bench_lock
 
                 post = lambda f: self.net.post("/api/orch", f, timeout=10.0)  # noqa: E731
-                with bench_lock.bot_on_unit(
-                    post, self.env["NIMBUS_TEST_TG_TOKEN"], str(self.chat), f"storm {self.leg}"
-                ):
+                token = self.env["NIMBUS_TEST_TG_TOKEN"]
+
+                def drain():
+                    n = drain_bot_queue(token)
+                    print(f"[storm] bot mode: {n} stale update(s) in the test bot's queue confirmed before the leg")
+
+                with bench_lock.bot_on_unit(post, token, str(self.chat), f"storm {self.leg}", before=drain):
                     time.sleep(5.0)  # the token swap lands on the poll task's next loop
                     yield self.chat
             else:
@@ -329,8 +350,22 @@ class StormBench:
             page = self._retry(lambda: self.net.get_json(q, timeout=15.0), "reading the Telegram archive")
             rows += [r for r in page.get("rows", []) if r.get("dir") == "out"]
             if not page.get("more"):
-                return rows
+                return [self._with_text(r, day) for r in rows]
             start = page["next"]
+
+    def _with_text(self, row: dict, day: str) -> dict:
+        """An outbound row with the text it carried (the row names its stored item)."""
+        raw = row.get("raw")
+        if not raw or "text" in row:
+            return row
+        if raw not in self._out_texts:
+            q = f"/api/tg/archive/item?chat={self.chat}&day={day}&name={raw}&inline=1"
+            try:
+                item = self.net.get_json(q, timeout=10.0)
+                self._out_texts[raw] = str(item.get("text") or item.get("caption") or "")
+            except Exception:  # noqa: BLE001 - unreadable item: counted, its text unknown
+                self._out_texts[raw] = ""
+        return dict(row, text=self._out_texts[raw])
 
     @contextlib.contextmanager
     def session(self, keep: Optional[str], head) -> Iterator[None]:

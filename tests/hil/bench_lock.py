@@ -86,11 +86,14 @@ def clear_bot_token(post, tries: int = 3, gap_s: float = 10.0) -> bool:
 
 
 @contextlib.contextmanager
-def bot_on_unit(post, token, chat, who: str) -> Iterator[None]:
+def bot_on_unit(post, token, chat, who: str, before=None) -> Iterator[None]:
     """The test bot's token (and its chat as the owner) on the unit for the block:
-    ``tg-bot`` taken first, the token cleared and the lock released in a finally."""
+    ``tg-bot`` taken first, the token cleared and the lock released in a finally.
+    ``before`` runs once the lock is held and before the token goes on (no poller runs)."""
     with bench_lock(TG_BOT, who):
         try:
+            if before is not None:
+                before()
             r = post({"tgToken": token, "tgAllow": chat})
             assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
             yield
