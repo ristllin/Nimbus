@@ -229,7 +229,7 @@ class TurnEngine {
     // ---- histV2: the turn-structured history (conversation.h) --------------
     // All nullable. histV2 is on only when the switch says so AND rows can be
     // read and the user row's id comes back; otherwise the device's window and
-    // the v4.5.15 capture stay byte-identical.
+    // the previous capture stay byte-identical.
     std::function<bool()> histV2;
     // The chat's conversation rows (message and media kinds), newest first,
     // strictly older than `before` ("" = from the newest), at most `limit`.

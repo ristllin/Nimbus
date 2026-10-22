@@ -118,7 +118,7 @@ class LabRig {
     // restart" reply against it).
     bool        scratchSaveFails = false;
     // The turn-structured history (histV2), as on the device: on by default;
-    // --hist-v1 renders the v4.5.15 window instead.
+    // --hist-v1 renders the previous 12-row window instead.
     bool        histV2 = true;
   };
 

@@ -62,7 +62,7 @@ void usage() {
       "  --verbose                           echo every HTTP exchange and tool call\n"
       "  --no-tools                          disable the agentic tool loop\n"
       "  --no-embed                          disable embeddings (no associative recall)\n"
-      "  --hist-v1                           the v4.5.15 conversation window, not the\n"
+      "  --hist-v1                           the previous 12-row window, not the\n"
       "                                      turn-structured history (histV2)\n"
       "  --role=<admin|user|guest|unknown>   run the chat as this role, so the\n"
       "                                      principal-scoped tool advertisement is\n"

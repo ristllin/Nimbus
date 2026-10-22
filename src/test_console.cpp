@@ -1978,7 +1978,7 @@ void dispatch(String line) {
   if (line == "TGGUARD?") { tgGuardStatus(); return; }
   if (line == "HISTV2" || line.startsWith("HISTV2 ")) {
     // HISTV2 [0|1]: the turn-structured history switch (RAM only, on at boot).
-    // 0 restores the v4.5.15 window and capture byte for byte (the bench's
+    // 0 restores the previous window and capture byte for byte (the bench's
     // byte-identical leg); no argument reports the state.
     String a = line.length() > 6 ? line.substring(7) : String("");
     a.trim();

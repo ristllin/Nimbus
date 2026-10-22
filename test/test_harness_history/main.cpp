@@ -345,7 +345,7 @@ static void test_fold_slice_starts_after_the_anchor() {
   r.marks.softStart.clear();
   const agent::FoldSlice second = r.eng->historyFoldSlice("123", 65536, true);
   TEST_ASSERT_TRUE(second.digest.find("note 0n") == std::string::npos);
-  // Off: no slice at all (the device keeps its v4.5.15 fold input).
+  // Off: no slice at all (the device keeps its previous fold input).
   Rig off;
   off.v2 = false;
   off.eng->handleMessage("x", "Roy", "123");

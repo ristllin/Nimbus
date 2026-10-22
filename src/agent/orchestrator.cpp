@@ -1223,7 +1223,7 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   // histV2 (conversation.h): the turn-structured history. A RAM switch, on by
   // default (no settings key); the test console's HISTV2 0 restores the
-  // v4.5.15 window and capture byte for byte.
+  // previous window and capture byte for byte.
   d.histV2 = [] { return agent::history::v2Enabled(); };
   d.captureUserRow = captureOwner;
   d.historyRows = [](const std::string& chatId, size_t limit, const std::string& before) {

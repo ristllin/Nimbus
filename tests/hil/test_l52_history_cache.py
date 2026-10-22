@@ -20,7 +20,7 @@ Legs (the message-level caching lane extends this file with its cache legs):
   3. Twelve distinct web turns: the next turn's history renders all twelve.
   4. A restart, then one more turn: the history after the restart continues the
      history before it byte for byte (no fold in between).
-  5. ``HISTV2 0`` restores the v4.5.15 window (its header), ``HISTV2 1`` restores
+  5. ``HISTV2 0`` restores the previous 12-row window (its header), ``HISTV2 1`` restores
      the default.
 
 Conditions: unit A (SD card), Orchestrator mode, a cheap head (claude-haiku-5-5),
@@ -186,6 +186,6 @@ def test_switch_off_restores_the_old_window(device: Device, net):
         chat_turn(s, ip, f"{RUN} old window: reply with just OK.")
         chat_turn(s, ip, f"{RUN} old window again: reply with just OK.")
         hist = _history(_dump(s, ip))
-        assert hist.startswith(OLD_HEADER), f"not the v4.5.15 window: {hist[:200]!r}"
+        assert hist.startswith(OLD_HEADER), f"not the previous window: {hist[:200]!r}"
     finally:
         device.cmd("HISTV2 1", "HISTV2", timeout=5.0)
