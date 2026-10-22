@@ -22,6 +22,7 @@ import time
 
 import pytest
 
+import bench_lock
 from device import ExpectTimeout
 
 
@@ -170,11 +171,8 @@ def test_telegram_roundtrip(device, secrets, require_secret):
             start = page["next"]
 
     device.ensure_mode(1)
-    r = requests.post(
-        f"http://{ip}/api/orch", headers=hdr, data={"tgToken": str(token), "tgAllow": str(chat)}, timeout=10
-    )
-    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
-    try:
+    post = lambda f: requests.post(f"http://{ip}/api/orch", headers=hdr, data=f, timeout=10)  # noqa: E731
+    with bench_lock.bot_on_unit(post, str(token), str(chat), "l5 F18 reply"):
         before = len(outbound())
         uid = tb.first_update_id() + 7
         device.cmd(
@@ -193,8 +191,6 @@ def test_telegram_roundtrip(device, secrets, require_secret):
             f"the device's reply to the test chat was not delivered (status {rows[-1].get('st')!r}); "
             "if Telegram says 'chat not found', the test chat has never started the test bot"
         )
-    finally:
-        requests.post(f"http://{ip}/api/orch", headers=hdr, data={"clr_tgToken": "1"}, timeout=10)
 
 
 # ---- graceful_degradation (F11 corollary) ----------------------------------

@@ -49,6 +49,7 @@ pytestmark = [pytest.mark.net]
 # Two distinct NON-owner chats -> two distinct namespaces (nsForChat(id, admin=False)).
 # Neither is the owner, so neither has readAll - the scoping check is real.
 CHAT_A = "924101"
+OWNER_WEB_CHAT = "web"  # the chat a web turn runs in: the owner's own (Admin)
 CHAT_B = "924102"
 MARKER = f"SPILL-{int(time.time()) % 100000}"  # unique per run; reruns can't alias
 
@@ -213,17 +214,12 @@ def test_live_spill_overflows_fresh_ring(board):
     while time.time() < deadline and int(_S.get(_u(ip, tok, "/api/state"), timeout=10).json().get("jobs") or 0):
         time.sleep(6)
 
-    # The head runs as the owner (web chat) - read the ring as the owner.
-    owner_chat = os.environ.get("NIMBUS_TEST_OWNER_CHAT", "")
-    lister = owner_chat or CHAT_A
+    # The head ran in the web chat, the owner's own chat: read the ring as that chat
+    # (NIMBUS_TEST_OWNER_CHAT names another owner chat to read it as instead).
+    lister = os.environ.get("NIMBUS_TEST_OWNER_CHAT", "") or OWNER_WEB_CHAT
     lst = _text(_astool(ip, tok, lister, "results.list"))
-    if "sub:" not in lst and lister == CHAT_A:
-        # CHAT_A can't see the owner's spill - retry as owner if we know it; else
-        # this is an honest skip, not a fail (scoping is WORKING, we just can't peek).
-        pytest.skip(
-            "live turn ran but its spill is owner-scoped; set "
-            "NIMBUS_TEST_OWNER_CHAT to the owner chat id to assert the sub: entry"
-        )
+    if "sub:" not in lst and lister != OWNER_WEB_CHAT:
+        lst = _text(_astool(ip, tok, OWNER_WEB_CHAT, "results.list"))
     assert "sub:" in lst, (
         "no sub: entry after a 7-way fan-out - the model under-spawned (no overflow) "
         f"or the spill hook is not wired. results.list=\n{lst[:400]}"

@@ -50,6 +50,8 @@ from typing import Dict, Iterable, List, Optional
 
 import pytest
 
+import bench_lock
+
 RETRY_QUIET_S = 60  # nimbus::core::TgOffsetCursor::kRetryQuietMs
 LONG_POLL_S = 30  # TELEGRAM_LONG_POLL_TIMEOUT_S
 BURST = ("repro one", "repro two", "/help", "repro four")
@@ -206,10 +208,9 @@ def bench(device, net, secrets, require_secret):
     else:
         net.provision(secrets.sta_ssid, secrets.sta_pass)
         net.wait_got_ip(timeout=25.0)
-    r = net.post("/api/orch", {"tgToken": secrets.tg_test_token, "tgAllow": secrets.tg_test_chat}, timeout=8.0)
-    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
-    yield secrets.tg_test_token, secrets.tg_test_chat
-    net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
+    post = lambda f: net.post("/api/orch", f, timeout=8.0)  # noqa: E731
+    with bench_lock.bot_on_unit(post, secrets.tg_test_token, secrets.tg_test_chat, "l42 bench"):
+        yield secrets.tg_test_token, secrets.tg_test_chat
 
 
 # ---- LAN legs -------------------------------------------------------------------------

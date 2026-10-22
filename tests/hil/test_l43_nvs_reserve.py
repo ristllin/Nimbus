@@ -48,6 +48,8 @@ from typing import List, Optional
 
 import pytest
 
+import bench_lock
+
 RESERVE = 24  # nimbus::store::kNvsReserveEntries
 ENTRY_BYTES = 32
 STORAGE_FULL = "storage_full"
@@ -207,8 +209,12 @@ def test_l43_reserve_refuses_noncritical_while_critical_lands(device, net, orch)
 @pytest.mark.manual
 def test_l43_offset_lands_at_reserve(device, net, orch, secrets, require_secret, require_manual):
     require_secret(secrets.require_test_telegram)
-    r = net.post("/api/orch", {"tgToken": secrets.tg_test_token, "tgAllow": secrets.tg_test_chat}, timeout=8.0)
-    assert r.status_code == 200, f"setting the test bot failed: HTTP {r.status_code}"
+    post = lambda f: net.post("/api/orch", f, timeout=8.0)  # noqa: E731
+    with bench_lock.bot_on_unit(post, secrets.tg_test_token, secrets.tg_test_chat, "l43 offset"):
+        _offset_at_reserve(device, net, require_manual)
+
+
+def _offset_at_reserve(device, net, require_manual):
     try:
         fill_to_reserve_plus_one(device, net)
         require_manual.confirm("From the test chat, send: reserve one\nThen press y.", timeout=180.0)
@@ -221,7 +227,6 @@ def test_l43_offset_lands_at_reserve(device, net, orch, secrets, require_secret,
         assert is_storage_full(r), f"a growing save at reserve+1 was not refused: HTTP {r.status_code}"
     finally:
         nvs_free(device)
-        net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
 
 
 @pytest.mark.hil

@@ -32,6 +32,9 @@ test_l36_voice_release_host.py.
 
 from __future__ import annotations
 
+import contextlib
+import os
+
 import re
 import time
 
@@ -105,11 +108,35 @@ def voice_ready(device, wake_home):
     device.cmd("STTKEY off", "STTKEY<", timeout=5.0)
 
 
+@contextlib.contextmanager
+def _no_link(device):
+    """The station stopped for the block (NIMBUS_L36_DROP_WIFI=1): the setup network
+    started and torn down again (WIFIAP on, WIFIAP drop), joining resumed after
+    (WIFIAP off). Without the switch a joined board skips: the leg needs no link."""
+    if device.status().group("wifi") == "0":
+        yield
+        return
+    if os.environ.get("NIMBUS_L36_DROP_WIFI") != "1":
+        pytest.skip(
+            "Wi-Fi is joined - the offline leg needs a board with no link: run it on a board "
+            "without Wi-Fi, or set NIMBUS_L36_DROP_WIFI=1 to stop the station for the leg"
+        )
+    device.cmd("WIFIAP on", "WIFIAP on", timeout=10.0)
+    try:
+        device.cmd("WIFIAP drop", "WIFIAP drop", timeout=10.0)
+        assert device.status().group("wifi") == "0", "the station is still joined after WIFIAP on/drop"
+        yield
+    finally:
+        device.cmd("WIFIAP off", "WIFIAP off", timeout=10.0)
+
+
 @pytest.mark.hil
 def test_offline_release_is_instant_and_names_the_network(device, voice_ready):
-    st = device.status()
-    if st.group("wifi") != "0":
-        pytest.skip("Wi-Fi is joined - the offline leg needs a board with no link")
+    with _no_link(device):
+        _offline_release(device, voice_ready)
+
+
+def _offline_release(device, voice_ready):
     v = _hold_and_release(device, voice_ready)
     assert v["outcome"] == "no_network", f"offline release should end no_network, got {v}"
     assert v["phase"] == "notice", v

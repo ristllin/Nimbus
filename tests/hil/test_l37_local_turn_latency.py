@@ -37,6 +37,8 @@ import time
 
 import pytest
 
+import bench_lock
+
 from device import ExpectTimeout
 
 # The issue's bench bar is "within about 1 s". The rule's own bound is far tighter
@@ -76,16 +78,13 @@ def token_device(device, net, secrets, require_secret):
     else:
         net.provision(secrets.sta_ssid, secrets.sta_pass)
         net.wait_got_ip(timeout=25.0)
-    r = net.post("/api/orch", {"tgToken": secrets.tg_test_token, "tgAllow": secrets.tg_test_chat}, timeout=8.0)
-    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
-    try:
+    post = lambda f: net.post("/api/orch", f, timeout=8.0)  # noqa: E731
+    with bench_lock.bot_on_unit(post, secrets.tg_test_token, secrets.tg_test_chat, "l37 bot"):
         # Drained at the poll loop top: within a second with no token, or once a
         # previous bot's long-poll returns (up to ~30 s).
         device.expect("telegram: token swapped live", timeout=45.0)
         time.sleep(5.0)  # the new bot's first long-poll is connected and waiting
         yield device
-    finally:
-        net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
 
 
 def _next_line(device, deadline: float, seen: list) -> str | None:

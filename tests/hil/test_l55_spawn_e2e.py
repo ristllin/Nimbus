@@ -121,16 +121,47 @@ def spawn_ready(device: Device, secrets) -> Device:
 # from an unlisted chat can never produce (it only queues an approval).
 
 
+# Two named units of work: a turn that names no topics gets a question back ("which
+# topics?") and spawns nothing, so the leg used to wait out a ledger line that never came.
+SPAWN_TWO_TURN = (
+    "Start two research sub-agents now, one per topic, each answering in one sentence: "
+    "(1) why the sky is blue; (2) the boiling point of water at sea level in Celsius. "
+    "Do not answer them yourself; when both are back, give me both answers."
+)
+SYNTHESIS_TIMEOUT_S = 300.0
+
+
+def first_spawn_event(line: str) -> Optional[str]:
+    """'ledger' or 'turn_end' for the first line that decides a spawn turn, else None."""
+    if parse_ledger(line) is not None:
+        return "ledger"
+    if re.search(TURN_END_RE, line):
+        return "turn_end"
+    return None
+
+
 @pytest.mark.hil
 @pytest.mark.agent
 def test_claimed_equals_spawned_under_full_nvs(spawn_ready: Device):
     dev = spawn_ready
-    dev.cmd_re("NVSFILL 400", r"NVSFILL\s+wrote=\d+", timeout=20.0)  # exhaust the partition
-    dev.drain(quiet=0.3)
-    dev.send("TURN research two unrelated topics in parallel and give me both answers")
-    spawned, claimed = parse_ledger(dev.expect_re(LEDGER_RE, timeout=120.0).string)
-    assert spawned == claimed, f"claimed {claimed} sub-agents, spawned {spawned}"
-    dev.cmd("NVSFILL 0", "NVSFILL cleared", timeout=15.0)
+    try:
+        for _ in range(10):  # exhaust the partition
+            if "full=1" in dev.cmd_re("NVSFILL 400", r"NVSFILL\s+wrote=\d+.*", timeout=20.0).group(0):
+                break
+        dev.drain(quiet=0.3)
+        dev.send("TURN " + SPAWN_TWO_TURN)
+        m = dev.expect_re(rf"{LEDGER_RE}|{TURN_END_RE}", timeout=PROBE_TIMEOUT_S)
+        assert first_spawn_event(m.string) == "ledger", (
+            f"the head turn ended with no spawn ledger line (it spawned nothing for two named topics): {m.string!r}"
+        )
+        spawned, claimed = parse_ledger(m.string)
+        assert spawned == claimed, f"claimed {claimed} sub-agents, spawned {spawned}"
+        assert spawned == 2, f"two named units of work, {spawned} sub-agents"
+        # The head turn ends, then the synthesis turn that delivers both answers.
+        dev.expect_re(TURN_END_RE, timeout=PROBE_TIMEOUT_S)
+        dev.expect_re(TURN_END_RE, timeout=SYNTHESIS_TIMEOUT_S)
+    finally:
+        dev.cmd("NVSFILL 0", "NVSFILL cleared", timeout=15.0)
 
 
 @pytest.mark.hil
@@ -245,6 +276,14 @@ def test_probe_retries_once_when_the_model_answers_itself():
     dev = _ProbeDevice([_TURN_END, "[agent] orchestrator: spawn ledger spawned=1 claimed=1", _TURN_END])
     assert _spawn_ledger_present(dev) is True
     assert len(dev.sent) == 2
+
+
+@pytest.mark.host
+def test_the_spawn_turn_names_two_units_of_work_and_reads_the_first_decider():
+    assert "(1)" in SPAWN_TWO_TURN and "(2)" in SPAWN_TWO_TURN
+    assert first_spawn_event("[agent] orchestrator: spawn ledger spawned=2 claimed=2") == "ledger"
+    assert first_spawn_event(_TURN_END) == "turn_end"
+    assert first_spawn_event("[agent] usage: spawn:anthropic in=120 out=30") is None
 
 
 @pytest.mark.host

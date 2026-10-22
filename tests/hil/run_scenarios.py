@@ -51,15 +51,17 @@ from qa_recorder import QARecorder, OracleResult  # noqa: E402
 
 # --------------------------------------------------------------------------- net
 class Dev:
-    """Thin HTTP client for one board. Every call carries the auth token."""
+    """Thin HTTP client for one board. Every call carries the device sign-in token in
+    the X-Nimbus-Token header: the firmware ignores a ?t= query since CUM-45 (a URL
+    lands in logs and history), so a query token reads as signed out (401)."""
 
     def __init__(self, ip: str, tok: str):
         self.ip, self.tok = ip, tok
         self.s = requests.Session()
+        self.s.headers["X-Nimbus-Token"] = tok
 
     def _u(self, path: str) -> str:
-        sep = "&" if "?" in path else "?"
-        return f"http://{self.ip}{path}{sep}t={self.tok}"
+        return f"http://{self.ip}{path}"
 
     def get(self, path: str, timeout=10):
         return self.s.get(self._u(path), timeout=timeout)
