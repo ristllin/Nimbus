@@ -190,7 +190,7 @@ gets the same care as the rest of `/mem`:
   names are validated against a strict pattern before any path is built, so a request
   cannot leave `/mem/tg`. Files are served as downloads unless they are bitmaps or
   plain text, with `nosniff` and a sandboxing content security policy, the same rule
-  as Memory & Files.
+  as the web page's Files list (Memory, then Files).
 - **Strangers cannot spend the card.** A chat that is not on the allowlist (anyone
   who found the bot, or a group or channel it was added to) is saved as text only,
   and its media is never downloaded. Its updates are bounded, and a spent budget
@@ -205,8 +205,8 @@ gets the same care as the rest of `/mem`:
   Under storage pressure every stranger day is deleted before any day of an
   allowlisted chat, and the newest allowlisted day is never deleted, so stranger
   data can never push the owner's history out.
-- **Read-only from the web.** Memory & Files lists saved media as read-only
-  `telegram-<chat>` folders; delete requests for them are refused. Only the
+- **Read-only from the web.** The Files list (Memory, then Files) shows saved media as
+  read-only `telegram-<chat>` folders; delete requests for them are refused. Only the
   storage-pressure policy (oldest days first, owner told once) and the factory reset
   remove archive files.
 - **Import is bounded.** The restore upload accepts only `r<16 hex>.<ext>` names under

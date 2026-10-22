@@ -526,8 +526,8 @@ clean-up: those passes never touch `/mem/tg`. It is removed only by:
 
 **Reading it.** `GET /api/tg/archive` lists chats, then a chat's days, then a day's
 index lines (paged with `from` and `limit`); `GET /api/tg/archive/item` streams one
-record or file. Both need the device sign-in token. Saved media also appears in
-Memory & Files as read-only `telegram-<chat>` folders.
+record or file. Both need the device sign-in token. Saved media also appears on the
+web page under Memory, then Files, as read-only `telegram-<chat>` folders.
 
 **Restoring a backup.** `tools/tg_archive_import.py` uploads a folder of backed-up
 media sidecars into the archive (each under the chat and day of the memory row that

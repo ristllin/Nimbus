@@ -51,7 +51,7 @@ confused.
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
 | `/clear` | Forget the current conversation and its active task and start fresh: the next reply sees none of this chat's earlier messages, summary, or working notes. Long-term memory, files, and the chat history are kept. A bare `/clear` explains what will happen and asks; `/clear yes` does it. The web page has the same action for the web chat (Memory, then "Clear conversation"). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
-| `/fetch approve\|deny <id>` | Approve or deny a download the assistant queued (the same list as Memory & Files on the web page). |
+| `/fetch approve\|deny <id>` | Approve or deny a download the assistant queued (the same list as Downloads under Assistant, then Safety on the web page). |
 | `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 | `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |
 
@@ -208,14 +208,14 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
 | `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
-| `FAULT <cap> <on\|off>` / `FAULT?` / `FAULT clear` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen, sd_io, provider, relay_noslot, embed_fail) to prove graceful degradation; query the mask. `FAULT clear` ends every injected fault, `embed_fail` and the memory ballast included. |
+| `FAULT <cap> <on\|off>` / `FAULT?` / `FAULT clear` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen, sd_io, provider, relay_noslot, embed_fail) to prove graceful degradation; query the mask. `FAULT clear` (or `none`, `off`) ends every injected fault at once: the mask (`embed_fail` included, which also ends the embedding pause so the queue drains), the `sram_ballast` hold, the `AUDIOINJECT` speech mute and `scratch_fail`; it replies `FAULT cleared mask=0x00`. |
 | `FAULT sram_ballast <bytes>` | Hold that much internal memory so the low-memory paths run on demand; `0` releases it. Held as up to 16 blocks, so it can go past the largest free block, and never below 4 KB free. Reports what it holds, internal free, largest block and block count. |
 | `FAULT embed_fail <on\|off>` | Make only the embedding call fail (the reply model still answers) with a recorded out-of-credit refusal (`HTTP 429 credit_balance_exhausted`), to exercise the memory-write queue. Replies `FAULT embed_fail=<0\|1> pending=<n>`; `off` also ends the embedding pause so the queue drains. |
 | `FAULT scratch_fail <on\|off>` | Make the scratchpad's flash file write fail, so a change is kept until restart only and says so, whatever the settings storage holds. Replies `FAULT scratch_fail=1`, or on `off` `FAULT scratch_fail=0 saved=<0\|1>` (`off` saves the notes again at once). `FAULT clear` ends it too, and ends `embed_fail`. |
-| `PANIC <abort\|nullptr\|canary\|twdt\|oom>` | Crash the device the chosen way so the crash summary at the next boot can be checked per kind. `PANIC <nullptr\|abort\|canary> arm=turn [round=N]` arms the crash inside the next turn instead: it fires as that turn sends its request in round N (default 0) and is dropped if the turn ends first. |
+| `PANIC <abort\|nullptr\|canary\|twdt\|oom>` | Crash the device the chosen way so the crash summary at the next boot can be checked per kind. `PANIC <nullptr\|abort\|canary> arm=turn [round=N]` arms the crash inside the next turn instead: it fires as that turn sends its request in round N (0 to 50, default 0) and is dropped if the turn ends first. |
 | `NVSFILL <entries>` / `NVSFILL 0` | Fill a scratch settings namespace to exercise the storage-full paths in seconds; `0` erases the scratch namespace. Reports free space before and after. |
-| `CAPTEST <tokens>` | Cap the first attempt of the next provider request at that many output tokens, so a cut reply and its retry run on demand. Reports "not wired" until the provider lane binds it. |
-| `PROVFAULT <host> <status> <json>` / `PROVFAULT off` | Answer one provider host with a set HTTP status and error body instead of the network (for example a credit or overload error), until `off`. Reports "not wired" until the provider lane binds it. |
+| `CAPTEST <tokens>` | Cap the first attempt of every provider request at that many output tokens, so a cut reply and its retry with more room run on demand. Replies `CAPTEST <tokens>`. The cap holds until the device restarts; no command clears it. |
+| `PROVFAULT <host> <status> <json>` / `PROVFAULT off` | Answer every request to one provider API host (for example `api.anthropic.com`) with a set HTTP status (100-599) and error body, such as a credit or overload error, without sending anything, until `PROVFAULT off`. Replies `PROVFAULT <host> <status> armed (<n> B body)`. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
 | `REBOOT` | Software restart - the only sanctioned way to restart from the host. |
@@ -237,7 +237,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
 | `EPIQ [@<cursor>] [--full] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. Each row prints as a 48-byte preview, or whole (up to 1024 bytes) with `--full`. |
 | `DREAM` | Fire the reserved maintenance-and-reflection loop now. Replies `DREAM queued` (`DREAM already queued` while one is waiting); the night runs on the turn task and logs `DREAM fired ok=<0\|1> detail=<...>` when it ends. |
-| `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days); report what it removed, or that it waited for a turn or a busy card. |
+| `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days). Replies `EPIPRUNE days=<n> status=<ran\|deferred-turn\|deferred-busy\|no-store\|clock-unset>`; a pass that ran adds `dayfiles=<n> blobs=<n> kept=<n>`, with `blobs=deferred` while the history index is still being rebuilt after a restart. A deferred pass removed nothing. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
 | `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive); a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. The page rides one command line, and a test-image line holds up to 4096 bytes. |
