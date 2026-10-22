@@ -6,7 +6,9 @@
 // token is supplied to device runs via NIMBUS_TOKEN (seeded into localStorage).
 import { defineConfig, devices } from '@playwright/test';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:8790';
+// PORT moves the host server (several worktrees can run the suite at once).
+const PORT = Number(process.env.PORT || 8790);
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const ON_DEVICE = process.env.TARGET === 'device';
 
 export default defineConfig({
@@ -30,7 +32,7 @@ export default defineConfig({
     ? undefined
     : {
         command: 'node server.mjs',
-        url: 'http://localhost:8790/healthz',
+        url: `http://localhost:${PORT}/healthz`,
         reuseExistingServer: !process.env.CI,
         stdout: 'ignore',
         stderr: 'pipe',

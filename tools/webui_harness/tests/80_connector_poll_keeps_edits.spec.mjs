@@ -85,11 +85,16 @@ test('the poll stops once polling is paused', async ({ page }) => {
   expect(state.calls).toBe(before);
 });
 
-test('an explicit load (tab open, save) still renders the cards in full', async ({ page }) => {
+test('an explicit load (tab open, save) renders the cards in full and keeps an unsaved card', async ({ page }) => {
   await seedToken(page);
   const state = { body: payload(false, '', 1) };
   await openConnectors(page, state);
   await page.locator('#cc_github_tok').fill('typed');
   await page.evaluate(() => loadConnectors());
-  await expect(page.locator('#cc_github_tok')).toHaveValue('');
+  // wf_plan 4c: a full rebuild (another card's Save or Remove) keeps what the owner
+  // typed on a card they have not saved, and says it is not saved yet.
+  await expect(page.locator('#cc_github_tok')).toHaveValue('typed');
+  await expect(page.locator('#cc_github_st')).toContainText('not saved');
+  // A card nobody touched renders fresh from the device.
+  await expect(page.locator('#cc_gcal_st')).toContainText('via sessions');
 });

@@ -650,6 +650,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <h2>Connectors <button class=qh type=button aria-expanded=false aria-label="About connectors">?</button></h2>
 <p class="hint tip">Tools that run in your AI provider's cloud - on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
 <p class=hint id=connhost></p>
+<p class=warnbox id=connwarn style="display:none"></p>
 <div id=conncards></div>
 <details style="margin-top:12px"><summary class=hint style="cursor:pointer">Advanced - edit raw JSON</summary>
 <p class=hint>A JSON array; secrets are write-only. Example: <code>{"name":"github","prov":"openai","kind":"mcp","url":"https://api.githubcopilot.com/mcp/","tok":"ghp_...","type":"github","en":1}</code></p>
@@ -701,12 +702,13 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
-<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
-<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
-<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
 <p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
+<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr id=codeSbxRow><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run Python on OpenAI or Mistral to make files such as charts and PDFs, then send them to you. Finished files land under Files.</p>
+<p class=hint id=codeSbxStat></p>
 <label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
-<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
+<p class="hint tip">Keeps a record of what the assistant did on each turn - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card; the device keeps the most recent turns.</p>
 <label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
 <input id=loopRounds type=number min=1 max=32>
 <label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
@@ -1609,9 +1611,13 @@ function fillVoices(prov, sel, ck){
     // Mistral's catalog carries the gender/persona/emotion structure.
     const structured=prov!=='openai'&&prov!=='cumulo'&&list.some(v=>v.gender||v.name);
     structured?buildCascade(list):renderFlat(list);};
+  // A sequence token: only the newest request may draw. A slow list for the
+  // previous provider (a Mistral catalog) must never overwrite the one just picked.
+  const seq=(window._voiceSeq=(window._voiceSeq||0)+1);
+  const mine=()=>seq===window._voiceSeq;
   fetch('/api/voices?provider='+encodeURIComponent(catProv)).then(r=>r.json())
-    .then(l=>render(Array.isArray(l)&&l.length?l:(FB[prov]||FB.mistral)))
-    .catch(()=>render(FB[prov]||FB.mistral));
+    .then(l=>{if(mine())render(Array.isArray(l)&&l.length?l:(FB[prov]||FB.mistral));})
+    .catch(()=>{if(mine())render(FB[prov]||FB.mistral);});
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
@@ -1768,8 +1774,20 @@ function pollMint(btn,left){
     else{setMintMsg(m.message||'Couldn\'t mint a key. Try again.',true);if(btn)btn.disabled=false;}
   }).catch(()=>setTimeout(()=>pollMint(btn,left-1),1500));
 }
+// The settings-store banner on Home: the device is short of room for settings, so
+// some changes may not save (the full-store class behind the October replay loop).
+function _nvsBanner(n,r){let b=$('nvsBanner');
+  const show=!!n&&(!!n.low||n.fails>0||!!(r&&r.starved));
+  if(!b){if(!show)return;const tiles=$('devtiles');if(!tiles||!tiles.parentNode)return;
+    b=document.createElement('div');b.id='nvsBanner';b.className='warnbox';b.style.margin='8px 0';
+    tiles.parentNode.insertBefore(b,tiles);}
+  if(!show){b.style.display='none';return;}
+  b.style.display='block';
+  b.textContent='Device storage is almost full, so some changes may not save. Remove connectors you don\'t use.'+
+    (n.fails>0?(' '+n.fails+(n.fails==1?' change':' changes')+' did not save since the last restart.'):'');}
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
+  if(d.nvs)_nvsBanner(d.nvs,d.nvsReserve);
   // CUM-15: reveal the full-card Format control only when the driver supports it.
   if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // CUM-187: hide the ring simulator on a board with no physical LED ring (the
@@ -3090,6 +3108,21 @@ function loadModels(){
       syncModelSel('subM_'+n,pp.subModel,pp.choices,pp.verify===1);});
   }).catch(()=>{});
 }
+// A Tool use switch: saved the moment it changes (no Save needed); while that save
+// is in flight the poll leaves it alone (data-dirty), then shows the stored value.
+function _orchSwitch(id,v){const el=$(id);if(!el)return;
+  if(!el.dataset.wired){el.dataset.wired='1';
+    el.onchange=()=>{el.dataset.dirty='1';orchApply({[id]:el.checked?1:0}).then(()=>{delete el.dataset.dirty;});};}
+  if(!el.dataset.dirty)el.checked=!!v;}
+// The Code sandbox status line, from the device's one PDF rule (pdfRoute). A
+// Virtual Nimbus cannot collect a file a sub-agent builds, so it shows no switch.
+var SBX_STAT={openai:'Ready. PDFs go through OpenAI.',anthropic:'Ready. PDFs go through Anthropic.',
+  device:'PDFs are made on the device: text and tables only. Add an OpenAI or Anthropic key for charts.',
+  nostore:'Insert an SD card to keep files.',sandboxoff:'Turn on Code sandbox to make PDFs through OpenAI.',
+  nokey:'Add your OpenAI or Anthropic key to make PDFs.',nocapture:''};
+function _sbxStatus(d){const row=$('codeSbxRow'),st=$('codeSbxStat');if(!st)return;
+  if(HOSTED){if(row)row.style.display='none';st.style.display='none';return;}
+  st.textContent=SBX_STAT[d.pdfRoute]||'';}
 function applyOrch(d){
   if($('fetchpol')&&d.fetchPol!=null)$('fetchpol').value=d.fetchPol;
   if($('modInbound')&&d.modInbound!=null)$('modInbound').checked=!!d.modInbound;
@@ -3122,7 +3155,7 @@ function applyOrch(d){
   const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.value=v;};
   set('custBase',d.cust.base||''); set('custConv',d.cust.conv); set('custModel',d.cust.model||'');
   $('custKey').placeholder=d.cust.hasKey?'Key set - type to replace':'API key';
-  set('orchHost',d.orchHost);
+  _orchHostSync(d.orchHost||'');
   renderPrio('provPrioList','provPrio',d.provPrio||'');
   renderPrio('subPrioList','subPrio',d.subPrio||'');
   if(d.sttProv){set('sttProv',d.sttProv); $('sttProv').onchange=()=>orchApply({sttProv:$('sttProv').value});}
@@ -3190,11 +3223,12 @@ function applyOrch(d){
     // does not read as a wall of errors (CUM-214).
     const bad=parts.some(p=>p[0]==='✗'),warn=parts.some(p=>p[0]==='⚠'||p[0]==='⏳'),setup=parts.some(p=>p[0]==='•');
     r.style.color=bad?'#e77':warn?'#e0b870':setup?'#a7adba':'#7fd1c8';}}
-  $('orchLoop').checked=!!d.orchLoop;
-  if($('midFail'))$('midFail').checked=!!d.midFail;
-  if($('codeSbx'))$('codeSbx').checked=!!d.codeSbx;
-  if(d.orchTrace!==undefined){$('orchTrace').checked=!!d.orchTrace;
+  // Tool use switches save on change; one the owner just flipped keeps its state
+  // while its save is in flight, so the 5 s poll never puts the old value back.
+  _orchSwitch('orchLoop',d.orchLoop);_orchSwitch('midFail',d.midFail);_orchSwitch('codeSbx',d.codeSbx);
+  if(d.orchTrace!==undefined){_orchSwitch('orchTrace',d.orchTrace);
     GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
+  _sbxStatus(d);
   // "Voice replies" toggle (P2.5): applies immediately (like the SFX controls).
   if(d.ttsOn!==undefined){const tv=$('ttsOn');
     if(tv){tv.checked=!!d.ttsOn; tv.onchange=()=>orchApply({ttsOn:tv.checked?1:0});}}
@@ -3653,28 +3687,39 @@ function connKindFor(prov,k){
   if(prov==='openai'&&k.cid)return 'connector';                            // OpenAI first-party connector_id
   return 'mcp';                                                            // BYO remote MCP by URL (+ token)
 }
-// The connector_id to prefill: OpenAI first-party default, or the Studio name for Mistral.
-function connCidDefault(prov,k){ return k.cid || (prov==='mistral'?k.id:''); }
+// The connector_id to prefill: Mistral's own workspace id (gcal -> google_calendar)
+// when Mistral runs it, else the OpenAI first-party default.
+function connCidDefault(prov,k){ return prov==='mistral'?(k.mcid||k.id):(k.cid||''); }
 function loadConnectors(poll){
   // A poll (the timer below, poll===true) stops once signed out or paused, like
   // every poller. Any other call (tab open, save, a handler's event) loads in full.
   if(poll===true&&!canPoll())return;
   fetch('/api/connectors').then(r=>r.json()).then(d=>{
   if(Array.isArray(d))d={configured:d,known:[],keyed:{},host:''};       // legacy-shape guard
-  const cfg=d.configured||[],known=d.known||[],keyed=d.keyed||{},host=d.host||'';
+  const cfg=d.configured||[],keyed=d.keyed||{},host=d.host||'';let known=d.known||[];
   const byId={};cfg.forEach(c=>{byId[c.type||c.name]=c;if(!byId[c.name])byId[c.name]=c;});
   const knownIds={};known.forEach(k=>knownIds[k.id]=1);
-  const extra=cfg.filter(c=>!knownIds[c.type]&&!knownIds[c.name]);
+  // Code Interpreter is the Code sandbox switch under Tools, never a card here.
+  const CS='code_interpreter';
+  const extra=cfg.filter(c=>!knownIds[c.type]&&!knownIds[c.name]&&c.type!==CS&&c.name!==CS);
+  known=known.filter(k=>k.id!==CS);
   const cards=known.map(k=>[k,byId[k.id]]).concat(extra.map(c=>[{id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c]));
   // CUM-537: a poll refreshes only each card's status badge. Rebuilding the cards
   // would wipe a token being typed or a provider being picked (focused or not); a
   // card that is new since the last full load waits for the next one.
+  window._connWs={miss:d.wsMiss,recheck:d.wsRecheckS};
+  connWarn(d.mistralTools|0,d.mistralToolsAdvised||2);
   if(poll===true){
-    cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');if(st)st.innerHTML=connStatus(k,c,keyed,host);});
+    cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');
+      if(st)st.innerHTML=window._connDrafts[k.id]?'<span class="badge vfy unk">not saved</span>':connStatus(k,c,keyed,host);
+      const w=$('cc_'+k.id+'_ws');if(w)w.innerHTML=connWsLine(k,c);});
   }else{
     $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
     window._connKnown=known;
+    window._connCtx={keyed:keyed,host:host,cards:{}};
+    cards.forEach(([k,c])=>{window._connCtx.cards[k.id]={k:k,c:c};});
     $('conncards').innerHTML=cards.map(([k,c])=>connCard(k,c,keyed,host)).join('')||'<p class=hint>No connectors available.</p>';
+    connRestoreDrafts();
   }
   $('connstat').textContent=cfg.length?(cfg.length+' configured'):'';
   // CUM-537: while the workspace check runs, refresh the badges so they turn to
@@ -3684,6 +3729,31 @@ function loadConnectors(poll){
   else if(!d.wsChecking)window._connPolls=0;
 }).catch(()=>{});}
 function connProvs(k){const p=(k.providers||'').split(',').filter(Boolean);if(!p.length)p.push('any');return p;}
+// Too many tools on one Mistral request make its turns slow (each rides the same
+// synchronous call the device stops waiting for at about a minute).
+function connWarn(n,adv){const w=$('connwarn');if(!w)return;
+  w.textContent=n>adv?(n+' Mistral connectors and built-ins are on. Mistral answers slowly with more than '+adv+' at once, so turn off the ones you don\'t use.'):'';
+  w.style.display=n>adv?'block':'none';}
+// The workspace line under a Mistral connector's badge: why it is not confirmed yet,
+// when the device checks again, and a Check Now button that queues the check alone.
+var CONN_MISS={memory:'the device was low on memory',busy:'the assistant was busy',network:'the connection was busy',noanswer:'Mistral did not answer'};
+function connWsLine(k,c){
+  if(!c||c.prov!=='mistral'||c.kind!=='connector'||!(c.en==1||c.en===true))return '';
+  if(c.ws!=='unchecked'&&c.ws!=='unlisted')return '';
+  const ws=window._connWs||{},why=CONN_MISS[ws.miss];
+  let t=c.ws==='unlisted'?('Your Mistral workspace does not offer '+(k.name||c.name)+' yet. Connect it in Mistral Studio, then press Check Now.')
+                        :('Not checked yet.'+(why?(' The last check did not finish: '+why+'.'):''));
+  if(ws.recheck!=null)t+=' Next automatic check in '+Math.max(1,Math.round(ws.recheck/60))+' min.';
+  return connEsc(t)+' <button type=button onclick="connCheckNow(\''+connEsc(k.id)+'\')">Check Now</button>';
+}
+function connCheckNow(id){
+  const el=$('cc_'+id+'_ws');
+  fetch('/api/connectors/check',{method:'POST'}).then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j}))).then(x=>{
+    if(x.s===409){if(el)el.textContent=x.j.message||'Add your Mistral key first.';return;}
+    if(x.s!==200){failToast();return;}
+    toast(x.j.queued?'Checking workspace':'Already confirmed');window._connPolls=0;loadConnectors();
+  }).catch(failToast);
+}
 // One card's status badge (its own span, so a poll can refresh it alone).
 function connStatus(k,c,keyed,host){
   const set=!!c,en=set&&(c.en==1||c.en===true);
@@ -3692,14 +3762,15 @@ function connStatus(k,c,keyed,host){
   const a=connAvail(c.prov,host,keyed,(c.auth!==undefined)?c.auth:-1,c.ws);
   return '<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';
 }
-function connCard(k,c,keyed,host){
+function connCard(k,c,keyed,host,provPick){
   const set=!!c,en=set&&(c.en==1||c.en===true);
   const provs=connProvs(k);
-  const curProv=set?c.prov:provs[0];
+  const curProv=provPick||(set?c.prov:provs[0]);
   const id=k.id,kind=connKindFor(curProv,k);
   const badges=provs.map(p=>'<span class="badge ext" style="margin-left:4px">'+connEsc(p)+'</span>').join('');
   const provSel='<select id="cc_'+id+'_prov" onchange="connProvChange(\''+connEsc(id)+'\')">'+provs.map(p=>'<option'+(p===curProv?' selected':'')+'>'+connEsc(p)+'</option>').join('')+'</select>';
   let h='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b>'+connEsc(k.name)+'</b>'+badges+'<span id="cc_'+connEsc(id)+'_st" style="margin-left:auto">'+connStatus(k,c,keyed,host)+'</span></div>';
+  h+='<div class=hint id="cc_'+connEsc(id)+'_ws" style="margin:4px 0">'+connWsLine(k,c)+'</div>';
   h+='<p class=cx style="margin:6px 0">'+connEsc(k.desc||'')+(k.docs?(' <a href="https://ristllin.github.io/Nimbus/guides/connectors#'+connEsc(k.docs)+'" target=_blank>setup&rarr;</a>'):'')+'</p>';
   h+='<div class=row style="margin-top:6px">'+provSel+'</div>';
   // Mistral connectors (Studio connectors + hosted built-ins) carry NO credential on
@@ -3707,14 +3778,16 @@ function connCard(k,c,keyed,host){
   // only references them by name. Enabling the checkbox here is not enough, so say the
   // real step plainly - otherwise it reads as "on but broken" (the gcal confusion).
   if(curProv==='mistral'&&kind!=='mcp'){
-    h+='<p class=hint style="margin:6px 0;color:var(--amber)">This runs on Mistral. Add your Mistral key, then turn '+connEsc(k.name)+' on in your Mistral account (La Plateforme &rsaquo; Connectors). It is referenced by name here, so there is nothing to paste.</p>';
+    h+='<p class=hint style="margin:6px 0;color:var(--amber)">'+(kind==='builtin'
+      ?'This runs inside Mistral with your Mistral key. There is nothing to paste here.'
+      :'This runs on Mistral. Add your Mistral key, then turn '+connEsc(k.name)+' on in Mistral Studio &rsaquo; Connectors. It is referenced by name here, so there is nothing to paste.')+'</p>';
   }
   // token field only for remote MCP (a pasted PAT/bearer). Mistral connectors carry
   // no device secret (Studio-auth); OpenAI first-party needs the OAuth block (helper
   // script / raw editor), not a single token.
   const showUrl=kind==='mcp',showCid=kind==='connector',showTok=kind==='mcp';
   h+='<div class=row id="cc_'+id+'_urlrow" style="margin-top:6px;display:'+(showUrl?'flex':'none')+'"><input id="cc_'+id+'_url" placeholder="MCP server URL (e.g. https://api.githubcopilot.com/mcp/)" value="'+connEsc(set?(c.url||''):'')+'"></div>';
-  h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="connector_id (Studio name / UUID)" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
+  h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="Connector name or ID" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
   const ph=(set&&c.hasTok)?'•••• saved - leave blank to keep':(k.cred||'Credential / token');
   h+='<div class=row id="cc_'+id+'_tokrow" style="margin-top:6px;display:'+(showTok?'flex':'none')+'"><input id="cc_'+id+'_tok" type=password placeholder="'+connEsc(ph)+'"></div>';
   // MCP OAuth sign-in (CUM-256): for a saved MCP server that signs in through the
@@ -3744,8 +3817,29 @@ function connCard(k,c,keyed,host){
   h+='<button type=button onclick="saveConnCard(\''+connEsc(id)+'\')">Save</button>';
   if(set)h+='<button type=button onclick="delConn(\''+connEsc(c.name)+'\')">Remove</button>';
   h+='</div>';
-  return '<div class=tile style="margin:8px 0">'+h+'</div>';
+  return '<div class=tile id="cc_'+connEsc(id)+'_tile" style="margin:8px 0" oninput="connDraftNote(\''+connEsc(id)+'\')" onchange="connDraftNote(\''+connEsc(id)+'\')">'+h+'</div>';
 }
+// Unsaved edits per card (wf_plan 4c): a Save or Remove on one card rebuilds every
+// card, and a provider switch redraws its own card - neither may throw away what
+// the owner typed or picked on a card they have not saved yet.
+window._connDrafts=window._connDrafts||{};
+function connDraftRead(id){const g=s=>{const e=$('cc_'+id+'_'+s);return e?e.value:'';};
+  const en=$('cc_'+id+'_en');return {prov:g('prov'),url:g('url'),cid:g('cid'),tok:g('tok'),en:en?en.checked:false};}
+function connDraftNote(id){window._connDrafts[id]=connDraftRead(id);
+  const st=$('cc_'+id+'_st');if(st)st.innerHTML='<span class="badge vfy unk">not saved</span>';}
+function connDraftApply(id,d){const put=(s,v)=>{const e=$('cc_'+id+'_'+s);if(e&&v!=null)e.value=v;};
+  put('url',d.url);put('cid',d.cid);put('tok',d.tok);
+  const en=$('cc_'+id+'_en');if(en)en.checked=!!d.en;
+  const st=$('cc_'+id+'_st');if(st)st.innerHTML='<span class="badge vfy unk">not saved</span>';}
+function connRestoreDrafts(){const ctx=window._connCtx||{cards:{}};
+  Object.keys(window._connDrafts).forEach(id=>{const d=window._connDrafts[id],e=ctx.cards[id];
+    if(!e||!$('cc_'+id+'_tile'))return;
+    if(d.prov&&$('cc_'+id+'_prov')&&$('cc_'+id+'_prov').value!==d.prov)connRedraw(id,d.prov);
+    connDraftApply(id,d);});}
+// Redraw one card for a provider: its hint, fields and badge follow the choice.
+function connRedraw(id,prov){const ctx=window._connCtx,e=ctx&&ctx.cards[id],tile=$('cc_'+id+'_tile');
+  if(!e||!tile)return false;
+  tile.outerHTML=connCard(e.k,e.c,ctx.keyed,ctx.host,prov);return true;}
 // Flip the mcp "appr" bit through the owner-gated connectors write (per CUM-33).
 // A patch-upsert preserves omitted fields (incl. the saved token); the device
 // reconciles on its next turn (discovers on approve, retracts tools on deny).
@@ -3785,9 +3879,14 @@ function mcpOauthPoll(id){
 function connFindKnown(id){return (window._connKnown||[]).find(k=>k.id===id)||{id:id,kind:'mcp',cid:''};}
 function connProvChange(id){
   const k=connFindKnown(id),prov=$('cc_'+id+'_prov').value,kind=connKindFor(prov,k);
-  const set=(row,on)=>{const e=$('cc_'+id+'_'+row);if(e)e.style.display=on?'flex':'none';};
-  set('urlrow',kind==='mcp');set('cidrow',kind==='connector');set('tokrow',kind==='mcp');
-  if(kind==='connector'){const ci=$('cc_'+id+'_cid');if(ci&&!ci.value)ci.value=connCidDefault(prov,k);}
+  const was=connDraftRead(id);
+  // Redraw the whole card for the new provider (its hint, fields and badge), then put
+  // back what the owner typed; the id takes this provider's default unless typed.
+  if(!connRedraw(id,prov)){
+    const set=(row,on)=>{const e=$('cc_'+id+'_'+row);if(e)e.style.display=on?'flex':'none';};
+    set('urlrow',kind==='mcp');set('cidrow',kind==='connector');set('tokrow',kind==='mcp');}
+  if(!was.cid||was.cid===(k.cid||'')||was.cid===(k.mcid||k.id))was.cid=connCidDefault(prov,k);
+  was.prov=prov;window._connDrafts[id]=was;connDraftApply(id,was);
 }
 function saveConnCard(id){
   const k=connFindKnown(id),prov=$('cc_'+id+'_prov').value,kind=connKindFor(prov,k);
@@ -3797,11 +3896,11 @@ function saveConnCard(id){
   if(kind==='connector')patch.cid=g('cid');
   if(kind!=='builtin'){const t=g('tok');if(t)patch.tok=t;}
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({patch:JSON.stringify(patch)}).toString()})
-   .then(jok).then(x=>{toast(x.ok?'Saved':'Rejected');window._connPolls=0;loadConnectors();}).catch(failToast);
+   .then(jok).then(x=>{toast(x.ok?'Saved':'Rejected');if(x.ok)delete window._connDrafts[id];window._connPolls=0;loadConnectors();}).catch(failToast);
 }
 function delConn(name){uiConfirm('Remove the '+name+' connector?',{ok:'Remove Connector',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({del:name}).toString()})
-   .then(jok).then(x=>{toast('Removed');window._connPolls=0;loadConnectors();}).catch(failToast);});
+   .then(jok).then(x=>{toast('Removed');delete window._connDrafts[name];window._connPolls=0;loadConnectors();}).catch(failToast);});
 }
 function saveConnectors(){
   const v=$('connBlob').value.trim(); if(!v){toast('Paste a JSON array first');return;}
@@ -3916,6 +4015,15 @@ function saveVerdict(ok,okMsg){
   m.textContent=ok?('✓ '+okMsg):'✗ '+lastFailText('Save failed - nothing was stored. Check the connection and try again.');
   m.style.cssText=ok?'color:#7fd1c8;font-weight:bold':'color:#e77;font-weight:bold';
 }
+// Primary provider: saved on change (like the voice providers). A stored value the
+// list does not offer (the router keys run as fallbacks, not as the primary) is shown
+// as a disabled "(stored)" entry, so the select never reads blank or lies.
+function _orchHostSync(v){const oh=$('orchHost');if(!oh)return;
+  if(v&&![].some.call(oh.options,o=>o.value===v)){const o=document.createElement('option');
+    o.value=v;o.disabled=true;o.textContent=(PROVLBL[v]||v)+' (stored)';oh.appendChild(o);}
+  if(!oh.dataset.wired){oh.dataset.wired='1';
+    oh.onchange=()=>{oh.dataset.dirty='1';orchApply({orchHost:oh.value}).then(()=>{delete oh.dataset.dirty;});};}
+  if(document.activeElement!==oh&&!oh.dataset.dirty)oh.value=v;}
 // The Models "Save Changes" and the Tools "Save Changes" (the relocated Tool use
 // group, CUM-163) both persist the whole orch field set: every input is read by id
 // and both subtabs' inputs stay in the DOM even while hidden, so either button
@@ -3926,7 +4034,6 @@ function saveVerdict(ok,okMsg){
 // NOTHING, silently, for every field.
 function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('custKey').value,
     custConv:$('custConv').value,custModel:$('custModel').value,
-    orchHost:$('orchHost').value,
     tgToken:$('tgToken').value,
     orchLoop:$('orchLoop').checked?1:0,
     midFail:$('midFail')&&$('midFail').checked?1:0,
@@ -3936,6 +4043,10 @@ function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('cust
     tlsVerify:$('tlsVerify').checked?1:0,
     capProbe:$('capProbe')?$('capProbe').value:1,
     capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24};}
+// The Tools "Save Changes" stores only the Tool use fields: never the Telegram
+// token or a provider field from another subtab.
+function _toolUsePayload(){const a=_orchSavePayload();
+  ['custBase','custKey','custConv','custModel','tgToken'].forEach(k=>delete a[k]);return a;}
 $('orchsave').onclick=()=>{
   $('orchmsg').textContent='Saving…';$('orchmsg').style.cssText='';
   orchApply(_orchSavePayload())
@@ -3951,7 +4062,7 @@ $('orchsave').onclick=()=>{
 };
 $('toolusesave')&&($('toolusesave').onclick=()=>{
   const m=$('toolusemsg'); if(m){m.textContent='Saving…';m.style.cssText='';}
-  orchApply(_orchSavePayload()).then(ok=>{if(m){m.textContent=ok===false?'✗ Save failed - try again.':'✓ Tool use settings saved.';m.style.cssText=ok===false?'color:#e77;font-weight:bold':'color:#7fd1c8;font-weight:bold';}});
+  orchApply(_toolUsePayload()).then(ok=>{if(m){m.textContent=ok===false?'✗ Save failed - try again.':'✓ Tool use settings saved.';m.style.cssText=ok===false?'color:#e77;font-weight:bold':'color:#7fd1c8;font-weight:bold';}});
 });
 let _tgVerifyWatch=false;
 $('savedir').onclick=()=>{
@@ -4503,6 +4614,82 @@ function _fpreview(project,name,kind){
   }).catch(()=>{pre.textContent='Couldn\'t load that file.';});
 }
 
+// ---- Telegram archive: browse by chat and day, open an item, export a day -----
+// Every Telegram message and file the bot sees is kept on the SD card (the
+// archive). This group lists the chats and their days, shows a day's items, opens
+// a record or a photo in place, and saves a whole day as a ZIP. Every read carries
+// the token in the header (the fetch shim), never in a link.
+function _tgArcGet(url){return fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status));}
+function _tgArcSave(url,name){return _tgArcGet(url).then(b=>{const u=URL.createObjectURL(b);
+  const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u),0);});}
+function _tgArcItemUrl(chat,day,name,inl){return '/api/tg/archive/item?chat='+encodeURIComponent(chat)+
+  '&day='+encodeURIComponent(day)+'&name='+encodeURIComponent(name)+(inl?'&inline=1':'');}
+function _tgArcOpen(chat,day,name){const v=$('tgArcView');if(!v)return;
+  v.style.display='block';v.innerHTML='';
+  const head=document.createElement('div');head.className='hint';head.textContent=day+' / '+name;v.appendChild(head);
+  if(_fviewable(name)==='img'){const img=document.createElement('img');img.alt=name;
+    img.style.cssText='max-width:100%;max-height:50vh;border-radius:8px;display:block';v.appendChild(img);
+    _tgArcGet(_tgArcItemUrl(chat,day,name,1)).then(b=>{const u=URL.createObjectURL(b);
+      img.onload=()=>URL.revokeObjectURL(u);img.src=u;}).catch(()=>{head.textContent='Couldn\'t load that photo.';});
+    return;}
+  if(/\.(json|jsonl|txt)$/i.test(name)){const pre=document.createElement('pre');
+    pre.style.cssText='max-height:40vh;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;margin:4px 0';
+    v.appendChild(pre);
+    _tgArcGet(_tgArcItemUrl(chat,day,name,1)).then(b=>b.text()).then(t=>{pre.textContent=t;})   // data, never markup
+      .catch(()=>{head.textContent='Couldn\'t load that record.';});
+    return;}
+  _tgArcSave(_tgArcItemUrl(chat,day,name,0),name).catch(failToast);}
+function _tgArcLink(label,chat,day,name){const b=document.createElement('button');b.type='button';
+  b.textContent=label;b.style.fontSize='11px';b.onclick=()=>_tgArcOpen(chat,day,name);return b;}
+function tgArcRows(chat,day,from){
+  fetch('/api/tg/archive?chat='+encodeURIComponent(chat)+'&day='+encodeURIComponent(day)+'&from='+from).then(jok).then(d=>{
+    const box=$('tgArcRows');if(!box)return;if(!from)box.innerHTML='';
+    (d.rows||[]).forEach(r=>{if(r.ev)return;   // a media status event rides its item
+      const row=document.createElement('div');row.className='row tgArcRow';row.style.cssText='margin:3px 0;gap:8px;align-items:center';
+      const t=document.createElement('span');t.className='hint';t.style.minWidth='150px';
+      const when=r.date?new Date(r.date*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+      t.textContent=when+' '+(r.dir==='out'?'sent':'received')+(r.kind?' '+r.kind:'');   // textContent: untrusted
+      row.appendChild(t);
+      if(r.raw)row.appendChild(_tgArcLink('Open',chat,day,r.raw));
+      if(r.file)row.appendChild(_tgArcLink(_fviewable(r.file)==='img'?'View':'Save',chat,day,r.file));
+      box.appendChild(row);});
+    if(!box.children.length)box.innerHTML='<p class=hint>Nothing archived that day.</p>';
+    const more=$('tgArcMore');more.style.display=d.more?'inline-block':'none';
+    more.onclick=()=>tgArcRows(chat,day,d.next);
+  }).catch(failToast);}
+function tgArcDays(chat){
+  fetch('/api/tg/archive?chat='+encodeURIComponent(chat)+'&limit=200').then(jok).then(d=>{
+    const sel=$('tgArcDay'),days=d.days||[];
+    sel.innerHTML=days.map(x=>'<option>'+connEsc(x)+'</option>').join('');
+    if(days.length)tgArcRows(chat,days[0],0);else $('tgArcRows').innerHTML='';
+  }).catch(failToast);}
+function tgArcLoad(){
+  fetch('/api/tg/archive').then(jok).then(d=>{
+    const chats=d.chats||[],sel=$('tgArcChat');
+    $('tgArcStat').textContent=chats.length?'Every message and file the bot receives, by chat and day.'
+      :'Nothing archived yet. Messages and files the bot receives are kept here when an SD card is in.';
+    sel.innerHTML=chats.map(c=>'<option value="'+connEsc(c.chat)+'">'+connEsc(c.chat)+' ('+c.days+(c.days==1?' day':' days')+')</option>').join('');
+    if(chats.length)tgArcDays(chats[0].chat);else{$('tgArcDay').innerHTML='';$('tgArcRows').innerHTML='';}
+  }).catch(()=>{$('tgArcStat').textContent='Couldn\'t load the archive. Try again.';});}
+function tgArcExport(){const chat=$('tgArcChat').value,day=$('tgArcDay').value;if(!chat||!day)return;
+  toast('Preparing the export');
+  _tgArcSave('/api/tg/archive/zip?chat='+encodeURIComponent(chat)+'&day='+encodeURIComponent(day),chat+'-'+day+'.zip')
+    .catch(failToast);}
+(function(){const pane=$('pane-mem');if(!pane||HOSTED||$('tgArcGroup'))return;   // a hosted instance has no archive
+  const g=document.createElement('details');g.className='setgroup';g.id='tgArcGroup';
+  g.innerHTML='<summary>Telegram archive<span class=chev>&rsaquo;</span></summary><div class=setbody>'+
+    '<p class=hint id=tgArcStat>Every message and file the bot receives, by chat and day.</p>'+
+    '<div class=row><select id=tgArcChat aria-label="Chat"></select><select id=tgArcDay aria-label="Day"></select>'+
+    '<button type=button id=tgArcExport>Export Day</button></div>'+
+    '<div id=tgArcRows></div><div class=row><button type=button id=tgArcMore style="display:none">Show More</button></div>'+
+    '<div id=tgArcView style="display:none;margin-top:8px"></div></div>';
+  pane.appendChild(g);
+  g.addEventListener('toggle',()=>{if(g.open)tgArcLoad();});
+  $('tgArcChat').onchange=()=>tgArcDays($('tgArcChat').value);
+  $('tgArcDay').onchange=()=>tgArcRows($('tgArcChat').value,$('tgArcDay').value,0);
+  $('tgArcExport').onclick=tgArcExport;})();
+
 function loadFiles(){
   const box=$('filesList'); if(!box)return;
   const proj=($('filesProj')&&$('filesProj').value.trim())||'';
@@ -4866,6 +5053,12 @@ function _turnChip(bubble,row){
   // Served-by disclosure (CUM-236): d.host/d.model are the failover-final head, so
   // annotate them "served by ... (fallback)" when the turn substituted.
   if(d.host)bits.push((d.fallback?'served by ':'')+d.host+(d.model?' · '+d.model:'')+(d.fallback?' (fallback)':''));
+  // More than one provider billed this turn (a switch mid-turn): say which and how much.
+  // A row the device had to shrink drops the model: [host,in,out] instead of
+  // [host,model,in,out,...] (orch_failure_rows.cpp addVia).
+  if(Array.isArray(d.via)&&d.via.length>1)
+    bits.push('via '+d.via.map(v=>{const m=v.length>3?v[1]:'',i=v.length>3?2:1;
+      return String(v[0]||'')+(m?' · '+m:'')+' '+_tok(v[i])+'/'+_tok(v[i+1]);}).join(', '));
   if(d.tools)bits.push(d.tools+' tool call'+(d.tools>1?'s':''));
   if(d.in||d.out)bits.push(_tok(d.in)+' in / '+_tok(d.out)+' out');
   if(d.ok===false)bits.push('failed'+(d.err?': '+d.err:''));
@@ -4919,13 +5112,43 @@ function _traceGroup(log,rows){
     det.appendChild(b);}
   log.appendChild(det);
 }
+// Older pages the owner loaded with Load Older (oldest first, each newest-first as
+// the device returns it) and the reply that gave the last of them: its cursor and
+// how far back it searched (19 Oct triage: the pane showed a day with five hours
+// missing and never said older history was still being indexed).
+let _chatOlder=[],_chatOlderMeta=null;
+function _chatLoadOlder(cursor,btn){
+  // The device's own cursor, passed back unchanged (never one computed here).
+  fetch('/api/mem/episodic?limit=200&before='+encodeURIComponent(cursor)).then(jok).then(o=>{
+    _chatOlder.unshift(o.messages||[]);_chatOlderMeta=o;loadChatHistory();
+  }).catch(e=>{if(btn)btn.disabled=false;failToast(e);});   // a failed load can be tried again
+}
+// The indexing divider, the Load Older control and how far back the page searched.
+function _chatHistoryEdges(log,d){
+  const meta=_chatOlderMeta||d;
+  const line=(t)=>{const dv=document.createElement('div');
+    dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0';dv.textContent=t;return dv;};
+  if(meta.olderExists&&meta.nextBefore){
+    const b=document.createElement('button');b.type='button';b.id='chatOlder';b.textContent='Load Older';
+    b.style.cssText='align-self:center;font-size:11px;margin:4px 0';
+    b.onclick=()=>{b.disabled=true;_chatLoadOlder(meta.nextBefore,b);};
+    log.insertBefore(b,log.firstChild);
+    if(meta.searchedTo){const first=b.nextSibling,sd=line('Searched back to '+meta.searchedTo);sd.id='chatSearchedTo';
+      log.insertBefore(sd,first?first.nextSibling:null);}
+  }
+  if(d.indexComplete===false){const dv=line('Older history is still being indexed: '+(d.total||0)+' rows so far.');
+    dv.id='chatIndexing';log.insertBefore(dv,log.firstChild);}
+}
 function loadChatHistory(){
   const log=$('chatLog'); if(!log||_chatBusy)return;
   // No kind filter: message rows render as bubbles, tool_output/llm_response rows
   // fold into per-turn disclosures. The 'system' session (device timeline) and
   // media/log rows stay out of the chat pane.
   fetch('/api/mem/episodic?limit=200').then(jok).then(d=>{
-    const ms=(d.messages||[]).slice().reverse();   // store returns newest-first
+    // Store pages return newest-first; older pages (Load Older) go before, once each.
+    const seen={},ms=[];
+    _chatOlder.concat([d.messages||[]]).forEach(pg=>pg.slice().reverse().forEach(m=>{
+      if(m.id&&seen[m.id])return;if(m.id)seen[m.id]=1;ms.push(m);}));
     log.innerHTML='';
     // Group by TURN ID, not adjacency: every trace row carries "turn:<user row
     // id>" and the turn's reply row carries the same tag, so an interleaved
@@ -4975,7 +5198,8 @@ function loadChatHistory(){
     // stacked as a wall of collapsed "N tool calls" rows the owner cannot place.
     if(liveTid&&byTurn[liveTid])_traceGroup(log,byTurn[liveTid]);
     if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
-    log.scrollTop=log.scrollHeight;
+    _chatHistoryEdges(log,d);
+    if(!_chatOlder.length)log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
 }
 // Async results (CUM-482): a sub-agent synthesis, spawn acks and raw fallbacks are
@@ -5207,7 +5431,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       // Per-provider setup guidance, updated as the selection changes.
       const pv=el('onb_prov'),pg=el('onb_provguide');
       const G={cumulo:'Cumulo Nimbus (recommended): sign in at app.cumulo-nimbus.ai and create a device key. One account, no separate provider billing to manage.',
-        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.',
+        anthropic:'Anthropic: sign up at platform.claude.com, add credit, then create an API key. Note: text only, no on-device voice.',
         openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
         mistral:'Mistral: sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
         zai:'Z.ai: sign up at z.ai, add credit, then create an API key.'};

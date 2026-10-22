@@ -66,6 +66,8 @@ export const ORCH = {
   cust: { base: '', conv: 'openai', model: '', hasKey: false },
   orchHost: 'anthropic',
   provPrio: 'anthropic,cumulo,zai', subPrio: 'cumulo,anthropic',
+  // The PDF route the Code sandbox status line shows (pdfRoute on the device).
+  codeSbx: 1, pdfRoute: 'anthropic',
   sttProv: 'openai', ttsOn: false, ttsProv: 'openai', ttsVoice: 'alloy',
   theme: 'nimbus', hasTav: false, hasTg: false,
   tgAllow: '', tgBot: '', tgLive: false, tgVerify: 'unk', tgVts: 0,
@@ -242,7 +244,11 @@ export const CONNECTORS = {
   ],
   configured: [
     { name: 'devtools', type: 'devtools', prov: 'anthropic', kind: 'mcp', url: 'https://mcp.example.dev/', en: 1, dev: 1, appr: 0, hasTok: true },
+    // A Code Interpreter card saved as a Mistral built-in (Lumi's shape): the page
+    // shows no card for it - Code sandbox under Tools is its only control.
+    { name: 'code_interpreter', type: 'code_interpreter', prov: 'mistral', kind: 'builtin', en: 1 },
   ],
+  mistralTools: 1, mistralToolsAdvised: 2,
 };
 export const TOOLS = { tools: [{ id: 'web', name: 'Web fetch', enabled: true }], sandbox: { enabled: false } };
 // GET /api/skills/list (web_skills.cpp): {sd, skills:[{id,title,version?,source,origin,pending?}]}.

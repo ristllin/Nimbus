@@ -32,9 +32,29 @@ export function fragmentOrder() {
   return order;
 }
 
-// The full page, byte-identical to what the device serves.
+// The full page, byte-identical to the blessed snapshot (and to what Virtual Nimbus
+// serves in one response).
 export function buildPage() {
   return fragmentOrder().map(fragmentPayload).join('');
+}
+
+// CUM-565: the device serves the page as two responses
+// (lib/core/include/nimbus/net/page_split.h): GET / is every fragment but the
+// last plus a script tag, and GET app.js is the last fragment's script body.
+const SCRIPT_OPEN = '<script>';
+const SCRIPT_CLOSE = '</script>\n';
+export const SCRIPT_TAG =
+  '<script src="app.js" onerror="setTimeout(function(){location.reload()},4000)"></script>\n';
+export function buildSplitPage() {
+  const parts = fragmentOrder().map(fragmentPayload);
+  const last = parts.pop();
+  if (!last.startsWith(SCRIPT_OPEN) || !last.endsWith(SCRIPT_CLOSE)) {
+    throw new Error('the last fragment is not exactly <script>...</script>');
+  }
+  return {
+    html: parts.join('') + SCRIPT_TAG,
+    js: last.slice(SCRIPT_OPEN.length, last.length - SCRIPT_CLOSE.length),
+  };
 }
 
 // The dotted-ring logo served at GET /logo.svg (a C string literal, not a raw

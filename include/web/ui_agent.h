@@ -30,6 +30,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <h2>Connectors <button class=qh type=button aria-expanded=false aria-label="About connectors">?</button></h2>
 <p class="hint tip">Tools that run in your AI provider's cloud - on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
 <p class=hint id=connhost></p>
+<p class=warnbox id=connwarn style="display:none"></p>
 <div id=conncards></div>
 <details style="margin-top:12px"><summary class=hint style="cursor:pointer">Advanced - edit raw JSON</summary>
 <p class=hint>A JSON array; secrets are write-only. Example: <code>{"name":"github","prov":"openai","kind":"mcp","url":"https://api.githubcopilot.com/mcp/","tok":"ghp_...","type":"github","en":1}</code></p>
@@ -81,12 +82,13 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
-<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
-<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
-<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
 <p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
+<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr id=codeSbxRow><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run Python on OpenAI or Mistral to make files such as charts and PDFs, then send them to you. Finished files land under Files.</p>
+<p class=hint id=codeSbxStat></p>
 <label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
-<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
+<p class="hint tip">Keeps a record of what the assistant did on each turn - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card; the device keeps the most recent turns.</p>
 <label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
 <input id=loopRounds type=number min=1 max=32>
 <label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>

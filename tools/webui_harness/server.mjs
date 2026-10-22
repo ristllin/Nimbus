@@ -1,5 +1,6 @@
 // server.mjs - a tiny host-side stand-in for the device web server. Serves the
-// reconstructed page (GET /), the logo (GET /logo.svg), and default JSON for the
+// reconstructed page (GET / and its script, GET /app.js, split as the device
+// serves them), the logo (GET /logo.svg), and default JSON for the
 // /api/* surface so the web app renders and happy-path flows run without a
 // device. Playwright specs override individual endpoints with page.route() to
 // exercise feedback states (pending / empty / error / slow).
@@ -8,7 +9,7 @@
 // (T5/HIL) is documented in tools/webui_harness/README.md and runs the same
 // specs against BASE_URL=http://<device-ip>.
 import { createServer } from 'node:http';
-import { buildPage, logoSvg } from './concat.mjs';
+import { buildSplitPage, logoSvg } from './concat.mjs';
 import { DEFAULTS, OK } from './fixtures.mjs';
 
 const PORT = Number(process.env.PORT || 8790);
@@ -23,7 +24,10 @@ const server = createServer((req, res) => {
   const path = url.pathname;
 
   if (path === '/' || path === '/index.html') {
-    return send(res, 200, 'text/html; charset=utf-8', buildPage());
+    return send(res, 200, 'text/html; charset=utf-8', buildSplitPage().html);
+  }
+  if (path === '/app.js') {
+    return send(res, 200, 'text/javascript; charset=utf-8', buildSplitPage().js);
   }
   if (path === '/logo.svg') {
     return send(res, 200, 'image/svg+xml', logoSvg());
