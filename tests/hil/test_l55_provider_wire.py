@@ -85,6 +85,15 @@ def _serial_lines(device, window_s: float) -> list:
     return lines
 
 
+def _await_line(device, pattern: str, seen: str, window_s: float) -> str:
+    """`seen` plus the console lines that follow, until `pattern` appears or `window_s`
+    ends: a spawn is dispatched by the job pump after the turn that ordered it ends."""
+    end = time.time() + window_s
+    while not re.search(pattern, seen) and time.time() < end:
+        seen += "\n" + "\n".join(_serial_lines(device, 5.0))
+    return seen
+
+
 def _turn(device, ip: str, text: str, timeout_s: int = 150):
     """Run one web-chat turn to its own answer; return (reply, the console lines it printed)."""
     device.drain(quiet=0.3)
@@ -272,45 +281,55 @@ def test_one_park_closes_every_seam_and_survives_a_restart(board, device):
     _verb_or_skip(device, "VISIONCHECK /nonexistent.jpg", "VISIONCHECK described=")
     _verb_or_skip(device, "PARK clear", "PARK cleared")  # no park left by an earlier run
     before = _orch_get(ip)
-    device.cmd(f"PROVFAULT api.openai.com 429 {CREDIT_EXHAUSTED_429}", "PROVFAULT", timeout=5)
     try:
-        # 1. The embedding seam meets the refusal (the turn's memory write embeds).
-        _, log1 = _turn(device, ip, "Remember this for later: my bike is a blue Brompton. Reply with one word.")
-        assert "park: openai parked (billing, HTTP 429) from embeddings" in log1, log1[-2000:]
-        # 2. The caption step: nothing to openai, it walks on or says why.
-        from tg_archive_bench import fsput
+        device.cmd(f"PROVFAULT api.openai.com 429 {CREDIT_EXHAUSTED_429}", "PROVFAULT", timeout=5)
+        try:
+            # 1. The embedding seam meets the refusal (the turn's memory write embeds).
+            _, log1 = _turn(device, ip, "Remember this for later: my bike is a blue Brompton. Reply with one word.")
+            assert "park: openai parked (billing, HTTP 429) from embeddings" in log1, log1[-2000:]
+            # 2. The caption step walks the provider priority: openai first, so it is
+            # skipped with no request and the walk asks the next provider.
+            from tg_archive_bench import fsput
 
-        fsput(device, TINY_JPEG, "/k2_park.jpg")
-        device.drain(quiet=0.3)
-        device.send("VISIONCHECK /k2_park.jpg")
-        vision = "\n".join(_serial_lines(device, 60.0))
-        assert "VISIONCHECK described=" in vision
-        assert (
-            "vision: skipped a closed provider (openai says the account is out of credit" in vision
-            or "vision: no provider open - openai says the account is out of credit" in vision
-        ), vision[-1500:]
-        assert "TEST override answered api.openai.com" not in vision
-        # 3. A spawn: the sub-priority puts openai first, the spawn runs elsewhere.
-        _orch_set(ip, {"subPrio": "openai,anthropic,mistral"})
-        _, log3 = _turn(
-            device,
-            ip,
-            "Start one background helper to find the capital of France and report "
-            "back in one sentence. Then tell me it started.",
-        )
-        assert re.search(r"spawned job\d+ -> (anthropic|mistral):", log3), log3[-2000:]
-        assert "TEST override answered api.openai.com" not in log3, "a closed provider got a request"
-    finally:
-        device.cmd("PROVFAULT off", "PROVFAULT", timeout=5)
-        _orch_set(ip, {"subPrio": before.get("subPrio", "anthropic,openai,mistral")})
-    # 4. A restart: the override is gone (RAM), the park is not (flash). PARK clear then
-    # leaves no closed provider behind for the next leg, or the next lane on this unit.
-    try:
+            _orch_set(ip, {"provPrio": "openai,mistral,anthropic"})
+            fsput(device, TINY_JPEG, "/k2_park.jpg")
+            device.drain(quiet=0.3)
+            device.send("VISIONCHECK /k2_park.jpg")
+            vision = "\n".join(_serial_lines(device, 60.0))
+            assert "VISIONCHECK described=" in vision
+            assert (
+                "vision: skipped a closed provider (openai says the account is out of credit" in vision
+                or "vision: no provider open - openai says the account is out of credit" in vision
+            ), vision[-1500:]
+            assert "TEST override answered api.openai.com" not in vision
+            # 3. A spawn: the sub-priority puts openai first, the spawn runs elsewhere.
+            _orch_set(ip, {"subPrio": "openai,anthropic,mistral"})
+            _, log3 = _turn(
+                device,
+                ip,
+                "Start one background helper to find the capital of France and report "
+                "back in one sentence. Then tell me it started.",
+            )
+            log3 = _await_line(device, r"spawned job\d+ ->", log3, 90.0)
+            assert re.search(r"spawned job\d+ -> (anthropic|mistral):", log3), log3[-2000:]
+            assert "TEST override answered api.openai.com" not in log3, "a closed provider got a request"
+        finally:
+            device.cmd("PROVFAULT off", "PROVFAULT", timeout=5)
+            _orch_set(
+                ip,
+                {
+                    "subPrio": before.get("subPrio", "anthropic,openai,mistral"),
+                    "provPrio": before.get("provPrio", "anthropic,openai,mistral"),
+                },
+            )
+        # 4. A restart: the override is gone (RAM), the park is not (flash).
         device.reboot_and_confirm()
         require_orchestrator(_S, ip, "L55")
         _, log4 = _turn(device, ip, "What did I tell you about my bike? One sentence.")
         assert "park: openai closed for embeddings" in log4, "the park did not survive the restart: " + log4[-2000:]
     finally:
+        # Whatever failed: no closed provider is left behind for the next leg, or the
+        # next lane on this unit.
         device.cmd("PARK clear", "PARK cleared", timeout=5)
 
 
@@ -350,6 +369,7 @@ def test_long_sub_reply_is_saved_whole(board, device):
         "return the whole report as its reply. Tell me when it has started.",
         timeout_s=180,
     )
+    log = _await_line(device, r"spawned job\d+", log, 90.0)
     assert re.search(r"spawned job\d+", log), log[-2000:]
     deadline = time.time() + 900
     saved = None
