@@ -106,7 +106,7 @@ def newest_seq(lines: Iterable[LogLine]) -> int:
 
 # Periodic status lines: a steady device repeats them word for word on a timer, which is
 # health, not a loop.
-HEARTBEATS: Tuple[str, ...] = ("[sram] steady",)
+HEARTBEATS: Tuple[str, ...] = ("[sram] steady", "ORCH alive", "RENDER screen=")
 
 
 def identical_peak(lines: Iterable[LogLine], ignore: Sequence[str] = ()) -> Tuple[int, str]:
