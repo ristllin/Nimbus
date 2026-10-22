@@ -1,0 +1,100 @@
+480 20089107 - orchestrator: turn host=openai (conv=0 heap=30880)
+486 20115661 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=28384 out=1425 cacheR=13574 cacheW=0]
+487 20116398 - turn end: ok host=openai tokens in=28384 out=1425 tools=1 reply=404B
+491 20119464 - telegram: send ok to 4242424242
+503 20205225 nvs nvs: write FAILED key=*** - storage full? (1152 B free of 20160 B)
+809 20388743 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+810 20388748 - orchestrator: turn host=openai (conv=0 heap=30464)
+813 20392417 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+814 20392424 - fabric: openai step failed (resp HTTP 429)
+816 20395420 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+836 20484965 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=45247 out=7524 cacheR=54219 cacheW=18073]
+837 20487125 - embed: HTTP 429 credit_balance_exhausted
+838 20487132 - memory: embed failed: HTTP 429 credit_balance_exhausted
+840 20487197 - turn end: ok host=anthropic tokens in=45247 out=7524 tools=3 reply=2085B
+842 20487906 - telegram: send ok to 4242424242
+843 20488563 - telegram: send ok to 4242424242
+844 20619871 - telegram: msg from Owner (chat 4242424242): owner message 1
+845 20621686 - embed: HTTP 429 credit_balance_exhausted
+846 20621694 - memory: recall embed failed (HTTP 429 credit_balance_exhausted
+848 20621751 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+849 20621757 - orchestrator: turn host=openai (conv=0 heap=30416)
+852 20624575 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+853 20624582 - fabric: openai step failed (resp HTTP 429)
+855 20627530 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+861 20671987 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=7474 out=3937 cacheR=28453 cacheW=9077]
+862 20672140 - turn end: ok host=anthropic tokens in=7474 out=3937 tools=2 reply=375B
+871 20680890 - telegram: send ok to 4242424242
+872 20681423 - telegram: send ok to 4242424242
+909 21031085 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+910 21031090 - orchestrator: turn host=openai (conv=0 heap=30200)
+913 21034268 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+914 21034274 - fabric: openai step failed (resp HTTP 429)
+916 21037238 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+935 21174634 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=99055 out=10939 cacheR=37706 cacheW=18853]
+936 21174993 - turn end: ok host=mistral tokens in=99055 out=10939 tools=6 reply=1034B
+937 21176320 - telegram: send ok to 4242424242
+938 21176833 - telegram: send ok to 4242424242
+939 21177370 - telegram: send ok to 4242424242
+940 21177923 - telegram: send ok to 4242424242
+951 41392106 - embed: HTTP 429 credit_balance_exhausted
+952 41392116 - memory: recall embed failed (HTTP 429 credit_balance_exhausted
+954 41392168 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+955 41392174 - orchestrator: turn host=openai (conv=0 heap=30184)
+958 41396211 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+959 41396218 - fabric: openai step failed (resp HTTP 429)
+961 41399387 - orchTurn(oai-loop): resp HTTP 429: You have no credits remaining.
+971 41417281 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=19432 out=801 cacheR=0 cacheW=0]
+972 41419545 - embed: HTTP 429 credit_balance_exhausted
+973 41419552 - memory: embed failed: HTTP 429 credit_balance_exhausted
+975 41420979 - embed: HTTP 429 credit_balance_exhausted
+976 41420986 - memory: embed failed: HTTP 429 credit_balance_exhausted
+978 41422309 - embed: HTTP 429 credit_balance_exhausted
+979 41422316 - memory: embed failed: HTTP 429 credit_balance_exhausted
+981 41423640 - embed: HTTP 429 credit_balance_exhausted
+982 41423647 - memory: embed failed: HTTP 429 credit_balance_exhausted
+984 41424972 - embed: HTTP 429 credit_balance_exhausted
+985 41424979 - memory: embed failed: HTTP 429 credit_balance_exhausted
+987 41426302 - embed: HTTP 429 credit_balance_exhausted
+988 41426309 - memory: embed failed: HTTP 429 credit_balance_exhausted
+995 41427288 - telegram: send ok to 4242424242
+996 41427787 - telegram: send ok to 4242424242
+999 50710812 - embed: HTTP 429 credit_balance_exhausted
+1000 50710820 - memory: recall embed failed (HTTP 429 credit_balance_exhausted
+483 42623995 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=30521 out=809 cacheR=14896 cacheW=0]
+485 42624267 - turn end: ok host=openai tokens in=30521 out=809 tools=2 reply=422B
+486 42624642 nvs nvs: write FAILED key=*** - storage full? (0 B free of 20160 B)
+490 42634995 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+491 42635004 - orchestrator: turn host=openai (conv=0 heap=25756)
+500 42652133 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=31247 out=257 cacheR=14883 cacheW=0]
+501 42652186 - turn end: ok host=openai tokens in=31247 out=257 tools=1 reply=126B
+504 42654945 - telegram: send ok to 4242424242
+505 42655515 - telegram: send ok to 4242424242
+506 42656589 - telegram: msg from Owner (chat 4242424242): owner message 2
+507 42656599 - telegram: msg from Owner (chat 4242424242): owner message 3
+508 42656609 - telegram: msg from Owner (chat 4242424242): owner message 4
+509 42656616 - telegram: msg from Owner (chat 4242424242): owner message 5
+511 42658538 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+512 42658544 - orchestrator: turn host=openai (conv=0 heap=26136)
+514 42660254 - transport: short body write 0/71508 to api.openai.com/v1/responses heap=24308
+517 42662412 - transport: short body write 0/71508 to api.openai.com/v1/responses heap=23740
+562 42689355 nvs nvs: write FAILED key=*** - storage full? (0 B free of 20160 B)
+563 42690406 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=3372 out=2220 cacheR=0 cacheW=21273]
+565 42690656 - turn end: ok host=anthropic tokens in=3372 out=2220 tools=0 reply=660B
+566 42691029 nvs nvs: write FAILED key=*** - storage full? (0 B free of 20160 B)
+596 42701709 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+671 42716078 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=30798 out=232 cacheR=14918 cacheW=0]
+672 42716108 - turn end: ok host=openai tokens in=30798 out=232 tools=1 reply=155B
+700 42720689 - telegram: send ok to 4242424242
+704 42721275 - telegram: send ok to 4242424242
+707 42721900 - telegram: send ok to 4242424242
+722 42723014 - telegram: msg from Owner (chat 4242424242): owner message 2
+723 42723023 - telegram: msg from Owner (chat 4242424242): owner message 3
+724 42723034 - telegram: msg from Owner (chat 4242424242): owner message 4
+725 42723040 - telegram: msg from Owner (chat 4242424242): owner message 5
+733 42725366 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+734 42725372 - orchestrator: turn host=openai (conv=0 heap=22156)
+813 42741778 - orchestrator: turn -> {"reply":"<reply>"} [tokens in=32014 out=542 cacheR=15820 cacheW=0]
+815 42743149 - turn end: ok host=openai tokens in=32014 out=542 tools=1 reply=470B
+870 42753423 - orchestrator: tool-loop ON (46 tools, 8 rounds/600s)
+871 42753431 - orchestrator: turn host=openai (conv=0 heap=25200)

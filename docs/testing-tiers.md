@@ -153,6 +153,62 @@ Every crash leaves a durable, readable cause, read on the next boot from the cor
   checks the built test image: the compiler once deleted the null store and turned the stack
   recursion into a loop, so those two kinds armed nothing.
 
+## Storm tier
+
+A storm is a fault that feeds itself: a device that cannot save its Telegram position
+takes the same message in again and again, a provider that refuses is asked again and
+again, and every attempt can cost money and send the owner another message. The storm
+suite (`tests/hil/storm/`, T5) reproduces eight of them on a bench unit and proves the
+same four things for each: the device stays **usable** (a fresh owner message gets an
+answer or an honest refusal within the leg's bound), **never loops** (paid turns, owner
+notices and repeated log lines stay inside the leg's table), **never spends without a
+cap** (provider requests stay inside the table, and a paused provider gets none) and
+**tells the owner once** (exactly one plain notice per episode).
+
+| Leg | Storm | Unit |
+|---|---|---|
+| `a_settings_full` | the settings store full, with the same Telegram page served again (20 copies, a restart in the middle) | L |
+| `b_page_reserved` | the same Telegram page served 50 times, the store healthy | L |
+| `c_provider_refusing` | the head provider out of credit or refusing payment (a 400 low credit balance, a 429 exhausted quota, a 402) | A |
+| `d_deterministic_error` | the head provider answering every attempt with the same 400 | A |
+| `e_low_heap` | internal memory held down to about 14 KB free for a turn and the nightly upkeep | A |
+| `f_reboot_mid_turn` | a restart inside a turn, then the same page served again | A |
+| `g_file_store_full` | the file store at its 256-file limit, then five owner photos | L |
+| `h_false_claim` | a reply that claims a save the turn never made | A |
+
+Each leg runs twice, on the same unit: first on the v4.5.13 control image, then on the
+release candidate, and prints a before/after table (each measure on both images, the
+candidate's bound, the four verdicts). The control image has none of the newer test
+console verbs, so it is driven through what it has: the test inject route delivers the
+re-served owner message, the LAN mock (`tests/hil/mock_llm.py`) is its head and carries
+every provider fault, and `tests/hil/storm/settings_fill.py` fills the settings store
+through the web API (and restores it from a snapshot). The low-memory leg's control runs
+the bench control image built with only the test console's memory ballast backported.
+The candidate is driven through its real paths: `TGINJECT`, `PROVFAULT`, `NVSFILL`,
+`FAULT sram_ballast`, `PANIC <kind> arm=turn`. Every leg clears every provider key but the
+one it uses (none on the control image, which never spends) and puts them back from the
+bench `.env` afterwards; no leg needs a phone or a person. The model-facing legs run the
+head on `NIMBUS_STORM_MODEL` (default `claude-haiku-5-5`).
+
+Run one leg on the unit the session opens (the unit's identity, control image or
+candidate, is read from `/api/state`):
+
+```bash
+NIMBUS_TEST_IP=<unit ip> NIMBUS_TEST_TOKEN=<sign-in token> NIMBUS_PORT=<port> \
+NIMBUS_STORM_UNIT=L NIMBUS_STORM_EVIDENCE=<evidence dir> NIMBUS_ENV_FILE=<bench .env> \
+  python3 -m pytest tests/hil/storm/test_storm_b_page_reserved.py -m "hil or net" --allow-hardware -s
+```
+
+Each run writes one JSON evidence record (`<leg>-<control|candidate>-<UTC time>.json`:
+the build and commit, the measures, the bounds, the verdicts) into
+`NIMBUS_STORM_EVIDENCE`; the candidate run's table reads the newest control record of the
+same leg from there. A release keeps its evidence in one directory per tag, and the
+release gate's storm step (`python3 tools/release_gate/run_gate.py --storm-evidence <dir>
+--candidate <sha>`) fails unless every leg passed on that candidate after its commit and
+has a control run. The grading is host-tested over recorded, scrubbed logs of the 19 and
+21 Oct 2026 storms (`tests/hil/storm/test_storm_grading_host.py`). The suite is
+device-only: a Virtual Nimbus has no settings store, console or card to storm.
+
 ## The release gate
 
 A cross-cutting battery that must be green before any firmware tag or client flash.
@@ -175,6 +231,9 @@ classes now has a test that fails on the pre-fix build and passes on the fix.
   where tapped, a wedged loop is caught by the watchdog, a bad OTA image rolls back.
 - Cloud legs (in the cloud repo, run by `pnpm e2e`): the connected-device 5xx interstitial,
   the reconnect storm, and the read-only live smoke.
+
+- Storm suite (T5, both bench units): every storm leg passed on the candidate after its
+  commit (see "Storm tier" above); `run_gate.py --storm-evidence <dir> --candidate <sha>`.
 
 `tools/release_gate/run_gate.py` prints the full battery with exact commands and the block
 condition. See `tools/release_gate/README.md` for what each leg catches.

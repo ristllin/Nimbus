@@ -46,6 +46,7 @@ GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered fi
 # wedged and every remaining hardware test FAILS FAST with a clear marker instead
 # of each burning a full read timeout (the 58-cascade this replaces).
 from wedge_guard import WedgeSentinel, is_wedge_candidate as _is_wedge_candidate  # noqa: E402
+import bench_lock  # noqa: E402  (the tg-bot lock around the bench fixture)
 
 
 def env_secrets() -> list:
@@ -332,13 +333,10 @@ def bench(device, net, secrets, require_secret):
     device.ensure_mode(1)
     net.ensure_station(secrets.sta_ssid, secrets.sta_pass)
     bot = secrets.bench_bot()
-    r = net.post("/api/orch", {"tgToken": bot.token, "tgAllow": bot.chat}, timeout=8.0)
-    assert r.status_code == 200, f"setting the test bot token failed: HTTP {r.status_code}"
-    yield bot
-    r = net.post("/api/orch", {"clr_tgToken": "1"}, timeout=8.0)
-    assert r.status_code == 200, (
-        f"clearing the test bot token failed (HTTP {r.status_code}); the unit may still poll it"
-    )
+    # The bench's tg-bot lock is held while the token is on the unit and released in a
+    # finally (bench_lock.bot_on_unit), whatever the leg does.
+    with bench_lock.bot_on_unit(lambda f: net.post("/api/orch", f, timeout=8.0), bot.token, bot.chat, "bench fixture"):
+        yield bot
 
 
 @pytest.fixture()
@@ -395,3 +393,31 @@ def require_secret(secrets):
             pytest.skip(str(exc))
 
     return _require
+
+
+# ---- storm suite (tests/hil/storm, STORM-E2E) --------------------------------
+@pytest.fixture
+def storm(device, net, request):
+    """One storm leg's bench (tests/hil/storm/kit.py StormBench) on the unit the session
+    opened, with its own LAN mock (the control image's head and provider faults). The
+    unit's identity (v4.5.13 control image or release candidate) is read from /api/state."""
+    from mock_llm import MockLLMServer
+
+    sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), "storm"))
+    import kit
+
+    mock = MockLLMServer().start()
+    try:
+        try:
+            alive = device.ping(timeout=3.0)
+        except DeviceError:  # an earlier leg's restart left the console closed
+            alive = False
+        if not alive:
+            device.reopen_after_reenumerate()
+        device.ensure_mode(1)
+        bench = kit.StormBench(device, net, mock=mock, leg=getattr(request.module, "LEG", ""))
+        bench.settle()
+        print(f"\n[storm] unit {bench.unit or '?'} build {bench.build} ({bench.role})")
+        yield bench
+    finally:
+        mock.stop()

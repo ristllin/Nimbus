@@ -40,6 +40,13 @@ sends ``store::customModel()``, live-settable via ``POST /api/orch custModel=``)
   mock-500-then-ok  HTTP 500 once (per reset()), then a good response
   mock-slow         sleeps past the adapter timeout, then answers
   mock-usage        good turn + usage {prompt_tokens:1234, completion_tokens:56}
+  mock-hold         holds the answer ``hold_s`` (default 25 s, inside the adapter's
+                    30 s timeout), so a turn is reliably in flight (storm leg f)
+  mock-credit-400 / mock-quota-429 / mock-402 / mock-invalid-400
+                    the provider refusals of the storm legs (c, d): every request
+                    gets the same status and error body (``FAULT_TURNS``)
+  mock-claim-nothing  a head reply that claims a save while the turn did nothing
+                    (storm leg h)
 
 Stdlib only (http.server + threading) - no external deps; importing this module
 does nothing but define classes (collection-safe).
@@ -79,6 +86,47 @@ CLAIM_TURNS = {
         "session_ops": "spawn three researchers on this and summarize",
     },
 }
+# Storm leg h: a reply that claims an effect the turn never had (no memory write, no
+# notes): the device must not pass it on as true.
+CLAIM_TURNS["mock-claim-nothing"] = {"reply": "Saved it to memory."}
+# Storm legs c and d: provider refusals, the same answer to every request. The bodies
+# are the providers' documented shapes (Anthropic's low credit balance is a 400,
+# OpenAI's exhausted quota a 429 with insufficient_quota, a 402 from an
+# OpenAI-compatible router, and a request the provider will never accept).
+FAULT_TURNS = {
+    "mock-credit-400": (
+        400,
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the API. Please go to Plans & Billing "
+                "to upgrade or purchase credits.",
+            },
+        },
+    ),
+    "mock-quota-429": (
+        429,
+        {
+            "error": {
+                "message": "You exceeded your current quota, please check your plan and billing details.",
+                "type": "insufficient_quota",
+                "code": "insufficient_quota",
+            }
+        },
+    ),
+    "mock-402": (402, {"error": {"message": "Payment required: add credit to continue.", "code": 402}}),
+    "mock-invalid-400": (
+        400,
+        {
+            "error": {
+                "message": "Invalid request: messages.1.content: unexpected field 'x_bench'.",
+                "type": "invalid_request_error",
+            }
+        },
+    ),
+}
+HOLD_REPLY = "held reply"
 TOOLLOOP_FINAL = "toolloop final"
 USAGE_PROMPT_TOKENS = 1234
 USAGE_COMPLETION_TOKENS = 56
@@ -219,6 +267,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, self._completion(model, self._final_content(req, "slow reply (too late)")))
             return
 
+        if model in FAULT_TURNS:
+            status, body = FAULT_TURNS[model]
+            self._send_json(status, body)
+            return
+
+        if model == "mock-hold":
+            time.sleep(owner.hold_s)
+            self._send_json(200, self._completion(model, self._final_content(req, HOLD_REPLY)))
+            return
+
         if model == "mock-usage":
             self._send_json(
                 200,
@@ -288,6 +346,8 @@ class _Handler(BaseHTTPRequestHandler):
                             "mock-500-then-ok",
                             "mock-slow",
                             "mock-usage",
+                            "mock-hold",
+                            *FAULT_TURNS,
                         )
                     ],
                 },
@@ -310,6 +370,7 @@ class MockLLMServer:
         self._counters: Dict[str, int] = {}
         self.requests: List[RecordedRequest] = []
         self.slow_delay_s = float(os.environ.get("NIMBUS_MOCK_SLOW_S", str(DEVICE_CUST_TIMEOUT_S + 5.0)))
+        self.hold_s = float(os.environ.get("NIMBUS_MOCK_HOLD_S", str(DEVICE_CUST_TIMEOUT_S - 5.0)))
         self.dump_path = dump_path
 
     # -- lifecycle -------------------------------------------------------------
@@ -578,6 +639,19 @@ def _selftest() -> int:  # pragma: no cover - developer smoke, run via __main__
     doc = json.loads(body)
     inner = json.loads(doc["choices"][0]["message"]["content"])
     check("json_schema => orch_turn JSON content", inner.get("reply") == MOCK_REPLY)
+
+    # 8b. storm refusals: every request gets the same status and error body
+    for name, (status, body) in FAULT_TURNS.items():
+        code1, raw1 = post(name)
+        code2, raw2 = post(name)
+        check(f"{name} refuses every request", code1 == code2 == status and raw1 == raw2, f"{code1} {code2}")
+        check(f"{name} carries the error message", json.loads(raw1)["error"]["message"] == body["error"]["message"])
+
+    # 8c. hold answers after the configured hold
+    srv.hold_s = 0.5
+    t0 = time.time()
+    code, body = post("mock-hold")
+    check("hold delayed >= configured", code == 200 and time.time() - t0 >= 0.4, f"code={code}")
 
     # 9. recording + JSONL dump
     n = len(srv.completions())
