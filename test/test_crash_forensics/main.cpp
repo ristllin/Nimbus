@@ -427,6 +427,31 @@ static void test_crash_kind_for_every_crash_reset_and_cause() {
   TEST_ASSERT_EQUAL_INT((int)CrashKind::SoftwareError, (int)crashKind(&stale, (int)ResetReason::Panic));
 }
 
+// A crash reset whose own dump was not saved (the bench log: "Not enough space to save
+// core dump!" for a live stack overflow on tg_poll) keeps the stored, earlier dump,
+// already reported: new=0 this-reset=1. The ev:boot row then named that earlier crash's
+// cause as this restart's (unit L, 22 Oct 2026: a stack-overflow crash read "abort()
+// was called"), while the owner notice already ignored it. Both judge by one rule now,
+// over every combination of crash reset x store known x new.
+static void test_a_crash_without_its_own_dump_never_borrows_an_older_cause() {
+  Report r = validReport(3, "tg_poll", "abort() was called at PC 0x421cb4a6 on core 0");
+  for (int bits = 0; bits < 8; ++bits) {
+    r.thisReset = bits & 1;
+    r.newKnown = bits & 2;
+    r.isNew = bits & 4;
+    const bool own = r.thisReset && (!r.newKnown || r.isNew);
+    TEST_ASSERT_EQUAL(own, describesThisCrash(r));
+    const std::string row = oneLiner(r);
+    const bool unsaved = r.thisReset && !own;
+    TEST_ASSERT_EQUAL_MESSAGE(unsaved, row == kUnsavedCrashLine, row.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(!unsaved, contains(row, "abort() was called"), row.c_str());
+    TEST_ASSERT_TRUE(row.size() <= 160);
+  }
+  // The counter-check: a crash reset with its own new dump still names its cause.
+  r.thisReset = r.newKnown = r.isNew = true;
+  TEST_ASSERT_TRUE(contains(oneLiner(r), "crash=tg_poll@0x"));
+}
+
 // Which lines a boot emits, over every image state x new/stale x store known/unknown.
 static void test_report_lines_by_state() {
   Report none;
@@ -931,5 +956,6 @@ int main(int, char**) {
   RUN_TEST(test_panic_arm_spec_grammar);
   RUN_TEST(test_panic_arm_fires_only_in_the_armed_round);
   RUN_TEST(test_panic_fire_every_kind_never_returns_quietly);
+  RUN_TEST(test_a_crash_without_its_own_dump_never_borrows_an_older_cause);
   return UNITY_END();
 }

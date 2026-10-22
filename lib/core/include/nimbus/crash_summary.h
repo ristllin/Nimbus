@@ -119,9 +119,21 @@ std::string crashWhyLine(const Report& r);
 // a dump already reported (new=0) or an invalid image; all three for a new valid dump.
 std::vector<std::string> reportLines(const Report& r);
 
-// The short form for the ev:boot row and /api/state, at most 160 B:
+// Whether the stored dump is this boot's own crash: the reset was a crash and the dump
+// is new (or no storage was attached to tell). A crash reset whose stored dump was
+// already reported wrote none of its own (it did not fit the partition, or the write
+// failed), so that older dump does not describe it. The owner notice and the ev:boot
+// row both judge by this one rule.
+bool describesThisCrash(const Report& r);
+
+// The text the ev:boot row uses when a crash reset left no report of its own.
+inline constexpr char kUnsavedCrashLine[] =
+    "crash=unsaved \"no crash report was saved for this restart; the stored one is from an earlier crash\"";
+
+// The short form for the ev:boot row, at most 160 B:
 //   crash=tg_poll@0x4201abcd "Stack canary watchpoint triggered (tg_poll)"
-// Empty when there is no valid image.
+// kUnsavedCrashLine on a crash reset whose stored dump is an older one (it never
+// names an earlier crash's cause as this restart's). Empty when there is no valid image.
 std::string oneLiner(const Report& r);
 
 // ---- /log/crash.seen ---------------------------------------------------------

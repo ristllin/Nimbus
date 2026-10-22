@@ -165,7 +165,10 @@ crash-why: Stack canary watchpoint triggered (tg_poll)
 - The dump is never erased by the reader, so a bench can still pull it over USB; the
   next crash overwrites it, and a factory reset erases it.
 - The same summary is in `GET /api/state` (`boot.crash`, `null` when there is no dump)
-  and on the episodic `ev:boot` row, so the assistant can say why it restarted.
+  and on the episodic `ev:boot` row, so the assistant can say why it restarted. A crash
+  whose own dump was not saved (it did not fit the 64 KB partition, or the write failed)
+  never borrows the stored, earlier dump's cause: its row says
+  `crash=unsaved "no crash report was saved for this restart; ..."`.
 - After a crash boot the owner gets one plain-words Telegram message that says what went
   wrong (a software error, part of it stopped responding, it ran out of memory, or one
   of its jobs ran out of memory) and names the request that was cut short

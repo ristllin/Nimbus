@@ -220,8 +220,11 @@ std::vector<std::string> reportLines(const Report& r) {
   return out;
 }
 
+bool describesThisCrash(const Report& r) { return r.thisReset && (!r.newKnown || r.isNew); }
+
 std::string oneLiner(const Report& r) {
   if (r.state != ImageState::Valid) return {};
+  if (r.thisReset && !describesThisCrash(r)) return kUnsavedCrashLine;
   std::string l = "crash=" + sys::fieldValue(r.task, 15) + "@0x" + hex8(r.pc);
   const std::string why = whyOf(r);
   const size_t room = 160 - l.size() - 3;   // space + two quotes

@@ -404,8 +404,7 @@ void queueCrashNotice() {
   if (!crashBoot()) return;
   const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
   // A crash's own dump names its cause; an older dump (this crash wrote none) does not.
-  const Report* dump = (g_report && g_report->thisReset && (!g_report->newKnown || g_report->isNew))
-                           ? g_report : nullptr;
+  const Report* dump = (g_report && describesThisCrash(*g_report)) ? g_report : nullptr;
   const char* cause = plainCause(crashKind(dump, g_reason));
   // Held only when the crash cut a background turn (the owner is not waiting on it);
   // sent once at the owner's next turn (restart_notice.h).
