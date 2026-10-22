@@ -7,7 +7,12 @@ each reply's claim against what the turn really did:
   C1  a memory write that does not land (``FAULT embed_fail on``: the embedding
       outage queues it, so it is not saved yet) under a reply that says "Saved
       it to memory." -> the turn delivers exactly one reply, carrying
-      "(Correction: that has not been saved.)", and ``claimsTailed`` goes up;
+      "(Correction: that has not been saved.)", and ``claimsTailed`` goes up.
+      The mock writes one fixed fact and the store is content-addressed: once a
+      run's queued copy drains (``FAULT embed_fail off``), the same write is a
+      duplicate, which IS saved, so the reply is true and gets no line (unit L,
+      22 Oct 2026, after the 21 Oct runs). The leg forgets that fact before the
+      turn and after the queue drains, so it repeats on the same unit;
   C2  the scratchpad route: the scratchpad lives in a flash file (v4.5.14), so a
       full NVS partition (``NVSFILL``) still saves and the result carries no
       note; a failed flash write (``FAULT scratch_fail on``) answers 507 with
@@ -34,7 +39,7 @@ import time
 
 import pytest
 
-from mock_llm import mock_llm  # noqa: F401  (fixture)
+from mock_llm import CLAIM_TURNS, mock_llm  # noqa: F401  (mock_llm is a fixture)
 from test_l12_mock_llm import _opost, custom_backend  # noqa: F401  (fixture + helper)
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
@@ -48,6 +53,11 @@ TURN_CHAT = "serial"
 # After the first reply row appears, how long to wait for a second one from the
 # same turn (a turn must deliver exactly one reply).
 SETTLE_S = 6.0
+# The one fact the mock's "mock-claim-saved" turn writes.
+CLAIM_FACT = CLAIM_TURNS["mock-claim-saved"]["mem_write"][0]["content"]
+# After FAULT embed_fail off the queue drains one step per 20 s (memory_subsystem.cpp
+# kDrainEveryMs); a unit whose embedding provider is down keeps it queued.
+DRAIN_WAIT_S = 60.0
 
 
 def assistant_replies(page: dict) -> dict:
@@ -103,6 +113,47 @@ def _turn(be, model: str, text: str, timeout: float = 90.0, switch: bool = True)
     return the_one_reply(new_replies(before, _replies(be)), model)
 
 
+def fact_ids(page: dict, fact: str) -> list:
+    """Ids of the stored copies of ``fact`` on one /api/mem/vector browse page."""
+    return [str(e.get("id")) for e in page.get("entries", []) if e.get("content") == fact]
+
+
+def _stored_fact_ids(be) -> list:
+    ids, offset = [], 0
+    while True:
+        page = be.net.get_json(f"/api/mem/vector?limit=100&offset={offset}", ip=be.ip, timeout=10.0)
+        ids += fact_ids(page, CLAIM_FACT)
+        offset += 100
+        if offset >= int(page.get("total", 0)):
+            return ids
+
+
+def _forget_fact(be) -> None:
+    """Delete every stored copy of the mock's fact, and check none is left."""
+    for fid in _stored_fact_ids(be):
+        r = be.net.post("/api/mem/vector", {"op": "delete", "id": fid}, ip=be.ip, timeout=10.0)
+        assert r.status_code == 200 and r.json().get("ok"), f"delete {fid} -> {r.status_code} {r.text[:120]!r}"
+    left = _stored_fact_ids(be)
+    assert not left, f"the leg's fact is still stored after the delete: {left}"
+
+
+def _drain_then_forget(be, strict: bool) -> None:
+    """After FAULT embed_fail off: let the queued fact drain into the store, then
+    forget it, so the leg leaves no fact behind. A queue that does not drain in time
+    (no working embedding provider) keeps the fact queued, where the next run's write
+    coalesces with it and still gets the correction. ``strict`` False (the leg already
+    failed) reports a cleanup failure instead of raising over the real one."""
+    try:
+        end = time.time() + DRAIN_WAIT_S
+        while time.time() < end and int(be.net.get_json("/api/mem/stats", ip=be.ip, timeout=8.0).get("pending", 0)):
+            time.sleep(4.0)
+        _forget_fact(be)
+    except Exception as exc:  # noqa: BLE001 - cleanup after a failed leg must not hide it
+        if strict:
+            raise
+        print(f"[C1] cleanup after a failed leg: {exc}")
+
+
 def _fill_nvs(device) -> None:
     for _ in range(40):
         out = device.cmd(f"NVSFILL {FILL_CHUNK}", expect="NVSFILL", timeout=20.0)
@@ -155,14 +206,18 @@ def test_c1_refused_memory_write_gets_the_correction_line(mock_head):
     out = be.device.cmd("FAULT embed_fail on", expect="FAULT", timeout=6.0)
     if "not wired" in out:
         pytest.skip("FAULT embed_fail is not bound in this build (lane P binds it)")
+    passed = False
     try:
+        _forget_fact(be)  # a copy an earlier run stored makes the write a duplicate: saved, no line
         t0 = _tailed(be)
         reply = _turn(be, "mock-claim-saved", "remember the bench note")
         assert reply.startswith("Saved it to memory."), reply
         assert SAVED_LINE in reply, f"no correction line on a refused write: {reply!r}"
         assert _tailed(be) == t0 + 1
+        passed = True
     finally:
         be.device.cmd("FAULT embed_fail off", expect="FAULT", timeout=6.0)
+        _drain_then_forget(be, strict=passed)
 
 
 def test_c2_scratchpad_note_follows_the_flash_file(mock_head):

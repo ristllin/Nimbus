@@ -26,10 +26,12 @@ import pytest
 import test_claim_check_bench as leg
 from mock_llm import CLAIM_TURNS
 from test_claim_check_bench import (
+    CLAIM_FACT,
     RAM_LINE,
     RAM_TOOL,
     SAVED_LINE,
     assistant_replies,
+    fact_ids,
     new_replies,
     scratch_result,
     the_one_reply,
@@ -107,7 +109,7 @@ def test_the_scratchpad_result_is_read_from_a_save_and_from_a_failed_save():
 
 
 # ---- the legs against a model of the device ------------------------------------
-NOTE = "bench claim check note"
+NOTE = CLAIM_FACT  # "bench claim check note", the mock's one fact
 SAVED_REPLY = "Saved it to memory."
 DURABLE_REPLY = "Put it in my notes, so it will survive a restart."
 
@@ -135,6 +137,8 @@ class FakeUnit:
         self.tailed = 0
         self.requests: list = []
         self.refused_saves: list = []
+        self.stored: dict = {}  # vector store: id -> content (content-addressed ids)
+        self.pending: list = []  # facts queued while embeddings are down
 
     # -- serial console
     def cmd(self, line: str, expect: str, timeout: float = 5.0) -> str:
@@ -143,7 +147,11 @@ class FakeUnit:
             return "NVSFILL wrote=400 commit=1 freeEntries 400->0 full=1" if self.nvs_full else "NVSFILL cleared"
         if line.startswith("FAULT embed_fail "):
             self.embed_fail = line.endswith(" on")
-            return f"FAULT embed_fail={int(self.embed_fail)} pending=0"
+            if not self.embed_fail:  # the pause ends and the queue drains into the store
+                for fact in self.pending:
+                    self.stored[f"v{abs(hash(fact)) % 10**8:08d}"] = fact
+                self.pending = []
+            return f"FAULT embed_fail={int(self.embed_fail)} pending={len(self.pending)}"
         if line.startswith("FAULT scratch_fail "):
             self.scratch_fail = line.endswith(" on")
             return "FAULT scratch_fail=1" if self.scratch_fail else "FAULT scratch_fail=0 saved=1"
@@ -160,9 +168,17 @@ class FakeUnit:
     def _turn(self, text: str) -> None:
         self.requests.append(self.model)
         reply = {"mock-claim-saved": SAVED_REPLY, "mock-claim-durable": DURABLE_REPLY}.get(self.model, "mock says hi")
-        if self.model == "mock-claim-saved" and self.embed_fail:  # queued, not saved yet
-            reply += "\n\n" + SAVED_LINE
-            self.tailed += 1
+        if self.model == "mock-claim-saved":
+            fact = CLAIM_TURNS["mock-claim-saved"]["mem_write"][0]["content"]
+            if fact in self.stored.values():  # a duplicate: already saved, the reply is true
+                pass
+            elif self.embed_fail:  # queued (or coalesced with a queued copy), not saved yet
+                if fact not in self.pending:
+                    self.pending.append(fact)
+                reply += "\n\n" + SAVED_LINE
+                self.tailed += 1
+            else:
+                self.stored[f"v{abs(hash(fact)) % 10**8:08d}"] = fact
         if self.model == "mock-claim-durable":
             changed = self.short != [NOTE]
             self.short = [NOTE]
@@ -182,6 +198,8 @@ class FakeUnit:
             return _Resp(200, {"ok": True})
         if path == "/api/mem/scratchpad":
             return self._scratch(data)
+        if path == "/api/mem/vector" and data.get("op") == "delete":
+            return _Resp(200, {"ok": self.stored.pop(data["id"], None) is not None, "total": len(self.stored)})
         raise AssertionError(f"unexpected POST {path}")
 
     def _scratch(self, data: dict) -> _Resp:
@@ -203,6 +221,13 @@ class FakeUnit:
             return {"orchHost": "custom", "cust": {"model": self.model}}
         if path.startswith("/api/mem/episodic?session=serial"):
             return {"messages": list(reversed(self.rows))[:20]}
+        if path.startswith("/api/mem/vector?"):
+            q = dict(kv.split("=") for kv in path.split("?", 1)[1].split("&"))
+            off, lim = int(q.get("offset", 0)), int(q.get("limit", 10))
+            items = [{"id": k, "content": v} for k, v in self.stored.items()]
+            return {"entries": items[off : off + lim], "total": len(items), "mode": "browse"}
+        if path.startswith("/api/mem/stats"):
+            return {"pending": len(self.pending), "vectors": len(self.stored)}
         raise AssertionError(f"unexpected GET {path}")
 
     # -- the mock head's recording
@@ -227,6 +252,33 @@ def test_c1_runs_against_the_device_rules(unit):
     unit.rows = [{"id": "m000000ff", "session": "serial", "role": "assistant", "kind": "message", "text": "older"}]
     leg.test_c1_refused_memory_write_gets_the_correction_line(unit.be)
     assert unit.tailed == 1 and not unit.embed_fail
+    assert unit.stored == {} and unit.pending == [], "the leg left its fact behind"
+
+
+def test_c1_repeats_on_a_unit_that_already_holds_the_fact(unit):
+    """Unit L, 22 Oct 2026: the 21 Oct runs drained the queued fact into the store, so
+    the next run's write was a duplicate (saved, true, no line) and C1 failed. The leg
+    forgets the fact first, and runs twice in a row on the same unit."""
+    unit.stored = {"v00000001": NOTE, "v00000002": "the owner drinks flat white"}
+    for _ in range(2):
+        leg.test_c1_refused_memory_write_gets_the_correction_line(unit.be)
+    assert unit.tailed == 2
+    assert unit.stored == {"v00000002": "the owner drinks flat white"}, "only the leg's own fact may go"
+
+
+def test_a_stored_fact_makes_the_saved_reply_true(unit):
+    """The device rule the leg works around: a duplicate write landed, so "Saved it to
+    memory." stands with no correction even while embeddings are down."""
+    unit.stored = {"v00000001": NOTE}
+    unit.embed_fail = True
+    unit.model = "mock-claim-saved"
+    unit.cmd("TURN remember the bench note", expect="TURN <-")
+    assert unit.rows[-1]["text"] == SAVED_REPLY and unit.tailed == 0
+
+
+def test_fact_ids_match_the_whole_content_only():
+    page = {"entries": [{"id": "a", "content": NOTE}, {"id": "b", "content": NOTE + " (edited)"}, {"id": "c"}]}
+    assert fact_ids(page, NOTE) == ["a"]
 
 
 def test_c2_runs_against_the_device_rules(unit):
