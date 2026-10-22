@@ -7,6 +7,7 @@
 
 #include "../sys/agent_log.h"
 #include "fs_atomic.h"      // flashMounted, writeFileAtomic - the park's flash file
+#include "../sys/psram_static.h"   // psramOrInternalCalloc - the park's records in PSRAM
 #include "orchestrator.h"   // inScheduledTurn, firstAllowedChat - the daily spend notice
 #include "store.h"          // modelRankPrice - the ledger's prices (CUM-708)
 #include "nimbus/orch/usage_ledger.h"   // setRankPriceSource
@@ -48,6 +49,9 @@ uint32_t epochNow() {
 // Registered before setup() runs: the park loads its file on the first question
 // any seam asks, whichever seam that is (the chat fabric included).
 const bool kStorageRegistered = [] {
+  // The park's records live in PSRAM (internal RAM if PSRAM is missing): only its
+  // locks and hooks stay in internal RAM.
+  orch::providerPark().setRecordMemory(::nimbus::psramOrInternalCalloc);
   orch::ParkStorage s;
   s.load = loadPark;
   s.save = savePark;

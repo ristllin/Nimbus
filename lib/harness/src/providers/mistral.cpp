@@ -10,6 +10,7 @@
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
+#include "nimbus/orch/provider_park.h"  // parkKeyFingerprint - the no-effort memo
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
@@ -312,18 +313,22 @@ struct MisLoopReq {
 // CUM-616: a model the table says reasons but that refused reasoning_effort (400
 // code 3051 "reasoning_effort is not enabled for this model"; Mistral documents a 422
 // for a bad value) is remembered for this boot, so later rounds do not pay the
-// refusal again. Bounded; RAM only.
+// refusal again. Bounded; RAM only. A model is kept as its 32-bit fingerprint (16 B of
+// internal RAM, not 192 B of names; parkKeyFingerprint is a plain FNV-1a string hash,
+// nothing key-specific): a collision only means one more model skips the field, which
+// every model did before CUM-616.
 namespace {
-char g_misNoEffort[4][48] = {};
+uint32_t g_misNoEffort[4] = {};
 bool misEffortRefusedBefore(const std::string& model) {
-  for (const auto& m : g_misNoEffort)
-    if (m[0] && model == m) return true;
+  const uint32_t fp = nimbus::orch::parkKeyFingerprint(model);
+  for (uint32_t m : g_misNoEffort)
+    if (m && m == fp) return true;
   return false;
 }
 void misRememberNoEffort(const std::string& model) {
-  if (misEffortRefusedBefore(model)) return;
+  if (model.empty() || misEffortRefusedBefore(model)) return;
   static size_t next = 0;
-  snprintf(g_misNoEffort[next++ % 4], sizeof(g_misNoEffort[0]), "%s", model.c_str());
+  g_misNoEffort[next++ % 4] = nimbus::orch::parkKeyFingerprint(model);
 }
 // A refusal of the reasoning_effort field itself: retried once without it.
 bool misRefusedEffort(int code, const std::string& text) {

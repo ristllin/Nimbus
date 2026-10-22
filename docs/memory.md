@@ -107,7 +107,15 @@ internal, only the data it guards moves). This holds the web model-memory echo,
 the fold status echo, the system-turn prompt, the large OAuth handoff buffers and
 the Telegram pending slots (voice, attachment, media, unknown-chat approvals): about
 6.3 KB that v4.5.14 had added back to static internal RAM.
-`tests/hil/test_psram_statics_host.py` fails if one moves back inline.
+An object that needs its constructor moves the same way with
+`nimbus::psramObject<T>(args...)`: it is built in place in PSRAM where the
+function-local static was, once, and never destroyed (a device never runs exit
+handlers), under the same rules plus no lock or atomic member. The job engine and the
+turn engine live there (about 3.1 KB), and the provider park keeps its record table
+in PSRAM through `setRecordMemory`, so only its locks and hooks stay internal.
+`tests/hil/test_psram_statics_host.py` fails if one moves back inline, and the
+release gate's static DRAM check (`tools/release_gate/check_static_dram.py`) fails an
+image whose static internal RAM grows past its recorded ceiling.
 
 Moving the MP3 scratch to PSRAM let the sfx task stack drop from 20 KB to 12 KB and
 made the 8 KB music task safe. Measured on the Solide S3 in Orchestrator mode with

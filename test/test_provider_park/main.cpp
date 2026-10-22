@@ -323,6 +323,33 @@ static void test_forget_parks_is_saved_and_keeps_pauses() {
   TEST_ASSERT_TRUE(orch::billingNoticeDue("openai"));    // the next episode is told again
 }
 
+// The records live where setRecordMemory says (the device: PSRAM), allocated once on
+// the first question, so the park object itself keeps only its locks and hooks in
+// internal RAM (the static DRAM release gate).
+alignas(8) static unsigned char g_recordArena[1024];
+static int g_recordAllocs = 0;
+static size_t g_recordBytes = 0;
+static void* arenaAlloc(size_t n) {
+  g_recordAllocs++;
+  g_recordBytes = n;
+  return n <= sizeof(g_recordArena) ? g_recordArena : nullptr;
+}
+
+static void test_records_live_in_the_memory_the_device_gives() {
+  orch::ProviderPark park;
+  park.setRecordMemory(arenaAlloc);
+  TEST_ASSERT_EQUAL(0, g_recordAllocs);   // nothing until the first question
+  TEST_ASSERT_TRUE(park.available("openai", PaidSeam::Chat, kFp, 1000).open);
+  TEST_ASSERT_EQUAL(1, g_recordAllocs);
+  TEST_ASSERT_TRUE(g_recordBytes >= orch::ProviderPark::kMaxProviders * 16);
+  park.park("openai", PaidSeam::Chat, kFp, ParkKind::Billing, 402, 1001);
+  TEST_ASSERT_FALSE(park.available("openai", PaidSeam::Vision, kFp, 1002).open);
+  TEST_ASSERT_EQUAL_STRING("openai", reinterpret_cast<const char*>(g_recordArena));   // the record is there
+  park.pause("mistral", orch::kPauseOwner);
+  TEST_ASSERT_EQUAL(orch::kPauseOwner, park.pausedBy("mistral"));
+  TEST_ASSERT_EQUAL(1, g_recordAllocs);   // once, never again
+}
+
 // ---- 5. the 19 Oct scenario across seams ---------------------------------------------
 
 // A refusal replayed on the EMBEDDING seam (OpenAI 429 credit_balance_exhausted),
@@ -522,6 +549,7 @@ int main(int, char**) {
   RUN_TEST(test_pause_switch_closes_every_seam_and_is_never_probed);
   RUN_TEST(test_pause_is_ram_only_and_survives_a_load);
   RUN_TEST(test_forget_parks_is_saved_and_keeps_pauses);
+  RUN_TEST(test_records_live_in_the_memory_the_device_gives);
   RUN_TEST(test_embedding_refusal_closes_vision_spawn_and_chat);
   RUN_TEST(test_rate_limit_on_one_seam_parks_nothing);
   RUN_TEST(test_spawn_refused_when_every_provider_is_closed);

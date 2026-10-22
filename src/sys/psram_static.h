@@ -25,9 +25,19 @@
 #include <esp_heap_caps.h>
 
 #include <cstdlib>
+#include <new>
 #include <type_traits>
+#include <utility>
 
 namespace nimbus {
+
+// PSRAM first, internal RAM if PSRAM is missing or full; zero-filled either way. The
+// one allocation rule every long-lived buffer below (and the provider park's record
+// table) follows.
+inline void* psramOrInternalCalloc(size_t bytes) {
+  void* p = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p ? p : heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 
 template <typename T>
 T& psramStatic() {
@@ -35,10 +45,28 @@ T& psramStatic() {
   // then exactly a static's zero-initialisation, and nothing is ever destroyed.
   static_assert(std::is_trivially_default_constructible_v<T> && std::is_trivially_destructible_v<T>,
                 "psramStatic: plain data only");
-  void* p = heap_caps_calloc(1, sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_calloc(1, sizeof(T), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  void* p = psramOrInternalCalloc(sizeof(T));
   if (!p) abort();   // cannot happen at static-init time; a static never fails either
   return *static_cast<T*>(p);
+}
+
+// The same for an object that needs its constructor (members that are not plain
+// data, built once with arguments where a function-local static was):
+//
+//   static TurnEngine& turnEngine = ::nimbus::psramObject<TurnEngine>(deps, tuning);
+//
+// Constructed in place in PSRAM (internal RAM if PSRAM is missing) on the first pass,
+// exactly once, and never destroyed: a device never runs exit handlers, so a static
+// object's destructor never ran either. The memory is zeroed before the constructor
+// runs, as a static's is, so a member a constructor leaves alone still reads 0. The
+// rules above hold, plus: no lock or atomic member (they stay in internal RAM; review
+// the class when you add one), and nothing reads the object before the declaration
+// has run (it is built where the static was, never at static-init time).
+template <typename T, typename... Args>
+T& psramObject(Args&&... args) {
+  void* p = psramOrInternalCalloc(sizeof(T));
+  if (!p) abort();   // a few KB at begin(): as fatal as a failed static would have been
+  return *new (p) T(std::forward<Args>(args)...);
 }
 
 }  // namespace nimbus

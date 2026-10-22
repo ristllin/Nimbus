@@ -55,7 +55,7 @@
 #include "nimbus/harness/router_refusal.h" // CUM-539/530: a router refusal, read and answered like the hosted head
 #include "nimbus/orch/safety_activity.h"  // cumuloHostFromBase - the router host the refusal tap watches
 #include "../sys/ps_json.h"              // PsramJsonAllocator - the refusal tap's filter copy stays off internal heap
-#include "../sys/psram_static.h"         // long-lived echo buffers in PSRAM, not internal .bss
+#include "../sys/psram_static.h"         // long-lived buffers and the two engines in PSRAM, not internal .bss
 
 #include "nimbus/orch/budget.h"         // deriveBudget - brief/fold-slice bytes from the head window
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
@@ -1616,7 +1616,9 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_journal.begin(&g_journalStore);
   // Construct the portable job machinery over the freshly loaded journal (the
   // engine's ctor arms the poll gate at "now", replacing g_nextPollAt = millis()).
-  static JobEngine engine(buildJobDeps(),
+  // The job and turn engines live in PSRAM (psram_static.h, psramObject): about 3 KB
+  // of task-only state that internal RAM no longer holds (no lock, no ISR access).
+  static JobEngine& engine = ::nimbus::psramObject<JobEngine>(buildJobDeps(),
       JobEngine::Tuning{AGENT_MAX_ACTIVE_INFLIGHT, ORCH_DISPATCH_MIN_HEAP,
                         AGENT_POLL_INTERVAL_MS});
   g_jobs = &engine;
@@ -1631,7 +1633,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   // CUM-523: a turn that cannot deliver over Telegram is never offered a Telegram
   // leg (the engine's one per-turn sample also narrows the manifest's hw.telegram).
   g_cfg.telegramDeliverable = telegramDeliverable;
-  static TurnEngine turnEngine(buildTurnDeps(),
+  static TurnEngine& turnEngine = ::nimbus::psramObject<TurnEngine>(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,
                          ORCH_TURN_MIN_LARGEST_BLOCK});

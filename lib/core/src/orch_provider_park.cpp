@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the one billing table
 
@@ -111,14 +112,35 @@ uint32_t ProviderPark::clockNow() {
   return lastNowMs_;
 }
 
+void ProviderPark::setRecordMemory(RecordAlloc alloc) {
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  recordAlloc_ = alloc;
+}
+
+ProviderPark::Span ProviderPark::recs() {
+  if (!recs_) {
+    const size_t bytes = sizeof(Rec) * kMaxProviders;
+    void* p = recordAlloc_ ? recordAlloc_(bytes) : nullptr;
+    if (!p) p = std::malloc(bytes);
+    if (!p) std::abort();   // a few hundred bytes at the first question: as fatal as a failed static
+    recs_ = static_cast<Rec*>(p);
+    for (size_t i = 0; i < kMaxProviders; i++) new (&recs_[i]) Rec();
+  }
+  return Span{recs_, recs_ + kMaxProviders};
+}
+
+ProviderPark::Span ProviderPark::recs() const {
+  return recs_ ? Span{recs_, recs_ + kMaxProviders} : Span{nullptr, nullptr};
+}
+
 ProviderPark::Rec* ProviderPark::find(const char* provider) {
-  for (Rec& r : recs_)
+  for (Rec& r : recs())
     if (r.provider[0] && std::strcmp(r.provider, provider) == 0) return &r;
   return nullptr;
 }
 
 const ProviderPark::Rec* ProviderPark::find(const char* provider) const {
-  for (const Rec& r : recs_)
+  for (const Rec& r : recs())
     if (r.provider[0] && std::strcmp(r.provider, provider) == 0) return &r;
   return nullptr;
 }
@@ -127,13 +149,14 @@ const ProviderPark::Rec* ProviderPark::find(const char* provider) const {
 // park and no pause (a stale latch is the cheapest thing to lose), else the first.
 ProviderPark::Rec* ProviderPark::ensure(const char* provider) {
   if (Rec* r = find(provider)) return r;
+  const Span all = recs();
   Rec* slot = nullptr;
-  for (Rec& r : recs_)
+  for (Rec& r : all)
     if (!r.provider[0]) { slot = &r; break; }
   if (!slot)
-    for (Rec& r : recs_)
+    for (Rec& r : all)
       if (r.kind == ParkKind::None && !r.paused) { slot = &r; break; }
-  if (!slot) slot = &recs_[0];
+  if (!slot) slot = &all[0];
   *slot = Rec();
   std::snprintf(slot->provider, sizeof(slot->provider), "%s", provider);
   return slot;
@@ -368,7 +391,7 @@ size_t ProviderPark::snapshot(ParkEntry* out, size_t cap, uint32_t nowMs) {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(nowMs);
   size_t n = 0;
-  for (const Rec& r : recs_) {
+  for (const Rec& r : recs()) {
     if (!r.provider[0] || n >= cap) continue;
     ParkEntry& e = out[n++];
     e = ParkEntry();
@@ -394,7 +417,7 @@ std::string ProviderPark::serialize(uint32_t nowMs) const {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   std::string out = "PK1\n";
   const uint32_t epoch = epochNow();
-  for (const Rec& r : recs_) {
+  for (const Rec& r : recs()) {
     if (!r.provider[0] || (r.kind == ParkKind::None && !r.noticed && !r.warnedDay)) continue;
     uint32_t inS = 0;
     if (r.kind != ParkKind::None && !r.probing && !laterOrEqual(nowMs, r.recheckAtMs))
@@ -436,10 +459,11 @@ uint32_t leftAfterRestart(const SavedRec& r, uint32_t epoch) {
 bool ProviderPark::deserialize(const std::string& blob, uint32_t nowMs) {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   if (blob.rfind("PK1\n", 0) != 0) return false;
+  const Span all = recs();
   Rec keep[kMaxProviders];   // pauses are RAM only: kept across the load
   for (size_t i = 0; i < kMaxProviders; i++) {
-    keep[i] = recs_[i];
-    recs_[i] = Rec();
+    keep[i] = all[i];
+    all[i] = Rec();
   }
   const uint32_t epoch = epochNow();
   bool clean = true;
@@ -453,7 +477,7 @@ bool ProviderPark::deserialize(const std::string& blob, uint32_t nowMs) {
       clean = false;
       continue;
     }
-    Rec& r = recs_[n++];
+    Rec& r = all[n++];
     std::snprintf(r.provider, sizeof(r.provider), "%s", sr.prov);
     r.kind = (ParkKind)sr.kind;
     r.httpStatus = sr.status;
@@ -471,7 +495,7 @@ bool ProviderPark::deserialize(const std::string& blob, uint32_t nowMs) {
 
 void ProviderPark::clear() {
   std::lock_guard<std::recursive_mutex> lk(mx_);
-  for (Rec& r : recs_) r = Rec();
+  for (Rec& r : recs()) r = Rec();
   pausedAll_ = 0;
 }
 
@@ -479,7 +503,7 @@ void ProviderPark::forgetParks(uint32_t nowMs) {
   FlushOnExit flushAfter{*this};   // after the lock below is released
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(nowMs);
-  for (Rec& r : recs_) {
+  for (Rec& r : recs()) {
     if (!r.provider[0]) continue;
     Rec kept;
     std::memcpy(kept.provider, r.provider, sizeof(kept.provider));

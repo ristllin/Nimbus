@@ -138,6 +138,13 @@ class ProviderPark {
 
   void setStorage(ParkStorage s);
 
+  // Where the records live (kMaxProviders of them, allocated on the first question):
+  // the device passes a PSRAM-first allocator, so the park keeps only its locks and
+  // hooks in internal RAM; null (the default) is the C++ heap. Records already made
+  // stay where they are.
+  using RecordAlloc = void* (*)(size_t bytes);
+  void setRecordMemory(RecordAlloc alloc);
+
   // THE question every paid seam asks before a request. `keyFp` is the
   // fingerprint of the key that request would carry (0 = unknown: not compared).
   // A paused provider is closed whatever its park; a parked one is closed until
@@ -204,6 +211,16 @@ class ProviderPark {
     uint32_t warnedDay = 0;
     uint8_t  paused = 0;
   };
+  // The record table: allocated on first use through recordAlloc_ (under mx_).
+  struct Span {
+    Rec* b;
+    Rec* e;
+    Rec* begin() const { return b; }
+    Rec* end() const { return e; }
+    Rec& operator[](size_t i) const { return b[i]; }
+  };
+  Span recs();
+  Span recs() const;   // empty until the table exists (a const call never allocates)
   Rec* find(const char* provider);
   const Rec* find(const char* provider) const;
   Rec* ensure(const char* provider);
@@ -226,7 +243,8 @@ class ProviderPark {
   mutable std::recursive_mutex mx_;
   std::mutex  saveMx_;
   bool        dirty_ = false;
-  Rec         recs_[kMaxProviders];
+  Rec*        recs_ = nullptr;   // kMaxProviders records (device: PSRAM)
+  RecordAlloc recordAlloc_ = nullptr;
   uint8_t     pausedAll_ = 0;
   ParkStorage storage_;
   bool        loaded_ = false;

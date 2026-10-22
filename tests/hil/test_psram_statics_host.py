@@ -4,6 +4,8 @@ v4.5.14 started with about 4.5 KB more static internal RAM than v4.5.13, which c
 straight off the internal heap at every point of a turn. These buffers were moved
 to PSRAM with ``nimbus::psramStatic`` (src/sys/psram_static.h) to win it back: each
 is declared as a reference to PSRAM storage, so only 4 bytes stay in internal .bss.
+Objects that need their constructor (the job and turn engines) move the same way with
+``nimbus::psramObject``.
 Moving one back inline (``static char g_memEcho[1201];``) silently costs that RAM
 again, so the source leg fails on it. The ELF leg checks the same thing in a built
 image when one is present. No board needed.
@@ -24,16 +26,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # file -> the buffers it keeps in PSRAM. A new buffer moved with psramStatic belongs here.
 MOVED = {
-    "src/agent/orchestrator.cpp": ("g_memEcho", "g_foldEcho", "s_sysTurnPrompt"),
+    "src/agent/orchestrator.cpp": ("g_memEcho", "g_foldEcho", "s_sysTurnPrompt", "engine", "turnEngine"),
     "src/agent/connectors.cpp": ("s_inRedirect", "s_inCode", "s_snapVerify", "s_snapErr", "s_snapAuthUrl"),
     "src/agent/telegram.cpp": ("g_media", "s_pending"),
 }
 
 
 def declared_in_psram(src: str, name: str) -> bool:
-    """True iff `name` is declared as a reference bound to psramStatic storage."""
+    """True iff `name` is declared as a reference bound to psramStatic or psramObject storage."""
     ref = re.compile(
-        r"(?:\(\s*&\s*" + name + r"\s*\)\s*\[[^\]]*\]|&\s*" + name + r")\s*=\s*(?:::)?nimbus::psramStatic<"
+        r"(?:\(\s*&\s*" + name + r"\s*\)\s*\[[^\]]*\]|&\s*" + name + r")\s*=\s*(?:::)?nimbus::psram(?:Static|Object)<"
     )
     return bool(ref.search(src))
 
@@ -44,7 +46,7 @@ def declared_inline(src: str, name: str) -> bool:
         r"^\s*(?:static\s+)?(?:const\s+)?[A-Za-z_][\w:]*\s+"  # the type
         r"(?:\w+\s*(?:\[[^\]]*\])?\s*,\s*)*"  # earlier names in the same declaration
         + name
-        + r"\s*(?:\[[^\]]*\])?\s*[;,]"
+        + r"\s*(?:\[[^\]]*\])?\s*[;,(]"  # "(": an object built with arguments
     )
     for line in src.splitlines():
         if decl.search(re.sub(r"=\s*\{[^}]*\}", "", line)):
@@ -79,6 +81,12 @@ def test_the_guard_sees_the_shapes_it_bans():
     )
     assert declared_in_psram("static PendingVoice& g_voice = ::nimbus::psramStatic<PendingVoice>();", "g_voice")
     assert not declared_in_psram("static char g_memEcho[1201] = {};", "g_memEcho")
+    assert declared_inline("  static TurnEngine turnEngine(buildTurnDeps(),", "turnEngine")
+    assert not declared_inline(
+        "  static TurnEngine& turnEngine = ::nimbus::psramObject<TurnEngine>(deps,", "turnEngine"
+    )
+    assert not declared_inline("  g_engine = &turnEngine;", "turnEngine")
+    assert declared_in_psram("  static JobEngine& engine = ::nimbus::psramObject<JobEngine>(buildJobDeps(),", "engine")
 
 
 def _built_elfs():
