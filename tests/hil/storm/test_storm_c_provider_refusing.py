@@ -70,6 +70,7 @@ def _episode(storm, name: str, scenario: str) -> g.Metrics:
         kit.owner_turn(storm, f"storm c {name} {uid}: reply with the single word pong", uid)
         probe = storm.fresh_message(kit.ANSWER_RE, f"storm c {name} probe {uid}: reply pong", uid + 1, timeout=150.0)
         w.close()
+        park = "" if storm.control else storm.verb("PARK?", "PARK", timeout=6.0).strip()
     finally:
         _disarm(storm)
     replies = w.replies(NOTICE_RE)
@@ -86,8 +87,8 @@ def _episode(storm, name: str, scenario: str) -> g.Metrics:
         usable_s=probe["usable_s"],
     )
     m.extra.update({"shape": name, "replies": replies, "probeReply": probe["reply"][:200]})
-    if not storm.control:
-        m.extra["park"] = storm.verb("PARK?", "PARK? providers", timeout=6.0).strip()
+    if park:
+        m.extra["park"] = park  # read before the leg clears the park
     return m
 
 
