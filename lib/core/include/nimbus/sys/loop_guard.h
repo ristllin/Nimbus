@@ -69,14 +69,18 @@ class LoopPassMonitor {
 std::string slowPassLine(uint32_t passMs, const LoopPassMonitor& m);
 
 // The holder side: a task that held the shared lock this long is named in the log,
-// so a slow tool shows up even after the loop stopped waiting for it.
+// so a slow tool shows up even after the loop stopped waiting for it. The model picks
+// the tools, so the line is rate limited like the slow-pass line: the first long hold,
+// a new longest hold kSlowPassRelogStepMs above the last one logged, or a long hold
+// kLongHoldRelogQuietMs after the last line (every hold is still counted).
 inline constexpr uint32_t kLongHoldMs = 3000;
+inline constexpr uint32_t kLongHoldRelogQuietMs = 60u * 1000u;
 
 class LockHoldMonitor {
  public:
-  // Record one hold of `holdMs` by `what` (a tool name). True when it should be logged
-  // (longHoldLine): every hold of kLongHoldMs or more.
-  bool note(const std::string& what, uint32_t holdMs);
+  // Record one hold of `holdMs` by `what` (a tool name) that ended at `nowMs`. True when
+  // it should be logged (longHoldLine).
+  bool note(const std::string& what, uint32_t holdMs, uint32_t nowMs);
   uint32_t longestMs() const { return longestMs_; }
   const std::string& longestWhat() const { return longestWhat_; }
   uint32_t longHolds() const { return long_; }
@@ -85,6 +89,9 @@ class LockHoldMonitor {
   uint32_t longestMs_ = 0;
   std::string longestWhat_;
   uint32_t long_ = 0;
+  uint32_t loggedMs_ = 0;
+  uint32_t loggedAt_ = 0;
+  bool logged_ = false;
 };
 
 // "memory: tool memory.search held the card lock for 9200 ms"

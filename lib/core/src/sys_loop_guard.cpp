@@ -1,12 +1,14 @@
 #include "nimbus/sys/loop_guard.h"
 
+#include <algorithm>
+
 #include "nimbus/sys/boot_record.h"   // fieldValue: a tool name is model text, capped and printable
 
 namespace nimbus::sys {
 
 uint32_t lockWaitMs(bool watchedTask, bool ownsLock, uint32_t requestedMs) {
   if (!watchedTask || ownsLock) return UINT32_MAX;   // an owner's re-take never waits
-  return requestedMs < kLoopLockWaitMs ? requestedMs : kLoopLockWaitMs;
+  return std::min(requestedMs, kLoopLockWaitMs);
 }
 
 bool LoopPassMonitor::note(uint32_t passMs, uint32_t nowMs) {
@@ -32,13 +34,19 @@ std::string slowPassLine(uint32_t passMs, const LoopPassMonitor& m) {
          (m.slowPasses() == 1 ? " slow pass" : " slow passes") + " this boot)";
 }
 
-bool LockHoldMonitor::note(const std::string& what, uint32_t holdMs) {
+bool LockHoldMonitor::note(const std::string& what, uint32_t holdMs, uint32_t nowMs) {
   if (holdMs > longestMs_) {
     longestMs_ = holdMs;
     longestWhat_ = what;
   }
   if (holdMs < kLongHoldMs) return false;
   ++long_;
+  const bool higher = holdMs >= loggedMs_ + kSlowPassRelogStepMs;
+  const bool quietOver = (uint32_t)(nowMs - loggedAt_) >= kLongHoldRelogQuietMs;
+  if (logged_ && !higher && !quietOver) return false;
+  logged_ = true;
+  loggedMs_ = holdMs;
+  loggedAt_ = nowMs;
   return true;
 }
 

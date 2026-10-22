@@ -1951,7 +1951,7 @@ void dispatch(String line) {
     // stay 0: a blocking card-lock take on the watched loop is the watchdog bug class.
     const agent::memory::LoopGuardStats g = agent::memory::loopGuardStats();
     const nimbus::sys::LoopPassMonitor& p = nimbus::loopwatch::passes();
-    char buf[200];
+    char buf[256];
     snprintf(buf, sizeof buf,
              "LOOPGUARD blocking=%u caller=0x%08x busy=%u parked=%u dropped=%u longHolds=%u "
              "longestHoldMs=%u tool=%s maxPassMs=%u slowPasses=%u",

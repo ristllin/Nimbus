@@ -145,8 +145,13 @@ def _provfault_on(device) -> None:
         pytest.skip("PROVFAULT is not wired in this image")
 
 
-def _cleanup(device, net, ip: str, prio: str) -> None:
-    for line, want in (("PROVFAULT off", "PROVFAULT"), ("TOOLSTALL 0", "TOOLSTALL")):
+def _cleanup(device, net, ip: str, prio: str, provfault_off: bool = True) -> None:
+    steps = (
+        (("PROVFAULT off", "PROVFAULT"), ("TOOLSTALL 0", "TOOLSTALL"))
+        if provfault_off
+        else (("TOOLSTALL 0", "TOOLSTALL"),)
+    )
+    for line, want in steps:
         try:
             device.cmd(line, want, timeout=5.0)
         except Exception as exc:  # noqa: BLE001 - reported; the next leg checks its own state
@@ -157,28 +162,40 @@ def _cleanup(device, net, ip: str, prio: str) -> None:
         print(f"[L66] cleanup provPrio: {exc}")
 
 
-def _start_stall_turn(device, net, ip: str) -> str:
-    """Arm the stall and the canned round, then start one web-chat turn."""
+def _start_stall_turn(device, net, ip: str) -> "tuple[str, str]":
+    """Arm the stall and the canned round, then start one web-chat turn. Returns the
+    provider order to restore and the turn id."""
     prio = str(net.get_json("/api/orch", ip=ip, timeout=8.0).get("provPrio") or "")
     net.post("/api/orch", {"provPrio": "anthropic"}, ip=ip, timeout=8.0)
     _arm(device, STALL_MS)
     _provfault_on(device)
     r = net.post("/api/chat", {"text": "L66 stall probe: look at your scratchpad."}, ip=ip, timeout=10.0)
     assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:200]}"
-    return prio
+    return prio, str(r.json().get("turn") or "")
 
 
 def _wait_for_stall_start(device, timeout: float = 60.0) -> None:
     device.expect("TOOLSTALL:", timeout=timeout)  # the dispatch took the lock and holds it
 
 
-def _wait_turn_end(device, timeout: float = 90.0) -> None:
-    """The canned round repeats until the turn's round cap ends it; clear PROVFAULT only
-    after that, so no later round of this turn reaches the real provider (and bills)."""
-    try:
-        device.expect_re(r"turn end: (ok|FAIL)", timeout=timeout)
-    except ExpectTimeout:
-        print(f"[L66] no turn end within {timeout:.0f} s; clearing PROVFAULT anyway")
+def turn_done(page: dict) -> bool:
+    """``GET /api/chat?turn=<id>``: the turn answered, or is no longer known."""
+    return bool(page.get("done") or page.get("gone"))
+
+
+def _wait_turn_end(net, ip: str, turn: str, timeout: float = 180.0) -> bool:
+    """The canned round repeats until the turn's round cap ends it. PROVFAULT is cleared
+    only after that (so no later round of this turn reaches the real provider and
+    bills); False when the turn is still running at the deadline."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if not turn or turn_done(net.get_json(f"/api/chat?turn={turn}", ip=ip, timeout=8.0)):
+                return True
+        except Exception as exc:  # noqa: BLE001 - a busy answer: poll again
+            print(f"[L66] turn poll: {exc}")
+        time.sleep(3.0)
+    return False
 
 
 # ---- HIL legs -----------------------------------------------------------------------
@@ -192,7 +209,7 @@ def test_slow_tool_leaves_the_loop_running(device, net):
     ip = _lan_ip(None)
     before_n = _boot_n(net, ip)
     before = _loopguard(device)
-    prio = _start_stall_turn(device, net, ip)
+    prio, turn = _start_stall_turn(device, net, ip)
     try:
         _wait_for_stall_start(device)
         # Inside the hold, past the 8 s watchdog: the loop still runs the console.
@@ -208,8 +225,9 @@ def test_slow_tool_leaves_the_loop_running(device, net):
         holds = [m for m in HOLD_LINE_RE.finditer(log) if m.group("tool") == STALL_TOOL]
         assert holds and int(holds[-1].group("ms")) >= STALL_MS, "the durable log does not name the long hold"
     finally:
-        _wait_turn_end(device)
-        _cleanup(device, net, ip, prio)
+        ended = _wait_turn_end(net, ip, turn)
+        _cleanup(device, net, ip, prio, provfault_off=ended)
+        assert ended, "the probe turn was still running; PROVFAULT is left armed (restart the unit to clear it)"
 
 
 @pytest.mark.hil
@@ -222,7 +240,7 @@ def test_before_fix_image_resets_like_lumi(device, net):
         pytest.skip("set NIMBUS_L66_BEFORE=1 with the before-fix image to reproduce the reset")
     ip = _lan_ip(None)
     before_n = _boot_n(net, ip)
-    prio = _start_stall_turn(device, net, ip)
+    prio, _turn = _start_stall_turn(device, net, ip)
     try:
         _wait_for_stall_start(device)
         try:

@@ -174,6 +174,27 @@ static void test_ownership_is_positional_for_every_split() {
   for (const auto& r : all) TEST_ASSERT_TRUE(r.text.find("[pre-sync") != std::string::npos);
 }
 
+// A reset during the .tmp + rename rewrite leaves the .tmp beside the file (written in
+// full, or torn mid-write) or alone (between the remove and the rename). Every case
+// keeps every complete row: the newer complete copy wins, a torn one never does.
+static void test_rewrite_window_never_loses_a_row() {
+  std::string old;
+  for (uint32_t i = 0; i < 3; ++i) old = appendPendingEvent(old, ev(40 + i, i, "boot", "row" + std::to_string(i)));
+  const std::string fresh = appendPendingEvent(old, ev(43, 9, "boot", "row3"));
+  TEST_ASSERT_EQUAL_STRING(old.c_str(), choosePendingContent(old, "").c_str());       // no reset
+  TEST_ASSERT_EQUAL_STRING(fresh.c_str(), choosePendingContent("", fresh).c_str());   // remove..rename
+  TEST_ASSERT_EQUAL_STRING(fresh.c_str(), choosePendingContent(old, fresh).c_str());  // tmp done, not renamed
+  TEST_ASSERT_TRUE(choosePendingContent("", "").empty());
+  // Torn .tmp at every byte: never preferred over the complete main file.
+  for (size_t cut = 0; cut < fresh.size(); ++cut)
+    TEST_ASSERT_EQUAL_STRING(old.c_str(), choosePendingContent(old, fresh.substr(0, cut)).c_str());
+  // At the row bound an append drops the oldest row: the newer copy still wins.
+  std::string full;
+  for (uint32_t i = 0; i < kPendingEvMaxRows; ++i) full = appendPendingEvent(full, ev(1, i, "boot", "f" + std::to_string(i)));
+  const std::string fuller = appendPendingEvent(full, ev(2, 99, "boot", "newest"));
+  TEST_ASSERT_EQUAL_STRING(fuller.c_str(), choosePendingContent(full, fuller).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_codec_round_trip);
@@ -182,6 +203,7 @@ int main(int, char**) {
   RUN_TEST(test_bounds_rows_and_bytes);
   RUN_TEST(test_rows_survive_resets_until_a_clock_exists);
   RUN_TEST(test_ownership_is_positional_for_every_split);
+  RUN_TEST(test_rewrite_window_never_loses_a_row);
   RUN_TEST(test_flush_reports_dropped_count);
   RUN_TEST(test_synced_boot_and_unknown_boot_numbers);
   return UNITY_END();

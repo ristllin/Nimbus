@@ -494,22 +494,22 @@ bool ownsCardLock() {
 }
 }  // namespace
 
+// A blocking take on the watched loop: the bug class loop_guard.h describes. Counted,
+// and the caller named once per boot; the take itself still happens (callers assume
+// the lock is held), and the watchdog stays the backstop.
+static void noteWatchedBlockingTake(uintptr_t caller) {
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_loopGuard.watchedBlockingTakes++;
+  g_loopGuard.lastBlockingCaller = caller;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  if (g_blockingTakeLogged) return;
+  g_blockingTakeLogged = true;
+  alogf("memory: the main loop waited for the card lock (caller 0x%08x)", (unsigned)caller);
+}
+
 void lock() {
   if (!g_memMux) return;
-  if (onWatchedTask() && !ownsCardLock()) {
-    // A blocking take on the watched loop: the bug class loop_guard.h describes. Count
-    // it and name the caller once per boot; the take itself still happens (callers
-    // assume the lock is held), and the watchdog stays the backstop.
-    const uintptr_t caller = (uintptr_t)__builtin_return_address(0);
-    portENTER_CRITICAL(&g_loopGuardMux);
-    g_loopGuard.watchedBlockingTakes++;
-    g_loopGuard.lastBlockingCaller = caller;
-    portEXIT_CRITICAL(&g_loopGuardMux);
-    if (!g_blockingTakeLogged) {
-      g_blockingTakeLogged = true;
-      alogf("memory: the main loop waited for the card lock (caller 0x%08x)", (unsigned)caller);
-    }
-  }
+  if (onWatchedTask() && !ownsCardLock()) noteWatchedBlockingTake((uintptr_t)__builtin_return_address(0));
   xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY);
 }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
@@ -542,14 +542,16 @@ LoopGuardStats loopGuardStats() {
 // The holder side: called by handleMcp while it still holds the card lock, so the line
 // reaches the durable log (its writer takes the same lock and re-enters).
 static void noteToolHold(const std::string& tool, uint32_t holdMs) {
-  if (!g_holdMon.note(tool, holdMs)) return;
+  const bool logIt = g_holdMon.note(tool, holdMs, millis());
+  if (holdMs < nimbus::sys::kLongHoldMs) return;
+  // Built before the critical section: nothing may allocate with the spinlock held.
+  const std::string what = nimbus::sys::fieldValue(g_holdMon.longestWhat(), 31);   // model text
   portENTER_CRITICAL(&g_loopGuardMux);
   g_loopGuard.longHolds = g_holdMon.longHolds();
   g_loopGuard.longestHoldMs = g_holdMon.longestMs();
-  const std::string what = nimbus::sys::fieldValue(g_holdMon.longestWhat(), 31);   // model text
   strlcpy(g_loopGuard.longestHoldTool, what.c_str(), sizeof g_loopGuard.longestHoldTool);
   portEXIT_CRITICAL(&g_loopGuardMux);
-  alog(nimbus::sys::longHoldLine(tool, holdMs).c_str());
+  if (logIt) alog(nimbus::sys::longHoldLine(tool, holdMs).c_str());
 }
 
 // Timeline events the main loop could not write because the card lock was busy (a
@@ -1607,14 +1609,23 @@ bool forceSdProbe() {
   return ok;
 }
 
+static constexpr uint32_t kTickBusyEscalate = 50;   // busy passes before the tick waits
+
 void tickSdHealth(uint32_t nowMs) {
   // Runs on the main loop every pass. A turn can hold the card lock across a whole
   // tool dispatch (a provider round trip, a card scan), so the loop only tries for
   // it: busy means this pass skips, and the next pass retries (loop_guard.h). The
   // guard also serializes the probe with promoteSd()'s end()/begin() on the web task
   // and the debounce read-modify-write with the web and Telegram tasks (prism).
-  LoopLock g(0);   // every pass retries, so this one never waits at all
-  if (!g) return;
+  // Every pass retries, so it never waits at first; after a run of busy passes it waits
+  // the full short try, so back-to-back tool calls cannot starve the probe forever.
+  static uint32_t s_busyRun = 0;
+  LoopLock g(s_busyRun >= kTickBusyEscalate ? nimbus::sys::kLoopLockWaitMs : 0);
+  if (!g) {
+    ++s_busyRun;
+    return;
+  }
+  s_busyRun = 0;
   drainParkedEvents();    // timeline events the loop parked while the lock was busy
   flushPendingEvents();   // pre-SNTP timeline rows flush once the clock syncs
   if (!g_haveSd) return;   // no card at boot: nothing to demote/promote
@@ -2338,12 +2349,9 @@ static bool s_pendingFlushOwned = false;
 // every other row as an earlier boot's, whatever boot numbers they carry.
 static size_t s_heldThisBoot = 0;
 
-// Caller holds the Lock. The file is rewritten through a .tmp sibling and a rename
-// (writeBlobAtomicOn), so a reset right between the remove and the rename leaves only
-// the .tmp: read it then, and no earlier boot's row is lost.
-static std::string readPendingEvFile() {
-  File f = g_fs->open(pendingEvPath(), FILE_READ);
-  if (!f) f = g_fs->open((std::string(pendingEvPath()) + ".tmp").c_str(), FILE_READ);
+// Caller holds the Lock. One file's bytes (bounded), "" when it is not there.
+static std::string readSmallFile(const std::string& path) {
+  File f = g_fs->open(path.c_str(), FILE_READ);
   if (!f) return {};
   std::string out;
   uint8_t buf[256];
@@ -2354,6 +2362,15 @@ static std::string readPendingEvFile() {
   }
   f.close();
   return out;
+}
+
+// Caller holds the Lock. The file is rewritten through a .tmp sibling and a rename
+// (writeBlobAtomicOn), so a reset can leave the .tmp beside the file (after the .tmp
+// was written) or alone (between the remove and the rename): the copy that holds more
+// rows wins (choosePendingContent), and no row is lost either way.
+static std::string pendingEvTmpPath() { return std::string(pendingEvPath()) + ".tmp"; }
+static std::string readPendingEvFile() {
+  return nimbus::orch::choosePendingContent(readSmallFile(pendingEvPath()), readSmallFile(pendingEvTmpPath()));
 }
 
 // Append one held event to the file. Caller holds the Lock. False when the store
@@ -2423,7 +2440,7 @@ void flushPendingEvents() {
   if (own) {
     Lock g;
     g_fs->remove(pendingEvPath());
-    g_fs->remove((std::string(pendingEvPath()) + ".tmp").c_str());
+    g_fs->remove(pendingEvTmpPath().c_str());
     s_pendingFileMaybe = false;
     s_pendingFlushOwned = false;
     s_heldThisBoot = 0;
@@ -2798,8 +2815,17 @@ std::string handleMcp(const std::string& jsonRpcRequest,
 }
 
 Stats stats() {
-  Lock g;
   Stats s;
+  s.sdPresent = effHaveSd();
+  s.sdMissingWithData = g_sdMissing;
+  s.flashFull = g_flashFull;
+  // The test console's STATUS runs on the main loop: while a tool holds the card lock
+  // it reports the engine counts as -1 (unknown) instead of waiting (loop_guard.h).
+  LoopLock g;
+  if (!g) {
+    s.vectorCount = s.scratchItems = s.episodicMsgs = s.maxVectors = -1;
+    return s;
+  }
   s.vectorCount = g_vec.size();
   s.scratchItems = (g_scratch.activeTask().empty() ? 0 : 1) +
                    g_scratch.count(Tier::Short) + g_scratch.count(Tier::Mid) +
@@ -2807,9 +2833,6 @@ Stats stats() {
   s.episodicMsgs = g_epiActive->messageCount();
   s.embedAvailable = embeddings::available();
   s.embedLocked = store::embedLocked();
-  s.sdPresent = effHaveSd();
-  s.sdMissingWithData = g_sdMissing;
-  s.flashFull = g_flashFull;
   s.maxVectors = g_vec.maxEntries();
   s.archivedCount = effHaveSd() ? g_archive.size() : 0;
   s.pending = (int)g_pending.size();

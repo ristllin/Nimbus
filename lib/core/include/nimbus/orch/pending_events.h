@@ -48,6 +48,14 @@ bool decodePendingEvent(const std::string& line, PendingEvent& out);
 PendingFile parsePendingFile(const std::string& content);
 std::string renderPendingFile(const PendingFile& f);
 
+// The device rewrites the file through a ".tmp" sibling and a rename, so a reset can
+// leave both copies (the .tmp complete and newer, or torn mid-write) or the .tmp alone.
+// Every rewrite appends one row to the previous content, so the copy that accounts for
+// more rows (kept plus dropped) is the newer complete one; a tie, or a .tmp that does
+// not end a line (torn), keeps the main file. Returns the content to use ("" when
+// neither exists).
+std::string choosePendingContent(const std::string& mainFile, const std::string& tmpFile);
+
 // Append one event and enforce the bounds; returns the new file content.
 std::string appendPendingEvent(const std::string& content, const PendingEvent& e);
 

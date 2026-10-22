@@ -23,6 +23,7 @@ from test_l66_loop_lock_stall import (
     lumi_signature_verdict,
     parse_loopguard,
     tool_round,
+    turn_done,
 )
 
 pytestmark = pytest.mark.host
@@ -126,3 +127,10 @@ def test_hold_line_shape_and_bars():
     m = HOLD_LINE_RE.search("12 3456 - memory: tool memory.scratchpad held the card lock for 15032 ms")
     assert m and m.group("tool") == STALL_TOOL and int(m.group("ms")) == 15032
     assert STALL_MS > 8000 + 2 * LONG_HOLD_MS  # past the watchdog, well past the hold bar
+
+
+def test_turn_done_reads_the_chat_page():
+    assert turn_done({"done": True, "reply": "x"})
+    assert turn_done({"gone": True})
+    assert not turn_done({"done": False, "pending": True})
+    assert not turn_done({})

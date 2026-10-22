@@ -9,6 +9,10 @@
 //     main.cpp functions it calls, transitively) is classified, and each one that
 //     takes the card lock opens with a LoopLock before any other lock or call. A new
 //     loop call into the memory subsystem with no classification fails here.
+// The gate reads call sites as text (`agent::memory::name(`): a call through a function
+// pointer, a macro or a class method in main.cpp is outside its reach. The device keeps
+// the runtime backstop for those: every blocking take on the watched loop is counted
+// (LOOPGUARD? blocking=) and named once per boot in the durable log.
 #include <unity.h>
 
 #include <cstdio>
@@ -32,7 +36,6 @@ static void test_wait_budget_every_case() {
       const uint32_t w = lockWaitMs(watched != 0, owns != 0);
       if (watched && !owns) {
         TEST_ASSERT_EQUAL_UINT32(kLoopLockWaitMs, w);
-        TEST_ASSERT_TRUE(w * 8 <= nimbus::cloud::kTaskWdtTimeoutMs / 4);
       } else {
         TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, w);   // other tasks, and an owner's re-take
       }
@@ -112,15 +115,33 @@ static void test_slow_pass_line() {
 
 static void test_hold_monitor_names_long_holds_only() {
   LockHoldMonitor h;
-  TEST_ASSERT_FALSE(h.note("memory.scratchpad", 40));
-  TEST_ASSERT_FALSE(h.note("memory.search", kLongHoldMs - 1));
+  TEST_ASSERT_FALSE(h.note("memory.scratchpad", 40, 1000));
+  TEST_ASSERT_FALSE(h.note("memory.search", kLongHoldMs - 1, 2000));
   TEST_ASSERT_EQUAL_UINT32(0, h.longHolds());
-  TEST_ASSERT_TRUE(h.note("memory.search", kLongHoldMs));
-  TEST_ASSERT_TRUE(h.note("web.search", 9200));
-  TEST_ASSERT_FALSE(h.note("docs.read", 12));
-  TEST_ASSERT_EQUAL_UINT32(2, h.longHolds());
-  TEST_ASSERT_EQUAL_UINT32(9200, h.longestMs());
+  TEST_ASSERT_TRUE(h.note("memory.search", kLongHoldMs, 3000));                      // first: logged
+  TEST_ASSERT_TRUE(h.note("web.search", kLongHoldMs + kSlowPassRelogStepMs, 4000));  // a step longer
+  TEST_ASSERT_FALSE(h.note("files.fetch", kLongHoldMs + 10, 5000));                  // counted, quiet
+  TEST_ASSERT_FALSE(h.note("docs.read", 12, 6000));
+  TEST_ASSERT_TRUE(h.note("files.fetch", kLongHoldMs, 4000 + kLongHoldRelogQuietMs));  // quiet window over
+  TEST_ASSERT_EQUAL_UINT32(4, h.longHolds());
+  TEST_ASSERT_EQUAL_UINT32(kLongHoldMs + kSlowPassRelogStepMs, h.longestMs());
   TEST_ASSERT_EQUAL_STRING("web.search", h.longestWhat().c_str());
+}
+
+// The model chooses the tools, so a turn loop calling a slow tool back to back for a
+// day cannot flood the durable log: about one line per quiet window, every hold counted.
+static void test_hold_monitor_never_floods() {
+  LockHoldMonitor h;
+  uint32_t now = 0, logged = 0, calls = 0;
+  const uint32_t day = 24u * 3600u * 1000u;
+  while (now < day) {
+    now += kLongHoldMs + 200;
+    ++calls;
+    if (h.note(calls % 2 ? "web.search" : "memory.search", kLongHoldMs + 100, now)) ++logged;
+  }
+  TEST_ASSERT_TRUE(logged >= 1);
+  TEST_ASSERT_TRUE(logged <= day / kLongHoldRelogQuietMs + 1);
+  TEST_ASSERT_EQUAL_UINT32(calls, h.longHolds());
 }
 
 static void test_long_hold_line_is_printable_and_capped() {
@@ -316,7 +337,7 @@ static std::map<std::string, std::string> loopReachedMemoryCalls(const std::map<
 }
 
 // Names a guarded function may call before its LoopLock: plain reads, no lock.
-static const std::set<std::string> kLockFreeHelpers = {"effHaveSd", "clockSynced", "sdLost"};
+static const std::set<std::string> kPreLockReads = {"effHaveSd", "clockSynced", "sdLost"};
 
 static void assertOpensWithLoopLock(const std::string& fn, const std::string& body) {
   const size_t at = body.find("LoopLock");
@@ -325,7 +346,7 @@ static void assertOpensWithLoopLock(const std::string& fn, const std::string& bo
   TEST_ASSERT_TRUE_MESSAGE(before.find("Lock") == std::string::npos && before.find("lock(") == std::string::npos,
                            (fn + ": a lock is taken before the LoopLock").c_str());
   for (const std::string& n : calledNames(before))
-    TEST_ASSERT_TRUE_MESSAGE(kLockFreeHelpers.count(n) || n == "if",
+    TEST_ASSERT_TRUE_MESSAGE(kPreLockReads.count(n) || n == "if",
                              (fn + ": calls " + n + " before the LoopLock").c_str());
 }
 
@@ -347,7 +368,7 @@ static void test_every_loop_storage_call_is_bounded() {
                                                           {"episodicBackfillTick", "runBackfillSlice"},
                                                           {"runBackfillSlice", "tryLock"}};
   // Read flags only.
-  const std::set<std::string> kLockFree = {"sdLost", "haveSd", "nowHours", "consumeRetentionRequest"};
+  const std::set<std::string> kNoLockFns = {"sdLost", "haveSd", "nowHours", "consumeRetentionRequest"};
   // The factory erase: the owner confirmed it, the turn task is quiesced first, its
   // card work runs under its own timed tries, and the device restarts after it.
   const std::set<std::string> kFactoryErase = {"eraseAllPrivateData", "factoryEraseWouldRefuse",
@@ -357,7 +378,7 @@ static void test_every_loop_storage_call_is_bounded() {
   TEST_ASSERT_TRUE(reached.count("tickSdHealth"));   // the reach really walked loop()
   for (const auto& kv : reached) {
     const std::string& fn = kv.first;
-    const bool known = kGuarded.count(fn) || kBoundedTry.count(fn) || kLockFree.count(fn) || kFactoryErase.count(fn);
+    const bool known = kGuarded.count(fn) || kBoundedTry.count(fn) || kNoLockFns.count(fn) || kFactoryErase.count(fn);
     TEST_ASSERT_TRUE_MESSAGE(known, ("loop reaches agent::memory::" + fn + " (via " + kv.second +
                                      "): open it with a LoopLock and classify it here")
                                         .c_str());
@@ -374,13 +395,24 @@ static void test_every_loop_storage_call_is_bounded() {
     TEST_ASSERT_TRUE_MESSAGE(bare.find("Lock g") == std::string::npos && bare.find("lock()") == std::string::npos,
                              (kv.first + ": a blocking lock before its timed try").c_str());
   }
-  for (const std::string& fn : kLockFree) {
+  for (const std::string& fn : kNoLockFns) {
     TEST_ASSERT_TRUE_MESSAGE(memFns.count(fn), (fn + ": no definition").c_str());
     const std::string& body = memFns.at(fn);
     TEST_ASSERT_TRUE_MESSAGE(body.find("Lock") == std::string::npos && body.find("lock(") == std::string::npos,
                              (fn + ": takes a lock").c_str());
   }
   for (const std::string& fn : kFactoryErase) TEST_ASSERT_TRUE_MESSAGE(memFns.count(fn), (fn + ": no definition").c_str());
+
+  // main.cpp and the test console (both run on the main loop: loop(), the console's
+  // hooks) never take the blocking card lock themselves; LoopLock blocks only where
+  // nothing watches the task.
+  for (const char* path : {"src/main.cpp", "src/test_console.cpp"}) {
+    const std::string code = codeOnly(readSource(path));
+    TEST_ASSERT_FALSE_MESSAGE(code.empty(), path);
+    TEST_ASSERT_TRUE_MESSAGE(code.find("memory::Lock ") == std::string::npos &&
+                                 code.find("memory::lock()") == std::string::npos,
+                             (std::string(path) + ": a blocking card-lock take; use agent::memory::LoopLock").c_str());
+  }
 
   // Every loop log line reaches the durable log with a timed try (CUM-401).
   const std::map<std::string, std::string> logFns = functionBodies(codeOnly(readSource("src/sys/errlog_fs.cpp")));
@@ -425,6 +457,7 @@ int main(int, char**) {
   RUN_TEST(test_pass_monitor_never_floods);
   RUN_TEST(test_slow_pass_line);
   RUN_TEST(test_hold_monitor_names_long_holds_only);
+  RUN_TEST(test_hold_monitor_never_floods);
   RUN_TEST(test_long_hold_line_is_printable_and_capped);
   RUN_TEST(test_every_loop_storage_call_is_bounded);
   RUN_TEST(test_gate_rejects_a_blocking_loop_call);

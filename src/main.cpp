@@ -4098,7 +4098,8 @@ void setup() {
       const uint32_t t0 = millis();
       std::vector<nimbus::orch::EpisodicMessage> rows;
       {
-        agent::memory::Lock lk;
+        agent::memory::LoopLock lk;   // the console runs on the main loop (loop_guard.h)
+        if (!lk) return String("EPIQ busy: a tool holds the card lock, try again");
         rows = agent::memory::episodic().query(q, &qi);
       }
       String out = String("EPIQ rows=") + rows.size() + " ms=" + (millis() - t0) +

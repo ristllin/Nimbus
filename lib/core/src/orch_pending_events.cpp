@@ -111,6 +111,15 @@ std::string appendPendingEvent(const std::string& content, const PendingEvent& e
   return out;
 }
 
+std::string choosePendingContent(const std::string& mainFile, const std::string& tmpFile) {
+  if (tmpFile.empty()) return mainFile;
+  if (mainFile.empty()) return tmpFile;
+  if (tmpFile.back() != '\n') return mainFile;   // torn mid-line: every line ends with '\n'
+  const PendingFile m = parsePendingFile(mainFile);
+  const PendingFile t = parsePendingFile(tmpFile);
+  return t.rows.size() + t.dropped > m.rows.size() + m.dropped ? tmpFile : mainFile;
+}
+
 std::string stampedPendingText(const PendingEvent& e, bool thisBoot) {
   if (thisBoot) return e.text + " [pre-sync, stamped at first clock sync]";
   const std::string from = e.bootNo ? "boot n=" + std::to_string(e.bootNo) : std::string("an earlier boot");
