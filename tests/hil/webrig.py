@@ -166,4 +166,4 @@ class LogFollower:
         self._stop.set()
         self._t.join(timeout=10)
         time.sleep(1.0)
-        self._read()   # the turn's last lines
+        self._read()  # the turn's last lines

@@ -381,9 +381,7 @@ def test_drain_waits_below_the_admission_gate(device: Device, lan, funded_embedd
     # lifted free memory over the gate and the drain was rightly admitted.
     _wait_idle(lan)
     free = int(dev.cmd_re("FAULT sram_ballast 0", r"intFree=(\d+)", timeout=8.0).group(1))
-    held = dev.cmd_re(
-        f"FAULT sram_ballast {max(free - BALLAST_FREE_B, 0)}", r"held=(\d+) intFree=(\d+)", timeout=8.0
-    )
+    held = dev.cmd_re(f"FAULT sram_ballast {max(free - BALLAST_FREE_B, 0)}", r"held=(\d+) intFree=(\d+)", timeout=8.0)
     try:
         if int(held.group(2)) >= GATE_FREE_B:
             pytest.fail(f"the ballast could not take free memory under {GATE_FREE_B} B: {held.group(0)}")

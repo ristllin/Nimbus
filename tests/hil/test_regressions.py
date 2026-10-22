@@ -137,7 +137,7 @@ def test_R_F16_web_race(device, net, secrets, require_secret):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
 
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
-    bright = tunable_param(st0)   # RingBrightness, or a numeric param on a board with no ring
+    bright = tunable_param(st0)  # RingBrightness, or a numeric param on a board with no ring
     pkey, name = bright["key"], bright["name"]
     lo, hi, step = int(bright["min"]), int(bright["max"]), max(1, int(bright["step"]))
     legal = list(range(lo, hi + 1, step))[:40]

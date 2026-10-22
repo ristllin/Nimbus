@@ -206,7 +206,7 @@ def test_live_spill_overflows_fresh_ring(board):
         "(6) about mountains [RT-6], (7) about rivers [RT-7]. Do not answer them "
         "yourself - delegate all seven."
     )
-    reply = chat_turn(_S, ip, prompt, timeout_s=240)   # the head turn's own answer
+    reply = chat_turn(_S, ip, prompt, timeout_s=240)  # the head turn's own answer
     assert reply, "the fan-out turn gave no reply"
     # Let the fan-out complete (7 cloud sub-agents + synthesis): no job left running.
     deadline = time.time() + 240

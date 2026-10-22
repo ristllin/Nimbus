@@ -48,7 +48,7 @@ CREDIT_400 = (
 )
 
 _S = None
-CUT_CAP = 128   # leg 1's first-attempt cap (output tokens)
+CUT_CAP = 128  # leg 1's first-attempt cap (output tokens)
 
 
 def _serial_lines(device, window_s: float) -> list:
@@ -77,7 +77,7 @@ def _turn(device, ip: str, text: str, timeout_s: int = 150):
         j = _S.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json()
         assert not j.get("gone"), f"turn {turn} is gone before it was answered"
         if j.get("done"):
-            lines += _serial_lines(device, 3.0)   # the turn's last lines, still in the buffer
+            lines += _serial_lines(device, 3.0)  # the turn's last lines, still in the buffer
             return str(j.get("reply") or ""), "\n".join(lines)
     pytest.fail(f"turn {turn} was not answered within {timeout_s}s: {text[:60]}")
 

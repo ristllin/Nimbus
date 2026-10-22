@@ -23,30 +23,37 @@ pytestmark = pytest.mark.host
 HIL = pathlib.Path(__file__).parent
 
 
+def _chat_url_names(src: str, fn: ast.AST) -> set:
+    """Names bound to a /api/chat URL inside one function."""
+    names = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and "/api/chat" in (ast.get_source_segment(src, node.value) or ""):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    return names
+
+
+def _is_legacy_chat_get(src: str, node: ast.AST, chat_names: set) -> bool:
+    """A .get/.get_json call on a /api/chat URL with no turn id or watch flag."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr not in ("get", "get_json") or not node.args:
+        return False
+    first = node.args[0]
+    names_chat = isinstance(first, ast.Name) and first.id in chat_names
+    if not names_chat and "/api/chat" not in (ast.get_source_segment(src, first) or ""):
+        return False
+    seg = ast.get_source_segment(src, node) or ""
+    return "turn" not in seg and "watch" not in seg
+
+
 def _chat_gets_without_turn(path: pathlib.Path) -> list:
     """Lines of `path` that GET /api/chat with no turn id or watch flag in the call."""
     src = path.read_text(encoding="utf-8")
-    tree = ast.parse(src)
     bad = []
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        chat_names = set()
-        for node in ast.walk(fn):  # names bound to a /api/chat URL inside this function
-            if isinstance(node, ast.Assign) and "/api/chat" in ast.get_source_segment(src, node.value or node):
-                chat_names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
-        for node in ast.walk(fn):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-                continue
-            if node.func.attr not in ("get", "get_json") or not node.args:
-                continue
-            seg = ast.get_source_segment(src, node) or ""
-            first = node.args[0]
-            names_chat = isinstance(first, ast.Name) and first.id in chat_names
-            if ("/api/chat" in ast.get_source_segment(src, first) or names_chat) and not (
-                "turn" in seg or "watch" in seg
-            ):
-                bad.append(f"{path.name}:{node.lineno}")
+    for fn in ast.walk(ast.parse(src)):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = _chat_url_names(src, fn)
+            bad += [f"{path.name}:{n.lineno}" for n in ast.walk(fn) if _is_legacy_chat_get(src, n, names)]
     return bad
 
 

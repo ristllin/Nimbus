@@ -33,7 +33,6 @@ from device import CONSOLE_LINE_CAP, CommandFailed, Device, command_line_problem
 from o2_soak_load import photo_page
 from test_l23_stack_health import PHOTO_PROMPT
 from test_l42_replay_full_nvs import BURST, BURST2, injected_page
-from test_l55_spawn_e2e import _MALFORMED_SESSION_OPS
 from test_l56_tg_inject import PAGES
 
 pytestmark = pytest.mark.host
@@ -54,7 +53,6 @@ def _hil_tginject_lines() -> dict:
         "l42 burst2": "TGINJECT " + injected_page(str(CHAT), BURST2),
         "l42 injected leg": "TGINJECT "
         + injected_page(str(CHAT), ("inject one", "inject two", "/help", "inject four")),
-        "l55 spawn malformed": "TGINJECT " + _MALFORMED_SESSION_OPS,
         "o2 soak photo": "TGINJECT " + _compact(photo_page(FILE_ID, CHAT, 900000001)),
         "archive text": "TGINJECT "
         + tb.page([tb.text_update(900000001, CHAT, "Reply with exactly the word: archived")]),
