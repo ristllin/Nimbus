@@ -93,14 +93,12 @@ replies.
 
 Strong at conversation and reasoning.
 
-1. **Create an account.** Go to
-   [console.anthropic.com](https://console.anthropic.com/) and sign up. This opens
-   the Claude Console (its address may show as `platform.claude.com`; that is the
-   same place).
+1. **Create an account.** Go to the Claude Console at
+   [platform.claude.com](https://platform.claude.com/) and sign up.
 2. **Billing (required).** There is no free tier, so add money first. Open
    **Billing** (or **Plans & billing**) and buy a small amount of credit.
 3. **Create the key.** Open **Settings**, then
-   [API keys](https://console.anthropic.com/settings/keys). Click **Create Key**,
+   [API keys](https://platform.claude.com/settings/keys). Click **Create Key**,
    name it `nimbus`, and create it.
 4. **Copy it now.** Copy the key and paste it into your notes app on the device you
    will set up from. You see the full key only once.

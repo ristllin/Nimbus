@@ -25,6 +25,17 @@ Provider failures, spend and long reports:
 - **A cut answer gets more room.** When a long tool call late in a turn is cut, the one retry now always has more room than the first attempt, so it is not cut twice and handed to another provider.
 - **A request the device could not send is not blamed on the provider.** It is resent once only after memory recovers, never switched to another provider, and the reply says the device was short of memory.
 
+PDFs, connectors and the web page:
+
+- **PDFs on every key you have.** The assistant makes a PDF through OpenAI's sandbox when you have your own OpenAI key and Code sandbox is on, otherwise through Anthropic's sandbox with your own Anthropic key, otherwise with the device's own PDF writer (text and tables). With an SD card the file is kept under Files and sent to you on Telegram. The Code sandbox switch shows which route is ready right now.
+- **One switch for the code sandbox.** A Code Interpreter connector card could hide OpenAI's sandbox from every PDF request. Code sandbox under Tools is now the only control; a card from an older version moves into it once. The prompt, the switch's status line and the routing of a file task all follow one rule, so the assistant never says "not possible" and "available" in the same breath.
+- **Mistral connectors tell the truth.** A confirmed connector stays confirmed across a restart. While one is not confirmed, the device checks again every 30 minutes, the card says why the last check did not finish, and Check Now runs the check alone. A connector your Mistral workspace does not offer is no longer sent to Mistral, and the card fills in Mistral's own connector id.
+- **Sign-in and key minting work from the web page again.** The MCP sign-in buttons and the Cloud access key mint were answered by the wrong handler; they now reach their own.
+- **The web page.** Switches under Tool use save the moment you flip them and are no longer reset by the page's refresh; the Primary provider saves on change; a card you have not saved keeps your edits when another card saves; the "?" next to each setting opens its own help; a slow voice list can no longer overwrite the voice you just picked; Mistral's console is called Mistral Studio everywhere.
+- **New on the web page.** A banner on Home when the settings storage is almost full, and a Health row that says how full it is and which saves failed; a turn that switched providers names each one under its reply; the chat says when older history is still being indexed and can load older messages; and a Telegram archive view under Memory to browse by chat and day, open an item and export a day as a ZIP.
+- **Lighter page loads through the cloud.** The page and its script now load as two smaller responses, so the page fits the cloud link with room to grow.
+
+
 ## v4.5.16 - No more restarts every few hours
 
 A fix release for a restart found on a desk device and reproduced on a bench device before the fix.

@@ -101,8 +101,11 @@ connector is not listed yet. That check needs no click from you:
 
 - **Listed and active:** usable. The assistant is told it can use it, and the
   Connectors tab shows where it runs.
-- **Not listed, or listed as inactive:** not usable; the Connectors tab shows
-  **connect it in Mistral**.
+- **Not listed, or listed as inactive:** not usable, and it is no longer sent to
+  Mistral at all (Mistral ignores a connector its workspace does not offer, so a
+  sub-agent would answer without it). The Connectors tab shows **connect it in
+  Mistral** with a line that says the workspace does not offer it yet, and a
+  **Check Now** button for after you connect it in Mistral Studio.
 - **Being checked** (right after a save or a restart, including a re-check of a
   connector Mistral did not list before): the card shows **checking your Mistral
   workspace** and updates by itself when the check lands. Only the status
@@ -110,8 +113,23 @@ connector is not listed yet. That check needs no click from you:
   card stays as it is. The check also steps aside for the assistant: if you send
   a message while it runs, it stops and tries again two minutes later.
 - **Not checked** (no Mistral key yet, or the check could not run): the card
-  shows **Mistral workspace not checked**, and the assistant is told the
-  workspace has not been checked rather than sent to Mistral for nothing.
+  shows **Mistral workspace not checked**, says why the last check did not
+  finish (the device was low on memory, the assistant was busy, the connection
+  was busy, or Mistral did not answer) and when the next automatic check runs,
+  with a **Check Now** button that runs the check alone, without a full Verify.
+  The connector still rides Mistral sub-agents, and the assistant is told it is
+  **unconfirmed**: it may try it through a Mistral sub-agent, and if the result
+  says the connector was not called, it tells you it is not connected yet.
+
+The last good answer is kept on the device (a small file in internal storage,
+tied to the Mistral key it was learned with, never the key itself), so a restart
+or a check that cannot finish never drops a confirmed connector back to "not
+checked". While a Studio connector is unconfirmed, the device checks again every
+30 minutes on its own. With more than two Mistral connectors and built-ins on at
+once, the Connectors tab warns that Mistral answers slowly: each one rides the same
+Mistral call, which the device stops waiting for after about a minute. When you
+pick Mistral on a card, the connector-id field fills in Mistral's own name for it
+(Google Calendar is `google_calendar`, GitHub `github_app`).
 
 Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
 can read false for connectors that work. So a listed connector is used, and the
@@ -260,11 +278,38 @@ them on here (provider = Mistral). They attach as `{type:"<name>"}` to the
 Orchestrator's own single-shot Mistral turns.
 
 - **web_search** - hosted web search with citations.
-- **code_interpreter** - sandboxed Python execution (also available on OpenAI
-  with no setup; the OpenAI sandbox can produce PDF and CSV files, the Mistral
-  one images and text only).
 - **image_generation** - hosted image generation.
-- **document_library** - RAG over your Studio document library.
+- **document_library** - RAG over the Libraries you make in Mistral Studio.
+
+Hosted Python (**code_interpreter**) is not a card here: the **Code sandbox**
+switch under Assistant > Tools > Tool use is its one control, for OpenAI and
+Mistral together. A Code Interpreter card saved by an older version is moved into
+that switch once, on the first start after the update (an enabled card turns the
+switch on). See [Make a PDF and get it on Telegram](#pdf).
+
+## Make a PDF and get it on Telegram {#pdf}
+
+The assistant can hand you a PDF (or another generated file) as a Telegram
+document. It picks the first route your device has:
+
+1. **OpenAI's sandbox** - with your own OpenAI API key and **Code sandbox** on
+   (Assistant > Tools > Tool use). An OpenAI sub-agent writes the file in Python;
+   it can hold charts and images.
+2. **Anthropic's sandbox** - with your own Anthropic API key. An Anthropic
+   sub-agent saves the file in its sandbox and the device collects it.
+3. **The device's own PDF writer** - with no OpenAI or Anthropic key. The device
+   writes the PDF itself: headings, text and simple tables, no charts or images.
+
+Every route needs an SD card: the file is kept under **Files** (Memory) and sent
+from there. The Code sandbox switch shows which route is ready right now (for
+example "Ready. PDFs go through OpenAI." or "Insert an SD card to keep files.").
+A Cumulo Nimbus key on its own cannot bring a sub-agent's file back, and
+Mistral's sandbox cannot make PDF or CSV files (images and text only).
+
+To try it, ask on Telegram: "Make a one-page PDF about X and send it here." The
+assistant's reply names the saved file; if Telegram cannot take the document, the
+file stays under Files. A Virtual Nimbus cannot collect a sub-agent's file yet, so
+it shows no Code sandbox switch and says plainly that a PDF is not possible.
 
 ## Mistral Studio connectors {#mistral-studio}
 

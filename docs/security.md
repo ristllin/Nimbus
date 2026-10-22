@@ -18,9 +18,11 @@ server - findings are weighted by real reachability.
   NVS, no setter). `net::webAuthOk()` checks `X-Nimbus-Token` (header or form field,
   never a `?t=` query param) in constant time and fails closed. Gates **every** route, reads included - `GET /api/state`,
   `/api/log`, `/api/connect`, `/api/sdprobe` and the LAN `POST /mcp` among them. The
-  only two ungated responses are the ones the gate itself needs: `GET /` (the static
+  only ungated responses are the ones the gate itself needs: `GET /` (the static
   shell, which carries no device data - every value is a placeholder filled in later by
-  a gated fetch) and `GET /logo.svg` (the gate's own artwork). Two deliberate bootstrap
+  a gated fetch), `GET /app.js` (that shell's script, served as its own response so
+  each fits the cloud link's buffer; static, from flash, no device data) and
+  `GET /logo.svg` (the gate's own artwork). Two deliberate bootstrap
   exceptions exist, both **unprovisioned-only**: `/savewifi` (first provision), and the
   AP-interface token handout on `GET /` + the captive-portal catch-all, which `302`s to
   `/?t=<token>` for a peer on the setup AP while no `staSsid` is saved (detailed under
@@ -185,8 +187,9 @@ gets the same care as the rest of `/mem`:
   bot token in use, so a key pasted into a chat lands on the card as `[redacted]`.
   Media files are stored as received. File downloads use the token in the request
   only.
-- **Owner token on every route.** `GET /api/tg/archive`, `GET /api/tg/archive/item`
-  and `POST /api/tg/archive/import` need the device sign-in token. Chat, day and file
+- **Owner token on every route.** `GET /api/tg/archive`, `GET /api/tg/archive/item`,
+  `GET /api/tg/archive/zip` and `POST /api/tg/archive/import` need the device
+  sign-in token. Chat, day and file
   names are validated against a strict pattern before any path is built, so a request
   cannot leave `/mem/tg`. Files are served as downloads unless they are bitmaps or
   plain text, with `nosniff` and a sandboxing content security policy, the same rule
