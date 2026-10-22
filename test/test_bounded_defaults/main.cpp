@@ -37,7 +37,7 @@ static void test_storm_breakers_are_on_by_default() {
   TEST_ASSERT_EQUAL_UINT32(12, kOwnerReserveTurns);
   TEST_ASSERT_EQUAL_UINT32(120, kRepeatWindowS);
   // A fresh record (the first power-on), nothing configured: the ceiling holds.
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
   TgGuard g(rtc);
   g.boot(BootKind::PowerOn, 0x1234u);
   const uint32_t t0 = 1792400000u;
