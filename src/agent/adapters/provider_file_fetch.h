@@ -13,6 +13,10 @@
 //             filename} (fileId here = "<container_id>/<file_id>"); download
 //             GET /v1/containers/<cid>/files/<fid>/content. Full file output
 //             INCLUDING PDF - the PDF path.
+//   anthropic - a managed-agent sub saves files under /mnt/session/outputs/;
+//             antPoll lists them (GET /v1/files?scope_id=<session>) and this
+//             downloads GET /v1/files/<id>/content (verified live 2026-10-22: a
+//             PDF, raw bytes, 200). The PDF path on an Anthropic key (OA-107).
 // The JobEngine hands the reference here on the terminal poll. This module
 // STREAMS the bytes straight to the SD artifact store (Content-Length-verified
 // - a truncated download is refused, never registered) and registers them, so

@@ -126,12 +126,13 @@ int httpsGetToSink(const char* host, const std::string& path, const std::string&
   }
   if (!connected) return 0;
 
-  // Anthropic authenticates the Files API with x-api-key + version + the files
-  // beta header, not a Bearer token.
+  // Anthropic authenticates the Files API with x-api-key + version, not a Bearer
+  // token; a managed-agent session's output files download with the Files and the
+  // Managed Agents beta together (verified live 2026-10-22).
   String auth = anthropicAuth
                     ? (String("x-api-key: ") + key.c_str() +
                        "\r\nanthropic-version: 2023-06-01"
-                       "\r\nanthropic-beta: files-api-2025-04-14\r\n")
+                       "\r\nanthropic-beta: files-api-2025-04-14,managed-agents-2026-04-01\r\n")
                     : (String("Authorization: Bearer ") + key.c_str() + "\r\n");
   String req = String("GET ") + path.c_str() + " HTTP/1.0\r\n" +
                "Host: " + host + "\r\n" + auth +
@@ -221,7 +222,8 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
     path = "/v1/containers/" + cid + "/files/" + fid + "/content";
     key = std::string(store::openaiKey().c_str());
   } else if (backend == "anthropic") {
-    // Anthropic Files API: GET /v1/files/<id>/content (x-api-key + files beta).
+    // Anthropic Files API: GET /v1/files/<id>/content. The id is a managed-agent
+    // sub's output file, listed by antPoll from GET /v1/files?scope_id=<session>.
     if (!safeFileId(fileId)) return "[file FAILED: bad file id from provider]";
     host = kAnthropicHost;
     path = "/v1/files/" + fileId + "/content";

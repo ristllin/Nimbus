@@ -629,6 +629,11 @@ static void test_sub_unsafe_model_name_falls_back() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-4-6=ag_1;", d.antAgents.c_str());
 }
 
+// A finished session's output listing (GET /v1/files?scope_id=<session>): empty,
+// so the job ends with its reply and no file (the poll lists outputs once idle).
+static const harness_test::Exchange kAntNoOutputs{"api.anthropic.com", "/v1/files?scope_id=sess_1",
+                                                  200, "{\"data\":[]}"};
+
 // ---- CUM-514: a sub-agent's saved report starts at the report ----------------
 // Bench (nimbus-light, T08): the Sweden workstream's saved file began "I'll start
 // with Boverket's own pages on the current rules and any transition from BBR.The
@@ -660,6 +665,7 @@ static void test_cum514_artifact_drops_the_narration() {
       antMsg("Those pages are mostly navigation. curl works. I'll write a helper.") + "," +
       antMsg(kSwedenReport) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  d.http.script.push_back(kAntNoOutputs);
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -681,6 +687,7 @@ static void test_cum514_artifact_keeps_what_follows_the_report() {
       "{\"data\":[" + antMsg("Checking the sources first.") + "," + antMsg(kSwedenReport) + "," +
       antMsg("Saved as sweden-rules.md.") + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  d.http.script.push_back(kAntNoOutputs);
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -694,6 +701,7 @@ static void test_cum514_artifact_keeps_what_follows_the_report() {
       "{\"data\":[{\"type\":\"agent.message\",\"content\":["
       "{\"type\":\"text\",\"text\":\"curl 8.22.0\"},{\"type\":\"text\",\"text\":\", dated Sep 2\"}]},"
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  one.http.script.push_back(kAntNoOutputs);
   auto opd = one.contract();
   agent::ResultEnvelope oenv{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(opd, "anthropic:sess_1", oenv));
@@ -711,6 +719,7 @@ static void test_cum514_artifact_keeps_a_long_earlier_section() {
       "{\"data\":[" + antMsg("Let me check the sources.") + "," + antMsg(sectionA) + "," +
       antMsg("Fetching one more page.") + "," + antMsg(sectionB) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  d.http.script.push_back(kAntNoOutputs);
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -728,6 +737,7 @@ static void test_cum514_short_report_still_drops_notes() {
                                "which version applies to a three-storey house.") + "," +
       antMsg(report) + "," +
       "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  d.http.script.push_back(kAntNoOutputs);
   auto pd = d.contract();
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
@@ -752,6 +762,7 @@ static void test_sub_poll_states() {
         "{\"data\":[{\"type\":\"agent.message\",\"content\":["
         "{\"type\":\"text\",\"text\":\"part1 \"},{\"type\":\"text\",\"text\":\"part2\"}]},"
         "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+    d.http.script.push_back(kAntNoOutputs);
     auto pd = d.contract();
     agent::ResultEnvelope env{};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,

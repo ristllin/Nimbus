@@ -38,6 +38,7 @@ const ToolTaintRow kRows[] = {
     {"files.append", T::Internal, E::FileWrite},   // G1a: writes rows, echoes only the count
     {"files.fetch", T::External, E::FileWrite},
     {"files.list", T::Internal, E::Read},
+    {"files.pdf", T::Internal, E::FileWrite},      // the device PDF writer (src/agent/pdf_tool.cpp)
     {"files.read", T::External, E::Read},
     {"files.search", T::External, E::Read},
     {"files.send", T::Internal, E::Send},

@@ -9,6 +9,7 @@
 #include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts, cache points
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - the fold trigger scale
+#include "nimbus/orch/connectors_wire.h"  // isFileSkill - the outputs hint on file tasks
 #include "nimbus/orch/compact.h"      // modelCtxTokens, ORCH_COMPACT_PROMPT (the fold round)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
@@ -48,13 +49,27 @@ using wire::s;
 // HTTPS exchange with api.anthropic.com carrying the Managed-Agents beta headers
 // (the pre-split antRequest sent the beta header on EVERY anthropic request,
 // head turns included - preserved).
+static const char* kBetaManagedAgents = "managed-agents-2026-04-01";
+// A session's output files are listed with BOTH the Files API and the Managed
+// Agents beta (the latter is what makes `scope_id` a known filter).
+static const char* kBetaSessionFiles = "files-api-2025-04-14,managed-agents-2026-04-01";
+// Where a managed-agent sub saves the files it builds for the owner, the line a
+// file task carries, and how many polls a done session may wait for a named file
+// to be listed (see antListOutputs).
+static const char kAntOutputsDir[] = "/mnt/session/outputs/";
+static const char kAntOutputsHint[] =
+    "\n\nSave each file you make for the owner under /mnt/session/outputs/ and name its "
+    "path in your final message.";
+static const int kAntOutputPolls = 2;
+
 static int antRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                       std::string body, JsonDocument& doc, const JsonDocument& filter,
-                      uint32_t timeoutMs = kHeadRoundCeilingMs) {
+                      uint32_t timeoutMs = kHeadRoundCeilingMs,
+                      const char* beta = kBetaManagedAgents) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"x-api-key", pd.key ? pd.key("anthropic") : std::string()},
       {"anthropic-version", kAnthropicVer},
-      {"anthropic-beta", "managed-agents-2026-04-01"},
+      {"anthropic-beta", beta},
       {"Content-Type", "application/json"},
   };
   // Cumulo head: reroute through /router/anthropic with the cumulo key (no-op on
@@ -386,7 +401,11 @@ FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
   // went out may have started the paid run.
   JsonDocument turnDoc;
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-  const int code = sendTurn(pd, session.id.c_str(), d.instruction, turnDoc);
+  // OA-107: a file task is told where the device collects files from (antPoll
+  // lists the session's /mnt/session/outputs/ files and the device downloads them).
+  std::string task = d.instruction ? d.instruction : "";
+  if (nimbus::orch::isFileSkill(d.skill ? d.skill : "")) task += kAntOutputsHint;
+  const int code = sendTurn(pd, session.id.c_str(), task.c_str(), turnDoc);
   if (code <= 0) {
     logCallFail("send turn", code, turnDoc);
     return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
@@ -516,6 +535,92 @@ static void antCountRuns(JsonArrayConst events, ResultEnvelope& env) {
   }
 }
 
+// ---- session output files (OA-107, L19-37) ----------------------------------
+// A managed-agent sub builds a file (a PDF, a chart, a CSV) in its sandbox and
+// saves it under /mnt/session/outputs/; the Files API keeps every such file,
+// scoped to the session (GET /v1/files?scope_id=<session>, verified live
+// 2026-10-22 on claude-haiku-5-5: a 1,550 B PDF listed and downloaded). When the
+// session is done, antPoll lists them into artifacts[] and the device's
+// "anthropic" capture backend (provider_file_fetch) streams each one to the file
+// store. The listing lags the idle event by a second or two (measured: empty on
+// the first call, listed 2 s later), so a session whose final message names an
+// outputs path but lists nothing yet stays Running for up to kAntOutputPolls more
+// polls instead of finishing with its file left behind.
+
+// Whether the last agent.message names a path under /mnt/session/outputs/.
+static bool antNamesOutputs(JsonArrayConst events) {
+  JsonObjectConst last;
+  for (JsonObjectConst ev : events)
+    if (!strcmp(ev["type"] | "", "agent.message")) last = ev;
+  if (last.isNull()) return false;
+  for (JsonObjectConst c : last["content"].as<JsonArrayConst>())
+    if (strstr(c["text"] | "", kAntOutputsDir)) return true;
+  return false;
+}
+
+// The session's output files into env.artifacts[] (the capture cap, then an
+// honest note for any past it, added to `tail`: the reply's one tail channel). Returns the files listed, kAntListFailed when the
+// listing could not be read (a poll later tries again), or kAntListSkipped for a
+// session that ran on the router (its files belong to the router account and are
+// never this device's to fetch).
+static const int kAntListFailed = -1;
+static const int kAntListSkipped = -2;
+static int antListOutputs(const ProviderDeps& pd, const char* sid, ResultEnvelope& env, std::string& tail) {
+  if (pd.routerBase && !pd.routerBase().empty()) return kAntListSkipped;
+  JsonDocument filter;
+  JsonObject fi = filter["data"].add<JsonObject>();
+  fi["id"] = true;
+  fi["filename"] = true;
+  fi["downloadable"] = true;
+  keepErrorEnvelope(filter);
+  JsonDocument doc;
+  const int code = antRequest(pd, "GET", std::string("/v1/files?scope_id=") + sid, "", doc,
+                              filter, kHeadRoundCeilingMs, kBetaSessionFiles);
+  if (code != 200) {
+    if (code > 0) logCallFail("list output files", code, doc);
+    return kAntListFailed;
+  }
+  int listed = 0, dropped = 0;
+  for (JsonObjectConst f : doc["data"].as<JsonArrayConst>()) {
+    const char* id = f["id"] | "";
+    if (!id[0] || !(f["downloadable"] | true)) continue;
+    listed++;
+    if (env.artifactCount >= nimbus::orch::kMaxArtifacts) { dropped++; continue; }
+    nimbus::orch::Artifact& a = env.artifacts[env.artifactCount++];
+    strncpy(a.type, "file", sizeof(a.type) - 1);
+    strncpy(a.url, id, sizeof(a.url) - 1);
+    strncpy(a.label, f["filename"] | "", sizeof(a.label) - 1);
+  }
+  if (dropped > 0)
+    tail += "\n[note: the run produced " + std::to_string(dropped) + " more file(s) beyond the " +
+            std::to_string(nimbus::orch::kMaxArtifacts) + "-file capture limit - they were NOT captured]";
+  hlog::logf("anthropic: session %s output files %d", sid, listed);
+  return listed;
+}
+
+// Polls a done session spent waiting for its named outputs to be listed, keyed by
+// session (RAM, a few slots: sub-agents are polled one at a time on one task).
+struct AntOutputWait { char sid[64]; int polls; };
+static AntOutputWait s_antWait[4];
+static int antOutputWaitBump(const char* sid) {
+  AntOutputWait* slot = &s_antWait[0];
+  for (AntOutputWait& w : s_antWait) {
+    if (!strncmp(w.sid, sid, sizeof(w.sid) - 1)) { slot = &w; break; }
+    if (w.polls < slot->polls) slot = &w;   // else reuse the least-used slot
+  }
+  if (strncmp(slot->sid, sid, sizeof(slot->sid) - 1)) {
+    strncpy(slot->sid, sid, sizeof(slot->sid) - 1);
+    slot->sid[sizeof(slot->sid) - 1] = 0;
+    slot->polls = 0;
+  }
+  return ++slot->polls;
+}
+// The session finished: its slot is free again (a later run starts from zero).
+static void antOutputWaitDone(const char* sid) {
+  for (AntOutputWait& w : s_antWait)
+    if (!strncmp(w.sid, sid, sizeof(w.sid) - 1)) { w.sid[0] = 0; w.polls = 0; }
+}
+
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {
   const char* colon = strchr(jobId, ':');
   if (!colon) return FabricErr::BadRequest;
@@ -555,18 +660,28 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
       strncpy(env.error, ev["error"]["message"] | "agent error", sizeof(env.error) - 1);
     }
   }
+  // OA-107 / L19-37 capture: a finished run lists its output files into artifacts[]
+  // first. A listing that failed, or a named file not listed yet (the listing lags
+  // the idle event): poll again, a bounded number of times, before finishing.
+  std::string tail;   // notes that must reach the head whole (the reply's tail channel)
+  if (done && !errored) {
+    const int listed = antListOutputs(pd, sid, env, tail);
+    const bool unsure = listed == kAntListFailed ||
+                        (listed == 0 && antNamesOutputs(doc["data"].as<JsonArrayConst>()));
+    if (unsure && antOutputWaitBump(sid) <= kAntOutputPolls) done = false;
+    else antOutputWaitDone(sid);
+  }
   // L19-37: a finished run whose deliverable stayed in its sandbox (no file was
   // captured into artifacts[]) says so, so its summary is never taken as the report.
-  std::string sandboxNote;
   if (done && !errored && env.artifactCount == 0) {
     const std::string path = antSandboxOutput(doc["data"].as<JsonArrayConst>());
     if (!path.empty()) {
-      sandboxNote = "\n[report left in the sandbox, not retrieved: " + path +
-                    " - this reply is the agent's summary, not the report]";
+      tail += "\n[report left in the sandbox, not retrieved: " + path +
+              " - this reply is the agent's summary, not the report]";
       hlog::logf("anthropic: %s left its report in the sandbox (%s), not retrieved", sid, path.c_str());
     }
   }
-  antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply), sandboxNote);
+  antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply), tail);
   antCountRuns(doc["data"].as<JsonArrayConst>(), env);
 
   if (errored)    env.state = JobState::Error;
