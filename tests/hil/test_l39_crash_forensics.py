@@ -25,7 +25,9 @@ and ``/api/state``; the two destructive legs carry only ``destructive``, so ``-m
 * a plain reboot after it: ``new=0 this-reset=0`` (stale, one line);
 * seq 0 exists in every boot (no pre-mount hole);
 * a host USB-CDC reset reads ``reason=usb(0x15)`` (it read ``unknown`` before);
-* offline boots keep their timeline rows (pre-sync events survive resets);
+* offline boots keep their timeline rows (pre-sync events survive resets): every earlier
+  offline boot's row says "from boot n=<k>, clock never synced", and the boot that
+  syncs labels its own row "[pre-sync, stamped at first clock sync]";
 * live: a panic at the transport write during a real turn proves the dump fits 64 KB
   with tg_poll deep in a TLS exchange and names the transport frame (the panic lands
   before any request byte is sent, so the provider bills nothing);
@@ -257,6 +259,58 @@ def poll_until(fetch, done, budget_s: float, interval_s: float = 5.0, clock=time
         sleep(interval_s)
 
 
+# The active durable log file and the one rotated before it (src/sys/errlog.h).
+ACTIVE_LOG = "nimbus.log"
+PREVIOUS_LOG = "nimbus.log.1"
+# A busy answer (503: internal memory short, e.g. right after a crash boot while the
+# TLS sessions come up) is the device protecting itself, not an empty log: retried.
+ERRLOG_BUSY_BUDGET_S = 45.0
+ERRLOG_RETRY_S = 3.0
+
+
+def starts_mid_boot(text: str) -> bool:
+    """True when a log file does not begin with a boot record: it rotated inside a
+    boot, so that boot's record (and its crash lines) sit in the previous file."""
+    lines = parse_log(text)
+    return not lines or not lines[0]["msg"].startswith("boot: ")
+
+
+def stitch_rotated(previous: str, active: str) -> str:
+    """The durable log as one text: the active file alone when it starts with a boot
+    record, else the previous rotated file first (the boot the rotation split)."""
+    if not starts_mid_boot(active) or not previous:
+        return active
+    return (previous if previous.endswith("\n") else previous + "\n") + active
+
+
+# Pre-sync timeline rows (nimbus/orch/pending_events.h stampedPendingText): a row from
+# an earlier boot names that boot; the boot that syncs keeps the plain suffix on its own.
+NEVER_SYNCED_RE = re.compile(r"\[from boot n=(\d+), clock never synced")
+OWN_PRESYNC = "[pre-sync, stamped at first clock sync]"
+# Cold boots the offline leg makes; the last one is the boot that syncs.
+OFFLINE_BOOTS = 3
+
+
+def offline_rows_verdict(page: dict, seen_ids: set, earlier_boots: int) -> "tuple[bool, str]":
+    """The class rule over the boot rows the first sync wrote (rows not in
+    ``seen_ids``): ``earlier_boots`` distinct earlier offline boots each have a "clock
+    never synced" row, and the syncing boot has its own pre-sync row."""
+    new = [
+        str(m.get("text") or "")
+        for m in page.get("messages", [])
+        if str(m.get("id")) not in seen_ids and str(m.get("text") or "").startswith("Booted ")
+    ]
+    earlier = sorted({int(n) for text in new for n in NEVER_SYNCED_RE.findall(text)})
+    if len(earlier) < earlier_boots:
+        return (
+            False,
+            f"{len(earlier)} earlier offline boot(s) {earlier} reached the timeline, want {earlier_boots}: {new}",
+        )
+    if not any(OWN_PRESYNC in text for text in new):
+        return False, f"the boot that synced has no row of its own: {new}"
+    return True, f"earlier offline boots {earlier} and the syncing boot's own row"
+
+
 # ---- device helpers --------------------------------------------------------------
 def _lan_ip(ip_from_beacon: Optional[str]) -> str:
     ip = os.environ.get("NIMBUS_TEST_IP") or ip_from_beacon
@@ -265,8 +319,25 @@ def _lan_ip(ip_from_beacon: Optional[str]) -> str:
     return ip
 
 
+def _errlog_file(net, ip: str, name: str = ACTIVE_LOG) -> str:
+    """One durable log file's text. A busy answer is retried within a budget; a
+    rotated file that does not exist yet reads empty; any other answer fails with its
+    status (it used to read as "no boot record")."""
+    path = "/api/errlog" if name == ACTIVE_LOG else f"/api/errlog?file={name}"
+    resp, err = poll_until(
+        lambda: net.get(path, ip=ip, timeout=15.0), lambda r: r.status_code != 503, ERRLOG_BUSY_BUDGET_S, ERRLOG_RETRY_S
+    )
+    assert resp is not None, f"GET {path}: no answer ({err!r})"
+    if name != ACTIVE_LOG and resp.status_code == 404:
+        return ""
+    assert resp.status_code == 200, f"GET {path} -> {resp.status_code}: {resp.text[:160]!r}"
+    return resp.text
+
+
 def _boots(net, ip: str) -> List[List[Dict[str, str]]]:
-    boots = split_boots(parse_log(net.get("/api/errlog", ip=ip, timeout=15.0).text))
+    active = _errlog_file(net, ip)
+    previous = _errlog_file(net, ip, PREVIOUS_LOG) if starts_mid_boot(active) else ""
+    boots = split_boots(parse_log(stitch_rotated(previous, active)))
     assert boots, "the durable log holds no boot record (is this the crash-forensics image?)"
     return boots
 
@@ -293,7 +364,7 @@ def _crash_report(net, ip: str, before_n: Optional[int]) -> dict:
 
 def _arm_log(net, ip: str) -> str:
     """The durable log's PANIC arm=turn lines (an arm the turn dropped says so)."""
-    text = net.get("/api/errlog", ip=ip, timeout=15.0).text
+    text = _errlog_file(net, ip)
     return " | ".join(ln for ln in text.splitlines() if "PANIC arm=turn" in ln)[-400:]
 
 
@@ -403,7 +474,7 @@ def test_seq0_exists_in_every_boot(device, net):
     """No pre-mount hole: every boot section of the current log file starts with its
     boot record at seq 0."""
     ip = _lan_ip(None)
-    boots = split_boots(parse_log(net.get("/api/errlog", ip=ip, timeout=15.0).text))
+    boots = split_boots(parse_log(_errlog_file(net, ip)))
     assert boots, "no boot record in the durable log"
     ok, why = every_boot_starts_at_seq0(boots)
     assert ok, why
@@ -483,32 +554,35 @@ def test_panic_armed_at_a_later_round(device, net):
 @pytest.mark.hil
 @pytest.mark.net
 def test_offline_boots_keep_their_rows(device, net, secrets):
-    """Pre-sync device events survive resets: two boots that never get a clock (Wi-Fi
+    """Pre-sync device events survive resets: boots that never get a clock (Wi-Fi
     pointed at an absent network, REBOOT cold clears the RTC clock) still reach the
-    timeline at the first sync, labelled with their boot number."""
+    timeline at the first sync. The link comes back inside the last offline boot, so
+    that boot syncs itself and labels its own row "[pre-sync, ...]"; every EARLIER
+    offline boot's row says "from boot n=<k>, clock never synced". Three cold boots,
+    so the rows of two earlier boots must ride the pending file across resets. Only
+    rows the first sync wrote count (a previous run's rows are on the same page)."""
     try:
         secrets.require_sta()
         ssid, pw = secrets.sta_ssid, secrets.sta_pass
     except Exception:  # noqa: BLE001 - SecretsUnavailable
         pytest.skip("needs the bench Wi-Fi credentials to restore the link")
+    ip = _lan_ip(None)
+    page = "/api/mem/episodic?session=system&limit=40"
+    seen = {str(m.get("id")) for m in net.get_json(page, ip=ip, timeout=15.0).get("messages", [])}
     device.wifi("l39-absent-network", "not-a-password")
-    for _ in range(2):
+    for _ in range(OFFLINE_BOOTS):
         device.cmd("REBOOT cold", "REBOOTING", timeout=5.0)
         device.reopen_after_reenumerate(drain_boot=False)
         device.wait_ready(timeout=60.0)
     device.wifi(ssid, pw)
-    ip = _lan_ip(None)
     # The board is rejoining Wi-Fi: a connect timeout inside the budget is retried.
-    rows, err = poll_until(
-        lambda: net.get("/api/mem/episodic?session=system&limit=40", ip=ip, timeout=15.0).text,
-        lambda text: text.count("clock never synced") >= 2,
+    got, err = poll_until(
+        lambda: net.get_json(page, ip=ip, timeout=15.0),
+        lambda p: offline_rows_verdict(p, seen, OFFLINE_BOOTS - 1)[0],
         120.0,
     )
-    rows = rows or ""
-    assert rows.count("clock never synced") >= 2, (
-        f"the offline boots' rows did not reach the timeline (last network error: {err!r})"
-    )
-    assert "from boot n=" in rows
+    ok, why = offline_rows_verdict(got or {}, seen, OFFLINE_BOOTS - 1)
+    assert ok, f"the offline boots' rows did not reach the timeline: {why} (last network error: {err!r})"
 
 
 @pytest.mark.destructive

@@ -17,10 +17,13 @@ from test_l39_crash_forensics import (
     every_boot_starts_at_seq0,
     first_boot_after,
     latest_turn_crash,
+    offline_rows_verdict,
     parse_log,
     poll_until,
     split_boots,
     stale_verdict,
+    starts_mid_boot,
+    stitch_rotated,
 )
 
 pytestmark = pytest.mark.host
@@ -355,3 +358,115 @@ def test_poll_lets_a_real_error_through():
 
     with pytest.raises(ValueError):
         poll_until(fetch, lambda _: True, 10.0, 5.0, _Clock().now, _Clock().sleep)
+
+
+# ---- reading the durable log: a busy answer and a rotation are not "no boot record" --
+class _Resp:
+    def __init__(self, status: int, text: str):
+        self.status_code, self.text = status, text
+
+
+class _LogNet:
+    """GET /api/errlog as the device answers it: scripted answers per path, in order."""
+
+    def __init__(self, answers: dict):
+        self.answers = {k: list(v) for k, v in answers.items()}
+        self.paths: list = []
+
+    def get(self, path, ip=None, timeout=5.0):
+        self.paths.append(path)
+        queue = self.answers[path]
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+
+ACTIVE, PREVIOUS = "/api/errlog", "/api/errlog?file=nimbus.log.1"
+CRASH_BOOT = _log(BOOT_PANIC, CRASH_NEW, BT, WHY)
+# The active file after a rotation inside the crash boot: the boot's later lines only.
+MID_BOOT = _log("41 9000 - [sram] steady-orch intFree=34764", "42 9100 - relay: online=1 cause=hello-ack")
+
+
+def test_a_file_that_starts_mid_boot_is_stitched_onto_the_previous_one():
+    assert not starts_mid_boot(CRASH_BOOT)
+    assert starts_mid_boot(MID_BOOT) and starts_mid_boot("")
+    assert stitch_rotated("anything", CRASH_BOOT) == CRASH_BOOT  # a whole active file stands alone
+    assert stitch_rotated("", MID_BOOT) == MID_BOOT  # nothing rotated yet
+    stitched = stitch_rotated(CRASH_BOOT.rstrip("\n"), MID_BOOT)
+    boots = split_boots(parse_log(stitched))
+    assert len(boots) == 1 and len(boots[0]) == 6  # the crash boot, with the lines after the rotation
+
+
+def test_boots_survive_a_busy_answer_and_a_rotation(monkeypatch):
+    monkeypatch.setattr(l39, "ERRLOG_RETRY_S", 0.0)
+    busy = _Resp(503, "Device busy, try again.")
+    net = _LogNet({ACTIVE: [busy, busy, _Resp(200, MID_BOOT)], PREVIOUS: [_Resp(200, CRASH_BOOT)]})
+    boots = l39._boots(net, "192.0.2.1")
+    assert crash_verdict(boot_report(boots[-1]), "abort") == (True, "ok")
+    assert net.paths == [ACTIVE, ACTIVE, ACTIVE, PREVIOUS]
+
+
+def test_a_whole_active_file_needs_no_previous_read(monkeypatch):
+    monkeypatch.setattr(l39, "ERRLOG_RETRY_S", 0.0)
+    net = _LogNet({ACTIVE: [_Resp(200, CRASH_BOOT)]})
+    assert len(l39._boots(net, "192.0.2.1")) == 1 and net.paths == [ACTIVE]
+
+
+def test_a_refused_read_fails_with_its_status_not_as_an_empty_log(monkeypatch):
+    monkeypatch.setattr(l39, "ERRLOG_RETRY_S", 0.0)
+    net = _LogNet({ACTIVE: [_Resp(401, '{"error":"Access token required."}')]})
+    with pytest.raises(AssertionError, match="-> 401"):
+        l39._boots(net, "192.0.2.1")
+
+
+def test_no_rotated_file_yet_reads_empty(monkeypatch):
+    monkeypatch.setattr(l39, "ERRLOG_RETRY_S", 0.0)
+    net = _LogNet({ACTIVE: [_Resp(200, MID_BOOT)], PREVIOUS: [_Resp(404, '{"error":"no such log file"}')]})
+    with pytest.raises(AssertionError, match="no boot record"):
+        l39._boots(net, "192.0.2.1")
+
+
+# ---- offline boots: what the first sync writes ---------------------------------------
+def _row(n: int, text: str) -> dict:
+    return {"id": f"m{n:08x}", "session": "system", "role": "system", "kind": "log", "text": text, "tags": "ev:boot"}
+
+
+BOOTED = (
+    'Booted v4.5.13 (v4.5.13-112-gb0aefd52) reason=usb mode=orchestrator crash=tg_poll@0x421cb2fe "StoreProhibited"'
+)
+# The page the 22 Oct unit L run read after two cold boots (texts shortened): the boot
+# that synced (f76) and the one earlier offline boot (f75), above the rows before the leg.
+PAGE_22_OCT = {
+    "messages": [
+        _row(0xF76, BOOTED + " [pre-sync, stamped at first clock sync]"),
+        _row(0xF75, BOOTED + " [from boot n=278, clock never synced; stamped at first clock sync]"),
+        _row(0xF74, BOOTED.replace("reason=usb", "reason=crash(panic)")),
+        _row(0xF71, "Booted v4.5.13 (v4.5.13-112-gb0aefd52) reason=crash(panic) mode=orchestrator"),
+    ]
+}
+SEEN_22_OCT = {"m00000f74", "m00000f71"}
+
+
+def test_two_cold_boots_give_one_earlier_row_and_the_syncing_boots_own():
+    """The 22 Oct page is the device doing the right thing for two cold boots; the old
+    leg counted both as "never synced" and failed it."""
+    assert offline_rows_verdict(PAGE_22_OCT, SEEN_22_OCT, 1)[0]
+    ok, why = offline_rows_verdict(PAGE_22_OCT, SEEN_22_OCT, 2)
+    assert not ok and "1 earlier offline boot(s) [278]" in why
+
+
+def test_three_cold_boots_need_two_distinct_earlier_boots_and_the_own_row():
+    page = {
+        "messages": [_row(0xF80, BOOTED + " [from boot n=280, clock never synced; stamped]")] + PAGE_22_OCT["messages"]
+    }
+    assert offline_rows_verdict(page, SEEN_22_OCT, 2)[0]
+    twice = {"messages": [_row(0xF80, PAGE_22_OCT["messages"][1]["text"])] + PAGE_22_OCT["messages"]}
+    assert not offline_rows_verdict(twice, SEEN_22_OCT, 2)[0]  # the same boot twice is one boot
+    no_own = {"messages": [m for m in page["messages"] if "pre-sync, stamped" not in m["text"]]}
+    ok, why = offline_rows_verdict(no_own, SEEN_22_OCT, 2)
+    assert not ok and "no row of its own" in why
+
+
+def test_rows_from_before_the_leg_never_count():
+    """A previous run's "never synced" rows sit on the same 40-row page."""
+    seen = SEEN_22_OCT | {"m00000f75", "m00000f76"}
+    ok, why = offline_rows_verdict(PAGE_22_OCT, seen, 1)
+    assert not ok and "0 earlier offline boot(s)" in why
