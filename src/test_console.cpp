@@ -500,8 +500,9 @@ void tzCheck(const String& tz, long long epoch) {
 // page is held for the rest of an album. The bench storm legs read these.
 void tgGuardStatus() {
   const agent::telegram::GuardStatus g = agent::telegram::guardStatus();
-  Serial.printf("TGGUARD dups=%u ceiling=%u poison=%u tries=%u holding=%d\n", (unsigned)g.dupDrops,
-                (unsigned)g.ceilingDrops, (unsigned)g.poisonAcks, (unsigned)g.tries, int(g.holding));
+  Serial.printf("TGGUARD dups=%u ceiling=%u poison=%u tries=%u holding=%d booted=%d\n", (unsigned)g.dupDrops,
+                (unsigned)g.ceilingDrops, (unsigned)g.poisonAcks, (unsigned)g.tries, int(g.holding),
+                int(g.booted));
   Serial.flush();
 }
 

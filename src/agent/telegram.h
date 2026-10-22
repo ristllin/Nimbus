@@ -108,6 +108,7 @@ struct GuardStatus {
   uint32_t poisonAcks;
   uint8_t  tries;
   bool     holding;   // a page is being held for the rest of an album or burst
+  bool     booted;    // the record was read this boot (false: Notifier mode, no counts)
 };
 GuardStatus guardStatus();
 

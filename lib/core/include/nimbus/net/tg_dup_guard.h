@@ -48,11 +48,15 @@
 //    stored, so the count survives a command page's per-bucket checkpoints. A commit
 //    clears the mark. Other resets (a restart, an update, USB) count nothing.
 //
-// The record (TgGuardState) is a plain struct the device keeps in RTC no-init memory:
-// it survives restarts, panics, watchdog and brownout resets but not a power cycle,
-// and costs no settings (NVS) write. A magic value, the firmware build id and a CRC-32
-// reject the garbage a power-on leaves and a layout from another build; a power-on
-// clears it. Portable and host-tested (test_tg_dup_guard, test_tg_burst).
+// The record is a plain struct the device keeps in RTC no-init memory (TgGuardStore):
+// it survives a restart, a panic, the watchdogs, a brownout, a deep-sleep wake and a
+// USB reset, but not a power cycle, and costs no settings (NVS) write. A magic value,
+// the firmware build id and a CRC-32 reject the garbage a power-on leaves and a layout
+// from another build; a power-on clears it. It is double-buffered: every write fills
+// the other copy and seals it (sequence number, then CRC) last, so a restart in the
+// middle of a write leaves the previous copy intact and the next boot reads the state
+// from before or after that write, never an emptied record. Portable and host-tested
+// (test_tg_dup_guard, test_tg_burst).
 namespace nimbus::net {
 
 constexpr uint32_t kRepeatWindowS = 120;
@@ -60,7 +64,7 @@ constexpr uint32_t kInboundTurnsPerHour = 60;
 constexpr uint32_t kOwnerReserveTurns = 12;
 constexpr uint8_t  kPoisonMaxTries = 2;
 constexpr size_t   kDupRing = 24;          // answered messages remembered (over two pages)
-constexpr uint32_t kTgGuardMagic = 0x54474404u;   // "TGD" + layout version
+constexpr uint32_t kTgGuardMagic = 0x54474405u;   // "TGD" + layout version
 
 // One message, as the breakers see it (the device fills it at classification).
 struct DupKey {
@@ -110,9 +114,11 @@ constexpr uint8_t kPhasePage = 1;     // the page is being classified (id: its f
 constexpr uint8_t kPhaseItem = 2;     // a media item is being fetched or described (its update)
 constexpr uint8_t kPhaseBucket = 3;   // a bucket's turn is running (its first update)
 
+// One copy of the record.
 struct TgGuardState {
   uint32_t magic;
   uint32_t build;
+  uint32_t seq;               // write sequence: the valid copy with the newer one is current
   int32_t  inflightFirstId;   // first update id of the work in flight (0: none)
   uint8_t  tries;             // crash resets counted against it
   uint8_t  head;              // next ring slot
@@ -130,9 +136,14 @@ struct TgGuardState {
   uint32_t crc;
 };
 
+// What the device keeps in RTC memory: two copies, one current.
+struct TgGuardStore {
+  TgGuardState slot[2];
+};
+
 class TgGuard {
  public:
-  explicit TgGuard(TgGuardState& s) : s_(s) {}
+  explicit TgGuard(TgGuardStore& st) : st_(st) {}
 
   // Once at boot, before the first poll. Clears the record on a power-on, on a bad
   // magic or CRC and on another build's record; counts a crash reset against a page
@@ -154,7 +165,7 @@ class TgGuard {
   // The drain ended: forget what was taken but not answered (a message whose turn
   // never ran must be free to run when it is served again).
   void clearPending() { pending_.clear(); }
-  uint32_t dupDrops() const { return s_.dupDrops; }
+  uint32_t dupDrops() const { return cur().dupDrops; }
 
   // ---- hourly ceiling (`nowS`: the device's best epoch; see the device seam).
   // `owner`: the turn is the owner's chat (its limit is the whole ceiling; the other
@@ -166,7 +177,7 @@ class TgGuard {
   // When such a turn may run again: when enough counted turns have aged out of the hour
   // (0 when it may run now).
   uint32_t ceilingResumeAt(uint32_t nowS, bool owner) const;
-  uint32_t ceilingDrops() const { return s_.ceilingDrops; }
+  uint32_t ceilingDrops() const { return cur().ceilingDrops; }
 
   // ---- poison guard
   // True when the work (`id`, `phase`) already cost kPoisonMaxTries crash resets: skip
@@ -175,15 +186,21 @@ class TgGuard {
   // The work (`id`, `phase`) is about to start: mark it in flight (its tries are kept
   // when it is the work already marked, reset otherwise).
   void mark(int32_t id, uint8_t phase);
-  int32_t markedId() const { return s_.inflightFirstId; }
-  uint8_t markedPhase() const { return s_.inflightPhase; }
+  int32_t markedId() const { return cur().inflightFirstId; }
+  uint8_t markedPhase() const { return cur().inflightPhase; }
   // The page in flight was committed: clear the mark.
   void commitPage();
-  uint8_t tries() const { return s_.tries; }
-  uint32_t poisonAcks() const { return s_.poisonAcks; }
+  uint8_t tries() const { return cur().tries; }
+  uint32_t poisonAcks() const { return cur().poisonAcks; }
 
-  // The record is intact (magic, build, CRC). For tests and the boot log.
+  // The current copy is intact (magic, build, CRC). For tests and the boot log.
   bool valid(uint32_t build) const;
+  // A snapshot of the counters, for the device to publish.
+  struct Counts {
+    uint32_t dupDrops, ceilingDrops, poisonAcks;
+    uint8_t  tries;
+  };
+  Counts counts() const { return {cur().dupDrops, cur().ceilingDrops, cur().poisonAcks, cur().tries}; }
 
  private:
   struct Pending {
@@ -191,12 +208,20 @@ class TgGuard {
     bool   noticed;
   };
   void clear(uint32_t build);
-  void seal();
+  const TgGuardState& cur() const { return st_.slot[active_]; }
+  // A write: the other copy, filled from the current one, to change and then seal.
+  TgGuardState& edit();
+  // Seal the copy edit() returned (sequence number, then CRC, last) and make it current.
+  void seal(TgGuardState& w);
   // The remembered (ring) or pending message `k` duplicates, and how (-1: none).
   int answeredIndex(const DupKey& k, DupVerdict& v) const;
   int pendingIndex(const DupKey& k, DupVerdict& v) const;
-  TgGuardState& s_;
+  TgGuardStore& st_;
+  uint8_t active_ = 0;
   std::vector<Pending> pending_;
 };
+
+// The copy of `st` that is intact for `build` and newest (-1: neither is).
+int currentSlot(const TgGuardStore& st, uint32_t build);
 
 }  // namespace nimbus::net

@@ -86,31 +86,64 @@ BootKind bootKindOf(int resetReason) {
 
 // ---- the record ----------------------------------------------------------------
 
-bool TgGuard::valid(uint32_t build) const {
-  if (s_.magic != kTgGuardMagic || s_.build != build) return false;
-  if (s_.head >= kDupRing || s_.count > kDupRing || s_.turnHead >= kInboundTurnsPerHour) return false;
-  return s_.crc == nimbus::sys::crc32(reinterpret_cast<const uint8_t*>(&s_), offsetof(TgGuardState, crc));
+namespace {
+
+uint32_t crcOf(const TgGuardState& s) {
+  return nimbus::sys::crc32(reinterpret_cast<const uint8_t*>(&s), offsetof(TgGuardState, crc));
 }
+
+bool slotValid(const TgGuardState& s, uint32_t build) {
+  if (s.magic != kTgGuardMagic || s.build != build) return false;
+  if (s.head >= kDupRing || s.count > kDupRing || s.turnHead >= kInboundTurnsPerHour) return false;
+  return s.crc == crcOf(s);
+}
+
+}  // namespace
+
+int currentSlot(const TgGuardStore& st, uint32_t build) {
+  const bool v0 = slotValid(st.slot[0], build), v1 = slotValid(st.slot[1], build);
+  if (v0 && v1) return (int32_t)(st.slot[1].seq - st.slot[0].seq) > 0 ? 1 : 0;
+  if (v0) return 0;
+  return v1 ? 1 : -1;
+}
+
+bool TgGuard::valid(uint32_t build) const { return slotValid(cur(), build); }
 
 void TgGuard::clear(uint32_t build) {
-  std::memset(&s_, 0, sizeof(s_));
-  s_.magic = kTgGuardMagic;
-  s_.build = build;
-  seal();
+  std::memset(&st_, 0, sizeof(st_));   // the other copy stays invalid (magic 0)
+  TgGuardState& s = st_.slot[0];
+  s.magic = kTgGuardMagic;
+  s.build = build;
+  s.seq = 1;
+  s.crc = crcOf(s);
+  active_ = 0;
 }
 
-void TgGuard::seal() {
-  s_.crc = nimbus::sys::crc32(reinterpret_cast<const uint8_t*>(&s_), offsetof(TgGuardState, crc));
+TgGuardState& TgGuard::edit() {
+  TgGuardState& w = st_.slot[active_ ^ 1];
+  std::memcpy(&w, &cur(), sizeof(w));
+  return w;
+}
+
+void TgGuard::seal(TgGuardState& w) {
+  w.seq = cur().seq + 1;
+  w.crc = crcOf(w);   // last: until it lands, the current copy stays the valid one
+  active_ ^= 1;
 }
 
 bool TgGuard::boot(BootKind kind, uint32_t build) {
   pending_.clear();
-  if (kind == BootKind::PowerOn || !valid(build)) {
+  const int slot = kind == BootKind::PowerOn ? -1 : currentSlot(st_, build);
+  if (slot < 0) {
     clear(build);
     return false;
   }
-  if (kind == BootKind::Crash && s_.inflightFirstId != 0 && s_.tries < 255) ++s_.tries;
-  seal();
+  active_ = (uint8_t)slot;
+  if (kind == BootKind::Crash && cur().inflightFirstId != 0 && cur().tries < 255) {
+    TgGuardState& w = edit();
+    ++w.tries;
+    seal(w);
+  }
   return true;
 }
 
@@ -118,8 +151,8 @@ bool TgGuard::boot(BootKind kind, uint32_t build) {
 
 int TgGuard::answeredIndex(const DupKey& k, DupVerdict& v) const {
   int repeatOf = -1;
-  for (size_t i = 0; i < s_.count; ++i) {
-    const TgGuardEntry& e = s_.ring[i];
+  for (size_t i = 0; i < cur().count; ++i) {
+    const TgGuardEntry& e = cur().ring[i];
     const DupVerdict d = verdictFor(k, e.chat, e.content, e.messageId, e.date, e.doneAt);
     if (d == DupVerdict::Replay) {
       v = d;
@@ -155,21 +188,24 @@ DupVerdict TgGuard::check(const DupKey& k) const {
 }
 
 bool TgGuard::noteDuplicate(const DupKey& k) {
-  ++s_.dupDrops;
   bool due = false;
   DupVerdict v = DupVerdict::New;
   const int a = answeredIndex(k, v);
-  if (a >= 0) {
-    due = !(s_.ring[a].flags & kEntryNoticed);
-    s_.ring[a].flags |= kEntryNoticed;
-  } else {
-    const int p = pendingIndex(k, v);
+  int p = -1;
+  if (a < 0) {
+    p = pendingIndex(k, v);
     if (p >= 0) {
       due = !pending_[(size_t)p].noticed;
       pending_[(size_t)p].noticed = true;
     }
   }
-  seal();
+  TgGuardState& w = edit();
+  ++w.dupDrops;
+  if (a >= 0) {
+    due = !(w.ring[a].flags & kEntryNoticed);
+    w.ring[a].flags |= kEntryNoticed;
+  }
+  seal(w);
   return due;
 }
 
@@ -186,16 +222,17 @@ void TgGuard::noteTurned(const DupKey& k, uint32_t nowS) {
     pending_.erase(pending_.begin() + (std::ptrdiff_t)i);
     break;
   }
-  TgGuardEntry& e = s_.ring[s_.head];
+  TgGuardState& w = edit();
+  TgGuardEntry& e = w.ring[w.head];
   e.chat = k.chat;
   e.content = k.content;
   e.messageId = (uint32_t)k.messageId;
   e.date = (uint32_t)k.date;
   e.doneAt = nowS;
   e.flags = noticed ? kEntryNoticed : 0;
-  s_.head = (uint8_t)((s_.head + 1) % kDupRing);
-  if (s_.count < kDupRing) ++s_.count;
-  seal();
+  w.head = (uint8_t)((w.head + 1) % kDupRing);
+  if (w.count < kDupRing) ++w.count;
+  seal(w);
 }
 
 // ---- hourly ceiling --------------------------------------------------------------
@@ -218,59 +255,65 @@ size_t recentTurns(const uint32_t* turns, uint32_t nowS, uint32_t* out) {
 
 bool TgGuard::ceilingAllows(uint32_t nowS, bool owner) const {
   uint32_t recent[kInboundTurnsPerHour];
-  return recentTurns(s_.turns, nowS, recent) < limitFor(owner);
+  return recentTurns(cur().turns, nowS, recent) < limitFor(owner);
 }
 
 void TgGuard::noteTurn(uint32_t nowS) {
-  s_.turns[s_.turnHead] = nowS ? nowS : 1;   // 0 marks an empty slot
-  s_.turnHead = (uint8_t)((s_.turnHead + 1) % kInboundTurnsPerHour);
-  seal();
+  TgGuardState& w = edit();
+  w.turns[w.turnHead] = nowS ? nowS : 1;   // 0 marks an empty slot
+  w.turnHead = (uint8_t)((w.turnHead + 1) % kInboundTurnsPerHour);
+  seal(w);
 }
 
 uint32_t TgGuard::ceilingResumeAt(uint32_t nowS, bool owner) const {
   uint32_t recent[kInboundTurnsPerHour];
-  const size_t n = recentTurns(s_.turns, nowS, recent);
+  const size_t n = recentTurns(cur().turns, nowS, recent);
   const uint32_t limit = limitFor(owner);
   if (n < limit) return 0;
   return recent[n - limit] + kHourS;   // that many must age out before one more may run
 }
 
 bool TgGuard::noteCeilingSkip(uint32_t nowS, bool owner) {
-  ++s_.ceilingDrops;
-  uint32_t& until = owner ? s_.ceilingNoticeUntil : s_.othersNoticeUntil;
+  const uint32_t resume = ceilingResumeAt(nowS, owner);
+  TgGuardState& w = edit();
+  ++w.ceilingDrops;
+  uint32_t& until = owner ? w.ceilingNoticeUntil : w.othersNoticeUntil;
   const bool due = (int64_t)nowS >= (int64_t)until;
-  if (due) until = ceilingResumeAt(nowS, owner);
-  seal();
+  if (due) until = resume;
+  seal(w);
   return due;
 }
 
 // ---- poison guard ----------------------------------------------------------------
 
 bool TgGuard::poisoned(int32_t id, uint8_t phase) {
-  if (id <= 0 || s_.inflightFirstId != id || s_.inflightPhase != phase || s_.tries < kPoisonMaxTries)
-    return false;
-  ++s_.poisonAcks;
-  s_.inflightFirstId = 0;
-  s_.inflightPhase = 0;
-  s_.tries = 0;
-  seal();
+  const TgGuardState& c = cur();
+  if (id <= 0 || c.inflightFirstId != id || c.inflightPhase != phase || c.tries < kPoisonMaxTries) return false;
+  TgGuardState& w = edit();
+  ++w.poisonAcks;
+  w.inflightFirstId = 0;
+  w.inflightPhase = 0;
+  w.tries = 0;
+  seal(w);
   return true;
 }
 
 void TgGuard::mark(int32_t id, uint8_t phase) {
-  if (id <= 0 || (s_.inflightFirstId == id && s_.inflightPhase == phase)) return;   // keep its tries
-  s_.inflightFirstId = id;
-  s_.inflightPhase = phase;
-  s_.tries = 0;
-  seal();
+  if (id <= 0 || (cur().inflightFirstId == id && cur().inflightPhase == phase)) return;   // keep its tries
+  TgGuardState& w = edit();
+  w.inflightFirstId = id;
+  w.inflightPhase = phase;
+  w.tries = 0;
+  seal(w);
 }
 
 void TgGuard::commitPage() {
-  if (s_.inflightFirstId == 0 && s_.tries == 0) return;
-  s_.inflightFirstId = 0;
-  s_.inflightPhase = 0;
-  s_.tries = 0;
-  seal();
+  if (cur().inflightFirstId == 0 && cur().tries == 0) return;
+  TgGuardState& w = edit();
+  w.inflightFirstId = 0;
+  w.inflightPhase = 0;
+  w.tries = 0;
+  seal(w);
 }
 
 }  // namespace nimbus::net

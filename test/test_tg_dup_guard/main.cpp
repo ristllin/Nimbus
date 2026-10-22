@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
 #include <random>
 #include <string>
 #include <vector>
@@ -39,7 +40,7 @@ static DupKey textKey(const char* chat, int64_t mid, int64_t date, const std::st
 // The receive path over one page of keys, reduced to the breaker calls. Counts paid
 // turns, owner notices and skips the way telegram.cpp does.
 struct Device {
-  TgGuardState rtc{};   // survives the restarts below unless a power-on clears it
+  TgGuardStore rtc{};   // survives the restarts below unless a power-on clears it
   TgGuard guard{rtc};
   int paid = 0, dupNotices = 0, ceilingNotices = 0, ceilingSkips = 0;
 
@@ -114,7 +115,7 @@ static void test_restart_mid_episode_keeps_one_turn() {
 static void test_fresh_device_runs_the_first_message() {
   for (int fill : {0x00, 0xFF, 0x5A}) {
     for (BootKind kind : {BootKind::PowerOn, BootKind::Other, BootKind::Crash}) {
-      TgGuardState rtc;
+      TgGuardStore rtc;
       std::memset(&rtc, fill, sizeof rtc);
       TgGuard g(rtc);
       TEST_ASSERT_FALSE(g.boot(kind, kBuild));
@@ -128,23 +129,33 @@ static void test_fresh_device_runs_the_first_message() {
   }
 }
 
-// The record from another build, or with one flipped byte, is rejected.
+// The record from another build is rejected; a flipped byte in the current copy falls
+// back to the other copy (one write older), and flipped bytes in both copies reject it.
 static void test_record_rejects_other_builds_and_corruption() {
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
   TgGuard g(rtc);
   g.boot(BootKind::PowerOn, kBuild);
   g.noteTurned(textKey("5", 1, kT0, "hi"), kT0);
+  g.noteTurned(textKey("5", 2, kT0, "there"), kT0);
   TEST_ASSERT_TRUE(g.valid(kBuild));
   TEST_ASSERT_FALSE(g.valid(kBuild + 1));
-  TgGuardState copy = rtc;
+  TgGuardStore copy = rtc;
   TgGuard other(copy);
   TEST_ASSERT_FALSE(other.boot(BootKind::Other, kBuild + 1));   // an update: start clean
   TEST_ASSERT_EQUAL_INT((int)DupVerdict::New, (int)other.check(textKey("5", 1, kT0, "hi")));
-  for (size_t at = 0; at < sizeof rtc; at += 37) {
-    TgGuardState bad = rtc;
-    reinterpret_cast<uint8_t*>(&bad)[at] ^= 0x10;
-    TgGuard b(bad);
-    TEST_ASSERT_FALSE(b.valid(kBuild));
+  const int cur = currentSlot(rtc, kBuild);
+  TEST_ASSERT_TRUE(cur >= 0);
+  for (size_t at = 0; at < sizeof(TgGuardState); at += 37) {
+    TgGuardStore one = rtc;   // the current copy damaged: the older one is read
+    reinterpret_cast<uint8_t*>(&one.slot[cur])[at] ^= 0x10;
+    TgGuard b(one);
+    TEST_ASSERT_TRUE(b.boot(BootKind::Other, kBuild));
+    TEST_ASSERT_EQUAL_INT((int)DupVerdict::Replay, (int)b.check(textKey("5", 1, kT0, "hi")));
+    TgGuardStore both = one;  // both damaged: nothing is trusted
+    reinterpret_cast<uint8_t*>(&both.slot[cur ^ 1])[at] ^= 0x10;
+    TgGuard c(both);
+    TEST_ASSERT_FALSE(c.boot(BootKind::Other, kBuild));
+    TEST_ASSERT_EQUAL_UINT32(0, c.dupDrops());
   }
 }
 
@@ -176,7 +187,7 @@ static void test_distinct_messages_run_until_the_ceiling() {
 // The resume time is the oldest counted turn plus an hour; a clock that moved back
 // counts the turns as recent (never as expired).
 static void test_ceiling_resume_time_and_clock_jumps() {
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
   TgGuard g(rtc);
   g.boot(BootKind::PowerOn, kBuild);
   for (uint32_t i = 0; i < kInboundTurnsPerHour; ++i) g.noteTurn((uint32_t)kT0 + i);
@@ -195,7 +206,7 @@ static void test_ceiling_resume_time_and_clock_jumps() {
 // A genuine repeat runs: after the window, or after the answer went out. Inside the
 // window and before the answer it is a duplicate.
 static void test_genuine_repeat_runs() {
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
   TgGuard g(rtc);
   g.boot(BootKind::PowerOn, kBuild);
   const DupKey yes = textKey("77", 10, kT0, "yes");
@@ -250,7 +261,7 @@ static void test_media_content_keys() {
 // the same work again keeps its tries. (The receive cycle's use of the marks across
 // pages, items and buckets is test_tg_burst's.)
 static void test_poison_guard_acks_after_two_crash_resets() {
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
   TgGuard g(rtc);
   g.boot(BootKind::PowerOn, kBuild);
   TEST_ASSERT_FALSE(g.poisoned(700, kPhasePage));
@@ -268,7 +279,7 @@ static void test_poison_guard_acks_after_two_crash_resets() {
   TEST_ASSERT_FALSE(g.poisoned(700, kPhasePage));     // the mark was cleared with the skip
   TEST_ASSERT_EQUAL_INT32(0, g.markedId());
   // A restart (software, update, USB) counts nothing.
-  TgGuardState r2{};
+  TgGuardStore r2{};
   TgGuard h(r2);
   h.boot(BootKind::PowerOn, kBuild);
   h.mark(800, kPhaseItem);
@@ -357,6 +368,97 @@ static void test_owner_keeps_a_reserve() {
   TEST_ASSERT_EQUAL_INT((int)kInboundTurnsPerHour, o.paid);
 }
 
+// ---- the record across every reset the device can see, and a torn write ----------
+
+// What the RTC memory holds after each reset reason: everything survives but a
+// power-on (the hardware leaves garbage; the reset_reason table folds a chip power
+// glitch and an unknown reason in with it).
+static bool rtcSurvives(int reason) {
+  using nimbus::sys::ResetReason;
+  return !(reason == (int)ResetReason::PowerOn || reason == (int)ResetReason::Unknown ||
+           reason == (int)ResetReason::PwrGlitch);
+}
+
+// Every reset reason: the duplicate count and the answered ring are kept across all of
+// them but a power-on; a crash (panic, the watchdogs, a lockup, a brownout) counts one
+// try against work in flight, nothing else does.
+static void test_record_across_every_reset_reason() {
+  using nimbus::sys::ResetReason;
+  for (int reason = 0; reason <= nimbus::sys::kLastResetReason; ++reason) {
+    TgGuardStore rtc;
+    std::memset(&rtc, 0x00, sizeof rtc);
+    TgGuard g(rtc);
+    g.boot(BootKind::PowerOn, kBuild);
+    const DupKey k = textKey("77", 42, kT0, "hello");
+    g.noteTurned(k, kT0 + 5);
+    for (int i = 0; i < 24; ++i) g.noteDuplicate(k);
+    g.mark(900, kPhaseBucket);
+    // The reset: RTC bytes survive or not, then the next boot reads them.
+    if (!rtcSurvives(reason)) std::memset(&rtc, 0xA5, sizeof rtc);
+    TgGuard next(rtc);
+    const bool kept = next.boot(bootKindOf(reason), kBuild);
+    char what[48];
+    std::snprintf(what, sizeof what, "reset reason %d", reason);
+    if (bootKindOf(reason) == BootKind::PowerOn) {
+      TEST_ASSERT_FALSE_MESSAGE(kept, what);
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, next.dupDrops(), what);
+      continue;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(kept, what);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(24, next.dupDrops(), what);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)DupVerdict::Replay, (int)next.check(k), what);
+    const bool crash = bootKindOf(reason) == BootKind::Crash;
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(crash ? 1 : 0, next.tries(), what);
+    if (reason == (int)ResetReason::Sw || reason == (int)ResetReason::DeepSleep || reason == (int)ResetReason::Usb)
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, next.tries(), what);
+  }
+}
+
+// A restart in the middle of a guard write (the web task's restart, a panic or a
+// watchdog can land between any two stores): the next boot finds the state from before
+// the write or after it, never an empty record. Every write the receive path makes,
+// torn after every number of its changed bytes, in many store orders.
+static void test_restart_in_the_middle_of_a_write() {
+  std::mt19937 rng(5);
+  for (int op = 0; op < 6; ++op) {
+    TgGuardStore rtc;
+    std::memset(&rtc, 0, sizeof rtc);
+    TgGuard g(rtc);
+    g.boot(BootKind::PowerOn, kBuild);
+    const DupKey k = textKey("77", 42, kT0, "hello");
+    g.noteTurned(k, kT0 + 5);
+    for (int i = 0; i < 10; ++i) g.noteDuplicate(k);
+    const TgGuardStore before = rtc;
+    switch (op) {
+      case 0: g.noteDuplicate(k); break;
+      case 1: g.noteTurned(textKey("77", 43, kT0 + 9, "more"), kT0 + 12); break;
+      case 2: g.noteTurn(kT0 + 20); break;
+      case 3: g.mark(700, kPhaseItem); break;
+      case 4: g.noteCeilingSkip(kT0 + 30, false); break;
+      default: g.commitPage(); g.mark(800, kPhasePage); break;
+    }
+    const TgGuardStore after = rtc;
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(&before);
+    const uint8_t* a = reinterpret_cast<const uint8_t*>(&after);
+    std::vector<size_t> changed;
+    for (size_t i = 0; i < sizeof rtc; ++i)
+      if (a[i] != b[i]) changed.push_back(i);
+    TEST_ASSERT_TRUE(!changed.empty());
+    for (int order = 0; order < 40; ++order) {
+      std::shuffle(changed.begin(), changed.end(), rng);
+      for (size_t cut = 0; cut <= changed.size(); ++cut) {
+        TgGuardStore torn = before;
+        uint8_t* t = reinterpret_cast<uint8_t*>(&torn);
+        for (size_t j = 0; j < cut; ++j) t[changed[j]] = a[changed[j]];
+        TgGuard r(torn);
+        TEST_ASSERT_TRUE_MESSAGE(r.boot(BootKind::Other, kBuild), "a torn write emptied the record");
+        TEST_ASSERT_TRUE(r.dupDrops() == 10 || r.dupDrops() == 11);
+        TEST_ASSERT_EQUAL_INT((int)DupVerdict::Replay, (int)r.check(k));
+      }
+    }
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_k_identical_pages_cost_one_turn);
@@ -373,5 +475,7 @@ int main(int, char**) {
   RUN_TEST(test_boot_kind_of_every_reset_reason);
   RUN_TEST(test_random_streams_never_pay_twice);
   RUN_TEST(test_owner_keeps_a_reserve);
+  RUN_TEST(test_record_across_every_reset_reason);
+  RUN_TEST(test_restart_in_the_middle_of_a_write);
   return UNITY_END();
 }

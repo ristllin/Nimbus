@@ -207,7 +207,7 @@ volatile uint32_t g_pubBackoffEnd = 0;     // millis() when the backoff ends (in
 // hourly ceiling, poison guard) in RTC no-init memory: it survives a restart, a panic,
 // a watchdog and a brownout, never a power cycle, and costs no settings write. Magic,
 // build id and CRC reject garbage; the poll task boots it before the first poll.
-RTC_NOINIT_ATTR nimbus::net::TgGuardState s_guardRtc;
+RTC_NOINIT_ATTR nimbus::net::TgGuardStore s_guardRtc;
 nimbus::net::TgGuard g_guard(s_guardRtc);
 int g_resetReason = 0;   // this boot's esp_reset_reason (main.cpp, setResetReason)
 volatile uint32_t g_pubDupDrops = 0;
@@ -215,6 +215,7 @@ volatile uint32_t g_pubCeilingDrops = 0;
 volatile uint32_t g_pubPoisonAcks = 0;
 volatile uint8_t  g_pubTries = 0;
 volatile bool     g_pubHolding = false;
+volatile bool     g_pubBooted = false;   // the record was read this boot (begin())
 // CUM-308: a token verified once (getMe) can be REVOKED later while the poll loop
 // keeps running - Telegram then 401s every getUpdates while the cached verdict
 // still reads "verified". This debounces consecutive poll auth failures (401/403,
@@ -1621,10 +1622,24 @@ static uint32_t guardBuildId() {
 }
 
 static void publishGuard() {
-  g_pubDupDrops = g_guard.dupDrops();
-  g_pubCeilingDrops = g_guard.ceilingDrops();
-  g_pubPoisonAcks = g_guard.poisonAcks();
-  g_pubTries = g_guard.tries();
+  const nimbus::net::TgGuard::Counts c = g_guard.counts();
+  g_pubDupDrops = c.dupDrops;
+  g_pubCeilingDrops = c.ceilingDrops;
+  g_pubPoisonAcks = c.poisonAcks;
+  g_pubTries = c.tries;
+  g_pubBooted = true;
+}
+
+// The storm breakers' record (RTC memory), read once per boot in begin(), before the
+// poll task exists, and published at once: kept across a restart, a panic, the
+// watchdogs, a brownout (a crash counts a try against work it cut short), a deep-sleep
+// wake and a USB reset; rebuilt after a power-on, from another build, or when neither
+// copy reads as intact.
+static void bootGuard() {
+  const bool kept = g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId());
+  publishGuard();
+  alogf("telegram: storm guard %s (reset %d, page tries %u, duplicates %u)", kept ? "kept" : "fresh",
+        g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
 }
 
 static void noteHistory(const nimbus::orch::PsString& text);
@@ -1839,13 +1854,6 @@ void pollTask(void*) {
   // NVS into the 14 Oct replay loop; test_nvs_full pins this single read).
   g_cursor.seed(store::telegramOffset());
   publishPollStatus();
-  // The storm breakers' record (RTC memory): kept across a restart, a panic, a watchdog
-  // or a brownout (which counts a try against a page whose processing it cut short),
-  // rebuilt after a power-on, from another build, or when it reads as garbage.
-  const bool guardKept = g_guard.boot(nimbus::net::bootKindOf(g_resetReason), guardBuildId());
-  alogf("telegram: storm guard %s (reset %d, page tries %u, duplicates %u)", guardKept ? "kept" : "fresh",
-        g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
-  publishGuard();
   if (haveToken) {
     alogf("telegram: poll start (offset=%ld) heap=%u", (long)g_cursor.offset(), ESP.getFreeHeap());
     // SECURITY: warn loudly if a token is set but the allowlist is empty - allowed()
@@ -2097,6 +2105,7 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
   // the very first local turn after boot must find it allocated. A null here keeps
   // the old behavior (waits run full; the drain still retries the alloc lazily).
   ensureInboundStage();
+  bootGuard();   // before the task: its counters are right from the first moment
   g_running   = true;
   BaseType_t ok = xTaskCreatePinnedToCore(pollTask, "tg_poll", POLL_STACK_BYTES,
                                           nullptr, 3, &g_task, 0);
@@ -2403,6 +2412,7 @@ GuardStatus guardStatus() {
   g.poisonAcks = g_pubPoisonAcks;
   g.tries = g_pubTries;
   g.holding = g_pubHolding;
+  g.booted = g_pubBooted;
   return g;
 }
 

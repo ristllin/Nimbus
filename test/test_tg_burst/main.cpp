@@ -36,7 +36,7 @@ using nimbus::net::BootKind;
 using nimbus::net::TgCycle;
 using nimbus::net::TgFetch;
 using nimbus::net::TgGuard;
-using nimbus::net::TgGuardState;
+using nimbus::net::TgGuardStore;
 using nimbus::net::TgNotice;
 using nimbus::net::TgReceiver;
 using nimbus::orch::ClassifiedUpdate;
@@ -92,7 +92,7 @@ struct World {
   bool holding = false;
   int writesDuringHold = 0;
   // RTC no-init memory: survives every restart but a power-on.
-  TgGuardState rtc{};
+  TgGuardStore rtc{};
 
   int64_t epoch() const { return kEpoch0 + now / 1000; }
   void psramAdd(size_t n) {
