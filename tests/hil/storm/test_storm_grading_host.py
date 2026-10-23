@@ -486,3 +486,27 @@ def test_spend_limits_a_leg_needs_room_under():
     )
     assert old["active"] is True and kit.spend_rows(old, "anthropic") == {"": (2000, 2509, True)}
     assert kit.spend_rows(None, "anthropic") == {}
+
+
+def test_file_store_leg_allows_one_send_per_photo_plus_the_notice():
+    """Leg g in bot mode: 5 replies and the one store-full notice log the same send line
+    6 times, which is not a loop (lane FSN, 23 Oct); 10 sends for 5 photos is."""
+    import test_storm_g_file_store_full as legg
+
+    def run(sends: int) -> g.Verdict:
+        lines = g.parse_log("\n".join(f"{k} {k * 100} - telegram: send ok to 4747474707" for k in range(1, sends + 1)))
+        peak, _ = g.identical_peak(lines)
+        m = g.Metrics(
+            paid_turns=legg.PHOTOS,
+            provider_requests=legg.PHOTOS,
+            parked_requests=0,
+            notices=1,
+            identical_peak=peak,
+            usable=True,
+            usable_s=8.0,
+        )
+        return g.grade(m, legg.BOUNDS)["no_loop"]
+
+    assert legg.MAX_SENDS == legg.PHOTOS + 1
+    assert run(6).status == g.PASS
+    assert run(10).status == g.FAIL and "identical log lines 10" in run(10).detail

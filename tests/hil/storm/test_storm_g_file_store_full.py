@@ -14,8 +14,9 @@ project, are removed afterwards. Every other provider key is cleared. Unit L.
 Bounds on the release candidate: at most one turn per photo, each photo read once
 (no repeated download), the owner told that the store is full, and every turn reaching
 the owner as exactly one message (a photo answered twice, or a notice repeated on its
-own, is a second message), no log line repeated more than 5 times, the fresh message
-answered within 180 s.
+own, is a second message), no log line repeated more than once per photo plus once (in
+bot mode each message to the owner logs the same send line), the fresh message answered
+within 180 s.
 
 Run: NIMBUS_STORM_UNIT=L python3 -m pytest tests/hil/storm/test_storm_g_file_store_full.py --allow-hardware -s
 """
@@ -42,8 +43,16 @@ NOTICE_RE = re.compile(
     r"full|storage|space|remove|delete|could not be (?:saved|stored|kept)|not (?:saved|stored)", re.I
 )
 DOWNLOAD_RE = re.compile(r"telegram: attachment downloaded")
+# In bot mode every message to the owner logs the same "telegram: send ok to <chat>" line:
+# one reply per photo plus the episode's one notice that the store is full. More than
+# that is a send loop, still caught here (and by messagesPerTurn and the notice count).
+MAX_SENDS = PHOTOS + 1
 BOUNDS = g.Bounds(
-    max_paid_turns=PHOTOS, max_provider_requests=3 * PHOTOS, max_identical=5, notices=(1, 1), usable_within_s=180.0
+    max_paid_turns=PHOTOS,
+    max_provider_requests=3 * PHOTOS,
+    max_identical=MAX_SENDS,
+    notices=(1, 1),
+    usable_within_s=180.0,
 )
 
 
