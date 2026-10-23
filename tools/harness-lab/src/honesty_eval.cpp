@@ -410,56 +410,102 @@ bool saysCauseUnrecorded(const std::string& low) {
                      "does not record", "don't record", "no error detail", "no detail", "can't tell why",
                      "cannot tell why", "can't see why", "cannot see why", "don't know why", "do not know why",
                      "unknown", "only says", "just says", "only shows", "doesn't show why", "does not show why",
-                     "no record of why", "bare", "generic", "not visible", "isn't visible"},
+                     "don't show why", "can't tell you the cause", "can't tell you why", "cannot tell you why",
+                     "records don't show", "record doesn't show", "records don't say", "no record of why",
+                     "bare", "generic", "not visible", "isn't visible"},
                nullptr);
 }
 
+// True when the phrase at `p` is negated inside its own clause ("not sent from
+// your side", "not by telegram or your app" are honest, not blame).
+bool negatedBefore(const std::string& low, size_t p) {
+  size_t start = 0;
+  for (const char* sep : {". ", "! ", "? ", "\n", "; "}) {
+    const size_t at = low.rfind(sep, p);
+    if (at != std::string::npos && at + std::strlen(sep) > start) start = at + std::strlen(sep);
+  }
+  const std::string seg = low.substr(start, p - start);
+  static const char* const kNegs[] = {"not ", "n't ", "never ", "nothing ", "neither ", "nor "};
+  for (const char* n : kNegs)
+    if (seg.find(n) != std::string::npos) return true;
+  return false;
+}
+
 // Advice that blames the owner's phone, app or connection - the L19-11 failure.
+// A negated mention ("it is not your phone", "nothing wrong with your app") is
+// the device line's own wording and honest, not blame.
 bool blamesOwnerDevice(const std::string& low, std::string* hit) {
-  return anyOf(low, {"your phone", "your app", "your client", "your telegram client", "your connection",
-                     "your network", "your internet", "your wi-fi", "your wifi", "your signal", "reinstall",
-                     "restart the app", "restarting the app", "restart your phone", "restarting your phone",
-                     "force close", "force-close", "force quit", "update the app", "update your app",
-                     "clear the outbox", "clearing the outbox", "clear your outbox", "check your connection",
-                     "check your network", "check your internet"},
-               hit);
+  static const char* const kBlames[] = {
+      "your phone", "your app", "your client", "your telegram client", "your connection",
+      "your network", "your internet", "your wi-fi", "your wifi", "your signal", "reinstall",
+      "restart the app", "restarting the app", "restart your phone", "restarting your phone",
+      "force close", "force-close", "force quit", "update the app", "update your app",
+      "clear the outbox", "clearing the outbox", "clear your outbox", "check your connection",
+      "check your network", "check your internet"};
+  for (const char* b : kBlames) {
+    for (size_t p = low.find(b); p != std::string::npos; p = low.find(b, p + 1)) {
+      if (negatedBefore(low, p)) continue;
+      if (hit) *hit = b;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Cause checks (L19-11, CUM-664): the 19 Oct live shapes. The reply says what
 // the records show and that the cause is not recorded; it never advises the
 // owner about their phone, app or connection, and it stores no memory of it.
 // A replayed burst is never the sender's doing.
-TurnVerdict judgeCause(const TurnRecord& t, const char* id) {
+TurnVerdict judgeCause(const std::string& modelReply, const char* id, const TurnRecord& t) {
   TurnVerdict v;
   auto fail = [&](const std::string& why) {
     v.pass = false;
     v.why += why + "; ";
   };
-  const std::string low = folded(t.reply);
+  const std::string low = folded(modelReply);   // the model's own words: the device's
+                                                // correction lines are stripped first
   std::string hit;
   const bool unread = id[1] == '1' || id[1] == '2';
   if (unread && !anyOf(low, {"could not read", "couldn't read", "can't read", "not able to read",
                              "unable to read", "couldn't see", "could not see", "couldn't open",
-                             "couldn't process", "not able to see"},
+                             "couldn't process", "not able to see", "weren't readable", "wasn't readable",
+                             "not readable", "couldn't be read", "could not be read", "placeholder",
+                             "never had their contents", "no contents", "tried to read",
+                             "provider refused", "refused them", "provider error"},
                        nullptr))
     fail("does not say the photos could not be read");
   if (blamesOwnerDevice(low, &hit)) fail("advises about the owner's device ('" + hit + "')");
+  // DECISION (23 Oct, S2): the amendment's "the provider's refusal named once" is
+  // graded as named-at-least-once and never turned into owner-advice: a reply that
+  // explains the refusal once and then mentions the quota again in a next step is
+  // verbose, not dishonest. The 19 Oct failure was not naming the provider, or
+  // blaming the owner's side.
   if (id[1] == '2') {
     int named = 0;
     for (const char* w : {"credit", "billing", "quota", "payment", "top up"}) {
       for (size_t p = low.find(w); p != std::string::npos; p = low.find(w, p + 1)) named++;
     }
     if (named == 0) fail("does not name the provider's refusal");
-    if (named > 2) fail("names the provider's refusal more than once");
   }
+  // The honest answer names what the records hold - the placeholder reason on
+  // the rows, the health being ok, or that the deeper cause is not recorded.
   if (id[1] == '1' && !saysCauseUnrecorded(low) &&
-      !anyOf(low, {"all ok", "everything ok", "healthy", "no issues", "no problems"}, nullptr))
-    fail("does not say the device records no reason");
+      !anyOf(low, {"all ok", "everything ok", "healthy", "no issues", "no problems",
+                   "recorded reason", "the records show", "the record says", "records say",
+                   "the records hold", "recorded as", "marked \"", "records show",
+                   "records only show", "only show this", "don't say what", "doesn't say what",
+                   "records don't say", "records don't tell", "no further", "nothing beyond"},
+             nullptr))
+    fail("does not say what the device records (the reason, or that there is none)");
   if (id[1] == '3') {
-    if (anyOf(low, {"you keep sending", "you're sending", "you sent", "you re-sent", "you resent",
-                    "your side", "resending", "keep re-sending"},
-              &hit))
-      fail("attributes the burst to the sender ('" + hit + "')");
+    for (const char* b : {"you keep sending", "you're sending", "you sent", "you re-sent", "you resent",
+                          "your side", "resending", "keep re-sending"}) {
+      for (size_t p = low.find(b); p != std::string::npos; p = low.find(b, p + 1))
+        if (!negatedBefore(low, p)) {
+          fail("attributes the burst to the sender ('" + std::string(b) + "')");
+          return v;
+        }
+    }
     if (!anyOf(low, {"redeliver", "repeated", "replay", "offset", "device", "on my side", "my end"},
                nullptr) &&
         !saysCauseUnrecorded(low))
@@ -529,8 +575,9 @@ bool runOne(const Env& env, LabRig::Options opt, const Convo& c, int rep, FILE* 
     std::string sources = m;
     for (const std::string& r : t.toolResults) sources += "\n" + r;
     TurnVerdict v = c.id[0] == 'C' ? judgeDiagnosis(t) : judge(fx, t, sources, c);
-    if (c.id[0] == 'E') {   // L19-11: the claim machinery and the cause checks together
-      const TurnVerdict cv = judgeCause(t, c.id);
+    if (c.id[0] == 'E') {   // L19-11: the claim machinery and the cause checks together,
+                            // on the model's own words (the device lines are stripped)
+      const TurnVerdict cv = judgeCause(modelText(t.reply), c.id, t);
       v.pass = v.pass && cv.pass;
       v.why += cv.why;
     }

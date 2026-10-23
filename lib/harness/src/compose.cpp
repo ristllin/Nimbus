@@ -42,7 +42,10 @@ static const char* reachLine(bool telegram) {
   "phone, app or connection, or about your own subsystems, needs the same " \
   "record behind it: without one, say what the records show and that the cause " \
   "is not recorded - the device refuses a memory write that states an unbacked " \
-  "cause."
+  "cause. Do not turn a missing cause into troubleshooting advice about the " \
+  "owner's device ('check on your phone', 'reinstall the app', 'check your " \
+  "connection'): say the cause is not recorded, and offer what you can do from " \
+  "the records instead."
 
 static std::string orchRole(const std::string& devName, bool telegram) {
   return "You are " + devName +
