@@ -60,7 +60,9 @@ class LabFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"number"},)"
             R"("sum":{"type":"string"}},"required":["project","name"]})");
+  }
 
+  void registerAppend(nimbus::orch::ToolRegistry& reg) {
     // CUM-644: the lab's files.append and tail view match the device's, so a
     // lab run exercises the same calls the firmware will see.
     reg.add("files.append",

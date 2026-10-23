@@ -339,10 +339,14 @@ static void test_assistant_rows_carry_out_kinds() {
   r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("thanks", "Roy", "123");
   const std::string w = r.lastWindow();
-  TEST_ASSERT_TRUE(w.find("- assistant [did: spoke]: Market at 9.\n\n  Set a reminder?\n") !=
+  // Lane G1's message-level history rides the [did: ...] tag inside the
+  // assistant message ("[did: spoke] Market at 9." - conversation.cpp
+  // renderHistory); the reply and its appended question are still ONE
+  // assistant message, and the written reply still beats the spoken one.
+  TEST_ASSERT_TRUE(w.find("- assistant: [did: spoke] Market at 9.\n\nSet a reminder?\n") !=
                    std::string::npos);
   TEST_ASSERT_TRUE(w.find("Market at nine.") == std::string::npos);   // written beats spoken
-  TEST_ASSERT_TRUE(w.find("- assistant [did: nothing]: Which stall first?") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("- assistant: [did: nothing] Which stall first?") != std::string::npos);
 }
 
 // The switch off is byte-identical to an engine that never heard of histV2: the
