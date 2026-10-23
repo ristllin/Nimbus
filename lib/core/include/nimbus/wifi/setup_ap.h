@@ -47,6 +47,13 @@ struct SetupApInputs {
   // EXHAUSTED (the supervisor reaches Unreachable and clears this), never mid-cycle - a
   // bounded window, so a TFT board is never stranded with the AP down.
   bool     failoverActive = false;
+  // Internal memory can take an AP start right now. Starting the AP allocates inside the
+  // Wi-Fi driver, which crashes on a failed allocation instead of returning an error
+  // (bench, unit A, 23 Oct: the station dropped during a turn under low memory, the AP
+  // restore ran, LoadProhibited in ieee80211_hostap_attach, twice in two runs). While
+  // false, the actions that start the AP (RestoreAp, ProtectAp) wait; the reconcile
+  // retries every few seconds, so the AP comes back as soon as memory does.
+  bool     memoryOk = true;
 };
 
 // Decide the single setup-AP action for this tick. See the header note for the why.

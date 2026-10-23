@@ -258,59 +258,57 @@ def _run(dev, record: dict, sink: list) -> None:
     if first.group(1) != "1":
         pytest.skip(f"no healthy card on this unit ({first.group(0)})")
     data = os.urandom(PAYLOAD_BYTES)
-    want = hashlib.sha256(data).hexdigest()
-    put = _fsput(dev, data, sink)
-    record["fsput"] = put.group(0)
-    before = _cmd(dev, f"FSTAT {PATH}", FSTAT_RE, sink, timeout=30.0)
-    record["fstatBefore"] = before.group(0)
-    reads = record.setdefault("readsUnder", [])
+    record["want"] = hashlib.sha256(data).hexdigest()
+    record["fsput"] = _fsput(dev, data, sink).group(0)
+    record["fstatBefore"] = _cmd(dev, f"FSTAT {PATH}", FSTAT_RE, sink, timeout=30.0).group(0)
+    _under_ballast(dev, record, sink, ip)
+    record["fstatAfter"] = _cmd(dev, f"FSTAT {PATH}", FSTAT_RE, sink, timeout=30.0).group(0)
+    record["probesAfter"] = [_cmd(dev, "SDCHECK", SDCHECK_RE, sink).group(0) for _ in range(2)]
+    _grade(record, sink)
+
+
+def _under_ballast(dev, record: dict, sink: list, ip: str) -> None:
     ballast = _cmd(dev, f"FAULT sram_ballast {BALLAST_ALL}", BALLAST_RE, sink)
     try:
         record["ballast"] = ballast.group(0)
         dma = _cmd(dev, "HEAPINFO", HEAPINFO_DMA_RE, sink)
         record["dmaFreeUnder"], record["dmaLargestUnder"] = int(dma.group(1)), int(dma.group(2))
         with _LanLoad(ip) as load:
-            end = time.time() + LOAD_S
-            while time.time() < end:
-                record["probes"].append(_cmd(dev, "SDCHECK", SDCHECK_RE, sink, timeout=20.0).group(0))
-                reads.append(
-                    _cmd(
-                        dev,
-                        f"FSTAT {PATH}",
-                        re.compile(r"FSTAT (ERR \w+|\S+ bytes=\d+ sha256=\w+)"),
-                        sink,
-                        timeout=30.0,
-                    ).group(1)
-                )
+            _probe_and_read(dev, record, sink)
         record["lanLoad"] = {"answered": load.ok, "failed": load.err}
     finally:
         record["release"] = _cmd(dev, "FAULT sram_ballast 0", BALLAST_RE, sink).group(0)
-    after = _cmd(dev, f"FSTAT {PATH}", FSTAT_RE, sink, timeout=30.0)
-    record["fstatAfter"] = after.group(0)
-    record["probesAfter"] = [_cmd(dev, "SDCHECK", SDCHECK_RE, sink).group(0) for _ in range(2)]
-    failures = [ln for ln in sink if CARD_FAIL_RE.search(ln)]
+
+
+def _probe_and_read(dev, record: dict, sink: list) -> None:
+    read_re = re.compile(r"FSTAT (ERR \w+|\S+ bytes=\d+ sha256=\w+)")
+    reads = record.setdefault("readsUnder", [])
+    end = time.time() + LOAD_S
+    while time.time() < end:
+        record["probes"].append(_cmd(dev, "SDCHECK", SDCHECK_RE, sink, timeout=20.0).group(0))
+        reads.append(_cmd(dev, f"FSTAT {PATH}", read_re, sink, timeout=30.0).group(1))
+
+
+def _grade(record: dict, sink: list) -> None:
+    good = f"bytes={PAYLOAD_BYTES} sha256={record['want']}"
     started = next(i for i, ln in enumerate(sink) if SDCHECK_RE.search(ln))
+    failures = [ln for ln in sink if CARD_FAIL_RE.search(ln)]
     restarts = [ln for ln in sink[started:] if RESTART_RE.search(ln)]
-    record["restartLines"] = restarts[:5]
-    record["cardFailLines"] = len(failures)
-    record["cardFailSample"] = failures[:5]
+    reads = record.get("readsUnder", [])
+    bad_reads = [r for r in reads if not r.endswith(good)]
     bad_probes = [p for p in record["probes"] + record["probesAfter"] if p != "SDCHECK probe=1 sdlost=0"]
-    bad_reads = [r for r in reads if not r.endswith(f"bytes={PAYLOAD_BYTES} sha256={want}")]
-    why = []
-    if put.group(2) != want or before.group(3) != want:
-        why.append("the file did not land on the card byte-identical")
-    if bad_reads:
-        why.append(f"{len(bad_reads)} of {len(reads)} reads under the load failed or differed: {bad_reads[:2]}")
-    if after.group(3) != want or int(after.group(2)) != PAYLOAD_BYTES:
-        why.append(f"the card read back different bytes after the ballast: {after.group(0)}")
-    if bad_probes:
-        why.append(f"the card probe failed {len(bad_probes)} time(s): {bad_probes[:3]}")
-    if failures:
-        why.append(f"the card driver ran out of memory or the card was demoted: {failures[:3]}")
-    if restarts:
-        why.append(f"the device restarted during the leg: {restarts[:3]}")
-    if len(record["probes"]) < 5:
-        why.append(f"only {len(record['probes'])} probes ran under the load (the leg measured too little)")
+    record.update(restartLines=restarts[:5], cardFailLines=len(failures), cardFailSample=failures[:5])
+    checks = [
+        (record["fsput"].endswith(f"sha256={record['want']}"), "the file did not land on the card byte-identical"),
+        (record["fstatBefore"].endswith(good), f"the first read differed: {record['fstatBefore']}"),
+        (not bad_reads, f"{len(bad_reads)} of {len(reads)} reads under the load failed or differed: {bad_reads[:2]}"),
+        (record["fstatAfter"].endswith(good), f"the read after the ballast differed: {record['fstatAfter']}"),
+        (not bad_probes, f"the card probe failed {len(bad_probes)} time(s): {bad_probes[:3]}"),
+        (not failures, f"the card driver ran out of memory or the card was demoted: {failures[:3]}"),
+        (not restarts, f"the device restarted during the leg: {restarts[:3]}"),
+        (len(record["probes"]) >= 5, f"only {len(record['probes'])} probes ran under the load"),
+    ]
+    why = [msg for ok, msg in checks if not ok]
     record["why"] = "; ".join(why)
     record["verdict"] = "FAIL" if why else "PASS"
 

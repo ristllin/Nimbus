@@ -14,7 +14,8 @@ const char* setupApActName(SetupApAct a) {
   return "none";
 }
 
-SetupApAct decideSetupAp(const SetupApInputs& in) {
+// The policy proper; decideSetupAp() applies the memory hold on top of it.
+static SetupApAct decidePolicy(const SetupApInputs& in) {
   // Notifier mode keeps the radio off (BLE owns the internal SRAM), so there is no
   // softAP to reconcile - turning it back on would defeat the Wi-Fi-off design.
   if (!in.orchestrator) return SetupApAct::None;
@@ -50,6 +51,16 @@ SetupApAct decideSetupAp(const SetupApInputs& in) {
     return SetupApAct::ProtectAp;
 
   return SetupApAct::None;
+}
+
+SetupApAct decideSetupAp(const SetupApInputs& in) {
+  const SetupApAct act = decidePolicy(in);
+  // Restore and Protect start the AP, which the Wi-Fi driver does not survive with
+  // internal memory exhausted: hold them until memory is back (the next reconcile asks
+  // again). Dropping the AP frees memory, so it never waits.
+  if (!in.memoryOk && (act == SetupApAct::RestoreAp || act == SetupApAct::ProtectAp))
+    return SetupApAct::None;
+  return act;
 }
 
 }  // namespace wifi

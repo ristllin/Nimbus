@@ -6927,6 +6927,16 @@ void loop() {
     // trying the NEXT network is progress, not churn - hold the setup AP until it is
     // exhausted (the supervisor clears this on reaching Unreachable).
     si.failoverActive = net::link::failoverActive();
+    // Starting the AP allocates inside the Wi-Fi driver, which crashes on a failed
+    // allocation: under low internal memory the restore waits for the next reconcile.
+    si.memoryOk = agent::memory::roomForDriverSetup();
+    static bool s_apHeldLow = false;
+    if (!si.memoryOk && !connected && !si.apAddressed && !s_apHeldLow) {
+      s_apHeldLow = true;
+      agent::alog("[net] Wi-Fi down - SoftAP restore waits for internal memory");
+    } else if (si.memoryOk) {
+      s_apHeldLow = false;
+    }
     switch (nimbus::wifi::decideSetupAp(si)) {
       case nimbus::wifi::SetupApAct::DropAp:
         net::dropSoftAP();

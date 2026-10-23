@@ -173,6 +173,48 @@ static void test_recovery_resumes_when_failover_exhausted() {
   TEST_ASSERT_EQUAL(SetupApAct::RestoreAp, decideSetupAp(in)); // exhausted -> AP back
 }
 
+// Low internal memory holds exactly the actions that start the AP, over every input
+// combination: with memory short, Restore and Protect become None and nothing else changes;
+// with memory back, the policy is unchanged (lane SDLOW: the driver crashed starting the AP
+// under low memory).
+static void test_low_memory_holds_every_ap_start_and_nothing_else() {
+  int held = 0, kept = 0;
+  for (int bits = 0; bits < (1 << 7); ++bits) {
+    for (uint32_t join : {0u, 1000u, 40000u}) {
+      SetupApInputs in;
+      in.orchestrator = bits & 1;
+      in.tftBoard = bits & 2;
+      in.staConnected = bits & 4;
+      in.apAddressed = bits & 8;
+      in.onboarded = bits & 16;
+      in.handoffGrace = bits & 32;
+      in.failoverActive = bits & 64;
+      in.msSinceJoin = join;
+      in.memoryOk = true;
+      const SetupApAct ok = decideSetupAp(in);
+      in.memoryOk = false;
+      const SetupApAct low = decideSetupAp(in);
+      if (ok == SetupApAct::RestoreAp || ok == SetupApAct::ProtectAp) {
+        TEST_ASSERT_EQUAL(SetupApAct::None, low);
+        held++;
+      } else {
+        TEST_ASSERT_EQUAL(ok, low);
+        kept++;
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(held > 0);   // counter-test: the sweep reached both AP-starting actions
+  TEST_ASSERT_TRUE(kept > 0);
+  // The exact shape seen on the bench: the station dropped, the AP down, memory short.
+  SetupApInputs in = base();
+  in.onboarded = true;
+  in.apAddressed = false;
+  in.memoryOk = false;
+  TEST_ASSERT_EQUAL(SetupApAct::None, decideSetupAp(in));
+  in.memoryOk = true;
+  TEST_ASSERT_EQUAL(SetupApAct::RestoreAp, decideSetupAp(in));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_notifier_never_touches_the_radio);
@@ -188,5 +230,6 @@ int main() {
   RUN_TEST(test_no_protect_without_a_join_in_flight);
   RUN_TEST(test_no_protect_after_onboarding_complete);
   RUN_TEST(test_first_boot_is_quiescent);
+  RUN_TEST(test_low_memory_holds_every_ap_start_and_nothing_else);
   return UNITY_END();
 }

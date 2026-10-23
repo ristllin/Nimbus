@@ -1757,13 +1757,13 @@ void tickSdHealth(uint32_t nowMs) {
 // a low-memory remount left unmounted), and writing what the card refused meanwhile (the
 // held history rows, then the vectors). The owner hears once per outage (main.cpp polls
 // sdOutageNoticeDue()).
-static constexpr size_t kRemountMinDmaBlock = 4096;     // the card's setup allocates DMA memory
-static constexpr size_t kRemountMinInternalFree = 16384;
+static constexpr size_t kSetupMinDmaBlock = 4096;      // a driver's setup allocates DMA memory
+static constexpr size_t kSetupMinInternalFree = 16384;
 static constexpr int kHeldRowsPerStep = 32;
 
-static bool memoryOkForRemount() {
-  return heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) >= kRemountMinDmaBlock &&
-         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= kRemountMinInternalFree;
+bool roomForDriverSetup() {
+  return heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) >= kSetupMinDmaBlock &&
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= kSetupMinInternalFree;
 }
 
 static bool rowsHeld() { return g_epiLog && g_epiLog->heldCount() > 0; }   // benign unlocked read
@@ -1771,7 +1771,7 @@ static bool rowsHeld() { return g_epiLog && g_epiLog->heldCount() > 0; }   // be
 bool sdRecoveryDue() {
   if (!g_begun || !g_haveSd || g_erasing) return false;
   const uint32_t now = millis();
-  if (sdLost()) return g_sdRecovery.remountDue(memoryOkForRemount(), now);
+  if (sdLost()) return g_sdRecovery.remountDue(roomForDriverSetup(), now);
   return effHaveSd() && g_sdRecovery.flushDue(rowsHeld(), g_vecOwed, now);
 }
 
@@ -1791,7 +1791,7 @@ void sdRecoveryStep() {
   if (!g_begun || !g_haveSd || g_erasing) return;
   const uint32_t now = millis();
   if (sdLost()) {
-    if (g_sdRecovery.remountDue(memoryOkForRemount(), now)) remountLostCard();
+    if (g_sdRecovery.remountDue(roomForDriverSetup(), now)) remountLostCard();
     return;
   }
   if (!effHaveSd() || !g_sdRecovery.flushDue(rowsHeld(), g_vecOwed, now)) return;

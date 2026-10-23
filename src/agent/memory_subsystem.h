@@ -181,6 +181,10 @@ bool forceSdProbe();   // test/console: one immediate probe+note (bypasses the c
 // lock-free (the Telegram task's idle wait polls it); sdRecoveryStep() runs one bounded
 // step on that task between turns, never on the main loop. sdOutageNoticeDue(): the
 // owner's one notice per outage is due now (main.cpp sends it, then sdOutageNoticeSent()).
+// Internal memory can take a driver's setup allocations now (a card remount, a Wi-Fi AP
+// start): a 4 KB DMA-capable block and 16 KB internal free. Below that a setup can fail
+// half-way (a card left unmounted) or crash inside the driver (the Wi-Fi AP start).
+bool roomForDriverSetup();
 bool sdRecoveryDue();
 void sdRecoveryStep();
 bool sdOutageNoticeDue(uint32_t nowMs);

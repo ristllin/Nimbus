@@ -67,6 +67,9 @@ network failover is designed to cooperate with that, not fight it:
   during that window.
 - The setup hotspot returns only once failover is **exhausted** (every saved network
   tried, none reachable). That is the point at which a person genuinely needs it.
+- When Wi-Fi drops while the device is very low on working memory, the hotspot waits
+  until memory is back (checked every few seconds): starting it allocates inside the
+  Wi-Fi driver, which restarts the device when that allocation fails.
 
 To decide whether the hotspot is up, the device asks the radio whether it is really
 running, not just whether it still has an address, so a hotspot that failed to start
