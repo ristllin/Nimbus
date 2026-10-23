@@ -569,28 +569,38 @@ static void test_marker_never_on_any_wire() {
 // weeks of history at the window cap, a full recall, the scratchpad and the
 // sessions - assembles under providers::kWireBodyMax on every wire, and a body
 // over the cap is refused before the send (fail closed, named).
-static void test_wire_body_size_guard() {
+// The REAL device shape (test_prompt_budget's deviceShapedTools): ~42 tools,
+// 309 B descriptions (784 B for device_status), ~220 B schemas.
+static std::vector<nimbus::orch::ToolRegistry::Spec> deviceShapedSpecs() {
   std::vector<nimbus::orch::ToolRegistry::Spec> specs;
   const std::string schema =
       R"({"type":"object","additionalProperties":false,"required":["project","name"],)"
       R"("properties":{"project":{"type":"string"},"name":{"type":"string"},"q":{"type":"string"},)"
       R"("text":{"type":"string"},"id":{"type":"string"},"content":{"type":"string"},)"
       R"("offset":{"type":"integer"},"limit":{"type":"integer"}}})";
-  // The REAL device shape (test_prompt_budget's deviceShapedTools): ~42 tools,
-  // 309 B descriptions (784 B for device_status), ~220 B schemas.
   for (int i = 0; i < 42; i++)
     specs.push_back({"tool_" + std::to_string(i),
                      std::string(i == 0 ? 784 : 309, 'd') + " tool", schema});
+  return specs;
+}
+
+// The device-shaped worst case: a full recent window (ContextBudget::
+// recentConvBytes, 8192 B), a full recall, a device-scale system budget.
+static std::string worstCasePrompt() {
   const std::unique_ptr<Turn> t = turnAt(9, true, 0);   // the summary pair only
-  for (int i = 0; i < 13; i++) {   // a full recent window at the device cap
-                               // (ContextBudget::recentConvBytes, 8192 B)
+  for (int i = 0; i < 13; i++) {
     t->ci.history.push_back({true, "question " + std::to_string(i) + ": " + std::string(280, 'q')});
     t->ci.history.push_back({false, "answer " + std::to_string(i) + ": " + std::string(280, 'a')});
   }
   for (int i = 0; i < 40; i++)
     t->ci.recalled.push_back("recalled fact " + std::string(100, 'r') + std::to_string(i));
-  t->ci.budgetBytes = 20480;   // the device-scale derived system budget
-  const std::string ins = agent::composeInstructions(t->ci);
+  t->ci.budgetBytes = 20480;
+  return agent::composeInstructions(t->ci);
+}
+
+static void test_wire_body_size_guard() {
+  const std::vector<nimbus::orch::ToolRegistry::Spec> specs = deviceShapedSpecs();
+  const std::string ins = worstCasePrompt();
   for (Wire w : {Wire::AntLoop, Wire::AntSingle, Wire::OaiLoop, Wire::OaiSingle, Wire::MisLoop}) {
     const auto bodies = runTurn(w, ins, "yes", &specs);
     char msg[128];
@@ -604,6 +614,58 @@ static void test_wire_body_size_guard() {
   TEST_ASSERT_FALSE(providers::bodyWithinBudget(body, err));
   TEST_ASSERT_TRUE(err.find("request body over") == 0);
   TEST_ASSERT_TRUE(providers::bodyWithinBudget(body.substr(0, providers::kWireBodyMax), err));
+}
+
+// CUM-642, the measurement: a LONG tool loop (12 rounds of 1.5 KB results, the
+// shape of a research turn reading file tails) at the device-shaped worst case
+// rides the 16 KB replay budget WITHIN the stated body budget - the fold fires
+// mid-loop (hysteresis: down to half, so it does not fire every round) and
+// every round's assembled body stays under kWireBodyMax, so the guard never
+// refuses a turn that is inside its component budgets. The newest result still
+// rides whole (the clip only touches a round that alone overflows).
+static void test_long_loop_replay_stays_within_the_body_budget() {
+  FakeProviderDeps d;
+  for (int i = 1; i <= 12; i++) {
+    const std::string body =
+        "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_" + std::to_string(i) +
+        "\",\"name\":\"memory_search\",\"input\":{\"q\":\"r" + std::to_string(i) +
+        "\"}}],\"stop_reason\":\"tool_use\"}";
+    d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, body});
+  }
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalResponse()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  for (const auto& s : deviceShapedSpecs()) rig.ht.specs.push_back(s);
+  const std::string result = std::string(1500, 'r') + " tail" + std::to_string(12);
+  rig.ht.dispatch = [&rig, &result](const nimbus::orch::HeadToolCall& c) {
+    nimbus::orch::HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    r.output = result;
+    return r;
+  };
+  std::string conv, out, err;
+  const std::string ins = worstCasePrompt();
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnAnthropic(pd, conv, ins, "yes", out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(13, (int)d.http.seen.size());
+  bool folded = false;
+  size_t largest = 0;
+  for (const auto& r : d.http.seen) {
+    largest = std::max(largest, r.body.size());
+    if (r.body.find("folded to one line each") != std::string::npos) folded = true;
+    TEST_ASSERT_TRUE_MESSAGE(r.body.size() <= providers::kWireBodyMax,
+                             ("mid-loop body " + std::to_string(r.body.size()) + " B").c_str());
+  }
+  char msg[128];
+  std::snprintf(msg, sizeof msg, "12-round loop: largest body %zu B (cap %zu B), fold fired=%d",
+                largest, providers::kWireBodyMax, (int)folded);
+  TEST_MESSAGE(msg);
+  TEST_ASSERT_TRUE_MESSAGE(folded, "the 16 KB replay budget must fold mid-loop here");
+  // The newest result rides whole on the last tool round (the clip only bites a
+  // round that alone overflows the budget).
+  TEST_ASSERT_TRUE(d.http.seen[11].body.find(" tail12") != std::string::npos);
 }
 
 // ---- Anthropic cache points --------------------------------------------------------
@@ -893,6 +955,7 @@ int main(int, char**) {
   RUN_TEST(test_wire_prefix_stable_and_tools_byte_identical);
   RUN_TEST(test_marker_never_on_any_wire);
   RUN_TEST(test_wire_body_size_guard);
+  RUN_TEST(test_long_loop_replay_stays_within_the_body_budget);
   RUN_TEST(test_anthropic_breakpoints_never_exceed_four);
   RUN_TEST(test_image_parts_never_carry_cache_control);
   RUN_TEST(test_openai_breakpoints_and_cache_key);

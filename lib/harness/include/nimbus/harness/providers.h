@@ -45,13 +45,15 @@ namespace providers {
 // scratchpad by the same budget), and the measured worst HEALTHY case - the
 // full 42-tool manifest on the wire, a device-scale system budget, a full
 // recent window, a full recall - assembles at 62.8-64.9 KB across the loop
-// wires, dominated by the tools array (~32 KB, the API contract). The 70 KB
-// budget sits above that case (test_prompt_layout asserts it, per wire) and
+// wires, dominated by the tools array (~32 KB, the API contract); a LONG
+// tool loop adds its replay budget on top (16 KB of tool results, CUM-642),
+// for a measured worst of about 80 KB mid-loop. The 85 KB budget sits above
+// that case (test_prompt_layout asserts it, per wire and mid-loop) and
 // a body over it is REFUSED before the send (fail closed, named, the way
 // serializeChecked refuses an over-long string): a component that escapes
 // its cap costs one honest turn, not a TLS stall (lane O3's memory pressure).
 // Photos splice in AFTER the check: they are their own bounded channel.
-inline constexpr size_t kWireBodyMax = 70000;
+inline constexpr size_t kWireBodyMax = 85000;
 
 // The last step of a body build, after serializeChecked: hold the assembled
 // body under kWireBodyMax. False + err (the provider refuses the send) when
