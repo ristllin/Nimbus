@@ -524,8 +524,9 @@ static void test_voice_claim_needs_a_telegram_receipt() {
   // the queued note (it is not known to have arrived), and a voice claim the voice line.
   ClaimCheck off;
   off.beginTurn();
-  off.noteTool(FxKind::Send, false, "sent to Telegram as text (voice replies are switched off, so it was not spoken)",
-               flags);
+  off.noteTool(FxKind::Send, false,
+               "queued for Telegram as text (voice replies are switched off, so it will not be spoken) - "
+               "no delivery receipt yet", flags);
   TEST_ASSERT_TRUE(off.finalCheck(turnJson("I sent it to you on Telegram."))
                        .find("no delivery receipt") != std::string::npos);
   TEST_ASSERT_FALSE(off.finalCheck(turnJson("I sent it to you as a voice message.")).empty());
@@ -552,13 +553,21 @@ static void test_voice_claim_needs_a_telegram_receipt() {
     none.beginTurn();
     TEST_ASSERT_EQUAL_STRING_MESSAGE("", none.finalCheck(turnJson(reply)).c_str(), reply);
   }
-  // A text send's claim keeps the plain backing (S2 extends receipts to text later), and
-  // a clause join keeps a voice word out of a text claim.
+  // 22 Oct (delivery claims, the text half): a queued text send backs no "sent"
+  // either; the claim layer treats it like any other receipt-less Telegram send.
+  // A clause join keeps a voice word out of a text claim (precision), and with a
+  // receipt the same claim is backed (the counter-test).
   ClaimCheck plain;
   plain.beginTurn();
-  plain.noteTool(FxKind::Send, false, "sent to Telegram as text", 0);
-  TEST_ASSERT_EQUAL_STRING("", plain.finalCheck(turnJson("I sent the text version since voice messages "
-                                                         "are off.")).c_str());
+  plain.noteTool(FxKind::Send, false, "queued for Telegram as text - no delivery receipt yet", flags);
+  TEST_ASSERT_TRUE(plain.finalCheck(turnJson("I sent the text version since voice messages "
+                                            "are off."))
+                       .find("no delivery receipt") != std::string::npos);
+  ClaimCheck arrived;
+  arrived.beginTurn();
+  arrived.noteTool(FxKind::Send, false, "queued for Telegram as text (message_id 5)", flags);
+  TEST_ASSERT_EQUAL_STRING("", arrived.finalCheck(turnJson("I sent the text version since voice messages "
+                                                           "are off.")).c_str());
 }
 
 

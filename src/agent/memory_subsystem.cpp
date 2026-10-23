@@ -1171,7 +1171,8 @@ void begin() {
             "voice:true to deliver it as spoken audio instead of text (up to 2,400 characters, "
             "sent as voice messages of up to 600 characters each). A voice result names "
             "Telegram's message_id for every voice message that arrived; without one, nothing "
-            "arrived.",
+            "arrived. A text result only says the message is QUEUED: the receipt comes when the "
+            "device delivers it, so phrase a text send as on its way, never as delivered.",
             [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               if (!agent::orchestrator::turnInFlight())
                 return nimbus::orch::ToolResult::fail("reply.telegram is only available during a turn");
@@ -1192,9 +1193,13 @@ void begin() {
                                      "chat, or pass an allowlisted id)"
                                    : result);
               if (voice) return nimbus::orch::ToolResult::ok(result);
+              // 22 Oct (delivery claims): a queued text is NOT a delivery. The
+              // tool's own success text backs no "sent" claim; the receipt comes
+              // when the poll task delivers, so the answer says queued.
               return nimbus::orch::ToolResult::ok(
-                  asked ? "sent to Telegram as text (voice replies are switched off, so it was not spoken)"
-                        : "sent to Telegram as text");
+                  asked ? "queued for Telegram as text (voice replies are switched off, so it will "
+                          "not be spoken) - no delivery receipt yet"
+                        : "queued for Telegram as text - no delivery receipt yet");
             },
             R"({"type":"object","properties":{"text":{"type":"string"},"chat_id":{"type":"string"},"voice":{"type":"boolean"}},"required":["text"]})");
 
