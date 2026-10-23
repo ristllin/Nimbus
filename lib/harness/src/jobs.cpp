@@ -864,6 +864,15 @@ std::string unlistedWhy(const std::string& provider, const std::string& asked,
 }
 }  // namespace
 
+// The provider's sub-agent default runs when the provider offers it: in its
+// model list, or accepted by the one validity check (a stored pick is never
+// refused - lane F2). Split out of coerceSpawnModel for the CCN ceiling.
+bool JobEngine::subDefaultIsRunnable(const std::string& provider, const std::string& sub,
+                                     const std::string& list) const {
+  return !sub.empty() && (nimbus::orch::modelInChoices(list, sub) ||
+                          (d_.modelIsValid && d_.modelIsValid(provider, sub)));
+}
+
 // Validated coercion (subagents F5): a model the provider does not list never
 // runs as an unchecked default. The asked model when listed, else the
 // provider's sub default when listed, else the CHEAPEST model the list holds
@@ -903,8 +912,7 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
     // The sub-agent default runs when the provider offers it: in the short list, or
     // accepted by the one check (a bare router id such as the owner's "gpt-5.6" is the
     // router's "openai/gpt-5.6"; a stored pick is never refused - lane F2).
-    if (!sub.empty() && (nimbus::orch::modelInChoices(list, sub) ||
-                         (d_.modelIsValid && d_.modelIsValid(provider, sub)))) {
+    if (subDefaultIsRunnable(provider, sub, list)) {
       model = sub;
       if (!asked.empty())
         ledgerSwapped(p, notOffered + "; runs on its sub-agent default " + sub);

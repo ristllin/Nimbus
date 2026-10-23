@@ -314,8 +314,26 @@ static void test_chat_summary_yields_to_window_by_clipping() {
   // The window keeps priority (it is the fresher signal), but since Context
   // Fabric the summary CLIPS to the remaining room (floor 1024 B) instead of
   // vanishing - a shortened anchored summary still beats none.
-  std::string full = agent::composeInstructions(in);
-  in.budgetBytes = (int)(full.size() - 2000);
+  //
+  // The budget is placed by measurement, not a fixed shortfall: the static
+  // prompt keeps growing (S's evidence rule, then H's models-on-demand note),
+  // and the old "full - 2000" budget slid below the 1024 B clip floor - which
+  // exercises the honest DROP branch (orch_world), not this test's property.
+  // The summary's room inside its own block is exactly
+  //   budget - staticBytes - reserve,   reserve = max(budget/4, 3328)
+  // so pinning the room mid-window (kClipRoom: above the 1024 B floor, below
+  // the ~3090 B summary, and low enough that the clip provably shortens it)
+  // keeps this in the CLIP branch whatever the static prompt weighs. The
+  // reserve is the only feedback, so a few fixed-point steps settle it.
+  in.budgetBytes = 1 << 20;   // an unbounded probe: the natural static size
+  const int statBytes = (int)agent::layout::split(agent::composeInstructions(in)).stat.size();
+  const int kClipRoom = 1792;
+  int budget = statBytes + 3328 + kClipRoom;
+  for (int i = 0; i < 4; i++) {
+    const int r = budget / 4 > 3328 ? budget / 4 : 3328;
+    budget = statBytes + r + kClipRoom;
+  }
+  in.budgetBytes = budget;
   std::string p = agent::composeInstructions(in);
   TEST_ASSERT_TRUE(p.find("KEEP-ME") != std::string::npos);       // tail survives
   TEST_ASSERT_TRUE(p.find("## CONVERSATION SUMMARY") != std::string::npos);  // clipped, kept

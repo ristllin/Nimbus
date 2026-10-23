@@ -390,6 +390,11 @@ class JobEngine {
   // lists). A substitution is named on the ledger line. False when no listed model
   // has a known price (the owner and the head are told why).
   bool coerceSpawnModel(const PendingSpawn& p, const std::string& provider, std::string& model);
+  // The provider's sub-agent default runs when the provider offers it: in its
+  // model list, or accepted by the one validity check (a stored pick is never
+  // refused - lane F2). Split out of coerceSpawnModel for the CCN ceiling.
+  bool subDefaultIsRunnable(const std::string& provider, const std::string& sub,
+                            const std::string& list) const;
   void refuseUnpricedModel(const PendingSpawn& p, const std::string& provider,
                            const std::string& asked, const std::string& sub,
                            const std::string& why);

@@ -468,6 +468,7 @@ def test_run_gate_storm_step_needs_both_arguments(capsys):
     assert run_gate.main(["--host-only", "--candidate", _CANDIDATE]) == 1
     assert "pass both --storm-evidence and --candidate" in capsys.readouterr().out
 
+
 def test_lane_h_models_on_demand_leg_is_listed():
     """Lane H: the models-on-demand bench leg and its page check are in the gate list,
     and the leg file exists (a listed leg with no file would read as a pass by omission)."""
