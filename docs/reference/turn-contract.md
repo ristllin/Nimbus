@@ -23,10 +23,15 @@ and how a turn flows through the live turn loop -
 `ORCH_SCHEMA_BODY` marks every field it advertises `required` at the API layer
 (each provider wraps this bare schema in its own envelope: Mistral
 `completion_args.response_format.json_schema.schema`, OpenAI `text.format.schema`,
-Anthropic `tool_use`). But `parseTurn()` is defensive: on Anthropic the wire
-schema is advisory (its strict-grammar budget rejects a contract this size), so
-the parser is the real enforcement layer, and it never throws away a good reply
-over one slightly-off item. Keep the schema string and the parser in lockstep.
+Anthropic `tool_use`). One exception (R3, row 23): the Anthropic wire, where the
+schema is advisory, ships a LEAN top-level `required` list - `reply` only - and
+the tool description says to OMIT fields the turn is not using, so the head
+stops re-emitting unchanged fields as empty values (a food-log turn once spent
+3,000 output tokens on 1,240 B of content that way). But `parseTurn()` is
+defensive: on Anthropic the wire schema is advisory (its strict-grammar budget
+rejects a contract this size), so the parser is the real enforcement layer, and
+it never throws away a good reply over one slightly-off item. Keep the schema
+string and the parser in lockstep.
 
 The split that matters at the parser is between `reply` and everything else:
 
@@ -46,8 +51,11 @@ The split that matters at the parser is between `reply` and everything else:
   still never a whole-turn error, and every spawn intent the parser cannot
   carry lands in `Turn::spawnDrops` with its reason.
 
-The wire schema still lists `memory` and `ask` under `required`: OpenAI strict
-mode demands every property be listed there. Only the parser is lenient.
+The wire schema still lists `memory` and `ask` under `required` on the STRICT
+wires (OpenAI, Mistral, the custom head): their validators demand every property
+be listed. The Anthropic wire ships `required: ["reply"]` instead (the schema is
+advisory there) and tells the head to omit what it is not using. Only the parser
+is lenient everywhere.
 
 ## The parse-boundary normalizer
 
