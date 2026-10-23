@@ -15,7 +15,9 @@
 // Claims a provider-hosted tool could back (a connector's send, a hosted web
 // search, a remote calendar change) run where the device cannot see them, so
 // when the head had hosted tools this turn, the sent / checked / changed
-// classes are not checked (precision first). Everything the device does itself
+// classes are not checked (precision first) - except a gap only this device
+// could have closed (a Telegram voice message from its own bot:
+// ClaimGap::deviceOnly). Everything the device does itself
 // (memory, files, skills, the scratchpad, spawns, durability, figures from a
 // source, unsourced sub-agent results) is always checked.
 //
@@ -50,7 +52,7 @@ class ClaimCheck {
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
                 uint8_t flags = 0);
   // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
-  // written or updated with permanent:true).
+  // written or updated with permanent:true, kFxVoice for reply.telegram voice:true).
   static uint8_t toolCallFlags(const std::string& regName, const std::string& argsJson);
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.

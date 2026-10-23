@@ -44,6 +44,7 @@
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
 #include "nimbus/net/tg_backoff.h"    // getUpdates backoff + retry_after (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
+#include "nimbus/net/tg_receipt.h"     // Telegram's answer -> a delivery receipt (host-tested)
 
 #include <algorithm>
 #include <WiFi.h>
@@ -1799,6 +1800,71 @@ static void drainInjectedPage() {
 // ---- media send (device -> owner; drained on the poll task) -----------------
 // Map a kind to the Bot API method + form field + a filename/mime. Photos are sent
 // as JPEG/PNG; documents keep their extension; voice must be OGG/Opus.
+struct MediaMethod {
+  const char* method;
+  const char* field;
+  const char* mime;
+};
+static MediaMethod mediaMethod(const char* kind) {
+  if (!strcmp(kind, "photo")) return {"sendPhoto", "photo", "image/jpeg"};
+  if (!strcmp(kind, "voice")) return {"sendVoice", "voice", "audio/ogg"};
+  if (!strcmp(kind, "audio")) return {"sendAudio", "audio", "audio/mpeg"};
+  return {"sendDocument", "document", "application/octet-stream"};
+}
+
+// The size of a file to upload, for the receipt's log line (SD under the card lock).
+static size_t mediaFileSize(const char* path, bool sd) {
+  if (sd) {
+    agent::memory::Lock g;
+    File f = agent::memory::dataFs().open(path, FILE_READ);
+    const size_t n = f ? (size_t)f.size() : 0;
+    if (f) f.close();
+    return n;
+  }
+  File f = LittleFS.open(path, FILE_READ);
+  const size_t n = f ? (size_t)f.size() : 0;
+  if (f) f.close();
+  return n;
+}
+
+// One media upload from this task, Telegram's answer read into a receipt and logged
+// ("telegram: sendAudio ok (message_id N, B bytes)" or FAIL with the reason).
+// `uploadName` (nullptr = the file's own name) and `title` (an audio's title) are what
+// the chat shows. Closes the poll socket first: one TLS session at a time.
+struct MediaUpload {
+  const char* chatId;
+  const char* kind;
+  const char* path;
+  const char* caption;
+  bool sd;
+  const char* uploadName;
+  const char* title;
+};
+static nimbus::net::TgReceipt uploadMedia(const MediaUpload& u, size_t* bytesOut) {
+  closePollSocket();   // single-TLS arena
+  const MediaMethod mm = mediaMethod(u.kind);
+  const char* base = strrchr(u.path, '/');
+  base = base ? base + 1 : u.path;
+  char path[128];
+  snprintf(path, sizeof(path), "/bot%s/%s", g_token.c_str(), mm.method);
+  std::vector<httpmp::Field> fields = {{"chat_id", u.chatId}};
+  if (u.caption && u.caption[0]) fields.push_back({"caption", u.caption});
+  if (u.title && u.title[0]) fields.push_back({"title", u.title});
+  const size_t bytes = mediaFileSize(u.path, u.sd);
+  if (bytesOut) *bytesOut = bytes;
+  String resp, err;
+  httpmp::Options opt;
+  opt.srcFs = u.sd ? &agent::memory::dataFs() : nullptr;   // E1: SD artifacts
+  opt.lockSrc = u.sd;                                      // serialize SD reads (tg_poll)
+  const bool ok = httpmp::post(TG_HOST, TG_PORT, path, "", fields, mm.field,
+                               u.uploadName && u.uploadName[0] ? u.uploadName : base, mm.mime,
+                               u.path, resp, err, opt);
+  const nimbus::net::TgReceipt r = nimbus::net::parseTgSendAnswer(ok, std::string(err.c_str()),
+                                                                  std::string(resp.c_str()));
+  alog(nimbus::net::tgSendLogLine(mm.method, r, bytes).c_str());
+  return r;
+}
+
 static void drainMedia() {
   PendingMedia m;
   portENTER_CRITICAL(&g_mediaMux);
@@ -1809,28 +1875,10 @@ static void drainMedia() {
   closePollSocket();   // single-TLS arena
   if (g_token.length() == 0) return;
 
-  const char* method = "sendDocument";
-  const char* field  = "document";
-  const char* mime   = "application/octet-stream";
-  if (!strcmp(m.kind, "photo")) { method = "sendPhoto"; field = "photo"; mime = "image/jpeg"; }
-  else if (!strcmp(m.kind, "voice")) { method = "sendVoice"; field = "voice"; mime = "audio/ogg"; }
-  else if (!strcmp(m.kind, "audio")) { method = "sendAudio"; field = "audio"; mime = "audio/mpeg"; }
-
   const char* base = strrchr(m.path, '/');
   base = base ? base + 1 : m.path;
-
-  char path[128];
-  snprintf(path, sizeof(path), "/bot%s/%s", g_token.c_str(), method);
-  std::vector<httpmp::Field> fields = {{"chat_id", m.chatId}};
-  if (m.caption[0]) fields.push_back({"caption", m.caption});
   agent::tgarchive::onOutboundMedia(String(m.chatId), m.kind, m.path, m.sd, String(m.caption));   // archive hook
-  String resp, err;
-  httpmp::Options opt;
-  opt.srcFs = m.sd ? &agent::memory::dataFs() : nullptr;   // E1: SD artifacts
-  opt.lockSrc = m.sd;                                      // serialize SD reads (tg_poll)
-  bool ok = httpmp::post(TG_HOST, TG_PORT, path, "", fields, field, base, mime, m.path, resp, err,
-                         opt);
-  alogf("telegram: %s %s (%s)", method, ok ? "ok" : "FAIL", ok ? "" : err.c_str());
+  const bool ok = uploadMedia({m.chatId, m.kind, m.path, m.caption, m.sd, nullptr, nullptr}, nullptr).ok;
   // A stored file that could not go out stays under Files: say so in the chat, so a
   // "queued for Telegram delivery" never ends in silence (one short notice through
   // the archived direct send, on this task, after the failed upload closed its socket).
@@ -2144,6 +2192,39 @@ static bool publishMedia(const String& chatId, const char* kind, const char* fil
   g_media.set = true;   // published LAST - picked up by drainMedia() next poll cycle
   portEXIT_CRITICAL(&g_mediaMux);
   return true;
+}
+
+bool onTurnTask() { return g_task != nullptr && xTaskGetCurrentTaskHandle() == g_task; }
+
+MediaReceipt sendMediaNow(const String& chatId, const char* kind, const char* filePath,
+                          const MediaOptions& opt) {
+  MediaReceipt out;
+  if (!onTurnTask()) {
+    out.error = "the upload can run only on the Telegram task, inside a turn";
+  } else if (g_token.length() == 0) {
+    out.error = "no Telegram bot token is set";
+  } else if (!filePath || !filePath[0] || !kind ||
+             (strcmp(kind, "document") && strcmp(kind, "photo") && strcmp(kind, "voice") &&
+              strcmp(kind, "audio"))) {
+    out.error = "nothing to upload";
+  }
+  if (out.error.length()) {
+    alogf("telegram: media upload refused (%s)", out.error.c_str());
+    return out;
+  }
+  size_t bytes = 0;
+  const nimbus::net::TgReceipt r =
+      uploadMedia({chatId.c_str(), kind, filePath, opt.caption, false, opt.uploadName, opt.title}, &bytes);
+  out.ok = r.ok;
+  out.messageId = r.messageId;
+  out.bytes = bytes;
+  out.error = r.error.c_str();
+  // Archive what was delivered. On this task the hook copies the file before it
+  // returns, so the caller may delete it afterwards.
+  if (r.ok)
+    agent::tgarchive::onOutboundMedia(chatId, kind, filePath, false,
+                                      String(opt.caption ? opt.caption : ""));
+  return out;
 }
 
 bool sendMedia(const String& chatId, const char* kind, const char* filePath,

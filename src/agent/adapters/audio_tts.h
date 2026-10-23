@@ -8,7 +8,7 @@
 //     Mistral "mp3" -> music::streamMp3File (vendored minimp3). The provider decides
 //     the format (see core::speakerTtsFormat); a Mistral-only device speaks via MP3.
 //   - Telegram voice replies ("mp3" -> telegram::sendMedia(audio)).
-// Fail-open: returns 0 on any failure (the caller falls back to text).
+// Fail-open: returns 0 on any failure (the caller falls back to text and says why).
 namespace agent {
 namespace tts {
 
@@ -26,8 +26,13 @@ String activeProvider();
 // picks the provider default (Mistral en_paul_neutral / OpenAI alloy). Returns
 // audio bytes written (0 = fail). The on-device speaker plays WAV directly and MP3
 // through the vendored minimp3 decoder, so both formats reach the speaker.
+// The read window is sized to the text (nimbus::orch::ttsDeadlineMs). A clip the
+// window or a dropped connection cut short is never used: the partial file is
+// removed and 0 returned, with "truncated at N B" in `why` (when given), as every
+// other failure names its reason there.
 size_t synthesizeToFile(const String& text, const char* outPath,
-                        const char* format = "mp3", const char* voice = nullptr);
+                        const char* format = "mp3", const char* voice = nullptr,
+                        String* why = nullptr);
 
 }  // namespace tts
 }  // namespace agent

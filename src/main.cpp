@@ -72,7 +72,7 @@
 #include "agent/provider_verify.h"
 #include "agent/store.h"
 #include "agent/telegram.h"
-#include "agent/adapters/audio_tts.h"  // orchSpeakSink - tts device action -> Telegram audio
+#include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
 #include "sys/tls_arbiter.h"
 #include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
 #include "hw/hal_status.h"
@@ -900,10 +900,12 @@ static void spendNoticePump() {
 
 // SpeakSink: voice the `tts` device action's text. Prefer the on-device speaker
 // (that is what the action promises and what the world prompt now tells the model),
-// and fall back to a Telegram audio message only when on-device speech is not
-// possible (no speaker / synth failed) - so the action is no longer a silent no-op
-// on a device with no Telegram allowlist. Runs on the poll task between long-polls
-// (single-TLS: the Telegram socket is closed), so the TTS synth + upload are safe.
+// and fall back to a Telegram voice message only when the speaker could not play it
+// (no speaker, synth failed, or the speaker did not open) - so the action is no
+// longer a silent no-op on a device with no Telegram allowlist. Runs on the poll task
+// between long-polls (single-TLS: the Telegram socket is closed), so the TTS synth +
+// upload are safe. reply.telegram voice:true never comes here: it goes straight to
+// Telegram (voice_reply.h).
 static void orchSpeakSink(const String& text) {
   if (text.length() == 0) return;
   // Test build only: AUDIOINJECT keeps text-to-speech off for its voice turn. The
@@ -915,8 +917,7 @@ static void orchSpeakSink(const String& text) {
   String allow = agent::store::telegramAllowlist();
   int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
   if (chat.length() == 0) return;
-  size_t n = agent::tts::synthesizeToFile(text, "/tts.mp3", "mp3");
-  if (n) agent::telegram::sendMedia(chat, "audio", "/tts.mp3", "Nimbus voice");
+  agent::voicereply::deliver(chat, text);   // logs the receipt, or why nothing arrived
 }
 
 // Incoming Telegram message -> one orchestrator turn (runs on the poll task, with

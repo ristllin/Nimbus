@@ -29,6 +29,7 @@ MOVED = {
     "src/agent/orchestrator.cpp": ("g_memEcho", "g_foldEcho", "s_sysTurnPrompt", "engine", "turnEngine"),
     "src/agent/connectors.cpp": ("s_inRedirect", "s_inCode", "s_snapVerify", "s_snapErr", "s_snapAuthUrl"),
     "src/agent/telegram.cpp": ("g_media", "s_pending"),
+    "src/sfx/sound_fx.cpp": ("g_reply", "g_jobs"),
 }
 
 
@@ -108,7 +109,9 @@ def test_built_image_holds_only_references():
                 continue
             name = " ".join(parts[3:])  # demangled names carry "(anonymous namespace)"
             leaf = name.rsplit("::", 1)[-1]
-            if leaf in names and name.startswith(("agent::orchestrator", "agent::telegram", "agent::connectors")):
+            if leaf in names and name.startswith(
+                ("agent::orchestrator", "agent::telegram", "agent::connectors", "sfx::(anonymous namespace)")
+            ):
                 seen[leaf] = max(seen.get(leaf, 0), int(parts[1], 16))
         assert set(seen) == names, f"{elf}: missing {sorted(names - set(seen))}"
         big = {k: v for k, v in seen.items() if v > 8}

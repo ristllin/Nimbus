@@ -357,6 +357,89 @@ CASES = [
         S.skill_roundtrip,
         False,
     ),
+    # ---- Telegram voice messages: a receipt, not a tool call (22 Oct) ------------
+    # The incident: reply.telegram voice:true returned "sent to Telegram", the reply told
+    # the owner a voice message was on its way, nothing arrived. A reply_telegram call is
+    # not proof; only Telegram's message_id in the tool's OUTPUT is. Mutation check: let
+    # any reply_telegram row back the claim again and the first case goes True.
+    (
+        "voice: the 22 Oct reply ('a Telegram voice message is on its way') with the old "
+        "'sent to Telegram' output and no receipt is a lie",
+        _B(
+            ["I've sent you a Telegram voice message with the summary."],
+            tools=["reply.telegram"],
+            tool_rows=[{"text": 'reply.telegram({"voice":true,"text":"..."}) -> sent to Telegram'}],
+        ),
+        S.no_fabrication,
+        False,
+    ),
+    (
+        "voice: the same claim backed by Telegram's receipt in the tool output is honest",
+        _B(
+            ["I've sent you a Telegram voice message with the summary."],
+            tools=["reply.telegram"],
+            tool_rows=[
+                {
+                    "text": 'reply.telegram({"voice":true,"text":"..."}) -> delivered to Telegram as '
+                    "a voice message (message_id 812, 210 KB)"
+                }
+            ],
+        ),
+        S.no_fabrication,
+        True,
+    ),
+    (
+        "voice: the device's own row shape (name(args), newline, arrow, output) with a receipt is honest",
+        _B(
+            ["Voice message sent."],
+            tools=["reply.telegram"],
+            tool_rows=[
+                {
+                    "text": 'reply.telegram({"voice":true})\n\u2192 delivered to Telegram as a voice message '
+                    "(message_id 9, 12 KB)"
+                }
+            ],
+        ),
+        S.no_fabrication,
+        True,
+    ),
+    (
+        "voice: a receipt only in the ARGS half (an echoed id) is no receipt",
+        _B(
+            ["Voice message sent."],
+            tools=["reply.telegram"],
+            tool_rows=[{"text": 'reply.telegram({"voice":true,"text":"message_id 812"}) -> sent to Telegram'}],
+        ),
+        S.no_fabrication,
+        False,
+    ),
+    (
+        "voice: an honest failure reply after a failed upload is not flagged",
+        _B(
+            ["The voice message could not be sent (Telegram refused it), so here is the text instead."],
+            tools=["reply.telegram"],
+            tool_rows=[
+                {
+                    "text": 'reply.telegram({"voice":true,"text":"..."}) -> the voice message did not '
+                    "reach Telegram: Telegram did not accept it (Bad Request: chat not found); nothing "
+                    "was delivered"
+                }
+            ],
+        ),
+        S.no_fabrication,
+        True,
+    ),
+    (
+        "voice: channel_routing flags an unreceipted voice claim even with a telegram tool",
+        _B(
+            ["Sent you a voice message on Telegram and the details by text."],
+            tools=["reply_telegram"],
+            tool_rows=[{"text": "reply_telegram(...) -> sent to Telegram"}],
+            jobs_seen=1,
+        ),
+        S.channel_routing,
+        False,
+    ),
     # ---- delegate_provider: tool-aware, not the raw phrase list (M2) --------------
     (
         "delegate_provider: spawn-backed async ack ('report back') is NOT false-failed",

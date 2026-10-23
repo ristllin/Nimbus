@@ -1,4 +1,5 @@
 #pragma once
+#include <Arduino.h>
 #include <cstdint>
 
 #include "nimbus/sfx_map.h"
@@ -52,11 +53,16 @@ bool play(const char* slug);
 
 // Queue a freshly-synthesized spoken reply for playback on the sfx task. `mp3`
 // selects the format: true plays /reply.mp3 through the vendored minimp3 decoder
-// (a Mistral device emits MP3 only), false plays /reply.wav via playWavFile.
-// Returns true when queued. reply.speak MUST use this rather than playing inline:
-// on tg_poll the ~8-12 s fetch+playback starved loopTask's watchdog. Any active
-// music track is ducked (stopped) first - both share the one I2S TX.
-bool speakReply(bool mp3);
+// (a Mistral device emits MP3 only), false plays /reply.wav.
+// Returns the reply's ticket (0 = not queued). reply.speak MUST use this rather than
+// playing inline: on tg_poll the ~8-12 s fetch+playback starved loopTask's watchdog.
+// Any active music track is ducked (stopped) first - both share the one I2S TX.
+uint32_t speakReply(bool mp3);
+// Wait up to `timeoutMs` for the sfx task to open the speaker for `ticket`. True once
+// the clip is playing (or played); false with `why` when the file, the decoder or the
+// speaker driver failed, a newer reply replaced it, or the wait ran out. Blocks the
+// caller in 50 ms steps: never call it from a task the watchdog watches.
+bool awaitReplyStart(uint32_t ticket, uint32_t timeoutMs, String* why);
 
 // Voice capture mute: suppress SFX while the mic records (don't pollute STT).
 void setMuted(bool muted);

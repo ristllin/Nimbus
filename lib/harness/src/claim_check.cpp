@@ -89,9 +89,12 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
 }
 
 uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
-  if (regName != "memory.write" && regName != "memory.update") return 0;
+  const bool memory = regName == "memory.write" || regName == "memory.update";
+  const bool telegram = regName == "reply.telegram";
+  if (!memory && !telegram) return 0;
   JsonDocument d;
   if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
+  if (telegram) return (d["voice"] | false) ? orch::kFxVoice : 0;
   return (d["permanent"] | false) ? orch::kFxPermanent : 0;
 }
 
@@ -144,7 +147,9 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   std::vector<orch::ClaimGap> kept;
   for (orch::ClaimGap& g : gaps) {
     if (skipSpawned && g.cls == orch::ClaimClass::Spawned) continue;
-    if (hosted_ && hostedClass(g.cls)) continue;
+    // A hosted tool may have sent an email, but never this device's Telegram voice
+    // message: a device-only gap is checked whatever tools the head had.
+    if (hosted_ && hostedClass(g.cls) && !g.deviceOnly) continue;
     kept.push_back(std::move(g));
   }
   orch::ClaimGap unsourced;

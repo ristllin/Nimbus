@@ -27,6 +27,11 @@
 //   R4  a scratchpad write backs "noted", and also brings the durability check;
 //   R5  text inside quotes or code is skipped (the head often quotes the owner);
 //   R6  English only: a reply that is mostly non-ASCII letters is not scanned.
+// A send claim about a voice message ("I sent you a voice message", "Voice note
+// sent") is backed only by a send that carries Telegram's receipt for a voice
+// message (turn_effects.h kFxVoice + kFxReceipt), never by a send tool's own words
+// (22 Oct: "sent to Telegram" backed "a voice message is on its way" and nothing
+// arrived). Text, document and photo sends keep the plain send backing for now.
 // Precision first: a missed claim costs nothing new, a false one would correct
 // a true reply. A claim about another person's action ("the photo you sent"),
 // a past reference ("already logged") and an adjective ("your logged runs") are
@@ -91,7 +96,9 @@ struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;
   std::string excerpt;     // the claim's clause, at most ~100 bytes, valid UTF-8
   std::string missing;     // Figure: the numbers no source holds ("200, 21, 60")
-  uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op
+  uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op, no voice receipt
+  bool        deviceOnly = false;   // only this device could have done it (a Telegram voice
+                                    // message from its bot): a hosted tool never backs it
 };
 
 // The numbers in a source text, normalized and space-separated ("20 3 1,500"

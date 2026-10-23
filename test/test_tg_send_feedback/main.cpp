@@ -1,7 +1,7 @@
 // test_tg_send_feedback - a file queued for Telegram never ends in silence. files.send
 // answers "queued <project>/<name> for Telegram delivery" and the upload runs later on
-// the poll task (drainMedia); when that upload fails, the chat is told once that the
-// file could not be sent and is still under Files. The upload is device code, so the
+// the poll task (drainMedia, through uploadMedia); when that upload fails, the chat is
+// told once that the file could not be sent and is still under Files. The upload is device code, so the
 // guard reads src/agent/telegram.cpp itself: the failure branch sits after the
 // upload, covers stored (SD) files, goes through the archived direct send, and names
 // the file. Counter-cases prove the reader sees a missing or misplaced notice.
@@ -39,7 +39,7 @@ static std::string bodyOf(const std::string& src, const char* sig) {
 
 // Empty when the drain body tells the owner about a failed stored-file upload; else why not.
 static std::string feedbackProblem(const std::string& body) {
-  const size_t post = body.find("httpmp::post(");
+  const size_t post = body.find("uploadMedia(");
   if (post == std::string::npos) return "no upload in the drain";
   const size_t fail = body.find("if (!ok && m.sd) sendNow(m.chatId,", post);
   if (fail == std::string::npos) return "no notice after a failed stored-file upload";
@@ -63,12 +63,12 @@ static void test_failed_upload_tells_the_owner() {
 }
 
 static void test_the_reader_sees_a_missing_or_misplaced_notice() {
-  TEST_ASSERT_FALSE(feedbackProblem("{\n  bool ok = httpmp::post(a);\n}\n").empty());
+  TEST_ASSERT_FALSE(feedbackProblem("{\n  const bool ok = uploadMedia(a).ok;\n}\n").empty());
   TEST_ASSERT_FALSE(feedbackProblem("{\n  if (!ok && m.sd) sendNow(m.chatId, \"x\");\n"
-                                    "  bool ok = httpmp::post(a);\n}\n").empty());
-  TEST_ASSERT_FALSE(feedbackProblem("{\n  bool ok = httpmp::post(a);\n"
+                                    "  const bool ok = uploadMedia(a).ok;\n}\n").empty());
+  TEST_ASSERT_FALSE(feedbackProblem("{\n  const bool ok = uploadMedia(a).ok;\n"
                                     "  if (!ok && m.sd) sendNow(m.chatId, \"Couldn't send it.\");\n}\n").empty());
-  TEST_ASSERT_TRUE(feedbackProblem("{\n  bool ok = httpmp::post(a);\n  if (!ok && m.sd) sendNow(m.chatId, "
+  TEST_ASSERT_TRUE(feedbackProblem("{\n  const bool ok = uploadMedia(a).ok;\n  if (!ok && m.sd) sendNow(m.chatId, "
                                    "(String(\"Couldn't send \") + base + \". It's saved under Files.\").c_str());\n}\n")
                        .empty());
 }

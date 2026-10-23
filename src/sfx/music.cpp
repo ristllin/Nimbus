@@ -19,6 +19,7 @@
 #include "nimbus/fault.h"
 #include "nimbus/orch/media.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/speaker_reply.h"              // speakerOpenFailReason - a failed open, said plainly
 #include "nimbus/tts_catalog.h"             // core::downmixStereoToMono (host-tested)
 
 namespace music {
@@ -116,6 +117,20 @@ static bool parseWavHeader(File& f, uint32_t& rate, uint32_t& dataLen) {
   return false;
 }
 
+// Open the speaker, or log why it would not start and tell the hook. Every player in
+// this file opens through here, so a failed open is never swallowed.
+static bool openSpeaker(uint32_t rate, OpenHook onOpen) {
+  if (solide::audio::spkOpen(rate)) {
+    if (onOpen) onOpen(true, "");
+    return true;
+  }
+  const std::string why = nimbus::sfx::speakerOpenFailReason(
+      heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+  agent::alogf("speaker: %s", nimbus::sfx::speakerFailText(why).c_str());
+  if (onOpen) onOpen(false, why.c_str());
+  return false;
+}
+
 // ---- the streaming WAV player (chunked, watchdog-safe, responsive control) ----
 // Returns true if the track played to its end, false if stop was requested.
 static bool streamWav(const std::string& path, uint32_t gen) {
@@ -131,7 +146,11 @@ static bool streamWav(const std::string& path, uint32_t gen) {
   }
 
   solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
-  solide::audio::spkOpen(rate);
+  if (!openSpeaker(rate, nullptr)) {
+    agent::memory::Lock sdlk;
+    f.close();
+    return true;   // skipped, like an unopenable file; the log line says why
+  }
   uint8_t buf[1024];
   uint32_t left = dataLen;
   bool finished = true;
@@ -189,14 +208,17 @@ static void refillMp3(File& f, Mp3Work* w, size_t& avail, bool useSdLock) {
   if (r > 0) avail += (size_t)r;
 }
 
-// Open the speaker at the stream's sample rate on the first decoded frame.
-static void openSpeakerOnce(bool& opened, int hz) {
-  if (opened) return;
+// Open the speaker at the stream's sample rate on the first decoded frame. False when
+// the driver would not start (logged, told to the hook): the caller stops, since every
+// later feed would be dropped and the clip would only look played.
+static bool openSpeakerOnce(bool& opened, int hz, OpenHook onOpen) {
+  if (opened) return true;
   uint32_t rate = hz ? (uint32_t)hz : 44100u;
   rate = rate < 8000 ? 8000 : (rate > 48000 ? 48000 : rate);
   solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
-  solide::audio::spkOpen(rate);
+  if (!openSpeaker(rate, onOpen)) return false;
   opened = true;
+  return true;
 }
 
 // The shared decode loop for both the SD-music and the LittleFS-reply paths. `f` is
@@ -205,7 +227,8 @@ static void openSpeakerOnce(bool& opened, int hz) {
 // keepPlaying(gen); the reply path passes hasGen=false and only stops on a speaker
 // fault. Returns true if the clip played to its natural end. Watchdog-safe: the
 // per-frame spkFeedBytes blocks on the I2S DMA, which yields.
-static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, bool hasGen) {
+static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, bool hasGen,
+                            OpenHook onOpen = nullptr) {
   mp3dec_init(&w->dec);
   size_t avail = 0;
   bool opened = false, finished = true;
@@ -220,11 +243,12 @@ static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, b
     memmove(w->in, w->in + info.frame_bytes, avail - (size_t)info.frame_bytes);
     avail -= (size_t)info.frame_bytes;
     if (samples <= 0) continue;                  // skipped ID3/junk, keep going
-    openSpeakerOnce(opened, info.hz);
+    if (!openSpeakerOnce(opened, info.hz, onOpen)) return false;
     feedMp3Frame(w, samples, info.channels);
   }
   if (opened) solide::audio::spkClose();
-  return finished;
+  else if (onOpen) onOpen(false, "the clip has no playable audio");
+  return finished && opened;
 }
 
 // Allocate the decode work buffer (~13 KB) plus minimp3's per-frame scratch (~15 KB)
@@ -254,25 +278,63 @@ static bool streamMp3(const std::string& path, uint32_t gen) {
   if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
   Mp3Work* w = allocMp3Work();
   if (!w) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: MP3 out of memory"); return true; }
-  bool finished = decodeMp3Stream(f, w, /*useSdLock=*/true, gen, /*hasGen=*/true);
+  // A track the speaker could not open, or with no playable audio, is skipped (true),
+  // like an unopenable file; only a stop or skip ends the queue's advance (false).
+  const bool played = decodeMp3Stream(f, w, /*useSdLock=*/true, gen, /*hasGen=*/true);
+  const bool finished = played || keepPlaying(gen);
   freeMp3Work(w);
   { agent::memory::Lock sdlk; f.close(); }
   return finished;
 }
 
-bool streamMp3File(fs::FS& fs, const char* path) {
-  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return false;
+bool streamMp3File(fs::FS& fs, const char* path, OpenHook onOpen) {
+  auto fail = [onOpen](const char* why) {
+    if (onOpen) onOpen(false, why);
+    return false;
+  };
+  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return fail("the speaker is marked faulty");
   File f = fs.open(path, FILE_READ);
-  if (!f) { agent::alogf("music: mp3 reply open failed %s", path); return false; }
+  if (!f) { agent::alogf("music: mp3 reply open failed %s", path); return fail("the clip file could not be opened"); }
   Mp3Work* w = allocMp3Work();
-  if (!w) { f.close(); agent::alogf("music: MP3 reply out of memory"); return false; }
+  if (!w) { f.close(); agent::alogf("music: MP3 reply out of memory"); return fail("not enough memory to decode the clip"); }
   // No SD-bus lock (LittleFS is off that bus) and no queue gen (a short reply clip
-  // is not a controllable track). Natural EOF returns true; a mid-clip speaker fault
-  // returns false.
-  bool ok = decodeMp3Stream(f, w, /*useSdLock=*/false, /*gen=*/0, /*hasGen=*/false);
+  // is not a controllable track). Natural EOF returns true; a mid-clip speaker fault,
+  // a speaker that would not open or a clip with no audio returns false.
+  bool ok = decodeMp3Stream(f, w, /*useSdLock=*/false, /*gen=*/0, /*hasGen=*/false, onOpen);
   freeMp3Work(w);
   f.close();
   return ok;
+}
+
+bool streamWavFile(fs::FS& fs, const char* path, OpenHook onOpen) {
+  auto fail = [onOpen](const char* why) {
+    if (onOpen) onOpen(false, why);
+    return false;
+  };
+  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return fail("the speaker is marked faulty");
+  File f = fs.open(path, FILE_READ);
+  if (!f) { agent::alogf("music: wav reply open failed %s", path); return fail("the clip file could not be opened"); }
+  uint32_t rate = 16000, dataLen = 0;
+  if (!parseWavHeader(f, rate, dataLen) || rate < 8000 || rate > 48000) {
+    f.close();
+    agent::alogf("music: not a usable WAV reply %s", path);
+    return fail("the clip is not a usable WAV file");
+  }
+  solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
+  if (!openSpeaker(rate, onOpen)) { f.close(); return false; }
+  uint8_t buf[1024];
+  uint32_t left = dataLen;
+  bool finished = true;
+  while (left > 0) {
+    if (nimbus::fault::active(nimbus::fault::SPEAKER)) { finished = false; break; }
+    const int got = f.read(buf, left < sizeof(buf) ? left : (uint32_t)sizeof(buf));
+    if (got <= 0) break;
+    solide::audio::spkFeedBytes(buf, (size_t)got);   // blocks on I2S DMA (yields)
+    left -= (uint32_t)got;
+  }
+  solide::audio::spkClose();
+  f.close();
+  return finished;
 }
 
 void stopForSpeech() {

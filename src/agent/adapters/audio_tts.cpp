@@ -16,6 +16,9 @@
 #include "nimbus/orch/seam_meter.h"  // meterSpeech - its spend (lane DEF)
 #include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
+#include "nimbus/orch/voice_notes.h"     // ttsDeadlineMs - the read window sized to the text
+
+#include <strings.h>                     // strncasecmp (Content-Length)
 
 namespace agent {
 namespace tts {
@@ -97,9 +100,182 @@ bool available() {
   return resolve(nullptr).key.length() > 0;
 }
 
+namespace {
+
+void setWhy(String* why, const String& s) {
+  if (why) *why = s;
+}
+
+// Connect within the request's window: up to three attempts, 400 ms apart.
+bool connectTts(WiFiClientSecure& c, const String& host, uint32_t deadline) {
+  for (int a = 0; a < 3 && (int32_t)(millis() - deadline) < 0; a++) {
+    if (c.connect(host.c_str(), 443)) return true;
+    tlsClose(c);
+    if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
+  }
+  return false;
+}
+
+// One header or status line (CR stripped), read within the window.
+int readLine(WiFiClientSecure& c, char* b, int cap, uint32_t deadline) {
+  int i = 0;
+  while ((int32_t)(millis() - deadline) < 0 && i < cap - 1) {
+    if (c.available()) { char ch = c.read(); if (ch == '\n') break; if (ch != '\r') b[i++] = ch; }
+    else if (!c.connected()) break;
+    else vTaskDelay(1);
+  }
+  b[i] = 0;
+  return i;
+}
+
+// The status code, with the header block consumed; *contentLength is -1 when absent.
+int readStatus(WiFiClientSecure& c, uint32_t deadline, long* contentLength) {
+  char line[512];
+  int status = 0;
+  *contentLength = -1;
+  if (readLine(c, line, sizeof(line), deadline) > 0) {
+    const char* sp = strchr(line, ' ');
+    if (sp) status = atoi(sp + 1);
+  }
+  while (readLine(c, line, sizeof(line), deadline) > 0)
+    if (!strncasecmp(line, "Content-Length:", 15)) *contentLength = atol(line + 15);
+  return status;
+}
+
+// A refused request: read the short error body, tell the park, log it, name it in why.
+void noteRefusal(WiFiClientSecure& c, const TtsProvider& prov, int status, uint32_t deadline,
+                 String* why) {
+  char errb[160] = {};
+  int n = 0;
+  while ((int32_t)(millis() - deadline) < 0 && n < (int)sizeof(errb) - 1 && (c.available() || c.connected())) {
+    if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
+  }
+  gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, errb);
+  // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
+  // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
+  bool jok = false;
+  const std::string code = core::parseErrorCode(errb, &jok);
+  if (jok && !code.empty()) {
+    alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
+          code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
+    setWhy(why, String("the voice provider refused (HTTP ") + status + ", " + code.c_str() + ")");
+    return;
+  }
+  const std::string line = nimbus::orch::providerErrLine(prov.slug.c_str(), status,
+                                                         nimbus::orch::providerErrorText(errb));
+  alogf("tts: %s", line.c_str());
+  setWhy(why, String("the voice provider refused (HTTP ") + status + ")");
+}
+
+// Mistral: {"audio_data":"<base64 mp3>"} - skip to the value, stream-decode it.
+// b64decodeToFile's clean flag: the closing quote arrived AND every byte was written.
+void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
+  String head;
+  const char* MARK = "\"audio_data\":\"";
+  while ((int32_t)(millis() - deadline) < 0 && head.length() < 512) {
+    if (c.available()) {
+      head += (char)c.read();
+      const int idx = head.indexOf(MARK);
+      if (idx < 0) continue;
+      bool clean = false;
+      rd.bytes = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline, &clean);
+      rd.endSeen = rd.writesOk = clean;
+      return;
+    }
+    if (!c.connected()) return;
+    vTaskDelay(1);
+  }
+}
+
+// OpenAI and the router: the raw audio body, until the server closes or the stated
+// length arrives (the end), or the window passes or a write fails (cut).
+void streamRaw(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
+  uint8_t buf[512];
+  rd.writesOk = true;
+  while (rd.writesOk && (int32_t)(millis() - deadline) < 0) {
+    if (c.available()) {
+      const int r = c.read(buf, sizeof(buf));
+      if (r > 0) { rd.writesOk = (size_t)f.write(buf, r) == (size_t)r; rd.bytes += r; }
+    } else if (!c.connected()) {
+      rd.endSeen = true;
+      return;
+    } else {
+      vTaskDelay(1);
+    }
+    if (rd.contentLength >= 0 && (long)rd.bytes >= rd.contentLength) { rd.endSeen = true; return; }
+  }
+}
+
+// One synthesis request: the JSON body, the flash file it fills and the window it
+// must finish in.
+struct TtsRequest {
+  const String& body;
+  const char*   outPath;
+  uint32_t      deadline;
+};
+
+// What one request produced: the bytes of a whole clip (0 = none), and whether the
+// provider answered the request (an answered synthesis is billed, whole or not).
+struct TtsResult {
+  size_t bytes = 0;
+  bool   answered = false;
+};
+
+// Send the request and stream the answer into outPath. Holds the work slot the
+// caller took; a clip that is not whole comes back as 0 bytes with why set.
+TtsResult requestAndStream(WiFiClientSecure& c, const TtsProvider& prov, const TtsRequest& rq, String* why) {
+  TtsResult res;
+  const String& body = rq.body;
+  const char* outPath = rq.outPath;
+  const uint32_t deadline = rq.deadline;
+  c.printf("POST %s HTTP/1.0\r\n", prov.path);
+  c.printf("Host: %s\r\n", prov.host.c_str());
+  c.printf("Authorization: Bearer %s\r\n", prov.key.c_str());
+  c.print("Content-Type: application/json\r\n");
+  c.printf("Content-Length: %u\r\n", (unsigned)body.length());
+  c.print("Connection: close\r\n\r\n");
+  c.print(body);
+  long contentLength = -1;
+  const int status = readStatus(c, deadline, &contentLength);
+  if (status < 200 || status >= 300) {
+    noteRefusal(c, prov, status, deadline, why);
+    if (status == 0) setWhy(why, "the voice provider did not answer in time");
+    return res;
+  }
+  res.answered = true;
+  gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, "");
+  File f = LittleFS.open(outPath, FILE_WRITE);
+  if (!f) {
+    alog("tts: fs open fail");
+    setWhy(why, "the clip could not be written to flash");
+    return res;
+  }
+  nimbus::orch::ClipRead rd;
+  rd.mistral = prov.mistral;
+  rd.contentLength = contentLength;
+  if (prov.mistral) streamMistral(c, f, deadline, rd);
+  else streamRaw(c, f, deadline, rd);
+  f.close();
+  const char* name = prov.mistral ? "mistral" : "openai";
+  if (!nimbus::orch::clipWhole(rd)) {
+    // A cut clip is never used (22 Oct: a clip cut at the 25 s window was logged as
+    // written and queued as whole). Remove it so nothing can pick it up.
+    LittleFS.remove(outPath);
+    alogf("tts: %s %s -> %s, removed", name, nimbus::orch::clipTruncatedText(rd.bytes).c_str(), outPath);
+    setWhy(why, nimbus::orch::clipTruncatedText(rd.bytes).c_str());
+    return res;
+  }
+  alogf("tts: %s wrote %u bytes -> %s", name, (unsigned)rd.bytes, outPath);
+  res.bytes = rd.bytes;
+  return res;
+}
+
+}  // namespace
+
 size_t synthesizeToFile(const String& text, const char* outPath,
-                        const char* format, const char* voice) {
-  if (text.length() == 0 || !outPath || !outPath[0]) return 0;
+                        const char* format, const char* voice, String* why) {
+  setWhy(why, "");
+  if (text.length() == 0 || !outPath || !outPath[0]) { setWhy(why, "nothing to say"); return 0; }
   const bool needWav = (format && strcmp(format, "wav") == 0);
   TtsProvider prov = resolve(voice);
   if (needWav && prov.mistral) {
@@ -109,12 +285,20 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     // speak path asks Mistral for "mp3" instead (minimp3 plays it); this guard just
     // protects any stray WAV caller (e.g. a console command) from that mismatch.
     alog("tts: wav requested but provider mistral emits mp3 only - not synthesizing");
+    setWhy(why, "this voice provider makes MP3 only");
     return 0;
   }
-  if (prov.key.length() == 0) { alogf("tts: no key for provider %s", store::ttsProvider().c_str()); return 0; }
+  if (prov.key.length() == 0) {
+    alogf("tts: no key for provider %s", store::ttsProvider().c_str());
+    setWhy(why, "no voice provider key is set");
+    return 0;
+  }
   // L19-8: a provider the one park closed (out of credit or a refused key learned on
   // any seam, or paused) gets no request; the turn's text reply still reaches the owner.
-  if (!gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key).open) return 0;
+  if (!gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key).open) {
+    setWhy(why, "the voice provider is paused");
+    return 0;
+  }
 
   JsonDocument doc;
   doc["model"] = prov.model;
@@ -126,102 +310,36 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   String body;
   serializeJson(doc, body);
 
-  if (!arbiter::acquireWork(10000)) { alog("tts: arbiter busy"); return 0; }
+  if (!arbiter::acquireWork(10000)) {
+    alog("tts: arbiter busy");
+    setWhy(why, "the network was busy");
+    return 0;
+  }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);
   // F25: bound the socket (setTimeout is inert on this client) + ride ONE wall
   // clock over connect + I/O so a half-open cellular NAT can't wedge the speak
-  // turn (this path is what hung tg_poll 10+ min live).
-  const uint32_t deadline = millis() + 25000;
-  c.setConnectionTimeout(25000);
-  bool connected = false;
-  for (int a = 0; a < 3 && !connected && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(prov.host.c_str(), 443)) { connected = true; break; }
-    tlsClose(c);
-    if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
-  }
-  if (!connected) {
-    arbiter::releaseWork();
+  // turn (this path is what hung tg_poll 10+ min live). The clock is sized to the
+  // text (voice_notes.h): a long reply needs longer than the old fixed 25 s.
+  const uint32_t windowMs = nimbus::orch::ttsDeadlineMs(nimbus::orch::textChars(text.c_str()));
+  const uint32_t deadline = millis() + windowMs;
+  c.setConnectionTimeout(windowMs);
+  TtsResult res;
+  if (!connectTts(c, prov.host, deadline)) {
     gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, 0, "");
     alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap());
-    return 0;
-  }
-
-  c.printf("POST %s HTTP/1.0\r\n", prov.path);
-  c.printf("Host: %s\r\n", prov.host.c_str());
-  c.printf("Authorization: Bearer %s\r\n", prov.key.c_str());
-  c.print("Content-Type: application/json\r\n");
-  c.printf("Content-Length: %u\r\n", (unsigned)body.length());
-  c.print("Connection: close\r\n\r\n");
-  c.print(body);
-
-  char line[512];
-  auto readLine = [&](char* b, int cap) -> int {
-    int i = 0;
-    while ((int32_t)(millis() - deadline) < 0 && i < cap - 1) {
-      if (c.available()) { char ch = c.read(); if (ch == '\n') break; if (ch != '\r') b[i++] = ch; }
-      else if (!c.connected()) break;
-      else vTaskDelay(1);
-    }
-    b[i] = 0; return i;
-  };
-  int status = 0;
-  if (readLine(line, sizeof(line)) > 0) { const char* sp = strchr(line, ' '); if (sp) status = atoi(sp + 1); }
-  while (readLine(line, sizeof(line)) > 0) { /* skip headers */ }
-  if (status < 200 || status >= 300) {
-    char errb[160] = {}; int n = 0;
-    while ((int32_t)(millis() - deadline) < 0 && n < (int)sizeof(errb) - 1 && (c.available() || c.connected())) {
-      if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
-    }
-    tlsClose(c); arbiter::releaseWork();
-    gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, errb);
-    // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
-    // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
-    bool jok = false;
-    std::string code = core::parseErrorCode(errb, &jok);
-    if (jok && !code.empty())
-      alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
-            code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
-    else
-      alogf("tts: %s", nimbus::orch::providerErrLine(prov.slug.c_str(), status,
-                                                     nimbus::orch::providerErrorText(errb)).c_str());
-    return 0;
-  }
-  // Lane DEF: an answered synthesis is billed per character of the text (the answer is
-  // audio, with no usage), counted toward the monthly spend ceiling.
-  nimbus::orch::meterSpeech(prov.slug.c_str(), prov.model, text.length());
-
-  gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, "");
-  File f = LittleFS.open(outPath, FILE_WRITE);
-  if (!f) { tlsClose(c); arbiter::releaseWork(); alog("tts: fs open fail"); return 0; }
-  size_t total = 0;
-  if (prov.mistral) {
-    // Body is {"audio_data":"<base64 mp3>"} - skip to the value, stream-decode it.
-    String head; const char* MARK = "\"audio_data\":\"";
-    while ((int32_t)(millis() - deadline) < 0 && head.length() < 512) {
-      if (c.available()) {
-        head += (char)c.read();
-        int idx = head.indexOf(MARK);
-        if (idx >= 0) { total = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline); break; }
-      } else if (!c.connected()) break;
-      else vTaskDelay(1);
-    }
+    setWhy(why, String("could not reach ") + prov.host);
   } else {
-    // OpenAI: raw binary audio body.
-    uint8_t buf[512];
-    while ((int32_t)(millis() - deadline) < 0) {
-      if (c.available()) { int r = c.read(buf, sizeof(buf)); if (r > 0) { f.write(buf, r); total += r; } }
-      else if (!c.connected()) break;
-      else vTaskDelay(1);
-    }
+    res = requestAndStream(c, prov, TtsRequest{body, outPath, deadline}, why);
   }
-  f.close();
   tlsClose(c);
   arbiter::releaseWork();
-  alogf("tts: %s wrote %u bytes -> %s", prov.mistral ? "mistral" : "openai",
-        (unsigned)total, outPath);
-  return total;
+  // Lane DEF: an answered synthesis is billed per character of the text (the answer is
+  // audio, with no usage), counted toward the monthly spend ceiling, even when the
+  // clip arrived cut and is not used.
+  if (res.answered) nimbus::orch::meterSpeech(prov.slug.c_str(), prov.model, text.length());
+  return res.bytes;
 }
 
 }  // namespace tts

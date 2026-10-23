@@ -58,6 +58,8 @@ const char* fxSlug(FxKind k);
 enum : uint8_t {
   kFxPermanent = 1u << 0,   // a memory write that asked for permanent storage
   kFxPending   = 1u << 1,   // derived from the turn's fields before apply ran
+  kFxVoice     = 1u << 2,   // a send asked for as a Telegram voice message (voice:true)
+  kFxReceipt   = 1u << 3,   // the send's result names Telegram's message_id: it arrived
 };
 
 struct Effect {
@@ -112,12 +114,25 @@ class TurnEffects {
 // scratchpad or config "view" is a Read. Ids are lifted from the tool's own text
 // ("stored memory <id>", "pin ok (<id>)", "saved <path>").
 // `flags` carries what the call's arguments said (kFxPermanent for a memory
-// written with permanent:true).
+// written with permanent:true, kFxVoice for a send asked for as a voice message).
+// A send whose result names Telegram's message_id carries kFxReceipt (its id is
+// the ref). A voice send is backed only by that receipt: without one it records as
+// failed, whatever its text says (22 Oct: "sent to Telegram" came back for a voice
+// message that never left the device); one that went out as text is a plain send.
+// A failed send whose text still names receipts (a voice reply that stopped part
+// way) records the delivered part as landed and the rest as failed.
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags = 0);
 
 // The id/name a tool result names, or "" ("stored memory m1a2b" -> "m1a2b").
 std::string fxRefFromOutput(const std::string& output);
+
+// The first Telegram message id a send's result names ("... (message_id 812, ..." ->
+// "812"), or "" when it names none: the delivery receipt.
+std::string fxReceiptId(const std::string& output);
+
+// True when an ok send this turn carries a voice message's receipt.
+bool voiceDelivered(const TurnEffects& fx);
 
 }  // namespace orch
 }  // namespace nimbus

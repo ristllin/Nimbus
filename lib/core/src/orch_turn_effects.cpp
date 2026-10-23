@@ -192,10 +192,49 @@ std::string fxRefFromOutput(const std::string& out) {
   return std::string();
 }
 
+std::string fxReceiptId(const std::string& out) {
+  static const char kLead[] = "message_id ";
+  const size_t at = out.find(kLead);
+  if (at == std::string::npos) return std::string();
+  size_t b = at + sizeof(kLead) - 1, e = b;
+  while (e < out.size() && out[e] >= '0' && out[e] <= '9') e++;
+  return e > b ? out.substr(b, e - b) : std::string();
+}
+
+bool voiceDelivered(const TurnEffects& fx) {
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.kind == FxKind::Send && e.ok && (e.flags & kFxVoice) && (e.flags & kFxReceipt)) return true;
+  }
+  return false;
+}
+
+// A send: its receipt, if the result names one. A voice send without a receipt did
+// not arrive (it records as failed); one that went out as text is a plain send.
+static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags) {
+  if ((flags & kFxVoice) && contains(output, "as text")) flags &= (uint8_t)~kFxVoice;
+  const std::string id = fxReceiptId(output);
+  if (!id.empty()) flags |= kFxReceipt;
+  if ((flags & kFxVoice) && id.empty()) {
+    fx.add(FxKind::Send, false, std::string(), 1, flags);
+    return;
+  }
+  fx.add(FxKind::Send, true, id.empty() ? fxRefFromOutput(output) : id, 1, flags);
+}
+
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags) {
   if (isError) {
-    fx.add(base, false);
+    // A voice reply that stopped part way: the messages Telegram named did arrive
+    // ("only 2 of the 3 voice messages reached Telegram (message_id 811, 812) ..."),
+    // so they back a claim about them; the rest is recorded as failed.
+    const std::string id = base == FxKind::Send ? fxReceiptId(output) : std::string();
+    if (!id.empty()) fx.add(FxKind::Send, true, id, 1, (uint8_t)(flags | kFxReceipt));
+    fx.add(base, false, std::string(), 1, flags);
+    return;
+  }
+  if (base == FxKind::Send) {
+    recordSend(fx, output, flags);
     return;
   }
   const FxKind k = refineKind(base, output);

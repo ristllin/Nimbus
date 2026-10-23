@@ -16,10 +16,12 @@
 
 #include "../sys/agent_log.h"
 #include "../sys/ps_json.h"       // PsramJsonAllocator (manifest parse off internal heap)
+#include "../sys/psram_static.h"  // the reply record lives in PSRAM, not internal .bss
 #include "../agent/store.h"
 #include "../agent/memory_subsystem.h"  // memory::haveSd()
 #include "nimbus/fault.h"
 #include "nimbus/sfx_paths.h"
+#include "nimbus/speaker_reply.h"   // ReplyTicket - the spoken reply's outcome (host-tested)
 
 #include "sfx_basic_data.h"  // generated: the embedded basic PCM (THE one include site)
 
@@ -48,8 +50,9 @@ struct Item {
                           // (a ~12 s inline fetch+playback starved loopTask's
                           // watchdog: task_wdt -> abort, field "harness reset").
   bool    mp3 = false;    // reply format: true => /reply.mp3 (minimp3), false =>
-                          // /reply.wav (playWavFile). A Mistral (MP3-only) device
-                          // uses the MP3 branch so it can finally speak.
+                          // /reply.wav. A Mistral (MP3-only) device uses the MP3
+                          // branch so it can finally speak.
+  uint32_t ticket = 0;    // the reply's ticket (g_reply): its outcome is reported there
 };
 
 bool          g_began = false;
@@ -73,7 +76,7 @@ uint8_t g_counts[(int)Ev::COUNT][3] = {};
 // Per-job status edge table (round-robin): fire only on CHANGE to a trigger
 // status - brokers re-send frames and a stuck job must not re-voice every frame.
 struct JobEdge { uint32_t key; uint8_t status; bool used; };
-JobEdge g_jobs[12] = {};
+JobEdge (&g_jobs)[12] = ::nimbus::psramStatic<JobEdge[12]>();   // PSRAM (offsets the reply record's internal bytes)
 int     g_jobsNext = 0;
 
 bool sdUsable() {
@@ -132,6 +135,42 @@ void applyConfig() {
   rescan();
 }
 
+// The newest spoken reply's outcome: the sfx task writes it, the turn's reply.speak
+// reads it (awaitReplyStart). Short critical sections only.
+nimbus::sfx::ReplyTicket& g_reply = ::nimbus::psramStatic<nimbus::sfx::ReplyTicket>();   // PSRAM; the mux stays internal
+portMUX_TYPE  g_replyMux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t      g_playingTicket = 0;   // sfx task only: the reply the open hook reports for
+
+void replyOpened(bool ok, const char* why) {
+  portENTER_CRITICAL(&g_replyMux);
+  if (ok) g_reply.playing(g_playingTicket);
+  else g_reply.failed(g_playingTicket, why);
+  portEXIT_CRITICAL(&g_replyMux);
+}
+
+void replyDone(uint32_t ticket) {
+  portENTER_CRITICAL(&g_replyMux);
+  g_reply.done(ticket);
+  portEXIT_CRITICAL(&g_replyMux);
+}
+
+// Play one spoken reply on this task and report its outcome to its ticket.
+void playReply(const Item& it) {
+  g_playingTicket = it.ticket;
+  if (!speakerUsable() || g_muted) {
+    replyOpened(false, g_muted ? "the microphone is recording" : "the speaker is marked faulty");
+    return;
+  }
+  // Both the reply and any music track feed the ONE shared I2S TX (the driver
+  // serializes it with a whole-clip mutex), so an active track would make the
+  // reply queue behind minutes of audio. Duck music first: a spoken reply wins.
+  music::stopForSpeech();
+  const bool played = it.mp3 ? music::streamMp3File(LittleFS, "/reply.mp3", replyOpened)
+                             : music::streamWavFile(LittleFS, "/reply.wav", replyOpened);
+  if (!played) agent::alogf("sfx: %s did not play to its end", it.mp3 ? "/reply.mp3" : "/reply.wav");
+  replyDone(it.ticket);   // a no-op for a failed ticket: done never hides a failure
+}
+
 void sfxTask(void*) {
   Item it;
   for (;;) {
@@ -143,20 +182,9 @@ void sfxTask(void*) {
     if (xQueueReceive(g_q, &it, pdMS_TO_TICKS(2000)) == pdTRUE) {
       if (it.speak) {
         // Spoken reply. /reply.wav|/reply.mp3 may be overwritten by a rapid next
-        // synth - acceptable for speech (latest wins); the history row was captured
-        // at queue time. Muted/faulted checks re-run here, not just at post time.
-        if (speakerUsable() && !g_muted) {
-          // Both the reply and any music track feed the ONE shared I2S TX (the driver
-          // serializes it with a whole-clip mutex), so an active track would make the
-          // reply queue behind minutes of audio. Duck music first: a spoken reply wins.
-          music::stopForSpeech();
-          // Playback runs async on this task, so speakOnDevice already reported
-          // "spoken" at queue time (same as the WAV path). Log a decode/playback miss
-          // here so a corrupt clip is at least diagnosable in /api/log.
-          if (it.mp3) { if (!music::streamMp3File(LittleFS, "/reply.mp3"))
-                          agent::alogf("sfx: /reply.mp3 did not play (decode/speaker)"); }
-          else        solide::audio::playWavFile(LittleFS, "/reply.wav");
-        }
+        // synth - acceptable for speech (latest wins; the older ticket then reads as
+        // replaced). Muted/faulted checks re-run here, not just at post time.
+        playReply(it);
       } else {
         resolveAndPlay((Ev)it.ev);
       }
@@ -242,11 +270,41 @@ bool onJobState(uint32_t key, uint8_t status) {
   return true;
 }
 
-bool speakReply(bool mp3) {
-  if (!g_began || !g_q) return false;
-  if (!speakerUsable()) return false;
+uint32_t speakReply(bool mp3) {
+  if (!g_began || !g_q) return 0;
+  if (!speakerUsable()) return 0;
   Item it{0, false, true, mp3};
-  return xQueueSend(g_q, &it, 0) == pdTRUE;   // full queue -> honest false
+  portENTER_CRITICAL(&g_replyMux);
+  it.ticket = g_reply.queue();
+  portEXIT_CRITICAL(&g_replyMux);
+  if (xQueueSend(g_q, &it, 0) == pdTRUE) return it.ticket;
+  portENTER_CRITICAL(&g_replyMux);
+  g_reply.failed(it.ticket, "the sound queue is full");   // full queue -> honest 0
+  portEXIT_CRITICAL(&g_replyMux);
+  return 0;
+}
+
+bool awaitReplyStart(uint32_t ticket, uint32_t timeoutMs, String* why) {
+  const uint32_t start = millis();
+  for (;;) {
+    // Copy the small record under the lock and read it outside: no allocation may
+    // happen inside a critical section.
+    portENTER_CRITICAL(&g_replyMux);
+    const nimbus::sfx::ReplyTicket snap = g_reply;
+    portEXIT_CRITICAL(&g_replyMux);
+    const nimbus::sfx::ReplyState st = snap.state(ticket);
+    if (nimbus::sfx::started(st)) return true;
+    if (nimbus::sfx::settled(st)) {
+      if (why) *why = snap.why(ticket).c_str();
+      return false;
+    }
+    if (millis() - start >= timeoutMs) {
+      if (why) *why = String("the speaker did not start within ") + (unsigned)(timeoutMs / 1000) +
+                      " s (it may still play)";
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
 }
 
 bool play(const char* s) {

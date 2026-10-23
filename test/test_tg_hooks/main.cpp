@@ -109,13 +109,22 @@ static void test_one_archive_hook_path() {
   const std::string fetch = bodyOf(code(), "static void fetchOnePage(");
   TEST_ASSERT_TRUE(fetch.find("agent::tgarchive::onInboundPage(") < fetch.find("parsePageBody("));
   // Outbound: send() archives the whole text before it is split, sendNow before it
-  // sends, drainMedia before the upload.
+  // sends, drainMedia before the upload, and the voice reply's upload (sendMediaNow)
+  // only once Telegram named the delivered message.
   const std::string snd = bodyOf(code(), "bool send(const String& chatId, const String& text, bool block) {");
   TEST_ASSERT_TRUE(snd.find("agent::tgarchive::onOutboundText(") < snd.find("TG_CHUNK"));
   const std::string now = bodyOf(code(), "static bool sendNow(const char* chatId, const char* text) {");
   TEST_ASSERT_TRUE(now.find("agent::tgarchive::onOutboundText(") < now.find("doSendMessage("));
   const std::string media = bodyOf(code(), "static void drainMedia() {");
-  TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") < media.find("httpmp::post("));
+  TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") != std::string::npos);
+  TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") < media.find("uploadMedia("));
+  const std::string upload = bodyOf(code(), "static nimbus::net::TgReceipt uploadMedia(");
+  TEST_ASSERT_TRUE(upload.find("closePollSocket();") < upload.find("httpmp::post("));
+  TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "httpmp::post(").size());   // every media send uploads here
+  const std::string sync = bodyOf(code(), "MediaReceipt sendMediaNow(");
+  TEST_ASSERT_TRUE(sync.find("if (!onTurnTask())") < sync.find("uploadMedia("));
+  TEST_ASSERT_TRUE(sync.find("uploadMedia(") < sync.find("if (r.ok)"));
+  TEST_ASSERT_TRUE(sync.find("if (r.ok)") < sync.find("agent::tgarchive::onOutboundMedia("));
 }
 
 // The polled page and the injected test page run the same receive cycle; its classify

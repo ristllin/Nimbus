@@ -330,11 +330,19 @@ reach the person. Both refuse outside a live turn.
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `reply.speak` | Read text aloud on the device speaker (text-to-speech). | `text` (**required**) | live |
-| `reply.telegram` | Send a Telegram message; `voice:true` delivers it as spoken audio. | `text` (**required**), `chat_id` (optional), `voice` (boolean) | live |
+| `reply.telegram` | Send a Telegram message; `voice:true` delivers it as spoken audio, as Telegram voice messages. | `text` (**required**), `chat_id` (optional), `voice` (boolean) | live |
 
 Note: `reply.speak` degrades honestly when voice replies are switched off or the
-speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
-back to text - the content is never dropped. `reply.telegram` is
+speaker volume is 0, refuses text over 1,200 characters, and reports success only
+once the speaker started playing; otherwise it says why ("could not play on the
+speaker: the audio driver could not start ..."). With voice replies off,
+`reply.telegram` `voice:true` falls back to text - the content is never dropped.
+A Telegram voice reply always goes to Telegram, never to the speaker: text of up to
+2,400 characters is split into voice messages of up to 600 characters, each one
+synthesized, uploaded at once and checked against Telegram's answer. The result names
+Telegram's `message_id` for every voice message that arrived ("delivered to Telegram
+as a voice message (message_id 812, 210 KB)"); when one did not, it says why and that
+nothing (or only some) was delivered, so the reply can fall back to text. `reply.telegram` is
 offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
 over Telegram. `files.send` delivers only to an allowlisted chat, so it is offered
@@ -426,9 +434,9 @@ terminate) are **not** device actions - they go through the turn's
 
 On-device speech plays through the built-in speaker. Both the `reply.speak` tool
 (mid-turn) and the end-of-turn `device[]` `tts` action synthesize the reply and
-play it on the speaker; `tts` falls back to a Telegram audio message when the
-device has no working speaker. A spoken Telegram message is also available via
-`reply.telegram` `voice:true`. The speaker plays WAV directly and decodes MP3 with
+play it on the speaker; `tts` falls back to a Telegram voice message when the
+speaker could not play it. A spoken Telegram message is also available via
+`reply.telegram` `voice:true`, which never uses the speaker. The speaker plays WAV directly and decodes MP3 with
 the bundled decoder, so the reply speaks whether the configured voice provider
 emits WAV (OpenAI) or MP3 (Mistral).
 

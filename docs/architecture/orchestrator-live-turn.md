@@ -309,9 +309,25 @@ the Bot API `sendDocument`/`sendPhoto`/`sendVoice`/`sendAudio` methods.
 
 **Spoken reply path.** Speaking is the model's choice, gated by the owner's
 **Voice replies** toggle (`store::ttsEnabled()`, on by default). `reply.speak`
-calls `speakOnDevice` and plays on the device speaker, refusing with a reason when
-voice replies are off or the speaker volume is 0. The `tts` device action and
-`reply.telegram` with `voice:true` go through the speak sink (`orchSpeakSink` in
-`main.cpp`), which plays on the speaker first and falls back to a Telegram audio
-message (`/tts.mp3` via `sendMedia(…, "audio", …)`) only when on-device speech is
-not possible.
+calls `speakOnDevice`, which queues the clip on the sound task and waits (up to
+10 s, on the poll task) for that task to open the speaker; it refuses with a reason
+when voice replies are off, the speaker volume is 0, the text is over 1,200
+characters, synthesis failed or the speaker driver would not start (every
+`spkOpen` in `music.cpp` goes through one helper that logs and reports a failed
+open). `reply.telegram` with `voice:true` never touches the speaker: `voice_reply.cpp`
+splits the text into voice messages (`nimbus/orch/voice_notes.h`: at most 600
+characters each, 2,400 per call), synthesizes each to its own LittleFS file
+(`/tgv-*.mp3`), uploads it at once with `telegram::sendMediaNow` (the poll task owns
+the TLS arena during a turn), reads Telegram's `message_id` from the answer
+(`nimbus/net/tg_receipt.h`), logs `telegram: sendAudio ok (message_id N, B bytes)` or
+`FAIL` with the reason, and deletes the file after the archive hook copied it. The
+whole call has one 150 s budget (it holds the poll task), so on a slow network it stops
+before a message that cannot finish and says how many arrived. The
+tool's result carries those receipts, and the claim check accepts a voice-message
+claim only with one. Text-to-speech gets a read window sized to its text (25 s up to
+60 s), and a clip the window or a dropped connection cut short is removed and
+reported as "truncated at N B", never used. The `tts` device action goes through the
+speak sink (`orchSpeakSink` in `main.cpp`), which plays on the speaker first and
+falls back to the same Telegram voice path only when the speaker could not play it.
+The reply tools run outside the memory card lock (`handleMcp`): only their history
+row takes it.

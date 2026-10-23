@@ -17,6 +17,7 @@
 
 #include "adapters/embeddings.h"
 #include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
+#include "nimbus/speaker_reply.h"   // speakerFailText - reply.speak's honest failure
 #include "adapters/tavily.h"
 #include "nimbus/harness/websearch.h"  // registerWebSearchTool (portable, host-tested)
 #include "nimbus/orch/tool_gates.h"     // CUM-508: the provider-gated tool table
@@ -666,6 +667,20 @@ static bool cardHoldsVectorData() {
   return has;
 }
 
+// reply.speak's failure words. A synthesis failure is named as one, never as a broken
+// speaker (owner 2026-07-16: the model kept blaming the speaker when synthesis failed);
+// a speaker that would not start says so (22 Oct). CUM-523: point at reply.telegram
+// only on a turn that was offered it.
+static std::string speakFailure(const std::string& why) {
+  const bool synth = why.rfind("text-to-speech failed", 0) == 0;
+  const bool tooLong = why.rfind("the text is ", 0) == 0;
+  std::string out = synth ? "on-device speech failed: " + why + " (the speaker itself is likely fine)"
+                          : tooLong ? why : nimbus::sfx::speakerFailText(why);
+  out += agent::orchestrator::telegramForTurn() ? "; reply.telegram with voice:true still delivers spoken audio"
+                                                : "; reply in text instead";
+  return out;
+}
+
 void begin() {
   if (g_begun) return;
   g_begun = true;
@@ -1100,9 +1115,10 @@ void begin() {
             "spoken response is helpful. Returns whether playback succeeded.",
             [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               // Turn-output tool only: refuse from the LAN /mcp path (no turn in
-              // flight) so an MCP client can't actuate the speaker + block the web
-              // task with a multi-second TLS+I2S synth/playback (prism).
-              if (!agent::orchestrator::turnInFlight())
+              // flight, or a turn running on the poll task while the call came in on
+              // the web task) so an MCP client can't actuate the speaker + block the
+              // web task with a multi-second TLS+I2S synth and the playback wait (prism).
+              if (!agent::orchestrator::turnInFlight() || !agent::telegram::onTurnTask())
                 return nimbus::orch::ToolResult::fail("reply.speak is only available during a turn");
               // Owner's "Voice replies" toggle (P2.5): OFF -> no audio, tell the
               // model to use text so the content still reaches the owner.
@@ -1124,23 +1140,20 @@ void begin() {
                     "after if the owner wanted silence");
               std::string t = a["text"].is<const char*>() ? std::string(a["text"].as<const char*>()) : std::string();
               if (t.empty()) return nimbus::orch::ToolResult::fail("missing 'text'");
-              if (!agent::orchestrator::speakOnDevice(String(t.c_str())))
-                // Honest failure (owner 2026-07-16: the model kept telling them the
-                // SPEAKER was broken when synthesis was what failed): name both
-                // possible stages, never blame the hardware. CUM-523: point at
-                // reply.telegram only on a turn that was offered it.
-                return nimbus::orch::ToolResult::fail(
-                    std::string("on-device speech failed at TTS synthesis or playback (NOT "
-                                "necessarily the speaker hardware - that is usually fine)") +
-                    (agent::orchestrator::telegramForTurn()
-                         ? "; reply.telegram with voice:true still delivers spoken audio"
-                         : "; reply in text instead"));
+              // "spoken" only once the speaker opened for the clip (22 Oct: a driver
+              // that could not start was swallowed and the clip counted as played).
+              String why;
+              if (!agent::orchestrator::speakOnDevice(String(t.c_str()), true, &why))
+                return nimbus::orch::ToolResult::fail(speakFailure(std::string(why.c_str())));
               return nimbus::orch::ToolResult::ok("spoken on device speaker");
             },
             R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})");
   g_reg.add("reply.telegram",
             "Send a Telegram message. Omit chat_id to reply to the current conversation; set "
-            "voice:true to deliver it as spoken audio instead of text.",
+            "voice:true to deliver it as spoken audio instead of text (up to 2,400 characters, "
+            "sent as voice messages of up to 600 characters each). A voice result names "
+            "Telegram's message_id for every voice message that arrived; without one, nothing "
+            "arrived.",
             [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               if (!agent::orchestrator::turnInFlight())
                 return nimbus::orch::ToolResult::fail("reply.telegram is only available during a turn");
@@ -1149,10 +1162,21 @@ void begin() {
               std::string cid = a["chat_id"].is<const char*>() ? std::string(a["chat_id"].as<const char*>()) : std::string();
               // Owner's "Voice replies" toggle (P2.5): OFF -> degrade voice to TEXT
               // (the content still arrives; it just isn't spoken - never dropped).
-              bool voice = (a["voice"] | false) && agent::store::ttsEnabled();
-              if (!agent::orchestrator::sendToChat(String(cid.c_str()), String(t.c_str()), voice))
-                return nimbus::orch::ToolResult::fail("no allowed Telegram target (omit chat_id to reply to the current chat, or pass an allowlisted id)");
-              return nimbus::orch::ToolResult::ok(voice ? "sent to Telegram" : "sent to Telegram as text");
+              const bool asked = a["voice"] | false;
+              const bool voice = asked && agent::store::ttsEnabled();
+              // Voice: the receipt (Telegram's message ids) or why nothing arrived, so
+              // the model can fall back to text and say so (22 Oct: "sent to Telegram"
+              // came back for a voice message that never left the device).
+              std::string result;
+              if (!agent::orchestrator::sendToChat(String(cid.c_str()), String(t.c_str()), voice, &result))
+                return nimbus::orch::ToolResult::fail(
+                    result.empty() ? "no allowed Telegram target (omit chat_id to reply to the current "
+                                     "chat, or pass an allowlisted id)"
+                                   : result);
+              if (voice) return nimbus::orch::ToolResult::ok(result);
+              return nimbus::orch::ToolResult::ok(
+                  asked ? "sent to Telegram as text (voice replies are switched off, so it was not spoken)"
+                        : "sent to Telegram as text");
             },
             R"({"type":"object","properties":{"text":{"type":"string"},"chat_id":{"type":"string"},"voice":{"type":"boolean"}},"required":["text"]})");
 
@@ -2778,6 +2802,15 @@ static bool isMutatingTool(const std::string& name, const std::string& action) {
          name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad";
 }
 
+// Tools that own a long network or speaker wait and take the card lock themselves,
+// only around their own card work, so handleMcp runs them outside its whole-call Lock:
+// image.generate (a 90-120 s image download, see image_gen.cpp) and the output-channel
+// tools (a text-to-speech download, a Telegram upload, a wait for playback: 25 s under
+// the Lock on 22 Oct), whose one card touch is the history row captureMessage locks.
+static bool locksItself(const std::string& name) {
+  return name == "image.generate" || name == "reply.telegram" || name == "reply.speak";
+}
+
 // The write tools reach their handler even under FAULT memory, which refuses and
 // counts them (MemoryContext::writable).
 static bool isMemoryWriteTool(const std::string& name) {
@@ -2811,7 +2844,9 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // 8 s watchdog and reboots the device (proven live). Such tools do their SD work
   // OUTSIDE the long wait, under their OWN brief Lock (they decode to PSRAM first),
   // so they dispatch outside this one. See image_gen.cpp.
-  if (name == "image.generate") return g_reg.handleRpc(jsonRpcRequest, who);  // self-locks briefly
+  // The reply tools refuse outside a turn, and a turn never runs on the main loop, so
+  // their history row needs no LoopLock.
+  if (locksItself(name)) return g_reg.handleRpc(jsonRpcRequest, who);
   // Serialize the whole dispatch with the turn task's engine access. Recursive, so the
   // nested applyConfig/persist* below re-enter safely. (A memory.write tool embeds via
   // TLS while holding this - a rare, brief stall for a concurrent turn, never a

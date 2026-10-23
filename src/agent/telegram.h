@@ -158,6 +158,28 @@ bool sendMedia(const String& chatId, const char* kind, const char* filePath,
 // than overwriting it - an artifact delivery must never be silently dropped.
 bool sendMediaSd(const String& chatId, const char* kind, const char* filePath,
                  const String& caption = "");
+
+// A media upload that runs NOW and waits for Telegram's answer: the voice reply path,
+// where the tool must say whether the message arrived. Runs only on the poll task
+// (every turn runs there, and it owns the TLS arena between its own requests); from any
+// other task it refuses. `messageId` is Telegram's id for the delivered message (> 0
+// only when ok); `error` says why nothing arrived. A delivered file is archived before
+// this returns, so the caller may delete it afterwards. LittleFS files only.
+struct MediaReceipt {
+  bool     ok = false;
+  int64_t  messageId = 0;
+  size_t   bytes = 0;       // the uploaded file's size
+  String   error;
+};
+struct MediaOptions {
+  const char* caption = nullptr;
+  const char* uploadName = nullptr;   // the file name the chat shows (nullptr: the file's own)
+  const char* title = nullptr;        // an audio's title in the chat
+};
+MediaReceipt sendMediaNow(const String& chatId, const char* kind, const char* filePath,
+                          const MediaOptions& opt = MediaOptions());
+// True when the caller runs on the poll task (the turn task).
+bool onTurnTask();
 void stop();
 
 // Factory-reset quiesce (release-gate finding 2026-10-04): signal the poll task

@@ -316,7 +316,7 @@ claims in eight classes:
 | saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write |
 | deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
 | spawned | "I started three research sub-agents" | that many accepted spawns |
-| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech |
+| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id` |
 | changed | "pinned", "switched", "turned off" | a real change; a pin on an already pinned memory is not one |
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
@@ -330,7 +330,7 @@ claims. Replies that are mostly not English are not scanned. When the head has
 provider-hosted tools on its turn (connectors, a hosted web search), claims of sending,
 checking or changing something are not checked, because those tools run where the
 device cannot see them; everything the device does itself (memory, files, skills,
-notes, sub-agents) is always checked.
+notes, sub-agents, a Telegram voice message from its own bot) is always checked.
 
 When a claim has no backing, the model gets one correction round: the claim check
 is one of the final-answer checks (see [the final check](reference/turn-contract.md#the-final-check)),

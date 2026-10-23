@@ -34,6 +34,9 @@
 #include "../sfx/music.h"               // CUM-40 music player control (/play)
 #include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
 #include "nimbus/tts_catalog.h"         // core::speakerTtsFormat - provider -> speaker format (host-tested)
+#include "nimbus/orch/voice_notes.h"     // kSpeakMaxChars - the speaker clip cap (host-tested)
+#include "nimbus/speaker_reply.h"       // speakerFailText - the speaker's honest failure (host-tested)
+#include "voice_reply.h"                // reply.telegram voice:true - Telegram with a receipt
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include "pdf_tool.h"                        // files.pdf - the device PDF writer
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
@@ -2010,9 +2013,20 @@ void handleMessage(const String& text, const String& fromName, const String& cha
 // speaker (loopback-verified working); reply.telegram delivers text to a chat.
 String currentChat() { return g_engine ? String(g_engine->currentChat().c_str()) : String(); }
 
-bool speakOnDevice(const String& text, bool capture) {
-  if (text.length() == 0) return false;
-  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return false;
+// How long reply.speak waits for the sound task to open the speaker: a short event
+// clip or a sync step ahead of it in the queue, and a paused music track handing back
+// the speaker, all fit.
+static constexpr uint32_t kSpeakStartWaitMs = 10000;
+
+bool speakOnDevice(const String& text, bool capture, String* why) {
+  auto fail = [why](const String& w) {
+    if (why) *why = w;
+    return false;
+  };
+  if (text.length() == 0) return fail("nothing to say");
+  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return fail("the speaker is marked faulty");
+  const size_t chars = nimbus::orch::textChars(std::string(text.c_str()));
+  if (chars > nimbus::orch::kSpeakMaxChars) return fail(nimbus::orch::speakTooLongText(chars).c_str());
   // Synthesize in the format the CONFIGURED provider actually emits, then play it
   // on the speaker (I2S TX, independent of the mic). OpenAI -> WAV (played directly);
   // Mistral/Voxtral -> MP3 (decoded by the vendored minimp3). This is the field-bug
@@ -2023,23 +2037,34 @@ bool speakOnDevice(const String& text, bool capture) {
   // provider), so the format we synthesize matches the provider that will voice it.
   const char* fmt = core::speakerTtsFormat(std::string(agent::tts::activeProvider().c_str()), &mp3);
   const char* path = mp3 ? "/reply.mp3" : "/reply.wav";
-  size_t n = agent::tts::synthesizeToFile(text, path, fmt);
-  if (!n) return false;
+  String ttsWhy;
+  size_t n = agent::tts::synthesizeToFile(text, path, fmt, nullptr, &ttsWhy);
+  if (!n) return fail(String("text-to-speech failed: ") + ttsWhy);
   // QUEUE the playback on the sfx task - never play inline. This runs on
   // tg_poll inside a tool round; the synth fetch above is bounded (~4 s) but
   // fetch + an 8 s clip held the tool dispatch locks past loopTask's 8 s
   // watchdog budget: task_wdt abort, observed in the field as "the harness
-  // reset itself" on 'count to ten out loud'.
-  const bool played = ::sfx::speakReply(mp3);
-  if (!played) alogf("speak: could not queue %s (%u bytes) - sfx queue full/off?", path, (unsigned)n);
+  // reset itself" on 'count to ten out loud'. Then wait (bounded, on this task,
+  // which no watchdog watches) for the sfx task to open the speaker: a clip is
+  // spoken only once it is playing, never when it was merely queued (22 Oct).
+  const uint32_t ticket = ::sfx::speakReply(mp3);
+  if (!ticket) {
+    alogf("speak: could not queue %s (%u bytes) - sfx queue full/off?", path, (unsigned)n);
+    return fail("the sound queue is full or off");
+  }
+  String playWhy;
+  if (!::sfx::awaitReplyStart(ticket, kSpeakStartWaitMs, &playWhy)) {
+    alogf("speak: %s", nimbus::sfx::speakerFailText(playWhy.c_str()).c_str());
+    return fail(playWhy);
+  }
   // Capture spoken output so a voice-only reply is still in history ("what did you
   // just say?" works on stateless hosts once device history reads these rows). Skip
   // when the caller already records it (the tts device action captures in apply.cpp),
   // so the same utterance is not written to history twice.
-  if (played && capture) memory::captureMessage(currentChat().c_str(), "assistant",
-                                                orch::MsgKind::Message, text, "",
-                                                withTurnTag("via:speaker"));
-  return played;
+  if (capture) memory::captureMessage(currentChat().c_str(), "assistant",
+                                      orch::MsgKind::Message, text, "",
+                                      withTurnTag("via:speaker"));
+  return true;
 }
 
 // Is `cid` in the persisted Telegram allowlist? Read from NVS (thread-safe) - NOT
@@ -2056,7 +2081,7 @@ static bool chatAllowed(const String& cid) {
   return false;
 }
 
-bool sendToChat(const String& chatId, const String& text, bool asVoice) {
+bool sendToChat(const String& chatId, const String& text, bool asVoice, std::string* result) {
   String cur = currentChat();
   String cid = chatId.length() ? chatId : cur;
   // serial/voice/web aren't Telegram-deliverable channels.
@@ -2066,13 +2091,18 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice) {
   // chat. Only the CURRENT turn's chat (implicit) or an ALLOWLISTED chat may be
   // messaged - the allowlist is the Telegram auth boundary, inbound AND outbound.
   if (cid != cur && !chatAllowed(cid)) return false;
-  if (asVoice && g_sinks.speak) {
-    g_sinks.speak(text);
-    // Capture spoken-via-Telegram output to the TARGET chat's history.
-    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
-                           withTurnTag("via:telegram"));
-    if (cid == cur && g_engine) g_engine->noteToolReplied();
-    return true;
+  if (asVoice) {
+    // Telegram, never the speaker (22 Oct: the speaker went first and failed silently,
+    // and the tool still said "sent"). The result is the receipt or why nothing arrived.
+    const voicereply::Outcome o = voicereply::deliver(cid, text);
+    if (result) *result = o.toolText;
+    if (o.notesSent > 0) {
+      // Capture what reached the TARGET chat to its history.
+      memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
+                             withTurnTag("via:telegram"));
+      if (cid == cur && g_engine) g_engine->noteToolReplied();
+    }
+    return o.delivered;
   }
   const bool sent = g_sinks.send && g_sinks.send(cid, text);
   // The current turn's chat already got a real answer mid-loop - remember it so

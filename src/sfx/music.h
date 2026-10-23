@@ -57,7 +57,14 @@ bool mp3Supported();
 // in PSRAM (never on the caller's stack - the sfx task stack is only 8 KB). Returns
 // true if the clip decoded and played to the end. NOTE: the shared I2S TX means a
 // caller should stopForSpeech() first if music might be streaming (see below).
-bool streamMp3File(fs::FS& fs, const char* path);
+// `onOpen`, when given, hears once whether the clip reached the speaker: ok=true right
+// after the speaker opened, or ok=false with the reason when the file, the decoder or
+// the speaker driver failed (22 Oct: a driver that could not start was swallowed and
+// the clip counted as played).
+using OpenHook = void (*)(bool ok, const char* why);
+bool streamMp3File(fs::FS& fs, const char* path, OpenHook onOpen = nullptr);
+// The same for a WAV reply clip (OpenAI and the router voice in WAV).
+bool streamWavFile(fs::FS& fs, const char* path, OpenHook onOpen = nullptr);
 
 // Stop music playback if a track is currently playing, so a spoken reply can take
 // the shared I2S TX channel immediately instead of queueing behind the whole track

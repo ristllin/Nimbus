@@ -243,10 +243,17 @@ bool   toolRidesLoop(const std::string& name);   // P7: is this registry tool lo
 
 // Output-channel helpers backing the reply.speak / reply.telegram tools (P6).
 String currentChat();                    // routing chatId of the in-flight turn ("" if none)
-bool   speakOnDevice(const String& text, bool capture = true);// TTS -> device speaker; false if
-                                         // unavailable/faulted. capture=false when the caller already
-                                         // records the spoken text to history (the tts device action does)
-bool   sendToChat(const String& chatId, const String& text, bool asVoice);  // "" chatId => current turn's chat
+// TTS -> device speaker. True only once the sound task opened the speaker for the clip
+// (a bounded wait); false with `why` when it is unavailable, faulted, too long, or the
+// speaker would not start. capture=false when the caller already records the spoken
+// text to history (the tts device action does).
+bool   speakOnDevice(const String& text, bool capture = true, String* why = nullptr);
+// "" chatId => current turn's chat. asVoice: synthesize and upload now as Telegram voice
+// messages (voice_reply.h), never the speaker; `result` gets the tool's words (the
+// receipt with Telegram's message ids, or why nothing arrived) and the return is true
+// only when every note arrived. False with `result` untouched: the chat is not allowed.
+bool   sendToChat(const String& chatId, const String& text, bool asVoice,
+                  std::string* result = nullptr);
 void   requestMemoryClear(); // stage a model-memory wipe (echo zeroed at once)
 void   requestConvReset();   // stage a provider-conversation reset (drained on tg_poll,
                              // AFTER any in-flight turn's write-back - prism B)

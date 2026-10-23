@@ -453,9 +453,103 @@ static void test_a_write_that_does_not_land_under_a_saved_reply_gets_one_correct
   }
 }
 
+// The 22 Oct incident (Lumi, v4.5.16): reply.telegram voice:true answered "sent to
+// Telegram" with no receipt, the reply told the owner a voice message was sent, and
+// "claims: ok n=1" let it through; nothing reached Telegram. A voice claim is backed
+// only by a voice send whose result names Telegram's message_id, with or without
+// hosted tools (a connector never sends this device's voice message).
+static void test_voice_claim_needs_a_telegram_receipt() {
+  using nimbus::orch::kFxVoice;
+  const std::string voiceArgs = R"({"text":"Here is your evening summary.","voice":true})";
+  const uint8_t flags = ClaimCheck::toolCallFlags("reply.telegram", voiceArgs);
+  TEST_ASSERT_EQUAL_UINT8(kFxVoice, flags);
+  TEST_ASSERT_EQUAL_UINT8(0, ClaimCheck::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
+  TEST_ASSERT_TRUE(agent::fxKindForTool("reply.telegram") == FxKind::Send);
+  const char* claims[] = {"I've sent you a voice message with the summary.", "Voice message sent.",
+                          "I sent the recap to Telegram as a voice note.",
+                          "Your summary has been sent as audio.",
+                          "The voice message has been sent to your Telegram."};
+  const char* receipt = "delivered to Telegram as a voice message (message_id 812, 210 KB)";
+  for (const char* reply : claims) {
+    for (int hosted = 0; hosted < 2; hosted++) {
+      ClaimCheck incident;
+      incident.beginTurn();
+      incident.setHostedTools(hosted != 0);
+      incident.noteTool(agent::fxKindForTool("reply.telegram"), false, "sent to Telegram", flags);
+      const std::string fix = incident.finalCheck(turnJson(reply));
+      TEST_ASSERT_TRUE_MESSAGE(fix.find("no voice message reached Telegram") != std::string::npos, reply);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: no voice message was delivered.)",
+                                       incident.tailAfterApply(reply).c_str(), reply);
+      ClaimCheck delivered;
+      delivered.beginTurn();
+      delivered.setHostedTools(hosted != 0);
+      delivered.noteTool(agent::fxKindForTool("reply.telegram"), false, receipt, flags);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", delivered.finalCheck(turnJson(reply)).c_str(), reply);
+    }
+  }
+  // The new honest failure backs nothing, so a "sent" reply is corrected too, and an
+  // honest reply about it is not.
+  ClaimCheck failed;
+  failed.beginTurn();
+  failed.noteTool(FxKind::Send, true,
+                  "the voice message did not reach Telegram: Telegram did not accept it (Bad Request: "
+                  "chat not found); nothing was delivered", flags);
+  TEST_ASSERT_FALSE(failed.finalCheck(turnJson("I sent it to you.")).empty());
+  TEST_ASSERT_EQUAL_STRING("", failed.finalCheck(turnJson("The voice message could not be sent, so here is "
+                                                          "the text instead.")).c_str());
+  // A voice reply that stopped part way: the delivered messages back a claim about
+  // them (precision first), and the failure is still on the record.
+  ClaimCheck partial;
+  partial.beginTurn();
+  partial.noteTool(FxKind::Send, true,
+                   "only 2 of the 3 voice messages reached Telegram (message_id 811, 812); message 3 did "
+                   "not: truncated at 4096 B (the speech audio did not arrive whole)", flags);
+  TEST_ASSERT_EQUAL_STRING("", partial.finalCheck(turnJson("I sent you two voice messages; the third "
+                                                           "one failed.")).c_str());
+  TEST_ASSERT_EQUAL(1, partial.effects().countFailed(FxKind::Send));
+  TEST_ASSERT_TRUE(nimbus::orch::voiceDelivered(partial.effects()));
+  // A receipt for a text send never backs a voice claim; voice switched off sends text,
+  // which backs a plain "sent" but not a voice message.
+  ClaimCheck text;
+  text.beginTurn();
+  text.noteTool(FxKind::Send, false, "sent to Telegram as text (message_id 5)", 0);
+  TEST_ASSERT_FALSE(text.finalCheck(turnJson("Voice message sent.")).empty());
+  ClaimCheck off;
+  off.beginTurn();
+  off.noteTool(FxKind::Send, false, "sent to Telegram as text (voice replies are switched off, so it was not spoken)",
+               flags);
+  TEST_ASSERT_EQUAL_STRING("", off.finalCheck(turnJson("I sent it to you on Telegram.")).c_str());
+  TEST_ASSERT_FALSE(off.finalCheck(turnJson("I sent it to you as a voice message.")).empty());
+  // Precision: a send that only mentions a voice is a plain send, backed by any send.
+  ClaimCheck file;
+  file.beginTurn();
+  file.noteTool(FxKind::Send, false, "queued for Telegram delivery: recording.m4a", 0);
+  for (const char* reply : {"Sent you the recording of your voice.", "I shared the audio file you asked for.",
+                            "I sent the transcript of your audio."})
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", file.finalCheck(turnJson(reply)).c_str(), reply);
+  // Precision: the owner's own voice messages, offers and earlier sends are not claims.
+  for (const char* reply : {"Thanks for your voice message, here is the answer.",
+                            "You sent me a voice message about the trip.",
+                            "Want me to send it as a voice message?",
+                            "I'll send you a voice note tonight.",
+                            "I could not send the voice message."}) {
+    ClaimCheck none;
+    none.beginTurn();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", none.finalCheck(turnJson(reply)).c_str(), reply);
+  }
+  // A text send's claim keeps the plain backing (S2 extends receipts to text later), and
+  // a clause join keeps a voice word out of a text claim.
+  ClaimCheck plain;
+  plain.beginTurn();
+  plain.noteTool(FxKind::Send, false, "sent to Telegram as text", 0);
+  TEST_ASSERT_EQUAL_STRING("", plain.finalCheck(turnJson("I sent the text version since voice messages "
+                                                         "are off.")).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_consistent_replies_need_no_correction);
+  RUN_TEST(test_voice_claim_needs_a_telegram_receipt);
   RUN_TEST(test_unbacked_claim_gets_one_correction_with_the_record);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);

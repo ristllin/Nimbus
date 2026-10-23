@@ -120,6 +120,12 @@ constexpr Cue kCues[] = {
     {C::Sent, "forwarded", kSelf, kSendBacks},
     {C::Sent, "delivered", kSelf, kSendBacks},
     {C::Sent, "posted", kSelf, kSendBacks},
+    {C::Sent, "voice message sent", 0, kSendBacks},
+    {C::Sent, "voice messages sent", 0, kSendBacks},
+    {C::Sent, "voice note sent", 0, kSendBacks},
+    {C::Sent, "voice notes sent", 0, kSendBacks},
+    {C::Sent, "audio message sent", 0, kSendBacks},
+    {C::Sent, "voice reply sent", 0, kSendBacks},
     {C::Sent, "spoken", kSelf, kSpeakBacks},
     {C::Sent, "read it aloud", 0, kSpeakBacks},
     {C::Sent, "read aloud", kSelf, kSpeakBacks},
@@ -1093,7 +1099,20 @@ std::string missingFigures(const Scan& sc, const Claim& cl, const std::vector<st
 
 // ---- gaps --------------------------------------------------------------------
 
-enum GapVariant : uint8_t { kGapPlain = 0, kGapRamOnly = 1, kGapNotPinned = 2, kGapPinNoop = 3, kGapSomeStarted = 4 };
+enum GapVariant : uint8_t {
+  kGapPlain = 0, kGapRamOnly = 1, kGapNotPinned = 2, kGapPinNoop = 3, kGapSomeStarted = 4,
+  kGapNoVoiceReceipt = 5,
+};
+
+// Phrases that make a send claim a voice-message claim: the delivery itself named as
+// spoken audio. A lone "voice" or "audio" is not enough ("sent you the recording of
+// your voice" is a file send).
+constexpr const char* kVoiceNouns[] = {
+    "voice message*", "voice note*", "voice reply", "voice replies", "voice memo*",
+    "voicemail*",     "voice-message*", "audio message*", "audio note*", "audio clip*",
+    "audio version",  "spoken version", "as audio",       "as spoken audio",
+};
+constexpr int kVoiceBefore = 4, kVoiceAfter = 8;
 
 bool backedBy(const TurnEffects& fx, uint32_t mask) {
   for (unsigned k = 0; k < (unsigned)FxKind::kCount; k++)
@@ -1203,8 +1222,36 @@ bool pinnedRightAfter(const Scan& sc, size_t k) {
   return false;
 }
 
+// A voice-message phrase near a send cue that starts at token i: starting up to
+// kVoiceBefore tokens before it ("the voice message has been sent") or kVoiceAfter after
+// its start ("sent you the summary as a voice message"), in its clause, not past a
+// clause join ("I sent the text since voice messages failed" is a text send).
+bool voiceNounNear(const Scan& sc, size_t i) {
+  auto voiceAt = [&](size_t k) {
+    for (const char* w : kVoiceNouns)
+      if (matchPhrase(sc, k, w, nullptr)) return true;
+    return false;
+  };
+  for (size_t k = i; k < sc.toks.size() && k < i + kVoiceAfter && sameClause(sc, k, i); k++) {
+    if (k > i && tokIn(sc.s, sc.toks[k], kClauseJoins)) break;
+    if (voiceAt(k)) return true;
+  }
+  for (size_t d = 1; d <= (size_t)kVoiceBefore && d <= i && sameClause(sc, i - d, i); d++) {
+    if (tokIn(sc.s, sc.toks[i - d], kClauseJoins)) break;
+    if (voiceAt(i - d)) return true;
+  }
+  return false;
+}
+
+// The cue's first token inside the claim's span (the claim records the clause).
+size_t cueToken(const Scan& sc, const Cue& cue, const Claim& cl) {
+  for (size_t k = 0; k < sc.toks.size() && sc.toks[k].b < cl.end; k++)
+    if (sc.toks[k].b >= cl.begin && matchPhrase(sc, k, cue.phrase, nullptr)) return k;
+  return sc.toks.size();
+}
+
 // The gap checks for one reply. The reply is tokenized at most once, and only
-// when a figure claim or a pin no-op needs its tokens.
+// when a figure claim, a pin no-op or a send claim needs its tokens.
 struct GapCheck {
   Scan sc;
   const ClaimScan& scan;
@@ -1249,7 +1296,20 @@ struct GapCheck {
     }
     return false;
   }
+  // A send claim about a voice message needs a voice message's receipt.
+  bool voiceClaim(const Cue& cue, const Claim& cl) {
+    if (cue.cls != C::Sent || cue.backs != kSendBacks) return false;
+    ensureTokens();
+    const size_t k = cueToken(sc, cue, cl);
+    return k < sc.toks.size() && voiceNounNear(sc, k);
+  }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
+    if (voiceClaim(cue, cl)) {
+      if (voiceDelivered(*ev.fx)) return false;
+      g.variant = kGapNoVoiceReceipt;
+      g.deviceOnly = true;
+      return true;
+    }
     if (!isGap(cue, cl, *ev.fx, &g.variant)) return false;
     if (cue.cls == C::Checked) return !pinStateChecked(cue, cl);
     if (g.variant != kGapPinNoop) return true;
@@ -1273,7 +1333,9 @@ const char* gapWhat(const ClaimGap& g) {
                                                    : "nothing was saved";
     case C::Deliverable: return "no file was written";
     case C::Spawned: return "fewer sub-agents were started than it says (or none)";
-    case C::Sent: return "nothing was sent, spoken or scheduled";
+    case C::Sent: return g.variant == kGapNoVoiceReceipt
+                             ? "no voice message reached Telegram (no delivery receipt with a message_id)"
+                             : "nothing was sent, spoken or scheduled";
     case C::Changed:
       if (g.variant == kGapPinNoop) return "that memory was already pinned, so nothing changed";
       return g.variant == kGapNotPinned ? "no pin ran" : "no change was made";
@@ -1440,7 +1502,8 @@ std::string claimTailLine(const ClaimGap& g) {
     case C::Deliverable: return "(Correction: nothing has been written for that yet.)";
     case C::Spawned:   // the spawn check's own lines, so both say it the same way
       return g.variant == kGapSomeStarted ? kSpawnSomeNotStartedLine : kSpawnNotStartedLine;
-    case C::Sent: return "(Correction: that has not been sent.)";
+    case C::Sent: return g.variant == kGapNoVoiceReceipt ? "(Correction: no voice message was delivered.)"
+                                                         : "(Correction: that has not been sent.)";
     case C::Changed:
       if (g.variant == kGapPinNoop) return "(Correction: that memory was already pinned, so nothing changed.)";
       return g.variant == kGapNotPinned ? "(Correction: nothing was pinned this turn.)"
