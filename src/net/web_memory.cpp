@@ -535,6 +535,56 @@ void handleEpisodicGet(AsyncWebServerRequest* r) {
 // the always-available orch_turn device actions, the on-device skill capsules, and
 // the provider-side connectors with availability tags - grouped so the Tools tab
 // and the model see one honest, non-stale list.
+// Provider-side connectors, with a "<provider> only" availability tag. The Info
+// array is String-heavy; keep it small + skip it entirely under heap pressure so
+// the diagnostic endpoint can NEVER crash the async task on a tight device (an
+// Info[12] on the small AsyncTCP stack + a big doc reset the connection at ~18 KB
+// free - prism/on-device). The registry tools are the important part.
+void addConnectorRows(JsonArray& arr, const ProviderState& ps, const char* kUnavail) {
+  auto add = [&](const char* name, const char* desc, const char* tag, const char* avail) {
+    JsonObject o = arr.add<JsonObject>();
+    o["group"] = "connector"; o["name"] = name; o["description"] = desc;
+    if (tag && tag[0]) o["tag"] = tag;
+    o["rides_loop"] = false;
+    if (avail) o["availability"] = avail;
+  };
+  if (ESP.getFreeHeap() <= 30000) {
+    add("(connectors hidden)",
+        "Device memory is momentarily low - connector rows are omitted to keep this "
+        "endpoint safe. Reload in a moment.", "low memory", nullptr);
+    return;
+  }
+  // HEAP, not stack - the AsyncTCP stack is the one an Info[12] already reset
+  // (see above); and the old Info[4] cap silently hid every connector past
+  // the fourth from this dashboard (see kMaxConnectors in connectors.h).
+  std::unique_ptr<agent::connectors::Info[]> ci(
+      new (std::nothrow) agent::connectors::Info[agent::connectors::kMaxConnectors]);
+  const int nc = ci ? agent::connectors::list(ci.get(), agent::connectors::kMaxConnectors) : 0;
+  for (int i = 0; i < nc; i++) {
+    String tag = ci[i].prov + " " + ci[i].kind + (ci[i].enabled ? "" : " (disabled)");
+    // Classify this connector by the same rule the model's catalog states in
+    // prose: on the current host provider (callable directly) vs another
+    // provider (spawn a sub-agent) vs unkeyed/disabled/sign-in-failed.
+    ConnectorInfo cw;
+    cw.name        = std::string(ci[i].name.c_str());
+    cw.prov        = std::string(ci[i].prov.c_str());
+    cw.kind        = std::string(ci[i].kind.c_str());
+    cw.type        = std::string(ci[i].type.c_str());
+    cw.connectorId = std::string(ci[i].connectorId.c_str());
+    cw.hasToken    = ci[i].tok.length() > 0;
+    cw.hasOauth    = ci[i].hasOauth;
+    cw.enabled     = ci[i].enabled;
+    // Same derivation the model catalog, wire attach, and /api/connectors use, so a
+    // Mistral Studio connector reads "reachable" here only once it is authenticated
+    // in the owner's Mistral account (not merely because it has no device signal).
+    cw.auth        = agent::connectors::connectorAuthState(cw);
+    add(ci[i].name.c_str(),
+        "Provider-side connector - the cloud provider runs it for the model.",
+        tag.c_str(), capScopeSlug(connectorScope(cw, ps)));
+  }
+  (void)kUnavail;
+}
+
 void handleToolsGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
   JsonDocument d;
@@ -574,52 +624,16 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
   // Skill capsules (readable via skill.get; stored skills also inject at spawn).
   // Rendered in their own panel, not the availability-badged tool table.
-  for (const auto& c : agent::skills::list()) {
+  const auto skillTag = [](const agent::SkillMeta& c) {
     std::string tag = c.builtin() ? "skill.get" : c.source + " skill.get";
     if (!c.builtin() && c.origin == "agent")
       tag += c.approved ? " agent" : " agent pending";
     if (c.pendingEdit) tag += " edit pending";
-    grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), tag.c_str(), false, nullptr);
-  }
-  // Provider-side connectors, with a "<provider> only" availability tag. The Info
-  // array is String-heavy; keep it small + skip it entirely under heap pressure so
-  // this diagnostic endpoint can NEVER crash the async task on a tight device
-  // (an Info[12] on the small AsyncTCP stack + a big doc reset the connection at
-  // ~18 KB free - prism/on-device). The registry tools above are the important part.
-  if (ESP.getFreeHeap() <= 30000) {
-    grp("connector", "(connectors hidden)",
-        "Device memory is momentarily low - connector rows are omitted to keep this "
-        "endpoint safe. Reload in a moment.", "low memory", false, nullptr);
-  } else {
-    // HEAP, not stack - the AsyncTCP stack is the one an Info[12] already reset
-    // (comment above); and the old Info[4] cap silently hid every connector past
-    // the fourth from this dashboard (see kMaxConnectors in connectors.h).
-    std::unique_ptr<agent::connectors::Info[]> ci(
-        new (std::nothrow) agent::connectors::Info[agent::connectors::kMaxConnectors]);
-    int nc = ci ? agent::connectors::list(ci.get(), agent::connectors::kMaxConnectors) : 0;
-    for (int i = 0; i < nc; i++) {
-      String tag = ci[i].prov + " " + ci[i].kind + (ci[i].enabled ? "" : " (disabled)");
-      // Classify this connector by the same rule the model's catalog states in
-      // prose: on the current host provider (callable directly) vs another
-      // provider (spawn a sub-agent) vs unkeyed/disabled/sign-in-failed.
-      ConnectorInfo cw;
-      cw.name        = std::string(ci[i].name.c_str());
-      cw.prov        = std::string(ci[i].prov.c_str());
-      cw.kind        = std::string(ci[i].kind.c_str());
-      cw.type        = std::string(ci[i].type.c_str());
-      cw.connectorId = std::string(ci[i].connectorId.c_str());
-      cw.hasToken    = ci[i].tok.length() > 0;
-      cw.hasOauth    = ci[i].hasOauth;
-      cw.enabled     = ci[i].enabled;
-      // Same derivation the model catalog, wire attach, and /api/connectors use, so a
-      // Mistral Studio connector reads "reachable" here only once it is authenticated
-      // in the owner's Mistral account (not merely because it has no device signal).
-      cw.auth        = agent::connectors::connectorAuthState(cw);
-      grp("connector", ci[i].name.c_str(),
-          "Provider-side connector - the cloud provider runs it for the model.",
-          tag.c_str(), false, capScopeSlug(connectorScope(cw, ps)));
-    }
-  }
+    return tag;
+  };
+  for (const auto& c : agent::skills::list())
+    grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), skillTag(c).c_str(), false, nullptr);
+  addConnectorRows(arr, ps, kUnavail);
   // The same live gate the registry listing uses (CUM-508), so this hint and the
   // web.search row can never disagree.
   if (!mem::registry().gateOpen("web.search"))

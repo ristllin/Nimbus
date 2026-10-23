@@ -154,7 +154,10 @@ def test_owner_approval_activates(board):
 
 def _agent_edit(ip, tok, sid, body):
     return _astool(
-        ip, tok, "web", "skill.save",
+        ip,
+        tok,
+        "web",
+        "skill.save",
         {"id": sid, "md": f"---\ntitle: Edit\ndesc: when to read it\n---\n{body}"},
     )
 
@@ -269,20 +272,26 @@ def test_skill_approve_inside_a_burst(device):
     page = {
         "ok": True,
         "result": [
-            {"update_id": upd, "message": {
-                "message_id": upd % 100000,
-                "from": {"id": int(chat_id), "first_name": "Bench"},
-                "chat": {"id": int(chat_id), "type": "private"},
-                "date": int(_time.time()),
-                "text": "/skill approve l25-burst",
-            }},
-            {"update_id": upd + 1, "message": {
-                "message_id": (upd + 1) % 100000,
-                "from": {"id": int(chat_id), "first_name": "Bench"},
-                "chat": {"id": int(chat_id), "type": "private"},
-                "date": int(_time.time()),
-                "text": "hello",
-            }},
+            {
+                "update_id": upd,
+                "message": {
+                    "message_id": upd % 100000,
+                    "from": {"id": int(chat_id), "first_name": "Bench"},
+                    "chat": {"id": int(chat_id), "type": "private"},
+                    "date": int(_time.time()),
+                    "text": "/skill approve l25-burst",
+                },
+            },
+            {
+                "update_id": upd + 1,
+                "message": {
+                    "message_id": (upd + 1) % 100000,
+                    "from": {"id": int(chat_id), "first_name": "Bench"},
+                    "chat": {"id": int(chat_id), "type": "private"},
+                    "date": int(_time.time()),
+                    "text": "hello",
+                },
+            },
         ],
     }
     line = device.cmd(f"TGINJECT {_json.dumps(page, separators=(',', ':'))}", "TGINJECT", timeout=10)

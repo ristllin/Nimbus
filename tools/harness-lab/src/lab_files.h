@@ -23,6 +23,12 @@ namespace lab {
 class LabFiles {
  public:
   void registerTools(nimbus::orch::ToolRegistry& reg) {
+    registerListAndSave(reg);
+    registerRead(reg);
+    registerAppend(reg);
+  }
+
+  void registerListAndSave(nimbus::orch::ToolRegistry& reg) {
     reg.add("files.list",
             "List stored files. Optional 'project' narrows to one project. "
             "Returns one 'project/name (N bytes)' per line.",
@@ -61,7 +67,9 @@ class LabFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+  }
 
+  void registerRead(nimbus::orch::ToolRegistry& reg) {
     reg.add("files.read", "Read a stored file's contents. Optional 'tail': read only the "
                          "last N rows (a CSV's header row comes with it).",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
@@ -87,6 +95,9 @@ class LabFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"integer"}},"required":["project","name"]})");
 
+  }
+
+  void registerAppend(nimbus::orch::ToolRegistry& reg) {
     reg.add("files.append",
             "Append rows to the end of a text document (a CSV, .log, .md, .txt, .json). "
             "Only the new rows are written - never read a whole log and save it back to "

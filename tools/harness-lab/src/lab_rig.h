@@ -589,6 +589,18 @@ class LabRig {
     return pd;
   }
 
+  // Lane I: the [SKILLS] index + the per-chat attach surface, wired as the
+  // device does (orchestrator.cpp). skillsIndex feeds the STABLE catalogs; the
+  // attach block rides the per-turn INPUT.
+  void wireSkillsDeps(agent::TurnEngine::Deps& d) {
+    d.skillsIndex = [this] { return skills_.indexText(); };
+    d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
+    d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
+    d.skillUsed = [this](const std::string& chat, const std::string& id) {
+      skills_.noteUsed(chat, id);
+    };
+  }
+
   void buildEngine() {
     agent::JobEngine::Deps jd;
     jd.platform = platform();
@@ -625,15 +637,7 @@ class LabRig {
       return reg_.handleRpc(req, who);
     };
     d.connectorsCatalog = [] { return std::string(); };
-    // Lane I: the [SKILLS] index + the per-chat attach surface, wired as the
-    // device does (orchestrator.cpp). skillsIndex feeds the STABLE catalogs; the
-    // attach block rides the per-turn INPUT.
-    d.skillsIndex = [this] { return skills_.indexText(); };
-    d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
-    d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
-    d.skillUsed = [this](const std::string& chat, const std::string& id) {
-      skills_.noteUsed(chat, id);
-    };
+    wireSkillsDeps(d);
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) {

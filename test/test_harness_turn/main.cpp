@@ -228,34 +228,7 @@ struct Rig {
       mcpRequests.push_back(req);
       return mcpResponse;
     };
-    // F1 (lane I): the attach deps the device wires over its SkillStore. The
-    // rig uses the REAL portable pieces (AttachTable + selectAttach) so the
-    // engine's [ACTIVE SKILLS] placement is tested against the true picks.
-    d.skillsPicks = [this](const std::string& chat) {
-      std::vector<agent::SkillMeta> metas;
-      for (const auto& kv : skillBodies) {
-        agent::SkillMeta m;
-        m.id = kv.first;
-        m.title = "T " + kv.first;
-        m.desc = "read BEFORE doing " + kv.first;
-        m.version = "1";
-        m.source = "sd";
-        m.origin = "user";
-        m.inject = "spawn";
-        m.rev = 3;
-        m.approved = true;
-        metas.push_back(std::move(m));
-      }
-      return agent::selectAttach(attachTable.stickyFor(chat), metas);
-    };
-    d.skillBody = [this](const std::string& id) {
-      auto it = skillBodies.find(id);
-      return it == skillBodies.end() ? std::string() : it->second;
-    };
-    d.skillUsed = [this](const std::string& chat, const std::string& id) {
-      skillNotes.push_back({chat, id});
-      attachTable.noteUsed(chat, id, plat.ms);
-    };
+    wireSkillAttachDeps(d);
     d.connectorsCatalog = [] { return std::string("## PROVIDERS & CONNECTORS\n"); };
     // W15: the rig advertises the skills index the way the device does
     // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
@@ -358,6 +331,37 @@ struct Rig {
     };
     d.hosts.fabricSupports = [](const std::string& h) {
       return h == "openai" || h == "anthropic" || h == "mistral";
+    };
+  }
+
+  // F1 (lane I): the attach deps the device wires over its SkillStore. The
+  // rig uses the REAL portable pieces (AttachTable + selectAttach) so the
+  // engine's [ACTIVE SKILLS] placement is tested against the true picks.
+  void wireSkillAttachDeps(TurnEngine::Deps& d) {
+    d.skillsPicks = [this](const std::string& chat) {
+      std::vector<agent::SkillMeta> metas;
+      for (const auto& kv : skillBodies) {
+        agent::SkillMeta m;
+        m.id = kv.first;
+        m.title = "T " + kv.first;
+        m.desc = "read BEFORE doing " + kv.first;
+        m.version = "1";
+        m.source = "sd";
+        m.origin = "user";
+        m.inject = "spawn";
+        m.rev = 3;
+        m.approved = true;
+        metas.push_back(std::move(m));
+      }
+      return agent::selectAttach(attachTable.stickyFor(chat), metas);
+    };
+    d.skillBody = [this](const std::string& id) {
+      auto it = skillBodies.find(id);
+      return it == skillBodies.end() ? std::string() : it->second;
+    };
+    d.skillUsed = [this](const std::string& chat, const std::string& id) {
+      skillNotes.push_back({chat, id});
+      attachTable.noteUsed(chat, id, plat.ms);
     };
   }
 

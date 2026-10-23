@@ -155,18 +155,26 @@ bool userMade(State s) {
   return s == State::ApprovedUser || s == State::ApprovedUserNext || s == State::ApprovedUserStaleNext;
 }
 
-// The owner's ops. kCount = "no row" (the test fails on it).
+// The owner's ops, split save/decide so each half stays simple. kCount = "no row"
+// (the test fails on it).
+SkillOutcome expectOwnerSave(State s) {
+  return hasLive(s) ? SkillOutcome::Replaced : SkillOutcome::Created;
+}
+SkillOutcome expectOwnerApprove(State s) {
+  if (!hasLive(s) || s == State::ApprovedUserStaleNext) return SkillOutcome::Refused;
+  if (hasNext(s)) return SkillOutcome::EditApplied;
+  return s == State::PendingAgent ? SkillOutcome::Approved : SkillOutcome::Unchanged;
+}
+SkillOutcome expectOwnerDeny(State s) {
+  if (hasNext(s)) return SkillOutcome::EditDiscarded;
+  return s == State::PendingAgent ? SkillOutcome::Deleted : SkillOutcome::Refused;
+}
 SkillOutcome expectOwner(State s, Op op) {
   switch (op) {
     case Op::Save:
-    case Op::SaveBodyOnly: return hasLive(s) ? SkillOutcome::Replaced : SkillOutcome::Created;
-    case Op::Approve:
-      if (!hasLive(s) || s == State::ApprovedUserStaleNext) return SkillOutcome::Refused;
-      if (hasNext(s)) return SkillOutcome::EditApplied;
-      return s == State::PendingAgent ? SkillOutcome::Approved : SkillOutcome::Unchanged;
-    case Op::Deny:
-      if (hasNext(s)) return SkillOutcome::EditDiscarded;
-      return s == State::PendingAgent ? SkillOutcome::Deleted : SkillOutcome::Refused;
+    case Op::SaveBodyOnly: return expectOwnerSave(s);
+    case Op::Approve:       return expectOwnerApprove(s);
+    case Op::Deny:          return expectOwnerDeny(s);
     case Op::Discard: return hasNext(s) ? SkillOutcome::EditDiscarded : SkillOutcome::Refused;
     case Op::Delete: return hasLive(s) ? SkillOutcome::Deleted : SkillOutcome::Refused;
     case Op::kCount: break;
@@ -229,8 +237,16 @@ std::string label(State s, Actor a, Op op, bool sa) {
   return b;
 }
 
-void checkInvariants(State s, Actor a, Op op, bool sa, const MemFs& before, MemFs& fs, const SkillResult& r) {
-  const std::string tag = label(s, a, op, sa);
+struct InvCase {
+  State s;
+  Actor a;
+  Op op;
+  bool sa;
+};
+void checkInvariants(const InvCase& c, const MemFs& before, MemFs& fs, const SkillResult& r) {
+  const State s = c.s;
+  const Actor a = c.a;
+  const std::string tag = label(c.s, c.a, c.op, c.sa);
   const bool agent = a != Actor::Owner;
   const auto liveAfter = fs.files.find(livePath(kId));
   const SkillMd liveBefore =
@@ -302,7 +318,7 @@ static void test_store_actor_state_matrix() {
           TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::skillOutcomeSlug(want), agent::skillOutcomeSlug(r.outcome),
                                            (tag + " err=" + r.err).c_str());
           TEST_ASSERT_EQUAL_MESSAGE(want != SkillOutcome::Refused, r.ok, tag.c_str());
-          checkInvariants((State)s, (Actor)a, (Op)op, sa != 0, before, fs, r);
+          checkInvariants({(State)s, (Actor)a, (Op)op, sa != 0}, before, fs, r);
           checkListMatchesStore(fs, tag);
           combos++;
         }

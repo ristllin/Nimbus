@@ -260,11 +260,34 @@ std::string userHalf(const Building& b) {
   return text;
 }
 
+// F1 (lane I): the skills this turn used or had attached, from its assistant
+// rows' skills: tag - in order, deduped. The ids join with '.' inside the tag
+// (a comma would read as the next tag item).
+std::vector<std::string> turnSkills(const Building& b) {
+  std::vector<std::string> ids;
+  for (const EpisodicMessage* m : b.asst)
+    for (const auto& id : splitRefs(tagValue(m->tags, kSkillsTag)))
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+  return ids;
+}
+
+// The joined assistant text: the replies, the questions, a spoken line only
+// when nothing was written, then the skills suffix (F1, lane I).
+std::string joinAssistantText(const std::string& replies, const std::string& asks,
+                              const std::string& spoken, const std::vector<std::string>& ids) {
+  std::string text = replies;
+  if (!asks.empty()) text += (text.empty() ? "" : "\n\n") + asks;
+  if (text.empty()) text = spoken;   // a spoken line counts only when nothing was written
+  if (ids.empty() || text.empty()) return text;
+  std::string joined;
+  for (const auto& id : ids) joined += (joined.empty() ? "" : ", ") + id;
+  return text += " (skills: " + joined + ")";
+}
+
 std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHours) {
   std::string replies, asks, spoken;
   std::vector<std::string> kinds;
   bool tagged = false;
-  std::vector<std::string> skillsIds;   // F1 (lane I): the ids this turn used or had attached
   for (const EpisodicMessage* m : b.asst) {
     const std::string out = tagValue(m->tags, kOutTag);
     std::string& into = out == "ask" ? asks : out == "tts" ? spoken : replies;
@@ -272,23 +295,9 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
     if (!tagValue(m->tags, "fx:").empty()) tagged = true;
     addDid(kinds, m->tags);
     if (m->tsHours > replyHours) replyHours = m->tsHours;
-    // The turn stamps every assistant row with the same skills: tag; render it
-    // once, in order, deduped (a, b). The ids join with '.' inside the tag
-    // (a comma would read as the next tag item).
-    for (const auto& id : splitRefs(tagValue(m->tags, kSkillsTag)))
-      if (std::find(skillsIds.begin(), skillsIds.end(), id) == skillsIds.end())
-        skillsIds.push_back(id);
   }
   did = tagged ? didText(kinds) : std::string();
-  std::string text = replies;
-  if (!asks.empty()) text += (text.empty() ? "" : "\n\n") + asks;
-  if (text.empty()) text = spoken;   // a spoken line counts only when nothing was written
-  if (!skillsIds.empty() && !text.empty()) {
-    std::string joined;
-    for (const auto& id : skillsIds) joined += (joined.empty() ? "" : ", ") + id;
-    text += " (skills: " + joined + ")";
-  }
-  return text;
+  return joinAssistantText(replies, asks, spoken, turnSkills(b));
 }
 
 HistTurn finish(const Building& b) {
