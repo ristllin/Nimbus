@@ -2293,6 +2293,8 @@ static void test_l19_39_router_id_on_a_direct_provider_is_named_in_the_ledger() 
   for (const orch::ProviderSlot& slot : orch::kProviderSlots)
     TEST_ASSERT_EQUAL_MESSAGE(std::string(slot.slug) != "cumulo",
                               orch::routerIdOnDirectProvider(slot.slug, "openai/gpt-5.6"), slot.slug);
+}
+
 // ---- wave 2: journal durability, the finished-job record (L19-35) --------------------
 
 // SPAWN-JOURNAL-DURABILITY: a started helper whose record did not store says so in
