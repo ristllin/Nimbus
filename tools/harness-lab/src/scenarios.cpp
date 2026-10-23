@@ -14,6 +14,7 @@
 #include "scenarios_photos.h"
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 #include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
+#include "scenarios_store_full.h"   // a full file store, said once (storm leg g)
 
 namespace lab {
 namespace {
@@ -371,6 +372,9 @@ void scFinishedJobs(LabRig& rig, Ctx& c) {
   c2::finishedJobs(rig, {[&c](bool ok, const std::string& w) { c.check(ok, w); },
                          [&c](const std::string& n) { c.note(n); }});
 }
+// Lane FSN: a full file store (scenarios_store_full.cpp).
+storefull::Report storeFullReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scStoreFullPhotos(LabRig& rig, Ctx& c) { storefull::storeFullPhotos(rig, storeFullReport(c)); }
 
 struct Scenario {
   const char* name;
@@ -413,6 +417,7 @@ const Scenario kScenarios[] = {
     {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
     {"finished-jobs",  "after a restart the finished jobs ride the turn context and are not run again", scFinishedJobs, false},
+    {"store-full-photos", "five photos into a full store: one short reply each, no re-explaining, no save tries", scStoreFullPhotos, false},
 };
 
 }  // namespace

@@ -34,6 +34,7 @@
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
 #include "nimbus/orch/media_label.h"  // the one inbound media label (host-tested)
+#include "nimbus/orch/store_full.h"   // a full file store is said once (host-tested)
 #include "nimbus/orch/blob_store.h"   // BlobHasher: the content hash of an inbound file
 #include "nimbus/net/tg_receive.h"    // the receive cycle: settle, breakers, turns (host-tested)
 #include "nimbus/net/tg_owner.h"      // which chat the device's notices go to (host-tested)
@@ -1055,6 +1056,21 @@ static void sendStorageNotice() {
   alog("telegram: storage-full notice sent to the owner");
 }
 
+// The once-per-episode "the file store is full" notice (agent::files::noteRefusal
+// raises it), on this task's outbound path. The photo path sends it at once, so it
+// reaches the owner before that photo's reply; the poll loop sends one an assistant
+// save raised. Waits for an owner chat to exist.
+static void sendFileStoreNotice() {
+  const String owner = ownerChat();
+  if (!owner.length() || !agent::files::takeFullNotice()) return;
+  String name = nimbus::sys::deviceName();
+  if (!name.length()) name = "Nimbus";
+  if (send(owner, name + ": " + nimbus::orch::kStoreFullNotice, /*block=*/false))
+    alog("telegram: storage-full notice sent to the owner (file store)");
+  else
+    alog("telegram: storage-full notice (file store) dropped: reply queue full");
+}
+
 // ---- sendMessage ------------------------------------------------------------
 
 // One raw sendMessage POST. htmlMode adds parse_mode=HTML (the text must then
@@ -1290,7 +1306,12 @@ struct InboundFile {
   bool image;   // R1: a photo, or a file in a format a head reads as an image
 };
 
-static bool storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
+// What the file store did with an inbound item: kept it, refused it because the store
+// is full (the owner is told once per episode, the head reads it as a fact), or did
+// not keep it for another reason.
+enum class Kept : uint8_t { Stored, Full, Failed };
+
+static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
   char fname[96];
   if (in.photo || !in.slot.fileName[0])
     snprintf(fname, sizeof(fname), "%s-%ld.%s", in.photo ? "photo" : "file", (long)in.slot.updateId,
@@ -1302,9 +1323,11 @@ static bool storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns)) return true;
+  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns)) return Kept::Stored;
   alogf("telegram: attach store failed: %s", ferr.c_str());
-  return false;
+  if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
+  sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
+  return Kept::Full;
 }
 
 static nimbus::orch::Principal senderOf(const char* chatId) {
@@ -1583,12 +1606,16 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   // storage limit, and a photo someone sent shows up in Memory & Files like any other
   // file. The episodic row is what the MODEL reads later, stamped with the original
   // send time; the blob sidecar is what it can be re-shown from.
-  storeInbound(in, who);
+  const bool full = storeInbound(in, who) == Kept::Full;
   g_slots[slot].media.kept = agent::memory::captureMediaFile(
       m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
       String(row.c_str()), localPath, photo ? "jpg" : "bin", m.date);
   if (g_slots[slot].media.kept && image)
     queueRecord(m, label, fail, visionContext(turn, k, n), total, photo ? "jpg" : "bin");
+  // The full store as a fact the owner already has, in this turn's text only (the
+  // stored row and the history keep the label): the head answers the photo instead
+  // of explaining the store again.
+  if (full) seg += nimbus::orch::storeFullFact(photo, g_slots[slot].media.kept);
   LittleFS.remove(localPath);
   return true;
 }
@@ -2210,6 +2237,7 @@ void pollTask(void*) {
     }
 
     if (haveToken) sendStorageNotice();   // once per boot, after a failed NVS write
+    if (haveToken) sendFileStoreNotice();   // once per full-store episode an assistant save raised
 
     // Drain reply queue. With a token, deliver to Telegram (retry a few times on a
     // transient TLS failure). Without a token the reply was already mirrored to

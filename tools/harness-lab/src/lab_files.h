@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/store_full.h"
 #include "nimbus/orch/tool_registry.h"
 
 // Host stand-in for the device's SD-backed artifact tools
@@ -48,6 +49,10 @@ class LabFiles {
               if (!nimbus::orch::FileStore::validSegment(p, 24) ||
                   !nimbus::orch::FileStore::validSegment(n, 48))
                 return nimbus::orch::ToolResult::fail("invalid project or name");
+              // A full store refuses as the device does (files_subsystem refusalForHead).
+              if (full_ != Full::No)
+                return nimbus::orch::ToolResult::fail(
+                    std::string(nimbus::orch::FileStore::kErrTooManyFiles) + nimbus::orch::kStoreFullToolNote);
               files_[p + "/" + n] = t;
               return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" +
                                                   std::to_string(t.size()) + " bytes)");
@@ -69,6 +74,10 @@ class LabFiles {
   }
 
   void seed(const std::string& path, const std::string& text) { files_[path] = text; }
+  // The store is full: every save is refused with the device's words (the store's
+  // error and the tool note: the owner is told once).
+  enum class Full { No, Told };
+  void setFull(Full f) { full_ = f; }
   size_t count() const { return files_.size(); }
   bool has(const std::string& path) const { return files_.count(path) > 0; }
   std::string get(const std::string& path) const {
@@ -81,6 +90,7 @@ class LabFiles {
     return a[k].is<const char*>() ? std::string(a[k].as<const char*>()) : std::string();
   }
   std::map<std::string, std::string> files_;
+  Full full_ = Full::No;
 };
 
 }  // namespace lab

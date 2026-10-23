@@ -26,6 +26,7 @@
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/tool_registry.h"
 
 namespace agent::files {
@@ -38,6 +39,7 @@ constexpr const char* kPartPath  = "/mem/files/.part";   // single upload sessio
 constexpr const char* kFetchTmp  = "/mem/files/.fetchtmp";   // W18 scan quarantine
 
 nimbus::orch::FileStore g_store;   // guarded by memory::Lock (shared, recursive)
+nimbus::orch::StoreFullEpisode g_full;   // atomics: any task notes, the Telegram task takes
 bool g_begun = false;
 bool g_cardUnsupported = false;    // CUM-7: card mounted but below the 1 GB minimum
 
@@ -216,6 +218,19 @@ StorageTruth storageTruth() {
   t.cardTotal   = (uint64_t)solide::storage::cardSizeMB() << 20;
   t.cardFree    = (uint64_t)solide::storage::freeMB() << 20;
   return t;
+}
+
+bool noteRefusal(const std::string& err) {
+  memory::Lock g;
+  return g_full.refused(g_store.fullRefusal(err));
+}
+
+bool takeFullNotice() { return g_full.takeNotice(); }
+
+bool fullEpisode() { return g_full.active(); }
+
+std::string refusalForHead(const std::string& err) {
+  return noteRefusal(err) ? err + nimbus::orch::kStoreFullToolNote : err;
 }
 
 // ---- streaming upload session ------------------------------------------------
@@ -609,7 +624,7 @@ static nimbus::orch::ToolResult appendRows(const std::string& project, const std
   const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
   if (!plan.ok) return ToolResult::fail(plan.err);
   const std::string refusal = appendRefusal(project, name, plan.bytes.size(), size + plan.bytes.size(), who);
-  if (!refusal.empty()) return ToolResult::fail(refusal);
+  if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   File f = fs.open(path.c_str(), FILE_APPEND);
@@ -664,7 +679,7 @@ std::string persistSubResult(const std::string& project, const std::string& name
   if (doc.size() > g_store.limits().maxNameLen) doc = std::string(tag) + ".md";
   std::string err;
   if (!saveText(project, doc, text, err, ownerNs))
-    return "[persist FAILED: " + err + "]";
+    return "[persist FAILED: " + refusalForHead(err) + "]";
   return "[saved: " + project + "/" + doc + "]";
 }
 
@@ -682,6 +697,7 @@ bool removeFile(const std::string& project, const std::string& name) {
   memory::dataFs().remove(pathOf(project, name).c_str());
   g_store.remove(project, name);
   persistIndex();
+  if (g_store.hasRoom()) g_full.room();   // the owner made room: a full-store episode ends
   return true;
 }
 
@@ -699,6 +715,7 @@ int removeProject(const std::string& project) {
   // Drop the now-empty project directory (best-effort; harmless if it lingers).
   memory::dataFs().rmdir((std::string(kRoot) + "/" + project).c_str());
   persistIndex();
+  if (g_store.hasRoom()) g_full.room();   // the owner made room: a full-store episode ends
   return (int)names.size();
 }
 
@@ -1121,7 +1138,7 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail(
                   "that project/name belongs to someone else - choose another name");
             if (!saveText(project, name, text, err, who.ns))
-              return nimbus::orch::ToolResult::fail(err);
+              return nimbus::orch::ToolResult::fail(refusalForHead(err));
             return nimbus::orch::ToolResult::ok("saved " + project + "/" + name + " (" +
                                                 std::to_string(text.size()) + " bytes)");
           },
@@ -1383,7 +1400,7 @@ void registerTools() {
             }
             free(buf);
             if (!saved)
-              return nimbus::orch::ToolResult::fail("generated but couldn't save: " + serr);
+              return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
 
             std::string out = "saved " + project + "/" + name + " (" +
                               std::to_string((unsigned)n) + " bytes)";

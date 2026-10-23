@@ -603,6 +603,34 @@ tiny card:     {present:false, unsupported:true, files:[]}
 `/api/state.files` mirrors `present/unsupported/count/bytes/quota/cardFree`, and the
 `files.list` tool returns `count/bytes/quota/cardFree/freeBytes` for the model.
 
+## 5d. A full file store
+
+The store refuses a new file when it is out of entries (256 by default) or out of
+quota (`FileStore::fullRefusal` tells these apart from a refused request such as a bad
+name or one file over its size limit, and from a card below the supported size). A
+full store is told to the owner **once per episode**, never per item:
+
+- **The episode starts** with the first save the owner did not watch fail: an inbound
+  Telegram photo or file, or an assistant save (`artifact.save`, `files.append`,
+  `files.pdf`, `image.generate`, a helper's saved report). A web upload is not one:
+  the page shows its own refusal.
+- **One device notice** goes to the owner's chat, before that photo's reply: "the file
+  store is full, so new photos and files are not saved to it. To make room, open the
+  device web page, delete files you don't need in the Memory tab's Files section, then
+  send them again."
+- **The head reads it as a fact.** Each photo or file the full store refused carries a
+  bracketed line in its turn (not saved, the owner already has the message, do not
+  explain it or ask which files to delete); a refused assistant save carries the same
+  in its tool result. The photo itself still lands in the chat's history (its blob and
+  media row are separate from the store), so the head says it in a few words and
+  answers the photo.
+- **The episode ends** when files are removed and the store has room again. A save
+  that lands in between does not end it. The state is RAM only (no settings key), so
+  a restart mid-episode tells the owner once more.
+
+The rule keys on the store's own full refusal, never on the number, so it holds when
+the entry limit or the quota changes.
+
 ## 6. Implementation phases (value × testability)
 
 **Phase A - host-testable now, no hardware.** Append-log episodic store behind the

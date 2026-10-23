@@ -14,6 +14,7 @@ installs it when you approve ([how updates work](ota.md)).
 - **Repeats cost one reply.** A message Telegram delivers again after it was answered, or the same message sent twice within 2 minutes before the first answer, is answered once, and you are told once. On 19 Oct one short message was answered 735 times.
 - **An hourly limit.** The device answers at most 60 messages an hour, and 12 of them are always kept for your own chat, so a busy shared chat cannot use up your replies. When it pauses, it tells you once, with the time replies resume. Commands always work.
 - **One download per photo.** The Telegram archive and the assistant used to download the same photo and voice note twice; they now share one download.
+- **A full file store is said once.** When the file store is full, the device now tells you once, with how to make room, and each photo you send gets one short reply. Before, every photo got a long reply that explained the full store again and asked which files to delete, and the device itself said nothing.
 - **Late messages show their time.** A message or photo that arrives late, or is delivered again, carries the time it was sent, so the assistant does not take it for a new one.
 
 Provider failures, spend and long reports:

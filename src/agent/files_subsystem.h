@@ -53,6 +53,22 @@ struct StorageTruth {
 };
 StorageTruth storageTruth();
 
+// ---- a full store, said once (nimbus/orch/store_full.h) ----
+// A save the owner did not watch fail (an inbound Telegram photo or file, an
+// assistant save) was refused with `err`. True when the store is full: the first such
+// refusal of an episode raises its one owner notice; the episode ends when files are
+// removed and the store has room again. A web upload is never noted here (the page
+// shows its refusal).
+bool noteRefusal(const std::string& err);
+// The episode's owner notice, once (the Telegram poll task sends it).
+bool takeFullNotice();
+// True while the store is full and the owner has been (or is being) told.
+bool fullEpisode();
+// The refusal an assistant save hands the head: a full store notes the episode
+// (noteRefusal) and adds that the owner is told and how much to say; any other
+// refusal is returned unchanged.
+std::string refusalForHead(const std::string& err);
+
 // ---- streaming upload session (web_files.cpp) ----
 // Single concurrent session (an ESP32 has no business running parallel SD
 // uploads): beginWrite() -> false if busy/refused (reason in err - quota, path,

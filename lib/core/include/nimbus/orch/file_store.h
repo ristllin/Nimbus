@@ -156,6 +156,19 @@ class FileStore {
   bool wouldExceed(const std::string& project, const std::string& name,
                    uint64_t addBytes, std::string& err) const;
 
+  // The two refusals that mean the store itself is full (out of entries, out of
+  // bytes), as opposed to a request it turns down (a bad name, one file too large).
+  static const char kErrTooManyFiles[];
+  static const char kErrStoreFull[];
+  // Is `err` (from add or wouldExceed) a full store, one that removing files would
+  // fix? False on a store that takes nothing at all (a zero byte quota: a card below
+  // the supported size), where the bytes refusal is not about fullness.
+  bool fullRefusal(const std::string& err) const;
+  // Room for one more small file: a free entry and at least one byte under the quota.
+  bool hasRoom() const {
+    return entries_.size() < lim_.maxEntries && totalBytes() < lim_.maxTotalBytes;
+  }
+
   // ---- persistence (device stores dump() as /mem/files/.index) ----
   // Versioned, line-oriented, tab-separated (names are segment-safe so no
   // escaping is needed - tabs/newlines are rejected by validSegment).

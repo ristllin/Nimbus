@@ -68,6 +68,14 @@ uint64_t FileStore::totalBytes() const {
   return t;
 }
 
+const char FileStore::kErrTooManyFiles[] = "too many files (remove some first)";
+const char FileStore::kErrStoreFull[] = "store full (artifacts are never auto-deleted - remove some first)";
+
+bool FileStore::fullRefusal(const std::string& err) const {
+  if (err == kErrTooManyFiles) return true;
+  return err == kErrStoreFull && lim_.maxTotalBytes > 0;
+}
+
 bool FileStore::wouldExceed(const std::string& project, const std::string& name,
                             uint64_t addBytes, std::string& err) const {
   if (!validSegment(project, lim_.maxProjectLen)) { err = "bad project name"; return true; }
@@ -76,11 +84,11 @@ bool FileStore::wouldExceed(const std::string& project, const std::string& name,
   const int existing = indexOf(project, name);
   const uint64_t replaced = existing >= 0 ? entries_[size_t(existing)].bytes : 0;
   if (totalBytes() - replaced + addBytes > lim_.maxTotalBytes) {
-    err = "store full (artifacts are never auto-deleted - remove some first)";
+    err = kErrStoreFull;
     return true;
   }
   if (existing < 0 && entries_.size() >= lim_.maxEntries) {
-    err = "too many files (remove some first)";
+    err = kErrTooManyFiles;
     return true;
   }
   err.clear();
