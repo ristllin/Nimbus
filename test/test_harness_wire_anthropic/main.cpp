@@ -108,6 +108,10 @@ static void test_single_shot_request_shape() {
   // ...but the schema structure itself rides, incl. the nullable-enum anyOf form.
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"input_schema\""));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "anyOf"));
+  // R3 (row 23): the advisory schema requires only reply, and the description
+  // tells the head to OMIT unused fields (same rule as the loop wire).
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"required\":[\"reply\"]"));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "Only reply is required"));
 }
 
 // R_ANT_nullable_anyOf: nullable ENUMS must be anyOf[{enum},{null}] - the one
@@ -304,6 +308,32 @@ static void test_loop_replays_thinking_blocks_unchanged() {
   TEST_ASSERT_TRUE(use != std::string::npos);
   TEST_ASSERT_TRUE(think < use);
   TEST_ASSERT_TRUE(d.http.seen[1].body.find("first, plan the search") != std::string::npos);
+}
+
+// R3 (row 23): the orch_turn schema is ADVISORY on this wire, so its top-level
+// required list is lean - reply only - and the tool description says to OMIT
+// unused fields. A model told every field is required re-emits them all as
+// empty values (out=3000 for 1,240 B of content, sdlog m00000622); the device
+// parser treats every field but reply as optional, so nothing is lost.
+static void test_orch_turn_tool_requires_only_reply() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+                           "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_f\",\"name\":\"orch_turn\","
+                           "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"tool_use\"}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  const std::string& body = d.http.seen[0].body;
+  TEST_ASSERT_TRUE(body.find("Only reply is required") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("OMIT every field you are not using") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("\"required\":[\"reply\"]") != std::string::npos);
+  // The counter: the full strict list (the OpenAI/Mistral wire shape) is gone.
+  TEST_ASSERT_FALSE(body.find("\"required\":[\"reply\",\"memory\"") != std::string::npos);
+  // Sub-object required lists (device[], mem_write[]) are untouched.
+  TEST_ASSERT_TRUE(body.find("\"required\":[\"content\",\"importance\"") != std::string::npos);
 }
 
 // Replay with one transcript-level fold and hysteresis (H6): a round's
@@ -1229,6 +1259,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_round2_body_rendered_from_transcript);
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
   RUN_TEST(test_loop_replays_thinking_blocks_unchanged);
+  RUN_TEST(test_orch_turn_tool_requires_only_reply);
   RUN_TEST(test_loop_replay_folds_with_hysteresis_over_budget);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);

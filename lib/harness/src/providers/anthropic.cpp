@@ -773,6 +773,16 @@ static void stripDescriptions(ArduinoJson::JsonVariant v) {
   }
 }
 
+// R3 (row 23): the schema is ADVISORY here (no strict:true), so the top-level
+// required list can be lean - only reply. The device parser treats every other
+// field as optional, and a lean list stops the head re-emitting unchanged
+// fields as empty values: a food-log turn spent 3,000 output tokens on
+// 1,240 B of content (sdlog m00000622). The strict wires (OpenAI, Mistral,
+// custom) keep the full list: their validators demand it.
+static void leanOrchRequired(ArduinoJson::JsonVariant schema) {
+  schema["required"].to<ArduinoJson::JsonArray>().add("reply");
+}
+
 // ---- multi-turn tool-use loop (ReAct) ---------------------------------------
 // The head model calls registry tools (memory.*/session.*/web.search) mid-turn,
 // sees each result, and iterates, terminating when it emits the orch_turn tool.
@@ -949,13 +959,16 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   JsonObject ot = toolsArr.add<JsonObject>();
   ot["name"]        = "orch_turn";
   ot["description"] = "Return your COMPLETE orchestrator turn. This is your FINAL "
-                      "answer and ENDS the turn - call it once you have everything.";
+                      "answer and ENDS the turn - call it once you have everything. "
+                      "Only reply is required: OMIT every field you are not using "
+                      "this turn rather than sending it empty or unchanged.";
   JsonDocument sd = makeDoc(pd);
   if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16))) {
     err = "schema parse";
     return false;
   }
   stripDescriptions(sd.as<ArduinoJson::JsonVariant>());
+  leanOrchRequired(sd.as<ArduinoJson::JsonVariant>());   // row 23
   ot["input_schema"] = sd;
   // CUM-641: the full tool set rides EVERY round, the forced final round
   // included - a round that shrank the array to orch_turn lost the whole
@@ -1339,7 +1352,9 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
   if (!a.fold) {
     JsonObject tool = d["tools"].add<JsonObject>();
     tool["name"] = "orch_turn";
-    tool["description"] = "Return your complete orchestrator turn.";
+    tool["description"] = "Return your complete orchestrator turn. Only reply is "
+                          "required: OMIT every field you are not using this turn "
+                          "rather than sending it empty or unchanged.";
     // NO strict:true - VERIFIED LIVE (2026-07-06): Anthropic's strict tool-use
     // compiles the schema to a grammar with a hard size budget, and this contract
     // exceeds it even with descriptions stripped ("compiled grammar is too
@@ -1352,6 +1367,7 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
       return false;
     }
     stripDescriptions(sd.as<ArduinoJson::JsonVariant>());   // fit the grammar budget
+    leanOrchRequired(sd.as<ArduinoJson::JsonVariant>());    // row 23: reply only
     tool["input_schema"] = sd;
     d["tool_choice"]["type"] = "auto";   // never forced (see above)
     if (!parts.split)
