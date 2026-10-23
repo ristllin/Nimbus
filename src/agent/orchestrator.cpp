@@ -181,7 +181,6 @@ static portMUX_TYPE g_foldSpin = portMUX_INITIALIZER_UNLOCKED;   // console (mai
 // pattern as g_memEcho.
 static char (&g_foldEcho)[224] = ::nimbus::psramStatic<char[224]>();   // PSRAM (psram_static.h)
 static void publishFoldStatus(const std::string& chat);   // fwd (defined below)
-static FlashJournalStore     g_journalStore;   // /data/agjournal.json (orch_persist.h)
 
 // Cross-task model-memory echo for the web UI. g_mem's std::string may be
 // reassigned mid-turn on THIS (poll) task; letting the AsyncTCP task copy it
@@ -1630,8 +1629,11 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
     if (nimbus::sys::headloopRoutine(l)) alogi(line);
     else alog(line);
   });
-  g_journalStore.begin();
-  g_journal.begin(&g_journalStore);
+  // The journal's file store (/data/agjournal.json, orch_persist.h), in PSRAM: its slot
+  // image is only touched from task context (begin here, then tg_poll).
+  static FlashJournalStore& journalStore = ::nimbus::psramObject<FlashJournalStore>();
+  journalStore.begin();
+  g_journal.begin(&journalStore);
   // Construct the portable job machinery over the freshly loaded journal (the
   // engine's ctor arms the poll gate at "now", replacing g_nextPollAt = millis()).
   // The job and turn engines live in PSRAM (psram_static.h, psramObject): about 3 KB

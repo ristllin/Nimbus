@@ -2274,7 +2274,8 @@ static void test_zero_new_nvs_keys() {
 // The device seams of the wave-2 moves and pacing, pinned at source level.
 static void test_c2_device_seams() {
   const std::string orch = readFile("src/agent/orchestrator.cpp");
-  TEST_ASSERT_TRUE(orch.find("static FlashJournalStore     g_journalStore;") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("static FlashJournalStore& journalStore = ::nimbus::psramObject<FlashJournalStore>();") !=
+                   std::string::npos);
   TEST_ASSERT_TRUE(orch.find("NvsJournalStore") == std::string::npos);
   const std::string op = readFile("src/agent/orch_persist.cpp");
   TEST_ASSERT_TRUE(op.find("static const char* kJournalPath = \"/data/agjournal.json\";") != std::string::npos);
