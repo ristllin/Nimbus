@@ -199,10 +199,18 @@ NIMBUS_STORM_UNIT=L NIMBUS_STORM_EVIDENCE=<evidence dir> NIMBUS_ENV_FILE=<bench 
   python3 -m pytest tests/hil/storm/test_storm_b_page_reserved.py -m "hil or net" --allow-hardware -s
 ```
 
-Each run writes one JSON evidence record (`<leg>-<control|candidate>-<UTC time>.json`:
-the build and commit, the measures, the bounds, the verdicts) into
-`NIMBUS_STORM_EVIDENCE`; the candidate run's table reads the newest control record of the
-same leg from there. A release keeps its evidence in one directory per tag, and the
+With `NIMBUS_STORM_TG=1` (and `NIMBUS_BENCH_LOCKS` pointing at the bench locks) a leg
+puts the dedicated test bot on the unit for its run, under the bench `tg-bot` lock, and
+the owner channel it grades is the device's own Telegram record (`/api/tg/archive`),
+with the device log's sends standing in when the card is gone.
+
+Each run writes one JSON evidence record (`<leg>-<control|candidate>-<UTC start>.json`:
+the build and commit, the measures, the bounds, the verdicts, the log source) and the
+device log it was graded from (`.log`) into `NIMBUS_STORM_EVIDENCE`; the candidate run's
+table reads the newest control record of the same leg from there. A candidate run
+records itself as an unfinished FAIL when it starts and replaces that with its own
+record when it ends, so a run that errors out never leaves an older pass standing.
+`python3 tests/hil/storm/report.py <dir> [--candidate <sha>]` prints every leg's table. A release keeps its evidence in one directory per tag, and the
 release gate's storm step (`python3 tools/release_gate/run_gate.py --storm-evidence <dir>
 --candidate <sha>`) fails unless every leg passed on that candidate after its commit and
 has a control run. The grading is host-tested over recorded, scrubbed logs of the 19 and
