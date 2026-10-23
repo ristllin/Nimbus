@@ -226,18 +226,26 @@ def _reply_text(lines: list) -> str:
     return ""
 
 
-@pytest.fixture
-def voice_bench(bench, net):
-    """The bench unit with the test bot, the head on the cheap model, Mistral voicing,
-    voice replies on and sound at 0; every changed setting restored."""
-    orch = net.get_json("/api/orch", timeout=8.0)
-    anth = (orch.get("providers") or {}).get("anthropic") or {}
-    mist = (orch.get("providers") or {}).get("mistral") or {}
+BENCH_SETTINGS = {
+    "orchHost": "anthropic",
+    "orchLoop": "1",
+    "orchM_anthropic": MODEL,
+    "ttsProv": "mistral",
+    "ttsOn": "1",
+    "sfxVol": "0",
+}
+
+
+def bench_prior(orch: dict) -> dict:
+    """The unit's settings the legs change (BENCH_SETTINGS), read from /api/orch, to
+    restore afterwards; skips, saying so, when the head or the voice provider has no key."""
+    providers = orch.get("providers") or {}
+    anth = providers.get("anthropic") or {}
     if not anth.get("hasKey"):
         pytest.skip("no Anthropic key on the unit")
-    if not mist.get("hasKey"):
+    if not (providers.get("mistral") or {}).get("hasKey"):
         pytest.skip("no Mistral key on the unit (the incident's voice provider)")
-    prior = {
+    return {
         "orchHost": str(orch.get("orchHost") or ""),
         "orchLoop": "1" if orch.get("orchLoop") else "0",
         "orchM_anthropic": str(anth.get("orchModel") or ""),
@@ -245,18 +253,21 @@ def voice_bench(bench, net):
         "ttsOn": "1" if orch.get("ttsOn") else "0",
         "sfxVol": str(orch.get("sfxVol", 0)),
     }
-    r = net.post(
-        "/api/orch",
-        {
-            "orchHost": "anthropic",
-            "orchLoop": "1",
-            "orchM_anthropic": MODEL,
-            "ttsProv": "mistral",
-            "ttsOn": "1",
-            "sfxVol": "0",
-        },
-        timeout=8.0,
-    )
+
+
+def _restore(net, bench, prior: dict, ceiling) -> None:
+    net.post("/api/orch", {k: v for k, v in prior.items() if v != ""}, timeout=8.0)
+    net.post("/api/orch", {"tgAllow": str(bench.chat)}, timeout=8.0)
+    if ceiling:
+        net.post("/api/orch", {"spendCeil": ceiling}, timeout=8.0)
+
+
+@pytest.fixture
+def voice_bench(bench, net):
+    """The bench unit with the test bot, the head on the cheap model, Mistral voicing,
+    voice replies on and sound at 0; every changed setting restored."""
+    prior = bench_prior(net.get_json("/api/orch", timeout=8.0))
+    r = net.post("/api/orch", BENCH_SETTINGS, timeout=8.0)
     assert r.status_code == 200, f"bench settings -> {r.status_code} {r.text[:200]}"
     ceiling = _lift_spend_freeze(net)
     # The token swap resets the offset, so a message still queued for the test bot runs
@@ -265,10 +276,7 @@ def voice_bench(bench, net):
     try:
         yield bench
     finally:
-        net.post("/api/orch", {k: v for k, v in prior.items() if v != ""}, timeout=8.0)
-        net.post("/api/orch", {"tgAllow": str(bench.chat)}, timeout=8.0)
-        if ceiling:
-            net.post("/api/orch", {"spendCeil": ceiling}, timeout=8.0)
+        _restore(net, bench, prior, ceiling)
 
 
 def spend_lift(spend: dict):

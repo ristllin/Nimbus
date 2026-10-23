@@ -12,6 +12,8 @@ import json
 import pytest
 
 from test_l67_voice_delivery import (
+    BENCH_SETTINGS,
+    bench_prior,
     probe_verdict,
     receipt_ids,
     speaker_touches,
@@ -85,3 +87,27 @@ def test_a_paused_ceiling_is_lifted_and_restored():
     assert spend_lift({"frozen": False, "limitCents": 2000, "spentCents": 10}) is None
     assert spend_lift({"frozen": True, "limitCents": 2000, "spentCents": 2003}) == ("2000", "2503")
     assert spend_lift({"frozen": True, "limitCents": 0, "spentCents": 7}) == ("off", "507")
+
+
+def test_bench_prior_restores_every_changed_setting():
+    orch = {
+        "orchHost": "openai",
+        "orchLoop": False,
+        "ttsProv": "openai",
+        "ttsOn": True,
+        "sfxVol": 25,
+        "providers": {"anthropic": {"hasKey": True, "orchModel": "claude-sonnet-5"}, "mistral": {"hasKey": True}},
+    }
+    prior = bench_prior(orch)
+    assert set(prior) == set(BENCH_SETTINGS)
+    assert prior == {
+        "orchHost": "openai",
+        "orchLoop": "0",
+        "orchM_anthropic": "claude-sonnet-5",
+        "ttsProv": "openai",
+        "ttsOn": "1",
+        "sfxVol": "25",
+    }
+    for missing in ({"anthropic": {"hasKey": False}, "mistral": {"hasKey": True}}, {"anthropic": {"hasKey": True}}):
+        with pytest.raises(pytest.skip.Exception):
+            bench_prior({"providers": missing})
