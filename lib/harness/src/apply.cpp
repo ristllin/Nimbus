@@ -564,7 +564,6 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // A reply that already ends with a question carries the ask: it is not
   // appended again, and only what is delivered is checked and captured.
   const bool askAppended = t.reply.length() && t.ask.length() && !replyAlreadyAsks(t.reply, t.ask);
-  const bool askDelivered = t.ask.length() && (askAppended || t.reply.empty());
   const std::string claimTail =
       st.claims ? st.claims->tailAfterApply(askAppended ? t.reply + "\n\n" + t.ask
                                                         : (t.reply.length() ? t.reply : t.ask),
@@ -608,12 +607,15 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // DELIVERED - the spawn and claim corrections included - so a later turn reads
   // the corrected text, not the model's.
   st.delivered = t.reply.length() ? t.reply + correctionTail : std::string();
-  const std::string askCaptured = t.reply.length() ? t.ask : t.ask + correctionTail;
-  // An ask the reply already carried was never sent on its own: history keeps
-  // what the owner received.
+  // One row per message the owner received (lane FSN, storm leg g): an appended ask
+  // rides the reply's row, as it rode the reply's message, so history, the web chat
+  // after a reload and the storm leg see one message per turn. The model-facing
+  // history is unchanged (assistantHalf joins reply and ask rows with "\n\n" too).
+  // An ask the reply already carried was never sent on its own and is not captured.
   if (d.captureAssistant) {
-    if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
-    if (askDelivered)     d.captureAssistant(chatId, askCaptured);
+    if (askAppended)           d.captureAssistant(chatId, st.delivered + "\n\n" + t.ask);
+    else if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
+    else if (t.ask.length())   d.captureAssistant(chatId, t.ask + correctionTail);
   }
 }
 

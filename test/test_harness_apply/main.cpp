@@ -396,8 +396,9 @@ static void test_reply_and_ask_deliver_as_one_message() {
   TEST_ASSERT_EQUAL_STRING("Here's the status.\n\nWant details?",
                            r.delivered[0].second.c_str());
   TEST_ASSERT_EQUAL(1, r.emitAsks);
-  // Both halves are episodically captured.
-  TEST_ASSERT_EQUAL(2, (int)r.captured.size());
+  // One message, one history row: the ask rides the reply's row.
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+  TEST_ASSERT_EQUAL_STRING("Here's the status.\n\nWant details?", r.captured[0].c_str());
   TEST_ASSERT_EQUAL_STRING("Here's the status.", st.lastReply.c_str());
 }
 
@@ -875,7 +876,8 @@ static void test_ask_duplicate_the_incident_pair_is_dropped() {
 }
 
 // Orchestrator ruling: a reply ending with a rhetorical question plus a different,
-// real question keeps the question - it is appended after a blank line and captured.
+// real question keeps the question - it is appended after a blank line and rides the
+// reply's history row.
 static void test_ask_duplicate_a_different_question_after_a_rhetorical_one_is_kept() {
   const std::string reply = "Lunch is logged at 640 kcal. Not bad for a Monday, right?";
   const std::string ask = "Should I book the dentist appointment for Thursday afternoon?";
@@ -884,7 +886,53 @@ static void test_ask_duplicate_a_different_question_after_a_rhetorical_one_is_ke
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_EQUAL_STRING((reply + "\n\n" + ask).c_str(), r.delivered[0].second.c_str());
   TEST_ASSERT_EQUAL(1, r.emitAsks);
-  TEST_ASSERT_EQUAL(2, (int)r.captured.size());           // reply row + ask row
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());           // one row, as one message
+  TEST_ASSERT_EQUAL_STRING((reply + "\n\n" + ask).c_str(), r.captured[0].c_str());
+}
+
+// Lane FSN's finding (storm leg g): the owner got one message but the history got two
+// rows (reply, then ask), so a reload of the web chat and the storm leg saw two
+// messages for one turn. Now one row per message the owner received. The row is the
+// delivered text minus the risk note (the note is a device warning, not something the
+// head said); the corrections still ride it.
+static void test_fsn_reply_plus_different_question_is_one_row() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t = turnWithDevice("{\"config\":{\"brightOvr\":true}}");
+  t.reply = "LED cap lifted for the photo shoot. Bright enough now?";
+  t.ask = "Should I put the cap back at 22:00 tonight?";
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  const std::string& sent = r.delivered[0].second;
+  const std::string note = "\n\u26a0 LED cap OVERRIDDEN to 100% - sustained heat risk to the panel "
+                           "(resets at reboot)";
+  TEST_ASSERT_TRUE(sent.find(note) != std::string::npos);     // the note was sent
+  TEST_ASSERT_EQUAL(1, r.emitAsks);
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());               // one row, not two
+  std::string minusNote = sent;
+  minusNote.erase(minusNote.find(note), note.size());
+  TEST_ASSERT_EQUAL_STRING(minusNote.c_str(), r.captured[0].c_str());
+  TEST_ASSERT_EQUAL_STRING((t.reply + "\n\n" + t.ask).c_str(), r.captured[0].c_str());
+}
+
+// Counter-case: the reply already asks the same thing, so the ask was never sent and
+// the one row is the reply only (no copy of the ask, no risk note).
+static void test_fsn_dropped_duplicate_is_one_row_with_the_reply_only() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t = turnWithDevice("{\"config\":{\"brightOvr\":true}}");
+  t.reply = "LED cap lifted. Should I put the cap back at 22:00 tonight?";
+  t.ask = "Do you want the cap put back at 22:00?";
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("Do you want") == std::string::npos);
+  TEST_ASSERT_EQUAL(1, r.emitAsks);
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+  TEST_ASSERT_EQUAL_STRING(t.reply.c_str(), r.captured[0].c_str());
 }
 
 // The class: the same question reworded (half its topic words, or all its key nouns,
@@ -916,7 +964,8 @@ static void test_ask_duplicate_same_question_dropped_different_kept() {
     const std::string want = c.dropped ? std::string(c.reply) : std::string(c.reply) + "\n\n" + c.ask;
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.reply);
     TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, c.reply);
-    TEST_ASSERT_EQUAL_MESSAGE(c.dropped ? 1 : 2, (int)r.captured.size(), c.reply);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), c.reply);    // one row per message
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.captured[0].c_str(), c.reply);
   }
   // Either field empty: nothing is "already asked".
   TEST_ASSERT_FALSE(agent::replyAlreadyAsks("", "Want details?"));
@@ -1081,6 +1130,8 @@ int main(int, char**) {
   RUN_TEST(test_ask_duplicate_the_incident_pair_is_dropped);
   RUN_TEST(test_ask_duplicate_a_different_question_after_a_rhetorical_one_is_kept);
   RUN_TEST(test_ask_duplicate_same_question_dropped_different_kept);
+  RUN_TEST(test_fsn_reply_plus_different_question_is_one_row);
+  RUN_TEST(test_fsn_dropped_duplicate_is_one_row_with_the_reply_only);
   RUN_TEST(test_orch_model_every_provider_slot_applies_and_nothing_else);
   RUN_TEST(test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour);
   RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);

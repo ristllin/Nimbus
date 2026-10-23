@@ -267,17 +267,34 @@ static void test_seedless_turn_trigger_row() {
 }
 
 // out: kinds: the spoken line, the reply and the question each say what they are.
+// One row per message the owner received (lane FSN): an appended question rides the
+// reply's row, so it is tagged reply; only a question sent on its own is tagged ask.
+// The model-facing history reads the same as with two rows.
 static void test_assistant_rows_carry_out_kinds() {
   Rig r;
   r.reply = "{\"reply\":\"Market at 9.\",\"memory\":\"\",\"ask\":\"Set a reminder?\","
             "\"device\":[{\"type\":\"tts\",\"text\":\"Market at nine.\"}]}";
   r.eng->handleMessage("plan Saturday", "Roy", "123");
+  r.reply = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"Which stall first?\"}";
+  r.eng->handleMessage("and Sunday?", "Roy", "123");
   std::map<std::string, std::string> kinds;
+  int assistantRows = 0;
   for (const auto& m : r.all("123"))
-    if (m.role == "assistant") kinds[m.text] = agent::tagValue(m.tags, agent::kOutTag);
+    if (m.role == "assistant") {
+      kinds[m.text] = agent::tagValue(m.tags, agent::kOutTag);
+      assistantRows++;
+    }
+  TEST_ASSERT_EQUAL(3, assistantRows);   // tts, reply+question, question
   TEST_ASSERT_EQUAL_STRING("tts", kinds["Market at nine."].c_str());
-  TEST_ASSERT_EQUAL_STRING("reply", kinds["Market at 9."].c_str());
-  TEST_ASSERT_EQUAL_STRING("ask", kinds["Set a reminder?"].c_str());
+  TEST_ASSERT_EQUAL_STRING("reply", kinds["Market at 9.\n\nSet a reminder?"].c_str());
+  TEST_ASSERT_EQUAL_STRING("ask", kinds["Which stall first?"].c_str());
+  r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->handleMessage("thanks", "Roy", "123");
+  const std::string w = r.lastWindow();
+  TEST_ASSERT_TRUE(w.find("- assistant [did: spoke]: Market at 9.\n\n  Set a reminder?\n") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(w.find("Market at nine.") == std::string::npos);   // written beats spoken
+  TEST_ASSERT_TRUE(w.find("- assistant [did: nothing]: Which stall first?") != std::string::npos);
 }
 
 // The switch off is byte-identical to an engine that never heard of histV2: the

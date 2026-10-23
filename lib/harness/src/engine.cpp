@@ -696,11 +696,12 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
 
 // ---- the turn core ----------------------------------------------------------
 
-// For one applyTurn: apply captures the spoken line, the reply and the question
-// as separate rows through one hook. Under histV2 the hook is wrapped so each row
-// carries its out: kind (a capture right after speak() is the tts line; the
-// first other one is the reply when the turn has one; the rest are the question)
-// and a seedless turn's trigger row lands first.
+// For one applyTurn: apply captures the spoken line and one row per message the
+// owner received through one hook (a question appended to the reply rides the
+// reply's row; a question sent on its own is its own row). Under histV2 the hook
+// is wrapped so each row carries its out: kind (a capture right after speak() is
+// the tts line; the first other one is the reply when the turn has one; the rest
+// are the question) and a seedless turn's trigger row lands first.
 struct TurnEngine::ApplyCapture {
   TurnEngine* e = nullptr;
   std::function<void(const std::string&, const std::string&)> capture;
