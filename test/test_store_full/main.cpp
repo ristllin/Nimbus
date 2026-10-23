@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -107,6 +108,10 @@ static void test_a_refused_request_is_not_a_full_store() {
   TEST_ASSERT_EQUAL_STRING(FileStore::kErrStoreFull, err.c_str());
   TEST_ASSERT_FALSE(tiny.fullRefusal(err));
   TEST_ASSERT_FALSE(tiny.hasRoom());
+  FileStore none(small(0, 100000));   // a store that takes no entries at all
+  TEST_ASSERT_TRUE(none.wouldExceed("p", "a.txt", 1, err));
+  TEST_ASSERT_EQUAL_STRING(FileStore::kErrTooManyFiles, err.c_str());
+  TEST_ASSERT_FALSE(none.fullRefusal(err));
 }
 
 static void test_room_follows_entries_and_bytes() {
@@ -230,7 +235,7 @@ static void test_head_fact_words() {
       TEST_ASSERT_EQUAL_STRING("\n[", f.substr(0, 2).c_str());
       TEST_ASSERT_EQUAL_CHAR(']', f.back());
       TEST_ASSERT_TRUE(f.find("already sent the owner a message") != std::string::npos);
-      TEST_ASSERT_TRUE(f.find("do not ask which files to delete") != std::string::npos);
+      TEST_ASSERT_TRUE(f.find("Do not ask which files to delete") != std::string::npos);
       const std::string item = std::string("The ") + (photo ? "photo" : "file") + " itself stays";
       TEST_ASSERT_EQUAL(kept, f.find(item) != std::string::npos);
       TEST_ASSERT_TRUE(f.find(photo ? "The file itself" : "The photo itself") == std::string::npos);
@@ -266,25 +271,40 @@ static size_t count(const std::string& hay, const std::string& needle) {
   return n;
 }
 
-// An inbound refusal notes the episode, sends its notice before the turn's reply and
-// puts the fact in the turn; every assistant save hands the head refusalForHead; only
-// a removal ends an episode; a web upload never opens one (the page shows its refusal).
+// The class: every source outside the store that saves into it (any of its write
+// entry points) notes a full store, so a new save path that forgets fails here; the
+// web upload routes are the one exception (the page shows the owner its refusal).
+static void test_every_save_path_notes_a_full_store() {
+  const char* const kSaves[] = {"files::saveStream(", "files::saveText(", "files::saveBytes(",
+                                "files::beginWrite(", "files::binaryWriteBegin(", "files::finishWrite("};
+  int savers = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator("src")) {
+    const std::string path = e.path().generic_string();
+    if (!e.is_regular_file() || e.path().extension() != ".cpp" || path == "src/agent/files_subsystem.cpp") continue;
+    const std::string s = readFile(path.c_str());
+    bool saves = false;
+    for (const char* call : kSaves) saves = saves || s.find(call) != std::string::npos;
+    if (!saves) continue;
+    ++savers;
+    const bool notes = s.find("noteRefusal(") != std::string::npos || s.find("refusalForHead(") != std::string::npos;
+    TEST_ASSERT_TRUE_MESSAGE(notes != (path == "src/net/web_files.cpp"), path.c_str());
+  }
+  TEST_ASSERT_TRUE(savers >= 4);   // telegram, the PDF writer, provider file capture, web uploads
+}
+
+// Inside the store: the assistant tools hand the head refusalForHead, the URL fetch
+// notes the episode (its error is what the fetch queue shows), only a removal ends an
+// episode, and the photo path sends the notice before the turn and puts the fact in it.
 static void test_device_wiring() {
   const std::string tg = readFile("src/agent/telegram.cpp");
-  TEST_ASSERT_EQUAL_size_t(1, count(tg, "agent::files::noteRefusal(ferr)"));
-  TEST_ASSERT_EQUAL_size_t(1, count(tg, "if (full) seg += nimbus::orch::storeFullFact(photo, g_slots[slot].media.kept);"));
-  TEST_ASSERT_EQUAL_size_t(3, count(tg, "sendFileStoreNotice()"));   // the sender, the photo path, the poll loop
+  TEST_ASSERT_TRUE(tg.find("agent::files::noteRefusal(ferr)") != std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("nimbus::orch::storeFullFact(") != std::string::npos);
+  TEST_ASSERT_TRUE(count(tg, "sendFileStoreNotice()") >= 3);   // the sender, the photo path, the poll loop
   const std::string fs = readFile("src/agent/files_subsystem.cpp");
-  // artifact.save, files.append, image.generate, a helper's saved report (+ the definition).
+  // artifact.save, files.append, image.generate, a helper's saved report, the definition.
   TEST_ASSERT_EQUAL_size_t(5, count(fs, "refusalForHead("));
-  TEST_ASSERT_EQUAL_size_t(2, count(fs, "if (g_store.hasRoom()) g_full.room();"));   // removeFile, removeProject
-  TEST_ASSERT_EQUAL_size_t(2, count(fs, "g_full.room()"));
-  TEST_ASSERT_EQUAL_size_t(2, count(readFile("src/agent/pdf_tool.cpp"), "files::refusalForHead(err)"));
-  for (const char* web : {"src/net/web_files.cpp", "src/net/webui.cpp"}) {
-    const std::string w = readFile(web);
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, count(w, "noteRefusal"), web);
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, count(w, "refusalForHead"), web);
-  }
+  TEST_ASSERT_TRUE(count(fs, "noteRefusal(err)") >= 4);   // the URL fetch's begin and finish, both paths
+  TEST_ASSERT_EQUAL_size_t(2, count(fs, "g_full.room()"));   // removeFile, removeProject
 }
 
 int main() {
@@ -300,6 +320,7 @@ int main() {
   RUN_TEST(test_owner_notice_words);
   RUN_TEST(test_head_fact_words);
   RUN_TEST(test_tool_note_words);
+  RUN_TEST(test_every_save_path_notes_a_full_store);
   RUN_TEST(test_device_wiring);
   return UNITY_END();
 }

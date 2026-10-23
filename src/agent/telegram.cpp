@@ -1044,31 +1044,31 @@ static void persistOffset() {
   publishPollStatus();
 }
 
-// The once-per-boot "settings storage is almost full" notice (raised by any failed
-// NVS write, nimbus::sys::takeStorageNotice), sent here on the poll task's own
-// outbound path - never from the writer's task. Waits for an owner chat to exist.
-static void sendStorageNotice() {
+// A raised-once owner notice, "<device name>: <text>", sent on the poll task's own
+// outbound path, never from the task that raised it. `take` consumes it (false: none
+// is due); nothing is taken until an owner chat exists. `which` names it in the log.
+static void sendOwnerNotice(bool (*take)(), const char* text, const char* which) {
   const String owner = ownerChat();
-  if (!owner.length() || !nimbus::sys::takeStorageNotice()) return;
+  if (!owner.length() || !take()) return;
   String name = nimbus::sys::deviceName();
   if (!name.length()) name = "Nimbus";
-  send(owner, name + ": " + nimbus::store::kStorageNoticeText, /*block=*/false);
-  alog("telegram: storage-full notice sent to the owner");
+  if (send(owner, name + ": " + text, /*block=*/false))
+    alogf("telegram: storage-full notice sent to the owner%s", which);
+  else
+    alogf("telegram: storage-full notice%s dropped: reply queue full", which);
+}
+
+// The once-per-boot "settings storage is almost full" notice (raised by any failed
+// NVS write, nimbus::sys::takeStorageNotice).
+static void sendStorageNotice() {
+  sendOwnerNotice(nimbus::sys::takeStorageNotice, nimbus::store::kStorageNoticeText, "");
 }
 
 // The once-per-episode "the file store is full" notice (agent::files::noteRefusal
-// raises it), on this task's outbound path. The photo path sends it at once, so it
-// reaches the owner before that photo's reply; the poll loop sends one an assistant
-// save raised. Waits for an owner chat to exist.
+// raises it). The photo path sends it at once, so it reaches the owner before that
+// photo's reply; the poll loop sends one an assistant save raised.
 static void sendFileStoreNotice() {
-  const String owner = ownerChat();
-  if (!owner.length() || !agent::files::takeFullNotice()) return;
-  String name = nimbus::sys::deviceName();
-  if (!name.length()) name = "Nimbus";
-  if (send(owner, name + ": " + nimbus::orch::kStoreFullNotice, /*block=*/false))
-    alog("telegram: storage-full notice sent to the owner (file store)");
-  else
-    alog("telegram: storage-full notice (file store) dropped: reply queue full");
+  sendOwnerNotice(agent::files::takeFullNotice, nimbus::orch::kStoreFullNotice, " (file store)");
 }
 
 // ---- sendMessage ------------------------------------------------------------

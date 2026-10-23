@@ -54,8 +54,8 @@ extern const char kStoreFullNotice[];
 std::string storeFullFact(bool photo, bool inHistory);
 
 // Appended to an assistant save the full store refused (artifact.save, files.append,
-// files.pdf, image.generate, a helper's saved report), so the head says the save did
-// not land and does not explain the store.
+// files.pdf, image.generate, a helper's saved report, a provider sandbox file), so the
+// head says the save did not land and does not explain the store.
 extern const char kStoreFullToolNote[];
 
 }  // namespace orch

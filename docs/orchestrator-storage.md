@@ -611,9 +611,10 @@ name or one file over its size limit, and from a card below the supported size).
 full store is told to the owner **once per episode**, never per item:
 
 - **The episode starts** with the first save the owner did not watch fail: an inbound
-  Telegram photo or file, or an assistant save (`artifact.save`, `files.append`,
-  `files.pdf`, `image.generate`, a helper's saved report). A web upload is not one:
-  the page shows its own refusal.
+  Telegram photo or file, an assistant save (`artifact.save`, `files.append`,
+  `files.pdf`, `image.generate`, a helper's saved report, a file captured from a
+  provider's sandbox) or an approved URL download (`files.fetch`). A web upload is not
+  one: the page shows its own refusal.
 - **One device notice** goes to the owner's chat, before that photo's reply: "the file
   store is full, so new photos and files are not saved to it. To make room, open the
   device web page, delete files you don't need in the Memory tab's Files section, then

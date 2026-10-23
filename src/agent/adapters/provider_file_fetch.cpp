@@ -241,7 +241,7 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
 
   std::string err;
   if (!files::binaryWriteBegin(prj, name, 0, ownerNs, err))
-    return "[file FAILED: " + err + "]";
+    return "[file FAILED: " + files::refusalForHead(err) + "]";
 
   if (!arbiter::acquireWork(10000)) {
     files::finishWrite(false, err);            // discard the .part
@@ -261,7 +261,7 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   const nimbus::orch::CaptureVerdict v =
       nimbus::orch::captureVerdict(code, sc.bytes, expected, eof, sc.writeErr);
   if (!files::finishWrite(v.ok, err)) {
-    std::string why = v.ok ? err : v.reason;
+    std::string why = v.ok ? files::refusalForHead(err) : v.reason;
     return "[file FAILED: " + why + "]";
   }
   alogf("files: captured %s/%s (%u B) from %s file %s", prj.c_str(), name.c_str(),

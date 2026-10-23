@@ -72,8 +72,7 @@ const char FileStore::kErrTooManyFiles[] = "too many files (remove some first)";
 const char FileStore::kErrStoreFull[] = "store full (artifacts are never auto-deleted - remove some first)";
 
 bool FileStore::fullRefusal(const std::string& err) const {
-  if (err == kErrTooManyFiles) return true;
-  return err == kErrStoreFull && lim_.maxTotalBytes > 0;
+  return (err == kErrTooManyFiles && lim_.maxEntries > 0) || (err == kErrStoreFull && lim_.maxTotalBytes > 0);
 }
 
 bool FileStore::wouldExceed(const std::string& project, const std::string& name,

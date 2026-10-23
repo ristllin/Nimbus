@@ -62,8 +62,6 @@ StorageTruth storageTruth();
 bool noteRefusal(const std::string& err);
 // The episode's owner notice, once (the Telegram poll task sends it).
 bool takeFullNotice();
-// True while the store is full and the owner has been (or is being) told.
-bool fullEpisode();
 // The refusal an assistant save hands the head: a full store notes the episode
 // (noteRefusal) and adds that the owner is told and how much to say; any other
 // refusal is returned unchanged.

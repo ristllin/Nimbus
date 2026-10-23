@@ -162,7 +162,7 @@ class FileStore {
   static const char kErrStoreFull[];
   // Is `err` (from add or wouldExceed) a full store, one that removing files would
   // fix? False on a store that takes nothing at all (a zero byte quota: a card below
-  // the supported size), where the bytes refusal is not about fullness.
+  // the supported size; a zero entry limit), where the refusal is not about fullness.
   bool fullRefusal(const std::string& err) const;
   // Room for one more small file: a free entry and at least one byte under the quota.
   bool hasRoom() const {

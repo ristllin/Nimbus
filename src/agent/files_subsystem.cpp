@@ -227,8 +227,6 @@ bool noteRefusal(const std::string& err) {
 
 bool takeFullNotice() { return g_full.takeNotice(); }
 
-bool fullEpisode() { return g_full.active(); }
-
 std::string refusalForHead(const std::string& err) {
   return noteRefusal(err) ? err + nimbus::orch::kStoreFullToolNote : err;
 }
@@ -809,14 +807,16 @@ uint64_t downloadToStore(const nimbus::orch::FetchReq& r, std::string& err) {
   // prism: stamp the REQUESTER's namespace (binaryWriteBegin) - beginWrite's
   // ownerNs="" is the device-owner override, which let a guest's fetch land as
   // an owner file OUTSIDE the guest's quota and overwrite anyone's artifact.
-  if (!binaryWriteBegin(r.project, r.name, 0, r.requestedBy, err)) return 0;
+  // A full store opens its episode (the owner's one notice); the error itself is
+  // what the fetch queue and the web page show, so it stays as the store wrote it.
+  if (!binaryWriteBegin(r.project, r.name, 0, r.requestedBy, err)) { noteRefusal(err); return 0; }
   uint64_t n = 0;
   std::string ct;
   n = agent::urlfetch::httpsGetStream(
       r.url, [](const uint8_t* d, size_t l) { return writeChunk(d, l); },
       g_store.limits().maxFileBytes, err, ct);
   if (n == 0) { abortWrite(); return 0; }
-  if (!finishWrite(true, err)) return 0;
+  if (!finishWrite(true, err)) { noteRefusal(err); return 0; }
   return n;
 }
 
@@ -895,7 +895,9 @@ void runScanFetch(nimbus::orch::FetchReq req) {
   // FIX #3 rider: the promoted file is stamped with the REQUESTER's namespace
   // (binaryWriteBegin), not the device-owner override - the same data boundary
   // every other save path enforces.
-  if (binaryWriteBegin(req.project, req.name, (size_t)n, req.requestedBy, err)) {
+  if (!binaryWriteBegin(req.project, req.name, (size_t)n, req.requestedBy, err)) {
+    noteRefusal(err);   // a full store: the episode's one owner notice
+  } else {
     File rf;
     { memory::Lock g; rf = memory::dataFs().open(kFetchTmp, FILE_READ); }
     uint8_t buf[1024];
@@ -908,7 +910,7 @@ void runScanFetch(nimbus::orch::FetchReq req) {
       saved += (uint64_t)k;
     }
     { memory::Lock g; if (rf) rf.close(); }
-    if (!ok || !finishWrite(true, err)) { abortWrite(); saved = 0; if (err.empty()) err = "promote failed"; }
+    if (!ok || !finishWrite(true, err)) { abortWrite(); saved = 0; noteRefusal(err); if (err.empty()) err = "promote failed"; }
   }
   { memory::Lock g; memory::dataFs().remove(kFetchTmp); }
 
