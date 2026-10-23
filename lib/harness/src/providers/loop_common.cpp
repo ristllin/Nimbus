@@ -303,26 +303,25 @@ bool testStatusOverride(const std::string& host, int& status, std::string& body)
 #endif
 
 namespace {
-// With every host of a turn closed: the one to ask anyway (the first closed by a
-// refused key, or one whose re-check fell due since the first walk: asking the park
-// again here is what hands that host its one probe), else `count`; and the first
-// closed for credit, which names the refusal when nothing is asked.
+// With every host of a turn closed: the one to ask (only a host whose re-check fell
+// due since the first walk: asking the park again here is what hands it its one
+// probe), else `count`; and the first closed by a refusal (out of credit or a refused
+// key), whose kind and status name the turn's refusal when nothing is asked.
 struct ClosedPick {
   size_t ask;
-  size_t billing;
-  int billingStatus = 0;
+  size_t refused;
+  orch::StepErr kind = orch::StepErr::None;
+  int status = 0;
 };
 ClosedPick pickWhenAllClosed(const ProviderDeps& pd, const std::vector<std::string>& hostList, size_t count) {
   ClosedPick pick{count, count};
   for (size_t i = 0; i < count; i++) {
     HostPark why;
     if (!hostParked(pd, hostList[i], &why)) return ClosedPick{i, count};   // its re-check is due now
-    if (why.paused) continue;
-    if (why.kind != orch::StepErr::Billing) return ClosedPick{i, count};   // a refused key
-    if (pick.billing >= count) {
-      pick.billing = i;
-      pick.billingStatus = why.httpStatus;
-    }
+    if (why.paused || pick.refused < count) continue;
+    pick.refused = i;
+    pick.kind = why.kind;
+    pick.status = why.httpStatus;
   }
   return pick;
 }
@@ -379,12 +378,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
 
   // A parked head (a billing or key refusal learned on any seam) is not asked again:
   // the turn starts on the first host that is open - no request, retry or notice
-  // spent on it. When every host is closed, only one closed by a refused KEY is
-  // tried anyway (a fixed key or model shows at once; the owner was already told). A
-  // host out of credit is never asked outside its timed re-check: with no other host
-  // the turn ends with no request and the park's billing cause (zero requests to a
-  // parked provider). A PAUSED host is never asked at all (the pause switch: the
-  // owner's pause, the spend ceiling).
+  // spent on it. A host closed by a refusal (out of credit, or a refused key) is never
+  // asked outside its timed re-check or a key change: with no open host the turn ends
+  // with no request and the park's cause (zero requests to a parked provider). A
+  // PAUSED host is never asked at all (the pause switch: the owner's pause, the spend
+  // ceiling).
   auto nextUnparked = [&](size_t from) -> size_t {
     for (size_t i = from; i < hostCount; i++)
       if (!hostParked(pd, hostList[i])) return i;
@@ -395,10 +393,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     const ClosedPick pick = pickWhenAllClosed(pd, hostList, hostCount);
     hostIdx = pick.ask;
     if (hostIdx >= hostCount) {
-      const size_t named = pick.billing < hostCount ? pick.billing : 0;
-      if (pick.billing < hostCount) {
-        err = orch::parkedRefusalError(hostList[named], pick.billingStatus);
-        hlog::logf("fabric: every host is out of credit or paused - no request (%s parked)", hostList[named].c_str());
+      const size_t named = pick.refused < hostCount ? pick.refused : 0;
+      if (pick.refused < hostCount) {
+        err = orch::parkedRefusalError(hostList[named], pick.kind, pick.status);
+        hlog::logf("fabric: every host is parked or paused - no request (%s parked: %s)", hostList[named].c_str(),
+                   orch::stepErrSlug(pick.kind));
       } else {
         err = "paused: paid requests to " + hostList[0] + " are paused";
         hlog::logf("fabric: every host is paused - no request");

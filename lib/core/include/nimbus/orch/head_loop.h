@@ -101,10 +101,12 @@ StepErr classifyStepError(const std::string& err, int* httpStatus = nullptr);
 bool isTimeoutError(const std::string& err);
 
 // The error of a turn the park answered with no request: every host it could use is
-// parked for billing ("parked: anthropic is out of credit (HTTP 402); no request
-// sent"). classifyStepError reads it as Billing (the cause the owner hears), and it
-// never feeds the park (nothing was answered, so the re-check time stays as it was).
-std::string parkedRefusalError(const std::string& host, int httpStatus);
+// closed by a refusal ("parked: anthropic is out of credit (HTTP 402); no request
+// sent", "parked: anthropic rejected the key (HTTP 401); no request sent").
+// classifyStepError reads it as the refusal's kind (Billing or Auth: the cause the
+// owner hears), and it never feeds the park (nothing was answered, so the re-check
+// time stays as it was). `kind` is Billing or Auth.
+std::string parkedRefusalError(const std::string& host, StepErr kind, int httpStatus);
 bool isParkedRefusal(const std::string& err);
 
 // The owner-facing cause of a failed step in plain words: "anthropic says the

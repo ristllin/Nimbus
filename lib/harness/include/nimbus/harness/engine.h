@@ -443,12 +443,15 @@ class TurnEngine {
   // L19-13 d: a provider-switch notice raised while a turn runs is HELD, not sent:
   // a turn that fails folds what it held into its ONE final notice (the owner got
   // three messages per failed turn on 19 Oct), a turn that is served sends it just
-  // before its reply. `billingHost` names the provider of a billing notice: its
-  // once-per-episode latch is taken when it is held (a quiet turn leaves it armed).
-  void holdNotice(const std::string& text, const std::string& billingHost = std::string());
+  // before its reply. `latchHost` names the provider of a refusal notice (out of
+  // credit, or a refused key: `kind` Billing or Auth): its once-per-episode latch is
+  // taken when it is held (a quiet turn leaves it armed).
+  void holdNotice(const std::string& text, const std::string& latchHost = std::string(),
+                  nimbus::orch::StepErr kind = nimbus::orch::StepErr::None);
   void flushHeldNotices(const std::string& chatId);
-  // The held notices' share of a failed turn's final notice: one "add credit" line
-  // per provider that refused for billing ("" when none). Clears the hold.
+  // The held notices' share of a failed turn's final notice: one next-step line per
+  // provider that refused ("Add credit on <p>'s billing page.", "Update <P>'s key
+  // under Assistant > Models."; "" when none). Clears the hold.
   std::string foldHeldNotices();
   // L19-13 d/e, L19-14: the one owner message of a failed turn: `head` ("That didn't
   // finish - <cause>."), then "Your message was not answered." when nothing ran, or
@@ -456,11 +459,12 @@ class TurnEngine {
   // folded notices.
   void deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
                       const std::string& advice, bool nothingRan);
-  // Lane PARK: the reply to a turn that failed for billing at `host` (a refusal, or
-  // the park's refusal with no request): the notice once per episode, then one short
-  // answer, then nothing (orch::billingTurnAnswer).
-  void deliverBillingFailure(const std::string& chatId, const std::string& host, int activeJobs,
-                             bool nothingRan);
+  // Lane PARK: the reply to a turn that failed at `host` out of credit or on a refused
+  // key (`kind` Billing or Auth; a refusal, or the park's refusal with no request):
+  // the notice once per episode, then one short answer, then nothing
+  // (orch::refusalTurnAnswer).
+  void deliverParkedRefusal(const std::string& chatId, const std::string& host, nimbus::orch::StepErr kind,
+                            int activeJobs, bool nothingRan);
   // Lane L: an answer that was not applied (cut or unreadable) but whose
   // salvaged text claims sub-agents: the ledger line and the head's note, as
   // apply gives a promise without a spawn.
@@ -504,7 +508,8 @@ class TurnEngine {
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
   struct HeldNotice {
     std::string text;
-    std::string billingHost;   // "" = a switch notice; else the provider that refused for billing
+    std::string latchHost;   // "" = a switch notice; else the provider whose refusal (credit or key) it tells
+    nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;   // Billing or Auth when latchHost is set
   };
   std::vector<HeldNotice> heldNotices_;   // this turn's switch notices (L19-13 d)
   std::string keylessPinTold_;            // HOST-FALLBACK: the keyless pin the owner was told about

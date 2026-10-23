@@ -308,12 +308,13 @@ void TurnEngine::deliverBillingNotice(const std::string& chatId, const std::stri
   deliver(chatId, text);
 }
 
-void TurnEngine::holdNotice(const std::string& text, const std::string& billingHost) {
-  if (!billingHost.empty() && !holdingNotices() && !nimbus::orch::billingNoticeDue(billingHost.c_str())) {
-    hlog::logf("orchestrator: %s billing notice already given this episode", billingHost.c_str());
+void TurnEngine::holdNotice(const std::string& text, const std::string& latchHost, orch::StepErr kind) {
+  if (!latchHost.empty() && !holdingNotices() && !nimbus::orch::billingNoticeDue(latchHost.c_str())) {
+    hlog::logf("orchestrator: %s %s notice already given this episode", latchHost.c_str(),
+               kind == orch::StepErr::Auth ? "key" : "billing");
     return;
   }
-  heldNotices_.push_back(HeldNotice{text, billingHost});
+  heldNotices_.push_back(HeldNotice{text, latchHost, kind});
 }
 
 void TurnEngine::flushHeldNotices(const std::string& chatId) {
@@ -325,8 +326,10 @@ void TurnEngine::flushHeldNotices(const std::string& chatId) {
 std::string TurnEngine::foldHeldNotices() {
   std::string out;
   for (const HeldNotice& n : heldNotices_) {
-    if (n.billingHost.empty()) continue;   // a switch notice: its cause is in the final notice
-    const std::string line = "Add credit on " + n.billingHost + "'s billing page.";
+    if (n.latchHost.empty()) continue;   // a switch notice: its cause is in the final notice
+    const std::string line = n.kind == orch::StepErr::Auth
+                                 ? "Update " + providerLabel(n.latchHost) + "'s key under Assistant > Models."
+                                 : "Add credit on " + n.latchHost + "'s billing page.";
     if (out.find(line) == std::string::npos) out += (out.empty() ? "" : " ") + line;
   }
   if (!heldNotices_.empty())
@@ -345,46 +348,51 @@ void TurnEngine::deliverFailure(const std::string& chatId, const std::string& he
     if (!work.empty()) text += " " + work;
   }
   text += " " + afterFailure(activeJobs, advice);
-  // Every held credit line names a provider this turn LEFT (no path returns to a host
-  // it switched away from), never the one the final notice names, and its latch was
-  // taken when it was held: it always rides along, or that provider is never told.
+  // Every held next-step line names a provider this turn LEFT (no path returns to a
+  // host it switched away from), never the one the final notice names, and its latch
+  // was taken when it was held: it always rides along, or that provider is never told.
   const std::string fold = foldHeldNotices();
   if (!fold.empty()) text += " " + fold;
   deliver(chatId, text);
 }
 
-// Lane PARK (storm leg c): a turn that failed for billing - refused at the provider, or
-// ended by the park with no request because every host it could use is out of credit
-// - tells the owner once per episode, the notice with the next step; the owner's next
-// such message gets one short answer naming no cause again; every later one of the
-// episode gets nothing (the owner was told, and the park's timed re-check or a new key
-// is what changes it). A routine or wakeup may carry the notice, never the short
-// answer. The latches are the park's, shared with every seam and kept on flash. A
-// quiet turn holds its words and takes no latch (deliver holds them).
-void TurnEngine::deliverBillingFailure(const std::string& chatId, const std::string& host, int activeJobs,
-                                       bool nothingRan) {
-  const std::string notice = "That didn't finish - " + providerLabel(host) +
-                             " says the account is out of credit. Add credit on its billing page, or "
-                             "switch providers.";
+// Lane PARK (storm leg c): a turn that failed on a parked kind of refusal - out of
+// credit or a refused key, refused at the provider or ended by the park with no request
+// because every host it could use is closed - tells the owner once per episode, the
+// notice with the next step; the owner's next such message gets one short answer;
+// every later one of the episode gets nothing (the owner was told, and the park's
+// timed re-check or a new key is what changes it). A routine or wakeup may carry the
+// notice, never the short answer. The latches are the park's, shared with every seam
+// and kept on flash. A quiet turn holds its words and takes no latch (deliver holds
+// them).
+void TurnEngine::deliverParkedRefusal(const std::string& chatId, const std::string& host, orch::StepErr kind,
+                                      int activeJobs, bool nothingRan) {
+  const bool key = kind == orch::StepErr::Auth;
+  const std::string label = providerLabel(host);
+  const std::string notice =
+      key ? "That didn't finish - " + label + " rejected its key. Update it under Assistant > Models."
+          : "That didn't finish - " + label +
+                " says the account is out of credit. Add credit on its billing page, or switch providers.";
   if (holdingNotices()) {
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
   }
   const bool ownerWrote = turnSource_ == TurnSource::Owner || turnSource_ == TurnSource::Serial;
-  const orch::BillingTurnAnswer answer = orch::billingTurnAnswer(host.c_str(), ownerWrote);
-  if (answer == orch::BillingTurnAnswer::Notice) {
+  const orch::RefusalTurnAnswer answer = orch::refusalTurnAnswer(host.c_str(), ownerWrote);
+  if (answer == orch::RefusalTurnAnswer::Notice) {
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
   }
   // Another provider's new episode met in this turn still reaches the owner.
   const std::string fold = foldHeldNotices();
-  if (answer == orch::BillingTurnAnswer::Short) {
-    const std::string text =
-        orch::billingShortAnswer(providerLabel(host), orch::providerPark().recheckInMs(host.c_str()));
+  if (answer == orch::RefusalTurnAnswer::Short) {
+    const std::string text = key ? orch::keyShortAnswer(label)
+                                 : orch::billingShortAnswer(label, orch::providerPark().recheckInMs(host.c_str()));
     deliver(chatId, fold.empty() ? text : text + " " + fold);
     return;
   }
-  hlog::logf("orchestrator: %s is out of credit and the owner was told this episode - no reply", host.c_str());
+  hlog::logf("orchestrator: %s %s and the owner was told this episode - no reply", host.c_str(),
+             key ? "rejected its key" : "is out of credit");
   if (!fold.empty()) deliver(chatId, fold);
 }
 
@@ -1472,9 +1480,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Lane K's park on the single-shot path (the fabric does this inside its loop): a
   // head that refused for billing or auth is not asked again; the turn starts on the
   // first alternate that is not parked, and the next turn's [FALLBACK] note names the
-  // head it started past. With no open alternate only a head closed by a refused key
-  // is asked anyway (a fixed key or model shows at once). A head out of credit, or
-  // paused, gets no request: the turn ends here with the park's cause (true).
+  // head it started past. With no open alternate a head closed by a refusal (out of
+  // credit, a refused key) or paused gets no request: the turn ends here with the
+  // park's cause (true); its timed re-check or a new key opens it again.
   auto startPastParkedHead = [&]() -> bool {
     providers::HostPark why;
     if (!d_.hosts.isParked(host, &why)) return false;
@@ -1483,7 +1491,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
                  orch::stepErrSlug(why.kind), alt.c_str());
       if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
-        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::billingNotice(host, why.httpStatus, alt), host);
+        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::billingNotice(host, why.httpStatus, alt), host, why.kind);
+      else if (why.kind == orch::StepErr::Auth)
+        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::keyNotice(host, why.httpStatus, alt), host, why.kind);
       switchPath += " -> " + alt;
       noteSwitch(errorClassOf(why.kind));
       host = alt;
@@ -1491,9 +1501,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       convContinued = false;
       return false;
     }
-    if (why.kind == orch::StepErr::Auth) return false;   // a refused key: asked anyway
     err = why.kind == orch::StepErr::Paused ? "paused: paid requests to " + host + " are paused"
-                                            : orch::parkedRefusalError(host, why.httpStatus);
+                                            : orch::parkedRefusalError(host, why.kind, why.httpStatus);
     hlog::logf("orchestrator: %s is parked (%s) and no other host is open - no request",
                host.c_str(), orch::stepErrSlug(why.kind));
     tf.chain.note(host, err);
@@ -1511,13 +1520,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         hostList, instructions, inputs, outJson, err, *headToolsPtr, &tf.spend,
         [&](const std::string& from, const std::string& to) {
           // The notice carries the cause and its HTTP status (lastFabricSwitch).
-          // A billing refusal is told once per episode (shared with the embedding
-          // seam); a turn that merely started past a parked head says nothing new.
+          // A billing refusal or a refused key is told once per episode (shared with
+          // the other seams); a turn that merely started past a host parked for
+          // anything else says nothing new.
           const providers::FabricSwitch& sw = providers::lastFabricSwitch();
           const std::string warn = "\xE2\x9A\xA0\xEF\xB8\x8F ";
           // L19-13 d: held until the turn ends (one message for a failed turn).
           if (sw.kind == orch::StepErr::Billing) {
-            holdNotice(warn + orch::billingNotice(from, sw.httpStatus, to), from);
+            holdNotice(warn + orch::billingNotice(from, sw.httpStatus, to), from, sw.kind);
+          } else if (sw.kind == orch::StepErr::Auth) {
+            holdNotice(warn + orch::keyNotice(from, sw.httpStatus, to), from, sw.kind);
           } else if (!sw.parkedStart) {
             holdNotice(warn + orch::stepErrCause(sw.kind, from, sw.httpStatus) + " - switching to " + to +
                        ". Your progress this turn carries over.");
@@ -1602,7 +1614,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const std::string notice = std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + failoverReason(host, err) +
                                  fb + " (your recent messages carry over; the provider-side thread restarts).";
       const orch::StepErr failKind = orch::classifyStepError(err);
-      holdNotice(notice, failKind == orch::StepErr::Billing ? host : std::string());   // L19-13 d
+      const bool told = failKind == orch::StepErr::Billing || failKind == orch::StepErr::Auth;
+      holdNotice(notice, told ? host : std::string(), failKind);   // L19-13 d
       // Record the switch as a model-facing context note for the next turn.
       switchPath += " -> " + fb;
       noteSwitch(errorClassOf(failKind));
@@ -1687,12 +1700,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return false;
     }
     // A billing refusal is not a rate limit (OpenAI's "no credits" comes as a
-    // 429): waiting never helps, credit does. Told once per episode (lane PARK),
-    // whether the provider refused or the park ended the turn with no request.
-    if (orch::classifyStepError(err) == orch::StepErr::Billing) {
+    // 429): waiting never helps, credit does; a refused key needs a new key. Both are
+    // told once per episode (lane PARK), whether the provider refused or the park
+    // ended the turn with no request. (A Cumulo router refusal sentence names no HTTP
+    // status, so it never classifies as either and keeps its own words below.)
+    const orch::StepErr parkedKind = orch::classifyStepError(err);
+    if (parkedKind == orch::StepErr::Billing || parkedKind == orch::StepErr::Auth) {
       const orch::FailStep* last = tf.chain.last();
       const bool named = last && last->host != orch::FailureChain::kDeviceHost && !last->host.empty();
-      deliverBillingFailure(chatId, named ? last->host : host, activeJobs, nothingRan);
+      deliverParkedRefusal(chatId, named ? last->host : host, parkedKind, activeJobs, nothingRan);
       fireTurnEnd(false, 0);
       return false;
     }

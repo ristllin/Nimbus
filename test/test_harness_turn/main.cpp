@@ -3792,13 +3792,13 @@ static void test_owner_notice_names_the_first_cause() {
 
 // L19-13a, the class over every typed kind the generic notice can carry: the owner
 // never reads "HTTP <code>:" provider text, and "ask again" appears exactly for the
-// kinds in transit (transport, server error or overload, timeout). Rate limits and
-// billing have their own replies; a cut is salvaged.
+// kinds in transit (transport, server error or overload, timeout). Rate limits,
+// billing and a refused key have their own replies (a refused key: test_parked_head);
+// a cut is salvaged.
 static void test_failure_notice_retry_advice_only_when_transient() {
   struct Case { const char* err; const char* raw; bool retry; };   // raw: the provider
   const Case cases[] = {                                          // body that must not leak
       {kAntInvalidJson, "not valid JSON", false},                        // bad request
-      {"messages HTTP 401: invalid x-api-key", "x-api-key", false},      // auth
       {"messages HTTP 404: model: claude-nonexistent-test", "claude-nonexistent-test", false},  // rejected
       {"messages HTTP 529: Overloaded", "Overloaded", true},              // overloaded
       {"messages HTTP 503: upstream connect error", "upstream", true},    // server error

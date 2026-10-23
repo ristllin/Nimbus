@@ -75,24 +75,18 @@ inline bool isBillingRefusal(int status, const std::string& text) {
 // download scan): the first seam to see it sends the notice, the rest stay quiet
 // until the episode ends (a request at that provider succeeds again, or its key
 // changes). The latch lives in the one provider park (provider_park.h), which keeps
-// it on flash, so a restart no longer re-sends the notice.
+// it on flash, so a restart no longer re-sends the notice. It is the provider's one
+// notice latch, whatever parked it: the chat head takes the same latch for a refused
+// key (refusalTurnAnswer, the engine's held switch notices).
 // True exactly once per episode: the caller that gets true sends the notice.
 bool billingNoticeDue(const char* provider);
 // The episode is over: the next refusal at this provider notices again.
 void billingEpisodeEnd(const char* provider);
 
-// What a turn refused for billing gets (a refusal at the provider, or a turn the park
-// answered with no request because every host it could use is parked for billing):
-// the notice the first time the episode reaches the owner, then one short answer to
-// the owner's next message, then nothing for the rest of the episode. A turn the
-// owner did not write (a routine, a wakeup) may carry the notice but never takes the
-// short answer: that is kept for the owner's own next message. Takes the latches
-// (shared with every seam, kept across a restart); the caller sends what it says.
-enum class BillingTurnAnswer : uint8_t { Notice, Short, Nothing };
-BillingTurnAnswer billingTurnAnswer(const char* provider, bool ownerWrote);
-
-// The short answer: no cause and no next step again (the notice said both), only
-// that the message went unanswered and when the provider is asked again.
+// The short answer to the owner's next message once a billing episode was told
+// (provider_park.h refusalTurnAnswer): no cause and no next step again (the notice
+// said both), only that the message went unanswered and when the provider is asked
+// again.
 // `provider` is the display name, `recheckInMs` the wait (0 = not known).
 inline std::string billingShortAnswer(const std::string& provider, uint32_t recheckInMs) {
   if (recheckInMs == 0)

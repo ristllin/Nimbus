@@ -136,8 +136,12 @@ StepErr classifyHttpStatus(int status, const std::string& text) {
 
 bool isTimeoutError(const std::string& err) { return err.rfind("timeout:", 0) == 0; }
 
-std::string parkedRefusalError(const std::string& host, int httpStatus) {
-  std::string e = "parked: " + host + " is out of credit";
+namespace {
+constexpr const char* kParkedKeyWords = " rejected the key";   // a provider name never holds a space
+}  // namespace
+
+std::string parkedRefusalError(const std::string& host, StepErr kind, int httpStatus) {
+  std::string e = "parked: " + host + (kind == StepErr::Auth ? kParkedKeyWords : " is out of credit");
   if (httpStatus > 0) e += " (HTTP " + std::to_string(httpStatus) + ")";
   return e + "; no request sent";
 }
@@ -150,10 +154,12 @@ StepErr classifyStepError(const std::string& err, int* httpStatus) {
   // The device's own lines, by their leading token.
   static const struct { const char* prefix; StepErr kind; } kDevice[] = {
       {"unsent:", StepErr::Unsent},     {"paused:", StepErr::Paused}, {"low memory", StepErr::LowMemory},
-      {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport}, {"parked:", StepErr::Billing},
+      {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport},
   };
   for (const auto& d : kDevice)
     if (err.rfind(d.prefix, 0) == 0) return d.kind;
+  if (isParkedRefusal(err))   // the park's own refusal (parkedRefusalError): its kind is in the words
+    return err.find(kParkedKeyWords) != std::string::npos ? StepErr::Auth : StepErr::Billing;
   if (err.find("out of memory") != std::string::npos) return StepErr::LowMemory;
   if (err == "schema parse" || err.rfind("request field over", 0) == 0 ||
       err.rfind("request text is not valid UTF-8", 0) == 0)

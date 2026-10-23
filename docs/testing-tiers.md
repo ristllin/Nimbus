@@ -176,6 +176,11 @@ cap** (provider requests stay inside the table, and a paused provider gets none)
 | `g_file_store_full` | the file store at its 256-file limit, then five owner photos | L |
 | `h_false_claim` | a reply that claims a save the turn never made | A |
 
+Beside the eight legs, `tests/hil/storm/test_park_key_refused.py` runs leg c's shape
+for a refused key (a 401 and a 403 through `PROVFAULT`, candidate only, bot mode): one
+request, none to the parked provider, the key notice once and the one short answer to
+the probe. It is not one of the release gate's legs.
+
 Each leg runs twice, on the same unit: first on the v4.5.13 control image, then on the
 release candidate, and prints a before/after table (each measure on both images, the
 candidate's bound, the four verdicts). The control image has none of the newer test

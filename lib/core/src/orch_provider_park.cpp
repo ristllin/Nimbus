@@ -88,6 +88,18 @@ std::string parkShortWords(const char* provider, const ParkVerdict& v) {
   return p + " refused the key.";
 }
 
+std::string keyNotice(const std::string& provider, int httpStatus, const std::string& next) {
+  std::string s = provider + " rejected its key";
+  if (httpStatus > 0) s += " (HTTP " + std::to_string(httpStatus) + ")";
+  s += ". Update it under Assistant > Models";
+  if (!next.empty()) s += "; until then, " + next + " answers";
+  return s + ".";
+}
+
+std::string keyShortAnswer(const std::string& provider) {
+  return "Your message was not answered. " + provider + " rejected its key: update it under Assistant > Models.";
+}
+
 uint32_t parkKeyFingerprint(const std::string& key) {
   if (key.empty()) return 0;
   uint32_t h = 2166136261u;
@@ -576,10 +588,10 @@ ProviderPick pickOpenProvider(const std::vector<std::string>& order,
 bool billingNoticeDue(const char* provider) { return providerPark().noticeDue(provider); }
 void billingEpisodeEnd(const char* provider) { providerPark().episodeEnd(provider); }
 
-BillingTurnAnswer billingTurnAnswer(const char* provider, bool ownerWrote) {
-  if (providerPark().noticeDue(provider)) return BillingTurnAnswer::Notice;
-  if (ownerWrote && providerPark().shortAnswerDue(provider)) return BillingTurnAnswer::Short;
-  return BillingTurnAnswer::Nothing;
+RefusalTurnAnswer refusalTurnAnswer(const char* provider, bool ownerWrote) {
+  if (providerPark().noticeDue(provider)) return RefusalTurnAnswer::Notice;
+  if (ownerWrote && providerPark().shortAnswerDue(provider)) return RefusalTurnAnswer::Short;
+  return RefusalTurnAnswer::Nothing;
 }
 
 }  // namespace orch

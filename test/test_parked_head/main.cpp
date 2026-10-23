@@ -39,8 +39,10 @@
 //   - every later message of the episode: no request, nothing sent;
 //   - the timed re-check is the only request after that; a key change is a new start;
 //     an answer ends the episode.
-// Counter-tests: a refused key (401) is still asked again, a paused host never is, and
-// another open provider still answers.
+// The same for a refused key (401, or a 403 for a model or endpoint): no request until
+// the key changes or the re-check, the notice once, one short answer ("... rejected its
+// key: update it under Assistant > Models."), then silence. Counter-tests: a paused
+// host is never asked, another open provider still answers, a new key is asked at once.
 
 namespace {
 
@@ -75,6 +77,7 @@ struct Shape {
   int status;
   const char* body;
   const char* errLine;
+  bool key = false;   // a refused key (Auth), else out of credit (Billing)
 };
 
 const Shape kShapes[] = {
@@ -103,6 +106,25 @@ const Shape kShapes[] = {
     {"mistral quota 429", "mistral", "api.mistral.ai", 429,
      "{\"message\":\"You exceeded your current quota\",\"code\":\"insufficient_quota\"}",
      "chat HTTP 429: You exceeded your current quota (insufficient_quota)"},
+    // Refused keys: a 401 closes every seam, a 403 (one model or endpoint) the chat seam.
+    {"anthropic key 401", "anthropic", "api.anthropic.com", 401,
+     "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
+     "messages HTTP 401: invalid x-api-key", true},
+    {"anthropic key 403", "anthropic", "api.anthropic.com", 403,
+     "{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Your API key does not "
+     "have permission to use the specified resource.\"}}",
+     "messages HTTP 403: Your API key does not have permission to use the specified resource.", true},
+    {"openai key 401", "openai", "api.openai.com", 401,
+     "{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\","
+     "\"code\":\"invalid_api_key\"}}",
+     "resp HTTP 401: Incorrect API key provided.", true},
+    {"openai key 403", "openai", "api.openai.com", 403,
+     "{\"error\":{\"message\":\"You are not allowed to sample from this model\",\"type\":\"invalid_request_error\"}}",
+     "resp HTTP 403: You are not allowed to sample from this model", true},
+    {"mistral key 401", "mistral", "api.mistral.ai", 401, "{\"message\":\"Unauthorized\"}",
+     "chat HTTP 401: Unauthorized", true},
+    {"mistral key 403", "mistral", "api.mistral.ai", 403, "{\"message\":\"Forbidden\"}", "chat HTTP 403: Forbidden",
+     true},
 };
 
 const char* apiHostOf(const std::string& host) {
@@ -228,20 +250,42 @@ struct ParkRig {
   }
 };
 
-void assertNotice(const ParkRig& r, const std::string& host, const char* what) {
-  const std::string& t = r.last();
-  TEST_ASSERT_TRUE_MESSAGE(t.find("says the account is out of credit") != std::string::npos, what);
-  TEST_ASSERT_TRUE_MESSAGE(t.find("Add credit on its billing page") != std::string::npos, what);
-  TEST_ASSERT_TRUE_MESSAGE(t.find("Your message was not answered.") != std::string::npos, what);
+std::string labelOf(const std::string& host) {
   const orch::ProviderSlot* ps = orch::findProviderSlot(host.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(ps && t.find(ps->label) != std::string::npos, what);   // names the provider
+  return ps ? std::string(ps->label) : host;
 }
 
-void assertShortAnswer(const ParkRig& r, const char* what) {
+void assertNotice(const ParkRig& r, const std::string& host, const char* what, bool key = false) {
   const std::string& t = r.last();
-  TEST_ASSERT_TRUE_MESSAGE(t.rfind("Your message was not answered.", 0) == 0, what);
-  TEST_ASSERT_TRUE_MESSAGE(t.find("checked again in") != std::string::npos, what);
-  TEST_ASSERT_FALSE_MESSAGE(hasNoticeWords(t), (std::string(what) + ": " + t).c_str());
+  const std::string msg = std::string(what) + ": " + t;
+  if (key) {
+    TEST_ASSERT_TRUE_MESSAGE(t.find(labelOf(host) + " rejected its key. Update it under Assistant > Models.") !=
+                                 std::string::npos,
+                             msg.c_str());
+  } else {
+    TEST_ASSERT_TRUE_MESSAGE(t.find("says the account is out of credit") != std::string::npos, msg.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(t.find("Add credit on its billing page") != std::string::npos, msg.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(t.find(labelOf(host)) != std::string::npos, msg.c_str());   // names the provider
+  }
+  TEST_ASSERT_TRUE_MESSAGE(t.find("Your message was not answered.") != std::string::npos, msg.c_str());
+  // No raw provider line ("messages HTTP 401: ...") and no "ask again": it comes back the same.
+  TEST_ASSERT_TRUE_MESSAGE(t.find("HTTP") == std::string::npos, msg.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(t.find("ask again") == std::string::npos, msg.c_str());
+}
+
+void assertShortAnswer(const ParkRig& r, const char* what, bool key = false, const std::string& host = "") {
+  const std::string& t = r.last();
+  const std::string msg = std::string(what) + ": " + t;
+  TEST_ASSERT_TRUE_MESSAGE(t.rfind("Your message was not answered.", 0) == 0, msg.c_str());
+  if (key) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(("Your message was not answered. " + labelOf(host) +
+                                      " rejected its key: update it under Assistant > Models.")
+                                         .c_str(),
+                                     t.c_str(), what);
+    return;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(t.find("checked again in") != std::string::npos, msg.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(hasNoticeWords(t), msg.c_str());
 }
 
 }  // namespace
@@ -266,24 +310,26 @@ static void test_every_refusal_shape_asks_once_and_tells_once() {
       r.turn("storm c: reply with the single word pong");
       TEST_ASSERT_EQUAL_MESSAGE(1, r.requestsTo(sh.host), what);
       TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), what);
-      assertNotice(r, sh.host, what);
+      assertNotice(r, sh.host, what, sh.key);
       orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
       const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, r.plat.ms);
       TEST_ASSERT_EQUAL_MESSAGE(1, (int)n, what);
-      TEST_ASSERT_EQUAL_MESSAGE((int)orch::ParkKind::Billing, (int)e[0].kind, what);   // parked for billing
+      TEST_ASSERT_EQUAL_MESSAGE((int)(sh.key ? orch::ParkKind::Auth : orch::ParkKind::Billing), (int)e[0].kind, what);
 
       r.turn("storm c probe: reply pong");
       TEST_ASSERT_EQUAL_MESSAGE(1, r.requestsTo(sh.host), what);   // zero requests to the parked provider
       TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);
-      assertShortAnswer(r, what);
+      assertShortAnswer(r, what, sh.key, sh.host);
 
       for (int t = 0; t < 4; t++) r.turn("hello?");
       TEST_ASSERT_EQUAL_MESSAGE(1, r.requestsTo(sh.host), what);
       TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);   // told once, answered once
       TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.unusedScript(), what);
-      int notices = 0;
-      for (const std::string& t : r.delivered) notices += hasNoticeWords(t) ? 1 : 0;
-      TEST_ASSERT_EQUAL_MESSAGE(1, notices, what);
+      if (!sh.key) {   // the storm grader's notice words: exactly one message carries them
+        int notices = 0;
+        for (const std::string& t : r.delivered) notices += hasNoticeWords(t) ? 1 : 0;
+        TEST_ASSERT_EQUAL_MESSAGE(1, notices, what);
+      }
       cases++;
     }
   }
@@ -291,54 +337,93 @@ static void test_every_refusal_shape_asks_once_and_tells_once() {
          cases);
 }
 
-// The rest of the episode: the timed re-check is the one request (refused again: no
-// word, since the owner was told and answered), an answer ends the episode (the next
-// refusal is a new episode, told once again), and a new key is a new start.
+// CUM-759, case by case: every refused-key shape (401 and 403 on each provider) on
+// every head path is one request, then nothing but the notice and one short answer over
+// five more messages. Every case is run and every failing one is named (the property
+// above stops at the first).
+static void test_every_key_refusal_on_every_path_is_one_request_then_quiet() {
+  std::string failed;
+  int cases = 0;
+  for (const Shape& sh : kShapes) {
+    if (!sh.key) continue;
+    for (Path path : kPaths) {
+      ParkRig r({sh.host}, path);
+      r.refuseNext(sh);
+      r.turn("first");
+      for (int t = 0; t < 5; t++) {
+        r.refuseNext(sh);   // whatever is asked keeps refusing (a request here is the bug)
+        r.turn("again");
+      }
+      const int requests = r.requestsTo(sh.host);
+      const int messages = (int)r.delivered.size();
+      const bool shortOk = messages >= 2 && r.delivered[1].find("rejected its key: update it under Assistant > "
+                                                                 "Models.") != std::string::npos;
+      if (requests != 1 || messages != 2 || !shortOk) {
+        char line[160];
+        snprintf(line, sizeof line, "[%s, %s: %d requests, %d messages] ", sh.name, pathName(path), requests,
+                 messages);
+        failed += line;
+      }
+      cases++;
+    }
+  }
+  TEST_ASSERT_EQUAL(18, cases);
+  TEST_ASSERT_TRUE_MESSAGE(failed.empty(), failed.c_str());
+}
+
+// The rest of the episode, out of credit and for a refused key: the timed re-check is
+// the one request (refused again: no word, since the owner was told and answered), an
+// answer ends the episode (the next refusal is a new episode, told once again), and a
+// new key is a new start (asked at once).
+static void recheckLifecycle(const Shape& sh, Path path) {
+  char what[96];
+  snprintf(what, sizeof what, "%s, %s", sh.name, pathName(path));
+  const std::string host = sh.host;
+  ParkRig r({host}, path);
+  r.refuseNext(sh);
+  r.turn();
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);
+
+  r.plat.ms += providers::kParkProbeMs - 60000;   // a minute before the re-check
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(1, r.requestsTo(host), what);
+  r.plat.ms += 60000;   // the re-check is due: one request, refused again, re-parked quietly
+  r.refuseNext(sh);
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(2, r.requestsTo(host), what);
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(2, r.requestsTo(host), what);   // parked for another whole wait
+
+  r.plat.ms += providers::kParkProbeMs;   // fixed at the provider: the re-check is answered
+  r.serveNext(host);
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(3, r.requestsTo(host), what);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("done", r.last().c_str(), what);
+  r.refuseNext(sh);   // refused again: a new episode, told once again
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(4, r.requestsTo(host), what);
+  assertNotice(r, host, what, sh.key);
+  r.turn();
+  assertShortAnswer(r, what, sh.key, host);
+  TEST_ASSERT_EQUAL_MESSAGE(4, r.requestsTo(host), what);
+
+  r.cfg.keys[host] = "sk-new-" + host;   // a new key: a new start, asked at once
+  r.refuseNext(sh);
+  r.turn();
+  TEST_ASSERT_EQUAL_MESSAGE(5, r.requestsTo(host), what);
+  assertNotice(r, host, what, sh.key);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.unusedScript(), what);
+}
+
 static void test_recheck_is_the_only_request_and_an_answer_ends_the_episode() {
   for (const char* host : kHosts) {
-    for (Path path : kPaths) {
-      char what[96];
-      snprintf(what, sizeof what, "%s, %s", host, pathName(path));
+    for (int key = 0; key < 2; key++) {
       const Shape* sh = nullptr;
       for (const Shape& s : kShapes)
-        if (std::string(s.host) == host && !sh) sh = &s;
-      ParkRig r({host}, path);
-      r.refuseNext(*sh);
-      r.turn();
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);
-
-      r.plat.ms += providers::kParkProbeMs - 60000;   // a minute before the re-check
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(1, r.requestsTo(host), what);
-      r.plat.ms += 60000;   // the re-check is due: one request, refused again, re-parked quietly
-      r.refuseNext(*sh);
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(2, r.requestsTo(host), what);
-      TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.delivered.size(), what);
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(2, r.requestsTo(host), what);   // parked for another whole wait
-
-      r.plat.ms += providers::kParkProbeMs;   // credit was added: the re-check is answered
-      r.serveNext(host);
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(3, r.requestsTo(host), what);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE("done", r.last().c_str(), what);
-      TEST_ASSERT_FALSE_MESSAGE(r.eng->headHost().empty(), what);
-      r.refuseNext(*sh);   // out of credit again: a new episode, told once again
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(4, r.requestsTo(host), what);
-      assertNotice(r, host, what);
-      r.turn();
-      assertShortAnswer(r, what);
-      TEST_ASSERT_EQUAL_MESSAGE(4, r.requestsTo(host), what);
-
-      r.cfg.keys[host] = std::string("sk-new-") + host;   // a new key: a new start
-      r.refuseNext(*sh);
-      r.turn();
-      TEST_ASSERT_EQUAL_MESSAGE(5, r.requestsTo(host), what);
-      assertNotice(r, host, what);
-      TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.unusedScript(), what);
+        if (std::string(s.host) == host && s.key == (key == 1) && !sh) sh = &s;
+      for (Path path : kPaths) recheckLifecycle(*sh, path);
     }
   }
 }
@@ -388,8 +473,9 @@ static void test_routines_carry_the_notice_never_the_short_answer() {
   }
 }
 
-// Every keyed host out of credit (two of them): no request to either; the owner
-// already heard of both. One out of credit and one paused: no request to either.
+// Every keyed host closed (two out of credit; one out of credit and one with a refused
+// key): no request to either; the owner heard of both in one message. One out of
+// credit and one paused: no request to either.
 static void test_every_keyed_host_closed_sends_nothing() {
   {
     ParkRig r({"anthropic", "openai"}, Path::Fabric);
@@ -401,7 +487,7 @@ static void test_every_keyed_host_closed_sends_nothing() {
     for (int t = 0; t < 3; t++) r.turn();
     TEST_ASSERT_EQUAL(1, r.requestsTo("anthropic"));
     TEST_ASSERT_EQUAL(1, r.requestsTo("openai"));
-    TEST_ASSERT_TRUE(LogCapture::contains("fabric: every host is out of credit or paused - no request"));
+    TEST_ASSERT_TRUE(LogCapture::contains("fabric: every host is parked or paused - no request"));
     // Both providers were told, in the one message of the turn that met them: the
     // notice names OpenAI (the turn ended there) and carries Anthropic's credit line.
     TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find("OpenAI says the account is out of credit") != std::string::npos,
@@ -410,6 +496,40 @@ static void test_every_keyed_host_closed_sends_nothing() {
                              r.delivered[0].c_str());
     TEST_ASSERT_EQUAL(2, (int)r.delivered.size());   // then one short answer, then nothing
     TEST_ASSERT_FALSE_MESSAGE(hasNoticeWords(r.delivered[1]), r.delivered[1].c_str());
+  }
+  {
+    ParkRig r({"anthropic", "openai"}, Path::Fabric);
+    const Shape* openaiKey = nullptr;
+    for (const Shape& s : kShapes)
+      if (std::string(s.name) == "openai key 401") openaiKey = &s;
+    r.refuseNext(kShapes[0]);   // anthropic out of credit, the round moves to openai: a refused key
+    r.refuseNext(*openaiKey);
+    r.turn();
+    for (int t = 0; t < 3; t++) r.turn();
+    TEST_ASSERT_EQUAL(1, r.requestsTo("anthropic"));
+    TEST_ASSERT_EQUAL(1, r.requestsTo("openai"));
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find("OpenAI rejected its key") != std::string::npos, r.delivered[0].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find("Add credit on anthropic's billing page.") != std::string::npos,
+                             r.delivered[0].c_str());
+    TEST_ASSERT_EQUAL(2, (int)r.delivered.size());
+  }
+  {   // the other way round: a refused key held at the switch, the turn ends out of credit
+    ParkRig r({"anthropic", "openai"}, Path::Fabric);
+    const Shape* antKey = nullptr;
+    for (const Shape& s : kShapes)
+      if (std::string(s.name) == "anthropic key 401") antKey = &s;
+    r.refuseNext(*antKey);
+    r.refuseNext(kShapes[3]);
+    r.turn();
+    r.turn();
+    TEST_ASSERT_EQUAL(1, r.requestsTo("anthropic"));
+    TEST_ASSERT_EQUAL(1, r.requestsTo("openai"));
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find("OpenAI says the account is out of credit") != std::string::npos,
+                             r.delivered[0].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find("Update Anthropic's key under Assistant > Models.") !=
+                                 std::string::npos,
+                             r.delivered[0].c_str());
+    TEST_ASSERT_EQUAL(2, (int)r.delivered.size());
   }
   {
     ParkRig r({"anthropic", "openai"}, Path::Fabric);
@@ -426,12 +546,15 @@ static void test_every_keyed_host_closed_sends_nothing() {
 }
 
 // Counter-tests. Another open provider still answers every message (the parked one is
-// skipped, not the turn). A refused key (401) is still asked again: a fixed key or
-// model shows at once and nothing is billed for a refused key.
-static void test_an_open_provider_answers_and_a_refused_key_is_asked_again() {
-  {
+// skipped, not the turn), out of credit or with a refused key, and a provider whose
+// key was refused is asked at once when its key changes (and answers).
+static void test_an_open_provider_answers_and_a_new_key_is_asked_at_once() {
+  for (int key = 0; key < 2; key++) {
     ParkRig r({"anthropic", "mistral"}, Path::Fabric);
-    r.refuseNext(kShapes[0]);
+    const Shape* refusal = &kShapes[0];
+    for (const Shape& s : kShapes)
+      if (key && std::string(s.name) == "anthropic key 401") refusal = &s;
+    r.refuseNext(*refusal);
     r.serveNext("mistral");
     r.turn();
     for (int t = 0; t < 3; t++) {
@@ -442,15 +565,20 @@ static void test_an_open_provider_answers_and_a_refused_key_is_asked_again() {
     TEST_ASSERT_EQUAL(4, r.requestsTo("mistral"));
     TEST_ASSERT_EQUAL_STRING("done", r.last().c_str());
   }
-  {
-    ParkRig r({"anthropic"}, Path::Fabric);
-    for (int t = 0; t < 2; t++) {
-      r.wire.http.script.push_back(
-          {"api.anthropic.com", "", 401, "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\","
-                                         "\"message\":\"invalid x-api-key\"}}"});
-      r.turn();
-    }
+  for (Path path : kPaths) {
+    ParkRig r({"anthropic"}, path);
+    const Shape* refusal = nullptr;
+    for (const Shape& s : kShapes)
+      if (std::string(s.name) == "anthropic key 401") refusal = &s;
+    r.refuseNext(*refusal);
+    r.turn();
+    r.turn();
+    TEST_ASSERT_EQUAL(1, r.requestsTo("anthropic"));
+    r.cfg.keys["anthropic"] = "sk-fixed-ant";
+    r.serveNext("anthropic");
+    r.turn();
     TEST_ASSERT_EQUAL(2, r.requestsTo("anthropic"));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("done", r.last().c_str(), pathName(path));
     TEST_ASSERT_EQUAL(0, (int)r.unusedScript());
   }
 }
@@ -458,10 +586,11 @@ static void test_an_open_provider_answers_and_a_refused_key_is_asked_again() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_refusal_shape_asks_once_and_tells_once);
+  RUN_TEST(test_every_key_refusal_on_every_path_is_one_request_then_quiet);
   RUN_TEST(test_recheck_is_the_only_request_and_an_answer_ends_the_episode);
   RUN_TEST(test_a_refusal_met_at_night_is_told_by_the_next_message_without_a_request);
   RUN_TEST(test_routines_carry_the_notice_never_the_short_answer);
   RUN_TEST(test_every_keyed_host_closed_sends_nothing);
-  RUN_TEST(test_an_open_provider_answers_and_a_refused_key_is_asked_again);
+  RUN_TEST(test_an_open_provider_answers_and_a_new_key_is_asked_at_once);
   return UNITY_END();
 }

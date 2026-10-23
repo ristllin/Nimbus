@@ -98,6 +98,15 @@ std::string parkWords(const char* provider, const ParkVerdict& v);
 // credit.", "openai refused the key.", "Paid requests are paused." ("" when open).
 std::string parkShortWords(const char* provider, const ParkVerdict& v);
 
+// The owner's words for a refused key (a 401, or a 403 for a model or endpoint), the
+// counterpart of billingNotice: "anthropic rejected its key (HTTP 401). Update it
+// under Assistant > Models; until then, openai answers." `next` "" = no other host.
+std::string keyNotice(const std::string& provider, int httpStatus, const std::string& next);
+// The one short answer to the owner's next message once the episode was told:
+// "Your message was not answered. Anthropic rejected its key: update it under
+// Assistant > Models." (`provider` is the display name.)
+std::string keyShortAnswer(const std::string& provider);
+
 // The fingerprint a park remembers its key by (32-bit FNV-1a of the key; a key
 // change ends the park). 0 for an empty key; a caller passing 0 skips the check.
 uint32_t parkKeyFingerprint(const std::string& key);
@@ -265,6 +274,17 @@ class ProviderPark {
 
 // The process-wide park every seam shares.
 ProviderPark& providerPark();
+
+// What a turn refused by a parked provider gets - out of credit or a refused key, a
+// refusal at the provider or a turn the park answered with no request because every
+// host it could use is closed: the notice the first time the episode reaches the
+// owner, then one short answer to the owner's next message, then nothing for the
+// rest of the episode. A turn the owner did not write (a routine, a wakeup) may carry
+// the notice but never takes the short answer: that is kept for the owner's own next
+// message. Takes the provider's latches (noticeDue, shortAnswerDue: shared with every
+// seam, kept across a restart); the caller sends what it says.
+enum class RefusalTurnAnswer : uint8_t { Notice, Short, Nothing };
+RefusalTurnAnswer refusalTurnAnswer(const char* provider, bool ownerWrote);
 
 // The walk a seam with several possible providers makes (the caption step, the
 // download scan): the first provider in `order` that has a key AND is open for
