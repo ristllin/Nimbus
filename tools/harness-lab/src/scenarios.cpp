@@ -397,6 +397,7 @@ void scFinishedJobs(LabRig& rig, Ctx& c) {
 storefull::Report storeFullReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scStoreFullPhotos(LabRig& rig, Ctx& c) { storefull::storeFullPhotos(rig, storeFullReport(c)); }
 void scCacheGaps(LabRig& rig, Ctx& c) { caching::cacheGaps(rig, histReport(c)); }
+void scFoldBudget(LabRig& rig, Ctx& c) { caching::foldBudget(rig, histReport(c)); }
 
 struct Scenario {
   const char* name;
@@ -445,6 +446,7 @@ const Scenario kScenarios[] = {
     {"prefs-e2e",      "a standing rule stated once rides every turn and the next day; replies carry no em dash", scPrefsE2E, false},
     {"prefs-nextday",  "a standing default stated on day N is applied on day N+1 without a reminder", scPrefsNextDay, false},
     {"cache-gaps",      "cost per turn at a fixed gap over a long history (NIMBUS_G1_GAP_S, _TURNS)", scCacheGaps, false},
+    {"fold-budget",     "one fold over a recorded long history: inside the budget, sections 2/4/5 kept", scFoldBudget, false},
 };
 
 }  // namespace

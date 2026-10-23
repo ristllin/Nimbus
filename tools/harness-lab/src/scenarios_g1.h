@@ -20,6 +20,10 @@ namespace caching {
 
 void cacheGaps(LabRig& rig, const history::Report& r);
 
+// L19-27 live: one fold over a recorded long history; the summary stays inside
+// the stated budget with the durable section headers (2, 4, 5) kept.
+void foldBudget(LabRig& rig, const history::Report& r);
+
 // Input-equivalent tokens of one usage total: what the turn cost in units of
 // uncached input tokens. `excludesCache` = the provider reports cache reads and
 // writes outside its input count (Anthropic).

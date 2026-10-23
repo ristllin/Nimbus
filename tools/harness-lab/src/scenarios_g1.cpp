@@ -7,6 +7,9 @@
 #include <thread>
 #include <vector>
 
+#include "nimbus/harness/dream.h"    // buildEpisodicDigest - the device's digest builder
+#include "nimbus/orch/compact.h"     // capSummary / kChatSummaryMax (L19-27)
+
 namespace lab {
 namespace caching {
 
@@ -117,6 +120,52 @@ void cacheGaps(LabRig& rig, const history::Report& r) {
   r.note("cache-gaps gap=" + std::to_string(gapS) + "s input-equivalent per turn: [" + series + "]");
   r.check(answered == turns, "every turn was answered (" + std::to_string(answered) + "/" +
                                  std::to_string(turns) + ")");
+}
+
+// L19-27 live: one fold on the pinned head over a recorded long history - the
+// seeded day, three weeks of it. The REAL engine runFold (the device's
+// compactTick call, minus its device-only storage) must produce a summary that
+// stays inside the stated budget (capSummary, kChatSummaryMax) and keeps the
+// durable section headers a tail-cut would have eaten (2, 4, 5).
+void foldBudget(LabRig& rig, const history::Report& r) {
+  const std::string chat = "foldleg";
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  for (int rep = 0; rep < 3; rep++) {
+    for (int i = 0; i < (int)(sizeof(kSeed) / sizeof(kSeed[0])); i++) {
+      nimbus::orch::EpisodicMessage u, a;
+      u.sessionId = chat;
+      u.role = "user";
+      u.text = kSeed[i].user;
+      a.sessionId = chat;
+      a.role = "assistant";
+      a.text = kSeed[i].assistant;
+      rows.push_back(u);
+      rows.push_back(a);
+    }
+  }
+  const std::string digest = agent::dream::buildEpisodicDigest(rows, 16384);
+  r.note("fold digest: " + std::to_string(digest.size()) + " B over " +
+         std::to_string(rows.size()) + " recorded rows");
+  std::string summary;
+  size_t produced = 0;
+  const auto res = rig.runFold(chat, "", digest, summary, &produced);
+  if (res != agent::TurnEngine::FoldResult::Ok) {
+    r.check(false, "the fold ran on the pinned head (result " + std::to_string((int)res) + ")");
+    return;
+  }
+  r.check(true, "the fold ran on the pinned head");
+  r.note("fold produced " + std::to_string(produced) + " B, kept " +
+         std::to_string(summary.size()) + " B (cap " +
+         std::to_string(nimbus::orch::kChatSummaryMax) + " B)");
+  r.check(summary.size() <= nimbus::orch::kChatSummaryMax,
+          "the kept summary stays inside the stated budget");
+  r.note("summary head: " + summary.substr(0, 400));
+  r.check(summary == nimbus::orch::capSummary(summary),
+          "capSummary keeps it whole (no re-trim, so the anchored fold re-digests from it)");
+  // Header titles, number-agnostic - the same rule capSummary's section
+  // splitter uses (a head may number or bold them differently).
+  for (const char* h : {"Pending items", "Owner intent", "Device"})
+    r.check(summary.find(h) != std::string::npos, std::string("section header kept: ") + h);
 }
 
 }  // namespace caching

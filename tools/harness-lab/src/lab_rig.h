@@ -147,6 +147,17 @@ class LabRig {
 
   // ---- the surface a scenario drives ---------------------------------------
 
+  // L19-27 live leg: the REAL engine fold - the same runFold the device's
+  // compactTick calls - over a recorded digest, minus the device-only storage
+  // (the fold-blob write-back and the chain clear live on the device). The
+  // provider call, failover ladder, metering and capSummary are identical.
+  agent::TurnEngine::FoldResult runFold(const std::string& chat,
+                                        const std::string& prevSummary,
+                                        const std::string& digest, std::string& summary,
+                                        size_t* producedBytes) {
+    return eng_->runFold(chat, prevSummary, digest, summary, producedBytes);
+  }
+
   // One owner turn, start to finish, exactly as a Telegram message would run.
   TurnRecord say(const std::string& chatId, const std::string& text) {
     resetSimHeap();   // each turn starts from the device's resting heap
