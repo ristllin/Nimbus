@@ -364,16 +364,26 @@ static void test_skills_index_names_every_approved_skill() {
   };
   std::string t = agent::skillsIndexText(es);
   TEST_ASSERT_TRUE(t.find("[SKILLS]") == 0);
-  TEST_ASSERT_TRUE(t.find("skill.get") != std::string::npos);   // the pull thread
+  TEST_ASSERT_TRUE(t.find("skill_get {id}") != std::string::npos);   // the pull thread, wire name
   TEST_ASSERT_TRUE(t.find("- deliver-pdf: Build a PDF") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("- deep-research: Multi-wave") != std::string::npos);
-  // Unapproved capsules are NOT advertised (they are inert until approved -
-  // naming them would advertise a capability that cannot fire).
-  TEST_ASSERT_TRUE(t.find("pending-one") == std::string::npos);
+  // A waiting skill is never listed as usable: it is named only in the tail line
+  // that says it is not active, so the model never reads "saved" as "active".
+  TEST_ASSERT_TRUE(t.find("- pending-one") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("(waiting for the owner's approval, not active: pending-one)") !=
+                   std::string::npos);
   // No entries at all -> no block (a bare header would be noise).
   TEST_ASSERT_EQUAL_STRING("", agent::skillsIndexText({}).c_str());
   std::vector<agent::SkillIndexEntry> onlyPending = {{"x", "y", true}};
-  TEST_ASSERT_EQUAL_STRING("", agent::skillsIndexText(onlyPending).c_str());
+  const std::string op = agent::skillsIndexText(onlyPending);
+  TEST_ASSERT_TRUE(op.find("- x:") == std::string::npos);
+  TEST_ASSERT_TRUE(op.find("not active: x") != std::string::npos);
+  // An approved skill with a proposed edit stays listed; the tail says the current
+  // version is the one that runs.
+  std::vector<agent::SkillIndexEntry> edited = {{"meal", "read before meals", false, true}};
+  const std::string ed = agent::skillsIndexText(edited);
+  TEST_ASSERT_TRUE(ed.find("- meal: read before meals") != std::string::npos);
+  TEST_ASSERT_TRUE(ed.find("edit proposed, current version runs: meal") != std::string::npos);
 }
 
 static void test_skills_index_bounds_and_names_the_overflow() {
@@ -392,7 +402,7 @@ static void test_skills_index_bounds_and_names_the_overflow() {
   std::string t2 = agent::skillsIndexText(es);
   TEST_ASSERT_TRUE_MESSAGE(t2.size() <= agent::kSkillIndexByteCap + 64,
                            "index blew its byte budget");
-  TEST_ASSERT_TRUE_MESSAGE(t2.find("more - skill.list") != std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(t2.find("more - skill_list") != std::string::npos,
                            "overflow must be NAMED, not silent");
 }
 
@@ -585,8 +595,11 @@ static void test_cum523_tool_results_name_telegram_tools_only_when_offered() {
   TEST_ASSERT_TRUE(handlers >= 30);   // the scan really saw the handlers
 }
 
+void runStoreTests();   // store.cpp: the SkillStore rules, the attach block, /skill
+
 int main(int, char**) {
   UNITY_BEGIN();
+  runStoreTests();
   RUN_TEST(test_cum523_tool_results_name_telegram_tools_only_when_offered);
   RUN_TEST(test_parse_full_front_matter);
   RUN_TEST(test_parse_defaults_inject_spawn);
