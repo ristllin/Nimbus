@@ -256,11 +256,14 @@ openai/gpt-9. Add the key under Providers & models, or ask for a model the route
 lists."* A key or custom endpoint added later on the web page applies to the next
 spawn; no restart is needed.
 
-The model id is checked against the provider's choice list (live-harvested,
-else the cold-start list); an id outside it logs `spawn model coerced` and uses
-the per-provider sub-model default when listed, else the cheapest listed model
-(above). The head's `[AVAILABLE MODELS]` line is
-built from that same list, so every model it is offered spawns as named. Deep
+The model id is checked by the device's one model check: a model in the
+provider's model store that the key can run, else (before the first fetch) the
+built-in starting list, or the provider's default. An id it refuses logs
+`spawn model coerced` and uses the per-provider sub-model default when listed,
+else the cheapest listed model (above). The head's `[AVAILABLE MODELS]` line is
+the store's short list, a subset of what the check accepts, so every model it is
+offered spawns as named; the line says how old the list is ("list from
+2026-10-22, may miss newer models"). Deep
 research models are not in any list (they cannot run the turn contract), so a
 `deep_research` skill hint runs on the provider's sub-model default with its
 always-on web search, not on a dedicated deep-research model.

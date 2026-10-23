@@ -93,7 +93,7 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
       boundaries, budget derived from the head's window) → scratchpad → recall → memory-howto
   → input: [MEMORY RESULTS] + [FRESH RESULTS] + [ACTIVE SESSIONS] + providers/models
     /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])
-  → host pick (orchHost || first of providerPriority) + per-chat conv chain
+  → host pick (resolveHeadHost: a keyed orchHost, else the first keyed provider) + per-chat conv chain
   → budget gate → head tool loop (≤8 rounds / 600 s wall clock / heap re-gate
     / byte budgets; each round's socket timeout clamped to the REMAINING budget)
       round: model → tool calls → registry dispatch (memory.*, web.search,
@@ -140,9 +140,14 @@ to 1,900 fewer input tokens per turn. It stays OFF until enabled per device;
 comparison and findings, and `tools/harness_prompt_cost.py` for the size
 measurement.
 
-Model routing: the head host comes from `orchHost` (or the first
-`providerPriority` entry); the model can switch its own host and model via the
-`orch_model` action (validated against the choice list, key required), but
+Model routing: the head host is `orchHost` while it has a key, else the first
+keyed provider in `providerPriority`, else the keyed router (Cumulo, then Z.ai),
+else any other keyed provider (`resolveHeadHost`, the one rule the screen and the
+web page also use). A pinned host whose key was removed is skipped, and the owner
+is told once; with no key anywhere every turn answers "No AI provider has a key:
+add one under Assistant > Models." without a request. The model can switch its own
+host and model via the `orch_model` action (validated by the one model check, key
+required), but
 keys, priority order and routing stay owner-only, both structurally (no setter
 exists in the config contract) and by protected-key refusal. Failover walks up
 to 2 keyed alternates; a fresh provider thread each time. A failed turn sends the

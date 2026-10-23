@@ -382,51 +382,70 @@ model defaults to a proven router model until you pick one under Assistant > Mod
 
 ## Model catalog, capabilities, and fallbacks
 
-The device builds a live, capability-aware model catalog per provider by harvesting
-each key's own `/v1/models` and classifying every model
-into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image), a size
-class (S/M/L), and capability flags. It reads capability fields where the API
+The device builds a live, capability-aware model list per provider from each key's
+own `/v1/models` (Anthropic: 100 models a page, following `has_more`) and classifies
+every model into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image),
+a size class (S/M/L), and capability flags. It reads capability fields where the API
 supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
-`capabilities`) and id-family heuristics otherwise. The Cumulo Nimbus head is
-special: it harvests the router's own `GET /router/models`, which lists exactly
-the models the router can route (priced and enabled), as `<upstream>/<model>`
-ids with a size class and the billed rates as metadata, so the Cumulo model list
-tracks the router's catalog rather than one upstream's `/v1/models`. The same verify
-keeps the billed rates (`in_micro_per_mtok` / `out_micro_per_mtok`) of the models the
-device uses - its Cumulo choice list plus the head and sub-agent models, at most 24 -
-so the Usage page prices Cumulo spend at what Cumulo bills (shown as "Cumulo price";
-a price you enter for a model still wins). They are read from the verify's own
-response, never fetched on a turn. A device with a verified Cumulo key and no stored
-router prices (for example right after an update) runs one Cumulo verify shortly
-after boot, on the same verify task, when no turn is running. The verify reads the
-first 64 KB of the router's list (about 95 KB in full): a model listed past that, or
-whose row the window cuts short, keeps no router price (the next price applies,
-never a wrong one) and is named in the log. The router
-default comes first, then one model per upstream, then a spread of the rest (a
-dated snapshot whose undated alias is listed is left out, and so is an id whose
-model part still holds a `/` after the upstream, such as
-`mistral/mistral/zai-glm-5-3`, which no upstream runs; a list or catalog an older
-build harvested and stored is read through the same rule, so the picker, the save,
-the head's model line and `GET /api/models` drop such an id at once, before the
-next verify rewrites the list). The same model name under
-two upstreams is two models; the four upstreams the device knows (OpenAI,
-Anthropic, Mistral, Z.ai) are always listed, and at most 8 others. A Virtual
-Nimbus applies the same rule to the same list. The short list behind
-the picker's Recommended group and the head's model line holds up to 12 of them;
-the full list (up to about 48) is the catalog, and the picker says when the router
-offered more than fits. The short-list harvest reads at most 128 chat models from
-the router's answer (current-generation models first), so an oversized or
-malformed list costs a bounded amount of work and logs one line. A model pick
-the device cannot run is refused with the models it accepts; the default can
-always be picked again. A one-shot cheap usability probe
-per selected model means a model your key cannot actually use never appears. The
-catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
-and stored in the device's flash (LittleFS) as a rebuildable cache that every
-verify re-harvests: a manual **Verify**, `POST /api/models/refresh`, or, with
-**Capability validation** set to Active, the scheduled re-check (default every 24
-hours; OpenAI, Anthropic and Mistral keys only). The generated
-[capability matrix](reference/capabilities-matrix.md) shows which role and feature
-each provider offers.
+`capabilities`) and id-family heuristics otherwise, and keeps what the provider says
+about each model: its display name, line (Anthropic), release date, lifecycle and an
+announced shutdown date. A model past its shutdown date is left out once the clock
+knows the date; one with a future date is kept, marked deprecated and left off the
+short list. Model ids are untrusted text: only ids of 1-64 characters from
+`[A-Za-z0-9._:/-]` are kept, and control characters are stripped from names.
+
+The Cumulo Nimbus head is special: it reads the router's own `GET /router/models`,
+which lists exactly the models the router can route (priced and enabled), as
+`<upstream>/<model>` ids with a size class and the billed rates as metadata, so the
+Cumulo model list tracks the router's catalog rather than one upstream's
+`/v1/models`. The list is about 95 KB; every list is read as a stream, one model at a
+time, so it is read whole in a few kilobytes of memory, and a list cut short (a
+dropped connection, the 20 s read deadline) is marked incomplete and never replaces
+a stored one. Every fetch writes one log line with what it read and kept. The router
+keeps one row per model: a dated snapshot whose undated alias is listed is left out,
+the dot and dash spellings of one version (`claude-opus-5.5`, `claude-opus-5-5`) are
+one model kept under the dash spelling, and the router's `:batch` price rows and ids
+whose model part still holds a `/` after the upstream (such as
+`mistral/mistral/zai-glm-5-3`, which no upstream runs) are not models the device can
+call. The router default comes first, then one model per upstream, then every
+upstream's current generation, then the rest. The same model name under two
+upstreams is two models; the four upstreams the device knows (OpenAI, Anthropic,
+Mistral, Z.ai) are always listed, and at most 8 others. A Virtual Nimbus applies the
+same rule to the same list.
+
+**The model store.** Each provider's list lives in one flash file,
+`/data/models_<provider>.txt`: a header line with the fetch time (`fetchedAt`, 0 when
+the clock was not set yet), the firmware version, how many models the provider
+listed, how many did not fit and the short list, then one line per model (about 85 B)
+with its price when the router gave one. It holds **up to 160 models and 20 KB per
+provider**; the router's whole list fits today, and a list that does not says
+"<n> more" in the picker. The short list (the picker's Recommended group and the
+head's `[AVAILABLE MODELS]` line) holds up to 8 models for a direct provider and up to
+12 (480 B) for the router, which always includes the router default. Nothing about
+the model list is kept in NVS. The same verify keeps the billed rates
+(`in_micro_per_mtok` / `out_micro_per_mtok`) of the models the device uses - its
+Cumulo short list plus the head and sub-agent models, at most 24 - so the Usage page
+prices Cumulo spend at what Cumulo bills (shown as "Cumulo price"; a price you enter
+for a model still wins). A device with a verified Cumulo key and no stored router
+prices (for example right after an update) runs one Cumulo verify shortly after
+boot, on the same verify task, when no turn is running.
+
+**One check.** Whether a model may be used is one rule, asked by the head's model
+switch, by every sub-agent spawn and by the web picker's save: a model the store
+lists that the key can run (not marked unusable by the probe, not a non-chat family,
+not past its shutdown date), else, before the first fetch, the built-in starting
+list; the provider's default model can always be picked again. So every model the
+picker or the head's model line offers is accepted, and a model pick the device
+cannot run is refused with the models it accepts. Each model in `GET /api/models`
+carries its price and where it comes from (`priceSrc`: the router's price, the
+built-in estimate, or `unknown`, shown as "price unknown"). A one-shot cheap
+usability probe per selected model means a model your key cannot actually use never
+appears. The list is served at `GET /api/models` (add `?all=1` to include
+probe-hidden models) with `fetchedAt` and `stale`, and every verify refreshes it: a
+manual **Verify**, `POST /api/models/refresh`, or, with **Capability validation** set
+to Active, the scheduled re-check (default every 24 hours; OpenAI, Anthropic and
+Mistral keys only). The generated [capability matrix](reference/capabilities-matrix.md)
+shows which role and feature each provider offers.
 
 Provider failover is a rule engine shared with the cloud (one admin-editable rule
 set): predicates match provider, model (with a trailing-`*` glob), size class,

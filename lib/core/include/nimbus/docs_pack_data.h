@@ -2280,11 +2280,14 @@ openai/gpt-9. Add the key under Providers & models, or ask for a model the route
 lists."* A key or custom endpoint added later on the web page applies to the next
 spawn; no restart is needed.
 
-The model id is checked against the provider's choice list (live-harvested,
-else the cold-start list); an id outside it logs `spawn model coerced` and uses
-the per-provider sub-model default when listed, else the cheapest listed model
-(above). The head's `[AVAILABLE MODELS]` line is
-built from that same list, so every model it is offered spawns as named. Deep
+The model id is checked by the device's one model check: a model in the
+provider's model store that the key can run, else (before the first fetch) the
+built-in starting list, or the provider's default. An id it refuses logs
+`spawn model coerced` and uses the per-provider sub-model default when listed,
+else the cheapest listed model (above). The head's `[AVAILABLE MODELS]` line is
+the store's short list, a subset of what the check accepts, so every model it is
+offered spawns as named; the line says how old the list is ("list from
+2026-10-22, may miss newer models"). Deep
 research models are not in any list (they cannot run the turn contract), so a
 `deep_research` skill hint runs on the provider's sub-model default with its
 always-on web search, not on a dedicated deep-research model.)NIMBUSDOC"},
@@ -4120,7 +4123,7 @@ one at a time:)NIMBUSDOC"},
 | 3 | static | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Delimited inside as `[OWNER PREFERENCES ...]` and framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules |
 | 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty |
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
-| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[YOUR MODEL]` (the host/model serving this turn), `[AVAILABLE MODELS]` (per-provider model lists, from the same list the spawn validator checks, so an advertised model always spawns as named), the skills index, `[PROVIDERS & CONNECTORS]`. Not counted in the budget |
+| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[YOUR MODEL]` (the host/model serving this turn), `[AVAILABLE MODELS]` (per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models"; every listed model passes the spawn and model-switch checks), the skills index, `[PROVIDERS & CONNECTORS]`. Not counted in the budget |
 | 7 | summary | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Clipped (floor 1024 B) or dropped when the static part leaves too little room |
 | 8 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
 | 9 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |

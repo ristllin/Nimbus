@@ -80,6 +80,12 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   #   chat; frozen across a restart and a full settings store; raising the ceiling over
   #   /api/orch lets the next turn run; CLOCK across the month boundary clears it quietly.
   pytest tests/hil/test_l65_spend_ceiling.py -m hil --allow-hardware
+  # The model store (lane F; lane H extends it): OTA from v4.5.14 merges the NVS short
+  #   lists into /data/models_<slug>.txt on the trial boot and erases them on the boot after
+  #   mark-valid; a verify writes the store with no NVS write; a rollback still reads the old
+  #   catalog; the Cumulo list is whole or says "more" (unit A); a keyless pinned head runs on
+  #   a keyed host (LAN mock). Phases run in order around the flashes (see the module doc).
+  pytest tests/hil/test_l50_model_refresh.py -m net --allow-hardware
 """
 
 CLOUD_BATTERY = """\

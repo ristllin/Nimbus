@@ -66,7 +66,7 @@ Rule of thumb:
 | Journal | NVS (6 slots `agjournal/j0..j5`) - the SD day-stream was PLANNED, never built | - | same NVS |
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
-| Provider model catalogs (rebuildable cache) | **LittleFS** | `/data/mcat_<provider>.json` (see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
+| Provider model lists (the model store, rebuilt by every verify) | **LittleFS** | `/data/models_<provider>.txt` (see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
 | Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Beside it in `/log`: the boot counter (`boot.n`) and the crash dedupe record (`crash.seen`). Device EVENTS are also durable via the episodic `system` timeline (kind=log); events captured before the clock syncs wait in `/mem/pending_ev.txt` | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring; held events in `/data/pending_ev.txt` |
 
 Two things **do not move**: NVS config/keys/verify are already at the

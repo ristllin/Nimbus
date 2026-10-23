@@ -40,8 +40,7 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 
 | Value | Where | Why |
 |---|---|---|
-| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (16000 B for the Cumulo router, which lists every upstream), so in NVS (~120 entries per 3800 B, nearly a whole page) four or five verified providers could exhaust it by themselves |
-| Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids; the Cumulo router list at most 12 ids and 480 B) and read on every turn |
+| Provider model list (`GET /api/models`, the short list, the model checks) | LittleFS file `/data/models_<provider>.txt` | The model store: every verify rewrites it. Up to 160 models and 20 KB per provider, about 85 B a model, with the fetch time and the short list in its header. Nothing about the model list is written to NVS (before v4.6 the short list lived in NVS as `mch_<provider>`, about 832 B on a device with five providers) |
 | Usage ledger | LittleFS file `/data/usage_ledger.txt` | Owner spend history and budgets per provider, at most 12 providers and 48 attribution rows, and always under 3,800 B (a deleted routine's rows go first, then the smallest; provider counters never). Until v4.5.13 it lived in NVS as `usgLedger`, rewritten after every turn, and on a full partition most of a month's spend was lost. The move follows the rule below. Per-model prices left it unchanged, byte for byte: everything per model lives in the files below. OpenAI's cached and cache-written tokens are split out of its input in memory and in the files below, but the ledger keeps OpenAI's input with them included and its cache fields 0, so it does not grow; the split is restored from the per-model file at boot. While flash is unmounted and the ledger is served from its legacy NVS copy, a turn adds no new (provider, tag) attribution row: spend is still counted in the provider's totals and the files below |
 | Scratchpad | LittleFS file `/data/scratchpad.bin` | The assistant's working notes. Until v4.5.13 the `orchmem` key `scratchB` (and the older `scratch`); the same rule below |
 | Mistral workspace answer | LittleFS file `/data/mistral_ws.txt` | Which Studio connectors the Mistral key's workspace lists, from the last check that landed, so a restart or a check that cannot finish keeps a confirmed connector usable. Tagged with a short SHA-256 fingerprint of the key it was learned with (never the key); read only under that key, and removed when the Mistral key changes. Written only when a fresh answer differs from the stored one. Never in NVS |
@@ -134,8 +133,16 @@ Earlier builds kept the catalogs in NVS as `mcat_<provider>`. On the first boot 
 build with the move (in either mode), each legacy catalog is copied to its file when
 the file is missing (Orchestrator mode, where flash storage is mounted) and **every
 legacy `mcat_` key is erased**. An erase only frees entries, so this heals a device
-that is completely full today. Each later verify writes the file and erases any
-leftover legacy key for that provider.
+that is completely full today.
+
+Up to v4.5.x the model list was a JSON catalog, `/data/mcat_<provider>.json`, plus
+the short list in NVS (`mch_<provider>`). On the first boot of the build with the
+model store, both are merged into `/data/models_<provider>.txt` (a model the
+catalog's size trim had lost but the short list still named is kept). The NVS short
+lists are erased on a **later** boot, once the new image has been marked valid and
+the store holds the list, so an update that rolls back still finds them. The JSON
+catalog files are never written or removed again, so a rollback to an older build
+keeps reading its catalog.
 
 **A save that does not land never answers ok.** Every `agent::store` setter returns
 whether its write landed, and every write reports to a per-task persist ledger. The
