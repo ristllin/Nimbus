@@ -610,6 +610,13 @@ class LabRig {
     };
   }
 
+  // The device's host adapters (fabric failover, Z.ai single-shot, the three
+  // loop hosts), split out of buildEngine to stay under the complexity gate.
+  void wireHosts(agent::TurnEngine::Deps& d) {
+    wireHosts(d);
+
+  }
+
   void buildEngine() {
     agent::JobEngine::Deps jd;
     jd.platform = platform();
@@ -671,8 +678,7 @@ class LabRig {
     };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
-      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] rides
-      if (ev.inputs) cur_.turnInputs = *ev.inputs;
+      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
     };
 
     d.apply.deliver = d.deliver;

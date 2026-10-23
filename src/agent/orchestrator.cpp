@@ -2046,7 +2046,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/clear - forget this conversation (keeps memory and files)\n"
                         "/mcp approve|deny <name> - approve a tool server\n"
                         "/play [track|stop|pause] - play music from the SD card\n"
-                        "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
+                        "/loop approve|deny|off|on <id> - manage a routine\n"
                         "/skill list|show <id> - see saved skills and what waits for you\n"
                         "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
                         "/skill auto on|off - may the assistant approve its own skill changes\n"
