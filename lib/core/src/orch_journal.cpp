@@ -349,7 +349,8 @@ void Journal::clearAll() {
 
 // ---- the file store ------------------------------------------------------------------
 
-std::string encodeJournalFile(const std::string (&slots)[kJournalSlots]) {
+std::string encodeJournalFile(const std::string (&slots)[kJournalSlots],
+                              const std::vector<std::string>* absorbed) {
   std::string out = "{";
   bool first = true;
   for (int s = 0; s < kJournalSlots; s++) {
@@ -361,14 +362,30 @@ std::string encodeJournalFile(const std::string (&slots)[kJournalSlots]) {
     out += "\":";
     out += slots[s];   // the record's own compact JSON
   }
+  if (absorbed && !absorbed->empty()) {
+    JsonDocument d;
+    JsonArray a = d.to<JsonArray>();
+    for (const auto& id : *absorbed) a.add(id);
+    std::string ids;   // serializeJson replaces a std::string's content: never `out` itself
+    serializeJson(d, ids);
+    if (!first) out += ',';
+    out += "\"m\":";
+    out += ids;
+  }
   out += '}';
   return out;
 }
 
-bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlots]) {
+bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlots],
+                       std::vector<std::string>* absorbed) {
   JsonDocument d;
   if (deserializeJson(d, blob) || !d.is<JsonObject>()) return false;
   std::string parsed[kJournalSlots];
+  if (absorbed) {
+    absorbed->clear();
+    for (JsonVariantConst id : d["m"].as<JsonArrayConst>())
+      if (id.is<const char*>()) absorbed->emplace_back(id.as<const char*>());
+  }
   for (JsonPairConst kv : d.as<JsonObjectConst>()) {
     char* end = nullptr;
     const long s = std::strtol(kv.key().c_str(), &end, 10);
@@ -424,12 +441,25 @@ void imageHolds(const std::string (&slots)[kJournalSlots], const JobRecord& r, b
 }
 }  // namespace
 
+bool FileJournalStore::absorbed(const std::string& jobId) const {
+  for (const auto& id : absorbed_)
+    if (id == jobId) return true;
+  return false;
+}
+
+void FileJournalStore::noteAbsorbed(const std::string& jobId) {
+  if (jobId.empty() || absorbed(jobId)) return;
+  if (absorbed_.size() >= kJournalAbsorbedKeep) absorbed_.erase(absorbed_.begin());
+  absorbed_.push_back(jobId);
+}
+
 int FileJournalStore::mergeLegacy() {
   int merged = 0;
   for (int s = 0; s < kAgentMaxJobs; s++) {
     const std::string v = io_.readLegacySlot(s);
     JobRecord r;
     if (v.empty() || !deserializeRecord(v.c_str(), r) || r.resultSeen) continue;
+    if (absorbed(r.jobId)) continue;   // taken before (it may have finished since)
     bool held = false, tagTaken = false;
     imageHolds(slots_, r, held, tagTaken);
     const int target = held ? -1 : mergeTarget(slots_);
@@ -438,6 +468,7 @@ int FileJournalStore::mergeLegacy() {
     char buf[kJournalSerializeBuf];
     if (serializeRecord(r, buf, sizeof(buf)) + 1 > sizeof(buf)) continue;
     slots_[target] = buf;
+    noteAbsorbed(r.jobId);
     merged++;
   }
   return merged;
@@ -445,20 +476,23 @@ int FileJournalStore::mergeLegacy() {
 
 JournalSource FileJournalStore::load() {
   for (auto& v : slots_) v.clear();
+  absorbed_.clear();
   std::string blob;
-  onDisk_ = io_.readFile(blob) && decodeJournalFile(blob, slots_);
+  onDisk_ = io_.readFile(blob) && decodeJournalFile(blob, slots_, &absorbed_);
   if (onDisk_) {
     if (mergeLegacy() == 0) return JournalSource::File;
-    durable_ = onDisk_ = io_.writeFileAtomic(encodeJournalFile(slots_));
+    durable_ = onDisk_ = io_.writeFileAtomic(image(slots_));
     return JournalSource::Merged;
   }
   bool any = false;
   for (int s = 0; s < kAgentMaxJobs; s++) {
     slots_[s] = io_.readLegacySlot(s);
+    JobRecord r;
+    if (!slots_[s].empty() && deserializeRecord(slots_[s].c_str(), r)) noteAbsorbed(r.jobId);
     any = any || !slots_[s].empty();
   }
   if (!any) return JournalSource::None;   // a first write creates the file
-  durable_ = onDisk_ = io_.writeFileAtomic(encodeJournalFile(slots_));
+  durable_ = onDisk_ = io_.writeFileAtomic(image(slots_));
   return JournalSource::Legacy;
 }
 
@@ -481,7 +515,7 @@ bool FileJournalStore::commit(int slot, const std::string& v) {
   if (slots_[slot] == v && onDisk_) return true;   // the file already holds it
   std::string next[kJournalSlots];
   for (int s = 0; s < kJournalSlots; s++) next[s] = s == slot ? v : slots_[s];
-  durable_ = io_.writeFileAtomic(encodeJournalFile(next));
+  durable_ = io_.writeFileAtomic(image(next));
   if (!durable_) return false;   // the file keeps its previous image (tmp + rename)
   slots_[slot] = v;
   onDisk_ = true;
@@ -494,7 +528,8 @@ bool FileJournalStore::remove(int slot) { return commit(slot, std::string()); }
 
 void FileJournalStore::clearNs() {
   std::string none[kJournalSlots];
-  durable_ = io_.writeFileAtomic(encodeJournalFile(none));
+  absorbed_.clear();   // the legacy records are erased below too
+  durable_ = io_.writeFileAtomic(image(none));
   if (durable_) {
     for (auto& v : slots_) v.clear();
     onDisk_ = true;

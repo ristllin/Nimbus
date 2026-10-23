@@ -571,7 +571,8 @@ namespace, where a full settings store refused them silently; the first boot of 
 reads them once, writes the file, and erases the NVS records on a boot whose image was
 already valid. If an earlier release ran after the file was created (a rollback, then an
 update back), a running record it left in NVS is added to the file, never dropped: that
-job may still be running and billing. The hosted instance keeps the same file under its volume
+job may still be running and billing. The file remembers which NVS records it already
+took, so the stale NVS copy of a job that has since finished never brings it back. The hosted instance keeps the same file under its volume
 (`<mem>/journal/agjournal.json`).
 
 ## 5c. SD quota and supported-card truth

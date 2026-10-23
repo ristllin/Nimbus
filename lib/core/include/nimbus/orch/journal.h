@@ -202,9 +202,15 @@ class Journal {
 // the file at once; NVS is never written again; the NVS records are erased only on a
 // boot whose image was already marked valid, once the file reads back, so a rollback to
 // v4.5.16 or earlier still finds its in-flight jobs.
-std::string encodeJournalFile(const std::string (&slots)[kJournalSlots]);
+// `absorbed` (optional, key "m"): the remote job ids already taken from the legacy NVS
+// records (see FileJournalStore::load), so a later boot never takes one of them again.
+std::string encodeJournalFile(const std::string (&slots)[kJournalSlots],
+                              const std::vector<std::string>* absorbed = nullptr);
 // False (slots untouched) when `blob` is not a journal image.
-bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlots]);
+bool decodeJournalFile(const std::string& blob, std::string (&slots)[kJournalSlots],
+                       std::vector<std::string>* absorbed = nullptr);
+// The most absorbed ids a file keeps (the newest): six per migration or merge.
+constexpr size_t kJournalAbsorbedKeep = 12;
 
 struct JournalFileIo {   // the device binds LittleFS and Preferences; tests a fake
   virtual ~JournalFileIo() = default;
@@ -227,7 +233,10 @@ class FileJournalStore : public JournalStore {
   // When both exist, a running NVS record the file does not hold (same remote job id)
   // is added to it: an earlier release wrote it after the file (a rollback, then this
   // release again), and dropping it would orphan a job that may still be billing. A tag
-  // the file already uses for another job is renumbered past every tag in either.
+  // the file already uses for another job is renumbered past every tag in either. A
+  // record the file took before (its remote id is in the file's absorbed list: the
+  // migration's own copy, which may have finished since) is never taken again, so a
+  // delivered job never comes back from its stale NVS copy.
   JournalSource load();
   // Erase the legacy NVS records when the rule allows it. True when they were erased.
   bool retireLegacy(bool imageValidAtBoot);
@@ -243,7 +252,13 @@ class FileJournalStore : public JournalStore {
   bool commit(int slot, const std::string& v);   // image with slot = v; kept on success
   int  mergeLegacy();                            // load(): running NVS records the file lacks
   JournalFileIo& io_;
+  bool absorbed(const std::string& jobId) const;
+  void noteAbsorbed(const std::string& jobId);
+  std::string image(const std::string (&slots)[kJournalSlots]) const {
+    return encodeJournalFile(slots, &absorbed_);
+  }
   std::string    slots_[kJournalSlots];
+  std::vector<std::string> absorbed_;   // remote ids taken from the legacy NVS records
   bool           durable_ = true;   // the last write landed
   bool           onDisk_ = false;   // the file holds exactly slots_
 };

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/journal.h"
@@ -644,6 +645,71 @@ static void test_journal_file_merges_records_an_earlier_release_left() {
   TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st3.load());
 }
 
+// The bench sequence (unit A, 23 Oct): the first boot moves a running job to the file;
+// the job finishes and is compacted; the NVS copy is still there (it retires only on a
+// later valid boot). The next boot must not take that stale copy again (it would
+// re-poll and re-deliver a finished job): the file remembers the remote ids it took.
+// A record the old image writes after a rollback (a new remote id) is still taken.
+static void test_journal_file_never_takes_back_a_record_it_already_took() {
+  FakeFileIo io;
+  io.legacy[0] = recJson(rec("job0000", "anthropic:sesn_A"));
+  {
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::Legacy, (int)st.load());
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(1, j.count());
+    TEST_ASSERT_TRUE(j.finish("job0000", fin("t", "", ""), JobState::Done));
+    j.gc();
+    TEST_ASSERT_EQUAL_INT(0, j.slotsUsed());
+  }
+  TEST_ASSERT_EQUAL_size_t(1, io.legacy.size());   // a trial boot: the NVS copy stays
+  {
+    FileJournalStore st(io);
+    TEST_ASSERT_EQUAL_INT((int)JournalSource::File, (int)st.load());   // not Merged
+    Journal j;
+    j.begin(&st);
+    TEST_ASSERT_EQUAL_INT(0, j.count());   // finished stays finished
+    TEST_ASSERT_TRUE(st.retireLegacy(true));
+  }
+  // A rollback: the old image runs a new job (new remote id) under the same tag.
+  io.legacy[0] = recJson(rec("job0000", "anthropic:sesn_B"));
+  FileJournalStore st(io);
+  TEST_ASSERT_EQUAL_INT((int)JournalSource::Merged, (int)st.load());
+  Journal j;
+  j.begin(&st);
+  TEST_ASSERT_EQUAL_INT(1, j.count());
+  JobRecord b{};
+  TEST_ASSERT_TRUE(j.get(0, b));
+  TEST_ASSERT_EQUAL_STRING("anthropic:sesn_B", b.jobId);
+  // The absorbed list rides the file and stays bounded.
+  std::string back[kJournalSlots];
+  std::vector<std::string> ids;
+  TEST_ASSERT_TRUE(decodeJournalFile(io.file, back, &ids));
+  TEST_ASSERT_EQUAL_size_t(2, ids.size());
+  std::vector<std::string> many;
+  for (int i = 0; i < 30; ++i) many.push_back("openai:resp_" + std::to_string(i));
+  std::string none[kJournalSlots];
+  TEST_ASSERT_TRUE(decodeJournalFile(encodeJournalFile(none, &many), back, &ids));
+  TEST_ASSERT_EQUAL_size_t(30, ids.size());   // the codec keeps what it is given ...
+  FakeFileIo cap;
+  for (int i = 0; i < 20; ++i) {   // ... the store keeps the newest kJournalAbsorbedKeep
+    cap.legacy.clear();
+    cap.legacy[0] = recJson(rec("job0001", ("openai:resp_" + std::to_string(i)).c_str()));
+    FileJournalStore c(cap);
+    c.load();
+    Journal cj;
+    cj.begin(&c);
+    JobRecord live{};
+    TEST_ASSERT_TRUE(cj.get(0, live));   // its tag may have been renumbered
+    cj.finish(live.tag, fin("t", "", ""), JobState::Done);
+    cj.gc();
+  }
+  TEST_ASSERT_TRUE(decodeJournalFile(cap.file, back, &ids));
+  TEST_ASSERT_EQUAL_size_t(kJournalAbsorbedKeep, ids.size());
+  TEST_ASSERT_EQUAL_STRING("openai:resp_19", ids.back().c_str());
+}
+
 // A write the file system refuses leaves the previous image whole and reports false;
 // an unchanged slot already on disk needs no write.
 static void test_journal_file_write_is_atomic_and_reports() {
@@ -887,6 +953,7 @@ int main() {
   RUN_TEST(test_journal_file_migration_legs);
   RUN_TEST(test_journal_file_write_is_atomic_and_reports);
   RUN_TEST(test_journal_file_merges_records_an_earlier_release_left);
+  RUN_TEST(test_journal_file_never_takes_back_a_record_it_already_took);
   RUN_TEST(test_finished_ring_keeps_the_last_eight_across_a_restart);
   RUN_TEST(test_a_finished_job_is_never_active_after_any_restart);
   RUN_TEST(test_without_the_finished_entry_a_restart_resurrects_the_job);
