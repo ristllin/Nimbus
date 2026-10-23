@@ -100,6 +100,13 @@ StepErr classifyStepError(const std::string& err, int* httpStatus = nullptr);
 // "timeout: ..." - the one timeout token every head uses (shared isTimeout).
 bool isTimeoutError(const std::string& err);
 
+// The error of a turn the park answered with no request: every host it could use is
+// parked for billing ("parked: anthropic is out of credit (HTTP 402); no request
+// sent"). classifyStepError reads it as Billing (the cause the owner hears), and it
+// never feeds the park (nothing was answered, so the re-check time stays as it was).
+std::string parkedRefusalError(const std::string& host, int httpStatus);
+bool isParkedRefusal(const std::string& err);
+
 // The owner-facing cause of a failed step in plain words: "anthropic says the
 // account is out of credit (HTTP 400)", "mistral did not answer in time".
 std::string stepErrCause(StepErr k, const std::string& host, int httpStatus);

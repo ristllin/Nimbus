@@ -19,6 +19,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 Provider failures, spend and long reports:
 
+- **Out of credit means no paid requests until it is fixed.** When every provider you have a key for is out of credit, your next messages make no request at all: you are told once what happened and where to add credit, the next message gets one short line saying it was not answered and when the provider is checked again, and later messages wait quietly. The check every 30 minutes, or a new key, is the only request until then. Before, each message asked the provider again and repeated the out-of-credit message.
 - **An out-of-credit provider is set aside everywhere.** When a provider refuses for credit or rejects its key, every part of the device stops asking it: replies, background helpers, memory, photo descriptions, speech and the download check. It is asked again after 30 minutes or when its key changes, and you are told once. This now holds across a restart, so a restart no longer costs one more refused request or a second message.
 - **One message when a turn fails.** A failed turn used to send a "switching to" message for each provider it tried and then a failure message. It now sends one message that names the first cause, says when your message was not answered, and lists what the turn had already done.
 - **A daily spend warning.** Each provider warns you once a day when its spend passes 5 USD or three times your usual day, whichever is larger (or the limit you set for it).

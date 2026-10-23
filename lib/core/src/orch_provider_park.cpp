@@ -164,7 +164,7 @@ ProviderPark::Rec* ProviderPark::ensure(const char* provider) {
 }
 
 void ProviderPark::dropIfEmpty(Rec& r) {
-  if (r.kind == ParkKind::None && !r.noticed && !r.warnedDay && !r.paused) r = Rec();
+  if (r.kind == ParkKind::None && !r.noticed && !r.answered && !r.warnedDay && !r.paused) r = Rec();
 }
 
 void ProviderPark::endEpisode(Rec& r) {
@@ -175,6 +175,7 @@ void ProviderPark::endEpisode(Rec& r) {
   r.sinceEpoch = 0;
   r.probing = false;
   r.noticed = false;
+  r.answered = false;
 }
 
 void ProviderPark::loadLocked(uint32_t nowMs) {
@@ -362,10 +363,34 @@ void ProviderPark::episodeEnd(const char* provider) {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(clockNow());
   Rec* r = find(provider);
-  if (!r || !r->noticed) return;
+  if (!r || (!r->noticed && !r->answered)) return;
   r->noticed = false;
+  r->answered = false;
   dropIfEmpty(*r);
   saveLocked();
+}
+
+bool ProviderPark::shortAnswerDue(const char* provider) {
+  if (!validName(provider)) return false;   // an unnamed provider cannot be latched: say nothing more
+  FlushOnExit flushAfter{*this};   // after the lock below is released
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(clockNow());
+  Rec* r = ensure(provider);
+  if (r->answered) return false;
+  r->answered = true;
+  r->noticed = true;   // the short answer follows the notice: never the other way round
+  saveLocked();
+  return true;
+}
+
+uint32_t ProviderPark::recheckInMs(const char* provider) {
+  if (!validName(provider)) return 0;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  const uint32_t now = clockNow();
+  loadLocked(now);
+  const Rec* r = find(provider);
+  if (!r || r->kind == ParkKind::None || r->probing || laterOrEqual(now, r->recheckAtMs)) return 0;
+  return r->recheckAtMs - now;
 }
 
 bool ProviderPark::dailyWarningDue(const char* provider, uint32_t dayKey) {
@@ -404,6 +429,7 @@ size_t ProviderPark::snapshot(ParkEntry* out, size_t cap, uint32_t nowMs) {
     e.sinceEpoch = r.sinceEpoch;
     e.probing = r.probing;
     e.noticed = r.noticed;
+    e.answered = r.answered;
     e.warnedDay = r.warnedDay;
     e.paused = (uint8_t)(r.paused | pausedAll_);
   }
@@ -414,12 +440,14 @@ size_t ProviderPark::snapshot(ParkEntry* out, size_t cap, uint32_t nowMs) {
 //   <provider> <kind> <status> <seamMask> <recheckInS> <recheckEpoch> <sinceEpoch> <noticed> <warnedDay> <keyFp hex>
 // recheckEpoch is the wall-clock re-check time when the clock is known (0 = not);
 // recheckInS is the relative wait, used when either clock is unknown at load.
+// <noticed> is 0 (not told), 1 (told) or 2 (told, and the one short answer to a
+// refused turn went out): an older image reads any non-zero value as "told".
 std::string ProviderPark::serialize(uint32_t nowMs) const {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   std::string out = "PK1\n";
   const uint32_t epoch = epochNow();
   for (const Rec& r : recs()) {
-    if (!r.provider[0] || (r.kind == ParkKind::None && !r.noticed && !r.warnedDay)) continue;
+    if (!r.provider[0] || (r.kind == ParkKind::None && !r.noticed && !r.answered && !r.warnedDay)) continue;
     uint32_t inS = 0;
     if (r.kind != ParkKind::None && !r.probing && !laterOrEqual(nowMs, r.recheckAtMs))
       inS = (r.recheckAtMs - nowMs + 999u) / 1000u;
@@ -427,7 +455,7 @@ std::string ProviderPark::serialize(uint32_t nowMs) const {
     std::snprintf(line, sizeof(line), "%s %u %d %u %lu %lu %lu %u %lu %08lx\n", r.provider, (unsigned)r.kind,
                   r.httpStatus, (unsigned)r.seamMask, (unsigned long)inS,
                   (unsigned long)(epoch && inS ? epoch + inS : 0u), (unsigned long)r.sinceEpoch,
-                  r.noticed ? 1u : 0u, (unsigned long)r.warnedDay, (unsigned long)r.keyFp);
+                  r.answered ? 2u : (r.noticed ? 1u : 0u), (unsigned long)r.warnedDay, (unsigned long)r.keyFp);
     out += line;
   }
   return out;
@@ -486,6 +514,7 @@ bool ProviderPark::deserialize(const std::string& blob, uint32_t nowMs) {
     r.recheckAtMs = nowMs + leftAfterRestart(sr, epoch) * 1000u;
     r.sinceEpoch = (uint32_t)sr.since;
     r.noticed = sr.noticed != 0;
+    r.answered = sr.noticed >= 2;
     r.warnedDay = (uint32_t)sr.warned;
     r.keyFp = (uint32_t)sr.fp;
   }
@@ -546,6 +575,12 @@ ProviderPick pickOpenProvider(const std::vector<std::string>& order,
 
 bool billingNoticeDue(const char* provider) { return providerPark().noticeDue(provider); }
 void billingEpisodeEnd(const char* provider) { providerPark().episodeEnd(provider); }
+
+BillingTurnAnswer billingTurnAnswer(const char* provider, bool ownerWrote) {
+  if (providerPark().noticeDue(provider)) return BillingTurnAnswer::Notice;
+  if (ownerWrote && providerPark().shortAnswerDue(provider)) return BillingTurnAnswer::Short;
+  return BillingTurnAnswer::Nothing;
+}
 
 }  // namespace orch
 }  // namespace nimbus

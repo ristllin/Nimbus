@@ -62,7 +62,7 @@ Rule of thumb:
 | Telegram archive (every message and file in or out, full size) | **SD** | `/mem/tg/<chat>/<day>/` raw JSON, media and `index.jsonl` ([memory.md, section 4](memory.md#4-the-telegram-archive-sd-card)) | not kept (SD only) |
 | Scratchpad (goal tiers) | **LittleFS** | `/data/scratchpad.bin` (~4 KB; the `orchmem` NVS copy until v4.5.14) | unchanged |
 | Usage ledger (spend and budgets) | **LittleFS** | `/data/usage_ledger.txt` (the `usgLedger` NVS key until v4.5.14) | unchanged |
-| Provider park (out-of-credit and refused-key parks, their re-check times, the once-per-episode billing notice and the daily spend warning, per provider) | **LittleFS** | `/data/provpark.txt` (a few lines; rewritten whole on every change) | unchanged |
+| Provider park (out-of-credit and refused-key parks, their re-check times, the once-per-episode billing notice and its one short answer, and the daily spend warning, per provider) | **LittleFS** | `/data/provpark.txt` (a few lines; rewritten whole on every change) | unchanged |
 | Sub-agent journal (running helpers and the last 8 finished) | **LittleFS** | `/data/agjournal.json` (the `agjournal` NVS slots `j0..j5` until v4.5.16; see [the sub-agent journal](#the-sub-agent-journal)) | unchanged |
 | Managed-agent ids (Anthropic environment and agent map) | **LittleFS** | `/data/ant_env.txt`, `/data/ant_agents.txt` (the `antEnv` and `antAgents` NVS keys until v4.5.16) | unchanged |
 | Routines | **LittleFS** | `/data/loops.json` (written atomically; a routine fires only after its next slot was saved) | unchanged |

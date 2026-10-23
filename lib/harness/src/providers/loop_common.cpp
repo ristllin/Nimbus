@@ -302,6 +302,32 @@ bool testStatusOverride(const std::string& host, int& status, std::string& body)
 }
 #endif
 
+namespace {
+// With every host of a turn closed: the one to ask anyway (the first closed by a
+// refused key, or one whose re-check fell due since the first walk: asking the park
+// again here is what hands that host its one probe), else `count`; and the first
+// closed for credit, which names the refusal when nothing is asked.
+struct ClosedPick {
+  size_t ask;
+  size_t billing;
+  int billingStatus = 0;
+};
+ClosedPick pickWhenAllClosed(const ProviderDeps& pd, const std::vector<std::string>& hostList, size_t count) {
+  ClosedPick pick{count, count};
+  for (size_t i = 0; i < count; i++) {
+    HostPark why;
+    if (!hostParked(pd, hostList[i], &why)) return ClosedPick{i, count};   // its re-check is due now
+    if (why.paused) continue;
+    if (why.kind != orch::StepErr::Billing) return ClosedPick{i, count};   // a refused key
+    if (pick.billing >= count) {
+      pick.billing = i;
+      pick.billingStatus = why.httpStatus;
+    }
+  }
+  return pick;
+}
+}  // namespace
+
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
                    std::string& outJson, std::string& err, const HeadTools& ht,
@@ -353,28 +379,33 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
 
   // A parked head (a billing or key refusal learned on any seam) is not asked again:
   // the turn starts on the first host that is open - no request, retry or notice
-  // spent on it. When every host is closed the first one closed by a refusal is
-  // tried anyway (the provider decides; the owner was already told) - but a PAUSED
-  // host is never asked (the pause switch: the owner's pause, the spend ceiling).
+  // spent on it. When every host is closed, only one closed by a refused KEY is
+  // tried anyway (a fixed key or model shows at once; the owner was already told). A
+  // host out of credit is never asked outside its timed re-check: with no other host
+  // the turn ends with no request and the park's billing cause (zero requests to a
+  // parked provider). A PAUSED host is never asked at all (the pause switch: the
+  // owner's pause, the spend ceiling).
   auto nextUnparked = [&](size_t from) -> size_t {
     for (size_t i = from; i < hostCount; i++)
       if (!hostParked(pd, hostList[i])) return i;
     return hostCount;
   };
-  auto firstUnpaused = [&]() -> size_t {
-    for (size_t i = 0; i < hostCount; i++) {
-      HostPark why;
-      if (!hostParked(pd, hostList[i], &why) || !why.paused) return i;
-    }
-    return hostCount;
-  };
   size_t hostIdx = nextUnparked(0);
-  if (hostIdx >= hostCount) hostIdx = firstUnpaused();
   if (hostIdx >= hostCount) {
-    err = "paused: paid requests to " + hostList[0] + " are paused";
-    hlog::logf("fabric: every host is paused - no request");
-    if (ht.onStepError) ht.onStepError(hostList[0], err);
-    return false;
+    const ClosedPick pick = pickWhenAllClosed(pd, hostList, hostCount);
+    hostIdx = pick.ask;
+    if (hostIdx >= hostCount) {
+      const size_t named = pick.billing < hostCount ? pick.billing : 0;
+      if (pick.billing < hostCount) {
+        err = orch::parkedRefusalError(hostList[named], pick.billingStatus);
+        hlog::logf("fabric: every host is out of credit or paused - no request (%s parked)", hostList[named].c_str());
+      } else {
+        err = "paused: paid requests to " + hostList[0] + " are paused";
+        hlog::logf("fabric: every host is paused - no request");
+      }
+      if (ht.onStepError) ht.onStepError(hostList[named], err);
+      return false;
+    }
   }
   int    switches = 0;
   const int kMaxSwitches = 2;

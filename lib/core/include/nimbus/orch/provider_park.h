@@ -35,7 +35,8 @@
 // changed key is a new start: the park and its notice latch end at once.
 //
 // Durable: the parks, their re-check times (wall clock when known), the notice
-// latch and the daily spend-warning latch are saved to a flash file on every change
+// latch (with its one short answer) and the daily spend-warning latch are saved to a
+// flash file on every change
 // (the device registers the storage; never NVS). The pause switch is RAM only: the
 // lane that pauses keeps its own durable state and re-applies the pause at boot.
 namespace nimbus {
@@ -124,6 +125,7 @@ struct ParkEntry {
   uint32_t sinceEpoch = 0;     // when it parked, wall clock (0 = unknown)
   bool     probing = false;    // the re-check request is out
   bool     noticed = false;    // the owner was told this episode
+  bool     answered = false;   // ...and the one short answer to a refused turn went out
   uint32_t warnedDay = 0;      // the last day the daily spend warning went out
   uint8_t  paused = 0;         // the pause switch's causes
 };
@@ -177,6 +179,14 @@ class ProviderPark {
   // true exactly once until the episode ends (noteSuccess, a key change).
   bool noticeDue(const char* provider);
   void episodeEnd(const char* provider);
+  // After that notice, one short answer to an owner turn refused for the same
+  // episode (the turn the park answered with no request, or a re-check refused
+  // again): true exactly once until the episode ends; every later refused turn of
+  // the episode is answered with nothing. Saved with the notice latch.
+  bool shortAnswerDue(const char* provider);
+  // How long until the provider's re-check request (0 when it is due, or when the
+  // provider is not parked). Reads only: it never hands out the probe.
+  uint32_t recheckInMs(const char* provider);
 
   // One daily spend warning per provider per day: true once for `dayKey`.
   bool dailyWarningDue(const char* provider, uint32_t dayKey);
@@ -209,6 +219,7 @@ class ProviderPark {
     bool     probing = false;
     uint32_t probeUntilMs = 0;   // the probe's lease ends (probing only)
     bool     noticed = false;
+    bool     answered = false;   // the episode's one short answer went out (implies noticed)
     uint32_t warnedDay = 0;
     uint8_t  paused = 0;
   };

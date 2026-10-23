@@ -136,13 +136,21 @@ StepErr classifyHttpStatus(int status, const std::string& text) {
 
 bool isTimeoutError(const std::string& err) { return err.rfind("timeout:", 0) == 0; }
 
+std::string parkedRefusalError(const std::string& host, int httpStatus) {
+  std::string e = "parked: " + host + " is out of credit";
+  if (httpStatus > 0) e += " (HTTP " + std::to_string(httpStatus) + ")";
+  return e + "; no request sent";
+}
+
+bool isParkedRefusal(const std::string& err) { return err.rfind("parked:", 0) == 0; }
+
 StepErr classifyStepError(const std::string& err, int* httpStatus) {
   const int st = httpStatusIn(err);
   if (httpStatus) *httpStatus = st;
   // The device's own lines, by their leading token.
   static const struct { const char* prefix; StepErr kind; } kDevice[] = {
       {"unsent:", StepErr::Unsent},     {"paused:", StepErr::Paused}, {"low memory", StepErr::LowMemory},
-      {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport},
+      {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport}, {"parked:", StepErr::Billing},
   };
   for (const auto& d : kDevice)
     if (err.rfind(d.prefix, 0) == 0) return d.kind;

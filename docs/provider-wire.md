@@ -232,8 +232,11 @@ Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A
 **parked** host is skipped at the start of later turns - no request, retry or
 notice spent on it - until its key changes, a request there succeeds, or 30
-minutes pass (then one probe request). With every host closed the first one closed
-by a refusal is asked anyway; a **paused** host is never asked.
+minutes pass (then one probe request). With every host closed, only a host closed
+by a refused key is asked anyway (a fixed key or model shows at once). A host out
+of credit gets no request outside that timed probe: the turn ends with no request
+(`parked: <host> is out of credit (HTTP <status>); no request sent`, typed Billing)
+and the owner reply below. A **paused** host is never asked.
 
 **One park per provider, for every paid seam.** The park
 (`lib/core/include/nimbus/orch/provider_park.h`) is shared by the chat head, the
@@ -252,6 +255,19 @@ provider (or every provider) off every seam until the cause that set it lifts it
 the spend ceiling uses it; the pause itself is not saved by the park (its owner
 re-applies it at boot). The health report's **Providers** row lists every closed
 provider and when it is checked again.
+
+**Out of credit: told once, answered once, then quiet.** A turn that fails for
+billing - the provider refused, or the park ended it with no request - follows one
+rule per episode, on every path (`orch::billingTurnAnswer`): the first time the
+episode reaches the owner they get the notice ("That didn't finish - Anthropic says
+the account is out of credit. Add credit on its billing page, or switch providers.
+Your message was not answered."); the next refused turn gets one short answer that
+names no cause again ("Your message was not answered. Anthropic is checked again in
+27 minutes, and replies resume when it accepts requests."); every later refused turn
+of the episode gets nothing. Both latches live in the park record (the notice latch
+is shared with the embedding, caption and other seams) and survive a restart; an
+answered probe or a new key ends the episode. A quiet background turn holds its
+words and takes neither latch, so the next attended turn tells the owner.
 
 The owner hears **one message per failed turn**: a switch notice raised while the
 turn runs is held, and a turn that fails folds it into its final notice (a billing
@@ -297,8 +313,10 @@ per-host loops could not carry a turn across providers.)
    starts on the first alternate that is not parked, and the next turn's
    `[FALLBACK]` note names the head it started past), a parked alternate is
    never a failover target, and the billing notice is told once per episode on
-   every path. With every host parked the head is asked anyway. The context fold
-   skips parked hosts the same way, and its answers and failures feed the park.
+   every path. With no open alternate a head closed by a refused key is asked
+   anyway; a head out of credit (or paused) gets no request and the turn ends with
+   the park's cause. The context fold skips parked hosts the same way, and its
+   answers and failures feed the park.
    Failover notices are held and folded into the one final notice like the
    fabric's.
 5. Provider switches always start a fresh provider-side thread; continuity

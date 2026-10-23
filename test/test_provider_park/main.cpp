@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -477,15 +479,199 @@ static void test_paused_fabric_sends_nothing() {
   TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, nullptr, nullptr));
   TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
   TEST_ASSERT_EQUAL((int)orch::StepErr::Paused, (int)orch::classifyStepError(err));
-  // A parked head with an open alternate is still started past; a paused one with
-  // only parked alternates is never asked "anyway".
+  // A paused head with only an alternate out of credit: neither is asked "anyway"
+  // (lane PARK: zero requests to a parked provider). The turn ends with the park's
+  // billing cause, naming the provider out of credit, and nothing is re-parked.
   providerPark().resume(orch::kPauseAllProviders, orch::kPauseSpendCeiling);
   providerPark().pause("anthropic", orch::kPauseOwner);
   providerPark().park("openai", PaidSeam::Chat, orch::parkKeyFingerprint("sk-fake-oai"), ParkKind::Billing, 429, 1);
-  d.http.script.push_back({"api.openai.com", "", 429, kCreditExhausted});
+  const uint32_t recheckBefore = providerPark().recheckInMs("openai");
   TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, nullptr, nullptr));
-  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());   // the parked one, tried anyway; never the paused head
+  TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE_MESSAGE(orch::isParkedRefusal(err), err.c_str());
+  TEST_ASSERT_EQUAL((int)orch::StepErr::Billing, (int)orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL_STRING("parked: openai is out of credit (HTTP 429); no request sent", err.c_str());
+  TEST_ASSERT_TRUE(providerPark().recheckInMs("openai") <= recheckBefore);   // the wait was not re-armed
+  // Counter-test: a host closed by a refused KEY is still asked anyway (a fixed key or
+  // model shows at once), never the paused head.
+  providerPark().forgetParks(2);
+  providerPark().park("openai", PaidSeam::Chat, orch::parkKeyFingerprint("sk-fake-oai"), ParkKind::Auth, 401, 3);
+  d.http.script.push_back({"api.openai.com", "", 401, "{\"error\":{\"message\":\"invalid key\"}}"});
+  TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, nullptr, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
   TEST_ASSERT_EQUAL_STRING("api.openai.com", d.http.seen[0].host.c_str());
+  providerPark().resume("anthropic", orch::kPauseOwner);
+}
+
+// Lane PARK: every billing refusal (each recorded message, in each provider's own error
+// envelope), on every one of the fabric's hosts as the only host of the turn: once
+// parked, later turns send nothing to it until its re-check, which is exactly one
+// request; a new key is a new start.
+struct BillingAnswer {
+  int status;
+  const char* message;
+};
+const BillingAnswer kBillingAnswers[] = {
+    {400, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing."},
+    {429, "You exceeded your current quota, please check your plan and billing details."},
+    {429, "You have no credits remaining. Add credits to continue using the API."},
+    {402, "Payment Required"},
+};
+static std::string billingBody(const std::string& host, const char* message) {
+  if (host == "mistral") return std::string("{\"message\":\"") + message + "\"}";
+  return std::string("{\"error\":{\"message\":\"") + message + "\"}}";
+}
+
+static void test_fabric_never_asks_a_host_out_of_credit_outside_its_recheck() {
+  struct Host { const char* name; const char* api; };
+  const Host hosts[] = {{"anthropic", "api.anthropic.com"}, {"openai", "api.openai.com"}, {"mistral", "api.mistral.ai"}};
+  int cases = 0;
+  for (const Host& h : hosts) {
+    for (const BillingAnswer& ba : kBillingAnswers) {
+      const std::string body = billingBody(h.name, ba.message);
+      const Refusal r{ba.status, body.c_str(), true, true};
+      providerPark().clear();
+      FakeProviderDeps d;
+      providers::ProviderDeps pd = d.contract();
+      FakeProviderDeps::ToolRig rig;
+      d.fillTools(rig);
+      std::string out, err;
+      char what[192];
+      snprintf(what, sizeof what, "%s: HTTP %d %s", h.name, r.status, r.body);
+      d.http.script.push_back({h.api, "", r.status, r.body});
+      TEST_ASSERT_FALSE_MESSAGE(providers::runFabricLoop(pd, {h.name}, "S", "U", out, err, rig.ht, nullptr, nullptr),
+                                what);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)d.http.seen.size(), what);
+      for (int t = 0; t < 3; t++) {
+        TEST_ASSERT_FALSE_MESSAGE(providers::runFabricLoop(pd, {h.name}, "S", "U", out, err, rig.ht, nullptr, nullptr),
+                                  what);
+        TEST_ASSERT_TRUE_MESSAGE(orch::isParkedRefusal(err), what);
+      }
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)d.http.seen.size(), what);   // zero requests to the parked host
+      d.now += providers::kParkProbeMs;   // the re-check: one request
+      d.http.script.push_back({h.api, "", r.status, r.body});
+      TEST_ASSERT_FALSE_MESSAGE(providers::runFabricLoop(pd, {h.name}, "S", "U", out, err, rig.ht, nullptr, nullptr),
+                                what);
+      TEST_ASSERT_FALSE_MESSAGE(providers::runFabricLoop(pd, {h.name}, "S", "U", out, err, rig.ht, nullptr, nullptr),
+                                what);
+      TEST_ASSERT_EQUAL_MESSAGE(2, (int)d.http.seen.size(), what);
+      d.keys[h.name] = std::string("sk-new-") + h.name;   // a new key: asked at once
+      d.http.script.push_back({h.api, "", r.status, r.body});
+      providers::runFabricLoop(pd, {h.name}, "S", "U", out, err, rig.ht, nullptr, nullptr);
+      TEST_ASSERT_EQUAL_MESSAGE(3, (int)d.http.seen.size(), what);
+      cases++;
+    }
+  }
+  printf("property: %d (host, billing refusal) cases, zero requests while parked, one per re-check\n", cases);
+}
+
+// ---- 6. told once: the notice, then one short answer, kept across a restart ------------
+
+// The owner's view of one billing episode: the notice, then one short answer to a
+// refused turn, then nothing, whatever seam or path asks; an answer or a new key
+// ends the episode and both latches with it.
+static void test_billing_turn_answer_is_notice_then_short_then_nothing() {
+  providerPark().park("anthropic", PaidSeam::Chat, kFp, ParkKind::Billing, 402, 1000);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("anthropic", true));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("anthropic", true));
+  for (int i = 0; i < 5; i++)
+    TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Nothing, (int)orch::billingTurnAnswer("anthropic", true));
+  TEST_ASSERT_FALSE(orch::billingNoticeDue("anthropic"));   // the embedding seam stays quiet too
+  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+  TEST_ASSERT_EQUAL(1, (int)providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, 1001));
+  TEST_ASSERT_TRUE(e[0].noticed);
+  TEST_ASSERT_TRUE(e[0].answered);
+  // A turn the owner did not write (a routine) never takes the short answer.
+  providerPark().park("mistral", PaidSeam::Chat, kFp, ParkKind::Billing, 402, 1000);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("mistral", false));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Nothing, (int)orch::billingTurnAnswer("mistral", false));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("mistral", true));
+  // Another provider's episode is its own.
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("openai", true));
+  // An answer ends the episode: notice, short answer, nothing again.
+  const uint32_t due = 1000 + orch::ProviderPark::kRecheckMs;
+  TEST_ASSERT_TRUE(providerPark().available("anthropic", PaidSeam::Chat, kFp, due).probe);
+  TEST_ASSERT_TRUE(providerPark().noteSuccess("anthropic", PaidSeam::Chat));
+  providerPark().park("anthropic", PaidSeam::Chat, kFp, ParkKind::Billing, 402, due + 10);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("anthropic", true));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("anthropic", true));
+  // A new key ends it too.
+  TEST_ASSERT_TRUE(providerPark().available("anthropic", PaidSeam::Chat, kFp + 1, due + 20).keyChanged);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("anthropic", true));
+  // The bench's clean slate ends it.
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("anthropic", true));
+  providerPark().forgetParks(due + 30);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("anthropic", true));
+}
+
+// A restart in the middle of the episode neither repeats the notice nor the short
+// answer (the file keeps both), and an image that predates the short answer reads
+// the saved value as "told" (its file format is unchanged: 10 fields per record).
+static void test_short_answer_survives_a_restart_and_old_images_read_it() {
+  FakeFlash f;
+  f.epoch = 1760000000;
+  f.now = 5000;
+  providerPark().setStorage(f.storage());
+  providerPark().park("anthropic", PaidSeam::Chat, kFp, ParkKind::Billing, 400, 5000);
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Notice, (int)orch::billingTurnAnswer("anthropic", true));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("anthropic", true));
+  TEST_ASSERT_TRUE_MESSAGE(f.blob.find("anthropic 1 400 255 ") == 4, f.blob.c_str());
+  unsigned kind = 0, mask = 0, noticed = 9;
+  int status = 0;
+  unsigned long inS = 0, ep = 0, since = 0, warned = 0, fp = 0;
+  char prov[16] = {};
+  TEST_ASSERT_EQUAL(10, std::sscanf(f.blob.c_str() + 4, "%15s %u %d %u %lu %lu %lu %u %lu %lx", prov, &kind, &status,
+                                    &mask, &inS, &ep, &since, &noticed, &warned, &fp));
+  TEST_ASSERT_EQUAL(2, (int)noticed);   // told, and answered once: non-zero, so an older image reads "told"
+  f.epoch += 60;
+  reboot(f, 2000);
+  TEST_ASSERT_FALSE(open("anthropic", PaidSeam::Chat, 2000));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Nothing, (int)orch::billingTurnAnswer("anthropic", true));
+  // A file an older image wrote (told, value 1): the short answer is still due once.
+  providerPark().clear();
+  TEST_ASSERT_TRUE(providerPark().deserialize("PK1\nopenai 1 429 255 600 0 0 1 0 00001234\n", 2000));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Short, (int)orch::billingTurnAnswer("openai", true));
+  TEST_ASSERT_EQUAL((int)orch::BillingTurnAnswer::Nothing, (int)orch::billingTurnAnswer("openai", true));
+}
+
+// The wait the short answer names is read without handing out the re-check request.
+static void test_recheck_in_reads_without_taking_the_probe() {
+  providerPark().park("mistral", PaidSeam::Chat, kFp, ParkKind::Billing, 402, 1000);
+  TEST_ASSERT_EQUAL(0u, providerPark().recheckInMs("openai"));   // not parked
+  TEST_ASSERT_TRUE(providerPark().available("mistral", PaidSeam::Chat, kFp, 1000 + 4 * 60000).open == false);
+  const uint32_t left = providerPark().recheckInMs("mistral");
+  TEST_ASSERT_EQUAL(orch::ProviderPark::kRecheckMs - 4 * 60000, left);
+  TEST_ASSERT_FALSE(providerPark().available("mistral", PaidSeam::Chat, kFp, 1000 + orch::ProviderPark::kRecheckMs - 1).open);
+  TEST_ASSERT_EQUAL(1u, providerPark().recheckInMs("mistral"));
+  // Due: the read says 0 and the next question still gets the probe.
+  TEST_ASSERT_FALSE(providerPark().available("mistral", PaidSeam::Chat, kFp, 1000 + orch::ProviderPark::kRecheckMs - 1).probe);
+}
+
+// The short answer, for every provider and every wait: it says the message went
+// unanswered and when the provider is asked again, and carries none of the words the
+// notice did (credit, billing, quota, payment, paused, plan): one notice per episode.
+static void test_short_answer_words_carry_no_second_notice() {
+  const char* const words[] = {"credit", "billing", "quota", "payment", "paused", "plan"};
+  int cases = 0;
+  for (const char* label : {"Anthropic", "OpenAI", "Mistral", "Z.ai", "Cumulo Nimbus", "your custom endpoint"}) {
+    for (uint32_t min = 0; min <= 31; min++) {
+      const std::string t = orch::billingShortAnswer(label, min * 60000u);
+      std::string low;
+      for (char c : t) low += (char)std::tolower((unsigned char)c);
+      for (const char* w : words) TEST_ASSERT_TRUE_MESSAGE(low.find(w) == std::string::npos, t.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(t.rfind("Your message was not answered.", 0) == 0, t.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(t.find(label) != std::string::npos, t.c_str());
+      for (unsigned char c : t) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c < 0x7f, t.c_str());   // plain ASCII
+      cases++;
+    }
+  }
+  TEST_ASSERT_EQUAL_STRING("Your message was not answered. Anthropic is checked again in 27 minutes, and replies "
+                           "resume when it accepts requests.",
+                           orch::billingShortAnswer("Anthropic", 26 * 60000 + 1).c_str());
+  TEST_ASSERT_EQUAL_STRING("Your message was not answered. Mistral is checked again in a minute, and replies resume "
+                           "when it accepts requests.",
+                           orch::billingShortAnswer("Mistral", 30000).c_str());
+  printf("property: %d (provider, wait) short answers, none a second notice\n", cases);
 }
 
 // Every harness request feeds the park: a sub-agent dispatch refused for billing
@@ -554,6 +740,11 @@ int main(int, char**) {
   RUN_TEST(test_rate_limit_on_one_seam_parks_nothing);
   RUN_TEST(test_spawn_refused_when_every_provider_is_closed);
   RUN_TEST(test_paused_fabric_sends_nothing);
+  RUN_TEST(test_fabric_never_asks_a_host_out_of_credit_outside_its_recheck);
+  RUN_TEST(test_billing_turn_answer_is_notice_then_short_then_nothing);
+  RUN_TEST(test_short_answer_survives_a_restart_and_old_images_read_it);
+  RUN_TEST(test_recheck_in_reads_without_taking_the_probe);
+  RUN_TEST(test_short_answer_words_carry_no_second_notice);
   RUN_TEST(test_sub_dispatch_refusal_parks_for_every_seam);
   return UNITY_END();
 }

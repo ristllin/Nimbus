@@ -101,7 +101,14 @@ struct Rig {
   std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
 
+  // The billing latches live in the one process-wide park: every rig starts a fresh
+  // episode (a billing refusal is told once per episode, then answered once, then not).
+  static void freshBillingEpisodes() {
+    for (const char* h : {"anthropic", "openai", "mistral"}) orch::billingEpisodeEnd(h);
+  }
+
   Rig() {
+    freshBillingEpisodes();
     auto deliverFn = [this](const std::string& c, const std::string& t) { delivered.push_back({c, t}); };
     JobEngine::Deps jd;
     jd.platform = plat.contract();
@@ -269,8 +276,10 @@ static void test_quiet_turn_notice_count_zero_on_every_failure_path() {
     owner.eng->handleMessage("hello", "Roy", "1001");
     snprintf(msg, sizeof msg, "owner turn lost its failure notice (%s)", f.name);
     TEST_ASSERT_TRUE_MESSAGE(owner.delivered.size() >= 1, msg);
-    // The quiet flag never outlives the turn: the owner's next failure is told.
+    // The quiet flag never outlives the turn: the owner's next failure is told (on a
+    // fresh billing episode: the other rigs above took this process's latch).
     script(q, f);
+    Rig::freshBillingEpisodes();
     q.eng->handleMessage("hello again", "Roy", "1001");
     TEST_ASSERT_TRUE(q.delivered.size() >= 1);
   }

@@ -234,8 +234,10 @@ nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 // The park is the Chat seam of the one per-provider park (nimbus/orch/provider_park.h):
 // a refusal learned on any seam (embeddings, the caption step, a spawn, speech, the
 // download scan) parks the host here too, and the state is kept on flash across a
-// restart. A PAUSED host (the pause switch: the owner, the spend ceiling) is never
-// asked at all, not even when every host is closed.
+// restart. When every host of a turn is closed, only a host closed by a refused key
+// is asked anyway: a host out of credit gets no request outside its re-check (the
+// turn ends with parkedRefusalError), and a PAUSED host (the pause switch: the
+// owner, the spend ceiling) is never asked at all.
 inline constexpr uint32_t kParkProbeMs = nimbus::orch::ProviderPark::kRecheckMs;
 // Why a host is parked (hostParked). kind None = not parked; kind Paused = the pause
 // switch holds it (`paused` = its causes, provider_park.h PauseCause).

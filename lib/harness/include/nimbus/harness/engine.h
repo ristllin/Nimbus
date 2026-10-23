@@ -456,6 +456,11 @@ class TurnEngine {
   // folded notices.
   void deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
                       const std::string& advice, bool nothingRan);
+  // Lane PARK: the reply to a turn that failed for billing at `host` (a refusal, or
+  // the park's refusal with no request): the notice once per episode, then one short
+  // answer, then nothing (orch::billingTurnAnswer).
+  void deliverBillingFailure(const std::string& chatId, const std::string& host, int activeJobs,
+                             bool nothingRan);
   // Lane L: an answer that was not applied (cut or unreadable) but whose
   // salvaged text claims sub-agents: the ledger line and the head's note, as
   // apply gives a promise without a spawn.

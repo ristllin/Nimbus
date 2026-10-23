@@ -1,5 +1,6 @@
 #pragma once
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -79,6 +80,28 @@ inline bool isBillingRefusal(int status, const std::string& text) {
 bool billingNoticeDue(const char* provider);
 // The episode is over: the next refusal at this provider notices again.
 void billingEpisodeEnd(const char* provider);
+
+// What a turn refused for billing gets (a refusal at the provider, or a turn the park
+// answered with no request because every host it could use is parked for billing):
+// the notice the first time the episode reaches the owner, then one short answer to
+// the owner's next message, then nothing for the rest of the episode. A turn the
+// owner did not write (a routine, a wakeup) may carry the notice but never takes the
+// short answer: that is kept for the owner's own next message. Takes the latches
+// (shared with every seam, kept across a restart); the caller sends what it says.
+enum class BillingTurnAnswer : uint8_t { Notice, Short, Nothing };
+BillingTurnAnswer billingTurnAnswer(const char* provider, bool ownerWrote);
+
+// The short answer: no cause and no next step again (the notice said both), only
+// that the message went unanswered and when the provider is asked again.
+// `provider` is the display name, `recheckInMs` the wait (0 = not known).
+inline std::string billingShortAnswer(const std::string& provider, uint32_t recheckInMs) {
+  if (recheckInMs == 0)
+    return "Your message was not answered. Replies resume when " + provider + " accepts requests again.";
+  const uint32_t min = (recheckInMs + 59999u) / 60000u;
+  const std::string when = min <= 1 ? std::string("in a minute") : "in " + std::to_string(min) + " minutes";
+  return "Your message was not answered. " + provider + " is checked again " + when +
+         ", and replies resume when it accepts requests.";
+}
 
 // The owner-facing words for a billing refusal, plain and with the one next step.
 // `next` is the provider the turn moves to ("" = none).

@@ -15,6 +15,7 @@
 
 #include "nimbus/mem_cap.h"              // utf8CapLen - the owner notice's cause cap
 #include "nimbus/orch/billing_refusal.h"  // billingNoticeDue / billingNotice - one notice per episode
+#include "nimbus/orch/provider_park.h"     // recheckInMs - the wait the short billing answer names
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
 #include "nimbus/orch/models_tool.h"     // R5: the [AVAILABLE MODELS] pointer line
@@ -273,7 +274,7 @@ std::string convMapSet(std::string raw, const std::string& chat,
 TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) {}
 
 void ProviderHosts::noteFailed(const std::string& host, const std::string& err) const {
-  if (!failed) return;
+  if (!failed || nimbus::orch::isParkedRefusal(err)) return;   // no request was answered
   int status = 0;
   const nimbus::orch::StepErr kind = nimbus::orch::classifyStepError(err, &status);
   failed(host, kind, status);
@@ -344,9 +345,47 @@ void TurnEngine::deliverFailure(const std::string& chatId, const std::string& he
     if (!work.empty()) text += " " + work;
   }
   text += " " + afterFailure(activeJobs, advice);
+  // Every held credit line names a provider this turn LEFT (no path returns to a host
+  // it switched away from), never the one the final notice names, and its latch was
+  // taken when it was held: it always rides along, or that provider is never told.
   const std::string fold = foldHeldNotices();
-  if (!fold.empty() && text.find("Add credit") == std::string::npos) text += " " + fold;
+  if (!fold.empty()) text += " " + fold;
   deliver(chatId, text);
+}
+
+// Lane PARK (storm leg c): a turn that failed for billing - refused at the provider, or
+// ended by the park with no request because every host it could use is out of credit
+// - tells the owner once per episode, the notice with the next step; the owner's next
+// such message gets one short answer naming no cause again; every later one of the
+// episode gets nothing (the owner was told, and the park's timed re-check or a new key
+// is what changes it). A routine or wakeup may carry the notice, never the short
+// answer. The latches are the park's, shared with every seam and kept on flash. A
+// quiet turn holds its words and takes no latch (deliver holds them).
+void TurnEngine::deliverBillingFailure(const std::string& chatId, const std::string& host, int activeJobs,
+                                       bool nothingRan) {
+  const std::string notice = "That didn't finish - " + providerLabel(host) +
+                             " says the account is out of credit. Add credit on its billing page, or "
+                             "switch providers.";
+  if (holdingNotices()) {
+    deliverFailure(chatId, notice, activeJobs, "", nothingRan);
+    return;
+  }
+  const bool ownerWrote = turnSource_ == TurnSource::Owner || turnSource_ == TurnSource::Serial;
+  const orch::BillingTurnAnswer answer = orch::billingTurnAnswer(host.c_str(), ownerWrote);
+  if (answer == orch::BillingTurnAnswer::Notice) {
+    deliverFailure(chatId, notice, activeJobs, "", nothingRan);
+    return;
+  }
+  // Another provider's new episode met in this turn still reaches the owner.
+  const std::string fold = foldHeldNotices();
+  if (answer == orch::BillingTurnAnswer::Short) {
+    const std::string text =
+        orch::billingShortAnswer(providerLabel(host), orch::providerPark().recheckInMs(host.c_str()));
+    deliver(chatId, fold.empty() ? text : text + " " + fold);
+    return;
+  }
+  hlog::logf("orchestrator: %s is out of credit and the owner was told this episode - no reply", host.c_str());
+  if (!fold.empty()) deliver(chatId, fold);
 }
 
 void TurnEngine::emitHead(uint8_t ringStatus) {
@@ -1431,13 +1470,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     pendingFallbackMs_ = nowMs();
   };
   // Lane K's park on the single-shot path (the fabric does this inside its loop): a
-  // head that refused for billing or auth earlier this boot is not asked again; the
-  // turn starts on the first alternate that is not parked, and the next turn's
-  // [FALLBACK] note names the head it started past. With every host parked the head
-  // is asked anyway (the provider decides; the owner was already told).
-  auto startPastParkedHead = [&]() {
+  // head that refused for billing or auth is not asked again; the turn starts on the
+  // first alternate that is not parked, and the next turn's [FALLBACK] note names the
+  // head it started past. With no open alternate only a head closed by a refused key
+  // is asked anyway (a fixed key or model shows at once). A head out of credit, or
+  // paused, gets no request: the turn ends here with the park's cause (true).
+  auto startPastParkedHead = [&]() -> bool {
     providers::HostPark why;
-    if (!d_.hosts.isParked(host, &why)) return;
+    if (!d_.hosts.isParked(host, &why)) return false;
     for (const std::string& alt : fallbackOrder(errorClassOf(why.kind), /*needFabric=*/false)) {
       if (d_.hosts.isParked(alt)) continue;
       hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
@@ -1449,8 +1489,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       host = alt;
       convId = "";
       convContinued = false;
-      return;
+      return false;
     }
+    if (why.kind == orch::StepErr::Auth) return false;   // a refused key: asked anyway
+    err = why.kind == orch::StepErr::Paused ? "paused: paid requests to " + host + " are paused"
+                                            : orch::parkedRefusalError(host, why.httpStatus);
+    hlog::logf("orchestrator: %s is parked (%s) and no other host is open - no request",
+               host.c_str(), orch::stepErrSlug(why.kind));
+    tf.chain.note(host, err);
+    return true;
   };
   if (fabricOn) {
     std::vector<std::string> hostList{host};
@@ -1489,8 +1536,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         });
     convId = "";   // stateless loops keep no provider-side conversation
   } else {
-    startPastParkedHead();
-    ok = runTurnHost(host, convId);
+    ok = !startPastParkedHead() && runTurnHost(host, convId);
   }
   // Retry/failover ONLY when no loop tool executed: a replay re-runs the whole tool
   // loop, duplicating side effects (memory writes, spawns). Once tools ran, a failed
@@ -1524,7 +1570,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // of this request (its content, key, account or model) comes back identical.
   const orch::StepErr errKind = ok ? orch::StepErr::None : orch::classifyStepError(err);
   const bool noRetry = !ok && !orch::fabricRuleFor(errKind).retrySameHost;
-  if (noRetry && !timedOut && !fabricOn && *loopDispatched == 0 && !isLowMem(err))
+  if (noRetry && !timedOut && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !orch::isParkedRefusal(err))
     hlog::logf("orchestrator: %s refused the request (%s) - no same-host retry", host.c_str(),
                orch::stepErrSlug(errKind));
   if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !noRetry) {   // one same-host retry on a fresh conversation
@@ -1641,10 +1687,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return false;
     }
     // A billing refusal is not a rate limit (OpenAI's "no credits" comes as a
-    // 429): waiting never helps, credit does.
+    // 429): waiting never helps, credit does. Told once per episode (lane PARK),
+    // whether the provider refused or the park ended the turn with no request.
     if (orch::classifyStepError(err) == orch::StepErr::Billing) {
-      deliverFailure(chatId, "That didn't finish - the provider says the account is out of credit. "
-                             "Add credit on its billing page, or switch providers.", activeJobs, "", nothingRan);
+      const orch::FailStep* last = tf.chain.last();
+      const bool named = last && last->host != orch::FailureChain::kDeviceHost && !last->host.empty();
+      deliverBillingFailure(chatId, named ? last->host : host, activeJobs, nothingRan);
       fireTurnEnd(false, 0);
       return false;
     }
