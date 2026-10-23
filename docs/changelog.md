@@ -6,7 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
-## Unreleased
+## v4.6.0 - Cheaper replies, honest failures, and a spend ceiling
+
+The wave of work after the October storm: conversations are cached the way providers
+bill them, so slow chats cost less; a failing provider is asked once, not on every
+message; albums and repeated messages get one reply; and a monthly spend ceiling is on
+by default. Everything below is what changed, grouped by where you see it.
 
 Cheaper, faster replies (the prompt and its cache, reworked):
 
@@ -42,6 +47,8 @@ Cheaper, faster replies (the prompt and its cache, reworked):
   nothing to say leaves a record of it (its trigger row, tagged, with the
   spend), and the scheduled-task preamble separates the two cases: when silence
   is right, and when the owner must see one short line.
+
+Photos and messages:
 
 - **Albums are answered once.** Several photos sent together get one reply that covers every photo, in the order sent, with the caption on the right photo. Before, each photo got its own reply, out of order, and a question sent right after an album could be answered before the last photos were looked at ("I didn't receive the third image"). A text sent right after the album joins the same reply; a voice note keeps its place among your messages.
 - **A photo is never lost to a restart.** A photo used to be marked as received before it was looked at, so a restart at that moment lost it. Now nothing is marked received until its reply is done, and a photo that keeps crashing the device is skipped after the second restart (the rest of your message is still answered) with one message asking you to send it again.
@@ -128,8 +135,6 @@ Models:
 - **What the picker offers is accepted.** Switching models from a chat, starting a helper and saving a model on the web page now use one check, so a model the device lists (Claude Sonnet 5.5, for example) is never refused by another part of it. The built-in starting lists now name current models, including Claude Haiku 5.5 and GPT-5.6 Sol.
 - **A model you chose keeps working.** A helper started with no model named runs the helper model you chose, also on Cumulo when it was saved without its "openai/" prefix (it used to run the cheapest model on the list). If a provider's list stops naming a model you chose, it keeps running and you are told once. OpenAI's gpt-5.6, which OpenAI answers but does not list, is accepted.
 - **A provider whose key you removed is skipped.** When the provider set as the assistant has no key, the device answers on a provider that has one and tells you once, instead of failing with a rejected-key message. With no key anywhere it says "No AI provider has a key: add one under Assistant > Models." instead of "Done."
-
-Models and questions:
 
 - **The assistant looks up current models itself.** It asks the device for a provider's model list when it needs a model id, instead of carrying every list in every message, so each message is smaller. A switch to a model the saved list does not have says so, with the list's date, and a fresh list is fetched after the turn.
 - **Model dropdowns refresh when you open them.** Opening a model dropdown shows the saved list at once, fetches a fresh one and then says "Updated" with the time. Each list is also refreshed weekly and after an update, and no provider's list is fetched more than once an hour.
