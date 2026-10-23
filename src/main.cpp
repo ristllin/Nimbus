@@ -79,6 +79,8 @@
 #include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
 #include "sys/tls_arbiter.h"
 #include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
+#include "sys/sd_dma_bounce.h"   // the card's reserved DMA buffer (before the mount)
+#include "nimbus/sd_recovery.h"     // the owner's one notice per memory-card outage
 #include "hw/hal_status.h"
 #include "hw/tft_out.h"      // colour touch panel (screenModel=tft)
 #include "hw/touch_input.h"  // taps -> the same gestures the encoder makes
@@ -887,6 +889,22 @@ static bool orchSendSink(const String& chatId, const String& text) {
     return true;
   }
   return agent::telegram::send(chatId, text);
+}
+
+// The owner's one notice per memory-card outage (sd_recovery.h decides when): the owner
+// chat on Telegram and the web chat, as the other device notices go. Runs on the poll
+// task (stagedWorkRun): never silent, and never a card-lock wait on the main loop.
+static void sendSdOutageNotice() {
+  const std::string text = nimbus::sdOutageNotice();
+  const String owner = agent::orchestrator::firstAllowedChat();
+  const bool tg = owner.length() && agent::telegram::send(owner, String(text.c_str()), /*block=*/false);
+  agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()),
+                                "", "ev:sd");
+  {
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    agent::deliverToWebChat(g_webChat, text, /*routine=*/true);
+  }
+  agent::alogf("memory: owner told the card is not answering (telegram %s)", tg ? "queued" : "not queued");
 }
 
 // Lane DEF: the monthly spend ceiling's owner notices (the poll task). Telegram goes to
@@ -3111,12 +3129,26 @@ static void otaEventHook(int ev, const char* a, const char* b) {
 // between the task's own work, never inside a turn, one per cycle.
 static bool stagedWorkPending() {
   return otaupd::onPollPending() ||
-         (g_orchMode && (agent::memory::embedDrainDue() || agent::vision::idleDue()));
+         (g_orchMode && (agent::memory::sdOutageNoticeDue(millis()) || agent::memory::sdRecoveryDue() ||
+                         agent::memory::embedDrainDue() || agent::vision::idleDue()));
 }
+// The memory card's outage notice and recovery step (a remount once memory is back, or
+// writing what it refused during an outage) go before the embedding drain, whose stores
+// land on the card. The notice writes a history row and so may wait for the card lock,
+// which the watched main loop must never do.
 static void stagedWorkRun() {
-  if (otaupd::onPollPending()) otaupd::runOnPoll();
-  else if (g_orchMode && agent::memory::embedDrainDue()) agent::memory::drainPendingStep();
-  else if (g_orchMode) agent::vision::idleStep();   // R1: an upload's deletion or a photo's record
+  if (otaupd::onPollPending()) {
+    otaupd::runOnPoll();
+  } else if (g_orchMode && agent::memory::sdOutageNoticeDue(millis())) {
+    agent::memory::sdOutageNoticeSent(millis());
+    sendSdOutageNotice();
+  } else if (g_orchMode && agent::memory::sdRecoveryDue()) {
+    agent::memory::sdRecoveryStep();
+  } else if (g_orchMode && agent::memory::embedDrainDue()) {
+    agent::memory::drainPendingStep();
+  } else if (g_orchMode) {
+    agent::vision::idleStep();   // R1: an upload's deletion or a photo's record
+  }
 }
 
 static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
@@ -3347,6 +3379,11 @@ void setup() {
   if (g_unsupportedScreenModel)
     Serial.println("[disp] scrModel=eink is unsupported (e-ink removed) - running the color panel");
   g_screenIsTft = true;   // the only supported display
+  // Reserve the card's DMA buffer while internal memory is plentiful, before the first
+  // card transfer (solide::begin() mounts the card first): without it every transfer
+  // allocates its own and the card drops out when internal memory runs short
+  // (src/sys/sd_dma_bounce.h). Logged at the mount below.
+  nimbus::sdbounce::reserve();
   g_hal = solide::begin({/*tft=*/true});  // per-subsystem health for STATUS/api-state
   // Publish it solide-free so the web + agent layers can read peripheral health
   // without depending on <solide/solide.h> (P5: /api/health, system.health tool,
@@ -3834,9 +3871,12 @@ void setup() {
     // The durable log's storage is ready: flush the boot's early backlog to the card
     // (both modes; memory::begin() attaches LittleFS instead when there is no card).
     nimbus::errlog::attachStorage(solide::storage::activeFs(), true);
-    agent::alogf("[sd] mounted: %llu MB total, %llu MB free",
+    const nimbus::sdbounce::Stats bs = nimbus::sdbounce::stats();
+    agent::alogf("[sd] mounted: %llu MB total, %llu MB free (DMA buffer %u B; card transfers so far: "
+                 "%u through it, %u direct, %u on the driver's own buffer)",
                  (unsigned long long)solide::storage::cardSizeMB(),
-                 (unsigned long long)solide::storage::freeMB());
+                 (unsigned long long)solide::storage::freeMB(), (unsigned)bs.reserved,
+                 (unsigned)bs.bounced, (unsigned)bs.direct, (unsigned)bs.fallback);
   } else {
     // cardType 0 (CARD_NONE) means the card never answered on the bus at all ->
     // NOT a format issue (an exFAT card would still report its type; only the FAT
@@ -6221,8 +6261,8 @@ void loop() {
 
   // SD graceful degradation: an adaptive liveness probe demotes the memory tier
   // when a card that was present at boot vanishes (cold joint / pull) and promotes
-  // it back on recovery - all WITHOUT a reboot (episodic appends fall to the RAM
-  // ring, vectors re-cap). The tick self-rate-limits; the edge drives the cue.
+  // it back on recovery - all WITHOUT a reboot (episodic appends are held and written
+  // once it answers, vectors re-cap). The tick self-rate-limits; the edge drives the cue.
   {
     static bool s_prevSdLost = false;
     agent::memory::tickSdHealth(now);

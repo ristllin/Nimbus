@@ -272,36 +272,78 @@ std::vector<EpisodicSession> AppendLogEpisodicStore::sessions(const std::string&
 }
 
 // ---- messages ---------------------------------------------------------------
-void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
-  std::string line = encodeEpisodicLine(m);
-  uint32_t dayNum = m.tsHours / 24;
-  long off = fs_.append(dayFile(dayNum), line + "\n");
-  if (off < 0) {
-    // FS append failed (mid-op SD loss): DON'T index a record we couldn't durably
-    // write, but keep it in the RAM recent-window so the current conversation's
-    // working set survives the vanished card (older on-disk history is what
-    // degrades). unpersisted_ > 0 also signals the device to demote the SD tier.
-    unpersisted_++;
-    maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
-    recent_.push_back(cacheOf(m));
-    if ((int)recent_.size() > recentCap_)
-      recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
-    return;
-  }
+AppendLogEpisodicStore::IdxRec AppendLogEpisodicStore::recordOf(const EpisodicMessage& m) {
   IdxRec r;
   r.tsHours = m.tsHours;
-  r.dayNum = dayNum;
-  r.offset = (uint32_t)off;
-  r.len = (uint32_t)line.size();
+  r.dayNum = m.tsHours / 24;
   r.idSfx = epiIdSuffix(m.id);
   r.kind = m.kind;
   r.sessionId = ps(m.sessionId);
   r.blobHash = ps(blobHashOf(m.blobPath));
+  return r;
+}
+
+void AppendLogEpisodicStore::holdRow(const EpisodicMessage& m, const std::string& line) {
+  // DON'T index a record we couldn't durably write, but keep it in the RAM
+  // recent-window so the current conversation's working set survives the vanished
+  // card, and hold its line for flushHeld(). unpersisted_ > 0 also signals the
+  // device to demote the SD tier.
+  unpersisted_++;
+  maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
+  recent_.push_back(cacheOf(m));
+  if ((int)recent_.size() > recentCap_)
+    recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
+  if ((int)held_.size() >= kHeldMaxRows) {   // bounded: the oldest held row goes, counted
+    held_.erase(held_.begin());
+    heldDropped_++;
+    unpersisted_--;   // no longer waiting for the card: unpersisted_ counts the held rows
+  }
+  held_.push_back(HeldRow{ps(line), recordOf(m)});
+}
+
+void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
+  std::string line = encodeEpisodicLine(m);
+  if (!held_.empty()) {
+    // Rows are waiting for the card: queue behind them so the day-streams keep the
+    // arrival order, then move a few (a refused move is the demote signal).
+    holdRow(m, line);
+    lastAppendOk_ = flushHeld(kInlineFlushRows) > 0;
+    return;
+  }
+  long off = fs_.append(dayFile(m.tsHours / 24), line + "\n");
+  lastAppendOk_ = off >= 0;
+  if (off < 0) {   // FS append failed (mid-op SD loss)
+    holdRow(m, line);
+    return;
+  }
+  IdxRec r = recordOf(m);
+  r.offset = (uint32_t)off;
+  r.len = (uint32_t)line.size();
   index_.push_back(r);
   maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
   recent_.push_back(cacheOf(m));
   if ((int)recent_.size() > recentCap_)
     recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
+}
+
+int AppendLogEpisodicStore::flushHeld(int maxRows) {
+  // The held rows are already in the recent window, in arrival order, and nothing
+  // was indexed after the first of them (addMessage queues behind them), so writing
+  // them oldest first keeps the ring the index's newest rows, in the same order.
+  int written = 0;
+  while (written < maxRows && !held_.empty()) {
+    HeldRow& h = held_.front();
+    const long off = fs_.append(dayFile(h.rec.dayNum), st(h.line) + "\n");
+    if (off < 0) break;
+    IdxRec r = std::move(h.rec);
+    r.offset = (uint32_t)off;
+    r.len = (uint32_t)h.line.size();
+    index_.push_back(std::move(r));
+    held_.erase(held_.begin());
+    if (unpersisted_ > 0) unpersisted_--;
+    written++;
+  }
+  return written;
 }
 
 bool AppendLogEpisodicStore::indexRowPasses(const MsgQuery& q, const IdxRec& r,

@@ -447,7 +447,7 @@ existing SD-first/LittleFS-fallback `loadBlob`; episodic replays the old
 | Subsystem | Degraded behavior |
 |---|---|
 | VDB | working set in PSRAM (or internal); durable to LittleFS **hard-capped ≈400 vecs** + score eviction. Closes the unbounded-flash bug. |
-| Episodic | no-card-AT-BOOT: in-RAM 500-ring + LittleFS whole-blob. ⚠ a MID-RUN demote keeps the append-log (256-ring, nothing persists until promote) (as before). |
+| Episodic | no-card-AT-BOOT: in-RAM 500-ring + LittleFS whole-blob. A MID-RUN demote keeps the append-log: new rows stay queryable in the RAM ring and are held, then written to the card in arrival order once it answers (see 5a). |
 | Media | **refused**, not degraded (since v3.7.0): an inbound photo or document is not downloaded: sent on its own it gets a plain reply asking the sender to describe it in words, and inside a message or an album the turn names it as not kept ("no memory card in the device"). Media on internal flash would compete with the firmware's own OTA slots for a 3.5 MB partition, and one phone photo can be a sixth of it. Voice notes still transcribe (the audio is transient); only the durable copy is skipped. |
 | Files (artifact store) | **unavailable**: `artifact.save` fails with a legible reason and the listing reports `present:false`. |
 | Tenants (roles + quotas) | fully functional - the table lives on **internal flash**, not the card, so losing a card never drops everyone's role. |
@@ -482,6 +482,38 @@ able to start regardless of how much it has written.**
 (`totalBytes-usedBytes`) before each write; below a floor it stops accepting new vectors
 and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
 `memory::flashFull()` and `/api/mem/stats` report the paused state.
+
+## 5a. When the card stops answering mid-run
+
+A card that was mounted at boot can stop answering later: a pull or a cold joint, and,
+until v4.6.0, internal memory running short (the storm suite's low-memory leg, 22 and 23
+Oct 2026). The device keeps working and loses nothing:
+
+- **Card transfers never allocate.** FATFS keeps its buffers in PSRAM on this build and the
+  S3 SDMMC host can only DMA internal memory, so the IDF driver used to allocate a 512 B
+  internal DMA buffer for every card transfer and failed with `not enough mem` when internal
+  memory was short. One sector-sized DMA buffer is now reserved at boot, before the card
+  mounts, and every such transfer goes through it (`src/sys/sd_dma_bounce.cpp`, link-time
+  wrappers around `sdmmc_read_sectors`/`sdmmc_write_sectors`).
+- **Demote and promote.** Two failed card writes or probes demote the tier (no restart); the
+  probe tries the card every 4 s while it is lost and two answers promote it back.
+- **Held writes.** History rows the card refused stay queryable in the RAM ring and are held,
+  oldest first; after the promote they are written in arrival order, a few with each new row
+  and the rest in bounded steps on the Telegram task between turns. Vectors whose persist
+  failed are written again once per recovery. Two things still lose held rows: a restart
+  before the card answers, and an outage long enough to hold more than 512 rows (the oldest
+  go first, counted in the log line that reports the flush).
+- **Remount.** A card still lost once internal memory has recovered (4 KB DMA block, 16 KB
+  internal free) is remounted, at most once a minute, on the Telegram task, never on the main
+  loop. A remount under low memory is never tried: it can leave the card unmounted.
+- **The owner hears once.** An outage that outlasts 20 s sends one notice (Telegram owner chat
+  and the web chat); a card that keeps dropping is told about at most once every 6 h. The
+  device screen and the web page show the live state the whole time.
+
+Bench legs: `tests/hil/test_l70_sd_low_memory.py` holds internal memory down with the console
+ballast and loads the network, then checks that the card neither runs out of memory nor
+demotes; a second leg fails every card write (`FAULT sd_io`) and checks one owner notice, a
+remount, the promote, and the held rows on the card after a restart.
 
 ## 5b. Implementation status
 

@@ -162,8 +162,8 @@ bool sdMissingWithData();
 
 // SD graceful degradation (the HIL test spec). A card present at boot can
 // vanish mid-run; the subsystem degrades to no-card behaviour WITHOUT a reboot and
-// recovers when the card answers again - no data loss (episodic appends fall back
-// to the RAM ring; vectors re-cap). sdLost(): the card was mounted at begin() but
+// recovers when the card answers again - no data loss (episodic appends are held in
+// the RAM ring and written once the card answers; vectors re-cap). sdLost(): the card was mounted at begin() but
 // is currently unusable (demoted). tickSdHealth(): call from the main loop - an
 // adaptive liveness probe that drives promote (and idle demote); watch the sdLost()
 // edge for the user-facing CTA. noteSdIoResult(): fed by real SD writes for
@@ -174,6 +174,17 @@ void noteSdIoResult(bool ok);
 void demoteSd();
 bool promoteSd();
 bool forceSdProbe();   // test/console: one immediate probe+note (bypasses the cadence gate)
+
+// SD outage recovery. What the card refused while it was lost (history rows, the
+// vectors) is held and written once it answers; a card still lost once internal memory
+// has recovered is remounted (at most once a minute). sdRecoveryDue() is cheap and
+// lock-free (the Telegram task's idle wait polls it); sdRecoveryStep() runs one bounded
+// step on that task between turns, never on the main loop. sdOutageNoticeDue(): the
+// owner's one notice per outage is due now (main.cpp sends it, then sdOutageNoticeSent()).
+bool sdRecoveryDue();
+void sdRecoveryStep();
+bool sdOutageNoticeDue(uint32_t nowMs);
+void sdOutageNoticeSent(uint32_t nowMs);
 
 // Append one battery telemetry row to the SD discharge log (/mem/battery/d<N>.jsonl,
 // day-partitioned). SD-gated (no-op with no card / while demoted). The caller logs

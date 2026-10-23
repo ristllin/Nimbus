@@ -285,6 +285,24 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // history is what degrades. > 0 signals the device to demote the SD tier.
   int unpersistedCount() const { return unpersisted_; }
 
+  // Held rows: every message whose append the card refused is also held, oldest
+  // first, and written to its day-stream once the card answers again, so an outage
+  // loses no history (only a restart before the card is back does). While any row
+  // is held, a new message queues behind it and addMessage() moves up to
+  // kInlineFlushRows held rows itself, so the day-streams keep the order the
+  // messages arrived in. flushHeld() writes up to `maxRows` (the device's step
+  // between turns) and stops at the first refused write; it returns rows written.
+  // Past kHeldMaxRows the oldest held row is dropped and counted in heldDropped() (it
+  // leaves unpersistedCount() too, which counts exactly the rows still held).
+  static constexpr int kHeldMaxRows = 512;
+  static constexpr int kInlineFlushRows = 2;
+  int heldCount() const { return (int)held_.size(); }
+  int heldDropped() const { return heldDropped_; }
+  int flushHeld(int maxRows);
+  // Did the card take the last addMessage()'s write (its own append, or a held row
+  // it moved)? false = the card refused it: the device's demote signal.
+  bool lastAppendOk() const { return lastAppendOk_; }
+
   // Highest numeric id suffix seen (the "m%08x" device scheme parses to this),
   // + 1, so the device resumes its id counter past ALL surviving history even
   // after a retention prune removed the oldest rows. 0 if the store is empty.
@@ -436,7 +454,20 @@ class AppendLogEpisodicStore : public EpisodicStore {
   std::vector<CachedMsg, WorkingAllocator<CachedMsg>> recent_;  // last <=recentCap_ full messages (PSRAM)
   std::vector<EpisodicSession> sessions_;  // LWW-by-id session table (small, internal ok)
   uint32_t maxIdSuffix_ = 0;               // high-water for nextIdHint()
-  int unpersisted_ = 0;                    // recent_ entries the FS refused (SD loss)
+  int unpersisted_ = 0;                    // recent_ entries the FS refused (SD loss); == held_.size()
+  // A row the card refused: its encoded line and its index record (offset and len are
+  // filled in when it is finally written).
+  struct HeldRow {
+    PsString line;
+    IdxRec rec;
+  };
+  std::vector<HeldRow, WorkingAllocator<HeldRow>> held_;   // oldest first (PSRAM)
+  int heldDropped_ = 0;
+  bool lastAppendOk_ = true;
+  // Index record for `m` (everything but offset and len).
+  static IdxRec recordOf(const EpisodicMessage& m);
+  // Refused write: keep `m` in the recent window (queryable) and hold its line.
+  void holdRow(const EpisodicMessage& m, const std::string& line);
   bool hydrateTruncated_ = false;          // index does not hold every row on the card
 
   // Backfill cursor. The walk goes newest day first; inside a day it moves the

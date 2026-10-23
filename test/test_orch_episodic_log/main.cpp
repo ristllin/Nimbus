@@ -38,8 +38,11 @@ struct FakeFs : EpiFs {
   }
 
   bool failAppend = false;   // simulate a mid-op SD I/O error on write
+  int okAppendsLeft = -1;    // >= 0: that many more appends succeed, then the card drops
   long append(const std::string& path, const std::string& bytes) override {
     appends++;
+    if (okAppendsLeft == 0) failAppend = true;
+    if (okAppendsLeft > 0) okAppendsLeft--;
     if (failAppend) return -1;   // card vanished: the write fails
     std::string& f = files[path];
     long off = (long)f.size();
@@ -454,14 +457,154 @@ static void test_append_failure_falls_back_to_ring() {
   TEST_ASSERT_EQUAL_STRING("during loss B", all[0].text.c_str());   // newest-first
   TEST_ASSERT_EQUAL_STRING("before loss", all[2].text.c_str());
 
-  // Card re-seated: durable writes resume; the RAM tail is not lost.
+  // Card re-seated: durable writes resume and the held rows go first (lane SDLOW): the
+  // new row queues behind them and moves two, so m2 and m3 are on the card and m4 waits
+  // for the next flush step. Nothing of the RAM tail is lost.
   fs.failAppend = false;
   st.addMessage(msg("m4", "s1", dayTs(100, 4), "assistant", MsgKind::Message, "after reinsert"));
-  TEST_ASSERT_EQUAL_INT(2, st.unpersistedCount());      // still 2 RAM-only
+  TEST_ASSERT_EQUAL_INT(1, st.unpersistedCount());
+  TEST_ASSERT_EQUAL_INT(1, st.flushHeld(16));
+  TEST_ASSERT_EQUAL_INT(0, st.unpersistedCount());
   TEST_ASSERT_EQUAL_INT(4, st.messageCount());
   auto after = st.query(q);
   TEST_ASSERT_EQUAL_INT(4, (int)after.size());
   TEST_ASSERT_EQUAL_STRING("after reinsert", after[0].text.c_str());
+}
+
+// ---- an SD outage loses no history (lane SDLOW) ---------------------------------
+// Every row the card refused is held and written once it answers again, in arrival
+// order, so a fresh store over the same card sees the whole conversation.
+static std::string mid(int i) {
+  char b[16];
+  snprintf(b, sizeof b, "m%08x", (unsigned)i);
+  return b;
+}
+
+static void test_outage_rows_are_written_when_the_card_returns() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 256);
+  st.addMessage(msg(mid(1), "s1", dayTs(100, 1), "user", MsgKind::Message, "before"));
+  fs.failAppend = true;
+  for (int i = 2; i <= 6; i++)
+    st.addMessage(msg(mid(i), "s1", dayTs(100, 2), "user", MsgKind::Message, "during " + std::to_string(i)));
+  TEST_ASSERT_FALSE(st.lastAppendOk());
+  TEST_ASSERT_EQUAL_INT(5, st.heldCount());
+  TEST_ASSERT_EQUAL_INT(5, st.unpersistedCount());
+  TEST_ASSERT_EQUAL_INT(0, st.flushHeld(16));   // card still down: nothing moves
+  TEST_ASSERT_EQUAL_INT(5, st.heldCount());
+
+  fs.failAppend = false;   // the card answers again
+  TEST_ASSERT_EQUAL_INT(3, st.flushHeld(3));    // bounded step
+  TEST_ASSERT_EQUAL_INT(2, st.flushHeld(16));
+  TEST_ASSERT_EQUAL_INT(0, st.heldCount());
+  TEST_ASSERT_EQUAL_INT(0, st.unpersistedCount());
+  TEST_ASSERT_EQUAL_INT(6, st.messageCount());   // unchanged by the move: no double count
+  TEST_ASSERT_EQUAL_INT(0, st.heldDropped());
+
+  // A restart after recovery: everything is on the card, in arrival order.
+  AppendLogEpisodicStore fresh(fs, "/mem/episodic", 256);
+  TEST_ASSERT_EQUAL_INT(6, fresh.hydrate());
+  MsgQuery q;
+  q.limit = 100;
+  auto all = fresh.query(q);
+  TEST_ASSERT_EQUAL_INT(6, (int)all.size());
+  for (int i = 0; i < 6; i++) TEST_ASSERT_EQUAL_STRING(mid(6 - i).c_str(), all[i].id.c_str());
+  TEST_ASSERT_EQUAL_STRING("during 6", all[0].text.c_str());
+}
+
+// While rows are held, a new row queues behind them and moves up to two held rows
+// itself; the day-stream keeps arrival order even when the card is back before the
+// device's own flush step runs.
+static void test_new_rows_queue_behind_held_rows() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 256);
+  fs.failAppend = true;
+  for (int i = 1; i <= 5; i++)
+    st.addMessage(msg(mid(i), "s1", dayTs(100, 1), "user", MsgKind::Message, "held"));
+  fs.failAppend = false;
+  st.addMessage(msg(mid(6), "s1", dayTs(100, 2), "user", MsgKind::Message, "new"));
+  TEST_ASSERT_TRUE(st.lastAppendOk());                                   // it moved held rows
+  TEST_ASSERT_EQUAL_INT(AppendLogEpisodicStore::kInlineFlushRows == 2 ? 4 : -1, st.heldCount());
+  st.flushHeld(100);
+  const std::string& day = fs.files["/mem/episodic/" + AppendLogEpisodicStore::civilDate(100) + ".jsonl"];
+  size_t at = 0;
+  for (int i = 1; i <= 6; i++) {   // ids appear in the file in arrival order
+    const size_t p = day.find("\"" + mid(i) + "\"", at);
+    TEST_ASSERT_TRUE_MESSAGE(p != std::string::npos, "a row is missing or out of order");
+    at = p;
+  }
+  // The index path (ring smaller than the history) reads the same rows back.
+  AppendLogEpisodicStore small(fs, "/mem/episodic", 2);
+  TEST_ASSERT_EQUAL_INT(6, small.hydrate());
+  MsgQuery q;
+  q.limit = 100;
+  auto rows = small.query(q);
+  TEST_ASSERT_EQUAL_INT(6, (int)rows.size());
+  TEST_ASSERT_EQUAL_STRING("new", rows[0].text.c_str());
+}
+
+// The card drops again in the middle of a flush: the step stops at the refused write,
+// keeps the rest held in order, and reports the refusal on the next row.
+static void test_flush_stops_at_the_first_refused_write() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 256);
+  fs.failAppend = true;
+  for (int i = 1; i <= 6; i++)
+    st.addMessage(msg(mid(i), "s1", dayTs(100, 1), "user", MsgKind::Message, "row " + std::to_string(i)));
+  fs.failAppend = false;
+  fs.okAppendsLeft = 2;
+  TEST_ASSERT_EQUAL_INT(2, st.flushHeld(16));
+  TEST_ASSERT_EQUAL_INT(4, st.heldCount());
+  st.addMessage(msg(mid(7), "s1", dayTs(100, 2), "user", MsgKind::Message, "row 7"));
+  TEST_ASSERT_FALSE(st.lastAppendOk());   // queued behind, and the inline move was refused
+  TEST_ASSERT_EQUAL_INT(5, st.heldCount());
+  fs.failAppend = false;
+  fs.okAppendsLeft = -1;
+  TEST_ASSERT_EQUAL_INT(5, st.flushHeld(16));
+  AppendLogEpisodicStore fresh(fs, "/mem/episodic", 256);
+  TEST_ASSERT_EQUAL_INT(7, fresh.hydrate());
+  MsgQuery q;
+  q.limit = 100;
+  auto all = fresh.query(q);
+  for (int i = 0; i < 7; i++) TEST_ASSERT_EQUAL_STRING(mid(7 - i).c_str(), all[i].id.c_str());
+}
+
+// A very long outage is bounded: past kHeldMaxRows the oldest held row goes, counted.
+static void test_held_rows_are_bounded() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 16);
+  fs.failAppend = true;
+  const int over = 5;
+  for (int i = 1; i <= AppendLogEpisodicStore::kHeldMaxRows + over; i++)
+    st.addMessage(msg(mid(i), "s1", dayTs(100, 1), "user", MsgKind::Message, "x"));
+  TEST_ASSERT_EQUAL_INT(AppendLogEpisodicStore::kHeldMaxRows, st.heldCount());
+  TEST_ASSERT_EQUAL_INT(over, st.heldDropped());
+  fs.failAppend = false;
+  TEST_ASSERT_EQUAL_INT(AppendLogEpisodicStore::kHeldMaxRows, st.unpersistedCount());   // only the held ones
+  TEST_ASSERT_EQUAL_INT(AppendLogEpisodicStore::kHeldMaxRows, st.flushHeld(100000));
+  TEST_ASSERT_EQUAL_INT(0, st.unpersistedCount());   // nothing waits: the card path is clear again
+  AppendLogEpisodicStore fresh(fs, "/mem/episodic", 16);
+  TEST_ASSERT_EQUAL_INT(AppendLogEpisodicStore::kHeldMaxRows, fresh.hydrate(0, 0));
+}
+
+// lastAppendOk() is the demote signal for every write shape.
+static void test_last_append_ok_tracks_every_write() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 16);
+  st.addMessage(msg(mid(1), "s1", dayTs(100, 1), "user", MsgKind::Message, "a"));
+  TEST_ASSERT_TRUE(st.lastAppendOk());   // a plain write
+  fs.failAppend = true;
+  st.addMessage(msg(mid(2), "s1", dayTs(100, 1), "user", MsgKind::Message, "b"));
+  TEST_ASSERT_FALSE(st.lastAppendOk());  // refused
+  st.addMessage(msg(mid(3), "s1", dayTs(100, 1), "user", MsgKind::Message, "c"));
+  TEST_ASSERT_FALSE(st.lastAppendOk());  // queued, and the move was refused
+  fs.failAppend = false;
+  st.addMessage(msg(mid(4), "s1", dayTs(100, 1), "user", MsgKind::Message, "d"));
+  TEST_ASSERT_TRUE(st.lastAppendOk());   // queued, held rows moved
+  st.flushHeld(10);
+  st.addMessage(msg(mid(5), "s1", dayTs(100, 1), "user", MsgKind::Message, "e"));
+  TEST_ASSERT_TRUE(st.lastAppendOk());   // back to plain writes
+  TEST_ASSERT_EQUAL_INT(0, st.heldCount());
 }
 
 // A device must be able to START no matter how much history it has written.
@@ -2356,6 +2499,11 @@ int main(int, char**) {
   RUN_TEST(test_prune_remove_failure_keeps_index_consistent);
   RUN_TEST(test_civil_date_sortable);
   RUN_TEST(test_append_failure_falls_back_to_ring);
+  RUN_TEST(test_outage_rows_are_written_when_the_card_returns);
+  RUN_TEST(test_new_rows_queue_behind_held_rows);
+  RUN_TEST(test_flush_stops_at_the_first_refused_write);
+  RUN_TEST(test_held_rows_are_bounded);
+  RUN_TEST(test_last_append_ok_tracks_every_write);
   RUN_TEST(test_cold_scan_finds_what_the_index_cannot);
   RUN_TEST(test_cold_cursor_pages_within_one_day_file);
   RUN_TEST(test_cold_scan_honors_the_read_boundary);

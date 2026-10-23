@@ -38,6 +38,7 @@
 #include "nimbus/docs_pack.h"             // docs.list/search/read - embedded device docs (W13)
 #include "nimbus/fault.h"                 // resilience: simulated SD/memory faults
 #include "nimbus/sd_health.h"             // SD demote/promote debounce (graceful degradation)
+#include "nimbus/sd_recovery.h"           // SD outage: remount gate + the owner's one notice
 #include "storage_tier.h"                 // CUM-405: pure storage-tier decision (host-tested)
 #include "fs_atomic.h"                    // writeFileAtomic - the scratchpad file
 #include "nimbus/store/moved_store.h"     // the scratchpad's move out of NVS (load/persist/retire)
@@ -133,6 +134,10 @@ volatile bool         g_erasing = false;
 // the HIL test spec.
 nimbus::SdHealthTracker g_sdHealth(2, 2);
 uint32_t              g_lastSdProbeMs = 0;
+// While the card is lost: when to remount it and when to tell the owner (sd_recovery.h).
+// The vectors' last persist failed on the card tier: the recovery step writes them again.
+nimbus::SdRecovery    g_sdRecovery;
+volatile bool         g_vecOwed = false;
 
 // Storage tiering (docs/orchestrator-storage.md). Bulk durable blobs live under
 // /mem on the SD card; with no card they fall back to the legacy LittleFS /data
@@ -1627,12 +1632,14 @@ static void applySdEdge(nimbus::SdHealthTracker::Event e) {
     // card-less device never archives). memory.archive also refuses live via
     // archiveAvailable(). The archive's RAM contents are kept for a later promote.
     g_vec.setArchiveSink(nullptr);
-    alog("memory: SD lost mid-run - demoted to no-card tier (appends -> RAM ring)");
+    g_sdRecovery.onLost(millis());
+    alog("memory: SD lost mid-run - demoted to no-card tier (writes held until it answers)");
   } else if (e == nimbus::SdHealthTracker::Event::Promote) {
     applyConfig();   // restore the full SD-tier cap
     // Re-attach the archive sink only if the archive existed at boot (a card-less
     // boot never built it; adopting a freshly-inserted card needs a restart).
     if (g_haveSd) g_vec.setArchiveSink(&g_archive);
+    g_sdRecovery.onRecovered();
     alog("memory: SD recovered - promoted back to the SD tier");
   }
 }
@@ -1741,6 +1748,69 @@ void tickSdHealth(uint32_t nowMs) {
   const bool ok = probeSdWrite();
   applySdEdge(g_sdHealth.note(ok));
 }
+
+// ---- SD outage recovery (lane SDLOW) ---------------------------------------------
+// While the card is lost the probe above keeps trying it every 4 s and promotes it as
+// soon as it answers. Two things it cannot do run on the Telegram task between turns
+// (sdRecoveryStep, main.cpp's staged-work slot), never on the main loop: a remount, for a
+// card that stays lost once memory has recovered (a stale mount after a reseat, or a card
+// a low-memory remount left unmounted), and writing what the card refused meanwhile (the
+// held history rows, then the vectors). The owner hears once per outage (main.cpp polls
+// sdOutageNoticeDue()).
+static constexpr size_t kRemountMinDmaBlock = 4096;     // the card's setup allocates DMA memory
+static constexpr size_t kRemountMinInternalFree = 16384;
+static constexpr int kHeldRowsPerStep = 32;
+
+static bool memoryOkForRemount() {
+  return heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) >= kRemountMinDmaBlock &&
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= kRemountMinInternalFree;
+}
+
+static bool rowsHeld() { return g_epiLog && g_epiLog->heldCount() > 0; }   // benign unlocked read
+
+bool sdRecoveryDue() {
+  if (!g_begun || !g_haveSd || g_erasing) return false;
+  const uint32_t now = millis();
+  if (sdLost()) return g_sdRecovery.remountDue(memoryOkForRemount(), now);
+  return effHaveSd() && g_sdRecovery.flushDue(rowsHeld(), g_vecOwed, now);
+}
+
+static void remountLostCard() {
+  g_sdRecovery.noteRemount(millis());
+  nimbus::errlog::releaseHandle();   // never keep the log file open across a remount
+  solide::storage::end();
+  const bool up = solide::storage::begin();
+  const bool ok = up && probeSdWrite();
+  alogf("memory: lost card remounted (internal memory is fine): %s",
+        ok ? "answering" : up ? "mounted, not answering" : "not mounted");
+  applySdEdge(g_sdHealth.note(ok));
+}
+
+void sdRecoveryStep() {
+  Lock g;   // the Telegram task may wait for the card lock: it is between turns
+  if (!g_begun || !g_haveSd || g_erasing) return;
+  const uint32_t now = millis();
+  if (sdLost()) {
+    if (g_sdRecovery.remountDue(memoryOkForRemount(), now)) remountLostCard();
+    return;
+  }
+  if (!effHaveSd() || !g_sdRecovery.flushDue(rowsHeld(), g_vecOwed, now)) return;
+  if (rowsHeld()) {
+    const int n = g_epiLog->flushHeld(kHeldRowsPerStep);
+    noteSdIoResult(n > 0);
+    alogf("memory: %d history row(s) held during the card outage written (%d left, %d dropped)", n,
+          g_epiLog->heldCount(), g_epiLog->heldDropped());
+    if (rowsHeld()) {   // more to do while this step made progress; a refusal waits for the timer
+      g_sdRecovery.noteFlush(now, n > 0);
+      return;
+    }
+  }
+  if (g_vecOwed && g_sdRecovery.flushAfterRecovery()) persistVectors();   // clears g_vecOwed on success
+  g_sdRecovery.noteFlush(now, false);
+}
+
+bool sdOutageNoticeDue(uint32_t nowMs) { return g_haveSd && g_sdRecovery.noticeDue(nowMs); }
+void sdOutageNoticeSent(uint32_t nowMs) { g_sdRecovery.noteNoticeSent(nowMs); }
 
 // Write a blob to `path` atomically: to `<path>.tmp`, then rename over `path`, so a
 // crash mid-write leaves the previous good blob intact (single-writer; FAT + LittleFS
@@ -1890,6 +1960,7 @@ nimbus::orch::MemOpCounters opCounters() {
 
 bool persistVectors() {
   Lock g;
+  if (g_haveSd) g_vecOwed = true;   // cleared below once the blob is on the card
   std::string blob = g_vec.serialize();
   // LittleFS overflow guard (degraded mode): never fill the internal partition. If
   // writing the blob would drop below the free floor, refuse + flag it (the model
@@ -1908,6 +1979,7 @@ bool persistVectors() {
   }
   bool w = writeBlobAtomic(g_vecPath, blob);
   if (effHaveSd()) noteSdIoResult(w);   // real SD write outcome feeds the demote watchdog
+  if (w && effHaveSd()) g_vecOwed = false;
   if (!w) alog("memory: vector persist failed");
   persistArchive();   // the archive rides the same persist cadence (dirty-gated, SD-only)
   return w;
@@ -2326,12 +2398,12 @@ static String captureMessageAt(const char* sessionId, const char* role, nimbus::
   m.text = std::string(text.c_str());
   m.blobPath = std::string(blobPath.c_str());
   m.tags = std::string(tags.c_str());   // e.g. "from:<sender>" (unified chat label)
-  // Feed the SD demote watchdog: on the append-log, a failed day-stream write bumps
-  // unpersistedCount() (the row falls back to the RAM ring) - the sudden-loss signal.
+  // Feed the SD demote watchdog: on the append-log, a refused day-stream write holds
+  // the row (RAM ring + held queue, written once the card answers) - the sudden-loss
+  // signal.
   const bool watch = effHaveSd() && g_epiLog;
-  const size_t unpBefore = watch ? g_epiLog->unpersistedCount() : 0;
   g_epiActive->addMessage(m);
-  if (watch) noteSdIoResult(g_epiLog->unpersistedCount() == unpBefore);
+  if (watch) noteSdIoResult(g_epiLog->lastAppendOk());
   persistEpisodic();   // no-op for the SD append-log (addMessage already durable)
   return String(m.id.c_str());
 }
