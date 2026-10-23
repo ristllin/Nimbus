@@ -844,64 +844,79 @@ static void test_every_mem_write_outcome_is_reported() {
 
 // ---- ASK-DUPLICATE (Lumi 22 Oct, m0000127a) -----------------------------------
 
-// The head ended its reply with a question and wrote the same question, reworded,
-// into ask: the owner got it twice. A reply whose last non-blank character is '?'
-// already asks; the ask is not appended, the needs-you state still fires, and the
-// history holds only what was sent.
-static void test_ask_duplicate_a_reworded_ask_after_a_question_is_not_appended() {
+static std::pair<Rec, ApplyState> applyReplyAsk(const std::string& reply, const std::string& ask) {
   Rec r;
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
   bool spawned = false;
   Turn t;
-  t.reply = "Lunch is logged at 640 kcal. Want me to add the walk too?\n";
-  t.ask = "Should I log the walk as well?";
+  t.reply = reply;
+  t.ask = ask;
   agent::applyTurn(t, "1001", d, st, spawned);
-  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
-  TEST_ASSERT_EQUAL_STRING(t.reply.c_str(), r.delivered[0].second.c_str());
-  TEST_ASSERT_TRUE(r.delivered[0].second.find("Should I log") == std::string::npos);
-  TEST_ASSERT_EQUAL(1, r.emitAsks);                       // needs-you still fires
-  TEST_ASSERT_EQUAL(1, (int)r.captured.size());           // only what was sent
-  TEST_ASSERT_EQUAL_STRING(t.reply.c_str(), r.captured[0].c_str());
+  return {r, st};
 }
 
-// The class: every reply ending in '?' (any trailing blanks) carries the ask; a
-// reply ending otherwise gets the ask appended after a blank line, captured too.
-static void test_ask_duplicate_the_last_non_blank_character_decides() {
-  const char* asks[] = {"Shall I?", "Do you want the weekly total?"};
-  const char* asked[] = {"Want details?", "Want details? ", "Want details?\n\n", "Ok?\t\r\n"};
-  const char* notAsked[] = {"Here's the status.", "Want details? Here's the status.",
-                            "Done (is that ok?)", "Saved."};
-  for (const char* a : asks) {
-    for (const char* rep : asked) {
-      Rec r;
-      ApplyDeps d = makeDeps(r);
-      ApplyState st = makeState(r);
-      bool spawned = false;
-      Turn t;
-      t.reply = rep;
-      t.ask = a;
-      agent::applyTurn(t, "1001", d, st, spawned);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(rep, r.delivered[0].second.c_str(), rep);
-      TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, rep);
-      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), rep);
-      TEST_ASSERT_TRUE(agent::replyAlreadyAsks(rep, a));
-    }
-    for (const char* rep : notAsked) {
-      Rec r;
-      ApplyDeps d = makeDeps(r);
-      ApplyState st = makeState(r);
-      bool spawned = false;
-      Turn t;
-      t.reply = rep;
-      t.ask = a;
-      agent::applyTurn(t, "1001", d, st, spawned);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(rep) + "\n\n" + a).c_str(),
-                                       r.delivered[0].second.c_str(), rep);
-      TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, rep);
-      TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.captured.size(), rep);   // reply row + ask row
-      TEST_ASSERT_FALSE(agent::replyAlreadyAsks(rep, a));
-    }
+// The 22 Oct incident pair (wording scrubbed): the head ended its reply with a
+// question about the calendar check and wrote the same question, reworded, into ask,
+// so the owner got it twice. Now one message, the needs-you state still fires, and
+// the history keeps only what was sent.
+static void test_ask_duplicate_the_incident_pair_is_dropped() {
+  const std::string reply =
+      "Your commute looks clear and the bus runs on time. Should I check your calendar for "
+      "anything that clashes with the 8:15 bus?\n";
+  const std::string ask = "Do you want me to check the calendar for clashes with tomorrow's 8:15 bus?";
+  auto out = applyReplyAsk(reply, ask);
+  Rec& r = out.first;
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(reply.c_str(), r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(1, r.emitAsks);                       // needs-you still fires
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());           // only what was sent
+  TEST_ASSERT_EQUAL_STRING(reply.c_str(), r.captured[0].c_str());
+}
+
+// Orchestrator ruling: a reply ending with a rhetorical question plus a different,
+// real question keeps the question - it is appended after a blank line and captured.
+static void test_ask_duplicate_a_different_question_after_a_rhetorical_one_is_kept() {
+  const std::string reply = "Lunch is logged at 640 kcal. Not bad for a Monday, right?";
+  const std::string ask = "Should I book the dentist appointment for Thursday afternoon?";
+  auto out = applyReplyAsk(reply, ask);
+  Rec& r = out.first;
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING((reply + "\n\n" + ask).c_str(), r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(1, r.emitAsks);
+  TEST_ASSERT_EQUAL(2, (int)r.captured.size());           // reply row + ask row
+}
+
+// The class: the same question reworded (half its topic words, or all its key nouns,
+// in the reply's final sentence) is dropped; a different question, a question earlier
+// in the reply, or a reply that does not end with '?' keeps the ask.
+static void test_ask_duplicate_same_question_dropped_different_kept() {
+  struct Case { const char* reply; const char* ask; bool dropped; };
+  const Case cases[] = {
+      // reworded copies
+      {"Lunch is logged at 640 kcal. Want me to add the walk too?\n", "Should I log the walk as well?", true},
+      {"Here's the status. Want details?", "Want details?", true},                    // verbatim
+      {"Here's the status. Want the details? ", "Would you like the details?", true},
+      {"Done. Should I set a reminder for the dentist?", "Shall I?", true},          // no topic of its own
+      {"The report is saved. Do you want the PDF sent to Telegram?",
+       "Should I send the PDF to Telegram now?", true},
+      {"Ready. Want the weekly totals for protein and calories?",
+       "Do you want weekly calorie and protein totals?", true},
+      // different questions
+      {"Lunch is logged. Not bad for a Monday, right?", "Should I book the dentist for Thursday?", false},
+      {"The bus is late again, can you believe it?", "Do you want the weekly spend report?", false},
+      {"Want details? Here's the status.", "Want details?", false},                  // question earlier
+      {"Here's the status.", "Want details?", false},                                 // no question
+      {"Saved the recipe. Anything else for dinner?", "Should I order the groceries for Saturday?", false},
+  };
+  for (const Case& c : cases) {
+    TEST_ASSERT_EQUAL_MESSAGE(c.dropped, agent::replyAlreadyAsks(c.reply, c.ask), c.reply);
+    auto out = applyReplyAsk(c.reply, c.ask);
+    Rec& r = out.first;
+    const std::string want = c.dropped ? std::string(c.reply) : std::string(c.reply) + "\n\n" + c.ask;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.reply);
+    TEST_ASSERT_EQUAL_MESSAGE(1, r.emitAsks, c.reply);
+    TEST_ASSERT_EQUAL_MESSAGE(c.dropped ? 1 : 2, (int)r.captured.size(), c.reply);
   }
   // Either field empty: nothing is "already asked".
   TEST_ASSERT_FALSE(agent::replyAlreadyAsks("", "Want details?"));
@@ -1063,8 +1078,9 @@ int main(int, char**) {
   RUN_TEST(test_claims_ask_is_checked_with_the_reply);
   RUN_TEST(test_claims_no_check_attached_is_byte_identical);
   RUN_TEST(test_every_mem_write_outcome_is_reported);
-  RUN_TEST(test_ask_duplicate_a_reworded_ask_after_a_question_is_not_appended);
-  RUN_TEST(test_ask_duplicate_the_last_non_blank_character_decides);
+  RUN_TEST(test_ask_duplicate_the_incident_pair_is_dropped);
+  RUN_TEST(test_ask_duplicate_a_different_question_after_a_rhetorical_one_is_kept);
+  RUN_TEST(test_ask_duplicate_same_question_dropped_different_kept);
   RUN_TEST(test_orch_model_every_provider_slot_applies_and_nothing_else);
   RUN_TEST(test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour);
   RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);

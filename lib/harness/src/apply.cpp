@@ -1,5 +1,9 @@
 #include "nimbus/harness/apply.h"
 
+#include <algorithm>
+#include <cctype>
+#include <vector>
+
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
@@ -33,14 +37,86 @@ static bool replyEndsWith(const std::string& reply, const std::string& ask) {
   return re + 1 >= n && reply.compare(re + 1 - n, n, ask, ab, n) == 0;
 }
 
+namespace {
+
+// Words that carry no topic of their own: function words and the verbs every question
+// is built from ("do you want me to...", "should I..."). What is left of a question is
+// what it asks about.
+bool askStopword(const std::string& w) {
+  static const char* const kStop[] = {
+      "a", "an", "the", "and", "or", "but", "if", "then", "so", "to", "of", "in", "on", "at",
+      "for", "with", "from", "by", "about", "as", "into", "over", "after", "before", "up",
+      "out", "off", "again", "also", "too", "very", "just", "only", "than", "that", "this",
+      "these", "those", "it", "its", "is", "are", "was", "were", "be", "been", "am", "do",
+      "does", "did", "have", "has", "had", "will", "would", "shall", "should", "can", "could",
+      "may", "might", "must", "i", "me", "my", "we", "us", "our", "you", "your", "he", "him",
+      "his", "she", "her", "they", "them", "their", "what", "which", "who", "when", "where",
+      "why", "how", "there", "here", "want", "like", "please", "let", "ok", "okay", "yes",
+      "no", "not", "any", "some", "all", "more", "much", "one", "get", "go", "need", "now",
+      "well", "still", "today", "anything", "something"};
+  for (const char* s : kStop)
+    if (w == s) return true;
+  return false;
+}
+
+// The topic words of `text`: lowercase ASCII letters and digits, stopwords dropped, a
+// plural "s" stripped (so "walks" and "walk" agree). Non-ASCII bytes split words.
+std::vector<std::string> topicWords(const std::string& text) {
+  std::vector<std::string> out;
+  std::string w;
+  auto flush = [&] {
+    if (w.size() > 3 && w.back() == 's' && w[w.size() - 2] != 's') w.pop_back();
+    if (!w.empty() && !askStopword(w)) out.push_back(w);
+    w.clear();
+  };
+  for (char c : text) {
+    const unsigned char u = (unsigned char)c;
+    if (u < 0x80 && std::isalnum(u)) w += (char)std::tolower(u);
+    else if (c != '\'') flush();
+  }
+  flush();
+  return out;
+}
+
+// The reply's final sentence when it is a question ("" when the reply does not end
+// with '?'): the text after the last sentence end before that closing '?'.
+std::string finalQuestion(const std::string& reply) {
+  const size_t q = reply.find_last_not_of(" \t\r\n");
+  if (q == std::string::npos || reply[q] != '?') return "";
+  const size_t b = q == 0 ? std::string::npos : reply.find_last_of(".!?\n", q - 1);
+  return reply.substr(b == std::string::npos ? 0 : b + 1, q - (b == std::string::npos ? 0 : b + 1) + 1);
+}
+
+// Does `ask` ask what `question` asks? At least half of the ask's topic words appear
+// in the question, or every longer one (its key nouns, 4+ letters) does. An ask with
+// no topic word at all ("Shall I?") adds nothing to a question already asked.
+bool asksTheSame(const std::string& question, const std::string& ask) {
+  const std::vector<std::string> a = topicWords(ask), q = topicWords(question);
+  if (a.empty()) return true;
+  size_t shared = 0, keys = 0, keysShared = 0;
+  for (const std::string& w : a) {
+    const bool in = std::find(q.begin(), q.end(), w) != q.end();
+    shared += in;
+    if (w.size() >= 4) {
+      keys++;
+      keysShared += in;
+    }
+  }
+  return shared * 2 >= a.size() || (keys > 0 && keysShared == keys);
+}
+
+}  // namespace
+
 bool replyAlreadyAsks(const std::string& reply, const std::string& ask) {
   if (reply.empty() || ask.empty()) return false;
-  // ASK-DUPLICATE (Lumi 22 Oct): the head ends its reply with a question and then
-  // writes the same question, reworded, into ask, so the owner got it twice. A
-  // reply whose last non-blank character is '?' has asked already.
-  const size_t re = reply.find_last_not_of(" \t\r\n");
-  if (re != std::string::npos && reply[re] == '?') return true;
-  return replyEndsWith(reply, ask);
+  if (replyEndsWith(reply, ask)) return true;
+  // ASK-DUPLICATE (Lumi 22 Oct): the head ended its reply with a question and wrote
+  // the same question, reworded, into ask, so the owner got it twice. The ask is
+  // dropped only when the reply's final sentence is a question that asks the same
+  // thing (orchestrator ruling): a different question - after a rhetorical one, say -
+  // is still appended.
+  const std::string q = finalQuestion(reply);
+  return !q.empty() && asksTheSame(q, ask);
 }
 
 // Did one device element's summary say it ran? A voice-off tts, a sink-less

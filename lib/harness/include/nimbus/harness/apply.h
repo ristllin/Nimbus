@@ -163,8 +163,10 @@ MemWriteOutcome memWriteOutcome(const nimbus::orch::ToolResult& r);
 
 // Whether `reply` already carries the question in `ask`, so the ask is not
 // appended to the delivered message: the reply ends with `ask` verbatim, or its
-// last non-blank character is '?' (a reworded copy, ASK-DUPLICATE). Either empty:
-// false. The ask still raises the needs-you state either way.
+// final sentence is a question asking the same thing (a reworded copy,
+// ASK-DUPLICATE: at least half of the ask's topic words appear in it, or all of the
+// ask's key nouns do). A different question is appended. Either empty: false. The ask
+// still raises the needs-you state either way.
 bool replyAlreadyAsks(const std::string& reply, const std::string& ask);
 
 // Apply one parsed turn. spawnedOut reports whether any sub-agent was enqueued

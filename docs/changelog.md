@@ -76,7 +76,7 @@ Models and questions:
 - **The assistant looks up current models itself.** It asks the device for a provider's model list when it needs a model id, instead of carrying every list in every message, so each message is smaller. A switch to a model the saved list does not have says so, with the list's date, and a fresh list is fetched after the turn.
 - **Model dropdowns refresh when you open them.** Opening a model dropdown shows the saved list at once, fetches a fresh one and then says "Updated" with the time. Each list is also refreshed weekly and after an update, and no provider's list is fetched more than once an hour.
 - **More models to switch to.** The assistant can switch itself to a Z.ai or Cumulo Nimbus model too. A Cumulo Nimbus model id asked of another provider is refused with the name that provider uses.
-- **A question is asked once.** When a reply already ends with a question, the follow-up question is no longer added again below it.
+- **A question is asked once.** When a reply already ends with a question and the assistant also sends the same question reworded, the copy is no longer added below it; a different question still is.
 
 ## v4.5.16 - No more restarts every few hours
 
