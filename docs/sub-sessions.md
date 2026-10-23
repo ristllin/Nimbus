@@ -261,7 +261,8 @@ built-in starting list, or the provider's default, or the model the owner chose
 for that provider (never refused; a helper with no model named runs it). An id it refuses logs
 `spawn model coerced` and uses the per-provider sub-model default when listed,
 else the cheapest listed model (above). The head reads the store through
-`models.list` (or, on a single-shot turn, the `[AVAILABLE MODELS]` line: the store's
+`models.list` (or, when the tool is not registered for that head, the
+`[AVAILABLE MODELS]` line: the store's
 short list, which says how old it is, "list from 2026-10-22, may miss newer
 models"), a subset of what the check accepts, so every model it is offered spawns as
 named. A router id (`<upstream>/<model>`) named on a direct provider is not in that

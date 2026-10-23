@@ -4480,10 +4480,46 @@ static void test_r5_available_models_points_to_models_list_when_callable() {
                    std::string::npos);
 }
 
+// PRISM row 1 (fix-before-tag): [AVAILABLE MODELS] rides the CACHED static
+// block, so its shape keys on the CONFIG's loop toggle + the registry, never
+// the per-turn heap gate. A device near the loop-heap band used to flip the
+// static block between the models.list pointer and the inline lists on
+// alternating turns, busting the static-prefix cache and re-billing it each
+// flip - against the policy compose.cpp states ("The CONFIG flag, never this
+// turn's heap gate"). Same config, only the turn's heap differs: the stat
+// block must be byte-identical, and the loop-off caveat rides the dynamic note.
+static void test_prism1_models_pointer_survives_a_loop_heap_flip() {
+  const auto turn = [](Rig& r) {
+    r.cfg.keyed = {"anthropic"};   // the CONFIG is identical on both turns
+    r.cfg.toolLoop = true;
+    r.specs.push_back(orch::ToolRegistry::Spec{"models.list", "list models", "{}"});
+    r.modelChoicesFn = [](const std::string&) { return std::string("claude-opus-5-5,claude-sonnet-5-5"); };
+    r.eng->handleMessage("switch to sonnet 5.5", "Owner", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  };
+  Rig on;
+  on.plat.heap = 100000;   // ample: the loop runs this turn
+  turn(on);
+  TEST_ASSERT_TRUE(on.attempts[0].hadTools);
+  Rig gated;
+  gated.plat.heap = 13000;   // below loopMinHeap + 2000: single-shot this turn
+  turn(gated);
+  TEST_ASSERT_FALSE(gated.attempts[0].hadTools);   // the flip is real (loop gated off)
+  const std::string statOn = agent::layout::split(on.attempts[0].instructions).stat;
+  const std::string statGated = agent::layout::split(gated.attempts[0].instructions).stat;
+  TEST_ASSERT_TRUE(statOn.find("[AVAILABLE MODELS] providers with a key: anthropic.") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(statOn.c_str(), statGated.c_str());   // the cache point holds across the flip
+  // the loop-off caveat rides the DYNAMIC block of the gated turn only
+  const std::string caveat = "points at models.list - one of these tools";
+  TEST_ASSERT_TRUE(agent::layout::split(gated.attempts[0].instructions).dyn.find(caveat) != std::string::npos);
+  TEST_ASSERT_TRUE(agent::layout::split(on.attempts[0].instructions).dyn.find(caveat) == std::string::npos);
+}
+
 // The [AVAILABLE MODELS] block: the CUM-486 parity and the R5 pointer line.
 static void runAvailableModelsTests() {
   RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
   RUN_TEST(test_r5_available_models_points_to_models_list_when_callable);
+  RUN_TEST(test_prism1_models_pointer_survives_a_loop_heap_flip);
   RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
 }
 

@@ -409,9 +409,13 @@ one table, `kGatedTools` in `lib/core/include/nimbus/orch/tool_gates.h`.
 
 Registered by `src/agent/model_refresh.cpp` (the portable tool is
 `lib/core/src/orch_models_tool.cpp`). The head asks which models a provider
-offers instead of reading every provider's list in every prompt: on a turn where
-it can call this tool, the prompt's `[AVAILABLE MODELS]` block is one line naming
-the providers with a key and pointing here (a single-shot turn keeps the lists).
+offers instead of reading every provider's list in every prompt: when the
+config's tool loop is on and the tool is registered for the head, the prompt's
+`[AVAILABLE MODELS]` block is one line naming the providers with a key and
+pointing here - a config-keyed shape, so the cached block is byte-stable across
+turns (a head without the tool loop keeps the lists; when low memory gates the
+loop off for one turn, the pointer stays and that turn's loop-off note says the
+tool cannot run either).
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|

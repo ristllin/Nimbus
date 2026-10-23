@@ -1045,16 +1045,25 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   ci.recalled = recalled;
   // R5: the model lists move behind models.list when the head can call it: the
-  // loop runs this turn, the tool is registered, and the head is one with a tool
-  // loop (the custom-dialect heads, Z.ai and a custom endpoint, run single-shot:
-  // custom.cpp advertises no tool, so they keep the inline lists).
+  // CONFIG's tool loop is on (toolsOnWire - the same cached-manifest property
+  // as the capability list, never this turn's heap gate), the tool is
+  // registered, and the head is one with a tool loop (the custom-dialect heads,
+  // Z.ai and a custom endpoint, run single-shot: custom.cpp advertises no tool,
+  // so they keep the inline lists). PRISM row 1: modelsTool used to key on
+  // ci.loopOn (the per-turn heap gate), so a device near the loop-heap band
+  // flipped the CACHED static block between the pointer line and the inline
+  // lists on alternating turns, busting the static-prefix cache each flip -
+  // against the stated policy (compose.cpp: "The CONFIG flag, never this turn's
+  // heap gate"). The loop-off caveat rides the dynamic note instead
+  // (ci.modelsPointer).
   const bool headLoops = !d_.hosts.fabricSupports || d_.hosts.fabricSupports(host);
   const bool modelsTool =
-      ci.loopOn && headLoops &&
+      ci.toolsOnWire && headLoops &&
       std::any_of(specs.begin(), specs.end(), [](const orch::ToolRegistry::Spec& s) {
         return s.name == "models.list" && !loopToolHidden(s.name);
       });
   ci.catalogs = buildStableCatalogs(modelsTool);
+  ci.modelsPointer = modelsTool;   // the loop-off note names models.list (compose.cpp)
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;

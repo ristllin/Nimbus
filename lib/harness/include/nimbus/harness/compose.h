@@ -112,6 +112,12 @@ struct ComposeInputs {
   // buildStableCatalogs(). They change only with the device config, so they ride
   // the end of the static block (prompt_layout.h); not counted in budgetBytes.
   std::string catalogs;
+  // True when [AVAILABLE MODELS] in in.catalogs is the models.list pointer line
+  // (config's loop toggle + registry + a looping head; NEVER this turn's heap
+  // gate, so the cached static block cannot flip per turn). Only the dynamic
+  // loop-off note reads it: on a heap-gated single-shot turn it says models.list
+  // cannot run either (prism row 1).
+  bool modelsPointer = false;
 };
 
 // Compose the World system prompt as the cacheable parts of prompt_layout.h,

@@ -488,8 +488,10 @@ class TurnEngine {
   // apply gives a promise without a spawn.
   void noteUnappliedSpawnClaim(const std::string& chatId);
   std::string buildDynamicContext(const std::string& chatId);
-  // modelsTool: the head can call models.list this turn, so [AVAILABLE MODELS] is
-  // the one pointer line instead of the per-provider lists.
+  // modelsTool: the CONFIG's loop toggle is on, models.list is registered and the
+  // head runs a tool loop, so [AVAILABLE MODELS] is the one pointer line instead
+  // of the per-provider lists. Config-keyed, never this turn's heap gate: the
+  // catalogs ride the CACHED static block (prism row 1).
   std::string buildStableCatalogs(bool modelsTool = false);
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the

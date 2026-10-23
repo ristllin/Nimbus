@@ -428,7 +428,7 @@ std::string composeInstructions(const ComposeInputs& in) {
         "each result before deciding your next step. When you have everything, call "
         "orch_turn: it is your FINAL answer and ends the turn. Prefer calling "
         "memory_search live over the deferred mem_query field.\n";
-  else
+  else {
     loopNote =
         "The mid-turn tool loop is OFF right now (setting or low memory), so these "
         "tools are NOT callable this turn. The turn contract still covers memory "
@@ -449,6 +449,20 @@ std::string composeInstructions(const ComposeInputs& in) {
         "what you could not do and why, and answer as fully as you can from what "
         "you already have. Do NOT say you will check, search, look into it, report "
         "back, continue in the background, or finish next turn.\n";
+    // PRISM row 1: the [AVAILABLE MODELS] line in the CACHED static block is the
+    // models.list pointer (config-keyed, so the static block is byte-stable
+    // across a loop-heap flip). On this single-shot turn the tool cannot run, and
+    // the caveat rides the DYNAMIC note so the pointer line itself never changes
+    // per turn - the same CONFIG-not-heap policy the capability list states
+    // above. Only when the pointer IS the block's shape (modelsPointer): with
+    // the inline lists there is nothing to caveat.
+    if (in.modelsPointer)
+      loopNote +=
+          "The [AVAILABLE MODELS] line points at models.list - one of these tools, "
+          "so it cannot run this turn either. Your own model id is in [YOUR MODEL] "
+          "above; for any other model, say what you need and the owner can ask "
+          "again on a turn with the loop on.\n";
+  }
   // v2 drops the standalone "## HOW YOUR MEMORY WORKS" block: the compressed
   // field docs + the memTiers pointer already carry it, and it is the first
   // section budget pressure sheds anyway. v1 keeps it.
