@@ -114,7 +114,9 @@ namespace orch {
   "recall them in future conversations. importance 0-1. ttl is how long the " \
   "fact should live - session|days|weeks|months|permanent (default weeks); pick " \
   "honestly: a meeting time is 'days', a stable preference is 'months', a name " \
-  "is 'permanent'. permanent:true additionally pins it so it never decays. A " \
+  "is 'permanent'. permanent:true additionally pins it so it never decays. " \
+  "standing:true marks an always/never rule for every reply: it is saved in " \
+  "the owner's STANDING RULES instead of memory. A " \
   "write here is stored just before this reply is delivered, and the device " \
   "confirms or corrects a save claim in the reply before the owner sees it; " \
   "one that is queued (embeddings down) or not stored is reported in the " \

@@ -36,6 +36,8 @@ struct ComposeInputs {
   // line's screen/ring facts). nullptr = buildBoardIdentity(), the build's own.
   const BoardIdentity* board = nullptr;
   std::string directive;             // owner directive (OrchMemory::directive)
+  std::string standingPrefs;         // the owner's standing rules block (owner_prefs.h;
+                                     // "" hides [STANDING RULES] - the fresh device)
   std::string runningMemory;         // model working notes (OrchMemory::model)
   nimbus::orch::Hardware hw;         // live manifest flags (deviceName ignored -
                                      // set from devName for lifetime safety)

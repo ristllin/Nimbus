@@ -72,7 +72,7 @@ std::string glossOf(const std::string& desc, int maxBytes) {
   // Prefer a clause boundary so the gloss reads as a sentence, not a cut.
   std::string s = desc.substr(0, (size_t)keep);
   size_t cut = s.find_last_of(".;");        // single-byte separators only
-  const size_t dash = s.rfind("\xE2\x80\x94");   // "-" as a whole sequence
+  const size_t dash = s.rfind("\xE2\x80\x94");   // em-dash-ok: the directive parser must know the sequence
   if (dash != std::string::npos && (cut == std::string::npos || dash > cut)) cut = dash;
   if (cut != std::string::npos && cut > (size_t)(maxBytes / 3)) {
     s = s.substr(0, cut);

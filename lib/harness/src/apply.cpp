@@ -413,6 +413,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           a["content"]    = w.content;
           a["importance"] = w.importance;
           a["permanent"]  = w.permanent;
+          a["standing"]   = w.standing;   // lane J: an every-reply rule routes to the standing rules
           if (!w.ttl.empty()) a["ttl"] = w.ttl;
           ToolResult r = d.memDispatch("memory.write", a.as<ArduinoJson::JsonObjectConst>(), who);
           hlog::logf("orchestrator: mem_write -> %s", (r.success ? r.output : r.error).c_str());

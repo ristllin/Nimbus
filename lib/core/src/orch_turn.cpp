@@ -526,6 +526,9 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
     if (w.importance < 0.0) w.importance = 0.0;
     if (w.importance > 1.0) w.importance = 1.0;
     w.permanent = m["permanent"].is<bool>() ? m["permanent"].as<bool>() : false;
+    // standing:true - a rule for every reply: routed to the owner's standing
+    // rules at apply (the schema doc says when to set it).
+    w.standing = m["standing"].is<bool>() ? m["standing"].as<bool>() : false;
     // ttl: optional enum string (session|days|weeks|months|permanent); only
     // accepted when it names a known class, else left "" (default at apply).
     if (m["ttl"].is<const char*>()) {

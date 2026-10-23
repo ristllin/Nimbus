@@ -148,6 +148,21 @@ def main():
     # ---- episodic history: paged day-streams to JSONL ----------------------
     episodic = export_episodic(base, tok, root, manifest)
 
+    # ---- the owner's standing rules (lane J) + the directive -----------------
+    # User data, not secrets: the rules file's whole content and the directive
+    # (the latter was never exported before either).
+    for path, fname in (("/api/prefs", "prefs.json"),):
+        try:
+            (root / fname).write_bytes(get(base, tok, path))
+        except Exception as e:
+            manifest["errors"].append(f"{path}: {e}")
+    try:
+        orch = json.loads(get(base, tok, "/api/orch"))
+        (root / "directive.json").write_bytes(
+            json.dumps({"sysPrompt": orch.get("sysPrompt", "")}, indent=1).encode())
+    except Exception as e:
+        manifest["errors"].append(f"/api/orch (directive): {e}")
+
     # ---- scratchpad + usage ------------------------------------------------
     for path, fname in (("/api/mem/scratchpad", "scratchpad.json"), ("/api/orch", "usage.json")):
         try:

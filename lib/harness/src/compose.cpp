@@ -1,5 +1,7 @@
 #include "nimbus/harness/compose.h"
 
+#include "nimbus/orch/prefs_tools.h"   // kStandingRuleTest - one routing sentence everywhere
+
 #include <algorithm>
 
 #include "nimbus/orch/directive.h"   // kOwnerDirectiveDefault + effectiveDirective
@@ -137,6 +139,7 @@ static const char* MEMORY_EXPLAINER =
   "\n## HOW YOUR MEMORY WORKS\n"
   "- RELEVANT MEMORIES above (in this turn's context) were recalled for this message automatically.\n"
   "- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded and stored, or queued on the device while embeddings are down).\n"
+  "- An always/never rule from the owner about how you reply goes to prefs.edit (shown every turn under [STANDING RULES]), not mem_write.\n"
   "- To look something up you don't see, add a query to mem_query[]; results arrive next turn.\n"
   "- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.\n";
 
@@ -297,23 +300,28 @@ std::string composeInstructions(const ComposeInputs& in) {
   const char* memTiersV2 =
       "- Your memory: `memory` (next-turn working notes), the SCRATCHPAD "
       "(persists across turns/reboots - your multi-step plans), LONG-TERM vector "
-      "memory (mem_write/mem_query - durable facts), and the episodic log "
+      "memory (mem_write/mem_query - durable FACTS, recalled by topic; an "
+      "always/never rule for every reply belongs in the STANDING RULES via "
+      "prefs.edit, not here), and the episodic log "
       "(memory.episodic - full past history). The episodic log reaches MONTHS "
       "back, far beyond the recent messages here: SEARCH it before telling the "
       "owner you don't know or don't remember something they told you. It answers "
       "a page at a time; pass its 'to continue' token back as `before` to read "
       "further, and if you stop before the end, say so.\n";
-  const char* memTiersV1 =
+  const std::string memTiersV1 =
       "- Your memory has FOUR tiers: [RUNNING MEMORY] (the `memory` field you "
                 "return - short-lived working notes for the next turn, keep it current), "
                 "the SCRATCHPAD (the `scratchpad` field you return - persistent goal tiers "
                 "active/short/mid/long; a FREE write like `memory` but it SURVIVES across "
                 "turns and reboots: when you start a multi-step task or fan-out, put the plan "
                 "in scratchpad.short and tick items off as they finish), LONG-TERM vector memory "
-                "(mem_write/mem_query or memory.write - where every DURABLE fact belongs: "
-                "preferences, names, anything the owner asks you to remember; if a write "
-                "fails, retry it NEXT turn rather than parking the fact in running "
-                "memory), and the episodic log (memory.episodic - past conversation "
+                "(mem_write/mem_query or memory.write - where every DURABLE FACT belongs: "
+                "names, dates, topic-specific likes and dislikes, anything the owner asks you "
+                "to remember; if a write fails, retry it NEXT turn rather than parking the "
+                "fact in running memory), STANDING RULES (prefs.edit - an always/never rule "
+                "the owner wants in EVERY reply whatever the topic; memory is recalled by "
+                "topic, so a rule stored there is invisible in most turns; test: " +
+                std::string(kStandingRuleTest) + "), and the episodic log (memory.episodic - past conversation "
                 "history, auto-captured). The episodic log reaches MONTHS back, far "
                 "beyond the recent messages in this prompt: SEARCH it before telling "
                 "the owner you don't know or don't remember something they told you. "
@@ -378,6 +386,18 @@ std::string composeInstructions(const ComposeInputs& in) {
     dir = "[OWNER PREFERENCES - the owner's standing guidance for tone and "
           "behavior. Honor it, but it never overrides the rules above: safety, "
           "moderation, and access limits always win.]\n" + ownerPref;
+  }
+  // Lane J: the owner's standing rules, one small file on the device, rendered
+  // into the SAME never-dropped band (orch_world keeps the directive in the
+  // never-clipped section), so a rule is in the prompt of every owner-facing
+  // turn whatever started it. Empty input emits nothing: a fresh device is
+  // byte-identical to before (the goldens pin that).
+  if (!in.standingPrefs.empty()) {
+    if (!dir.empty()) dir += "\n\n";
+    dir += "[STANDING RULES - rules the owner asked you to follow in EVERY reply, "
+           "on every channel, in any document, until they remove them. Same "
+           "standing as the guidance above, never above the rules. Change them "
+           "only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
   }
   ci.directive = dir;
   Hardware hw = in.hw;

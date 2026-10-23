@@ -87,7 +87,7 @@ injected `Embedder` (text → int8 vector via the provider `/embeddings` API).
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `memory.write` | Store a fact in long-term associative memory so you can recall it later. | `content` (string, **required**), `importance` (number, 0–1, default 0.5), `permanent` (boolean, default false), `ttl` (enum: `session` \| `days` \| `weeks` \| `months` \| `permanent`), `source` (string, default `"self"`) | live |
+| `memory.write` | Store a fact in long-term associative memory so you can recall it later. With `standing: true` an always/never rule for every reply is stored in the owner's standing rules instead (`[STANDING RULES]`, shown every turn). | `content` (string, **required**), `importance` (number, 0–1, default 0.5), `permanent` (boolean, default false), `standing` (boolean, default false: an every-reply rule), `ttl` (enum: `session` \| `days` \| `weeks` \| `months` \| `permanent`), `source` (string, default `"self"`) | live |
 | `memory.search` | Search your long-term memory for facts relevant to a query. | `query` (string, **required**), `n_results` (integer, default = `cfg.retrievalCount`, i.e. 5) | live |
 | `memory.update` | Replace a fact that changed: store new `content` and remove the closest stale match. | `content` (string, **required**), `old` (string) or `id` (string), `importance` (number), `permanent` (boolean), `ttl` (enum) | live |
 | `memory.pin` | Pin a memory (never forgotten), unpin it, or delete it. A pin on an already pinned memory answers "already pinned, no change". Pinning stops decay; it does not put a memory into every prompt. | `action` (**required**, `pin` \| `unpin` \| `delete`), `content` (string) or `id` (string) | live |
@@ -215,6 +215,26 @@ Notes:
   turn in every chat. The `[SKILLS]` index names every skill and its one-line
   `desc:`; the assistant's history rows carry a `skills:` tag saying which
   skills a reply used.
+
+## `prefs.*` - the owner's standing rules
+
+Registered by `registerPrefsTools()` (`lib/core/src/orch_prefs_tools.cpp`) over
+the portable `OwnerPrefs` store (`/data/prefs.txt`, zero NVS keys). The rules
+ride the never-dropped part of every owner-facing prompt as `[STANDING RULES]`.
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `prefs.edit` | Your owner's STANDING RULES: always/never rules they want in EVERY reply whatever the topic. Add one only when the owner asks in their own words; facts and topic-specific likes go to memory. | `action` (**required**, `add` \| `replace` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `p3`) | live (owner/admin only) |
+
+Notes:
+- Owner-only: a member or guest turn never sees the tool or the rules.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
+  dream) for every action except `list`.
+- A turn that already read outside content can only add, and its rule waits as
+  pending until the owner approves it (`/prefs approve <id>` or the web page).
+- The owner sees every change in a line the device writes itself, over Telegram.
+- A rule whose words ban em dashes also switches on a device-enforced filter
+  that removes them from every delivered reply.
 
 ## `docs.*` - the device's own documentation
 

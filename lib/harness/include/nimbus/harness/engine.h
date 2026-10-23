@@ -396,6 +396,9 @@ class TurnEngine {
   bool turnInFlight() const { return turnInFlight_; }
   uint32_t headJobKey() const { return keyFromTag("head"); }
   bool inScheduledTurn() const { return scheduledTurn_; }
+  // Lane J: did this turn read outside content (a media row folded in, or an
+  // external-tainted tool result)? Read-only, for the device's prefs taint rail.
+  bool externalContentSeen() const { return externalContentSeen_; }
   const std::string& lastInstructions() const { return lastInstructions_; }
   const std::string& currentChat() const { return curChat_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -

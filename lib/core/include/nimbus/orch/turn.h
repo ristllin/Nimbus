@@ -71,6 +71,8 @@ struct MemWrite {
   double      importance = 0.5;
   bool        permanent  = false;
   std::string ttl;         // "" = default class; else session|days|weeks|months|permanent
+  bool        standing = false;   // a rule for every reply: routed to the owner's
+                                  // standing rules (owner_prefs), never the VDB
 };
 
 // A conversational session op the model issues (the ONLY advertised way to

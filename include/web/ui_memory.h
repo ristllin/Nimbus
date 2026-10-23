@@ -41,6 +41,11 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <textarea id=directive rows=8></textarea>
 <div class=row><button id=savedir type=button>Save</button><button id=revertdir type=button>Revert to default</button></div>
 <p class=hint id=dirmsg></p>
+<label>Standing rules <button class=qh type=button aria-expanded=false aria-label="About standing rules">?</button></label>
+<p class="hint tip">Short always/never rules the assistant follows in every reply. It adds one when you ask in chat; you can add, approve or remove any here. The assistant never removes one on its own.</p>
+<div id=prefslist class=hint>loading&hellip;</div>
+<div class=row style="margin-top:6px"><input id=prefsnew placeholder="A rule, e.g. Never use em dashes" style="flex:1"><button id=prefsadd type=button>Add</button></div>
+<p class=hint id=prefsmsg></p>
 <label>Assistant memory <button class=qh type=button aria-expanded=false aria-label="About assistant memory">?</button></label>
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>

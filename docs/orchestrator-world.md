@@ -48,6 +48,27 @@ box, with a "Revert to default" affordance. Injected below the platform rules an
 identity, delimited as owner preferences (it shapes style, never overrides
 safety/moderation/access). Editable only by the human (web UI / provisioning).
 
+### 1.1b Standing rules
+
+The owner's short always/never rules ("never use em dashes", "meat weights I
+give are raw"), stored in one small file on the internal flash
+(`/data/prefs.txt`, at most 12 rules, 240 characters each, 1,200 characters of
+rule text together, zero NVS keys) and rendered into the never-dropped part of
+every owner-facing prompt as `[STANDING RULES]`, right under the directive.
+A rule stated once is applied in every later reply without a reminder: memory
+is recalled by topic, so a rule that applies to every topic almost never
+surfaces from it.
+
+The assistant adds one only when the owner asks in their own words
+(`prefs.edit`, or a `mem_write` item marked `standing:true`), never from an
+unattended turn, and a turn that read outside content can only add one that
+waits for the owner's approval. The owner manages the list with `/prefs`
+(list, add, rm, approve, clear) or the web page under Memory, beside the
+directive; a first boot after the update seeds it from the always/never rules
+already in memory and lists them once. A rule that forbids em dashes also
+switches on a device-enforced filter that removes them from every delivered
+reply, so the guarantee holds even when the model slips.
+
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an
 active-task line), which the model rewrites as it works:

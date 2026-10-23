@@ -382,6 +382,42 @@ def restore_files(base, tok, src, a, out):
     )
 
 
+# The owner's standing rules (lane J): replayed through POST /api/prefs
+# action=import, which stores them ACTIVE with origin import (the device-side
+# dedup makes a repeated restore a no-op). The directive rides the same backup
+# (directive.json) through the existing /api/orch apply route.
+def restore_prefs(base, tok, src, a, out):
+    pf = src / "prefs.json"
+    if not pf.is_file():
+        return
+    rules = json.loads(pf.read_text())
+    items = rules.get("items", [])
+    n = 0
+    for r in items:
+        if r.get("state") != "active":
+            continue   # a pending rule was never the owner's; it does not restore
+        if a.dry_run:
+            n += 1
+            continue
+        body = urllib.parse.urlencode({"action": "import", "text": r["text"]}).encode()
+        try:
+            _req(base, tok, "/api/prefs", body, "application/x-www-form-urlencoded")
+            n += 1
+        except Exception as e:
+            out.fail(f"prefs import {r.get('id')}: {e}")
+    print(f"  prefs: {n} standing rule(s) {'would be' if a.dry_run else ''} imported")
+
+    dj = src / "directive.json"
+    if dj.is_file():
+        prompt = json.loads(dj.read_text()).get("sysPrompt", "")
+        if not a.dry_run and prompt:
+            body = urllib.parse.urlencode({"sysPrompt": prompt}).encode()
+            try:
+                _req(base, tok, "/api/orch", body, "application/x-www-form-urlencoded")
+            except Exception as e:
+                out.fail(f"directive: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Restore a Nimbus backup folder onto a device.")
     ap.add_argument("--ip", required=True)
@@ -435,6 +471,7 @@ def main():
         restore_vectors(base, tok, src, a, out)
         restore_episodic(base, tok, src, a, out)
         restore_scratchpad(base, tok, src, a, out)
+        restore_prefs(base, tok, src, a, out)
         restore_files(base, tok, src, a, out)
     except RestoreError as e:
         out.fail(str(e))

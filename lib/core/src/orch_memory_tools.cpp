@@ -428,6 +428,7 @@ struct WriteSpec {
   std::string ttlName;
   std::string source = "self";
   uint32_t createdAtHours = 0;
+  bool standing = false;   // lane J: an every-reply rule, routed to the standing rules
 };
 
 WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defImportance) {
@@ -436,6 +437,7 @@ WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defIm
   double imp = defImportance;
   numArg(a, "importance", imp);
   w.importance = (float)(imp < 0 ? 0 : imp > 1 ? 1 : imp);
+  w.standing = a["standing"].is<bool>() ? a["standing"].as<bool>() : false;
   w.permanent = a["permanent"].is<bool>() ? a["permanent"].as<bool>() : false;
   w.source = strArg(a, "source", "self");
   w.ttlName = strArg(a, "ttl", "");
@@ -565,6 +567,14 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
   if (!who.perms().writeOwn)
     return withCode(ToolResult::fail("this conversation isn't approved to store memories yet"),
                     kMemOutcomeRefused, ctx);
+  // Lane J: an every-reply rule goes to the owner's standing rules, never the
+  // topic-recalled vector store. handled=false falls through to the ordinary
+  // write (the rules refused it: not the owner, an unattended turn, not wired).
+  if (w.standing && ctx.saveStanding) {
+    bool handled = false;
+    ToolResult r = ctx.saveStanding(w.content, who, handled);
+    if (handled) return r;
+  }
   VecEntry e;
   std::string note;
   if (const char* refusal = prepareWrite(ctx, who, w, e, note, 0))

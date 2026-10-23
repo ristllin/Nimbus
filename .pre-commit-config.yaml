@@ -47,6 +47,14 @@ repos:
         types: [text]
         exclude: '^test/support/fixtures/|^website/static/vendor/'
 
+      - id: no-escaped-em-dash
+        name: no escaped em dash forms (lane J, see tools/check_no_escaped_em_dash.sh)
+        # The literal-character hook above cannot see \xE2\x80\x94-style escapes;
+        # this runs the scanner that can (reviewed parser lines carry em-dash-ok:).
+        entry: tools/check_no_escaped_em_dash.sh
+        language: system
+        pass_filenames: false
+
       - id: no-eink
         name: no e-ink / rotary knob on user surfaces (lane N10 removal)
         entry: tools/check_no_eink.sh

@@ -175,8 +175,41 @@ static void test_prompt_golden_with_recall_loop_off() {
 static void test_prompt_golden_v2_default() {
   ComposeInputs in = cannedInputs();
   in.promptV2 = true;
+  // Lane J: the v2 golden carries the owner's standing rules, so the block's
+  // framing is pinned byte for byte (the default/v1 goldens stay the fresh
+  // device: no rules, byte-identical to before the lane).
+  in.standingPrefs = "- (p1) Never use em dashes anywhere.\n- (p2) Meat weights I give are raw.";
   checkTextGolden("orch_prompt_v2_default.txt",
                   agent::layout::display(agent::composeInstructions(in)));
+}
+
+// Lane J (UNIFIED 4.5): the standing rules' presence property. The block rides
+// the never-dropped directive band, whatever the turn or the budget pressure,
+// and a device with no rules is byte-identical to before the lane.
+static void test_standing_rules_block_presence() {
+  // With rules: the block is present, framed after the owner preferences, and
+  // whole (both rules, both ids).
+  ComposeInputs in = cannedInputs();
+  in.standingPrefs = "- (p1) Never use em dashes anywhere.\n- (p2) Meat weights I give are raw.";
+  const std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("[STANDING RULES") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("- (p1) Never use em dashes anywhere.") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("- (p2) Meat weights I give are raw.") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("[OWNER PREFERENCES") < p.find("[STANDING RULES"));
+  // Never dropped: a starved budget clips the DYNAMIC tail, not the directive
+  // band the rules ride (orch_world keeps that band never-clipped).
+  ComposeInputs starved = in;
+  starved.budgetBytes = 2048;
+  const std::string q = agent::composeInstructions(starved);
+  TEST_ASSERT_TRUE(q.find("[STANDING RULES") != std::string::npos);
+  TEST_ASSERT_TRUE(q.find("- (p1) Never use em dashes anywhere.") != std::string::npos);
+  // Fresh device (no rules): byte-identical output - the goldens pin this too.
+  ComposeInputs fresh;
+  fresh = cannedInputs();
+  const std::string a = agent::composeInstructions(cannedInputs());
+  ComposeInputs b = cannedInputs();
+  b.standingPrefs.clear();
+  TEST_ASSERT_EQUAL_STRING(a.c_str(), agent::composeInstructions(b).c_str());
 }
 
 // N11: v1 must stay byte-identical when the flag is off (a default fleet is
@@ -627,6 +660,7 @@ int main(int, char**) {
   RUN_TEST(test_prompt_golden_default);
   RUN_TEST(test_prompt_golden_with_recall_loop_off);
   RUN_TEST(test_prompt_golden_v2_default);
+  RUN_TEST(test_standing_rules_block_presence);
   RUN_TEST(test_prompt_v2_flag_off_is_v1);
   RUN_TEST(test_prompt_v2_is_smaller);
   RUN_TEST(test_prompt_v2_names_every_field);

@@ -27,6 +27,8 @@
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
 #include "files_subsystem.h"            // files::available - E1 capability manifest
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
+#include "prefs_subsystem.h"            // standing rules: the block, /prefs, the delivery filter
+#include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
 #include "safety_activity_store.h"       // CUM-215 Safety activity log + scoped allowlist (record/allow)
@@ -384,6 +386,16 @@ static nimbus::orch::ContextBudget headBudget() {
 // Returns false ONLY when the outbound screen suppressed the message (a full reply
 // queue is logged, not "undelivered": the message still belongs in the history).
 static bool deliver(const String& chatId, const String& text, bool system = false) {
+  // Lane J (D-3): the owner's standing rules can switch on device-enforced
+  // output filters. "Never use em dashes" is exactly the kind of rule a model
+  // slips on in long formatted replies, so the rule ALSO strips them here, at
+  // the one seam every outbound reply crosses (Telegram, web chat, voice) -
+  // after the model, before the owner. Owner-facing turns only; device copy is
+  // exempt (it never carries one anyway).
+  String body = text;
+  const uint32_t filterMask = prefs::filtersForRole(roleOfChat(chatId) == nimbus::orch::Role::Admin);
+  if (!system && filterMask)
+    body = String(nimbus::orch::applyOutputFilters(std::string(text.c_str()), filterMask).c_str());
   // Gate 2 (outbound to guests, fail-open): when the owner turns it on, a reply to
   // a non-admin chat is screened; a flagged reply is suppressed (a classifier
   // outage fails open, so an outage never silences the assistant). Admin/web/serial
@@ -392,7 +404,7 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // the fetch scan. Genuine device system copy is exempt so we never pay a classifier
   // call to screen our own known-safe strings - but only on provenance, not content.
   if (!nimbus::orch::outboundExempt(system) &&
-      moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
+      moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, body) == nimbus::orch::ModAction::Block) {
     alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
     return false;
   }
@@ -404,9 +416,9 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // other: orchSendSink hands it to the web chat book as an ASYNC delivery (the open
   // page re-renders its history, where captureAssistant records it), never into the
   // legacy single slot or any turn's reply (agent::deliverToWebChat).
-  if (g_sinks.send && !g_sinks.send(chatId, text))
+  if (g_sinks.send && !g_sinks.send(chatId, body))
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
-          (int)text.length(), chatId.c_str());
+          (int)body.length(), chatId.c_str());
   return true;
 }
 
@@ -1143,6 +1155,10 @@ static TurnEngine::Deps buildTurnDeps() {
     in.now       = std::string(nimbus::hw::localTimeStr().c_str());  // "" = unsynced
     in.fw        = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
     in.directive = g_mem.directive();
+    // Lane J: the owner's standing rules ride the never-dropped band beside the
+    // directive, on every owner-facing turn whatever started it (a member or
+    // guest turn never sees them - the rules are the owner's).
+    in.standingPrefs = prefs::blockForRole(roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin);
     in.runningMemory = g_mem.model(chatId);   // the TURN CHAT's rolling summary (B3)
     // LIVE hardware manifest (P5): read the actual HAL health + storage mount +
     // fault mask instead of hardcoding flags, so the model's self-model matches
@@ -1889,7 +1905,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         // Async by design: the fold runs on the next pollJobs pass (~1 s), off
         // the command path - the same staged pattern as every heavy owner op.
         stageManualFold(chatId.c_str());
-        say(selfTag + "Compacting this conversation in the background \xE2\x80\x94 I'll confirm shortly.");
+        say(selfTag + "Compacting this conversation in the background - I'll confirm shortly.");
         return;
       }
       if (v == "remind") {
@@ -1903,7 +1919,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String note = (sp < 0) ? String("") : rest.substring(sp + 1); note.trim();
         const long secs = nimbus::orch::parseDurationSecs(std::string(durStr.c_str()));
         if (secs < 0 || note.length() == 0) {
-          say(selfTag + "Usage: /remind <when> <what> \xE2\x80\x94 e.g. "
+          say(selfTag + "Usage: /remind <when> <what> - e.g. "
                           "/remind 30m take the cake out. Time is a span like 45s, 30m, "
                           "2h, or 1d.");
           return;
@@ -1918,7 +1934,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
           // Translate the core's in_seconds bounds message into /remind's vocabulary.
           String em = String(rr.err.c_str());
           if (em.indexOf("in_seconds") >= 0)
-            em = "that time is out of range \xE2\x80\x94 pick between 2 minutes and 7 days";
+            em = "that time is out of range - pick between 2 minutes and 7 days";
           say(selfTag + "Couldn't set that reminder: " + em);
           return;
         }
@@ -1927,7 +1943,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                     : (secs < 86400) ? (String(secs / 3600) + "h" +
                                         (secs % 3600 ? " " + String((secs % 3600) / 60) + "m" : ""))
                     : (String(secs / 86400) + "d");
-        say(selfTag + "Reminder set \xE2\x80\x94 in " + when + " I'll remind you: " +
+        say(selfTag + "Reminder set - in " + when + " I'll remind you: " +
                         note + "  (cancel with /loop deny " + String(rr.id.c_str()) + ")");
         return;
       }
@@ -1939,10 +1955,10 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
         if (action.length() == 0) { say(selfTag + "Usage: /loops \xC2\xB7 /loop approve|deny|off|on <id>"); return; }
         String msg;
-        if      (action == "approve") msg = loops::approveLoop(id) ? "Approved \xE2\x80\x94 it will run on schedule." : "No routine with that ID.";
+        if      (action == "approve") msg = loops::approveLoop(id) ? "Approved - it will run on schedule." : "No routine with that ID.";
         else if (action == "deny" || action == "kill" || action == "delete")
           msg = loops::isReservedId(id)
-                    ? "This is a system routine \xE2\x80\x94 use /loop off " + id + " to pause it."
+                    ? "This is a system routine - use /loop off " + id + " to pause it."
                     : (loops::cancelLoop(id) ? "Removed." : "No routine with that ID.");
         else if (action == "off"  || action == "pause")  msg = loops::setEnabled(id, false) ? "Paused." : "No routine with that ID.";
         else if (action == "on"   || action == "resume") msg = loops::setEnabled(id, true)  ? "Resumed." : "No routine with that ID.";
@@ -1970,6 +1986,14 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         } else {
           say(selfTag + "Usage: /fetch approve|deny <id>");
         }
+        return;
+      }
+      if (v == "prefs") {
+        // Lane J: the owner's standing rules - deterministic, owner-only, never
+        // a paid turn. The parse and the words come from the portable command
+        // handler (prefs_tools.cpp), pinned host-side.
+        say(selfTag +
+            nimbus::orch::prefsCommand(prefs::context(), cmd.args.c_str()).c_str());
         return;
       }
       if (v == "skill") {
@@ -2012,25 +2036,26 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         return;
       }
       if (v == "help" || v == "start") {
-        say("Hi \xE2\x80\x94 I'm " + String(nimbus::sys::deviceName().c_str()) +
+        say("Hi - I'm " + String(nimbus::sys::deviceName().c_str()) +
                         " (firmware " NIMBUS_FW_VERSION
                         "). Send a message and I'll reply here.\n\nOwner commands:\n"
-                        "/update \xE2\x80\x94 install a pending firmware update\n"
-                        "/loops \xE2\x80\x94 list routines\n"
-                        "/remind <when> <what> \xE2\x80\x94 one-time reminder (e.g. /remind 30m ...)\n"
-                        "/compact \xE2\x80\x94 summarize this conversation into memory\n"
+                        "/update - install a pending firmware update\n"
+                        "/loops - list routines\n"
+                        "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)\n"
+                        "/compact - summarize this conversation into memory\n"
                         "/clear - forget this conversation (keeps memory and files)\n"
                         "/mcp approve|deny <name> - approve a tool server\n"
                         "/play [track|stop|pause] - play music from the SD card\n"
                         "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
                         "/skill list|show <id> - see saved skills and what waits for you\n"
                         "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
-                        "/skill auto on|off - may the assistant approve its own skill changes");
+                        "/skill auto on|off - may the assistant approve its own skill changes\n"
+                        "/prefs - list your standing rules; /prefs add <rule> saves one"); a5b07423 (lane J: standing owner preferences - the store, the block, the surfaces, and the em-dash ban enforced)
         return;
       }
       // Any other slash command: deterministic reply, never a paid LLM turn.
       say(selfTag + "I don't recognize /" + String(v.c_str()) +
-                      " \xE2\x80\x94 try /help. To chat, just write without the slash.");
+                      " - try /help. To chat, just write without the slash.");
       return;
     }
   }
@@ -2175,6 +2200,13 @@ bool fileSendForTurn() {
   return telegramDeliverable(std::string());   // outside a turn: a chat is allowlisted
 }
 bool inScheduledTurn() { return g_engine && g_engine->inScheduledTurn(); }
+
+// Lane J: did the running turn read outside content (a folded-in media row, or
+// an external-tainted tool result)? The standing rules' taint rail reads it: a
+// rule a tainted turn adds waits for the owner's approval instead of going live.
+bool turnReadOutsideContent() {
+  return g_engine && g_engine->externalContentSeen();
+}
 
 nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String& prompt,
                                               const String& name, const String& loopId,
@@ -2436,7 +2468,7 @@ static void compactTick() {
     if (due == FoldDue::ThrashPaused) {
       if (!pseudo)
         deliver(String(chat.c_str()),
-                String("\xE2\x9A\xA0 Conversation compaction paused for this chat \xE2\x80\x94 it "
+                String("\xE2\x9A\xA0 Conversation compaction paused for this chat - it "
                        "kept refilling immediately. Send /compact to run it manually."),
                 /*system=*/true);
       return;
@@ -2551,7 +2583,7 @@ static void compactTick() {
     publishFoldStatus(chat);
     if (!pseudo) deliver(String(chat.c_str()),
             String("\xE2\x9A\xA0 Conversation compaction keeps failing for this "
-                   "chat \xE2\x80\x94 automatic compaction is paused. /compact retries manually."),
+                   "chat - automatic compaction is paused. /compact retries manually."),
             /*system=*/true);
   }
 }

@@ -22,6 +22,9 @@ const ToolTaintRow kRows[] = {
     {"memory.config", T::Internal, E::Config},
     {"memory.episodic", T::External, E::Read},   // past messages include tool outputs and media
     {"memory.archive", T::Internal, E::MemDelete},
+    // the owner's standing rules (lib/core/src/orch_prefs_tools.cpp): a durable save
+    // the owner asked for, so a "saved" claim is backed like a memory write
+    {"prefs.edit", T::Internal, E::MemWrite},
     // the recent-results ring (lib/core/src/orch_result_store.cpp)
     {"results.get", T::External, E::Read},
     {"results.list", T::External, E::Read},

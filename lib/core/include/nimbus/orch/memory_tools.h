@@ -174,6 +174,12 @@ struct MemoryContext {
   std::function<void(EmbedFail kind, const std::string& raw)> onParked;
   // Every memory.write / memory.update outcome code, for the turn and dream counts.
   std::function<void(const char* code)> onWriteOutcome;
+  // Lane J: a mem_write item marked standing:true routes here (the owner's
+  // standing rules, owner_prefs.h) instead of the vector store. Null = the
+  // rules are not wired: the item stores as an ordinary memory. handled=false
+  // says the rules did not take it (not the owner, an unattended turn) and the
+  // ordinary write path continues.
+  std::function<ToolResult(const std::string&, const Principal&, bool&)> saveStanding;
 };
 
 // The honest effect reports the claim check reads (turn_effects.h): a pin on an

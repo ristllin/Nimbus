@@ -1,5 +1,7 @@
 #include "memory_subsystem.h"
 
+#include "prefs_subsystem.h"   // lane J: the standing-rules store + tools
+
 #include <esp_littlefs.h>    // esp_littlefs_format_partition - the scrub's empty FS
 #include <esp_partition.h>   // esp_partition_erase_range - the scrub erases every block
 
@@ -942,8 +944,16 @@ void begin() {
     else if (!strcmp(code, nimbus::orch::kMemOutcomeQueued)) g_outcomes.queued++;
     else if (!strcmp(code, nimbus::orch::kMemOutcomeRefused)) g_outcomes.refused++;
   };
+  // Lane J: an every-reply mem_write item (standing:true) routes to the owner's
+  // standing rules instead of the vector store; the prefs context carries the
+  // same rails the prefs.edit tool has (owner, attended, taint means pending).
+  ctx.saveStanding = [](const std::string& text, const nimbus::orch::Principal& who,
+                        bool& handled) {
+    return nimbus::orch::prefsSaveStanding(prefs::context(), text, who, handled);
+  };
   g_ctx = ctx;
   registerMemoryTools(g_reg, ctx);
+  nimbus::orch::registerPrefsTools(g_reg, prefs::context());
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
   // session.* tools for external MCP clients. list + terminate are live over the

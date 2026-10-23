@@ -117,6 +117,9 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // True while a scheduled-loop turn is executing - the device-action validator
 // refuses `reboot` and `loop.create` in this window (prism fork-bomb/reset guard).
 bool inScheduledTurn();
+// Lane J: did the running turn read outside content (a folded-in media row or
+// an external-tainted tool result)? The standing rules' taint rail reads it.
+bool turnReadOutsideContent();
 // Is `cid` currently in the Telegram allowlist? (Local Loops fire-time re-check.)
 bool isChatAllowed(const String& cid);
 // The first allow-listed chat (owner default target for a loop with no chat_id).
