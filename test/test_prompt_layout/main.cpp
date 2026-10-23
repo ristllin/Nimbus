@@ -369,15 +369,8 @@ static const char* wireName(Wire w) {
   return "?";
 }
 
-// Run one head turn on a fake transport; returns every request body. `finalOnly`
-// forces the tool-less final round (the cap path) on the loops that have one.
-// `extraSpecs` appends registry tools to the rig (the body-size guard's
-// full-manifest case).
-static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
-                                        const std::string& inputs,
-                                        const std::vector<nimbus::orch::ToolRegistry::Spec>* extraSpecs = nullptr) {
-  FakeProviderDeps d;
-  const bool loop = w == Wire::AntLoop || w == Wire::OaiLoop || w == Wire::MisLoop;
+// The fake transport's scripted replies for one wire (its http.script).
+static void scriptWire(FakeProviderDeps& d, Wire w) {
   switch (w) {
     case Wire::AntLoop:
       d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolResponse()});
@@ -398,11 +391,23 @@ static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
       d.http.script.push_back({"", "/v1/chat/completions", 200, misFinalResponse()});
       break;
   }
+}
+
+// Run one head turn on a fake transport; returns every request body. `finalOnly`
+// forces the tool-less final round (the cap path) on the loops that have one.
+// `extraSpecs` appends registry tools to the rig (the body-size guard's
+// full-manifest case).
+static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
+                                        const std::string& inputs,
+                                        const std::vector<nimbus::orch::ToolRegistry::Spec>* extraSpecs = nullptr) {
+  static const std::vector<nimbus::orch::ToolRegistry::Spec> kNoSpecs;
+  FakeProviderDeps d;
+  const bool loop = w == Wire::AntLoop || w == Wire::OaiLoop || w == Wire::MisLoop;
+  scriptWire(d, w);
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
-  if (extraSpecs)
-    for (const auto& s : *extraSpecs) rig.ht.specs.push_back(s);
+  for (const auto& s : (extraSpecs ? *extraSpecs : kNoSpecs)) rig.ht.specs.push_back(s);
   std::string conv, out, err;
   const agent::HeadTools* tools = loop ? &rig.ht : nullptr;
   bool ok = false;

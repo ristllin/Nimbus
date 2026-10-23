@@ -212,17 +212,21 @@ int volatileRank(const SummarySection& sec) {
 }
 }  // namespace
 
-std::string capSummary(const std::string& s) {
-  if (s.size() <= kChatSummaryMax) return s;
-  static const char kEllipsis[] = "\xE2\x80\xA6";   // the visible cut marker
-  std::vector<SummarySection> secs = splitSections(s);
-  const auto fits = [&](const std::string& j) { return j.size() + sizeof(kEllipsis) - 1 <= kChatSummaryMax; };
-  bool trimmed = false;
-  // 1. drop whole VOLATILE sections, the most volatile first, while over the cap.
-  while (true) {
-    std::string joined;
-    joinSections(secs, joined);
-    if (fits(joined)) break;
+// The visible cut marker (one, flush against the last kept text).
+const char kSumEllipsis[] = "\xE2\x80\xA6";
+
+bool sectionsFit(const std::vector<SummarySection>& secs) {
+  std::string joined;
+  joinSections(secs, joined);
+  return joined.size() + sizeof(kSumEllipsis) - 1 <= kChatSummaryMax;
+}
+
+// 1. drop whole VOLATILE sections, the most volatile first, while over the cap.
+// The last section always stays (a headerless prose summary is one section:
+// the UTF-8-safe tail cut takes it). True when any section was dropped.
+bool dropVolatileSections(std::vector<SummarySection>& secs) {
+  bool dropped = false;
+  while (!sectionsFit(secs)) {
     int worst = -1;
     int worstRank = 3;
     for (size_t i = 0; i < secs.size(); i++) {
@@ -230,19 +234,18 @@ std::string capSummary(const std::string& s) {
       const int rank = volatileRank(secs[i]);
       if (rank < worstRank) { worstRank = rank; worst = (int)i; }
     }
-    if (worst < 0 || secs.size() <= 1) break;   // nothing volatile left, or the
-                                              // last section stays (a headerless
-                                              // prose summary is one section: the
-                                              // UTF-8-safe tail cut below takes it)
+    if (worst < 0 || secs.size() <= 1) break;   // nothing volatile left
     secs.erase(secs.begin() + worst);
-    trimmed = true;
+    dropped = true;
   }
-  // 2. trim the durable BODIES from the last durable section backwards, a whole
-  //    line at a time; their headers always stay whole.
-  while (true) {
-    std::string joined;
-    joinSections(secs, joined);
-    if (fits(joined)) break;
+  return dropped;
+}
+
+// 2. trim the durable BODIES from the last durable section backwards, a whole
+//    line at a time; their headers always stay whole. True when any line went.
+bool trimDurableBodies(std::vector<SummarySection>& secs) {
+  bool trimmed = false;
+  while (!sectionsFit(secs)) {
     int target = -1;
     for (size_t i = secs.size(); i-- > 0;)
       if (secs[i].durable && !secs[i].body.empty()) { target = (int)i; break; }
@@ -250,28 +253,35 @@ std::string capSummary(const std::string& s) {
     dropLastLine(secs[target].body);
     trimmed = true;
   }
+  return trimmed;
+}
+
+std::string capSummary(const std::string& s) {
+  if (s.size() <= kChatSummaryMax) return s;
+  std::vector<SummarySection> secs = splitSections(s);
+  const bool trimmed = dropVolatileSections(secs) | trimDurableBodies(secs);
   std::string joined;
   joinSections(secs, joined);
-  if (fits(joined)) {
+  if (joined.size() + sizeof(kSumEllipsis) - 1 <= kChatSummaryMax) {
     if (!trimmed) return joined;
     // The cut is visible, exactly one marker: it lands flush against the last
     // kept text (its trailing line end is dropped first), so a re-cap of an
     // already capped summary - the next anchored fold - finds it and never
     // doubles it.
     while (!joined.empty() && joined.back() == '\n') joined.pop_back();
-    if (joined.size() >= sizeof(kEllipsis) - 1 &&
-        joined.compare(joined.size() - (sizeof(kEllipsis) - 1), sizeof(kEllipsis) - 1,
-                       kEllipsis) == 0)
+    if (joined.size() >= sizeof(kSumEllipsis) - 1 &&
+        joined.compare(joined.size() - (sizeof(kSumEllipsis) - 1), sizeof(kSumEllipsis) - 1,
+                       kSumEllipsis) == 0)
       return joined;
-    joined += kEllipsis;
+    joined += kSumEllipsis;
     return joined;
   }
   // 3. the pathological case (the durable headers alone near the cap): one
   //    UTF-8-safe tail cut. Never a torn sequence.
   const int keep = nimbus::utf8CapLen(joined.c_str(), (int)joined.size(),
-                                      (int)kChatSummaryMax - (sizeof(kEllipsis) - 1));
+                                      (int)kChatSummaryMax - (sizeof(kSumEllipsis) - 1));
   joined.resize((size_t)keep);
-  joined += kEllipsis;
+  joined += kSumEllipsis;
   return joined;
 }
 

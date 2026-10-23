@@ -90,6 +90,30 @@ std::string historyLine(const HistoryFacts& h) {
          plural(h.recalledItems, "item", "items");
 }
 
+// histV2: the history part's messages (one per kMsgSplit, 'u' or 'a' then its
+// text) - their count, their total bytes, and the summary pair's bytes when it
+// rides first.
+void measureHistoryMessages(const std::string& s, const Region& hist, HistoryFacts& h) {
+  int msgs = 0;
+  size_t bytes = 0;
+  bool first = true;
+  for (size_t p = s.find(layout::kMsgSplit, hist.b);
+       p != npos && p + 1 < hist.e; p = s.find(layout::kMsgSplit, p + 1)) {
+    const size_t next = s.find(layout::kMsgSplit, p + 1);
+    const size_t end = (next == npos || next > hist.e) ? hist.e : next;
+    if (end > p + 2) {
+      msgs++;
+      bytes += end - (p + 2);
+      if (first && s.compare(p + 2, 21, "[CONVERSATION SUMMARY") == 0)
+        h.summaryBytes = end - (p + 2);
+    }
+    first = false;
+    if (next == npos) break;
+  }
+  h.windowRows = msgs;
+  h.windowBytes = bytes;
+}
+
 }  // namespace
 
 HistoryFacts measureHistory(const std::string& instructions, const std::string& heldSummary,
@@ -97,27 +121,7 @@ HistoryFacts measureHistory(const std::string& instructions, const std::string& 
   HistoryFacts h;
   const Regions r = regionsOf(instructions);
   if (r.split) {
-    // The history part (prompt_layout.h): one message per kMsgSplit, 'u' or 'a'
-    // then its text. The summary pair, when the chat was compacted, is the
-    // first message.
-    int msgs = 0;
-    size_t bytes = 0;
-    bool first = true;
-    for (size_t p = instructions.find(layout::kMsgSplit, r.hist.b);
-         p != npos && p + 1 < r.hist.e; p = instructions.find(layout::kMsgSplit, p + 1)) {
-      const size_t next = instructions.find(layout::kMsgSplit, p + 1);
-      const size_t end = (next == npos || next > r.hist.e) ? r.hist.e : next;
-      if (end > p + 2) {
-        msgs++;
-        bytes += end - (p + 2);
-        if (first && instructions.compare(p + 2, 21, "[CONVERSATION SUMMARY") == 0)
-          h.summaryBytes = end - (p + 2);
-      }
-      first = false;
-      if (next == npos) break;
-    }
-    h.windowRows = msgs;
-    h.windowBytes = bytes;
+    measureHistoryMessages(instructions, r.hist, h);
   } else {
     const Region sec = sectionIn(instructions, r.hist, "CONVERSATION SUMMARY");
     if (sec.b != npos) h.summaryBytes = sec.e - sec.b;

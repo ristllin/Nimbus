@@ -112,12 +112,13 @@ class PosixFiles {
                                 key = str(a, "key"), sum = str(a, "sum");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-              std::string err, note;
               if (!key.empty()) {
-                if (!upsert(p, n, t, key, sum, err, note))
-                  return nimbus::orch::ToolResult::fail(err);
-                return nimbus::orch::ToolResult::ok(note);
+                UpsertOut out;
+                if (!upsert(p, n, t, key, sum, out))
+                  return nimbus::orch::ToolResult::fail(out.err);
+                return nimbus::orch::ToolResult::ok(out.note);
               }
+              std::string err, note;
               if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
               return nimbus::orch::ToolResult::ok(note);
             },
@@ -276,22 +277,28 @@ class PosixFiles {
     return buf;
   }
 
+  // The upsert's outcome in one bundle (the function stays under the argument
+  // ceiling): ok + the error text or the model-facing note.
+  struct UpsertOut {
+    bool        ok = false;
+    std::string err, note;
+  };
+
   bool upsert(const std::string& p, const std::string& n, const std::string& text,
-              const std::string& key, const std::string& sum, std::string& err,
-              std::string& note) {
+              const std::string& key, const std::string& sum, UpsertOut& out) {
     std::string cur;
     const nimbus::orch::FileEntry* old = store_.find(p, n);
     if (old) read(p, n, cur);
     const nimbus::orch::CsvUpsert up =
         nimbus::orch::planCsvUpsert(cur, text, key, sum, todayStr());
     if (!up.ok) {
-      err = up.err;
+      out.err = up.err;
       return false;
     }
     if (up.changed) {
-      if (store_.wouldExceed(p, n, up.out.size(), err)) return false;
+      if (store_.wouldExceed(p, n, up.out.size(), out.err)) return false;
       if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
-        err = "write failed";
+        out.err = "write failed";
         return false;
       }
       nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
@@ -303,16 +310,16 @@ class PosixFiles {
       }
       e.bytes = (uint32_t)up.out.size();
       e.hash = 0;
-      if (!store_.add(e, err)) return false;
+      if (!store_.add(e, out.err)) return false;
       fsutil::writeFileAtomic(indexPath(), store_.dump());
     }
-    note = "updated " + std::to_string(up.replaced) +
-           (up.replaced == 1 ? " row" : " rows") + ", appended " +
-           std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
+    out.note = "updated " + std::to_string(up.replaced) +
+               (up.replaced == 1 ? " row" : " rows") + ", appended " +
+               std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
     if (up.hasTotal) {
       char tot[32];
       std::snprintf(tot, sizeof tot, "%g", up.todayTotal);
-      note += "; today's " + sum + ": " + tot;
+      out.note += "; today's " + sum + ": " + tot;
     }
     return true;
   }

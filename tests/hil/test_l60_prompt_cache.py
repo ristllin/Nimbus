@@ -225,9 +225,7 @@ def test_l60_five_food_logs_median_two_requests(board):
         assert "files: appended" in log or "files: upsert" in log, (
             f"food log {i}: neither files.append nor a keyed upsert ran"
         )
-        assert "files: artifact l60-bench/food-log.csv" not in log, (
-            f"food log {i}: the log was re-saved whole"
-        )
+        assert "files: artifact l60-bench/food-log.csv" not in log, f"food log {i}: the log was re-saved whole"
         counts.append(len(rounds))
     counts.sort()
     median = counts[len(counts) // 2]

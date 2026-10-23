@@ -151,6 +151,77 @@ void dayTotalOf(const std::vector<std::string>& rows, int dateCol, int sumCol,
   out.todayTotal = total;
   out.hasTotal = true;
 }
+// The column indexes a keyed upsert needs; -1 when the column is absent.
+struct UpsertCols {
+  int key = -1, sum = -1, date = -1;
+};
+
+// The header checks' outcome: the column indexes when the headers can merge,
+// else the reason they cannot.
+struct UpsertHeader {
+  bool        ok = false;
+  UpsertCols  cols;
+  std::string err;
+};
+
+// The header checks: the text's header must name the key (and the sum) column,
+// and a stored file must carry the key column too (its header is the first
+// row; an empty or new file adopts the text's header, and `rows` receives it).
+UpsertHeader upsertColumns(const std::vector<std::string>& fresh,
+                           const std::string& keyCol, const std::string& sumCol,
+                           std::vector<std::string>& rows, std::vector<std::string>& header) {
+  UpsertHeader h;
+  const std::vector<std::string> newHeader = splitCsvRow(fresh.front());
+  h.cols.key = columnIndex(newHeader, keyCol);
+  if (h.cols.key < 0) {
+    h.err = "the text's header has no column '" + keyCol + "'";
+    return h;
+  }
+  h.cols.sum = sumCol.empty() ? -1 : columnIndex(newHeader, sumCol);
+  if (!sumCol.empty() && h.cols.sum < 0) {
+    h.err = "the text's header has no column '" + sumCol + "'";
+    return h;
+  }
+  if (!rows.empty()) {
+    header = splitCsvRow(rows.front());
+    if (columnIndex(header, keyCol) < 0) {
+      h.err = "the stored file has no column '" + keyCol + "' - its header differs";
+      return h;
+    }
+  } else {
+    rows.push_back(fresh.front());   // the header lands as the file's first row
+    header = newHeader;
+  }
+  h.cols.date = dateColumnOf(header);
+  h.ok = true;
+  return h;
+}
+
+// Merge each new data row by key: a row whose key exists replaces it, anything
+// else appends. A stray row (no key value) is skipped.
+void mergeRowsByKey(std::vector<std::string>& rows, const std::vector<std::string>& fresh,
+                    int keyIdx, int& replaced, int& appended) {
+  for (size_t i = 1; i < fresh.size(); i++) {
+    const std::vector<std::string> f = splitCsvRow(fresh[i]);
+    if (f.size() <= (size_t)keyIdx || f[(size_t)keyIdx].empty()) continue;   // a stray row: skip
+    const std::string& key = f[(size_t)keyIdx];
+    bool hit = false;
+    for (size_t r = 1; r < rows.size() && !hit; r++) {
+      const std::vector<std::string> g = splitCsvRow(rows[r]);
+      if (g.size() > (size_t)keyIdx && g[(size_t)keyIdx] == key) {
+        rows[r] = fresh[i];
+        replaced++;
+        hit = true;
+      }
+    }
+    if (!hit) {
+      rows.push_back(fresh[i]);
+      appended++;
+    }
+  }
+}
+
+
 }  // namespace
 
 CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
@@ -167,56 +238,19 @@ CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
     out.err = "need 'text': the header row and at least one data row";
     return out;
   }
-  const std::vector<std::string> newHeader = splitCsvRow(fresh.front());
-  const int keyIdx = columnIndex(newHeader, keyCol);
-  if (keyIdx < 0) {
-    out.err = "the text's header has no column '" + keyCol + "'";
-    return out;
-  }
-  int sumIdx = sumCol.empty() ? -1 : columnIndex(newHeader, sumCol);
-  if (!sumCol.empty() && sumIdx < 0) {
-    out.err = "the text's header has no column '" + sumCol + "'";
-    return out;
-  }
-  // The existing file must carry the same header (the first row); an empty or
-  // new file adopts the text's header as row 0.
   std::vector<std::string> header;
-  if (!rows.empty()) {
-    header = splitCsvRow(rows.front());
-    if (columnIndex(header, keyCol) < 0) {
-      out.err = "the stored file has no column '" + keyCol + "' - its header differs";
-      return out;
-    }
-  } else {
-    rows.push_back(fresh.front());   // the header lands as the file's first row
-    header = newHeader;
+  const UpsertHeader h = upsertColumns(fresh, keyCol, sumCol, rows, header);
+  if (!h.ok) {
+    out.err = h.err;
+    return out;
   }
-  const int dateIdx = dateColumnOf(header);
-  // Merge each new data row by key.
-  for (size_t i = 1; i < fresh.size(); i++) {
-    const std::vector<std::string> f = splitCsvRow(fresh[i]);
-    if (f.size() <= (size_t)keyIdx || f[(size_t)keyIdx].empty()) continue;   // a stray row: skip
-    const std::string& key = f[(size_t)keyIdx];
-    bool hit = false;
-    for (size_t r = 1; r < rows.size() && !hit; r++) {
-      const std::vector<std::string> g = splitCsvRow(rows[r]);
-      if (g.size() > (size_t)keyIdx && g[(size_t)keyIdx] == key) {
-        rows[r] = fresh[i];
-        out.replaced++;
-        hit = true;
-      }
-    }
-    if (!hit) {
-      rows.push_back(fresh[i]);
-      out.appended++;
-    }
-  }
+  mergeRowsByKey(rows, fresh, h.cols.key, out.replaced, out.appended);
   // Join and report.
   std::string joined;
   for (const std::string& r : rows) joined += r + "\n";
   out.changed = joined != existing;
   out.out = out.changed ? joined : std::string();
-  dayTotalOf(rows, dateIdx, sumIdx, today, out);
+  dayTotalOf(rows, h.cols.date, h.cols.sum, today, out);
   out.ok = true;
   return out;
 }
