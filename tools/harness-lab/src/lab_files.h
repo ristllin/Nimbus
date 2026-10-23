@@ -106,11 +106,14 @@ class LabFiles {
               // The device's own append rules (normalize rows, cap bytes, repair a
               // cut last row visibly) - a lab that taught a different shape would
               // teach the model a habit the firmware doesn't serve.
-              std::string& file = files_[p + "/" + n];
+              const std::string key = p + "/" + n;
+              auto it = files_.find(key);
+              const std::string existing = it == files_.end() ? std::string() : it->second;
               const nimbus::orch::AppendPlan plan =
-                  nimbus::orch::planAppend(t, file.size(), file.empty() ? '\n' : file.back());
+                  nimbus::orch::planAppend(t, existing.size(),
+                                           existing.empty() ? '\n' : existing.back());
               if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
-              file += plan.bytes;
+              files_[key] = existing + plan.bytes;
               return nimbus::orch::ToolResult::ok(
                   "appended " + std::to_string(plan.rows) + " row(s) to " + p + "/" + n +
                   (plan.repairedCut

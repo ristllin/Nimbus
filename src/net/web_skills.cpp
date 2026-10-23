@@ -52,6 +52,17 @@ String resultJson(const std::string& id, const agent::SkillResult& res) {
   return out;
 }
 
+// One owner store op, shared by the approve/deny/discard/delete routes. A
+// plain function (no capture): the handler lambdas outlive this call, so a
+// captured stack local would dangle by the time a request arrives.
+void ownerOp(AsyncWebServerRequest* r,
+             agent::SkillResult (*op)(const std::string&, const agent::SkillCaller&)) {
+  if (authBlocked(r)) return;
+  const std::string id(qparam(r, "id").c_str());
+  const agent::SkillResult res = op(id, agent::SkillCaller::ownerCall());
+  sendJson(r, res.ok ? 200 : 400, resultJson(id, res));
+}
+
 }  // namespace
 
 void registerSkillRoutes(AsyncWebServer& server) {
@@ -125,24 +136,16 @@ void registerSkillRoutes(AsyncWebServer& server) {
   });
 
   // ---- POST /api/skills/approve|deny|discard|delete id= ------------------------
-  const auto ownerOp = [](AsyncWebServerRequest* r,
-                          agent::SkillResult (*op)(const std::string&,
-                                                    const agent::SkillCaller&)) {
-    if (authBlocked(r)) return;
-    const std::string id(qparam(r, "id").c_str());
-    const agent::SkillResult res = op(id, agent::SkillCaller::ownerCall());
-    sendJson(r, res.ok ? 200 : 400, resultJson(id, res));
-  };
-  server.on("/api/skills/approve", HTTP_POST, [&ownerOp](AsyncWebServerRequest* r) {
+  server.on("/api/skills/approve", HTTP_POST, [](AsyncWebServerRequest* r) {
     ownerOp(r, skills::approve);
   });
-  server.on("/api/skills/deny", HTTP_POST, [&ownerOp](AsyncWebServerRequest* r) {
+  server.on("/api/skills/deny", HTTP_POST, [](AsyncWebServerRequest* r) {
     ownerOp(r, skills::deny);
   });
-  server.on("/api/skills/discard", HTTP_POST, [&ownerOp](AsyncWebServerRequest* r) {
+  server.on("/api/skills/discard", HTTP_POST, [](AsyncWebServerRequest* r) {
     ownerOp(r, skills::discard);
   });
-  server.on("/api/skills/delete", HTTP_POST, [&ownerOp](AsyncWebServerRequest* r) {
+  server.on("/api/skills/delete", HTTP_POST, [](AsyncWebServerRequest* r) {
     ownerOp(r, skills::remove);
   });
 
