@@ -15,9 +15,9 @@ Unit A.
 
 Bounds on the release candidate: at most three turns (the message and the upkeep's two
 phases), at most twelve head requests, no request written with 0 bytes sent more than
-once, at most one owner message about it (the honest low-memory reply, or none when the
-turn got through), no log line repeated more than 5 times, the probe answered within
-180 s of the release.
+once, exactly one owner message about it when the owner's turn failed (none needed when
+it got through), the upkeep finishing with a result, no log line repeated more than 5
+times, the probe answered within 180 s of the release.
 
 Run: NIMBUS_STORM_UNIT=A python3 -m pytest tests/hil/storm/test_storm_e_low_heap.py --allow-hardware -s
 """
@@ -40,6 +40,10 @@ NOTICE_RE = re.compile(r"memory|connection|network|try again|could not|couldn.t|
 ZERO_WRITE_RE = re.compile(r"short body write 0/|after 0 of \d+ bytes|not sent \(first write\)")
 BALLAST_RE = re.compile(r"FAULT sram_ballast=(\d+) held=(\d+) intFree=(\d+) intLargest=(\d+)")
 BOUNDS = g.Bounds(max_paid_turns=3, max_provider_requests=12, max_identical=5, notices=(0, 1), usable_within_s=180.0)
+# When the owner's turn failed under the ballast, the owner must hear exactly once why.
+BOUNDS_FAILED = g.Bounds(
+    max_paid_turns=3, max_provider_requests=12, max_identical=5, notices=(1, 1), usable_within_s=180.0
+)
 
 
 def _internal_free(storm) -> int:
@@ -120,4 +124,6 @@ def test_storm_e_low_heap(storm):
         # got (both images are measured the same way).
         m.notes.append(f"the upkeep did not finish under low memory: {dream[:120]}")
         m.usable = False
-    kit.assert_graded(storm.finish(LEG, m, BOUNDS))
+    failed = g.owner_turn_failed(w.lines)
+    m.extra["ownerTurnFailed"] = failed
+    kit.assert_graded(storm.finish(LEG, m, BOUNDS_FAILED if failed else BOUNDS))

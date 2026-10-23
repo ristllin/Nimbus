@@ -408,3 +408,50 @@ def test_the_console_tap_records_what_the_harness_reads_and_pumps_the_rest():
     assert tap.source == "http"
     tap.console.close()
     assert "_readline" not in vars(dev) or dev._readline.__name__ != "record"
+
+
+def test_sends_and_failed_owner_turns_from_the_log():
+    log = "\n".join(
+        [
+            "1 1 - turn end: FAIL host=anthropic tokens in=0 out=0 tools=0 reply=0B src=owner",
+            "2 2 - telegram: send ok to 4747474705",
+            "3 3 - telegram: send FAIL to 4747474705",
+            "4 4 - telegram: send ok to 1234",
+            "5 5 - turn end: FAIL host=anthropic tokens in=0 out=0 tools=0 reply=0B src=dream",
+        ]
+    )
+    lines = g.parse_log(log)
+    assert g.telegram_sends(lines, 4747474705) == 2
+    assert g.owner_turn_failed(lines)
+    ok = g.parse_log(
+        "1 1 - turn end: ok host=anthropic tokens in=1 out=1 tools=0 reply=2B src=owner\n"
+        "2 2 - turn end: FAIL host=anthropic tokens in=0 out=0 tools=0 reply=0B src=dream"
+    )
+    assert not g.owner_turn_failed(ok), "a failed background turn is not the owner's"
+
+
+class _NetState:
+    """/api/state answers in turn: unreachable, the old boot, then the new boot."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+
+    def get_json(self, path, timeout=None):
+        a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if a is None:
+            raise ConnectionError("booting")
+        return a
+
+
+def test_a_slow_crash_boot_is_seen_by_its_boot_number(monkeypatch):
+    """A crash boot answered only after its uptime passed the previous one (unit A, 22
+    Oct): the boot number moving on is what shows the restart."""
+    monkeypatch.setattr(kit.time, "sleep", lambda s: None)
+    bench = kit.StormBench.__new__(kit.StormBench)
+    bench.net = _NetState([None, {"uptimeMs": 900000, "boot": {"n": 7}}, {"uptimeMs": 400000, "boot": {"n": 8}}])
+    seen = []
+    bench.tap = type("T", (), {"restarted": lambda self, up: seen.append(up), "poll": lambda self: []})()
+    bench.reopen_console = lambda: None
+    bench.settle = lambda: None
+    bench.wait_back(timeout=5.0, before_ms=(300000, 7))
+    assert seen == [400000]

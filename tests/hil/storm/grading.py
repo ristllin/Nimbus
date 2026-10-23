@@ -197,6 +197,19 @@ def requests_after_park(lines: Sequence[LogLine], host_word: str, request_re: "r
     return n
 
 
+TG_SEND_RE = re.compile(r"telegram: send (?:ok|FAIL) to (?P<chat>-?\d+)")
+
+
+def telegram_sends(lines: Iterable[LogLine], chat: int) -> int:
+    """Messages the device sent (or finally failed to send) to ``chat``, from its log."""
+    return sum(1 for ln in lines if (m := TG_SEND_RE.search(ln.text)) and int(m.group("chat")) == chat)
+
+
+def owner_turn_failed(lines: Iterable[LogLine]) -> bool:
+    """An owner's turn in the window ended in failure (it reached no answer)."""
+    return any(t["outcome"].upper() == "FAIL" and t["src"] in ("owner", "") for t in turn_ends(lines))
+
+
 def log_notices(lines: Iterable[LogLine]) -> List[str]:
     """The owner notices the device logged as queued or sent outside a turn's reply."""
     return [ln.text for ln in lines if NOTICE_LOG_RE.search(ln.text)]

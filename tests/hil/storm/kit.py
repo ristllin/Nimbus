@@ -578,23 +578,31 @@ class StormBench:
         assert r.status_code in (200, 202), f"restart refused: HTTP {r.status_code}"
         self.wait_back(timeout, before_ms=before)
 
-    def uptime(self) -> Optional[int]:
+    def uptime(self) -> Optional[Tuple[int, Optional[int]]]:
+        """(uptime ms, boot number) now; the boot number is None on an image without it."""
         try:
-            return int(self.net.get_json("/api/state", timeout=6.0).get("uptimeMs"))
+            st = self.net.get_json("/api/state", timeout=6.0)
+            boot = st.get("boot")
+            return int(st.get("uptimeMs")), (int(boot["n"]) if isinstance(boot, dict) and "n" in boot else None)
         except Exception:  # noqa: BLE001 - unreadable: wait_back falls back to a fresh uptime
             return None
 
-    def wait_back(self, timeout: float = 120.0, before_ms: Optional[int] = None, fresh_ms: int = 120000) -> None:
-        """Wait until the unit answers again after a restart: its uptime is below the one
-        read before the restart (``before_ms``; a busy boot can keep the web page silent
-        for minutes, so "fresh" alone missed a crash boot on unit A), else under
-        ``fresh_ms``."""
+    def wait_back(self, timeout: float = 120.0, before_ms=None, fresh_ms: int = 120000) -> None:
+        """Wait until the unit answers again after a restart. ``before_ms`` is what
+        ``uptime()`` read before it: the restart is seen when the boot number moved on, or
+        the uptime fell below the one read before; without it, when the uptime is under
+        ``fresh_ms``. A crash boot kept unit A's page silent for longer than the previous
+        uptime (22 Oct), so the boot number is the reliable sign."""
+        prev_up, prev_boot = before_ms if isinstance(before_ms, tuple) else (before_ms, None)
         time.sleep(6.0)
         end = time.time() + timeout
         while time.time() < end:
             try:
-                up = self.net.get_json("/api/state", timeout=4.0).get("uptimeMs", 10**9)
-                if (before_ms is not None and up < before_ms) or up < fresh_ms:
+                st = self.net.get_json("/api/state", timeout=4.0)
+                up = st.get("uptimeMs", 10**9)
+                boot = st.get("boot") if isinstance(st.get("boot"), dict) else {}
+                moved = prev_boot is not None and boot.get("n") not in (None, prev_boot)
+                if moved or (prev_up is not None and up < prev_up) or up < fresh_ms:
                     self.tap.restarted(up)
                     self.tap.poll()  # the boot's lines (a crash notice among them) before they scroll away
                     break
@@ -912,7 +920,15 @@ class Window:
         sent to the chat and never written to its history), else the chat's history
         notices plus the notices the device logged as queued."""
         if self.sent is not None:
-            return sum(1 for r in self.sent if notice_re.search(str(r.get("text") or "")))
+            archived = sum(1 for r in self.sent if notice_re.search(str(r.get("text") or "")))
+            # The archive lives on the card: when the card drops out (low memory) the sends
+            # are only in the device log. Each send there that is not an answer the chat
+            # history holds is a notice.
+            sends = g.telegram_sends(self.lines, self.bench.chat)
+            if sends > len(self.sent):
+                answers = len(self.replies(notice_re)["answers"])
+                return max(archived, sends - answers)
+            return archived
         return len(self.replies(notice_re)["notices"]) + len(g.log_notices(self.lines))
 
     def replies(self, notice_re) -> dict:
