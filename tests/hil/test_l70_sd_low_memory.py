@@ -14,23 +14,26 @@ wrappers exist, and the buffer is reserved before the first card mount.
 Bench leg (``hil``, an SDMMC unit with a card, test build, ``NIMBUS_TEST_IP``; no model
 turn, nothing spent): write an 8 KB file (``FSPUT``, 16 sectors; every card transfer goes
 through the reserved buffer whatever the memory level, so this is also the write-integrity
-check), then hold internal memory with ``FAULT sram_ballast`` as far down as the console
-allows (4 KB free, up to 16 blocks) and put the network under load (LOAD_THREADS parallel
-``GET /`` from the LAN, the Wi-Fi receive buffers and TCP/IP allocations a turn's traffic
-makes). For LOAD_S seconds, alternate the card probe (``SDCHECK``: create, write, read back,
-delete) and a read of the file (``FSTAT``). Stop the load, release, read the file again,
-probe twice. The ballast alone leaves about 1 KB of DMA-capable memory, which a 512 B
-allocation still finds; the network load takes the rest away from moment to moment, as the
-storm leg's turn did.
+check), then hold internal memory with ``FAULT sram_ballast`` down to the 19 Oct storm
+shape (about 13.5 KB free, largest block about 7 KB: the depth the card actually dropped
+out at on the owner's device, and the depth the storm leg e ballasts to) and put the
+network under load (LOAD_THREADS parallel ``GET /`` from the LAN, the Wi-Fi receive
+buffers and TCP/IP allocations a turn's traffic makes). For LOAD_S seconds, alternate the
+card probe (``SDCHECK``: create, write, read back, delete) and a read of the file
+(``FSTAT``). Stop the load, release, read the file again, probe twice. The shape leaves
+about 1 KB of DMA-capable memory, which a 512 B allocation only sometimes finds; the
+network load takes the rest away from moment to moment, as the storm leg's turn did.
 
 Pass: every probe answers ``probe=1 sdlost=0``, every read of the file is byte-identical
 (under the load and after it), and the console shows no ``not enough mem`` from the card
 driver and no demotion. On the image before the fix (17f0f67c, unit A, 23 Oct) the same
 drive logged ``sdmmc_read_sectors: not enough mem`` (26 lines in one run, with a failed
 read of the file, two failed probes and the card demoted). A restart during the leg is
-recorded and fails it (a load that exhausts internal memory completely restarts any image
-from outside the card path: newlib's file lock, the Wi-Fi PHY timer; LOAD_THREADS and
-LOAD_S keep the load below that). The console transcript of each run is saved beside its
+recorded and fails it. The leg once ballasted to the console's 4 KB floor instead, and
+that depth tips the device into the total-exhaustion aborts from outside the card path
+(newlib's file lock, the Wi-Fi PHY timer; CUM-757, lane O3) - a different defect, below
+the storm's shape; the ballast now targets the storm shape so this leg grades the card,
+not the exhaustion abort. The console transcript of each run is saved beside its
 evidence record.
 
 Second bench leg (``hil``, the same unit, nothing spent): a card that stops answering loses
@@ -63,6 +66,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 BALLAST_RE = re.compile(r"FAULT sram_ballast=(\d+) held=(\d+) intFree=(\d+) intLargest=(\d+) chunks=(\d+)")
 HEAPINFO_DMA_RE = re.compile(r"HEAPINFO dma free=(\d+) alloc=\d+ largest=(\d+)")
+HEAPINFO_INTERNAL_RE = re.compile(r"HEAPINFO internal free=(\d+) alloc=\d+ largest=(\d+)")
 SDCHECK_RE = re.compile(r"SDCHECK probe=(\d) sdlost=(\d)")
 FSTAT_RE = re.compile(r"FSTAT (\S+) bytes=(\d+) sha256=([0-9a-f]{64})")
 CARD_FAIL_RE = re.compile(r"sdmmc_(read|write)_sectors: not enough mem|SD lost mid-run|SD lost -> degraded")
@@ -73,7 +77,10 @@ PAYLOAD_BYTES = 8 * 1024
 # (the image before the fix fails at once), short of exhausting internal memory outright.
 LOAD_THREADS = int(os.environ.get("NIMBUS_L70_LOAD_THREADS", "3"))
 LOAD_S = float(os.environ.get("NIMBUS_L70_LOAD_S", "30"))
-BALLAST_ALL = 1_000_000  # more than the unit has: the ballast holds all it can above its 4 KB floor
+# The 19 Oct storm shape the leg ballasts to: about 13.5 KB internal free (the storm leg's
+# own ballast lands at 13,752 free / 7,156 largest). The verb keeps 4 KB as its floor, so a
+# target below that still bottoms out at the floor.
+BALLAST_FREE = int(os.environ.get("NIMBUS_L70_BALLAST_FREE", "13500"))
 
 
 # ---- source guards (no board) ------------------------------------------------------
@@ -283,9 +290,15 @@ def _run(dev, record: dict, sink: list) -> None:
 
 
 def _under_ballast(dev, record: dict, sink: list, ip: str) -> None:
-    ballast = _cmd(dev, f"FAULT sram_ballast {BALLAST_ALL}", BALLAST_RE, sink)
+    # Hold what leaves the storm shape free: the depth the card dropped out at on the
+    # owner's device (the deeper, console-floor ballast trips the exhaustion aborts,
+    # which are not this leg's defect).
+    free = int(_cmd(dev, "HEAPINFO", HEAPINFO_INTERNAL_RE, sink).group(1))
+    hold = max(0, free - BALLAST_FREE)
+    ballast = _cmd(dev, f"FAULT sram_ballast {hold}", BALLAST_RE, sink)
     try:
         record["ballast"] = ballast.group(0)
+        record["ballastFreeTarget"] = BALLAST_FREE
         dma = _cmd(dev, "HEAPINFO", HEAPINFO_DMA_RE, sink)
         record["dmaFreeUnder"], record["dmaLargestUnder"] = int(dma.group(1)), int(dma.group(2))
         with _LanLoad(ip) as load:
