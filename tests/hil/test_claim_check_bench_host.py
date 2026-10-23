@@ -35,6 +35,7 @@ from test_claim_check_bench import (
     new_replies,
     scratch_result,
     the_one_reply,
+    QUEUED_LINE,
 )
 from test_l12_mock_llm import Backend
 
@@ -175,7 +176,7 @@ class FakeUnit:
             elif self.embed_fail:  # queued (or coalesced with a queued copy), not saved yet
                 if fact not in self.pending:
                     self.pending.append(fact)
-                reply += "\n\n" + SAVED_LINE
+                reply += "\n\n" + QUEUED_LINE
                 self.tailed += 1
             else:
                 self.stored[f"v{abs(hash(fact)) % 10**8:08d}"] = fact
