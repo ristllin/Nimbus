@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 
 import pytest
 
@@ -406,6 +407,9 @@ def storm(device, net, request):
     sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), "storm"))
     import kit
 
+    leg = getattr(request.module, "LEG", "")
+    started = time.time()
+    kit.begin_unfinished(net, leg, started)  # before any console work: an errored setup still leaves a FAIL
     mock = MockLLMServer().start()
     try:
         try:
@@ -419,12 +423,13 @@ def storm(device, net, request):
                 device.bus_reset(target_serial=kit.port_mac(device.port) or None)
                 device.reopen_after_reenumerate()
         device.ensure_mode(1)
-        bench = kit.StormBench(device, net, mock=mock, leg=getattr(request.module, "LEG", ""))
-        bench.begin(bench.leg)
+        bench = kit.StormBench(device, net, mock=mock, leg=leg, started=started)
         bench.settle()
         print(f"\n[storm] unit {bench.unit or '?'} build {bench.build} ({bench.role})")
         yield bench
     finally:
-        mock.stop()
-        if "bench" in locals():
-            bench.console.close()  # the device's own line reader back for the next leg
+        try:
+            if "bench" in locals():
+                bench.console.close()  # the device's own line reader back for the next leg
+        finally:
+            mock.stop()

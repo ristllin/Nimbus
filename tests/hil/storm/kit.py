@@ -127,6 +127,23 @@ def drain_bot_queue(token: str) -> int:
         return -1
 
 
+def begin_unfinished(net, leg: str, started: float) -> None:
+    """Before a leg touches the unit: a candidate run records itself as an unfinished FAIL
+    (the leg's own record, named by the same start, replaces it). Read over HTTP only, so
+    a console that never comes back still leaves the FAIL; a unit that does not answer at
+    all cannot be attributed to a commit and writes nothing."""
+    if not leg:
+        return
+    try:
+        build = str(net.get_json("/api/state", timeout=8.0).get("build") or "")
+    except Exception:  # noqa: BLE001 - unreachable: nothing to attribute
+        return
+    if not build or CONTROL_BUILD_RE.match(build):
+        return
+    run = g.RunId(leg, g.CANDIDATE, build, commit_of(build), UNIT, started, time.time())
+    g.write_evidence(EVIDENCE_DIR, g.unfinished_record(run))
+
+
 def port_mac(port: Optional[str]) -> str:
     """The MAC a serial port's USB serial number names (the ESP32-S3's own), or ''."""
     try:
@@ -298,7 +315,7 @@ class StormBench:
     """One leg's bench: identity of the image, the owner chat, the head provider, the
     drives, the log tap and the evidence."""
 
-    def __init__(self, device, net, mock=None, leg: str = ""):
+    def __init__(self, device, net, mock=None, leg: str = "", started: Optional[float] = None):
         self.device = device
         self.leg = leg
         self.mac = port_mac(getattr(device, "port", None))
@@ -314,7 +331,7 @@ class StormBench:
         self.unit = UNIT
         self.console = ConsoleTap(device)
         self.tap = LogTap(net, console=self.console)
-        self.started = time.time()
+        self.started = started if started is not None else time.time()
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
         self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
         self.windows: List[Tuple[str, List[str]]] = []  # (log source, lines) of each closed window
@@ -748,16 +765,6 @@ class StormBench:
             self.verb("NVSFILL 0", "NVSFILL", timeout=20.0)
 
     # ---- evidence and the table ---------------------------------------------------------------
-    def begin(self, leg: str) -> None:
-        """A candidate run records itself as unfinished (FAIL) before it starts; finish()
-        replaces the record."""
-        if self.role == g.CANDIDATE and leg:
-            now = time.time()
-            g.write_evidence(
-                EVIDENCE_DIR,
-                g.unfinished_record(g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, now)),
-            )
-
     def finish(self, leg: str, metrics: g.Metrics, bounds: g.Bounds) -> dict:
         """Write this run's evidence and print the leg's before/after table (the newest
         control record in the evidence directory is the 'before')."""
