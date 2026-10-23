@@ -42,12 +42,21 @@ uint8_t bitOf(NoticeChannel c) { return (uint8_t)(1u << (uint8_t)c); }
 // ---- the ceiling -----------------------------------------------------------------
 
 bool SpendCeiling::frozenWith(uint64_t pendingMicro) const {
+  if (!active()) return false;
   if (frozen) return true;
   return addSatMicro(spentMicro, pendingMicro) >= limitMicro;
 }
 
+bool SpendCeiling::setProviderCaps(bool on) {
+  if (providerCaps == on) return false;
+  providerCaps = on;
+  const bool wasFrozen = frozen;
+  settle();
+  return frozen != wasFrozen;
+}
+
 void SpendCeiling::settle() {
-  const bool over = spentMicro >= limitMicro;
+  const bool over = active() && spentMicro >= limitMicro;
   if (over == frozen) return;
   frozen = over;
   noticesSent = 0;   // a new episode owes every notice; a closed one owes none
@@ -80,6 +89,14 @@ bool SpendCeiling::add(uint64_t micro, uint32_t nowMonth) {
 }
 
 bool SpendCeiling::setLimit(uint64_t micro) {
+  if (micro == 0) {   // the owner turned the overall ceiling off
+    if (ownerSet && limitMicro == 0) return false;
+    limitMicro = 0;
+    ownerSet = true;
+    warned = false;
+    settle();
+    return true;
+  }
   if (micro < kMinLimitMicro) micro = kMinLimitMicro;
   if (micro > kMaxLimitMicro) micro = kMaxLimitMicro;
   if (micro == limitMicro && ownerSet) return false;
@@ -102,7 +119,7 @@ bool SpendCeiling::markNotice(NoticeChannel c) {
 }
 
 bool SpendCeiling::warnOwed() const {
-  return !warned && !frozen && spentMicro >= limitMicro / 100 * kWarnPercent;
+  return active() && !warned && !frozen && spentMicro >= limitMicro / 100 * kWarnPercent;
 }
 
 bool SpendCeiling::markWarned() {
@@ -137,6 +154,11 @@ SpendCeiling SpendCeiling::firstBoot(uint32_t month, bool spentBefore, uint64_t 
   c.migrationOwed = bitOf(NoticeChannel::Web);
   if (telegram) c.migrationOwed |= bitOf(NoticeChannel::Telegram);
   return c;
+}
+
+void SpendCeiling::owesMigration(bool telegram) {
+  migrationOwed = bitOf(NoticeChannel::Web);
+  if (telegram) migrationOwed |= bitOf(NoticeChannel::Telegram);
 }
 
 bool SpendCeiling::markDelivered(NoticeChannel ch, Notice kind) {
@@ -188,8 +210,8 @@ bool parseFields(const std::string& text, uint64_t (&f)[9]) {
   return true;
 }
 
-uint64_t clampLimit(uint64_t v) {
-  if (v == 0) return SpendCeiling::kDefaultLimitMicro;
+uint64_t clampLimit(uint64_t v, bool ownerSet) {
+  if (v == 0) return ownerSet ? 0 : SpendCeiling::kDefaultLimitMicro;   // owner-set 0 = off
   if (v < SpendCeiling::kMinLimitMicro) return SpendCeiling::kMinLimitMicro;
   return v > SpendCeiling::kMaxLimitMicro ? SpendCeiling::kMaxLimitMicro : v;
 }
@@ -204,8 +226,8 @@ bool SpendCeiling::deserialize(const std::string& text) {
   uint64_t f[9] = {0};
   if (!parseFields(text, f)) return false;
   SpendCeiling s;
-  s.limitMicro = clampLimit(f[0]);
   s.ownerSet = f[1] != 0;
+  s.limitMicro = clampLimit(f[0], s.ownerSet);
   s.monthKey = validMonth(f[2]);
   s.spentMicro = f[3];
   s.frozen = f[4] != 0;
@@ -223,7 +245,7 @@ bool SpendCeiling::deserialize(const std::string& text) {
   return true;
 }
 
-uint64_t parseCeilingCents(const std::string& field) {
+uint64_t parseCeilingCents(const std::string& field, uint64_t floorMicro) {
   constexpr uint64_t kMaxCents = SpendCeiling::kMaxLimitMicro / 10000ULL;
   if (field.empty()) return 0;
   uint64_t cents = 0;
@@ -234,7 +256,7 @@ uint64_t parseCeilingCents(const std::string& field) {
   }
   if (cents == 0) return 0;
   const uint64_t micro = (cents > kMaxCents ? kMaxCents : cents) * 10000ULL;
-  return micro < SpendCeiling::kMinLimitMicro ? SpendCeiling::kMinLimitMicro : micro;
+  return micro < floorMicro ? floorMicro : micro;
 }
 
 // ---- copy ------------------------------------------------------------------------
@@ -480,7 +502,7 @@ void notePendingUsage(const char* host, const char* configuredModel, const Token
   TurnSpend ts;
   ts.add(host, configuredModel ? configuredModel : "", d);
   const uint64_t micro = pricer(ts);
-  if (micro) sink(micro);
+  if (micro) sink(host, micro);
 }
 
 void installSeamMeter(SeamSpendSink sink) { g_seamSink.store(sink); }

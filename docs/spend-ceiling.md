@@ -96,6 +96,40 @@ A heads-up goes out once a month when the estimate reaches **80%** of the ceilin
 - **Or wait for the month to end**: on the 1st (device time) the count starts again and
   paid calls resume, with no message.
 
+## Monthly limits per provider
+
+You can also give each provider its own monthly limit, in dollars, under
+**Assistant > Usage > Budgets** (the **$ per month** field of **Set a budget**). Each
+limit is a hard stop for that provider alone:
+
+- **Counted the same way as the ceiling**: every paid call of that provider (replies,
+  helpers, memory, photo descriptions, speech, images, file checks, screening), at the
+  usage it reports or the high estimate in [What counts](#what-counts), over the
+  budget's month (from its reset day, 1 for a calendar month, in the device's time
+  zone).
+- **At its limit, that provider pauses** for every paid call, and the others keep
+  working: a reply that would have used it runs on the next provider in your order, a
+  helper meant for it starts on another provider, and its memory, voice and photo calls
+  stop. A provider with no limit is never paused by one.
+- **One message per channel** (Telegram and the web chat) names the provider, the
+  limit and how to raise it; a heads-up goes out at 80% of the limit. The Usage page
+  lists each limit with this month's count and marks a paused one.
+- **Raising the limit lifts the pause at once**; the next month starts a new count
+  with no message.
+
+**With provider limits set, the overall ceiling is off** unless you chose one: your
+limits are the stops you picked, and a provider with no limit stays unlimited. To keep
+an overall ceiling as well, set one under **Monthly spend ceiling**; to turn it off on
+a device without provider limits, clear **Pause paid AI calls at an overall monthly
+ceiling** and save.
+
+## Daily spend warning
+
+Under **Assistant > Usage**, **Daily spend warning** sends one message a day once
+today's spend across all providers passes the amount you set (device date, from
+$0.01). It is a heads-up only: spending continues. Leave it empty for the built-in warning, which
+tells you once a day when a provider's spend passes 5 USD or three times its usual day.
+
 ## Default models
 
 A new setup uses each provider's standard model for the assistant and its cheapest
@@ -140,6 +174,11 @@ Other defaults keep a single request from turning into a long bill:
   away and that message says so; raise the ceiling to keep going.
 - If the assistant runs on a premium model (for example Claude Opus 5), the message
   says how much sooner the ceiling is reached and how much a standard model saves.
+- If you had set provider budgets with a **$ per month** amount, those become hard
+  monthly limits, the overall ceiling stays off, and the first-start message lists the
+  limits that apply (every other provider has none). A device already on the release
+  with the overall ceiling gets that message once too, on its first start after this
+  update.
 
 ## Virtual Nimbus
 
@@ -155,9 +194,11 @@ provider reports, at the prices on the **Usage** page. Your provider's bill is t
 final word. Set a provider's price under **Prices** on the **Usage** page if it
 differs.
 
-**Can I turn the ceiling off?** Set it high enough for your use. A very high ceiling
-keeps the safety net without getting in the way.
+**Can I turn the ceiling off?** Yes: clear **Pause paid AI calls at an overall monthly
+ceiling** and save. It is off already when you set provider limits and never chose a
+ceiling.
 
-**Do the per-provider budgets still work?** Yes. A provider budget limits one
-provider; the monthly ceiling limits all of them together. Whichever is reached first
-applies.
+**Do the per-provider budgets still work?** Yes. A **$ per month** budget is a hard
+monthly limit for that provider (see [Monthly limits per provider](#monthly-limits-per-provider));
+token and call limits keep working as before. When you set an overall ceiling as well,
+whichever is reached first applies.

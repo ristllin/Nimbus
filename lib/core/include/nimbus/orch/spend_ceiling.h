@@ -63,9 +63,18 @@ struct SpendCeiling {
   uint8_t  noticesSent = 0;      // bit per NoticeChannel: the open episode's notices
   bool     warned = false;       // the 80 percent warning went out this month
   uint8_t  migrationOwed = 0;    // bit per NoticeChannel: the first-boot ceiling notice
+  // Lane DEF2: the owner set per-provider monthly limits (provider_caps.h). Not stored:
+  // the store sets it from the cap table. With limits set, the overall ceiling is off
+  // unless the owner chose one; a limit of 0 chosen by the owner is "off" too.
+  bool     providerCaps = false;
+
+  // Whether the overall ceiling applies at all (see providerCaps).
+  bool active() const { return ownerSet ? limitMicro > 0 : !providerCaps; }
+  // The cap table changed: whether provider limits are set (re-decides the freeze).
+  bool setProviderCaps(bool on);
 
   // The freeze decision for the stored count plus `pendingMicro` (the turn in
-  // flight, not yet committed): true at or over the ceiling.
+  // flight, not yet committed): true at or over the ceiling (never while off).
   bool frozenWith(uint64_t pendingMicro) const;
 
   // Each transition returns whether the stored state changed (the caller persists).
@@ -74,7 +83,7 @@ struct SpendCeiling {
   // Committed spend (rolls first). A crossing opens a freeze episode.
   bool add(uint64_t micro, uint32_t nowMonth);
   // A new ceiling, clamped to [kMinLimitMicro, kMaxLimitMicro]; marks it owner-set.
-  // Raising it above the count closes the episode at once.
+  // Raising it above the count closes the episode at once. 0 turns it off (owner-set).
   bool setLimit(uint64_t micro);
   // The notice for channel `c` is owed: an open episode that has not told it yet.
   bool noticeOwed(NoticeChannel c) const;
@@ -92,6 +101,9 @@ struct SpendCeiling {
   // Telegram bot is set, on Telegram. A new device starts at zero and owes nothing.
   static SpendCeiling firstBoot(uint32_t month, bool spentBefore, uint64_t monthToDateMicro,
                                 bool telegram);
+  // One update notice owed on the web chat and, with a Telegram bot set, on Telegram (a
+  // file from an earlier release on a device whose provider limits now stop paid calls).
+  void owesMigration(bool telegram);
 
   // The notice owed on `ch` now, in priority order: the first-boot notice, this pause's
   // notice, then the 80 percent warning (the warning goes out once, on the first
@@ -114,9 +126,10 @@ struct SpendCeiling {
 };
 
 // The owner's ceiling field (whole cents, as the web page posts it) in micro-USD,
-// clamped to [kMinLimitMicro, kMaxLimitMicro]; 0 for anything that is not a positive
-// whole number (empty, signs, letters, a fraction).
-uint64_t parseCeilingCents(const std::string& field);
+// clamped to [floorMicro, kMaxLimitMicro]; 0 for anything that is not a positive whole
+// number (empty, signs, letters, a fraction). The daily warning passes a one-cent floor.
+uint64_t parseCeilingCents(const std::string& field,
+                           uint64_t floorMicro = SpendCeiling::kMinLimitMicro);
 
 // ---- owner-facing copy (plain words, ASCII; goldens in test/golden/) ----------------
 
@@ -205,7 +218,8 @@ bool isSpendFrozenError(const std::string& err);
 // before that. Each billed round adds its priced usage here (installed pricer), the
 // gate counts it at once, and the turn's committed spend replaces it.
 using SpendPricer = uint64_t (*)(const TurnSpend& spend);   // micro-USD
-using PendingSink = void (*)(uint64_t micro);
+// The sink hears the host that billed it (lane DEF2: each provider's own limit).
+using PendingSink = void (*)(const char* host, uint64_t micro);
 void installPendingSpend(SpendPricer pricer, PendingSink sink);
 // The usage `host` billed between `before` and `after` (the same host's running
 // counter) priced and handed to the sink. Nothing billed: nothing happens.

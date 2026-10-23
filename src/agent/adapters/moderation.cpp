@@ -6,6 +6,7 @@
 
 #include "../store.h"
 #include "nimbus/orch/seam_meter.h"   // the paid-call gate and the meter (lane DEF)
+#include "nimbus/orch/provider_park.h"   // the pause switch (lane DEF2)
 #include "../../sys/agent_log.h"
 #include "../../sys/net_util.h"      // tlsSetup / tlsClose
 #include "../../sys/tls_arbiter.h"
@@ -40,6 +41,12 @@ static bool readLine(WiFiClientSecure& c, String& out, uint32_t deadline) {
 static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acquireMs) {
   const String key = store::mistralKey();
   if (!key.length()) return ClassifierVerdict::Error;
+  // Lane DEF2: Mistral paused (its own monthly limit, the overall ceiling, or the owner):
+  // no classifier call, answered as an outage (the gate's fail-open or fail-closed rule).
+  if (nimbus::orch::providerPark().pausedBy("mistral")) {
+    alog("moderation: skipped - paid requests to mistral are paused");
+    return ClassifierVerdict::Error;
+  }
 
   JsonDocument d;
   d["model"] = "mistral-moderation-latest";

@@ -141,6 +141,10 @@ const SeamRow kSeams[] = {
      "nimbus::orch::PaidSeam::UrlFetch", true, nimbus::orch::SpendSeam::UrlFetch},
     {"moderation", "src/agent/adapters/moderation.cpp", "ClassifierVerdict classify(const std::string& text,",
      "paidCallAllowed(nimbus::orch::SpendSeam::Moderation)", false, nimbus::orch::SpendSeam::Moderation},
+    {"moderation (park)", "src/agent/adapters/moderation.cpp", "static ClassifierVerdict classifyMistral(",
+     "providerPark().pausedBy(\"mistral\")", true, nimbus::orch::SpendSeam::Moderation},
+    {"each loop round (park)", "lib/harness/src/providers/loop_common.cpp", "bool runFabricLoop(",
+     "orch::kPauseProviderLimit", true, nimbus::orch::SpendSeam::Wire},
     {"hosted embeddings", "nimbusd/src/rig.h", "std::vector<int8_t> embedWith(const std::string& text,",
      "paidCallAllowed(orch::SpendSeam::Embed)", false, nimbus::orch::SpendSeam::Embed},
 };
@@ -201,6 +205,12 @@ const MeterRow kSinks[] = {
      "pause(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling)"},
     {"the park's resume", S::Head, "src/agent/spend_ceiling_store.cpp", "void freezeToPark(bool isFrozen)",
      "resume(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling)"},
+    // Lane DEF2: each provider's own monthly limit pauses that provider alone.
+    {"a provider's limit to the park", S::Head, "src/agent/spend_ceiling_store.cpp",
+     "void applyProviderFreezes(const ProviderFreezes& want)",
+     "pause(want.provider[i], nimbus::orch::kPauseProviderLimit)"},
+    {"every report hands it over", S::Head, "src/agent/spend_ceiling_store.cpp",
+     "void report(bool global, const ProviderFreezes& providers)", "applyProviderFreezes(providers)"},
 };
 
 // "" when the meter row holds, else why not ("" signature: anywhere in the file).

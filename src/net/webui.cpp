@@ -1678,12 +1678,23 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
   if (n == "orchTrace")    { agent::store::setOrchTrace(v == "1" || v == "true"); return true; }
   if (n == "ttsOn")        { agent::store::setTtsEnabled(v == "1" || v == "true"); return true; }
   if (n == "loopRounds")   { agent::store::setOrchLoopRounds(v.toInt()); return true; }
-  // Lane DEF: the monthly spend ceiling in cents (clamped to 1 to 100,000 USD). A write
-  // that did not land reports to the persist ledger, so the route answers 507.
+  // Lane DEF: the monthly spend ceiling in cents (clamped to 1 to 100,000 USD), or "off"
+  // (lane DEF2: the owner's provider limits alone apply). A write that did not land
+  // reports to the persist ledger, so the route answers 507.
   if (n == "spendCeil") {
+    if (v == "off") { agent::spend::setLimitMicro(0); return true; }
     const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(v.c_str()));
-    if (micro == 0) { err = "spend ceiling must be a positive whole number of cents"; return true; }
+    if (micro == 0) { err = "spend ceiling must be a positive whole number of cents, or off"; return true; }
     agent::spend::setLimitMicro(micro);
+    return true;
+  }
+  // Lane DEF2: the owner's daily spend warning in cents (every provider together); 0 = the
+  // default per-provider rule.
+  if (n == "dailyWarn") {
+    if (v == "0") { agent::spend::setDailyWarnMicro(0); return true; }
+    const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(v.c_str()), 10000ULL);   // from 1 cent
+    if (micro == 0) { err = "daily warning must be a whole number of cents (0 for the default)"; return true; }
+    agent::spend::setDailyWarnMicro(micro);
     return true;
   }
   if (n == "loopRescap")   { agent::store::setOrchLoopResultCap(v.toInt()); return true; }  // per-tool-result byte cap (dialable for stress)

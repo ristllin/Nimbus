@@ -128,6 +128,59 @@ test('a web chat send while paused shows the reason at once', async ({ page }) =
   await expect(page.locator('#chatLog')).toContainText('Paid AI calls are paused', { timeout: 10000 });
 });
 
+// Lane DEF2: provider limits are hard stops; with them set the overall ceiling is off by
+// default (the owner can also turn it off); the owner's daily warning.
+test('with provider limits the overall ceiling reads off and each limit is listed', async ({ page }) => {
+  await openUsage(page, {
+    ...CEILING, active: false, ownerSet: false, spentCents: 1864,
+    providers: [
+      { p: 'anthropic', capCents: 5000, spentCents: 5012, frozen: true, resetsOn: '1 November' },
+      { p: 'openai', capCents: 1000, spentCents: 600, frozen: false, resetsOn: '1 November' },
+      { p: 'mistral', capCents: 0, spentCents: 49, frozen: false, resetsOn: '1 November' },
+    ],
+  });
+  await expect(page.locator('#ceilMeter')).toContainText('no overall ceiling');
+  await expect(page.locator('#ceilMeter')).toContainText('Off: your provider limits apply');
+  const prov = page.locator('#ceilProv');
+  await expect(prov).toContainText('Anthropic: $50.12~ of $50.00');
+  await expect(prov).toContainText('paused');
+  await expect(prov).toContainText('OpenAI: $6.00~ of $10.00');
+  await expect(prov).not.toContainText('Mistral');   // no limit: not listed
+  await expect(page.locator('#ceil_on')).not.toBeChecked();
+});
+
+test('unchecking the ceiling posts off; the daily warning posts cents', async ({ page }) => {
+  const posts = [];
+  await openUsage(page, CEILING, posts);
+  await page.locator('#ceil_on').uncheck();
+  await page.locator('#ceilsave').click();
+  await expect(page.locator('#ceilmsg')).toContainText('The overall monthly ceiling is off');
+  expect(posts[0].get('spendCeil')).toBe('off');
+  await page.locator('#daily_usd').fill('5');
+  await page.locator('#dailysave').click();
+  await expect(page.locator('#dailymsg')).toContainText('Daily spend warning set to $5.00');
+  expect(posts[1].get('dailyWarn')).toBe('500');
+  await page.locator('#daily_usd').fill('');
+  await page.locator('#dailysave').click();
+  await expect(page.locator('#dailymsg')).toContainText('built-in daily warning');
+  expect(posts[2].get('dailyWarn')).toBe('0');
+  await page.locator('#daily_usd').fill('0.25');   // a sub-dollar warning is kept in cents
+  await page.locator('#dailysave').click();
+  await expect(page.locator('#dailymsg')).toContainText('Daily spend warning set to $0.25');
+  expect(posts[3].get('dailyWarn')).toBe('25');
+  await page.locator('#daily_usd').fill('-1');
+  await page.locator('#dailysave').click();
+  await expect(page.locator('#dailymsg')).toContainText('Enter an amount');
+  expect(posts.length).toBe(4);
+});
+
+test('a device without the daily warning (the hosted one) does not offer it', async ({ page }) => {
+  const { dailyWarnCents, todayCents, ...older } = CEILING;
+  await openUsage(page, older);
+  await expect(page.locator('#dailyRow')).toBeHidden();
+  await expect(page.locator('#ceil_usd')).toBeVisible();
+});
+
 test('the ceiling block does not scroll sideways at 375 px', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await openUsage(page, { ...CEILING, spentCents: 1700 });

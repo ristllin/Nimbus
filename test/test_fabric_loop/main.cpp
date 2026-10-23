@@ -10,6 +10,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/failure_chain.h"
+#include "nimbus/orch/provider_park.h"   // lane DEF2: the provider-limit pause
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/turn_spend.h"
 
@@ -512,7 +513,7 @@ static uint64_t ceilPricer(const orch::TurnSpend& s) {   // 1,000 micro-USD per 
   for (size_t i = 0; i < s.n; ++i) m += (uint64_t)(s.slot[i].in + s.slot[i].out) * 1000;
   return m;
 }
-static void ceilSink(uint64_t micro) { g_ceilPending += micro; }
+static void ceilSink(const char*, uint64_t micro) { g_ceilPending += micro; }
 static bool ceilFrozen() { return g_ceilPending >= g_ceilLimit; }
 
 static void runKeepsAnswering(uint64_t limitMicro, FakeProviderDeps& d, std::string& err,
@@ -559,8 +560,62 @@ static void test_spend_ceiling_with_room_lets_the_loop_run() {
   TEST_ASSERT_FALSE(orch::isSpendFrozenError(err));
 }
 
+// ---- lane DEF2: a provider's own monthly limit ------------------------------------
+// Anthropic reaches its limit after the turn's first round (its billed rounds count at
+// once; the store pauses it in the park): the next round moves to the next open host,
+// quietly (a parked-start switch: the owner hears about the limit once, from the
+// store), the progress carrying over. A turn that starts with Anthropic paused never
+// sends it a request.
+static void test_provider_limit_mid_turn_moves_the_round() {
+  orch::providerPark().clear();
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  auto tool = rig.ht.dispatch;
+  rig.ht.dispatch = [&tool](const orch::HeadToolCall& c) {
+    orch::providerPark().pause("anthropic", orch::kPauseProviderLimit);   // the limit, mid-turn
+    return tool(c);
+  };
+  std::string out, err;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht,
+                                            nullptr, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", d.http.seen[0].host.c_str());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", d.http.seen[1].host.c_str());
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());   // the tool ran once, its result carried over
+  TEST_ASSERT_TRUE(providers::lastFabricSwitch().parkedStart);   // quiet: no switch notice
+  // Starting paused: no request to Anthropic at all.
+  FakeProviderDeps s;
+  s.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  auto spd = s.contract();
+  FakeProviderDeps::ToolRig srig;
+  s.fillTools(srig);
+  std::string sout, serr;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(spd, {"anthropic", "openai"}, "S", "U", sout, serr, srig.ht,
+                                            nullptr, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)s.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", s.http.seen[0].host.c_str());
+  // Counter-test: a provider with no limit reached keeps the turn (no move).
+  orch::providerPark().resume("anthropic", orch::kPauseProviderLimit);
+  FakeProviderDeps k;
+  k.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  k.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalBody()});
+  auto kpd = k.contract();
+  FakeProviderDeps::ToolRig krig;
+  k.fillTools(krig);
+  std::string kout, kerr;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(kpd, {"anthropic", "openai"}, "S", "U", kout, kerr, krig.ht,
+                                            nullptr, nullptr));
+  for (const auto& req : k.http.seen) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", req.host.c_str());
+  orch::providerPark().clear();
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_provider_limit_mid_turn_moves_the_round);
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);

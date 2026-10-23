@@ -974,8 +974,11 @@ class WebApi {
   // status 0 when absent. Applied at once (the state file, not a hosted setting).
   ApiResp spendCeilWrite(const std::string& body) {
     if (!present(formFieldNames(body), "spendCeil")) return ApiResp{0, "", ""};
-    const uint64_t micro = nimbus::orch::parseCeilingCents(formValue(body, "spendCeil"));
-    if (micro == 0) return refuse("spend ceiling must be a positive whole number of cents");
+    // Lane DEF2: "off" turns the ceiling off (device parity; a hosted instance has no
+    // per-provider limits of its own, so off means no monthly ceiling at all).
+    const std::string v = formValue(body, "spendCeil");
+    const uint64_t micro = v == "off" ? 0 : nimbus::orch::parseCeilingCents(v);
+    if (micro == 0 && v != "off") return refuse("spend ceiling must be a positive whole number of cents, or off");
     if (!rig_->spendCeiling().setLimitMicro(micro))
       return ApiResp{507, "application/json", R"({"error":"storage_full","note":"Couldn't save the ceiling."})"};
     return okJson(R"({"ok":true,"applied":1})");

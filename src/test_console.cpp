@@ -469,23 +469,49 @@ void parkTest(String arg) {
   Serial.printf("PARK? providers=%u\n", (unsigned)n);
 }
 
-// SPENDSET <cents> | SPENDSET limit <cents> | SPENDSET?: the monthly spend ceiling's
-// bench seam (lane DEF). <cents> seeds this month's count (a fresh episode when it
-// lands at or over the ceiling); limit sets the ceiling as the owner would; ? prints
-// the state and the paid-call gate's consults and refusals per seam.
+// SPENDSET's count seeds (prov, day, the overall count); false when it printed the usage.
+static bool spendSeed(const String& arg) {
+  if (arg.startsWith("prov ")) {
+    String rest = arg.substring(5);
+    rest.trim();
+    const int sp = rest.indexOf(' ');
+    const long long cents = sp > 0 ? atoll(rest.substring(sp + 1).c_str()) : -1;
+    if (sp <= 0 || cents < 0) { reply("SPENDSET usage: SPENDSET prov <provider> <cents>"); return false; }
+    agent::spend::testSetProviderSpent(rest.substring(0, sp).c_str(), (uint64_t)cents * 10000ULL);
+    return true;
+  }
+  if (arg.startsWith("day ")) {
+    const long long cents = atoll(arg.substring(4).c_str());
+    if (cents < 0) { reply("SPENDSET usage: SPENDSET day <cents>"); return false; }
+    agent::spend::testSetDaySpent((uint64_t)cents * 10000ULL);
+    return true;
+  }
+  const long long cents = atoll(arg.c_str());
+  if (cents < 0) { reply("SPENDSET usage: SPENDSET <cents> | limit <cents> | ?"); return false; }
+  agent::spend::testSetSpent((uint64_t)cents * 10000ULL);
+  return true;
+}
+
+// SPENDSET <cents> | SPENDSET limit <cents>|off | SPENDSET prov <provider> <cents> |
+// SPENDSET day <cents> | SPENDSET?: the monthly spend limits' bench seam (lanes DEF,
+// DEF2). <cents> seeds this month's overall count (a fresh episode when it lands at or
+// over the ceiling); limit sets the ceiling as the owner would (off turns it off); prov
+// seeds one provider's count; day seeds today's count; ? prints the state and the
+// paid-call gate's consults and refusals per seam.
 void spendSet(String arg) {
   arg.trim();
-  if (arg.startsWith("limit ")) {
+  if (arg == "limit off") {
+    const bool ok = agent::spend::setLimitMicro(0);
+    Serial.printf("SPENDSET limit off %s\n", ok ? "stored" : "NOT stored");
+  } else if (arg.startsWith("limit ")) {
     String c = arg.substring(6);
     c.trim();
     const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(c.c_str()));
     if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents>"); return; }
     const bool ok = agent::spend::setLimitMicro(micro);
     Serial.printf("SPENDSET limit %s %s\n", c.c_str(), ok ? "stored" : "NOT stored");
-  } else if (arg.length() && arg != "?") {
-    const long long cents = atoll(arg.c_str());
-    if (cents < 0) { reply("SPENDSET usage: SPENDSET <cents> | limit <cents> | ?"); return; }
-    agent::spend::testSetSpent((uint64_t)cents * 10000ULL);
+  } else if (arg.length() && arg != "?" && !spendSeed(arg)) {
+    return;
   }
   Serial.printf("SPENDSET %s\n", agent::spend::stateJson().c_str());
   String gate = "SPENDGATE";

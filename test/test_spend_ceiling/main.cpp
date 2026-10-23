@@ -505,7 +505,11 @@ static uint64_t pricer(const TurnSpend& s) {
   g_priced += m;
   return m;
 }
-static void sink(uint64_t micro) { g_pending += micro; }
+static std::string g_pendingHost;
+static void sink(const char* host, uint64_t micro) {
+  g_pending += micro;
+  g_pendingHost = host ? host : "";
+}
 
 static void test_pending_usage_is_the_delta_priced() {
   installPendingSpend(&pricer, &sink);
@@ -517,6 +521,7 @@ static void test_pending_usage_is_the_delta_priced() {
   notePendingUsage("anthropic", "claude-haiku-5-5", before, after);
   // haiku-5-5: $0.10 per 1M in + $0.05 for 100K out.
   TEST_ASSERT_EQUAL_UINT64(150000ULL, g_pending);
+  TEST_ASSERT_EQUAL_STRING("anthropic", g_pendingHost.c_str());   // the host that billed it
   notePendingUsage("anthropic", "claude-haiku-5-5", after, after);   // nothing billed
   TEST_ASSERT_EQUAL_UINT64(150000ULL, g_pending);
 }

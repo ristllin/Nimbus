@@ -2437,27 +2437,77 @@ function renderUsageAll(f){renderCeiling();renderBudgets(_usageBP);renderUsageSu
 // Lane DEF: the monthly spend ceiling across all providers (GET /api/orch usage.ceiling):
 // this month's estimate against the ceiling, and whether paid calls are paused.
 let _usageCeil=null;
-function renderCeiling(){
-  const box=$('ceilMeter'),c=_usageCeil; if(!box)return;
-  if(!c||!c.loaded){box.innerHTML='';return;}
+// Lane DEF2: the ceiling can be off (the owner's choice, or provider limits set), each
+// provider's own monthly limit is a hard stop listed below it, and a daily warning.
+function _ceilMeter(c){
+  if(c.active===false)return '<div class=row style="justify-content:space-between"><b>'+_usd(c.spentCents,true)+
+    ' this month, no overall ceiling</b><span class=hint>'+(c.ownerSet?'Turned off':'Off: your provider limits apply')+
+    '</span></div>';
   const pct=c.limitCents>0?Math.min(100,c.spentCents/c.limitCents*100):0;
   const col=c.frozen?'#f0687a':(pct>=80?'#e0b870':'#7fd1c8');
-  box.innerHTML='<div class=row style="justify-content:space-between"><b>'+_usd(c.spentCents,true)+' of '+
+  return '<div class=row style="justify-content:space-between"><b>'+_usd(c.spentCents,true)+' of '+
     _usd(c.limitCents,false)+' this month'+(c.frozen?' <span class="badge vfy bad">paid calls paused</span>':'')+
     '</b><span class=hint>'+(c.resetsOn?'Starts again '+_sEsc(c.resetsOn):'')+'</span></div>'+
     '<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>';
-  const inp=$('ceil_usd');
-  if(inp&&document.activeElement!==inp&&!inp.dataset.edited)inp.value=Math.round(c.limitCents/100);
+}
+function _ceilProviders(c){
+  const rows=(c.providers||[]).filter(p=>p.capCents>0);
+  if(!rows.length)return '';
+  return '<p class=hint style="margin:6px 0 2px">Provider limits (every paid call counts; at its limit a provider pauses and the others keep working):</p>'+
+    rows.map(p=>'<div class=row style="justify-content:space-between"><span>'+_sEsc(_provLabel(p.p))+': '+
+      _usd(p.spentCents,true)+' of '+_usd(p.capCents,false)+
+      (p.frozen?' <span class="badge vfy bad">paused</span>':'')+'</span><span class=hint>'+
+      (p.resetsOn?'Starts again '+_sEsc(p.resetsOn):'')+'</span></div>').join('');
+}
+function _provLabel(slug){const m={anthropic:'Anthropic',openai:'OpenAI',mistral:'Mistral',zai:'Z.ai',cumulo:'Cumulo Nimbus',tavily:'Tavily',custom:'Custom endpoint'};return m[slug]||slug;}
+function renderCeiling(){
+  const box=$('ceilMeter'),c=_usageCeil; if(!box)return;
+  if($('dailyRow'))$('dailyRow').hidden=!c||c.dailyWarnCents===undefined;   // a device without the daily warning
+  if(!c||!c.loaded){box.innerHTML='';if($('ceilProv'))$('ceilProv').innerHTML='';return;}
+  box.innerHTML=_ceilMeter(c);
+  if($('ceilProv'))$('ceilProv').innerHTML=_ceilProviders(c);
+  const on=$('ceil_on'),inp=$('ceil_usd'),day=$('daily_usd');
+  if(on&&!on.dataset.edited)on.checked=c.active!==false;
+  if(inp&&document.activeElement!==inp&&!inp.dataset.edited)inp.value=c.limitCents>0?Math.round(c.limitCents/100):'';
+  if(day&&document.activeElement!==day&&!day.dataset.edited)day.value=c.dailyWarnCents>0?(c.dailyWarnCents/100):'';
+  if($('dailymsg')&&c.dailyWarnCents>0&&!$('dailymsg').dataset.said)
+    $('dailymsg').textContent='Today so far: '+_usd(c.todayCents||0,true)+'. One message a day past the warning.';
 }
 if($('ceil_usd'))$('ceil_usd').oninput=()=>{$('ceil_usd').dataset.edited='1';};
-// The ceiling is dollars in the UI, CENTS on the wire (spendCeil, 1 to 100,000 USD).
+if($('ceil_on'))$('ceil_on').onchange=()=>{$('ceil_on').dataset.edited='1';};
+if($('daily_usd'))$('daily_usd').oninput=()=>{$('daily_usd').dataset.edited='1';};
+// The ceiling is dollars in the UI, CENTS on the wire (spendCeil, 1 to 100,000 USD; off).
 if($('ceilsave'))$('ceilsave').onclick=()=>{
+  if($('ceil_on')&&!$('ceil_on').checked){
+    orchApply({spendCeil:'off'}).then(ok=>{
+      if(ok===false)return;
+      delete $('ceil_on').dataset.edited;
+      $('ceilmsg').textContent='The overall monthly ceiling is off. Provider limits still apply.';
+      loadOrch();
+    });
+    return;
+  }
   const usd=+$('ceil_usd').value||0;
   if(usd<1||usd>100000){$('ceilmsg').textContent='Enter an amount from $1 to $100,000.';return;}
   orchApply({spendCeil:Math.round(usd*100)}).then(ok=>{
     if(ok===false)return;
     delete $('ceil_usd').dataset.edited;
+    if($('ceil_on'))delete $('ceil_on').dataset.edited;
     $('ceilmsg').textContent='Monthly spend ceiling set to $'+usd.toLocaleString()+'.';
+    loadOrch();
+  });
+};
+// The daily warning: dollars in the UI, CENTS on the wire (dailyWarn; 0 = the built-in rule).
+if($('dailysave'))$('dailysave').onclick=()=>{
+  const raw=$('daily_usd').value.trim(),usd=raw===''?0:+raw;
+  if(!(usd>=0)||usd>100000){$('dailymsg').textContent='Enter an amount from $0.01 to $100,000, or leave it empty.';return;}
+  const cents=Math.round(usd*100);
+  if(usd>0&&cents<1){$('dailymsg').textContent='Enter at least $0.01, or leave it empty.';return;}
+  orchApply({dailyWarn:cents}).then(ok=>{
+    if(ok===false)return;
+    delete $('daily_usd').dataset.edited;
+    $('dailymsg').dataset.said='1';
+    $('dailymsg').textContent=cents?'Daily spend warning set to $'+(cents/100).toFixed(2)+'.':'The built-in daily warning per provider applies.';
     loadOrch();
   });
 };

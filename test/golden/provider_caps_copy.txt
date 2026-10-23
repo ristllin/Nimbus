@@ -1,0 +1,10 @@
+[provider freeze]
+Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($50.12) reached the $50.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. To raise it, open the device's web page, go to Assistant > Usage, and raise its monthly limit. Otherwise it resumes on 1 November.
+[provider warning]
+This month's estimated Anthropic spend is $40.10, 80% of the $50.00 monthly limit you set. At the limit, paid calls to Anthropic pause until it is raised or the period ends. To change it, open the device's web page, go to Assistant > Usage, and raise its monthly limit.
+[daily warning]
+About $5.20 spent on AI today, past your daily warning of $5.00. Spending continues; this is a heads-up. Change the warning on Assistant > Usage.
+[migration, provider limits, overall off]
+New in this update: the monthly limits you set per provider now stop paid AI calls. At its limit a provider pauses for replies, helpers, memory, voice, photos and images, and the others keep working. Limits that apply: Anthropic $50.00, OpenAI $10.00, Z.ai $10.00. Every other provider has no limit. The overall monthly ceiling is off because you set provider limits; you can turn it on under Assistant > Usage. To change a limit, open the device's web page and go to Assistant > Usage.
+[migration, provider limits, overall on]
+New in this update: the monthly limits you set per provider now stop paid AI calls. At its limit a provider pauses for replies, helpers, memory, voice, photos and images, and the others keep working. Limits that apply: Anthropic $50.00, OpenAI $10.00, Z.ai $10.00. Every other provider has no limit. An overall monthly ceiling of $75.00 also applies. To change a limit, open the device's web page and go to Assistant > Usage.

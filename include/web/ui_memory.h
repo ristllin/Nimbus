@@ -161,15 +161,25 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 
 <div class=sec id=budgetsSec>
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
-<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a cap, that provider's turns and searches are refused until the reset day; the assistant fails over to another in-budget provider when it can.</p>
+<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap counts every model at its price above, estimates included. At a token cap, that provider's turns and searches are refused until the reset day; at a dollar cap, every paid call to it pauses until the reset day or until you raise the cap. The assistant fails over to another in-budget provider when it can.</p>
 <div class=provrow id=ceilSec style="border-top:0;margin-top:6px;padding-top:0">
 <label for=ceil_usd>Monthly spend ceiling</label>
 <div id=ceilMeter></div>
+<label class=pr><input type=checkbox id=ceil_on checked> Pause paid AI calls at an overall monthly ceiling</label>
 <div class=row>
 <input id=ceil_usd type=number min=1 max=100000 step=1 placeholder="$ per month" aria-label="Monthly spend ceiling in dollars" style="flex:1 1 120px;max-width:200px">
 <button id=ceilsave type=button>Save</button>
 </div>
 <p class=hint id=ceilmsg>All providers together, this calendar month. At the ceiling, paid AI calls pause until you raise it or the month ends.</p>
+<div id=ceilProv></div>
+<div id=dailyRow>
+<label for=daily_usd>Daily spend warning</label>
+<div class=row>
+<input id=daily_usd type=number min=0 max=100000 step=0.01 placeholder="$ per day" aria-label="Daily spend warning in dollars" style="flex:1 1 120px;max-width:200px">
+<button id=dailysave type=button>Save</button>
+</div>
+<p class=hint id=dailymsg>One message a day once today's spend across all providers passes it. Leave it empty for the built-in warning per provider.</p>
+</div>
 </div>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">

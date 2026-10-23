@@ -49,6 +49,13 @@ Spend ceiling and default models:
   memory, photo descriptions, speech, images, file checks and message screening, at
   the usage the provider reports or a high estimate where it reports none. A reminder
   or wakeup due during a pause runs soon after it lifts. [Monthly spend ceiling](spend-ceiling.md)
+- **Monthly limits per provider, as hard stops.** A provider budget's $ per month amount
+  now pauses that provider alone for every paid call once it is reached (replies move to
+  the next provider, helpers start elsewhere), with one message per channel naming the
+  provider and the limit and a heads-up at 80%; raising it lifts the pause at once. With
+  provider limits set, the overall ceiling is off unless you choose one, and you can turn
+  it off yourself. A daily spend warning of your own replaces the built-in one.
+  [Monthly limits per provider](spend-ceiling.md#monthly-limits-per-provider)
 - **Cost-conscious default models.** New setups run the assistant on each provider's
   standard model (Claude Sonnet 5, OpenAI's mini class, Mistral Medium, GLM-5.3) and
   helpers, photo captions, routines and the nightly dream on its cheapest model.

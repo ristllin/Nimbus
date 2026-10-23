@@ -9,6 +9,9 @@
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - recordProviderSpend
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
 
+namespace nimbus { namespace orch { struct CapRule; } }   // provider_caps.h (lane DEF2)
+namespace agent { namespace spend { struct Part; } }     // spend_ceiling_store.h
+
 // store - device configuration accessors for the Orchestrator subsystem, backed
 // by solide::memory (NVS). Mirrors the subset of Nuage-Solide's storage.h that
 // the ported agent code (adapters + orchestrator + telegram) depends on, so the
@@ -424,6 +427,14 @@ uint64_t priceSpendMicro(const nimbus::orch::TurnSpend& spend);
 // `tag` "spawn:<provider>"): filed like a turn's spend, counted by the ceiling without
 // ending the turn in flight.
 void     recordSideSpend(const nimbus::orch::TurnSpend& spend, const char* tag);
+// Each slot of `spend` at the ledger's price, by provider (up to `cap` parts).
+size_t   priceSpendParts(const nimbus::orch::TurnSpend& spend, agent::spend::Part* parts, size_t cap);
+// The per-provider monthly limits' inputs (lane DEF2): the owner's budget cents limits
+// (the "budget=prov:tok:call:resetDay:cents" setting), each provider's estimate for its
+// current budget period, and today's estimate across every provider.
+void     providerCapRules(std::vector<nimbus::orch::CapRule>& out);
+void     providerPeriodSeeds(std::vector<std::pair<std::string, uint64_t>>& out);
+uint64_t todayMicro();
 bool     usageHasHistory();
 uint64_t monthToDateMicro();
 bool   providerOverBudget(const String& provider);                     // gate before spend

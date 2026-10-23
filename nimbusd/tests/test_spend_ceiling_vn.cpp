@@ -189,6 +189,11 @@ static void checkWeb(ndtest::Ctx& c, const std::string& dataDir) {
              (noticeChats[0] == "424242" || noticeChats[1] == "424242"),
          "the Telegram notice went to the owner chat");
   }
+  // Lane DEF2: the owner can turn the ceiling off; paid calls are no longer paused by it.
+  Out off = req(cl, port, "POST", "/api/orch", tok, "spendCeil=off");
+  c.ok(off.status == 200 && has(rig.spendCeiling().stateJson(), "\"active\":false") &&
+           !orch::spendFrozen(),
+       "POST spendCeil=off turns the ceiling off: " + off.body);
   unsetenv("TELEGRAM_BOT_TOKEN");
   unsetenv("NIMBUSD_TG_CHAT_ID");
   http.stop();

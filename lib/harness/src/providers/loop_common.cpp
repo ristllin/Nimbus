@@ -398,6 +398,30 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                               uint32_t budgetMs,
                               const std::string& capReason) -> orch::HeadStep {
     for (;;) {
+      // Lane DEF2: a host whose own monthly limit was reached during this turn (its billed
+      // rounds count at once) is not asked again: the round moves to the next open host,
+      // quietly (the owner hears about the limit once, from the limits store), and the
+      // progress carries over; with no open host left the turn ends with the pause.
+      if (orch::providerPark().pausedBy(hostList[hostIdx].c_str()) & orch::kPauseProviderLimit) {
+        orch::HeadStep paused;
+        paused.ok = false;
+        paused.kind = orch::StepErr::Paused;
+        paused.error = "paused: paid requests to " + hostList[hostIdx] + " are paused";
+        noteFailed(paused);
+        const size_t nextIdx = nextUnparked(hostIdx + 1);
+        orch::HeadStepFn next = nextIdx < hostCount && switches < kMaxSwitches ? makeStep(nextIdx) : nullptr;
+        if (!next) return paused;
+        hlog::logf("fabric: %s reached its monthly limit - the round moves to %s",
+                   hostList[hostIdx].c_str(), hostList[nextIdx].c_str());
+        g_lastSwitch = FabricSwitch{hostList[hostIdx], hostList[nextIdx], orch::StepErr::Paused, 0, true};
+        if (notify) notify(hostList[hostIdx], hostList[nextIdx]);
+        const size_t prevIdx = hostIdx;
+        hostIdx = nextIdx;
+        ++switches;
+        cur = next;
+        inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
+        continue;
+      }
       // Lane DEF: each billed round counts toward the monthly spend ceiling at once (the
       // turn files its spend at its end), so a long loop that crosses it is refused at
       // its next request (wire::exchange) instead of running to the turn's end.

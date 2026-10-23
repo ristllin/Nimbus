@@ -10,8 +10,9 @@ import { readFileSync } from 'node:fs';
 // The monthly spend ceiling (lane DEF): spend.cpp's stateJson(), on /api/state (spend)
 // and /api/orch (usage.ceiling).
 export const CEILING = {
-  limitCents: 2000, spentCents: 640, frozen: false, ownerSet: false, month: 202610,
-  resetsOn: '1 November', saved: true, loaded: true,
+  limitCents: 2000, spentCents: 640, frozen: false, ownerSet: false, active: true, month: 202610,
+  resetsOn: '1 November', saved: true, loaded: true, dailyWarnCents: 0, todayCents: 120,
+  providers: [],
 };
 
 export const STATE = {

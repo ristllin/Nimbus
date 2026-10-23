@@ -74,6 +74,7 @@ ParkKind parkKindFor(int httpStatus, const std::string& text);
 enum PauseCause : uint8_t {
   kPauseOwner = 1u << 0,          // the owner paused the provider by hand
   kPauseSpendCeiling = 1u << 1,   // the monthly spend ceiling is reached
+  kPauseProviderLimit = 1u << 2,  // lane DEF2: this provider's own monthly limit is reached
 };
 inline constexpr const char* kPauseAllProviders = "*";
 

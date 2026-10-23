@@ -1351,14 +1351,28 @@ void recordProviderTokens(const String& provider, const nimbus::orch::TokenDelta
     recordProviderTokensLocked(provider, d, tag, model);
     micro = ledgerLocked().priceDeltaMicro(std::string(provider.c_str()), model, d);
   }
-  // The monthly spend ceiling counts the record at its price, after the ledger lock (the
-  // ceiling store may read the ledger on its first load).
-  agent::spend::commit(micro, false);
+  // The monthly spend limits count the record at its price, after the ledger lock (the
+  // limits store may read the ledger on its first load).
+  const agent::spend::Part part{provider.c_str(), micro};
+  agent::spend::commit(&part, 1, false);
+}
+
+// Each slot of `spend` at the ledger's price, by provider (caller holds g_ledgerMx).
+static size_t spendPartsLocked(const nimbus::orch::TurnSpend& spend, agent::spend::Part* parts,
+                               size_t cap) {
+  auto& L = ledgerLocked();
+  size_t n = 0;
+  for (size_t i = 0; i < spend.n && n < cap; ++i) {
+    const nimbus::orch::SpendSlot& sl = spend.slot[i];
+    parts[n++] = agent::spend::Part{sl.host, L.priceDeltaMicro(sl.host, sl.model, nimbus::orch::ledgerDelta(sl))};
+  }
+  return n;
 }
 
 // recordProviderSpend's ledger work (caller holds g_ledgerMx): every slot filed, each
-// store persisted once; answers the spend at the ledger's prices (micro-USD).
-static uint64_t recordProviderSpendLocked(const nimbus::orch::TurnSpend& spend, const char* tag) {
+// store persisted once; fills the spend at the ledger's prices by provider (micro-USD).
+static size_t recordProviderSpendLocked(const nimbus::orch::TurnSpend& spend, const char* tag,
+                                        agent::spend::Part* parts) {
   auto& L = ledgerLocked();
   const uint32_t day = currentDayKey();
   const std::string t(tag ? tag : "");
@@ -1388,18 +1402,19 @@ static uint64_t recordProviderSpendLocked(const nimbus::orch::TurnSpend& spend, 
     histLocked().prune(day, 60);
     persistHistLocked();
   }
-  return L.priceTurnMicro(spend);
+  return spendPartsLocked(spend, parts, nimbus::orch::TurnSpend::kSlots);
 }
 
 void recordProviderSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
-  uint64_t micro = 0;
+  agent::spend::Part parts[nimbus::orch::TurnSpend::kSlots];
+  size_t n = 0;
   if (!spend.empty()) {
     std::lock_guard<std::mutex> lk(g_ledgerMx);
-    micro = recordProviderSpendLocked(spend, tag);
+    n = recordProviderSpendLocked(spend, tag, parts);
   }
-  // The ceiling counts the turn after the ledger lock. A fold ("compact") runs inside a
+  // The limits count the turn after the ledger lock. A fold ("compact") runs inside a
   // turn: only the turn's own record (billed or not) ends its pending rounds.
-  agent::spend::commit(micro, !(tag && std::strcmp(tag, "compact") == 0));
+  agent::spend::commit(parts, n, !(tag && std::strcmp(tag, "compact") == 0));
 }
 
 static void recordProviderCallLocked(const String& provider) {  // caller holds g_ledgerMx
@@ -1427,7 +1442,8 @@ void recordProviderCall(const String& provider) {
     micro = ledgerLocked().priceDeltaMicro(std::string(provider.c_str()), "",
                                            nimbus::orch::TokenDelta{}, 1);
   }
-  agent::spend::commit(micro, false);   // a search call counts toward the ceiling too
+  const agent::spend::Part part{provider.c_str(), micro};
+  agent::spend::commit(&part, 1, false);   // a search call counts toward the limits too
 }
 
 // ---- the monthly spend ceiling's inputs (lane DEF) -----------------------------
@@ -1440,12 +1456,56 @@ uint64_t priceSpendMicro(const nimbus::orch::TurnSpend& spend) {
 
 void recordSideSpend(const nimbus::orch::TurnSpend& spend, const char* tag) {
   if (spend.empty()) return;
-  uint64_t micro = 0;
+  agent::spend::Part parts[nimbus::orch::TurnSpend::kSlots];
+  size_t n = 0;
   {
     std::lock_guard<std::mutex> lk(g_ledgerMx);
-    micro = recordProviderSpendLocked(spend, tag);
+    n = recordProviderSpendLocked(spend, tag, parts);
   }
-  agent::spend::commit(micro, false);   // never ends the turn in flight
+  agent::spend::commit(parts, n, false);   // never ends the turn in flight
+}
+
+size_t priceSpendParts(const nimbus::orch::TurnSpend& spend, agent::spend::Part* parts, size_t cap) {
+  if (spend.empty()) return 0;
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  return spendPartsLocked(spend, parts, cap);
+}
+
+// ---- the per-provider monthly limits' inputs (lane DEF2) ----------------------------
+
+void providerCapRules(std::vector<nimbus::orch::CapRule>& out) {
+  out.clear();
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  for (const auto& e : ledgerLocked().entries()) {
+    if (!e.centsLimit) continue;
+    nimbus::orch::CapRule c;
+    c.provider = e.name;
+    c.capMicro = e.centsLimit > UINT64_MAX / 10000ULL ? UINT64_MAX : e.centsLimit * 10000ULL;
+    c.resetDay = e.resetDay ? e.resetDay : 1;
+    out.push_back(c);
+  }
+}
+
+void providerPeriodSeeds(std::vector<std::pair<std::string, uint64_t>>& out) {
+  out.clear();
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  for (const auto& e : L.entries()) {
+    if (e.periodKey == 0 || e.periodKey != currentPeriodKey(e.resetDay)) continue;
+    const uint64_t cents = L.priceProvider(e.name);
+    if (cents) out.push_back({e.name, cents * 10000ULL});
+  }
+}
+
+uint64_t todayMicro() {
+  const uint32_t day = currentDayKey();
+  if (!day) return 0;
+  std::lock_guard<std::mutex> lk(g_ledgerMx);
+  auto& L = ledgerLocked();
+  uint64_t micro = 0;
+  for (const auto& e : L.entries())
+    micro = nimbus::orch::addSatMicro(micro, L.priceDay(histLocked(), e.name, day) * 10000ULL);
+  return micro;
 }
 
 bool usageHasHistory() {
@@ -1627,6 +1687,9 @@ void noteLiveLoopIds(const std::vector<std::string>& ids) {
 // crosses its threshold (nimbus::orch::DailyWarn), the owner hears once that day.
 // Priced from the usage history's day; latched on the device's local date.
 static void checkDailySpend(const String& provider) {
+  // Lane DEF2: the owner's own daily warning (every provider together, the limits store's
+  // notice) replaces this default per-provider rule while it is set.
+  if (agent::spend::dailyWarnMicro() > 0) return;
   const time_t now = time(nullptr);
   const uint32_t day = currentDayKey();
   if (!day || !agent::gate::ownerReachable()) return;   // undated, or nobody to tell now
@@ -1643,30 +1706,59 @@ static void checkDailySpend(const String& provider) {
   if (due) agent::gate::sendOwnerNotice(provider.c_str(), String(notice.c_str()));
 }
 
+// Caller holds g_ledgerMx. The ledger's own ceilings: tokens and calls, and the dollar
+// limit only while the limits file has not loaded (lane DEF2: once it has, the dollar limit
+// is its hard freeze, one count for every seam, so the turn failover, the search refusal and
+// the Budgets row never trip a cent before the freeze or after a raise lifts it).
+static bool overLedgerBudgetLocked(const std::string& name, bool dollarKnown) {
+  const nimbus::orch::UsageLedger& L = ledgerLocked();
+  return L.overTokenBudget(name) || L.overCallBudget(name) || (!dollarKnown && L.overCostBudget(name));
+}
+
+// Caller holds g_ledgerMx: a Budgets row's "over" (the park read takes only its own lock).
+static bool overLocked(const std::string& name) {
+  bool known = false;
+  return agent::spend::providerAtLimit(name.c_str(), known) || overLedgerBudgetLocked(name, known);
+}
+
 bool providerOverBudget(const String& provider) {
   if (provider.length() == 0) return false;
   checkDailySpend(provider);
+  bool known = false;
+  if (agent::spend::providerAtLimit(provider.c_str(), known)) return true;
   std::lock_guard<std::mutex> lk(g_ledgerMx);
+  const std::string name(provider.c_str());
   // Dated form (prism: the forever-gated wedge) - a stale periodKey reads as a
   // FRESH period, so "wait for the reset day" actually comes true even though
   // a gated provider never records. Unsynced clock (pre-SNTP) falls back to
   // the strict form: never un-gate on a clock we don't trust.
   time_t now = time(nullptr);
-  if (now < 1600000000) return ledgerLocked().overBudget(std::string(provider.c_str()));
-  struct tm tmv;
-  localtime_r(&now, &tmv);
-  return ledgerLocked().overBudget(std::string(provider.c_str()),
-                                   tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+  if (now >= 1600000000) {
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    const nimbus::orch::ProviderBudget* e = ledgerLocked().find(name);
+    if (!e || e->periodKey != nimbus::orch::usagePeriodKey(tmv.tm_year + 1900, tmv.tm_mon + 1,
+                                                           tmv.tm_mday, e->resetDay))
+      return false;   // a new period: the roll happens on the next record
+  }
+  return overLedgerBudgetLocked(name, known);
 }
 
 bool setProviderBudget(const String& provider, uint64_t tokenLimit,
                        uint32_t callLimit, uint8_t resetDay, uint64_t centsLimit) {
   if (provider.length() == 0) return true;   // nothing to store
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
-  auto& L = ledgerLocked();
-  const nimbus::orch::UsageLedger before = L;
-  L.setLimits(std::string(provider.c_str()), tokenLimit, callLimit, resetDay, centsLimit);
-  return persistOrRevertLocked(before);
+  bool ok;
+  {
+    std::lock_guard<std::mutex> lk(g_ledgerMx);
+    auto& L = ledgerLocked();
+    const nimbus::orch::UsageLedger before = L;
+    L.setLimits(std::string(provider.c_str()), tokenLimit, callLimit, resetDay, centsLimit);
+    ok = persistOrRevertLocked(before);
+  }
+  // Lane DEF2: the cents limit is a hard monthly limit; after the ledger lock, the limits
+  // store re-reads it, so a raised one lifts that provider's pause at once.
+  agent::spend::capsChanged();
+  return ok;
 }
 
 // CUM-708: the ledger's price for ranking `model` of `provider` (rankPrice): the
@@ -1697,7 +1789,7 @@ String providerBudgetJson() {
     out += ",\"tokenLimit\":";  out += String((double)e.tokenLimit, 0);
     out += ",\"callLimit\":";   out += String(e.callLimit);
     out += ",\"resetDay\":";    out += String(e.resetDay);
-    out += ",\"over\":";        out += (L.overBudget(e.name) ? "true" : "false");
+    out += ",\"over\":";        out += (overLocked(e.name) ? "true" : "false");
     // L19-2: today's spend and the daily warning threshold it is held to.
     const uint32_t day = currentDayKey();
     if (day) {
@@ -1728,7 +1820,7 @@ String providerUsageJson() {
     out += ",\"tokenLimit\":";   out += String((double)e.tokenLimit, 0);
     out += ",\"callLimit\":";    out += String(e.callLimit);
     out += ",\"resetDay\":";     out += String(e.resetDay);
-    out += ",\"over\":";         out += (L.overBudget(e.name) ? "true" : "false");
+    out += ",\"over\":";         out += (overLocked(e.name) ? "true" : "false");
     out += ",\"tokIn\":";        out += String((double)e.tokensIn, 0);
     out += ",\"tokOut\":";       out += String((double)e.tokensOut, 0);
     out += ",\"totIn\":";        out += String((double)e.totalIn, 0);

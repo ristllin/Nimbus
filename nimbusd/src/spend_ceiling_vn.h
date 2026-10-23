@@ -46,7 +46,7 @@ class SpendCeilingVn {
     nimbus::orch::installSpendFreeze(+[] { return self() && self()->frozen(); });
     nimbus::orch::installPendingSpend(
         +[](const nimbus::orch::TurnSpend& s) { return self() ? self()->price(s) : 0; },
-        +[](uint64_t micro) { if (self()) self()->addPending(micro); });
+        +[](const char*, uint64_t micro) { if (self()) self()->addPending(micro); });
     // Every paid call outside a turn (a sub-agent, an embedding) counts too.
     nimbus::orch::installSeamMeter(+[](nimbus::orch::SpendSeam, const char*,
                                        const nimbus::orch::TurnSpend& s, uint64_t est) {
@@ -123,10 +123,11 @@ class SpendCeilingVn {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "{\"limitCents\":%llu,\"spentCents\":%llu,\"frozen\":%s,\"ownerSet\":%s,"
-                  "\"month\":%lu,\"resetsOn\":\"%s\",\"saved\":%s,\"loaded\":true}",
+                  "\"active\":%s,\"month\":%lu,\"resetsOn\":\"%s\",\"saved\":%s,\"loaded\":true}",
                   (unsigned long long)(c_.limitMicro / 10000ULL),
                   (unsigned long long)(c_.spentMicro / 10000ULL),
                   c_.frozenWith(pending_) ? "true" : "false", c_.ownerSet ? "true" : "false",
+                  c_.active() ? "true" : "false",
                   (unsigned long)c_.monthKey, nimbus::orch::resetDateText(c_.monthKey).c_str(),
                   dirty_ ? "false" : "true");
     return buf;

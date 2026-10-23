@@ -13,6 +13,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/jobs.h"
 #include "nimbus/orch/spend_ceiling.h"
+#include "nimbus/orch/provider_park.h"   // lane DEF2: the provider-limit pause
 #include "nimbus/orch/model_choices.h"   // staticModelChoices / modelInChoices
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the cheapest fallback
 #include "nimbus/harness/providers.h"
@@ -527,6 +528,26 @@ static void test_spend_ceiling_refuses_a_sub_dispatch_before_any_request() {
       TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
     }
   }
+}
+
+// Lane DEF2: a provider whose own monthly limit is reached (its park pause) runs no
+// helper: a spawn naming it moves to the next open keyed provider, and the limit's words
+// ride the swap; Mistral, Z.ai or any other provider with room keeps working.
+static void test_a_provider_at_its_limit_runs_no_helper() {
+  orch::providerPark().clear();
+  orch::providerPark().pause("anthropic", orch::kPauseProviderLimit);
+  Rig r;
+  CompatAdapter zai;
+  r.fabric.registerAdapter(&zai);
+  r.keyed = {"anthropic", "zai"};
+  zai.deps.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"});
+  r.eng->enqueueSpawn(sp("summarize the GLM paper"), "chat1");   // names anthropic
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());   // nothing to anthropic
+  TEST_ASSERT_EQUAL(1, (int)zai.deps.http.seen.size());     // it ran on Z.ai instead
+  TEST_ASSERT_TRUE(LogCapture::contains("spawn moved anthropic -> zai"));
+  TEST_ASSERT_TRUE(LogCapture::contains("its monthly limit is reached"));
+  orch::providerPark().clear();
 }
 
 // CUM-538 gate: a 200 whose result could not be read (empty content, or a body the
@@ -2237,6 +2258,7 @@ int main(int, char**) {
   RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
   RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
   RUN_TEST(test_spend_ceiling_refuses_a_sub_dispatch_before_any_request);
+  RUN_TEST(test_a_provider_at_its_limit_runs_no_helper);
   RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
   RUN_TEST(test_an_unreadable_answer_may_have_run);
   RUN_TEST(test_spawn_note_budget_is_per_chat);

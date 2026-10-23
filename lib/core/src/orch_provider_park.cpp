@@ -70,6 +70,7 @@ std::string parkWords(const char* provider, const ParkVerdict& v) {
   if (v.open) return std::string();
   const std::string p = provider ? provider : "the provider";
   if (v.paused & kPauseSpendCeiling) return "paid requests to " + p + " are paused: the monthly spend limit is reached";
+  if (v.paused & kPauseProviderLimit) return "paid requests to " + p + " are paused: its monthly limit is reached";
   if (v.paused) return "paid requests to " + p + " are paused";
   std::string s;
   if (v.kind == ParkKind::Billing) s = p + " says the account is out of credit";

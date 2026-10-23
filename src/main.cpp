@@ -878,18 +878,16 @@ static bool orchSendSink(const String& chatId, const String& text) {
 // gets a history row the page renders plus an async delivery an open page re-reads.
 // The device screen's line is drawn from the state itself (fillVoiceCtx).
 static void spendNoticePump() {
-  using agent::spend::NoticeKind;
   using nimbus::orch::NoticeChannel;
   std::string text;
-  NoticeKind k = NoticeKind::None;
   if (agent::telegram::enabled()) {
-    k = agent::spend::nextNotice(NoticeChannel::Telegram, text);
-    const String owner = k != NoticeKind::None ? agent::orchestrator::firstAllowedChat() : String();
+    const agent::spend::Owed k = agent::spend::nextNotice(NoticeChannel::Telegram, text);
+    const String owner = k.any() ? agent::orchestrator::firstAllowedChat() : String();
     if (owner.length() && agent::telegram::send(owner, String(text.c_str()), /*block=*/false))
       agent::spend::delivered(NoticeChannel::Telegram, k);
   }
-  k = agent::spend::nextNotice(NoticeChannel::Web, text);
-  if (k != NoticeKind::None) {
+  const agent::spend::Owed k = agent::spend::nextNotice(NoticeChannel::Web, text);
+  if (k.any()) {
     agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message,
                                   String(text.c_str()), "", "ev:spend");
     {
