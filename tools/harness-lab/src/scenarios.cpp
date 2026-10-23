@@ -16,6 +16,7 @@
 #include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
 #include "scenarios_store_full.h"   // a full file store, said once (storm leg g)
 #include "scenarios_skills.h"   // lane I: skills used and editable (live legs)
+#include "scenarios_prefs.h"   // lane J: standing owner preferences (live legs)
 
 namespace lab {
 namespace {
@@ -297,6 +298,18 @@ skillslegs::Report skillslegsReport(Ctx& c) {
 }
 void scSkillsE2E(LabRig& rig, Ctx& c) { skillslegs::e2e(rig, skillslegsReport(c)); }
 void scMealEval(LabRig& rig, Ctx& c) { skillslegs::mealEval(rig, skillslegsReport(c)); }
+void scPrefsE2E(LabRig& rig, Ctx& c) {
+  prefslegs::Report rep;
+  rep.check = [&c](bool ok, const std::string& what) { c.check(ok, what); };
+  rep.note = [&c](const std::string& what) { c.note(what); };
+  prefslegs::e2e(rig, rep);
+}
+void scPrefsNextDay(LabRig& rig, Ctx& c) {
+  prefslegs::Report rep;
+  rep.check = [&c](bool ok, const std::string& what) { c.check(ok, what); };
+  rep.note = [&c](const std::string& what) { c.note(what); };
+  prefslegs::nextDay(rig, rep);
+}
 
 // 12. The live ".env" regression (2026-08-13, Nimbus-4): asked how to set up
 //     GitHub so the assistant could create repos, the model walked a device
@@ -427,6 +440,8 @@ const Scenario kScenarios[] = {
     {"store-full-photos", "five photos into a full store: one short reply each, no re-explaining, no save tries", scStoreFullPhotos, false},
     {"skills-e2e",     "a read skill attaches across turns; edits stage; the owner's skill survives; authoring lints", scSkillsE2E, false},
     {"meal-eval",      "the food log is written where it is read: stated figures and corrections append rows", scMealEval, false},
+    {"prefs-e2e",      "a standing rule stated once rides every turn and the next day; replies carry no em dash", scPrefsE2E, false},
+    {"prefs-nextday",  "a standing default stated on day N is applied on day N+1 without a reminder", scPrefsNextDay, false},
 };
 
 }  // namespace

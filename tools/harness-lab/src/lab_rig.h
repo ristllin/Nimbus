@@ -11,6 +11,7 @@
 #include "curl_transport.h"
 #include "lab_env.h"
 #include "lab_files.h"
+#include "lab_prefs.h"   // lane J: the standing rules
 #include "lab_wire.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fault_transport.h"
@@ -48,6 +49,8 @@
 // pins (effort, output cap, per-request ceiling), then any injected faults
 // (--fault), then the recorder (--record), then libcurl.
 namespace lab {
+// True while a scheduled (unattended) turn runs - the prefs rails read it.
+inline bool g_labScheduledTurn = false;
 
 // The model a host runs when nothing overrides it. Cheapest current model per
 // provider (live tests run Anthropic first, on claude-haiku-5-5).
@@ -68,7 +71,7 @@ namespace orch = nimbus::orch;
 
 struct TurnRecord {
   std::string chatId, userText, reply;
-  std::string turnInputs;   // the per-turn INPUT (where [ACTIVE SKILLS] rides)
+  std::string turnInputs;   // the per-turn INPUT (where [ACTIVE SKILLS] and [STANDING RULES] ride)
   std::vector<std::string> toolCalls;    // "name(args)"
   std::vector<std::string> toolResults;  // truncated result text
   std::vector<std::string> deliveries;
@@ -174,8 +177,11 @@ class LabRig {
     cur_ = TurnRecord{};
     cur_.chatId = chatId;
     cur_.userText = prompt;
+    g_labScheduledTurn = true;
     auto r = eng_->injectScheduledTurn(chatId, prompt, name, loopId, quietOk);
+    g_labScheduledTurn = false;
     cur_.host = lastHost_;
+    cur_.systemPrompt = eng_->lastInstructions();   // lane J: the block rides the static band
     cur_.tokensIn = r.tokens.promptTokens;
     cur_.tokensOut = r.tokens.completionTokens;
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
@@ -226,6 +232,7 @@ class LabRig {
   const RecordingTransport& recorder() const { return rec_; }
   LabFiles& files() { return files_; }
   LabSkills& skills() { return skills_; }   // seed + inspect the store (lane I)
+  LabPrefs& prefs() { return prefs_; }   // lane J: the standing-rules store
   const std::vector<TurnRecord>& turns() const { return turns_; }
   const std::vector<std::string>& toolNames() const { return toolNames_; }
 
@@ -340,7 +347,9 @@ class LabRig {
     // "unavailable" to the memory tools, which then degrade / refuse honestly).
     mc.embed = [this](const std::string& text, std::string& err) { err.clear(); return embed(text); };
     mc.persistScratch = [this] { return saveScratch(); };
+    prefs_.bindStanding(mc);   // lane J: mem_write standing:true -> the rules
     orch::registerMemoryTools(reg_, mc);
+    prefs_.registerTools(reg_);   // lane J: prefs.edit, registered as the device does
 
     // Split by tool group so each registration (and its lambda) stays inside the
     // complexity gate. Registration order is preserved (it drives toolNames_).
@@ -630,6 +639,7 @@ class LabRig {
       in.recentConversation = recentWindow(chat);
       in.runningMemory = memory_;
       in.scratchpad = &scratch_;
+      in.standingPrefs = prefs_.blockFor(chat);   // lane J: [STANDING RULES]
       return in;
     };
     d.toolSpecs = [this](const orch::Principal& who) { return reg_.toolSpecsFor(who); };
@@ -662,6 +672,7 @@ class LabRig {
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
       if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] rides
+      if (ev.inputs) cur_.turnInputs = *ev.inputs;
     };
 
     d.apply.deliver = d.deliver;
@@ -853,6 +864,7 @@ class LabRig {
   orch::ToolRegistry reg_;
   LabFiles           files_;
   LabSkills          skills_;   // the lab's SkillStore + attach table (lane I)
+  LabPrefs           prefs_;   // lane J: the standing-rules store + tools
   std::vector<std::string> toolNames_;
   std::string tavilyKey_;
 
