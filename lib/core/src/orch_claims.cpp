@@ -27,6 +27,10 @@ enum CueFlag : uint16_t {
   kLogSense   = 1u << 8,   // "logged": after a system-data noun it is the device's log, not a save
   kState      = 1u << 9,   // a state claim: plain future tense ("it will survive a reboot") still claims it
   kAsName     = 1u << 10,  // "saved as <name>": followed by a/an/the it names a kind, not a file
+  kFaultCtx   = 1u << 11,  // cause: counts only with a fault word in the sentence ("stuck", "flaky")
+  kContraRepeat = 1u << 12,  // cause about the sender repeating: a gap when the device repeated
+  kSelfOk     = 1u << 13,  // cause: "it is working": needs a health read and no failure on record
+  kLogObject  = 1u << 14,  // saved: a log, entry, ledger or total within reach ("updated the log")
 };
 
 struct Cue {
@@ -53,6 +57,12 @@ constexpr uint32_t kChangeBacks =
     fxBit(FxKind::Config) | fxBit(FxKind::FileWrite) | fxBit(FxKind::SkillSave) |
     fxBit(FxKind::Schedule);
 constexpr uint32_t kCheckBacks = fxBit(FxKind::Read) | fxBit(FxKind::SubSourced);
+// "switched", "turned on", "set it to": a setting (a config change that stored a new
+// value) or a routine; a memory or file write does not back it.
+constexpr uint32_t kSwitchBacks = fxBit(FxKind::Config) | fxBit(FxKind::Schedule);
+// "updated the log", "adjusted the entry" (19 Oct: the day log was said to be updated
+// after a correction and was not): only a file write backs it.
+constexpr uint32_t kLogBacks = fxBit(FxKind::FileWrite);
 constexpr uint32_t kDurableStoreBacks = fxBit(FxKind::MemWrite) | fxBit(FxKind::MemUpdate) |
                                         fxBit(FxKind::MemPin) | fxBit(FxKind::FileWrite) |
                                         fxBit(FxKind::SkillSave);
@@ -78,6 +88,13 @@ constexpr Cue kCues[] = {
     {C::Saved, "committed to memory", 0, kSavedBacks},
     {C::Saved, "made a note", kSelf, kNotedBacks},
     {C::Saved, "jotted down", kSelf, kNotedBacks},
+    // a correction carried into a record (L19-50): with a log noun near, a file write
+    // backs it; "corrected" alone is backed by any save
+    {C::Saved, "updated", kLogObject, kLogBacks},
+    {C::Saved, "corrected", kLogObject, kLogBacks},
+    {C::Saved, "adjusted", kLogObject, kLogBacks},
+    {C::Saved, "amended", kLogObject, kLogBacks},
+    {C::Saved, "corrected", kSelf | kNoPassive, kSavedBacks},
     // ---- a deliverable that exists outside the reply
     {C::Deliverable, "written and waiting", kAnySubject, kFileBacks},
     {C::Deliverable, "drafted and waiting", kAnySubject, kFileBacks},
@@ -140,13 +157,20 @@ constexpr Cue kCues[] = {
     // ---- changed state
     {C::Changed, "pinned", kPin, 0},
     {C::Changed, "unpinned", 0, fxBit(FxKind::MemUpdate)},
-    {C::Changed, "switched", kSelf, kChangeBacks},
-    {C::Changed, "turned off", kSelf, kChangeBacks},
-    {C::Changed, "turned on", kSelf, kChangeBacks},
+    {C::Changed, "switched", kSelf, kSwitchBacks},
+    {C::Changed, "turned off", kSelf, kSwitchBacks},
+    {C::Changed, "turned on", kSelf, kSwitchBacks},
     {C::Changed, "updated", kSelf, kChangeBacks},
     {C::Changed, "changed", kSelf, kChangeBacks},
-    {C::Changed, "enabled", kSelf, kChangeBacks},
-    {C::Changed, "disabled", kSelf, kChangeBacks},
+    {C::Changed, "enabled", kSelf, kSwitchBacks},
+    {C::Changed, "disabled", kSelf, kSwitchBacks},
+    {C::Changed, "i set", 0, kSwitchBacks},
+    {C::Changed, "i've set", 0, kSwitchBacks},
+    {C::Changed, "i have set", 0, kSwitchBacks},
+    {C::Changed, "we set", 0, kSwitchBacks},
+    {C::Changed, "set it to", kSelf | kNoPassive, kSwitchBacks},
+    {C::Changed, "set to", kSelf | kNoPassive, kSwitchBacks},
+    {C::Changed, "now set to", kAnySubject, kSwitchBacks},
     // ---- durable (the scratchpad's save, a pin)
     {C::Durable, "survive* reboot*", kAnySubject | kState, 0},
     {C::Durable, "survive* a reboot", kAnySubject | kState, 0},
@@ -242,6 +266,134 @@ constexpr Cue kCues[] = {
     {C::Figure, "package says", kAnySubject | kState | kFigure, 0},
     {C::Figure, "per the packaging", kAnySubject | kState | kFigure, 0},
     {C::Figure, "on the packaging", kAnySubject | kState | kFigure, 0},
+    // ---- causes (backs = the CauseEvidence bit that supports the cause)
+    // the owner's phone, app or client (a fault word in the sentence makes it a cause)
+    {C::Cause, "telegram client", kAnySubject | kState | kFaultCtx, kEvClient},
+    {C::Cause, "telegram app", kAnySubject | kState | kFaultCtx, kEvClient},
+    {C::Cause, "your client", kAnySubject | kState | kFaultCtx, kEvClient},
+    {C::Cause, "your app", kAnySubject | kState | kFaultCtx, kEvClient},
+    {C::Cause, "your phone", kAnySubject | kState | kFaultCtx, kEvClient},
+    {C::Cause, "on your end", kAnySubject | kState | kFaultCtx, kEvClient | kEvNetwork},
+    {C::Cause, "on your side", kAnySubject | kState | kFaultCtx, kEvClient | kEvNetwork},
+    {C::Cause, "your outbox", kAnySubject | kState, kEvClient},
+    {C::Cause, "stuck outbox", kAnySubject | kState, kEvClient},
+    // advice that blames the owner's phone or app
+    {C::Cause, "force-close*", kAnySubject | kState, kEvClient},
+    {C::Cause, "force close*", kAnySubject | kState, kEvClient},
+    {C::Cause, "force-quit*", kAnySubject | kState, kEvClient},
+    {C::Cause, "force quit*", kAnySubject | kState, kEvClient},
+    {C::Cause, "clear its outbox", kAnySubject | kState, kEvClient},
+    {C::Cause, "clearing its outbox", kAnySubject | kState, kEvClient},
+    {C::Cause, "clear the outbox", kAnySubject | kState, kEvClient},
+    {C::Cause, "clear your outbox", kAnySubject | kState, kEvClient},
+    {C::Cause, "reinstall the app", kAnySubject | kState, kEvClient},
+    {C::Cause, "reinstalling the app", kAnySubject | kState, kEvClient},
+    {C::Cause, "reinstall telegram", kAnySubject | kState, kEvClient},
+    {C::Cause, "restart the app", kAnySubject | kState, kEvClient},
+    {C::Cause, "restarting the app", kAnySubject | kState, kEvClient},
+    {C::Cause, "restart your phone", kAnySubject | kState, kEvClient},
+    {C::Cause, "restarting your phone", kAnySubject | kState, kEvClient},
+    {C::Cause, "restart telegram", kAnySubject | kState, kEvClient},
+    {C::Cause, "update the app", kAnySubject | kState, kEvClient},
+    {C::Cause, "update your app", kAnySubject | kState, kEvClient},
+    {C::Cause, "update telegram", kAnySubject | kState, kEvClient},
+    // the owner's connection
+    {C::Cause, "your network", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your connection", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your internet", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your wi-fi", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your wifi", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your signal", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "your router", kAnySubject | kState | kFaultCtx, kEvNetwork},
+    {C::Cause, "network glitch*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "network hiccup*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "network issue*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "network problem*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "connection issue*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "connection problem*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "connectivity issue*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "connectivity problem*", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "flaky connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "poor connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "spotty connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "unstable connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "bad connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "weak signal", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "check your connection", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "check your network", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "check your internet", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "check your wi-fi", kAnySubject | kState, kEvNetwork},
+    {C::Cause, "check your wifi", kAnySubject | kState, kEvNetwork},
+    // a damaged or incomplete file
+    {C::Cause, "corrupt", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "corrupted", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "partially uploaded", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "partially-uploaded", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "partial upload", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "incomplete upload", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "upload was incomplete", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "didn't fully upload", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "did not fully upload", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "damaged file", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "file is damaged", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "file was damaged", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "malformed", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "broken file", kAnySubject | kState, kEvCorrupt},
+    {C::Cause, "file is broken", kAnySubject | kState, kEvCorrupt},
+    // the sender repeating himself (a gap when the device recorded its own repeat)
+    {C::Cause, "you keep sending", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you keep resending", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you've been sending", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you have been sending", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent the same", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you've sent the same", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent it again", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent this again", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent that again", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you re-sent", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you resent", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you're resending", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you're sending the same", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent it # times", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you've sent it # times", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you sent this # times", kAnySubject | kState | kContraRepeat, 0},
+    {C::Cause, "you've sent this # times", kAnySubject | kState | kContraRepeat, 0},
+    // the assistant's own subsystems failing: timed out, out of credit
+    {C::Cause, "timed out", kAnySubject | kState, kEvTimeout},
+    {C::Cause, "timeout", kAnySubject | kState, kEvTimeout},
+    {C::Cause, "time limit", kAnySubject | kState, kEvTimeout},
+    {C::Cause, "took too long", kAnySubject | kState, kEvTimeout},
+    {C::Cause, "out of credit*", kAnySubject | kState, kEvBilling},
+    {C::Cause, "no credits", kAnySubject | kState, kEvBilling},
+    {C::Cause, "credit balance", kAnySubject | kState, kEvBilling},
+    {C::Cause, "billing issue*", kAnySubject | kState, kEvBilling},
+    {C::Cause, "billing problem*", kAnySubject | kState, kEvBilling},
+    // ... or working (needs a health read this turn and no failure on record)
+    {C::Cause, "vision path is working", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision path is healthy", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision path is fine", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision path works", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision is working", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision is fine", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision is healthy", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "vision works", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "image reading is working", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "image reading works", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "photo reading is working", kAnySubject | kState | kSelfOk, kEvImageFail},
+    {C::Cause, "nothing wrong on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "nothing is wrong on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "nothing wrong on my side", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "nothing is wrong on my side", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "no problem on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "no problem on my side", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "no issue on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "no issues on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "everything is working on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "everything is fine on my end", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "my end is fine", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "my side is fine", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "all systems are working", kAnySubject | kState | kSelfOk, kEvFailure},
+    {C::Cause, "all systems are fine", kAnySubject | kState | kSelfOk, kEvFailure},
 };
 constexpr size_t kCueCount = sizeof(kCues) / sizeof(kCues[0]);
 
@@ -634,14 +786,26 @@ bool isNegation(const Scan& sc, const Tok& t) {
 // it", "I probably saved it") but not a state ("it'll probably survive a
 // reboot" still claims durability).
 constexpr const char* kTenseOnly[] = {"will", "gonna", "shall", "probably", "possibly", "likely"};
+// A cause stated as a guess is still a cause ("it's probably your connection", "it
+// might be your phone"): these words do not exempt a cause claim; offers, conditions
+// and questions still do.
+constexpr const char* kSpeculation[] = {"could", "might",  "may",      "would",    "should",  "must",
+                                        "maybe", "perhaps", "probably", "possibly", "likely",  "will",
+                                        "gonna", "shall",  "hope",     "hopefully"};
 
-bool isFutureMarker(const Scan& sc, size_t k, bool state) {
+// How a claim reads futures: an action (plain futures exempt it), a state (they do
+// not), or a cause (guesses do not either).
+enum class Tense : uint8_t { Action, State, Cause };
+
+bool isFutureMarker(const Scan& sc, size_t k, Tense tense) {
   const Tok& t = sc.toks[k];
-  if (state && (tokIn(sc.s, t, kTenseOnly) || endsWith(sc.s, t, "'ll"))) return false;
+  if (tense != Tense::Action && (tokIn(sc.s, t, kTenseOnly) || endsWith(sc.s, t, "'ll"))) return false;
+  if (tense == Tense::Cause && (tokIn(sc.s, t, kSpeculation) || endsWith(sc.s, t, "'d"))) return false;
   if (tokIn(sc.s, t, kFutureWords) || endsWith(sc.s, t, "'ll") || endsWith(sc.s, t, "'d")) return true;
   if (k + 1 >= sc.toks.size() || !sameClause(sc, k, k + 1)) return false;
   for (const char* pair : kFuturePairs) {
     const char* sp = std::strchr(pair, ' ');
+    if (tense == Tense::Cause && std::strcmp(pair, "can be") == 0) continue;   // "can be your wifi"
     if (tokIs(sc.s, t, pair, (size_t)(sp - pair), false) && tokIs(sc.s, sc.toks[k + 1], sp + 1))
       return true;
   }
@@ -712,10 +876,10 @@ bool negativeSubjectScope(const Scan& sc, size_t i) {
 }
 
 // R2: an offer, condition or future earlier in the clause.
-bool futureBefore(const Scan& sc, size_t i, bool state) {
+bool futureBefore(const Scan& sc, size_t i, Tense tense) {
   for (size_t k = i; k-- > 0;) {
     if (!sameClause(sc, k, i)) break;
-    if (isFutureMarker(sc, k, state)) return true;
+    if (isFutureMarker(sc, k, tense)) return true;
   }
   return false;
 }
@@ -738,14 +902,14 @@ bool openerOf(const Scan& sc, size_t k, size_t* first) {
 // A clause opened by "or" with no assistant subject before the cue shares the
 // offer, condition or possibility of the clauses before it in the sentence,
 // back to the nearest clause that has the assistant as its subject.
-bool orClauseScope(const Scan& sc, size_t i, bool state) {
+bool orClauseScope(const Scan& sc, size_t i, Tense tense) {
   size_t f = 0;
   if (tokIn(sc.s, sc.toks[i], kSelfSubjects) || !openerOf(sc, i, &f)) return false;
   if (f == 0 || !tokIs(sc.s, sc.toks[f], "or")) return false;
   for (int hop = 0; hop < 8 && f > 0; hop++) {
     const size_t p = f - 1;   // the last token of the clause before
     if (sc.toks[p].sent != sc.toks[i].sent) return false;
-    if (isFutureMarker(sc, p, state) || futureBefore(sc, p, state)) return true;
+    if (isFutureMarker(sc, p, tense) || futureBefore(sc, p, tense)) return true;
     if (!openerOf(sc, p, &f)) return false;   // that clause has its own subject
   }
   return false;
@@ -934,11 +1098,16 @@ bool earlierInSentence(const Scan& sc, size_t i) {
   return false;
 }
 
+Tense tenseOf(const Cue& cue) {
+  if (cue.cls == C::Cause) return Tense::Cause;
+  return (cue.flags & kState) ? Tense::State : Tense::Action;
+}
+
 // R1, R2 and R5: quoted, a question, negated close by, or an offer/future.
 bool outOfScope(const Scan& sc, size_t i, size_t len, const Cue& cue) {
+  const Tense tense = tenseOf(cue);
   return anyQuoted(sc, i, len) || sc.sentQuestion[sc.toks[i].sent] || negatedBefore(sc, i) ||
-         negativeSubjectScope(sc, i) || futureBefore(sc, i, (cue.flags & kState) != 0) ||
-         orClauseScope(sc, i, (cue.flags & kState) != 0);
+         negativeSubjectScope(sc, i) || futureBefore(sc, i, tense) || orClauseScope(sc, i, tense);
 }
 
 // Not this turn's act by the assistant: another subject, an adjective, a past
@@ -993,6 +1162,52 @@ bool spawnRejected(const Scan& sc, size_t i, size_t len, const Cue& cue, int* nu
   return (cue.flags & kSpawnVerb) && (clauseNegated(sc, i) || !spawnNounNear(sc, i, i + len, num));
 }
 
+// Fault words: in a cause's sentence they make "your phone" a cause ("your Telegram
+// client is re-sending a stuck item"), not a mention ("send it from your phone").
+constexpr const char* kFaultWords[] = {
+    "stuck",     "re-send*", "resend*",   "re-sent",  "glitch*", "bug*",      "broken",  "corrupt*",
+    "fail*",     "issue*",   "problem*",  "outbox",   "keeps",   "repeat*",   "duplicat*", "crash*",
+    "flaky",     "drop*",    "unstable",  "slow*",    "lag*",    "weak",      "poor",    "spotty",
+    "interrupt*", "lost",    "losing",    "error*",   "offline", "hiccup*",   "fault*",  "misbehav*",
+    "unreliable", "blocking", "blocked",  "cut",      "patchy",  "intermittent*",
+};
+
+bool faultWord(const Scan& sc, const Tok& t) {
+  for (const char* w : kFaultWords) {
+    const size_t n = std::strlen(w);
+    const bool prefix = w[n - 1] == '*';
+    if (tokIs(sc.s, t, w, prefix ? n - 1 : n, prefix)) return true;
+  }
+  return false;
+}
+
+bool faultWordInSentence(const Scan& sc, size_t i, size_t len) {
+  for (size_t k = i; k-- > 0 && sc.toks[k].sent == sc.toks[i].sent;)
+    if (faultWord(sc, sc.toks[k])) return true;
+  for (size_t k = i + len; k < sc.toks.size() && sc.toks[k].sent == sc.toks[i].sent; k++)
+    if (faultWord(sc, sc.toks[k])) return true;
+  return false;
+}
+
+// Records a correction is carried into ("updated the log", "the entry is corrected").
+constexpr const char* kRecordNouns[] = {"log",   "logs",  "entry", "entries", "ledger", "total",
+                                        "totals", "tally", "diary", "tracker", "record"};
+
+bool recordNounNear(const Scan& sc, size_t i, size_t len) {
+  for (size_t k = i + len; k < sc.toks.size() && k < i + len + 4 && sameClause(sc, k, i); k++)
+    if (tokIn(sc.s, sc.toks[k], kRecordNouns)) return true;
+  for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], kRecordNouns)) return true;
+  return false;
+}
+
+// A cue that needs company it does not have: a cause noun with no fault word in its
+// sentence, a record verb with no record near.
+bool contextMissing(const Scan& sc, size_t i, size_t len, const Cue& cue) {
+  if ((cue.flags & kFaultCtx) && !faultWordInSentence(sc, i, len)) return true;
+  return (cue.flags & kLogObject) && !recordNounNear(sc, i, len);
+}
+
 void addClaim(const Scan& sc, size_t i, size_t c, int num, ClaimScan& out) {
   Claim cl;
   cl.cls = kCues[c].cls;
@@ -1004,7 +1219,9 @@ void addClaim(const Scan& sc, size_t i, size_t c, int num, ClaimScan& out) {
   out.claims.push_back(cl);
 }
 
-// Try every cue at token i; append at most one claim per class.
+// Try every cue at token i; append at most one claim per class. A record verb with
+// its record ("updated the log") claims the token for the save class: the plain
+// "updated" of the change class stands down.
 void matchAt(const Scan& sc, size_t i, ClaimScan& out) {
   const char first = sc.s[sc.toks[i].b] | 0x20;
   for (size_t c = 0; c < kCueCount; c++) {
@@ -1013,9 +1230,10 @@ void matchAt(const Scan& sc, size_t i, ClaimScan& out) {
     if (lead != '#' && lead != first) continue;
     int num = 0;
     const size_t len = matchPhrase(sc, i, cue.phrase, &num);
-    if (!len || !passesScope(sc, i, len, cue)) continue;
+    if (!len || contextMissing(sc, i, len, cue) || !passesScope(sc, i, len, cue)) continue;
     if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue)) continue;
     addClaim(sc, i, c, num, out);
+    if (cue.flags & kLogObject) return;
   }
 }
 
@@ -1101,7 +1319,14 @@ std::string missingFigures(const Scan& sc, const Claim& cl, const std::vector<st
 
 enum GapVariant : uint8_t {
   kGapPlain = 0, kGapRamOnly = 1, kGapNotPinned = 2, kGapPinNoop = 3, kGapSomeStarted = 4,
-  kGapNoVoiceReceipt = 5,
+  kGapNoVoiceReceipt = 5, kGapQueued = 6, kGapNoReceipt = 7,
+  // causes
+  kGapCauseOwner = 8,        // the owner's phone, app or connection
+  kGapCauseFile = 9,         // a damaged or incomplete file
+  kGapCauseSender = 10,      // the sender repeating himself, while the device repeated
+  kGapCauseOkFailed = 11,    // "it is working", with a failure on record
+  kGapCauseOkUnchecked = 12, // "it is working", nothing read to confirm it
+  kGapCauseOwn = 13,         // the assistant's own subsystem (timed out, out of credit)
 };
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
@@ -1140,9 +1365,49 @@ bool pinBacked(const TurnEffects& fx) {
 // RAM-only note is checked as Durable. When the turn's only save was a RAM-only
 // note, the note was kept until restart, not lost, and the line says so (a
 // refused memory write keeps the plain line).
+// Every memory write or update that did not land was queued (not refused).
+bool failedWritesQueued(const TurnEffects& fx) {
+  bool any = false;
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.ok || (e.kind != FxKind::MemWrite && e.kind != FxKind::MemUpdate)) continue;
+    if (!(e.flags & kFxQueued)) return false;
+    any = true;
+  }
+  return any;
+}
+
 bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
   if (backedBy(fx, cue.backs)) return false;
   if (fx.anyOk(FxKind::ScratchRamOnly) && fx.countFailed(FxKind::MemWrite) == 0) *variant = kGapRamOnly;
+  else if (failedWritesQueued(fx)) *variant = kGapQueued;
+  return true;
+}
+
+// A delivery claim: a Telegram send backs it only with Telegram's receipt; a send
+// that was only queued gets its own line (it may still arrive).
+bool sentGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
+  if (cue.backs != kSendBacks) return !backedBy(fx, cue.backs);
+  if (sendDelivered(fx)) return false;
+  if (sendQueuedOnly(fx)) *variant = kGapNoReceipt;
+  return true;
+}
+
+// A cause against what this turn's records show (cue.backs: the supporting bit; for
+// "it is working" the bit that contradicts it).
+bool causeGap(const Cue& cue, uint32_t ev, uint8_t* variant) {
+  if (cue.flags & kContraRepeat) {
+    *variant = kGapCauseSender;
+    return (ev & kEvDeviceRepeat) != 0;
+  }
+  if (cue.flags & kSelfOk) {
+    *variant = (ev & cue.backs) ? kGapCauseOkFailed : kGapCauseOkUnchecked;
+    return (ev & cue.backs) || !(ev & kEvHealthRead);
+  }
+  if (ev & cue.backs) return false;
+  if (cue.backs & (kEvClient | kEvNetwork)) *variant = kGapCauseOwner;
+  else if (cue.backs & kEvCorrupt) *variant = kGapCauseFile;
+  else *variant = kGapCauseOwn;
   return true;
 }
 
@@ -1179,6 +1444,7 @@ bool isGap(const Cue& cue, const Claim& cl, const TurnEffects& fx, uint8_t* vari
     }
     case C::Changed: return changedGap(cue, fx, variant);
     case C::Durable: return durableGap(cue, fx, variant);
+    case C::Sent: return sentGap(cue, fx, variant);
     default: return !backedBy(fx, cue.backs);
   }
 }
@@ -1304,6 +1570,7 @@ struct GapCheck {
     return k < sc.toks.size() && voiceNounNear(sc, k);
   }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
+    if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
     if (voiceClaim(cue, cl)) {
       if (voiceDelivered(*ev.fx)) return false;
       g.variant = kGapNoVoiceReceipt;
@@ -1327,15 +1594,37 @@ std::string joinNumbers(const std::string& csv) {
   return last == std::string::npos ? csv : csv.substr(0, last) + " and " + csv.substr(last + 2);
 }
 
+const char* causeWhat(uint8_t variant) {
+  switch (variant) {
+    case kGapCauseOwner:
+      return "no tool result or device record this turn shows a problem with the owner's phone, app "
+             "or connection; say what the records show, or that the cause is not recorded";
+    case kGapCauseFile:
+      return "no record this turn shows the file was damaged or incomplete; say what the records show, "
+             "or that the cause is not recorded";
+    case kGapCauseSender:
+      return "the device's records show it repeated these deliveries itself, so do not say the owner "
+             "sent them again";
+    case kGapCauseOkFailed: return "the device's records this turn show a failure there, so it is not confirmed working";
+    case kGapCauseOkUnchecked: return "nothing read this turn confirms it is working";
+    default: return "no tool result or device record this turn shows that cause";
+  }
+}
+
 const char* gapWhat(const ClaimGap& g) {
   switch (g.cls) {
-    case C::Saved: return g.variant == kGapRamOnly ? "it was kept in RAM only; saving failed"
-                                                   : "nothing was saved";
+    case C::Saved:
+      if (g.variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
+      return g.variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
     case C::Deliverable: return "no file was written";
     case C::Spawned: return "fewer sub-agents were started than it says (or none)";
-    case C::Sent: return g.variant == kGapNoVoiceReceipt
-                             ? "no voice message reached Telegram (no delivery receipt with a message_id)"
-                             : "nothing was sent, spoken or scheduled";
+    case C::Sent:
+      if (g.variant == kGapNoVoiceReceipt)
+        return "no voice message reached Telegram (no delivery receipt with a message_id)";
+      return g.variant == kGapNoReceipt
+                 ? "the Telegram send was only queued: no delivery receipt (message_id) came back, so it "
+                   "is not known to have arrived"
+                 : "nothing was sent, spoken or scheduled";
     case C::Changed:
       if (g.variant == kGapPinNoop) return "that memory was already pinned, so nothing changed";
       return g.variant == kGapNotPinned ? "no pin ran" : "no change was made";
@@ -1344,6 +1633,7 @@ const char* gapWhat(const ClaimGap& g) {
                                 : "the scratchpad save failed; it is kept in RAM only until restart";
     case C::Checked: return "no lookup ran";
     case C::Figure: return "these numbers are in no source you were given";
+    case C::Cause: return causeWhat(g.variant);
     default: return "this turn did not do it";
   }
 }
@@ -1351,8 +1641,8 @@ const char* gapWhat(const ClaimGap& g) {
 }  // namespace
 
 const char* claimClassSlug(ClaimClass c) {
-  static const char* const kSlugs[] = {"saved", "deliverable", "spawned", "sent",
-                                       "changed", "durable", "checked", "figure"};
+  static const char* const kSlugs[] = {"saved",   "deliverable", "spawned", "sent",  "changed",
+                                       "durable", "checked",     "figure",  "cause"};
   static_assert(sizeof(kSlugs) / sizeof(kSlugs[0]) == (size_t)ClaimClass::kCount,
                 "every ClaimClass needs a slug");
   return (size_t)c < (size_t)ClaimClass::kCount ? kSlugs[(size_t)c] : "unknown";
@@ -1362,7 +1652,8 @@ size_t claimCueCount() { return kCueCount; }
 
 ClaimCueInfo claimCue(size_t i) {
   const Cue& c = kCues[i < kCueCount ? i : 0];
-  return ClaimCueInfo{c.cls, c.phrase, (c.flags & kSelf) != 0};
+  return ClaimCueInfo{c.cls, c.phrase, (c.flags & kSelf) != 0, (c.flags & kFaultCtx) != 0,
+                      (c.flags & kLogObject) != 0};
 }
 
 ClaimScan scanClaims(const std::string& reply) {
@@ -1395,6 +1686,97 @@ std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
     gaps.push_back(std::move(g));
   }
   return gaps;
+}
+
+bool unbackedCause(const std::string& text, uint32_t causeEvidence, std::string* excerpt) {
+  const ClaimScan scan = scanClaims(text);
+  bool any = false;
+  for (const Claim& cl : scan.claims) any = any || cl.cls == C::Cause;
+  if (!any) return false;
+  TurnEffects none;
+  ClaimEvidence ev;
+  ev.fx = &none;
+  ev.causeEvidence = causeEvidence;
+  for (const ClaimGap& g : claimGaps(text, scan, ev)) {
+    if (g.cls != C::Cause) continue;
+    if (excerpt) *excerpt = g.excerpt;
+    return true;
+  }
+  return false;
+}
+
+namespace {
+
+// What a record says about causes, phrase by phrase (lowercase; the record is
+// folded first). Each phrase reads as a failure or a fact in the device's own words
+// (its log lines, its labels, its tool results), never a mere mention of a part
+// ("network: ok" backs nothing).
+struct EvidencePhrases {
+  uint32_t bit;
+  const char* const* phrases;
+  size_t n;
+};
+
+constexpr const char* kEvNetworkWords[] = {
+    "timed out", "timeout", "connect fail", "connection failed", "connection reset", "connection refused",
+    "connection lost", "lost connection", "network error", "network failure", "unreachable", "dns ",
+    "offline", "no network", "not connected", "did not answer", "no answer", "handshake fail",
+    "my wifi", "my wi-fi", "my connection", "my internet", "my network", "my signal",
+};
+constexpr const char* kEvClientWords[] = {
+    "telegram client", "client error", "client closed", "your client", "my phone", "my app",
+    "my telegram", "outbox",
+};
+constexpr const char* kEvCorruptWords[] = {
+    "corrupt", "partial upload", "partially uploaded", "incomplete", "malformed", "damaged",
+    "decode fail", "could not decode", "couldn't decode", "invalid image", "not a valid image",
+};
+constexpr const char* kEvRepeatWords[] = {
+    "\"tgoffsetsaved\":false", "tgoffsetsaved: false", "[tgoffset]", "offset write", "redeliver",
+    "re-served", "replay", "delivered again", "duplicate", ", sent ", "(sent ",
+};
+constexpr const char* kEvImageWords[] = {
+    "couldn't be described", "could not be described", "(not read", "not read:", "could not be fetched",
+    "couldn't be fetched", "\"visionlasterr\":{",
+};
+constexpr const char* kEvFailureWords[] = {
+    "failed", "failure", "refused", "out of credit", "http 4", "http 5", "unavailable", "parked",
+    "not stored", "storage full", "storage is almost full", "write failed", "low memory", "did not answer",
+};
+constexpr const char* kEvBillingWords[] = {
+    "out of credit", "credit balance", "no credits", "insufficient_quota", "billing", "payment required",
+    "http 402",
+};
+constexpr const char* kEvTimeoutWords[] = {"timed out", "timeout", "deadline"};
+
+#define NIMBUS_EV(bit, arr) EvidencePhrases{bit, arr, sizeof(arr) / sizeof(arr[0])}
+constexpr EvidencePhrases kEvidence[] = {
+    NIMBUS_EV(kEvNetwork, kEvNetworkWords),     NIMBUS_EV(kEvClient, kEvClientWords),
+    NIMBUS_EV(kEvCorrupt, kEvCorruptWords),     NIMBUS_EV(kEvDeviceRepeat, kEvRepeatWords),
+    NIMBUS_EV(kEvImageFail, kEvImageWords),     NIMBUS_EV(kEvFailure, kEvFailureWords),
+    NIMBUS_EV(kEvFailure, kEvImageWords),       NIMBUS_EV(kEvBilling, kEvBillingWords),
+    NIMBUS_EV(kEvTimeout, kEvTimeoutWords),
+};
+#undef NIMBUS_EV
+
+}  // namespace
+
+uint32_t causeEvidenceOf(const std::string& record) {
+  constexpr size_t kWindow = 32768;   // the newest 32 KB (inputs end with the owner's text)
+  const size_t from = record.size() > kWindow ? record.size() - kWindow : 0;
+  std::string low;
+  low.reserve(record.size() - from);
+  for (size_t p = from; p < record.size();) low += foldAt(record, p);
+  uint32_t bits = 0;
+  for (const EvidencePhrases& e : kEvidence) {
+    if (bits & e.bit) continue;
+    for (size_t i = 0; i < e.n; i++)
+      if (low.find(e.phrases[i]) != std::string::npos) {
+        bits |= e.bit;
+        break;
+      }
+  }
+  return bits;
 }
 
 std::string figureNumbers(const std::string& text, size_t cap) {
@@ -1493,17 +1875,38 @@ std::string claimCorrection(const std::vector<ClaimGap>& gaps, const TurnEffects
   return out;
 }
 
+namespace {
+std::string causeLine(uint8_t variant) {
+  switch (variant) {
+    case kGapCauseOwner:
+      return "(Note: the device has no record of a problem with your phone, app or connection, so that "
+             "cause is not confirmed.)";
+    case kGapCauseFile: return "(Note: nothing the device recorded shows the file was damaged or incomplete.)";
+    case kGapCauseSender:
+      return "(Note: the device recorded repeats on its own side, so these may not have come from you.)";
+    case kGapCauseOkFailed: return "(Correction: the device recorded a failure there, so it is not confirmed working.)";
+    case kGapCauseOkUnchecked: return "(Note: nothing was checked this turn to confirm that it is working.)";
+    default: return "(Note: the device has no record of that cause.)";
+  }
+}
+}  // namespace
+
 std::string claimTailLine(const ClaimGap& g) {
   switch (g.cls) {
     case C::Saved:
+      if (g.variant == kGapQueued)
+        return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
       return g.variant == kGapRamOnly
                  ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
                  : "(Correction: that has not been saved.)";
     case C::Deliverable: return "(Correction: nothing has been written for that yet.)";
     case C::Spawned:   // the spawn check's own lines, so both say it the same way
       return g.variant == kGapSomeStarted ? kSpawnSomeNotStartedLine : kSpawnNotStartedLine;
-    case C::Sent: return g.variant == kGapNoVoiceReceipt ? "(Correction: no voice message was delivered.)"
-                                                         : "(Correction: that has not been sent.)";
+    case C::Sent:
+      if (g.variant == kGapNoVoiceReceipt) return "(Correction: no voice message was delivered.)";
+      return g.variant == kGapNoReceipt
+                 ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
+                 : "(Correction: that has not been sent.)";
     case C::Changed:
       if (g.variant == kGapPinNoop) return "(Correction: that memory was already pinned, so nothing changed.)";
       return g.variant == kGapNotPinned ? "(Correction: nothing was pinned this turn.)"
@@ -1516,6 +1919,7 @@ std::string claimTailLine(const ClaimGap& g) {
     case C::Figure:
       return "(Note: " + joinNumbers(g.missing) +
              " did not appear in the source I was given, so treat them as estimates.)";
+    case C::Cause: return causeLine(g.variant);
     default: return std::string();
   }
 }

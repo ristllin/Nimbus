@@ -85,8 +85,17 @@ static std::string coreFor(const ClaimCueInfo& c) {
 
 static bool startsWithI(const char* phrase) { return phrase[0] == 'i' && (phrase[1] == ' ' || phrase[1] == '\''); }
 
+// The context a cue needs in its sentence: a record noun right after a record
+// verb ("updated the log"), a fault word somewhere in the sentence of a cause
+// ("your phone ... after that glitch").
+static std::string contextFor(const ClaimCueInfo& c) {
+  if (c.needsRecordNoun) return " the log";
+  if (c.needsFaultWord) return " after that glitch";
+  return "";
+}
+
 static std::string positiveFor(const ClaimCueInfo& c) {
-  const std::string core = coreFor(c);
+  const std::string core = coreFor(c) + contextFor(c);
   return (startsWithI(c.phrase) ? "Done, " : "Done, I ") + core + " for you.";
 }
 
@@ -101,7 +110,7 @@ static void test_every_class_has_cues_and_a_template() {
     TEST_ASSERT_GREATER_THAN_MESSAGE(0, perClass[c], claimClassSlug((ClaimClass)c));
     TEST_ASSERT_NOT_EQUAL(0, std::strcmp(claimClassSlug((ClaimClass)c), "unknown"));
   }
-  TEST_ASSERT_EQUAL(8, (int)ClaimClass::kCount);   // update coreFor and this line together
+  TEST_ASSERT_EQUAL(9, (int)ClaimClass::kCount);   // update coreFor and this line together
 }
 
 static void test_every_cue_is_a_claim_when_plain() {
@@ -142,7 +151,7 @@ static void test_negation_five_tokens_away_does_not_reach() {
     const bool bare = (c.cls == ClaimClass::Saved || c.cls == ClaimClass::Deliverable) && w > 2 &&
                       c.phrase[w - 2] == 'e' && c.phrase[w - 1] == 'd';
     const std::string s = std::string(bare ? "Not really truly quite totally very fully " : "Not really truly quite totally ") +
-                          coreFor(c) + ".";
+                          coreFor(c) + contextFor(c) + ".";
     TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(s), c.cls), s.c_str());
   }
 }
@@ -169,7 +178,7 @@ static void test_negative_subject_negates_its_whole_clause() {
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
     if (isFigure(c) || c.cls == ClaimClass::Spawned) continue;
-    const std::string act = (startsWithI(c.phrase) ? "" : "I ") + coreFor(c) + ".";
+    const std::string act = (startsWithI(c.phrase) ? "" : "I ") + coreFor(c) + contextFor(c) + ".";
     const std::string positive = std::string("Everything in the recent logs or messages shows that ") + act;
     TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(positive), c.cls), positive.c_str());
     for (const char* n : negative) {
@@ -202,15 +211,21 @@ static void test_negative_subject_negates_its_whole_clause() {
 static void test_or_clause_shares_the_possibility_before_it() {
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
-    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase)) continue;
-    const std::string core = coreFor(c);
+    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase) ||
+        std::strncmp(c.phrase, "we ", 3) == 0)
+      continue;   // "or we set": the clause has its own subject, like "or I saved"
+    const std::string core = coreFor(c) + contextFor(c);
     for (const char* mid : {", or ", ", or it was "}) {
       const std::string plain = "The old list was lost on the way" + std::string(mid) + core + " somewhere else.";
       TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(plain), c.cls), plain.c_str());
-      // "probably" exempts an action but not a durability state, as in its own clause.
-      const bool state = c.cls == ClaimClass::Durable;
+      // "probably" exempts an action but not a durability state, as in its own
+      // clause. A cause is a state twice over: a guess ("may", "probably") never
+      // exempts it, in either lead.
+      const bool state = c.cls == ClaimClass::Durable || c.cls == ClaimClass::Cause;
       for (const char* lead : {"The old list may have been lost on the way", "The old list was probably lost on the way"}) {
-        const bool claim = state && std::strstr(lead, "probably") != nullptr;
+        const bool claim = c.cls == ClaimClass::Cause
+                               ? true
+                               : state && std::strstr(lead, "probably") != nullptr;
         const std::string s = lead + std::string(mid) + core + " somewhere else.";
         TEST_ASSERT_EQUAL_MESSAGE(claim, hasClass(scanClaims(s), c.cls), s.c_str());
       }
@@ -223,9 +238,11 @@ static void test_or_clause_shares_the_possibility_before_it() {
   // list of things done, where the subject has no offer.
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
-    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase)) continue;
-    const std::string offer = "If you want, I can change the tone, make it shorter, or " + coreFor(c) + " today.";
-    const std::string done = "I changed the tone, made it shorter, or " + coreFor(c) + " today.";
+    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase) ||
+        std::strncmp(c.phrase, "we ", 3) == 0)
+      continue;   // "or we set": the clause has its own subject, like "or I saved"
+    const std::string offer = "If you want, I can change the tone, make it shorter, or " + coreFor(c) + contextFor(c) + " today.";
+    const std::string done = "I changed the tone, made it shorter, or " + coreFor(c) + contextFor(c) + " today.";
     TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(offer), c.cls), offer.c_str());
     TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(done), c.cls), done.c_str());
   }
@@ -259,12 +276,13 @@ static void test_every_cue_in_a_question_offer_or_condition_is_not_a_claim() {
 static void test_plain_future_exempts_actions_but_not_durability() {
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
-    // Durability and a figure's source are states: "it'll survive a reboot",
-    // "it will likely survive a restart" and "it will show 37 g per the label"
-    // still claim them. Likelihood words exempt actions the same way.
-    const bool state = c.cls == ClaimClass::Durable || isFigure(c);
+    // Durability, a figure's source and a cause are states: "it'll survive a
+    // reboot", "it will likely survive a restart", "it will show 37 g per the
+    // label" and "it might be your phone" still claim them. Likelihood words
+    // exempt actions the same way, and never a cause (a guess is the failure).
+    const bool state = c.cls == ClaimClass::Durable || isFigure(c) || c.cls == ClaimClass::Cause;
     for (const char* lead : {"I'll ", "I will probably ", "I likely ", "I possibly "}) {
-      const std::string s = lead + coreFor(c) + ".";
+      const std::string s = lead + coreFor(c) + contextFor(c) + ".";
       TEST_ASSERT_EQUAL_MESSAGE(state, hasClass(scanClaims(s), c.cls), s.c_str());
     }
   }
@@ -373,10 +391,9 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
       {ClaimClass::Sent, "I sent it.", {FxKind::Send}},
       {ClaimClass::Sent, "Reminder set.", {FxKind::Schedule}},
       {ClaimClass::Sent, "I read it aloud.", {FxKind::Speak}},
-      {ClaimClass::Changed, "I switched the model.",
-       {FxKind::MemPin, FxKind::MemUpdate, FxKind::MemDelete, FxKind::MemWrite, FxKind::Scratch,
-        FxKind::ScratchRamOnly, FxKind::Config, FxKind::FileWrite, FxKind::SkillSave,
-        FxKind::Schedule}},
+      // 23 Oct: "switched" is a setting that stored a new value, or a routine:
+      // a memory or file write no longer backs it.
+      {ClaimClass::Changed, "I switched the model.", {FxKind::Config, FxKind::Schedule}},
       {ClaimClass::Changed, "Pinned that memory.", {FxKind::MemPin}},
       {ClaimClass::Checked, "I checked the timetable.", {FxKind::Read, FxKind::SubSourced}},
   };

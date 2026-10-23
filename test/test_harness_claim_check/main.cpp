@@ -445,7 +445,11 @@ static void test_a_write_that_does_not_land_under_a_saved_reply_gets_one_correct
     TEST_ASSERT_EQUAL_MESSAGE(c.writes, a.writes, c.what);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)a.delivered.size(), c.what);
     const std::string want =
-        c.lands ? std::string("Saved it to memory.") : std::string("Saved it to memory.\n\n") + kNotSavedLine;
+        c.lands ? std::string("Saved it to memory.")
+                : std::string("Saved it to memory.\n\n") +
+                      (c.end == WriteEnd::Queued
+                           ? "(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
+                           : kNotSavedLine);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), a.delivered[0].c_str(), c.what);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)a.captured.size(), c.what);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(a.delivered[0].c_str(), a.captured[0].c_str(), c.what);

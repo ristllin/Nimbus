@@ -27,11 +27,22 @@
 //   R4  a scratchpad write backs "noted", and also brings the durability check;
 //   R5  text inside quotes or code is skipped (the head often quotes the owner);
 //   R6  English only: a reply that is mostly non-ASCII letters is not scanned.
-// A send claim about a voice message ("I sent you a voice message", "Voice note
-// sent") is backed only by a send that carries Telegram's receipt for a voice
-// message (turn_effects.h kFxVoice + kFxReceipt), never by a send tool's own words
-// (22 Oct: "sent to Telegram" backed "a voice message is on its way" and nothing
-// arrived). Text, document and photo sends keep the plain send backing for now.
+// A send claim about a Telegram delivery is backed only by a send that carries
+// Telegram's receipt (turn_effects.h kFxReceipt: the message_id Telegram answered
+// with), never by a send tool's own words (22 Oct: "sent to Telegram" backed "a
+// voice message is on its way" and nothing arrived). A voice-message claim needs a
+// voice message's receipt; a text, document or photo send without a receipt (it was
+// only queued) backs no "sent" either. A send that is not a Telegram send (a share
+// link) backs it as before.
+//
+// Cause claims (19 Oct: "your Telegram client is re-sending a corrupt,
+// partially-uploaded item", "my vision path is working", none of it on record) are
+// a class of their own: a cause about the owner's phone, app or connection, about a
+// file being damaged, about the sender repeating himself, or about the assistant's
+// own subsystems (it timed out, it is out of credit, it is working) needs a tool
+// result or a device record behind it this turn (CauseEvidence). Hedges ("probably",
+// "might be", "looks like") do not exempt a cause: a guess about the owner's phone
+// is the failure. Questions, offers, conditions and negations still do.
 // Precision first: a missed claim costs nothing new, a false one would correct
 // a true reply. A claim about another person's action ("the photo you sent"),
 // a past reference ("already logged") and an adjective ("your logged runs") are
@@ -59,6 +70,7 @@ enum class ClaimClass : uint8_t {
   Durable,       // survives reboot, reboot or not, never decay, every turn
   Checked,       // verified, I checked, looked it up, live data
   Figure,        // a figure credited to a source: (label), per the label, watch said
+  Cause,         // a cause: your phone/app/connection, a damaged file, it timed out, it works
   kCount
 };
 
@@ -90,13 +102,34 @@ struct ClaimEvidence {
   const std::string* recalled = nullptr;    // memories recalled into the prompt: a source
                                             // only for what the owner reported ("your
                                             // watch said"), never for a label figure
+  uint32_t causeEvidence = 0;               // CauseEvidence bits this turn's records carry
 };
+
+// What this turn's records (tool results, the turn's input block: the owner's text,
+// photo labels, device notices) show about causes, as bits. A cause claim is backed
+// only by the bit it needs (claims.cpp kCues): "your connection" by a network failure
+// on record, "corrupt" by a record that says so. kEvHealthRead comes from the ledger
+// (a status or health tool ran), never from text.
+enum CauseEvidence : uint32_t {
+  kEvNetwork      = 1u << 0,   // a network failure: no answer, timed out, connect failed
+  kEvClient       = 1u << 1,   // a record naming the owner's phone, app or client
+  kEvCorrupt      = 1u << 2,   // a damaged, partial or undecodable file
+  kEvDeviceRepeat = 1u << 3,   // the device repeated a delivery (offset not saved, redelivered)
+  kEvFailure      = 1u << 4,   // any failure on record (a photo not read, a refusal, HTTP 4xx/5xx)
+  kEvHealthRead   = 1u << 5,   // a status or health read ran this turn
+  kEvBilling      = 1u << 6,   // a provider out of credit
+  kEvTimeout      = 1u << 7,   // a timeout on record
+  kEvImageFail    = 1u << 8,   // a photo that could not be read or fetched
+};
+// The CauseEvidence bits one record shows (the newest 32 KB of it).
+uint32_t causeEvidenceOf(const std::string& record);
 
 struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;
   std::string excerpt;     // the claim's clause, at most ~100 bytes, valid UTF-8
   std::string missing;     // Figure: the numbers no source holds ("200, 21, 60")
-  uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op, no voice receipt
+  uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op, no voice
+                           // receipt, queued, no receipt, and the cause lines
   bool        deviceOnly = false;   // only this device could have done it (a Telegram voice
                                     // message from its bot): a hosted tool never backs it
 };
@@ -110,6 +143,13 @@ std::string figureNumbers(const std::string& text, size_t cap = 4096);
 // order. No ledger (fx null) means nothing can be checked: no gaps.
 std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
                                 const ClaimEvidence& ev);
+
+// True when `text` (a reply, or a memory about to be written) states a cause that
+// `causeEvidence` does not back; *excerpt (may be null) gets the first such clause.
+// The apply-time refusal of a memory write that would store an unrecorded cause as a
+// fact reads it (19 Oct: "Roy's Telegram client had a stuck outbox" was stopped only
+// by the embedding outage).
+bool unbackedCause(const std::string& text, uint32_t causeEvidence, std::string* excerpt = nullptr);
 
 // The unsourced-result rail (sub-agent provenance): the turn read a live-data
 // sub-agent result that no lookup backed, ran no lookup of its own, and the
@@ -136,6 +176,8 @@ struct ClaimCueInfo {
   ClaimClass  cls;
   const char* phrase;   // lowercase words; '*' ends a prefix word; '#' is any number
   bool        needsSelf;   // counts only with the assistant (or a passive) as subject
+  bool        needsFaultWord;   // a cause cue that counts only with a fault word in its sentence
+  bool        needsRecordNoun;  // a save cue that counts only with a record noun near ("updated the log")
 };
 size_t claimCueCount();
 ClaimCueInfo claimCue(size_t i);

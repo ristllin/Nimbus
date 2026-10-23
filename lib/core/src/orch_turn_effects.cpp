@@ -148,6 +148,7 @@ std::string TurnEffects::summary() const {
     out += kFxInfo[k].what;
     out += ": " + countText(ok);
     if (bad) out += " (" + countText(bad) + " failed or refused)";
+    if (kind == FxKind::Send && sendQueuedOnly(*this)) out += " (queued for Telegram, no delivery receipt)";
     std::string refs;
     for (const Effect& e : v_)
       if (e.kind == kind && e.ok && e.ref[0] && refs.size() < 48) refs += (refs.empty() ? "" : ", ") + std::string(e.ref);
@@ -209,6 +210,52 @@ bool voiceDelivered(const TurnEffects& fx) {
   return false;
 }
 
+bool sendDelivered(const TurnEffects& fx) {
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.kind == FxKind::Send && e.ok && (!(e.flags & kFxTelegram) || (e.flags & kFxReceipt))) return true;
+  }
+  return false;
+}
+
+bool sendQueuedOnly(const TurnEffects& fx) {
+  bool queued = false;
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.kind != FxKind::Send || !e.ok) continue;
+    if ((e.flags & kFxTelegram) && !(e.flags & kFxReceipt)) queued = true;
+    else return false;   // something did arrive
+  }
+  return queued;
+}
+
+namespace {
+bool endsWith(const std::string& s, const char* suf) {
+  const size_t n = std::strlen(suf);
+  return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
+}
+}  // namespace
+
+bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
+  kind = FxKind::Config;
+  if (sum.find("cfg(") != std::string::npos) { landed = false; return true; }   // no change, nothing
+  if (endsWith(sum, "cfg ")) { landed = true; return true; }
+  if (startsWith(sum, "tts")) {
+    kind = FxKind::Speak;
+    landed = sum == "tts ";
+    return true;
+  }
+  if (startsWith(sum, "led") || startsWith(sum, "lights") || startsWith(sum, "reboot")) {
+    landed = sum == "led " || sum == "lights " || sum == "reboot ";
+    return true;
+  }
+  if (startsWith(sum, "orch_model(")) {
+    landed = !contains(sum, "(invalid)") && !contains(sum, "(no-key)") && !contains(sum, "(no change)");
+    return true;
+  }
+  return false;   // skip, protected-BLOCKED, unsupported: no action ran
+}
+
 // A send: its receipt, if the result names one. A voice send without a receipt did
 // not arrive (it records as failed); one that went out as text is a plain send.
 static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags) {
@@ -222,8 +269,28 @@ static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags
   fx.add(FxKind::Send, true, id.empty() ? fxRefFromOutput(output) : id, 1, flags);
 }
 
+// "queued memory <id>, not stored yet" / "queued update for <id>, not changed yet".
+static bool queuedWrite(FxKind base, const std::string& out) {
+  return (base == FxKind::MemWrite || base == FxKind::MemUpdate) &&
+         (startsWith(out, "queued memory ") || startsWith(out, "queued update for "));
+}
+
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags) {
+  if (queuedWrite(base, output)) {   // queued is not stored, success flag or not
+    fx.add(base, false, std::string(), 1, (uint8_t)(flags | kFxQueued));
+    return;
+  }
+  if (base == FxKind::Config && startsWith(output, "applied: ")) {   // device.control
+    // The summary is the first line; a risk note may follow it.
+    const size_t nl = output.find('\n');
+    const std::string sum = output.substr(9, nl == std::string::npos ? std::string::npos : nl - 9);
+    FxKind k;
+    bool landed = false;
+    if (deviceSummaryEffect(sum, k, landed)) fx.add(k, landed && !isError);
+    else fx.add(FxKind::Read, !isError);
+    return;
+  }
   if (isError) {
     // A voice reply that stopped part way: the messages Telegram named did arrive
     // ("only 2 of the 3 voice messages reached Telegram (message_id 811, 812) ..."),

@@ -60,6 +60,9 @@ enum : uint8_t {
   kFxPending   = 1u << 1,   // derived from the turn's fields before apply ran
   kFxVoice     = 1u << 2,   // a send asked for as a Telegram voice message (voice:true)
   kFxReceipt   = 1u << 3,   // the send's result names Telegram's message_id: it arrived
+  kFxTelegram  = 1u << 4,   // a Telegram send (reply.telegram, files.send): backed only by a receipt
+  kFxQueued    = 1u << 5,   // a memory write the store queued (not stored yet)
+  kFxHealth    = 1u << 6,   // a read of the device's own state (device.status, system.health, ...)
 };
 
 struct Effect {
@@ -121,6 +124,10 @@ class TurnEffects {
 // message that never left the device); one that went out as text is a plain send.
 // A failed send whose text still names receipts (a voice reply that stopped part
 // way) records the delivered part as landed and the rest as failed.
+// A memory write the store only queued ("queued memory <id>, not stored yet") is not
+// stored, whatever the call's success flag says: it records as failed with kFxQueued.
+// A device action's summary ("applied: cfg ", "applied: cfg(no change) ",
+// "applied: tts ") records what it really did (deviceSummaryEffect).
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags = 0);
 
@@ -133,6 +140,20 @@ std::string fxReceiptId(const std::string& output);
 
 // True when an ok send this turn carries a voice message's receipt.
 bool voiceDelivered(const TurnEffects& fx);
+
+// True when an ok send this turn backs a "sent" claim: one that is not a Telegram
+// send (a share link), or a Telegram send that carries Telegram's receipt.
+bool sendDelivered(const TurnEffects& fx);
+// True when a Telegram send this turn was accepted but carries no receipt (queued).
+bool sendQueuedOnly(const TurnEffects& fx);
+
+// What one device-action summary did (apply.cpp applyDeviceElement's tokens): its
+// effect kind and whether it landed. A config change lands only when a knob survived
+// the scheduled-turn strip and a stored value changed ("cfg "); "cfg(no change) " and
+// "cfg(nothing) " change nothing. A voice-off or sink-less tts, a sink-less led, a
+// refused reboot and an invalid or keyless model switch land nothing either. False
+// when the summary names no action the ledger records.
+bool deviceSummaryEffect(const std::string& summary, FxKind& kind, bool& landed);
 
 }  // namespace orch
 }  // namespace nimbus
