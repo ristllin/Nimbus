@@ -858,6 +858,11 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <textarea id=directive rows=8></textarea>
 <div class=row><button id=savedir type=button>Save</button><button id=revertdir type=button>Revert to default</button></div>
 <p class=hint id=dirmsg></p>
+<label>Standing rules <button class=qh type=button aria-expanded=false aria-label="About standing rules">?</button></label>
+<p class="hint tip">Short always/never rules the assistant follows in every reply. It adds one when you ask in chat; you can add, approve or remove any here. The assistant never removes one on its own.</p>
+<div id=prefslist class=hint>loading&hellip;</div>
+<div class=row style="margin-top:6px"><input id=prefsnew placeholder="A rule, e.g. Never use em dashes" style="flex:1"><button id=prefsadd type=button>Add</button></div>
+<p class=hint id=prefsmsg></p>
 <label>Assistant memory <button class=qh type=button aria-expanded=false aria-label="About assistant memory">?</button></label>
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>
@@ -4243,6 +4248,44 @@ $('savedir').onclick=()=>{
 $('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
   if(ok){$('directive').value=window.__dirDefault||'';const m=$('dirmsg');if(m)m.textContent='Reverted to the default.';}
 }));
+// ---- Standing rules (lane J): the list under the Directive box, plus add /
+// approve / remove. The assistant's own saves arrive as pending when the turn
+// read outside content; approving is the owner's one click here.
+let _prefsSeen='';
+function loadPrefs(){
+  const box=$('prefslist'); if(!box)return;
+  fetch('/api/prefs').then(jok).then(d=>{
+    const now=JSON.stringify(d);
+    if(now===_prefsSeen)return;   // the memory pane polls; an unchanged list must not re-render (a link the owner is clicking stays stable)
+    _prefsSeen=now;
+    const items=d.items||[];
+    if(!items.length){box.innerHTML='<span class=hint>No standing rules yet. Add one below, or ask in chat.</span>';return;}
+    box.innerHTML=items.map(r=>'<div class=row style="margin:2px 0">'
+      +'<span style="flex:1">'+_fesc(r.text)
+      +(r.state==='pending'?' <b style="color:#e0a349">waits for your approval</b>':'')
+      +(r.nodash?' <span class=hint>(em dashes are removed from replies)</span>':'')
+      +'</span>'
+      +(r.state==='pending'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="approve">Approve</a>':'')
+      +' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="remove">Remove</a></div>').join('');
+    const msg=$('prefsmsg'); if(msg)msg.textContent='';
+    box.querySelectorAll('a[data-pid]').forEach(a=>a.onclick=e=>{e.preventDefault();
+      const fd=new FormData();fd.append('action',a.dataset.pact);fd.append('id',a.dataset.pid);
+      fetch('/api/prefs',{method:'POST',body:fd}).then(jok)
+        .then(()=>loadPrefs()).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='That did not work - try again.';});});
+  }).catch(()=>{box.innerHTML='<span class=hint>Standing rules unavailable.</span>';});
+}
+$('prefsadd')&&($('prefsadd').onclick=()=>{
+  const t=$('prefsnew').value.trim(), m=$('prefsmsg'); if(m)m.textContent='';
+  if(!t){if(m)m.textContent='Type a rule first.';return;}
+  const fd=new FormData();fd.append('action','add');fd.append('text',t);
+  // The device answers with its own plain-words reason on a refusal (a number
+  // alone would not help the owner), so read it here rather than through jok.
+  fetch('/api/prefs',{method:'POST',body:fd}).then(async r=>{
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){const m=$('prefsmsg');if(m)m.textContent=j.error||('Save failed ('+r.status+').');return;}
+    $('prefsnew').value='';loadPrefs();
+  }).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='Could not reach the device - try again.';});
+});
 $('clearmem').onclick=()=>{
   uiConfirm('Erase the assistant\'s memory?\n\nYour directive is kept.',{ok:'Erase Memory',danger:true}).then(ok=>{ if(ok)
     orchApply({clearMem:1}); });
@@ -4704,7 +4747,7 @@ $('embsave').onclick=()=>{
     })
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent=saveFailText(e,'Couldn\'t verify - try again.');});
 };
-function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();}
+function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();loadPrefs();}
 
 // ---- Files (E1 artifact store): browse /mem/files, download, delete, upload ----
 function _fbytes(n){n=n||0;return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';}

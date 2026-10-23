@@ -215,6 +215,17 @@ ToolResult prefsSaveStanding(const PrefsToolContext& ctx, const std::string& tex
   return out;
 }
 
+// The clear verb (its confirm gate keeps it out of prefsCommand's body).
+std::string commandClear(const PrefsToolContext& ctx, const std::string& rest) {
+  if (rest != "yes") return "This removes every standing rule. Send /prefs clear yes to confirm.";
+  std::string reply = kUnavailable;
+  const bool ran = ctx.withPrefs && ctx.withPrefs([&](OwnerPrefs& p) {
+    const PrefErr e = p.clear();
+    reply = e == PrefErr::Ok ? "Removed every standing rule." : std::string("Not changed: ") + prefErrWords(e) + ".";
+  });
+  return ran ? reply : kUnavailable;
+}
+
 std::string prefsCommand(const PrefsToolContext& ctx, const std::string& args) {
   std::string rest;
   const std::string verb = firstWord(args, rest);
@@ -224,14 +235,7 @@ std::string prefsCommand(const PrefsToolContext& ctx, const std::string& args) {
     run([&](OwnerPrefs& p) { reply = commandList(p); });
     return reply;
   }
-  if (verb == "clear") {
-    if (rest != "yes") return "This removes every standing rule. Send /prefs clear yes to confirm.";
-    run([&](OwnerPrefs& p) {
-      const PrefErr e = p.clear();
-      reply = e == PrefErr::Ok ? "Removed every standing rule." : std::string("Not changed: ") + prefErrWords(e) + ".";
-    });
-    return reply;
-  }
+  if (verb == "clear") return commandClear(ctx, rest);
   const bool known = verb == "add" || verb == "approve" || verb == "rm" || verb == "remove" ||
                      verb == "delete" || verb == "del";
   if (!known || rest.empty()) return kUsage;

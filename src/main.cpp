@@ -2695,6 +2695,14 @@ static void sramSnap(const char* tag) {
   have = true;
 }
 
+// Lane J: the standing rules' first-boot seed - once the memory engines are up,
+// lift the owner's always/never rules out of memory and list them once (a no-op
+// on every later boot: the seed marker rides the prefs file).
+static void prefsFirstBootSeed() {
+  agent::prefs::begin();
+  agent::prefs::seedFirstBoot(std::string(nimbus::sys::deviceName().c_str()));
+}
+
 static void orchestratorBegin() {
   ORCH_MARK("orch: arbiter");
   agent::arbiter::begin();      // work-slot arbitration (heap-only)
@@ -2708,11 +2716,7 @@ static void orchestratorBegin() {
   sinks.device = orchDeviceSink;  // -> led/lights/reboot executor (main loop applies)
   ORCH_MARK("orch: begin");
   agent::orchestrator::begin(&g_fabric, sinks);
-  // Lane J: the standing rules' first-boot seed - once the memory engines are
-  // up, lift the owner's always/never rules out of memory and list them once
-  // (a no-op on every later boot: the seed marker rides the prefs file).
-  agent::prefs::begin();
-  agent::prefs::seedFirstBoot(std::string(nimbus::sys::deviceName().c_str()));
+  prefsFirstBootSeed();
 
   // Register the device's own secrets so the agent log ring (GET /api/log) masks
   // them if a provider error body ever echoes one (CUM-73). This is the reliable

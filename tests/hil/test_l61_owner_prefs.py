@@ -58,8 +58,7 @@ def _act(ip, tok, action, **kw):
 
 
 def _astool(ip, tok, chat, tool, args):
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": tool, "arguments": args}})
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
     r = _S.post(_u(ip, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
     if r.status_code == 404:
         pytest.skip("/api/test/astool absent - flash [env:test]")
@@ -172,13 +171,16 @@ def test_prefs_command_over_telegram(device, board):
     page = {
         "ok": True,
         "result": [
-            {"update_id": upd, "message": {
-                "message_id": upd % 100000,
-                "from": {"id": int(chat_id), "first_name": "Bench"},
-                "chat": {"id": int(chat_id), "type": "private"},
-                "date": int(time.time()),
-                "text": "/prefs",
-            }},
+            {
+                "update_id": upd,
+                "message": {
+                    "message_id": upd % 100000,
+                    "from": {"id": int(chat_id), "first_name": "Bench"},
+                    "chat": {"id": int(chat_id), "type": "private"},
+                    "date": int(time.time()),
+                    "text": "/prefs",
+                },
+            },
         ],
     }
     line = device.cmd(f"TGINJECT {json.dumps(page, separators=(',', ':'))}", "TGINJECT", timeout=10)

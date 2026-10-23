@@ -615,58 +615,66 @@ ToolResult callTool(ToolRegistry& reg, const char* action, const char* id, const
 }
 }  // namespace
 
+static void railsStandingCell(struct World&, const Principal&, bool, bool, bool, const std::string&);
+
+// One rails-matrix cell: (role, turn kind, taint, action, route). Lifted out of
+// the matrix so each stays inside the complexity gate; the invariants are the
+// same in both routes (owner + attended + untainted = active; owner + attended
+// + tainted = pending; otherwise nothing changed).
+static void railsCell(Role r, Kind k, bool taint, int action, int route) {
+  World w;
+  w.p.begin(&w.io);
+  w.p.add("Always reply in English", PrefOrigin::Web, 1, false, nullptr);   // p1, the owner's
+  w.scheduled = kindScheduled(Kind(k));
+  w.tainted = taint;
+  const Principal who = principalForRole(r == Role::Admin ? "owner-chat" : "member-chat", r);
+  const std::string before = w.p.serialize();
+  const bool owner = r == Role::Admin;
+  const bool sched = kindScheduled(Kind(k));
+  if (route == 1) return railsStandingCell(w, who, owner, sched, taint, before);
+  ToolRegistry reg;
+  registerPrefsTools(reg, w.ctx());
+  static const char* const kActions[] = {"add", "replace", "remove", "list"};
+  const ToolResult res = callTool(reg, kActions[action], "p1", "Never use em dashes", who);
+  const bool isList = action == 3;
+  const bool expectOk = owner && (isList || (!sched && (action == 0 || !taint)));
+  TEST_ASSERT_EQUAL_MESSAGE(expectOk, res.success, (std::string(kActions[action]) + " " + roleName(r)).c_str());
+  if (!expectOk || isList) {
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), w.p.serialize().c_str());   // nothing changed
+    TEST_ASSERT_EQUAL(0, w.notices);
+  } else {
+    TEST_ASSERT_EQUAL(1, w.notices);   // the owner sees every change, once
+    if (action == 0) TEST_ASSERT_EQUAL(taint, w.p.find(2)->pending);
+  }
+}
+
+// The mem_write standing:true route's cell (it only adds).
+static void railsStandingCell(World& w, const Principal& who, bool owner, bool sched, bool taint,
+                              const std::string& before) {
+  bool handled = false;
+  const ToolResult res = prefsSaveStanding(w.ctx(), "Never use em dashes", who, handled);
+  TEST_ASSERT_EQUAL(owner && !sched, handled);
+  if (!handled) {
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), w.p.serialize().c_str());
+    return;
+  }
+  TEST_ASSERT_TRUE(res.success);
+  TEST_ASSERT_EQUAL_STRING(taint ? kMemOutcomeQueued : kMemOutcomeStored, res.code.c_str());
+  TEST_ASSERT_EQUAL(taint, w.p.find(2)->pending);
+  TEST_ASSERT_EQUAL(1, w.notices);
+}
+
 static void test_rails_matrix_over_every_role_turn_kind_taint_action_and_route() {
   int cells = 0;
-  for (int r = 0; r <= int(Role::Admin); r++) {
-    for (int k = 0; k < int(Kind::kCount); k++) {
-      for (int taint = 0; taint < 2; taint++) {
-        for (int action = 0; action < 4; action++) {
+  for (int r = 0; r <= int(Role::Admin); r++)
+    for (int k = 0; k < int(Kind::kCount); k++)
+      for (int taint = 0; taint < 2; taint++)
+        for (int action = 0; action < 4; action++)
           for (int route = 0; route < 2; route++) {
             if (route == 1 && action != 0) continue;   // the mem_write route only adds
-            World w;
-            w.p.begin(&w.io);
-            w.p.add("Always reply in English", PrefOrigin::Web, 1, false, nullptr);   // p1, the owner's
-            w.scheduled = kindScheduled(Kind(k));
-            w.tainted = taint == 1;
-            const Principal who = principalForRole(r == 3 ? "owner-chat" : "member-chat", Role(r));
-            const std::string before = w.p.serialize();
-            const bool owner = Role(r) == Role::Admin;
-            const bool sched = kindScheduled(Kind(k));
-            if (route == 1) {
-              bool handled = false;
-              const ToolResult res = prefsSaveStanding(w.ctx(), "Never use em dashes", who, handled);
-              TEST_ASSERT_EQUAL(owner && !sched, handled);
-              if (!handled) {
-                TEST_ASSERT_EQUAL_STRING(before.c_str(), w.p.serialize().c_str());
-              } else {
-                TEST_ASSERT_TRUE(res.success);
-                TEST_ASSERT_EQUAL_STRING(taint ? kMemOutcomeQueued : kMemOutcomeStored, res.code.c_str());
-                TEST_ASSERT_EQUAL(taint == 1, w.p.find(2)->pending);
-                TEST_ASSERT_EQUAL(1, w.notices);
-              }
-              cells++;
-              continue;
-            }
-            ToolRegistry reg;
-            registerPrefsTools(reg, w.ctx());
-            static const char* const kActions[] = {"add", "replace", "remove", "list"};
-            const ToolResult res = callTool(reg, kActions[action], "p1", "Never use em dashes", who);
-            const bool isList = action == 3;
-            const bool expectOk = owner && (isList || (!sched && (action == 0 || !taint)));
-            TEST_ASSERT_EQUAL_MESSAGE(expectOk, res.success, (std::string(kActions[action]) + " " + roleName(Role(r))).c_str());
-            if (!expectOk || isList) {
-              TEST_ASSERT_EQUAL_STRING(before.c_str(), w.p.serialize().c_str());   // nothing changed
-              TEST_ASSERT_EQUAL(0, w.notices);
-            } else {
-              TEST_ASSERT_EQUAL(1, w.notices);   // the owner sees every change, once
-              if (action == 0) TEST_ASSERT_EQUAL(taint == 1, w.p.find(2)->pending);
-            }
+            railsCell(Role(r), Kind(k), taint == 1, action, route);
             cells++;
           }
-        }
-      }
-    }
-  }
   TEST_MESSAGE(("rails matrix: " + std::to_string(cells) + " cells").c_str());
   TEST_ASSERT_EQUAL(4 * int(Kind::kCount) * 2 * 5, cells);
 }

@@ -395,7 +395,7 @@ def restore_prefs(base, tok, src, a, out):
     n = 0
     for r in items:
         if r.get("state") != "active":
-            continue   # a pending rule was never the owner's; it does not restore
+            continue  # a pending rule was never the owner's; it does not restore
         if a.dry_run:
             n += 1
             continue

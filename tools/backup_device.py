@@ -158,8 +158,7 @@ def main():
             manifest["errors"].append(f"{path}: {e}")
     try:
         orch = json.loads(get(base, tok, "/api/orch"))
-        (root / "directive.json").write_bytes(
-            json.dumps({"sysPrompt": orch.get("sysPrompt", "")}, indent=1).encode())
+        (root / "directive.json").write_bytes(json.dumps({"sysPrompt": orch.get("sysPrompt", "")}, indent=1).encode())
     except Exception as e:
         manifest["errors"].append(f"/api/orch (directive): {e}")
 
