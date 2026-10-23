@@ -640,15 +640,20 @@ static nimbus::orch::ToolResult upsertRows(const std::string& project, const std
   using nimbus::orch::ToolResult;
   if (!fileKindIsCsv(name))
     return ToolResult::fail("the keyed upsert is for CSV files (.csv) - name the file .csv");
+  {   // the ownership gate BEFORE anything on the card is opened (appendGate's
+      // own rule - the merge below reads the file, and a caller who cannot
+      // write this file must never learn what is in it either).
+    memory::Lock g;
+    const std::string gate = appendGate(project, name, who);
+    if (!gate.empty()) return ToolResult::fail(gate);
+  }
   const std::string existing = readWhole(project, name, 256 * 1024);
   const nimbus::orch::CsvUpsert up =
       nimbus::orch::planCsvUpsert(existing, text, key, sum, todayStr());
   if (!up.ok) return ToolResult::fail(up.err);
   if (up.changed) {
-    {   // the same gates as a plain append: ownership first, then the quota
+    {   // then the quota, the same rule as artifact.save
       memory::Lock g;
-      const std::string gate = appendGate(project, name, who);
-      if (!gate.empty()) return ToolResult::fail(gate);
       const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
       if (q.maxBytes && g_store.bytesFor(who.ns) + up.out.size() > q.maxBytes)
         return ToolResult::fail(

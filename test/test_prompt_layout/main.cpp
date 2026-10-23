@@ -679,6 +679,30 @@ static void test_openai_breakpoints_and_cache_key() {
   TEST_ASSERT_TRUE(k1 != layout::cacheKey("Nimbus-2", "chat:roy"));
 }
 
+// The TTL order the API refuses: a 1-hour point after a 5-minute one is
+// invalid (the counter-test for anthropicTtlOrderValid).
+static void test_ttl_order_counter_a_short_point_before_a_long_one_is_invalid() {
+  JsonDocument bad;
+  JsonArray sys = bad["system"].to<JsonArray>();
+  JsonObject a = sys.add<JsonObject>();
+  a["type"] = "text"; a["text"] = "first";
+  a["cache_control"]["type"] = "ephemeral";   // 5m
+  JsonObject b = sys.add<JsonObject>();
+  b["type"] = "text"; b["text"] = "second";
+  b["cache_control"]["type"] = "ephemeral"; b["cache_control"]["ttl"] = "1h";
+  TEST_ASSERT_FALSE(layout::anthropicTtlOrderValid(bad.as<JsonVariantConst>()));
+  // The right order (1h first, 5m after) is valid.
+  JsonDocument good;
+  JsonArray sys2 = good["system"].to<JsonArray>();
+  JsonObject c = sys2.add<JsonObject>();
+  c["type"] = "text"; c["text"] = "first";
+  c["cache_control"]["type"] = "ephemeral"; c["cache_control"]["ttl"] = "1h";
+  JsonObject d = sys2.add<JsonObject>();
+  d["type"] = "text"; d["text"] = "second";
+  d["cache_control"]["type"] = "ephemeral";
+  TEST_ASSERT_TRUE(layout::anthropicTtlOrderValid(good.as<JsonVariantConst>()));
+}
+
 // ---- the TTL table ----------------------------------------------------------------
 static void test_ttl_table_picks_one_hour_for_a_slow_chat() {
   const uint32_t min5 = 5u * 60u * 1000u, min60 = 60u * 60u * 1000u;
@@ -822,6 +846,7 @@ int main(int, char**) {
   RUN_TEST(test_anthropic_breakpoints_never_exceed_four);
   RUN_TEST(test_image_parts_never_carry_cache_control);
   RUN_TEST(test_openai_breakpoints_and_cache_key);
+  RUN_TEST(test_ttl_order_counter_a_short_point_before_a_long_one_is_invalid);
   RUN_TEST(test_ttl_table_picks_one_hour_for_a_slow_chat);
   RUN_TEST(test_turn_gaps_track_chats_in_ram);
   RUN_TEST(test_golden_layout_per_provider);
