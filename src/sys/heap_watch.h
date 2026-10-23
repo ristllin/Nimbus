@@ -77,9 +77,17 @@ uint32_t tlsOverlaps();
 // The low-water mark (UINT32_MAX before the first sample).
 uint32_t lowWater();
 
+// The boot ladder's loopTask stack floor (release-v451x bisect): reads the
+// loopTask high-water mark once, after the orchestrator boot, writes the floor
+// line (healthy AND fault - the bench leg greps it) and records the verdict for
+// /api/state. Returns true when the boot is under the floor (a BOOT FAULT).
+bool bootStackFloorCheck();
+// The verdict bootStackFloorCheck() recorded (false before it ran).
+bool bootStackFault();
+
 // /api/state.mem: lowWater, lowWaterTags, lowWaterUp (s), allocFails, allocFailLast,
-// restingLargest, tlsOverlaps, and the stack high-water marks the stack-health suite
-// reads (loopStackMin, panelStackMin, vrelStackMin).
+// restingLargest, tlsOverlaps, bootStackFault, and the stack high-water marks the
+// stack-health suite reads (loopStackMin, panelStackMin, vrelStackMin).
 void stateInto(JsonObject mem);
 
 }  // namespace nimbus::heapwatch

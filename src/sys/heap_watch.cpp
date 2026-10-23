@@ -241,6 +241,20 @@ uint32_t lowWater() {
   return v;
 }
 
+// ---- the boot ladder's loopTask stack floor ----------------------------------
+
+static bool s_bootStackFault = false;
+
+bool bootStackFloorCheck() {
+  const TaskHandle_t t = xTaskGetHandle("loopTask");
+  const uint32_t min = t ? (uint32_t)uxTaskGetStackHighWaterMark(t) : 0;
+  s_bootStackFault = loopStackUnderFloor(min);
+  agent::alogf("%s", loopStackFloorLine(min, t != nullptr).c_str());
+  return s_bootStackFault;
+}
+
+bool bootStackFault() { return s_bootStackFault; }
+
 void stateInto(JsonObject mem) {
   portENTER_CRITICAL(&s_stateMux);
   const Ladder l = s_ladder;
@@ -261,6 +275,7 @@ void stateInto(JsonObject mem) {
   }
   mem["restingLargest"] = restingLargest();
   mem["tlsOverlaps"] = tlsOverlaps();
+  mem["bootStackFault"] = s_bootStackFault;   // the boot ladder's loopTask floor check
   // Stack high-water marks (bytes: StackType_t is uint8_t on this port) for the
   // tasks the stack-health suite reads: the main loop, the display render task and
   // the voice release watcher.

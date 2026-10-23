@@ -304,6 +304,47 @@ static void test_spawn_gate_table() {
   TEST_ASSERT_EQUAL_STRING("turn in flight", spawnVerdictName(SpawnVerdict::TurnInFlight));
 }
 
+// ---- the boot's loopTask stack floor (release-v451x bisect) --------------------
+
+// The floor fails the states that crashed the release gate and passes a healthy
+// boot: the last-good main finished with 88 B of loopTask headroom and the
+// crashing build measured 56 B; a boot with room to spare sits well above 1 KB.
+// Exactly at the floor passes ("drops under" the floor faults).
+static void test_loop_stack_floor_catches_the_eroded_boots() {
+  TEST_ASSERT_TRUE(loopStackUnderFloor(0));
+  TEST_ASSERT_TRUE(loopStackUnderFloor(56));    // the crashing build's journal segment
+  TEST_ASSERT_TRUE(loopStackUnderFloor(88));    // the last-good main's whole boot
+  TEST_ASSERT_TRUE(loopStackUnderFloor(kLoopStackFloorBytes - 1));
+  TEST_ASSERT_FALSE(loopStackUnderFloor(kLoopStackFloorBytes));
+  TEST_ASSERT_FALSE(loopStackUnderFloor(2108));   // the measured free at orch: begin
+  TEST_ASSERT_FALSE(loopStackUnderFloor(UINT32_MAX));
+}
+
+// The boot ladder's one line, both ways: the bench leg greps the healthy form,
+// and the fault form names the floor and the boot path, LOUD.
+static void test_loop_stack_floor_line_healthy_and_fault() {
+  const std::string ok = loopStackFloorLine(2890, true);
+  TEST_ASSERT_TRUE(ok.find("boot stack: loopTask min free 2890 B, floor 1024 B - ok") != std::string::npos);
+  const std::string fault = loopStackFloorLine(88, true);
+  TEST_ASSERT_TRUE(fault.find("BOOT FAULT") != std::string::npos);
+  TEST_ASSERT_TRUE(fault.find("88 B is under the 1024 B floor") != std::string::npos);
+  TEST_ASSERT_TRUE(fault.find("grew past the loopTask stack") != std::string::npos);
+  // A missing task handle reads as a fault too, never a clean pass.
+  const std::string noTask = loopStackFloorLine(4096, false);
+  TEST_ASSERT_TRUE(noTask.find("BOOT FAULT") != std::string::npos);
+  TEST_ASSERT_TRUE(noTask.find("no task handle") != std::string::npos);
+}
+
+// The orchestrator's one-shot boot task asks the same gate the four worker
+// sites share: a 12 KB stack is granted at boot-like free (plenty, no turn),
+// refused under the 16 KB margin, and always refused once a turn is in flight.
+static void test_spawn_gate_answers_the_boot_task_shape() {
+  TEST_ASSERT_EQUAL(SpawnVerdict::Ok, spawnVerdict(12288, 80 * 1024, false));
+  TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, spawnVerdict(12288, 12288 + 16384 - 1, false));
+  TEST_ASSERT_EQUAL(SpawnVerdict::Ok, spawnVerdict(12288, 12288 + 16384, false));
+  TEST_ASSERT_EQUAL(SpawnVerdict::TurnInFlight, spawnVerdict(12288, 80 * 1024, true));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_ring_reset_is_valid_and_empty);
@@ -319,5 +360,8 @@ int main() {
   RUN_TEST(test_line_budget_caps_per_minute_and_counts_drops);
   RUN_TEST(test_resting_largest_is_min_of_recent_idle_samples);
   RUN_TEST(test_spawn_gate_table);
+  RUN_TEST(test_loop_stack_floor_catches_the_eroded_boots);
+  RUN_TEST(test_loop_stack_floor_line_healthy_and_fault);
+  RUN_TEST(test_spawn_gate_answers_the_boot_task_shape);
   return UNITY_END();
 }

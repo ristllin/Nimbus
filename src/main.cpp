@@ -23,6 +23,7 @@
 //                                                  echo for E2E validation)
 #include <Arduino.h>
 #include <esp_heap_caps.h>  // heap_caps_calloc (PSRAM-backed mbedTLS allocator)
+#include <freertos/semphr.h>  // the orchestrator boot task's completion handshake
 #include <new>              // placement new (PSRAM-backed panel framebuffers)
 #include <esp_bt.h>         // esp_bt_controller_mem_release (free BT RAM in Orch mode)
 #include <esp_sleep.h>
@@ -2824,6 +2825,53 @@ static void orchestratorBegin() {
   ORCH_MARK("orch: done");
 }
 
+// The orchestrator's boot work runs OFF the Arduino loopTask (release-v451x
+// bisect): the whole orchestratorBegin() chain - the persisted-store loads
+// (journal, tenants, folds, prefs), the skills/tool registrations and the
+// engine wiring - is the deepest call chain of the boot, and loopTask's 8 KB
+// stack had ~88 B of headroom left after it on the last-good main; lane I's
+// ~100 B of registration depth tipped the canary. setup() runs it on a one-shot
+// task with a proper stack and JOINS it before anything else proceeds, so the
+// frozen no-concurrency rule holds (nothing runs in parallel: this is the same
+// one-shot shape provider_verify/cloud_mint use, gated by heapwatch::spawnGate,
+// and tg_poll still comes up exactly where it did - inside the moved body).
+// The join is short (file loads + registrations, no TLS), so the blocked
+// loopTask cannot trip the task watchdog. When the gate refuses or the spawn
+// fails, the work runs inline on loopTask as before and the boot says so -
+// a degraded boot, never a silent one.
+static constexpr uint32_t kOrchBootStackBytes = 12288;
+
+static void orchBootTask(void* pv) {
+  orchestratorBegin();
+  xSemaphoreGive((SemaphoreHandle_t)pv);   // the handshake: boot proceeds when done
+  vTaskDelete(nullptr);
+}
+
+static void orchestratorBeginOffLoopTask() {
+  SemaphoreHandle_t done = xSemaphoreCreateBinary();
+  if (!done) {
+    agent::alog("orchboot: no RAM for the join semaphore - orchestrator boot runs inline");
+    orchestratorBegin();
+    return;
+  }
+  const nimbus::heapwatch::SpawnVerdict gate =
+      nimbus::heapwatch::spawnGate(kOrchBootStackBytes, "orchboot");
+  bool spawned = false;
+  if (gate == nimbus::heapwatch::SpawnVerdict::Ok)
+    spawned = xTaskCreate(orchBootTask, "orchboot", kOrchBootStackBytes, done, 1, nullptr) == pdPASS;
+  if (spawned) {
+    xSemaphoreTake(done, portMAX_DELAY);   // joined: single-task again before loop()
+  } else {
+    if (gate != nimbus::heapwatch::SpawnVerdict::Ok)
+      agent::alogf("orchboot: spawn gate %s - the orchestrator boot runs inline on loopTask",
+                    nimbus::heapwatch::spawnVerdictName(gate));
+    else
+      agent::alog("orchboot: task spawn failed - the orchestrator boot runs inline on loopTask");
+    orchestratorBegin();
+  }
+  vSemaphoreDelete(done);
+}
+
 // Live device state for the self-test engine (hw::selftest reaches nothing on its
 // own). Installed as the provider; called on whatever task runs a check.
 static nimbus::hw::SelfTestInputs buildSelfTestInputs() {
@@ -4006,11 +4054,16 @@ void setup() {
   // Lane DEF: the paid-call gate answers from the monthly spend ceiling before any
   // turn can start (orchestratorBegin starts the poll task).
   agent::spend::install();
-  if (g_orchMode) orchestratorBegin();
+  if (g_orchMode) orchestratorBeginOffLoopTask();
   // After a crash boot, tell the owner in plain words (and name the request that was
   // cut short), at once when they were waiting on it, else at their next turn; the
   // reply queue exists now.
   if (g_orchMode) nimbus::crash::queueCrashNotice();
+  // The boot ladder's stack floor (release-v451x): the loopTask watermark after the
+  // orchestrator boot, against the pure heap_watch floor. LOUD both ways - the
+  // bench leg greps the healthy line, and an eroded boot (88 B on the last-good
+  // main) prints a BOOT FAULT instead of crashing a release-gate boot later.
+  if (g_orchMode) nimbus::heapwatch::bootStackFloorCheck();
   sramSnap("post-orch");  // CUM-185: after tg_poll/fabric/orchestrator task stacks are up
   BOOT_STAGE(120, 120, 0, Orch);   // YELLOW: orchestrator up (final stage before loop)
 

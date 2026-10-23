@@ -185,4 +185,21 @@ const char* spawnVerdictName(SpawnVerdict v) {
   return "?";
 }
 
+// ---- the boot's loopTask stack floor -----------------------------------------
+
+std::string loopStackFloorLine(uint32_t minBytes, bool taskPresent) {
+  char b[192];
+  if (taskPresent && !loopStackUnderFloor(minBytes)) {
+    std::snprintf(b, sizeof b, "boot stack: loopTask min free %u B, floor %u B - ok",
+                  (unsigned)minBytes, (unsigned)kLoopStackFloorBytes);
+    return b;
+  }
+  std::snprintf(b, sizeof b,
+                "boot stack: BOOT FAULT - loopTask min free %s%u B is under the %u B floor: "
+                "the boot path grew past the loopTask stack (see docs/memory.md)",
+                taskPresent ? "" : "?? (no task handle) ", (unsigned)minBytes,
+                (unsigned)kLoopStackFloorBytes);
+  return b;
+}
+
 }  // namespace nimbus::heapwatch

@@ -63,6 +63,17 @@ typically has ~8 MB free at the same moment.
   (`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`) and the mbedTLS record buffers already
   live in PSRAM, so `tg_poll`'s stack is internal because it reads NVS/config, not
   because it runs the handshake. The gate is flash access, not TLS.
+- **The orchestrator's boot work** - `setup()` runs the whole `orchestratorBegin()`
+  chain (the persisted-store loads, the skills/tool registrations, the engine
+  wiring) on a one-shot 12 KB `orchboot` task and joins it before anything else
+  proceeds. It is the deepest call chain of the boot, and the Arduino `loopTask`'s
+  8 KB stack had ~88 B of headroom left after it on the last release - the next
+  lane's ~100 B of registration depth tipped the canary (the release-v451x boot
+  crash). Nothing runs in parallel: the task is joined before `loop()` starts, the
+  same one-shot shape `provider_verify` uses. The boot ladder then checks the
+  `loopTask` watermark against a 1 KB floor (`boot stack: loopTask min free ...
+  floor 1024 B - ok`, or a `BOOT FAULT` line that also sets `mem.bootStackFault`),
+  so stack erosion fails a bench leg loudly instead of a release-gate boot.
 - **DMA buffers** - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
   `MALLOC_CAP_DMA` explicitly and bypass the PSRAM spill entirely.
 - **lwIP pbufs + the TLS record working set** - the ~24 KB "danger zone." A
@@ -255,6 +266,9 @@ task's serve), so the device also keeps evidence of its own:
 - `mem.tlsOverlaps`: concurrent work-TLS seen (it stays 0 under the single slot).
 - `mem.loopStackMin`, `mem.panelStackMin`, `mem.vrelStackMin`: worst free stack of
   the main loop, the display render task and the voice-release watcher.
+- `mem.bootStackFault`: the boot ladder's stack-floor check faulted - the `loopTask`
+  watermark after the orchestrator boot dropped under 1 KB (`boot stack: BOOT FAULT`
+  in the log). False on a healthy boot.
 - Every provider exchange logs one `transport: heaptrace` line on every path, with
   the heap at four phases and `fail=` (where it stopped: `connect`, `head`,
   `body@<bytes sent>`, `read`, `headers`, `parse`, `none`), `af=` (failed

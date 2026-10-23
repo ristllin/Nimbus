@@ -222,4 +222,28 @@ enum class SpawnVerdict : uint8_t { Ok, TurnInFlight, LowMemory };
 SpawnVerdict spawnVerdict(uint32_t stackBytes, uint32_t intFree, bool turnInFlight);
 const char* spawnVerdictName(SpawnVerdict v);
 
+// ---- the boot's loopTask stack floor ---------------------------------------------
+
+// The loopTask free-stack floor for the boot ladder, in BYTES (the high-water
+// mark is already bytes on the Xtensa port; see telegram.cpp's sample). The
+// release-v451x bisect: the last-good boot finished with 88 B of loopTask
+// headroom and the next lane's ~100 B of begin-chain depth tipped the canary -
+// chronic stack erosion that no host battery can see (a device-only stack
+// layout property), caught only by a release-gate boot crash. The floor fails
+// the boot LOUDLY so the erosion surfaces at the lane-battery era instead.
+// 1 KB: the crashing states (88 B, 56 B) fault, and a healthy boot - whose
+// deepest loopTask point sits well above the floor once the orchestrator's
+// boot work runs on its own task - passes with margin.
+inline constexpr uint32_t kLoopStackFloorBytes = 1024;
+
+// True when the loopTask free-stack watermark drops under the floor.
+inline bool loopStackUnderFloor(uint32_t minBytes) { return minBytes < kLoopStackFloorBytes; }
+
+// The boot ladder's one line, healthy or fault (the bench leg greps it):
+//   "boot stack: loopTask min free 2890 B, floor 1024 B - ok"
+//   "boot stack: BOOT FAULT - loopTask min free 88 B is under the 1024 B floor:
+//    the boot path grew past the loopTask stack (see docs/memory.md)"
+// `taskPresent` false (no loopTask handle) always reads as a fault.
+std::string loopStackFloorLine(uint32_t minBytes, bool taskPresent);
+
 }  // namespace nimbus::heapwatch
