@@ -177,7 +177,10 @@ def _fsput_once(dev, data: bytes, sink: list) -> "re.Match | None":
     except AssertionError:
         # Bytes the console dropped leave it short of the length: fill it up so it leaves
         # its data mode (the excess reads as one rejected console line), then let it settle.
-        dev.send("A" * (len(b64) + 64))
+        # The filler ends with a newline: when the console never ENTERED data mode (the
+        # FSPUT line itself was dropped), the filler would otherwise swallow the retry's
+        # command into one rejected line (bench, unit A, 23 Oct: "ERR unknown 'AAA...FSPUT'").
+        dev.send("A" * (len(b64) + 64) + "\n")
         while dev._readline(time.time() + 2.0) is not None:
             pass
         return None
