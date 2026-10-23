@@ -1103,41 +1103,25 @@ static bool applyParam(const String& name, const String& value) {
 
 // ---- orchestrator control surface (plan ROUND 3 Part A) ----------------------
 
-// The compiled default model per provider (agent_config.h) - the model a provider
-// runs when no override is stored. Always a valid pick, so the default can be
-// re-picked by name (CUM-530). "" for a slug with none.
-static const char* providerDefaultModel(const char* slug) {
-  if (!strcmp(slug, "openai"))    return OPENAI_MODEL;
-  if (!strcmp(slug, "anthropic")) return ANT_MODEL;
-  if (!strcmp(slug, "mistral"))   return MISTRAL_MODEL;
-  if (!strcmp(slug, "cumulo"))    return CUMULO_MODEL;
-  if (!strcmp(slug, "zai"))       return ZAI_MODEL;
-  return "";
-}
-
-// CUM-530: is this model pick allowed for the provider + role? The effective choice
-// list and the compiled default first (cheap); the stored catalog - the list the
-// picker renders - only when those miss. On a refusal `err` names the allowed values.
+// Is this model pick allowed for the provider + role? THE check orch_model and spawns
+// ask too (store::modelSelectable, lane F): the model store, else the cold-start list,
+// plus the role defaults (lane DEF). On a refusal `err` names the allowed values,
+// the role's default first (CUM-530).
 static bool modelPickAllowed(const nimbus::orch::ProviderSlot& slot, bool orchRole,
                              const String& v, String& err) {
+  if (!v.length()) return true;   // back to the provider default
+  using nimbus::orch::PickRole;
+  std::string text;
+  if (agent::model_pick::allowed(slot.slug, v.c_str(), orchRole ? PickRole::Head : PickRole::Sub,
+                                 agent::store::modelSources(slot.slug, text)))
+    return true;
   agent::model_pick::PickLists l;
   l.choices = nimbus::orch::effectiveModelChoices(
       slot.slug, std::string(agent::store::modelChoices(slot.slug).c_str()));
-  l.defaultModel = providerDefaultModel(slot.slug);
+  l.defaultModel = agent::store::roleDefaultModel(
+                       slot.slug, orchRole ? nimbus::orch::DefaultRole::Head : nimbus::orch::DefaultRole::Sub)
+                       .c_str();
   l.router = !strcmp(slot.slug, "cumulo");
-  const std::string pick(v.c_str());
-  if (agent::model_pick::allowed(l, pick)) return true;
-  // Lane DEF: the role's own default (the sub default for a sub pick) is always valid.
-  if (!orchRole) {
-    agent::model_pick::PickLists sub = l;
-    sub.defaultModel =
-        agent::store::roleDefaultModel(slot.slug, nimbus::orch::DefaultRole::Sub).c_str();
-    if (agent::model_pick::allowed(sub, pick)) return true;
-  }
-  l.catalog = agent::model_pick::catalogSelectors(
-      std::string(agent::store::modelCatalogJson(slot.slug).c_str()),
-      orchRole ? "orchestrator" : "sub-agent", &agent::PsramJsonAllocator::instance());
-  if (agent::model_pick::allowed(l, pick)) return true;
   err = agent::model_pick::rejectMessage(slot.label, l).c_str();
   return false;
 }
@@ -1384,11 +1368,14 @@ static void buildOrchState(String& out) {
 }
 
 // GET /api/models - the capability-aware catalog (contract on CUM-26). Reads each
-// provider's persisted catalog blob (mcat_<provider>, built by the verify harvest
-// from the portable parser) and frames it with keyed/verified/probe/refresh state.
-// Unusable models are omitted unless ?all=1 ("a model your key cannot use never
-// appears"). Built in PSRAM: three per-provider blobs re-parsed here would spike
-// internal heap on the default allocator.
+// provider's model store (/data/models_<slug>.txt, lane F) and frames it with
+// keyed/verified/probe and honest freshness: fetchedAt is the calendar time of the
+// fetch (0 when the clock was unset, or for a list merged from an older build), and
+// stale is true until a dated fetch is younger than the probe interval. Unusable
+// models are omitted unless ?all=1 ("a model your key cannot use never appears"), and
+// a model's chat roles are listed only while the one check accepts it. Each row says
+// its price or priceSrc "unknown". Built in PSRAM; the store is scanned one row at a
+// time (no row list held).
 static bool providerKeyed(const char* p) {
   if (!strcmp(p, "openai")) return agent::store::hasOpenaiKey();
   if (!strcmp(p, "anthropic")) return agent::store::hasAnthropicKey();
@@ -1397,22 +1384,31 @@ static bool providerKeyed(const char* p) {
   if (!strcmp(p, "cumulo")) return agent::store::hasCumuloKey();
   return false;
 }
-// The stored catalog rows GET /api/models shows: unusable ones only with ?all=1,
-// and never a row no upstream runs (an older build's harvest, CUM-530). A trim
-// marker on a row left out moves to the last row shown.
-static void addShownRows(JsonArray marr, JsonArrayConst rows, bool includeUnusable) {
-  int more = 0;
-  for (JsonObjectConst m : rows) {
-    const bool hidden = (!includeUnusable && !(m["usable"] | true)) || !agent::model_pick::rowRuns(m);
-    if (hidden) { more += m["more"] | 0; continue; }
-    marr.add(m);   // deep-copies the stored model object into the response
-  }
+// One provider's stored rows into `marr`. The "<n> more not shown" count (the store's
+// bound, plus rows left out here) rides the last row shown, as the picker reads it.
+static void addStoredRows(const char* p, const std::string& text, JsonObject o, bool includeUnusable,
+                          uint32_t now) {
+  nimbus::orch::ModelStoreMeta meta;
+  const bool have = nimbus::orch::parseModelStoreHeader(text, meta);
+  o["fetchedAt"] = meta.fetchedAt;
+  o["refreshedAt"] = meta.fetchedAt;
+  o["listSrc"] = have ? meta.src.c_str() : "none";
+  o["total"] = meta.total;
+  o["incomplete"] = meta.cut;
+  JsonArray marr = o["models"].to<JsonArray>();
+  if (!have) return;
+  uint32_t hidden = 0;
+  nimbus::orch::forEachStoreRow(p, text, [&](const nimbus::orch::ModelInfo& m) {
+    if (!includeUnusable && !m.usable) { ++hidden; return true; }
+    nimbus::orch::modelRowToJson(p, m, marr.add<JsonObject>(), now);
+    return true;
+  });
+  const uint32_t more = meta.more + hidden;
   if (more && marr.size()) marr[marr.size() - 1]["more"] = more;
 }
 static void buildModelsCatalog(String& out, const String& only, bool includeUnusable) {
   JsonDocument d(&agent::PsramJsonAllocator::instance());
-  const time_t nowT = time(nullptr);
-  const uint32_t now = (nowT > 100000) ? (uint32_t)nowT : 0;   // 0 until the clock is set
+  const uint32_t now = nimbus::orch::calendarNowOrZero(time(nullptr));   // 0 until the clock is set
   const uint32_t ttl = (uint32_t)agent::store::capProbeHours() * 3600u;
   d["generatedAt"] = now;
   d["ttlSec"] = ttl;
@@ -1433,15 +1429,10 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     o["vfyMax8"] = agent::provider_verify::deferMax8(p);   // CUM-447: deferral number + gate
     o["vfyFloor"] = agent::provider_verify::deferFloor();
     o["probe"] = agent::store::capProbe();
-    const uint32_t rts = agent::store::verifyTs(p);
-    o["refreshedAt"] = rts;
-    o["stale"] = (now && rts) ? (now - rts > ttl) : true;
-    JsonArray marr = o["models"].to<JsonArray>();
-    String blob = agent::store::modelCatalogJson(p);
-    if (!blob.length()) continue;
-    JsonDocument md(&agent::PsramJsonAllocator::instance());
-    if (deserializeJson(md, blob) != DeserializationError::Ok) continue;
-    addShownRows(marr, md.as<JsonArrayConst>(), includeUnusable);
+    const std::string text = agent::store::modelStoreText(p);
+    addStoredRows(p, text, o, includeUnusable, now);
+    const uint32_t at = o["fetchedAt"] | 0u;
+    o["stale"] = !(now && at && now >= at && now - at <= ttl);
   }
   serializeJson(d, out);
 }

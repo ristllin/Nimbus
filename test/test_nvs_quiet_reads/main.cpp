@@ -88,10 +88,46 @@ static void test_the_wifi_slot_readers_are_quiet() {
   }
 }
 
+
+// Lane F: the model fetch makes ZERO NVS writes. The old harvest stored its short list
+// in NVS (mch_<slug>, ~832 B on Lumi) and logged "harvested" even after that write
+// failed; the list now lives in the model store's flash file. A source guard over the
+// fetch region of provider_verify.cpp (streaming, paging, storing, router prices) and
+// the model store's readers and writer in store.cpp: no NVS write call of any kind.
+static std::string between(const std::string& src, const char* from, const char* to) {
+  const size_t a = src.find(from);
+  TEST_ASSERT_TRUE_MESSAGE(a != std::string::npos, from);
+  const size_t b = src.find(to, a);
+  TEST_ASSERT_TRUE_MESSAGE(b != std::string::npos, to);
+  return src.substr(a, b - a);
+}
+static void test_the_model_fetch_writes_no_nvs() {
+  static const char* kNvsWrites[] = {"memory::set", "memory::eraseKey", "putStr(", "putOrClear(",
+                                     "putInt(", "putBool(", "clearKey(", "setVerify(", "setReason(",
+                                     "setDeferMax8(", "setModelChoices", "nvsAdmit", "notePersist",
+                                     "setZaiBase(", "setTgBotName("};
+  const std::string verify = readFile("src/agent/provider_verify.cpp");
+  const std::string store = readFile("src/agent/store.cpp");
+  const std::string regions[] = {
+      between(verify, "// ---- model list fetch (lane F) begin", "// ---- model list fetch (lane F) end"),
+      between(verify, "static void probeSelectedModels(", "// Does a Z.ai candidate host answer"),
+      between(store, "// ---- the model store (lane F)", "int migrateModelStores() {"),
+  };
+  for (const std::string& r : regions) {
+    TEST_ASSERT_TRUE(r.size() > 200);
+    for (const char* w : kNvsWrites)
+      TEST_ASSERT_TRUE_MESSAGE(r.find(w) == std::string::npos, (std::string("NVS write in the model fetch: ") + w).c_str());
+  }
+  // And the fetch is what the verify calls: one call site, inside runOne.
+  TEST_ASSERT_TRUE(verify.find("fetchModelList(provider, client, key)") != std::string::npos);
+  TEST_ASSERT_TRUE(verify.find("models harvested") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_no_loud_string_reads_in_the_firmware);
   RUN_TEST(test_the_getter_probes_before_it_reads);
   RUN_TEST(test_the_wifi_slot_readers_are_quiet);
+  RUN_TEST(test_the_model_fetch_writes_no_nvs);
   return UNITY_END();
 }

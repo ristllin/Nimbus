@@ -1580,10 +1580,11 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
   // a SaveScope or an explicit retry already covers, frozen at their count. Lane C's
   // files are at 0 (ota_update.cpp, store.cpp, connectors.cpp, the Telegram routes).
   // dream_subsystem.cpp (1) and telegram.cpp (2) lost their discards to lane M's
-  // 19 Oct dream rewrite and lane A's offset rework (the baseline only shrinks).
+  // 19 Oct dream rewrite and lane A's offset rework, provider_verify.cpp (2) its NVS
+  // short-list and catalog writes to lane F's model store (the baseline only shrinks).
   const std::map<std::string, size_t> baseline = {
       {"src/agent/memory_subsystem.cpp", 2},
-      {"src/agent/orchestrator.cpp", 16},   {"src/agent/provider_verify.cpp", 8},
+      {"src/agent/orchestrator.cpp", 16},   {"src/agent/provider_verify.cpp", 6},
       {"src/agent/store_config.cpp", 1},
       {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 24},
       {"src/net/cloud_mint.cpp", 2},        {"src/net/relay_client.cpp", 6},

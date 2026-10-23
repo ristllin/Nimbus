@@ -7,8 +7,8 @@
 #include "../sys/ps_json.h"       // PsramJsonAllocator - Mistral model-metadata parse off internal heap
 #include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
 #include "nimbus/orch/fallback_rules.h" // portable fallback rule parse (Cumulo cloud sync)
-#include "nimbus/store/persist.h"       // kCatalogMaxBytes - the catalog cache bound (CUM-479)
 #include "router_catalog.h"             // CUM-530: the Cumulo router list rule (host-tested)
+#include "version.h"                    // NIMBUS_FW_VERSION - the model store header
 #include <time.h>
 
 #include "esp_heap_caps.h"
@@ -246,23 +246,108 @@ static bool pumpRouterPriceRefill(uint32_t now, bool inTurn, bool online) {
   return true;
 }
 
-// Per-model prices (2026-10): what the Cumulo router bills for each model this device
-// keeps - the choice list plus the configured head and sub-agent selectors, at most
-// 24 rows - read in place from the verify's PSRAM body (never copied whole). Verify
-// task only, never the turn path; stored apart from the owner's own prices.
-static void storeRouterPrices(const char* body, const std::string& choicesCsv) {
+// ---- model list fetch (lane F) begin ------------------------------------------------
+// Every LLM verify streams the provider's model list into its model store
+// (/data/models_<slug>.txt, nimbus/orch/model_catalog.h). Nothing on this path writes
+// NVS: the old harvest kept a short list in NVS (mch_<slug>) and logged "harvested"
+// even when that write had failed. The body is read in small chunks through
+// nimbus::orch::ModelsBodyReader, so the Cumulo router's ~95 KB list (cut at 64 KB
+// before, CUM-564) is read whole in bounded memory, one row at a time; Anthropic is
+// asked for 100 models a page and its has_more pages are followed. One line always
+// says what was read and kept, and why a list was not stored.
+static const size_t   kModelBodyMaxBytes = 512 * 1024;   // one page: a ceiling on a hostile body
+static const uint32_t kModelBodyMs       = 20000;        // one page's read deadline
+static const int      kModelPagesMax     = 4;            // Anthropic: up to 400 models
+
+static void harvestCb(void* ctx, const char* obj, size_t len) {
+  nimbus::orch::harvestRow(*static_cast<nimbus::orch::ModelHarvest*>(ctx), obj, len);
+}
+
+// What one fetch read, for its log line.
+struct ModelFetch {
+  size_t bytes = 0;
+  int    pages = 0;
+};
+
+// Stream one page's body (its status line already read) into `h`. True when the
+// provider says more pages follow (`lastId` is then the cursor).
+static bool streamModelPage(WiFiClientSecure& client, nimbus::orch::ModelHarvest& h,
+                            std::string& lastId, ModelFetch& f) {
+  nimbus::orch::ModelsBodyReader rd(&harvestCb, &h);
+  char chunk[512];
+  const uint32_t deadline = millis() + kModelBodyMs;
+  while ((int32_t)(millis() - deadline) < 0 && rd.bytes() < kModelBodyMaxBytes && !rd.complete()) {
+    const int n = client.read((uint8_t*)chunk, sizeof(chunk));
+    if (n > 0) {
+      rd.feed(chunk, (size_t)n);
+      continue;
+    }
+    if (!client.connected() && client.available() == 0) break;   // drained and closed
+    delay(2);
+  }
+  f.bytes += rd.bytes();
+  ++f.pages;
+  if (!rd.complete()) h.cut = true;
+  h.oversize += rd.oversize();
+  lastId = rd.lastId();
+  return rd.hasMore();
+}
+
+// The HTTP status code off a response's first line (0 when none arrived in time).
+static int readStatusCode(WiFiClientSecure& client, uint32_t ms) {
+  const uint32_t deadline = millis() + ms;
+  String status;
+  while ((int32_t)(millis() - deadline) < 0) {
+    if (client.available()) {
+      const char c = client.read();
+      if (c == '\n') break;
+      if (c != '\r') status += c;
+    } else if (!client.connected()) {
+      break;
+    } else {
+      delay(2);
+    }
+  }
+  const int sp = status.indexOf(' ');
+  return (sp > 0 && (int)status.length() >= sp + 4) ? status.substring(sp + 1, sp + 4).toInt() : 0;
+}
+
+// The next Anthropic page after `after` (a cleaned model id) on its own connection;
+// the previous one is closed first (one TLS session at a time).
+static bool fetchAnthropicPage(nimbus::orch::ModelHarvest& h, const String& key,
+                               const std::string& after, std::string& lastId, ModelFetch& f) {
+  WiFiClientSecure c;
+  tlsSetup(c);
+  c.setHandshakeTimeout(12);
+  c.setConnectionTimeout(15000);
+  bool more = false;
+  if (!c.connect(ANTHROPIC_HOST, 443)) {
+    h.cut = true;
+  } else {
+    c.print(String("GET /v1/models?limit=100&after_id=") + after.c_str() +
+            " HTTP/1.0\r\nHost: " ANTHROPIC_HOST "\r\nx-api-key: " + key +
+            "\r\nanthropic-version: " ANTHROPIC_VER
+            "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n");
+    if (readStatusCode(c, 15000) == 200) more = streamModelPage(c, h, lastId, f);
+    else h.cut = true;
+  }
+  tlsClose(c);
+  return more;
+}
+
+// Router prices for the spend ledger: what the Cumulo router bills for each model this
+// device keeps (the short list plus the configured head and sub-agent selectors, at
+// most 24 rows), read from the fetched rows. A model with no priced row keeps no router
+// price - the next price tier applies, never a wrong one. Stored in a flash file.
+static void storeRouterPrices(const std::vector<nimbus::orch::ModelInfo>& rows, const std::string& choices) {
   std::vector<nimbus::orch::ModelRate> prices;
   std::vector<std::string> missing;
   const std::vector<std::string> keep = router_catalog::priceKeepIds(
-      choicesCsv, std::string(store::orchModel("cumulo").c_str()),
+      choices, std::string(store::orchModel("cumulo").c_str()),
       std::string(store::subModel("cumulo").c_str()));
-  const size_t n = router_catalog::harvestPrices(body, keep, prices, &missing);
-  // CUM-564: the read window holds the first 64 KB of the router's list; a model
-  // listed later, cut off at the window's end, or not listed at all keeps no router
-  // price - the next price tier applies, never a wrong one.
+  const size_t n = router_catalog::routerRates(rows, keep, prices, &missing);
   for (const std::string& id : missing)
-    alogf("verify: no whole cumulo price row for %s (first 64 KB read, or not listed) - "
-          "left unset", id.c_str());
+    alogf("verify: the cumulo router lists no price for %s - left unset", id.c_str());
   if (!n) return;
   if (store::replaceRouterPrices(prices))
     alogf("verify: cumulo router prices kept for %u models", (unsigned)prices.size());
@@ -270,85 +355,64 @@ static void storeRouterPrices(const char* body, const std::string& choicesCsv) {
     alogf("verify: cumulo router prices not stored");
 }
 
-// Build the rich capability catalog from a raw /v1/models response body and
-// persist it to its flash file (/data/mcat_<provider>.json - never NVS since
-// CUM-479). Independent of the legacy CSV harvest; an empty parse keeps the last
-// good catalog. The body may still carry HTTP headers (the portable parser locates
-// the JSON). The doc rides PSRAM, not internal heap.
-static void buildAndStoreCatalog(const String& provider, const char* body, size_t len,
-                                 const String& csvFallback) {
+// Order, bound and store one fetch's rows. A list cut short in transit never
+// replaces a stored one (the last good list stays); an empty one never does.
+static void storeModelHarvest(const String& provider, nimbus::orch::ModelHarvest& h, const ModelFetch& f) {
   using namespace nimbus::orch;
-  std::vector<ModelInfo> cat;
-  parseModelsList(std::string(provider.c_str()), std::string(body, len), cat,
-                  &PsramJsonAllocator::instance());
-  if (cat.empty() && csvFallback.length()) {
-    // The full /models body did not parse (a slow round truncates the JSON while
-    // the string-scan above still salvaged ids; or a router envelope the parser
-    // did not recognise), but the CSV harvest DID find chat-capable ids. Rebuild
-    // the catalog from those so GET /api/models is never empty for a verified
-    // provider that has a usable model list (CUM-242 leg 1: cumulo verified but
-    // catalog empty). The CSV already arrives flagship-first from the harvest.
-    int start = 0;
-    while (start < (int)csvFallback.length()) {
-      int comma = csvFallback.indexOf(',', start);
-      if (comma < 0) comma = csvFallback.length();
-      String id = csvFallback.substring(start, comma); id.trim();
-      if (id.length())
-        cat.push_back(classifyCatalogEntry(std::string(provider.c_str()), std::string(id.c_str())));
-      start = comma + 1;
-    }
-  }
-  if (cat.empty()) return;  // nothing to store - keep whatever was stored
-  // CUM-530: the router aggregates every upstream, so it gets its own (larger)
-  // bound, and its order puts the router default and one model per upstream first
-  // (dated twins dropped) - a trim from the back can then never cost the default
-  // or a whole upstream (the bench kept 8 anthropic/claude-opus rows and nothing
-  // else).
+  finishHarvest(h);
   const bool router = (provider == "cumulo");
-  // The row cap's cut counts toward the "<n> more not shown" marker below.
-  const size_t cut = router ? router_catalog::protectHeads(cat, CUMULO_MODEL) : 0;
-  const size_t bound = router ? router_catalog::kCatalogMaxBytes : nimbus::store::kCatalogMaxBytes;
-  JsonDocument doc(&PsramJsonAllocator::instance());
-  modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
-  String out;
-  serializeJson(doc, out);
-  // Bound each provider's catalog (GET /api/models frames every provider's in one
-  // response). Flagships sort first, so drop the trailing (lowest-priority) models
-  // until it fits, and say how many were trimmed.
-  // Once trimming starts, keep room for the "more" marker so the file stays
-  // within the bound.
-  int dropped = (int)cut;
-  while (out.length() > (dropped ? bound - 16 : bound) && cat.size() > 1) {
-    cat.pop_back();
-    ++dropped;
-    doc.clear();
-    modelsToJson(cat, doc.to<JsonArray>(), true);
-    out = "";
-    serializeJson(doc, out);
+  size_t more = h.overflow + (router ? router_catalog::protectHeads(h.rows, CUMULO_MODEL) : 0);
+  more += boundModelRows(h.rows);
+  ModelStoreMeta meta;
+  meta.fetchedAt = h.now;
+  meta.fw = NIMBUS_FW_VERSION;
+  meta.total = (uint32_t)(h.rows.size() + more);
+  meta.more = (uint32_t)more;
+  meta.cut = h.cut || h.hasMore;
+  meta.src = "api";
+  meta.choices = router ? router_catalog::storeChoices(h.rows, CUMULO_MODEL, h.now)
+                        : directChoices(std::string(provider.c_str()), h.rows, h.now);
+  alog(harvestLogLine(h, meta, f.bytes, f.pages).c_str());
+  if (!harvestStorable(h, !store::modelStoreText(provider).empty())) {
+    alogf("verify: %s model list %s - the last list stays", provider.c_str(),
+          h.rows.empty() ? "empty" : "incomplete");
+    return;
   }
-  // Say it in the stored list too: the last kept model carries "more": <n>, which
-  // GET /api/models passes through and the picker shows as "<n> more not shown".
-  if (dropped) {
-    JsonArray arr = doc.as<JsonArray>();
-    arr[arr.size() - 1]["more"] = dropped;
-    out = "";
-    serializeJson(doc, out);
-  }
-  // The catalog is a rebuildable cache in a LittleFS file, so it can no longer
-  // starve owner config: the old store-then-shrink-until-it-fits-NVS loop (CUM-242)
-  // packed it into whatever NVS was left and starved every later owner write
-  // (CUM-479). A failed file write keeps the last good catalog; the compact CSV
-  // choice list is unaffected either way.
-  const bool stored = store::setModelCatalogJson(provider, out);
-  if (dropped)
-    alogf("verify: %s catalog trimmed %d model(s) to its size and row bounds", provider.c_str(), dropped);
-  if (stored)
-    alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
-          (unsigned)cat.size(), (unsigned)out.length());
-  else
-    alogf("verify: %s catalog file write failed - the choice list still drives the dropdown",
+  const std::string text = serializeModelStore(meta, h.rows);
+  if (!store::setModelStoreText(provider, text)) {
+    alogf("verify: %s model list not stored (file write failed) - the last list stays",
           provider.c_str());
+    return;
+  }
+  alogf("verify: %s models stored: %u (%u B), short list %s", provider.c_str(),
+        (unsigned)h.rows.size(), (unsigned)text.size(), meta.choices.c_str());
+  if (router) storeRouterPrices(h.rows, meta.choices);
 }
+
+// The verify's GET answered 200 on `client`: read its model list (and Anthropic's
+// further pages) and store it. Closes `client` (the next page, and the usability
+// probe after this, each open their own session).
+static void fetchModelList(const String& provider, WiFiClientSecure& client, const String& key) {
+  std::unique_ptr<nimbus::orch::ModelHarvest> h(new (std::nothrow) nimbus::orch::ModelHarvest());
+  if (!h) {
+    alogf("verify: %s model list skipped (low memory)", provider.c_str());
+    return;
+  }
+  h->provider = provider.c_str();
+  h->now = nimbus::orch::calendarNowOrZero(time(nullptr));
+  h->alloc = &PsramJsonAllocator::instance();
+  ModelFetch f;
+  std::string lastId;
+  bool more = streamModelPage(client, *h, lastId, f);
+  tlsClose(client);
+  while (more && provider == "anthropic" && !h->cut && !lastId.empty() && f.pages < kModelPagesMax) {
+    const std::string after = lastId;
+    more = fetchAnthropicPage(*h, key, after, lastId, f);
+  }
+  h->hasMore = more;
+  storeModelHarvest(provider, *h, f);
+}
+// ---- model list fetch (lane F) end --------------------------------------------------
 
 // One minimal probe call confirming a specific model is usable by this key (the
 // usability probe: "a model your key cannot use never appears"). Opens its own
@@ -433,16 +497,8 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
   return nimbus::orch::probeVerdict(code, std::string(errBody.c_str()));
 }
 
-// The "more": n trim marker a size-bounded catalog carries on its last entry.
-static int trimMarker(JsonArrayConst arr) {
-  return arr.size() ? (arr[arr.size() - 1]["more"] | 0) : 0;
-}
-static void setTrimMarker(JsonArray arr, int more) {
-  if (more && arr.size()) arr[arr.size() - 1]["more"] = more;
-}
-
 // Probe the owner's SELECTED models for a provider (bounded to protect the single
-// TLS slot) and fold the verdicts into the cached catalog. An Unknown (transient)
+// TLS slot) and fold the verdicts into the model store. An Unknown (transient)
 // verdict leaves the model as-is for a later retry; a definitive verdict marks the
 // model probed and sets usable, so an unusable selection stops appearing.
 static void probeSelectedModels(const String& provider) {
@@ -453,12 +509,10 @@ static void probeSelectedModels(const String& provider) {
   if (om.length()) cands[nc++] = om;
   if (sm.length() && sm != om) cands[nc++] = sm;
   if (!nc) return;
-  const String blob = store::modelCatalogJson(provider);
-  if (!blob.length()) return;
-  JsonDocument md(&PsramJsonAllocator::instance());
-  if (deserializeJson(md, blob) != DeserializationError::Ok) return;
+  nimbus::orch::ModelStoreMeta meta;
   std::vector<nimbus::orch::ModelInfo> cat;
-  nimbus::orch::modelsFromJson(md.as<JsonArrayConst>(), cat);
+  if (!nimbus::orch::parseModelStore(provider.c_str(), store::modelStoreText(provider), meta, &cat))
+    return;
   bool changed = false;
   for (int i = 0; i < nc; ++i) {
     nimbus::orch::ModelInfo* found = nullptr;
@@ -473,16 +527,8 @@ static void probeSelectedModels(const String& provider) {
     alogf("verify: %s probe %s -> %s", provider.c_str(), cands[i].c_str(),
           found->usable ? "usable" : "UNUSABLE");
   }
-  if (!changed) return;
-  // The trim marker rides the last entry; ModelInfo has no slot for it, so carry
-  // it across the rebuild (CUM-530: a trimmed list keeps saying so).
-  const int more = trimMarker(md.as<JsonArrayConst>());
-  JsonDocument out(&PsramJsonAllocator::instance());
-  nimbus::orch::modelsToJson(cat, out.to<JsonArray>(), true);
-  setTrimMarker(out.as<JsonArray>(), more);
-  String s;
-  serializeJson(out, s);
-  if (s.length() <= 3900) store::setModelCatalogJson(provider, s);
+  if (changed && !store::setModelStoreText(provider, nimbus::orch::serializeModelStore(meta, cat)))
+    alogf("verify: %s probe verdicts not stored (file write failed)", provider.c_str());
 }
 
 // Does a Z.ai candidate host answer the models list for this token? One quick GET
@@ -714,7 +760,8 @@ static void runOne() {
   // the base path is /api/paas/v4, not /v1.
   const bool isZai = (provider == "zai");
   if (provider == "openai")         { host = OPENAI_HOST;    key = store::openaiKey(); }
-  else if (provider == "anthropic") { host = ANTHROPIC_HOST; key = store::anthropicKey(); }
+  else if (provider == "anthropic") { host = ANTHROPIC_HOST; key = store::anthropicKey();
+                                      path = "/v1/models?limit=100"; }   // has_more pages follow
   else if (provider == "mistral")   { host = MISTRAL_HOST;   key = store::mistralKey(); }
   else if (isZai)                   { key = store::zaiKey(); path = ZAI_BASE_PATH "/models"; }
   else if (provider == "cumulo")    { key = store::cumuloKey();
@@ -828,243 +875,9 @@ static void runOne() {
       // FIRST still costs nothing and keeps it ahead of any later write. The
       // recordVerify at the end is then idempotent.
       if (result != -1) recordVerify(provider, result, rsn);
-      // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
-      // 2026-07-16: the static model dropdowns were stale, missing current-gen
-      // models). Stream the body into a bounded PSRAM buffer, pull every "id" that
-      // passes the per-provider chat-capable filter, cap at 8, store as the live
-      // choice list (NVS; static defaults remain the fallback). The richer
-      // capability catalog is built separately by buildAndStoreCatalog below.
-      if (!isTg && !isTav && code == 200) {
-        const size_t kCap = 65536;   // OpenAI's list is the biggest (~40 KB)
-        char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
-        if (buf) {
-          // Own deadline: the status-line 15 s window can be mostly spent by the
-          // time a 40 KB body streams - a shared clock starved the read to zero
-          // bytes on a slow round (live-caught: openai verified but no harvest).
-          const uint32_t bodyDeadline = millis() + 20000;
-          size_t blen = 0;
-          while (millis() < bodyDeadline && blen < kCap - 1) {
-            // read() drives the TLS layer to decrypt the NEXT record even when
-            // available()==0 - the old available()/connected() break bailed at a
-            // record boundary (~16 KB) with the rest of the body still buffered
-            // below (live-caught: identical 16751-byte truncation on every run).
-            int c = client.read();
-            if (c >= 0) { buf[blen++] = (char)c; continue; }
-            if (!client.connected()) break;   // truly drained + closed
-            delay(2);
-          }
-          buf[blen] = 0;
-          String csv;
-          int kept = 0;
-          bool handled = false;   // Mistral's metadata path sets this so the id
-                                  // string-scan below is skipped (openai/anthropic only).
-          // Non-chat FAMILIES that can't run our turn contract (embeddings/audio/
-          // image/etc.), by id substring - provider-independent. Used both by the
-          // Mistral metadata path (as its ONLY name filter - capability flags do the
-          // rest) and by the legacy string-scan's `rejected` below.
-          // (The list lives in router_catalog.h, shared with the router harvest.)
-          auto neverFamily = [](const String& id) -> bool {
-            return router_catalog::neverChatFamily(std::string(id.c_str()));
-          };
-          // Per-provider chat-capable filter (the legacy id string-scan path).
-          auto rejected = [&](const String& id) -> bool {
-            if (neverFamily(id)) return true;
-            // Cumulo verifies against the router's own GET /router/models: only
-            // ROUTABLE (priced + enabled) models, ids "<upstream>/<model>",
-            // flagship-first order. Strip the upstream so the id filters below
-            // see the bare model, and skip the snapshot filter's openai-only
-            // parts for non-openai upstreams (their ids never start gpt-/o<N>).
-            String bare = id;
-            String up = "openai";
-            if (provider == "cumulo") {
-              int sl = id.indexOf('/');
-              if (sl > 0) { up = id.substring(0, sl); bare = id.substring(sl + 1); }
-            }
-            if (provider == "cumulo" && up != "openai") return false;   // curated by the router
-            if (provider == "openai" || provider == "cumulo") {
-              const String& mid = (provider == "cumulo") ? bare : id;
-              // Dated snapshots (…-2025-04-16) duplicate their undated alias and
-              // waste dropdown slots - openai-only (anthropic's haiku ids are
-              // dated-ONLY, rejecting there would lose the model entirely).
-              if (mid.indexOf("-202") >= 0) return true;
-              return !(mid.startsWith("gpt-") || (mid[0] == 'o' && mid[1] >= '1' && mid[1] <= '9'));
-            }
-            if (provider == "anthropic") return !id.startsWith("claude-");
-            if (provider == "mistral")   return !id.endsWith("-latest");
-            if (provider == "zai")       return !id.startsWith("glm");
-            return true;
-          };
-          // Flagship-family ids first: the provider's list order is arbitrary, and a
-          // cap-8 single pass filled Mistral's slots with code/tiny variants before
-          // ever reaching mistral-large (live-caught). Pass 1 keeps preferred ids,
-          // pass 2 fills the remaining slots with the rest.
-          auto preferred = [&](const String& id) -> bool {
-            if (provider == "mistral")
-              return id.indexOf("large") >= 0 || id.indexOf("medium") >= 0 ||
-                     id.indexOf("small") >= 0 || id.indexOf("magistral") >= 0;
-            // Flagship generations first (openai: gpt-5 and newer, zai: glm-5 and
-            // newer) - the o-series ids precede gpt-5* in the body and were filling
-            // every slot before the flagship (live-caught). The predicate is the
-            // catalog's isFlagshipFamily so a new generation (gpt-6-astra) lands in
-            // the dropdown without a hardcoded prefix edit here: the openai ring
-            // below keeps ONLY preferred ids, so a generation this missed was
-            // unselectable as orchestrator or sub-session model.
-            if (provider == "cumulo") {
-              // The router's list is curated (routable-only) and flagship-first;
-              // prefer each upstream's CURRENT generation so rows priced only for
-              // back-compat billing (claude-3-5-*, gpt-4o) fill leftover slots.
-              int sl = id.indexOf('/');
-              String up = sl > 0 ? id.substring(0, sl) : String("openai");
-              String bare = sl > 0 ? id.substring(sl + 1) : id;
-              if (up == "openai" || up == "zai")
-                return nimbus::orch::isFlagshipFamily(up.c_str(), bare.c_str());
-              if (up == "anthropic") return !bare.startsWith("claude-3");  // 3.x retired upstream
-              return true;   // mistral rows are current family aliases
-            }
-            if (provider == "openai" || provider == "zai")
-              return nimbus::orch::isFlagshipFamily(provider.c_str(), id.c_str());
-            return true;   // anthropic's list arrives newest-first already
-          };
-          // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,
-          // Mistral's carries per-model `capabilities` + `deprecation` + `aliases`.
-          // The old `!endsWith("-latest")` heuristic (a) still OFFERED 5 models that
-          // DEPRECATE 2026-07-31 (they keep a -latest alias) and even PRIORITISED
-          // magistral-medium-latest, and (b) ignored whether a model can actually run
-          // our turn (chat + function-calling). Parse ONLY those fields (ArduinoJson
-          // Filter bounds the DOM; the doc rides PSRAM) and keep chat+function-calling,
-          // NON-deprecated models, alias-deduped (prefer the canonical -latest form),
-          // flagships first. On any parse failure -> handled stays false -> the legacy
-          // string-scan runs as a safety net.
-          if (provider == "mistral") {
-            // Parse the WHOLE body into a PSRAM-backed doc (a Filter parse returned an
-            // empty data array on-device; the full doc is ~150 KB in PSRAM, of which
-            // 8 MB is free, so the internal-heap concern that would motivate a filter
-            // doesn't apply here - the verify task's internal cost stays ~0).
-            // buf still holds the HTTP RESPONSE HEADERS ahead of the JSON body (only
-            // the status line was consumed above; the string-scan below tolerates the
-            // headers, a JSON parse does not). Skip to the body: past the blank line
-            // separating headers from body.
-            const char* jbody = strstr(buf, "\r\n\r\n");
-            jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
-            JsonDocument md(&PsramJsonAllocator::instance());
-            DeserializationError perr =
-                deserializeJson(md, jbody, DeserializationOption::NestingLimit(16));
-            if (perr)
-              alogf("verify: mistral meta parse err: %s", perr.c_str());
-            if (!perr) {
-              JsonArrayConst arr = md["data"].as<JsonArrayConst>();
-              for (int pass = 0; pass < 2 && kept < 8; ++pass) {
-                for (JsonObjectConst m : arr) {
-                  if (kept >= 8) break;
-                  String id((const char*)(m["id"] | ""));
-                  if (id.length() < 3 || neverFamily(id)) continue;   // family filter only
-                  JsonObjectConst cap = m["capabilities"];
-                  if (!(cap["completion_chat"] | false)) continue; // can't run a chat turn
-                  if (!(cap["function_calling"] | false)) continue;// can't do the tool contract
-                  if (!m["deprecation"].isNull()) continue;        // dies soon - never offer it
-                  // Alias dedup: drop a dated snapshot that a -latest alias also covers.
-                  if (!id.endsWith("-latest")) {
-                    bool aliasedLatest = false;
-                    for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>())
-                      if (String((const char*)(a | "")).endsWith("-latest")) { aliasedLatest = true; break; }
-                    if (aliasedLatest) continue;
-                  }
-                  const bool flag = id.indexOf("large") >= 0 || id.indexOf("medium") >= 0 ||
-                                    id.indexOf("small") >= 0 || id.indexOf("magistral") >= 0;
-                  if ((pass == 0) != flag) continue;               // pass 0: flagships; pass 1: rest
-                  if ((String(",") + csv + ",").indexOf(String(",") + id + ",") >= 0) continue;
-                  csv += (csv.length() ? "," : "") + id;
-                  ++kept;
-                }
-              }
-              handled = true;   // parse OK -> don't also run the id string-scan
-              alogf("verify: mistral metadata path kept %d (of %d models)",
-                    kept, (int)md["data"].as<JsonArrayConst>().size());
-            }
-          }
-          // CUM-530: the Cumulo router list. Every chat-capable router id is
-          // collected (flagship families first, then the rest, each in the
-          // router's order), then router_catalog keeps the router default, one
-          // model per upstream, and a round-robin spread within its count/byte
-          // bound - saying so when the router offered more.
-          if (provider == "cumulo") {
-            const router_catalog::Shortlist sl =
-                router_catalog::shortlist(router_catalog::harvestIds(buf), CUMULO_MODEL);
-            csv = sl.csv.c_str();
-            kept = (int)sl.kept;
-            handled = true;
-            storeRouterPrices(buf, sl.csv);
-            if (sl.truncated())
-              alogf("verify: cumulo choice list keeps %u of %u router models (list truncated; "
-                    "the default and one per upstream first, the full list is GET /api/models)",
-                    (unsigned)sl.kept, (unsigned)sl.total);
-          }
-          if (!handled) {   // openai/anthropic (+ Mistral parse-failure fallback): id string-scan
-          // openai's list is ordered OLDEST-first (created ascending) - keeping the
-          // first 8 matches served gpt-5 while cutting gpt-5.5/5.4 (live-caught).
-          // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
-          // and mistral uses -latest aliases, so first-8 is right for them.
-          const bool keepNewestLast = (provider == "openai");
-          String ring[8];
-          int ringN = 0;
-          for (int pass = 0; pass < 2 && kept < 8; ++pass) {
-            const char* p = buf;
-            // Tolerate pretty-printed JSON: OpenAI emits '"id": "x"' WITH a space
-            // (live-caught - 125 ids in the body, zero matched the compact form);
-            // Anthropic/Mistral emit compact '"id":"x"'. Match the key, then skip
-            // whitespace to the value quote.
-            while (kept < 8 && (p = strstr(p, "\"id\":")) != nullptr) {
-              p += 5;
-              while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-              if (*p != '"') continue;
-              ++p;
-              const char* e = strchr(p, '"');
-              if (!e || e - p > 64) break;
-              String id(p);
-              id = id.substring(0, e - p);
-              p = e;
-              if (id.length() < 3 || rejected(id)) continue;
-              if ((pass == 0) != preferred(id)) continue;   // pass 0: preferred; pass 1: the rest
-              if (keepNewestLast) {
-                bool dup = false;
-                for (int r = 0; r < ringN && !dup; ++r) dup = (ring[r] == id);
-                if (dup) continue;
-                if (ringN == 8) {                       // slide: drop the oldest
-                  for (int r = 1; r < 8; ++r) ring[r - 1] = ring[r];
-                  ringN = 7;
-                }
-                ring[ringN++] = id;
-                continue;                                // kept stays 0 -> full scan
-              }
-              String probe = String(",") + csv + ",";
-              if (probe.indexOf(String(",") + id + ",") >= 0) continue;   // exact dedup
-              csv += (csv.length() ? "," : "") + id;
-              ++kept;
-            }
-            if (keepNewestLast) break;   // the ring pass covers everything in one sweep
-          }
-          if (keepNewestLast) {
-            for (int r = ringN - 1; r >= 0; --r) {       // newest first in the dropdown
-              csv += (csv.length() ? "," : "") + ring[r];
-              ++kept;
-            }
-          }
-          }   // end if(!handled) - legacy id string-scan
-          if (kept > 0) {
-            store::setModelChoices(provider, csv);
-            alogf("verify: %s models harvested: %s", provider.c_str(), csv.c_str());
-          } else {
-            // Diagnose silently-empty harvests: read-starved (0 bytes) vs the
-            // filter rejecting everything (bytes read but nothing kept).
-            alogf("verify: %s harvest EMPTY (read %u bytes) - keeping the stored list",
-                  provider.c_str(), (unsigned)blen);
-          }
-          // Rich capability-aware catalog (GET /api/models): built from the SAME
-          // body via the portable parser, independent of the legacy CSV above.
-          buildAndStoreCatalog(provider, buf, blen, csv);
-          free(buf);
-        }
-      }
+      // LLM providers: the verify already fetched the model list - store it (lane F:
+      // the whole list, streamed, in the provider's model store; no NVS write).
+      if (!isTg && !isTav && code == 200) fetchModelList(provider, client, key);
       // Telegram bonus (owner ask: show WHICH bot is connected in the web app):
       // getMe's tiny body carries the bot's username - read the rest of the
       // response (bounded) and pull it out. Display-only NVS sidecar.
@@ -1200,6 +1013,9 @@ void begin() {
   // room back on this boot. The copy to its flash file happens only where LittleFS
   // is mounted (Orchestrator mode); in Notifier mode the caches are just evicted.
   store::migrateCatalogCachesOffNvs();
+  // Lane F: the older build's model lists move into the model store (the NVS short
+  // lists go on the boot after this image is marked valid).
+  store::migrateModelStores();
 }
 
 }  // namespace provider_verify

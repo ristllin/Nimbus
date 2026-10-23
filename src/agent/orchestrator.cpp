@@ -444,18 +444,21 @@ static bool telegramDeliverable(const std::string& chatId) {
 }
 
 // CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
-// the live-harvested list first - the verify pass reads the provider's /models,
-// keeping current-generation ids selectable without a firmware release - else
-// the cold-start list). The spawn validator, the orch_model validator AND the
-// prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
+// the model store's short list first - every verify fetches the provider's list,
+// keeping current-generation ids selectable without a firmware release - else the
+// cold-start list). The prompt's [AVAILABLE MODELS] line and the spawn fallback
+// (d.modelChoices below) read it; it is a subset of what modelIsValid accepts, so the
 // head is never offered a model that validation then coerces away.
 static std::string modelChoicesFor(const std::string& p) {
   return nimbus::orch::effectiveModelChoices(p.c_str(),
                                              std::string(store::modelChoices(String(p.c_str())).c_str()));
 }
 
+// Lane F: orch_model and spawns ask THE check (store::modelSelectable over the model
+// store, the cold-start list and the compiled default) - the same one the web pick
+// asks, so a model the picker or the prompt offers is never refused here.
 static bool modelIsValid(const String& provider, const char* model) {
-  return model && nimbus::orch::modelInChoices(modelChoicesFor(std::string(provider.c_str())), model);
+  return model && store::modelSelectable(provider, String(model), nimbus::orch::PickRole::Any);
 }
 
 // ---- last-turn introspection (owner ask 2026-07-16: "create a file where I can
@@ -888,7 +891,7 @@ static std::string cumuloPick() {
 // answered (RAM only, like the hosted head's) are fixed buffers: nothing on the
 // turn path grows the heap (the tap's filter copy is transient and in PSRAM).
 static char g_cumuloRouterHost[64] = "";   // the host the tap watches (set per turn)
-static char g_cumuloLastGood[72] = "";     // a router id is at most 64 characters (harvestIds)
+static char g_cumuloLastGood[72] = "";     // a router id is at most 64 characters (cleanModelId)
 // Copy `s` whole into `dst`, or clear it when it does not fit: a cut host or
 // selector would name a different one.
 template <size_t N>
@@ -1192,6 +1195,10 @@ static TurnEngine::Deps buildTurnDeps() {
   // rest, so the head saw "zai: ;" / "cumulo: ;" and refused those sub-agents,
   // and kept offering o4-mini-deep-research, which validation coerced away.
   d.modelChoices = [](const std::string& p) { return modelChoicesFor(p); };
+  // Lane F: how old that list is ("list from <date>, may miss newer models").
+  d.modelListNote = [](const std::string& p) {
+    return std::string(store::modelListNote(String(p.c_str())).c_str());
+  };
   // The owner's row: `tags` is the sanitized "from:<sender>" plus, under histV2,
   // the att:/src:/sent: items the engine adds. Returns the row id.
   auto captureOwner = [](const std::string& chatId, const std::string& text,

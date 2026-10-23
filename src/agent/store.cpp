@@ -19,9 +19,12 @@
 #include "agent_config.h"
 #include "fs_atomic.h"                     // writeFileAtomic - the usage files (tmp + rename)
 #include "provider_gate.h"                // the daily spend notice (L19-2)
+#include "nimbus/orch/connectors_wire.h"   // resolveHeadHost - the one head-host rule
+#include "nimbus/orch/model_catalog.h"     // the model store line format (lane F)
 #include "nimbus/orch/model_choices.h"     // effectiveModelChoices - the priceable models
 #include "nimbus/orch/model_defaults.h"    // role defaults (lane DEF): head, sub, background
 #include "spend_ceiling_store.h"           // the monthly spend ceiling counts every record
+#include "version.h"                       // NIMBUS_FW_VERSION - the models file header
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h" // GET /api/usage/models body
@@ -309,41 +312,33 @@ uint32_t fallbackSyncTs()    { return (uint32_t)solide::memory::getInt(AKEY_FALL
 // ---- routing + models ----
 String orchHost() { return pcGet(&PSnap::orchHost); }
 
-// The host a turn ACTUALLY runs on: explicit orchHost, else the head of the
-// priority list. ⚠ Use this (never raw orchHost()) wherever the model's context
-// window is resolved - orchHost is "" by default, and modelCtxTokens("") falls
-// back to the conservative 100K default, which silently HALVED the derived
-// brief/fold-slice budgets and made the web UI report the wrong effective caps
-// (prism 2026-08-05). The engine resolves the same way inline.
+// The host a turn ACTUALLY runs on, by the ONE rule the engine dispatches with
+// (nimbus::orch::resolveHeadHost): the pinned orchHost while it has a key, else the
+// first KEYED provider in priority, else the keyed router (Cumulo, then Z.ai), else
+// any other keyed provider; only with no key anywhere the pin or the raw head (a
+// fresh device mid-onboarding, where every turn is refused locally anyway).
+// HOST-FALLBACK (22 Oct): a pinned host whose key was cleared used to win here and
+// in the engine, so the turn dialed it keyless (HTTP 401).
+// ⚠ Use this (never raw orchHost()) wherever the model's context window is resolved -
+// orchHost is "" by default, and modelCtxTokens("") falls back to the conservative
+// 100K default, which silently HALVED the derived brief/fold-slice budgets and made
+// the web UI report the wrong effective caps (prism 2026-08-05).
 bool providerHasKey(const String& name) {
   String n = name; n.trim();
   if (n == "openai")    return hasOpenaiKey();
   if (n == "anthropic") return hasAnthropicKey();
   if (n == "mistral")   return hasMistralKey();
+  if (n == "cumulo")    return hasCumuloKey();
+  if (n == "zai")       return hasZaiKey();
+  if (n == "custom")    return hasCustom();
   return false;
 }
 String resolvedOrchHost() {
-  String h = orchHost();
-  if (h.length()) return h;
-  // Walk the priority list and pick the FIRST provider that actually has a key,
-  // so the active provider is one the owner configured. A bare default list heads
-  // with "openai" even when only Mistral is keyed - the reported bug. Fall back to
-  // the raw head only if nothing is keyed yet (fresh device mid-onboarding).
-  const String pr = providerPriority();
-  String head;
-  int start = 0;
-  while (start <= (int)pr.length()) {
-    int c = pr.indexOf(',', start);
-    String tok = (c < 0) ? pr.substring(start) : pr.substring(start, c);
-    tok.trim();
-    if (tok.length()) {
-      if (head.length() == 0) head = tok;
-      if (providerHasKey(tok)) return tok;
-    }
-    if (c < 0) break;
-    start = c + 1;
-  }
-  return head;
+  const std::string rf = hasCumuloKey() ? "cumulo" : hasZaiKey() ? "zai" : "";
+  return String(nimbus::orch::resolveHeadHost(
+                    std::string(orchHost().c_str()), std::string(providerPriority().c_str()),
+                    [](const std::string& h) { return providerHasKey(String(h.c_str())); }, rf)
+                    .c_str());
 }
 String orchConvId() { return getStrQuiet(AKEY_ORCH_CONVID, ""); }
 bool   setOrchConvId(const String& v) { return putOrClear(AKEY_ORCH_CONVID, v); }
@@ -607,36 +602,170 @@ bool setSubModel(const String& provider, const String& v) {
   String key = String(AKEY_SUB_MODEL_PFX) + provider;
   return putOrClear(key.c_str(), v);
 }
-// Live model choices harvested from the provider's /v1/models by the verify pass
-// (owner 2026-07-16: the static lists were stale - no Opus 4.8 / Fable / new-gen
-// OpenAI). "" = never harvested; the static defaults stay the fallback.
-String modelChoices(const String& provider) {
-  String key = String("mch_") + provider;
-  return getStrQuiet(key.c_str(), "");
+// ---- the model store (lane F): /data/models_<slug>.txt, never NVS ----------------
+// One LittleFS file per provider holds every model its last fetch kept (line format,
+// nimbus/orch/model_catalog.h) plus, in its header, the fetch time and the short list.
+// The text is cached in RAM (one allocation per provider, PSRAM: over the 128 B
+// extmem threshold), never as parsed rows: each read scans it in place, so no
+// per-model string lives on the internal heap. Older builds kept the short list in
+// NVS (mch_<slug>) and a JSON catalog in /data/mcat_<slug>.json; the JSON file is
+// never written or deleted here, so a rollback still reads it (critique C2).
+namespace {
+std::mutex g_modelMx;
+struct ModelStoreSlot {
+  bool        loaded = false;
+  bool        have = false;            // the text has a store header
+  std::string text;
+  nimbus::orch::ModelStoreMeta meta;   // its header, parsed once per load or write
+};
+ModelStoreSlot g_modelStore[nimbus::orch::kProviderSlotCount + 1];   // + custom
+
+int modelSlot(const String& provider) {
+  int i = 0, found = -1;
+  nimbus::store::forEachCatalogProvider([&](const char* slug) {
+    if (found < 0 && provider == slug) found = i;
+    ++i;
+  });
+  return found;
 }
-bool setModelChoices(const String& provider, const String& csv) {
-  String key = String("mch_") + provider;
-  return putOrClear(key.c_str(), csv);
-}
-// ---- provider capability catalogs: LittleFS files, never NVS (CUM-479) ----------
-// A catalog is a REBUILDABLE cache (every verify re-harvests it) of up to
-// nimbus::store::kCatalogMaxBytes, which in NVS cost ~120 entries - nearly a whole
-// page - per provider, so five verified providers exhausted the 20 KB partition and
-// every later owner write (connectors, host switch, scratchpad) failed. They now live
-// in /data/mcat_<provider>.json on the 3.5 MB LittleFS partition; NVS keeps only
-// owner config. exists() first: a bare open() of a missing file logs an [E] line.
-String modelCatalogJson(const String& provider) {
-  const std::string path = nimbus::store::catalogCachePath(provider.c_str());
-  if (path.empty() || !LittleFS.exists(path.c_str())) return String();
+
+// The slot, its file read once per boot (callers hold g_modelMx).
+const ModelStoreSlot& modelStoreLocked(int slot, const String& provider) {
+  ModelStoreSlot& s = g_modelStore[slot];
+  if (s.loaded || !agent::flashMounted()) return s;
+  s.loaded = true;
+  const std::string path = nimbus::orch::modelStorePath(provider.c_str());
+  if (path.empty() || !LittleFS.exists(path.c_str())) return s;
   File f = LittleFS.open(path.c_str(), "r");
-  if (!f) return String();
-  String s = f.readString();
+  if (!f) return s;
+  const size_t n = f.size();
+  if (n > 0 && n <= nimbus::orch::kModelStoreMaxBytes + 1024) {
+    s.text.resize(n);
+    s.text.resize(f.read((uint8_t*)&s.text[0], n));
+  }
   f.close();
+  s.have = nimbus::orch::parseModelStoreHeader(s.text, s.meta);
   return s;
 }
-// Written to a temp file and renamed over the old one, so a reader (GET /api/models on
-// the AsyncTCP task, polled right after a verify) never sees a half-written catalog -
-// the atomic replace the NVS value used to give for free.
+}  // namespace
+
+std::string modelStoreText(const String& provider) {
+  const int slot = modelSlot(provider);
+  if (slot < 0) return std::string();
+  std::lock_guard<std::mutex> lk(g_modelMx);
+  return modelStoreLocked(slot, provider).text;
+}
+
+// The flash write runs outside g_modelMx (readers on the web and turn tasks never wait
+// on it); a write mutex keeps two writers (the verify task, the boot merge) in order.
+// The header is parsed before the lock is taken, so the swap is all the lock covers.
+bool setModelStoreText(const String& provider, const std::string& text) {
+  const int slot = modelSlot(provider);
+  const std::string path = nimbus::orch::modelStorePath(provider.c_str());
+  if (slot < 0 || path.empty()) return false;
+  static std::mutex s_writeMx;
+  std::lock_guard<std::mutex> wl(s_writeMx);
+  LittleFS.mkdir("/data");
+  if (!agent::writeFileAtomic(path.c_str(), text, "models")) return false;
+  nimbus::orch::ModelStoreMeta meta;
+  const bool have = nimbus::orch::parseModelStoreHeader(text, meta);
+  std::string copy = text;
+  std::lock_guard<std::mutex> lk(g_modelMx);
+  ModelStoreSlot& s = g_modelStore[slot];
+  s.text.swap(copy);
+  s.meta = std::move(meta);
+  s.have = have;
+  s.loaded = true;
+  return true;
+}
+
+// Read on hot paths (every role-default lookup, the prompt line): the cached header,
+// never a copy of the file text.
+String modelChoices(const String& provider) {
+  const int slot = modelSlot(provider);
+  if (slot < 0) return String();
+  std::lock_guard<std::mutex> lk(g_modelMx);
+  const ModelStoreSlot& s = modelStoreLocked(slot, provider);
+  return s.have ? String(s.meta.choices.c_str()) : String();
+}
+
+String modelListNote(const String& provider) {
+  const int slot = modelSlot(provider);
+  if (slot < 0) return String();
+  std::lock_guard<std::mutex> lk(g_modelMx);
+  const ModelStoreSlot& s = modelStoreLocked(slot, provider);
+  return String(nimbus::orch::modelListNote(s.have, s.meta).c_str());
+}
+
+// The check's sources other than the store text. The role defaults are read first:
+// they take the store lock themselves (the short list).
+static nimbus::orch::SelectableSources baseSources(const String& provider) {
+  nimbus::orch::SelectableSources src;
+  src.coldStart = nimbus::orch::staticModelChoices(provider.c_str());
+  src.defaultModel = defaultModelFor(provider, nimbus::orch::DefaultRole::Head).c_str();
+  src.subDefaultModel = defaultModelFor(provider, nimbus::orch::DefaultRole::Sub).c_str();
+  src.now = nimbus::orch::calendarNowOrZero(time(nullptr));
+  return src;
+}
+
+nimbus::orch::SelectableSources modelSources(const String& provider, std::string& text) {
+  nimbus::orch::SelectableSources src = baseSources(provider);
+  text = modelStoreText(provider);
+  src.storeText = &text;
+  return src;
+}
+
+bool modelSelectable(const String& provider, const String& id, nimbus::orch::PickRole role) {
+  nimbus::orch::SelectableSources src = baseSources(provider);
+  const int slot = modelSlot(provider);
+  if (slot < 0) return nimbus::orch::modelSelectable(provider.c_str(), id.c_str(), role, src);
+  std::lock_guard<std::mutex> lk(g_modelMx);   // scanned in place: no copy of the text
+  src.storeText = &modelStoreLocked(slot, provider).text;
+  return nimbus::orch::modelSelectable(provider.c_str(), id.c_str(), role, src);
+}
+
+int migrateModelStores() {
+  if (!agent::flashMounted()) return 0;   // Notifier mode: nothing to merge into
+  const bool imageValid = otaupd::imageValidAtBoot();
+  int erased = 0, merged = 0;
+  nimbus::store::forEachCatalogProvider([&](const char* slug) {
+    const std::string key = std::string("mch_") + slug;
+    const String csv = getStrQuiet(key.c_str(), "");
+    const std::string jpath = nimbus::store::catalogCachePath(slug);
+    const bool haveJson = !jpath.empty() && LittleFS.exists(jpath.c_str());
+    const std::string existing = modelStoreText(slug);
+    if (csv.length() || (existing.empty() && haveJson)) {
+      std::string json;
+      if (existing.empty() && haveJson) {   // read only: a rollback keeps reading it
+        File f = LittleFS.open(jpath.c_str(), "r");
+        if (f) {
+          json = f.readString().c_str();
+          f.close();
+        }
+      }
+      const std::string text =
+          nimbus::orch::mergeLegacyLists(slug, existing, json, csv.c_str(), NIMBUS_FW_VERSION);
+      if (!text.empty() && setModelStoreText(slug, text)) ++merged;
+    }
+    if (nimbus::orch::legacyListErasable(imageValid, !modelStoreText(slug).empty(), csv.length() > 0) &&
+        clearKey(key.c_str()))
+      ++erased;
+  });
+  if (merged || erased) {
+    nimbus::store::NvsUsage u;
+    nimbus::sys::nvsUsage(u);
+    agent::alogcf(nimbus::errlog::cat::kNvs,
+                  "models: merged %d older list(s) into the model store, erased %d NVS list(s) (%u B free)",
+                  merged, erased, (unsigned)u.freeBytes);
+  }
+  return erased;
+}
+
+// ---- legacy provider capability catalogs (CUM-479) --------------------------------
+// Before lane F the catalogs were /data/mcat_<provider>.json (and before CUM-479 the
+// NVS keys mcat_<provider>). This build never writes them; the boot heal below still
+// carries a legacy NVS copy to its file (so a rollback finds it) and frees the key.
+// Written to a temp file and renamed over the old one.
 static bool writeCatalogFile(const std::string& path, const String& json) {
   LittleFS.mkdir("/data");
   const std::string tmp = path + ".tmp";
@@ -652,13 +781,6 @@ static bool writeCatalogFile(const std::string& path, const String& json) {
   }
   LittleFS.remove(tmp.c_str());
   return false;
-}
-bool setModelCatalogJson(const String& provider, const String& json) {
-  const std::string path = nimbus::store::catalogCachePath(provider.c_str());
-  if (path.empty() || !writeCatalogFile(path, json)) return false;
-  // A pre-CUM-479 copy of this provider's cache in NVS is now stale: free it.
-  clearKey(nimbus::store::legacyCatalogKey(provider.c_str()).c_str());
-  return true;
 }
 int evictLegacyCatalogCaches() { return nimbus::store::evictLegacyCatalogs(g_nvs); }
 int migrateCatalogCachesOffNvs() {

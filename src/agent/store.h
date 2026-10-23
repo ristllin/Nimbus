@@ -6,6 +6,7 @@
 
 #include "nimbus/orch/model_defaults.h" // DefaultRole - roleDefaultModel (lane DEF)
 #include "nimbus/orch/model_ledger.h"   // TokenDelta, ModelRate, RateEdit (per-model prices)
+#include "nimbus/orch/model_selectable.h"   // PickRole - the one model check (lane F)
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - recordProviderSpend
 #include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
 
@@ -97,9 +98,9 @@ uint32_t fallbackSyncTs();         [[nodiscard]] bool setFallbackSyncTs(uint32_t
 
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
-bool   providerHasKey(const String& name);  // is an API key stored for openai|anthropic|mistral
-String resolvedOrchHost();                  // orchHost, else the first KEYED provider in priority - use
-                                            // this whenever the model WINDOW is resolved
+bool   providerHasKey(const String& name);  // is a key stored for this provider (every slot + custom)
+String resolvedOrchHost();                  // the head a turn runs on (resolveHeadHost: a keyless pin is
+                                            // skipped) - use this whenever the model WINDOW is resolved
 int    effectiveToolResultCap();            // the per-result clamp a turn will apply (derived|owner)
 String orchConvId();                        // "host|convId" (per-host conversation state)
 [[nodiscard]] bool   setOrchConvId(const String& v);
@@ -115,17 +116,32 @@ String captionModel(const String& provider);  // the fallback captioner's role d
 // The role default alone (no owner pick): what a provider runs for `role` when the owner
 // picked nothing. Always a valid pick for that role (the web model check accepts it).
 String roleDefaultModel(const String& provider, nimbus::orch::DefaultRole role);
-// Live model list harvested from the provider's /v1/models by the verify pass;
-// "" until a verify has run. Callers fall back to the static compile-time list.
+// ---- the model store (lane F): /data/models_<slug>.txt, never NVS ----
+// The provider's model store text (a header line, then one line per model:
+// nimbus/orch/model_catalog.h), "" until a verify fetched a list or this build's first
+// boot merged the older build's lists. Cached in RAM; safe from any task.
+std::string modelStoreText(const String& provider);
+// Replace it (a temp file renamed over the old one, so a reader never sees half a
+// file). False = the file write failed and the last list stays. No NVS write.
+[[nodiscard]] bool setModelStoreText(const String& provider, const std::string& text);
+// The short list (CSV) the prompt's [AVAILABLE MODELS] line and the picker's quick
+// picks show: the store header's choices, "" with no store (callers then use the
+// cold-start list through nimbus::orch::effectiveModelChoices).
 String modelChoices(const String& provider);
-[[nodiscard]] bool   setModelChoices(const String& provider, const String& csv);
-// Rich capability-aware catalog per provider (GET /api/models model array as JSON).
-// A REBUILDABLE cache, so it lives in a LittleFS file (/data/mcat_<provider>.json),
-// never in NVS (CUM-479: five ~3.8 KB catalogs exhausted the 20 KB partition). ""
-// = never harvested. Survives a reboot; the CSV above stays for the /api/orch
-// dropdowns (bounded: at most 8 ids, the one catalog-ish value left in NVS).
-String modelCatalogJson(const String& provider);
-[[nodiscard]] bool   setModelCatalogJson(const String& provider, const String& json);  // false = file write failed
+// Its freshness for the prompt line: "(list from 2026-10-22, may miss newer models)".
+String modelListNote(const String& provider);
+// THE "is this model allowed" check (nimbus/orch/model_selectable.h) over this
+// device's sources: the store, the cold-start list, the compiled default, the clock.
+// orch_model, spawns and the web pick all ask it.
+bool modelSelectable(const String& provider, const String& id, nimbus::orch::PickRole role);
+// The sources that check reads (the store text lands in `text`, which must outlive the
+// result): for a caller that asks through agent::model_pick.
+nimbus::orch::SelectableSources modelSources(const String& provider, std::string& text);
+// Boot (provider_verify::begin): merge the older build's lists (NVS mch_<slug>, and
+// /data/mcat_<slug>.json, which stays for a rollback) into the store, and on a boot
+// whose image was already valid erase mch_<slug> once its store holds the list.
+// Returns how many NVS keys were erased.
+int    migrateModelStores();
 // Erase every legacy NVS catalog key (mcat_<provider>, pre-CUM-479). Erasing only
 // frees entries, so it works on a full partition. Returns how many were removed.
 int    evictLegacyCatalogCaches();
