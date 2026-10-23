@@ -198,3 +198,39 @@ def test_l60_food_log_turn_appends_in_three_requests(board):
     assert len(rounds) <= 3, f"the food-log turn took {len(rounds)} requests (> 3)"
     assert "files: appended" in log, "files.append never ran (no 'files: appended' line)"
     assert "files: artifact l60-bench/food-log.csv" not in log, "the log was re-saved whole"
+
+
+def test_l60_five_food_logs_median_two_requests(board):
+    """The MASTER bench leg (critique F9): five consecutive food-log turns. The
+    keyed CSV upsert + the day-total tail read (the G1 token levers) keep the
+    median turn at most 2 requests (headloop rounds) and the maximum at 3."""
+    ip, _ = board
+    meals = [
+        ("oats with banana and a coffee", "about 390 kcal and 11 g protein"),
+        ("tuna and bean salad", "about 450 kcal and 35 g protein"),
+        ("an apple and some almonds", "about 210 kcal and 5 g protein"),
+        ("chicken wrap", "about 520 kcal and 34 g protein"),
+        ("veg chili, one bowl", "about 480 kcal and 21 g protein"),
+    ]
+    counts = []
+    for i, (meal, facts) in enumerate(meals, 1):
+        _, log = _chat(
+            ip,
+            f"Log meal {i} of 5 to l60-bench/food-log.csv (columns date,meal,kcal,protein_g): "
+            f"{meal} (bench run {RUN}), {facts}.",
+            timeout_s=200,
+        )
+        rounds = re.findall(r"headloop round=(\d+)", log)
+        assert rounds, f"food log {i}: no headloop rounds in /api/log (is the tool loop on?)"
+        assert "files: appended" in log or "files: upsert" in log, (
+            f"food log {i}: neither files.append nor a keyed upsert ran"
+        )
+        assert "files: artifact l60-bench/food-log.csv" not in log, (
+            f"food log {i}: the log was re-saved whole"
+        )
+        counts.append(len(rounds))
+    counts.sort()
+    median = counts[len(counts) // 2]
+    print(f"L60 five food logs requests={counts} median={median}")
+    assert median <= 2, f"the median food log took {median} requests (> 2)"
+    assert max(counts) <= 3, f"the worst food log took {max(counts)} requests (> 3)"
