@@ -426,6 +426,7 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     tc["function"]["name"] = "orch_turn";
   }
   if (!wire::serializeChecked(req, body, err)) return false;
+  if (!bodyWithinBudget(body, err)) return false;   // R3: the stated budget, before the photo splice
   return !a.imgs || imageparts::spliceMarkers(body, *a.imgs, *a.splices, err);
 }
 
@@ -772,7 +773,8 @@ static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
     wire::putFieldStr(d["instructions"], instructions + note, "the system prompt");
   }
   if (!out.studio && !mistralPinTurnSchema(d)) { out.err = "schema parse"; return false; }
-  return wire::serializeChecked(d, out.body, out.err);
+  if (!wire::serializeChecked(d, out.body, out.err)) return false;
+  return bodyWithinBudget(out.body, out.err);   // R3: the stated body budget
 }
 
 bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,

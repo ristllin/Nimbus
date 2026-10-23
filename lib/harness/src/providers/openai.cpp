@@ -555,6 +555,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     std::string body;
     BodySplices splices;
     if (!wire::serializeChecked(req, body, out.error) ||
+        !bodyWithinBudget(body, out.error) ||   // R3: the stated budget, before the photo splice
         (imgs && !imageparts::spliceMarkers(body, *imgs, splices, out.error))) {
       out.ok = false;
       return out;
@@ -570,7 +571,8 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       imgs = nullptr;
       renderInput();
       body.clear();
-      if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
+      if (!wire::serializeChecked(req, body, out.error) ||
+          !bodyWithinBudget(body, out.error)) { out.ok = false; return out; }
       resp.clear();
       const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
       code = oaiResponses(pd, std::move(body), roundMs, resp, filter);
@@ -747,6 +749,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     // turn can use them mid-turn even with a strict json_schema text format.
     if (pd.attachOpenAI) pd.attachOpenAI(d);
     if (!wire::serializeChecked(d, body, err)) return false;
+    if (!bodyWithinBudget(body, err)) return false;   // R3: the stated body budget
   }
 
   JsonDocument filter;

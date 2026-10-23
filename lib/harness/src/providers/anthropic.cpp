@@ -991,7 +991,8 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   // point: nothing else it sends is cached, and it has points to spare.
   if (!a.parts->split)
     toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
-  return wire::serializeChecked(req, body, err);
+  if (!wire::serializeChecked(req, body, err)) return false;
+  return bodyWithinBudget(body, err);   // R3: the stated body budget (photos splice after)
 }
 
 // Read one loop response into `out`: the FIRST orch_turn's input is the turn and
@@ -1373,7 +1374,8 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
     if (!parts.split)
       tool["cache_control"]["type"] = "ephemeral";   // an unsplit prompt: the tools prefix segment
   }
-  return wire::serializeChecked(d, body, err);
+  if (!wire::serializeChecked(d, body, err)) return false;
+  return bodyWithinBudget(body, err);   // R3: the stated body budget (photos splice after)
 }
 
 // What one single-shot reply holds: the orch_turn input (the turn), else the

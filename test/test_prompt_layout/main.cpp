@@ -371,8 +371,11 @@ static const char* wireName(Wire w) {
 
 // Run one head turn on a fake transport; returns every request body. `finalOnly`
 // forces the tool-less final round (the cap path) on the loops that have one.
+// `extraSpecs` appends registry tools to the rig (the body-size guard's
+// full-manifest case).
 static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
-                                        const std::string& inputs) {
+                                        const std::string& inputs,
+                                        const std::vector<nimbus::orch::ToolRegistry::Spec>* extraSpecs = nullptr) {
   FakeProviderDeps d;
   const bool loop = w == Wire::AntLoop || w == Wire::OaiLoop || w == Wire::MisLoop;
   switch (w) {
@@ -398,6 +401,8 @@ static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
+  if (extraSpecs)
+    for (const auto& s : *extraSpecs) rig.ht.specs.push_back(s);
   std::string conv, out, err;
   const agent::HeadTools* tools = loop ? &rig.ht : nullptr;
   bool ok = false;
@@ -555,6 +560,50 @@ static void test_marker_never_on_any_wire() {
     TEST_ASSERT_TRUE(d.http.seen[0].body.find("[RUNNING MEMORY]") != std::string::npos);
     TEST_ASSERT_TRUE(d.http.seen[0].body.find("RECENT CONVERSATION") != std::string::npos);
   }
+}
+
+// ---- the wire body-size guard (R3, the 22 Oct prompt-size item) --------------------
+// A one-word owner turn on a bench unit with weeks of history sent a 56,504 B
+// request body (v4.5.15 soak). The stated budget: the worst HEALTHY turn - the
+// full 42-tool manifest on the wire as schemas, a device-scale system budget,
+// weeks of history at the window cap, a full recall, the scratchpad and the
+// sessions - assembles under providers::kWireBodyMax on every wire, and a body
+// over the cap is refused before the send (fail closed, named).
+static void test_wire_body_size_guard() {
+  std::vector<nimbus::orch::ToolRegistry::Spec> specs;
+  const std::string schema =
+      R"({"type":"object","additionalProperties":false,"required":["project","name"],)"
+      R"("properties":{"project":{"type":"string"},"name":{"type":"string"},"q":{"type":"string"},)"
+      R"("text":{"type":"string"},"id":{"type":"string"},"content":{"type":"string"},)"
+      R"("offset":{"type":"integer"},"limit":{"type":"integer"}}})";
+  // The REAL device shape (test_prompt_budget's deviceShapedTools): ~42 tools,
+  // 309 B descriptions (784 B for device_status), ~220 B schemas.
+  for (int i = 0; i < 42; i++)
+    specs.push_back({"tool_" + std::to_string(i),
+                     std::string(i == 0 ? 784 : 309, 'd') + " tool", schema});
+  const std::unique_ptr<Turn> t = turnAt(9, true, 0);   // the summary pair only
+  for (int i = 0; i < 13; i++) {   // a full recent window at the device cap
+                               // (ContextBudget::recentConvBytes, 8192 B)
+    t->ci.history.push_back({true, "question " + std::to_string(i) + ": " + std::string(280, 'q')});
+    t->ci.history.push_back({false, "answer " + std::to_string(i) + ": " + std::string(280, 'a')});
+  }
+  for (int i = 0; i < 40; i++)
+    t->ci.recalled.push_back("recalled fact " + std::string(100, 'r') + std::to_string(i));
+  t->ci.budgetBytes = 20480;   // the device-scale derived system budget
+  const std::string ins = agent::composeInstructions(t->ci);
+  for (Wire w : {Wire::AntLoop, Wire::AntSingle, Wire::OaiLoop, Wire::OaiSingle, Wire::MisLoop}) {
+    const auto bodies = runTurn(w, ins, "yes", &specs);
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "%s: round-0 body %zu B (cap %zu B)", wireName(w),
+                  bodies[0].size(), providers::kWireBodyMax);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE_MESSAGE(bodies[0].size() <= providers::kWireBodyMax, msg);
+  }
+  // The counter: the guard itself refuses an oversized body, by name.
+  std::string body(providers::kWireBodyMax + 1, 'x'), err;
+  TEST_ASSERT_FALSE(providers::bodyWithinBudget(body, err));
+  TEST_ASSERT_TRUE(err.find("request body over") == 0);
+  TEST_ASSERT_TRUE(providers::bodyWithinBudget(body.substr(0, providers::kWireBodyMax), err));
 }
 
 // ---- Anthropic cache points --------------------------------------------------------
@@ -843,6 +892,7 @@ int main(int, char**) {
   RUN_TEST(test_flat_render_of_the_largest_budget_stays_under_the_guard);
   RUN_TEST(test_wire_prefix_stable_and_tools_byte_identical);
   RUN_TEST(test_marker_never_on_any_wire);
+  RUN_TEST(test_wire_body_size_guard);
   RUN_TEST(test_anthropic_breakpoints_never_exceed_four);
   RUN_TEST(test_image_parts_never_carry_cache_control);
   RUN_TEST(test_openai_breakpoints_and_cache_key);
