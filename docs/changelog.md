@@ -68,6 +68,7 @@ Models:
 
 - **The whole model list, kept up to date.** Each provider's model list is read whole and kept in flash, up to 160 models per provider: the Cumulo list (about 95 KB) used to stop at 64 KB and fall back to 12 models. Each model shows its price or "price unknown", one model's two spellings take one place, models past their shutdown date are left out, and the list says how old it is. Nothing about it is kept in settings storage any more, which frees room there.
 - **What the picker offers is accepted.** Switching models from a chat, starting a helper and saving a model on the web page now use one check, so a model the device lists (Claude Sonnet 5.5, for example) is never refused by another part of it. The built-in starting lists now name current models, including Claude Haiku 5.5 and GPT-5.6 Sol.
+- **A model you chose keeps working.** A helper started with no model named runs the helper model you chose, also on Cumulo when it was saved without its "openai/" prefix (it used to run the cheapest model on the list). If a provider's list stops naming a model you chose, it keeps running and you are told once. OpenAI's gpt-5.6, which OpenAI answers but does not list, is accepted.
 - **A provider whose key you removed is skipped.** When the provider set as the assistant has no key, the device answers on a provider that has one and tells you once, instead of failing with a rejected-key message. With no key anywhere it says "No AI provider has a key: add one under Assistant > Models." instead of "Done."
 
 ## v4.5.16 - No more restarts every few hours

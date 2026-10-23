@@ -214,6 +214,10 @@ class TurnEngine {
     // models)"; device: the model store's fetch date). Nullable: no note, the line is
     // byte-identical to before (lane F, honest freshness).
     std::function<std::string(const std::string& provider)> modelListNote;
+    // A pending one-time owner notice about the model lists ("" for none; device: a
+    // stored pick a fresh list no longer names). Taken at the start of an owner-facing
+    // turn and held like a switch notice. Nullable.
+    std::function<std::string()> takeModelNotice;
     // Episodic auto-capture of the owner's message (session row + user row with
     // the engine-sanitized "from:<name>" tag). Nullable.
     std::function<void(const std::string& chatId, const std::string& text,

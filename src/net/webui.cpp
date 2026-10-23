@@ -1616,10 +1616,10 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
 
   // Per-provider model picks. One loop over the canonical registry (CUM-213):
   // cumulo/zai are first-class heads (CUM-242), so they validate exactly like the
-  // BYOK providers. CUM-530: a pick is accepted from the effective choice list, the
-  // provider's catalog for that role (what the picker renders), or the compiled
-  // default; a refused pick is a 400 naming the allowed values - it used to answer
-  // 200 ok and change nothing.
+  // BYOK providers. Lane F: a pick is accepted by the one model check (the store, a
+  // probed alias, the cold-start list, the role defaults, or the value already stored,
+  // so re-saving a card never fails on a pick a later list dropped); a refused pick is
+  // a 400 naming the allowed values - it used to answer 200 ok and change nothing.
   for (const auto& slot : nimbus::orch::kProviderSlots) {
     const char* p = slot.slug;
     const bool isOrch = (n == String("orchM_") + p);

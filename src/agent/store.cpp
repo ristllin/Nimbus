@@ -13,6 +13,7 @@
 #include <LittleFS.h>   // daily usage history (/data/usage_hist.txt - too big for NVS)
 #include <nvs.h>        // nvs_entry_find - the reserve's eviction pass lists key names
 
+#include <algorithm>
 #include <ctime>
 #include <mutex>
 
@@ -697,15 +698,65 @@ String modelListNote(const String& provider) {
   return String(nimbus::orch::modelListNote(s.have, s.meta).c_str());
 }
 
+// The owner's stored picks for a provider (no defaults): "" when none is stored.
+static std::string storedPick(const char* pfx, const String& provider) {
+  const String key = String(pfx) + provider;
+  return std::string(getStrQuiet(key.c_str(), "").c_str());
+}
+
 // The check's sources other than the store text. The role defaults are read first:
-// they take the store lock themselves (the short list).
+// they take the store lock themselves (the short list). The owner's stored picks are
+// never refused (a fresh list that dropped one leaves it running; the owner is told
+// once: noteUnlistedPicks).
 static nimbus::orch::SelectableSources baseSources(const String& provider) {
   nimbus::orch::SelectableSources src;
   src.coldStart = nimbus::orch::staticModelChoices(provider.c_str());
   src.defaultModel = defaultModelFor(provider, nimbus::orch::DefaultRole::Head).c_str();
   src.subDefaultModel = defaultModelFor(provider, nimbus::orch::DefaultRole::Sub).c_str();
   src.now = nimbus::orch::calendarNowOrZero(time(nullptr));
+  src.configured = {storedPick(AKEY_ORCH_MODEL_PFX, provider), storedPick(AKEY_SUB_MODEL_PFX, provider)};
   return src;
+}
+
+// ---- the one-time notice for a stored pick a fresh list dropped ----------------------
+// RAM only (no NVS): each (provider, model) is told at most once per boot, on the first
+// owner turn after the fetch that dropped it.
+namespace {
+std::mutex g_pickNoticeMx;
+std::string g_pickNotice;                 // pending, taken by the next owner turn
+std::vector<std::string> g_pickNoticeTold;  // "provider/model" already told this boot
+}  // namespace
+
+void noteUnlistedPicks(const String& provider) {
+  nimbus::orch::SelectableSources src = baseSources(provider);
+  const std::string text = modelStoreText(provider);
+  src.storeText = &text;
+  const nimbus::orch::ProviderSlot* slot = nimbus::orch::findProviderSlot(provider.c_str());
+  const std::string label = slot ? slot->label : provider.c_str();
+  const std::string picks[2] = {src.configured[0], src.configured[1]};
+  for (int i = 0; i < 2; ++i) {
+    const std::string& m = picks[i];
+    if (m.empty() || (i == 1 && m == picks[0])) continue;
+    const nimbus::orch::PickRole role = i == 0 ? nimbus::orch::PickRole::Head : nimbus::orch::PickRole::Sub;
+    if (nimbus::orch::modelListed(provider.c_str(), m, role, src)) continue;
+    const std::string key = std::string(provider.c_str()) + "/" + m;
+    std::lock_guard<std::mutex> lk(g_pickNoticeMx);
+    if (std::find(g_pickNoticeTold.begin(), g_pickNoticeTold.end(), key) != g_pickNoticeTold.end()) continue;
+    if (g_pickNoticeTold.size() < 16) g_pickNoticeTold.push_back(key);
+    agent::alogf("models: %s no longer lists %s (the %s model the owner chose) - it keeps running",
+                 provider.c_str(), m.c_str(), i == 0 ? "assistant" : "helper");
+    g_pickNotice += (g_pickNotice.empty() ? "" : " ") + label + "'s model list no longer names " + m +
+                    ", the " + (i == 0 ? "assistant" : "helper") +
+                    " model you chose; it keeps running. Choose another under Assistant > Models if it "
+                    "stops answering.";
+  }
+}
+
+std::string takeModelNotice() {
+  std::lock_guard<std::mutex> lk(g_pickNoticeMx);
+  std::string out;
+  out.swap(g_pickNotice);
+  return out;
 }
 
 nimbus::orch::SelectableSources modelSources(const String& provider, std::string& text) {

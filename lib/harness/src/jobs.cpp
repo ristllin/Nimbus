@@ -875,7 +875,11 @@ bool JobEngine::coerceSpawnModel(const PendingSpawn& p, const std::string& provi
       if (model.empty()) model = sub;
       return true;
     }
-    if (!sub.empty() && nimbus::orch::modelInChoices(list, sub)) {
+    // The sub-agent default runs when the provider offers it: in the short list, or
+    // accepted by the one check (a bare router id such as the owner's "gpt-5.6" is the
+    // router's "openai/gpt-5.6"; a stored pick is never refused - lane F2).
+    if (!sub.empty() && (nimbus::orch::modelInChoices(list, sub) ||
+                         (d_.modelIsValid && d_.modelIsValid(provider, sub)))) {
       model = sub;
       if (!asked.empty())
         ledgerSwapped(p, provider + " does not offer " + asked + "; runs on its sub-agent default " + sub);

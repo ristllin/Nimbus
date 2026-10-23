@@ -258,7 +258,8 @@ spawn; no restart is needed.
 
 The model id is checked by the device's one model check: a model in the
 provider's model store that the key can run, else (before the first fetch) the
-built-in starting list, or the provider's default. An id it refuses logs
+built-in starting list, or the provider's default, or the model the owner chose
+for that provider (never refused; a helper with no model named runs it). An id it refuses logs
 `spawn model coerced` and uses the per-provider sub-model default when listed,
 else the cheapest listed model (above). The head's `[AVAILABLE MODELS]` line is
 the store's short list, a subset of what the check accepts, so every model it is

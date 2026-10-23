@@ -387,6 +387,7 @@ static void storeModelHarvest(const String& provider, nimbus::orch::ModelHarvest
   alogf("verify: %s models stored: %u (%u B), short list %s", provider.c_str(),
         (unsigned)h.rows.size(), (unsigned)text.size(), meta.choices.c_str());
   if (router) storeRouterPrices(h.rows, meta.choices);
+  store::noteUnlistedPicks(provider);   // a stored pick the fresh list dropped: told once
 }
 
 // The verify's GET answered 200 on `client`: read its model list (and Anthropic's

@@ -1324,6 +1324,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       keylessPinTold_.clear();   // keyed again: a later clear is told again
     }
   }
+  // A stored model pick the provider's fresh list no longer names keeps running; the
+  // owner hears it once (lane F2), on a turn someone is waiting for.
+  if (d_.takeModelNotice && !holdingNotices()) {
+    const std::string note = d_.takeModelNotice();
+    if (!note.empty()) holdNotice(note);
+  }
   // Per-provider LLM token budget (owner: "limit budget per provider"). Opt-in - a
   // limit defaults to 0 (unlimited), so this only fires when the owner SET one and the
   // month's ceiling is reached. Prefer failing OVER to a keyed provider still in

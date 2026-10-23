@@ -433,8 +433,11 @@ boot, on the same verify task, when no turn is running.
 **One check.** Whether a model may be used is one rule, asked by the head's model
 switch, by every sub-agent spawn and by the web picker's save: a model the store
 lists that the key can run (not marked unusable by the probe, not a non-chat family,
-not past its shutdown date), else, before the first fetch, the built-in starting
-list; the provider's default model can always be picked again. So every model the
+not past its shutdown date), or an id the provider serves under another name (OpenAI's
+`gpt-5.6`, answered as `gpt-5.6-sol`), else, before the first fetch, the built-in
+starting list; the provider's default models can always be picked again, and a model
+you already chose is never refused: if a later list no longer names it, it keeps
+running and you are told once. So every model the
 picker or the head's model line offers is accepted, and a model pick the device
 cannot run is refused with the models it accepts. Each model in `GET /api/models`
 carries its price and where it comes from (`priceSrc`: the router's price, the

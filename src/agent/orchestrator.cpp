@@ -1202,6 +1202,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.modelListNote = [](const std::string& p) {
     return std::string(store::modelListNote(String(p.c_str())).c_str());
   };
+  d.takeModelNotice = [] { return store::takeModelNotice(); };   // a dropped stored pick, told once
   // The owner's row: `tags` is the sanitized "from:<sender>" plus, under histV2,
   // the att:/src:/sent: items the engine adds. Returns the row id.
   auto captureOwner = [](const std::string& chatId, const std::string& text,

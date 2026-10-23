@@ -135,6 +135,7 @@ struct Rig {
   std::string chatSummary;          // L19-28: the compacted summary composeInputs hands the engine
   // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
   std::function<std::string(const std::string&)> modelChoicesFn;
+  std::string modelNotice;   // lane F2: the pending one-time model-list notice (taken once)
   int journalGcs = 0;
 
   struct DebugCap {
@@ -232,6 +233,11 @@ struct Rig {
     d.modelChoices = [this](const std::string& p) {
       if (modelChoicesFn) return modelChoicesFn(p);
       return "model-" + p + "-a,model-" + p + "-b";
+    };
+    d.takeModelNotice = [this] {
+      std::string out;
+      out.swap(modelNotice);
+      return out;
     };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& f) {
@@ -2968,6 +2974,24 @@ static void test_no_key_anywhere_answers_every_turn_kind_honestly() {
   TEST_ASSERT_FALSE(k.anyDelivered("has no key"));
 }
 
+
+// Lane F2: a stored model pick a fresh list no longer names keeps running, and the
+// owner hears it once: the pending notice rides the next owner turn (before its
+// reply), never a quiet background turn, and is not repeated.
+static void test_dropped_stored_pick_is_told_once_on_an_owner_turn() {
+  Rig r;
+  r.modelNotice = "Anthropic's model list no longer names claude-sonnet-5, the assistant model you chose; "
+                  "it keeps running. Choose another under Assistant > Models if it stops answering.";
+  r.scripts["anthropic"] = {{true, kGoodTurn, "", 0, "a1", 50, 10}, {true, kGoodTurn, "", 0, "a2", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+  TEST_ASSERT_TRUE(r.eng->runTurn("again", "1001", "again"));
+  int told = 0;
+  for (const auto& d : r.delivered) told += d.second.find("no longer names claude-sonnet-5") != std::string::npos;
+  TEST_ASSERT_EQUAL(1, told);
+  TEST_ASSERT_TRUE(r.modelNotice.empty());
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());   // the turns ran on the stored pick's host
+}
+
 // The predicate is budget-agnostic and counts a configured keyless custom head:
 // an over-budget provider is still "configured" (own reply), and a LAN endpoint
 // needs no key - neither must read as "no provider".
@@ -4276,6 +4300,7 @@ static void runFirstHalf() {
   RUN_TEST(test_keyless_pinned_head_runs_on_a_keyed_host_and_says_so_once);
   RUN_TEST(test_keyed_provider_outside_the_priority_list_runs_the_turn);
   RUN_TEST(test_no_key_anywhere_answers_every_turn_kind_honestly);
+  RUN_TEST(test_dropped_stored_pick_is_told_once_on_an_owner_turn);
   RUN_TEST(test_any_provider_configured_predicate);
   RUN_TEST(test_loop_gate_uses_entry_heap_not_the_recall_dip);
   RUN_TEST(test_loop_defers_when_entry_heap_is_genuinely_low);

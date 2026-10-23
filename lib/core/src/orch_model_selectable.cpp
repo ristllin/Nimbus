@@ -59,10 +59,31 @@ bool isRoleDefault(bool router, const std::string& want, PickRole role, const Se
   return role != PickRole::Head && !src.subDefaultModel.empty() &&
          pickKey(router, src.subDefaultModel) == want;
 }
+
+// The model a probed alias answers as, in the same key form, or "" (no alias). For the
+// router the alias is looked up under its upstream ("openai/gpt-5.6").
+std::string servedFor(const std::string& provider, bool router, const std::string& want) {
+  std::string up = provider, model = want;
+  if (router) {
+    const RouterRoute r = resolveRouterRoute(want);
+    up = r.upstream;
+    model = r.model;
+  }
+  for (const ServedAlias& a : kServedAliases)   // the router's key has its separators unified
+    if (up == a.provider && model == (router ? sameModelKey(a.alias) : std::string(a.alias)))
+      return router ? sameModelKey(up + "/" + a.served) : std::string(a.served);
+  return std::string();
+}
+
+bool isConfigured(bool router, const std::string& want, const SelectableSources& src) {
+  for (const std::string& c : src.configured)
+    if (!c.empty() && pickKey(router, c) == want) return true;
+  return false;
+}
 }  // namespace
 
-bool modelSelectable(const std::string& provider, const std::string& id, PickRole role,
-                     const SelectableSources& src) {
+bool modelListed(const std::string& provider, const std::string& id, PickRole role,
+                 const SelectableSources& src) {
   if (id.empty()) return false;
   const bool router = provider == "cumulo";
   if (router && !routableSelector(id)) return false;
@@ -71,11 +92,25 @@ bool modelSelectable(const std::string& provider, const std::string& id, PickRol
   if (isRoleDefault(router, want, role, src)) return true;
   // The store is the authority once it offers anything for the role: a model it
   // lists but cannot run now (unusable, retired) is refused like an unlisted one.
+  // A probed alias stands for the model it answers as.
+  const std::string served = servedFor(provider, router, want);
   const StoreVerdict v = scanStore(provider, router, want, roleBit(role), src);
   if (v.accepted) return true;
+  if (!served.empty() && scanStore(provider, router, served, roleBit(role), src).accepted) return true;
   if (v.anyOffered) return false;
   // No store (or none of its rows can run the role): the compiled cold-start list.
-  return inColdStart(router, want, src.coldStart);
+  return inColdStart(router, want, src.coldStart) ||
+         (!served.empty() && inColdStart(router, served, src.coldStart));
+}
+
+bool modelSelectable(const std::string& provider, const std::string& id, PickRole role,
+                     const SelectableSources& src) {
+  if (id.empty()) return false;
+  const bool router = provider == "cumulo";
+  if (router && !routableSelector(id)) return false;
+  const std::string want = pickKey(router, id);
+  if (!want.empty() && isConfigured(router, want, src)) return true;   // never refuse a stored pick
+  return modelListed(provider, id, role, src);
 }
 
 }  // namespace orch

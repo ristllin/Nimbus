@@ -137,6 +137,11 @@ bool modelSelectable(const String& provider, const String& id, nimbus::orch::Pic
 // The sources that check reads (the store text lands in `text`, which must outlive the
 // result): for a caller that asks through agent::model_pick.
 nimbus::orch::SelectableSources modelSources(const String& provider, std::string& text);
+// After a fetch stored a provider's list: a stored owner pick (head or helper) the list
+// no longer names keeps running, and the owner is told once per boot (RAM only).
+void   noteUnlistedPicks(const String& provider);
+// The pending one-time notice ("" for none), taken by the next owner turn.
+std::string takeModelNotice();
 // Boot (provider_verify::begin): merge the older build's lists (NVS mch_<slug>, and
 // /data/mcat_<slug>.json, which stays for a rollback) into the store, and on a boot
 // whose image was already valid erase mch_<slug> once its store holds the list.
