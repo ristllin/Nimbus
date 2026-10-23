@@ -704,6 +704,9 @@ static void buildState(String& out) {
   // round, and replies delivered with a correction line.
   d["claimsCorrected"] = agent::ClaimCheck::correctedCount();
   d["claimsTailed"]    = agent::ClaimCheck::tailedCount();
+  // Trace/media sidecar writes that failed since boot (L19-24): a failure leaves
+  // the row with its clipped text only, so the count is what surfaces the loss.
+  d["blobWriteFails"]  = agent::memory::blobWriteFails();
 
   // CUM-257: soak-observability fields (uptimeMs, ringBackstopFires, touch health)
   // in one place so the LAN-driven soak legs (CUM-243 ring backstop, CUM-248 touch

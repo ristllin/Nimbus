@@ -66,6 +66,7 @@ const ToolTaintRow kRows[] = {
     {"tenant.set_quota", T::Internal, E::Admin},
     // device (src/main.cpp, src/agent/orchestrator.cpp)
     {"device.status", T::Internal, E::Read},
+    {"device.log", T::Internal, E::Read},
     {"device.selftest", T::Internal, E::Read},
     {"device.control", T::Internal, E::Config},
     {"ota.status", T::Internal, E::Read},

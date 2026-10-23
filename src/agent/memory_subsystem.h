@@ -282,8 +282,16 @@ static const size_t kTraceBytesMax = 768 * 1024;
 // Glass Box P4: park the FULL text of a clipped trace row in the existing
 // content-addressed blob store (/mem/blobs), returning the path for the row's
 // blobPath. Dedup + the 6 h retention sweep come free with that store. Returns
-// "" with no SD (the row keeps its clip - degraded, never broken).
-String persistTraceBlob(const String& text);
+// "" with no SD (the row keeps its clip - degraded, never broken). *writeFailed
+// (may be null), false in every early-return case, is true only when the SD
+// was there and the write failed (L19-24: the row then carries the lost-sidecar
+// mark and the blobWriteFails counter grows).
+String persistTraceBlob(const String& text, bool* writeFailed = nullptr);
+
+// Trace/media sidecar writes that failed since boot (RAM counter, /api/state,
+// L19-24). A failure leaves the row with its clipped text only; this is what
+// tells the trace view and the owner the full texts are missing.
+uint32_t blobWriteFails();
 
 // True once SNTP has produced a real epoch (~2020+). Pre-sync, decay/prune/
 // boost-on-use are guarded off (Release C3) - boot-relative hours vs stored

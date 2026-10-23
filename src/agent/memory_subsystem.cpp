@@ -14,6 +14,7 @@
 #include <esp_heap_caps.h>                 // the recall and drain largest-block floor
 #include <time.h>
 #include <utility>
+#include <atomic>
 
 #include "adapters/embeddings.h"
 #include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
@@ -2227,13 +2228,22 @@ std::string restoreImport(const char* body, size_t len) {
 // Durable media sidecar (docs/orchestrator-storage.md §4). Content-address `bytes`
 // to /mem/blobs/<hash>.<ext> (identical bytes dedup to one file) and return the
 // path for an episodic row's blobPath. SD-gated: returns "" with no card (degraded
-// mode keeps media ephemeral), so the active card-less path is unchanged.
-static String persistBlobSidecar(const std::string& bytes, const char* ext) {
+// mode keeps media ephemeral), so the active card-less path is unchanged. A write
+// that fails against a present card counts in blobWriteFails (L19-24): the row
+// then carries the lost-sidecar mark instead of quietly showing only its clip.
+static std::atomic<uint32_t> s_blobWriteFails{0};   // L19-24: /api/state + the turn-end row
+static String persistBlobSidecar(const std::string& bytes, const char* ext, bool* writeFailed) {
+  if (writeFailed) *writeFailed = false;
   if (!effHaveSd() || bytes.empty()) return String();
   std::string path = nimbus::orch::blobPath(kBlobDir, nimbus::orch::blobHash(bytes),
                                             ext ? ext : "");
   if (!g_fs->exists(path.c_str())) {              // dedup: skip if already stored
-    if (!writeBlobAtomic(path, bytes)) { alog("memory: blob sidecar write failed"); return String(); }
+    if (!writeBlobAtomic(path, bytes)) {
+      alog("memory: blob sidecar write failed");
+      s_blobWriteFails.fetch_add(1);   // L19-24: the loss is counted, not silent
+      if (writeFailed) *writeFailed = true;
+      return String();
+    }
   }
   return String(path.c_str());
 }
@@ -2241,10 +2251,13 @@ static String persistBlobSidecar(const std::string& bytes, const char* ext) {
 // Glass Box P4: the full text behind a clipped trace row. Rides the SAME
 // content-addressed store as media sidecars - dedup (a repeated tool result
 // stores once) and retention pruning are already implemented there.
-String persistTraceBlob(const String& text) {
+String persistTraceBlob(const String& text, bool* writeFailed) {
+  if (writeFailed) *writeFailed = false;
   if (!traceActive() || !text.length()) return String();
-  return persistBlobSidecar(std::string(text.c_str()), "txt");
+  return persistBlobSidecar(std::string(text.c_str()), "txt", writeFailed);
 }
+
+uint32_t blobWriteFails() { return s_blobWriteFails.load(); }
 
 void captureSession(const char* sessionId, const char* provider, const String& title) {
   if (!g_begun || !sessionId) return;
@@ -2571,7 +2584,7 @@ void captureEvent(const char* ev, const String& text) {
 void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
                   const String& text, const uint8_t* bytes, size_t len, const char* ext) {
   if (!g_begun || !effHaveSd() || !bytes || !len) return;
-  String path = persistBlobSidecar(std::string((const char*)bytes, len), ext);
+  String path = persistBlobSidecar(std::string((const char*)bytes, len), ext, nullptr);
   if (path.length()) captureMessage(sessionId, role, kind, text, path);
 }
 

@@ -34,6 +34,7 @@ struct TurnEndRowIn {
   const TurnSpend*    spend = nullptr;   // "via" when more than one slot billed
   const FailureChain* chain = nullptr;   // "err": the first cause first
   std::string error;          // the last error text, used when there is no chain
+  uint32_t    blobFails = 0; // trace sidecar writes that failed this turn (L19-24)
 };
 
 // The ceiling the device stores a turn-end row under (ORCH_TRACE_END_MAX).
@@ -43,7 +44,8 @@ inline constexpr size_t kTurnEndRowMin = 96;
 
 // The row as JSON, at most `cap` bytes when cap >= kTurnEndRowMin. Keys: host, model,
 // fallback (only when true), src, tools, ok, in, out, cr / cw (only when non-zero),
-// reply, err (only on failure), via (only when more than one slot billed:
+// reply, blobFails (only when non-zero: trace sidecar writes that failed this
+// turn), err (only on failure), via (only when more than one slot billed:
 // [[host, model, in, out, cr, cw], ...]). When it does not fit it shrinks in this
 // order: via model names, the cause (later hosts, then the first text down to 40 B),
 // cr/cw, via cache counts, model, the cause down to its first host's short form,

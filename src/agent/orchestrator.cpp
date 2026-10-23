@@ -67,6 +67,7 @@
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
 #include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
+#include "nimbus/orch/trace_rows.h"    // the tool trace row + the lost-sidecar mark (L19-24)
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/memory.h"
 #include "nimbus/orch/journal.h"
@@ -1289,6 +1290,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // the SD append-log + the owner `otrace` knob.
   static std::map<std::string, std::string> s_traceArgs;   // call id -> args (full cap)
   static int s_traceBlobs = 0;   // sidecars written this turn (P4 budget)
+  static int s_turnBlobFails = 0;   // sidecar writes that failed this turn (L19-24)
   d.hooks.onTurnStart = [](const TurnStartEv& ev) {
     // Turn identity = the turn's USER row id (boot-stable, resumed past history
     // via nextIdHint) - so the chat UI joins a bubble to its trace rows by ID
@@ -1298,6 +1300,7 @@ static TurnEngine::Deps buildTurnDeps() {
     // the same counter here; episodicCaptureUser overwrites this with the real
     // row id when a user row does get captured, whichever order the hooks fire.
     s_traceBlobs = 0;
+    s_turnBlobFails = 0;
     // The user row is captured BEFORE this hook fires (durable-first), so prefer
     // the id it already stashed - minting here would consume a fresh id and
     // clobber the real one, leaving the turn tagged with an id no row owns
@@ -1327,35 +1330,30 @@ static TurnEngine::Deps buildTurnDeps() {
     std::string args;
     auto it = s_traceArgs.find(r.id);
     if (it != s_traceArgs.end()) { args = it->second; s_traceArgs.erase(it); }
-    int keep = nimbus::utf8CapLen(r.output.c_str(), (int)r.output.size(),
-                                  ORCH_TRACE_OUT_MAX);
-    const bool outClipped  = keep < (int)r.output.size();
-    std::string out = outClipped
-                          ? r.output.substr(0, (size_t)keep) + "\xE2\x80\xA6[truncated]"
-                          : r.output;
     // The row keeps the SHORT args clip; the sidecar keeps what was really sent.
-    int akeep = nimbus::utf8CapLen(args.c_str(), (int)args.size(), ORCH_TRACE_ARGS_MAX);
-    const bool argsClipped = akeep < (int)args.size();
-    std::string argsRow = argsClipped ? args.substr(0, (size_t)akeep) + "\xE2\x80\xA6" : args;
     // ONE merged row per call: name(args) -> output. Halves row count and keeps
-    // args + result together for the chat disclosure.
-    String text = String(r.name.c_str()) + "(" + argsRow.c_str() + ")\n\xE2\x86\x92 " +
-                  out.c_str();
+    // args + result together for the chat disclosure. P4: when anything was
+    // clipped, park the FULL call+result as a blob so the owner can open what
+    // the model actually saw (the model has results.get; the web had nothing).
+    // Bounded per turn so a tool-heavy turn can't churn the SD. The row itself
+    // is built in one portable place (trace_rows) so the L19-24 lost-sidecar
+    // mark is host-tested: a clipped row whose sidecar write failed says so.
+    orch::TraceToolRow tr;
+    tr.name = r.name;
+    tr.args = args;
+    tr.output = r.output;
+    tr.blobWanted = s_traceBlobs < ORCH_TRACE_BLOBS_PER_TURN;
+    const orch::TraceToolRowOut row = orch::buildTraceToolRow(
+        tr, [](const std::string& full, bool* failed) {
+          return std::string(memory::persistTraceBlob(String(full.c_str()), failed).c_str());
+        });
+    if (row.blobPath.length()) s_traceBlobs++;
+    if (row.blobFailed) s_turnBlobFails++;
     String tags = String(g_turnTag) + ",tool:" + r.name.c_str() +
                   (r.isError ? ",err" : "");
-    // P4: when anything was clipped, park the FULL call+result as a blob so the
-    // owner can open what the model actually saw (the model has results.get; the
-    // web had nothing). Bounded per turn so a tool-heavy turn can't churn the SD.
-    String blob;
-    if ((outClipped || argsClipped) && s_traceBlobs < ORCH_TRACE_BLOBS_PER_TURN) {
-      std::string full = r.name + "(" + args + ")\n\xE2\x86\x92 " + r.output;
-      int fkeep = nimbus::utf8CapLen(full.c_str(), (int)full.size(), ORCH_TRACE_BLOB_MAX);
-      if (fkeep < (int)full.size()) full = full.substr(0, (size_t)fkeep);
-      blob = memory::persistTraceBlob(String(full.c_str()));
-      if (blob.length()) s_traceBlobs++;
-    }
     std::string chat(currentChat().c_str());
-    memory::captureMessage(chat.c_str(), "tool", orch::MsgKind::ToolOutput, text, blob, tags);
+    memory::captureMessage(chat.c_str(), "tool", orch::MsgKind::ToolOutput,
+                           String(row.text.c_str()), String(row.blobPath.c_str()), tags);
   };
   d.hooks.onThinking = [](const ThinkingEv& ev) {
     if (!memory::traceActive()) return;
@@ -1464,6 +1462,7 @@ static TurnEngine::Deps buildTurnDeps() {
       row.spend = ev.spend;
       row.chain = ev.chain;
       row.error = ev.error;
+      row.blobFails = (uint32_t)s_turnBlobFails;   // L19-24: the trace view sees the loss
       const std::string js = nimbus::orch::turnEndRowJson(row, ORCH_TRACE_END_MAX);
       // blobPath -> this turn's dossier, so the chat can offer "turn anatomy"
       // without probing for a file that may have been evicted by the ring.

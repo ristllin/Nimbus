@@ -72,6 +72,7 @@ void addDetail(JsonDocument& d, const TurnEndRowIn& r, int level) {
   if (level < kNoCache && r.cacheR) d["cr"] = r.cacheR;
   if (level < kNoCache && r.cacheW) d["cw"] = r.cacheW;
   d["reply"] = (uint32_t)r.reply;
+  if (r.blobFails) d["blobFails"] = r.blobFails;   // L19-24: the trace sidecar loss is on the row
   if (!r.ok) d["err"] = causeAt(r, level);
   if (level < kNoVia && viaShown(r)) addVia(d, r, level);
 }
