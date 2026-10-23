@@ -79,6 +79,7 @@ void ClaimCheck::beginTurn() {
   fx_.reset();
   sources_.clear();
   recalled_.clear();
+  causeEvidence_ = 0;
   hosted_ = false;
   corrected_ = false;
 }
@@ -86,20 +87,31 @@ void ClaimCheck::beginTurn() {
 void ClaimCheck::setSources(const std::string& inputs, const std::string& recalled) {
   sources_ = orch::figureNumbers(inputs, kSourceNumbersMax);
   recalled_ = orch::figureNumbers(recalled, kSourceNumbersMax);
+  causeEvidence_ = orch::causeEvidenceOf(inputs);
 }
 
 uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
+  // A read of the device's own state (L19-11): the only thing that can confirm
+  // "it is working" (kEvHealthRead comes from the ledger, never from text).
+  if (regName == "device.status" || regName == "system.health") return orch::kFxHealth;
   const bool memory = regName == "memory.write" || regName == "memory.update";
-  const bool telegram = regName == "reply.telegram";
+  const bool telegram = regName == "reply.telegram" || regName == "files.send";
   if (!memory && !telegram) return 0;
   JsonDocument d;
   if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
-  if (telegram) return (d["voice"] | false) ? orch::kFxVoice : 0;
+  if (telegram) {
+    // 22 Oct: a Telegram send (text, document, photo, voice) is backed only by
+    // Telegram's own receipt, never by the send tool's success text.
+    return (d["voice"] | false) ? (uint8_t)(orch::kFxTelegram | orch::kFxVoice)
+                                : orch::kFxTelegram;
+  }
   return (d["permanent"] | false) ? orch::kFxPermanent : 0;
 }
 
 void ClaimCheck::noteTool(orch::FxKind kind, bool isError, const std::string& output, uint8_t flags) {
   orch::recordToolEffect(fx_, kind, isError, output, flags);
+  causeEvidence_ |= orch::causeEvidenceOf(output);
+  if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
   if (isError || sources_.size() >= kSourceNumbersMax) return;
   const std::string more = orch::figureNumbers(output, kSourceNumbersMax - sources_.size());
   if (more.empty()) return;
@@ -141,6 +153,7 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   ev.fx = &fx;
   ev.grounding = &sources_;
   ev.recalled = &recalled_;
+  ev.causeEvidence = causeEvidence_;
   const orch::ClaimScan scan = orch::scanClaims(reply);
   if (scan.skippedNonEnglish) hlog::log("claims: skipped (non-English)");
   std::vector<orch::ClaimGap> gaps = orch::claimGaps(reply, scan, ev);

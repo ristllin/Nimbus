@@ -46,19 +46,29 @@ class ClaimCheck {
   // The sources a figure may come from: the turn's input block (the owner's
   // text, captions, the conversation window, fresh results) and, separately,
   // the recalled memories (a source only for what the owner reported).
+  // The input block also seeds this turn's cause evidence (L19-11): what the
+  // records the model was given say about the owner's phone/app/connection,
+  // damaged files, timeouts and the like, as orch::CauseEvidence bits.
   void setSources(const std::string& inputs, const std::string& recalled);
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
                 uint8_t flags = 0);
   // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
-  // written or updated with permanent:true, kFxVoice for reply.telegram voice:true).
+  // written or updated with permanent:true, kFxVoice for reply.telegram
+  // voice:true, kFxHealth for a read of the device's own state).
   static uint8_t toolCallFlags(const std::string& regName, const std::string& argsJson);
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.
   void noteFresh(int sourced, int unsourced);
   // The head had provider-hosted tools this turn (connectors, hosted search).
   void setHostedTools(bool on) { hosted_ = on; }
+
+  // This turn's cause evidence (L19-11): what the records the model was given
+  // (its inputs, its tool results, its health reads) say about causes, as
+  // orch::CauseEvidence bits. Apply reads it to refuse a mem_write that would
+  // store an unbacked cause as a fact.
+  uint32_t causeEvidence() const { return causeEvidence_; }
 
   nimbus::orch::TurnEffects& effects() { return fx_; }
   const nimbus::orch::TurnEffects& effects() const { return fx_; }
@@ -93,6 +103,7 @@ class ClaimCheck {
   nimbus::orch::TurnEffects fx_;
   std::string sources_;
   std::string recalled_;
+  uint32_t causeEvidence_ = 0;   // this turn's records, as CauseEvidence bits
   bool hosted_ = false;
   bool corrected_ = false;
 };

@@ -44,6 +44,7 @@ struct Rec {
   std::string awaited;
   bool cancelResult = true;
   bool memSuccess = true;
+  bool configChanges = true;   // what execConfig answers: did a stored value change?
   std::string memCode;     // the outcome code memory.write returns ("" = none)
   std::string pendingMem;
   bool lastSpawnQuiet = false;   // the quiet flag passed to the last enqueueSpawn
@@ -54,7 +55,10 @@ struct Rec {
 static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
   ApplyDeps d;
   d.ttsEnabled = tts;
-  d.execConfig = [&r](const ValidatedAction& va) { r.execed.push_back(va); };
+  d.execConfig = [&r](const ValidatedAction& va) {
+    r.execed.push_back(va);
+    return r.configChanges;   // 23 Oct: false simulates a nothing-stored action
+  };
   if (withSinks) {
     d.stageDevice = [&r](const ValidatedAction& va) { r.staged.push_back(va); };
     d.speak = [&r](const std::string& s) { r.spoken.push_back(s); };
@@ -1092,6 +1096,76 @@ static void test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused() {
   TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
 }
 
+// L19-11 (CUM-664): a mem_write that records an unbacked cause as a fact is
+// refused at apply time (19 Oct: "Roy's Telegram client had a stuck outbox" was
+// stopped only by the embedding outage). The write never reaches the store, the
+// reason is fed back for the next turn, and the ledger's failed-write effect
+// still corrects a "saved" reply. Counter-test: with the cause on record this
+// turn, the same write stores.
+static void test_mem_write_of_an_unbacked_cause_is_refused() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  agent::ClaimCheck cc;
+  cc.beginTurn();   // no records this turn: no cause evidence at all
+  ApplyState st = makeState(r);
+  st.claims = &cc;
+  bool spawned = false;
+  Turn t;
+  nimbus::orch::MemWrite w;
+  w.content = "Roy's Telegram client had a stuck outbox, so the photos arrived corrupt";
+  t.mem_write.push_back(w);
+  t.reply = "Noted.";
+  agent::applyTurn(t, "web", d, st, spawned);
+  TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());   // the write never reached the store
+  TEST_ASSERT_EQUAL(0, r.persists);
+  TEST_ASSERT_TRUE(r.pendingMem.find(
+                       "NOT stored: it states a cause this turn's records do not show") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("unbacked cause"));
+  // A "saved" reply is still corrected: the refusal left a failed write effect.
+  TEST_ASSERT_TRUE(cc.tailAfterApply("Saved.").find("(Correction: that has not been saved.)") !=
+                   std::string::npos);
+  // Counter-test: with the cause on record this turn, the same write stores.
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2);
+  agent::ClaimCheck cc2;
+  cc2.beginTurn();
+  cc2.setSources("[tg] client error: the owner's Telegram client rejected the upload\n"
+                 "the photos arrived corrupt (partial upload)\n", "");
+  ApplyState st2 = makeState(r2);
+  st2.claims = &cc2;
+  agent::applyTurn(t, "web", d2, st2, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r2.memCalls.size());
+  TEST_ASSERT_TRUE(r2.memCalls[0].find("memory.write:") == 0);
+  TEST_ASSERT_EQUAL(1, r2.persists);
+}
+
+
+// 23 Oct (lane H follow-up 02, CUM-652): a config action that changed nothing is
+// never "done". The summary reports "cfg(no change)", the ledger records a
+// failed config effect, and a "switched" reply gets the correction line (the
+// live shape: an invented config field, nothing switched, the reply said it
+// had). Counter-test: a real change backs the same reply.
+static void test_a_no_change_config_action_backs_no_switched_reply() {
+  Rec r;
+  r.configChanges = false;
+  ApplyDeps d = makeDeps(r);
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  Turn t = turnWithDevice("{\"config\":{\"ledBrightness\":40}}");
+  t.reply = "I've switched the brightness to 40 for you.";
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_TRUE(LogCapture::contains("cfg(no change)"));
+  TEST_ASSERT_TRUE(out.find("(Correction: nothing was changed this turn.)") != std::string::npos);
+  // A stored value that really changed backs the same reply.
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2);
+  agent::ClaimCheck cc2;
+  cc2.beginTurn();
+  const std::string out2 = applyChecked(r2, d2, t, cc2);
+  TEST_ASSERT_EQUAL(0, (int)out2.find("I've switched the brightness to 40 for you."));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -1135,6 +1209,8 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_every_provider_slot_applies_and_nothing_else);
   RUN_TEST(test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour);
   RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);
+  RUN_TEST(test_mem_write_of_an_unbacked_cause_is_refused);
+  RUN_TEST(test_a_no_change_config_action_backs_no_switched_reply);
   UNITY_END();
   return 0;
 }

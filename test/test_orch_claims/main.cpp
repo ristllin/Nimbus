@@ -915,6 +915,54 @@ static void test_held_out_synthetic_set() {
   TEST_ASSERT_LESS_OR_EQUAL((int)knownMisses.size(), fn);
 }
 
+
+// L19-50 (CUM-698): a correction carried into a record ("I updated the day
+// log", "corrected the entry", "adjusted the totals") is a save claim backed
+// only by a file write. A memory write or a config change backs none of it
+// (19 Oct: the reply said the day log was updated after a correction and it
+// was not). Counter-tests: "corrected" without a record near it stays backed
+// by any save, and "updated the model settings" is a change claim backed by a
+// config change.
+static void test_a_correction_of_the_record_needs_a_files_effect() {
+  const char* replies[] = {
+      "I updated the day log with the new time.",
+      "I corrected the entry for the dentist visit.",
+      "I adjusted the totals after recounting.",
+      "The day log has been updated.",
+      "I amended the ledger with the refund.",
+  };
+  TurnEffects none, mem, file, cfg;
+  mem.add(FxKind::MemWrite, true);
+  file.add(FxKind::FileWrite, true);
+  cfg.add(FxKind::Config, true);
+  for (const char* r : replies) {
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, none), ClaimClass::Saved), r);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, mem), ClaimClass::Saved), r);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, cfg), ClaimClass::Saved), r);
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, file), ClaimClass::Saved), r);
+  }
+  // Without a record near, "corrected" is any save; "updated the settings" is a change.
+  TEST_ASSERT_FALSE(gapOf(gapsFor("I corrected it for you.", mem), ClaimClass::Saved));
+  TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the model settings for you.", cfg), ClaimClass::Changed));
+}
+
+// 23 Oct (lane H follow-up 02, CUM-652): "switched", "set" and "turned on"
+// need a setting that really changed; a no-op config effect backs none of
+// them, and neither does a memory or file write.
+static void test_switch_claims_need_a_setting_that_changed() {
+  TurnEffects noop, changed, mem;
+  noop.add(FxKind::Config, false);   // "cfg(no change)": nothing was stored
+  changed.add(FxKind::Config, true);
+  mem.add(FxKind::MemWrite, true);
+  const char* claims[] = {"I switched the model to good-fast.", "I've set the posture to dark.",
+                          "The profile is now set to focus.", "I turned on the voice replies."};
+  for (const char* c : claims) {
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(c, noop), ClaimClass::Changed), c);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(c, mem), ClaimClass::Changed), c);
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(c, changed), ClaimClass::Changed), c);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_class_has_cues_and_a_template);
@@ -926,6 +974,8 @@ int main(int, char**) {
   RUN_TEST(test_or_clause_shares_the_possibility_before_it);
   RUN_TEST(test_plain_future_exempts_actions_but_not_durability);
   RUN_TEST(test_every_cue_inside_quotes_or_code_is_not_a_claim);
+  RUN_TEST(test_a_correction_of_the_record_needs_a_files_effect);
+  RUN_TEST(test_switch_claims_need_a_setting_that_changed);
   RUN_TEST(test_non_english_reply_is_not_scanned);
   RUN_TEST(test_other_person_past_and_adjective_are_not_claims);
   RUN_TEST(test_spawn_claims_need_a_sub_agent_noun_and_respect_clause_negation);

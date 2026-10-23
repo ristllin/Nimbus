@@ -38,7 +38,11 @@ static const char* reachLine(bool telegram) {
   "times and which provider served must match the rows you read. If nothing you " \
   "read names the cause, say the cause is not recorded and name the read that " \
   "would show it. Never offer a likely cause from general knowledge of the " \
-  "device, and never mem_write an unverified cause."
+  "device, and never mem_write an unverified cause. A cause about the owner's " \
+  "phone, app or connection, or about your own subsystems, needs the same " \
+  "record behind it: without one, say what the records show and that the cause " \
+  "is not recorded - the device refuses a memory write that states an unbacked " \
+  "cause."
 
 static std::string orchRole(const std::string& devName, bool telegram) {
   return "You are " + devName +

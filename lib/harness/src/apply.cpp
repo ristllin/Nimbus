@@ -233,15 +233,17 @@ std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
       } else if (va.hasDevName) {
         devSummary += "devName(reboot-to-apply) ";
       }
-      if (d.execConfig) d.execConfig(ex);
       // Talk-to-configure knobs (posture/profile/theme/attnHoldMs) mutate the
       // main-task-owned Config/theme, so they route through the DeviceSink like
       // led/lights - the main loop applies + persists them (same pipeline as
       // the menu/web UI). NVS-only knobs above stay inline (any-task safe).
-      if (d.stageDevice &&
-          (va.hasPosture || va.hasProfile || va.hasTheme || va.hasAttnHoldMs))
-        d.stageDevice(va);
-      devSummary += "cfg ";
+      const bool stagedKnobs = va.hasPosture || va.hasProfile || va.hasTheme || va.hasAttnHoldMs;
+      const bool changed = d.execConfig ? d.execConfig(ex) : false;
+      if (d.stageDevice && stagedKnobs) d.stageDevice(va);
+      // 23 Oct: "cfg" is said only when a stored value changed (or a knob was
+      // handed to the main loop); an action that stored nothing reports "no
+      // change", and the claim check holds a "switched" reply against it.
+      devSummary += (changed || (d.stageDevice && stagedKnobs)) ? "cfg " : "cfg(no change) ";
       break;
     }
     case ActionKind::Tts:
@@ -388,6 +390,25 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       }
       if (!refuseWrites)
         for (const auto& w : t.mem_write) {
+          // L19-11 (CUM-664): never store an unbacked cause as a fact. A write
+          // whose content states a cause this turn's records do not show (a
+          // guess about the owner's phone, app or connection, a damaged file, a
+          // subsystem "working") is refused at apply time, logged and fed back
+          // (19 Oct: "Roy's Telegram client had a stuck outbox" was stopped only
+          // by the embedding outage).
+          std::string unbacked;
+          if (st.claims && nimbus::orch::unbackedCause(w.content, st.claims->causeEvidence(), &unbacked)) {
+            hlog::logf("orchestrator: mem_write refused - unbacked cause: %s", memExcerpt(unbacked).c_str());
+            st.memRefused++;
+            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite, true,
+                                           "refused: that cause is not on record this turn", 0);
+            if (st.pendingMemResults)
+              *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
+                                       "\" -> NOT stored: it states a cause this turn's records do " +
+                                       "not show (\"" + unbacked + "\"); write what the records show, or " +
+                                       "that the cause is not recorded\n";
+            continue;
+          }
           JsonDocument a;
           a["content"]    = w.content;
           a["importance"] = w.importance;

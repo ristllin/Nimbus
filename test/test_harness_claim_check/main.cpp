@@ -466,8 +466,11 @@ static void test_voice_claim_needs_a_telegram_receipt() {
   using nimbus::orch::kFxVoice;
   const std::string voiceArgs = R"({"text":"Here is your evening summary.","voice":true})";
   const uint8_t flags = ClaimCheck::toolCallFlags("reply.telegram", voiceArgs);
-  TEST_ASSERT_EQUAL_UINT8(kFxVoice, flags);
-  TEST_ASSERT_EQUAL_UINT8(0, ClaimCheck::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)(nimbus::orch::kFxTelegram | kFxVoice), flags);
+  TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxTelegram,
+                          ClaimCheck::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
+  TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxTelegram,
+                          ClaimCheck::toolCallFlags("files.send", R"({"path":"/sd/a.jpg"})"));
   TEST_ASSERT_TRUE(agent::fxKindForTool("reply.telegram") == FxKind::Send);
   const char* claims[] = {"I've sent you a voice message with the summary.", "Voice message sent.",
                           "I sent the recap to Telegram as a voice note.",
@@ -512,18 +515,26 @@ static void test_voice_claim_needs_a_telegram_receipt() {
                                                            "one failed.")).c_str());
   TEST_ASSERT_EQUAL(1, partial.effects().countFailed(FxKind::Send));
   TEST_ASSERT_TRUE(nimbus::orch::voiceDelivered(partial.effects()));
-  // A receipt for a text send never backs a voice claim; voice switched off sends text,
-  // which backs a plain "sent" but not a voice message.
+  // A receipt for a text send never backs a voice claim; voice switched off sends text.
   ClaimCheck text;
   text.beginTurn();
   text.noteTool(FxKind::Send, false, "sent to Telegram as text (message_id 5)", 0);
   TEST_ASSERT_FALSE(text.finalCheck(turnJson("Voice message sent.")).empty());
+  // 22 Oct: the switched-off send carried no receipt either, so a plain "sent" gets
+  // the queued note (it is not known to have arrived), and a voice claim the voice line.
   ClaimCheck off;
   off.beginTurn();
   off.noteTool(FxKind::Send, false, "sent to Telegram as text (voice replies are switched off, so it was not spoken)",
                flags);
-  TEST_ASSERT_EQUAL_STRING("", off.finalCheck(turnJson("I sent it to you on Telegram.")).c_str());
+  TEST_ASSERT_TRUE(off.finalCheck(turnJson("I sent it to you on Telegram."))
+                       .find("no delivery receipt") != std::string::npos);
   TEST_ASSERT_FALSE(off.finalCheck(turnJson("I sent it to you as a voice message.")).empty());
+  // A receipt makes it a delivered send again, whichever flag it started with.
+  ClaimCheck offArrived;
+  offArrived.beginTurn();
+  offArrived.noteTool(FxKind::Send, false,
+                      "sent to Telegram as text (voice replies are switched off) (message_id 5)", flags);
+  TEST_ASSERT_EQUAL_STRING("", offArrived.finalCheck(turnJson("I sent it to you on Telegram.")).c_str());
   // Precision: a send that only mentions a voice is a plain send, backed by any send.
   ClaimCheck file;
   file.beginTurn();
@@ -550,6 +561,113 @@ static void test_voice_claim_needs_a_telegram_receipt() {
                                                          "are off.")).c_str());
 }
 
+
+// ---- the cause-attribution class (L19-11, CUM-664) ----------------------------
+// The 19 Oct live shapes: three placeholder photos with everything else healthy,
+// the provider out of credit, and a replayed text burst. A cause about the
+// owner's phone, app or connection, a damaged file, or the assistant's own
+// subsystems needs a record behind it; a tool-backed cause gets no tail.
+
+// (a) the photos turn: image failures on record, everything else ok. The honest
+// reply names the failures; the blamed-client and connection-guess replies and
+// the app advice get the owner line.
+static void test_cause_claims_need_a_record_behind_them() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources("[photo] IMG_001.jpg (not read: placeholder image, could not be described)\n"
+                "[photo] IMG_002.jpg (not read: placeholder image, could not be described)\n"
+                "[photo] IMG_003.jpg (not read: placeholder image, could not be described)\n"
+                "system_health: all ok\n", "");
+  const char* honest = "I could not read any of the three photos; the device records no "
+                       "reason beyond the failed reads themselves.";
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(honest).c_str());
+  const char* blames[] = {
+      "Your Telegram client is re-sending them corrupt, so they arrive damaged.",
+      "It's probably your connection dropping the uploads.",
+      "Restart the app and send them again.",
+      "Reinstall Telegram and the photos will come through.",
+  };
+  for (const char* reply : blames) {
+    const std::string tail = cc.tailAfterApply(reply);
+    TEST_ASSERT_TRUE_MESSAGE(
+        tail.find("no record of a problem with your phone, app or connection") != std::string::npos,
+        reply);
+  }
+  // The same causes with a record behind them get no tail: a real client error
+  // on the owner's side, a refused connection, a corrupt upload (counter-test).
+  ClaimCheck backed;
+  backed.beginTurn();
+  backed.setSources("[tg] client error: the owner's Telegram client rejected the upload\n"
+                    "connection refused while fetching the photo\n"
+                    "the file arrived corrupt (partial upload)\n", "");
+  for (const char* reply : blames)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", backed.tailAfterApply(reply).c_str(), reply);
+}
+
+// (b) the provider's own billing label names the refusal once.
+static void test_a_billed_refusal_names_the_provider_once() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources("[photo] IMG_001.jpg (not read: provider error insufficient_quota, billing)\n", "");
+  const std::string tail = cc.tailAfterApply(
+      "The photos could not be read: the provider is out of credit until the "
+      "balance is topped up.");
+  TEST_ASSERT_EQUAL_STRING("", tail.c_str());
+  // The billing record does not license a phone diagnosis.
+  TEST_ASSERT_TRUE(cc.tailAfterApply("Your phone is dropping the uploads.")
+                       .find("no record of a problem with your phone") != std::string::npos);
+}
+
+// (c) a replayed text burst is the device's own repeat, never the sender's.
+static void test_a_replayed_burst_is_not_blamed_on_the_sender() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources("[inbox] \"tgOffsetSaved\":false - the offset write is owed\n"
+                "[inbox] redelivered 3 messages from the last poll\n", "");
+  const std::string tail = cc.tailAfterApply(
+      "You keep sending the same text; it arrived four times.");
+  TEST_ASSERT_TRUE(tail.find("the device recorded repeats on its own side") != std::string::npos);
+  // With no device repeat on record, the same reply is not corrected (maybe the
+  // owner really did resend; precision first).
+  ClaimCheck none;
+  none.beginTurn();
+  none.setSources("[inbox] 3 new messages\n", "");
+  TEST_ASSERT_EQUAL_STRING("", none.tailAfterApply(
+      "You keep sending the same text; it arrived four times.").c_str());
+}
+
+// "It is working": only a health read this turn backs it, and a failure on
+// record contradicts it. kEvHealthRead comes from the ledger, never from text.
+static void test_working_claims_need_a_health_read() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxHealth,
+                         ClaimCheck::toolCallFlags("device.status", "{}"));
+  TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxHealth,
+                         ClaimCheck::toolCallFlags("system.health", "{}"));
+  const char* works = "My vision path is working fine now.";
+  // Nothing was read: the unchecked line.
+  TEST_ASSERT_TRUE(cc.tailAfterApply(works).find(
+                       "nothing was checked this turn to confirm that it is working") != std::string::npos);
+  // A health read this turn, no failure anywhere: backed.
+  cc.noteTool(FxKind::Read, false, "system.health: every subsystem ok", nimbus::orch::kFxHealth);
+  TEST_ASSERT_EQUAL_UINT32(nimbus::orch::kEvHealthRead, cc.causeEvidence());
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(works).c_str());
+  // A photo failure on record contradicts the working claim.
+  ClaimCheck failed;
+  failed.beginTurn();
+  failed.setSources("[photo] IMG_001.jpg (not read)\n", "");
+  failed.noteTool(FxKind::Read, false, "system.health: every subsystem ok", nimbus::orch::kFxHealth);
+  TEST_ASSERT_TRUE(failed.tailAfterApply(works).find(
+                       "the device recorded a failure there, so it is not confirmed working") !=
+                   std::string::npos);
+  // A health line in the input text alone backs nothing (kFxHealth is the ledger's).
+  ClaimCheck textOnly;
+  textOnly.beginTurn();
+  textOnly.setSources("system_health: all ok\n", "");
+  TEST_ASSERT_EQUAL_UINT32(0, textOnly.causeEvidence());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_consistent_replies_need_no_correction);
@@ -570,5 +688,9 @@ int main(int, char**) {
   RUN_TEST(test_round_forced_final_gets_the_line_and_no_extra_round);
   RUN_TEST(test_round_consistent_reply_and_spawn_claims_cost_no_claim_round);
   RUN_TEST(test_a_write_that_does_not_land_under_a_saved_reply_gets_one_corrected_reply);
+  RUN_TEST(test_cause_claims_need_a_record_behind_them);
+  RUN_TEST(test_a_billed_refusal_names_the_provider_once);
+  RUN_TEST(test_a_replayed_burst_is_not_blamed_on_the_sender);
+  RUN_TEST(test_working_claims_need_a_health_read);
   return UNITY_END();
 }

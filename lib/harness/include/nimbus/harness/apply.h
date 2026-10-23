@@ -27,10 +27,14 @@ enum class ScratchOutcome : uint8_t { Applied = 0, AppliedRamOnly, Skipped };
 struct ApplyDeps {
   // Device-action execution (no policy inside):
   //   execConfig: apply the inline NVS knobs still flagged on the (already
-  //   policy-stripped) action + live sfx refresh. stageDevice: hand a validated
-  //   action to the main loop via the DeviceSink (led/lights/reboot + the
-  //   posture/profile/theme/attnHold config knobs).
-  std::function<void(const nimbus::orch::ValidatedAction&)> execConfig;
+  //   policy-stripped) action + live sfx refresh. Returns whether a stored
+  //   value CHANGED (before != after): false is a no-op action (23 Oct: a
+  //   model invented a config field, nothing switched, the reply said it had)
+  //   and the device action then reports "no change", so the claim ledger backs
+  //   no "switched" reply. stageDevice: hand a validated action to the main
+  //   loop via the DeviceSink (led/lights/reboot + the posture/profile/theme/
+  //   attnHold config knobs).
+  std::function<bool(const nimbus::orch::ValidatedAction&)> execConfig;
   std::function<void(const nimbus::orch::ValidatedAction&)> stageDevice;  // null => (noop) paths
   std::function<void(const std::string& text)> speak;                    // null => tts(no-sink)
   bool ttsEnabled = false;

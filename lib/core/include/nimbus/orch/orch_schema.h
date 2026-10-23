@@ -36,10 +36,13 @@ namespace orch {
   "Text to send the owner now; empty string if none. Say only what actually " \
   "happened this turn and only what you actually saw: a claim that something was " \
   "saved, written, started, sent, spoken, scheduled, pinned or changed, that it " \
-  "survives a restart, that you checked live data, or that a figure came from a " \
-  "source (a label, a receipt, the owner's watch) needs a tool result, a field of " \
-  "this reply or a source text this turn that shows it; quote the real id. If a " \
-  "step only drafted, failed or was refused, say exactly that. Writing 'sent' or " \
+  "survives a restart, that you checked live data, that a figure came from a " \
+  "source (a label, a receipt, the owner's watch), or that something caused a " \
+  "failure - the owner's phone, app or connection, a damaged file, one of your " \
+  "own subsystems - needs a tool result, a field of this reply or a source " \
+  "text this turn that shows it; quote the real id. If a " \
+  "step only drafted, failed or was refused, say exactly that; if nothing you " \
+  "read names the cause, say the cause is not recorded. Writing 'sent' or " \
   "'saved' does not make it so. The device checks each claim against this turn's " \
   "recorded effects and sources and corrects the reply when they disagree. Never " \
   "invent ids, links, or successes."
