@@ -190,6 +190,16 @@ std::string replaceBreaks(const std::string& t, const char* sep) {
 std::string wholeRow(const EpisodicMessage& m) {
   std::string line = std::string("- ") + roleOf(m) + ": " + replaceBreaks(m.text, "\n  ");
   while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) line.pop_back();
+  // F1 (lane I): an assistant row that used or had skills attached carries the
+  // skills: tag; render it as the suffix the model can answer "did you use the
+  // skill for that?" from. Unknown tags on other roles are ignored. The ids
+  // join with '.' inside the tag (a comma would read as the next tag item).
+  const std::string sk = tagValue(m.tags, kSkillsTag);
+  if (!sk.empty()) {
+    std::string joined;
+    for (const auto& id : splitRefs(sk)) joined += (joined.empty() ? "" : ", ") + id;
+    if (!joined.empty()) line += " (skills: " + joined + ")";
+  }
   line += '\n';
   return line;
 }

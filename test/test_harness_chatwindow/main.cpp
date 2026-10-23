@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/harness/conversation.h"
+#include "nimbus/harness/dream.h"   // buildConversationWindow - the legacy window (skills: suffix)
 #include "nimbus/harness/jobs.h"   // kJobDeliveryTag / isJobDelivery
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"       // capSummary / buildCompactInputs (L19-27)
@@ -273,8 +274,32 @@ std::string hex16(int i) {
 
 // One exchange is one user half and one assistant half: the reply and the
 // question it asked join; a spoken line counts only when nothing was written.
-static void test_hist_turn_is_the_unit() {
+// The skills: tag a turn stamps on its assistant rows renders once, in both
+// histories, as " (skills: <ids>)" - the honesty trail lane I (F1) adds, so a
+// later turn can answer "did you use the skill for that?" from the row.
+static void test_hist_skills_tag_renders_once() {
   HistChat c;
+  const std::string t1 = c.user("log this lunch");
+  c.reply(t1, "Logged: 600-700 kcal.", "reply", "fx:read,skills:meal-log");
+  const std::string t2 = c.user("did you use the skill for that?");
+  c.reply(t2, "Yes, meal-log.", "reply", "fx:read,skills:meal-log.meal-photo");
+  // histV2: the suffix rides the assistant half, ids in order, deduped, once.
+  const auto turns = c.turns();
+  TEST_ASSERT_EQUAL(2, (int)turns.size());
+  TEST_ASSERT_TRUE(turns[0].assistant.find(" (skills: meal-log)") != std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)count(turns[0].assistant, "(skills:"));
+  TEST_ASSERT_TRUE(turns[1].assistant.find(" (skills: meal-log, meal-photo)") != std::string::npos);
+  // The legacy window renders the same suffix on the assistant row.
+  const std::string w = agent::dream::buildConversationWindow(c.newestFirst(), 8192);
+  TEST_ASSERT_TRUE(w.find("Logged: 600-700 kcal. (skills: meal-log)") != std::string::npos);
+  // A row without the tag renders unchanged.
+  const std::string t3 = c.user("thanks");
+  c.reply(t3, "Any time.");
+  TEST_ASSERT_TRUE(c.block().find("(skills: meal-log)") != std::string::npos);
+  TEST_ASSERT_TRUE(c.block().find("Any time. (skills:") == std::string::npos);
+}
+
+static void test_hist_turn_is_the_unit() {  HistChat c;
   const std::string t1 = c.user("plan my Saturday");
   c.reply(t1, "Market at 9, then the hike.");
   c.reply(t1, "Want me to set a reminder?", "ask");
@@ -717,6 +742,7 @@ int main(int, char**) {
   RUN_TEST(test_job_delivery_rows_never_enter_a_conversation_read);
   RUN_TEST(test_boundary_tag_matches_whole_item_only);
   RUN_TEST(test_hist_turn_is_the_unit);
+  RUN_TEST(test_hist_skills_tag_renders_once);
   RUN_TEST(test_hist_photo_and_voice_render_once);
   RUN_TEST(test_hist_older_rows_dedupe);
   RUN_TEST(test_hist_inflight_media_excluded_every_album_size);

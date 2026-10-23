@@ -67,6 +67,7 @@ extern const char kAttTag[];       // "att:" + blob refs joined by '.', on the u
 extern const char kSrcTag[];       // "src:" + source key (user row; a trigger row's source)
 extern const char kSentTag[];      // "sent:" + unix seconds the sender sent the item
 extern const char kOutTag[];       // "out:" + reply | ask | tts, on an assistant row
+extern const char kSkillsTag[];   // "skills:" + ids joined by ',', on an assistant row (F1 honesty trail)
 extern const char kTriggerTag[];   // "ev:trigger" - a seedless turn's user half
 
 // The value of the first comma-list item starting with `key` ("" if none).

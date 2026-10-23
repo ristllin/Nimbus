@@ -15,6 +15,7 @@
 #include "nimbus/harness/jobs.h"        // JobEngine (fresh results + keyFromTag)
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
 #include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
+#include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
 #include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
 #include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class
@@ -205,6 +206,17 @@ class TurnEngine {
     // capsule so the model can PULL a playbook with skill.get. A skill the
     // per-turn context never NAMES is a skill the model will never reach for.
     std::function<std::string()> skillsIndex;
+    // F1 attach (lane I): the skills that ride this chat's turns. picksFor(chat)
+    // returns the pinned + sticky picks (the device's RAM AttachTable over its
+    // SkillStore); body(id) returns the text that runs (the approved version).
+    // The engine renders the [ACTIVE SKILLS] block (portable skillsAttachText)
+    // into the per-turn INPUT - never the static prompt, whose bytes must not
+    // change with a read (the provider cache keeps working).
+    std::function<std::vector<AttachPick>(const std::string& chatId)> skillsPicks;
+    std::function<std::string(const std::string& id)> skillBody;
+    // The engine calls this after a head-loop skill.get succeeded, with the
+    // chat the turn runs in: the device notes (chat, id) in its attach table.
+    std::function<void(const std::string& chat, const std::string& id)> skillUsed;
     // Model choice list per provider for the [AVAILABLE MODELS] block. MUST be the
     // same derivation the spawn validator accepts (device: the shared
     // nimbus::orch::effectiveModelChoices over the harvested list - CUM-486), so
@@ -469,7 +481,7 @@ class TurnEngine {
   // salvaged text claims sub-agents: the ledger line and the head's note, as
   // apply gives a promise without a spawn.
   void noteUnappliedSpawnClaim(const std::string& chatId);
-  std::string buildDynamicContext();
+  std::string buildDynamicContext(const std::string& chatId);
   // modelsTool: the head can call models.list this turn, so [AVAILABLE MODELS] is
   // the one pointer line instead of the per-provider lists.
   std::string buildStableCatalogs(bool modelsTool = false);
@@ -505,6 +517,12 @@ class TurnEngine {
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
+  // F1 (lane I): this turn's skills - what buildDynamicContext attached (the
+  // picks) and what a head skill.get read. The ids join the assistant row's
+  // skills: tag, so a later turn answers "did you use the skill?" from the row.
+  std::vector<AttachPick> attachPicks_;
+  std::vector<std::string> skillsUsed_;
+  void noteSkillUsed(const std::string& id);   // dedup, at most 4 ids
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
   struct HeldNotice {
     std::string text;

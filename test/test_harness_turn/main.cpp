@@ -90,7 +90,8 @@ struct Rig {
   std::vector<Attempt> attempts;
   std::vector<orch::HeadToolResult> toolResults;
   std::vector<std::string> finalChecks;   // what HeadTools.cfg.validateFinal said (checkFinal)
-  std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant
+  std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
+  std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
 
   std::vector<std::pair<std::string, std::string>> delivered;  // chat, text
@@ -137,6 +138,13 @@ struct Rig {
   std::function<std::string(const std::string&)> modelChoicesFn;
   std::string modelNotice;   // lane F2: the pending one-time model-list notice (taken once)
   int journalGcs = 0;
+  // F1 (lane I): the rig's attach surface - a real portable AttachTable over
+  // the stored bodies below, so a skill.get in one turn attaches on the next.
+  agent::AttachTable attachTable;
+  std::map<std::string, std::string> skillBodies;   // id -> the approved body that runs
+  std::vector<std::pair<std::string, std::string>> skillNotes;   // (chat, id) the engine reported
+  std::string dispatchTool = "memory_search";   // the tool a fabricDispatch call names
+  std::string dispatchArgs = "{\"query\":\"x\"}";   // its arguments
 
   struct DebugCap {
     std::string host, instructions, inputs, rawOut;
@@ -219,6 +227,34 @@ struct Rig {
     d.mcpDispatch = [this](const std::string& req, const nimbus::orch::Principal&) {
       mcpRequests.push_back(req);
       return mcpResponse;
+    };
+    // F1 (lane I): the attach deps the device wires over its SkillStore. The
+    // rig uses the REAL portable pieces (AttachTable + selectAttach) so the
+    // engine's [ACTIVE SKILLS] placement is tested against the true picks.
+    d.skillsPicks = [this](const std::string& chat) {
+      std::vector<agent::SkillMeta> metas;
+      for (const auto& kv : skillBodies) {
+        agent::SkillMeta m;
+        m.id = kv.first;
+        m.title = "T " + kv.first;
+        m.desc = "read BEFORE doing " + kv.first;
+        m.version = "1";
+        m.source = "sd";
+        m.origin = "user";
+        m.inject = "spawn";
+        m.rev = 3;
+        m.approved = true;
+        metas.push_back(std::move(m));
+      }
+      return agent::selectAttach(attachTable.stickyFor(chat), metas);
+    };
+    d.skillBody = [this](const std::string& id) {
+      auto it = skillBodies.find(id);
+      return it == skillBodies.end() ? std::string() : it->second;
+    };
+    d.skillUsed = [this](const std::string& chat, const std::string& id) {
+      skillNotes.push_back({chat, id});
+      attachTable.noteUsed(chat, id, plat.ms);
     };
     d.connectorsCatalog = [] { return std::string("## PROVIDERS & CONNECTORS\n"); };
     // W15: the rig advertises the skills index the way the device does
@@ -330,6 +366,7 @@ struct Rig {
   void wireLaneL(TurnEngine::Deps& d, bool withSubFabric) {
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       assistantRows.push_back({c, t});
+      assistantRowTags.push_back(eng ? eng->assistantRowTags() : std::string());
     };
     if (!withSubFabric) return;
     d.apply.enqueueSpawn = [this](const orch::Spawn& sp, const std::string& chat, bool quiet) {
@@ -390,8 +427,8 @@ struct Rig {
     for (int i = 0; i < fabricDispatch && ht.dispatch; ++i) {
       orch::HeadToolCall c;
       c.id = "t" + std::to_string(i);
-      c.name = "memory_search";
-      c.argsJson = "{\"query\":\"x\"}";
+      c.name = dispatchTool;
+      c.argsJson = dispatchArgs;
       toolResults.push_back(ht.dispatch(c));
     }
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
@@ -4054,6 +4091,66 @@ static void test_model_change_during_the_turn_never_relabels_it() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", r.hookEnds.back().model.c_str());
 }
 
+// ---- lane I: the attach block rides the per-turn INPUT, never the prompt ------
+
+// T4: turn 1 reads a skill with skill_get; turns 2 and 3 in the same chat carry
+// exactly one [ACTIVE SKILLS] block in the per-turn INPUT, the static
+// instructions stay byte-identical to a no-skill rig's, and every turn's
+// assistant row carries the skills: tag the history renders as " (skills: ...)".
+static void test_turn_rig_attach_and_prefix_stability() {
+  Rig withSkill;
+  withSkill.cfg.midFail = true;   // the device default: turns run on the tool-loop fabric
+  withSkill.specs.push_back(orch::ToolRegistry::Spec{"skill.get", "read a skill by id", "{}"});
+  withSkill.skillBodies["meal-photo-science"] = "Estimate every meal photo with a kcal range.";
+  withSkill.dispatchTool = "skill.get";
+  withSkill.dispatchArgs = "{\"id\":\"meal-photo-science\"}";
+  withSkill.fabricDispatch = 1;
+  withSkill.fabricOut = "{\"reply\":\"logged with a range\",\"memory\":\"\",\"ask\":\"\"}";
+  withSkill.eng->handleMessage("log this photo", "Omar", "web");
+  TEST_ASSERT_EQUAL(1, (int)withSkill.skillNotes.size());
+  TEST_ASSERT_EQUAL_STRING("web", withSkill.skillNotes[0].first.c_str());
+  TEST_ASSERT_EQUAL_STRING("meal-photo-science", withSkill.skillNotes[0].second.c_str());
+
+  Rig plain;   // the same three turns with no skill anywhere: the reference bytes
+  plain.cfg.midFail = true;
+  plain.specs.push_back(orch::ToolRegistry::Spec{"skill.get", "read a skill by id", "{}"});
+  plain.eng->handleMessage("log this photo", "Omar", "web");
+  plain.eng->handleMessage("and this one", "Omar", "web");
+  plain.eng->handleMessage("did you use the skill for that?", "Omar", "web");
+
+  withSkill.eng->handleMessage("and this one", "Omar", "web");
+  withSkill.eng->handleMessage("did you use the skill for that?", "Omar", "web");
+
+  // Turn 1: nothing was attached when the turn began, so no block; turns 2 and 3:
+  // exactly one block each.
+  TEST_ASSERT_EQUAL(3, (int)withSkill.debug.size());
+  TEST_ASSERT_TRUE(withSkill.debug[0].inputs.find("[ACTIVE SKILLS]") == std::string::npos);
+  for (int i = 1; i < 3; ++i) {
+    const size_t at = withSkill.debug[i].inputs.find("[ACTIVE SKILLS]");
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "turn 2/3 carries the block");
+    TEST_ASSERT_TRUE(withSkill.debug[i].inputs.find("[ACTIVE SKILLS]", at + 1) ==
+                     std::string::npos);
+  }
+  // The attached section names the skill, its revision and its body.
+  TEST_ASSERT_TRUE(withSkill.debug[1].inputs.find(
+                       "[SKILL meal-photo-science rev 3 - approved") != std::string::npos);
+  TEST_ASSERT_TRUE(withSkill.debug[1].inputs.find("Estimate every meal photo with a kcal range.") !=
+                   std::string::npos);
+  // The static prompt never changes with a skill read - byte-identical to the
+  // no-skill rig's, and the block never rides it.
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_EQUAL_STRING(plain.debug[i].instructions.c_str(),
+                             withSkill.debug[i].instructions.c_str());
+  }
+  TEST_ASSERT_TRUE(withSkill.debug[1].instructions.find("[ACTIVE SKILLS]") == std::string::npos);
+  // The honesty trail: every assistant row of turns 1-3 carries the skills tag
+  // (turn 1 fetched it; 2 and 3 had it attached).
+  TEST_ASSERT_EQUAL(3, (int)withSkill.assistantRows.size());
+  for (const auto& tags : withSkill.assistantRowTags)
+    TEST_ASSERT_TRUE_MESSAGE(tags.find("skills:meal-photo-science") != std::string::npos,
+                             tags.c_str());
+}
+
 // Lane K's park on the non-fabric paths (PG2), one group so main stays under the
 // length ceiling.
 static void runBillingParkTests() {
@@ -4370,6 +4467,7 @@ static void runFirstHalf() {
   RUN_TEST(test_lane_l_recovered_actions_apply_only_on_clean_owner_turns);
   RUN_TEST(test_lane_l_a_gated_recovered_spawn_is_reported);
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
+  RUN_TEST(test_turn_rig_attach_and_prefix_stability);
   RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
   RUN_TEST(test_pg5_custom_head_saved_claim_delivers_one_reply);
   RUN_TEST(test_pg5_custom_head_durability_claim_follows_the_flash_save);

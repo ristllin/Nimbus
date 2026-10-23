@@ -63,6 +63,7 @@ const char kAttTag[] = "att:";
 const char kSrcTag[] = "src:";
 const char kSentTag[] = "sent:";
 const char kOutTag[] = "out:";
+const char kSkillsTag[] = "skills:";
 const char kTriggerTag[] = "ev:trigger";
 const char kHistoryHeader[] =
     "\n## RECENT CONVERSATION (this chat, oldest first, one exchange per turn; the current "
@@ -263,6 +264,7 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
   std::string replies, asks, spoken;
   std::vector<std::string> kinds;
   bool tagged = false;
+  std::vector<std::string> skillsIds;   // F1 (lane I): the ids this turn used or had attached
   for (const EpisodicMessage* m : b.asst) {
     const std::string out = tagValue(m->tags, kOutTag);
     std::string& into = out == "ask" ? asks : out == "tts" ? spoken : replies;
@@ -270,11 +272,22 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
     if (!tagValue(m->tags, "fx:").empty()) tagged = true;
     addDid(kinds, m->tags);
     if (m->tsHours > replyHours) replyHours = m->tsHours;
+    // The turn stamps every assistant row with the same skills: tag; render it
+    // once, in order, deduped (a, b). The ids join with '.' inside the tag
+    // (a comma would read as the next tag item).
+    for (const auto& id : splitRefs(tagValue(m->tags, kSkillsTag)))
+      if (std::find(skillsIds.begin(), skillsIds.end(), id) == skillsIds.end())
+        skillsIds.push_back(id);
   }
   did = tagged ? didText(kinds) : std::string();
   std::string text = replies;
   if (!asks.empty()) text += (text.empty() ? "" : "\n\n") + asks;
   if (text.empty()) text = spoken;   // a spoken line counts only when nothing was written
+  if (!skillsIds.empty() && !text.empty()) {
+    std::string joined;
+    for (const auto& id : skillsIds) joined += (joined.empty() ? "" : ", ") + id;
+    text += " (skills: " + joined + ")";
+  }
   return text;
 }
 

@@ -599,8 +599,18 @@ void TurnEngine::noteUnappliedSpawnClaim(const std::string& chatId) {
                                     "running for them");
 }
 
-std::string TurnEngine::buildDynamicContext() {
+std::string TurnEngine::buildDynamicContext(const std::string& chatId) {
   std::string ctx;
+  // F1 (lane I): the approved skills attached to THIS chat (pinned context
+  // skills, plus what it read) ride the per-turn INPUT, never the static
+  // prompt - the static block must stay byte-identical across turns that
+  // differ only in a skill read, or every read would drop the provider cache.
+  // The picks join this turn's skills: row tag (the honesty trail).
+  attachPicks_ = d_.skillsPicks ? d_.skillsPicks(chatId) : std::vector<AttachPick>{};
+  if (!attachPicks_.empty() && d_.skillBody) {
+    ctx += agent::skillsAttachText(attachPicks_,
+                                   [this](const std::string& id) { return d_.skillBody(id); });
+  }
   // A provider fallback from the previous turn, surfaced once (mention only if
   // relevant/asked), labelled with whose turn it was and how long ago so this turn
   // never reads it as its own switch. Cleared after it is handed to the model.
@@ -806,6 +816,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // at all in Full posture. Offline on destruction frees the arc (also on error
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
+  // F1 (lane I): this turn's skills start from what buildDynamicContext
+  // attached (buildDynamicContext runs just before runTurn); a mid-loop
+  // skill.get adds its id through noteSkillUsed.
+  skillsUsed_.clear();
+  for (const auto& p : attachPicks_) noteSkillUsed(p.id);
   turnTelegram_ = telegram;   // CUM-523: the one sample every Telegram decision reads
   // files.send needs an allowlisted chat: a Telegram turn's own answer may come from
   // public mode, so it also asks for no chat (""); any other turn's answer already
@@ -1195,6 +1210,31 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
             orch::toolTaint(regName) == orch::Taint::External)
           externalContentSeen_ = true;
         return inner(call);
+      };
+    }
+    // Lane I: a successful head skill.get names its id - the device notes the
+    // (chat, id) pair in its RAM attach table, and the id joins this turn's
+    // skills: row tag. Recording here (not inside the registry handler) keeps
+    // the rule in the portable engine, host-tested, and safe from a provider
+    // that sanitizes the tool name (regName is resolved through the map).
+    {
+      auto inner = std::move(headTools.dispatch);
+      headTools.dispatch = [this, inner, nameMap](const orch::HeadToolCall& call)
+                               -> orch::HeadToolResult {
+        const orch::HeadToolResult r = inner(call);
+        auto it = nameMap->find(call.name);
+        const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
+        if (regName != "skill.get" || r.isError || r.output.empty()) return r;
+        std::string id;
+        {
+          JsonDocument a;
+          if (deserializeJson(a, call.argsJson) == ArduinoJson::DeserializationError::Ok)
+            id = std::string(a["id"] | "");
+        }
+        if (id.empty()) return r;
+        noteSkillUsed(id);
+        if (d_.skillUsed) d_.skillUsed(curChat_, id);
+        return r;
       };
     }
     // The final-answer checks share ONE correction round (orch::chainFinalChecks):
@@ -1924,7 +1964,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   const std::string ownerRaw = d_.jobs->ownerResultsText();
   std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
-  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext(chatId) +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
     "running - see [ACTIVE SESSIONS]). There is no new user message. "
     "Synthesize their results for the owner in reply, and fold anything worth keeping "
@@ -2027,7 +2067,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
       loopHint += " reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram"
                   " chat, never for answering this one.";
   }
-  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext(chatId) +
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
@@ -2106,10 +2146,16 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "when you set it:\n\n"
     : quietOk
       // A quiet loop (the dream) succeeds by saying nothing: telling it to "reply to
-      // the owner" contradicted its own instructions (lane M).
+      // the owner" contradicted its own instructions (lane M). The 22 Oct amendment
+      // (SILENT-ROUTINE-COST) makes the two cases explicit: when silence is right,
+      // and when a short reply is expected.
       ? "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
-        "There is no new owner message. Do the task now; reply ONLY if the owner must see "
-        "something - an empty reply sends nothing.\n\n"
+        "There is no new owner message. Do the task now. Silence is right when the owner "
+        "needs nothing: the task found nothing worth telling them, or it did its upkeep "
+        "with nothing to change - then reply with nothing at all and the run stays "
+        "quiet. If the task DID find something the owner must see or act on, reply "
+        "with one short line that says what it is and, if you changed anything, what "
+        "you did.\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
         "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
@@ -2124,7 +2170,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
           ? "\n\n(Your reply is delivered to " + std::string(deliveryPlace(target)) +
                 ". Do not send a second copy over another messaging channel.)"
           : std::string();
-  std::string inputs = takePendingMemResults(target) + takeSpawnNotes(target) + buildDynamicContext() +
+  std::string inputs = takePendingMemResults(target) + takeSpawnNotes(target) + buildDynamicContext(target) +
                        preamble + prompt + where;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
   dreamTurn_ = dream::isReserved(loopId);
@@ -2139,6 +2185,18 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   else
     setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   o.ok = runTurn(inputs, target, prompt, telegram);
+  // 22 Oct amendment (SILENT-ROUTINE-COST): a quiet routine that ends silent
+  // records WHY it stayed silent - the run still spent its provider rounds, and
+  // without a row the spend reads as a lost turn. The still-pending trigger row
+  // (nothing flushed it: no reply was captured) lands now, tagged with the
+  // quiet reason, so the fire leaves a trace in the chat's history.
+  if (quietOk && triggerPending_ && lastReply_.find_first_not_of(" \t\r\n") == std::string::npos) {
+    triggerTags_ += ",silent:quiet-routine";
+    hlog::logf("loop: %s stayed silent (quiet routine, empty reply) in=%u out=%u",
+               loopId.c_str(), (unsigned)lastTurnUsage_.promptTokens,
+               (unsigned)lastTurnUsage_.completionTokens);
+    flushTrigger(target);
+  }
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
@@ -2324,16 +2382,6 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
 
 // ---- histV2: the turn-structured history (conversation.h) --------------------
 
-bool TurnEngine::histV2On() const {
-  return d_.histV2 && d_.histV2() && d_.historyRows && d_.captureUserRow;
-}
-
-std::string TurnEngine::assistantRowTags() const {
-  std::string tags = claims_.effects().fxTag();
-  if (!outKind_.empty()) tags += std::string(",") + kOutTag + outKind_;
-  return tags;
-}
-
 namespace {
 // A routine or loop id inside a tag: id characters only, bounded.
 std::string tagSafe(const std::string& v) {
@@ -2345,6 +2393,38 @@ std::string tagSafe(const std::string& v) {
   }
   return o;
 }
+}  // namespace
+
+bool TurnEngine::histV2On() const {
+  return d_.histV2 && d_.histV2() && d_.historyRows && d_.captureUserRow;
+}
+
+std::string TurnEngine::assistantRowTags() const {
+  std::string tags = claims_.effects().fxTag();
+  if (!outKind_.empty()) tags += std::string(",") + kOutTag + outKind_;
+  // F1 (lane I): the ids this turn read (skill.get) or had attached, so a
+  // later turn answers "did you use the skill for that?" from the row - the
+  // renderer turns the tag into " (skills: a, b)". Ids join with '.' (the att:
+  // precedent): the tag list is comma-separated, so a comma would read as the
+  // next tag's key.
+  std::string ids;
+  for (const auto& id : skillsUsed_) {
+    const std::string s = tagSafe(id);
+    if (s.empty() || ids.size() + s.size() + 1 > 60) break;
+    ids += (ids.empty() ? "" : ".") + s;
+  }
+  if (!ids.empty()) tags += std::string(",") + kSkillsTag + ids;
+  return tags;
+}
+
+void TurnEngine::noteSkillUsed(const std::string& id) {
+  for (const auto& s : skillsUsed_)
+    if (s == id) return;
+  if (skillsUsed_.size() >= 4) return;   // the attach block carries at most 4 anyway
+  skillsUsed_.push_back(id);
+}
+
+namespace {
 
 constexpr size_t kHistoryPageRows = 24;   // one read of the chat's rows (transient)
 constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds as it is read
