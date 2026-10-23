@@ -3125,9 +3125,13 @@ $('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
 // ---- Standing rules (lane J): the list under the Directive box, plus add /
 // approve / remove. The assistant's own saves arrive as pending when the turn
 // read outside content; approving is the owner's one click here.
+let _prefsSeen='';
 function loadPrefs(){
   const box=$('prefslist'); if(!box)return;
   fetch('/api/prefs').then(jok).then(d=>{
+    const now=JSON.stringify(d);
+    if(now===_prefsSeen)return;   // the memory pane polls; an unchanged list must not re-render (a link the owner is clicking stays stable)
+    _prefsSeen=now;
     const items=d.items||[];
     if(!items.length){box.innerHTML='<span class=hint>No standing rules yet. Add one below, or ask in chat.</span>';return;}
     box.innerHTML=items.map(r=>'<div class=row style="margin:2px 0">'
@@ -3148,9 +3152,13 @@ $('prefsadd')&&($('prefsadd').onclick=()=>{
   const t=$('prefsnew').value.trim(), m=$('prefsmsg'); if(m)m.textContent='';
   if(!t){if(m)m.textContent='Type a rule first.';return;}
   const fd=new FormData();fd.append('action','add');fd.append('text',t);
-  fetch('/api/prefs',{method:'POST',body:fd}).then(jok)
-    .then(()=>{$('prefsnew').value='';loadPrefs();})
-    .catch(e=>{if(m)m.textContent=e;});
+  // The device answers with its own plain-words reason on a refusal (a number
+  // alone would not help the owner), so read it here rather than through jok.
+  fetch('/api/prefs',{method:'POST',body:fd}).then(async r=>{
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){const m=$('prefsmsg');if(m)m.textContent=j.error||('Save failed ('+r.status+').');return;}
+    $('prefsnew').value='';loadPrefs();
+  }).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='Could not reach the device - try again.';});
 });
 $('clearmem').onclick=()=>{
   uiConfirm('Erase the assistant\'s memory?\n\nYour directive is kept.',{ok:'Erase Memory',danger:true}).then(ok=>{ if(ok)
