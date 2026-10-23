@@ -2050,7 +2050,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/skill list|show <id> - see saved skills and what waits for you\n"
                         "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
                         "/skill auto on|off - may the assistant approve its own skill changes\n"
-                        "/prefs - list your standing rules; /prefs add <rule> saves one"); a5b07423 (lane J: standing owner preferences - the store, the block, the surfaces, and the em-dash ban enforced)
+                        "/prefs - list your standing rules; /prefs add <rule> saves one");
         return;
       }
       // Any other slash command: deterministic reply, never a paid LLM turn.
