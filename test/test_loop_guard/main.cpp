@@ -350,6 +350,15 @@ static void assertOpensWithLoopLock(const std::string& fn, const std::string& bo
                              (fn + ": calls " + n + " before the LoopLock").c_str());
 }
 
+// True when `body` takes a lock: "Lock" anywhere, or "lock(" that is not the tail of
+// "block("/"Block(" (the heap's largest-free-block read names its block; it takes no lock).
+static bool takesALock(const std::string& body) {
+  if (body.find("Lock") != std::string::npos) return true;
+  for (size_t at = body.find("lock("); at != std::string::npos; at = body.find("lock(", at + 1))
+    if (at == 0 || (body[at - 1] != 'b' && body[at - 1] != 'B')) return true;
+  return false;
+}
+
 static void test_every_loop_storage_call_is_bounded() {
   const std::string mainSrc = codeOnly(readSource("src/main.cpp"));
   const std::string memSrc = codeOnly(readSource("src/agent/memory_subsystem.cpp"));
@@ -368,7 +377,8 @@ static void test_every_loop_storage_call_is_bounded() {
                                                           {"episodicBackfillTick", "runBackfillSlice"},
                                                           {"runBackfillSlice", "tryLock"}};
   // Read flags only.
-  const std::set<std::string> kNoLockFns = {"sdLost", "haveSd", "nowHours", "consumeRetentionRequest"};
+  const std::set<std::string> kNoLockFns = {"sdLost", "haveSd", "nowHours", "consumeRetentionRequest",
+                                            "roomForDriverSetup"};
   // The factory erase: the owner confirmed it, the turn task is quiesced first, its
   // card work runs under its own timed tries, and the device restarts after it.
   const std::set<std::string> kFactoryErase = {"eraseAllPrivateData", "factoryEraseWouldRefuse",
@@ -397,9 +407,7 @@ static void test_every_loop_storage_call_is_bounded() {
   }
   for (const std::string& fn : kNoLockFns) {
     TEST_ASSERT_TRUE_MESSAGE(memFns.count(fn), (fn + ": no definition").c_str());
-    const std::string& body = memFns.at(fn);
-    TEST_ASSERT_TRUE_MESSAGE(body.find("Lock") == std::string::npos && body.find("lock(") == std::string::npos,
-                             (fn + ": takes a lock").c_str());
+    TEST_ASSERT_TRUE_MESSAGE(!takesALock(memFns.at(fn)), (fn + ": takes a lock").c_str());
   }
   for (const std::string& fn : kFactoryErase) TEST_ASSERT_TRUE_MESSAGE(memFns.count(fn), (fn + ": no definition").c_str());
 

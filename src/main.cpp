@@ -3137,9 +3137,8 @@ static bool stagedWorkPending() {
 // land on the card. The notice writes a history row and so may wait for the card lock,
 // which the watched main loop must never do.
 static void stagedWorkRun() {
-  if (otaupd::onPollPending()) {
-    otaupd::runOnPoll();
-  } else if (g_orchMode && agent::memory::sdOutageNoticeDue(millis())) {
+  if (otaupd::onPollPending()) otaupd::runOnPoll();
+  else if (g_orchMode && agent::memory::sdOutageNoticeDue(millis())) {
     agent::memory::sdOutageNoticeSent(millis());
     sendSdOutageNotice();
   } else if (g_orchMode && agent::memory::sdRecoveryDue()) {
