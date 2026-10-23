@@ -192,12 +192,12 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
     for (const auto& t : tools)
       if (t.name == "skill.save" || t.name == "skill_save") { canSaveSkills = true; break; }
     if (canSaveSkills)
-      out += "- You CAN save reusable skills with skill.save (admin conversations only) - but "
-             "approval is ASYNCHRONOUS: a skill you save stays INACTIVE until the owner "
-             "approves it later, so treat saving as an investment for FUTURE tasks, never a "
-             "step of the current one. Always say a saved skill awaits approval. You can "
-             "delete only skills you "
-             "authored; the owner manages theirs in the web UI.\n";
+      out += "- You CAN save reusable skills with skill.save (admin conversations only). A "
+             "skill you save is NOT in use until the owner approves it - and an edit of a "
+             "skill in use proposes a NEW revision: the approved version keeps running "
+             "until the owner approves the edit. Never say a skill or an edit is active "
+             "unless skill.list shows status approved. You can delete only skills you "
+             "authored; the owner manages theirs in the web UI or with /skill.\n";
   }
   // The claim rule itself lives once, in ORCH_D_REPLY (the device checks it).
 

@@ -572,11 +572,13 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
   grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
   grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
-  // Skill capsules (readable via skill.get; SD capsules also inject at spawn).
+  // Skill capsules (readable via skill.get; stored skills also inject at spawn).
   // Rendered in their own panel, not the availability-badged tool table.
   for (const auto& c : agent::skills::list()) {
-    std::string tag = c.source == "sd" ? "sd skill.get" : "skill.get";
-    if (c.origin == "agent") tag += c.approved ? " agent" : " agent pending";
+    std::string tag = c.builtin() ? "skill.get" : c.source + " skill.get";
+    if (!c.builtin() && c.origin == "agent")
+      tag += c.approved ? " agent" : " agent pending";
+    if (c.pendingEdit) tag += " edit pending";
     grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), tag.c_str(), false, nullptr);
   }
   // Provider-side connectors, with a "<provider> only" availability tag. The Info

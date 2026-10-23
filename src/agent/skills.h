@@ -2,84 +2,83 @@
 #include <string>
 #include <vector>
 
-// skills - on-device knowledge/instruction capsules (P7 static + v4.0.0
-// dynamic, both origins).
+#include "nimbus/harness/skill_attach.h"   // AttachTable / AttachPick
+#include "nimbus/harness/skill_store.h"   // SkillStore / SkillCaller / SkillResult
+
+// skills - the device's skills the assistant uses and can edit (lane I).
 //
-// Two sources, merged (SD wins on an id collision):
-//   1. Built-ins (architecture / deep-research / hardware / tools-guide /
-//      deliver-pdf; portable text in nimbus/harness/builtin_skills.h) - work
-//      with no SD and no WiFi; static playbooks the model pulls via skill.get.
-//      A built-in names the Telegram-only tools only on a turn offered them.
-//   2. SD capsules at /mem/skills/<id>/SKILL.md - a front-matter header
-//      (title / version / inject / created_by / created_at / approved; parser
-//      is the PORTABLE agent::parseSkillMd in lib/harness) over a markdown
-//      body. TWO writers since v4.0.0:
-//        - the OWNER via the token-gated web CRUD (src/net/web_skills.cpp);
-//        - the MODEL via the skill.save/skill.delete tools (memory_subsystem)
-//          - server-stamped created_by: agent, approved: false (INERT for
-//          spawn injection until the owner approves via web or Telegram
-//          `/skill approve <id>`), reserved built-in ids refused, capped
-//          pending queue. The model may delete ONLY agent-origin capsules;
-//          the owner may delete anything.
+// All rules live in the PORTABLE, host-tested SkillStore (lib/harness): staged
+// SKILL.next.md revisions, the owner-origin guard, the save lint, the pending
+// cap, revision counters and the self-approve switch. This adapter only binds
+// the store to the device's storage and surfaces:
+//   - the [SKILLS] index and the per-chat attach table (the engine deps);
+//   - the skill.* tool surface (memory_subsystem);
+//   - the owner surfaces: /skill commands (orchestrator) and the web routes.
 //
-// Consumption: skill.list / skill.get registry tools, the web Tools tab, and
-// PER-SPAWN INJECTION: spawnCapsule(id) is wired as the JobEngine's
-// resolveSkill, so a sub-agent spawned with a skill id gets that capsule
-// PREPENDED to its instruction (inject: spawn|both, APPROVED capsules only).
+// Files, under the store root on the ACTIVE tier (SD /mem/skills when a card is
+// mounted, else LittleFS /data/skills):
+//   <id>/SKILL.md       the live version (approved, or waiting when new)
+//   <id>/SKILL.next.md  a proposed edit of an approved skill (waiting)
+// The owner's "the assistant may approve its own skill revisions" switch is a
+// tiny file on internal flash on every tier (/data/skills_auto.txt; absent or
+// anything but "1" reads as off, so the default is off).
 //
-// Memory discipline: SD file reads go through a PSRAM staging buffer (8 KB file
-// cap; the injected capsule is further capped at 4 KB by the portable
-// composer); nothing here holds steady-state internal-SRAM.
+// Memory discipline: file reads stage through PSRAM (8 KB file cap); the RAM
+// attach table is 4 slots (~256 B); nothing here holds steady-state
+// internal-SRAM beyond that.
 namespace agent::skills {
 
-struct Capsule {
-  std::string id;
-  std::string title;
-  std::string desc;      // one line for the ambient [SKILLS] index (W15)
-  std::string version;   // "" for built-ins / headerless files
-  std::string source;    // "builtin" | "sd"
-  std::string origin;    // "builtin" | "user" | "agent"
-  bool        approved = true;   // false only for pending agent capsules
-};
+// The active tier is the SD card (store root /mem/skills).
+bool sdAvailable();
 
-// All capsules (metadata only - no bodies), built-ins + SD merged, SD-wins.
-std::vector<Capsule> list();
+// The one store over the active tier. begin() (memory_subsystem's, or the
+// first call) constructs it; safe to call from any task afterwards.
+agent::SkillStore& store();
 
-// The ambient [SKILLS] index block for the per-turn dynamic context (W15):
-// one "- id: desc" line per non-pending capsule, rendered by the portable
-// agent::skillsIndexText (host-tested bounding). "" when no capsules exist.
+// The owner's self-approve switch (D-4): "the assistant may approve its own
+// skill revisions" - when on, an attended, untainted admin save goes live and
+// the owner is told; default off.
+bool selfApproveOn();
+bool setSelfApprove(bool on);
+
+// ---- the engine's attach surface ---------------------------------------------
+// The [SKILLS] index block (the portable skillsIndexText over the store).
 std::string indexText();
+// The skills attached to one chat's turns: pinned context skills plus what the
+// chat read (the RAM AttachTable + selectAttach, both portable).
+std::vector<agent::AttachPick> picksFor(const std::string& chatId);
+// The body that runs for one attached id (the approved version, "" otherwise).
+std::string attachBody(const std::string& id);
+// A head turn read this skill in this chat (RAM only; sticky attach).
+void noteUsed(const std::string& chat, const std::string& id);
+// /clear in a chat drops its sticky skills (the CUM-511 boundary).
+void dropChat(const std::string& chat);
 
-// A capsule's full body by id ("" if unknown). SD front matter is stripped.
-std::string get(const std::string& id);
-
-// The body to inject at sub-agent spawn: APPROVED SD capsules whose front
-// matter says inject: spawn|both. Built-ins, context-only capsules and
-// PENDING agent capsules return "" (inert until the owner approves).
+// ---- the tool and web surface ------------------------------------------------
+// Built-ins and stored skills, a stored one replacing a built-in of the id.
+std::vector<agent::SkillMeta> list();
+// skill.get: the labelled body (a waiting skill is labelled not-active; "" for
+// an unknown id). `trusted` (optional) is set for an approved or built-in skill
+// - the ones that may attach. A built-in follows the turn's CUM-523 sides.
+std::string get(const std::string& id, bool* trusted = nullptr);
+// The capsule a sub-agent spawned with this skill receives ("" unless an
+// approved stored skill with inject spawn|both).
 std::string spawnCapsule(const std::string& id);
-
-// A built-in id (un-shadowable by AGENT saves - a shadowed tools-guide would be
-// a prompt-substitution attack; the OWNER may still override via the web).
-bool reservedId(const std::string& id);
-
-// Count of agent-created capsules still awaiting approval (the pending cap).
-int pendingAgentCount();
-
-// ---- CRUD (SD-gated) --------------------------------------------------------
-bool sdAvailable();                       // the SD tier is up (memory::haveSd)
-// Raw SKILL.md text for the editor ("" if no SD capsule; built-ins are not
-// editable and return "" here - the editor shows their body via get()).
+// Raw texts for the owner's editor ("" when absent).
 std::string raw(const std::string& id);
-// Validate id + parse + SERVER-STAMP origin (byAgent => created_by: agent,
-// approved: false - ALWAYS, including re-saves, so approve-then-mutate can't
-// bypass review; user saves => created_by: user, approved: true) + re-emit the
-// CANONICAL front matter (composeSkillMd - forged fields never reach disk) +
-// atomic write. False with err set on bad id / no SD / oversize / IO failure.
-bool save(const std::string& id, const std::string& md, std::string& err,
-          bool byAgent = false);
-// Flip an SD capsule to approved (owner action: web or /skill approve).
-bool approve(const std::string& id, std::string& err);
-// byAgent deletes refuse non-agent-origin capsules; owner deletes anything.
-bool remove(const std::string& id, std::string& err, bool byAgent = false);
+std::string rawNext(const std::string& id);
+// Waiting assistant skills plus proposed edits (the pending cap counts these).
+int pendingCount();
+
+// One whole-store operation under the storage lock, with the caller resolved by
+// the caller (the tool handler passes the turn's admin/scheduled/tainted facts
+// via SkillCaller; the web routes pass ownerCall()). Refusals leave the store
+// byte-identical; the result carries the plain owner words (skillResultText).
+agent::SkillResult save(const std::string& id, const std::string& md,
+                        const agent::SkillCaller& who);
+agent::SkillResult approve(const std::string& id, const agent::SkillCaller& who);
+agent::SkillResult deny(const std::string& id, const agent::SkillCaller& who);
+agent::SkillResult discard(const std::string& id, const agent::SkillCaller& who);
+agent::SkillResult remove(const std::string& id, const agent::SkillCaller& who);
 
 }  // namespace agent::skills

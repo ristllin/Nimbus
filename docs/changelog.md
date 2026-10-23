@@ -8,6 +8,31 @@ installs it when you approve ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **Skills the assistant actually uses, and can edit safely.** A skill read once
+  in a chat now stays attached to that chat's next turns (`[ACTIVE SKILLS]`), so
+  the assistant follows it on follow-ups instead of re-reading it every turn;
+  an approved skill with `inject: context` or `both` rides every turn. The
+  assistant's edits are staged: saving an approved skill proposes a revision in
+  `SKILL.next.md` and the approved version keeps running until you approve it
+  (Telegram `/skill approve <id>` or the web editor), so an edit can never
+  destroy the working skill. Every save carries a revision number; the
+  assistant never changes who wrote a skill, never deletes yours, and never
+  approves anything unless you switch on "the assistant may approve its own
+  skill changes" (`/skill auto on`, off by default). The web Skills page shows
+  each skill's one-line description, what waits for you, and the proposed edit
+  beside the live text; `/skill list`, `/skill show <id>` and `/skill delete
+  <id>` work over Telegram. History rows now say which skills a reply used, so
+  "did you use the skill for that?" is answered from the record.
+- **The food log is written where it is read.** The built-in logging playbook
+  now names one food-log file, reads the log before estimating anything logged
+  before, computes a day's total from the file's own rows, and appends a row
+  for every figure you state or correct - never a claimed update without the
+  appended row (the 19 Oct stale-ledger failure).
+- **A silent routine says why it was silent.** A routine that ends its run with
+  nothing to say leaves a record of it (its trigger row, tagged, with the
+  spend), and the scheduled-task preamble separates the two cases: when silence
+  is right, and when the owner must see one short line.
+
 - **Albums are answered once.** Several photos sent together get one reply that covers every photo, in the order sent, with the caption on the right photo. Before, each photo got its own reply, out of order, and a question sent right after an album could be answered before the last photos were looked at ("I didn't receive the third image"). A text sent right after the album joins the same reply; a voice note keeps its place among your messages.
 - **A photo is never lost to a restart.** A photo used to be marked as received before it was looked at, so a restart at that moment lost it. Now nothing is marked received until its reply is done, and a photo that keeps crashing the device is skipped after the second restart (the rest of your message is still answered) with one message asking you to send it again.
 - **Full captions.** A caption longer than 256 characters reached the assistant cut off. It now arrives whole.

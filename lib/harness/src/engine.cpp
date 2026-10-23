@@ -1216,11 +1216,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // (chat, id) pair in its RAM attach table, and the id joins this turn's
     // skills: row tag. Recording here (not inside the registry handler) keeps
     // the rule in the portable engine, host-tested, and safe from a provider
-    // that sanitizes the tool name (regName is resolved through the map).
+    // that sanitizes the tool name (regName is resolved through the map). The
+    // same wrap publishes the turn's trust facts (skillTurnTainted) to the
+    // device's skill.save handler: a save that follows outside content is
+    // never self-approved.
     {
       auto inner = std::move(headTools.dispatch);
       headTools.dispatch = [this, inner, nameMap](const orch::HeadToolCall& call)
                                -> orch::HeadToolResult {
+        const agent::SkillTurnScope scope(externalContentSeen_);
         const orch::HeadToolResult r = inner(call);
         auto it = nameMap->find(call.name);
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;

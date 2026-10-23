@@ -245,7 +245,9 @@ static void test_stale_note_never_applies_to_another_turn() {
 }
 
 // Row 58: a routine that replies leaves a trigger row ahead of its reply; a
-// routine that stays silent leaves nothing.
+// quiet routine that stays silent now leaves its trace too (22 Oct amendment,
+// SILENT-ROUTINE-COST): the still-pending trigger row lands, tagged with why the
+// run stayed silent, so the fire never reads as a lost turn.
 static void test_seedless_turn_trigger_row() {
   Rig r;
   r.eng->injectScheduledTurn("123", "check the trains", "commute", "l7", false, false, false);
@@ -258,7 +260,12 @@ static void test_seedless_turn_trigger_row() {
                            agent::tagValue(rows[0].tags, "turn:").c_str());
   r.reply = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->injectScheduledTurn("123", "only if needed", "quiet check", "l8", true, false, false);
-  TEST_ASSERT_EQUAL(2, (int)r.all("123").size());
+  auto quiet = r.all("123");
+  TEST_ASSERT_EQUAL(3, (int)quiet.size());   // the silent run leaves its row
+  TEST_ASSERT_EQUAL_STRING("[routine \"quiet check\" ran]", quiet[0].text.c_str());
+  TEST_ASSERT_TRUE(agent::hasTagItem(quiet[0].tags, agent::kTriggerTag));
+  TEST_ASSERT_TRUE_MESSAGE(agent::hasTagItem(quiet[0].tags, "silent:quiet-routine"),
+                           quiet[0].tags.c_str());   // why it stayed silent is recorded
   // The next owner turn's history shows the routine as its own exchange.
   r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("thanks", "Roy", "123");

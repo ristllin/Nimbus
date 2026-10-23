@@ -15,6 +15,7 @@
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 #include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
 #include "scenarios_store_full.h"   // a full file store, said once (storm leg g)
+#include "scenarios_skills.h"   // lane I: skills used and editable (live legs)
 
 namespace lab {
 namespace {
@@ -290,6 +291,12 @@ void scMeteringFail(LabRig& rig, Ctx& c) { turnrec::meteringFail(rig, report(c))
 void scDiagnoseFromEvidence(LabRig& rig, Ctx& c) { turnrec::diagnoseFromEvidence(rig, report(c)); }
 void scRepeatFromStorage(LabRig& rig, Ctx& c) { turnrec::repeatFromStorage(rig, report(c)); }
 void scProviderErrorReason(LabRig& rig, Ctx& c) { turnrec::providerErrorReason(rig, report(c)); }
+skillslegs::Report skillslegsReport(Ctx& c) {
+  return skillslegs::Report{[&c](bool ok, const std::string& what) { c.check(ok, what); },
+                           [&c](const std::string& what) { c.note(what); }};
+}
+void scSkillsE2E(LabRig& rig, Ctx& c) { skillslegs::e2e(rig, skillslegsReport(c)); }
+void scMealEval(LabRig& rig, Ctx& c) { skillslegs::mealEval(rig, skillslegsReport(c)); }
 
 // 12. The live ".env" regression (2026-08-13, Nimbus-4): asked how to set up
 //     GitHub so the assistant could create repos, the model walked a device
@@ -418,6 +425,8 @@ const Scenario kScenarios[] = {
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
     {"finished-jobs",  "after a restart the finished jobs ride the turn context and are not run again", scFinishedJobs, false},
     {"store-full-photos", "five photos into a full store: one short reply each, no re-explaining, no save tries", scStoreFullPhotos, false},
+    {"skills-e2e",     "a read skill attaches across turns; edits stage; the owner's skill survives; authoring lints", scSkillsE2E, false},
+    {"meal-eval",      "the food log is written where it is read: stated figures and corrections append rows", scMealEval, false},
 };
 
 }  // namespace

@@ -184,14 +184,19 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=subpane id=subpane-skills style="display:none">
 <div class=sec>
 <h2>Skills <button class=qh type=button aria-expanded=false aria-label="About skills">?</button></h2>
-<p class="hint tip">Saved instruction sets the assistant applies when it starts a matching session.</p>
+<p class="hint tip">Saved playbooks the assistant reads before a matching task and can propose edits to.</p>
 <p class=hint id=skStat>-</p>
 <div id=skList class=hint>loading&hellip;</div>
+<div class=row style="margin-top:10px"><label class=row style="gap:6px"><input type=checkbox id=skAuto> The assistant may approve its own skill changes</label></div>
 <label style="margin-top:10px">Skill ID <span class=hint>(a-z 0-9 - _ &middot; max 23 chars)</span></label>
 <div class=row><input id=skId placeholder="deep-research" style="max-width:200px"><button id=skLoad type=button>Load</button></div>
-<textarea id=skMd rows=8 spellcheck=false placeholder="---&#10;title: My skill&#10;inject: spawn&#10;---&#10;Instructions the session receives when it starts with this skill."></textarea>
+<textarea id=skMd rows=8 spellcheck=false placeholder="---&#10;title: My skill&#10;desc: WHEN to read this skill&#10;inject: spawn&#10;---&#10;Instructions the assistant follows when it reads this skill."></textarea>
+<div id=skNextWrap style="display:none;margin-top:6px">
+<label>Proposed edit <span class=hint>(the approved version above keeps running until you approve it)</span></label>
+<textarea id=skNext rows=6 spellcheck=false readonly></textarea>
+</div>
 <div class=row><button id=skSave type=button>Save</button><button id=skDel type=button style="background:#333;color:#cde">Delete</button><button class=qh type=button aria-expanded=false aria-label="About skill storage">?</button></div>
-<p class="hint tip">Skills live on the SD card at <span class=badge>/mem/skills/&lt;id&gt;/SKILL.md</span>. Front matter: <span class=badge>title</span>, optional <span class=badge>version</span> and <span class=badge>inject: spawn|context|both</span>. Only you can write skills - the assistant reads them with <span class=badge>skill.get</span> and receives them when a session names the skill.</p>
+<p class="hint tip">Skills live at <span class=badge>/mem/skills/&lt;id&gt;/SKILL.md</span> (internal flash at <span class=badge>/data/skills</span> with no card). Front matter you write: <span class=badge>title</span>, <span class=badge>desc</span> (one line saying WHEN to read it), <span class=badge>version</span>, <span class=badge>inject: spawn|context|both</span>. The assistant's saves wait for your approval; your saves are live at once.</p>
 <p class=hint id=skMsg></p>
 </div>
 <div class=sec>

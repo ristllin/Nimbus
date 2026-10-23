@@ -1203,30 +1203,39 @@ void begin() {
             },
             R"({"type":"object","properties":{"text":{"type":"string"},"chat_id":{"type":"string"},"voice":{"type":"boolean"}},"required":["text"]})");
 
-  // skills (P7) - on-device documentation capsules the model pulls on demand
-  // (architecture / hardware / tools-guide), keeping the per-turn prompt lean.
+  // skills (lane I) - task playbooks the model pulls and can edit, over the
+  // host-tested portable SkillStore (see src/agent/skills.h for the file layout).
   g_reg.add("skill.list",
-            "List the on-device playbooks/knowledge capsules you can read (id + title + "
-            "description): task recipes, how you're wired, your hardware, your tools.",
+            "List the skills (task playbooks and knowledge capsules) with their status: "
+            "approved, waiting for the owner's approval, or an edit waiting on an approved one.",
             [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               JsonDocument d;
               JsonArray arr = d.to<JsonArray>();
-              for (const auto& c : agent::skills::list()) {
+              for (const auto& m : agent::skills::list()) {
                 JsonObject o = arr.add<JsonObject>();
-                o["id"] = c.id; o["title"] = c.title;
-                if (!c.desc.empty()) o["desc"] = c.desc;
+                o["id"] = m.id; o["title"] = m.title;
+                if (!m.desc.empty()) o["desc"] = m.desc;
+                o["status"] = agent::skillStatusSlug(m.status());
+                if (!m.builtin()) {
+                  o["origin"] = m.origin;
+                  o["inject"] = m.inject;
+                  o["rev"] = m.rev;
+                }
               }
               std::string s; serializeJson(d, s);
               return nimbus::orch::ToolResult::ok(s);
             },
             R"({"type":"object","properties":{}})");
   g_reg.add("skill.get",
-            "Read a knowledge capsule by id (from skill.list) - the long-form detail about "
-            "yourself, so it needn't bloat every prompt.",
+            "Read a skill - a task playbook or knowledge capsule - by id from the [SKILLS] "
+            "index. Read the matching one BEFORE starting (or refusing) a task it covers. "
+            "Once read it stays attached to this chat's next turns ([ACTIVE SKILLS]), so do "
+            "not read it again.",
             [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               std::string id = a["id"].is<const char*>() ? std::string(a["id"].as<const char*>()) : std::string();
-              std::string body = agent::skills::get(id);
-              if (body.empty()) return nimbus::orch::ToolResult::fail("unknown skill id (call skill.list)");
+              bool trusted = false;
+              std::string body = agent::skills::get(id, &trusted);
+              if (body.empty()) return nimbus::orch::ToolResult::fail("unknown skill id (call skill_list)");
               return nimbus::orch::ToolResult::ok(body);
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
@@ -1310,17 +1319,19 @@ void begin() {
               return nimbus::orch::ToolResult::ok(out);
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
-  // v4.0.0 skills authoring: the model can WRITE its own capsules - with rails.
-  // Server-stamped created_by: agent + approved: false (INERT for spawn
-  // injection until the owner approves); reserved built-in ids refused; capped
-  // pending queue; denied in scheduled/unattended turns (PolicyResolver below).
+  // Lane I: the model edits skills through the portable SkillStore - staged
+  // revisions (an approved skill keeps running until the owner approves the
+  // edit), the save lint, the pending cap, the owner-origin guard and the
+  // self-approve switch. The description documents every front-matter key an
+  // author writes from the ONE shared table (kSkillMdKeys), so a key the composer
+  // writes can never go undocumented (the T7 drift guard).
   g_reg.add("skill.save",
-            "Save (or update) a reusable skill capsule you authored: a markdown playbook "
-            "future runs can inject into sub-agents. id: a-z0-9-_ max 23 chars. md: the "
-            "SKILL.md text (optional front matter title:/inject:). ⚠ Approval is "
-            "ASYNCHRONOUS - a skill you save is INACTIVE until the owner approves it "
-            "later (web UI or /skill approve), so save skills as an investment for FUTURE "
-            "tasks, never as a step of the CURRENT one.",
+            std::string("Save or update a skill - a task playbook stored on the device. ") +
+            "id: a-z0-9-_ max 23 chars. md: the SKILL.md text. Front matter keys you may " +
+            "write: " + agent::skillAuthorKeysDoc() + ". Saving a NEW skill waits for the " +
+            "owner's approval (it is not usable in the current task); saving an existing " +
+            "APPROVED skill proposes an EDIT - the approved version keeps running until the " +
+            "owner approves it, so an edit is never a step of the current task either.",
             [](ArduinoJson::JsonObjectConst a,
                const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
               // Same rationale as loop.create: a persistent instruction blob
@@ -1329,41 +1340,49 @@ void begin() {
               if (!who.perms().manageTenants)
                 return nimbus::orch::ToolResult::fail(
                     "only an admin's conversation can author skills");
-              if (agent::skills::pendingAgentCount() >= 4)
-                return nimbus::orch::ToolResult::fail(
-                    "4 skills are already awaiting the owner's approval - ask them to "
-                    "approve or delete some first");
               std::string id = a["id"].is<const char*>() ? a["id"].as<const char*>() : "";
               std::string md = a["md"].is<const char*>() ? a["md"].as<const char*>() : "";
-              std::string err;
-              if (!agent::skills::save(id, md, err, /*byAgent=*/true))
-                return nimbus::orch::ToolResult::fail(err);
+              const agent::SkillCaller whoCall = agent::SkillCaller::agentCall(
+                  true, orchestrator::inScheduledTurn(), agent::skillTurnTainted());
+              const agent::SkillResult r = agent::skills::save(id, md, whoCall);
+              if (!r.ok) return nimbus::orch::ToolResult::fail(r.err);
+              std::string out = agent::skillResultText(id, r);
+              if (r.outcome == agent::SkillOutcome::Created ||
+                  r.outcome == agent::SkillOutcome::Replaced ||
+                  r.outcome == agent::SkillOutcome::EditProposed)
+                out = agent::skillProposalNotice(id, r);   // plain words for the reply too
+              // The 17 Oct sibling case: a save that created a near-duplicate names the
+              // existing skill so the next save can edit it instead.
+              if (!r.similar.empty())
+                out += " A skill named '" + r.similar + "' already exists - if you meant to " +
+                       "edit it, save there instead.";
               // Owner alert (the loops pattern): direct, never left to the
-              // model's narration.
+              // model's narration. A WentLive change is told with the switch's
+              // own notice; anything else waits for the owner's decision.
               String owner = orchestrator::firstAllowedChat();
-              if (owner.length())
-                agent::telegram::send(owner,
-                    String("The assistant saved a new skill '") + id.c_str() +
-                    "' - it stays inactive until you approve it. Reply /skill approve " +
-                    id.c_str() + " to activate, or /skill deny " + id.c_str() + ".",
-                    /*block=*/false);
-              return nimbus::orch::ToolResult::ok(
-                  "skill '" + id + "' saved - PENDING the owner's approval (it cannot be "
-                  "used in the current task; once approved it works in future runs)");
+              if (owner.length()) {
+                const String notice = (r.outcome == agent::SkillOutcome::WentLive)
+                    ? String(agent::skillSelfApproveNotice(id, r.rev, r.outcome ==
+                              agent::SkillOutcome::Created).c_str())
+                    : String(agent::skillProposalNotice(id, r).c_str());
+                agent::telegram::send(owner, notice, /*block=*/false);
+              }
+              return nimbus::orch::ToolResult::ok(out);
             },
             R"({"type":"object","properties":{"id":{"type":"string"},"md":{"type":"string"}},"required":["id","md"]})");
   g_reg.add("skill.delete",
-            "Delete a skill capsule YOU authored (created_by: agent). Owner-created "
-            "skills can only be deleted by the owner in the web UI.",
+            "Delete a skill capsule YOU authored (created_by: agent). Owner-made "
+            "skills can only be deleted by the owner (web UI or /skill delete).",
             [](ArduinoJson::JsonObjectConst a,
                const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
               if (!who.perms().manageTenants)
                 return nimbus::orch::ToolResult::fail(
                     "only an admin's conversation can manage skills");
               std::string id = a["id"].is<const char*>() ? a["id"].as<const char*>() : "";
-              std::string err;
-              if (!agent::skills::remove(id, err, /*byAgent=*/true))
-                return nimbus::orch::ToolResult::fail(err);
+              const agent::SkillCaller whoCall = agent::SkillCaller::agentCall(
+                  true, orchestrator::inScheduledTurn(), false);
+              const agent::SkillResult r = agent::skills::remove(id, whoCall);
+              if (!r.ok) return nimbus::orch::ToolResult::fail(r.err);
               return nimbus::orch::ToolResult::ok("skill '" + id + "' deleted");
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");

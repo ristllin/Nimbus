@@ -119,7 +119,8 @@ const Part kToolsGuide[] = {
      "capsules are INJECTED into that sub-agent's instructions at spawn.\n"
      "web.search: live web lookups (only if a Tavily key is set).\n"
      "system.health: your own hardware/subsystem status.\n"
-     "skill.list/skill.get: pull long-form docs about yourself (this guide included).\n"
+     "skill.list/skill.get: task playbooks and knowledge capsules - read the matching one "
+     "BEFORE a task it covers; once read it stays attached to the chat ([ACTIVE SKILLS]).\n"
      "Device state (LED theme, ring level, brightness, power profile, lights on/off,\n"
      "voice) is NOT a callable tool: change it with the device[] actions of your\n"
      "orch_turn (lights / led / config / tts). Protected settings are refused.\n"
@@ -188,10 +189,19 @@ const Part kLogRows[] = {
      "3. A new log: the first files.append carries the header row, then the row.\n"
      "4. A running total (a daily ledger): append a NEW row with the updated totals;\n"
      "   the latest row for a date is the current one. Never rewrite earlier rows.\n"
-     "5. A meal photo: estimate it, then one files.append to the food log (and one\n"
+     "5. The food log is ONE file (the CSV you keep for meals, e.g. food-log.csv in the\n"
+     "   owner's project): never split a day's meals across files. Before estimating\n"
+     "   anything you logged before - an earlier meal, a figure the owner corrects,\n"
+     "   a day total - read the log's tail first, and compute the day's total from the\n"
+     "   file's own rows with the files tool, never from memory. If the owner's stated\n"
+     "   total and the file's disagree, say both.\n"
+     "6. EVERY owner-stated figure and EVERY correction appends a row with files.append\n"
+     "   (a correction adds its own row; never rewrite an earlier one). Never say a\n"
+     "   figure was updated or corrected without the appended row that shows it.\n"
+     "7. A meal photo: estimate it, then one files.append to the food log (and one\n"
      "   to the ledger if you keep one), then reply with the row you added. Several\n"
      "   rows for one meal go in ONE call, one row per line.\n"
-     "6. If files.append says the last row was incomplete, the file was cut\n"
+     "8. If files.append says the last row was incomplete, the file was cut\n"
      "   mid-write: say so, and check the tail before adding that row again.\n"},
 };
 
@@ -225,7 +235,7 @@ const Entry kEntries[] = {
      NIMBUS_PARTS(kDeliverPdf)},
     {{"log-rows", "Log a row to a CSV or log file (food log, ledger)",
       "Add rows to a log with files.append and read its end with files.read tail - read "
-      "BEFORE logging a meal, a weight, a ledger total or any tracker row."},
+      "BEFORE logging or correcting a meal, a weight, a ledger total or any tracker row."},
      NIMBUS_PARTS(kLogRows)},
 };
 #undef NIMBUS_PARTS

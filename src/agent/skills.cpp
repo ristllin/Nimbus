@@ -1,168 +1,113 @@
 #include "skills.h"
 
 #include <Arduino.h>
+#include <LittleFS.h>
 #include <esp_heap_caps.h>
 
 #include <cstring>
 
 #include "memory_subsystem.h"          // dataFs() + haveSd() + Lock (SD serialization)
-#include "orchestrator.h"              // telegramForTurn - which side of a built-in to serve
+#include "orchestrator.h"              // telegramForTurn / fileSendForTurn (CUM-523 sides)
 #include "../sys/agent_log.h"
-#include "nimbus/harness/builtin_skills.h"   // the built-in capsules (portable, host-tested)
-#include "nimbus/harness/skill_md.h"   // portable parseSkillMd (host-tested)
+#include "nimbus/harness/builtin_skills.h"   // isBuiltinSkill (the un-shadowable ids)
 
 namespace agent::skills {
 
 namespace {
 
-// ---- SD capsules ------------------------------------------------------------
-const char*  kSkillsDir  = "/mem/skills";
-// File read cap: capsules are small by contract; the spawn injection is further
-// capped at 4 KB by the portable composer.
-constexpr size_t kFileCap = 8192;
+// The store root on each tier: SD when a card is mounted, else LittleFS
+// (/data/skills - the flash tier keeps working with no card).
+constexpr const char* kSdRoot    = "/mem/skills";
+constexpr const char* kFlashRoot = "/data/skills";
+// The largest stored skill on the flash tier (LittleFS holds the store there
+// alongside everything else; the SD tier has no limit).
+constexpr size_t kFlashMaxStored = 8;
 
-// The Directive/PendingSpawn skill field is char[24] - an id longer than 23
-// bytes could never round-trip through a spawn, so refuse it at save time.
-constexpr size_t kIdMax = 23;
-
-bool validId(const std::string& id) {
-  if (id.empty() || id.size() > kIdMax) return false;
-  for (char c : id) {
-    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '-' || c == '_';
-    if (!ok) return false;
-  }
-  return true;
-}
-
-std::string mdPath(const std::string& id) {
-  return std::string(kSkillsDir) + "/" + id + "/SKILL.md";
-}
-
-// Read <id>/SKILL.md through a PSRAM staging buffer (never a big internal-SRAM
-// block), capped at kFileCap. "" when absent/unreadable. Caller holds no lock;
-// this takes memory::Lock around the SD I/O (the one mutex serializing the bus).
-std::string readMd(const std::string& id) {
-  if (!memory::haveSd() || !validId(id)) return std::string();
-  agent::memory::Lock g;
-  File f = memory::dataFs().open(mdPath(id).c_str(), FILE_READ);
-  if (!f) return std::string();
-  size_t n = f.size();
-  if (n > kFileCap) n = kFileCap;
-  char* buf = (char*)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM);
-  if (!buf) { f.close(); return std::string(); }
-  size_t got = f.read((uint8_t*)buf, n);
-  f.close();
-  std::string out(buf, got);
-  heap_caps_free(buf);
-  return out;
-}
-
-}  // namespace
-
-bool sdAvailable() { return memory::haveSd(); }
-
-std::vector<Capsule> list() {
-  std::vector<Capsule> out;
-  for (size_t i = 0; i < builtinSkillCount(); i++) {
-    const BuiltinSkill& b = builtinSkill(i);
-    out.push_back(Capsule{b.id, b.title, b.desc, "", "builtin", "builtin", true});
-  }
-  if (!memory::haveSd()) return out;
-
-  // Scan /mem/skills/<id>/SKILL.md. Directory walk under the Lock; the per-file
-  // header read re-takes it recursively (memory::Lock is recursive).
-  std::vector<std::string> ids;
-  {
+// DeviceSkillFs - the five file operations of the portable seam (skill_store.h)
+// over the device's FS. Every operation takes the storage lock and stages big
+// reads through PSRAM (never a large internal-SRAM block). memory::Lock is
+// recursive, so the whole-op locks in the public API below are safe.
+class DeviceSkillFs : public agent::SkillFs {
+ public:
+  bool read(const std::string& path, size_t cap, std::string& out) override {
     agent::memory::Lock g;
-    File dir = memory::dataFs().open(kSkillsDir);
-    if (dir && dir.isDirectory()) {
-      File e;
-      while ((e = dir.openNextFile())) {
-        if (e.isDirectory()) {
-          const char* full = e.name();          // may be full path or bare name
-          const char* slash = strrchr(full, '/');
-          std::string id = slash ? slash + 1 : full;
-          if (validId(id)) ids.push_back(id);
-        }
-        e.close();
+    File f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!f) return false;
+    size_t n = f.size();
+    if (n > cap) n = cap;
+    char* buf = (char*)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM);
+    if (!buf) { f.close(); return false; }
+    size_t got = f.read((uint8_t*)buf, n);
+    f.close();
+    out.assign(buf, got);
+    heap_caps_free(buf);
+    return true;
+  }
+  bool writeAtomic(const std::string& path, const std::string& text) override {
+    agent::memory::Lock g;
+    fs::FS& fs = agent::memory::dataFs();
+    const size_t slash = path.rfind('/');
+    if (slash != std::string::npos) mkdirs(fs, path.substr(0, slash));
+    const std::string tmp = path + ".tmp";
+    File f = fs.open(tmp.c_str(), FILE_WRITE);
+    if (!f) return false;
+    const size_t n = f.write((const uint8_t*)text.data(), text.size());
+    f.close();
+    if (n != text.size()) { fs.remove(tmp.c_str()); return false; }
+    fs.remove(path.c_str());   // a reader sees the old file or the new one, never torn
+    return fs.rename(tmp.c_str(), path.c_str());
+  }
+  std::vector<std::string> listDirs(const std::string& dir) override {
+    std::vector<std::string> out;
+    agent::memory::Lock g;
+    File d = agent::memory::dataFs().open(dir.c_str());
+    if (!d || !d.isDirectory()) return out;
+    for (File e; (e = d.openNextFile());) {
+      if (e.isDirectory()) {
+        const char* full = e.name();   // may be the full path or the bare name
+        const char* slash = strrchr(full, '/');
+        out.push_back(slash ? slash + 1 : full);
       }
+      e.close();
     }
-    if (dir) dir.close();
+    d.close();
+    return out;
   }
-  for (const auto& id : ids) {
-    std::string md = readMd(id);
-    if (md.empty()) continue;                   // dir without a SKILL.md
-    SkillMd doc = parseSkillMd(md);
-    Capsule c;
-    c.id       = id;
-    c.title    = doc.title.empty() ? id : doc.title;
-    c.desc     = doc.desc;   // "" falls back to title in indexText
-    c.version  = doc.version;
-    c.source   = "sd";
-    c.origin   = doc.createdBy;      // "user" | "agent" (parser clamps)
-    c.approved = doc.approved;
-    // SD wins on an id collision with a built-in (owner override).
-    bool replaced = false;
-    for (auto& b : out)
-      if (b.id == id) { b = c; replaced = true; break; }
-    if (!replaced) out.push_back(std::move(c));
+  bool exists(const std::string& path) override {
+    agent::memory::Lock g;
+    return agent::memory::dataFs().exists(path.c_str());
   }
-  return out;
-}
-
-std::string indexText() {
-  std::vector<agent::SkillIndexEntry> es;
-  for (const auto& c : list()) {
-    agent::SkillIndexEntry e;
-    e.id      = c.id;
-    e.desc    = !c.desc.empty() ? c.desc : c.title;   // desc, else title, else id
-    e.pending = !c.approved;
-    es.push_back(std::move(e));
+  bool remove(const std::string& path) override {
+    agent::memory::Lock g;
+    return agent::memory::dataFs().remove(path.c_str());
   }
-  return agent::skillsIndexText(es);
-}
+  bool rename(const std::string& from, const std::string& to) override {
+    agent::memory::Lock g;
+    fs::FS& fs = agent::memory::dataFs();
+    fs.remove(to.c_str());
+    return fs.rename(from.c_str(), to.c_str());
+  }
+  void removeDir(const std::string& dir) override {   // best effort
+    agent::memory::Lock g;
+    agent::memory::dataFs().rmdir(dir.c_str());
+  }
 
-std::string get(const std::string& id) {
-  // SD first (SD wins on collision), then the built-ins.
-  std::string md = readMd(id);
-  if (!md.empty()) return parseSkillMd(md).body;
-  // CUM-523: a built-in names reply.telegram / files.send only on a turn that was
-  // offered them (the turn's one sample; outside a turn, the device's standing answer).
-  return builtinSkillBody(id, agent::orchestrator::telegramForTurn(),
-                          agent::orchestrator::fileSendForTurn());
-}
+ private:
+  static void mkdirs(fs::FS& fs, const std::string& dir) {
+    size_t p = 0;
+    while ((p = dir.find('/', p + 1)) != std::string::npos)
+      fs.mkdir(dir.substr(0, p).c_str());
+    fs.mkdir(dir.c_str());
+  }
+};
 
-std::string spawnCapsule(const std::string& id) {
-  // Only owner-authored SD capsules inject at spawn, and only when their front
-  // matter says inject: spawn|both. Built-ins stay pure provider hints - the
-  // pre-P2 behavior - so existing spawn flows are byte-identical.
-  std::string md = readMd(id);
-  if (md.empty()) return std::string();
-  SkillMd doc = parseSkillMd(md);
-  if (doc.inject == "context") return std::string();
-  // INERT-PENDING (v4.0.0): an unapproved agent capsule never rides a spawn
-  // brief - a persistent instruction blob is a prompt-injection channel until
-  // the owner approves it (web or /skill approve). skill.get read-back still
-  // works; injection is the gated surface.
-  if (!doc.approved) return std::string();
-  return doc.body;
-}
-
-std::string raw(const std::string& id) { return readMd(id); }
-
-bool reservedId(const std::string& id) { return isBuiltinSkill(id); }
-
-int pendingAgentCount() {
-  int n = 0;
-  for (const auto& c : list())
-    if (c.origin == "agent" && !c.approved) n++;
-  return n;
-}
+DeviceSkillFs g_fs;
+agent::SkillStore* g_store = nullptr;   // constructed on first use (the tier is known then)
+agent::AttachTable g_attach;            // RAM only, lost on restart by design
 
 // Device clock as "YYYY-MM-DD HH:MM" ("" before SNTP sync - honest absence
 // beats a 1970 stamp).
-static std::string nowStamp() {
+std::string nowStamp() {
   time_t t = time(nullptr);
   if (t < 1600000000) return std::string();   // clock not synced yet
   struct tm tmv;
@@ -170,93 +115,128 @@ static std::string nowStamp() {
   char buf[20];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", tmv.tm_year + 1900,
            tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
-  return std::string(buf);
+  return buf;
 }
 
-// Write canonical text atomically (tmp + rename, writeBlobAtomic discipline).
-static bool writeMd(const std::string& id, const std::string& text, std::string& err) {
-  agent::memory::Lock g;
-  fs::FS& fs = memory::dataFs();
-  fs.mkdir(kSkillsDir);
-  fs.mkdir((std::string(kSkillsDir) + "/" + id).c_str());
-  std::string path = mdPath(id), tmp = path + ".tmp";
-  File f = fs.open(tmp.c_str(), FILE_WRITE);
-  if (!f) { err = "SD open failed"; return false; }
-  size_t n = f.write((const uint8_t*)text.data(), text.size());
+// The store's config for the ACTIVE tier; constructs the store on first use.
+agent::SkillStore& storeFor() {
+  if (!g_store) {
+    agent::SkillStoreConfig cfg;
+    cfg.root = agent::memory::haveSd() ? kSdRoot : kFlashRoot;
+    cfg.sourceSlug = agent::memory::haveSd() ? "sd" : "flash";
+    cfg.fileCap = 8192;
+    cfg.pendingCap = 4;
+    cfg.maxStored = agent::memory::haveSd() ? 0 : kFlashMaxStored;
+    g_store = new agent::SkillStore(g_fs, cfg, &nowStamp);
+  }
+  return *g_store;
+}
+
+}  // namespace
+
+bool sdAvailable() { return agent::memory::haveSd(); }
+
+agent::SkillStore& store() { return storeFor(); }
+
+// The switch file lives on internal flash on EVERY tier (LittleFS is always
+// mounted), so pulling the SD card never changes the owner's trust setting.
+bool selfApproveOn() {
+  if (LittleFS.totalBytes() == 0) return false;   // not mounted
+  File f = LittleFS.open(agent::kSkillSelfApproveFile, FILE_READ);
+  if (!f) return false;
+  std::string text;
+  text.resize(f.size() > 32 ? 32 : f.size());
+  const size_t got = text.empty() ? 0 : f.read((uint8_t*)text.data(), text.size());
   f.close();
-  if (n != text.size()) { fs.remove(tmp.c_str()); err = "SD write failed"; return false; }
-  fs.remove(path.c_str());
-  if (!fs.rename(tmp.c_str(), path.c_str())) { err = "SD rename failed"; return false; }
-  return true;
+  text.resize(got);
+  return agent::skillSelfApproveFromFile(text);
 }
 
-bool save(const std::string& id, const std::string& md, std::string& err, bool byAgent) {
-  if (!validId(id)) { err = "bad id (a-z 0-9 - _ , max 23 chars)"; return false; }
-  if (md.empty())   { err = "empty capsule"; return false; }
-  if (md.size() > kFileCap) { err = "capsule too large (8 KB max)"; return false; }
-  if (!memory::haveSd()) { err = "no SD card - dynamic skills need the SD tier"; return false; }
-  if (byAgent && reservedId(id)) {
-    err = "'" + id + "' is a built-in skill - pick a different id";
-    return false;
-  }
-  // Parse whatever was handed in, keep the CONTENT fields, SERVER-STAMP the
-  // origin, and re-emit canonical front matter - a model-supplied
-  // `approved: true` or `created_by: user` never reaches disk (the portable
-  // composeSkillMd round-trip is the sanitization, host-tested).
-  SkillMd doc = parseSkillMd(md);
-  doc.createdBy = byAgent ? "agent" : "user";
-  // Agent saves are ALWAYS pending - including re-saves of an approved capsule
-  // (approve-then-mutate must not bypass review). Owner saves imply approval.
-  doc.approved  = !byAgent;
-  doc.createdAt = nowStamp();
-  const std::string canon = composeSkillMd(doc);
-  if (canon.size() > kFileCap) { err = "capsule too large (8 KB max)"; return false; }
-  if (!writeMd(id, canon, err)) return false;
-  alogf("skills: saved %s (%u bytes, by=%s%s)", id.c_str(), (unsigned)canon.size(),
-        byAgent ? "agent" : "user", byAgent ? " PENDING" : "");
-  return true;
+bool setSelfApprove(bool on) {
+  if (LittleFS.totalBytes() == 0) return false;   // not mounted: the switch stays as-is
+  if (!on) return LittleFS.remove(agent::kSkillSelfApproveFile) || true;
+  File f = LittleFS.open(agent::kSkillSelfApproveFile, FILE_WRITE);
+  if (!f) return false;
+  const size_t n = f.write((const uint8_t*)"1", 1);
+  f.close();
+  return n == 1;
 }
 
-bool approve(const std::string& id, std::string& err) {
-  // Hold the Lock across the whole read-modify-write (it is recursive, so the
-  // inner readMd/writeMd re-take it harmlessly). Without this, an agent
-  // skill.save landing between our read and our write would be OVERWRITTEN by
-  // the approve - an approved capsule with a body the owner never reviewed,
-  // exactly the approve-then-mutate bypass the save() stamping exists to stop.
+// ---- the engine's attach surface ----------------------------------------------
+
+std::string indexText() { return storeFor().indexText(); }
+
+std::vector<agent::AttachPick> picksFor(const std::string& chatId) {
+  // noteTurn (idle expiry) rides the pick: the table expires lazily here, the
+  // same rule the engine's RAM tests pin.
+  g_attach.noteTurn(chatId, millis());
+  return agent::selectAttach(g_attach.stickyFor(chatId), storeFor().list());
+}
+
+std::string attachBody(const std::string& id) {
+  // CUM-523: a built-in body follows the turn's one sample (the tool surface
+  // serves the same side).
+  return storeFor().liveBody(id, agent::SkillSide{agent::orchestrator::telegramForTurn(),
+                                                  agent::orchestrator::fileSendForTurn()});
+}
+
+void noteUsed(const std::string& chat, const std::string& id) {
+  g_attach.noteUsed(chat, id, millis());
+}
+
+void dropChat(const std::string& chat) { g_attach.dropChat(chat); }
+
+// ---- the tool and web surface ---------------------------------------------------
+
+std::vector<agent::SkillMeta> list() { return storeFor().list(); }
+
+std::string get(const std::string& id, bool* trusted) {
+  return storeFor().get(id, agent::SkillSide{agent::orchestrator::telegramForTurn(),
+                                             agent::orchestrator::fileSendForTurn()},
+                        trusted);
+}
+
+std::string spawnCapsule(const std::string& id) { return storeFor().spawnCapsule(id); }
+
+std::string raw(const std::string& id) { return storeFor().raw(id); }
+
+std::string rawNext(const std::string& id) { return storeFor().rawNext(id); }
+
+int pendingCount() { return storeFor().pendingCount(); }
+
+// Every whole-store op holds the storage lock across its read-modify-write
+// (recursive, so the fs seam's inner locks re-enter harmlessly). Without this,
+// an agent skill.save landing between the read and the write of an approve
+// would be overwritten - the approve-then-mutate bypass the store's rules
+// exist to stop.
+agent::SkillResult save(const std::string& id, const std::string& md,
+                        const agent::SkillCaller& who) {
   agent::memory::Lock g;
-  std::string md = readMd(id);
-  if (md.empty()) { err = "no such skill on SD"; return false; }
-  SkillMd doc = parseSkillMd(md);
-  if (doc.approved) return true;                 // idempotent
-  doc.approved = true;
-  if (!writeMd(id, composeSkillMd(doc), err)) return false;
-  alogf("skills: approved %s", id.c_str());
-  return true;
+  const agent::SkillResult r = storeFor().save(id, md, who, selfApproveOn());
+  if (r.ok)
+    alogf("skills: %s %s rev %d (outcome %s)", who.owner ? "owner" : "assistant",
+          id.c_str(), r.rev, agent::skillOutcomeSlug(r.outcome));
+  else
+    alogf("skills: refused %s by %s (%s)", id.c_str(), who.owner ? "owner" : "assistant",
+          r.err.c_str());
+  return r;
 }
 
-bool remove(const std::string& id, std::string& err, bool byAgent) {
-  if (!validId(id)) { err = "bad id"; return false; }
-  if (!memory::haveSd()) { err = "no SD card"; return false; }
-  // Lock spans the origin check AND the delete (recursive; same reasoning as
-  // approve()) - the check must not run against a file another task replaces
-  // before the delete lands.
+agent::SkillResult approve(const std::string& id, const agent::SkillCaller& who) {
   agent::memory::Lock g;
-  if (byAgent) {
-    // The model may delete ONLY what it authored; user capsules are the
-    // owner's (web UI). Read the origin from disk - never trust the caller.
-    std::string md = readMd(id);
-    if (md.empty()) { err = "no such skill on SD"; return false; }
-    if (parseSkillMd(md).createdBy != "agent") {
-      err = "'" + id + "' was created by the owner - only they can delete it";
-      return false;
-    }
-  }
-  fs::FS& fs = memory::dataFs();
-  if (!fs.exists(mdPath(id).c_str())) { err = "no such skill on SD"; return false; }
-  fs.remove(mdPath(id).c_str());
-  fs.rmdir((std::string(kSkillsDir) + "/" + id).c_str());   // best-effort
-  alogf("skills: removed %s%s", id.c_str(), byAgent ? " (by agent)" : "");
-  return true;
+  return storeFor().approve(id, who);
+}
+agent::SkillResult deny(const std::string& id, const agent::SkillCaller& who) {
+  agent::memory::Lock g;
+  return storeFor().deny(id, who);
+}
+agent::SkillResult discard(const std::string& id, const agent::SkillCaller& who) {
+  agent::memory::Lock g;
+  return storeFor().discard(id, who);
+}
+agent::SkillResult remove(const std::string& id, const agent::SkillCaller& who) {
+  agent::memory::Lock g;
+  return storeFor().remove(id, who);
 }
 
 }  // namespace agent::skills

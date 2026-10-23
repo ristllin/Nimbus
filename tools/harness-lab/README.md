@@ -148,6 +148,8 @@ permanently-broken `web.search` ship, so each scenario asserts an outcome.
 | `scheduled` | an unattended routine turn - the news-briefing path |
 | `dream` | a quiet consolidation turn is allowed to say nothing |
 | `parity` | every keyed provider handles a plain turn and a tool turn |
+| `skills-e2e` | a read skill attaches across turns ([ACTIVE SKILLS] in the follow-ups' INPUT), edits stage as SKILL.next.md with the live file untouched, the owner's skill survives a delete request, and a new save passes the lint |
+| `meal-eval` | the food log is written where it is read: an owner-stated figure and a correction land as files.append rows, never a claimed update without the effect |
 
 Scenarios needing a Tavily key **skip loudly**. A silent skip reads as a pass,
 which is how a broken capability stays broken.
@@ -203,6 +205,11 @@ python3 metering_check.py $R/usage.jsonl $R/run.log      # METERING MATCH per pr
 # The head names the device's settings storage (nearly full, the Telegram offset
 # not saved) as the reason the same answer repeats, not the owner's app:
 #   NIMBUS_LAB_MODEL=<model> '--fault=<other hosts>:*:0:connect' scenarios repeat-from-storage
+# Lane I: skills the assistant uses and can edit (seed an approved meal skill in
+# the store, then read/attach/edit/author). The meal leg checks the ledger is
+# written where it is read:
+#   NIMBUS_LAB_MODEL=claude-haiku-5-5 ... scenarios skills-e2e
+#   NIMBUS_LAB_MODEL=claude-haiku-5-5 ... scenarios meal-eval
 # A body with invalid UTF-8 is rejected with the provider's reason, unbilled:
 #   --host=mistral ... scenarios provider-error-reason
 ```

@@ -1205,8 +1205,15 @@ static TurnEngine::Deps buildTurnDeps() {
   d.connectorsCatalog = [] { return std::string(connectors::catalog().c_str()); };
   // W15: the ambient skills index - every turn NAMES the playbooks (id + one-line
   // desc) so the model pulls the procedure with skill.get instead of the recipes
-  // riding every prompt.
+  // riding every prompt. Lane I: the per-chat attach surface - the [ACTIVE
+  // SKILLS] block the engine renders into the per-turn INPUT, and the (chat, id)
+  // report of a successful skill.get the RAM table notes.
   d.skillsIndex = [] { return skills::indexText(); };
+  d.skillsPicks = [](const std::string& chatId) { return skills::picksFor(chatId); };
+  d.skillBody = [](const std::string& id) { return skills::attachBody(id); };
+  d.skillUsed = [](const std::string& chat, const std::string& id) {
+    skills::noteUsed(chat, id);
+  };
   // [AVAILABLE MODELS] reads the SAME derivation the spawn validator accepts
   // (CUM-486). It used compile-time lists for three providers and "" for the
   // rest, so the head saw "zai: ;" / "cumulo: ;" and refused those sub-agents,
@@ -1966,26 +1973,42 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         return;
       }
       if (v == "skill") {
-        // v4.0.0: approve/deny an agent-authored skill capsule - the Telegram
-        // counterpart of the web approve button. Deterministic, owner-only,
-        // never a paid turn (intercepted before the LLM like /loop).
-        String rest = String(cmd.args.c_str());
-        int sp = rest.indexOf(' ');
-        String action = (sp < 0) ? rest : rest.substring(0, sp);
-        String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
-        if (action.length() == 0 || id.length() == 0) {
-          say(selfTag + "Usage: /skill approve|deny <id>");
+        // Lane I: the owner's /skill sub-commands over the store - deterministic,
+        // owner-only, never a paid turn (intercepted before the LLM like /loop).
+        // The parse and the words come from the portable command table
+        // (skill_store.h), pinned by test_skill_commands_burst_and_parse.
+        std::string arg;
+        const agent::SkillCmd sub = agent::parseSkillCmd(cmd.args.c_str(), arg);
+        const std::string id = arg;
+        if (sub == agent::SkillCmd::List) {
+          say(selfTag + agent::skillListText(skills::store(), skills::selfApproveOn()).c_str());
           return;
         }
-        std::string err;
-        String msg;
-        if (action == "approve")
-          msg = skills::approve(id.c_str(), err) ? "Approved \xE2\x80\x94 it can now be used."
-                                                  : String(err.c_str());
-        else if (action == "deny" || action == "delete")
-          msg = skills::remove(id.c_str(), err) ? "Removed." : String(err.c_str());
-        else { say(selfTag + "Usage: /skill approve|deny <id>"); return; }
-        say(selfTag + "Skill " + id + ": " + msg);
+        if (sub == agent::SkillCmd::Show) {
+          say(selfTag + agent::skillShowText(skills::store(), id).c_str());
+          return;
+        }
+        if (sub == agent::SkillCmd::Auto) {
+          const bool on = arg == "on";
+          if (arg != "on" && arg != "off") {
+            say(selfTag + agent::skillCmdUsage().c_str());
+            return;
+          }
+          if (!skills::setSelfApprove(on)) {
+            say(selfTag + "The switch could not be written.");
+            return;
+          }
+          say(selfTag + String("The assistant may approve its own skill changes: ") +
+              (on ? "on" : "off") + ".");
+          return;
+        }
+        const agent::SkillCaller who = agent::SkillCaller::ownerCall();
+        agent::SkillResult r;
+        if (sub == agent::SkillCmd::Approve)      r = skills::approve(id, who);
+        else if (sub == agent::SkillCmd::Deny)    r = skills::deny(id, who);
+        else if (sub == agent::SkillCmd::Delete)  r = skills::remove(id, who);
+        else { say(selfTag + agent::skillCmdUsage().c_str()); return; }
+        say(selfTag + agent::skillResultText(id, r).c_str());
         return;
       }
       if (v == "help" || v == "start") {
@@ -2000,7 +2023,9 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/mcp approve|deny <name> - approve a tool server\n"
                         "/play [track|stop|pause] - play music from the SD card\n"
                         "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
-                        "/skill approve|deny <id> \xE2\x80\x94 manage a saved skill");
+                        "/skill list|show <id> - see saved skills and what waits for you\n"
+                        "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
+                        "/skill auto on|off - may the assistant approve its own skill changes");
         return;
       }
       // Any other slash command: deterministic reply, never a paid LLM turn.
@@ -2676,6 +2701,7 @@ static void clearConversation(const String& chatId) {
                          String(agent::kClearBoundaryText), "",
                          String(agent::kClearBoundaryTag));
   if (g_engine) g_engine->clearChatConv(cid);   // this chat's provider-side thread only
+  skills::dropChat(cid);   // lane I: /clear drops this chat's sticky skill attachments too
   g_mem.setModel(cid, std::string());            // this chat's running notes
   syncMemEcho();
   // A clear is not a fold: empty summary, zeroed counters, epoch 0 (never folded,

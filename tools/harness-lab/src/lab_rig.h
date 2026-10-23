@@ -28,6 +28,7 @@
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/storage_state.h"
 #include "nimbus/orch/tool_gates.h"
+#include "lab_skills.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_memory.h"
 
@@ -67,6 +68,7 @@ namespace orch = nimbus::orch;
 
 struct TurnRecord {
   std::string chatId, userText, reply;
+  std::string turnInputs;   // the per-turn INPUT (where [ACTIVE SKILLS] rides)
   std::vector<std::string> toolCalls;    // "name(args)"
   std::vector<std::string> toolResults;  // truncated result text
   std::vector<std::string> deliveries;
@@ -223,6 +225,7 @@ class LabRig {
   const agent::FaultPlan& faults() const { return faultPlan_; }
   const RecordingTransport& recorder() const { return rec_; }
   LabFiles& files() { return files_; }
+  LabSkills& skills() { return skills_; }   // seed + inspect the store (lane I)
   const std::vector<TurnRecord>& turns() const { return turns_; }
   const std::vector<std::string>& toolNames() const { return toolNames_; }
 
@@ -345,6 +348,7 @@ class LabRig {
     registerDocsTools();
     registerDeviceStatusTool();
     files_.registerTools(reg_);
+    skills_.registerTools(reg_);   // the device's four skill tools over a store (lane I)
 
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
   }
@@ -621,6 +625,15 @@ class LabRig {
       return reg_.handleRpc(req, who);
     };
     d.connectorsCatalog = [] { return std::string(); };
+    // Lane I: the [SKILLS] index + the per-chat attach surface, wired as the
+    // device does (orchestrator.cpp). skillsIndex feeds the STABLE catalogs; the
+    // attach block rides the per-turn INPUT.
+    d.skillsIndex = [this] { return skills_.indexText(); };
+    d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
+    d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
+    d.skillUsed = [this](const std::string& chat, const std::string& id) {
+      skills_.noteUsed(chat, id);
+    };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) {
@@ -643,6 +656,9 @@ class LabRig {
                      trunc(r.output, 200).c_str());
     };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
+      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] rides
+    };
 
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) {
@@ -832,6 +848,7 @@ class LabRig {
   std::unique_ptr<orch::EpisodicStore> epi_;
   orch::ToolRegistry reg_;
   LabFiles           files_;
+  LabSkills          skills_;   // the lab's SkillStore + attach table (lane I)
   std::vector<std::string> toolNames_;
   std::string tavilyKey_;
 

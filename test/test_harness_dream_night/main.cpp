@@ -508,7 +508,11 @@ static void test_quiet_preamble_never_asks_for_a_reply() {
   Rig r;
   r.dreamTurn();
   TEST_ASSERT_EQUAL(1, (int)r.inputsSeen.size());
-  TEST_ASSERT_TRUE(r.inputsSeen[0].find("reply ONLY if the owner must see something") != std::string::npos);
+  // The 22 Oct amendment (SILENT-ROUTINE-COST, lane I): the quiet preamble says
+  // when silence is right and when a short reply is expected - never a blanket
+  // "reply to the owner".
+  TEST_ASSERT_TRUE(r.inputsSeen[0].find("Silence is right when the owner needs nothing") !=
+                   std::string::npos);
   TEST_ASSERT_TRUE(r.inputsSeen[0].find("reply to the owner concisely") == std::string::npos);
   Rig n;
   n.routineTurn();

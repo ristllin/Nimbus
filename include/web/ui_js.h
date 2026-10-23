@@ -3826,37 +3826,57 @@ $('upBtn')&&($('upBtn').onclick=()=>{
     ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
     error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
 });
-// ---- Skills (P2 dynamic capsules): list + load/save/delete on the SD card ----
+// ---- Skills (lane I): list, edit, staged revisions and the approve switch ----
 function loadSkills(){
   const box=$('skList'); if(!box)return;
   fetch('/api/skills/list').then(jok).then(d=>{
-    $('skStat').textContent=d.sd?'SD ready - your skills load into new sessions automatically':'No SD card - built-in skills only (read-only)';
+    $('skStat').textContent=(d.sd?'SD ready - your skills load into new sessions automatically':'No SD card - skills live on internal flash (read-only built-ins)')
+      +(d.auto?' - the assistant may approve its own skill changes':'');
+    const auto=$('skAuto'); if(auto)auto.checked=!!d.auto;
     const sk=d.skills||[];
     if(!sk.length){box.innerHTML='<span class=hint>No skills yet</span>';return;}
     // Join only the metadata a skill actually carries, so a skill with no title/
-    // origin never renders a lone "·" separator with nothing around it (CUM-214).
+    // origin never renders a lone separator with nothing around it (CUM-214).
     box.innerHTML=sk.map(s=>{
       const meta=[];
       if(s.title)meta.push(_fesc(s.title));
       if(s.version)meta.push('v'+_fesc(s.version));
       const org=s.origin||s.source; if(org)meta.push(_fesc(org));
-      if(s.pending)meta.push('<b style="color:#e0a349">pending approval</b>');
-      return '<a href="#" data-skid="'+_fesc(s.id)+'" style="margin-right:10px">'+_fesc(s.id)+'</a>'+
-        (meta.length?('<span class=hint>'+meta.join(' · ')+'</span>'):'')+
-        (s.pending?' <a href="#" data-skapprove="'+_fesc(s.id)+'">Approve</a>':'')+'<br>';
+      if(s.rev)meta.push('rev '+_fesc(String(s.rev)));
+      if(s.pending)meta.push('<b style="color:#e0a349">waiting for your approval</b>');
+      if(s.pendingEdit)meta.push('<b style="color:#e0a349">an edit waits for your approval</b>');
+      return '<a href="#" data-skid="'+_fesc(s.id)+'" style="margin-right:10px">'+_fesc(s.id)+'</a>'
+        +(s.desc?'<span class=hint style="display:block;margin:0 0 2px">'+_fesc(s.desc)+'</span>':'')
+        +(meta.length?('<span class=hint>'+meta.join(' · ')+'</span>'):'')
+        +(s.pending?' <a href="#" data-skapprove="'+_fesc(s.id)+'">Approve</a>'
+                   +' <a href="#" data-skdeny="'+_fesc(s.id)+'">Deny</a>':'')
+        +(s.pendingEdit?' <a href="#" data-skapprove="'+_fesc(s.id)+'">Approve edit</a>'
+                      +' <a href="#" data-skdiscard="'+_fesc(s.id)+'">Discard edit</a>':'')+'<br>';
     }).join('');
     box.querySelectorAll('a[data-skid]').forEach(a=>a.onclick=e=>{e.preventDefault();$('skId').value=a.dataset.skid;loadSkillMd();});
-    box.querySelectorAll('a[data-skapprove]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      const fd=new FormData();fd.append('id',a.dataset.skapprove);
-      fetch('/api/skills/approve',{method:'POST',body:fd}).then(jok)
-        .then(()=>{toast('Skill approved');loadSkills();}).catch(()=>toast('Approve failed'));});
+    const skOp=(sel,url,ok)=>box.querySelectorAll(sel).forEach(a=>a.onclick=e=>{e.preventDefault();
+      const fd=new FormData();fd.append('id',a.dataset.skid||a.dataset.skapprove||a.dataset.skdeny||a.dataset.skdiscard);
+      fetch(url,{method:'POST',body:fd}).then(jok)
+        .then(()=>{toast(ok);loadSkills();}).catch(()=>toast('Failed'));});
+    skOp('a[data-skapprove]','/api/skills/approve','Skill approved');
+    skOp('a[data-skdeny]','/api/skills/deny','Skill denied');
+    skOp('a[data-skdiscard]','/api/skills/discard','Edit discarded');
   }).catch(()=>{box.innerHTML='<span class=hint>Skills unavailable</span>';});
 }
+// The D-4 switch: "the assistant may approve its own skill changes".
+$('skAuto')&&($('skAuto').onchange=()=>{
+  const fd=new FormData();fd.append('on',$('skAuto').checked?'on':'off');
+  fetch('/api/skills/auto',{method:'POST',body:fd}).then(jok)
+    .then(()=>toast($('skAuto').checked?'The assistant may approve its own changes':'Changes wait for your approval again'))
+    .catch(()=>{$('skAuto').checked=!$('skAuto').checked;toast('The switch could not be written');});
+});
 function loadSkillMd(){
   const id=$('skId').value.trim(); if(!id){toast('Enter a skill id first');return;}
   fetch('/api/skills/get?id='+encodeURIComponent(id)).then(jok).then(d=>{
     $('skMd').value=d.md||'';
-    $('skMsg').textContent=d.source==='builtin'?'Built-in skill (read-only) - Save stores an editable copy under the same id':'Loaded from the SD card';
+    $('skNext').value=d.next_md||'';
+    $('skNextWrap').style.display=d.next_md?'block':'none';
+    $('skMsg').textContent=d.source==='builtin'?'Built-in skill (read-only) - Save stores an editable copy under the same id':'Loaded from the device';
   }).catch(()=>{$('skMsg').textContent='Not found - Save creates it';});
 }
 $('skLoad')&&($('skLoad').onclick=loadSkillMd);
@@ -3866,17 +3886,17 @@ $('skSave')&&($('skSave').onclick=()=>{
   const fd=new FormData();fd.append('id',id);fd.append('md',md);
   fetch('/api/skills/save',{method:'POST',body:fd})
     .then(r=>r.json().then(j=>{if(!r.ok)throw (j.error||r.status);return j;}))
-    .then(()=>{$('skMsg').textContent='Saved ✓';loadSkills();})
-    .catch(e=>{$('skMsg').textContent='✗ '+e;});
+    .then(j=>{$('skMsg').textContent='Saved'+(j.rev?(' (revision '+j.rev+')'):'')+(j.warnings&&j.warnings.length?(' - '+j.warnings.join('; ')):'');loadSkills();})
+    .catch(e=>{$('skMsg').textContent='Failed: '+e;});
 });
 $('skDel')&&($('skDel').onclick=()=>{
   const id=$('skId').value.trim(); if(!id){toast('Enter a skill id first');return;}
-  uiConfirm('Delete the skill "'+id+'" from the SD card?',{ok:'Delete Skill',danger:true}).then(ok=>{ if(!ok)return;
+  uiConfirm('Delete the skill "'+id+'"?',{ok:'Delete Skill',danger:true}).then(ok=>{ if(!ok)return;
   const fd=new FormData();fd.append('id',id);
   fetch('/api/skills/delete',{method:'POST',body:fd})
     .then(r=>r.json().then(j=>{if(!r.ok)throw (j.error||r.status);return j;}))
-    .then(()=>{$('skMsg').textContent='Deleted';$('skMd').value='';loadSkills();})
-    .catch(e=>{$('skMsg').textContent='✗ '+e;});});
+    .then(()=>{$('skMsg').textContent='Deleted';$('skMd').value='';$('skNext').value='';loadSkills();})
+    .catch(e=>{$('skMsg').textContent='Failed: '+e;});});
 });
 const GRPLBL={registry:'Available now',device:'Device actions',
   skill:'Knowledge',connector:'Connectors'};
