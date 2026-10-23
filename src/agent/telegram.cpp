@@ -1061,14 +1061,14 @@ static void sendOwnerNotice(bool (*take)(), const char* text, const char* which)
 // The once-per-boot "settings storage is almost full" notice (raised by any failed
 // NVS write, nimbus::sys::takeStorageNotice).
 static void sendStorageNotice() {
-  sendOwnerNotice(nimbus::sys::takeStorageNotice, nimbus::store::kStorageNoticeText, "");
+  sendOwnerNotice([] { return nimbus::sys::takeStorageNotice(); }, nimbus::store::kStorageNoticeText, "");
 }
 
 // The once-per-episode "the file store is full" notice (agent::files::noteRefusal
 // raises it). The photo path sends it at once, so it reaches the owner before that
 // photo's reply; the poll loop sends one an assistant save raised.
 static void sendFileStoreNotice() {
-  sendOwnerNotice(agent::files::takeFullNotice, nimbus::orch::kStoreFullNotice, " (file store)");
+  sendOwnerNotice([] { return agent::files::takeFullNotice(); }, nimbus::orch::kStoreFullNotice, " (file store)");
 }
 
 // ---- sendMessage ------------------------------------------------------------
