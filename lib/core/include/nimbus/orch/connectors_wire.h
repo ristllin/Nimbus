@@ -464,10 +464,12 @@ const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, 
 
 // The head a turn actually runs on - the turn engine's resolution rule, shared so the
 // catalog's "YOU are here" (ProviderState.currentHost) can never name a different
-// head than the one the turn dispatches to: an explicit `orchHost` pin, else the
-// first provider in the comma-separated `priority` for which `keyed(slug)` is true,
-// else `routerFallback` (the router head that runs a keyless-BYOK instance, "" if
-// none), else the bare first priority token. Tokens are whitespace-trimmed.
+// head than the one the turn dispatches to: an explicit `orchHost` pin while
+// `keyed(pin)`, else the first provider in the comma-separated `priority` for which
+// `keyed(slug)` is true, else `routerFallback` (the keyed router head, "" if none),
+// else any other keyed provider (registry order, then "custom"); with no key anywhere
+// the pin, else the bare first priority token. A null `keyed` trusts the pin and keys
+// nothing else. Tokens are whitespace-trimmed.
 std::string resolveHeadHost(const std::string& orchHost, const std::string& priority,
                             const std::function<bool(const std::string&)>& keyed,
                             const std::string& routerFallback);

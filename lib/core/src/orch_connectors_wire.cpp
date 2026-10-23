@@ -1,4 +1,5 @@
 #include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/provider_slots.h"   // kProviderSlots - the keyed walk past the priority list
 
 #include <cstring>   // std::strcmp (provider match, connector tools[] scan)
 
@@ -1182,21 +1183,21 @@ void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& 
   }
 }
 
-std::string resolveHeadHost(const std::string& orchHost, const std::string& priority,
-                            const std::function<bool(const std::string&)>& keyed,
-                            const std::string& routerFallback) {
-  auto trim = [](const std::string& t) {
-    const size_t b = t.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos) return std::string();
-    return t.substr(b, t.find_last_not_of(" \t\r\n") - b + 1);
-  };
-  const std::string pin = trim(orchHost);
-  if (!pin.empty()) return pin;
-  std::string head;
+namespace {
+std::string trimHost(const std::string& t) {
+  const size_t b = t.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) return std::string();
+  return t.substr(b, t.find_last_not_of(" \t\r\n") - b + 1);
+}
+
+// The first keyed token of the comma-separated priority list ("" for none); `head`
+// receives the first token, keyed or not.
+std::string firstKeyedInPriority(const std::string& priority,
+                                 const std::function<bool(const std::string&)>& keyed, std::string& head) {
   for (size_t start = 0; start <= priority.size();) {
     const size_t comma = priority.find(',', start);
     const size_t end = comma == std::string::npos ? priority.size() : comma;
-    const std::string tok = trim(priority.substr(start, end - start));
+    const std::string tok = trimHost(priority.substr(start, end - start));
     if (!tok.empty()) {
       if (head.empty()) head = tok;
       if (keyed && keyed(tok)) return tok;
@@ -1204,8 +1205,37 @@ std::string resolveHeadHost(const std::string& orchHost, const std::string& prio
     if (comma == std::string::npos) break;
     start = comma + 1;
   }
-  const std::string rf = trim(routerFallback);
-  return rf.empty() ? head : rf;
+  return std::string();
+}
+
+// Any keyed provider in registry order, then the custom endpoint; "" for none.
+std::string anyKeyedProvider(const std::function<bool(const std::string&)>& keyed) {
+  if (!keyed) return std::string();
+  for (size_t i = 0; i < kProviderSlotCount; ++i)
+    if (keyed(kProviderSlots[i].slug)) return kProviderSlots[i].slug;
+  return keyed("custom") ? std::string("custom") : std::string();
+}
+}  // namespace
+
+std::string resolveHeadHost(const std::string& orchHost, const std::string& priority,
+                            const std::function<bool(const std::string&)>& keyed,
+                            const std::string& routerFallback) {
+  // HOST-FALLBACK (22 Oct bench): a pin whose key was cleared is skipped like an
+  // unkeyed priority token, so the turn runs on a keyed host instead of dialing the
+  // pin keyless (HTTP 401). With no key anywhere the pin still names the head (the
+  // turn is refused locally before any request).
+  const std::string pin = trimHost(orchHost);
+  if (!pin.empty() && (!keyed || keyed(pin))) return pin;
+  std::string head;
+  const std::string first = firstKeyedInPriority(priority, keyed, head);
+  if (!first.empty()) return first;
+  const std::string rf = trimHost(routerFallback);
+  if (!rf.empty()) return rf;
+  // A keyed provider the priority list leaves out (the bench: priority "anthropic",
+  // only Mistral keyed) still runs the turn rather than nothing.
+  const std::string any = anyKeyedProvider(keyed);
+  if (!any.empty()) return any;
+  return pin.empty() ? head : pin;
 }
 
 bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs) {

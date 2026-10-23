@@ -210,6 +210,10 @@ class TurnEngine {
     // nimbus::orch::effectiveModelChoices over the harvested list - CUM-486), so
     // the head is never offered a model that validation coerces away.
     std::function<std::string(const std::string& provider)> modelChoices;
+    // How fresh that list is, appended after it ("(list from 2026-10-22, may miss newer
+    // models)"; device: the model store's fetch date). Nullable: no note, the line is
+    // byte-identical to before (lane F, honest freshness).
+    std::function<std::string(const std::string& provider)> modelListNote;
     // Episodic auto-capture of the owner's message (session row + user row with
     // the engine-sanitized "from:<name>" tag). Nullable.
     std::function<void(const std::string& chatId, const std::string& text,
@@ -492,6 +496,7 @@ class TurnEngine {
     std::string billingHost;   // "" = a switch notice; else the provider that refused for billing
   };
   std::vector<HeldNotice> heldNotices_;   // this turn's switch notices (L19-13 d)
+  std::string keylessPinTold_;            // HOST-FALLBACK: the keyless pin the owner was told about
   std::string heldReply_;               // the dream turn's output, held (FireOutcome.held)
   // True while a quiet scheduled turn runs: every engine notice is held (deliver)
   // and the one-notice billing latch is left armed (lane M x lane K).

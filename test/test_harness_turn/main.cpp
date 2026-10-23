@@ -2866,10 +2866,8 @@ static void test_no_provider_gives_honest_local_reply_not_silence() {
   // Exactly one delivery: the honest local message; ZERO provider attempts.
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
-  TEST_ASSERT_EQUAL_STRING(
-      "No AI provider is set up yet. Add a provider key under Providers & models in "
-      "the web app, then send your message again.",
-      r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING("No AI provider has a key: add one under Assistant > Models.",
+                           r.lastText().c_str());
   // No ring arc armed (no head Running/Offline churn), turn counter untouched, and
   // it did not read as a transient "resend in a few seconds" heap deferral.
   TEST_ASSERT_EQUAL(0, r.headEventsWith(Status::Running));
@@ -2891,9 +2889,83 @@ static void test_router_only_provider_is_not_told_no_provider() {
   TEST_ASSERT_TRUE(r.eng->anyProviderConfigured());
   r.eng->handleMessage("hello?", "Roy", "1001");
   // The honest "no provider" reply must NOT fire - the device has a provider.
-  TEST_ASSERT_FALSE(r.anyDelivered("No AI provider is set up"));
+  TEST_ASSERT_FALSE(r.anyDelivered("No AI provider has a key"));
   // The turn ran the normal path instead of being short-circuited.
   TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+}
+
+
+// ---- HOST-FALLBACK (22 Oct, lane B's bench on unit L) ---------------------------
+// A pinned head whose key was cleared was still dialed (HTTP 401, no fallback), and
+// with no keyed provider in the priority list the turn ran on nothing and said
+// "Done.". The head is now the first KEYED host (resolveHeadHost), the owner hears
+// once that the pin has no key, and with no key anywhere every turn kind answers
+// honestly without a request.
+static void test_keyless_pinned_head_runs_on_a_keyed_host_and_says_so_once() {
+  Rig r;
+  r.cfg.keyed = {"mistral"};
+  r.cfg.orchHost = "anthropic";      // pinned, key cleared
+  r.cfg.priority = "anthropic";
+  r.scripts["mistral"] = {{true, kGoodTurn, "", 0, "m1", 50, 10}, {true, kGoodTurn, "", 0, "m2", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+  TEST_ASSERT_TRUE(r.eng->runTurn("again", "1001", "again"));
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
+  for (const auto& a : r.attempts) TEST_ASSERT_EQUAL_STRING("mistral", a.host.c_str());   // never the keyless pin
+  int told = 0;
+  for (const auto& d : r.delivered)
+    told += d.second.find("Anthropic has no key, so Mistral is answering instead") != std::string::npos;
+  TEST_ASSERT_EQUAL(1, told);                     // once, not every turn
+  TEST_ASSERT_FALSE(r.anyDelivered("rejected the key"));
+  // The key comes back, then goes again: told again.
+  r.cfg.keyed = {"mistral", "anthropic"};
+  r.scripts["anthropic"] = {{true, kGoodTurn, "", 0, "a1", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("pinned", "1001", "pinned"));
+  TEST_ASSERT_EQUAL_STRING("anthropic", r.attempts.back().host.c_str());
+  r.cfg.keyed = {"mistral"};
+  r.scripts["mistral"] = {{true, kGoodTurn, "", 0, "m3", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("cleared", "1001", "cleared"));
+  told = 0;
+  for (const auto& d : r.delivered) told += d.second.find("Anthropic has no key") != std::string::npos;
+  TEST_ASSERT_EQUAL(2, told);
+}
+
+// The second bench shape: no pin, a priority list naming only keyless providers, and
+// a keyed provider outside it. The turn runs on that provider - not on nothing.
+static void test_keyed_provider_outside_the_priority_list_runs_the_turn() {
+  Rig r;
+  r.cfg.keyed = {"mistral"};
+  r.cfg.orchHost = "";
+  r.cfg.priority = "anthropic";
+  r.scripts["mistral"] = {{true, kGoodTurn, "", 0, "m1", 50, 10}};
+  r.eng->handleMessage("hello", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("mistral", r.attempts[0].host.c_str());
+  TEST_ASSERT_TRUE(r.anyDelivered("hello there"));
+  TEST_ASSERT_FALSE(r.anyDelivered("has no key"));   // nothing was pinned: nothing to tell
+}
+
+// No key anywhere: an owner message, a routine and a synthesis turn each get the
+// honest sentence and no request is made.
+static void test_no_key_anywhere_answers_every_turn_kind_honestly() {
+  Rig r;
+  r.cfg.keyed.clear();
+  r.cfg.orchHost = "anthropic";
+  r.eng->handleMessage("hello", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.eng->runTurn("routine", "1001", ""));
+  int honest = 0;
+  for (const auto& d : r.delivered)
+    honest += d.second == "No AI provider has a key: add one under Assistant > Models.";
+  TEST_ASSERT_EQUAL(2, honest);
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  TEST_ASSERT_FALSE(r.anyDelivered("Done."));
+  // A keyed pin: no notice, the pin runs.
+  Rig k;
+  k.cfg.keyed = {"anthropic", "mistral"};
+  k.cfg.orchHost = "anthropic";
+  k.scripts["anthropic"] = {{true, kGoodTurn, "", 0, "a1", 50, 10}};
+  TEST_ASSERT_TRUE(k.eng->runTurn("hi", "1001", "hi"));
+  TEST_ASSERT_EQUAL_STRING("anthropic", k.attempts[0].host.c_str());
+  TEST_ASSERT_FALSE(k.anyDelivered("has no key"));
 }
 
 // The predicate is budget-agnostic and counts a configured keyless custom head:
@@ -3609,6 +3681,12 @@ static std::vector<ExitCase> exitCases() {
   // refused before it left: a quiet exit (the notice pump tells the owner), with a cause.
   v.push_back({"spend ceiling (mid-turn)", "anthropic", "spend ceiling",
                failAll("spend ceiling: paid calls are paused")});
+  // HOST-FALLBACK: no provider has a key (a routine or synthesis turn reaches the
+  // engine without handleMessage's check): an honest local reply, never a dial.
+  v.push_back({"no key", "device", "no provider has a key", [](Rig& r) {
+                 r.cfg.keyed.clear();
+                 r.cfg.orchHost = "anthropic";
+               }});
   v.push_back({"parse", "device", "parse", [](Rig& r) {
                  Rig::Script bad;
                  bad.outJson = "{\"nothing\":true}";   // a turn with no usable reply
@@ -3656,7 +3734,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
   const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse",
-                         "spend ceiling"};
+                         "spend ceiling", "no key"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
@@ -4159,8 +4237,8 @@ static void runLateLaneTests() {
   runSpendCeilingTests();
 }
 
-int main(int, char**) {
-  UNITY_BEGIN();
+// The suite in two halves (one function per half keeps each under the length gate).
+static void runFirstHalf() {
   RUN_TEST(test_lane_l_a_silent_synthesis_never_drops_the_results);
   RUN_TEST(test_lane_l_a_cut_answer_is_salvaged_marked_and_captured);
   RUN_TEST(test_lane_l_the_salvage_marker_appears_exactly_when_cut);
@@ -4195,6 +4273,9 @@ int main(int, char**) {
   RUN_TEST(test_convmap_legacy_discarded_and_lru);
   RUN_TEST(test_no_provider_gives_honest_local_reply_not_silence);
   RUN_TEST(test_router_only_provider_is_not_told_no_provider);
+  RUN_TEST(test_keyless_pinned_head_runs_on_a_keyed_host_and_says_so_once);
+  RUN_TEST(test_keyed_provider_outside_the_priority_list_runs_the_turn);
+  RUN_TEST(test_no_key_anywhere_answers_every_turn_kind_honestly);
   RUN_TEST(test_any_provider_configured_predicate);
   RUN_TEST(test_loop_gate_uses_entry_heap_not_the_recall_dip);
   RUN_TEST(test_loop_defers_when_entry_heap_is_genuinely_low);
@@ -4217,6 +4298,9 @@ int main(int, char**) {
   RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
+}
+
+static void runSecondHalf() {
   RUN_TEST(test_cum544_second_notice_names_its_own_reason);
   RUN_TEST(test_cum544_only_the_timeout_token_skips_the_retry);
   RUN_TEST(test_cum523_telegram_only_tools_are_exactly_these);
@@ -4276,6 +4360,12 @@ int main(int, char**) {
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   runLateLaneTests();   // lanes K2 and DEF (and the recall-outage test, kept in order; main sits at the length gate)
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  runFirstHalf();
+  runSecondHalf();
   UNITY_END();
   return 0;
 }

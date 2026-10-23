@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <functional>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1294,8 +1296,11 @@ static void test_resolve_head_host_matches_the_engine_rule() {
       resolveHeadHost("", "cumulo,mistral", keyedSet({"cumulo", "mistral"}), "cumulo").c_str());
   TEST_ASSERT_EQUAL_STRING("mistral",
       resolveHeadHost("", "openai,anthropic,mistral,cumulo", keyedSet({"mistral"}), "").c_str());
-  TEST_ASSERT_EQUAL_STRING("anthropic",
+  // HOST-FALLBACK (22 Oct bench): a pin whose key was cleared is skipped.
+  TEST_ASSERT_EQUAL_STRING("openai",
       resolveHeadHost(" anthropic ", "openai,mistral", keyedSet({"openai"}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic",
+      resolveHeadHost(" anthropic ", "openai,mistral", keyedSet({"openai", "anthropic"}), "").c_str());
   TEST_ASSERT_EQUAL_STRING("zai",
       resolveHeadHost("", "openai, mistral", keyedSet({}), "zai").c_str());
   TEST_ASSERT_EQUAL_STRING("openai",
@@ -1304,6 +1309,71 @@ static void test_resolve_head_host_matches_the_engine_rule() {
       resolveHeadHost("", "openai,,  mistral ", keyedSet({"mistral"}), "").c_str());
   TEST_ASSERT_EQUAL_STRING("", resolveHeadHost("", "", keyedSet({}), "").c_str());
   TEST_ASSERT_EQUAL_STRING("mistral", resolveHeadHost("", "mistral", nullptr, "").c_str());
+}
+
+
+// HOST-FALLBACK, the class over every combination: which providers hold a key (all
+// 64 subsets of the five slots plus custom), the pin, the priority list and the
+// router fallback the device derives (Cumulo, then Z.ai). Whenever ANY provider has a
+// key the head has one; a keyed pin wins; then the priority list's first keyed; then
+// the router fallback; then any keyed slot; with no key anywhere the pin, else the
+// raw head (the turn is then answered locally). The bench: pin anthropic with its key
+// cleared and only Mistral keyed ran keyless (401); priority "anthropic" with Mistral
+// keyed ran on nothing ("Done.").
+static std::string trimmedHost(std::string t) {
+  t.erase(0, t.find_first_not_of(' '));
+  t.erase(t.find_last_not_of(' ') + 1);
+  return t;
+}
+// The rule written out plainly, as the oracle for the class test below.
+static std::string expectedHead(const std::function<bool(const std::string&)>& keyed, const std::string& pin,
+                                const std::string& prio, const std::string& rf) {
+  if (!pin.empty() && keyed(pin)) return pin;
+  for (size_t a = 0; a <= prio.size();) {
+    size_t c = prio.find(',', a);
+    if (c == std::string::npos) c = prio.size();
+    const std::string t = trimmedHost(prio.substr(a, c - a));
+    if (!t.empty() && keyed(t)) return t;
+    a = c + 1;
+  }
+  if (!rf.empty()) return rf;
+  for (const char* sl : {"cumulo", "openai", "anthropic", "mistral", "zai", "custom"})
+    if (keyed(sl)) return sl;
+  return std::string();
+}
+static void test_resolve_head_host_never_picks_a_keyless_host_when_one_is_keyed() {
+  using nimbus::orch::resolveHeadHost;
+  const char* const kAll[] = {"openai", "anthropic", "mistral", "cumulo", "zai", "custom"};
+  const char* const kPins[] = {"", "anthropic", "zai", "custom", " mistral "};
+  const char* const kPrio[] = {"", "anthropic", "openai,anthropic,mistral", "mistral, openai", "zai,cumulo"};
+  int checked = 0;
+  for (unsigned mask = 0; mask < 64; ++mask) {
+    std::function<bool(const std::string&)> keyed = [mask, &kAll](const std::string& h) {
+      for (unsigned i = 0; i < 6; ++i)
+        if ((mask & (1u << i)) && h == kAll[i]) return true;
+      return false;
+    };
+    const std::string rf = keyed("cumulo") ? "cumulo" : keyed("zai") ? "zai" : "";
+    for (const char* pin : kPins) {
+      for (const char* prio : kPrio) {
+        const std::string got = resolveHeadHost(pin, prio, keyed, rf);
+        const std::string p = trimmedHost(pin);
+        const std::string tag = std::string("mask ") + std::to_string(mask) + " pin '" + pin + "' prio '" + prio + "'";
+        if (mask) {
+          TEST_ASSERT_TRUE_MESSAGE(keyed(got), tag.c_str());   // the class: never keyless while one is keyed
+          TEST_ASSERT_EQUAL_STRING_MESSAGE(expectedHead(keyed, p, prio, rf).c_str(), got.c_str(), tag.c_str());
+        } else if (!p.empty()) {
+          TEST_ASSERT_EQUAL_STRING_MESSAGE(p.c_str(), got.c_str(), tag.c_str());
+        }
+        ++checked;
+      }
+    }
+  }
+  TEST_ASSERT_EQUAL(64 * 5 * 5, checked);
+  // The two bench shapes, by name.
+  auto only = [](const char* k) { return [k](const std::string& h) { return h == k; }; };
+  TEST_ASSERT_EQUAL_STRING("mistral", resolveHeadHost("anthropic", "anthropic", only("mistral"), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", resolveHeadHost("", "anthropic", only("mistral"), "").c_str());
 }
 
 // Hosted wiring (ProviderState.mistralHeadCarriesStudio = false): Studio connectors
@@ -2289,6 +2359,7 @@ int main() {
   RUN_TEST(test_workspace_scanner_structure);
   RUN_TEST(test_workspace_item_cap);
   RUN_TEST(test_resolve_head_host_matches_the_engine_rule);
+  RUN_TEST(test_resolve_head_host_never_picks_a_keyless_host_when_one_is_keyed);
   RUN_TEST(test_studio_connectors_sub_only_when_the_head_cannot_carry_them);
   RUN_TEST(test_connector_auth_rule_table);
   RUN_TEST(test_wants_probe_only_for_enabled_studio_connectors);

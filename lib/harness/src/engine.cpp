@@ -18,6 +18,7 @@
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
+#include "nimbus/orch/connectors_wire.h"  // resolveHeadHost - the one head-host rule
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 #include "nimbus/orch/model_defaults.h"  // lane DEF: background turns run on the cheapest tier
 #include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate (monthly spend ceiling)
@@ -165,44 +166,39 @@ namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
 using solide::ring::Status;
 
+// The honest local answer when no provider has a key (HOST-FALLBACK, 22 Oct): one
+// sentence on every channel, before any request or paid turn.
+static const char* const kNoProviderKeyReply =
+    "No AI provider has a key: add one under Assistant > Models.";
+
+// A provider's display name for an owner notice ("Anthropic"; the LAN endpoint is
+// "your custom endpoint"), else its slug.
+static std::string providerLabel(const std::string& slug) {
+  if (slug == "custom") return "your custom endpoint";
+  const orch::ProviderSlot* ps = orch::findProviderSlot(slug.c_str());
+  return ps ? std::string(ps->label) : slug;
+}
+
 static void trimInPlace(std::string& s);
 
 // The head the next turn will ACTUALLY run on - the one resolution both the
-// turn core and the [YOUR MODEL] context line read. Explicit orchHost wins;
-// else the first KEYED provider in priority order (CUM-201: BYOK-override
-// first); else the verified router fallback head (Cumulo, then Z.ai - CUM-242);
-// else the bare first priority token (unkeyed - it fails honestly at the wire).
-// One rule on purpose: when the context line read the raw first token instead,
-// a hosted anthropic-only instance INTRODUCED ITSELF as "mistral /
-// mistral-large-latest" - the model parrots this line, so it must name the
-// real head (CUM-374 e2e, 2026-09-18).
+// turn core and the [YOUR MODEL] context line read: nimbus::orch::resolveHeadHost,
+// the rule the device's screen, catalog and web page share. The pinned orchHost while
+// it has a key; else the first KEYED provider in priority order (CUM-201: BYOK-override
+// first); else the verified router fallback head (Cumulo, then Z.ai - CUM-242); else
+// any other keyed provider; only with no key anywhere the pin or the bare first token
+// (the turn is then answered locally, never dialed). HOST-FALLBACK (22 Oct bench): a
+// pin whose key was cleared won here and the turn dialed it keyless (HTTP 401); with
+// no keyed provider in the priority list the turn ran on nothing and said "Done."
+// One rule on purpose: when the context line read the raw first token instead, a
+// hosted anthropic-only instance INTRODUCED ITSELF as "mistral /
+// mistral-large-latest" - the model parrots this line, so it must name the real head
+// (CUM-374 e2e, 2026-09-18).
 static std::string resolveTurnHost(const TurnEngine::Deps& d) {
-  std::string host = d.cfg.provider.orchHost ? d.cfg.provider.orchHost() : std::string();
-  if (!host.empty()) return host;
-  std::string pr =
-      d.cfg.provider.providerPriority ? d.cfg.provider.providerPriority() : std::string();
-  std::string head, keyed;
-  for (size_t start = 0; start <= pr.length();) {
-    size_t c = pr.find(',', start);
-    const size_t end = (c == std::string::npos) ? pr.length() : c;
-    std::string cand = pr.substr(start, end - start);
-    trimInPlace(cand);
-    if (cand.length()) {
-      if (head.empty()) head = cand;
-      if (d.cfg.provider.hasKey && d.cfg.provider.hasKey(cand)) { keyed = cand; break; }
-    }
-    if (c == std::string::npos) break;
-    start = c + 1;
-  }
-  if (!keyed.empty()) {
-    host = keyed;
-  } else {
-    std::string rf =
-        d.cfg.provider.routerFallbackHost ? d.cfg.provider.routerFallbackHost() : std::string();
-    host = !rf.empty() ? rf : head;
-  }
-  trimInPlace(host);
-  return host;
+  const auto& p = d.cfg.provider;
+  return orch::resolveHeadHost(p.orchHost ? p.orchHost() : std::string(),
+                               p.providerPriority ? p.providerPriority() : std::string(), p.hasKey,
+                               p.routerFallbackHost ? p.routerFallbackHost() : std::string());
 }
 
 std::string TurnEngine::headHost() const { return resolveTurnHost(d_); }
@@ -620,7 +616,8 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_) {
     std::string list = d_.modelChoices ? d_.modelChoices(p) : std::string();
     if (list.empty() && d_.cfg.provider.subModel) list = d_.cfg.provider.subModel(p);
     if (list.empty()) continue;
-    ctx += " " + p + ": " + list + ";";
+    const std::string note = d_.modelListNote ? d_.modelListNote(p) : std::string();
+    ctx += " " + p + ": " + list + (note.empty() ? "" : " " + note) + ";";
     any = true;
   }
   // The custom LAN endpoint, when configured, is a REAL spawn/head target - its
@@ -1289,6 +1286,35 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     return out;
   };
 
+  // HOST-FALLBACK (22 Oct bench): the resolution skips a keyless pin and walks every
+  // keyed provider, so with no provider configured at all the head has no key: answer
+  // honestly instead of dialing it keyless (a 401) or running on nothing ("Done.").
+  // A routine or synthesis turn reaches this without handleMessage's own check.
+  if (d_.cfg.provider.hasKey && (host.empty() || !d_.cfg.provider.hasKey(host)) &&
+      !anyProviderConfigured()) {
+    hlog::logf("orchestrator: no provider has a key (head '%s') - honest local reply", host.c_str());
+    deliver(chatId, kNoProviderKeyReply);
+    tf.chain.noteDevice("no provider has a key");
+    fireTurnEnd(false, 0);
+    return false;
+  }
+  // A pinned head whose key was cleared: the turn runs on the keyed host the
+  // resolution found, and the owner hears it once per pin (not every turn).
+  {
+    const std::string pin = d_.cfg.provider.orchHost ? d_.cfg.provider.orchHost() : std::string();
+    if (!pin.empty() && pin != host && d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(pin)) {
+      hlog::logf("orchestrator: pinned head %s has no key - running on %s", pin.c_str(), host.c_str());
+      if (keylessPinTold_ != pin && !holdingNotices()) {
+        keylessPinTold_ = pin;
+        std::string note = providerLabel(pin) + " has no key, so " + providerLabel(host) +
+                           " is answering instead. Add a key or choose another provider under Assistant > Models.";
+        note[0] = (char)toupper((unsigned char)note[0]);
+        holdNotice(note);
+      }
+    } else if (pin == host) {
+      keylessPinTold_.clear();   // keyed again: a later clear is told again
+    }
+  }
   // Per-provider LLM token budget (owner: "limit budget per provider"). Opt-in - a
   // limit defaults to 0 (unlimited), so this only fires when the owner SET one and the
   // month's ceiling is reached. Prefer failing OVER to a keyed provider still in
@@ -1821,8 +1847,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // voice, serial), so the honest reply reaches all of them from one place.
   if (!anyProviderConfigured()) {
     hlog::log("orchestrator: turn refused - no provider configured (honest local reply)");
-    deliver(chatId, "No AI provider is set up yet. Add a provider key under "
-                    "Providers & models in the web app, then send your message again.");
+    deliver(chatId, kNoProviderKeyReply);
     return;
   }
   // CUM-404: admit on BOTH the total-free backstop AND the largest-contiguous-block
