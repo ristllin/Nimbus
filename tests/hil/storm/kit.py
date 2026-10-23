@@ -144,6 +144,41 @@ def begin_unfinished(net, leg: str, started: float) -> None:
     g.write_evidence(EVIDENCE_DIR, g.unfinished_record(run))
 
 
+SPEND_OVERALL_RE = re.compile(
+    r'"limitCents":(\d+),"spentCents":(\d+),"frozen":(true|false)(?:,"ownerSet":\w+,"active":(true|false))?'
+)
+SPEND_PROV_RE = re.compile(r'\{"p":"(\w+)","capCents":(\d+),"spentCents":(\d+),"frozen":(true|false)')
+
+
+def parse_spend_state(out: str) -> Optional[dict]:
+    """The overall ceiling and the per-provider limits from a SPENDSET line."""
+    m = SPEND_OVERALL_RE.search(out or "")
+    if not m:
+        return None
+    return {
+        "limitCents": int(m.group(1)),
+        "spentCents": int(m.group(2)),
+        "frozen": m.group(3) == "true",
+        "active": m.group(4) != "false",  # an image before provider limits: the ceiling is always on
+        "providers": {
+            p.group(1): (int(p.group(2)), int(p.group(3)), p.group(4) == "true") for p in SPEND_PROV_RE.finditer(out)
+        },
+    }
+
+
+def spend_rows(st: Optional[dict], keep: Optional[str]) -> Dict[str, Tuple[int, int, bool]]:
+    """The limits a leg must have room under: the overall ceiling when it is active ("")
+    and the kept provider's own limit."""
+    if not st:
+        return {}
+    rows: Dict[str, Tuple[int, int, bool]] = {}
+    if st.get("active", True) and st["limitCents"]:
+        rows[""] = (st["limitCents"], st["spentCents"], st["frozen"])
+    if keep and keep in st.get("providers", {}):
+        rows[keep] = st["providers"][keep]
+    return rows
+
+
 def port_mac(port: Optional[str]) -> str:
     """The MAC a serial port's USB serial number names (the ESP32-S3's own), or ''."""
     try:
@@ -462,50 +497,44 @@ class StormBench:
         """Everything a leg runs inside, undone in reverse order however it ends: the
         owner chat, the one provider key it keeps, room under the spend ceiling, and its
         head (``head_for``)."""
-        with self.owner_chat(), self.only_provider(keep), self.spend_room(), head:
+        with self.owner_chat(), self.only_provider(keep), self.spend_room(keep), head:
             self.guard0 = guard_counts(self)
             yield
 
     # ---- the monthly spend ceiling ------------------------------------------------------
-    SPEND_RE = re.compile(r'SPENDSET \{.*?"limitCents":(\d+),"spentCents":(\d+),"frozen":(true|false)')
-
     def spend_state(self) -> Optional[dict]:
-        """The monthly spend ceiling (SPENDSET?), or None on an image without it."""
+        """The monthly spend limits (SPENDSET ?), or None on an image without them."""
         try:
             out = self.verb("SPENDSET ?", "SPENDSET", timeout=6.0)
         except Exception:  # noqa: BLE001 - no answer: no ceiling seam
             return None
-        m = self.SPEND_RE.search(out)
-        if not m:
-            return None
-        return {"limitCents": int(m.group(1)), "spentCents": int(m.group(2)), "frozen": m.group(3) == "true"}
+        return parse_spend_state(out)
 
     @contextlib.contextmanager
-    def spend_room(self, need_cents: int = 300) -> Iterator[Optional[dict]]:
-        """Room under the monthly spend ceiling for the leg. A bench unit's month carries
-        every earlier lane's bench spend; a ceiling already reached pauses every paid
-        call and the leg would grade the pause, not its storm. When the room left is
-        under ``need_cents`` this month's count is seeded to 0 for the leg and put back
-        after it (SPENDSET, test builds). The ceiling itself stays: the legs prove the
-        cap holds, they never lift it."""
+    def spend_room(self, keep: Optional[str] = None, need_cents: int = 300) -> Iterator[Optional[dict]]:
+        """Room under the monthly spend limits for the leg. A bench unit's month carries
+        every earlier lane's bench spend; a limit already reached pauses paid calls and
+        the leg would grade the pause, not its storm. When the overall ceiling (if it is
+        active) or the kept provider's own limit has less than ``need_cents`` left, that
+        count is seeded to 0 for the leg and put back after it, plus what the leg itself
+        spent (SPENDSET, test builds). The limits themselves stay: the legs prove a cap
+        holds, they never lift one."""
         st = self.spend_state() if not self.control else None
-        seeded = None
+        seeds: Dict[str, int] = {}  # "" = the overall count, else the provider's
         try:
-            if st and (st["frozen"] or st["limitCents"] - st["spentCents"] < need_cents):
-                seeded = st["spentCents"]  # set first: a seed that raises after landing is still put back
-                self.verb("SPENDSET 0", "SPENDSET", timeout=6.0)
-                print(f"[storm] spend ceiling: {st}; this month's count seeded to 0 for the leg")
+            for who, (limit, spent, frozen) in spend_rows(st, keep).items():
+                if frozen or limit - spent < need_cents:
+                    seeds[who] = spent  # set first: a seed that raises after landing is still put back
+                    self.verb(f"SPENDSET {'prov ' + who + ' ' if who else ''}0", "SPENDSET", timeout=6.0)
+                    print(f"[storm] spend limit {who or 'overall'}: {spent}/{limit} cents; seeded to 0 for the leg")
             yield st
         finally:
-            if seeded is not None:
-                # The month's count back, plus what the leg itself spent: the device keeps
-                # counting the bench's real spend.
-                now = self.spend_state() or {"spentCents": 0}
-                back = seeded + now["spentCents"]
-                self.verb(f"SPENDSET {back}", "SPENDSET", timeout=6.0)
-                print(
-                    f"[storm] spend ceiling: this month's count put back to {back} cents ({now['spentCents']} by the leg)"
-                )
+            if seeds:
+                now = spend_rows(self.spend_state(), keep)
+                for who, before in seeds.items():
+                    back = before + now.get(who, (0, 0, False))[1]
+                    self.verb(f"SPENDSET {'prov ' + who + ' ' if who else ''}{back}", "SPENDSET", timeout=6.0)
+                    print(f"[storm] spend limit {who or 'overall'}: count put back to {back} cents")
 
     # ---- provider isolation and the head -------------------------------------------------
     @contextlib.contextmanager

@@ -469,3 +469,20 @@ def test_an_unfinished_run_is_a_fail_that_its_own_record_replaces(tmp_path):
     assert g.write_evidence(str(tmp_path), done) == first  # the same file: replaced
     records = g.load_evidence(str(tmp_path))
     assert len(records) == 1 and records[0]["grade"] == g.PASS
+
+
+def test_spend_limits_a_leg_needs_room_under():
+    line = (
+        'SPENDSET {"limitCents":2000,"spentCents":4444,"frozen":true,"ownerSet":false,"active":false,'
+        '"month":202610,"resetsOn":"1 November","saved":true,"loaded":true,"dailyWarnCents":500,"todayCents":12,'
+        '"providers":[{"p":"anthropic","capCents":1000,"spentCents":1200,"frozen":true,"resetsOn":"1 November"},'
+        '{"p":"openai","capCents":500,"spentCents":0,"frozen":false,"resetsOn":"1 November"}]}'
+    )
+    st = kit.parse_spend_state(line)
+    assert st["active"] is False and st["providers"]["anthropic"] == (1000, 1200, True)
+    assert kit.spend_rows(st, "anthropic") == {"anthropic": (1000, 1200, True)}  # the inactive ceiling is no limit
+    old = kit.parse_spend_state(
+        'SPENDSET {"limitCents":2000,"spentCents":2509,"frozen":true,"ownerSet":false,"month":1}'
+    )
+    assert old["active"] is True and kit.spend_rows(old, "anthropic") == {"": (2000, 2509, True)}
+    assert kit.spend_rows(None, "anthropic") == {}

@@ -187,7 +187,10 @@ the bench control image built with only the test console's memory ballast backpo
 The candidate is driven through its real paths: `TGINJECT`, `PROVFAULT`, `NVSFILL`,
 `FAULT sram_ballast`, `PANIC <kind> arm=turn`. Every leg clears every provider key but the
 one it uses (none on the control image, which never spends) and puts them back from the
-bench `.env` afterwards; no leg needs a phone or a person. The model-facing legs run the
+bench `.env` afterwards; when the unit's overall monthly ceiling (if active) or the kept
+provider's own monthly limit has less than 3 USD left, the leg seeds that count to 0 for
+its run (`SPENDSET`, test builds) and puts it back with its own spend added, never
+lifting a limit; no leg needs a phone or a person. The model-facing legs run the
 head on `NIMBUS_STORM_MODEL` (default `claude-haiku-5-5`).
 
 Run one leg on the unit the session opens (the unit's identity, control image or
