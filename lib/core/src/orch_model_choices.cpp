@@ -55,6 +55,15 @@ std::string effectiveModelChoices(const char* slug, const std::string& harvested
   return kept.empty() ? std::string(staticModelChoices(slug)) : kept;
 }
 
+std::vector<std::string> choiceItems(const std::string& csv) {
+  std::vector<std::string> out;
+  eachItem(csv, [&out](const char* p, size_t n) {
+    out.emplace_back(p, n);
+    return true;
+  });
+  return out;
+}
+
 bool modelInChoices(const std::string& csv, const std::string& model) {
   if (model.empty()) return false;
   return !eachItem(csv, [&model](const char* p, size_t n) {   // stops at the match

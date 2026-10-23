@@ -1,21 +1,21 @@
 #pragma once
 // router_catalog - the Cumulo router's model list, on the device and on a hosted
-// Virtual Nimbus (CUM-530).
+// Virtual Nimbus (CUM-530, lane F L19-49).
 //
 // The router's GET /router/models lists every routable model as
-// "<upstream>/<model>", ordered size class first, then upstream name, then model.
-// The verify harvest used to keep the first 8 "preferred" ids of that list, so a
-// router whose large Anthropic rows sort first filled every slot with
-// anthropic/claude-opus-* ids (dated twins included): the router default
-// openai/gpt-5.6 and every other upstream vanished from the picker, and a save of
-// the default was refused. The rule here is the one place that decides which
-// router models the device keeps:
+// "<upstream>/<model>" (~95 KB, over 600 rows), ordered size class first, then
+// upstream name, then model. The device reads it whole as a stream
+// (nimbus::orch::ModelsBodyReader) into its model store, and this header is the one
+// place that decides which router models the store keeps and in what order:
+//   - one slot per model: a dated snapshot whose undated alias is listed is dropped,
+//     and the dot and dash spellings of one version ("claude-opus-5.5",
+//     "claude-opus-5-5") are one model, kept under the dash spelling;
 //   - the router default first, then the first (flagship) model of each upstream,
-//     then the rest in the router's own order;
-//   - a dated snapshot whose undated alias is also listed is dropped (an alias,
-//     not a second model);
-//   - the compact choice list (NVS mch_cumulo, also the [AVAILABLE MODELS] line
-//     every turn carries) is capped by count and bytes, and says when it was cut.
+//     then every upstream's current chat models, then the rest;
+//   - at most kCatalogMaxRows rows (nimbus::orch::kModelStoreMaxRows); what does
+//     not fit is counted, so the stored list says "<n> more";
+//   - the short list (the [AVAILABLE MODELS] line every turn carries, and the quick
+//     picks) is capped by count and bytes and always holds the router default.
 // Header-only and Arduino-free so test/test_router_catalog pins it on the host, and
 // nimbusd (which builds from lib/ alone) bounds its catalog by the same rule.
 
@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "nimbus/harness/log.h"   // hlog - one line when the harvest bound is hit
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/model_key.h"      // usageModelKey - the price row's key
 #include "nimbus/orch/model_ledger.h"   // ModelRate, kMaxRouterRates
@@ -36,23 +35,12 @@
 namespace agent {
 namespace router_catalog {
 
-// The compact choice list: at most this many ids and this many CSV bytes (NVS).
+// The short list: at most this many ids and this many CSV bytes.
 inline constexpr size_t kChoicesMax      = 12;
 inline constexpr size_t kChoicesMaxBytes = 480;
-// The router's capability catalog file (/data/mcat_cumulo.json, GET /api/models).
-// One router aggregates every upstream's list, so it gets about four single-provider
-// budgets (nimbus::store::kCatalogMaxBytes is 3800): ~48 models.
-inline constexpr size_t kCatalogMaxBytes = 16000;
-// The most chat ids one harvest keeps from a /router/models body. The body is
-// untrusted and only byte-bounded (64 KB): ~6500 tiny ids would otherwise each
-// cost a string and a sort slot inside the verify slot. Far above any real router
-// list, and ten times the choice list.
-inline constexpr size_t kHarvestMax = 128;
-// The most rows the router catalog keeps from the same body (protectHeads), so the
-// store step is bounded: the size trim that follows re-serializes once per
-// dropped row. (The parse and keepOrder before it are O(n log n) over the body,
-// and keepOrder groups at most 4 + kOtherUpstreamsMax upstreams.)
-inline constexpr size_t kCatalogMaxRows = kHarvestMax;
+// The router's rows in the model store (/data/models_cumulo.txt, GET /api/models):
+// the store's own bound, which holds every routable model the router lists today.
+inline constexpr size_t kCatalogMaxRows  = nimbus::orch::kModelStoreMaxRows;
 
 // The upstreams the device runs a head on natively (and zai, the router's GLM):
 // always grouped. Any other upstream is grouped only while fewer than
@@ -98,29 +86,18 @@ inline std::string undatedAlias(const std::string& id) {
   return std::string();
 }
 
-// ---- the harvest filter (moved here from provider_verify.cpp so it is tested) ----
+// ---- which router rows are chat models -------------------------------------------
 
 // Non-chat FAMILIES that can't run the turn contract (embeddings/audio/image/...),
-// by id substring - provider-independent. provider_verify's harvest uses the same
-// list for every provider.
-inline bool neverChatFamily(const std::string& id) {
-  static const char* const kNever[] = {"embed", "moderation", "audio", "realtime",
-                                       "transcribe", "tts", "whisper", "image",
-                                       "dall-e", "ocr", "voxtral", "davinci",
-                                       "babbage", "instruct", "search-", "chatgpt",
-                                       "research",   // deep-research models can't run chat turns
-                                       "fim",        // fill-in-middle = code completion
-                                       nullptr};
-  for (int i = 0; kNever[i]; ++i)
-    if (id.find(kNever[i]) != std::string::npos) return true;
-  return false;
-}
+// by id substring - the one list in nimbus::orch (model_catalog.h).
+inline bool neverChatFamily(const std::string& id) { return nimbus::orch::neverChatFamily(id); }
 
 // A router id the device can run as a chat model. The router lists only ROUTABLE
 // (priced + enabled) models, so other upstreams are curated by it; the openai
-// upstream still drops dated snapshots and non-chat families by name.
+// upstream still drops dated snapshots and non-chat families by name, and no
+// upstream's ":batch" price twin is a model the device can call (routerRowKept).
 inline bool routerChatModel(const std::string& id) {
-  if (id.size() < 3 || neverChatFamily(id) || !routable(id)) return false;
+  if (id.size() < 3 || neverChatFamily(id) || !nimbus::orch::routerRowKept(id)) return false;
   const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(id);
   if (r.upstream != "openai") return true;
   const std::string& m = r.model;
@@ -130,45 +107,7 @@ inline bool routerChatModel(const std::string& id) {
 
 // Each upstream's CURRENT generation first (rows priced only for back-compat
 // billing - claude-3-*, gpt-4o - come after).
-inline bool routerFlagship(const std::string& id) {
-  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(id);
-  if (r.upstream == "openai" || r.upstream == "zai")
-    return nimbus::orch::isFlagshipFamily(r.upstream, r.model);
-  if (r.upstream == "anthropic") return r.model.rfind("claude-3", 0) != 0;
-  return true;
-}
-
-// Every "id" value in a /router/models body (HTTP headers may precede it; pretty or
-// compact JSON), chat models only, flagships first, each group in the router's
-// order, at most kHarvestMax ids (flagships fill first, wherever they appear; one
-// log line says when the bound cut the list). An id over 64 chars ends the scan
-// (it is not an id list).
-inline std::vector<std::string> harvestIds(const char* body) {
-  std::vector<std::string> flag, rest;
-  size_t found = 0;
-  const char* p = body;
-  while (p && (p = std::strstr(p, "\"id\":")) != nullptr) {
-    p += 5;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-    if (*p != '"') continue;
-    const char* e = std::strchr(++p, '"');
-    if (!e || e - p > 64) break;
-    const std::string id(p, (size_t)(e - p));
-    p = e;
-    if (!routerChatModel(id)) continue;
-    ++found;
-    std::vector<std::string>& group = routerFlagship(id) ? flag : rest;
-    if (group.size() < kHarvestMax) group.push_back(id);
-  }
-  const size_t room = kHarvestMax - flag.size();
-  const size_t take = std::min(room, rest.size());
-  flag.insert(flag.end(), rest.begin(), rest.begin() + static_cast<std::ptrdiff_t>(take));
-  if (found > flag.size())
-    agent::hlog::logf("router_catalog: harvest keeps %u of %u router chat ids (bound %u, "
-                      "flagships first)",
-                      (unsigned)flag.size(), (unsigned)found, (unsigned)kHarvestMax);
-  return flag;
-}
+inline bool routerFlagship(const std::string& id) { return nimbus::orch::routerFlagshipSelector(id); }
 
 namespace detail {
 
@@ -212,28 +151,41 @@ inline bool newerFirst(const VersionKey& ka, const VersionKey& kb) {
   return !ka.variant && kb.variant;
 }
 
-// Distinct, non-twin candidates (indexes into canon) in list order. O(n log n):
-// indexes sorted by (id, position) put each id's first occurrence at the head of
-// its run, and "is the alias listed" is a binary search - no pairwise scan, no
-// copied strings (the list comes from an untrusted router body).
+// Distinct, non-twin candidates (indexes into canon) in list order, one per model:
+// the spellings of one model (sameModelKey: "claude-opus-5.5" and "claude-opus-5-5")
+// count once, kept under the spelling equal to the key (the dash form the upstream's
+// own API uses) when listed, else the first; a dated twin of a listed alias is
+// dropped. O(n log n): indexes sorted by (key, position), "is the alias listed" a
+// binary search - no pairwise scan (the list comes from an untrusted router body).
 inline std::vector<size_t> candidates(const std::vector<std::string>& canon) {
-  std::vector<size_t> byId(canon.size());
-  for (size_t i = 0; i < byId.size(); ++i) byId[i] = i;
-  std::sort(byId.begin(), byId.end(), [&](size_t a, size_t b) {
-    const int c = canon[a].compare(canon[b]);
+  std::vector<std::string> key(canon.size());
+  for (size_t i = 0; i < canon.size(); ++i) key[i] = nimbus::orch::sameModelKey(canon[i]);
+  std::vector<size_t> byKey(canon.size());
+  for (size_t i = 0; i < byKey.size(); ++i) byKey[i] = i;
+  std::sort(byKey.begin(), byKey.end(), [&](size_t a, size_t b) {
+    const int c = key[a].compare(key[b]);
     return c != 0 ? c < 0 : a < b;
   });
-  std::vector<bool> first(canon.size(), false);
-  for (size_t k = 0; k < byId.size(); ++k)
-    first[byId[k]] = k == 0 || canon[byId[k]] != canon[byId[k - 1]];
+  // The representative of each key's run: its dash spelling if listed, else its first.
+  std::vector<bool> rep(canon.size(), false);
+  for (size_t k = 0; k < byKey.size();) {
+    size_t e = k + 1;
+    while (e < byKey.size() && key[byKey[e]] == key[byKey[k]]) ++e;
+    size_t pick = byKey[k];
+    for (size_t j = k; j < e; ++j)
+      if (canon[byKey[j]] == key[byKey[j]]) { pick = byKey[j]; break; }
+    rep[pick] = true;
+    k = e;
+  }
   auto listed = [&](const std::string& id) {
-    const auto it = std::lower_bound(byId.begin(), byId.end(), id,
-                                     [&](size_t i, const std::string& v) { return canon[i] < v; });
-    return it != byId.end() && canon[*it] == id;
+    const std::string kid = nimbus::orch::sameModelKey(id);
+    const auto it = std::lower_bound(byKey.begin(), byKey.end(), kid,
+                                     [&](size_t i, const std::string& v) { return key[i] < v; });
+    return it != byKey.end() && key[*it] == kid;
   };
   std::vector<size_t> cand;
   for (size_t i = 0; i < canon.size(); ++i) {
-    if (canon[i].empty() || !first[i]) continue;
+    if (canon[i].empty() || !rep[i]) continue;
     const std::string alias = undatedAlias(canon[i]);
     if (!alias.empty() && listed(alias)) continue;   // a dated twin of a listed alias
     cand.push_back(i);
@@ -248,6 +200,23 @@ struct Queues {
   std::vector<std::vector<size_t>> q;
   size_t dropped = 0;   // candidates of upstreams past the bound (counted as "more")
 };
+// Each upstream's chat models lead its queue, its current generation (routerFlagship)
+// first, then newest first, so neither a non-chat row nor a junk row whose name reads
+// as a higher number ever becomes the upstream's head. Each id's key is computed once.
+inline void sortQueues(const std::vector<std::string>& canon, const std::vector<size_t>& cand, Queues& qs) {
+  std::vector<VersionKey> keys(canon.size());
+  std::vector<uint8_t> rank(canon.size(), 0);   // 0 current chat, 1 other chat, 2 not chat
+  for (size_t i : cand) {
+    keys[i] = versionKey(undatedModel(canon[i]));
+    rank[i] = !routerChatModel(canon[i]) ? 2 : routerFlagship(canon[i]) ? 0 : 1;
+  }
+  for (auto& qv : qs.q)
+    std::stable_sort(qv.begin(), qv.end(), [&](size_t a, size_t b) {
+      if (rank[a] != rank[b]) return rank[a] < rank[b];
+      return newerFirst(keys[a], keys[b]);
+    });
+}
+
 inline Queues byUpstream(const std::vector<std::string>& canon, const std::vector<size_t>& cand,
                          const std::vector<size_t>& skip) {
   Queues qs;
@@ -275,11 +244,7 @@ inline Queues byUpstream(const std::vector<std::string>& canon, const std::vecto
   // generation first): order each upstream newest-first so a cut list keeps
   // claude-opus-5 / gpt-6-astra / glm-5.3, not the 4.x / 5.5 / glm-5 rows.
   // Each id's key is computed once (not twice per comparison).
-  std::vector<VersionKey> keys(canon.size());
-  for (size_t i : cand) keys[i] = versionKey(undatedModel(canon[i]));
-  for (auto& qv : qs.q)
-    std::stable_sort(qv.begin(), qv.end(),
-                     [&](size_t a, size_t b) { return newerFirst(keys[a], keys[b]); });
+  sortQueues(canon, cand, qs);
   return qs;
 }
 
@@ -315,8 +280,9 @@ inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
   const std::vector<size_t> cand = detail::candidates(canon);
   std::vector<size_t> order;
   const std::string def = canonical(defaultSel);
+  const std::string defKey = nimbus::orch::sameModelKey(def);
   for (size_t i : cand)
-    if (canon[i] == def) { order.push_back(i); break; }
+    if (!def.empty() && nimbus::orch::sameModelKey(canon[i]) == defKey) { order.push_back(i); break; }
   const std::string defUp = order.empty() ? std::string() : upstreamOf(def);
   const detail::Queues qs = detail::byUpstream(canon, cand, order);
   if (dropped) *dropped = qs.dropped;
@@ -350,95 +316,53 @@ inline Shortlist shortlist(const std::vector<std::string>& ids, const std::strin
   return out;
 }
 
-// ---- router prices (per-model prices, 2026-10) -------------------------------------
-// The router's /router/models rows carry what Cumulo bills per model
-// (in_micro_per_mtok / out_micro_per_mtok, micro-USD per 1M tokens). The harvest
-// keeps ONLY the device's own models - the choice list plus the configured head and
-// sub-agent selectors - at most kMaxRouterRates rows, reading the body in place
-// (the verify task's PSRAM buffer): no copy of the body, one short string per id.
+// ---- the router rows the model store keeps ------------------------------------------
+
+// The router selector of a parsed catalog entry. parseModelsList keeps the bare
+// model in `id` and the upstream in `upstream` (classified against its upstream),
+// so the selector a pick must send is "<upstream>/<id>".
+inline std::string selectorOf(const nimbus::orch::ModelInfo& m) { return nimbus::orch::modelSelector(m); }
 
 namespace detail {
-// The unsigned integer after "<field>": inside [from, to), saturating at u32 max;
-// 0 when the field is absent or not a number.
-inline uint32_t priceField(const char* from, const char* to, const char* field) {
-  const size_t fl = std::strlen(field);
-  for (const char* p = from; p + fl <= to; ++p) {
-    if (std::memcmp(p, field, fl) != 0) continue;
-    p += fl;
-    while (p < to && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
-    uint64_t v = 0;
-    bool any = false;
-    while (p < to && *p >= '0' && *p <= '9') {
-      any = true;
-      v = v * 10 + (uint64_t)(*p - '0');
-      if (v > UINT32_MAX) return UINT32_MAX;
-      ++p;
+// Rows no upstream runs and ":batch" price twins go; a non-chat router id keeps only
+// its non-chat roles (an embedding or speech row), and a row with no role left goes.
+inline void keepRunnableRows(std::vector<nimbus::orch::ModelInfo>& cat) {
+  using namespace nimbus::orch;
+  size_t w = 0;
+  for (size_t i = 0; i < cat.size(); ++i) {
+    ModelInfo& m = cat[i];
+    const std::string sel = selectorOf(m);
+    if (!routerRowKept(sel)) continue;
+    if (!routerChatModel(sel)) m.roles &= (uint16_t)~(RoleOrchestrator | RoleSubAgent | RoleVision);
+    if (!m.roles) continue;
+    if (w != i) cat[w] = std::move(m);
+    ++w;
+  }
+  cat.resize(w);
+}
+
+// Each kept row's price is the highest of its spellings' (fail-closed money: spend on
+// that model is never priced at the cheaper spelling's rate).
+inline void raiseToSpellingPrice(std::vector<nimbus::orch::ModelInfo>& cat, const std::vector<std::string>& ids,
+                                 const std::vector<size_t>& order) {
+  std::vector<std::pair<std::string, size_t>> keyed;
+  keyed.reserve(ids.size());
+  for (size_t i = 0; i < ids.size(); ++i)
+    if (cat[i].priced) keyed.emplace_back(nimbus::orch::sameModelKey(canonical(ids[i])), i);
+  std::sort(keyed.begin(), keyed.end());
+  for (size_t i : order) {
+    const std::string k = nimbus::orch::sameModelKey(canonical(ids[i]));
+    auto it = std::lower_bound(keyed.begin(), keyed.end(), std::make_pair(k, (size_t)0));
+    for (; it != keyed.end() && it->first == k; ++it) {
+      const nimbus::orch::ModelInfo& o = cat[it->second];
+      cat[i].priced = true;
+      cat[i].priceIn = std::max(cat[i].priceIn, o.priceIn);
+      cat[i].priceOut = std::max(cat[i].priceOut, o.priceOut);
     }
-    return any ? (uint32_t)v : 0;
   }
-  return 0;
 }
 
-// The next "id" string at or after `p`: `idKey` is where its key starts, `p` leaves
-// on its closing quote. False at the end of the body, or when an id over 64 chars
-// says this is not an id list.
-inline bool nextId(const char*& p, const char*& idKey, std::string& id) {
-  while ((p = std::strstr(p, "\"id\":")) != nullptr) {
-    idKey = p;
-    p += 5;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-    if (*p != '"') continue;
-    const char* e = std::strchr(++p, '"');
-    if (!e || e - p > 64) return false;
-    id.assign(p, (size_t)(e - p));
-    p = e;
-    return true;
-  }
-  return false;
-}
-
-// The price row of the router object around one id: from its '{' to its '}' (router
-// rows are flat objects). False when the object is unterminated.
-inline bool rowPrice(const char* body, const char* idKey, const char* idEnd, const std::string& id,
-                     nimbus::orch::ModelRate& r) {
-  const char* lb = idKey;
-  while (lb > body && *lb != '{') --lb;
-  const char* rb = std::strchr(idEnd, '}');
-  if (!rb) return false;
-  r = nimbus::orch::ModelRate{};
-  std::strcpy(r.prov, "cumulo");
-  nimbus::orch::usageModelKey("cumulo", id.c_str(), "", r.model);
-  r.microIn = priceField(lb, rb, "\"in_micro_per_mtok\":");
-  r.microOut = priceField(lb, rb, "\"out_micro_per_mtok\":");
-  return true;
-}
-
-// The kept ids in canonical "<upstream>/<model>" form (bounded by the caller), and
-// which of them a whole row was read for.
-struct KeepSet {
-  std::vector<std::string> ids;
-  std::vector<bool>        seen;
-  explicit KeepSet(const std::vector<std::string>& keepIds) {
-    ids.reserve(keepIds.size());
-    for (const std::string& k : keepIds)
-      if (routable(k)) ids.push_back(canonical(k));
-    seen.assign(ids.size(), false);
-  }
-  bool has(const std::string& c) const { return std::find(ids.begin(), ids.end(), c) != ids.end(); }
-  void mark(const std::string& c) {
-    for (size_t k = 0; k < ids.size(); ++k) seen[k] = seen[k] || ids[k] == c;
-  }
-  // The kept ids no row was read for, once each.
-  void missing(std::vector<std::string>& out) const {
-    out.clear();
-    for (size_t i = 0; i < ids.size(); ++i)
-      if (!seen[i] && std::find(out.begin(), out.end(), ids[i]) == out.end()) out.push_back(ids[i]);
-  }
-};
-
-// A second router row for a key already kept (two ids can share one key, e.g. an
-// alias and its 4-digit build) raises the kept price to the higher one, per field
-// (fail-closed: spend on that key is never priced at the cheaper id's rate).
+// A second rate for a key already kept raises it to the higher price, per field.
 inline bool mergeKeyed(std::vector<nimbus::orch::ModelRate>& v, const nimbus::orch::ModelRate& r) {
   for (auto& o : v) {
     if (std::strcmp(o.model, r.model) != 0) continue;
@@ -450,8 +374,64 @@ inline bool mergeKeyed(std::vector<nimbus::orch::ModelRate>& v, const nimbus::or
 }
 }  // namespace detail
 
-// The ids whose router prices the device keeps: the compact choice list (CSV) plus
-// the configured head and sub-agent selectors. Bounded by kChoicesMax + 2.
+// Reorder a parsed router catalog in place for the model store and bound it to
+// kCatalogMaxRows (CUM-530: the body is untrusted, and thousands of tiny ids used to
+// reach the store step whole). Rows no upstream runs and ":batch" twins go, one row
+// stays per model (keepOrder), the router default and each upstream's head come
+// first, then every upstream's current chat models (routerFlagship), then the other
+// chat models, then the non-chat rows - so neither the row cap nor a size trim from
+// the back costs the default, an upstream or a flagship listed late. Returns how many
+// models the cap cut or the upstream bound left out (the stored list says "<n> more").
+inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std::string& defaultSel) {
+  detail::keepRunnableRows(cat);
+  std::vector<std::string> ids;
+  ids.reserve(cat.size());
+  for (const auto& m : cat) ids.push_back(selectorOf(m));
+  size_t dropped = 0;
+  std::vector<size_t> order = keepOrder(ids, defaultSel, &dropped);
+  detail::raiseToSpellingPrice(cat, ids, order);
+  std::vector<std::string> ups;   // the heads: the first row of each upstream (bounded scan)
+  size_t heads = 0;
+  while (heads < order.size() && heads < kCatalogMaxRows) {
+    const std::string up = upstreamOf(ids[order[heads]]);
+    if (std::find(ups.begin(), ups.end(), up) != ups.end()) break;
+    ups.push_back(up);
+    ++heads;
+  }
+  const auto rest = order.begin() + static_cast<std::ptrdiff_t>(heads);
+  const auto chatEnd = std::stable_partition(rest, order.end(), [&](size_t i) { return routerChatModel(ids[i]); });
+  std::stable_partition(rest, chatEnd, [&](size_t i) { return routerFlagship(ids[i]); });
+  const size_t cut = order.size() > kCatalogMaxRows ? order.size() - kCatalogMaxRows : 0;
+  order.resize(order.size() - cut);
+  std::vector<nimbus::orch::ModelInfo> out;
+  out.reserve(order.size());
+  for (size_t i : order) out.push_back(std::move(cat[i]));
+  cat.swap(out);
+  return cut + dropped;
+}
+
+// The router's short list from its store rows (protectHeads order): shortlist() over
+// the offered chat rows, with the router default always in it ("the Cumulo list
+// always holds CUMULO_MODEL"): first when the router lists it, else placed first
+// anyway (the router still answers its own default).
+inline std::string storeChoices(const std::vector<nimbus::orch::ModelInfo>& rows, const std::string& defaultSel,
+                                uint32_t now) {
+  std::vector<std::string> ids;
+  ids.reserve(rows.size());
+  for (const auto& m : rows)
+    if (nimbus::orch::rowOffered(m, nimbus::orch::RoleOrchestrator, now) && routerChatModel(selectorOf(m)))
+      ids.push_back(selectorOf(m));
+  const Shortlist sl = shortlist(ids, defaultSel);
+  const std::string def = canonical(defaultSel);
+  if (def.empty()) return sl.csv;
+  for (const std::string& id : ids)
+    if (nimbus::orch::sameModelKey(canonical(id)) == nimbus::orch::sameModelKey(def)) return sl.csv;
+  const Shortlist rest = shortlist(ids, defaultSel, kChoicesMax - 1, kChoicesMaxBytes - def.size() - 1);
+  return rest.csv.empty() ? def : def + "," + rest.csv;
+}
+
+// The ids whose router prices the device keeps in its spend ledger: the short list
+// (CSV) plus the configured head and sub-agent selectors. Bounded by kChoicesMax + 2.
 inline std::vector<std::string> priceKeepIds(const std::string& choicesCsv,
                                              const std::string& orchSel,
                                              const std::string& subSel) {
@@ -469,77 +449,38 @@ inline std::vector<std::string> priceKeepIds(const std::string& choicesCsv,
   return keep;
 }
 
-// The verify reads at most 64 KB of the router's body (CUM-564; the full list is
-// ~95 KB), so a kept id listed late may not be in the read window, and the last row
-// in it may be cut short. Neither gets a price: a row is priced only when its whole
-// object ('{' to '}') is in the window, and an id never seen is named in `missing`
-// (canonical form, when given) so the caller can log it - its price stays unset (the
-// next tier prices it), never a wrong one.
-inline size_t harvestPrices(const char* body, const std::vector<std::string>& keepIds,
-                            std::vector<nimbus::orch::ModelRate>& out,
-                            std::vector<std::string>* missing = nullptr) {
+// The ledger rates of `keepIds` from the router's store rows: each kept id priced by
+// its own model's row (either spelling), keyed by the id as the device names it, at
+// most ModelLedger::kMaxRouterRates rows. A kept id no priced row matches is named in
+// `missing` (canonical form): its price stays unset (the next tier prices it), never
+// a wrong one.
+inline size_t routerRates(const std::vector<nimbus::orch::ModelInfo>& rows,
+                          const std::vector<std::string>& keepIds,
+                          std::vector<nimbus::orch::ModelRate>& out,
+                          std::vector<std::string>* missing = nullptr) {
   out.clear();
-  detail::KeepSet keep(keepIds);
-  out.reserve(nimbus::orch::ModelLedger::kMaxRouterRates);
-  const char* p = body;
-  const char* idKey = nullptr;
-  std::string id;
-  // Each kept id appears once in a real body; the bound caps the row scans a
-  // malformed body (one id repeated without prices) could cost the verify task.
-  size_t scans = 0;
-  const size_t maxScans = 4 * nimbus::orch::ModelLedger::kMaxRouterRates;
-  while (p && out.size() < nimbus::orch::ModelLedger::kMaxRouterRates && scans < maxScans &&
-         detail::nextId(p, idKey, id)) {
-    if (!routable(id) || !keep.has(canonical(id))) continue;
-    ++scans;
+  if (missing) missing->clear();
+  for (const std::string& id : keepIds) {
+    if (out.size() >= nimbus::orch::ModelLedger::kMaxRouterRates) break;
+    if (!routable(id)) continue;
+    const std::string k = nimbus::orch::sameModelKey(canonical(id));
+    const nimbus::orch::ModelInfo* hit = nullptr;
+    for (const auto& m : rows)
+      if (m.priced && nimbus::orch::sameModelKey(canonical(selectorOf(m))) == k) { hit = &m; break; }
+    if (!hit) {
+      if (missing && std::find(missing->begin(), missing->end(), canonical(id)) == missing->end())
+        missing->push_back(canonical(id));
+      continue;
+    }
     nimbus::orch::ModelRate r;
-    if (!detail::rowPrice(body, idKey, p, id, r)) break;   // cut short: no price
-    keep.mark(canonical(id));
+    std::strcpy(r.prov, "cumulo");
+    nimbus::orch::usageModelKey("cumulo", id.c_str(), "", r.model);
+    r.microIn = hit->priceIn;
+    r.microOut = hit->priceOut;
     if (!r.model[0] || (!r.microIn && !r.microOut) || detail::mergeKeyed(out, r)) continue;
     out.push_back(r);
   }
-  if (missing) keep.missing(*missing);
   return out.size();
-}
-
-// The router selector of a parsed catalog entry. parseModelsList keeps the bare
-// model in `id` and the upstream in `upstream` (classified against its upstream),
-// so the selector a pick must send is "<upstream>/<id>".
-inline std::string selectorOf(const nimbus::orch::ModelInfo& m) {
-  return m.upstream.empty() ? m.id : m.upstream + "/" + m.id;
-}
-
-// Reorder a parsed router catalog in place to keepOrder() (dropping dated twins
-// and duplicates) and bound it to kCatalogMaxRows (CUM-530: the body is untrusted,
-// and thousands of tiny ids used to reach the store step whole). The router
-// default and each upstream's head come first, then every upstream's current
-// generation (routerFlagship), then the rest, so neither a row cap nor the size
-// trim from the back costs the default, an upstream or a flagship listed late.
-// Returns how many rows the cap cut or the upstream bound left out (the stored
-// list says "<n> more").
-inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std::string& defaultSel) {
-  std::vector<std::string> ids;
-  ids.reserve(cat.size());
-  for (const auto& m : cat) ids.push_back(selectorOf(m));
-  size_t dropped = 0;
-  std::vector<size_t> order = keepOrder(ids, defaultSel, &dropped);
-  std::vector<std::string> ups;   // the heads: the first row of each upstream (bounded scan)
-  size_t heads = 0;
-  while (heads < order.size() && heads < kCatalogMaxRows) {
-    const std::string up = upstreamOf(ids[order[heads]]);
-    if (std::find(ups.begin(), ups.end(), up) != ups.end()) break;
-    ups.push_back(up);
-    ++heads;
-  }
-  std::stable_partition(order.begin() + static_cast<std::ptrdiff_t>(heads), order.end(),
-                        [&](size_t i) { return routerFlagship(ids[i]); });
-  const size_t cut = order.size() > kCatalogMaxRows ? order.size() - kCatalogMaxRows : 0;
-  order.resize(order.size() - cut);
-  std::vector<nimbus::orch::ModelInfo> out;
-  out.reserve(order.size());
-  for (size_t i : order) out.push_back(std::move(cat[i]));
-  cat.swap(out);
-  return cut + dropped;
 }
 
 }  // namespace router_catalog

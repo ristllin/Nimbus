@@ -1,11 +1,15 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "../support/fake_platform.h"
 #include "nimbus/harness/apply.h"
+#include "nimbus/orch/model_catalog.h"     // lane F: the model store
+#include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/model_selectable.h"
 
 // Stage E suite - the SECURITY RAILS of turn application, host-tested for the
 // first time: scheduled-turn refusals (reboot/ttsOn/devName/sleepOvr/brightOvr),
@@ -282,6 +286,51 @@ static void test_orch_model_keyless_provider_refused() {
       "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
   TEST_ASSERT_TRUE(LogCapture::contains("orch_model(no-key)"));
+}
+
+
+// Lane F: orch_model asks THE check over the model store (the device's modelIsValid is
+// store::modelSelectable). claude-sonnet-5-5 is in the Oct 2026 store but was in no
+// compiled list and not in Lumi's 8-id NVS list, so "switch to Sonnet 5.5" was refused
+// ("No Sonnet 5.5 in what I can access"); now an id in the file applies, and an id the
+// file does not list (nor the cold-start list) is still refused.
+static void test_orch_model_id_in_the_store_applies() {
+  std::string body;
+  {
+    FILE* f = std::fopen("test/support/fixtures/models_2026-10/anthropic.json", "rb");
+    TEST_ASSERT_NOT_NULL(f);
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+  }
+  nimbus::orch::ModelHarvest h;
+  h.provider = "anthropic";
+  nimbus::orch::harvestBody(h, body.data(), body.size());
+  nimbus::orch::finishHarvest(h);
+  nimbus::orch::ModelStoreMeta meta;
+  meta.choices = nimbus::orch::directChoices("anthropic", h.rows, 0);
+  static std::string store;
+  store = nimbus::orch::serializeModelStore(meta, h.rows);
+  for (const char* model : {"claude-sonnet-5-5", "claude-opus-4-7", "claude-imaginary-9"}) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.modelIsValid = [](const std::string& p, const std::string& m) {
+      nimbus::orch::SelectableSources src;
+      src.storeText = &store;
+      src.coldStart = nimbus::orch::staticModelChoices(p.c_str());
+      return nimbus::orch::modelSelectable(p, m, nimbus::orch::PickRole::Any, src);
+    };
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    const std::string turn =
+        std::string("{\"type\":\"orch_model\",\"provider\":\"anthropic\",\"model\":\"") + model + "\"}";
+    agent::applyTurn(turnWithDevice(turn.c_str()), "1001", d, st, spawned);
+    const bool listed = std::string(model) != "claude-imaginary-9";
+    TEST_ASSERT_EQUAL_MESSAGE(listed ? 1 : 0, (int)r.hostModelSet.size(), model);
+    if (listed) TEST_ASSERT_EQUAL_STRING(model, r.hostModelSet[0].second.c_str());
+  }
+  TEST_ASSERT_FALSE(nimbus::orch::modelInChoices(meta.choices, "claude-opus-4-7"));   // past the short list
 }
 
 // ---- reply / ask / Done. ----------------------------------------------------
@@ -800,6 +849,7 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_valid_and_keyed_applies);
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
+  RUN_TEST(test_orch_model_id_in_the_store_applies);
   RUN_TEST(test_reply_and_ask_deliver_as_one_message);
   RUN_TEST(test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated);
   RUN_TEST(test_mem_write_is_stored_before_the_reply_is_delivered);

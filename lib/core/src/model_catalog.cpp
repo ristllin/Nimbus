@@ -317,15 +317,6 @@ ModelInfo classifyEntry(const std::string& provider, const std::string& id) {
   return mi;
 }
 
-// Locate the JSON body when HTTP response headers precede it.
-const char* jsonStart(const std::string& body) {
-  size_t p = body.find("\r\n\r\n");
-  if (p != std::string::npos) return body.c_str() + p + 4;
-  p = body.find("\n\n");
-  if (p != std::string::npos) return body.c_str() + p + 2;
-  return body.c_str();
-}
-
 // Drop each row from `from` on whose model an earlier row already has (the first
 // stays, order kept), with one index sort: O(n log n) however many rows an
 // untrusted body lists (CUM-530: the pairwise scan was quadratic, and a router
@@ -375,44 +366,171 @@ ModelInfo classifyCatalogEntry(const std::string& provider, const std::string& i
   return classifyEntry(provider, id);
 }
 
-size_t parseModelsList(const std::string& provider, const std::string& body,
-                       std::vector<ModelInfo>& out, ArduinoJson::Allocator* alloc) {
+// ---- one fetch's rows (lane F) ---------------------------------------------------
+namespace {
+
+// The provider's own words about a model: name, line, dates and lifecycle. Untrusted
+// text, so every string is cleaned and bounded; a field the provider does not send
+// stays empty.
+// The lifecycle word normalized: "retired", "deprecated" (a legacy model counts), or
+// "active" for any other word the provider sends; "" when it sends none.
+std::string lifecycleWord(const char* raw) {
+  const std::string life = cleanModelText(raw ? raw : "", kModelLineMax);   // a short word
+  if (life.empty()) return life;
+  if (life.find("retir") != std::string::npos) return "retired";
+  if (life.find("deprec") != std::string::npos || life.find("legacy") != std::string::npos)
+    return "deprecated";
+  return "active";
+}
+
+// The announced end: Anthropic retires_at, OpenAI shutdown_date, Mistral deprecation.
+uint32_t announcedEnd(JsonObjectConst m) {
+  for (const char* key : {"retires_at", "shutdown_date", "deprecation"})
+    if (const char* end = m[key] | (const char*)nullptr) return parseIsoTime(end);
+  return 0;
+}
+
+uint32_t createdAt(JsonObjectConst m) {
+  if (m["created"].is<uint32_t>()) return m["created"].as<uint32_t>();
+  const char* ca = m["created_at"] | (const char*)nullptr;
+  return ca ? parseIsoTime(ca) : 0;
+}
+
+void overlayMeta(const std::string& provider, JsonObjectConst m, ModelInfo& mi) {
+  const char* nm = m["display_name"] | (const char*)nullptr;
+  if (!nm && provider == "mistral") nm = m["name"] | (const char*)nullptr;
+  if (nm && mi.id != nm) mi.name = cleanModelText(nm, kModelNameMax);
+  if (const char* ln = m["line"] | (const char*)nullptr) mi.line = cleanModelText(ln, kModelLineMax);
+  mi.created = createdAt(m);
+  mi.life = lifecycleWord(m["lifecycle"] | (const char*)nullptr);
+  mi.retires = announcedEnd(m);
+  if (!m["deprecated_at"].isNull() || mi.life == "deprecated" || mi.life == "retired")
+    mi.deprecated = true;
+}
+
+// The Cumulo router bills each row at its own price (micro-USD per 1M tokens).
+void overlayRouterPrice(JsonObjectConst m, ModelInfo& mi) {
+  const uint32_t in = m["in_micro_per_mtok"] | 0u;
+  const uint32_t out = m["out_micro_per_mtok"] | 0u;
+  if (!in && !out) return;
+  mi.priced = true;
+  mi.priceIn = in;
+  mi.priceOut = out;
+}
+
+}  // namespace
+
+namespace {
+
+// The row's id as the device keeps it (Mistral: its canonical -latest alias), or ""
+// when the device will not keep one (counted as unsafe).
+std::string rowId(const std::string& provider, JsonObjectConst m) {
+  const std::string id =
+      (provider == "mistral") ? mistralCanonicalId(m) : std::string((const char*)(m["id"] | ""));
+  return (id.size() >= 2 && cleanModelId(id)) ? id : std::string();
+}
+
+// The per-provider API fields; false when the provider's own metadata drops the row
+// (Mistral marks it deprecated, or it cannot chat).
+bool overlayProvider(const std::string& provider, JsonObjectConst m, ModelInfo& mi) {
+  bool keep = true;
+  if (provider == "anthropic") {
+    overlayAnthropic(m, mi);
+  } else if (provider == "mistral") {
+    overlayMistral(m, mi, keep);  // Mistral drops models the API marks deprecated
+  } else if (provider == "cumulo") {
+    overlayCumulo(m, mi);
+    overlayRouterPrice(m, mi);
+  } else if (!m["shutdown_date"].isNull() || !m["deprecation"].isNull()) {
+    // A future shutdown date still leaves the model usable: flag it, keep it,
+    // and let the usability probe / UI decide. (Mistral is stricter above.)
+    mi.deprecated = true;
+  }
+  return keep && mi.roles != 0;  // role-less (non-agentic) models never surface
+}
+
+// Past the collect bound only a router chat row of a current generation of one of the
+// four upstreams the device runs is taken.
+bool admittedPastBound(const std::string& provider, const ModelInfo& mi, const std::string& id) {
+  const bool knownUp = mi.upstream == "openai" || mi.upstream == "anthropic" ||
+                       mi.upstream == "mistral" || mi.upstream == "zai";
+  return provider == "cumulo" && knownUp && mi.hasRole(RoleOrchestrator) && !neverChatFamily(mi.id) &&
+         routerFlagshipSelector(id);
+}
+
+}  // namespace
+
+void harvestRow(ModelHarvest& h, const char* obj, size_t len) {
+  ++h.seen;
+  if (h.rows.size() >= 2 * kHarvestCollectMax) {
+    ++h.overflow;
+    return;
+  }
   // A null allocator would make ArduinoJson dereference nullptr on the first
   // allocation; fall back to its default allocator (host tests pass nullptr).
-  JsonDocument doc = alloc ? JsonDocument(alloc) : JsonDocument();
-  DeserializationError err =
-      deserializeJson(doc, jsonStart(body), DeserializationOption::NestingLimit(16));
-  if (err) return 0;
-  JsonArrayConst arr = doc["data"].as<JsonArrayConst>();
-  if (arr.isNull()) return 0;
-
-  const size_t startCount = out.size();
-  for (JsonObjectConst m : arr) {
-    std::string id =
-        (provider == "mistral") ? mistralCanonicalId(m) : std::string((const char*)(m["id"] | ""));
-    if (id.size() < 2) continue;
-
-    ModelInfo mi = classifyEntry(provider, id);
-
-    bool keep = true;
-    if (provider == "anthropic") {
-      overlayAnthropic(m, mi);
-    } else if (provider == "mistral") {
-      overlayMistral(m, mi, keep);  // Mistral drops models the API marks deprecated
-    } else if (provider == "cumulo") {
-      overlayCumulo(m, mi);
-    } else if (!m["shutdown_date"].isNull() || !m["deprecation"].isNull()) {
-      // A future shutdown date still leaves the model usable: flag it, keep it,
-      // and let the usability probe / UI decide. (Mistral is stricter above.)
-      mi.deprecated = true;
-    }
-    if (mi.roles == 0) keep = false;  // role-less (non-agentic) models never surface
-    if (!keep) continue;
-    out.push_back(std::move(mi));
+  JsonDocument doc = h.alloc ? JsonDocument(h.alloc) : JsonDocument();
+  const bool parsed = !deserializeJson(doc, obj, len, DeserializationOption::NestingLimit(16)) &&
+                      doc.is<JsonObjectConst>();
+  const std::string id = parsed ? rowId(h.provider, doc.as<JsonObjectConst>()) : std::string();
+  if (id.empty()) {
+    ++h.hostile;
+    return;
   }
-  dropDuplicateIds(out, startCount);
-  sortFlagshipFirst(out);
-  return out.size() - startCount;
+  if (h.provider == "cumulo" && !routerRowKept(id)) {   // never kept: not held in RAM either
+    ++h.notRun;
+    return;
+  }
+  JsonObjectConst m = doc.as<JsonObjectConst>();
+  ModelInfo mi = classifyEntry(h.provider, id);
+  const bool keep = overlayProvider(h.provider, m, mi);
+  overlayMeta(h.provider, m, mi);
+  // Past its announced end (when the clock says so) or retired: never kept.
+  if (mi.life == "retired" || (h.now && mi.retires && mi.retires <= h.now)) {
+    ++h.retired;
+    return;
+  }
+  if (!keep) return;
+  if (h.rows.size() >= kHarvestCollectMax && !admittedPastBound(h.provider, mi, id)) {
+    ++h.overflow;
+    return;
+  }
+  keepOffInternalHeap(mi);   // the row's strings: PSRAM, never internal SRAM, per row
+  h.rows.push_back(std::move(mi));
+}
+
+namespace {
+void harvestRowCb(void* ctx, const char* obj, size_t len) {
+  harvestRow(*static_cast<ModelHarvest*>(ctx), obj, len);
+}
+}  // namespace
+
+bool harvestBody(ModelHarvest& h, const char* body, size_t len, std::string* lastId) {
+  ModelsBodyReader rd(&harvestRowCb, &h);
+  rd.feed(body, len);
+  if (!rd.complete()) h.cut = true;
+  h.oversize += rd.oversize();
+  if (lastId) *lastId = rd.lastId();
+  return rd.hasMore();
+}
+
+void finishHarvest(ModelHarvest& h) {
+  dropDuplicateIds(h.rows, 0);
+  sortFlagshipFirst(h.rows);
+}
+
+size_t parseModelsList(const std::string& provider, const std::string& body,
+                       std::vector<ModelInfo>& out, ArduinoJson::Allocator* alloc) {
+  // The streamed reader (orch_model_store.cpp) over the whole body, one row at a time:
+  // the same per-row rules a fetch applies, so a parse here and a fetch on the
+  // device can never disagree. No clock: no retire date drops a row.
+  ModelHarvest h;
+  h.provider = provider;
+  h.alloc = alloc;
+  harvestBody(h, body.data(), body.size());
+  finishHarvest(h);
+  const size_t n = h.rows.size();
+  for (ModelInfo& m : h.rows) out.push_back(std::move(m));
+  return n;
 }
 
 // ---- role/cap tokens ---------------------------------------------------------
@@ -515,32 +633,64 @@ size_t modelsFromJson(JsonArrayConst arr, std::vector<ModelInfo>& out) {
   return out.size() - start;
 }
 
+namespace {
+// The shared row body of both modelsToJson forms; `roleMask` filters the roles listed.
+void rowJson(const ModelInfo& mi, JsonObject o, uint16_t roleMask) {
+  o["id"] = mi.id;
+  JsonArray roles = o["roles"].to<JsonArray>();
+  for (const RoleBit& b : kRoleBits)
+    if (mi.roles & roleMask & b.r) roles.add(b.t);
+  o["usable"] = mi.usable;
+  o["probed"] = mi.probed;
+  o["ctxTokens"] = mi.ctxTokens;
+  o["maxOutTokens"] = mi.maxOutTokens;
+  JsonObject caps = o["caps"].to<JsonObject>();
+  caps["tools"] = mi.hasCap(CapTools);
+  caps["vision"] = mi.hasCap(CapVision);
+  caps["streaming"] = mi.hasCap(CapStreaming);
+  caps["json"] = mi.hasCap(CapJson);
+  caps["embedding"] = mi.hasCap(CapEmbedding);
+  caps["audioIn"] = mi.hasCap(CapAudioIn);
+  caps["audioOut"] = mi.hasCap(CapAudioOut);
+  o["family"] = mi.family;
+  char sz[2] = {mi.size ? mi.size : '\0', '\0'};
+  o["size"] = mi.size ? sz : "";
+  o["source"] = mi.apiCaps ? "api" : "heuristic";
+  o["deprecated"] = mi.deprecated;
+  if (!mi.upstream.empty()) o["upstream"] = mi.upstream;
+}
+}  // namespace
+
 void modelsToJson(const std::vector<ModelInfo>& models, JsonArray arr, bool includeUnusable) {
   for (const ModelInfo& mi : models) {
     if (!includeUnusable && !mi.usable) continue;
-    JsonObject o = arr.add<JsonObject>();
-    o["id"] = mi.id;
-    JsonArray roles = o["roles"].to<JsonArray>();
-    for (const RoleBit& b : kRoleBits)
-      if (mi.roles & b.r) roles.add(b.t);
-    o["usable"] = mi.usable;
-    o["probed"] = mi.probed;
-    o["ctxTokens"] = mi.ctxTokens;
-    o["maxOutTokens"] = mi.maxOutTokens;
-    JsonObject caps = o["caps"].to<JsonObject>();
-    caps["tools"] = mi.hasCap(CapTools);
-    caps["vision"] = mi.hasCap(CapVision);
-    caps["streaming"] = mi.hasCap(CapStreaming);
-    caps["json"] = mi.hasCap(CapJson);
-    caps["embedding"] = mi.hasCap(CapEmbedding);
-    caps["audioIn"] = mi.hasCap(CapAudioIn);
-    caps["audioOut"] = mi.hasCap(CapAudioOut);
-    o["family"] = mi.family;
-    char sz[2] = {mi.size ? mi.size : '\0', '\0'};
-    o["size"] = mi.size ? sz : "";
-    o["source"] = mi.apiCaps ? "api" : "heuristic";
-    o["deprecated"] = mi.deprecated;
-    if (!mi.upstream.empty()) o["upstream"] = mi.upstream;
+    rowJson(mi, arr.add<JsonObject>(), 0xFFFF);
+  }
+}
+
+void modelRowToJson(const std::string& provider, const ModelInfo& m, JsonObject o, uint32_t now) {
+  uint16_t mask = 0xFFFF;
+  if (!rowOffered(m, RoleOrchestrator, now)) mask &= (uint16_t)~RoleOrchestrator;
+  if (!rowOffered(m, RoleSubAgent, now)) mask &= (uint16_t)~RoleSubAgent;
+  rowJson(m, o, mask);
+  if (!m.name.empty()) o["name"] = m.name;
+  if (!m.line.empty()) o["line"] = m.line;
+  if (m.created) o["created"] = m.created;
+  if (!m.life.empty()) o["life"] = m.life;
+  if (m.retires) o["retires"] = m.retires;
+  const ModelPrice p = modelPrice(provider, m);
+  o["priceSrc"] = p.src;
+  if (std::strcmp(p.src, "unknown") != 0) {
+    o["priceIn"] = p.in;
+    o["priceOut"] = p.out;
+  }
+}
+
+void modelsToJson(const std::string& provider, const std::vector<ModelInfo>& models,
+                  JsonArray arr, bool includeUnusable, uint32_t now) {
+  for (const ModelInfo& mi : models) {
+    if (!includeUnusable && !mi.usable) continue;
+    modelRowToJson(provider, mi, arr.add<JsonObject>(), now);
   }
 }
 

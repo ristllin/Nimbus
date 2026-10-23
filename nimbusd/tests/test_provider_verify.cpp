@@ -29,6 +29,7 @@
 #include "engine_thread.h"
 #include "reply_buffer.h"
 #include "rig.h"
+#include "nimbus/harness/router_catalog.h"   // kCatalogMaxRows - the bound
 #include "test_util.h"
 #include "web_api.h"
 
@@ -377,8 +378,9 @@ static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
 // CUM-530 gate (critic): the device bounds the router catalog it keeps, the hosted
 // consumer of the same untrusted body did not, so a body of thousands of ids was
 // held whole and served on every GET /api/orch. It now takes the device's rule:
-// at most 128 rows, the router default first, the flagships kept wherever they are
-// listed, and no id that no upstream runs.
+// at most kCatalogMaxRows rows (the device's model store bound, 160 since lane F), the
+// router default first, the flagships kept wherever they are listed, and no id that no
+// upstream runs.
 static void testHostedCatalogIsBounded(ndtest::Ctx& c) {
   std::printf("  -- (h) the hosted router catalog is bounded like the device's --\n");
   clearEnv();
@@ -393,7 +395,8 @@ static void testHostedCatalogIsBounded(ndtest::Ctx& c) {
   NimbusdRig rig(cfg, opts("pv-h"), &tx);
   c.ok(rig.verifyProvider("cumulo"), "the verify succeeds");
   const auto models = rig.verifyState("cumulo").models;
-  c.ok(!models.empty() && models.size() <= 128, "at most 128 rows are kept (got " + std::to_string(models.size()) + ")");
+  c.ok(!models.empty() && models.size() <= agent::router_catalog::kCatalogMaxRows,
+       "at most kCatalogMaxRows rows are kept (got " + std::to_string(models.size()) + ")");
   c.ok(!models.empty() && models[0].id == "openai/gpt-5.6", "the router default comes first");
   std::string all = ",";
   for (const auto& m : models) all += m.id + ",";

@@ -1,10 +1,15 @@
 #include <unity.h>
 
+#include <cstdio>
+
 #include <set>
 #include <string>
 #include <vector>
 
+#include "../../src/agent/agent_config.h"   // CUMULO_MODEL - the router default
+#include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_slots.h"
 
 // CUM-486: the ONE model-choice derivation, tested over EVERY provider slot in the
@@ -133,6 +138,74 @@ static void test_cheapest_choice_by_the_price_table() {
   TEST_ASSERT_EQUAL_STRING("", cheapestChoice("custom", "llama-3").c_str());
 }
 
+
+// ==== lane F ===========================================================================
+
+// The cold-start lists hold current active ids (claude-haiku-5-5 replaced haiku-4-5,
+// whose retirement floor passed on 15 Oct 2026; gpt-5.6-sol is in the OpenAI list,
+// critique C1), each priced by its own built-in row, and the Cumulo list always holds
+// the router default (agent_config.h CUMULO_MODEL).
+static void test_cold_start_lists_are_current_and_priced() {
+  TEST_ASSERT_TRUE(modelInChoices(NIMBUS_ANT_MODEL_CHOICES, "claude-haiku-5-5"));
+  TEST_ASSERT_FALSE(modelInChoices(NIMBUS_ANT_MODEL_CHOICES, "claude-haiku-4-5"));
+  TEST_ASSERT_TRUE(modelInChoices(NIMBUS_OPENAI_MODEL_CHOICES, "gpt-5.6-sol"));
+  TEST_ASSERT_TRUE(modelInChoices(NIMBUS_CUMULO_MODEL_CHOICES, CUMULO_MODEL));
+  for (const ProviderSlot& slot : kProviderSlots)
+    for (const std::string& id : split(staticModelChoices(slot.slug)))
+      TEST_ASSERT_NOT_NULL_MESSAGE(builtinModelPrice(slot.slug, id.c_str()),
+                                   (std::string(slot.slug) + " has no price row for " + id).c_str());
+}
+
+// The first boot of this build (critique C3): the older build's JSON catalog lost
+// claude-fable-5-1 in its size trim while its NVS short list still had it; the merged
+// store holds both. The NVS list is erased only on the boot AFTER the image was marked
+// valid, and only once the store holds the list (an OTA trial boot may still roll back).
+static void test_legacy_short_list_merge_then_erase_after_mark_valid() {
+  const std::string mcat = "[{\"id\":\"claude-opus-5\",\"roles\":[\"orchestrator\",\"sub-agent\"],\"usable\":true}]";
+  const std::string mch = "claude-fable-5-1,claude-opus-5";
+  // Boot 1 (OTA trial boot): merge, keep the NVS list.
+  const std::string store = mergeLegacyLists("anthropic", "", mcat, mch, "v4.6.0");
+  TEST_ASSERT_TRUE(store.find("\nclaude-fable-5-1\t") != std::string::npos);
+  TEST_ASSERT_TRUE(store.find("\nclaude-opus-5\t") != std::string::npos);
+  TEST_ASSERT_FALSE(legacyListErasable(/*imageValidAtBoot=*/false, true, true));
+  // Boot 2 (the image was marked valid during boot 1): nothing new to merge, erase.
+  TEST_ASSERT_EQUAL_STRING("", mergeLegacyLists("anthropic", store, mcat, mch, "v4.6.0").c_str());
+  TEST_ASSERT_TRUE(legacyListErasable(true, true, true));
+  // A failed store write on boot 1 keeps the NVS list on boot 2.
+  TEST_ASSERT_FALSE(legacyListErasable(true, false, true));
+}
+
+static std::string readSrc(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+// A rollback keeps reading /data/mcat_<slug>.json (critique C2): this build never
+// writes or deletes it outside the legacy NVS-to-file copy, and never writes the NVS
+// short list. A source guard over the files that touch the catalogs.
+static void test_rollback_keeps_the_legacy_catalog_readable() {
+  const std::string store = readSrc("src/agent/store.cpp");
+  const std::string verify = readSrc("src/agent/provider_verify.cpp");
+  const std::string web = readSrc("src/net/webui.cpp");
+  for (const std::string* src : {&store, &verify, &web}) {
+    TEST_ASSERT_TRUE(src->find("setModelCatalogJson") == std::string::npos);
+    TEST_ASSERT_TRUE(src->find("setModelChoices") == std::string::npos);
+  }
+  // writeCatalogFile (the only writer of an mcat_ file) runs only in the legacy copy.
+  size_t calls = 0;
+  for (size_t p = store.find("writeCatalogFile("); p != std::string::npos; p = store.find("writeCatalogFile(", p + 1))
+    ++calls;
+  TEST_ASSERT_EQUAL_UINT(2, calls);   // its definition and the one call in migrateCatalogCachesOffNvs
+  TEST_ASSERT_TRUE(store.find("LittleFS.remove(jpath") == std::string::npos);
+  TEST_ASSERT_TRUE(store.find("LittleFS.remove(nimbus::store::catalogCachePath") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_slot_has_a_cold_start_list);
@@ -141,6 +214,9 @@ int main(int, char**) {
   RUN_TEST(test_model_in_choices_exact_and_trimmed);
   RUN_TEST(test_cheapest_choice_by_the_price_table);
   RUN_TEST(test_cumulo_derivation_drops_what_no_upstream_runs);
+  RUN_TEST(test_cold_start_lists_are_current_and_priced);
+  RUN_TEST(test_legacy_short_list_merge_then_erase_after_mark_valid);
+  RUN_TEST(test_rollback_keeps_the_legacy_catalog_readable);
   UNITY_END();
   return 0;
 }
