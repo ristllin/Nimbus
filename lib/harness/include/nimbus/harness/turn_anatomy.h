@@ -17,14 +17,16 @@ namespace agent {
 
 struct TurnDebugEv;   // hooks.h
 
-// The history the device put in this turn's system prompt.
+// The history the device put in this turn's prompt.
 struct HistoryFacts {
-  size_t summaryBytes = 0;        // the conversation summary block as sent (0 = none sent)
-  bool summaryClipped = false;    // the device held more summary than it sent (cut or dropped)
-  int windowRows = 0;             // rows of the recent conversation window as sent
-  size_t windowBytes = 0;         // the window section as sent
-  size_t runningMemoryBytes = 0;  // the running memory note as sent
-  int recalledItems = 0;          // recalled long-term memories as sent
+  size_t summaryBytes = 0;        // the conversation summary as sent (0 = none sent)
+  bool summaryClipped = false;   // the device held more summary than it sent (cut or dropped)
+  int windowRows = 0;            // histV1: rows of the recent-conversation text window;
+                                 // histV2: the history MESSAGES sent as real items
+  size_t windowBytes = 0;        // the same history's bytes (the window section, or the
+                                 // messages' texts)
+  size_t runningMemoryBytes = 0; // the running memory note as sent
+  int recalledItems = 0;         // recalled long-term memories as sent
 };
 
 // Measure `instructions` (the composed prompt: the joined layout string, or a

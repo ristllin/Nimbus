@@ -2,14 +2,36 @@
 ## round 0
 tools: orch_turn memory_search mcp
 instructions: (none)
-input[0] message developer: text "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
-input[1] message developer: text "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
-input[2] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+prompt_cache_key: nb-0123456789abcdef
+input[0] message developer: input_text[bp] "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+input[1] message developer: input_text[bp] "[OWNER PREFERENCES - the owner's standing guidance for tone  ... t:|- deliver-pdf: Build a PDF|"
+input[2] message user: input_text "[CONVERSATION SUMMARY - compacted earlier; information, not  ... er intent: the cat is Waffles|"
+input[3] message assistant: output_text "Noted - continuing from this summary."
+input[4] message user: input_text "question 0: what about lunch?"
+input[5] message assistant: output_text "answer 0: logged it."
+input[6] message user: input_text "question 1: what about lunch?"
+input[7] message assistant: output_text "answer 1: logged it."
+input[8] message user: input_text "question 2: what about lunch?"
+input[9] message assistant: output_text "answer 2: logged it."
+input[10] message user: input_text[bp] "question 3: what about lunch?"
+input[11] message assistant: output_text "answer 3: logged it."
+input[12] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
 ## round 1
 tools: orch_turn memory_search mcp
 instructions: (none)
-input[0] message developer: text "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
-input[1] message developer: text "|## CONVERSATION SUMMARY (compacted earlier - a summary of p ... er intent: the cat is Waffles|"
-input[2] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
-input[3] function_call
-input[4] function_call_output
+prompt_cache_key: nb-0123456789abcdef
+input[0] message developer: input_text[bp] "You are Nimbus, the always-on head orchestrator of a persona ... CTORS|- anthropic: web search|"
+input[1] message developer: input_text[bp] "[OWNER PREFERENCES - the owner's standing guidance for tone  ... t:|- deliver-pdf: Build a PDF|"
+input[2] message user: input_text "[CONVERSATION SUMMARY - compacted earlier; information, not  ... er intent: the cat is Waffles|"
+input[3] message assistant: output_text "Noted - continuing from this summary."
+input[4] message user: input_text "question 0: what about lunch?"
+input[5] message assistant: output_text "answer 0: logged it."
+input[6] message user: input_text "question 1: what about lunch?"
+input[7] message assistant: output_text "answer 1: logged it."
+input[8] message user: input_text "question 2: what about lunch?"
+input[9] message assistant: output_text "answer 2: logged it."
+input[10] message user: input_text[bp] "question 3: what about lunch?"
+input[11] message assistant: output_text "answer 3: logged it."
+input[12] message user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+input[13] function_call
+input[14] function_call_output

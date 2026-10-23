@@ -25,6 +25,11 @@ struct TokenUsage {
   // pre-cache ledger on each provider rather than silently changing scale.
   uint32_t cacheReadTokens  = 0;
   uint32_t cacheWriteTokens = 0;
+  // R3 (22 Oct item): the part of cacheWriteTokens written with the 1-hour
+  // TTL (Anthropic's cache_creation.ephemeral_1h_input_tokens; 0 on every
+  // other provider). Priced at 2x the input rate, so the spend ceiling never
+  // under-counts.
+  uint32_t cacheWrite1hTokens = 0;
   // Served model (CUM-236): the "model" the provider echoed in its response. Rides
   // out on the turn's usage so the engine can disclose a fallback substitution. Not
   // a count - merged as "last non-empty wins" so the FINAL served host's model
@@ -51,6 +56,7 @@ struct TokenUsage {
     completionTokens += o.completionTokens;
     cacheReadTokens  += o.cacheReadTokens;
     cacheWriteTokens += o.cacheWriteTokens;
+    cacheWrite1hTokens += o.cacheWrite1hTokens;
     responses = (uint16_t)((uint32_t)responses + o.responses > 0xFFFFu ? 0xFFFFu
                                                                         : responses + o.responses);
     if (o.maxRequestIn > maxRequestIn) maxRequestIn = o.maxRequestIn;

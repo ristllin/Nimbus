@@ -56,6 +56,10 @@ struct Hardware {
   // CUM-523: files.send cannot deliver on this turn (no allowlisted chat), even
   // when reply.telegram can: the file-delivery advice then never names it.
   bool noFileSend = false;
+  // The tools ride the request itself (the head's tool loop is on): each one is
+  // in the provider's tool list with its full description and schema, so the
+  // manifest names where they are instead of listing them a second time.
+  bool toolsOnWire = false;
 };
 
 struct ToolInfo {

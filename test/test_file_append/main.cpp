@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <algorithm>
+
 #include <string>
 #include <vector>
 
@@ -128,6 +130,80 @@ static void test_tail_render_names_what_is_shown() {
   TEST_ASSERT_TRUE(part.find("header: date,meal,kcal\nc,d,2\ne,f,3\n") != std::string::npos);
 }
 
+// ---- G1 (rows 32/33): the keyed CSV upsert and the day total ------------------
+static void test_g1_keyed_upsert_updates_by_key_and_appends_new() {
+  const std::string ex = "date,meal,kcal\n2026-10-23,lunch,450\n2026-10-22,dinner,900\n";
+  const std::string nt = "date,meal,kcal\n2026-10-23,lunch,520\n2026-10-23,snack,180\n";
+  const nimbus::orch::CsvUpsert up =
+      nimbus::orch::planCsvUpsert(ex, nt, "meal", "kcal", "2026-10-23");
+  TEST_ASSERT_TRUE(up.ok);
+  TEST_ASSERT_EQUAL_INT(1, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1, up.appended);
+  TEST_ASSERT_TRUE(up.changed);
+  TEST_ASSERT_TRUE(up.out.find("2026-10-23,lunch,520") != std::string::npos);
+  TEST_ASSERT_TRUE(up.out.find("2026-10-23,lunch,450") == std::string::npos);
+  TEST_ASSERT_TRUE(up.out.find("2026-10-22,dinner,900") != std::string::npos);
+  // One row per key: the header plus three data rows (lunch, the 22nd's
+  // dinner, the new snack), and "lunch" appears exactly once.
+  TEST_ASSERT_EQUAL_INT(4, (int)std::count(up.out.begin(), up.out.end(), '\n'));
+  size_t at = 0, lunches = 0;
+  while ((at = up.out.find("lunch", at)) != std::string::npos) { lunches++; at++; }
+  TEST_ASSERT_EQUAL_INT(1, (int)lunches);
+  // A new file adopts the text's header as its first row.
+  const nimbus::orch::CsvUpsert fresh =
+      nimbus::orch::planCsvUpsert("", nt, "meal", "kcal", "2026-10-23");
+  TEST_ASSERT_TRUE(fresh.ok);
+  TEST_ASSERT_EQUAL_INT(2, fresh.appended);
+  TEST_ASSERT_TRUE(fresh.out.rfind("date,meal,kcal\n", 0) == 0);
+}
+
+static void test_g1_upsert_reports_the_day_total() {
+  const std::string ex = "date,meal,kcal\n2026-10-23,lunch,450\n2026-10-22,dinner,900\n";
+  const std::string nt = "date,meal,kcal\n2026-10-23,dinner,700\n";
+  const nimbus::orch::CsvUpsert up =
+      nimbus::orch::planCsvUpsert(ex, nt, "meal", "kcal", "2026-10-23");
+  TEST_ASSERT_TRUE(up.ok && up.hasTotal);
+  TEST_ASSERT_TRUE(up.todayTotal > 1149.9 && up.todayTotal < 1150.1);   // 450 lunch + 700 dinner
+  // Without a sum column there is no total, and no error.
+  const nimbus::orch::CsvUpsert noSum =
+      nimbus::orch::planCsvUpsert(ex, nt, "meal", "", "2026-10-23");
+  TEST_ASSERT_TRUE(noSum.ok);
+  TEST_ASSERT_FALSE(noSum.hasTotal);
+  // A "day" column works too; numbers with units parse by their prefix.
+  const std::string ex2 = "day,kcal\n2026-10-23,300 kcal\n";
+  const nimbus::orch::CsvUpsert u2 =
+      nimbus::orch::planCsvUpsert(ex2, "day,kcal\n", "day", "kcal", "2026-10-23");
+  TEST_ASSERT_TRUE(u2.ok && u2.hasTotal);
+  TEST_ASSERT_TRUE(u2.todayTotal > 299.9 && u2.todayTotal < 300.1);
+}
+
+static void test_g1_upsert_refuses_a_header_mismatch() {
+  const std::string ex = "date,kcal\n2026-10-23,450\n";
+  // The text's header has no 'meal' column.
+  nimbus::orch::CsvUpsert up =
+      nimbus::orch::planCsvUpsert(ex, "date,meal,kcal\nx\n", "meal", "", "2026-10-23");
+  TEST_ASSERT_FALSE(up.ok);
+  TEST_ASSERT_FALSE(up.err.empty());
+  // The stored file has no 'meal' column: refused, never merged blind.
+  up = nimbus::orch::planCsvUpsert(ex, "date,meal,kcal\n2026-10-23,lunch,1\n", "meal", "",
+                                  "2026-10-23");
+  TEST_ASSERT_FALSE(up.ok);
+  // A missing key argument is an error.
+  up = nimbus::orch::planCsvUpsert(ex, "date,meal\nx\n", "", "", "2026-10-23");
+  TEST_ASSERT_FALSE(up.ok);
+}
+
+static void test_g1_day_total_matches_only_today() {
+  const std::string csv =
+      "date,kcal\n2026-10-23 08:00,400\n2026-10-23 13:00,500\n2026-10-22,999\nno-date,1\n";
+  double total = 0;
+  TEST_ASSERT_TRUE(nimbus::orch::csvDayTotal(csv, "kcal", "2026-10-23", total));
+  TEST_ASSERT_TRUE(total > 899.9 && total < 900.1);
+  // No date column, no total.
+  TEST_ASSERT_FALSE(nimbus::orch::csvDayTotal("meal,kcal\nlunch,5\n", "kcal", "2026-10-23", total));
+  // No such sum column.
+  TEST_ASSERT_FALSE(nimbus::orch::csvDayTotal(csv, "protein", "2026-10-23", total));
+}
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_never_rewrites_a_stored_byte);
@@ -135,5 +211,9 @@ int main(int, char**) {
   RUN_TEST(test_cut_file_is_reported_not_joined);
   RUN_TEST(test_tail_returns_exactly_the_last_n_rows);
   RUN_TEST(test_tail_render_names_what_is_shown);
+  RUN_TEST(test_g1_keyed_upsert_updates_by_key_and_appends_new);
+  RUN_TEST(test_g1_upsert_reports_the_day_total);
+  RUN_TEST(test_g1_upsert_refuses_a_header_mismatch);
+  RUN_TEST(test_g1_day_total_matches_only_today);
   return UNITY_END();
 }

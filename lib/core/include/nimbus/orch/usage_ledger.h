@@ -65,6 +65,10 @@ struct ProviderBudget {
   // split is RAM-only and the NVS blob carries the folded form (cacheFoldedInNvs).
   uint64_t    cacheRead  = 0;
   uint64_t    cacheWrite = 0;
+  // R3 (22 Oct item): the part of cacheWrite written with the 1-hour TTL
+  // (Anthropic; priced at 2x the input rate, the published rate, so the
+  // spend ceiling never under-counts a slow chat's writes).
+  uint64_t    cacheWrite1h = 0;
 
   // The provider-rate-only term: period spend in cents priced at THIS provider's
   // own rates (integer math, floored per term). Since per-model prices (2026-10)
@@ -77,7 +81,8 @@ struct ProviderBudget {
     return tokensIn * centsPerMIn / 1000000ULL +
            tokensOut * centsPerMOut / 1000000ULL +
            cacheRead * centsPerMIn / 10000000ULL +          // 0.1x input rate
-           cacheWrite * centsPerMIn * 5ULL / 4000000ULL +   // 1.25x input rate
+           (cacheWrite - cacheWrite1h) * centsPerMIn * 5ULL / 4000000ULL +  // 1.25x
+           cacheWrite1h * centsPerMIn / 500000ULL +         // 2x input rate (R3)
            (uint64_t)calls * centsPerKCalls / 1000ULL;
   }
 };

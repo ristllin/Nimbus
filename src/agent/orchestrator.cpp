@@ -2537,8 +2537,9 @@ static void compactTick() {
   }
 
   std::string summary;
+  size_t producedBytes = 0;
   const uint32_t t0 = millis();
-  const auto res = g_engine->runFold(chat, prev.summary, digest, summary);
+  const auto res = g_engine->runFold(chat, prev.summary, digest, summary, &producedBytes);
   if (res == agent::TurnEngine::FoldResult::Deferred) {
     // A gate closed between canFoldNow() and the call - leave all state
     // untouched. A MANUAL request must not evaporate silently after the device
@@ -2561,7 +2562,9 @@ static void compactTick() {
     memory::captureMessage(chat.c_str(), "system", nimbus::orch::MsgKind::Log,
         String("Conversation compacted: ") + String((unsigned)prev.bytesSinceFold) +
             " B / " + String((unsigned)prev.msgsSinceFold) + " msgs folded into a " +
-            String((unsigned)summary.size()) + " B summary (" +
+            String((unsigned)summary.size()) + " B summary (produced " +
+            String((unsigned)producedBytes) + " B, kept " + String((unsigned)summary.size()) +
+            " B) (" +
             String((unsigned)((millis() - t0) / 1000)) + " s)",
         "", thru.empty() ? String("ev:compact") : String("ev:compact,thru:") + thru.c_str());
     // Success confirmation only for MANUAL /compact (the owner asked and was

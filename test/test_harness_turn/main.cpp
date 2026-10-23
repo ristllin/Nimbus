@@ -699,7 +699,7 @@ static void test_two_turns_share_the_static_prompt_block() {
   const agent::layout::PromptParts b = agent::layout::split(r.attempts[1].instructions);
   TEST_ASSERT_TRUE(a.split && b.split);
   TEST_ASSERT_TRUE_MESSAGE(a.stat == b.stat, "the static block changed between two turns");
-  TEST_ASSERT_TRUE(a.summary == b.summary);
+  TEST_ASSERT_TRUE(a.shelf == b.shelf);   // the cached shelf block is stable too
   TEST_ASSERT_TRUE(a.dyn != b.dyn);
   TEST_ASSERT_TRUE(b.dyn.find("the owner likes tea") != std::string::npos);
   // The per-turn input keeps only the per-turn context.
@@ -732,8 +732,10 @@ static void test_happy_turn_delivers_and_accounts() {
   // provider reads them from its cache, not the per-turn input.
   const agent::layout::PromptParts parts = agent::layout::split(r.attempts[0].instructions);
   TEST_ASSERT_TRUE(parts.split);
-  TEST_ASSERT_TRUE(parts.stat.find("[SKILLS]") != std::string::npos);
-  TEST_ASSERT_TRUE(parts.stat.find("- deliver-pdf: Build a PDF") != std::string::npos);
+  // R3: the skills index rides the SHELF block (its own cache point after the
+  // static one); the connector catalog stays in the static block.
+  TEST_ASSERT_TRUE(parts.shelf.find("[SKILLS]") != std::string::npos);
+  TEST_ASSERT_TRUE(parts.shelf.find("- deliver-pdf: Build a PDF") != std::string::npos);
   TEST_ASSERT_TRUE(parts.stat.find("## PROVIDERS & CONNECTORS") != std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("[SKILLS]") == std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("## PROVIDERS & CONNECTORS") == std::string::npos);
@@ -1856,6 +1858,7 @@ static void test_owner_reminder_gets_reminder_framing_not_wakeup() {
 // (to the web chat that set it) IS the reminder.
 static void test_cum523_telegramless_wakeup_has_no_telegram_leg() {
   Rig r;
+  r.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   r.cfg.telegramOn = false;
   r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
   r.specs.push_back(orch::ToolRegistry::Spec{"files.send", "Send a stored file on Telegram.", "{}"});
@@ -1883,10 +1886,19 @@ static void test_cum523_telegramless_wakeup_has_no_telegram_leg() {
 // keeps reply.telegram), and an ordinary web message still gets the full hint.
 static void test_cum523_telegram_device_keeps_the_tool() {
   Rig r;
+  r.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
   r.eng->handleMessage("hi", "Dana", "web");
   TEST_ASSERT_TRUE(r.debug[0].instructions.find("reply_telegram") != std::string::npos);
-  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
+  // R3: on a LOOP turn the tools ride the request (the manifest points there),
+  // and the loop hint still names the rule.
+  Rig on;
+  on.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  on.eng->handleMessage("hi", "Dana", "web");
+  TEST_ASSERT_TRUE(on.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(agent::layout::split(on.debug[0].instructions)
+                       .stat.find("Your tools are the ones in this request's tool list") !=
                    std::string::npos);
 
   Rig w;   // the same web message on a Telegram-less device: no Telegram anywhere
@@ -1919,7 +1931,8 @@ static void publicNoAllowlist(Rig& r) {
 // all on the first answer, on every turn entry.
 static void test_cum523_telegram_is_sampled_once_per_turn() {
   int calls = 0;
-  Rig r;
+  Rig r;   // the loop is ON: the sample's surfaces are the loop hint and the
+           // turn's own tool list on the wire (the manifest points there, R3)
   // The turn's own chat is asked once; "" (is a chat allowlisted, for files.send)
   // is a different question and is not counted.
   r.cfg.telegramFn = [&calls](const std::string& c) { return c.empty() || ++calls == 1; };
@@ -1928,7 +1941,6 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   TEST_ASSERT_EQUAL(1, calls);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(r.debug[0].instructions.find("reply_telegram") != std::string::npos);
 
   // A scheduled one-shot: the delivery line and the tool list share the sample.
   Rig s;
@@ -1939,7 +1951,6 @@ static void test_cum523_telegram_is_sampled_once_per_turn() {
   TEST_ASSERT_EQUAL(1, calls);
   TEST_ASSERT_TRUE(s.attempts[0].inputs.find("(Your reply is delivered to this Telegram chat.") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(s.debug[0].instructions.find("reply_telegram") != std::string::npos);
 
   // The synthesis turn and a direct runTurn sample once too.
   Rig y;
@@ -1973,6 +1984,7 @@ static void test_cum523_deliverability_rule() {
 static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
   for (const char* chat : {"web", "voice", "serial"}) {
     Rig r;
+    r.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
     publicNoAllowlist(r);
     r.eng->handleMessage("hi", "Dana", chat);
     const std::string& sys = r.debug[0].instructions;
@@ -1990,6 +2002,7 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
 
   Rig t;   // a guest's Telegram turn in the same mode keeps its own chat
   publicNoAllowlist(t);
+  t.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   t.eng->handleMessage("hi", "Guest", "5550001");
   TEST_ASSERT_TRUE(t.debug[0].instructions.find("reply_telegram") != std::string::npos);
 }
@@ -2000,6 +2013,7 @@ static void test_cum523_public_mode_empty_allowlist_is_decided_per_turn() {
 // files.send, and neither the capability line nor a built-in served on it names it.
 static void test_cum523_public_guest_turn_gets_reply_but_no_file_send() {
   Rig t;
+  t.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   publicNoAllowlist(t);
   t.hw.files = t.hw.sd = t.hw.wifi = true;
   t.hw.telegram = true;
@@ -2024,6 +2038,7 @@ static void test_cum523_public_guest_turn_gets_reply_but_no_file_send() {
   // Counter-test: with a chat allowlisted the same guest turn keeps files.send.
   Rig a;
   a.cfg.telegramPublic = true;
+  a.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   addTelegramSpecs(a);
   a.hw = t.hw;
   a.eng->handleMessage("send me the report as a PDF", "Guest", "5550001");
@@ -2051,8 +2066,25 @@ static void test_cum523_public_guest_turn_gets_reply_but_no_file_send() {
 // device's real built-ins), the capability line (SD files bullet) - and every
 // built-in body served on that turn (skill.get) follows the same sample. (The rig
 // stubs the connector catalog; its own wording is pinned in test_connectors_wire.)
+// R3: with the tool loop ENABLED the tools ride the request itself, so the
+// capability manifest points at the request's tool list instead of repeating
+// it (~8 KB a turn).
+static void test_g1_loop_on_manifest_points_at_the_request_tools() {
+  Rig r;   // the rig default: toolLoop on
+  r.specs.push_back({"reply_speak", "Say something out loud"});
+  r.specs.push_back({"files_send", "Send a file"});
+  r.eng->handleMessage("hello there", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.attempts.size() >= 1);
+  const agent::layout::PromptParts parts = agent::layout::split(r.attempts[0].instructions);
+  TEST_ASSERT_TRUE(parts.stat.find("Tools you can call:") == std::string::npos);
+  TEST_ASSERT_TRUE(parts.stat.find("reply_speak") == std::string::npos);
+  TEST_ASSERT_TRUE(parts.stat.find("Your tools are the ones in this request's tool list") !=
+                   std::string::npos);
+}
+
 static void test_cum523_telegramless_prompt_names_no_telegram_tool() {
   Rig r;
+  r.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   r.cfg.telegramOn = false;
   r.hw.files = r.hw.sd = r.hw.speaker = r.hw.voiceReplies = r.hw.wifi = true;
   r.hw.telegram = true;   // the bot "runs" in the manifest; the turn's sample says no
@@ -2073,6 +2105,7 @@ static void test_cum523_telegramless_prompt_names_no_telegram_tool() {
 
   // Counter-test: the same turn with a deliverable bot keeps every Telegram name.
   Rig b;
+  b.cfg.toolLoop = false;   // single-shot: the manifest lists the tools (R3)
   b.hw = r.hw;
   b.specs = r.specs;
   b.eng->handleMessage("make me a PDF report", "Dana", "web");
@@ -4551,6 +4584,7 @@ static void runSecondHalf() {
   RUN_TEST(test_cum523_public_mode_empty_allowlist_is_decided_per_turn);
   RUN_TEST(test_cum523_public_guest_turn_gets_reply_but_no_file_send);
   RUN_TEST(test_cum523_telegramless_prompt_names_no_telegram_tool);
+  RUN_TEST(test_g1_loop_on_manifest_points_at_the_request_tools);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);
   RUN_TEST(test_lastturn_head_names_the_chain_and_the_device_history);

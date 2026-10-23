@@ -143,6 +143,22 @@ std::string clipMessage(const std::string& s) {
   return s.substr(0, (size_t)keep) + kCut;
 }
 
+// Critique B2 (G1): an image row's machine description only has to identify
+// and summarize the photo - its ref names it and image.look reads it again -
+// so it is capped to about 300 chars past the label. The clip lands on the
+// DESCRIPTION only (at the insertion point, userHalf below), never on the
+// owner's own text after it, and never splits a UTF-8 sequence.
+std::string clipImageRow(const std::string& s) {
+  if (s.rfind("[image", 0) != 0) return s;   // only a photo row's description
+  const size_t close = s.find(']');
+  const size_t label = close == std::string::npos ? 0 : close + 1;
+  if (s.size() <= label + nimbus::orch::kImageRowMaxChars) return s;
+  static const char kCut[] = " ...(cut)";
+  const int keep = nimbus::utf8CapLen(s.c_str(), (int)s.size(),
+                                      (int)(label + nimbus::orch::kImageRowMaxChars - sizeof(kCut)));
+  return s.substr(0, (size_t)keep) + kCut;
+}
+
 // ---- time ---------------------------------------------------------------------
 using nimbus::orch::kClockValidHours;   // under it a row's hour is boot-relative: no date
 
@@ -234,25 +250,26 @@ std::string userHalf(const Building& b) {
   if (!b.userRow) {
     if (b.media.empty()) return "[no owner message - an automatic turn]";
     const EpisodicMessage& m = *b.media.front();
-    if (!m.text.empty()) return m.text;
+    if (!m.text.empty()) return clipImageRow(m.text);
     return m.kind == MsgKind::Audio ? "[voice note]" : std::string("[") + nimbus::orch::kindName(m.kind) + "]";
   }
   std::string text = b.userRow->text;
   size_t from = 0;
   for (const EpisodicMessage* m : b.media) {
     if (m->text.empty()) continue;
+    const std::string media = clipImageRow(m->text);
     const size_t whole = text.find(m->text, from);
     if (whole != std::string::npos) {   // already in place (a file's name, say)
       from = whole + m->text.size();
       continue;
     }
-    const std::string label = bracketLabel(m->text);
-    const size_t at = label.empty() || label == m->text ? std::string::npos : text.find(label, from);
+    const std::string label = bracketLabel(media);
+    const size_t at = label.empty() || label == media ? std::string::npos : text.find(label, from);
     if (at != std::string::npos) {
-      text.replace(at, label.size(), m->text);
-      from = at + m->text.size();
+      text.replace(at, label.size(), media);
+      from = at + media.size();
     } else {
-      text += (text.empty() ? "" : "\n") + m->text;
+      text += (text.empty() ? "" : "\n") + media;
       from = text.size();
     }
   }
@@ -617,6 +634,7 @@ HistoryWindow fitHistory(const std::vector<HistTurn>& turns, const std::string& 
   for (size_t i = drop; i < turns.size(); i++)
     w.block += renderTurnLines(turns[i], i > drop ? &turns[i - 1] : nullptr, utcOffsetMin);
   w.bytes = w.block.size() - (sizeof(kHistoryHeader) - 1);
+  w.kept.assign(turns.begin() + drop, turns.end());
   return w;
 }
 

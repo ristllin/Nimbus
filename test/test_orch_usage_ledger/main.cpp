@@ -2416,9 +2416,10 @@ static void test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload() {
   const std::string nvs = L.serialize();
   TEST_ASSERT_EQUAL_STRING(Old.serialize().c_str(), nvs.c_str());
   const std::vector<std::string> g = nvsGroup(nvs, "openai");
-  TEST_ASSERT_EQUAL(18, (int)g.size());
+  TEST_ASSERT_EQUAL(19, (int)g.size());   // 18 + the R3 tail (cacheWrite1h)
   TEST_ASSERT_EQUAL_STRING("0", g[16].c_str());
   TEST_ASSERT_EQUAL_STRING("0", g[17].c_str());
+  TEST_ASSERT_EQUAL_STRING("0", g[18].c_str());   // the R3 tail: no 1-hour writes
   // Anthropic's own split still rides the blob (it always has).
   TEST_ASSERT_EQUAL_STRING("9743", nvsGroup(nvs, "anthropic")[16].c_str());
   // Restart: the split comes back from the rows, the estimate is unchanged, nothing lost.
@@ -2457,10 +2458,11 @@ static void test_r4_fresh_device_switched_turn() {
   TEST_ASSERT_EQUAL(0, (int)L.tagEntries().size());
   const std::string nvs = L.serialize();
   const std::vector<std::string> g = nvsGroup(nvs, "openai");
-  TEST_ASSERT_EQUAL(18, (int)g.size());
+  TEST_ASSERT_EQUAL(19, (int)g.size());   // 18 + the R3 tail (cacheWrite1h)
   TEST_ASSERT_EQUAL_STRING("17717", g[7].c_str());   // input in its native, cache-included form
   TEST_ASSERT_EQUAL_STRING("0", g[16].c_str());
   TEST_ASSERT_EQUAL_STRING("0", g[17].c_str());
+  TEST_ASSERT_EQUAL_STRING("0", g[18].c_str());   // the R3 tail: no 1-hour writes
   UsageHistory h;
   h.record("anthropic", "claude-haiku-5-5", 20650, ant, 0);
   h.record("openai", "gpt-5.6-luna", 20650, oai, 0);

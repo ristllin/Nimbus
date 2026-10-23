@@ -97,6 +97,14 @@ std::string buildCompactInputs(const std::string& prevSummary,
 // is re-injected into every future prompt - a torn sequence would 400 them all).
 constexpr size_t kChatSummaryMax = 4096;
 
+// capSummary is SECTION-AWARE (L19-27): a summary that fits is kept whole; one
+// that does not drops whole low-priority sections first (device & task state,
+// then owner intent - the durable sections, decisions/preferences, pending
+// items and long-term facts, are never dropped whole), then trims the durable
+// sections' BODIES from the last one backwards, a whole line at a time, their
+// headers always whole, and never splits a UTF-8 sequence. The cut is visible
+// (one ellipsis), so the next anchored fold re-digests from it, not behind it.
+
 // How many chats keep a fold state. Raised 8 -> 16 (R5): a household or a small
 // group easily exceeds eight correspondents, and evicting a chat's slot discards
 // its summary - the next turn there starts with no continuity and re-pays the

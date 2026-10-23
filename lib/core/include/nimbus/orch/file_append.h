@@ -51,4 +51,37 @@ TailView tailRows(const std::string& window, size_t windowStart, size_t n);
 std::string renderTail(const TailView& v, const std::string& name, size_t fileBytes,
                        const std::string& headerRow);
 
+
+// ---- the keyed CSV upsert and the day total (G1, rows 32/33) ------------------
+// A keyed CSV is a log whose rows are unique per key (the date, a meal slot, a
+// ledger category): logging the same key again UPDATES that row instead of
+// adding a duplicate. Only the new rows cross the model's context; the merge
+// happens on the device. (The old path - files.read then a whole-file
+// artifact.save - sent every stored byte over the prompt twice.)
+struct CsvUpsert {
+  bool ok = false;
+  std::string err;         // why not, when !ok
+  std::string out;         // the whole new file ("" = nothing to write)
+  bool changed = false;    // the file differs from `existing`
+  int replaced = 0;        // rows whose key already existed
+  int appended = 0;        // rows with a new key
+  bool hasTotal = false;   // the day total is known
+  double todayTotal = 0;   // the sum column over today's rows
+};
+// Merge `newText` (one header row first, matching columns, then data rows)
+// into `existing` keyed by `keyCol`; when `sumCol` is not empty and a date
+// column ("date" or "day") exists, report the total of `sumCol` over the rows
+// whose date starts with `today` ("YYYY-MM-DD"). Simple comma-split fields; a
+// field with a quoted comma is passed through untouched (a log row, not a
+// spreadsheet formula).
+CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
+                        const std::string& keyCol, const std::string& sumCol,
+                        const std::string& today);
+
+// The day total alone (the tail view): the sum of `sumCol` over the rows whose
+// date column starts with `today`. False when the file has no date column or
+// no such sum column.
+bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
+                 const std::string& today, double& out);
+
 }  // namespace nimbus::orch

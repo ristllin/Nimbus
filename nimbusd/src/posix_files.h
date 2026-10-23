@@ -9,6 +9,7 @@
 
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/tool_registry.h"
 #include "posix_fs.h"
 
@@ -97,21 +98,32 @@ class PosixFiles {
             R"("name":{"type":"string"},"tail":{"type":"number"}},"required":["project","name"]})");
 
     // The device's files.append (file_append.h): the new rows go on the end of the
-    // file; nothing stored is rewritten.
+    // file; nothing stored is rewritten. With 'key' it is the keyed CSV upsert
+    // (G1, rows 32/33) and the reply carries the day total.
     addOwnerOnly(reg, "files.append",
             "Add rows to the END of a text file (a log, a CSV): only the new rows are "
             "written. Creates the file when missing (put a CSV's header row first). Up to "
-            "4 KB per call. Use it to log a row instead of re-saving the whole file.",
+            "4 KB per call. Use it to log a row instead of re-saving the whole file. For "
+            "a keyed CSV pass 'key' (the column whose value identifies a row) to UPDATE "
+            "that row instead of adding a duplicate, and 'sum' (a numeric column) to get "
+            "its total for today in the reply.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
+              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text"),
+                                key = str(a, "key"), sum = str(a, "sum");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
               std::string err, note;
+              if (!key.empty()) {
+                if (!upsert(p, n, t, key, sum, err, note))
+                  return nimbus::orch::ToolResult::fail(err);
+                return nimbus::orch::ToolResult::ok(note);
+              }
               if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
               return nimbus::orch::ToolResult::ok(note);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"text":{"type":"string"}},)"
+            R"("name":{"type":"string"},"text":{"type":"string"},)"
+            R"("key":{"type":"string"},"sum":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
   }
 
@@ -251,6 +263,57 @@ class PosixFiles {
     note = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
            p + "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
            (plan.repairedCut ? "; its last row was incomplete and is left as it was" : "");
+    return true;
+  }
+
+  // The keyed CSV upsert (file_append.h): the daemon merges by key and reports
+  // the day total, the same reply the device gives.
+  static std::string todayStr() {
+    const nimbus::orch::LocalDate d = nimbus::orch::localDateOf(time(nullptr));
+    if (!d.valid()) return std::string();
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
+    return buf;
+  }
+
+  bool upsert(const std::string& p, const std::string& n, const std::string& text,
+              const std::string& key, const std::string& sum, std::string& err,
+              std::string& note) {
+    std::string cur;
+    const nimbus::orch::FileEntry* old = store_.find(p, n);
+    if (old) read(p, n, cur);
+    const nimbus::orch::CsvUpsert up =
+        nimbus::orch::planCsvUpsert(cur, text, key, sum, todayStr());
+    if (!up.ok) {
+      err = up.err;
+      return false;
+    }
+    if (up.changed) {
+      if (store_.wouldExceed(p, n, up.out.size(), err)) return false;
+      if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
+        err = "write failed";
+        return false;
+      }
+      nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
+      if (!old) {
+        e.project = p;
+        e.name = n;
+        e.createdAt = (uint32_t)time(nullptr);
+        e.kind = nimbus::orch::fileKindForName(n);
+      }
+      e.bytes = (uint32_t)up.out.size();
+      e.hash = 0;
+      if (!store_.add(e, err)) return false;
+      fsutil::writeFileAtomic(indexPath(), store_.dump());
+    }
+    note = "updated " + std::to_string(up.replaced) +
+           (up.replaced == 1 ? " row" : " rows") + ", appended " +
+           std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
+    if (up.hasTotal) {
+      char tot[32];
+      std::snprintf(tot, sizeof tot, "%g", up.todayTotal);
+      note += "; today's " + sum + ": " + tot;
+    }
     return true;
   }
 

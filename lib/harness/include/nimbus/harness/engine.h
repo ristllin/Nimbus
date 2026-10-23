@@ -356,8 +356,11 @@ class TurnEngine {
   // Keyed, in-budget fold hosts (orchHost first, then priority; <=3). Public so
   // tests can pin the ladder order without scripting a provider.
   std::vector<std::string> foldHostCandidates() const;
+  // `producedBytes`, when given, receives the model's raw summary size before
+  // capSummary trimmed it (L19-27: the ev:compact row reports both).
   FoldResult runFold(const std::string& chatId, const std::string& prevSummary,
-                     const std::string& digest, std::string& outSummary);
+                     const std::string& digest, std::string& outSummary,
+                     size_t* producedBytes = nullptr);
 
   // Reset ONE chat's provider conversation (fold write-order step 2; also the
   // reactive-overflow recovery). Other chats' threads stay intact - unlike the
@@ -510,6 +513,9 @@ class TurnEngine {
 
   Deps   d_;
   Tuning t_;
+  // R3 (G1): the turn-start gaps per chat, for the Anthropic TTL table
+  // (prompt_layout.h). RAM only (a restart starts over on 5 minutes).
+  layout::TurnGaps turnGaps_;
 
   volatile bool turnInFlight_ = false;
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
@@ -608,6 +614,11 @@ class TurnEngine {
   bool captureOwnerRow(const std::string& chatId, const std::string& text, const std::string& fromTag);
   // H2/H3: the RECENT CONVERSATION block for this turn ("" = none).
   std::string historyBlock(const std::string& chatId, size_t highBytes);
+  // R3 (G1): the same turns as real messages (renderHistory - the summary pair
+  // first), for the providers' history items. `summary` is the chat's fold
+  // summary, its header line stripped when the caller sent a rendered block.
+  std::vector<HistMsg> historyMessages(const std::string& chatId, size_t highBytes,
+                                       const std::string& summary);
   // Capture one assistant row with its out: kind (and the trigger row first).
   void captureAssistantRow(const std::string& chatId, const std::string& text, const char* outKind);
   void flushTrigger(const std::string& chatId);   // the pending trigger row, once

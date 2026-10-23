@@ -72,6 +72,8 @@ void usage() {
       "  --role=<admin|user|guest|unknown>   run the chat as this role, so the\n"
       "                                      principal-scoped tool advertisement is\n"
       "                                      exercised (default: admin)\n"
+      "  --dev-name=<name>                   the device name the prompt carries (a distinct\n"
+      "                                      name per concurrent cache run, default Nimbus-Lab)\n"
       "  --heap=<bytes>                      report a device-like internal heap, so the\n"
       "                                      real turn/loop heap gates fire (e.g. 30000)\n"
       "  --heap-decay=<bytes>                subtract this per heap read, so the value\n"
@@ -173,6 +175,7 @@ int main(int argc, char** argv) {
     else if (a == "--hist-v1")               opt.histV2 = false;
     else if (a == "--defaults")              opt.roleDefaults = true;
     else if (a.rfind("--role=", 0) == 0)     opt.role = a.substr(7);
+    else if (a.rfind("--dev-name=", 0) == 0) opt.devName = a.substr(11);
     else if (a.rfind("--heap=", 0) == 0)     opt.heapBytes = (uint32_t)std::stoul(a.substr(7));
     else if (a.rfind("--heap-decay=", 0) == 0) opt.heapDecay = (uint32_t)std::stoul(a.substr(13));
     else if (a == "--nvs-full")              sub.nvsFull = true;

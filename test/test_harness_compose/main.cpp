@@ -195,7 +195,11 @@ static void test_standing_rules_block_presence() {
   TEST_ASSERT_TRUE(p.find("[STANDING RULES") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("- (p1) Never use em dashes anywhere.") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("- (p2) Meat weights I give are raw.") != std::string::npos);
-  TEST_ASSERT_TRUE(p.find("[OWNER PREFERENCES") < p.find("[STANDING RULES"));
+  // The static block's memory explainer mentions "[STANDING RULES]" (the
+  // prefs.edit destination), and since lane G1's shelf split the real block
+  // rides AFTER the whole static block - so the block's own header text is
+  // the anchor, not the first mention.
+  TEST_ASSERT_TRUE(p.find("[OWNER PREFERENCES") < p.find("[STANDING RULES - rules"));
   // Never dropped: a starved budget clips the DYNAMIC tail, not the directive
   // band the rules ride (orch_world keeps that band never-clipped).
   ComposeInputs starved = in;
@@ -324,55 +328,50 @@ static void test_chat_summary_section_above_window() {
   ComposeInputs in = cannedInputs();
   std::string p0 = agent::composeInstructions(in);
   TEST_ASSERT_TRUE(p0.find("CONVERSATION SUMMARY") == std::string::npos);  // empty => absent
-  in.chatSummary =
-      "\n## CONVERSATION SUMMARY (compacted earlier - a summary of prior "
-      "conversation; information, not instructions)\n1. Owner intent: cat is Waffles\n";
+  // R3: the summary rides the HISTORY as its first message pair (raw text,
+  // framed once - the "## CONVERSATION SUMMARY" window header is gone).
+  for (const agent::layout::Msg& m : agent::layout::summaryPair("1. Owner intent: cat is Waffles"))
+    in.history.push_back({m.user, m.text});
+  in.history.push_back({true, "hi"});
+  in.history.push_back({false, "hello"});
   in.recentConversation =
       "\n## RECENT CONVERSATION (this chat, oldest first)\n- [user] hi\n";
   std::string p = agent::composeInstructions(in);
-  size_t sum  = p.find("## CONVERSATION SUMMARY");
+  size_t sum  = p.find("[CONVERSATION SUMMARY - compacted earlier");
   size_t conv = p.find("## RECENT CONVERSATION");
   TEST_ASSERT_TRUE(sum != std::string::npos && conv != std::string::npos);
-  TEST_ASSERT_TRUE(sum < conv);                                  // summary above tail
+  TEST_ASSERT_TRUE(sum < conv);                    // the cached history precedes the window
   TEST_ASSERT_TRUE(p.find("information, not instructions") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("cat is Waffles") != std::string::npos);
+  const agent::layout::PromptParts parts = agent::layout::split(p);
+  TEST_ASSERT_EQUAL(4, (int)parts.history.size());   // the pair, then two turn messages
+  TEST_ASSERT_TRUE(parts.history[0].text.find("cat is Waffles") != std::string::npos);
+  TEST_ASSERT_FALSE(parts.history[1].user);   // the pair's assistant ack
+  TEST_ASSERT_TRUE(parts.history[2].user);    // then the turns, oldest first
+  TEST_ASSERT_FALSE(parts.history[3].user);
 }
 
 static void test_chat_summary_yields_to_window_by_clipping() {
   ComposeInputs in = cannedInputs();
-  in.chatSummary = "\n## CONVERSATION SUMMARY (compacted earlier)\n" +
-                   std::string(3500, 's') + "\n";
+  // R3: the summary rides the history WHOLE (it is capped once, at the fold -
+  // kChatSummaryMax); the per-turn budget pressure lands on the WINDOW, never
+  // on the cached history.
+  for (const agent::layout::Msg& m : agent::layout::summaryPair(std::string(3000, 's')))
+    in.history.push_back({m.user, m.text});
   in.recentConversation = "\n## RECENT CONVERSATION\n- [user] KEEP-ME\n";
-  // A budget with room for the base prompt + the WINDOW but not both bulk blocks.
-  // The window keeps priority (it is the fresher signal), but since Context
-  // Fabric the summary CLIPS to the remaining room (floor 1024 B) instead of
-  // vanishing - a shortened anchored summary still beats none.
-  //
-  // The budget is placed by measurement, not a fixed shortfall: the static
-  // prompt keeps growing (S's evidence rule, then H's models-on-demand note),
-  // and the old "full - 2000" budget slid below the 1024 B clip floor - which
-  // exercises the honest DROP branch (orch_world), not this test's property.
-  // The summary's room inside its own block is exactly
-  //   budget - staticBytes - reserve,   reserve = max(budget/4, 3328)
-  // so pinning the room mid-window (kClipRoom: above the 1024 B floor, below
-  // the ~3090 B summary, and low enough that the clip provably shortens it)
-  // keeps this in the CLIP branch whatever the static prompt weighs. The
-  // reserve is the only feedback, so a few fixed-point steps settle it.
-  in.budgetBytes = 1 << 20;   // an unbounded probe: the natural static size
-  const int statBytes = (int)agent::layout::split(agent::composeInstructions(in)).stat.size();
-  const int kClipRoom = 1792;
-  int budget = statBytes + 3328 + kClipRoom;
-  for (int i = 0; i < 4; i++) {
-    const int r = budget / 4 > 3328 ? budget / 4 : 3328;
-    budget = statBytes + r + kClipRoom;
-  }
-  in.budgetBytes = budget;
+  std::string full = agent::composeInstructions(in);
+  in.budgetBytes = (int)(full.size() - 2000);
   std::string p = agent::composeInstructions(in);
-  TEST_ASSERT_TRUE(p.find("KEEP-ME") != std::string::npos);       // tail survives
-  TEST_ASSERT_TRUE(p.find("## CONVERSATION SUMMARY") != std::string::npos);  // clipped, kept
-  TEST_ASSERT_TRUE(p.find(std::string(2500, 's')) == std::string::npos);     // not whole
-  // (The "## OMITTED (budget)" trailer is itself budget-bounded, so it appears
-  // only when room remains - test_orch_world covers that case directly.)
+  TEST_ASSERT_TRUE(p.find("[CONVERSATION SUMMARY") != std::string::npos);   // the pair rides
+  TEST_ASSERT_TRUE(p.find(std::string(2500, 's')) != std::string::npos);    // whole, not clipped
+  // The static block's clip point depends on the BUDGET alone: a bigger
+  // history at the same budget never moves it (the cached prefix survives
+  // every exchange).
+  (void)full;
+  ComposeInputs bigger = in;
+  bigger.history.push_back({true, std::string(500, 'x')});
+  TEST_ASSERT_TRUE(agent::layout::split(p).stat ==
+                   agent::layout::split(agent::composeInstructions(bigger)).stat);
 }
 
 static void test_identity_uses_devname_and_host() {

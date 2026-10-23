@@ -220,6 +220,22 @@ void clampResult(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks, HeadTool
 }
 }  // namespace
 
+namespace {
+// R3 (row: accept orch_turn when every sibling call is a write): the loop's
+// call names are the sanitized registry names (loopToolName). A write here is
+// a tool whose result can only CONFIRM the reply's claim - a pure ack. A
+// read (memory_search, files_read) returns facts the answer was written
+// without, and files_append returns the running day total, so they still get
+// the CUM-506 re-ask round; so does any failed call.
+bool isAckWrite(const std::string& loopName) {
+  static const char* const kAcks[] = {"memory_write",  "memory_update",   "memory_pin",
+                                      "memory_delete", "memory_config",   "memory_scratchpad"};
+  for (const char* w : kAcks)
+    if (loopName == w) return true;
+  return false;
+}
+}  // namespace
+
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
@@ -353,16 +369,31 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
       // results existed (a failed save, or a read whose data it never saw), it
       // is discarded: the next round hands the results back and the answer the
       // owner gets is written with them in hand. Each call runs exactly once.
+      // R3 narrows the discard: when every sibling is a pure write and all
+      // succeed, the answer stands (below) - nothing it claims is unconfirmed.
       // On the forced final round tools were withdrawn (the model was told
       // nothing it asks for will run), so stray calls there are not executed.
       if (!sr.toolCalls.empty() && !lastChance) {
+        // R3: when every sibling is a pure write and they all succeed, the
+        // answer is accepted as written (the re-ask round exists for results
+        // the reply should have seen; a successful ack can only confirm it).
+        // One model round saved on the food-log class of turn.
+        bool allAcks = true;
+        for (const HeadToolCall& c : sr.toolCalls) allAcks = allAcks && isAckWrite(c.name);
         prior.clear();
         const bool allOk = dispatchAll(sr.toolCalls, round);
-        if (hooks.log)
-          hooks.log("headloop: ran " + std::to_string(sr.toolCalls.size()) +
-                    " tool call(s) sent with the final answer" + (allOk ? "" : " (one failed)") +
-                    " - asking again with the results");
-        continue;
+        if (allAcks && allOk) {
+          if (hooks.log)
+            hooks.log("headloop: ran " + std::to_string(sr.toolCalls.size()) +
+                      " write call(s) sent with the final answer - all succeeded, accepting it");
+          // fall through: this orch_turn is the answer
+        } else {
+          if (hooks.log)
+            hooks.log("headloop: ran " + std::to_string(sr.toolCalls.size()) +
+                      " tool call(s) sent with the final answer" +
+                      (allOk ? "" : " (one failed)") + " - asking again with the results");
+          continue;
+        }
       }
       if (!sr.toolCalls.empty() && hooks.log)
         hooks.log("headloop: dropped " + std::to_string(sr.toolCalls.size()) +

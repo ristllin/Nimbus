@@ -8,6 +8,16 @@ installs it when you approve ([how updates work](ota.md)).
 
 ## Unreleased
 
+Cheaper, faster replies (the prompt and its cache, reworked):
+
+- **Your conversation is sent as a real conversation.** The assistant's memory of your chat used to be one text block, re-sent and re-written on every turn, so providers re-billed it at full price once their short cache expired. It is now sent as the actual messages - one from you, one from the assistant, per turn - and a chat whose turns come 5 to 60 minutes apart keeps its cache alive for an hour, so a slow conversation costs a fraction of the old price at every turn after the first.
+- **An owner edit no longer re-caches everything.** Your standing preferences and the skills list moved to their own cached block after the fixed one, so changing them re-writes only that block, not the whole prompt.
+- **The tool list is not sent twice.** With the mid-turn tool loop on, every tool already rides the request with its description; the prompt no longer lists them all again (about 8 KB less per turn).
+- **A log row updates in place.** `files.append` can update a row by its key (a date, a meal slot) instead of appending a duplicate, and both it and a log's tail read report the day's total, so logging a meal is one call instead of a read plus a save.
+- **The final answer is not thrown away when it did not need to be.** When the assistant sends its answer together with plain saves and they all succeed, the answer stands as written - the device used to ask the model to write it again with the results in hand, costing another round.
+- **The fold summary keeps what matters.** A summary that runs long now drops whole low-priority sections first - your pending items and long-term facts are never the part that gets cut - and the compaction prompt states the size budget up front.
+- **Photo descriptions in the history are capped.** A machine's description of a photo only has to identify it, so a long one is capped to about 300 characters with the reference kept; the photo itself can always be looked at again.
+- **Cache costs are counted honestly.** One-hour cache writes are billed at their real (higher) rate in the spend accounting, so a slow chat's savings are never over-counted.
 - **Skills the assistant actually uses, and can edit safely.** A skill read once
   in a chat now stays attached to that chat's next turns (`[ACTIVE SKILLS]`), so
   the assistant follows it on follow-ups instead of re-reading it every turn;

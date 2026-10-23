@@ -81,6 +81,20 @@ static bool oaiIsReasoningModel(const std::string& model) {
   return false;
 }
 
+// R3 (row: strip orch_turn field descriptions on the OpenAI wire): the field
+// docs live in the static prompt block (the compressed v2 field guide), so the
+// schema carries none - the same trim the Anthropic wire makes for its grammar
+// budget. Strict mode accepts a description-less schema (proven live).
+static void stripFieldDescriptions(ArduinoJson::JsonVariant v) {
+  if (v.is<ArduinoJson::JsonObject>()) {
+    ArduinoJson::JsonObject o = v.as<ArduinoJson::JsonObject>();
+    o.remove("description");
+    for (ArduinoJson::JsonPair kv : o) stripFieldDescriptions(kv.value());
+  } else if (v.is<ArduinoJson::JsonArray>()) {
+    for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) stripFieldDescriptions(e);
+  }
+}
+
 static JobState mapStatus(const char* s) {
   if (!s) return JobState::Unknown;
   if (!strcmp(s, "completed"))   return JobState::Done;
@@ -412,6 +426,8 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     std::string& tail = round.split ? round.dyn : round.stat;
     tail = wire::roundInstructions(tail, capReason);
     if (!round.split) wire::putFieldStr(req["instructions"], round.stat, "the system prompt");
+    // R3: one chat's turns on one provider cache (prompt_cache_key).
+    layout::putCacheKey(req.as<ArduinoJson::JsonObject>(), round);
     req["store"]        = false;   // stateless: the device owns the turn's state
     // Glass Box A4: ask reasoning models for a summary of their thinking so it
     // can be captured into HeadStep.text (gated - a chat model would 400 on the
@@ -431,19 +447,24 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
     auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
-      // A split prompt (prompt_layout.h): the static block (and the summary) as
-      // developer messages, then the user seed led by the per-turn block. The
-      // request then starts with the same bytes on every turn of a day.
-      if (round.split) layout::putOpenAIDeveloper(in, round);
+      // A split prompt (prompt_layout.h): the static block and the shelf as
+      // developer messages (explicit cache breakpoints), then the history as
+      // message items (a breakpoint on the last user item), then the user seed
+      // led by the per-turn block. The request then starts with the same bytes
+      // on every turn of a day.
+      if (round.split) layout::putOpenAIInput(in, round);
       renderOaiInput(tr, in, imgs != nullptr);
-      for (JsonObject m : in)
-        if (!strcmp(m["role"] | "", "user")) {
-          if (round.split)
-            wire::putFieldStr(m["content"], layout::userWithDynamic(round, m["content"] | ""),
-                              "the user message");
-          if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
-          break;
-        }
+      // The SEEDED user message (this turn's own, after the history): the
+      // per-turn block leads it and the photos ride it. Index, not "first
+      // user" - the history items are users too.
+      const size_t seedIdx = round.split ? 2 + round.history.size() : 0;
+      if (in.size() > seedIdx && !strcmp(in[seedIdx]["role"] | "", "user")) {
+        JsonObject m = in[seedIdx];
+        if (round.split)
+          wire::putFieldStr(m["content"], layout::userWithDynamic(round, m["content"] | ""),
+                            "the user message");
+        if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
+      }
       // Forced final after a STALL: if the newest round carried no tool calls
       // (prose-only - not rendered), this request would be byte-identical to the
       // one the model just stalled on; nudge with a user message so it answers
@@ -466,7 +487,10 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     };
     renderInput();
 
-    // tools: orch_turn always (the terminal); registry specs on tool rounds.
+    // tools: orch_turn always (the terminal); the registry specs on EVERY round
+    // (CUM-641: a forced final round that shrank the array lost the tools
+    // segment of the cache and rewrote it at 1.25x - the forced tool_choice is
+    // what stops the model calling them, not a missing array).
     JsonArray tools = req["tools"].to<JsonArray>();
     {
       JsonObject ot = tools.add<JsonObject>();     // Responses function tools are FLAT
@@ -480,22 +504,23 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
                           DeserializationOption::NestingLimit(16))) {
         out.ok = false; out.error = "schema parse"; return out;
       }
+      stripFieldDescriptions(sd.as<ArduinoJson::JsonVariant>());   // the field docs ride the prompt instead
       ot["parameters"] = sd;
     }
+    for (const auto& s : ht.specs) {
+      JsonObject t = tools.add<JsonObject>();
+      t["type"] = "function";
+      t["name"] = s.name;
+      t["description"] = s.description;
+      t["strict"] = false;                       // registry schemas aren't strict-shaped
+      JsonDocument ssd = makeDoc(pd);
+      if (deserializeJson(ssd, s.schemaJson,
+                          DeserializationOption::NestingLimit(16)) == DeserializationError::Ok)
+        t["parameters"] = ssd;
+      else
+        t["parameters"].to<JsonObject>();
+    }
     if (allowTools) {
-      for (const auto& s : ht.specs) {
-        JsonObject t = tools.add<JsonObject>();
-        t["type"] = "function";
-        t["name"] = s.name;
-        t["description"] = s.description;
-        t["strict"] = false;                       // registry schemas aren't strict-shaped
-        JsonDocument ssd = makeDoc(pd);
-        if (deserializeJson(ssd, s.schemaJson,
-                            DeserializationOption::NestingLimit(16)) == DeserializationError::Ok)
-          t["parameters"] = ssd;
-        else
-          t["parameters"].to<JsonObject>();
-      }
       // "required" (not "auto"): the model must call SOME tool every round - either
       // a registry tool or the terminal orch_turn - so text-only stall rounds can't
       // happen (observed live with auto: a post-dispatch round answered in prose and
@@ -686,13 +711,15 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     JsonDocument d;
     d["model"]        = pd.orchModel ? pd.orchModel("openai") : std::string();  // per-provider orchestrator model
     // A split prompt (prompt_layout.h): developer messages for the static block
-    // and the summary, then the per-turn block leading the user message.
+    // and the shelf (explicit cache breakpoints), the history as message items,
+    // then the per-turn block leading the user message.
     std::string sys;
     wire::putFieldStr(sys, instructions, "the system prompt");
     const layout::PromptParts parts = layout::split(sys);
+    layout::putCacheKey(d.as<ArduinoJson::JsonObject>(), parts);
     if (parts.split) {
       JsonArray in = d["input"].to<JsonArray>();
-      layout::putOpenAIDeveloper(in, parts);
+      layout::putOpenAIInput(in, parts);
       JsonObject u = in.add<JsonObject>();
       u["type"] = "message";
       u["role"] = "user";

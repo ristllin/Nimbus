@@ -98,6 +98,7 @@ TokenDelta ledgerDelta(const SpendSlot& s) {
     d.in = s.in;
     d.cacheR = s.cacheR;
     d.cacheW = s.cacheW;
+    d.cacheW1h = s.cacheW1h < s.cacheW ? s.cacheW1h : s.cacheW;   // R3: the TTL split
   } else if (std::strcmp(s.host, "openai") == 0) {
     // Both cache counts are PART of input_tokens: never more than it (a malformed
     // usage object must not wrap the remainder).
@@ -140,6 +141,10 @@ void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
   if (model && *model && !models_.tracking()) startTracking();
   const char* key = models_.spendKey(model);
   recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
+  if (d.cacheW1h) {   // R3: the 1-hour-TTL part, priced at 2x at estimate time
+    ProviderBudget* e = ensure(name);
+    if (e) e->cacheWrite1h += d.cacheW1h;
+  }
   // Every row follows its own provider's period: a provider that rolled zeroes its
   // rows' period counters, one that first synced carries its pre-sync rows along.
   models_.syncPeriods(&UsageLedger::periodOf, this);
@@ -285,10 +290,16 @@ struct MicroSum {
       micro = addSat(micro, costMicroSat(t.cacheR, r.cacheR, sat), sat);
     else
       micro = addSat(micro, costMicroSat(t.cacheR, r.in, sat) / 10, sat);
-    if (r.cacheW)
-      micro = addSat(micro, costMicroSat(t.cacheW, r.cacheW, sat), sat);
-    else
-      micro = addSat(micro, costMicroSat(mulSat(t.cacheW, 5, sat), r.in, sat) / 4, sat);
+    // R3: the 1-hour-TTL part of the writes prices at 2x the input rate (the
+    // published Anthropic rate); the 5-minute part keeps the write rate.
+    if (r.cacheW) {
+      micro = addSat(micro, costMicroSat(t.cacheW - t.cacheW1h, r.cacheW, sat), sat);
+      micro = addSat(micro, costMicroSat(mulSat(t.cacheW1h, 2, sat), r.in, sat), sat);
+    } else {
+      micro = addSat(micro, costMicroSat(mulSat(t.cacheW - t.cacheW1h, 5, sat), r.in, sat) / 4,
+                     sat);
+      micro = addSat(micro, costMicroSat(mulSat(t.cacheW1h, 2, sat), r.in, sat), sat);
+    }
   }
   void addCalls(uint64_t calls, uint64_t microPerK) {
     micro = addSat(micro, mulSat(calls, microPerK, sat) / 1000ULL, sat);
@@ -1246,6 +1257,8 @@ std::string UsageLedger::serialize() const {
     // v4.1.3 tail: period prompt-cache counters (same append-only compat rules).
     out.push_back('|'); appendU64(out, folded ? 0 : e.cacheRead);
     out.push_back('|'); appendU64(out, folded ? 0 : e.cacheWrite);
+    // R3 tail: the 1-hour-TTL part of cacheWrite. Absent in older blobs -> 0.
+    out.push_back('|'); appendU64(out, e.cacheWrite1h);
   }
   // Attribution tail: '#'-prefixed 4-field groups. tag is [a-z0-9_:-] by
   // construction ("turn"/"synthesis"/"loop:<id>"/"spawn:<backend>") - no '|'/';'.
@@ -1313,6 +1326,10 @@ void UsageLedger::deserialize(const std::string& s) {
     if (np > 15) e.centsLimit     = (uint64_t)strtoull(parts[15].c_str(), nullptr, 10);
     if (np > 16) e.cacheRead      = (uint64_t)strtoull(parts[16].c_str(), nullptr, 10);
     if (np > 17) e.cacheWrite     = (uint64_t)strtoull(parts[17].c_str(), nullptr, 10);
+    if (np > 18) {
+      e.cacheWrite1h = (uint64_t)strtoull(parts[18].c_str(), nullptr, 10);
+      if (e.cacheWrite1h > e.cacheWrite) e.cacheWrite1h = e.cacheWrite;   // never negative spend
+    }
     entries_.push_back(std::move(e));
   }
 }

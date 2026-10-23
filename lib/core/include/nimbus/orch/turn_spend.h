@@ -29,6 +29,7 @@ struct SpendSlot {
   char     host[kProvKeyCap] = {0};
   char     model[kModelKeyCap] = {0};   // usageModelKey at bill time ("" = provider level)
   uint32_t in = 0, out = 0, cacheR = 0, cacheW = 0;   // provider-native counts
+  uint32_t cacheW1h = 0;   // the 1-hour-TTL part of cacheW (Anthropic; 0 elsewhere)
   uint16_t billed = 0;                  // billed responses (HTTP 200s with usage)
   bool empty() const { return !billed && !in && !out && !cacheR && !cacheW; }
 };

@@ -155,6 +155,9 @@ struct HistoryWindow {
   std::string softStart;   // the soft start after this call (forward only)
   bool shifted = false;    // the start moved now: rows are hidden until a fold
   size_t bytes = 0;        // rendered turn bytes kept
+  // The kept turns themselves (R3/G1: renderHistory turns them into the
+  // history messages the providers send as items).
+  std::vector<HistTurn> kept;
 };
 // Fit `turns` (already after `softStart`) into the budget, oldest first.
 HistoryWindow fitHistory(const std::vector<HistTurn>& turns, const std::string& softStart,

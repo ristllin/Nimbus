@@ -138,9 +138,20 @@ struct Rig {
   std::string lastWindow() const {
     const std::string& ins = instructions.back();
     const size_t at = ins.find("\n## RECENT CONVERSATION");
-    if (at == std::string::npos) return std::string();
-    const size_t end = ins.find("\n## ", at + 5);
-    return ins.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    if (at != std::string::npos) {   // histV1: the text window rides the dyn part
+      const size_t end = ins.find("\n## ", at + 5);
+      return ins.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    }
+    // histV2/R3: the history rides as real messages; render them in the
+    // window's line shape so the same assertions keep reading them.
+    const agent::layout::PromptParts p = agent::layout::split(ins);
+    std::string out;
+    for (const auto& m : p.history) {
+      out += m.user ? "- user: " : "- assistant: ";
+      out += m.text;
+      if (!out.empty() && out.back() != '\n') out += '\n';
+    }
+    return out;
   }
 };
 
@@ -185,7 +196,37 @@ static void test_owner_row_tags_and_stored_text() {
   // Next turn: the photo renders once, in place, in the history.
   r.eng->handleMessage("and dinner?", "Roy", "123");
   TEST_ASSERT_EQUAL(1, (int)count(r.lastWindow(), "a bowl of ramen"));
-  TEST_ASSERT_TRUE(r.lastWindow().find("- user: [image] a bowl of ramen\n\n  They wrote: lunch") != std::string::npos);
+  TEST_ASSERT_TRUE(r.lastWindow().find("[image] a bowl of ramen\n\nThey wrote: lunch") != std::string::npos);
+}
+
+// Critique B2 (G1): an image row in the window is capped far below a text
+// message - the ref names the photo and image.look reads it again, so a
+// machine description only has to identify and summarize it.
+static void test_image_row_is_capped_to_about_300_chars() {
+  Rig r;
+  const char* ref = "00000000abc00099";
+  const std::string longDesc = std::string(2000, 'd');
+  r.add("123", "user", MsgKind::Image, "[image] " + longDesc, "",
+        std::string("/mem/blobs/") + ref + ".jpg");
+  agent::history::Inbound in;
+  in.chatId = "123";
+  in.said = "[image]\n\nwhat was in that photo?";
+  in.refs = {ref};
+  in.src = "tg:9002x1";
+  const std::string routed = "[image] " + longDesc + "\n\nwhat was in that photo?";
+  agent::history::noteInbound(in, routed);
+  r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\",\"device\":[]}";
+  r.eng->handleMessage(routed, "Roy", "123");
+  r.eng->handleMessage("thanks", "Roy", "123");
+  const std::string w = r.lastWindow();
+  // The image row's user line: the label plus at most about 300 chars of the
+  // description, its cut visible.
+  const size_t at = w.find("[image] ");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const size_t eol = w.find('\n', at);
+  TEST_ASSERT_TRUE(eol - at <= 8 + nimbus::orch::kImageRowMaxChars + 16);
+  TEST_ASSERT_TRUE(w.find(std::string(400, 'd')) == std::string::npos);  // the bulk is gone
+  TEST_ASSERT_TRUE(w.find("what was in that photo?") != std::string::npos);  // the text after
 }
 
 // H7 / T8: random replay sequences (the same source delivered k times among
@@ -269,7 +310,7 @@ static void test_seedless_turn_trigger_row() {
   // The next owner turn's history shows the routine as its own exchange.
   r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("thanks", "Roy", "123");
-  TEST_ASSERT_TRUE(r.lastWindow().find("- system: [routine \"commute\" ran]\n- assistant [did: nothing]: ok") !=
+  TEST_ASSERT_TRUE(r.lastWindow().find("[routine \"commute\" ran]\n- assistant: [did: nothing] ok") !=
                    std::string::npos);
 }
 
@@ -458,6 +499,7 @@ static void test_text_bucket_source_and_inject_without_ids() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_owner_row_tags_and_stored_text);
+  RUN_TEST(test_image_row_is_capped_to_about_300_chars);
   RUN_TEST(test_exactly_once_capture_by_source);
   RUN_TEST(test_stale_note_never_applies_to_another_turn);
   RUN_TEST(test_album_from_the_batcher_is_captured_once_with_its_refs);

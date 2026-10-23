@@ -1,5 +1,8 @@
 #include "nimbus/orch/file_append.h"
 
+#include <cstdlib>
+#include <vector>
+
 namespace nimbus::orch {
 
 AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) {
@@ -77,6 +80,161 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
     out += "[the last row is incomplete - the file was cut mid-write; the next "
            "files.append starts on a new line]\n";
   return out;
+}
+
+namespace {
+// The CSV row helpers of the keyed upsert (G1, rows 32/33). A field is the
+// text between commas, surrounding spaces trimmed; a quoted field is used as
+// written (quotes included): a log row, not a spreadsheet formula.
+std::vector<std::string> splitCsvRow(const std::string& row) {
+  std::vector<std::string> out;
+  size_t p = 0;
+  while (true) {
+    size_t c = row.find(',', p);
+    const size_t end = c == std::string::npos ? row.size() : c;
+    size_t b = p, e = end;
+    while (b < e && (row[b] == ' ' || row[b] == '\t')) b++;
+    while (e > b && (row[e - 1] == ' ' || row[e - 1] == '\t')) e--;
+    out.push_back(row.substr(b, e - b));
+    if (c == std::string::npos) break;
+    p = c + 1;
+  }
+  return out;
+}
+
+std::vector<std::string> splitRows(const std::string& text) {
+  std::vector<std::string> out;
+  size_t p = 0;
+  while (p <= text.size()) {
+    const size_t nl = text.find('\n', p);
+    const size_t end = nl == std::string::npos ? text.size() : nl;
+    std::string row = text.substr(p, end - p);
+    if (!row.empty() && row.back() == '\r') row.pop_back();
+    out.push_back(row);
+    if (nl == std::string::npos) break;
+    p = nl + 1;
+  }
+  if (!out.empty() && out.back().empty()) out.pop_back();   // the final line end
+  return out;
+}
+
+// The leading number of a field ("450" or "450 kcal"); 0 when none.
+double numPrefix(const std::string& f) {
+  if (f.empty()) return 0;
+  char* end = nullptr;
+  const double v = std::strtod(f.c_str(), &end);
+  return end == f.c_str() ? 0 : v;
+}
+
+int columnIndex(const std::vector<std::string>& header, const std::string& name) {
+  for (size_t i = 0; i < header.size(); i++)
+    if (header[i] == name) return (int)i;
+  return -1;
+}
+
+// The date column ("date", then "day"), or -1.
+int dateColumnOf(const std::vector<std::string>& header) {
+  int c = columnIndex(header, "date");
+  return c >= 0 ? c : columnIndex(header, "day");
+}
+
+void dayTotalOf(const std::vector<std::string>& rows, int dateCol, int sumCol,
+                const std::string& today, CsvUpsert& out) {
+  if (dateCol < 0 || sumCol < 0 || today.empty()) return;
+  double total = 0;
+  for (size_t r = 1; r < rows.size(); r++) {
+    const std::vector<std::string> f = splitCsvRow(rows[r]);
+    if (f.size() <= (size_t)dateCol || f.size() <= (size_t)sumCol) continue;
+    if (f[(size_t)dateCol].rfind(today, 0) != 0) continue;
+    total += numPrefix(f[(size_t)sumCol]);
+  }
+  out.todayTotal = total;
+  out.hasTotal = true;
+}
+}  // namespace
+
+CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
+                        const std::string& keyCol, const std::string& sumCol,
+                        const std::string& today) {
+  CsvUpsert out;
+  if (keyCol.empty()) {
+    out.err = "need 'key': the column whose value identifies a row";
+    return out;
+  }
+  std::vector<std::string> rows = splitRows(existing);
+  const std::vector<std::string> fresh = splitRows(newText);
+  if (fresh.empty()) {
+    out.err = "need 'text': the header row and at least one data row";
+    return out;
+  }
+  const std::vector<std::string> newHeader = splitCsvRow(fresh.front());
+  const int keyIdx = columnIndex(newHeader, keyCol);
+  if (keyIdx < 0) {
+    out.err = "the text's header has no column '" + keyCol + "'";
+    return out;
+  }
+  int sumIdx = sumCol.empty() ? -1 : columnIndex(newHeader, sumCol);
+  if (!sumCol.empty() && sumIdx < 0) {
+    out.err = "the text's header has no column '" + sumCol + "'";
+    return out;
+  }
+  // The existing file must carry the same header (the first row); an empty or
+  // new file adopts the text's header as row 0.
+  std::vector<std::string> header;
+  if (!rows.empty()) {
+    header = splitCsvRow(rows.front());
+    if (columnIndex(header, keyCol) < 0) {
+      out.err = "the stored file has no column '" + keyCol + "' - its header differs";
+      return out;
+    }
+  } else {
+    rows.push_back(fresh.front());   // the header lands as the file's first row
+    header = newHeader;
+  }
+  const int dateIdx = dateColumnOf(header);
+  // Merge each new data row by key.
+  for (size_t i = 1; i < fresh.size(); i++) {
+    const std::vector<std::string> f = splitCsvRow(fresh[i]);
+    if (f.size() <= (size_t)keyIdx || f[(size_t)keyIdx].empty()) continue;   // a stray row: skip
+    const std::string& key = f[(size_t)keyIdx];
+    bool hit = false;
+    for (size_t r = 1; r < rows.size() && !hit; r++) {
+      const std::vector<std::string> g = splitCsvRow(rows[r]);
+      if (g.size() > (size_t)keyIdx && g[(size_t)keyIdx] == key) {
+        rows[r] = fresh[i];
+        out.replaced++;
+        hit = true;
+      }
+    }
+    if (!hit) {
+      rows.push_back(fresh[i]);
+      out.appended++;
+    }
+  }
+  // Join and report.
+  std::string joined;
+  for (const std::string& r : rows) joined += r + "\n";
+  out.changed = joined != existing;
+  out.out = out.changed ? joined : std::string();
+  dayTotalOf(rows, dateIdx, sumIdx, today, out);
+  out.ok = true;
+  return out;
+}
+
+bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
+                 const std::string& today, double& total) {
+  if (sumCol.empty() || today.empty()) return false;
+  const std::vector<std::string> rows = splitRows(fileText);
+  if (rows.empty()) return false;
+  const std::vector<std::string> header = splitCsvRow(rows.front());
+  const int sumIdx = columnIndex(header, sumCol);
+  const int dateIdx = dateColumnOf(header);
+  if (sumIdx < 0 || dateIdx < 0) return false;
+  CsvUpsert tmp;
+  dayTotalOf(rows, dateIdx, sumIdx, today, tmp);
+  if (!tmp.hasTotal) return false;
+  total = tmp.todayTotal;
+  return true;
 }
 
 }  // namespace nimbus::orch

@@ -93,7 +93,9 @@ static void test_single_shot_request_shape() {
   // "cache_control" - that would be satisfied by the system block alone.)
   TEST_ASSERT_TRUE(bodyHas(d, 0,
       "\"cache_control\":{\"type\":\"ephemeral\"}}],\"tool_choice\""));
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"role\":\"user\",\"content\":\"USER\""));
+  // R3: the user message's content rides as a text BLOCK (the same bytes
+  // whether or not it is the one carrying the moving cache point).
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"USER\""));
   // NEVER forced: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced tool_choice
   // with HTTP 400 (verified live 18 Oct). auto + the orch_turn tool.
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":{\"type\":\"auto\"}"));
@@ -269,6 +271,39 @@ static void test_loop_echoes_assistant_with_tool_use() {
   TEST_ASSERT_EQUAL(110, (int)u.promptTokens);
   TEST_ASSERT_EQUAL(25, (int)u.completionTokens);
   TEST_ASSERT_EQUAL_STRING("messages", conv.c_str());
+}
+
+// R3 (preserved thinking): a tool round whose response carried thinking
+// blocks replays them UNCHANGED before its tool_use on every later round -
+// Anthropic enforces the pairing and validates the signature on accounts
+// created on or after 31 Aug 2026, so the bytes are stored verbatim at read
+// time and re-serialized as they arrived.
+static void test_loop_replays_thinking_blocks_unchanged() {
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.anthropic.com", "/v1/messages", 200,
+       "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"first, plan the search\","
+       "\"signature\":\"sig-abc123\"},{\"type\":\"tool_use\",\"id\":\"tu_1\","
+       "\"name\":\"memory_search\",\"input\":{\"q\":\"tea\"}}],\"stop_reason\":\"tool_use\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200,
+                           "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_f\",\"name\":\"orch_turn\","
+                           "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"tool_use\"}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  // The second request replays the thinking block verbatim, BEFORE the
+  // tool_use it preceded (Anthropic's required order).
+  const size_t think = d.http.seen[1].body.find("\"type\":\"thinking\"");
+  const size_t sig = d.http.seen[1].body.find("\"signature\":\"sig-abc123\"");
+  const size_t use = d.http.seen[1].body.find("\"type\":\"tool_use\",\"id\":\"tu_1\"");
+  TEST_ASSERT_TRUE(think != std::string::npos);
+  TEST_ASSERT_TRUE(sig != std::string::npos);
+  TEST_ASSERT_TRUE(use != std::string::npos);
+  TEST_ASSERT_TRUE(think < use);
+  TEST_ASSERT_TRUE(d.http.seen[1].body.find("first, plan the search") != std::string::npos);
 }
 
 // Replay with one transcript-level fold and hysteresis (H6): a round's
@@ -451,11 +486,11 @@ static void test_loop_sibling_after_orch_turn_is_dispatched_once() {
     TEST_ASSERT_EQUAL_STRING("memory_write", rig.dispatched[0].name.c_str());
     TEST_ASSERT_EQUAL_STRING("tu_mw", rig.dispatched[0].id.c_str());
     TEST_ASSERT_TRUE(rig.dispatched[0].argsJson.find("Nereid II") != std::string::npos);
-    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
-    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_use_id\":\"tu_mw\""));
-    TEST_ASSERT_TRUE(bodyHas(d, 1, "stored memory m00000001"));
-    TEST_ASSERT_FALSE(bodyHas(d, 1, "tu_fin"));   // the premature final is gone
-    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+    // R3: every sibling is a pure write and it succeeded, so the answer the
+    // model wrote beside it stands - no re-ask round, no premature-final
+    // replacement (a failed save or a read still re-asks, test_orch_head_loop).
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"I've saved that permanently.\"}", out.c_str());
   }
 }
 
@@ -1193,6 +1228,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_round2_body_rendered_from_transcript);
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
+  RUN_TEST(test_loop_replays_thinking_blocks_unchanged);
   RUN_TEST(test_loop_replay_folds_with_hysteresis_over_budget);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);

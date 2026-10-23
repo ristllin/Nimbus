@@ -242,13 +242,24 @@ std::string mistralCallId(const std::string& id) {
 static void renderMistralMessages(const nimbus::orch::Transcript& tr,
                                   ArduinoJson::JsonArray msgs,
                                   const std::string& sysText,
-                                  bool showingImages) {
+                                  bool showingImages,
+                                  const layout::PromptParts* parts = nullptr) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   {
     JsonObject s = msgs.add<JsonObject>();
     s["role"] = "system";
-    wire::putFieldStr(s["content"], sysText, "the system prompt");
+    wire::putFieldStr(s["content"], parts ? (parts->stat + parts->shelf) : sysText, "the system prompt");
+  }
+  // R3: the history as real messages between the system and this turn's own
+  // (Mistral caches a matching prefix on its own; the API refuses an empty
+  // text, so an empty history message carries a placeholder).
+  if (parts) {
+    for (const layout::Msg& m : parts->history) {
+      JsonObject o = msgs.add<JsonObject>();
+      o["role"] = m.user ? "user" : "assistant";
+      wire::putFieldStr(o["content"], m.text.empty() ? "(empty)" : m.text, "a history message");
+    }
   }
   const auto& e = tr.entries();
   for (const auto& it : e) {
@@ -352,17 +363,21 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
   {
     JsonArray msgs = req["messages"].to<JsonArray>();
     // A split prompt (prompt_layout.h): the system message is the static block
-    // plus the summary (a prefix Mistral reads from its cache), and the per-turn
-    // block leads the user seed.
+    // plus the shelf, then the history messages, and the per-turn block leads
+    // the user seed. R3: prompt_cache_key keeps one chat's turns on one cache.
     const layout::PromptParts& p = *a.round;
-    renderMistralMessages(tr, msgs, p.stat + p.summary, a.imgs != nullptr);
-    for (JsonObject m : msgs)
-      if (!strcmp(m["role"] | "", "user")) {
-        if (p.split)
-          wire::putFieldStr(m["content"], layout::userWithDynamic(p, m["content"] | ""), "the user message");
-        if (a.imgs) imageparts::putParts(m, *a.imgs, imageparts::Dialect::MistralChat);
-        break;
-      }
+    layout::putCacheKey(req.as<ArduinoJson::JsonObject>(), p);
+    renderMistralMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr);
+    // The SEEDED user message (the turn's own, after the history): the per-turn
+    // block leads it and the photos ride it. Index, not "first user": the
+    // history messages are users too.
+    const size_t seedIdx = 1 + (p.split ? p.history.size() : 0);
+    if (msgs.size() > seedIdx && !strcmp(msgs[seedIdx]["role"] | "", "user")) {
+      JsonObject m = msgs[seedIdx];
+      if (p.split)
+        wire::putFieldStr(m["content"], layout::userWithDynamic(p, m["content"] | ""), "the user message");
+      if (a.imgs) imageparts::putParts(m, *a.imgs, imageparts::Dialect::MistralChat);
+    }
   }
   JsonArray tools = req["tools"].to<JsonArray>();
   {

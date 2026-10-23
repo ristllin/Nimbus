@@ -149,11 +149,11 @@ static void test_cum506_five_facts_batched_with_the_final_turn_are_saved() {
     for (const auto& c : rig.dispatched) TEST_ASSERT_EQUAL_STRING("memory_write", c.name.c_str());
     TEST_ASSERT_TRUE(rig.dispatched[0].argsJson.find("Dr. Leila Mansour") != std::string::npos);
     TEST_ASSERT_TRUE(rig.dispatched[4].argsJson.find("cortado with oat milk") != std::string::npos);
-    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
-    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_call_id\":\"mw0000004\""));
-    TEST_ASSERT_TRUE(bodyHas(d, 1, "stored memory m00000001"));
-    TEST_ASSERT_FALSE(bodyHas(d, 1, "fin000001"));      // the premature final is gone
-    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+    // R3: five pure writes, all succeeded - the answer written beside them
+    // stands; no second round carries their results back. The accepted answer
+    // is the one the model wrote WITH the saves (its claim is true).
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(out.find("I've saved these permanently") != std::string::npos);
   }
 }
 

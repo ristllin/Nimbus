@@ -642,7 +642,9 @@ class LabRig {
     d.composeInputs = [this](const std::string& chat) {
       agent::ComposeInputs in;
       in.devName = opt_.devName;
-      in.hostLabel = lastHost_.empty() ? std::string("(picking)") : lastHost_;
+      // The device names its configured head (compose.h hostForPrompt), so the
+      // identity line is the same on every turn and the static block caches.
+      in.hostLabel = agent::hostForPrompt(config().provider);
       in.recentConversation = recentWindow(chat);
       in.runningMemory = memory_;
       in.scratchpad = &scratch_;

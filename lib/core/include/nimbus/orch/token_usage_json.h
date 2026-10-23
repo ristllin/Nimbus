@@ -39,6 +39,10 @@ inline TokenUsage tokenUsageFromJson(ArduinoJson::JsonObjectConst usage) {
   t.cacheWriteTokens = usage["cache_creation_input_tokens"] | 0u;
   if (t.cacheWriteTokens == 0)  // OpenAI Responses API (GPT-5.6 and later)
     t.cacheWriteTokens = usage["input_tokens_details"]["cache_write_tokens"] | 0u;
+  // R3: Anthropic splits cache creation by TTL; the 1-hour part prices at 2x
+  // (never more than the whole, whatever a malformed object says).
+  t.cacheWrite1hTokens = usage["cache_creation"]["ephemeral_1h_input_tokens"] | 0u;
+  if (t.cacheWrite1hTokens > t.cacheWriteTokens) t.cacheWrite1hTokens = t.cacheWriteTokens;
   t.responses = 1;   // one billed response (a missing usage object returned above)
   // The request's whole prompt: Anthropic's siblings are outside input_tokens.
   const bool excluded = !usage["cache_read_input_tokens"].isNull() ||

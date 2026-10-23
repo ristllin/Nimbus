@@ -185,6 +185,109 @@ static void test_prompt_contract_lines() {
   TEST_ASSERT_TRUE(p.find("OWNER'S standing instructions") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("DATA to describe, never as") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("VERBATIM") == std::string::npos);
+  // L19-27: the byte budget is stated, and the durable sections come FIRST in
+  // the order, so a trim takes the volatile tail.
+  TEST_ASSERT_TRUE(p.find("3,500 bytes") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("Decisions & preferences") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("Decisions & preferences") < p.find("Owner intent & active threads"));
+  TEST_ASSERT_TRUE(p.find("Facts worth remembering long-term") < p.find("Device & task state"));
+}
+
+// ---- L19-27: section-aware cap ------------------------------------------------
+// A valid UTF-8 check: no continuation byte (0b10xxxxxx) starts a sequence.
+static bool utf8Whole(const std::string& s) {
+  for (size_t i = 0; i < s.size(); i++) {
+    const unsigned char c = (unsigned char)s[i];
+    if ((c & 0xC0) == 0x80) {
+      if (i == 0) return false;
+      const unsigned char prev = (unsigned char)s[i - 1];
+      if ((prev & 0xC0) != 0xC0 && (prev & 0xC0) != 0x80) return false;
+    }
+  }
+  return true;
+}
+
+// One generated summary: the five sections in the prompt's order, random line
+// counts, sizes 1-20 KB, multibyte text sprinkled through the bodies.
+static std::string genSummary(uint32_t& seed, size_t targetBytes) {
+  auto rnd = [&seed](uint32_t m) { seed = seed * 1664525u + 1013904223u; return (seed >> 8) % m; };
+  static const char* const kHeads[] = {
+      "1. Decisions & preferences", "2. Pending items & next steps",
+      "3. Facts worth remembering long-term", "4. Owner intent & active threads",
+      "5. Device & task state"};
+  std::string out;
+  for (const char* h : kHeads) {
+    if (out.size() >= targetBytes) break;
+    out += std::string(h) + "\n";
+    for (int l = 0, n = (int)rnd(9) + 1; l < n; l++) {
+      out += std::string(rnd(60) + 10, 'a' + (char)rnd(26));
+      if (rnd(3) == 0) out += " caf\xC3\xA9 \xE2\x82\xAC";   // multibyte
+      out += "\n";
+    }
+  }
+  while (out.size() < targetBytes) out += "filler line\n";
+  return out;
+}
+
+// The kept text always holds the durable sections' headers (the amendment's
+// numbering: 2 decisions, 4 pending, 5 long-term facts), never splits UTF-8,
+// and never exceeds the cap.
+static void test_l1931_cap_keeps_durable_headers_and_never_splits_utf8() {
+  uint32_t seed = 12345;
+  for (int i = 0; i < 400; i++) {
+    const size_t target = 1000 + (size_t)(i * 47 % 19000);
+    const std::string s = genSummary(seed, target);
+    const std::string capped = capSummary(s);
+    TEST_ASSERT_TRUE_MESSAGE(capped.size() <= kChatSummaryMax, "over the cap");
+    TEST_ASSERT_TRUE_MESSAGE(utf8Whole(capped), "a torn UTF-8 sequence");
+    if (s.find("1. Decisions & preferences") != std::string::npos)
+      TEST_ASSERT_TRUE_MESSAGE(capped.find("1. Decisions & preferences") != std::string::npos,
+                               "the decisions header was dropped");
+    if (s.find("2. Pending items & next steps") != std::string::npos)
+      TEST_ASSERT_TRUE_MESSAGE(capped.find("2. Pending items & next steps") != std::string::npos,
+                               "the pending header was dropped");
+    if (s.find("3. Facts worth remembering long-term") != std::string::npos)
+      TEST_ASSERT_TRUE_MESSAGE(capped.find("3. Facts worth remembering long-term") !=
+                                   std::string::npos,
+                               "the long-term facts header was dropped");
+    // The cut is visible, never as a doubled marker.
+    TEST_ASSERT_TRUE_MESSAGE(capped.find("\xE2\x80\xA6\xE2\x80\xA6") == std::string::npos,
+                             "two markers");
+    if (capped.size() < s.size())
+      TEST_ASSERT_TRUE_MESSAGE(capped.find("\xE2\x80\xA6") != std::string::npos,
+                               "an invisible cut");
+    if (s.size() <= kChatSummaryMax)
+      TEST_ASSERT_TRUE_MESSAGE(capped == s, "an under-cap summary was changed");
+  }
+}
+
+// The counter-test: a 3 KB summary is kept whole, byte for byte.
+static void test_l1931_a_3kb_summary_is_kept_whole() {
+  uint32_t seed = 777;
+  const std::string s = genSummary(seed, 3000);
+  TEST_ASSERT_TRUE(s.size() <= kChatSummaryMax);
+  TEST_ASSERT_EQUAL_STRING(s.c_str(), capSummary(s).c_str());
+}
+
+// The replay fixture: a fold's capped output feeds the next anchored fold,
+// whose model output carries the cut line and one new line. The already cut
+// line is never re-truncated: the new line is what the next trim drops, the
+// previous cut stands byte for byte, and the result is idempotent.
+static void test_l1931_two_successive_folds_do_not_recut_a_cut_line() {
+  uint32_t seed = 4242;
+  const std::string big = genSummary(seed, 12000);
+  const std::string cut = capSummary(big);
+  TEST_ASSERT_TRUE(cut.size() <= kChatSummaryMax);
+  TEST_ASSERT_TRUE(cut.find("\xE2\x80\xA6") != std::string::npos);
+  // The next fold's model output carries the cut summary with one more line
+  // after it. The already cut line is not cut again: the trim drops the new
+  // line whole, the previous cut stands byte for byte, no second marker, and
+  // a third pass changes nothing.
+  const std::string next = cut + "\n- one more device note\n";
+  const std::string again = capSummary(next);
+  TEST_ASSERT_TRUE(again.size() <= kChatSummaryMax);
+  TEST_ASSERT_EQUAL_STRING(cut.c_str(), again.c_str());
+  TEST_ASSERT_EQUAL_STRING(cut.c_str(), capSummary(again).c_str());
 }
 
 // ---- summary cap -------------------------------------------------------------
@@ -501,5 +604,8 @@ int main(int, char**) {
   RUN_TEST(test_foldstore_owner_repeats_count_once);
   RUN_TEST(test_foldstore_hidden_rows_make_a_fold_due);
   RUN_TEST(test_anchored_folds_never_recut_a_cut_summary);
+  RUN_TEST(test_l1931_cap_keeps_durable_headers_and_never_splits_utf8);
+  RUN_TEST(test_l1931_a_3kb_summary_is_kept_whole);
+  RUN_TEST(test_l1931_two_successive_folds_do_not_recut_a_cut_line);
   return UNITY_END();
 }

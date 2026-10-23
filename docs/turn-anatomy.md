@@ -67,34 +67,40 @@ watchdogs) see [harness.md](harness.md); for the sub-agent side see
 ### 1. INSTRUCTIONS - the system prompt (rebuilt every turn)
 
 Assembled by `composeInstructions()` (`lib/harness/src/compose.cpp`; section
-emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`) in three
+emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`) in five
 parts, in this order (see "The cacheable prefix" below for why):
 
-- the **static** part, which changes only with the device config, the tool list
-  or the date;
-- the **summary** part, which changes only when the chat is compacted;
-- the **per-turn** part, which changes every turn.
+- the **static** part, which changes only with the device config or the date;
+- the **shelf** part (the owner's standing preferences and the skills index),
+  which changes only on an owner or skill edit;
+- the **history** part: the conversation as real user and assistant messages,
+  the fold summary's pair first - the only thing that rewrites it is a
+  compaction, a `/clear` or an overflow shift;
+- the **per-turn** part, which changes every turn;
+- the **cache settings** (the Anthropic TTL choice and the per-chat cache key),
+  which the providers read and never send as text.
 
 The budget (`maxContextBytes`: auto by default, derived from the head model's
 window, 32 KB at a 200K head; an owner override is clamped to 4 KB to 64 KB) is
 split by size alone: the per-turn part keeps a quarter of it (at least 3328 B),
-the static part is fitted to the rest (its capability list clips first), and the
-summary takes what the static part leaves above that reserve. Inside the per-turn
-part optional blocks drop from the bottom of the table first, then recall bullets
-one at a time:
+and the static part is fitted to the rest, its shelf and catalogs counted against
+it (its capability list clips first). The history rides its own budget (derived
+from the head model's window), so a growing conversation never moves the static
+part's clip point. Inside the per-turn part optional blocks drop from the bottom
+of the table first, then recall bullets one at a time:
 
 | # | part | block | source | what it is |
 |---|---|---|---|---|
 | 1 | static | role + field docs | `ORCH_ROLE` + `ORCH_FIELD_DOCS` | the orch_turn contract, generated from the same `ORCH_D_*` macros as the wire schema - prompt and wire cannot drift |
 | 2 | static | identity + `[HOW YOU RUN]` | `compose.cpp` | device name, "Your brain right now: host/model", firmware version, **the current date (temporal grounding - says UNKNOWN and forbids dating anything until SNTP syncs)**, then how turns/rounds/memory tiers/sub-agents work |
-| 3 | static | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Delimited inside as `[OWNER PREFERENCES ...]` and framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. Below it, `[STANDING RULES]`: your short always/never rules from `/data/prefs.txt` (up to 12), every owner-facing turn, added with `/prefs` or `prefs.edit` |
-| 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty |
+| 3 | shelf | `[OWNER PREFERENCES ...]` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. It rides the shelf (its own cached block), so an owner edit re-caches only the shelf. Below it, `[STANDING RULES]`: your short always/never rules from `/data/prefs.txt` (up to 12), every owner-facing turn, added with `/prefs` or `prefs.edit` |
+| 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, Limits (keys/routing blocked), connector honesty. The `Tools you can call:` list appears only when the mid-turn tool loop is disabled in the settings - with the loop on, every tool rides the request itself with its full description and the manifest points there (about 8 KB less per turn) |
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
-| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[YOUR MODEL]` (the host/model serving this turn), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the head can call it; on a single-shot turn the per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks), the skills index, `[PROVIDERS & CONNECTORS]`. Not counted in the budget |
-| 7 | summary | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Clipped (floor 1024 B) or dropped when the static part leaves too little room |
-| 8 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
-| 9 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 10 | per-turn | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat history: one user line and one assistant line per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Rules: see "The turn-structured history" below |
+| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[YOUR MODEL]` (the host/model serving this turn), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the head can call it; on a single-shot turn the per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks), `[PROVIDERS & CONNECTORS]`. Counted against the static part's budget since the shelf split (a flat render can no longer pass the 60 KB wire guard) |
+| 7 | shelf | the skills index | `engine.cpp` | the playbook list (`[SKILLS]`), the same index the skill.get tool serves from; an edit re-caches only the shelf |
+| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as the `## RECENT CONVERSATION` block. Rules: see "The turn-structured history" below |
+| 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
+| 10 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 11 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
 | 12 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 
@@ -105,27 +111,37 @@ cache read), so the prompt is laid out to keep its front identical from turn to
 turn:
 
 - **Order.** The static part comes first and carries the date only, never the
-  minute clock; everything that changes per turn comes after it. The tools array
-  is built in registry order with fixed descriptions, so it is byte-identical
-  across turns.
+  minute clock; the shelf, then the history, then everything that changes per
+  turn come after it. The tools array is built in registry order with fixed
+  descriptions and rides every round of a turn unchanged, so it is
+  byte-identical across turns and rounds.
 - **On the wire.** `lib/harness/src/prompt_layout.cpp` splits the composed string
   again for each provider:
-  - Anthropic: one system block per part, a cache point on the static block and
-    on the summary block, one on the last tool and one on the last message
-    (four in all, the API maximum, counted by a test);
-  - OpenAI: the static part (and the summary) as developer messages, then the
-    user message led by the per-turn part;
-  - Mistral: one system message (static plus summary), then the user message led
-    by the per-turn part;
+  - Anthropic: system blocks for the static part and the shelf, each with a
+    cache point; the history as real user and assistant messages with the third
+    point on its last message; the moving fourth point on the request's last
+    message (four in all, the API maximum, counted by a test). The points carry
+    the TTL the chat's turn gaps picked (1 hour for a chat whose median gap is
+    5 to 60 minutes, else the default 5 minutes; the moving point is always
+    5 minutes), and a round's thinking blocks replay unchanged before the tool
+    calls they preceded;
+  - OpenAI: the static part and the shelf as developer messages with explicit
+    cache breakpoints, the history as message items with the third breakpoint on
+    the last user item, then the user message led by the per-turn part, and the
+    per-chat `prompt_cache_key`;
+  - Mistral: one system message (static plus shelf), the history messages, then
+    the user message led by the per-turn part, and the per-chat
+    `prompt_cache_key`;
   - the custom, Z.ai and Cumulo heads and the Mistral single shot send the parts
-    flat, in the same order.
+    flat, in the same order (the history renders as the `## RECENT CONVERSATION`
+    block).
 - **Within a turn.** Each tool round's request starts with the previous round's
   request: tool results already sent are never rewritten, so a round reads the
   last one from the cache. Over the replay budget (16 KB on Anthropic, 24 KB on
   OpenAI and Mistral) the newest result is cut with a visible `[cut: ...]` note,
   or withheld with a `[not shown: ...]` note when no room is left.
 - **Checked by tests.** `test/test_prompt_layout` composes many turns that differ
-  only in per-turn content and asserts the static and summary parts, and each
+  only in per-turn content and asserts the static and shelf parts, and each
   provider's cached request segments, are byte-identical; a counter-test puts a
   timestamp in the static part and must fail. The goldens
   `test/golden/layout_{anthropic,openai,mistral}.txt` pin each provider's layout.

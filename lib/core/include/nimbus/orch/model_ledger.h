@@ -49,6 +49,7 @@ inline constexpr size_t kProvKeyCap = 16;   // provider id buffer (15 chars + NU
 // (recorded only for providers that exclude cache traffic from the prompt count).
 struct TokenDelta {
   uint64_t in = 0, out = 0, cacheR = 0, cacheW = 0;
+  uint64_t cacheW1h = 0;   // the 1-hour-TTL part of cacheW (R3; priced at 2x)
   bool empty() const { return !in && !out && !cacheR && !cacheW; }
 };
 

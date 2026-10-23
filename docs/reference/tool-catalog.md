@@ -272,7 +272,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
-| `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call) | live |
+| `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written. With `key`, a keyed CSV upsert: a row whose key matches an existing one UPDATES it instead of adding a duplicate. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call), `key` (optional, the column whose value identifies a row), `sum` (optional, a numeric column - the reply carries its total for today) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
@@ -291,6 +291,12 @@ Notes:
   new rows (line ends normalized, a final line end added). When the file's last
   row was cut mid-write, the new rows start on a fresh line and the result says
   so. It follows the same ownership and quota rules as `artifact.save`.
+- The keyed upsert (a `key` column) is the one exception to "never rewrites":
+  the merge happens on the device, so only the new rows cross the model's
+  context - never a whole-file read plus a whole-file save. The reply names how
+  many rows were updated and appended, and - with `sum` - the day's running
+  total, so a log update never needs a second read. `files.read {tail}` takes
+  the same `sum` argument for the same total.
 - `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
   returns the last complete rows, oldest first, plus a CSV's header row when it
   is not among them; an incomplete last row is reported, not hidden.

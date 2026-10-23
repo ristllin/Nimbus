@@ -17,6 +17,7 @@
 #include "scenarios_store_full.h"   // a full file store, said once (storm leg g)
 #include "scenarios_skills.h"   // lane I: skills used and editable (live legs)
 #include "scenarios_prefs.h"   // lane J: standing owner preferences (live legs)
+#include "scenarios_g1.h"   // message-level caching legs (cost per turn by gap)
 
 namespace lab {
 namespace {
@@ -395,6 +396,7 @@ void scFinishedJobs(LabRig& rig, Ctx& c) {
 // Lane FSN: a full file store (scenarios_store_full.cpp).
 storefull::Report storeFullReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scStoreFullPhotos(LabRig& rig, Ctx& c) { storefull::storeFullPhotos(rig, storeFullReport(c)); }
+void scCacheGaps(LabRig& rig, Ctx& c) { caching::cacheGaps(rig, histReport(c)); }
 
 struct Scenario {
   const char* name;
@@ -442,6 +444,7 @@ const Scenario kScenarios[] = {
     {"meal-eval",      "the food log is written where it is read: stated figures and corrections append rows", scMealEval, false},
     {"prefs-e2e",      "a standing rule stated once rides every turn and the next day; replies carry no em dash", scPrefsE2E, false},
     {"prefs-nextday",  "a standing default stated on day N is applied on day N+1 without a reminder", scPrefsNextDay, false},
+    {"cache-gaps",      "cost per turn at a fixed gap over a long history (NIMBUS_G1_GAP_S, _TURNS)", scCacheGaps, false},
 };
 
 }  // namespace

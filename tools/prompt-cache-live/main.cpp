@@ -469,7 +469,8 @@ void scCachePair(Rig& rig, Report& r, const std::string& repo, int gapS, bool fl
   const agent::layout::PromptParts p1 = agent::layout::split(ins1), p2 = agent::layout::split(ins2);
   r.check("turn 1 ok", ok1);
   r.check("turn 2 ok", ok2);
-  r.check("static + summary blocks identical across the turns", p1.stat == p2.stat && p1.summary == p2.summary);
+  r.check("static + shelf blocks identical across the turns",
+           p1.stat == p2.stat && p1.shelf == p2.shelf);
   r.check("the per-turn blocks differ", p1.dyn != p2.dyn);
   r.check("turn 2 ran", rig.http.calls.size() > turn1Calls);
   const Usage u2 = rig.http.calls.size() > turn1Calls ? usageOf(rig.http.calls[turn1Calls]) : Usage{};
@@ -482,7 +483,7 @@ void scCachePair(Rig& rig, Report& r, const std::string& repo, int gapS, bool fl
     r.check("turn 2 round 0 reads from the cache", u2.cacheRead > 0);
   }
   r.extra = ",\"flat\":" + std::string(flat ? "true" : "false") + ",\"gapSeconds\":" + std::to_string(gapS) + ",\"staticBytes\":" + std::to_string(p1.stat.size()) +
-            ",\"summaryBytes\":" + std::to_string(p1.summary.size()) + ",\"dynBytes\":[" +
+            ",\"historyBytes\":" + std::to_string(agent::layout::historyBytes(p1.history)) + ",\"dynBytes\":[" +
             std::to_string(p1.dyn.size()) + "," + std::to_string(p2.dyn.size()) + "]" +
             ",\"prefixTokens\":" + std::to_string(prefix) + ",\"turn2Round0CacheRead\":" + std::to_string(u2.cacheRead) +
             ",\"turn1\":" + requestsJson(rig, 0, turn1Calls) +
@@ -494,7 +495,8 @@ void scCachePair(Rig& rig, Report& r, const std::string& repo, int gapS, bool fl
 // (byte share; the tools ride the prefix, so they stay in the estimate).
 long estPrefixTokens(const agent::layout::PromptParts& p, size_t userBytes, long fullTokens) {
   const double perTurnBytes = (double)p.dyn.size() + (double)userBytes;
-  const double contentBytes = (double)p.stat.size() + (double)p.summary.size() + perTurnBytes;
+  const double contentBytes =
+      (double)p.stat.size() + (double)p.shelf.size() + agent::layout::historyBytes(p.history) + perTurnBytes;
   return fullTokens - (long)(fullTokens * perTurnBytes / contentBytes + 0.5);
 }
 
@@ -520,8 +522,8 @@ void scCacheReplay(Rig& rig, Report& r, const std::string& repo, int gapS) {
   r.check("turn 2 ok", ok2);
   r.check("the same three-word owner text on both turns", t1->inputs == t2->inputs);
   r.check("the running-memory note changed between them", t1->ci.runningMemory != t2->ci.runningMemory);
-  r.check("static + summary blocks identical across the replay",
-          p1.stat == p2.stat && p1.summary == p2.summary);
+  r.check("static + shelf blocks identical across the replay",
+          p1.stat == p2.stat && p1.shelf == p2.shelf);
   r.check("the per-turn blocks differ", p1.dyn != p2.dyn);
   long prefix = -1;
   bool prefixEstimated = false;
@@ -542,7 +544,7 @@ void scCacheReplay(Rig& rig, Report& r, const std::string& repo, int gapS) {
   r.extra = ",\"replayText\":\"" + std::string(kReplayText) + "\",\"gapSeconds\":" + std::to_string(gapS) +
             ",\"prefixEstimated\":" + std::string(prefixEstimated ? "true" : "false") +
             ",\"staticBytes\":" + std::to_string(p1.stat.size()) +
-            ",\"summaryBytes\":" + std::to_string(p1.summary.size()) + ",\"dynBytes\":[" +
+            ",\"historyBytes\":" + std::to_string(agent::layout::historyBytes(p1.history)) + ",\"dynBytes\":[" +
             std::to_string(p1.dyn.size()) + "," + std::to_string(p2.dyn.size()) + "]" +
             ",\"prefixTokens\":" + std::to_string(prefix) +
             ",\"turn2Round0CacheRead\":" + std::to_string(u2.cacheRead) +

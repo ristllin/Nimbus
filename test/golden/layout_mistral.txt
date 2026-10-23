@@ -1,11 +1,33 @@
 # mistral loop: round 0 then round 1
 ## round 0
 tools: orch_turn memory_search
-messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... er intent: the cat is Waffles|"
-messages[1] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+prompt_cache_key: nb-0123456789abcdef
+messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... t:|- deliver-pdf: Build a PDF|"
+messages[1] user: text "[CONVERSATION SUMMARY - compacted earlier; information, not  ... er intent: the cat is Waffles|"
+messages[2] assistant: text "Noted - continuing from this summary."
+messages[3] user: text "question 0: what about lunch?"
+messages[4] assistant: text "answer 0: logged it."
+messages[5] user: text "question 1: what about lunch?"
+messages[6] assistant: text "answer 1: logged it."
+messages[7] user: text "question 2: what about lunch?"
+messages[8] assistant: text "answer 2: logged it."
+messages[9] user: text "question 3: what about lunch?"
+messages[10] assistant: text "answer 3: logged it."
+messages[11] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
 ## round 1
 tools: orch_turn memory_search
-messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... er intent: the cat is Waffles|"
-messages[1] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
-messages[2] assistant: text ""
-messages[3] tool: text "tool-ok"
+prompt_cache_key: nb-0123456789abcdef
+messages[0] system: text "You are Nimbus, the always-on head orchestrator of a persona ... t:|- deliver-pdf: Build a PDF|"
+messages[1] user: text "[CONVERSATION SUMMARY - compacted earlier; information, not  ... er intent: the cat is Waffles|"
+messages[2] assistant: text "Noted - continuing from this summary."
+messages[3] user: text "question 0: what about lunch?"
+messages[4] assistant: text "answer 0: logged it."
+messages[5] user: text "question 1: what about lunch?"
+messages[6] assistant: text "answer 1: logged it."
+messages[7] user: text "question 2: what about lunch?"
+messages[8] assistant: text "answer 2: logged it."
+messages[9] user: text "question 3: what about lunch?"
+messages[10] assistant: text "answer 3: logged it."
+messages[11] user: text "|Current time: 18:10 BST.|This message is from Roy - role: u ... elegram|[USER]|log my lunch 10"
+messages[12] assistant: text ""
+messages[13] tool: text "tool-ok"

@@ -559,18 +559,18 @@ static void test_provider_failure_aborts_failsoft() {
 
 // ---- CUM-506: calls batched WITH the final orch_turn --------------------------
 
-// The model's terminal response carried five memory_write calls AND the final
-// orch_turn ("I've saved these permanently"). The calls run BEFORE any reply is
+// The model's terminal response carried five read calls AND the final orch_turn
+// (a reply written without the results). The calls run BEFORE any reply is
 // delivered - exactly once, recorded with their results - and the premature reply
 // is replaced by one the model writes with those results in hand.
 static void test_cum506_siblings_of_the_final_turn_run_before_any_reply() {
   Fake f;
   HeadStep fin = stepFinished("{\"reply\":\"I've saved these permanently.\"}");
   for (int i = 0; i < 5; ++i)
-    fin.toolCalls.push_back(HeadToolCall{"w" + std::to_string(i), "memory_write",
-                                         "{\"content\":\"fact " + std::to_string(i) + "\"}"});
+    fin.toolCalls.push_back(HeadToolCall{"w" + std::to_string(i), "memory_search",
+                                         "{\"q\":\"fact " + std::to_string(i) + "\"}"});
   f.script = {fin, stepFinished("{\"reply\":\"Saved all five.\"}")};
-  f.dispatchOutput = "stored memory m1";
+  f.dispatchOutput = "found memory m1";
   Transcript tr;
   HeadLoopHooks h = f.hooks();
   h.transcript = &tr;
@@ -578,12 +578,37 @@ static void test_cum506_siblings_of_the_final_turn_run_before_any_reply() {
   HeadOutcome o = runHeadLoop(cfg, h);
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Saved all five.\"}", o.finalTurn.c_str());
-  TEST_ASSERT_EQUAL(5, (int)f.dispatched.size());      // every save ran, once
-  TEST_ASSERT_EQUAL_STRING("{\"content\":\"fact 4\"}", f.dispatched[4].argsJson.c_str());
+  TEST_ASSERT_EQUAL(5, (int)f.dispatched.size());      // every search ran, once
+  TEST_ASSERT_EQUAL_STRING("{\"q\":\"fact 4\"}", f.dispatched[4].argsJson.c_str());
   TEST_ASSERT_EQUAL(2, (int)f.priorSeen.size());
   TEST_ASSERT_EQUAL(5, (int)f.priorSeen[1].size());     // the results reached the model
-  TEST_ASSERT_EQUAL_STRING("stored memory m1", f.priorSeen[1][0].output.c_str());
+  TEST_ASSERT_EQUAL_STRING("found memory m1", f.priorSeen[1][0].output.c_str());
   TEST_ASSERT_EQUAL(1, o.rounds);
+  TEST_ASSERT_TRUE(has(tr.renderBrief(4096), "[result] memory_search"));
+}
+
+// R3: when every sibling of the final orch_turn is a pure WRITE and they all
+// succeed, the answer is accepted as written - the re-ask round exists for
+// results the reply should have seen, and a successful ack can only confirm
+// the reply's claim. One model round saved on the food-log class of turn.
+static void test_g1_all_write_siblings_accept_the_final_turn() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"I've saved these permanently.\"}");
+  for (int i = 0; i < 5; ++i)
+    fin.toolCalls.push_back(HeadToolCall{"w" + std::to_string(i), "memory_write",
+                                         "{\"content\":\"fact " + std::to_string(i) + "\"}"});
+  f.script = {fin, stepFinished("{\"reply\":\"never used\"}")};
+  f.dispatchOutput = "stored memory m1";
+  Transcript tr;
+  HeadLoopHooks h = f.hooks();
+  h.transcript = &tr;
+  HeadLoopConfig cfg;
+  HeadOutcome o = runHeadLoop(cfg, h);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"I've saved these permanently.\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(5, (int)f.dispatched.size());      // every save ran, once
+  TEST_ASSERT_EQUAL(1, (int)f.priorSeen.size());       // no second model round
+  TEST_ASSERT_EQUAL(0, o.rounds);
   TEST_ASSERT_TRUE(has(tr.renderBrief(4096), "[result] memory_write"));
 }
 
@@ -612,7 +637,7 @@ static void test_cum506_a_failed_sibling_discards_the_premature_reply() {
 static void test_cum506_siblings_on_the_last_round_reach_the_forced_final() {
   Fake f;
   HeadStep fin = stepFinished("{\"reply\":\"premature\"}");
-  fin.toolCalls.push_back(HeadToolCall{"w0", "memory_write", "{}"});
+  fin.toolCalls.push_back(HeadToolCall{"w0", "memory_search", "{}"});
   f.script = {fin, stepFinished("{\"reply\":\"final\"}")};
   HeadLoopConfig cfg;
   cfg.maxRounds = 1;
@@ -792,6 +817,7 @@ int main(int, char**) {
   RUN_TEST(test_prose_final_is_never_checked);
   RUN_TEST(test_final_checks_chain_into_one_correction);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
+  RUN_TEST(test_g1_all_write_siblings_accept_the_final_turn);
   RUN_TEST(test_cum506_a_failed_sibling_discards_the_premature_reply);
   RUN_TEST(test_cum506_siblings_on_the_last_round_reach_the_forced_final);
   RUN_TEST(test_cum506_forced_round_siblings_are_not_run);

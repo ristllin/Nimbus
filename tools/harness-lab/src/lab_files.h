@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -9,7 +10,8 @@
 
 #include "nimbus/orch/file_append.h"  // planAppend + the tail view (files.append)
 #include "nimbus/orch/file_store.h"
-#include "nimbus/orch/store_full.h"
+#include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
+#include "nimbus/orch/file_append.h"  // planAppend/tailRows (CUM-644)
 #include "nimbus/orch/tool_registry.h"
 
 // Host stand-in for the device's SD-backed artifact tools
@@ -70,70 +72,96 @@ class LabFiles {
   }
 
   void registerRead(nimbus::orch::ToolRegistry& reg) {
-    reg.add("files.read", "Read a stored file's contents. Optional 'tail': read only the "
-                         "last N rows (a CSV's header row comes with it).",
+    reg.add("files.read",
+            "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
+            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
+            "reports that column's total for today.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name");
               auto it = files_.find(p + "/" + n);
               if (it == files_.end())
                 return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
-              int tail = a["tail"].is<int>() ? a["tail"].as<int>() : 0;
-              if (tail <= 0) return nimbus::orch::ToolResult::ok(it->second);
-              // The device's tail view (nimbus/orch/file_append.h), so the lab
-              // teaches the same read-the-end habit the firmware serves.
-              const std::string& file = it->second;
-              const size_t win = std::min(file.size(), nimbus::orch::kTailWindowBytes);
-              const nimbus::orch::TailView v =
-                  nimbus::orch::tailRows(file.substr(file.size() - win),
-                                         file.size() - win, (size_t)tail);
-              std::string header;
-              const size_t eol = file.find('\n');
-              if (eol != std::string::npos) header = file.substr(0, eol);
-              return nimbus::orch::ToolResult::ok(
-                  nimbus::orch::renderTail(v, n, file.size(), header));
+              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1) {
+                const size_t rows = (size_t)a["tail"].as<double>();
+                const size_t win = nimbus::orch::kTailWindowBytes;
+                const size_t start =
+                    it->second.size() > win ? it->second.size() - win - 1 : 0;
+                std::string text = nimbus::orch::renderTail(
+                    nimbus::orch::tailRows(it->second.substr(start), start, rows), n,
+                    it->second.size(), std::string());
+                const std::string sum = str(a, "sum");
+                if (!sum.empty()) {
+                  double total = 0;
+                  if (nimbus::orch::csvDayTotal(it->second, sum, todayStr(), total)) {
+                    char buf[48];
+                    std::snprintf(buf, sizeof buf, "%g", total);
+                    text += "today's " + sum + ": " + buf + "\n";
+                  } else {
+                    text += "[no day total: the file has no date column or no column '" +
+                            sum + "']\n";
+                  }
+                }
+                return nimbus::orch::ToolResult::ok(text);
+              }
+              return nimbus::orch::ToolResult::ok(it->second);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"integer"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"},)"
+            R"("sum":{"type":"string"}},"required":["project","name"]})");
 
+    // CUM-644: the lab's files.append and tail view match the device's, so a
+    // lab run exercises the same calls the firmware will see.
+    reg.add("files.append",
+            "Add rows to the END of a TEXT document (a log, a CSV): only the new rows are "
+            "written. For a keyed CSV pass 'key' (the column whose value identifies a row) "
+            "to UPDATE that row instead of adding a duplicate, and 'sum' (a numeric column) "
+            "to get its total for today in the reply.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+              const std::string p = str(a, "project"), n = str(a, "name"),
+                                t = str(a, "text"), key = str(a, "key"), sum = str(a, "sum");
+              if (p.empty() || n.empty() || t.empty())
+                return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+              if (!key.empty()) {
+                const nimbus::orch::CsvUpsert up =
+                    nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
+                if (!up.ok) return nimbus::orch::ToolResult::fail(up.err);
+                if (up.changed) files_[p + "/" + n] = up.out;
+                std::string note = "updated " + std::to_string(up.replaced) +
+                                   (up.replaced == 1 ? " row" : " rows") + ", appended " +
+                                   std::to_string(up.appended) +
+                                   (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
+                if (up.hasTotal) {
+                  char buf[48];
+                  std::snprintf(buf, sizeof buf, "%g", up.todayTotal);
+                  note += "; today's " + sum + ": " + buf;
+                }
+                return nimbus::orch::ToolResult::ok(note);
+              }
+              const std::string path = p + "/" + n;
+              const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(
+                  t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back());
+              if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
+              files_[path] += plan.bytes;
+              return nimbus::orch::ToolResult::ok(
+                  "appended " + std::to_string(plan.rows) +
+                  (plan.rows == 1 ? " row" : " rows") + " to " + p + "/" + n + " (now " +
+                  std::to_string(files_[path].size()) + " bytes)");
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"},"text":{"type":"string"},)"
+            R"("key":{"type":"string"},"sum":{"type":"string"}},)"
+            R"("required":["project","name","text"]})");
   }
 
-  void registerAppend(nimbus::orch::ToolRegistry& reg) {
-    reg.add("files.append",
-            "Append rows to the end of a text document (a CSV, .log, .md, .txt, .json). "
-            "Only the new rows are written - never read a whole log and save it back to "
-            "add a row.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
-              if (p.empty() || n.empty())
-                return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
-              if (n.rfind(".csv") == std::string::npos && n.rfind(".log") == std::string::npos &&
-                  n.rfind(".md") == std::string::npos && n.rfind(".txt") == std::string::npos &&
-                  n.rfind(".json") == std::string::npos)
-                return nimbus::orch::ToolResult::fail(
-                    "files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
-              if (!nimbus::orch::FileStore::validSegment(p, 24) ||
-                  !nimbus::orch::FileStore::validSegment(n, 48))
-                return nimbus::orch::ToolResult::fail("invalid project or name");
-              // The device's own append rules (normalize rows, cap bytes, repair a
-              // cut last row visibly) - a lab that taught a different shape would
-              // teach the model a habit the firmware doesn't serve.
-              const std::string key = p + "/" + n;
-              auto it = files_.find(key);
-              const std::string existing = it == files_.end() ? std::string() : it->second;
-              const nimbus::orch::AppendPlan plan =
-                  nimbus::orch::planAppend(t, existing.size(),
-                                           existing.empty() ? '\n' : existing.back());
-              if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
-              files_[key] = existing + plan.bytes;
-              return nimbus::orch::ToolResult::ok(
-                  "appended " + std::to_string(plan.rows) + " row(s) to " + p + "/" + n +
-                  (plan.repairedCut
-                       ? " (the file's last row was incomplete; the new rows start on a fresh line)"
-                       : ""));
-            },
-            R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"text":{"type":"string"}},)"
-            R"("required":["project","name","text"]})");
+  // The lab's "today" (the same device rule the upsert and the tail view use).
+  static std::string todayStr() {
+    const time_t now = std::time(nullptr);
+    std::tm loc{};
+    if (!localtime_r(&now, &loc)) return std::string();
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", loc.tm_year + 1900, loc.tm_mon + 1,
+                  loc.tm_mday);
+    return buf;
   }
 
   void seed(const std::string& path, const std::string& text) { files_[path] = text; }

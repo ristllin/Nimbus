@@ -84,6 +84,13 @@ constexpr int kSpawnNameMax = 24;   // short display name (mirrors JobRecord.nam
 // CUM-485) - the old fixed 3000 B constant clipped the previous reply's code.
 constexpr int    kRecentTurnsMax  = 12;
 
+// --- Image rows in the conversation window (G1, critique B2) -----------------
+// A photo's machine description rides the history as text, once (G0). It only
+// has to identify and summarize the image - the ref names it and image.look
+// reads it again - so its cap sits far below a text message's: the row label
+// plus about 300 characters of description. UTF-8 safe, like every history cut.
+constexpr size_t kImageRowMaxChars = 300;
+
 // --- Rapid-message batching (CUM-398) ---------------------------------------
 // Several messages arriving in quick succession in one chat are drained into ONE
 // turn (one reply), bucketed by chat so different principals never merge. The

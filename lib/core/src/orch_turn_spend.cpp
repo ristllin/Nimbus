@@ -20,6 +20,7 @@ void addInto(SpendSlot& s, const TokenUsage& u) {
   s.out = addSat32(s.out, u.completionTokens);
   s.cacheR = addSat32(s.cacheR, u.cacheReadTokens);
   s.cacheW = addSat32(s.cacheW, u.cacheWriteTokens);
+  s.cacheW1h = addSat32(s.cacheW1h, u.cacheWrite1hTokens);
   s.billed = addSat16(s.billed, u.responses);
 }
 

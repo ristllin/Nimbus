@@ -238,6 +238,13 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
     out += "Your own documentation is on the device: for any question about your "
            "capabilities, tools, hardware, or limits, check docs.search / docs.read "
            "before answering from memory.\n";
+    // R3: with the tool loop on, every tool rides the request with its full
+    // description and schema; a second list here cost about 8 KB per turn.
+    if (hw.toolsOnWire) {
+      out += "Your tools are the ones in this request's tool list, each with its "
+             "description: call them by those names.\n";
+      return out;
+    }
     out += "Tools you can call:\n";
     // Rank-ordered, two-tier. A device registers ~42 tools whose full descriptions
     // (~13 KB) do not fit the derived system-prompt budget (~7.7 KB of room after

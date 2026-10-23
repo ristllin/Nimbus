@@ -17,20 +17,24 @@ struct Region {
 };
 struct Regions {
   bool split = false;
-  Region summary, dyn;
+  Region shelf, hist, dyn;
 };
 Regions regionsOf(const std::string& s) {
   Regions r;
   const size_t a = s.find(layout::kPartSplit);
   if (a == npos) {
     r.dyn = {0, s.size()};   // a legacy single string: search all of it
-    r.summary = r.dyn;
+    r.shelf = r.hist = r.dyn;
     return r;
   }
   r.split = true;
+  // static | shelf | history | dynamic | cache settings (prompt_layout.h)
   const size_t b = s.find(layout::kPartSplit, a + 1);
-  r.summary = {a + 1, b == npos ? s.size() : b};
-  r.dyn = {b == npos ? s.size() : b + 1, s.size()};
+  const size_t c = s.find(layout::kPartSplit, b == npos ? a + 1 : b + 1);
+  const size_t d = s.find(layout::kPartSplit, c == npos ? a + 1 : c + 1);
+  r.shelf = {a + 1, b == npos ? s.size() : b};
+  r.hist = {b == npos ? s.size() : b + 1, c == npos ? s.size() : c};
+  r.dyn = {c == npos ? s.size() : c + 1, d == npos ? s.size() : d};
   return r;
 }
 
@@ -61,9 +65,10 @@ int rowsIn(const std::string& s, Region sec) {
 }
 
 // The block a heading at `at` sits in, padded for the legend column.
-const char* partAt(size_t at, size_t sumAt, size_t dynAt) {
+const char* partAt(size_t at, size_t shelfAt, size_t histAt, size_t dynAt) {
   if (at > dynAt) return "per-turn  ";
-  if (sumAt != npos && at > sumAt) return "summary   ";
+  if (histAt != npos && at > histAt) return "history   ";
+  if (shelfAt != npos && at > shelfAt) return "shelf     ";
   return "static    ";
 }
 
@@ -92,18 +97,39 @@ HistoryFacts measureHistory(const std::string& instructions, const std::string& 
   HistoryFacts h;
   const Regions r = regionsOf(instructions);
   if (r.split) {
-    h.summaryBytes = r.summary.e - r.summary.b;
+    // The history part (prompt_layout.h): one message per kMsgSplit, 'u' or 'a'
+    // then its text. The summary pair, when the chat was compacted, is the
+    // first message.
+    int msgs = 0;
+    size_t bytes = 0;
+    bool first = true;
+    for (size_t p = instructions.find(layout::kMsgSplit, r.hist.b);
+         p != npos && p + 1 < r.hist.e; p = instructions.find(layout::kMsgSplit, p + 1)) {
+      const size_t next = instructions.find(layout::kMsgSplit, p + 1);
+      const size_t end = (next == npos || next > r.hist.e) ? r.hist.e : next;
+      if (end > p + 2) {
+        msgs++;
+        bytes += end - (p + 2);
+        if (first && instructions.compare(p + 2, 21, "[CONVERSATION SUMMARY") == 0)
+          h.summaryBytes = end - (p + 2);
+      }
+      first = false;
+      if (next == npos) break;
+    }
+    h.windowRows = msgs;
+    h.windowBytes = bytes;
   } else {
-    const Region sec = sectionIn(instructions, r.summary, "CONVERSATION SUMMARY");
+    const Region sec = sectionIn(instructions, r.hist, "CONVERSATION SUMMARY");
     if (sec.b != npos) h.summaryBytes = sec.e - sec.b;
   }
-  // Sent whole, the block the device held appears verbatim; cut or dropped, it does not.
-  h.summaryClipped = !heldSummary.empty() && instructions.find(heldSummary) == npos;
+  // histV1 keeps the text window in the per-turn block: it is the window then.
   const Region win = sectionIn(instructions, r.dyn, "RECENT CONVERSATION");
   if (win.b != npos) {
     h.windowBytes = win.e - win.b;
     h.windowRows = rowsIn(instructions, win);
   }
+  // Sent whole, the block the device held appears verbatim; cut or dropped, it does not.
+  h.summaryClipped = !heldSummary.empty() && instructions.find(heldSummary) == npos;
   if (!runningMemory.empty() && instructions.find("[RUNNING MEMORY]\n" + runningMemory) != npos)
     h.runningMemoryBytes = runningMemory.size();
   const Region rec = sectionIn(instructions, r.dyn, "RELEVANT MEMORIES");
@@ -128,7 +154,8 @@ std::vector<std::string> promptHeadings(const std::string& prompt) {
 std::string sectionLegend(const std::string& prompt) {
   const std::vector<std::string> heads = promptHeadings(prompt);
   if (heads.empty()) return "Sections: none (this prompt has no \"## \" headings).\n";
-  const size_t sumAt = prompt.find(layout::kDisplaySummaryLabel);
+  const size_t shelfAt = prompt.find(layout::kDisplayShelfLabel);
+  const size_t histAt = prompt.find(layout::kDisplayHistoryLabel);
   const size_t dynAt = prompt.find(layout::kDisplayDynLabel);
   const bool split = dynAt != npos;
   std::string out = split ? "Sections (every \"## \" heading below, in order, with the block that carries it):\n"
@@ -137,11 +164,12 @@ std::string sectionLegend(const std::string& prompt) {
   for (const std::string& h : heads) {
     const size_t at = prompt.find("## " + h, from);
     from = at == npos ? from : at + 1;
-    const char* part = split ? partAt(at, sumAt, dynAt) : "";
+    const char* part = split ? partAt(at, shelfAt, histAt, dynAt) : "";
     out += std::string("  ") + part + "## " + h + "\n";
   }
   out += split ? "Bracketed blocks such as [HOW YOU RUN], the catalogs and [RUNNING MEMORY] sit inside these "
-                 "blocks; the per-turn block starts at the \"cached blocks end\" line.\n"
+                 "blocks; the history rides as real messages and the per-turn block starts at the "
+                 "\"cached blocks end\" line.\n"
                : "Bracketed blocks such as [HOW YOU RUN] and [RUNNING MEMORY] sit between these sections.\n";
   return out;
 }

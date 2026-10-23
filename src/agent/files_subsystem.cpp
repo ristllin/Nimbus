@@ -27,6 +27,7 @@
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
+#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/tool_registry.h"
 
 namespace agent::files {
@@ -513,8 +514,24 @@ static std::string readWhole(const std::string& project, const std::string& name
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
 // A CSV's first line rides along as the header when it is not in the window.
+// The device's local date ("YYYY-MM-DD", "" when the clock is unset) - the day
+// the upsert and the tail view total.
+static std::string todayStr() {
+  const nimbus::orch::LocalDate d = nimbus::orch::localDateOf((time_t)nowEpoch());
+  if (!d.valid()) return std::string();
+  char buf[16];
+  snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
+  return buf;
+}
+
+static std::string numLine(double v) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "%g", v);
+  return buf;
+}
+
 static nimbus::orch::ToolResult readTail(const std::string& project, const std::string& name,
-                                         size_t rows) {
+                                         size_t rows, const std::string& sumCol) {
   memory::Lock g;
   if (!available() || !g_store.find(project, name))
     return nimbus::orch::ToolResult::fail("not found");
@@ -536,7 +553,17 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
   }
   f.close();
   const nimbus::orch::TailView v = nimbus::orch::tailRows(window, start, rows);
-  return nimbus::orch::ToolResult::ok(nimbus::orch::renderTail(v, name, size, header));
+  std::string text = nimbus::orch::renderTail(v, name, size, header);
+  // G1 (rows 32/33): the day total rides the same reply, so a log row never
+  // costs a second files.read round.
+  if (!sumCol.empty()) {
+    double total = 0;
+    if (nimbus::orch::csvDayTotal(readWhole(project, name, 256 * 1024), sumCol, todayStr(), total))
+      text += "today's " + sumCol + ": " + numLine(total) + "\n";
+    else
+      text += "[no day total: the file has no date column or no column '" + sumCol + "']\n";
+  }
+  return nimbus::orch::ToolResult::ok(text);
 }
 
 // files.append helpers (caller holds memory::Lock). Why an append may not touch
@@ -602,16 +629,57 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
+// files.append with a key: the keyed CSV upsert (G1, rows 32/33). The model
+// sends only the new rows; the device merges them by key and reports the day
+// total, so a log update is one call instead of a read plus a whole-file save.
+// The whole-file rewrite happens here, on the device - never over the prompt.
+static nimbus::orch::ToolResult upsertRows(const std::string& project, const std::string& name,
+                                           const std::string& text, const std::string& key,
+                                           const std::string& sum,
+                                           const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (!fileKindIsCsv(name))
+    return ToolResult::fail("the keyed upsert is for CSV files (.csv) - name the file .csv");
+  const std::string existing = readWhole(project, name, 256 * 1024);
+  const nimbus::orch::CsvUpsert up =
+      nimbus::orch::planCsvUpsert(existing, text, key, sum, todayStr());
+  if (!up.ok) return ToolResult::fail(up.err);
+  if (up.changed) {
+    {   // the same gates as a plain append: ownership first, then the quota
+      memory::Lock g;
+      const std::string gate = appendGate(project, name, who);
+      if (!gate.empty()) return ToolResult::fail(gate);
+      const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
+      if (q.maxBytes && g_store.bytesFor(who.ns) + up.out.size() > q.maxBytes)
+        return ToolResult::fail(
+            "this conversation has reached its file-storage limit - ask the "
+            "device's admin to raise it, or delete something first");
+    }
+    std::string err;
+    if (!saveText(project, name, up.out, err, who.ns)) return ToolResult::fail(err);
+    alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
+          up.replaced, up.appended, (unsigned)up.out.size());
+  }
+  std::string msg = "updated " + std::to_string(up.replaced) +
+                    (up.replaced == 1 ? " row" : " rows") + ", appended " +
+                    std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " +
+                    project + "/" + name;
+  if (up.hasTotal) msg += "; today's " + sum + ": " + numLine(up.todayTotal);
+  return ToolResult::ok(msg);
+}
+
 // files.append: the new rows go on the END of a text document (created when
 // missing); nothing already stored is read back or rewritten (file_append.h).
 static nimbus::orch::ToolResult appendRows(const std::string& project, const std::string& name,
-                                           const std::string& text,
+                                           const std::string& text, const std::string& key,
+                                           const std::string& sum,
                                            const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
   if (project.empty() || name.empty() || text.empty())
     return ToolResult::fail("need 'project', 'name' and 'text'");
   if (!textDocName(name))
     return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
+  if (!key.empty()) return upsertRows(project, name, text, key, sum, who);
   memory::Lock g;
   const std::string gate = appendGate(project, name, who);
   if (!gate.empty()) return ToolResult::fail(gate);
@@ -1015,7 +1083,9 @@ void registerTools() {
   reg.add("files.read",
           "Read a stored TEXT document's content (md/txt/json/csv/log). Large files "
           "are paged: pass 'offset' to continue from where the previous view ended. "
-          "Pass 'tail' (a row count) to read only the last rows of a log or CSV.",
+          "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
+          "'sum' (a numeric column) the tail also reports that column's total for "
+          "today, so a log read and its day total are one call.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             if (project.empty() || name.empty())
@@ -1034,7 +1104,7 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
             if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-              return readTail(project, name, (size_t)a["tail"].as<double>());
+              return readTail(project, name, (size_t)a["tail"].as<double>(), argStr(a, "sum"));
             const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
             // Whole-file read through PSRAM, then a bounded UTF-8-safe window -
             // page size leaves header room inside the loop's per-result clamp
@@ -1058,7 +1128,7 @@ void registerTools() {
                                std::to_string((unsigned)total) + "\n";
             return nimbus::orch::ToolResult::ok(head + text.substr(off, (size_t)keep));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"}},"required":["project","name"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -1150,11 +1220,15 @@ void registerTools() {
           "Add rows to the END of a TEXT document (a log, a CSV): only the new rows are "
           "written, nothing stored is read or rewritten. Creates the file when missing "
           "(put a CSV's header row first). Up to 4 KB per call. Use it to log a row "
-          "instead of reading and re-saving the whole file.",
+          "instead of reading and re-saving the whole file. For a keyed CSV pass 'key' "
+          "(the column whose value identifies a row, like a date or a meal slot) to "
+          "UPDATE that row instead of adding a duplicate, and 'sum' (a numeric column) "
+          "to get its total for today in the reply.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            return appendRows(argStr(a, "project"), argStr(a, "name"), argStr(a, "text"), who);
+            return appendRows(argStr(a, "project"), argStr(a, "name"), argStr(a, "text"),
+                              argStr(a, "key"), argStr(a, "sum"), who);
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"}},"required":["project","name","text"]})");
 
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "

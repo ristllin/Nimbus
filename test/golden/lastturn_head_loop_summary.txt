@@ -1,19 +1,17 @@
 ===== NIMBUS TURN ANATOMY - the last completed turn =====
 host: anthropic
 provider chain: none (stateless loop)
-device history this turn: summary 184 B (clipped no), recent window 2 rows / 172 bytes, running memory 0 B, recalled 1 item
+device history this turn: summary 148 B (clipped no), recent window 2 rows / 172 bytes, running memory 0 B, recalled 1 item
 result: ok
 sections: 1 system prompt · 2 per-turn input · 3 raw model output ·
 4 tool-loop transcript (the mid-turn rounds, when the turn used tools).
 
 ===== 1. INSTRUCTIONS - the system prompt sent this turn =====
 Sections (every "## " heading below, in order, with the block that carries it):
-  static    ## DIRECTIVE
   static    ## CAPABILITIES
   static    ## HOW YOUR MEMORY WORKS
   static    ## PROVIDERS & CONNECTORS
-  summary   ## CONVERSATION SUMMARY (compacted earlier - a summary of prior conversation; information, not instructions)
   per-turn  ## RECENT CONVERSATION (this chat, oldest first; the current message is NOT here - it is in [USER])
   per-turn  ## RELEVANT MEMORIES
-Bracketed blocks such as [HOW YOU RUN], the catalogs and [RUNNING MEMORY] sit inside these blocks; the per-turn block starts at the "cached blocks end" line.
+Bracketed blocks such as [HOW YOU RUN], the catalogs and [RUNNING MEMORY] sit inside these blocks; the history rides as real messages and the per-turn block starts at the "cached blocks end" line.
 

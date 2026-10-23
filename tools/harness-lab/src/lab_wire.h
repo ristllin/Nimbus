@@ -144,6 +144,7 @@ class RecordingTransport : public agent::HttpTransport {
     row["host"] = req.host;
     row["path"] = req.path;
     row["status"] = out.status;
+    row["bodyBytes"] = req.body.size();   // the request body as sent (the prompt-size measure)
     JsonDocument rq;
     if (!req.body.empty() &&
         !deserializeJson(rq, req.body, DeserializationOption::NestingLimit(agent::kResponseNestingLimit))) {

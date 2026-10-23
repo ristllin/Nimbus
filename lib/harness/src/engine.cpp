@@ -48,6 +48,16 @@
 
 namespace agent {
 
+// The fold summary as raw text: the device closure renders it with a
+// "## CONVERSATION SUMMARY..." header line (the histV1 window shape); the
+// history pair frames the raw text itself, so the header is dropped once here.
+static std::string rawFoldSummary(const std::string& summary) {
+  const size_t at = summary.find("## CONVERSATION SUMMARY");
+  if (at == std::string::npos) return summary;
+  const size_t e = summary.find('\n', at);
+  return e == std::string::npos ? std::string() : summary.substr(e + 1);
+}
+
 namespace {
 // CUM-544: a TIMEOUT is model latency, not a dead link. Only the shared explicit
 // token every head writes ("timeout: ..."): a provider error that merely mentions
@@ -750,9 +760,8 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   }
   ctx += availableModelsLine(d_, modelsTool);
 
-  // W15: the skills index BEFORE the connector catalog - playbooks frame HOW to
-  // use the capabilities the catalog then lists.
-  if (d_.skillsIndex) ctx += d_.skillsIndex();
+  // R3: the skills index rides the SHELF block (its own cache point after the
+  // static one - a skill edit re-caches only the shelf), not the static catalogs.
   // Per-provider capability + connector catalog (Phase C): what each provider's
   // turns/sub-agents can actually reach, so spawns are chosen knowingly.
   if (d_.connectorsCatalog) ctx += d_.connectorsCatalog();
@@ -987,8 +996,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const orch::ContextBudget budget =
       orch::deriveBudget(orch::modelCtxTokens(host, headModel), bov);
   ci.budgetBytes = budget.systemPromptBytes;
-  // H2: the turn-structured history replaces the device's 12-row window.
-  if (histV2On()) ci.recentConversation = historyBlock(chatId, budget.recentConvBytes);
+  // H2/R3: the turn-structured history as REAL messages the providers send as
+  // history items (prompt_layout.h) - the text window stays empty. Without
+  // histV2 the device's rendered window rides the per-turn block and only the
+  // summary pair rides as history.
+  if (!ci.chatSummary.empty())
+    ci.chatSummary = rawFoldSummary(ci.chatSummary);   // header stripped; measureHistory sees it below
+  if (histV2On()) {
+    ci.history = historyMessages(chatId, budget.recentConvBytes, ci.chatSummary);
+    ci.recentConversation.clear();   // the history rides as messages; the closure's
+                                     // text window was the histV1 shape
+  } else if (!ci.chatSummary.empty()) {
+    ci.history = renderHistory({}, ci.chatSummary, 0);   // the summary pair alone
+  }
+  // R3: this chat's TTL table choice and its per-chat cache key.
+  turnGaps_.note(chatId, nowMs());
+  ci.cache.longTtl = turnGaps_.longTtl(chatId);
+  ci.cache.key = layout::cacheKey(ci.devName, chatId);
   hlog::logf("budget: ctx=%uK sys=%d res=%u tot=%u (%s)", (unsigned)(budget.ctxTokens / 1000),
              budget.systemPromptBytes, (unsigned)budget.toolResultBytes,
              (unsigned)budget.toolTotalBytes,
@@ -1000,6 +1024,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // wiring below so "advertised == callable" can't drift). Verified live:
   // without this block Mistral/OpenAI skip mid-turn tools entirely.
   ci.loopOn = loopOnThisTurn;   // decided from entry heap (above), not live
+  // R3: the CONFIG's loop toggle decides whether the tools ride the request
+  // (a cached-manifest property), never this turn's heap gate.
+  ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
@@ -1028,6 +1055,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         return s.name == "models.list" && !loopToolHidden(s.name);
       });
   ci.catalogs = buildStableCatalogs(modelsTool);
+  // R3: the skills shelf (its own cached block; "" = none on this fabric).
+  if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
   std::string instructions = agent::composeInstructions(ci);
   // ONE line, only when the loop was actually withheld - the interesting case,
@@ -2314,7 +2343,8 @@ bool TurnEngine::canFoldNow() const {
 TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
                                            const std::string& prevSummary,
                                            const std::string& digest,
-                                           std::string& outSummary) {
+                                           std::string& outSummary,
+                                           size_t* producedBytes) {
   namespace orch = nimbus::orch;
   outSummary.clear();
   // Gate like an unattended turn: the fold is background work - defer, never
@@ -2378,7 +2408,9 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   // ignored (no applyTurn - device actions, mem writes, spawns are all inert).
   // The summary feeds every later prompt: a leaked tag here would come back in
   // later replies, so it passes the same reply seam (lane L, formatting F4).
-  outSummary = orch::capSummary(orch::cleanReplyMarkup(t.reply));
+  const std::string raw = orch::cleanReplyMarkup(t.reply);
+  if (producedBytes) *producedBytes = raw.size();
+  outSummary = orch::capSummary(raw);
   hlog::logf("fold(%s): ok on %s (%u in / %u out)", chatId.c_str(), host.c_str(),
              (unsigned)usage.promptTokens, (unsigned)usage.completionTokens);
   return FoldResult::Ok;
@@ -2538,6 +2570,28 @@ std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes
     if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
   }
   return w.block;
+}
+
+// R3 (G1): the same fitted turns as real messages (renderHistory), the summary
+// pair first (the caller passes the RAW summary; rawFoldSummary).
+std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, size_t highBytes,
+                                                 const std::string& summary) {
+  if (chatId.empty() || chatId == "system")
+    return summary.empty() ? std::vector<HistMsg>() : renderHistory({}, summary, 0);
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  HistoryBudget b;
+  b.highBytes = highBytes;
+  HistoryOptions o;
+  o.inFlightId = curUserRowId_;
+  o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
+  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  const HistoryWindow w = fitHistory(loadTurns(chatId, o, 2 * b.highRows), marks.softStart, b, o.utcOffsetMin);
+  if (w.shifted) {
+    hlog::logf("history(%s): overflow shift to %s (%u B kept)", chatId.c_str(), w.softStart.c_str(),
+               (unsigned)w.bytes);
+    if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
+  }
+  return renderHistory(w.kept, summary, o.utcOffsetMin);
 }
 
 FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {

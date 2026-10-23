@@ -2,6 +2,8 @@
 
 #include <cstring>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -793,7 +795,8 @@ static void stripDescriptions(ArduinoJson::JsonVariant v) {
 //   - tool_result content is clipped UTF-8-safe under ArduinoJson's 65535-byte
 //     string ceiling (a longer string stores as NULL and 400s the request).
 static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs,
-                              bool showingImages) {
+                              bool showingImages,
+                              const std::map<std::string, std::string>* thinkingByCall = nullptr) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
@@ -830,6 +833,20 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
     JsonObject a = msgs.add<JsonObject>();
     a["role"] = "assistant";
     JsonArray ac = a["content"].to<JsonArray>();
+    // R3 (preserved thinking): a round's thinking blocks replay UNCHANGED
+    // before the calls they preceded - Anthropic enforces this on accounts
+    // created on or after 31 Aug 2026, and the signature is validated, so the
+    // bytes are stored verbatim at read time and never re-cut.
+    if (thinkingByCall) {
+      const auto it = thinkingByCall->find(e[calls.front()].id);
+      if (it != thinkingByCall->end() && !it->second.empty()) {
+        JsonDocument tb;
+        if (deserializeJson(tb, it->second) == DeserializationError::Ok &&
+            tb.is<ArduinoJson::JsonArrayConst>())
+          for (ArduinoJson::JsonObjectConst blk : tb.as<ArduinoJson::JsonArrayConst>())
+            ac.add(blk);   // deep-copy within this doc's allocator
+      }
+    }
     if (!prose.empty()) {
       JsonObject t = ac.add<JsonObject>();
       t["type"] = "text";
@@ -909,24 +926,25 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   req["model"]      = *a.model;
   req["max_tokens"] = a.maxTokens;
   if (a.effort && *a.effort) req["output_config"]["effort"] = a.effort;
-  // roundInstructions() appends the final-round notice when a cap forced this
-  // tool-less round, so the model reports what it could not finish rather than
-  // promising work that will never run. Prompt caching (prompt_layout.h): system
-  // rides as content blocks, one per part, so the static and summary blocks carry
-  // cache points; inside a tool loop the rounds are seconds apart, so the
-  // 5-minute ephemeral cache hits on every round after the first. The notice
-  // rides the per-turn block (the only block of an unsplit prompt), so a final
-  // round still hits the static and summary blocks.
-  // Cache points (at most 4): the last tool, the static block, the summary block,
-  // and the last message.
+  // R3 (prompt_layout.h): system = the static and shelf blocks, each with a
+  // cache point (the TTL from the parts); the history rides as real messages
+  // before the turn's own, its last message carrying the third point; the
+  // moving fourth point sits on the last message (cacheLastMessage). That is
+  // the documented maximum of 4 - a later point already covers the tools
+  // prefix, so the old point on the last tool is gone. The per-turn block (the
+  // notice included) leads the seeded user message (applied in the render
+  // step, so a retry never doubles it), so a forced final round still hits
+  // every cached block.
   {
     layout::PromptParts round = *a.parts;
-    std::string& tail = round.split ? round.dyn : round.stat;
-    tail = wire::roundInstructions(tail, *a.capReason);
+    if (!round.split)
+      round.stat = wire::roundInstructions(round.stat, *a.capReason);   // the legacy single string
     layout::putAnthropicSystem(req["system"].to<JsonArray>(), round);
+    JsonArray out = req["messages"].to<JsonArray>();
+    layout::putAnthropicHistory(out, round);
+    for (JsonObject m : msgs) out.add(m);
+    layout::cacheLastMessage(out);
   }
-  req["messages"] = msgs;   // deep-copy within the doc's allocator
-  layout::cacheLastMessage(req["messages"].as<JsonArray>());
   JsonArray toolsArr = req["tools"].to<JsonArray>();
   JsonObject ot = toolsArr.add<JsonObject>();
   ot["name"]        = "orch_turn";
@@ -939,7 +957,11 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   }
   stripDescriptions(sd.as<ArduinoJson::JsonVariant>());
   ot["input_schema"] = sd;
-  for (size_t i = 0; a.allowTools && i < a.ht->specs.size(); i++) {
+  // CUM-641: the full tool set rides EVERY round, the forced final round
+  // included - a round that shrank the array to orch_turn lost the whole
+  // tools segment of the cache and rewrote it at 1.25x. The final-round notice
+  // (on the per-turn block) is what tells the model to finish now.
+  for (size_t i = 0; i < a.ht->specs.size(); i++) {
     const auto& spec = a.ht->specs[i];
     JsonObject t = toolsArr.add<JsonObject>();
     t["name"]        = spec.name;
@@ -952,9 +974,10 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
       t["input_schema"].to<JsonObject>();
   }
   req["tool_choice"]["type"] = "auto";   // may call a tool OR finish (orch_turn) - every round
-  // Cache breakpoint on the LAST tool: caches the entire tools array as one prefix
-  // segment (Anthropic caches tools -> system -> messages in that canonical order).
-  toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
+  // An UNSPLIT prompt (sub-agent briefs, the dream) keeps the tools-prefix
+  // point: nothing else it sends is cached, and it has points to spare.
+  if (!a.parts->split)
+    toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
   return wire::serializeChecked(req, body, err);
 }
 
@@ -962,9 +985,22 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
 // the scan goes on (calls after it are still tool calls - CUM-526); text blocks
 // are collected into HeadStep.text (Glass Box A4, observed only). Returns the
 // stop_reason.
-static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out) {
+static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out,
+                                 std::map<std::string, std::string>* thinkingByCall = nullptr) {
+  std::string pendingThinking;   // this round's thinking blocks, serialized verbatim
+  bool thinkingStashed = false;
   for (JsonObjectConst c : resp["content"].as<JsonArrayConst>()) {
     const char* ty = c["type"] | "";
+    if (strcmp(ty, "thinking") == 0) {
+      // R3: store the block's thinking text + signature EXACTLY as served -
+      // the replay must be byte-unchanged and the signature is validated.
+      std::string blk;
+      serializeJson(c, blk);
+      if (pendingThinking.empty()) pendingThinking = "[";
+      else pendingThinking += ",";
+      pendingThinking += blk;
+      continue;
+    }
     if (strcmp(ty, "text") == 0) {
       const char* txt = c["text"] | "";
       if (txt[0]) {
@@ -985,6 +1021,12 @@ static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep
     call.name     = nm;
     call.argsJson = (args.length() && args != "null") ? args : "{}";
     out.toolCalls.push_back(call);
+    // The thinking blocks that preceded this round's FIRST call ride under
+    // its id (the renderer emits them before the calls, unchanged).
+    if (thinkingByCall && !thinkingStashed && !pendingThinking.empty()) {
+      thinkingStashed = true;
+      (*thinkingByCall)[call.id] = pendingThinking + "]";
+    }
   }
   return resp["stop_reason"] | "";
 }
@@ -1017,8 +1059,11 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
   std::string sys;
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
+  // R3: this turn's thinking payloads, keyed by the round's first tool-call id
+  // (RAM only, one turn's lifetime, small at effort low).
+  auto thinkingByCall = std::make_shared<std::map<std::string, std::string>>();
 
-  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts](
+  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts, thinkingByCall](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -1050,7 +1095,18 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     JsonArray msgs;
     auto render = [&]() {
       msgs = conv.to<JsonArray>();
-      renderAntMessages(tr, msgs, imgs != nullptr);
+      renderAntMessages(tr, msgs, imgs != nullptr, thinkingByCall.get());
+      // R3: the per-turn block (the final-round notice included) LEADS the
+      // seeded user message, so the system blocks and the history stay
+      // byte-stable across rounds and turns. Once per render: the messages
+      // array is rebuilt above, so a re-render never doubles the prefix.
+      if (parts.split && msgs.size() > 0 && !strcmp(msgs[0]["role"] | "", "user")) {
+        layout::PromptParts led = parts;
+        led.dyn = wire::roundInstructions(led.dyn, capReason);
+        wire::putFieldStr(msgs[0]["content"],
+                          layout::userWithDynamic(led, msgs[0]["content"] | ""),
+                          "the user message");
+      }
       if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
       if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
         // A trailing assistant message is a prefill, which current models reject.
@@ -1082,6 +1138,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     JsonDocument filter;
     JsonObject ci = filter["content"].add<JsonObject>();
     ci["type"] = true; ci["id"] = true; ci["name"] = true; ci["input"] = true; ci["text"] = true;
+    ci["thinking"] = true; ci["signature"] = true;   // R3: preserved-thinking replay (verbatim)
     filter["stop_reason"] = true;
     filter["stop_details"]["category"] = true;   // a refusal names its category
     filter["error"]["message"] = true;
@@ -1141,7 +1198,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                     (const char*)(resp["stop_reason"] | "?") + ")";
         return out;
       }
-      const std::string sr = antReadRound(resp, out);
+      const std::string sr = antReadRound(resp, out, thinkingByCall.get());
       // 4) the completeness gate: a reply cut at max_tokens - wherever it stopped,
       //    a finished orch_turn included - is never run and never delivered as
       //    complete (a half-written memory_write, a reply cut mid-sentence).
@@ -1258,19 +1315,27 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
   d["model"] = *a.model;
   d["max_tokens"] = a.maxTokens;
   if (a.effort && *a.effort) d["output_config"]["effort"] = a.effort;
-  // Prompt caching (prompt_layout.h) - same block shape as the loop path. A
-  // single-shot turn caches the static and summary blocks for the NEXT turn
-  // (hits when the owner replies within the 5-minute TTL; refreshed on every
-  // hit); the per-turn block does not. The compaction prompt is unsplit: one
-  // block with its own cache point.
-  {
+  // Prompt caching (prompt_layout.h) - the loop path's shape: the static and
+  // shelf system blocks carry points, the history rides as real messages with
+  // the third on its last item, and the moving fourth point sits on the user
+  // message. A single-shot turn caches the static blocks for the NEXT turn of
+  // the chat; the compaction prompt is unsplit: one system point, one on its
+  // only message, one on the tool.
+  const layout::PromptParts parts = [&] {
     std::string sys;
     wire::putFieldStr(sys, *a.instructions, "the system prompt");
-    layout::putAnthropicSystem(d["system"].to<JsonArray>(), layout::split(sys));
+    return layout::split(sys);
+  }();
+  layout::putAnthropicSystem(d["system"].to<JsonArray>(), parts);
+  {
+    JsonArray msgs = d["messages"].to<JsonArray>();
+    layout::putAnthropicHistory(msgs, parts);
+    JsonObject m = msgs.add<JsonObject>();
+    m["role"] = "user";
+    wire::putFieldStr(m["content"], layout::userWithDynamic(parts, *a.inputs), "the user message");
+    layout::textAsBlocks(msgs);
+    layout::cacheLastMessage(msgs);
   }
-  JsonObject m = d["messages"].add<JsonObject>();
-  m["role"] = "user";
-  wire::putFieldStr(m["content"], *a.inputs, "the user message");
   if (!a.fold) {
     JsonObject tool = d["tools"].add<JsonObject>();
     tool["name"] = "orch_turn";
@@ -1289,7 +1354,8 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
     stripDescriptions(sd.as<ArduinoJson::JsonVariant>());   // fit the grammar budget
     tool["input_schema"] = sd;
     d["tool_choice"]["type"] = "auto";   // never forced (see above)
-    tool["cache_control"]["type"] = "ephemeral";   // caches the tools prefix segment
+    if (!parts.split)
+      tool["cache_control"]["type"] = "ephemeral";   // an unsplit prompt: the tools prefix segment
   }
   return wire::serializeChecked(d, body, err);
 }

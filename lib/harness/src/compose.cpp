@@ -388,10 +388,9 @@ std::string composeInstructions(const ComposeInputs& in) {
           "moderation, and access limits always win.]\n" + ownerPref;
   }
   // Lane J: the owner's standing rules, one small file on the device, rendered
-  // into the SAME never-dropped band (orch_world keeps the directive in the
-  // never-clipped section), so a rule is in the prompt of every owner-facing
-  // turn whatever started it. Empty input emits nothing: a fresh device is
-  // byte-identical to before (the goldens pin that).
+  // into the SAME never-dropped band, so a rule is in the prompt of every
+  // owner-facing turn whatever started it. Empty input emits nothing: a fresh
+  // device is byte-identical to before (the goldens pin that).
   if (!in.standingPrefs.empty()) {
     if (!dir.empty()) dir += "\n\n";
     dir += "[STANDING RULES - rules the owner asked you to follow in EVERY reply, "
@@ -399,13 +398,22 @@ std::string composeInstructions(const ComposeInputs& in) {
            "standing as the guidance above, never above the rules. Change them "
            "only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
   }
-  ci.directive = dir;
+  // R3: the directive does NOT ride the static block - the shelf (below) carries
+  // it, so an owner edit re-caches only the shelf. Lane J's standing rules ride
+  // the same shelf (they are part of `dir`), so they still reach every
+  // owner-facing turn.
   Hardware hw = in.hw;
   hw.deviceName = devName.c_str();   // devName outlives the renderCapabilities call below
   hw.display = board.display;        // static board facts (flash strings)
   hw.ringOnScreen = !board.physicalRing;
   hw.noTelegram = !in.telegram;      // CUM-523
   hw.noFileSend = !in.telegram || !in.fileSend;
+  // R3: with the tool loop enabled in the config, every tool rides the request
+  // itself with its full description and schema, so the manifest points there
+  // instead of listing them a second time (orch_world.cpp - the list cost about
+  // 8 KB per turn). The CONFIG flag, never this turn's heap gate: a per-turn
+  // flag would rewrite the cached manifest whenever the gate closes.
+  hw.toolsOnWire = in.toolsOnWire;
   ci.capabilities = renderCapabilities(hw, in.tools);
   // "Advertised == callable" (§coherence): the tool list is ALWAYS advertised
   // (owner R7: the self-model used to lose all tool knowledge whenever the loop
@@ -446,30 +454,30 @@ std::string composeInstructions(const ComposeInputs& in) {
   // section budget pressure sheds anyway. v1 keeps it.
   ci.memoryExplainer = in.promptV2 ? "" : MEMORY_EXPLAINER;
 
-  // 1. static block, budgeted ALONE (prompt_layout.h): nothing in it depends on
-  // this turn's clock, speaker, memory, sessions, window or recall.
+  // 1. the shelf: the owner's standing preferences plus the skills shelf, their
+  // own cached block after the static one (an owner or skill edit re-caches
+  // only this block). It rides whole: the directive is capped at its source and
+  // assembleContext's section rules do not reach the shelf.
+  std::string shelf = dir;
+  if (!in.skillsShelf.empty()) shelf += (shelf.empty() ? "" : "\n") + in.skillsShelf;
+
+  // 2. static block, budgeted ALONE (prompt_layout.h): nothing in it depends
+  // on this turn's clock, speaker, memory, sessions, window, recall OR history
+  // - the history's size must never move the static clip point, or every turn
+  // that adds an exchange would rewrite the whole cached prefix. The shelf and
+  // the catalogs ride the same budget (prism row 9: the catalogs used to append
+  // outside it, so a flat render could pass the 60,000 B string guard).
   const int budget = in.budgetBytes;
   const int reserve = dynamicReserve(budget);
+  const int fixedBytes = (int)shelf.size() + (int)in.catalogs.size();
   layout::PromptParts parts;
   parts.split = true;
-  parts.stat = assembleContext(ci, budget - reserve).prompt;
-  // The stable catalogs (providers, models, skills, connectors) follow it. They
-  // used to ride the per-turn input unbudgeted and still do not count against the
-  // budget; their bytes change only with the device config.
-  const int staticBytes = (int)parts.stat.size();
+  parts.stat = assembleContext(ci, budget - reserve - fixedBytes).prompt;
   parts.stat += in.catalogs;
 
-  // 2. the conversation summary: its own block (it changes only at compaction),
-  // clipped to the room the static block leaves above the per-turn reserve.
-  if (!in.chatSummary.empty()) {
-    ContextInputs sum;
-    sum.chatSummary = in.chatSummary;
-    parts.summary = assembleContext(sum, budget - staticBytes - reserve).prompt;
-  }
-
-  // 3. the per-turn block: the clock, the speaker, running memory, the loop note,
-  // then the sessions, the window, the scratchpad and the recall, trimmed to what
-  // is left.
+  // 4. the per-turn block: the clock, the speaker, running memory, the loop note,
+  // then the sessions, the histV1 text window, the scratchpad and the recall,
+  // trimmed to what is left after the cached blocks.
   ContextInputs dyn;
   std::string head = dynamicClockLine(in.now) + speakerLine(in);
   if (!in.runningMemory.empty())
@@ -480,7 +488,14 @@ std::string composeInstructions(const ComposeInputs& in) {
   dyn.scratchpad = in.scratchpad;
   dyn.recalled = in.recalled;
   dyn.recallDegraded = in.recallDegraded;
-  parts.dyn = assembleContext(dyn, budget - staticBytes - (int)parts.summary.size()).prompt;
+  parts.dyn = assembleContext(dyn, budget - (int)parts.stat.size() - (int)shelf.size()).prompt;
+
+  // 5. the cached blocks and the history the providers render as messages, and
+  // the turn's cache settings.
+  parts.shelf = shelf;
+  parts.history.reserve(in.history.size());
+  for (const HistMsg& m : in.history) parts.history.push_back({m.user, m.text});
+  parts.cache = in.cache;
   return layout::join(parts);
 }
 
