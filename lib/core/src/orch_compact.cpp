@@ -230,7 +230,10 @@ std::string capSummary(const std::string& s) {
       const int rank = volatileRank(secs[i]);
       if (rank < worstRank) { worstRank = rank; worst = (int)i; }
     }
-    if (worst < 0) break;   // nothing volatile left to drop whole
+    if (worst < 0 || secs.size() <= 1) break;   // nothing volatile left, or the
+                                              // last section stays (a headerless
+                                              // prose summary is one section: the
+                                              // UTF-8-safe tail cut below takes it)
     secs.erase(secs.begin() + worst);
     trimmed = true;
   }
@@ -250,11 +253,17 @@ std::string capSummary(const std::string& s) {
   std::string joined;
   joinSections(secs, joined);
   if (fits(joined)) {
-    // The cut is visible, exactly one marker: a re-cap of an already capped
-    // summary (the next anchored fold) never doubles it.
-    if (trimmed && joined.compare(joined.size() - (sizeof(kEllipsis) - 1),
-                                  sizeof(kEllipsis) - 1, kEllipsis) != 0)
-      joined += kEllipsis;
+    if (!trimmed) return joined;
+    // The cut is visible, exactly one marker: it lands flush against the last
+    // kept text (its trailing line end is dropped first), so a re-cap of an
+    // already capped summary - the next anchored fold - finds it and never
+    // doubles it.
+    while (!joined.empty() && joined.back() == '\n') joined.pop_back();
+    if (joined.size() >= sizeof(kEllipsis) - 1 &&
+        joined.compare(joined.size() - (sizeof(kEllipsis) - 1), sizeof(kEllipsis) - 1,
+                       kEllipsis) == 0)
+      return joined;
+    joined += kEllipsis;
     return joined;
   }
   // 3. the pathological case (the durable headers alone near the cap): one

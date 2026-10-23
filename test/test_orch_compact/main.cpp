@@ -274,16 +274,20 @@ static void test_l1931_a_3kb_summary_is_kept_whole() {
 // line is never re-truncated: the new line is what the next trim drops, the
 // previous cut stands byte for byte, and the result is idempotent.
 static void test_l1931_two_successive_folds_do_not_recut_a_cut_line() {
-  uint32_t seed = 4242;
-  const std::string big = genSummary(seed, 12000);
+  // One durable section at the cap, one volatile section after it: the cap
+  // drops the volatile one and marks the cut.
+  std::string big = "1. Decisions & preferences\n" + std::string(4050, 'a') + "\n";
+  big += "4. Owner intent & active threads\n" + std::string(200, 'z') + "\n";
   const std::string cut = capSummary(big);
-  TEST_ASSERT_TRUE(cut.size() <= kChatSummaryMax);
-  TEST_ASSERT_TRUE(cut.find("\xE2\x80\xA6") != std::string::npos);
+  TEST_ASSERT_TRUE(cut.size() + 3 <= kChatSummaryMax);   // at the cap, marker included
+  TEST_ASSERT_TRUE(cut.size() > 4000);
+  TEST_ASSERT_TRUE(cut.rfind("\xE2\x80\xA6") == cut.size() - 3);   // the visible cut
   // The next fold's model output carries the cut summary with one more line
-  // after it. The already cut line is not cut again: the trim drops the new
-  // line whole, the previous cut stands byte for byte, no second marker, and
-  // a third pass changes nothing.
+  // after it (over the cap again). The already cut line is not cut again:
+  // the trim drops the new line whole, the previous cut stands byte for
+  // byte, and a third pass changes nothing.
   const std::string next = cut + "\n- one more device note\n";
+  TEST_ASSERT_TRUE(next.size() > kChatSummaryMax);
   const std::string again = capSummary(next);
   TEST_ASSERT_TRUE(again.size() <= kChatSummaryMax);
   TEST_ASSERT_EQUAL_STRING(cut.c_str(), again.c_str());
