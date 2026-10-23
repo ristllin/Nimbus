@@ -16,12 +16,11 @@
 // time, on the self-deleting verify task (provider_verify::requestRefresh). Nothing
 // here opens a connection or blocks: the tool and the web route only set a flag.
 //
-// The passive refresh: weekly, or after a firmware update. A provider's list carries
-// a stamp on flash (/data/mstamp_<slug>.txt: "#models v1 fetchedAt=<s> fw=<build>",
-// the build being NIMBUS_FW_BUILD, so a new image of any kind counts as an update),
-// written after every list fetch; at boot plus 10 minutes, then every 6 hours, a
-// keyed provider whose stamp is missing, a week old or from another firmware is
-// queued. Never NVS.
+// The passive refresh: weekly, or after a firmware update. It reads the header of lane
+// F's model store (/data/models_<slug>.txt: "#models v1 fetchedAt=<s> fw=<version>
+// ...", written by every list fetch); at boot plus 10 minutes, then every 6 hours, a
+// keyed provider whose store is missing, a week old or written by another firmware
+// version is queued. Never NVS.
 namespace agent {
 namespace model_refresh {
 
@@ -42,11 +41,11 @@ nimbus::orch::RefreshAsk request(const char* provider, const char* why);
 // queued".
 std::string missText(const std::string& provider, const std::string& model);
 
-// The fetch time of `provider`'s list from its stamp (unix seconds; 0 = never, or
-// fetched while the clock was unset).
+// The fetch time of `provider`'s list from its store header (unix seconds; 0 = never,
+// or fetched while the clock was unset).
 uint32_t fetchedAt(const char* provider);
 
-// The firmware build that fetched `provider`'s list ("" = no stamp).
+// The firmware version that wrote `provider`'s store ("" = no store).
 std::string stampFw(const char* provider);
 
 // A refresh of `provider` is queued or running.
@@ -55,9 +54,6 @@ bool pending(const char* provider);
 // Run the passive check now instead of on its clock (the test console's MODELS
 // passive); returns how many providers it queued.
 int passiveCheckNow();
-
-// Verify task, after a list fetch stored a list: writes the stamp.
-void noteFetched(const char* provider);
 
 }  // namespace model_refresh
 }  // namespace agent

@@ -1,8 +1,6 @@
 #include "model_refresh.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <LittleFS.h>
 #include <WiFi.h>
 #include <time.h>
 
@@ -12,19 +10,16 @@
 
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"          // restingLargest - the handshake floor gate
-#include "../sys/ps_json.h"             // PsramJsonAllocator - the catalog parse off internal heap
-#include "fs_atomic.h"                  // writeFileAtomic, flashMounted
 #include "memory_subsystem.h"           // registry() - where models.list lives
-#include "nimbus/orch/model_catalog.h"  // ModelInfo, modelsFromJson, classifyCatalogEntry
-#include "nimbus/orch/model_choices.h"  // effectiveModelChoices - the list orch_model checks
+#include "nimbus/orch/model_catalog.h"  // lane F: the model store, rowOffered, modelPrice
+#include "nimbus/orch/model_choices.h"  // staticModelChoices - before the first fetch
 #include "nimbus/orch/model_refresh.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/usage_ledger.h"   // rateSrcName
 #include "orchestrator.h"               // turnInFlight
 #include "provider_verify.h"
-#include "router_catalog.h"
 #include "store.h"
-#include "version.h"                    // NIMBUS_FW_BUILD - the firmware a list was fetched by
+#include "version.h"                    // NIMBUS_FW_VERSION - the store header's firmware
 
 namespace agent {
 namespace model_refresh {
@@ -59,91 +54,87 @@ bool keyed(const char* p) {
   return false;
 }
 
-uint32_t nowEpoch() {
-  const time_t t = time(nullptr);
-  return t > 1700000000 ? (uint32_t)t : 0;   // 0 until the clock is set
-}
+uint32_t nowEpoch() { return nimbus::orch::calendarNowOrZero(time(nullptr)); }   // 0 until the clock is set
 
-std::string stampPath(const char* slug) { return std::string("/data/mstamp_") + slug + ".txt"; }
-
+// The stamp: the header of lane F's model store for `slug` (fetch time, the firmware
+// that wrote it). No store yet: present=false.
 nimbus::orch::ModelsStamp readStamp(const char* slug) {
-  nimbus::orch::ModelsStamp s;
-  if (slotIndex(slug) < 0 || !flashMounted()) return s;
-  const std::string path = stampPath(slug);
-  if (!LittleFS.exists(path.c_str())) return s;
-  File f = LittleFS.open(path.c_str(), "r");
-  if (!f) return s;
-  char buf[128];
-  const size_t n = f.readBytes(buf, sizeof(buf) - 1);
-  f.close();
-  buf[n] = 0;
-  nimbus::orch::parseModelsStamp(std::string(buf, n), s);
-  return s;
+  if (slotIndex(slug) < 0) return nimbus::orch::ModelsStamp();
+  return nimbus::orch::stampFromStore(store::modelStoreText(String(slug)));
 }
 
-// A catalog row's selector: the router's rows carry the bare id plus the upstream.
-std::string selectorOf(const std::string& provider, const nimbus::orch::ModelInfo& mi) {
-  if (provider != "cumulo" || mi.upstream.empty() || mi.id.rfind(mi.upstream + "/", 0) == 0) return mi.id;
-  return mi.upstream + "/" + mi.id;
+// What one store row costs and where the figure comes from: the ledger's own price
+// when it has one for this model (the owner's, the router's billed rate, the
+// built-in model estimate), else the store row's (lane F: the router's per-row price
+// or the built-in estimate). A provider-wide default is never shown as a model's price.
+void priceRow(const std::string& provider, const nimbus::orch::ModelInfo& m, nimbus::orch::ModelRow& r) {
+  using nimbus::orch::RateSrc;
+  const nimbus::orch::EffRate rate = store::modelRate(provider, r.id);
+  const RateSrc src = rate.src();
+  if (src == RateSrc::Owner || src == RateSrc::Router || src == RateSrc::BuiltinModel) {
+    r.priceIn = (uint32_t)(rate.in > 0xFFFFFFFFull ? 0xFFFFFFFFull : rate.in);
+    r.priceOut = (uint32_t)(rate.out > 0xFFFFFFFFull ? 0xFFFFFFFFull : rate.out);
+    r.priceSource = nimbus::orch::rateSrcName(src);
+    return;
+  }
+  const nimbus::orch::ModelPrice mp = nimbus::orch::modelPrice(provider, m);
+  if (!std::strcmp(mp.src, "unknown")) {
+    r.priceSource = "none";
+    return;
+  }
+  r.priceIn = mp.in;
+  r.priceOut = mp.out;
+  r.priceSource = !std::strcmp(mp.src, "builtin") ? "est" : mp.src;
 }
 
-nimbus::orch::ModelRow rowFor(const std::string& provider, const std::string& id,
-                              const nimbus::orch::ModelInfo& mi) {
+nimbus::orch::ModelRow rowFor(const std::string& provider, const nimbus::orch::ModelInfo& m) {
   nimbus::orch::ModelRow r;
-  r.id = id;
-  r.line = mi.family;
-  r.size = mi.size;
-  r.ctx = mi.ctxTokens;
-  r.lifecycle = mi.deprecated ? "deprecated" : "active";
-  r.roles = mi.roles;
-  const nimbus::orch::EffRate rate = store::modelRate(provider, id);
-  r.priceIn = (uint32_t)(rate.in > 0xFFFFFFFFull ? 0xFFFFFFFFull : rate.in);
-  r.priceOut = (uint32_t)(rate.out > 0xFFFFFFFFull ? 0xFFFFFFFFull : rate.out);
-  r.priceSource = nimbus::orch::rateSrcName(rate.src());
+  r.id = nimbus::orch::modelSelector(m);
+  r.name = m.name;
+  r.line = m.line.empty() ? m.family : m.line;
+  r.size = m.size;
+  r.released = m.created;
+  r.ctx = m.ctxTokens;
+  r.lifecycle = !m.life.empty() ? m.life : (m.deprecated ? "deprecated" : "active");
+  r.roles = m.roles;
+  priceRow(provider, m, r);
   return r;
 }
 
-// The rows models.list shows for `provider`: the ids the orch_model and spawn checks
-// accept (the effective choice list), so every id the head reads applies as named,
-// with the capability catalog's details where it has the model. Flash reads only.
+// The rows models.list shows for `provider`, from lane F's model store: every row the
+// one model check offers now (rowOffered: usable, a chat role, not past its retire
+// date), in the store's order, so every id the head reads applies as named. Before
+// the first fetch: the compiled cold-start list. Flash (RAM-cached) reads only.
 bool loadRows(const std::string& provider, nimbus::orch::ProviderModels& out) {
-  const String p(provider.c_str());
-  const String harvested = store::modelChoices(p);
-  const std::string choices =
-      nimbus::orch::effectiveModelChoices(provider.c_str(), std::string(harvested.c_str()));
-  std::vector<nimbus::orch::ModelInfo> cat;
-  const String blob = store::modelCatalogJson(p);
-  if (blob.length()) {
-    JsonDocument d(&PsramJsonAllocator::instance());
-    if (!deserializeJson(d, blob)) {
-      JsonArrayConst arr = d.as<JsonArrayConst>();
-      nimbus::orch::modelsFromJson(arr, cat);
-      if (arr.size()) out.more = arr[arr.size() - 1]["more"] | 0;
-    }
+  const std::string text = store::modelStoreText(String(provider.c_str()));
+  nimbus::orch::ModelStoreMeta meta;
+  const uint32_t now = nowEpoch();
+  if (!text.empty() && nimbus::orch::parseModelStoreHeader(text, meta)) {
+    out.fetched = true;
+    out.fetchedAt = meta.fetchedAt;
+    out.more = meta.more;
+    nimbus::orch::forEachStoreRow(provider, text, [&](const nimbus::orch::ModelInfo& m) {
+      if (nimbus::orch::rowOffered(m, 0, now)) out.rows.push_back(rowFor(provider, m));
+      return true;
+    });
+    if (!out.rows.empty()) return true;
   }
-  out.fetched = harvested.length() > 0 || blob.length() > 0;
-  out.fetchedAt = readStamp(provider.c_str()).fetchedAt;
+  out.fetched = false;   // no store row can run a chat role: the cold-start list stands
+  const std::string cold = nimbus::orch::staticModelChoices(provider.c_str());
   size_t start = 0;
-  while (start < choices.size()) {
-    size_t comma = choices.find(',', start);
-    if (comma == std::string::npos) comma = choices.size();
-    std::string id = choices.substr(start, comma - start);
+  while (start < cold.size()) {
+    size_t comma = cold.find(',', start);
+    if (comma == std::string::npos) comma = cold.size();
+    const std::string id = cold.substr(start, comma - start);
     start = comma + 1;
-    id.erase(0, id.find_first_not_of(" \t"));
-    id.erase(id.find_last_not_of(" \t") + 1);
-    if (id.empty()) continue;
-    const nimbus::orch::ModelInfo* found = nullptr;
-    for (const auto& mi : cat)
-      if (selectorOf(provider, mi) == id) { found = &mi; break; }
-    if (found && !found->usable) continue;   // a model the key cannot use is never offered
-    out.rows.push_back(rowFor(provider, id, found ? *found : nimbus::orch::classifyCatalogEntry(provider, id)));
+    if (!id.empty()) out.rows.push_back(rowFor(provider, nimbus::orch::classifyCatalogEntry(provider, id)));
   }
   return true;
 }
 
-// The build that fetched a list: NIMBUS_FW_BUILD (git describe), so any new image -
-// a release or a bench flash - counts as an update; a release build reads its tag.
-const char* runningFw() { return NIMBUS_FW_BUILD; }
+// The firmware version lane F's store header records (NIMBUS_FW_VERSION): a list
+// written by another version is due once after an update.
+const char* runningFw() { return NIMBUS_FW_VERSION; }
 
 int passiveCheck() {
   const uint32_t now = nowEpoch();
@@ -192,13 +183,6 @@ int passiveCheckNow() { return g_begun ? passiveCheck() : 0; }
 bool pending(const char* provider) {
   std::lock_guard<std::mutex> lk(g_mx);
   return g_q.queued(provider) || (g_running[0] && provider && !std::strcmp(g_running, provider));
-}
-
-void noteFetched(const char* provider) {
-  if (slotIndex(provider) < 0) return;
-  const std::string stamp = nimbus::orch::formatModelsStamp(nowEpoch(), runningFw());
-  if (!writeFileAtomic(stampPath(provider).c_str(), stamp, "mstamp"))
-    alogif("models: %s list stamp not stored", provider);
 }
 
 void begin() {

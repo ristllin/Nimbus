@@ -4,7 +4,8 @@ Bench legs for program-2026-10-18 lane H on unit L (the test build, Orchestrator
 an Anthropic head on claude-haiku-5-5, at least one more keyed provider). LAN legs need
 ``NIMBUS_TEST_IP`` and ``NIMBUS_TEST_TOKEN``; the console legs (``hil``) need the board
 on its port (``--port`` or ``NIMBUS_PORT``). Lane F's ``test_l50_model_refresh.py``
-covers the model store itself; this file folds into it after F's merge.
+covers the model store itself in phases ordered around flashes; these legs read that
+store and run on their own, so they stay in this file.
 
 1. ``POST /api/models/refresh`` twice inside the rate window starts one refresh per
    provider: the first answers queued (or recent), the second pending or recent, the
@@ -17,10 +18,13 @@ covers the model store itself; this file folds into it after F's merge.
 3. One web-chat turn "Switch to Sonnet 5.5." on claude-haiku-5-5 applies: ``GET
    /api/orch`` then names anthropic / claude-sonnet-5-5 (about $0.003); the head model
    is put back afterwards.
-4. After a flash the passive refresh runs once per provider: ``MODELS passive`` queues
-   every keyed provider whose list was fetched by another build (or never), each list
-   then carries the running build in its stamp, and a second ``MODELS passive`` queues
-   nothing. Run it first after the flash, before the device's own check at boot + 10 min.
+4. After an update the passive refresh runs once per provider: ``MODELS passive`` queues
+   every keyed provider whose model store was written by another firmware version (or
+   has none), each store then carries the running version in its header, and a second
+   ``MODELS passive`` queues nothing. Run it first after the flash, before the device's
+   own check at boot + 10 min. An app flash of the same version queues only providers
+   with no store or a stale one; the version-change path is host-tested
+   (test_models_refresh).
 
 The page leg ("Updated <time>" after opening a dropdown) is the web harness spec
 ``tools/webui_harness/tests/74_model_picker.spec.mjs`` run with ``TARGET=device``.
@@ -102,7 +106,7 @@ def _turn(device, ip: str, text: str, timeout_s: int = 150) -> tuple:
 
 
 def _models_console(device) -> dict:
-    """MODELS? -> {slug: (fetchedAt, fw, pending)}, plus the running build under "_build"."""
+    """MODELS? -> {slug: (fetchedAt, fw, pending)}, plus the running version under "_build"."""
     device.drain(quiet=0.3)
     device.send("MODELS?")
     out = {}
@@ -110,7 +114,7 @@ def _models_console(device) -> dict:
     while time.time() < deadline:
         m = device.expect_re(r"^MODELS(\?| )", timeout=max(0.5, deadline - time.time()))
         line = m.string.strip()
-        b = re.match(r"^MODELS\? build=(\S+)", line)
+        b = re.match(r"^MODELS\? fw=(\S+)", line)
         if b:
             out["_build"] = b.group(1)
             return out
@@ -156,7 +160,7 @@ def test_l50h_passive_refresh_runs_once_per_provider_after_a_flash(board, device
         time.sleep(5)
     build = state.get("_build", "")
     stale = [p for p in keyed if state.get(p, (0, "", True))[1] != build]
-    assert not stale, f"lists not refreshed by build {build}: {stale} (MODELS? {state})"
+    assert not stale, f"stores not written by version {build}: {stale} (MODELS? {state})"
     again = int(device.cmd_re("MODELS passive", r"^MODELS passive queued=(\d+)", timeout=10).group(1))
     assert again == 0, f"a second passive check queued {again} more refresh(es)"
     print(f"\n[L50h] passive check queued {first} of {len(keyed)} keyed providers; all now stamped {build}")

@@ -2,11 +2,11 @@
 
 #include <ArduinoJson.h>
 
-#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/model_refresh.h"
 #include "nimbus/orch/models_tool.h"
 #include "nimbus/orch/provider_slots.h"
@@ -165,73 +165,74 @@ static void test_models_list_output_is_outside_text() {
 
 // ---- the stamp in the model file header and the passive refresh ---------------
 
-static void test_stamp_round_trips_and_ignores_unknown_keys() {
-  const std::string line = formatModelsStamp(1792454400, "v4.5.16-23-g98137e0d");
-  TEST_ASSERT_EQUAL_STRING("#models v1 fetchedAt=1792454400 fw=v4.5.16-23-g98137e0d\n", line.c_str());
-  ModelsStamp s;
-  TEST_ASSERT_TRUE(parseModelsStamp(line + "claude-sonnet-5-5|Claude Sonnet 5.5|...\n", s));
-  TEST_ASSERT_TRUE(s.present);
-  TEST_ASSERT_EQUAL_UINT32(1792454400u, s.fetchedAt);
-  TEST_ASSERT_EQUAL_STRING("v4.5.16-23-g98137e0d", s.fw.c_str());
-  // A later header with more keys, in any order, still reads.
-  TEST_ASSERT_TRUE(parseModelsStamp("#models v1 rows=13 fw=v5.0.0 more=0 fetchedAt=7\r\n", s));
-  TEST_ASSERT_EQUAL_UINT32(7u, s.fetchedAt);
-  TEST_ASSERT_EQUAL_STRING("v5.0.0", s.fw.c_str());
-  // No header: not present.
-  TEST_ASSERT_FALSE(parseModelsStamp("claude-sonnet-5-5|x\n", s));
-  TEST_ASSERT_FALSE(s.present);
-  // A hostile version cannot break the space-separated header.
-  const std::string bad = formatModelsStamp(1, "v1 fetchedAt=99\nfw=x");
-  TEST_ASSERT_EQUAL(1, (int)std::count(bad.begin(), bad.end(), '\n'));
-  TEST_ASSERT_TRUE(parseModelsStamp(bad, s));
-  TEST_ASSERT_EQUAL_UINT32(1u, s.fetchedAt);
+// A model store as lane F writes it (model_catalog.h serializeModelStore): the header
+// line, then rows. The passive refresh reads only the header.
+static std::string store(uint32_t fetchedAt, const std::string& fw) {
+  ModelStoreMeta meta;
+  meta.fetchedAt = fetchedAt;
+  meta.fw = fw;
+  ModelInfo m = classifyCatalogEntry("anthropic", "claude-sonnet-5-5");
+  m.name = "Claude Sonnet 5.5";
+  return serializeModelStore(meta, std::vector<ModelInfo>{m});
 }
 
-// The passive refresh decides from the model file's header alone: the firmware
-// that fetched the list and when. Every reason, plus the counter-cases.
+// The stamp is lane F's store header: fetch time and the firmware version that wrote it.
+static void test_stamp_reads_the_model_store_header() {
+  ModelsStamp s = stampFromStore(store(1792454400, "v4.6.0"));
+  TEST_ASSERT_TRUE(s.present);
+  TEST_ASSERT_EQUAL_UINT32(1792454400u, s.fetchedAt);
+  TEST_ASSERT_EQUAL_STRING("v4.6.0", s.fw.c_str());
+  // Keys the header gains later, in any order, do not matter.
+  s = stampFromStore("#models v1 total=3 fw=v5.0.0 more=0 fetchedAt=7 cut=0 src=api\n");
+  TEST_ASSERT_TRUE(s.present);
+  TEST_ASSERT_EQUAL_UINT32(7u, s.fetchedAt);
+  TEST_ASSERT_EQUAL_STRING("v5.0.0", s.fw.c_str());
+  // No store, or text with no header: no stamp.
+  TEST_ASSERT_FALSE(stampFromStore("").present);
+  TEST_ASSERT_FALSE(stampFromStore("claude-sonnet-5-5\tx\n").present);
+}
+
+// The passive refresh decides from the store header alone: the firmware version that
+// wrote the list and when it was fetched. Every reason, plus the counter-cases.
 static void test_passive_refresh_reads_the_firmware_from_the_file_header() {
   const uint32_t now = 1792540800;   // 2026-10-21
   const std::string fw = "v4.6.0";
   struct Case { std::string file; uint32_t now; PassiveWhy want; };
   const Case cases[] = {
-      {"claude-x|...\n", now, PassiveWhy::NoStamp},                                   // pre-stamp file
-      {"", now, PassiveWhy::NoStamp},                                                 // no file
-      {formatModelsStamp(now - 3600, "v4.5.16") + "rows\n", now, PassiveWhy::Firmware},   // after an update
-      {formatModelsStamp(now - 3600, "v4.5.16"), 0, PassiveWhy::Firmware},              // even with no clock
-      {formatModelsStamp(now - kPassiveMaxAgeS, fw), now, PassiveWhy::Stale},           // a week old
-      {formatModelsStamp(now - kPassiveMaxAgeS + 60, fw), now, PassiveWhy::None},       // not yet
-      {formatModelsStamp(0, fw), now, PassiveWhy::UnknownAge},                          // fetched clockless
-      {formatModelsStamp(0, fw), 0, PassiveWhy::None},                                  // still clockless
-      {formatModelsStamp(now - 60, fw), 0, PassiveWhy::None},
-      {formatModelsStamp(now + 3600, fw), now, PassiveWhy::None},                       // a clock step back
+      {"claude-x\t...\n", now, PassiveWhy::NoStamp},                          // no header
+      {"", now, PassiveWhy::NoStamp},                                         // no store
+      {store(now - 3600, "v4.5.16"), now, PassiveWhy::Firmware},              // after an update
+      {store(now - 3600, "v4.5.16"), 0, PassiveWhy::Firmware},                // even with no clock
+      {store(now - kPassiveMaxAgeS, fw), now, PassiveWhy::Stale},             // a week old
+      {store(now - kPassiveMaxAgeS + 60, fw), now, PassiveWhy::None},         // not yet
+      {store(0, fw), now, PassiveWhy::UnknownAge},                            // fetched clockless
+      {store(0, fw), 0, PassiveWhy::None},                                    // still clockless
+      {store(now - 60, fw), 0, PassiveWhy::None},
+      {store(now + 3600, fw), now, PassiveWhy::None},                         // a clock step back
   };
-  for (const Case& c : cases) {
-    ModelsStamp s;
-    parseModelsStamp(c.file, s);
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(passiveWhyToken(c.want), passiveWhyToken(passiveRefreshDue(s, fw, c.now)),
-                                     c.file.c_str());
-  }
+  for (const Case& c : cases)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(passiveWhyToken(c.want),
+                                     passiveWhyToken(passiveRefreshDue(stampFromStore(c.file), fw, c.now)),
+                                     c.file.substr(0, 60).c_str());
 }
 
-// After an update the passive check queues each keyed provider once; the stamp a
-// refresh writes then holds the running firmware and nothing more is due.
+// After an update the passive check queues each keyed provider once; the store a
+// refresh writes then carries the running firmware and nothing more is due.
 static void test_after_an_update_each_provider_refreshes_once() {
   const uint32_t now = 1792540800;
   const std::string fw = "v4.6.0";
-  std::map<std::string, std::string> files;   // the model file per provider
-  for (const ProviderSlot& slot : kProviderSlots) files[slot.slug] = formatModelsStamp(now - 7200, "v4.5.16");
+  std::map<std::string, std::string> files;   // the model store per provider
+  for (const ProviderSlot& slot : kProviderSlots) files[slot.slug] = store(now - 7200, "v4.5.16");
   ModelRefreshQueue q;
   uint32_t ms = 600000;
   int starts = 0;
   for (int pass = 0; pass < 3; ++pass) {   // the passive check runs again later
-    for (auto& f : files) {
-      ModelsStamp s;
-      parseModelsStamp(f.second, s);
-      if (passiveRefreshDue(s, fw, now) != PassiveWhy::None) q.request(f.first.c_str(), true, ms);
-    }
+    for (auto& f : files)
+      if (passiveRefreshDue(stampFromStore(f.second), fw, now) != PassiveWhy::None)
+        q.request(f.first.c_str(), true, ms);
     while (const char* due = q.due(false, true, false, true)) {
       q.started(due, ms += 5000);
-      files[due] = formatModelsStamp(now, fw);   // the refresh writes the new stamp
+      files[due] = store(now, fw);   // the refresh writes a new store
       starts++;
     }
     ms += 6u * kHour;
@@ -265,7 +266,7 @@ int main(int, char**) {
   RUN_TEST(test_the_rate_window_survives_the_clock_wrap);
   RUN_TEST(test_never_a_fetch_inside_the_tool);
   RUN_TEST(test_models_list_output_is_outside_text);
-  RUN_TEST(test_stamp_round_trips_and_ignores_unknown_keys);
+  RUN_TEST(test_stamp_reads_the_model_store_header);
   RUN_TEST(test_passive_refresh_reads_the_firmware_from_the_file_header);
   RUN_TEST(test_after_an_update_each_provider_refreshes_once);
   RUN_TEST(test_miss_texts);

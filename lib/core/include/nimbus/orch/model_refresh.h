@@ -16,8 +16,8 @@
 // resting heap above the handshake floor), one provider at a time, on the
 // self-deleting verify task: a request never opens a connection itself.
 //
-// The passive check reads a stamp kept with the provider's model list on flash
-// (the list's fetch time and the firmware that fetched it), never NVS.
+// The passive check reads the header of the provider's model store on flash (the
+// list's fetch time and the firmware that wrote it), never NVS.
 //
 // Portable, Arduino-free, host-tested (test_models_refresh).
 namespace nimbus {
@@ -58,17 +58,17 @@ class ModelRefreshQueue {
   size_t next_ = 0;   // registry index the next due() scan starts at
 };
 
-// ---- the stamp kept with a provider's model list ----------------------------
-// One header line, "#models v1 fetchedAt=<unix s> fw=<firmware>", space-separated
-// key=value pairs; a reader ignores keys it does not know.
+// ---- the stamp: the header of the provider's model store ---------------------
+// Lane F's model store (/data/models_<slug>.txt, model_catalog.h) starts with
+// "#models v1 fetchedAt=<unix s> fw=<firmware version> ...": when the list was fetched
+// and the firmware that wrote it. The passive refresh reads those two fields.
 struct ModelsStamp {
-  bool        present = false;
-  uint32_t    fetchedAt = 0;   // 0 when the clock was unset at the fetch
-  std::string fw;              // the firmware version that fetched the list
+  bool        present = false;   // the store has a header (a list was fetched or merged)
+  uint32_t    fetchedAt = 0;     // 0 when the clock was unset at the fetch (or a legacy merge)
+  std::string fw;                // the firmware version that wrote the store
 };
-std::string formatModelsStamp(uint32_t fetchedAt, const std::string& fw);
-// Reads the first "#models v1" line of `text`; false (present=false) when none.
-bool parseModelsStamp(const std::string& text, ModelsStamp& out);
+// The stamp of a store text (parseModelStoreHeader); present=false with no header.
+ModelsStamp stampFromStore(const std::string& storeText);
 
 // ---- the passive refresh ------------------------------------------------------
 // Why a stored list is due for a passive refresh.

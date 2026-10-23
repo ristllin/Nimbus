@@ -585,8 +585,8 @@ void tgGuardStatus() {
 }
 
 // MODELS? | MODELS passive (lane H, R5): one line per provider slot with
-// the stamp kept with its model list (fetch time, the build that fetched it) and
-// whether a refresh is queued or running, then the running build. "passive" runs
+// its model store header (fetch time, the firmware version that wrote it) and
+// whether a refresh is queued or running, then the running version and build. "passive" runs
 // the passive check now (weekly / after an update) instead of at boot + 10 min.
 void modelsTest(const String& arg) {
   if (arg == "passive") {
@@ -599,7 +599,7 @@ void modelsTest(const String& arg) {
                   (unsigned long)agent::model_refresh::fetchedAt(slot.slug),
                   agent::model_refresh::stampFw(slot.slug).c_str(), (int)agent::model_refresh::pending(slot.slug));
   }
-  Serial.printf("MODELS? build=%s\n", NIMBUS_FW_BUILD);
+  Serial.printf("MODELS? fw=%s build=%s\n", NIMBUS_FW_VERSION, NIMBUS_FW_BUILD);
   Serial.flush();
 }
 

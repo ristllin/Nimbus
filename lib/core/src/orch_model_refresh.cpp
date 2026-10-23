@@ -1,7 +1,8 @@
 #include "nimbus/orch/model_refresh.h"
 
-#include <cstdlib>
 #include <cstring>
+
+#include "nimbus/orch/model_catalog.h"   // lane F: the model store header
 
 namespace nimbus {
 namespace orch {
@@ -54,59 +55,21 @@ bool ModelRefreshQueue::lastStart(const char* slug, uint32_t& atMs) const {
 
 // ---- the stamp -----------------------------------------------------------------
 
-namespace {
-// A firmware version kept in a space-separated header: anything outside
-// [A-Za-z0-9._+-] becomes '_', and it is bounded.
-std::string stampSafe(const std::string& v) {
-  std::string out;
-  for (char c : v) {
-    if (out.size() >= 48) break;
-    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                    c == '.' || c == '_' || c == '+' || c == '-';
-    out += ok ? c : '_';
-  }
-  return out;
-}
-}  // namespace
-
-std::string formatModelsStamp(uint32_t fetchedAt, const std::string& fw) {
-  return "#models v1 fetchedAt=" + std::to_string(fetchedAt) + " fw=" + stampSafe(fw) + "\n";
-}
-
-bool parseModelsStamp(const std::string& text, ModelsStamp& out) {
-  out = ModelsStamp();
-  static const char kTag[] = "#models v1";
-  size_t pos = 0;
-  while (pos < text.size()) {
-    size_t eol = text.find('\n', pos);
-    if (eol == std::string::npos) eol = text.size();
-    const std::string line = text.substr(pos, eol - pos);
-    pos = eol + 1;
-    if (line.compare(0, sizeof(kTag) - 1, kTag) != 0) continue;
-    out.present = true;
-    size_t t = sizeof(kTag) - 1;
-    while (t < line.size()) {
-      while (t < line.size() && (line[t] == ' ' || line[t] == '\r')) ++t;
-      size_t e = line.find(' ', t);
-      if (e == std::string::npos) e = line.size();
-      const std::string kv = line.substr(t, e - t);
-      t = e;
-      const size_t eq = kv.find('=');
-      if (eq == std::string::npos) continue;
-      const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
-      if (k == "fetchedAt") out.fetchedAt = (uint32_t)std::strtoul(v.c_str(), nullptr, 10);
-      else if (k == "fw") out.fw = stampSafe(v);
-    }
-    return true;
-  }
-  return false;
+ModelsStamp stampFromStore(const std::string& storeText) {
+  ModelsStamp s;
+  ModelStoreMeta meta;
+  if (storeText.empty() || !parseModelStoreHeader(storeText, meta)) return s;
+  s.present = true;
+  s.fetchedAt = meta.fetchedAt;
+  s.fw = meta.fw;
+  return s;
 }
 
 // ---- the passive refresh ---------------------------------------------------------
 
 PassiveWhy passiveRefreshDue(const ModelsStamp& s, const std::string& runningFw, uint32_t nowEpoch) {
   if (!s.present) return PassiveWhy::NoStamp;
-  if (s.fw != stampSafe(runningFw)) return PassiveWhy::Firmware;
+  if (s.fw != runningFw) return PassiveWhy::Firmware;
   if (!nowEpoch) return PassiveWhy::None;   // no clock: no age can be judged
   if (!s.fetchedAt) return PassiveWhy::UnknownAge;
   if (nowEpoch >= s.fetchedAt && nowEpoch - s.fetchedAt >= kPassiveMaxAgeS) return PassiveWhy::Stale;
