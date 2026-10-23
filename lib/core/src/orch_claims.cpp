@@ -797,19 +797,25 @@ constexpr const char* kSpeculation[] = {"could", "might",  "may",      "would", 
 // not), or a cause (guesses do not either).
 enum class Tense : uint8_t { Action, State, Cause };
 
+// A two-word future marker at k ("will be", "can be"); a cause reads "can be"
+// as present ("can be your wifi" is a guess, not a future).
+bool futurePairAt(const Scan& sc, size_t k, Tense tense) {
+  if (k + 1 >= sc.toks.size() || !sameClause(sc, k, k + 1)) return false;
+  for (const char* pair : kFuturePairs) {
+    const char* sp = std::strchr(pair, ' ');
+    if (tense == Tense::Cause && std::strcmp(pair, "can be") == 0) continue;
+    if (tokIs(sc.s, sc.toks[k], pair, (size_t)(sp - pair), false) && tokIs(sc.s, sc.toks[k + 1], sp + 1))
+      return true;
+  }
+  return false;
+}
+
 bool isFutureMarker(const Scan& sc, size_t k, Tense tense) {
   const Tok& t = sc.toks[k];
   if (tense != Tense::Action && (tokIn(sc.s, t, kTenseOnly) || endsWith(sc.s, t, "'ll"))) return false;
   if (tense == Tense::Cause && (tokIn(sc.s, t, kSpeculation) || endsWith(sc.s, t, "'d"))) return false;
   if (tokIn(sc.s, t, kFutureWords) || endsWith(sc.s, t, "'ll") || endsWith(sc.s, t, "'d")) return true;
-  if (k + 1 >= sc.toks.size() || !sameClause(sc, k, k + 1)) return false;
-  for (const char* pair : kFuturePairs) {
-    const char* sp = std::strchr(pair, ' ');
-    if (tense == Tense::Cause && std::strcmp(pair, "can be") == 0) continue;   // "can be your wifi"
-    if (tokIs(sc.s, t, pair, (size_t)(sp - pair), false) && tokIs(sc.s, sc.toks[k + 1], sp + 1))
-      return true;
-  }
-  return false;
+  return futurePairAt(sc, k, tense);
 }
 
 // R1: a negation within 4 tokens before token i (same clause).
@@ -1611,20 +1617,28 @@ const char* causeWhat(uint8_t variant) {
   }
 }
 
+// The save-class what: queued, RAM-only or nothing at all.
+const char* savedWhat(uint8_t variant) {
+  if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
+  return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
+}
+
+// The send-class what: no voice receipt, a queued Telegram send, or nothing sent.
+const char* sentWhat(uint8_t variant) {
+  if (variant == kGapNoVoiceReceipt)
+    return "no voice message reached Telegram (no delivery receipt with a message_id)";
+  return variant == kGapNoReceipt
+             ? "the Telegram send was only queued: no delivery receipt (message_id) came back, so it "
+               "is not known to have arrived"
+             : "nothing was sent, spoken or scheduled";
+}
+
 const char* gapWhat(const ClaimGap& g) {
   switch (g.cls) {
-    case C::Saved:
-      if (g.variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
-      return g.variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
+    case C::Saved: return savedWhat(g.variant);
     case C::Deliverable: return "no file was written";
     case C::Spawned: return "fewer sub-agents were started than it says (or none)";
-    case C::Sent:
-      if (g.variant == kGapNoVoiceReceipt)
-        return "no voice message reached Telegram (no delivery receipt with a message_id)";
-      return g.variant == kGapNoReceipt
-                 ? "the Telegram send was only queued: no delivery receipt (message_id) came back, so it "
-                   "is not known to have arrived"
-                 : "nothing was sent, spoken or scheduled";
+    case C::Sent: return sentWhat(g.variant);
     case C::Changed:
       if (g.variant == kGapPinNoop) return "that memory was already pinned, so nothing changed";
       return g.variant == kGapNotPinned ? "no pin ran" : "no change was made";
@@ -1891,22 +1905,30 @@ std::string causeLine(uint8_t variant) {
 }
 }  // namespace
 
+// The save-class tail: queued, RAM-only, or the plain not-saved correction.
+std::string savedTail(uint8_t variant) {
+  if (variant == kGapQueued)
+    return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
+  return variant == kGapRamOnly
+             ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
+             : "(Correction: that has not been saved.)";
+}
+
+// The send-class tail: no voice receipt, a queued Telegram send, or nothing sent.
+std::string sentTail(uint8_t variant) {
+  if (variant == kGapNoVoiceReceipt) return "(Correction: no voice message was delivered.)";
+  return variant == kGapNoReceipt
+             ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
+             : "(Correction: that has not been sent.)";
+}
+
 std::string claimTailLine(const ClaimGap& g) {
   switch (g.cls) {
-    case C::Saved:
-      if (g.variant == kGapQueued)
-        return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
-      return g.variant == kGapRamOnly
-                 ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
-                 : "(Correction: that has not been saved.)";
+    case C::Saved: return savedTail(g.variant);
     case C::Deliverable: return "(Correction: nothing has been written for that yet.)";
     case C::Spawned:   // the spawn check's own lines, so both say it the same way
       return g.variant == kGapSomeStarted ? kSpawnSomeNotStartedLine : kSpawnNotStartedLine;
-    case C::Sent:
-      if (g.variant == kGapNoVoiceReceipt) return "(Correction: no voice message was delivered.)";
-      return g.variant == kGapNoReceipt
-                 ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
-                 : "(Correction: that has not been sent.)";
+    case C::Sent: return sentTail(g.variant);
     case C::Changed:
       if (g.variant == kGapPinNoop) return "(Correction: that memory was already pinned, so nothing changed.)";
       return g.variant == kGapNotPinned ? "(Correction: nothing was pinned this turn.)"

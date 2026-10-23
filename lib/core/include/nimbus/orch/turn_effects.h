@@ -83,6 +83,8 @@ class TurnEffects {
   bool add(FxKind k, bool ok, const std::string& ref = std::string(), uint8_t count = 1,
            uint8_t flags = 0);
   size_t size() const { return v_.size(); }
+  // Every effect, in the order they landed (the summary's refs walk these).
+  const std::vector<Effect, WorkingAllocator<Effect>>& all() const { return v_; }
   bool empty() const { return v_.empty(); }
   const Effect& at(size_t i) const { return v_[i]; }
   bool overflowed() const { return overflow_; }

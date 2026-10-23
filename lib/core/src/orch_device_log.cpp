@@ -110,13 +110,25 @@ std::string joinMatch(const DeviceLogArgs& a) {
   return out;
 }
 
+// The text one render walks: its span, where matching starts (a torn first line is
+// skipped), and how many bytes were scanned (the no-match message names the window).
+struct RenderIn {
+  const char* text = nullptr;
+  size_t len = 0;
+  size_t from = 0;
+  size_t scanned = 0;
+};
+
 // Header, note, then the kept lines oldest first, newest kept whole when the 4 KB
 // budget runs out (older lines are the ones dropped).
-std::string render(const char* text, size_t len, size_t from, const DeviceLogArgs& a,
-                   const std::string& note, size_t scanned, DeviceLogStats* st) {
+std::string render(const RenderIn& in, const DeviceLogArgs& a,
+                   const std::string& note, DeviceLogStats* st) {
+  const char* text = in.text;
+  const size_t len = in.len;
+  const size_t scanned = in.scanned;
   Keep keep;
   keep.cap = clampInt(a.lines, 1, kDeviceLogLinesMax);
-  collect(text, len, from, a, keep);
+  collect(text, len, in.from, a, keep);
   std::string head = kDeviceLogHeader;
   if (!note.empty()) head += "\n" + note;
   if (keep.count == 0) {
@@ -167,20 +179,23 @@ DeviceLogArgs parseDeviceLogArgs(ArduinoJson::JsonObjectConst a) {
   return out;
 }
 
-std::string readDeviceLog(const DeviceLogSource& src, const DeviceLogArgs& a, DeviceLogStats* st) {
-  DeviceLogStats local;
-  DeviceLogStats& s = st ? *st : local;
-  s = DeviceLogStats();
-  if (!src.size || !src.read) return std::string();
-  const size_t budget = (size_t)clampInt(a.scanKb, kDeviceLogScanKbMin, kDeviceLogScanKbMax) * 1024;
+// The scanned bytes, newest chunk first, oldest chunk last (the read order is
+// backwards within each file: newest bytes first). A short read (a rotation or a
+// card failure between chunks) stops the scan and keeps what was read whole.
+struct ChunkScan {
+  WorkStr all;             // the scanned bytes, oldest first
+  bool oldestAtStart = false;   // the oldest chunk read starts its file (no partial line)
+};
+
+ChunkScan scanChunks(const DeviceLogSource& src, size_t budget, DeviceLogStats& s) {
   struct Chunk {
     int file;
     WorkStr data;
   };
   std::vector<Chunk, WorkingAllocator<Chunk>> chunks;   // newest first
   char* tmp = static_cast<char*>(workingAlloc(kDeviceLogChunk));
-  if (!tmp) return std::string();
-  bool oldestAtStart = false;   // the oldest chunk read starts its file (no partial line)
+  ChunkScan out;
+  if (!tmp) return out;
   bool stop = false;
   for (int f = 0; f < src.files && s.scanned < budget && !stop; f++) {
     const long sz = src.size(f);
@@ -200,25 +215,34 @@ std::string readDeviceLog(const DeviceLogSource& src, const DeviceLogArgs& a, De
       }
       chunks.push_back(Chunk{f, WorkStr(tmp, got)});
       s.scanned += got;
-      oldestAtStart = pos == 0;
+      out.oldestAtStart = pos == 0;
     }
   }
   workingFree(tmp);
-  if (chunks.empty()) return std::string();
-  WorkStr all;
-  all.reserve(s.scanned + (size_t)src.files);
+  out.all.reserve(s.scanned + (size_t)src.files);
   for (size_t i = chunks.size(); i-- > 0;) {
     // Files meet on a line boundary (rotation happens between lines); a file whose
     // last line was cut short still never runs into the next one.
-    if (!all.empty() && chunks[i].file != chunks[i + 1].file && all.back() != '\n') all += '\n';
-    all += chunks[i].data;
+    if (!out.all.empty() && chunks[i].file != chunks[i + 1].file && out.all.back() != '\n') out.all += '\n';
+    out.all += chunks[i].data;
   }
+  return out;
+}
+
+std::string readDeviceLog(const DeviceLogSource& src, const DeviceLogArgs& a, DeviceLogStats* st) {
+  DeviceLogStats local;
+  DeviceLogStats& s = st ? *st : local;
+  s = DeviceLogStats();
+  if (!src.size || !src.read) return std::string();
+  const size_t budget = (size_t)clampInt(a.scanKb, kDeviceLogScanKbMin, kDeviceLogScanKbMax) * 1024;
+  const ChunkScan scan = scanChunks(src, budget, s);
+  if (scan.all.empty()) return std::string();
   size_t from = 0;
-  if (!oldestAtStart) {
-    const char* nl = static_cast<const char*>(std::memchr(all.data(), '\n', all.size()));
-    from = nl ? (size_t)(nl - all.data()) + 1 : all.size();
+  if (!scan.oldestAtStart) {   // the scan starts mid-line: drop the torn line
+    const char* nl = static_cast<const char*>(std::memchr(scan.all.data(), '\n', scan.all.size()));
+    from = nl ? (size_t)(nl - scan.all.data()) + 1 : scan.all.size();
   }
-  return render(all.data(), all.size(), from, a, std::string(), s.scanned, &s);
+  return render(RenderIn{scan.all.data(), scan.all.size(), from, s.scanned}, a, std::string(), &s);
 }
 
 std::string renderDeviceLog(const std::string& text, const DeviceLogArgs& a, const std::string& note,
@@ -227,7 +251,7 @@ std::string renderDeviceLog(const std::string& text, const DeviceLogArgs& a, con
   DeviceLogStats& s = st ? *st : local;
   s = DeviceLogStats();
   s.scanned = text.size();
-  return render(text.data(), text.size(), 0, a, note, text.size(), &s);
+  return render(RenderIn{text.data(), text.size(), 0, text.size()}, a, note, &s);
 }
 
 }  // namespace orch

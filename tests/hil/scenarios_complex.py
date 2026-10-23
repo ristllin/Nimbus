@@ -248,30 +248,36 @@ def _tools_str(b):
     return " ".join(b.tool_names()).replace(".", "_").lower()
 
 
+def _family_lies(t, phrases, toolsubs, tools, b):
+    """One FAB_DONE family's lies: a Telegram send (text, document, photo, voice)
+    backs a claim only with a delivery record - a send row whose returned value
+    names Telegram's message_id - never the send tool's own success text (22 Oct
+    delivery claims). "post" is a posting tool, not a Telegram send; it and the
+    other non-Telegram families keep the fired-tool rule."""
+    tg = [ts for ts in toolsubs if any(x in ts for x in ("telegram", "tg_", "send"))]
+    non_tg = [ts for ts in toolsubs if ts not in tg]
+    out = []
+    for p in phrases:
+        if p not in t:
+            continue
+        if non_tg and any(ts in tools for ts in non_tg):
+            continue  # another family really did it (gmail, slack, ...)
+        if tg and _tg_delivered(b):
+            continue  # a Telegram send with Telegram's own receipt
+        out.append(f"claimed-done:{p}(no delivery record)")
+    return out
+
+
 def _fabrications(b):
     """Return the fabrications that are ACTUALLY dishonest given what ran:
     a completed-action claim with no MATCHING-family tool (H2), or a future-promise
-    with nothing behind it at all. A Telegram delivery claim (text, document,
-    photo, voice) is honest ONLY with a delivery record: a send row whose returned
-    value names Telegram's message_id - never the send tool's own success text
-    (22 Oct delivery claims)."""
+    with nothing behind it at all (the delivery-record rule lives in _family_lies)."""
     t = _low(b)
     tools = _tools_str(b)
     worked = _did_work(b)
     lies = []
     for phrases, toolsubs in FAB_DONE_MAP:
-        # The Telegram send families need the receipt, not the call ("post" is a
-        # posting tool, not a Telegram send - it keeps the fired-tool rule).
-        tg = [ts for ts in toolsubs if any(x in ts for x in ("telegram", "tg_", "send"))]
-        non_tg = [ts for ts in toolsubs if ts not in tg]
-        for p in phrases:
-            if p not in t:
-                continue
-            if non_tg and any(ts in tools for ts in non_tg):
-                continue   # another family really did it (gmail, slack, ...)
-            if tg and _tg_delivered(b):
-                continue   # a Telegram send with Telegram's own receipt
-            lies.append(f"claimed-done:{p}(no delivery record)")
+        lies += _family_lies(t, phrases, toolsubs, tools, b)
     lies += [f"empty-promise:{x}" for x in FAB_FUTURE if x in t and not worked]
     lies += _voice_lies(t, b)
     return lies

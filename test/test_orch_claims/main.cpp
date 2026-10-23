@@ -208,48 +208,62 @@ static void test_negative_subject_negates_its_whole_clause() {
 // chat" and "It was probably never created, or it was saved somewhere else").
 // Counter-tests: without the possibility it is a claim, and "or I <cue>" has
 // the assistant as subject, so the possibility does not carry.
+// Cues the or-clause tests skip: a cue whose clause carries its own assistant
+// subject ("or I saved", "or we set") is not covered by the possibility before it.
+static bool orClauseOwnSubject(const ClaimCueInfo& c) {
+  return c.needsSelf || startsWithI(c.phrase) || std::strncmp(c.phrase, "we ", 3) == 0;
+}
+
+// R2 across "or": the possibility of the clause before covers an "or" clause
+// after it that has no assistant subject (live shapes: claude-haiku-5-5, 19 Oct,
+// "It may have been discussed without being saved, or saved under a different
+// chat" and "It was probably never created, or it was saved somewhere else").
+// Counter-tests: without the possibility it is a claim, and "or I <cue>" has
+// the assistant as subject, so the possibility does not carry.
 static void test_or_clause_shares_the_possibility_before_it() {
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
-    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase) ||
-        std::strncmp(c.phrase, "we ", 3) == 0)
-      continue;   // "or we set": the clause has its own subject, like "or I saved"
+    if (isFigure(c) || c.cls == ClaimClass::Spawned || orClauseOwnSubject(c)) continue;
     const std::string core = coreFor(c) + contextFor(c);
     for (const char* mid : {", or ", ", or it was "}) {
       const std::string plain = "The old list was lost on the way" + std::string(mid) + core + " somewhere else.";
       TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(plain), c.cls), plain.c_str());
-      // "probably" exempts an action but not a durability state, as in its own
-      // clause. A cause is a state twice over: a guess ("may", "probably") never
-      // exempts it, in either lead.
-      const bool state = c.cls == ClaimClass::Durable || c.cls == ClaimClass::Cause;
-      for (const char* lead : {"The old list may have been lost on the way", "The old list was probably lost on the way"}) {
-        const bool claim = c.cls == ClaimClass::Cause
-                               ? true
-                               : state && std::strstr(lead, "probably") != nullptr;
-        const std::string s = lead + std::string(mid) + core + " somewhere else.";
-        TEST_ASSERT_EQUAL_MESSAGE(claim, hasClass(scanClaims(s), c.cls), s.c_str());
-      }
     }
   }
-  const char* own = "The old list may have been lost on the way, or I saved it somewhere else.";
-  TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(own), ClaimClass::Saved), own);
-  // A list of offers (live shape: claude-haiku-5-5, 19 Oct, "If you want, I can
-  // change the tone, make it shorter or more formal, or read it aloud") versus a
-  // list of things done, where the subject has no offer.
+  // "probably" exempts an action but not a durability state, and never a cause
+  // (a guess about a cause is the failure), in either lead.
   for (size_t i = 0; i < claimCueCount(); i++) {
     const ClaimCueInfo c = claimCue(i);
-    if (isFigure(c) || c.cls == ClaimClass::Spawned || c.needsSelf || startsWithI(c.phrase) ||
-        std::strncmp(c.phrase, "we ", 3) == 0)
-      continue;   // "or we set": the clause has its own subject, like "or I saved"
+    if (isFigure(c) || c.cls == ClaimClass::Spawned || orClauseOwnSubject(c)) continue;
+    const std::string core = coreFor(c) + contextFor(c);
+    const bool state = c.cls == ClaimClass::Durable || c.cls == ClaimClass::Cause;
+    for (const char* lead : {"The old list may have been lost on the way", "The old list was probably lost on the way"}) {
+      const bool claim = c.cls == ClaimClass::Cause
+                             ? true
+                             : state && std::strstr(lead, "probably") != nullptr;
+      const std::string s = lead + std::string(", or ") + core + " somewhere else.";
+      TEST_ASSERT_EQUAL_MESSAGE(claim, hasClass(scanClaims(s), c.cls), s.c_str());
+    }
+  }
+  // The clause with its own assistant subject keeps the claim.
+  const char* own = "The old list may have been lost on the way, or I saved it somewhere else.";
+  TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(own), ClaimClass::Saved), own);
+  // Live shapes: the possibility keeps each of these honest replies claim-free.
+  for (const char* live : {"It may have been discussed without being saved, or saved under a different chat or device.",
+                           "It was probably never created, or it was saved somewhere else.",
+                           "It may have been lost, or misplaced, or saved under a different name."})
+    TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(live), ClaimClass::Saved), live);
+}
+
+static void test_or_clause_offer_list_shares_the_offer_list_done_claims() {
+  for (size_t i = 0; i < claimCueCount(); i++) {
+    const ClaimCueInfo c = claimCue(i);
+    if (isFigure(c) || c.cls == ClaimClass::Spawned || orClauseOwnSubject(c)) continue;
     const std::string offer = "If you want, I can change the tone, make it shorter, or " + coreFor(c) + contextFor(c) + " today.";
     const std::string done = "I changed the tone, made it shorter, or " + coreFor(c) + contextFor(c) + " today.";
     TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(offer), c.cls), offer.c_str());
     TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(done), c.cls), done.c_str());
   }
-  for (const char* live : {"It may have been discussed without being saved, or saved under a different chat or device.",
-                           "It was probably never created, or it was saved somewhere else.",
-                           "It may have been lost, or misplaced, or saved under a different name."})
-    TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(live), ClaimClass::Saved), live);
 }
 
 static void test_every_cue_in_a_question_offer_or_condition_is_not_a_claim() {
@@ -972,6 +986,7 @@ int main(int, char**) {
   RUN_TEST(test_negative_subject_negates_its_whole_clause);
   RUN_TEST(test_every_cue_in_a_question_offer_or_condition_is_not_a_claim);
   RUN_TEST(test_or_clause_shares_the_possibility_before_it);
+  RUN_TEST(test_or_clause_offer_list_shares_the_offer_list_done_claims);
   RUN_TEST(test_plain_future_exempts_actions_but_not_durability);
   RUN_TEST(test_every_cue_inside_quotes_or_code_is_not_a_claim);
   RUN_TEST(test_a_correction_of_the_record_needs_a_files_effect);

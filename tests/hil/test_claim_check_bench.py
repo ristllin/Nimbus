@@ -299,8 +299,7 @@ def _astool(be, tool: str, args: dict) -> dict:
     """Dispatch one registry tool over the test-only /api/test/astool route
     (MCP tools/call). Not a turn: no trace rows, no claim check - the seam for
     cost and state measurements."""
-    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": tool, "arguments": args}}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}
     r = be.net.post(f"/api/test/astool?chat={TURN_CHAT}", body, ip=be.ip, timeout=30.0)
     assert r.status_code == 200, f"astool {tool} -> {r.status_code} {r.text[:160]!r}"
     return r.json()
@@ -310,7 +309,7 @@ def _state_int(be, key: str) -> int:
     return int(be.state().get(key, -1))
 
 
-def test_b2_device_log_cost_and_the_locked_chunks(custom_backend):
+def test_b2_device_log_cost_and_the_locked_chunks(custom_backend):  # noqa: F811 (the imported fixture)
     """B2 (CUM-646): one device.log call answers within its bounds and never
     dents the durable writer. The chunked reader takes the card lock per 4 KB
     chunk and releases it between chunks (the writer only try-locks, so a long
@@ -321,30 +320,27 @@ def test_b2_device_log_cost_and_the_locked_chunks(custom_backend):
     out = _astool(be, "device.log", {})
     assert "device log" in str(out), f"the header is missing: {str(out)[:120]!r}"
     heap_min_before = _state_int(be, "heapMin")
-    skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0)
-                         .headers.get("X-Log-Durable-Skipped", "-1"))
+    skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-1"))
     for _ in range(5):
         t0 = time.time()
         out = _astool(be, "device.log", {"match": "nvs|save|boot", "lines": 60, "scan_kb": 64})
         dt = time.time() - t0
-        assert dt < 0.3, f"device.log answered in {dt*1000:.0f} ms (budget 300 ms)"
+        assert dt < 0.3, f"device.log answered in {dt * 1000:.0f} ms (budget 300 ms)"
     heap_min_after = _state_int(be, "heapMin")
-    skipped_after = int(be.net.get("/api/log", ip=be.ip, timeout=10.0)
-                        .headers.get("X-Log-Durable-Skipped", "-2"))
+    skipped_after = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-2"))
     # The low-water moves at most a chunk's worth of small pieces, and the
     # durable writer never skipped a line because of the reads.
     assert heap_min_after >= heap_min_before - 256, (
-        f"the internal low-water fell {heap_min_before - heap_min_after} B below its "
-        "start (budget 256 B)")
+        f"the internal low-water fell {heap_min_before - heap_min_after} B below its start (budget 256 B)"
+    )
     assert skipped_after == skipped_before, (
-        f"durableSkipped moved {skipped_before} -> {skipped_after}: a read held the "
-        "card lock across chunks")
+        f"durableSkipped moved {skipped_before} -> {skipped_after}: a read held the card lock across chunks"
+    )
 
 
 def _turn_on_real_model(be, text: str, timeout: float = 120.0) -> str:
     """One head turn on the LIVE model (NIMBUS_LAB_MODEL), the reply it delivered."""
-    r = _opost(be.net, be.ip, be.tok, {"orchHost": "anthropic", "convReset": "1",
-                                       "orchModel": LIVE_MODEL})
+    r = _opost(be.net, be.ip, be.tok, {"orchHost": "anthropic", "convReset": "1", "orchModel": LIVE_MODEL})
     assert r.status_code == 200, f"orchHost=anthropic -> {r.status_code}"
     before = _replies(be)
     try:
@@ -367,7 +363,7 @@ def _tool_rows(be) -> list:
     return [str(e.get("text", "")) for e in rows]
 
 
-def test_l1b_a_failed_turn_is_diagnosed_from_the_device_log(custom_backend):
+def test_l1b_a_failed_turn_is_diagnosed_from_the_device_log(custom_backend):  # noqa: F811 (the imported fixture)
     """L1 variant B (CUM-646): the head has the device_log tool, so a failure
     that belongs to no turn is diagnosed from the durable log, not guessed. The
     leg injects a real cause (FAULT provider), lets a turn fail on it, clears
@@ -384,27 +380,28 @@ def test_l1b_a_failed_turn_is_diagnosed_from_the_device_log(custom_backend):
             be.device.cmd("TURN ping", expect="TURN <-", timeout=6.0)
         except Exception:  # noqa: BLE001 - the echo is advisory
             pass
-        time.sleep(20.0)   # the failed turn and its log lines land
+        time.sleep(20.0)  # the failed turn and its log lines land
     finally:
         be.device.cmd("FAULT provider off", expect="FAULT", timeout=6.0)
     reply = _turn_on_real_model(
-        be, "Something failed on your last turn. Read your own device log and tell "
-            "me exactly what the matter was.")
+        be, "Something failed on your last turn. Read your own device log and tell me exactly what the matter was."
+    )
     rows = _tool_rows(be)
     assert any(r.startswith("device.log(") or r.startswith("device_log(") for r in rows), (
-        "the head never read the device log")
+        "the head never read the device log"
+    )
     low = reply.lower()
     for bad in ("your phone", "your app", "your connection", "reinstall", "restart the app"):
         assert bad not in low, f"the reply blames the owner's device: {bad!r}"
-    assert ("not recorded" in low or "provider" in low or "fault" in low
-            or "http" in low or "fail" in low), "the reply names no cause from the log"
+    assert "not recorded" in low or "provider" in low or "fault" in low or "http" in low or "fail" in low, (
+        "the reply names no cause from the log"
+    )
     for row in rows:
-        if row.startswith("memory.write(") and any(
-                c in row.lower() for c in ("because", "due to", "cause")):
+        if row.startswith("memory.write(") and any(c in row.lower() for c in ("because", "due to", "cause")):
             assert "provider" in row.lower(), f"a guessed cause was stored: {row[:120]!r}"
 
 
-def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):
+def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (the imported fixture)
     """L19-24 (CUM-676): under internal-heap starvation (FAULT sram_ballast to
     about 16 KB free) a clipped tool result cannot park its full text; the trace
     row carries the lost-sidecar mark, /api/state counts the failure, the SD is
@@ -419,33 +416,25 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):
     if "holds=" not in out:
         pytest.skip(f"FAULT sram_ballast is not bound in this build ({out.strip()!r})")
     blob_fails_before = _state_int(be, "blobWriteFails")
-    skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0)
-                         .headers.get("X-Log-Durable-Skipped", "-1"))
+    skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-1"))
     try:
-        reply = _turn_on_real_model(
-            be, "Read your device log with scan_kb 64 and lines 60, then tell me "
-                "what the oldest lines say.")
+        _turn_on_real_model(
+            be, "Read your device log with scan_kb 64 and lines 60, then tell me what the oldest lines say."
+        )
         rows = _tool_rows(be)
         clipped = [r for r in rows if r.startswith("device.log(")]
         assert clipped, "the head never read the device log"
-        assert any(LOST_SIDECAR in r for r in clipped), (
-            "no lost-sidecar mark on the clipped row under starvation")
-        assert _state_int(be, "blobWriteFails") > blob_fails_before, (
-            "blobWriteFails did not move")
+        assert any(LOST_SIDECAR in r for r in clipped), "no lost-sidecar mark on the clipped row under starvation"
+        assert _state_int(be, "blobWriteFails") > blob_fails_before, "blobWriteFails did not move"
         assert not be.state().get("sdLost", False), "the SD was demoted (not the fault)"
-        skipped_after = int(be.net.get("/api/log", ip=be.ip, timeout=10.0)
-                            .headers.get("X-Log-Durable-Skipped", "-2"))
+        skipped_after = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-2"))
         assert skipped_after == skipped_before, "durableSkipped moved (not the fault)"
     finally:
         be.device.cmd("FAULT sram_ballast 0", expect="FAULT", timeout=10.0)
     # The counter-test: with the ballast gone the same read parks its sidecar.
     blob_fails = _state_int(be, "blobWriteFails")
-    _turn_on_real_model(
-        be, "Read your device log again with scan_kb 64 and lines 60, and tell me "
-            "what changed.")
+    _turn_on_real_model(be, "Read your device log again with scan_kb 64 and lines 60, and tell me what changed.")
     rows = _tool_rows(be)
     clipped = [r for r in rows if r.startswith("device.log(")]
-    assert clipped and not any(LOST_SIDECAR in r for r in clipped[-2:]), (
-        "the mark appears without starvation")
-    assert _state_int(be, "blobWriteFails") == blob_fails, (
-        "blobWriteFails moved without starvation")
+    assert clipped and not any(LOST_SIDECAR in r for r in clipped[-2:]), "the mark appears without starvation"
+    assert _state_int(be, "blobWriteFails") == blob_fails, "blobWriteFails moved without starvation"

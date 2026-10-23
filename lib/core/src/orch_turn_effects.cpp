@@ -137,6 +137,14 @@ void TurnEffects::dropPending() {
   v_.resize(w);
 }
 
+// The ok refs of one kind, comma-joined, capped (the ledger summary's parenthesis).
+std::string kindRefs(const TurnEffects& fx, FxKind kind) {
+  std::string refs;
+  for (const Effect& e : fx.all())
+    if (e.kind == kind && e.ok && e.ref[0] && refs.size() < 48) refs += (refs.empty() ? "" : ", ") + std::string(e.ref);
+  return refs;
+}
+
 std::string TurnEffects::summary() const {
   if (v_.empty()) return "nothing (no tool changed or looked up anything)";
   std::string out;
@@ -149,9 +157,7 @@ std::string TurnEffects::summary() const {
     out += ": " + countText(ok);
     if (bad) out += " (" + countText(bad) + " failed or refused)";
     if (kind == FxKind::Send && sendQueuedOnly(*this)) out += " (queued for Telegram, no delivery receipt)";
-    std::string refs;
-    for (const Effect& e : v_)
-      if (e.kind == kind && e.ok && e.ref[0] && refs.size() < 48) refs += (refs.empty() ? "" : ", ") + std::string(e.ref);
+    const std::string refs = kindRefs(*this, kind);
     if (!refs.empty()) out += " (" + refs + ")";
   }
   if (overflow_) out += "; (more effects than the ledger holds)";
