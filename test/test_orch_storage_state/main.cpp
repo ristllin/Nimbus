@@ -25,7 +25,7 @@ static void test_golden_fresh_device() {
   TEST_ASSERT_EQUAL_STRING(
       "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},"
       "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":true,"
-      "\"embedParked\":false,\"embedParkedWhy\":null}",
+      "\"embedParked\":false,\"embedParkedWhy\":null,\"visionLastErr\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -43,7 +43,7 @@ static void test_golden_nvsfill0_shape() {
   TEST_ASSERT_EQUAL_STRING(
       "{\"nvs\":{\"free\":288,\"fails\":2,\"lastFail\":\"tgOffset\"},"
       "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":false,"
-      "\"embedParked\":false,\"embedParkedWhy\":null}",
+      "\"embedParked\":false,\"embedParkedWhy\":null,\"visionLastErr\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -71,6 +71,7 @@ static void test_keys_always_present_values_may_be_null() {
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"tgOffsetSaved\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParked\""), j.c_str());
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"embedParkedWhy\""), j.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(j.c_str(), "\"visionLastErr\":null"), j.c_str());
     JsonDocument d;
     const std::string err = deserializeJson(d, j) ? "parse failed" : "";
     TEST_ASSERT_EQUAL_STRING_MESSAGE("", err.c_str(), j.c_str());
@@ -97,7 +98,8 @@ static void test_golden_embedding_parked_shape() {
   TEST_ASSERT_EQUAL_STRING(
       "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},"
       "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":true,"
-      "\"embedParked\":true,\"embedParkedWhy\":\"out of embedding credit at openai\"}",
+      "\"embedParked\":true,\"embedParkedWhy\":\"out of embedding credit at openai\","
+      "\"visionLastErr\":null}",
       storageStateJson(s).c_str());
 }
 
@@ -114,7 +116,26 @@ static void test_golden_starved_reserve_shape() {
   TEST_ASSERT_EQUAL_STRING(
       "{\"nvs\":{\"free\":288,\"fails\":0,\"lastFail\":null},"
       "\"nvsReserve\":{\"starved\":true,\"refused\":17},\"tgOffsetSaved\":true,"
-      "\"embedParked\":false,\"embedParkedWhy\":null}",
+      "\"embedParked\":false,\"embedParkedWhy\":null,\"visionLastErr\":null}",
+      storageStateJson(s).c_str());
+}
+
+// L19-9 (lane E): the photo reader's last failure - when, which provider, the typed
+// class and the HTTP status, so the head can say photos are not being read because
+// the provider is out of credit instead of blaming the owner's phone. Never a body.
+static void test_golden_vision_last_error_shape() {
+  StorageState s;
+  s.nvsStats = true;
+  s.nvsFree = 16384;
+  s.visionErrAtS = 4021;
+  s.visionErrProvider = "openai";
+  s.visionErrClass = "billing";
+  s.visionErrStatus = 429;
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"nvs\":{\"free\":16384,\"fails\":0,\"lastFail\":null},"
+      "\"nvsReserve\":{\"starved\":false,\"refused\":0},\"tgOffsetSaved\":true,"
+      "\"embedParked\":false,\"embedParkedWhy\":null,"
+      "\"visionLastErr\":{\"atS\":4021,\"provider\":\"openai\",\"class\":\"billing\",\"status\":429}}",
       storageStateJson(s).c_str());
 }
 
@@ -137,6 +158,7 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_golden_fresh_device);
   RUN_TEST(test_golden_starved_reserve_shape);
+  RUN_TEST(test_golden_vision_last_error_shape);
   RUN_TEST(test_golden_embedding_parked_shape);
   RUN_TEST(test_golden_nvsfill0_shape);
   RUN_TEST(test_keys_always_present_values_may_be_null);

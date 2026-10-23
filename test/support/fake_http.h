@@ -43,6 +43,9 @@ struct FakeHttpTransport : agent::HttpTransport {
   std::vector<Exchange> script;
   size_t idx = 0;
   std::vector<agent::HttpRequest> seen;
+  // The splices each request carried (R1 photos), in request order. `seen` records
+  // the materialized body (what went on the wire) with its splices cleared.
+  std::vector<agent::BodySplices> spliced;
   // When set, each scripted exchange advances this clock by its takesMs, so a
   // test can make a request outlive (or not) the caller's deadline.
   uint32_t* clock = nullptr;
@@ -50,6 +53,11 @@ struct FakeHttpTransport : agent::HttpTransport {
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out,
             std::string& err) override {
     seen.push_back(req);
+    spliced.push_back(req.splices);
+    if (!req.splices.empty()) {
+      seen.back().body = agent::materializeBody(req);
+      seen.back().splices.clear();
+    }
     if (idx >= script.size()) {
       out.status = 0;
       err = "FakeHttpTransport: script exhausted (unexpected extra request to " +

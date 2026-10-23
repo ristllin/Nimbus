@@ -36,6 +36,7 @@
 #include "sys/loop_watch.h"               // every loop pass timed against the task watchdog
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
+#include "agent/adapters/image_vision.h"   // R1: device.status visionLastErr, the photo idle step
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
 #include "nimbus/config/identity_keys.h"  // keys that must survive a factory reset
 #include "nimbus/orch/danger_zone.h"      // CUM-15: device-name keep-list preserved across a reset
@@ -2827,7 +2828,8 @@ static void registerDeviceTools() {
           "a device-side repeat, not the owner's app), and embedParked = the embedding "
           "provider is refusing (true: new memories wait on the device and recall is "
           "keyword-only; embedParkedWhy says why - never claim memory is stored while "
-          "it is true). "
+          "it is true), and visionLastErr = the last time a photo could not be read "
+          "(provider, class such as billing or network, HTTP status; null when none). "
           "Silent - never makes a sound.",
           [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
             // W11: the hw snapshot PLUS the agent-layer live state (composed here,
@@ -2921,6 +2923,14 @@ static void registerDeviceTools() {
               const nimbus::sys::NvsGuardStats gs = nimbus::sys::nvsGuardStats();
               st.nvsReserveStarved = gs.starved;
               st.nvsReserveRefused = gs.refused;
+              // L19-9 (lane E): the photo reader's last failure (typed, never a body).
+              const agent::vision::LastError ve = agent::vision::lastError();
+              if (ve.atMs) {
+                st.visionErrAtS = ve.atMs / 1000;
+                st.visionErrProvider = ve.provider;
+                st.visionErrClass = agent::vision::readFailSlug(ve.fail);
+                st.visionErrStatus = ve.status;
+              }
               s += ","; s += nimbus::orch::storageStateJson(st).c_str();
             }
             s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
@@ -3066,11 +3076,13 @@ static void otaEventHook(int ev, const char* a, const char* b) {
 // runs (memory writes queued during an embedding outage, lane P). Both run
 // between the task's own work, never inside a turn, one per cycle.
 static bool stagedWorkPending() {
-  return otaupd::onPollPending() || (g_orchMode && agent::memory::embedDrainDue());
+  return otaupd::onPollPending() ||
+         (g_orchMode && (agent::memory::embedDrainDue() || agent::vision::idleDue()));
 }
 static void stagedWorkRun() {
   if (otaupd::onPollPending()) otaupd::runOnPoll();
-  else if (g_orchMode) agent::memory::drainPendingStep();
+  else if (g_orchMode && agent::memory::embedDrainDue()) agent::memory::drainPendingStep();
+  else if (g_orchMode) agent::vision::idleStep();   // R1: an upload's deletion or a photo's record
 }
 
 static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {

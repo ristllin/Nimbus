@@ -42,23 +42,46 @@ std::string mediaTag(const MediaLabel& l) {
   return out;
 }
 
-std::string mediaSegment(const MediaLabel& l) {
-  std::string out = mediaTag(l);
+const char kAttachedSuffix[] = " (attached: the photo itself is in this message)";
+
+namespace {
+// `detail`, or `fallback` when it is empty.
+std::string orElse(const std::string& detail, const char* fallback) { return detail.empty() ? fallback : detail; }
+
+std::string transcribedSuffix(const MediaLabel& l) {
+  std::string out = " (transcribed";
+  if (!l.by.empty()) out += " by " + l.by;
+  out += ")";
+  if (!l.detail.empty()) out += " " + capped(l.detail);
+  return out;
+}
+}  // namespace
+
+std::string mediaSuffix(const MediaLabel& l) {
   switch (l.cls) {
     case MediaClass::Described:
-      if (!l.detail.empty()) return out + " " + capped(l.detail);
-      return out + " (couldn't be described)";
+      return l.detail.empty() ? std::string(" (couldn't be described)") : " " + capped(l.detail);
     case MediaClass::NotDescribed:
-      return out + " (couldn't be described)";
+      return " (couldn't be described)";
     case MediaClass::FetchFailed:
-      return out + " (could not be fetched" + (l.detail.empty() ? std::string() : ": " + l.detail) + ")";
+      return " (could not be fetched" + (l.detail.empty() ? std::string() : ": " + l.detail) + ")";
     case MediaClass::Stored:
-      return out + " " + (l.detail.empty() ? std::string("attachment") : l.detail);
+      return " " + orElse(l.detail, "attachment");
+    case MediaClass::Attached:
+      return kAttachedSuffix;
+    case MediaClass::Transcribed:
+      return transcribedSuffix(l);
+    case MediaClass::NotRead:
+      return " (not read: " + orElse(l.detail, "no provider could read it") + ")";
+    case MediaClass::Pending:
+      return " (seen in its turn; no record written yet)";
     case MediaClass::Count:
       break;
   }
-  return out;
+  return std::string();
 }
+
+std::string mediaSegment(const MediaLabel& l) { return mediaTag(l) + mediaSuffix(l); }
 
 bool lateItem(int64_t nowEpoch, int64_t date) {
   constexpr int64_t kClockSet = 1577836800LL;   // 2020-01-01

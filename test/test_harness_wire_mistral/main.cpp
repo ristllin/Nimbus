@@ -6,6 +6,8 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../support/image_turn_fixture.h"
+#include "nimbus/orch/turn_images.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
@@ -1261,6 +1263,86 @@ static void test_cum616_effort_table_matches_the_recorded_model_list() {
   TEST_ASSERT_TRUE(checked > 10);
 }
 
+// ---- R1: photos to the head as images --------------------------------------------
+// Chat-completions image_url parts (a data URL string, Mistral's documented form),
+// each after a text label, the turn text last, in the seeded user message only; the
+// bytes spliced at send time; tool rounds keep "any" (never a forced function).
+
+static const char* str(JsonVariantConst v) { return v | ""; }
+
+static bool misPhotoTurn(FakeProviderDeps& d, harness_test::PhotoTurn& fx, const char* model, std::string& err) {
+  auto pd = d.contract();
+  const std::string m = model;
+  pd.orchModel = [m](const char*) { return m; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out;
+  return providers::orchTurnMistral(pd, conv, "SYS", fx.text, out, err, &rig.ht, nullptr);
+}
+
+static void test_r1_image_url_parts_in_the_seeded_user_message() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatToolCallBody("memory_search", "tc1tc1tc1")});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(misPhotoTurn(d, fx, "mistral-small-latest", err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  for (size_t r = 0; r < 2; ++r) {
+    JsonDocument req;
+    TEST_ASSERT_FALSE(deserializeJson(req, d.http.seen[r].body, DeserializationOption::NestingLimit(64)));
+    JsonArrayConst msgs = req["messages"];
+    TEST_ASSERT_EQUAL_STRING("user", str(msgs[1]["role"]));
+    JsonArrayConst c = msgs[1]["content"];
+    TEST_ASSERT_EQUAL(5, (int)c.size());
+    TEST_ASSERT_EQUAL_STRING("text", str(c[0]["type"]));
+    TEST_ASSERT_EQUAL_STRING("[image 1/2 ref=0123456789abcdef]", str(c[0]["text"]));
+    TEST_ASSERT_EQUAL_STRING("image_url", str(c[1]["type"]));
+    TEST_ASSERT_EQUAL_STRING(("data:image/jpeg;base64," + harness_test::b64Of(fx.a)).c_str(), str(c[1]["image_url"]));
+    TEST_ASSERT_EQUAL_STRING(("data:image/png;base64," + harness_test::b64Of(fx.b)).c_str(), str(c[3]["image_url"]));
+    TEST_ASSERT_NOT_NULL(strstr(str(c[4]["text"]), "They wrote: what do the labels say?"));
+    int images = 0;
+    bool cached = false;
+    harness_test::walkParts(req["messages"], "image_url", images, cached);
+    TEST_ASSERT_EQUAL_MESSAGE(2, images, "the photos ride the seeded user message only");
+    TEST_ASSERT_FALSE(cached);
+    TEST_ASSERT_EQUAL(2, (int)d.http.spliced[r].size());
+    TEST_ASSERT_FALSE(bodyHas(d, r, "nimg:"));
+  }
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":\"any\""));
+  TEST_ASSERT_EQUAL(0, fx.transcribed);
+}
+
+// Codestral takes no image: the transcriptions ride the text.
+static void test_r1_mistral_model_without_image_input_reads_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(misPhotoTurn(d, fx, "codestral-latest", err), err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "(machine transcription by anthropic: photo 1 shows a label)"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "image_url"));
+  TEST_ASSERT_TRUE(d.http.spliced[0].empty());
+}
+
+// Mistral refuses the image (400 naming it): re-sent once, blind.
+static void test_r1_mistral_refused_image_resent_as_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 400,
+                           "{\"object\":\"error\",\"message\":\"Image could not be decoded\",\"type\":"
+                           "\"invalid_request_error\",\"code\":\"3310\"}"});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(misPhotoTurn(d, fx, "mistral-small-latest", err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "image_url"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "image_url"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "(machine transcription by anthropic: photo 2 shows a label)"));
+  TEST_ASSERT_TRUE(fx.set->rejected);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -1299,6 +1381,9 @@ int main(int, char**) {
   RUN_TEST(test_cum616_effort_none_only_on_models_that_reason);
   RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
+  RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
+  RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
+  RUN_TEST(test_r1_mistral_refused_image_resent_as_transcriptions);
   UNITY_END();
   return 0;
 }

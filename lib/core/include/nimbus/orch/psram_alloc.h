@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <new>
+#include <string>
+#include <vector>
 
 // psram_alloc - the seam that puts the memory WORKING SET in the 8 MB PSRAM instead
 // of the ~300 KB internal SRAM (docs/orchestrator-storage.md §2). The portable core
@@ -50,6 +52,19 @@ struct WorkingAllocator {
   template <class U> bool operator==(const WorkingAllocator<U>&) const noexcept { return true; }
   template <class U> bool operator!=(const WorkingAllocator<U>&) const noexcept { return false; }
 };
+
+// Small strings and their containers that outlive a turn (the photo queues, the photo
+// row overlay): through the same hooks, so a 20-byte id lands in PSRAM on the device
+// instead of the internal heap (malloc keeps anything under 128 B internal, where
+// many small long-lived pieces cut the largest free block TLS needs).
+using WorkingString = std::basic_string<char, std::char_traits<char>, WorkingAllocator<char>>;
+template <class T>
+using WorkingVector = std::vector<T, WorkingAllocator<T>>;
+inline WorkingString workingCopy(const std::string& s) { return WorkingString(s.data(), s.size()); }
+inline std::string plainCopy(const WorkingString& s) { return std::string(s.data(), s.size()); }
+inline bool sameText(const WorkingString& a, const std::string& b) {
+  return a.size() == b.size() && a.compare(0, a.size(), b.data(), b.size()) == 0;
+}
 
 }  // namespace orch
 }  // namespace nimbus

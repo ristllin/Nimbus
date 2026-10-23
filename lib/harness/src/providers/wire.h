@@ -137,13 +137,15 @@ inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, int
 // returns both mapped to "network" at every call site, so they collapse here).
 // `rateLimitHeaders` (optional): on an error response, the provider's
 // x-ratelimit-* headers land there (see HttpRequest::errHeaders) - the quota
-// window a 429 refused on.
+// window a 429 refused on. `splices` (optional): payloads written into the body at
+// send time (http.h BodySplice: the photos of an R1 image turn).
 inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                     const char* method, const std::string& path,
                     std::vector<std::pair<std::string, std::string>> headers,
                     std::string body, uint32_t timeoutMs,
                     JsonDocument& doc, const JsonDocument& filter,
-                    HeaderList* rateLimitHeaders = nullptr) {
+                    HeaderList* rateLimitHeaders = nullptr,
+                    const BodySplices* splices = nullptr) {
   doc.clear();
   lastExchange() = LastExchange{};
   // Lane DEF: the monthly spend ceiling. A request that starts paid work (anything but
@@ -183,6 +185,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   req.path = path;
   req.headers = std::move(headers);
   req.body = std::move(body);
+  if (splices) req.splices = *splices;   // R1: photos written into the body at send time
   req.timeoutMs = timeoutMs;
   if (rateLimitHeaders) {
     req.errHeaderPrefix = "x-ratelimit";

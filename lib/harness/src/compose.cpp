@@ -251,6 +251,19 @@ static int dynamicReserve(int budgetBytes) {
   return quarter > 3328 ? quarter : 3328;
 }
 
+// R1 / L19-4: what the photo labels mean, in one line. A photo the head sees itself
+// rides the message as an image; a transcription is another model's text; a photo
+// nobody could read names the reason, and the head says so instead of guessing or
+// blaming the sender's phone (19 Oct: identical placeholders led the head to blame
+// the owner's Telegram app).
+static const char kPhotoLegend[] =
+    "- Photos: [image k/N ref=<16 hex>] marks each one. (attached: ...) = the photo itself "
+    "is in this message; (transcribed by X) = another model's text from the photo, which "
+    "you have not seen; (not read: reason) = nobody could read it - say so with that "
+    "reason and never blame the sender or their phone; the photo is kept, so never ask for "
+    "it to be sent again unless the reason is its size or format; image.look {ref, "
+    "question} looks at an earlier photo again.\n";
+
 std::string composeInstructions(const ComposeInputs& in) {
   using namespace nimbus::orch;
   ContextInputs ci;
@@ -340,7 +353,9 @@ std::string composeInstructions(const ComposeInputs& in) {
                 "answer. Without the loop, one orch_turn is the whole turn.\n" +
                 (in.promptV2 ? std::string(memTiersV2) : std::string(memTiersV1)) +
                 "- Sub-agents (spawn) are fire-and-forget background workers; name each one "
-                "well - the owner sees your names.\n";
+                "well - the owner sees your names.\n" +
+                // R1 / L19-4: the one legend line for the photo label family.
+                std::string(kPhotoLegend);
   // Owner directive (section 3, never dropped): the owner's standing preferences,
   // sourced from NVS `sysPrompt` (empty => the shipped default). It is USER-owned
   // text, so it is delimited as OWNER PREFERENCES and framed as SUBORDINATE to the

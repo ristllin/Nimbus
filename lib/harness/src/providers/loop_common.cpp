@@ -7,6 +7,7 @@
 
 #include "nimbus/harness/log.h"
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
+#include "image_parts.h"   // R1: LoopImages - the turn's photos seed the transcript
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/provider_park.h"   // the one per-provider park every seam shares
 #include "nimbus/orch/transcript.h"
@@ -312,6 +313,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // host's step renders its wire from it.
   orch::Transcript tr;
   tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
 
   // Per-host usage (lane T): each host's step adds into its OWN counter (hostUse),
   // and every host that billed is filed into `spend` once when the loop ends, with

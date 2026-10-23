@@ -191,6 +191,12 @@ nimbus::orch::VectorArchive& archive();
 nimbus::orch::Scratchpad&    scratchpad();
 nimbus::orch::MemConfig&     config();
 nimbus::orch::EpisodicStore& episodic();
+// R1/L19-5: replace the text of the newest photo (or file) row of `sessionId` whose
+// stored copy is `ref` (the 16-hex blob hash): a photo's short record written after
+// its row, or its description read again once a provider is open. Every later read
+// of the row returns the new text (the history window, the episodic tool, the web).
+// False when no such row is in the chat's recent rows.
+bool replaceMediaRowText(const char* sessionId, const std::string& ref, const String& text);
 
 // Associative recall for a live turn (Phase 2): embed `queryText` and return up to
 // `k` recalled memories formatted as prompt bullets ("[NN%] content"), filtered by

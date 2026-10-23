@@ -2,18 +2,19 @@
   "about": "tools/model_id_lint.py allowlist. `allow`: a known offence, naming the lane that removes it; the lint fails once an entry no longer matches, so this list only shrinks. `keys`: a literal that names a model only to compare against it and is never sent. `retired`: bad by policy even while a provider still lists it.",
   "retired": [
     {"id": "gpt-4o-mini", "why": "owner ruling R1 (16 Oct 2026) retires it everywhere"},
-    {"id": "claude-haiku-4-5", "why": "its retirement floor passed on 15 Oct 2026"}
+    {"id": "claude-haiku-4-5", "why": "its retirement floor passed on 15 Oct 2026"},
+    {"id": "claude-3-5-haiku-latest", "why": "retired upstream: Anthropic answers 404 (77 refused caption calls on bench unit L, 22 Oct 2026)"},
+    {"id": "pixtral-12b-latest", "why": "retired upstream; owner ruling R1 picks current caption models by scoring"}
   ],
-  "allow": [
-    {"id": "gpt-4o-mini", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "router vision default; R1 replaces the captioner"},
-    {"id": "pixtral-12b-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"},
-    {"id": "claude-3-5-haiku-latest", "file": "src/agent/adapters/image_vision.cpp", "lane": "E", "why": "retired upstream; R1 removes it"}
-  ],
+  "allow": [],
   "keys": [
     {"id": "dall-e-2", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},
     {"id": "dall-e-3", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},
     {"id": "gpt-4o", "file": "lib/core/src/model_catalog.cpp", "why": "family prefix used to classify catalog rows"},
     {"id": "gpt-4o", "file": "lib/core/src/orch_compact.cpp", "why": "context-window family prefix"},
+    {"id": "gpt-4o", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
+    {"id": "gpt-4.1", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
+    {"id": "o4-mini", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "claude-haiku-5-5:long", "file": "lib/core/include/nimbus/orch/model_price_defaults.h", "why": "ledger key of the over-100K price tier; never sent"},
     {"id": "mistral-large-4", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"},
     {"id": "mistral-small-26", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"}

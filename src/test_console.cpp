@@ -448,6 +448,26 @@ void visionCheck(String path) {
   Serial.flush();
 }
 
+// IMGMODE native|caption|upload|inline | IMGMODE? (lane E, R1): RAM-only switches for
+// the bench legs. native/caption: photos go to the head as images, or every photo
+// through the caption step (the PROVFAULT legs need the captioner on the path);
+// upload/inline: an Anthropic head uploads each photo once (the Files API) or
+// re-sends it inline every round (the heap trace compares both). IMGMODE? also
+// reports the photo record queue and the uploads waiting for deletion.
+void imgMode(String arg) {
+  arg.trim();
+  if (arg == "native") agent::vision::setNative(true);
+  else if (arg == "caption") agent::vision::setNative(false);
+  else if (arg == "upload") agent::vision::setUploadOnce(true);
+  else if (arg == "inline") agent::vision::setUploadOnce(false);
+  else if (arg.length() && arg != "?") { reply("IMGMODE usage: IMGMODE native|caption|upload|inline|?"); return; }
+  Serial.printf("IMGMODE native=%d upload=%d head=%d records=%u deletes=%u lastErr=%s\n",
+                agent::vision::native() ? 1 : 0, agent::vision::uploadOnce() ? 1 : 0,
+                agent::vision::nativeHead() ? 1 : 0, (unsigned)agent::vision::recordQueue().size(),
+                (unsigned)agent::providers::pendingUploadDeletes(), agent::vision::lastErrJson().c_str());
+  Serial.flush();
+}
+
 // PARK? | PARK clear (L19-8): list the one per-provider park (one line per provider:
 // kind, HTTP status, closed seams, seconds to the re-check, pause causes), or end every
 // park and latch and save the file without them (pauses stay), so a bench leg leaves
@@ -2058,6 +2078,10 @@ void dispatch(String line) {
   }
   if (line == "PARK?" || line.startsWith("PARK ")) {
     parkTest(line == "PARK?" ? String() : line.substring(5));
+    return;
+  }
+  if (line == "IMGMODE?" || line.startsWith("IMGMODE ")) {
+    imgMode(line == "IMGMODE?" ? String("?") : line.substring(8));
     return;
   }
   if (line.startsWith("AUDIOINJECT ")) {

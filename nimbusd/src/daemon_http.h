@@ -98,15 +98,17 @@ class DaemonHttpTransport : public agent::HttpTransport {
     // (the rule beside failureText's "no response").
     if (req.method != "GET") curl_easy_setopt(handle_, CURLOPT_FRESH_CONNECT, 1L);
 
+    // R1: a body with photos spliced in (http.h BodySplice) goes out whole here.
+    const std::string body = agent::materializeBody(req);
     if (req.method == "POST") {
       curl_easy_setopt(handle_, CURLOPT_POST, 1L);
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, req.body.data());
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)req.body.size());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
     } else if (req.method != "GET") {
       curl_easy_setopt(handle_, CURLOPT_CUSTOMREQUEST, req.method.c_str());
-      if (!req.body.empty()) {
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, req.body.data());
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)req.body.size());
+      if (!body.empty()) {
+        curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+        curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
       }
     }
 
@@ -163,7 +165,7 @@ class DaemonHttpTransport : public agent::HttpTransport {
         curl_easy_getinfo(handle_, CURLINFO_SIZE_UPLOAD_T, &uploaded) != CURLE_OK)
       return Sent::Whole;
     if (pretransfer <= 0) return Sent::No;
-    return uploaded >= (curl_off_t)req.body.size() ? Sent::Whole : Sent::Partly;
+    return uploaded >= (curl_off_t)agent::bodyLength(req) ? Sent::Whole : Sent::Partly;
   }
 
   static size_t onWrite(char* p, size_t sz, size_t nm, void* ud) {

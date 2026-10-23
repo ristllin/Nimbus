@@ -1,419 +1,327 @@
 #include "image_vision.h"
 
-#include <ArduinoJson.h>
 #include <FS.h>
 #include <LittleFS.h>
-#include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>   // esp_random - the per-turn marker nonce
 
 #include "../../sys/agent_log.h"
 #include "../../sys/heap_watch.h"   // activity tag: vision
-#include "../../sys/net_util.h"      // tlsClose, tlsSetup
-#include "../../sys/tls_arbiter.h"   // single-TLS arena
-#include "nimbus/orch/reply_text.h"
-#include "nimbus/orch/seam_meter.h"   // meterSeamAnswerBody - its spend (lane DEF)
-#include "../agent_config.h"         // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
-#include "../orchestrator.h"          // inScheduledTurn, firstAllowedChat - the billing notice
-#include "../provider_gate.h"         // the one per-provider park (L19-8)
-#include "../telegram.h"              // send - the billing notice
-#include "nimbus/orch/billing_refusal.h"  // billingNoticeDue, billingNotice - one notice per episode
+#include "../agent_config.h"        // CUMULO_HOST_DEFAULT
+#include "../memory_subsystem.h"    // dataFs, the photo's stored copy and its row
+#include "../orchestrator.h"        // inScheduledTurn, firstAllowedChat - the billing notice
 #include "../store.h"
-#include "nimbus/harness/providers.h"  // testStatusOverride - the bench's scripted answer (test builds)
-#include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
+#include "../telegram.h"            // send - the billing notice
+#include "../transport_tls.h"       // deviceTransport, deviceProviderDeps - the one TLS path
+#include "nimbus/harness/providers.h"   // deletePendingUploads - the idle step
+#include "nimbus/orch/blob_store.h"
+#include "nimbus/orch/media_label.h"
+#include "nimbus/orch/provider_park.h"
 
 namespace agent {
 namespace vision {
 
 namespace {
 
-// Which provider looks at the picture. All three take an image in the same
-// shape (a data: URL in a user message), differing only in host, path, and
-// where the model name goes - so one request builder serves all of them.
-struct Provider {
-  const char* host = nullptr;
-  const char* path = nullptr;
-  const char* model = nullptr;
-  String      key;
-  bool        anthropic = false;   // different body shape + auth header
-  // x1 §1b (CUM-77): when set, the call travels through the Cumulo router -
-  // hostBuf/pathBuf back the dynamic host+path, and auth is ALWAYS Bearer (the
-  // router injects the upstream's real key server-side), even for the anthropic
-  // body shape. `anthropic` still selects the body shape (messages vs chat).
-  bool        routed = false;
-  String      hostBuf;
-  String      pathBuf;
-};
+String g_failWords;
+bool g_uploadOnce = true;
+bool g_native = true;
 
-// x1 §1b: a Cumulo-only device has no direct vision key, so route the vision
-// chat/messages call through /router/<upstream>. The upstream comes from the
-// cumulo model selection ("<upstream>/<model>", default openai); each upstream
-// keeps its own vision-capable default model. zai has no vision path here.
-bool resolveCumulo(Provider& p) {
-  if (!store::cumuloKey().length()) return false;
-  String sel = store::orchModel("cumulo");
-  int ms = sel.indexOf('/');
-  String up = ms > 0 ? sel.substring(0, ms) : String("openai");
-  const char* vpath = "/v1/chat/completions";
-  if (up == "openai")         { p.model = "gpt-4o-mini";            p.anthropic = false; }
-  else if (up == "mistral")   { p.model = "pixtral-12b-latest";     p.anthropic = false; }
-  else if (up == "anthropic") { p.model = "claude-3-5-haiku-latest"; p.anthropic = true; vpath = "/v1/messages"; }
-  else return false;   // zai / unknown: no router vision path
-  String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
-  int sch = base.indexOf("://"); if (sch >= 0) base = base.substring(sch + 3);
-  int sl = base.indexOf('/');    if (sl >= 0) base = base.substring(0, sl);
-  p.hostBuf = base;
-  p.pathBuf = String("/router/") + up + vpath;
-  p.host = p.hostBuf.c_str();
-  p.path = p.pathBuf.c_str();
-  p.key = store::cumuloKey();
-  p.routed = true;
-  return true;
+// The router's bare host ("" without a Cumulo key).
+std::string routerHost() {
+  if (!store::cumuloKey().length()) return std::string();
+  String base = store::cumuloBase();
+  if (!base.length()) base = CUMULO_HOST_DEFAULT;
+  const int sch = base.indexOf("://");
+  if (sch >= 0) base = base.substring(sch + 3);
+  const int sl = base.indexOf('/');
+  if (sl >= 0) base = base.substring(0, sl);
+  return std::string(base.c_str());
 }
 
-// Why the last caption attempt had no description: the park's words when every
-// keyed provider was closed, or the refusal it met (L19-8). "" after a success.
-String g_failWords;
-
-// The key a vision request to `name` would carry ("" = it cannot look at a picture).
-std::string visionKeyOf(const std::string& name) {
-  if (name == "openai") return store::openaiKey().c_str();
-  if (name == "mistral") return store::mistralKey().c_str();
-  if (name == "anthropic") return store::anthropicKey().c_str();
-  if (name == "cumulo") {
-    Provider probe;
-    return resolveCumulo(probe) ? std::string(store::cumuloKey().c_str()) : std::string();
-  }
+std::string keyOf(const std::string& provider) {
+  if (provider == "openai") return store::openaiKey().c_str();
+  if (provider == "mistral") return store::mistralKey().c_str();
+  if (provider == "anthropic") return store::anthropicKey().c_str();
+  if (provider == "cumulo") return store::cumuloKey().c_str();
   return std::string();
 }
 
-bool resolveNamed(const std::string& name, Provider& p) {
-  if (name == "openai") {
-    p = {"api.openai.com", "/v1/chat/completions", "gpt-4o-mini", store::openaiKey(), false};
-  } else if (name == "mistral") {
-    p = {"api.mistral.ai", "/v1/chat/completions", "pixtral-12b-latest", store::mistralKey(), false};
-  } else if (name == "anthropic") {
-    p = {"api.anthropic.com", "/v1/messages", "claude-3-5-haiku-latest", store::anthropicKey(), true};
+CaptionDeps deps() {
+  CaptionDeps d;
+  d.http = &deviceTransport();
+  d.key = keyOf;
+  d.priority = [] { return std::string(store::providerPriority().c_str()); };
+  d.nowMs = [] { return (uint32_t)millis(); };
+  d.routerHost = routerHost;
+  d.routerSelection = [] { return std::string(store::orchModel("cumulo").c_str()); };
+  // The caption model: the role default from the provider's catalog (lane DEF).
+  d.model = [](const std::string& p) { return std::string(store::captionModel(String(p.c_str())).c_str()); };
+  // One owner notice per billing episode, shared with every seam; a quiet background
+  // turn leaves it for the next owner turn.
+  d.ownerReachable = [] {
+    return !orchestrator::inScheduledTurn() && orchestrator::firstAllowedChat().length() > 0;
+  };
+  d.notifyOwner = [](const std::string& words) {
+    const String owner = orchestrator::firstAllowedChat();
+    if (owner.length()) agent::telegram::send(owner, String(words.c_str()), /*block=*/false);
+  };
+  return d;
+}
+
+void freeBytes(nimbus::orch::TurnImages& set) {
+  for (auto& it : set.items) {
+    free(const_cast<uint8_t*>(it.bytes));
+    it.bytes = nullptr;
+  }
+}
+
+// The turn being built (one at a time, on the poll task).
+std::unique_ptr<nimbus::orch::TurnImages> g_set;
+
+// A photo's fallback segment for a head that cannot see it: its transcription, or
+// why there is none (the typed label).
+std::string transcribeFor(const nimbus::orch::TurnImage& it) {
+  const CaptionResult r = read(it.bytes, it.len, it.mime.c_str(), String(), CaptionKind::Fallback);
+  nimbus::orch::MediaLabel l;
+  l.kind = nimbus::orch::MediaKind::Image;
+  if (!r.text.empty()) {
+    l.cls = nimbus::orch::MediaClass::Transcribed;
+    l.detail = r.text;
+    l.by = r.provider;
   } else {
-    return name == "cumulo" && resolveCumulo(p);
+    l.cls = nimbus::orch::MediaClass::NotRead;
+    l.detail = r.words;
   }
-  return true;
+  return it.tag + nimbus::orch::mediaSuffix(l);
 }
-
-// Follow the configured priority so the device uses the key the owner actually
-// wants spent, rather than whichever we happened to check first; then the router
-// when a Cumulo key is present, so a Cumulo-only device whose priority omits cumulo
-// still gets vision instead of a silent nothing. A provider the park closed (out of
-// credit or a refused key learned on any seam, or paused) is skipped with no
-// request (L19-8); `slug` names the provider picked.
-bool resolve(Provider& p, std::string& slug) {
-  String prio = store::providerPriority();
-  if (!prio.length()) prio = "openai,mistral,anthropic";
-  std::vector<std::string> order;
-  int s = 0;
-  while (s < (int)prio.length()) {
-    int e = prio.indexOf(',', s); if (e < 0) e = prio.length();
-    String name = prio.substring(s, e); name.trim();
-    s = e + 1;
-    if (name.length()) order.push_back(name.c_str());
-  }
-  order.push_back("cumulo");
-  const nimbus::orch::ProviderPick pick =
-      nimbus::orch::pickOpenProvider(order, visionKeyOf, nimbus::orch::PaidSeam::Vision, (uint32_t)millis());
-  if (pick.provider.empty()) {
-    g_failWords = pick.closedWhy.c_str();
-    if (g_failWords.length()) alogf("vision: no provider open - %s", g_failWords.c_str());
-    return false;
-  }
-  if (!pick.closedWhy.empty())
-    alogf("vision: skipped a closed provider (%s) - asking %s", pick.closedWhy.c_str(), pick.provider.c_str());
-  slug = pick.provider;
-  return resolveNamed(pick.provider, p);
-}
-
-const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-// Encode `f` as base64 straight into `out`. Streams in 3-byte groups so the raw
-// image is never resident twice.
-size_t b64EncodeFile(File& f, char* out, size_t cap) {
-  size_t n = 0;
-  uint8_t in[3];
-  while (true) {
-    const int r = f.read(in, 3);
-    if (r <= 0) break;
-    if (n + 4 > cap) return 0;                 // caller sized it; refuse, never tear
-    out[n++] = kB64[in[0] >> 2];
-    out[n++] = kB64[((in[0] & 0x03) << 4) | (r > 1 ? (in[1] >> 4) : 0)];
-    out[n++] = (r > 1) ? kB64[((in[1] & 0x0F) << 2) | (r > 2 ? (in[2] >> 6) : 0)] : '=';
-    out[n++] = (r > 2) ? kB64[in[2] & 0x3F] : '=';
-    if (r < 3) break;
-  }
-  return n;
-}
-
-// JSON-escape into a fixed buffer. The caption is the sender's own text and
-// rides inside a hand-built body, so it must not be able to close the string.
-void appendEscaped(String& dst, const String& src, size_t maxLen) {
-  const size_t n = src.length() < maxLen ? src.length() : maxLen;
-  for (size_t i = 0; i < n; i++) {
-    const char c = src[i];
-    switch (c) {
-      case '"':  dst += "\\\""; break;
-      case '\\': dst += "\\\\"; break;
-      case '\n': dst += "\\n";  break;
-      case '\r': break;
-      case '\t': dst += "\\t";  break;
-      default:
-        if ((uint8_t)c < 0x20) break;          // drop other controls
-        dst += c;
-    }
-  }
-}
-
-// L19-3: a billing refusal on the caption step tells the owner once per episode
-// (the latch is shared with every seam and kept on flash); a quiet background turn
-// leaves it for the next owner turn.
-void tellOwnerOutOfCredit(const std::string& slug, int status) {
-  if (orchestrator::inScheduledTurn()) return;
-  const String owner = orchestrator::firstAllowedChat();
-  if (!owner.length() || !nimbus::orch::billingNoticeDue(slug.c_str())) return;
-  const std::string words = nimbus::orch::billingNotice(slug, status, "") +
-                            " Until then, photos are described by another provider when one has a key.";
-  agent::telegram::send(owner, String(words.c_str()), /*block=*/false);
-}
-
-// A refused caption request: the park learns it (a billing or key refusal closes the
-// provider for every seam, the next photo walks on with no request to it), and the
-// caption step keeps the reason to show.
-void noteRefusal(const std::string& slug, const Provider& prov, int status, const char* body) {
-  const nimbus::orch::ParkKind k =
-      gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, status, body);
-  if (k == nimbus::orch::ParkKind::Billing) {
-    tellOwnerOutOfCredit(slug, status);
-    g_failWords = (slug + " says the account is out of credit").c_str();
-  } else if (k == nimbus::orch::ParkKind::Auth)
-    g_failWords = (slug + " refused the key").c_str();
-  else
-    g_failWords = nimbus::orch::providerErrLine(slug.c_str(), status, nimbus::orch::providerErrorText(body)).c_str();
-}
-
-const char* kPrompt =
-    "Describe this image for someone who cannot see it. Be specific and "
-    "concrete: what it shows, any text that appears in it, and anything "
-    "notable. Two or three sentences. If the sender asked something, answer "
-    "that. Do not start with \"This image shows\".";
 
 }  // namespace
 
 bool available() {
-  Provider p;
-  std::string slug;
-  return resolve(p, slug);
+  const uint32_t now = (uint32_t)millis();
+  for (const char* p : {"openai", "mistral", "anthropic", "cumulo"}) {
+    const std::string key = keyOf(p);
+    if (key.empty() || !*captionModel(p == std::string("cumulo") ? "openai" : p)) continue;
+    if (!strcmp(p, "cumulo") && routerHost().empty()) continue;
+    if (nimbus::orch::providerPark()
+            .available(p, nimbus::orch::PaidSeam::Vision, nimbus::orch::parkKeyFingerprint(key), now)
+            .open)
+      return true;
+  }
+  return false;
+}
+
+CaptionResult read(const uint8_t* bytes, size_t len, const char* mime, const String& context, CaptionKind kind,
+                   const String& question) {
+  nimbus::heapwatch::Scope describing(nimbus::heapwatch::kVision);
+  CaptionRequest in;
+  in.bytes = bytes;
+  in.len = len;
+  in.mime = mime && *mime ? nimbus::orch::imagePartMime(mime) : "image/jpeg";
+  if (in.mime.empty()) in.mime = "image/jpeg";
+  in.context = context.c_str();
+  in.question = question.c_str();
+  in.kind = kind;
+  CaptionResult r = caption(deps(), in);
+  g_failWords = r.text.empty() ? String(r.words.c_str()) : String();
+  // T's per-turn spend: what the caption step billed rides the next turn's record.
+  if (!r.usage.empty()) nimbus::orch::addVisionSpend(r.provider.c_str(), r.model.c_str(), r.usage);
+  return r;
+}
+
+uint8_t* loadToPsram(const char* path, ::fs::FS& fsys, size_t maxBytes, size_t& len, const char*& why) {
+  len = 0;
+  why = "";
+  File f = fsys.open(path, FILE_READ);
+  if (!f) { why = "could not be fetched"; return nullptr; }
+  const size_t n = f.size();
+  if (!n || n > maxBytes) {
+    f.close();
+    why = n ? "too large" : "could not be fetched";
+    return nullptr;
+  }
+  // PSRAM only: a photo on the internal heap would take the memory a TLS handshake
+  // needs moments later. No PSRAM, no photo (the label says the device was low).
+  uint8_t* buf = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  if (!buf) {
+    f.close();
+    why = "device low on memory";
+    return nullptr;
+  }
+  const size_t got = f.read(buf, n);
+  f.close();
+  if (got != n) {
+    free(buf);
+    why = "could not be fetched";
+    return nullptr;
+  }
+  len = n;
+  return buf;
+}
+
+String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs, const String& caption) {
+  g_failWords = "";
+  if (!path || !*path) return String();
+  size_t len = 0;
+  const char* why = "";
+  uint8_t* buf = loadToPsram(path, sourceFs ? *sourceFs : (::fs::FS&)LittleFS, nimbus::orch::kImagePartBytes, len, why);
+  if (!buf) {
+    g_failWords = why;
+    alogf("vision: %s: %s", path, why);
+    return String();
+  }
+  const CaptionResult r = read(buf, len, mime, caption, CaptionKind::Fallback);
+  free(buf);
+  return String(r.text.c_str());
 }
 
 String failWords() { return g_failWords; }
 
-String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
-                     const String& caption) {
-  nimbus::heapwatch::Scope describing(nimbus::heapwatch::kVision);
-  Provider prov;
-  std::string slug;
-  g_failWords = "";
-  if (!path || !*path || !resolve(prov, slug)) return String();
-#ifdef NIMBUS_TEST
-  {   // the bench's scripted provider answer (PROVFAULT): the refusal path, no upload
-    int ovStatus = 0;
-    std::string ovBody;
-    if (agent::providers::testStatusOverride(std::string(prov.host), ovStatus, ovBody) && ovStatus >= 300) {
-      alogf("vision: TEST override answered %s with HTTP %d", prov.host, ovStatus);
-      noteRefusal(slug, prov, ovStatus, ovBody.c_str());
-      return String();
-    }
-  }
-#endif
+namespace {
+// Is the photo `ref` in chat `ns`'s recent rows (the photos and files it sent)?
+bool chatHasPhoto(const std::string& ns, const std::string& ref) {
+  nimbus::orch::MsgQuery q;
+  q.sessionId = ns;
+  q.haveKind = true;
+  q.kind = nimbus::orch::MsgKind::Image;
+  q.alsoKinds = {nimbus::orch::MsgKind::File};
+  q.limit = 200;
+  memory::Lock lk;
+  for (const auto& m : memory::episodic().query(q))
+    if (nimbus::orch::blobHashOf(m.blobPath) == ref) return true;
+  return false;
+}
+}  // namespace
 
-  ::fs::FS& fsRef = sourceFs ? *sourceFs : (::fs::FS&)LittleFS;
-  File f = fsRef.open(path, FILE_READ);
-  if (!f) { alogf("vision: cannot open %s", path); return String(); }
-  const size_t raw = f.size();
-  if (raw == 0 || raw > kMaxImageBytes) {
-    f.close();
-    alogf("vision: %u bytes is outside the budget", (unsigned)raw);
-    return String();
+std::string look(const std::string& ref, const std::string& question, const std::string& ns, bool owner,
+                 std::string& err) {
+  if (!lookArgsValid(ref, question, err)) return std::string();
+  if (!memory::haveSd()) {
+    err = "no memory card: earlier photos are not kept";
+    return std::string();
   }
+  // A caller that is not the owner looks only at its own chat's photos; an unnamed
+  // chat (empty ns) is the most restrictive case, never "any chat".
+  if (!owner && (ns.empty() || !chatHasPhoto(ns, ref))) {
+    err = "no photo with that ref in this chat";
+    return std::string();
+  }
+  size_t len = 0;
+  const char* why = "";
+  uint8_t* buf = nullptr;
+  for (const char* ext : {"jpg", "bin"}) {
+    const std::string path = nimbus::orch::blobPath("/mem/blobs", ref, ext);
+    memory::Lock lk;
+    if (!memory::dataFs().exists(path.c_str())) continue;
+    buf = loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
+    break;
+  }
+  if (!buf) {
+    err = why[0] ? std::string("the photo could not be read: ") + why : "no stored photo with that ref";
+    return std::string();
+  }
+  const char* mime = nimbus::orch::sniffImageMime(buf, len);
+  if (!*mime) {
+    free(buf);
+    err = "that ref is not a photo";
+    return std::string();
+  }
+  const CaptionResult r = read(buf, len, mime, String(), CaptionKind::Question, String(question.c_str()));
+  free(buf);
+  if (r.text.empty()) err = "the photo could not be read: " + r.words;
+  return r.text;
+}
 
-  // base64 is 4 bytes per 3, plus the JSON envelope. PSRAM only - this is far
-  // past what internal heap can hold, and the whole point of the single write
-  // below is that it never becomes per-chunk TLS records.
-  const size_t b64cap = ((raw + 2) / 3) * 4 + 4;
-  // PSRAM ONLY. The old fallback to the internal heap looked harmless because a
-  // big image fails it cleanly - but a MODEST one succeeds, taking ~24 KB of the
-  // ~30 KB internal heap moments before c.connect() needs ~50 KB contiguous for
-  // the TLS handshake. Failing the description is a far better outcome than
-  // OOMing the turn, so there is no fallback: no PSRAM, no vision.
-  char* b64 = (char*)heap_caps_malloc(b64cap, MALLOC_CAP_SPIRAM);
-  if (!b64) {
-    f.close();
-    alogf("vision: no PSRAM for a %u-byte image - skipping the description",
-          (unsigned)raw);
-    return String();
+nimbus::orch::TurnImages* turnSet(bool create) {
+  if (!g_set && create) {
+    g_set.reset(new nimbus::orch::TurnImages());
+    char nonce[17];
+    snprintf(nonce, sizeof nonce, "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+    g_set->nonce = nonce;
+    g_set->uploadOnce = g_uploadOnce;
+    g_set->release = freeBytes;
+    g_set->transcribe = transcribeFor;
   }
-  const size_t b64len = b64EncodeFile(f, b64, b64cap);
-  f.close();
-  if (!b64len) { free(b64); alog("vision: encode failed"); return String(); }
+  return g_set.get();
+}
 
-  // The mime type is SENDER-SUPPLIED (Telegram passes document.mime_type
-  // through unvalidated) and it is concatenated into a hand-built JSON string,
-  // where one double-quote would close the string and let the rest become body
-  // structure. Escaping it would still admit nonsense; an allowlist is the
-  // honest answer, because there are only four types worth sending.
-  const char* mt = "image/jpeg";
-  if (mime && mime[0]) {
-    if      (!strcmp(mime, "image/png"))  mt = "image/png";
-    else if (!strcmp(mime, "image/gif"))  mt = "image/gif";
-    else if (!strcmp(mime, "image/webp")) mt = "image/webp";
-    else if (!strcmp(mime, "image/jpeg") || !strcmp(mime, "image/jpg")) mt = "image/jpeg";
+void offerTurnSet(const String& chatId, const String& routedText) {
+  if (!g_set || g_set->empty()) {
+    g_set.reset();
+    return;
   }
+  alogf("vision: %u photo(s), %u bytes, go to the head as images", (unsigned)g_set->items.size(),
+        (unsigned)g_set->bytes());
+  nimbus::orch::offerTurnImages(chatId.c_str(), routedText.c_str(), std::move(g_set));
+}
 
-  // Build the body by hand. ArduinoJson cannot hold this string at all - its
-  // 65535-byte limit (ARDUINOJSON_STRING_LENGTH_SIZE=2) is smaller than even a
-  // modest photo's base64 - and assembling it as one buffer is what lets the
-  // whole request go out in a single write.
-  String head, tail;
-  head.reserve(512);
-  if (prov.anthropic) {
-    head = String("{\"model\":\"") + prov.model +
-           "\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":["
-           "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"" +
-           mt + "\",\"data\":\"";
-    tail = "\"}},{\"type\":\"text\",\"text\":\"";
-    appendEscaped(tail, String(kPrompt), 512);
-    if (caption.length()) {
-      tail += "\\n\\nThe sender wrote: ";
-      appendEscaped(tail, caption, 400);
-    }
-    tail += "\"}]}]}";
-  } else {
-    head = String("{\"model\":\"") + prov.model +
-           "\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":["
-           "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:" + mt + ";base64,";
-    tail = "\"}},{\"type\":\"text\",\"text\":\"";
-    appendEscaped(tail, String(kPrompt), 512);
-    if (caption.length()) {
-      tail += "\\n\\nThe sender wrote: ";
-      appendEscaped(tail, caption, 400);
-    }
-    tail += "\"}]}]}";
-  }
-  const size_t bodyLen = head.length() + b64len + tail.length();
+void dropTurnSet() {
+  g_set.reset();
+  nimbus::orch::dropTurnImages();
+}
 
-  if (!arbiter::acquireWork(15000)) { free(b64); alog("vision: arbiter busy"); return String(); }
-  WiFiClientSecure c;
-  tlsSetup(c);
-  c.setHandshakeTimeout(12);
-  // One wall clock across connect + I/O: a half-open NAT must not wedge tg_poll
-  // (the F25 lesson - setTimeout is inert on this client, setConnectionTimeout
-  // is what drives the socket).
-  const uint32_t deadline = millis() + 45000;
-  c.setConnectionTimeout(45000);
-  bool connected = false;
-  for (int a = 0; a < 3 && !connected && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(prov.host, 443)) { connected = true; break; }
-    tlsClose(c);
-    if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
-  }
-  if (!connected) {
-    free(b64); arbiter::releaseWork();
-    gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, 0, "");
-    alogf("vision: connect %s failed", prov.host);
-    return String();
-  }
+bool nativeHead() {
+  if (!g_native) return false;
+  const String h = store::resolvedOrchHost();
+  return nimbus::orch::headTakesImages(h.c_str(), store::orchModel(h).c_str());
+}
+void setNative(bool on) { g_native = on; }
+bool native() { return g_native; }
 
-  c.printf("POST %s HTTP/1.0\r\n", prov.path);
-  c.printf("Host: %s\r\n", prov.host);
-  if (prov.anthropic && !prov.routed) {
-    c.printf("x-api-key: %s\r\n", prov.key.c_str());
-    c.print("anthropic-version: 2023-06-01\r\n");
-  } else {
-    // Routed (Cumulo) calls always use Bearer with the router key - the router
-    // injects the upstream's real auth - even for the anthropic body shape.
-    c.printf("Authorization: Bearer %s\r\n", prov.key.c_str());
-    if (prov.anthropic) c.print("anthropic-version: 2023-06-01\r\n");
-  }
-  c.print("Content-Type: application/json\r\n");
-  c.printf("Content-Length: %u\r\n", (unsigned)bodyLen);
-  c.print("Connection: close\r\n\r\n");
-  // Three writes, not one per chunk: header prefix, the base64 blob, suffix.
-  c.print(head);
-  size_t sent = 0;
-  while (sent < b64len && (int32_t)(millis() - deadline) < 0) {
-    const size_t chunk = (b64len - sent) > 4096 ? 4096 : (b64len - sent);
-    const size_t w = c.write((const uint8_t*)(b64 + sent), chunk);
-    if (!w) break;
-    sent += w;
-  }
-  c.print(tail);
-  free(b64);
-  if (sent != b64len) {
-    tlsClose(c); arbiter::releaseWork();
-    alog("vision: upload cut short");
-    return String();
-  }
+void setUploadOnce(bool on) { g_uploadOnce = on; }
+bool uploadOnce() { return g_uploadOnce; }
 
-  char line[512];
-  auto readLine = [&](char* b, int cap) -> int {
-    int i = 0;
-    while ((int32_t)(millis() - deadline) < 0 && i < cap - 1) {
-      if (c.available()) { char ch = c.read(); if (ch == '\n') break; if (ch != '\r') b[i++] = ch; }
-      else if (!c.connected()) break;
-      else vTaskDelay(1);
-    }
-    b[i] = 0; return i;
-  };
-  int status = 0;
-  if (readLine(line, sizeof(line)) > 0) {
-    const char* sp = strchr(line, ' ');
-    if (sp) status = atoi(sp + 1);
-  }
-  while (readLine(line, sizeof(line)) > 0) { /* skip headers */ }
+bool idleDue() {
+  if (providers::pendingUploadDeletes()) return true;
+  return recordQueue().due((uint32_t)millis(), available()) != nullptr;
+}
 
-  // The reply is a short description, so a bounded read is enough.
-  String body;
-  body.reserve(4096);
-  while ((int32_t)(millis() - deadline) < 0 && body.length() < 8192) {
-    if (c.available()) body += (char)c.read();
-    else if (!c.connected()) break;
-    else vTaskDelay(1);
+void idleStep() {
+  if (providers::pendingUploadDeletes()) {
+    providers::deletePendingUploads(deviceProviderDeps(), 1);
+    return;
   }
-  tlsClose(c);
-  arbiter::releaseWork();
-
-  if (status < 200 || status >= 300) {
-    alogf("vision: %s",
-          nimbus::orch::providerErrLine("caption", status, nimbus::orch::providerErrorText(body.c_str())).c_str());
-    noteRefusal(slug, prov, status, body.c_str());
-    return String();
-  }
-  gate::noteAnswer(slug.c_str(), nimbus::orch::PaidSeam::Vision, prov.key, status, "");
-  // Lane DEF: an answered description is billed: its reported usage (else an estimate:
-  // a picture at kImageEstimateChars plus the 512-token answer cap) counts toward the
-  // monthly spend ceiling.
+  const PendingRecord* due = recordQueue().due((uint32_t)millis(), available());
+  if (!due) return;
+  const PendingRecord rec = *due;   // settle() reorders the queue
+  const std::string path = nimbus::orch::blobPath("/mem/blobs", nimbus::orch::plainCopy(rec.ref),
+                                                  rec.ext.empty() ? "jpg" : nimbus::orch::plainCopy(rec.ext));
+  size_t len = 0;
+  const char* why = "";
+  uint8_t* buf = nullptr;
   {
-    const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(prov.host, prov.path, prov.model);
-    nimbus::orch::meterSeamAnswerBody(nimbus::orch::SpendSeam::VisionFallback, r.provider.c_str(),
-                                      r.model.c_str(), body.c_str(),
-                                      nimbus::orch::kImageEstimateChars, 512);
+    memory::Lock lk;   // the card: one reader at a time (the idle step holds no turn)
+    buf = loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
   }
+  if (!buf) {
+    alogf("vision: record for %s skipped: %s", rec.ref.c_str(), why);
+    recordQueue().settle(rec.ref, true, (uint32_t)millis());   // nothing to read: give up
+    return;
+  }
+  const CaptionResult r = read(buf, len, rec.mime.c_str(), String(rec.context.c_str()), CaptionKind::Memory);
+  free(buf);
+  if (r.text.empty()) {
+    alogf("vision: record for %s not written (%s)", rec.ref.c_str(), r.words.c_str());
+    recordQueue().settle(rec.ref, false, (uint32_t)millis());
+    return;
+  }
+  nimbus::orch::MediaLabel l;
+  l.cls = nimbus::orch::MediaClass::Transcribed;
+  l.detail = r.text;
+  l.by = r.provider;
+  const std::string text = nimbus::orch::plainCopy(rec.tag) + nimbus::orch::mediaSuffix(l);
+  const bool ok =
+      memory::replaceMediaRowText(rec.chatId.c_str(), nimbus::orch::plainCopy(rec.ref), String(text.c_str()));
+  alogf("vision: record for %s %s", rec.ref.c_str(), ok ? "written" : "has no row to write to");
+  recordQueue().settle(rec.ref, true, (uint32_t)millis());
+}
 
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) { alog("vision: unparseable reply"); return String(); }
-  String out;
-  if (prov.anthropic) {
-    out = nimbus::orch::messagesContentText(doc["content"]).c_str();
-  } else {
-    out = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]).c_str();
-  }
-  out.trim();
-  alogf("vision: described %u bytes -> %u chars", (unsigned)raw, (unsigned)out.length());
+String lastErrJson() {
+  const LastError e = lastError();
+  if (!e.atMs) return String();
+  String out = "{\"atS\":" + String((unsigned long)(e.atMs / 1000)) + ",\"provider\":\"" + e.provider.c_str() +
+               "\",\"class\":\"" + readFailSlug(e.fail) + "\",\"status\":" + String(e.status) + "}";
   return out;
 }
 

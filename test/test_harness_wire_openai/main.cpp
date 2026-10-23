@@ -5,6 +5,8 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../support/image_turn_fixture.h"
+#include "nimbus/orch/turn_images.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 
@@ -934,6 +936,106 @@ static void test_cum619_incomplete_sub_keeps_its_partial_answer() {
   }
 }
 
+// ---- R1: photos to the head as images --------------------------------------------
+// Responses input_image parts with an inline data URL and detail high, each after an
+// input_text label, the turn text last, in the seeded user message only; the bytes
+// spliced at send time. The head rounds keep their own tool_choice ("required" on tool
+// rounds; the forced final is the existing rule, not an image rule).
+
+static const char* str(JsonVariantConst v) { return v | ""; }
+
+static bool oaiPhotoTurn(FakeProviderDeps& d, harness_test::PhotoTurn& fx, const char* model, std::string& err) {
+  auto pd = d.contract();
+  const std::string m = model;
+  pd.orchModel = [m](const char*) { return m; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out;
+  return providers::orchTurnOpenAI(pd, conv, "SYS", fx.text, out, err, &rig.ht, nullptr);
+}
+
+static JsonObjectConst userMessage(JsonDocument& req) {
+  for (JsonObjectConst m : req["input"].as<JsonArrayConst>())
+    if (!strcmp(m["role"] | "", "user")) return m;
+  return JsonObjectConst();
+}
+
+static void test_r1_input_image_parts_in_the_seeded_user_message() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, toolCallBody("resp_1")});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, finalCallBody("resp_2")});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(oaiPhotoTurn(d, fx, "gpt-5.6-luna", err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  for (size_t r = 0; r < 2; ++r) {
+    JsonDocument req;
+    TEST_ASSERT_FALSE(deserializeJson(req, reqBody(d, r), DeserializationOption::NestingLimit(64)));
+    JsonArrayConst c = userMessage(req)["content"];
+    TEST_ASSERT_EQUAL(5, (int)c.size());
+    TEST_ASSERT_EQUAL_STRING("input_text", str(c[0]["type"]));
+    TEST_ASSERT_EQUAL_STRING("[image 1/2 ref=0123456789abcdef]", str(c[0]["text"]));
+    TEST_ASSERT_EQUAL_STRING("input_image", str(c[1]["type"]));
+    TEST_ASSERT_EQUAL_STRING(("data:image/jpeg;base64," + harness_test::b64Of(fx.a)).c_str(), str(c[1]["image_url"]));
+    TEST_ASSERT_EQUAL_STRING("high", str(c[1]["detail"]));
+    TEST_ASSERT_EQUAL_STRING(("data:image/png;base64," + harness_test::b64Of(fx.b)).c_str(), str(c[3]["image_url"]));
+    TEST_ASSERT_EQUAL_STRING("input_text", str(c[4]["type"]));
+    TEST_ASSERT_NOT_NULL(strstr(str(c[4]["text"]), "They wrote: what do the labels say?"));
+    int images = 0;
+    bool cached = false;
+    harness_test::walkParts(req["input"], "input_image", images, cached);
+    TEST_ASSERT_EQUAL_MESSAGE(2, images, "the photos ride the seeded user message only");
+    TEST_ASSERT_FALSE(cached);
+    TEST_ASSERT_EQUAL(2, (int)d.http.spliced[r].size());
+    TEST_ASSERT_FALSE(bodyHas(d, r, "nimg:"));
+  }
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":\"required\""));   // a tool round
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"function_call_output\""));       // round 2: results after the photos
+  TEST_ASSERT_EQUAL(0, fx.transcribed);
+}
+
+// A model without image input (o3-mini) reads the transcriptions in place of the labels.
+static void test_r1_openai_model_without_image_input_reads_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, finalCallBody("resp_1")});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(oaiPhotoTurn(d, fx, "o3-mini", err), err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "(machine transcription by anthropic: photo 1 shows a label)"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "input_image"));
+  TEST_ASSERT_TRUE(d.http.spliced[0].empty());
+}
+
+// OpenAI refuses the image (400 invalid_image): the round is re-sent once, blind.
+static void test_r1_openai_refused_image_resent_as_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 400,
+                           "{\"error\":{\"message\":\"Invalid image data.\",\"type\":\"invalid_request_error\","
+                           "\"code\":\"invalid_image\"}}"});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, finalCallBody("resp_1")});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(oaiPhotoTurn(d, fx, "gpt-5.6-luna", err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "input_image"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "input_image"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "(machine transcription by anthropic: photo 2 shows a label)"));
+  TEST_ASSERT_TRUE(fx.set->rejected);
+}
+
+// The single shot (tool loop off) shows no photo.
+static void test_r1_openai_single_shot_reads_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.toolLoop = false;
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, singleShotBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(oaiPhotoTurn(d, fx, "gpt-5.6-luna", err), err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "(machine transcription by anthropic: photo 1 shows a label)"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "input_image"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -972,6 +1074,10 @@ int main(int, char**) {
   RUN_TEST(test_cum477_resend_gets_the_rest_of_the_round_budget);
   RUN_TEST(test_cum477_no_transport_no_resend);
   RUN_TEST(test_cum477_tagged_low_memory_reaches_the_single_shot_head);
+  RUN_TEST(test_r1_input_image_parts_in_the_seeded_user_message);
+  RUN_TEST(test_r1_openai_model_without_image_input_reads_transcriptions);
+  RUN_TEST(test_r1_openai_refused_image_resent_as_transcriptions);
+  RUN_TEST(test_r1_openai_single_shot_reads_transcriptions);
   UNITY_END();
   return 0;
 }

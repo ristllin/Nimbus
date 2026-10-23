@@ -44,6 +44,7 @@
 #include "../sys/ota_update.h"            // imageValidAtBoot - when the legacy copy may go
 #include <solide/storage.h>               // re-probe the SD card on recovery
 #include "nimbus/orch/blob_store.h"
+#include "nimbus/orch/row_overlay.h"   // R1/L19-5: a photo row's text replaced after it was stored
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/billing_refusal.h"   // one owner notice per billing episode (shared with chat)
@@ -95,6 +96,12 @@ InMemoryEpisodicStore g_epi{500};     // no-SD degraded store + SD-migration scr
 ArduinoEpiFs*          g_epiFs = nullptr;
 AppendLogEpisodicStore* g_epiLog = nullptr;
 EpisodicStore*         g_epiActive = &g_epi;  // the store the World + capture use
+// R1/L19-5: every read of the episodic store goes through this overlay, so a photo
+// row whose short record (or re-read description) was written after the row itself
+// reads with that text. Replacements are appended to kRowTextPath (one JSON line
+// each) and replayed at begin(); bounded (RowTextOverlay::kMax).
+RowTextOverlay         g_rowOverlay;
+const char*            kRowTextPath = "/mem/episodic/rowtext.jsonl";
 uint32_t              g_epiSeq = 0;   // monotonic message-id counter
 const char* kEpiDir     = "/mem/episodic";
 const char* kBlobDir    = "/mem/blobs";
@@ -837,6 +844,16 @@ void begin() {
     int loaded = epiLog.hydrate(nimbus::orch::kHydrateMaxRows,
                                 nimbus::orch::kHydrateMaxBytes,
                                 [] { vTaskDelay(1); });
+    {   // R1/L19-5: the photo rows' replaced texts (bounded file, read once)
+      File rt = g_fs->open(kRowTextPath, FILE_READ);
+      if (rt && rt.size() <= 256u * 1024u) {
+        std::string lines(rt.size(), '\0');
+        lines.resize(rt.read((uint8_t*)&lines[0], lines.size()));
+        const size_t n = g_rowOverlay.load(lines);
+        if (n) alogf("memory: %u photo record(s) replayed", (unsigned)n);
+      }
+      if (rt) rt.close();
+    }
     if (epiLog.hydrateTruncated())
       alogf("memory: episodic boot scan hit its budget (%d indexed) - indexing the "
             "older rows on the card in the background", loaded);
@@ -1513,7 +1530,45 @@ void applyConfig() {
   if (!effHaveSd() && (cap == 0 || cap > kDegradedMaxVectors)) cap = kDegradedMaxVectors;
   g_vec.setMaxEntries(cap);
 }
-EpisodicStore& episodic()   { return *g_epiActive; }
+EpisodicStore& episodic() {
+  g_rowOverlay.bind(g_epiActive);   // the active store may change (an SD demote or promote)
+  return g_rowOverlay;
+}
+
+bool replaceMediaRowText(const char* sessionId, const std::string& ref, const String& text) {
+  if (!g_begun || !sessionId || ref.size() != 16) return false;
+  Lock g;
+  MsgQuery q;
+  q.sessionId = sessionId;
+  q.haveKind = true;
+  q.kind = MsgKind::Image;
+  q.alsoKinds = {MsgKind::File};
+  q.limit = 48;
+  std::string id;
+  for (const auto& m : g_epiActive->query(q))   // newest first
+    if (nimbus::orch::blobHashOf(m.blobPath) == ref) { id = m.id; break; }
+  if (id.empty()) return false;
+  const std::string t(text.c_str(), text.length());
+  g_rowOverlay.put(id, t);
+  if (effHaveSd()) {   // durable: one line per replacement, replayed at begin()
+    File f = g_fs->open(kRowTextPath, FILE_APPEND);
+    if (f) {
+      const std::string line = RowTextOverlay::line(id, t) + "\n";
+      f.write((const uint8_t*)line.data(), line.size());
+      const size_t size = f.size();
+      f.close();
+      if (size > 96u * 1024u) {   // compact: only the kept replacements (bounded by kMax)
+        const std::string all = g_rowOverlay.dump();
+        File w = g_fs->open(kRowTextPath, FILE_WRITE);
+        if (w) {
+          w.write((const uint8_t*)all.data(), all.size());
+          w.close();
+        }
+      }
+    }
+  }
+  return true;
+}
 
 // ---- SD graceful degradation: demote/promote (the HIL test spec) --------
 

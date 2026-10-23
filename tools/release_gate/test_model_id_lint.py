@@ -238,3 +238,37 @@ def test_url_fetch_scan_is_off_retired_models():
     assert not [f for f in unallowed if f.file == rel]
     retired = {r["id"] for r in allow.get("retired", [])}
     assert not [h for h in hits if h.file == rel and any(h.model.startswith(r) for r in retired)]
+
+
+def test_photo_reader_sends_only_current_models():
+    """The photo reader (lane E, owner ruling R1): the fallback caption step and the
+    head's image parts run on current models only. On 22 Oct 2026 bench unit L's
+    captioner still sent claude-3-5-haiku-latest (Anthropic: 404, 77 refused calls)
+    from an allowlist entry; the retired caption ids are now on the retired list, so
+    one coming back anywhere fails this lint."""
+    allow = json.loads((lint.REPO / "tools/model_id_allowlist.json").read_text())
+    retired = {r["id"] for r in allow.get("retired", [])}
+    assert {"gpt-4o-mini", "claude-3-5-haiku-latest", "pixtral-12b-latest"} <= retired
+    unallowed, _stale, hits = lint.lint()
+    for rel in ("src/agent/adapters/image_vision.cpp", "lib/harness/src/vision_caption.cpp"):
+        assert not [e for e in allow.get("allow", []) if e.get("file") == rel], f"{rel} is still allowlisted"
+        assert not [f for f in unallowed if f.file == rel]
+        assert not [h for h in hits if h.file == rel and h.model in retired]
+    # The caption models come from the one role-default table (lane DEF): its caption
+    # rows name current, priced ids only.
+    src = (lint.REPO / "lib/core/include/nimbus/orch/model_defaults.h").read_text()
+    rows = [ln for ln in src.splitlines() if "DefaultRole::Caption," in ln]
+    assert len(rows) >= 3, rows
+    assert not [r for r in rows if any(x in r for x in retired)], rows
+
+
+def test_retired_caption_id_fails_anywhere(tmp_path):
+    allow = {"allow": [], "keys": [], "retired": [{"id": "claude-haiku-4-5", "why": "test policy"}]}
+    unallowed, _, _ = _tree(
+        tmp_path,
+        'const char* kCaption = "claude-haiku-4-5";\n',
+        allow=allow,
+        prices=[("anthropic", "claude-haiku-4-5"), ("anthropic", "claude-opus-5")],
+    )
+    assert [f.model for f in unallowed] == ["claude-haiku-4-5"]
+    assert any("retired by policy" in r for r in unallowed[0].reasons)

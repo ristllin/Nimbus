@@ -28,6 +28,21 @@ static constexpr uint8_t kResponseNestingLimit = 64;
 
 using HeaderList = std::vector<std::pair<std::string, std::string>>;
 
+// A binary payload written into the request body at send time (R1: photos to the
+// head as images). `len` bytes at `bytes` go out at byte offset `at` of `body`:
+// base64-encoded when `base64` (an image inside a JSON string), raw otherwise (a
+// multipart file part). So image bytes never become a JSON string (ArduinoJson
+// stores at most 65,535 B in one) and the whole body is never assembled: the
+// transport encodes it slice by slice from the one copy of the bytes (PSRAM on the
+// device). The bytes must outlive the exchange.
+struct BodySplice {
+  size_t at = 0;                  // offset into HttpRequest::body (ascending, <= body.size())
+  const uint8_t* bytes = nullptr;
+  size_t len = 0;
+  bool base64 = true;
+};
+using BodySplices = std::vector<BodySplice>;
+
 struct HttpRequest {
   std::string method;   // "GET" | "POST"
   std::string host;     // e.g. "api.anthropic.com" (443 implied unless set)
@@ -49,7 +64,90 @@ struct HttpRequest {
   // response body.
   const char* errHeaderPrefix = nullptr;
   HeaderList* errHeaders = nullptr;
+  // Payloads spliced into `body` at send time (see BodySplice); empty = `body` is
+  // the whole request body. Content-Length is bodyLength(), never body.size().
+  BodySplices splices;
 };
+
+// ---- the spliced body (portable; the device transport and the host fakes) ------
+inline size_t base64Len(size_t raw) { return ((raw + 2) / 3) * 4; }
+inline size_t spliceLen(const BodySplice& s) { return s.base64 ? base64Len(s.len) : s.len; }
+
+// The bytes the request body puts on the wire: `body` plus every splice.
+inline size_t bodyLength(const HttpRequest& r) {
+  size_t n = r.body.size();
+  for (const auto& s : r.splices) n += spliceLen(s);
+  return n;
+}
+
+namespace detail {
+inline char b64Char(uint8_t v) {
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[v & 0x3F];
+}
+// Base64 character `e` of the encoding of bytes[0..len).
+inline char b64At(const uint8_t* bytes, size_t len, size_t e) {
+  const size_t g = (e / 4) * 3;
+  const size_t have = len - g < 3 ? len - g : 3;
+  const uint8_t a = bytes[g], b = have > 1 ? bytes[g + 1] : 0, c = have > 2 ? bytes[g + 2] : 0;
+  switch (e % 4) {
+    case 0: return b64Char(a >> 2);
+    case 1: return b64Char(((a & 0x03) << 4) | (b >> 4));
+    case 2: return have > 1 ? b64Char(((b & 0x0F) << 2) | (c >> 6)) : '=';
+    default: return have > 2 ? b64Char(c) : '=';
+  }
+}
+}  // namespace detail
+
+// Copy up to `want` bytes of the logical body, starting at `off`, into `out`;
+// returns how many were copied (0 past the end). Any offset works, so the device
+// transport can fill one 4,096 B slice at a time.
+inline size_t bodyRead(const HttpRequest& r, size_t off, uint8_t* out, size_t want) {
+  size_t got = 0, pos = 0, bodyPos = 0;   // pos: logical offset; bodyPos: offset into body
+  auto copyBody = [&](size_t upto) {       // body[bodyPos..upto)
+    const size_t segLen = upto - bodyPos;
+    if (got < want && off < pos + segLen) {
+      const size_t from = off > pos ? off - pos : 0;
+      size_t n = segLen - from;
+      if (n > want - got) n = want - got;
+      std::memcpy(out + got, r.body.data() + bodyPos + from, n);
+      got += n;
+      off += n;
+    }
+    pos += segLen;
+    bodyPos = upto;
+  };
+  for (const auto& s : r.splices) {
+    copyBody(s.at < r.body.size() ? s.at : r.body.size());
+    const size_t segLen = spliceLen(s);
+    for (size_t e = off > pos ? off - pos : 0; got < want && off >= pos && e < segLen; ++e, ++off)
+      out[got++] = s.base64 ? (uint8_t)detail::b64At(s.bytes, s.len, e) : s.bytes[e];
+    pos += segLen;
+  }
+  copyBody(r.body.size());
+  return got;
+}
+
+// The send side's headroom rule (R1: photos make large bodies). Before each body slice
+// after the first, the device transport waits in short steps while the largest free
+// internal block is under kSliceHeadroom, so the TCP window drains (acknowledged
+// segments free their buffers) before the next slice needs its own; bounded per slice,
+// after which the slice is written anyway. Measured on bench unit L (23 Oct): 130 KB
+// photo uploads and 0.6 MB inline bodies took the largest block to 7 KB and failed an
+// allocation now and then (af=1..4; one body cut at 36,864 B and resent).
+constexpr uint32_t kSliceHeadroom = 12288;
+constexpr uint32_t kSliceWaitStepMs = 10;
+constexpr uint32_t kSliceWaitMaxMs = 1500;
+inline bool sliceShouldWait(uint32_t largestFree, uint32_t waitedMs) {
+  return largestFree < kSliceHeadroom && waitedMs < kSliceWaitMaxMs;
+}
+
+// The whole logical body as one string (host fakes and tests; never on the device).
+inline std::string materializeBody(const HttpRequest& r) {
+  if (r.splices.empty()) return r.body;
+  std::string out(bodyLength(r), '\0');
+  bodyRead(r, 0, (uint8_t*)&out[0], out.size());
+  return out;
+}
 
 struct HttpResponse {
   int         status = 0;   // 0 => transport failure (see err)

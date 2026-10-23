@@ -28,6 +28,7 @@
 #include "nimbus/orch/gradient.h"     // TranscriptItem - the shared entry type
 #include "nimbus/orch/head_loop.h"    // HeadToolCall / HeadToolResult
 #include "nimbus/orch/psram_alloc.h"  // WorkingAllocator
+#include "nimbus/orch/turn_images.h"  // TurnImages - the photos of the seeded user message
 
 namespace nimbus {
 namespace orch {
@@ -35,6 +36,11 @@ namespace orch {
 class Transcript {
  public:
   void addUser(std::string text);
+  // The photos the seeded user message carries (R1, turn_images.h): each renderer
+  // puts them into that message, the newest user message of the request, as its
+  // provider's image parts, never into a later one. Not owned; nullptr = none.
+  void setImages(TurnImages* imgs) { images_ = imgs; }
+  TurnImages* images() const { return images_; }
   void addAssistantText(std::string text, int round, const char* provider);
   void addToolCall(const HeadToolCall& c, int round, const char* provider);
   void addToolResult(const HeadToolResult& r, int round);
@@ -78,6 +84,7 @@ class Transcript {
  private:
   std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>> e_;
   size_t replayBytes_ = 0;
+  TurnImages* images_ = nullptr;
   int newestRound() const;
   void foldOldRounds(int newest, size_t lowWater);
   void clipNewest(int newest, size_t cap);

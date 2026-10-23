@@ -153,13 +153,18 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 
 **What `[USER]` holds for a burst or an album.** Messages sent together arrive as one
 `[USER]` message: one `Message k of N from <name>:` block per message, in the order
-they were sent (a single message arrives as itself, byte for byte). A photo or file is
-its label and its description, then `They wrote:` and its caption:
-`[image 2/3 ref=0123456789abcdef] a plate of pasta ...`. The label is one format
-everywhere (the turn, the stored row, the history): `k/N` is the item's place among
-the turn's media, `ref` is its content hash (16 hex characters, absent when nothing
-was fetched), and the text after the bracket is the description or why there is none
-(`(couldn't be described)`, `(could not be fetched: too large)`). A late or
+they were sent (a single message arrives as itself, byte for byte). A photo is its
+label, then `They wrote:` and its caption:
+`[image 2/3 ref=0123456789abcdef] (attached: the photo itself is in this message)`.
+The photo itself rides the same message as an image part, after a one-line label
+naming its ref and before the text (the head model reads the pixels). A head that cannot
+see it reads its machine transcription instead (`(transcribed by openai) Nutrition
+facts ...`), and a photo nobody could read says why (`(not read: anthropic out of
+credit (HTTP 429))`). The label is one format everywhere (the turn, the stored row, the
+history): `k/N` is the item's place among the turn's media, `ref` is its content hash
+(16 hex characters, absent when nothing was fetched; `image.look` takes it to look at
+an earlier photo again), and the text after the bracket is the class
+(`(could not be fetched: too large)`, a file's name). A late or
 redelivered item carries its original send time: `(sent 09:58)` before a text,
 `, sent 09:58` inside a label. A voice note is its own turn (its transcript); a
 command is always its own turn.
@@ -214,11 +219,13 @@ called by the engine for every turn:
   no answer shows `[no reply]`. A routine, wakeup or sub-agent synthesis turn
   shows its trigger as a `- system:` line (`[routine "commute" ran]`), so its
   reply never sits under the previous turn's reply.
-- **Each item once.** A photo's description lives in its media row; the user
+- **Each item once.** A photo's record lives in its media row; the user
   row keeps what the sender sent with a bare label (`[image]`) where the photo
   sat, joined to the media row by its blob ref (the 16-hex content hash), and
-  the history puts the description back in place (an album's labels each get
-  their own). A voice note's transcript is the user row. Rows captured before
+  the history puts the record back in place (an album's labels each get
+  their own). A photo the head saw itself is not re-sent in later turns: its row
+  carries its short machine transcription, written after its turn, and
+  `image.look` looks at the photo again when the record does not answer. A voice note's transcript is the user row. Rows captured before
   this rule render once too (a repeated description or a `ref=` label is
   recognized).
 - **Captured once.** A Telegram turn's user row carries its source (the newest

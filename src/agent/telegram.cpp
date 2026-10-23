@@ -24,7 +24,7 @@
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #include "nimbus/harness/turn_inbox.h"   // histV2: what the sender sent, for the turn's history row
-#include "adapters/image_vision.h"   // a photo enters the conversation as words
+#include "adapters/image_vision.h"   // R1: a photo goes to the head as an image (a transcription as the fallback)
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
 #include "tg_archive.h"             // lane R: every update and every send is archived on SD
 #include "orchestrator.h"           // roleOfChat / tenantQuotaOf - who is sending
@@ -1287,6 +1287,7 @@ struct InboundFile {
   const char* lfsPath;
   std::string hash;
   bool photo;
+  bool image;   // R1: a photo, or a file in a format a head reads as an image
 };
 
 static bool storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
@@ -1417,33 +1418,133 @@ static bool failedSegment(nimbus::orch::MediaLabel& label, const char* why, int 
   return false;
 }
 
+// R1: photo k of n goes to the head as an image when the head reads images: its bytes
+// (staged at `in.lfsPath`) are copied into one PSRAM buffer held for the turn, no
+// caption call. False (the caption step reads it instead) when the head has no image
+// input, the format is not one a head reads, an animated GIF, the turn's photo budget
+// is spent, or PSRAM is short.
+static bool attachNative(const InboundFile& in, nimbus::orch::MediaLabel& label) {
+  const char* mime = in.slot.mime[0] ? in.slot.mime : "image/jpeg";
+  if (!agent::vision::nativeHead() || !nimbus::orch::imagePartMime(mime)[0]) return false;
+  nimbus::orch::TurnImages* set = agent::vision::turnSet(true);
+  if (set->items.size() >= nimbus::orch::kTurnImageMax) return false;
+  size_t len = 0;
+  const char* why = "";
+  uint8_t* buf = agent::vision::loadToPsram(in.lfsPath, LittleFS, nimbus::orch::kImagePartBytes, len, why);
+  // The bytes decide, never the sender's declared type (admitImage sniffs them).
+  const char* real = buf ? nimbus::orch::admitImage(*set, buf, len, why) : "";
+  if (!*real) {
+    alogf("telegram: media %d/%d not attached (%s)", label.k, label.n, why);
+    free(buf);
+    return false;
+  }
+  set->items.push_back(nimbus::orch::attachedImage(label, buf, len, real));
+  label.cls = nimbus::orch::MediaClass::Attached;
+  alogf("telegram: media %d/%d attached for the head (%u bytes)", label.k, label.n, (unsigned)len);
+  return true;
+}
+
+// The fallback (R1): the caption step reads photo k of n (the provider walk, the one
+// park, a typed failure). The same bytes and caption already read: no second call
+// (L19-6: the content hash comes first). Returns the result's class for the label.
+static void transcribeStaged(const InboundFile& in, const String& ctx, nimbus::orch::MediaLabel& label,
+                             agent::vision::ReadFail& fail) {
+  const MediaSlot& m = in.slot;
+  fail = agent::vision::ReadFail::None;
+  std::string known;
+  nimbus::net::MediaMemo* mm = memo();
+  if (mm && mm->find(m.chatId, in.hash, ctx.c_str(), known)) {
+    alogf("telegram: media %d/%d read before (same photo and caption): no second call", label.k, label.n);
+    label.cls = nimbus::orch::MediaClass::Transcribed;
+    label.detail = known;
+    return;
+  }
+  size_t len = 0;
+  const char* why = "";
+  uint8_t* buf = agent::vision::loadToPsram(in.lfsPath, LittleFS, nimbus::orch::kImagePartBytes, len, why);
+  if (!buf) {
+    fail = strcmp(why, "too large") == 0 ? agent::vision::ReadFail::TooLarge : agent::vision::ReadFail::LowMemory;
+    label.cls = nimbus::orch::MediaClass::NotRead;
+    label.detail = why;
+    return;
+  }
+  const char* real = nimbus::orch::sniffImageMime(buf, len);   // the bytes decide the type
+  if (!*real) {
+    free(buf);
+    fail = agent::vision::ReadFail::Unsupported;
+    label.cls = nimbus::orch::MediaClass::NotRead;
+    label.detail = "not a photo format the device reads";
+    return;
+  }
+  alogf("telegram: media %d/%d describing", label.k, label.n);
+  const agent::vision::CaptionResult r = agent::vision::read(buf, len, real, ctx);
+  free(buf);
+  if (!r.text.empty()) {
+    if (mm) mm->put(m.chatId, in.hash, ctx.c_str(), r.text);
+    label.cls = nimbus::orch::MediaClass::Transcribed;
+    label.detail = r.text;
+    label.by = r.provider;
+    return;
+  }
+  fail = r.fail;
+  label.cls = nimbus::orch::MediaClass::NotRead;
+  label.detail = agent::vision::notReadWords(r);   // a refusal: kept and read again later
+}
+
 // Steps 3-5 once the file is staged: the label's ref (the content hash), the archive's
-// copy (one download), the description (a photo) or the name (a document).
-static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t n, nimbus::orch::MediaLabel& label) {
+// copy (one download), then the photo to the head as an image (R1), else its
+// transcription or the typed reason it has none; a document keeps its name.
+static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t n, nimbus::orch::MediaLabel& label,
+                           agent::vision::ReadFail& fail) {
   const MediaSlot& m = in.slot;
   label.ref = in.hash;
+  fail = agent::vision::ReadFail::None;
   agent::tgarchive::adoptInbound({m.chatId, m.updateId, m.date, m.fileId}, in.lfsPath);
-  // Vision is best-effort: if no provider can look at it, the photo is still kept and
-  // the label says so. The same bytes and caption already described: no second call.
-  String description;
-  const String ctx = in.photo ? visionContext(turn, k, n) : String();
-  std::string known;
-  nimbus::net::MediaMemo* mm = in.photo ? memo() : nullptr;
-  if (mm && mm->find(m.chatId, in.hash, ctx.c_str(), known)) {
-    description = known.c_str();
-    alogf("telegram: media %d/%d described before (same photo and caption): no second call", label.k, label.n);
-  } else if (in.photo && agent::vision::available()) {
-    alogf("telegram: media %d/%d describing", label.k, label.n);
-    description = agent::vision::describeImage(in.lfsPath, m.mime[0] ? m.mime : "image/jpeg", nullptr, ctx);
-    if (mm) mm->put(m.chatId, in.hash, ctx.c_str(), description.c_str());
-  }
-  if (!in.photo) {
+  if (!in.image) {
+    if (nimbus::orch::isHeic(m.mime)) {   // no provider reads HEIC: the sender can resend it
+      label.kind = nimbus::orch::MediaKind::Image;
+      label.cls = nimbus::orch::MediaClass::NotRead;
+      label.detail = "HEIC format; ask for it sent as a photo";
+      fail = agent::vision::ReadFail::Unsupported;
+      return;
+    }
     label.cls = nimbus::orch::MediaClass::Stored;
     label.detail = m.fileName;
     return;
   }
-  label.cls = description.length() ? nimbus::orch::MediaClass::Described : nimbus::orch::MediaClass::NotDescribed;
-  label.detail = description.c_str();
+  label.kind = nimbus::orch::MediaKind::Image;
+  if (attachNative(in, label)) return;
+  transcribeStaged(in, visionContext(turn, k, n), label, fail);
+}
+
+// The photo's stored row (R1): a photo the head sees itself is stored with a pending
+// label until its short record is written (agent::vision's idle step replaces it);
+// any other item's row is its segment.
+static std::string rowSegment(const nimbus::orch::MediaLabel& label) {
+  nimbus::orch::MediaLabel row = label;
+  if (row.cls == nimbus::orch::MediaClass::Attached) row.cls = nimbus::orch::MediaClass::Pending;
+  return nimbus::orch::mediaSegment(row);
+}
+
+// Queue the photo's record (a photo the head saw), or its re-read once a provider is
+// open again (a reading that failed for a refusal, a closed provider or no answer).
+static void queueRecord(const MediaSlot& m, const nimbus::orch::MediaLabel& label, agent::vision::ReadFail fail,
+                        const String& ctx, size_t len, const char* ext) {
+  const bool record = label.cls == nimbus::orch::MediaClass::Attached;
+  const bool reread = agent::vision::rereadLater(fail);
+  if (!record && !reread) return;
+  agent::vision::PendingRecord r;
+  r.chatId = m.chatId;
+  r.ref = nimbus::orch::workingCopy(label.ref);
+  r.mime = m.mime[0] ? m.mime : "image/jpeg";
+  nimbus::orch::MediaLabel bracket = label;
+  bracket.cls = nimbus::orch::MediaClass::Pending;
+  const std::string seg = nimbus::orch::mediaSegment(bracket);
+  r.tag = nimbus::orch::workingCopy(seg.substr(0, seg.find(']') + 1));
+  r.context = ctx.c_str();
+  r.ext = ext;
+  r.len = len;
+  agent::vision::recordQueue().push(r);
 }
 
 static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string& seg) {
@@ -1471,9 +1572,12 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   if (why[0]) return failedSegment(label, why, slot, seg);
   alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   downloading.end();
-  const InboundFile in{m, localPath, hashFile(localPath), photo};
-  describeStaged(in, turn, k, n, label);
+  const bool image = photo || nimbus::orch::imagePartMime(m.mime)[0];
+  const InboundFile in{m, localPath, hashFile(localPath), photo, image};
+  agent::vision::ReadFail fail;
+  describeStaged(in, turn, k, n, label, fail);
   seg = nimbus::orch::mediaSegment(label);
+  const std::string row = rowSegment(label);
   noteTurnMedia(slot, label, true);
   // Store it through the FILE STORE: that is what makes it count against the sender's
   // storage limit, and a photo someone sent shows up in Memory & Files like any other
@@ -1482,7 +1586,9 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   storeInbound(in, who);
   g_slots[slot].media.kept = agent::memory::captureMediaFile(
       m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
-      String(seg.c_str()), localPath, photo ? "jpg" : "bin", m.date);
+      String(row.c_str()), localPath, photo ? "jpg" : "bin", m.date);
+  if (g_slots[slot].media.kept && image)
+    queueRecord(m, label, fail, visionContext(turn, k, n), total, photo ? "jpg" : "bin");
   LittleFS.remove(localPath);
   return true;
 }
@@ -1674,6 +1780,7 @@ struct TgIo {
   void mediaFailed(const std::string& chat, size_t turn) {
     telegram::mediaFailed(chat.c_str(), g_batch.mediaCountAt(turn));
     s_turnMedia = 0;
+    agent::vision::dropTurnSet();   // R1: no turn runs, so no photo is shown
   }
   void skipMedia(size_t, size_t k, size_t n, int slot, std::string& seg) { telegram::skipMedia(k, n, slot, seg); }
   bool processVoice(int slot, std::string& transcript) { return telegram::processVoice(slot, transcript); }
@@ -1682,7 +1789,12 @@ struct TgIo {
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
     noteHistory(text);   // histV2: the turn's source and stored media, for its history row
+    // R1: the photos this turn attached go to the head as images (the engine takes
+    // them with the turn and frees them when it ends; a turn that never took them, a
+    // command or a refusal, frees them here).
+    agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
     if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+    agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
   }
   void notice(const nimbus::net::TgNotice& n) { sendGuardNotice(n); }
@@ -1691,6 +1803,8 @@ struct TgIo {
     s_turnMedia = 0;
     freeSlots();
     publishGuard();
+    agent::vision::dropTurnSet();
+    agent::vision::endPage();   // the next page's photos walk the providers from the top
   }
 };
 

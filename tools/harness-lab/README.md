@@ -235,3 +235,30 @@ python3 spend_ledger.py price $R/usage.jsonl
 - `episodic-dates`: two photo rows, yesterday's described and today's not; "did
   any photo get read today?" must be answered "no" from the `memory_episodic`
   output (each row carries its date and age).
+
+## Photo legs: photos go to the head as images
+
+Three scenarios check the photo path (`src/scenarios_photos.cpp`, owner ruling R1).
+They read photos from a directory named by `NIMBUS_LAB_PHOTOS`: JPEGs plus a
+`truth.json` listing, per photo, the fields a reader must copy exactly
+(`{"photos":[{"file":"jar.jpg","fields":["4417","250 g"]}]}`); without it they skip
+loudly.
+
+```bash
+R=/tmp/rec; mkdir -p $R
+NIMBUS_LAB_PHOTOS=<dir> ./build/nimbus-lab --env=<secrets .env> --host=anthropic \
+    --model=claude-haiku-5-5 --effort=low --record=$R scenarios photos-native photo-label-honesty
+NIMBUS_LAB_PHOTOS=<dir> ./build/nimbus-lab --env=<secrets .env> scenarios caption-scoring
+```
+
+- `photos-native`: three photos go to the head as image parts through the real
+  renderer, body splice and upload-once path (an Anthropic head uploads each photo
+  to the Files API, references it by file id and the uploads are deleted after the
+  turn); the one reply must read the label values. On a head without image input
+  (glm-5.3-flash) the photos ride as the real caption walk's transcriptions.
+- `photo-label-honesty`: a photo the caption step could not read for billing; the
+  head names the provider's credit, does not blame the phone and does not ask for
+  a resend (run it three times).
+- `caption-scoring`: the fallback caption step on each keyed provider's caption
+  model, every photo twice; at least 80 percent of fields exact and no empty
+  caption.

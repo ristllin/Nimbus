@@ -45,6 +45,7 @@ const ToolTaintRow kRows[] = {
     {"files.share", T::Internal, E::Share},
     {"files.stat", T::Internal, E::Read},
     {"image.generate", T::External, E::FileWrite},
+    {"image.look", T::External, E::Read},          // R1: what a photo shows is outside text
     // firmware docs, routines, replies, skills, tenants (src/agent/memory_subsystem.cpp)
     {"docs.list", T::Internal, E::Read},
     {"docs.read", T::Internal, E::Read},

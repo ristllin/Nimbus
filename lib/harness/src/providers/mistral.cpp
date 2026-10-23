@@ -16,6 +16,7 @@
 #include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "nimbus/orch/reply_text.h"
+#include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
 #include "wire.h"
 
 // Mistral - the PORTABLE wire half of the pre-split
@@ -125,7 +126,8 @@ static int mistralParseFileRefs(const JsonDocument& doc,
 static int mistralRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                           std::string body, JsonDocument& doc, const JsonDocument& filter,
                           uint32_t timeoutMs = MISTRAL_TIMEOUT_MS,
-                          HeaderList* quotaHeaders = nullptr) {
+                          HeaderList* quotaHeaders = nullptr,
+                          const BodySplices* splices = nullptr) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"Authorization", "Bearer " + (pd.key ? pd.key("mistral") : std::string())},
       {"Content-Type", "application/json"},
@@ -135,7 +137,7 @@ static int mistralRequest(const ProviderDeps& pd, const char* method, const std:
   wire::UpstreamReq req{kMistralHost, 443, true, path, std::move(headers)};
   wire::applyRouter(pd, "mistral", req);
   return exchange(pd, req.host.c_str(), req.port, req.tls, method, req.path,
-                  std::move(req.headers), std::move(body), timeoutMs, doc, filter, quotaHeaders);
+                  std::move(req.headers), std::move(body), timeoutMs, doc, filter, quotaHeaders, splices);
 }
 
 // "<what> HTTP <code>[ [rl:<window>]][: <provider message>]". On a 429 the quota
@@ -239,7 +241,8 @@ std::string mistralCallId(const std::string& id) {
 // through mistralSafeName (the reserved-name rename, inverted on dispatch).
 static void renderMistralMessages(const nimbus::orch::Transcript& tr,
                                   ArduinoJson::JsonArray msgs,
-                                  const std::string& sysText) {
+                                  const std::string& sysText,
+                                  bool showingImages) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   {
@@ -252,7 +255,9 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
-    wire::putFieldStr(u["content"], it.text, "the user message");
+    // A request that does not show the turn's photos reads their machine
+    // transcriptions in place of their labels (R1).
+    wire::putFieldStr(u["content"], imageparts::userText(tr, it.text, showingImages), "the user message");
     break;
   }
   size_t i = 0;
@@ -308,6 +313,8 @@ struct MisLoopReq {
   bool allowTools;
   uint32_t maxTokens;
   const char* effort;   // reasoning_effort ("" = the field is not sent)
+  nimbus::orch::TurnImages* imgs;   // R1: the photos this request shows (nullptr = blind)
+  BodySplices* splices;             // where their bytes are spliced in at send time
 };
 
 // CUM-616: a model the table says reasons but that refused reasoning_effort (400
@@ -348,13 +355,14 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     // plus the summary (a prefix Mistral reads from its cache), and the per-turn
     // block leads the user seed.
     const layout::PromptParts& p = *a.round;
-    renderMistralMessages(tr, msgs, p.stat + p.summary);
-    if (p.split)
-      for (JsonObject m : msgs)
-        if (!strcmp(m["role"] | "", "user")) {
+    renderMistralMessages(tr, msgs, p.stat + p.summary, a.imgs != nullptr);
+    for (JsonObject m : msgs)
+      if (!strcmp(m["role"] | "", "user")) {
+        if (p.split)
           wire::putFieldStr(m["content"], layout::userWithDynamic(p, m["content"] | ""), "the user message");
-          break;
-        }
+        if (a.imgs) imageparts::putParts(m, *a.imgs, imageparts::Dialect::MistralChat);
+        break;
+      }
   }
   JsonArray tools = req["tools"].to<JsonArray>();
   {
@@ -402,7 +410,8 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     tc["type"] = "function";
     tc["function"]["name"] = "orch_turn";
   }
-  return wire::serializeChecked(req, body, err);
+  if (!wire::serializeChecked(req, body, err)) return false;
+  return !a.imgs || imageparts::spliceMarkers(body, *a.imgs, *a.splices, err);
 }
 
 // Read one chat-completions reply into `out`. Returns false when the reply is cut
@@ -497,12 +506,17 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     bool effortRetried = false;   // the one retry without reasoning_effort (CUM-616)
+    // R1: the photos ride the seeded user message when this model takes images and
+    // no provider refused them this turn (inline data URLs, spliced at send time).
+    orch::TurnImages* imgs = imageparts::shown(tr, "mistral", model);
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
       const char* effort = misEffortRefusedBefore(model) ? "" : (attempt ? cap.retryEffort : cap.effort);
       std::string body;
-      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens, effort}, body, out.error)) {
+      BodySplices splices;
+      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens, effort, imgs, &splices}, body,
+                       out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -511,8 +525,14 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       HeaderList quota;
       const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
       int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                                resp, filter, roundMs, &quota);
+                                resp, filter, roundMs, &quota, splices.empty() ? nullptr : &splices);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200 && imgs && imageparts::refusedImages(code, mistralErrText(resp)) &&
+          imageparts::rejectAndRetry(imgs, "orchTurn(mistral-loop)", code)) {
+        imgs = nullptr;   // this round again, reading the transcriptions (and the rest of the turn)
+        --attempt;
+        continue;
+      }
       if (code != 200 && *effort && !effortRetried &&
           misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
         hlog::logf("orchTurn(mistral-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",
@@ -555,6 +575,7 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   // by construction - no conversation to create or track in loop mode.
   orch::Transcript tr;
   tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   // CUM-477: one same-host resend of a request that never left (see openai.cpp).
   const orch::HeadStepFn inner = misLoopStep(pd, instructions, ht, usage, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(mistral-loop)"};
@@ -753,7 +774,11 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
 
   MistralHeadBody hb;   // hb.studio: a Studio connector rides this turn (the schema-less shape)
   // The Conversations API takes one instructions string: send the layout flat.
-  if (!mistralHeadBody(pd, convId, layout::flat(instructions), inputs, hb)) { err = hb.err; return false; }
+  // A single shot shows no photo: the turn's photos read as their transcriptions (R1).
+  if (!mistralHeadBody(pd, convId, layout::flat(instructions), imageparts::blindInputs(inputs), hb)) {
+    err = hb.err;
+    return false;
+  }
 
   JsonDocument filter;
   filter["conversation_id"] = true;

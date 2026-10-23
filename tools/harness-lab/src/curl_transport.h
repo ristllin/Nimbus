@@ -48,7 +48,10 @@ class CurlHttpTransport : public agent::HttpTransport {
     rec.method = req.method;
     rec.host = req.host;
     rec.path = req.path;
-    if (recordBodies) rec.reqBody = req.body;
+    // R1: a request with photos spliced in (http.h BodySplice) goes out whole here;
+    // the device writes the same bytes slice by slice.
+    const std::string body = agent::materializeBody(req);
+    if (recordBodies) rec.reqBody = body;
 
     CURL* c = curl_easy_init();
     if (!c) {
@@ -82,13 +85,13 @@ class CurlHttpTransport : public agent::HttpTransport {
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     if (req.method == "POST") {
       curl_easy_setopt(c, CURLOPT_POST, 1L);
-      curl_easy_setopt(c, CURLOPT_POSTFIELDS, req.body.data());
-      curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)req.body.size());
+      curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)body.size());
     } else if (req.method != "GET") {
       curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, req.method.c_str());
-      if (!req.body.empty()) {
-        curl_easy_setopt(c, CURLOPT_POSTFIELDS, req.body.data());
-        curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)req.body.size());
+      if (!body.empty()) {
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.data());
+        curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)body.size());
       }
     }
 

@@ -237,15 +237,59 @@ is `src/agent/telegram.cpp`). One cycle:
    rolling hour, 12 of them reserved for the owner's chat, so the other allowed chats
    stop at 48; commands do not count) a turn is skipped, with one owner notice per
    trip. Otherwise every photo of the turn is fetched, hashed, handed to the archive
-   (one download per file), described and stored, in album order, with a typing
-   indicator at most once per photo and only 4 s or more after the last; then the turn
-   runs with every item of its bucket (`MessageBatcher::render`, the one label
+   (one download per file) and stored, in album order, with a typing indicator at most
+   once per photo and only 4 s or more after the last; then the turn runs with every
+   item of its bucket (`MessageBatcher::render`, the one label
    `nimbus/orch/media_label.h`). A failed item is part of the turn, never a separate
    reply, unless the turn has nothing else (no text, no caption, nothing fetched): then
-   one plain reply says why, instead of a paid turn.
+   one plain reply says why, instead of a paid turn. How each photo reaches the head is
+   described under "Photos go to the head as images" below.
 5. **Commit.** Only after the page's turns returned does the cursor move past it (a
    page holding a command checkpoints after each bucket), so a reset anywhere re-serves
    the page and the duplicate breaker skips what was already answered.
+
+**Photos go to the head as images.** A photo is sent to the head model as an image,
+not as a description of it (`nimbus/orch/turn_images.h`). When the configured head reads
+images (every Claude model; OpenAI gpt-4o, gpt-4.1, gpt-5 and newer; Mistral chat models
+with vision, by one rule, `headTakesImages`), the photo's bytes are copied into one PSRAM
+buffer held for the turn and its label reads `(attached: the photo itself is in this
+message)`; no caption call is made. The channel offers the turn's photos to a single slot
+bound to the chat and the routed text; the engine takes them when the owner turn starts
+and every head loop seeds its transcript with them. Each renderer puts them into the
+seeded user message, the newest user message of the request, as its provider's image
+parts (Anthropic `image`, OpenAI Responses `input_image` with detail high, Mistral
+`image_url`), each after a one-line label naming its ref and before the turn text; an
+image part never carries the cache point, so later rounds read the photos from the
+provider's cache. The bytes are never a JSON string: the renderer writes a marker, the
+body records a splice (`http.h` `BodySplice`), and the transport base64-encodes each
+4,096 B slice from the PSRAM copy at send time, so a 2 MB album costs one 4 KB slice
+buffer, never internal heap. Before each slice after the first, the transport waits in
+short steps (at most 1.5 s) while the largest free internal block is under 12 KB, so
+the TCP window drains before the next slice needs its buffers (`http.h`
+`sliceShouldWait`; large bodies used to fail an allocation now and then). On an Anthropic head with a direct key each photo is
+uploaded once per turn (the Files API, raw bytes) and every round references it by
+file_id; the uploads are deleted afterwards, one per poll cycle. Bounds: 10 photos,
+512 KB each, 2 MB per turn; a photo past them, an animated GIF, a format no head reads,
+a head without image input (or a host a failover lands on), and a provider that refuses
+the image parts all fall back to the caption step, whose text is labelled
+`(transcribed by <provider>)` so the head knows it has not seen the photo. A photo
+nobody could read says why, one label per cause (`(not read: openai out of credit
+(HTTP 429))`, `(not read: too large)`, `(not read: device low on memory)`), never the
+provider's own words; the prompt explains the family in one line.
+
+The caption step (`nimbus/harness/vision_caption.h`) runs current models only
+(claude-haiku-5-5, gpt-5.6-luna, mistral-small-latest), detail high and low effort, and
+walks the keyed providers in priority order, sticky per page. A billing or key refusal
+parks that provider through the one shared park (every seam, not just photos) and the
+walk moves on in the same photo; a server error or a dropped connection moves on
+without parking; the owner gets one notice per episode, shared with every seam. It also
+writes each attached photo's short record for memory afterwards (one photo per poll
+cycle, never inside a turn: the stored row reads `(seen in its turn; no record written
+yet)` until then), and reads a photo again once its provider is open after a refusal;
+both replace the row's text through the episodic overlay (`nimbus/orch/row_overlay.h`).
+`image.look {ref, question}` looks at an earlier photo again on demand. What the caption
+step bills rides the next turn's per-host spend record. `device.status` carries
+`visionLastErr`.
 
 **The poison guard.** Media are acked only after processing, so a page whose processing
 crashes the device would be served again on every boot. The work in flight is marked in

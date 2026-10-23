@@ -16,6 +16,7 @@
 #include "nimbus/orch/seam_meter.h"   // anthropicSessionUsage - a finished sub's spend
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
+#include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
 #include "wire.h"
 
 // Anthropic - the PORTABLE wire half of the pre-split
@@ -66,7 +67,8 @@ static const int kAntOutputPolls = 2;
 static int antRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                       std::string body, JsonDocument& doc, const JsonDocument& filter,
                       uint32_t timeoutMs = kHeadRoundCeilingMs,
-                      const char* beta = kBetaManagedAgents) {
+                      const char* beta = kBetaManagedAgents,
+                      const BodySplices* splices = nullptr) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"x-api-key", pd.key ? pd.key("anthropic") : std::string()},
       {"anthropic-version", kAnthropicVer},
@@ -78,8 +80,12 @@ static int antRequest(const ProviderDeps& pd, const char* method, const std::str
   wire::UpstreamReq req{kAnthropicHost, 443, true, path, std::move(headers)};
   wire::applyRouter(pd, "anthropic", req);
   return exchange(pd, req.host.c_str(), req.port, req.tls, method, req.path,
-                  std::move(req.headers), std::move(body), timeoutMs, doc, filter);
+                  std::move(req.headers), std::move(body), timeoutMs, doc, filter, nullptr, splices);
 }
+
+// The head's beta header: the managed-agents beta every request carries, plus the
+// Files API beta when a photo of the turn rides as a file reference (R1).
+static const char* kBetaHeadWithFiles = "managed-agents-2026-04-01,files-api-2025-04-14";
 
 // ---- Managed Agents sub-sessions --------------------------------------------
 
@@ -786,16 +792,18 @@ static void stripDescriptions(ArduinoJson::JsonVariant v) {
 //     (the API validates the pairing);
 //   - tool_result content is clipped UTF-8-safe under ArduinoJson's 65535-byte
 //     string ceiling (a longer string stores as NULL and 400s the request).
-static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs) {
+static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs,
+                              bool showingImages) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
-  // The seeded user turn (pinned; always first).
+  // The seeded user turn (pinned; always first). A request that does not show the
+  // turn's photos reads their machine transcriptions in place of their labels (R1).
   for (const auto& it : e) {
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
-    wire::putFieldStr(u["content"], it.text, "the user message");
+    wire::putFieldStr(u["content"], imageparts::userText(tr, it.text, showingImages), "the user message");
     break;
   }
   // Walk rounds in order. Entries are appended in round order by construction.
@@ -1030,22 +1038,37 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     //    results are clipped to the room left under the replay budget instead of
     //    folding older rounds (which rewrote them every round).
     if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
-    JsonDocument conv = makeDoc(pd);
-    JsonArray msgs = conv.to<JsonArray>();
-    renderAntMessages(tr, msgs);
-    if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
-    if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
-      // A trailing assistant message is a prefill, which current models reject.
-      // The renderer always answers tool_use rounds with their results, so this
-      // shouldn't trigger - but if it ever does, the request stays valid.
-      JsonObject u = msgs.add<JsonObject>();
-      u["role"] = "user";
-      u["content"] = "Now call orch_turn with your final complete turn.";
+    // R1: the photos ride the seeded user message when this model takes images and
+    // no provider refused them this turn; uploaded once (the Files API) where the key
+    // is direct, so the later rounds reference them instead of re-sending them.
+    orch::TurnImages* imgs = imageparts::shown(tr, "anthropic", model);
+    if (imgs && !imgs->uploadTried) {
+      imgs->uploadTried = true;
+      if (imgs->uploadOnce) imageparts::antUploadImages(pd, *imgs);
     }
-    // 1b) every string content as one text block, so a message has the same bytes
-    //     whether or not it is the last one (the one antLoopBody gives the moving
-    //     cache point).
-    layout::textAsBlocks(msgs);
+    JsonDocument conv = makeDoc(pd);
+    JsonArray msgs;
+    auto render = [&]() {
+      msgs = conv.to<JsonArray>();
+      renderAntMessages(tr, msgs, imgs != nullptr);
+      if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
+      if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
+        // A trailing assistant message is a prefill, which current models reject.
+        // The renderer always answers tool_use rounds with their results, so this
+        // shouldn't trigger - but if it ever does, the request stays valid.
+        JsonObject u = msgs.add<JsonObject>();
+        u["role"] = "user";
+        u["content"] = "Now call orch_turn with your final complete turn.";
+      }
+      // 1b) every string content as one text block, so a message has the same bytes
+      //     whether or not it is the last one (the one antLoopBody gives the moving
+      //     cache point).
+      layout::textAsBlocks(msgs);
+      // 1c) the photos before the turn text in the seeded message (never a cache
+      //     point: the moving one stays on the last text block, after them).
+      if (imgs && msgs.size() > 0) imageparts::putParts(msgs[0], *imgs, imageparts::Dialect::Anthropic);
+    };
+    render();
     // A string dropped while the conversation was rendered (conv is its own
     // document, copied into req as a null) is refused before the send.
     if (conv.overflowed()) {
@@ -1077,17 +1100,31 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       const AntLoopReq a{&model, &parts, &capReason, &ht, allowTools, maxTokens,
                          attempt ? cap.retryEffort : cap.effort};
       std::string body;
-      if (!antLoopBody(pd, a, msgs, body, out.error)) {
+      BodySplices splices;
+      if (!antLoopBody(pd, a, msgs, body, out.error) ||
+          (imgs && !imageparts::spliceMarkers(body, *imgs, splices, out.error))) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
       }
       // 3) send - the body is serialized ONCE into a contiguous buffer and handed
-      //    to the transport whole (single TLS write).
+      //    to the transport whole (single TLS write); the photos are spliced in at
+      //    send time.
       JsonDocument resp = makeDoc(pd);
       const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-      const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), resp, filter, roundMs);
+      const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), resp, filter, roundMs,
+                                  imageparts::anyFileRef(imgs) ? kBetaHeadWithFiles : kBetaManagedAgents,
+                                  splices.empty() ? nullptr : &splices);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200 && imgs && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
+          imageparts::rejectAndRetry(imgs, "orchTurn(ant-loop)", code)) {
+        // The provider refused the photos themselves: this round again, reading their
+        // transcriptions (the fallback captioner), and so does the rest of the turn.
+        imgs = nullptr;
+        render();
+        --attempt;
+        continue;
+      }
       if (code != 200) {
         const std::string e = wire::httpErrLine("messages", code, resp["error"]["message"] | "");
         wire::httpFailure(out, code, e, e + " " + (const char*)(resp["error"]["type"] | ""));
@@ -1161,6 +1198,7 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   // complete - the request body is rendered fresh from it every round.
   orch::Transcript tr;
   tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   // CUM-477: one same-host resend of a request that never left (see openai.cpp).
   const orch::HeadStepFn inner = antLoopStep(pd, instructions, ht, usage, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(ant-loop)"};
@@ -1314,8 +1352,10 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+  // A single shot shows no photo: the turn's photos read as their transcriptions (R1).
+  const std::string seen = fold ? inputs : imageparts::blindInputs(inputs);
   for (int attempt = 0; attempt < 2; ++attempt) {
-    const AntShot shot{&model, &instructions, &inputs, fold,
+    const AntShot shot{&model, &instructions, &seen, fold,
                        attempt ? cap.retryTokens : cap.maxTokens, attempt ? cap.retryEffort : cap.effort};
     std::string body;
     if (!antShotBody(shot, body, err)) return false;

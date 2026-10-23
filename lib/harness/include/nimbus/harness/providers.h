@@ -134,6 +134,19 @@ struct ProviderDeps {
   ArduinoJson::Allocator* alloc = nullptr;
 };
 
+// ---- R1: the turn's photos as image parts (nimbus/orch/turn_images.h) -----------
+// Every head loop seeds its transcript with the photos of the turn in flight
+// (activeTurnImages) and its renderer puts them into the seeded user message as the
+// provider's image parts, or their machine transcriptions when the model cannot see
+// them. On an Anthropic head with a direct key each photo is uploaded once per turn
+// (the Files API) and referenced by file_id in every round; when the loop ends the
+// uploads are queued for deletion, which the device runs one at a time on its idle
+// step (deletePendingUploads), never inside a turn and never before the reply.
+size_t pendingUploadDeletes();
+// Delete up to `max` queued uploads; returns how many were settled (deleted, gone,
+// or refused for good). A transient failure keeps the id for a later call.
+int deletePendingUploads(const ProviderDeps& pd, int max = 1);
+
 // ---- head-orchestrator turns (std::string space) ----------------------------
 // Same contract as the engine's ProviderTurnFn: send system(instructions) +
 // user(inputs), get the strict orch_turn JSON in outJson. convId is in-out

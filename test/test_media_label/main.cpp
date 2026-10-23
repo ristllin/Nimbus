@@ -189,7 +189,10 @@ static void test_every_label_path_uses_the_formatter() {
   TEST_ASSERT_EQUAL_size_t(2, count(tg, "nimbus::orch::mediaSegment(label)"));
   TEST_ASSERT_EQUAL_size_t(2, count(tg, "return failedSegment(label, why, slot, seg);"));
   TEST_ASSERT_EQUAL_size_t(0, count(tg, "mediaTag("));
-  TEST_ASSERT_TRUE(tg.find("String(seg.c_str()), localPath, photo ? \"jpg\" : \"bin\", m.date);") != std::string::npos);
+  // The row text is the segment of the row's label (a photo the head saw is stored
+  // pending its record, R1): still built by the formatter, never by hand.
+  TEST_ASSERT_TRUE(tg.find("String(row.c_str()), localPath, photo ? \"jpg\" : \"bin\", m.date);") != std::string::npos);
+  TEST_ASSERT_EQUAL_size_t(1, count(tg, "return nimbus::orch::mediaSegment(row);"));
 }
 
 // The blob-hash dedupe of the description step: the same chat, bytes (content hash)

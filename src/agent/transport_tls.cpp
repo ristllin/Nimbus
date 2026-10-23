@@ -117,6 +117,27 @@ struct TlsIo {
   uint32_t deadline;   // F25: the WHOLE operation (connect retries + I/O) rides one clock
   std::string parseWhy;   // the parser's reason when readBody() fails
   std::string tooLarge;   // set when the body parsed whole but was over the retained cap
+  uint8_t* slice = nullptr;   // R1: one PSRAM slice a spliced body is encoded into
+  uint32_t pacedMs = 0;       // time spent waiting for internal headroom between slices
+
+  ~TlsIo() {
+    free(slice);
+    if (pacedMs) alogf("transport: %s%s paced %u ms for internal headroom", req.host.c_str(), req.path.c_str(),
+                       (unsigned)pacedMs);
+  }
+
+  // R1 (http.h sliceShouldWait): let the TCP window drain before the next slice when
+  // the internal heap is short, instead of failing an allocation mid-body.
+  void paceForHeadroom() {
+    uint32_t waited = 0;
+    while (sliceShouldWait((uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                           waited) &&
+           !expired()) {
+      vTaskDelay(pdMS_TO_TICKS(kSliceWaitStepMs));
+      waited += kSliceWaitStepMs;
+    }
+    pacedMs += waited;
+  }
 
   bool expired() const { return (int32_t)(millis() - deadline) >= 0; }
   void close() { if (req.tls) tlsClose(tls); else plain.stop(); }
@@ -141,7 +162,7 @@ struct TlsIo {
                   "Host: " + req.host.c_str() + "\r\n";
     for (const auto& h : req.headers)
       head += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
-    head += "Content-Length: " + String((unsigned)req.body.size()) + "\r\nConnection: close\r\n\r\n";
+    head += "Content-Length: " + String((unsigned)bodyLength(req)) + "\r\nConnection: close\r\n\r\n";
     return client->print(head) == head.length();
   }
 
@@ -153,7 +174,16 @@ struct TlsIo {
 #ifdef NIMBUS_TEST
     if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
 #endif
-    return client->write((const uint8_t*)req.body.data() + off, want);
+    if (off > 0) paceForHeadroom();
+    if (req.splices.empty()) return client->write((const uint8_t*)req.body.data() + off, want);
+    // R1: a body with photos spliced in (http.h BodySplice) is never assembled: each
+    // slice is encoded from the photo's one PSRAM copy into one PSRAM slice buffer,
+    // so a 2 MB album costs 4 KB of working memory, never internal heap.
+    if (!slice) slice = (uint8_t*)heap_caps_malloc(nimbus::heapwatch::kBodySliceBytes, MALLOC_CAP_SPIRAM);
+    if (!slice) return 0;   // no PSRAM for the slice: the body fails "after N of M", typed by the caller
+    if (want > nimbus::heapwatch::kBodySliceBytes) want = nimbus::heapwatch::kBodySliceBytes;
+    const size_t n = bodyRead(req, off, slice, want);
+    return n ? client->write(slice, n) : 0;
   }
 
   // Status line: "HTTP/1.0 200 ...".
@@ -288,7 +318,7 @@ class TlsTransport : public HttpTransport {
     ExchangeTrace trace;
     trace.host = req.host.c_str();
     trace.path = req.path.c_str();
-    trace.body = (uint32_t)req.body.size();
+    trace.body = (uint32_t)bodyLength(req);
     trace.pre = sampleHeap();
     trace.atMs = millis();
     const uint32_t afStart = nimbus::heapwatch::allocFails();

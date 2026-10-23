@@ -12,6 +12,7 @@
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
+#include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
 #include "wire.h"
 
 // OpenAI Responses API - the PORTABLE wire half of the pre-split
@@ -51,12 +52,13 @@ static std::vector<std::pair<std::string, std::string>> oaiHeaders(const std::st
 // One OpenAI Responses (POST /v1/responses) exchange, rerouted through the Cumulo
 // router when `pd` carries the override (no-op otherwise). Centralizes the
 // applyRouter rewrite so the head loop and the single-shot head share ONE path.
-static int oaiResponses(const ProviderDeps& pd, const std::string& key, std::string body,
-                        uint32_t timeoutMs, JsonDocument& resp, const JsonDocument& filter) {
-  wire::UpstreamReq req{kOpenAIHost, 443, true, "/v1/responses", oaiHeaders(key)};
+static int oaiResponses(const ProviderDeps& pd, std::string body, uint32_t timeoutMs, JsonDocument& resp,
+                        const JsonDocument& filter, const BodySplices* splices = nullptr) {
+  wire::UpstreamReq req{kOpenAIHost, 443, true, "/v1/responses",
+                        oaiHeaders(pd.key ? pd.key("openai") : std::string())};
   wire::applyRouter(pd, "openai", req);
   return exchange(pd, req.host.c_str(), req.port, req.tls, "POST", req.path,
-                  std::move(req.headers), std::move(body), timeoutMs, resp, filter);
+                  std::move(req.headers), std::move(body), timeoutMs, resp, filter, nullptr, splices);
 }
 
 // Glass Box A4 (OpenAI reasoning capture): the Responses `reasoning` parameter and
@@ -309,15 +311,18 @@ FabricErr oaiCancel(const ProviderDeps& pd, const char* host, const std::string&
 // function_call_output answers. Prose/reasoning SUMMARIES are observed-only and
 // never replayed (the encrypted reasoning items in `meta` are the replayable
 // form a reasoning model requires under store:false).
-static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray in) {
+static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray in,
+                           bool showingImages) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
+  // A request that does not show the turn's photos reads their machine
+  // transcriptions in place of their labels (R1).
   for (const auto& it : e) {
     if (it.kind != Kind::User) continue;
     JsonObject m = in.add<JsonObject>();
     m["type"] = "message"; m["role"] = "user";
-    wire::putFieldStr(m["content"], it.text, "the user message");
+    wire::putFieldStr(m["content"], imageparts::userText(tr, it.text, showingImages), "the user message");
     break;
   }
   size_t i = 0;
@@ -372,7 +377,6 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
                                      nimbus::orch::Transcript& tr) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("openai") : std::string();
-  const std::string key   = pd.key ? pd.key("openai") : std::string();
   // The wire-ceiling bound: the replayed tool outputs must stay under the
   // measured ~52 KB body ceiling. trimToolOutputs clips only the NEWEST results
   // (never a round already sent, so each round extends the cached prefix) - the
@@ -385,7 +389,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
 
-  return [&ht, usage, &tr, pd, model, key, kReplayToolBytes, parts](
+  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -422,20 +426,24 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
         req["reasoning"]["effort"] = "low";
       req["include"].to<JsonArray>().add("reasoning.encrypted_content");
     }
-    {
+    // R1: the photos ride the seeded user message when this model takes images and
+    // no provider refused them this turn (inline data URLs, spliced at send time).
+    orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
+    auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
       // A split prompt (prompt_layout.h): the static block (and the summary) as
       // developer messages, then the user seed led by the per-turn block. The
       // request then starts with the same bytes on every turn of a day.
       if (round.split) layout::putOpenAIDeveloper(in, round);
-      renderOaiInput(tr, in);
-      if (round.split)
-        for (JsonObject m : in)
-          if (!strcmp(m["role"] | "", "user")) {
+      renderOaiInput(tr, in, imgs != nullptr);
+      for (JsonObject m : in)
+        if (!strcmp(m["role"] | "", "user")) {
+          if (round.split)
             wire::putFieldStr(m["content"], layout::userWithDynamic(round, m["content"] | ""),
                               "the user message");
-            break;
-          }
+          if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
+          break;
+        }
       // Forced final after a STALL: if the newest round carried no tool calls
       // (prose-only - not rendered), this request would be byte-identical to the
       // one the model just stalled on; nudge with a user message so it answers
@@ -455,7 +463,8 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
           m["content"] = "Now call orch_turn with your final complete turn.";
         }
       }
-    }
+    };
+    renderInput();
 
     // tools: orch_turn always (the terminal); registry specs on tool rounds.
     JsonArray tools = req["tools"].to<JsonArray>();
@@ -519,11 +528,29 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     std::string body;
-    if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
+    BodySplices splices;
+    if (!wire::serializeChecked(req, body, out.error) ||
+        (imgs && !imageparts::spliceMarkers(body, *imgs, splices, out.error))) {
+      out.ok = false;
+      return out;
+    }
     JsonDocument resp = makeDoc(pd);
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-    int code = oaiResponses(pd, key, std::move(body), roundMs, resp, filter);
+    int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
     if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+    if (code != 200 && imgs && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
+        imageparts::rejectAndRetry(imgs, "orchTurn(oai-loop)", code)) {
+      // The provider refused the photos themselves: this round again, reading their
+      // transcriptions (the fallback captioner), and so does the rest of the turn.
+      imgs = nullptr;
+      renderInput();
+      body.clear();
+      if (!wire::serializeChecked(req, body, out.error)) { out.ok = false; return out; }
+      resp.clear();
+      const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
+      code = oaiResponses(pd, std::move(body), roundMs, resp, filter);
+      if (code <= 0) { wire::transportFailure(pd, t1, roundMs, out); return out; }
+    }
     if (code != 200) {
       const std::string e = wire::httpErrLine("resp", code, resp["error"]["message"] | "");
       wire::httpFailure(out, code, e,
@@ -608,6 +635,7 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
   // by construction - no previous_response_id, no store, no chain to poison.
   orch::Transcript tr;
   tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   // CUM-477: a request the device could not finish sending is resent once on the
   // same host after the heap recovers (the Cumulo router head runs this loop).
   const orch::HeadStepFn inner = oaiLoopStep(pd, instructions, ht, usage, tr);
@@ -651,6 +679,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   if (tools && tools->dispatch && pd.toolLoopOn && pd.toolLoopOn())
     return runOaiLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
+  // A single shot shows no photo: the turn's photos read as their transcriptions (R1).
+  const std::string seen = imageparts::blindInputs(inputs);
   std::string body;
   {
     JsonDocument d;
@@ -666,10 +696,10 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
       JsonObject u = in.add<JsonObject>();
       u["type"] = "message";
       u["role"] = "user";
-      wire::putFieldStr(u["content"], layout::userWithDynamic(parts, inputs), "the user message");
+      wire::putFieldStr(u["content"], layout::userWithDynamic(parts, seen), "the user message");
     } else {
       d["instructions"] = sys;
-      wire::putFieldStr(d["input"], inputs, "the user message");
+      wire::putFieldStr(d["input"], seen, "the user message");
     }
     d["store"]        = true;
     if (convId.length()) d["previous_response_id"] = convId;   // stateful chain
@@ -705,7 +735,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-  int code = oaiResponses(pd, key, std::move(body), OAI_TIMEOUT_MS, doc, filter);
+  int code = oaiResponses(pd, std::move(body), OAI_TIMEOUT_MS, doc, filter);
   if (code <= 0)   { err = wire::headTransportError(pd, t0, OAI_TIMEOUT_MS); return false; }
   if (code != 200) {
     err = wire::httpErrLine("resp", code, doc["error"]["message"] | "");

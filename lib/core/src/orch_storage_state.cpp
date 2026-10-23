@@ -20,6 +20,16 @@ std::string storageStateJson(const StorageState& s) {
   d["tgOffsetSaved"] = s.tgOffsetSaved;
   d["embedParked"] = s.embedParked;
   d["embedParkedWhy"] = s.embedParkedWhy.empty() ? nullptr : JsonString(s.embedParkedWhy.c_str());
+  // L19-9 (lane E): the photo reader's last failure, typed, never a response body.
+  if (s.visionErrClass.empty()) {
+    d["visionLastErr"] = nullptr;
+  } else {
+    JsonObject v = d["visionLastErr"].to<JsonObject>();
+    v["atS"] = s.visionErrAtS;
+    v["provider"] = s.visionErrProvider;
+    v["class"] = s.visionErrClass;
+    v["status"] = s.visionErrStatus;
+  }
   std::string out;
   serializeJson(d, out);
   return out;

@@ -13,6 +13,9 @@
 //   [image 3/3 ref=fedcba9876543210, sent 09:58] (couldn't be described)
 //   [image 1/1] (could not be fetched: too large)
 //   [file 1/2 ref=0011223344556677] menu.pdf
+//   [image 1/2 ref=0123456789abcdef] (attached: the photo itself is in this message)
+//   [image 2/2 ref=fedcba9876543210] (transcribed by openai) Nutrition facts ...
+//   [image 1/1 ref=0123456789abcdef] (not read: anthropic out of credit (HTTP 429))
 //
 // - k/N: the item's position among the media of its turn (album order), and the count.
 // - ref: the item's content hash (the 16 lowercase hex characters of the blob store's
@@ -21,8 +24,9 @@
 // - sent: the original Telegram send time, only for a late or redelivered item, so a
 //   replayed photo never reads as new (the time is the device's local time).
 // - the class suffix after the bracket: a description, or why there is none. The
-//   classes below are the receive path's; the image lane adds its typed failure
-//   classes here, never a new format.
+//   classes below are the receive path's and the image lane's (R1: the photo goes to
+//   the head as an image; a transcription is the fallback and says so; a photo nobody
+//   could read says why, one class per cause, never in the sender's words).
 //
 // Portable and Arduino-free (host-tested in test_media_label, which also checks that
 // every label in the device's receive path comes from here).
@@ -36,6 +40,12 @@ enum class MediaClass : uint8_t {
   NotDescribed,  // kept, but nothing could describe it
   FetchFailed,   // the download failed; `detail` says why
   Stored,        // a file kept without a description (documents): `detail` is its name
+  Attached,      // R1: the photo itself rides this turn's message as an image part
+  Transcribed,   // another model's text from the photo (`by` names it): the fallback,
+                 // and a photo's short record in memory; `detail` is the text
+  NotRead,       // nobody could read it: `detail` is the typed reason (vision::ReadFail
+                 // words: "anthropic out of credit (HTTP 429)", "too large", ...)
+  Pending,       // a stored photo the head saw, its short record not written yet
   Count,         // sentinel: the class test walks every value below it
 };
 
@@ -51,8 +61,9 @@ struct MediaLabel {
   std::string ref;          // validRef() or "" (no content)
   std::string sentAt;       // "09:58" for a late item, "" otherwise
   MediaClass  cls = MediaClass::Described;
-  std::string detail;       // the description (Described), the reason (FetchFailed) or
-                            // the file name (Stored)
+  std::string detail;       // the description (Described), the reason (FetchFailed,
+                            // NotRead), the file name (Stored) or the text (Transcribed)
+  std::string by;           // Transcribed: the provider that wrote it ("" = unnamed)
 };
 
 // Exactly 16 lowercase hex characters (a blob hash).
@@ -64,6 +75,11 @@ std::string mediaTag(const MediaLabel& l);
 // The whole segment: the bracket plus its class suffix. A description longer than
 // kMediaTextMax is cut on a UTF-8 boundary and ends with kMediaCutMark.
 std::string mediaSegment(const MediaLabel& l);
+// The class suffix alone (what follows the bracket, its leading space included), so
+// a holder of the bracket text can write the segment for another class.
+std::string mediaSuffix(const MediaLabel& l);
+// The suffix of an image the head sees itself (Attached), word for word.
+extern const char kAttachedSuffix[];
 
 // A late or redelivered item: its Telegram date is more than kLateItemS before the
 // device clock (false while the clock is unset, before 2020). Such an item carries

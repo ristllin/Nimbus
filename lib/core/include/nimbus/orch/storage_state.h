@@ -32,10 +32,18 @@ struct StorageState {
   // that is out of settings-storage room instead of guessing.
   bool        nvsReserveStarved = false;
   uint32_t    nvsReserveRefused = 0;
+  // L19-9 (lane E): the photo reader's last failure since boot - when (uptime
+  // seconds), which provider, the typed class ("billing", "network", ...) and the
+  // HTTP status; never the response body. visionErrClass "" = none (null).
+  uint32_t    visionErrAtS = 0;
+  std::string visionErrProvider;
+  std::string visionErrClass;
+  int         visionErrStatus = 0;
 };
 
 // "nvs":{"free":..,"fails":..,"lastFail":..},"nvsReserve":{"starved":..,"refused":..},
-// "tgOffsetSaved":..,"embedParked":..,"embedParkedWhy":..(null when not parked)
+// "tgOffsetSaved":..,"embedParked":..,"embedParkedWhy":..(null when not parked),
+// "visionLastErr":{"atS":..,"provider":..,"class":..,"status":..} (null when none)
 std::string storageStateJson(const StorageState& s);
 
 }  // namespace orch

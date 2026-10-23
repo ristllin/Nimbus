@@ -11,6 +11,7 @@
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 #include "scenarios_albums.h"
+#include "scenarios_photos.h"
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 
 namespace lab {
@@ -352,6 +353,11 @@ void scDreamNoEmbed(LabRig& rig, Ctx& c) { dreamNoEmbed(rig, checkOf(c), noteOf(
 // Lane D: albums as one turn (scenarios_albums.cpp).
 albums::Report albumsReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scAlbumsOneTurn(LabRig& rig, Ctx& c) { albums::albumsOneTurn(rig, albumsReport(c)); }
+// Lane E: photos to the head as images (scenarios_photos.cpp).
+photos::Report photosReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scPhotosNative(LabRig& rig, Ctx& c) { photos::photosNative(rig, photosReport(c)); }
+void scPhotoLabelHonesty(LabRig& rig, Ctx& c) { photos::photoLabelHonesty(rig, photosReport(c)); }
+void scCaptionScoring(LabRig& rig, Ctx& c) { photos::captionScoring(rig, photosReport(c)); }
 // The turn-structured history legs (scenarios_g0.h).
 history::Report histReport(Ctx& c) {
   return {[&c](bool ok, const std::string& w) { c.check(ok, w); },
@@ -397,6 +403,9 @@ const Scenario kScenarios[] = {
     {"albums-one-turn", "an album and its follow-up are one turn whose reply covers every photo", scAlbumsOneTurn, false},
     {"history-cache",  "facts, a photo and a routine ride the history once; a replay storm is one row", scHistoryCache, false},
     {"episodic-dates", "memory_episodic rows carry their dates: today's unread photo reads as today's", scEpisodicDates, false},
+    {"photos-native",  "three label photos go to the head as images; the reply reads their values", scPhotosNative, false},
+    {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
+    {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
 };
 
 }  // namespace

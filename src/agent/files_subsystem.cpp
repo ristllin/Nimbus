@@ -1283,8 +1283,30 @@ void registerTools() {
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"chat_id":{"type":"string"}},"required":["project","name"]})");
 
+  // image.look (R1) - the head sees a photo as an image only in the turn it arrived;
+  // an earlier photo is looked at again on demand, by the ref in its label, with one
+  // question. One caption-step request (the provider walk, the shared park), through
+  // the work slot like every TLS user. Turn-only: the request blocks for seconds, so it
+  // runs on the turn task, never the AsyncTCP /mcp path. A caller that is not the owner
+  // looks only at photos of its own chat.
+  reg.add("image.look",
+          "Look again at a photo sent earlier and answer one question about it. ref = the "
+          "16 hex characters in its [image ... ref=...] label; question = what to look for "
+          "(copy any text you need from it). One provider call: use it only when the stored "
+          "record of the photo does not answer the question.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            if (!agent::orchestrator::turnInFlight())
+              return nimbus::orch::ToolResult::fail("image.look is only available during a turn");
+            std::string err;
+            const std::string answer =
+                agent::vision::look(argStr(a, "ref"), argStr(a, "question"), who.ns, who.owner, err);
+            if (answer.empty()) return nimbus::orch::ToolResult::fail(err);
+            return nimbus::orch::ToolResult::ok(answer);
+          },
+          R"({"type":"object","properties":{"ref":{"type":"string"},"question":{"type":"string"}},"required":["ref","question"]})");
+
   // image.generate - the write half of image support (the read half is inbound
-  // photos -> describeImage). Generates a PNG from a prompt, streams it to the
+  // photos to the head as images, image.look for an earlier one). Generates a PNG from a prompt, streams it to the
   // durable store as an Image file, and (optionally) reads it back with a vision
   // description. The saved Image is a first-class artifact: it appears in Memory
   // & Files, is found by files.list/files.search, and files.send delivers it to

@@ -6,11 +6,14 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../support/image_turn_fixture.h"
+#include "../../lib/harness/src/providers/image_parts.h"   // refusedImages - the image refusal rule
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/transcript.h"
+#include "nimbus/orch/turn_images.h"
 
 // Stage H wire suite - the Anthropic provider: the Messages-API forced-tool
 // single shot (ADVISORY schema - no strict:true, descriptions STRIPPED to fit
@@ -907,6 +910,278 @@ static void test_cap_table_rows_retry_keeps_more_room_under_the_clamp() {
   }
 }
 
+// ---- R1: photos to the head as images --------------------------------------------
+// The photos ride the seeded user message (the newest user message) as image parts,
+// each after a one-line label and before the turn text; never a cache point; the bytes
+// spliced at send time (no marker left, no base64 JSON string built); tool_choice auto.
+
+static const char* str(JsonVariantConst v) { return v | ""; }
+
+static void antPhotoTurn(FakeProviderDeps& d, harness_test::PhotoTurn& fx, const char* model, bool& ok,
+                         std::string& err) {
+  auto pd = d.contract();
+  const std::string m = model;
+  pd.orchModel = [m](const char*) { return m; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out;
+  ok = providers::orchTurnAnthropic(pd, conv, "SYS", fx.text, out, err, &rig.ht, nullptr);
+}
+
+static void test_r1_images_ride_the_newest_user_message() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, toolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  for (size_t r = 0; r < 2; ++r) {
+    JsonDocument req;
+    TEST_ASSERT_FALSE(deserializeJson(req, reqBody(d, r), DeserializationOption::NestingLimit(64)));
+    JsonArrayConst c0 = req["messages"][0]["content"];
+    TEST_ASSERT_EQUAL(5, (int)c0.size());   // label, image, label, image, the turn text
+    TEST_ASSERT_EQUAL_STRING("text", str(c0[0]["type"]));
+    TEST_ASSERT_EQUAL_STRING("[image 1/2 ref=0123456789abcdef]", str(c0[0]["text"]));
+    TEST_ASSERT_EQUAL_STRING("image", str(c0[1]["type"]));
+    TEST_ASSERT_EQUAL_STRING("base64", str(c0[1]["source"]["type"]));
+    TEST_ASSERT_EQUAL_STRING("image/jpeg", str(c0[1]["source"]["media_type"]));
+    TEST_ASSERT_EQUAL_STRING(harness_test::b64Of(fx.a).c_str(), str(c0[1]["source"]["data"]));
+    TEST_ASSERT_EQUAL_STRING("[image 2/2 ref=fedcba9876543210]", str(c0[2]["text"]));
+    TEST_ASSERT_EQUAL_STRING("image/png", str(c0[3]["source"]["media_type"]));
+    TEST_ASSERT_EQUAL_STRING(harness_test::b64Of(fx.b).c_str(), str(c0[3]["source"]["data"]));
+    TEST_ASSERT_NOT_NULL(strstr(str(c0[4]["text"]), "They wrote: what do the labels say?"));
+    TEST_ASSERT_NOT_NULL(strstr(str(c0[4]["text"]), "(attached: the photo itself is in this message)"));
+    int images = 0;
+    bool cached = false;
+    harness_test::walkParts(req["messages"], "image", images, cached);
+    TEST_ASSERT_EQUAL_MESSAGE(2, images, "the photos ride the seeded message only, once");
+    TEST_ASSERT_FALSE_MESSAGE(cached, "an image part never carries cache_control");
+    TEST_ASSERT_EQUAL_STRING("auto", str(req["tool_choice"]["type"]));   // never forced
+    TEST_ASSERT_EQUAL(2, (int)d.http.spliced[r].size());   // the bytes were spliced at send time
+    TEST_ASSERT_TRUE(d.http.spliced[r][0].base64);
+    TEST_ASSERT_FALSE(bodyHas(d, r, "nimg:"));
+    TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(d.http.seen[r], "anthropic-beta").c_str());
+  }
+  // Round 1: the seeded message is the last one, so the moving cache point is its
+  // turn text, after the photos. Round 2: the tool result message carries no photo.
+  JsonDocument r1, r2;
+  deserializeJson(r1, reqBody(d, 0), DeserializationOption::NestingLimit(64));
+  deserializeJson(r2, reqBody(d, 1), DeserializationOption::NestingLimit(64));
+  TEST_ASSERT_FALSE(r1["messages"][0]["content"][4]["cache_control"].isNull());
+  TEST_ASSERT_EQUAL(3, (int)r2["messages"].size());
+  int later = 0;
+  bool cached = false;
+  harness_test::walkParts(r2["messages"][2], "image", later, cached);
+  TEST_ASSERT_EQUAL(0, later);
+  TEST_ASSERT_EQUAL(0, fx.transcribed);   // the head saw them: no caption call
+}
+
+// Upload once: each photo goes to the Files API once (multipart, raw bytes spliced),
+// every round references it by file_id with the Files beta, and the uploads are queued
+// for deletion when the loop ends (deleted later by the idle step, never before the reply).
+static void test_r1_anthropic_uploads_once_and_references_file_ids() {
+  harness_test::PhotoTurn fx;
+  fx.set->uploadOnce = true;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_a1\",\"type\":\"file\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_b2\",\"type\":\"file\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, toolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
+  for (size_t u = 0; u < 2; ++u) {
+    const agent::HttpRequest& up = d.http.seen[u];
+    TEST_ASSERT_EQUAL_STRING("POST", up.method.c_str());
+    TEST_ASSERT_EQUAL_STRING("files-api-2025-04-14", headerOf(up, "anthropic-beta").c_str());
+    TEST_ASSERT_EQUAL(0, (int)headerOf(up, "Content-Type").find("multipart/form-data; boundary="));
+    TEST_ASSERT_EQUAL(1, (int)d.http.spliced[u].size());
+    TEST_ASSERT_FALSE(d.http.spliced[u][0].base64);   // raw bytes, no base64 overhead
+    const std::vector<uint8_t>& raw = u == 0 ? fx.a : fx.b;
+    TEST_ASSERT_TRUE(up.body.find(std::string(raw.begin(), raw.end())) != std::string::npos);
+  }
+  TEST_ASSERT_NOT_NULL(strstr(d.http.seen[0].body.c_str(), "filename=\"0123456789abcdef.jpg\""));
+  TEST_ASSERT_NOT_NULL(strstr(d.http.seen[1].body.c_str(), "filename=\"fedcba9876543210.png\""));
+  for (size_t r = 2; r < 4; ++r) {
+    JsonDocument req;
+    deserializeJson(req, reqBody(d, r), DeserializationOption::NestingLimit(64));
+    JsonArrayConst c0 = req["messages"][0]["content"];
+    TEST_ASSERT_EQUAL_STRING("file", str(c0[1]["source"]["type"]));
+    TEST_ASSERT_EQUAL_STRING("file_a1", str(c0[1]["source"]["file_id"]));
+    TEST_ASSERT_EQUAL_STRING("file_b2", str(c0[3]["source"]["file_id"]));
+    TEST_ASSERT_TRUE(c0[1]["source"]["data"].isNull());
+    TEST_ASSERT_TRUE(d.http.spliced[r].empty());   // nothing re-sent
+    TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01,files-api-2025-04-14",
+                             headerOf(d.http.seen[r], "anthropic-beta").c_str());
+  }
+  TEST_ASSERT_EQUAL(2, (int)providers::pendingUploadDeletes());
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/file_a1", 200, "{\"id\":\"file_a1\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/file_b2", 404, "{}"});
+  auto pd = d.contract();
+  TEST_ASSERT_EQUAL(1, providers::deletePendingUploads(pd, 1));   // one per idle step
+  TEST_ASSERT_EQUAL(1, providers::deletePendingUploads(pd, 1));
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+  TEST_ASSERT_EQUAL_STRING("DELETE", d.http.seen[4].method.c_str());
+  TEST_ASSERT_EQUAL_STRING("/v1/files/file_a1", d.http.seen[4].path.c_str());
+  TEST_ASSERT_EQUAL_STRING("files-api-2025-04-14", headerOf(d.http.seen[4], "anthropic-beta").c_str());
+}
+
+// A transient delete failure keeps the id for a later idle step; a refusal for good
+// (the key changed) drops it.
+static void test_r1_upload_delete_retries_only_transient_failures() {
+  harness_test::PhotoTurn fx;
+  fx.set->uploadOnce = true;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_x\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_y\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  auto pd = d.contract();
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/file_x", 503, "{}"});
+  TEST_ASSERT_EQUAL(0, providers::deletePendingUploads(pd, 1));   // a 503: not settled...
+  TEST_ASSERT_EQUAL(2, (int)providers::pendingUploadDeletes());   // ...the id is kept for a later step
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/file_y", 401, "{}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/file_x", 200, "{}"});
+  TEST_ASSERT_EQUAL(2, providers::deletePendingUploads(pd, 5));
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+}
+
+// The multipart boundary is never inside the photo's bytes: a sender's bytes that
+// carry the would-be boundary get another one, so they cannot add parts to the upload.
+static void test_r1_upload_boundary_is_not_in_the_bytes() {
+  harness_test::PhotoTurn fx;
+  fx.set->uploadOnce = true;
+  const std::string evil = "\r\n--nimbus-photo-t3st-0123456789abcdef\r\nContent-Disposition: form-data; name=\"purpose\"\r\n";
+  fx.a.assign(evil.begin(), evil.end());
+  fx.set->items[0].bytes = fx.a.data();
+  fx.set->items[0].len = fx.a.size();
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_e\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_f\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  const std::string ct = headerOf(d.http.seen[0], "Content-Type");
+  const std::string boundary = ct.substr(ct.find("boundary=") + 9);
+  TEST_ASSERT_EQUAL_STRING("nimbus-photo-t3st-0123456789abcdefx", boundary.c_str());
+  TEST_ASSERT_TRUE(evil.find("--" + boundary) == std::string::npos);
+  auto pd = d.contract();
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/", 200, "{}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files/", 200, "{}"});
+  providers::deletePendingUploads(pd, 5);
+}
+
+// A failed upload sends that photo inline instead (never a failed turn), and a
+// network failure stops the other uploads at once.
+static void test_r1_failed_upload_falls_back_inline() {
+  harness_test::PhotoTurn fx;
+  fx.set->uploadOnce = true;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 500, "{\"error\":{\"message\":\"overloaded\"}}"});
+  d.http.script.push_back(harness_test::transportCut(0));
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 2, harness_test::b64Of(fx.a).c_str()));
+  TEST_ASSERT_TRUE(bodyHas(d, 2, harness_test::b64Of(fx.b).c_str()));
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+}
+
+// A model without image input reads the transcriptions in place of the labels, made
+// once per photo for the whole turn; no image part, no splice.
+static void test_r1_model_without_image_input_reads_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, toolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "model-anthropic", ok, err);   // not a claude- id: no image input
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  for (size_t r = 0; r < 2; ++r) {
+    TEST_ASSERT_TRUE(bodyHas(d, r, "(machine transcription by anthropic: photo 1 shows a label)"));
+    TEST_ASSERT_FALSE(bodyHas(d, r, "(attached: the photo itself is in this message)"));
+    TEST_ASSERT_FALSE(bodyHas(d, r, "\"type\":\"image\""));
+    TEST_ASSERT_TRUE(d.http.spliced[r].empty());
+  }
+  TEST_ASSERT_EQUAL(2, fx.transcribed);
+}
+
+// The provider refuses the photos themselves (400 naming the image): the same round
+// is re-sent once with the transcriptions, and the rest of the turn stays blind.
+static void test_r1_refused_images_are_resent_as_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 400,
+                           "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":"
+                           "\"messages.0.content.1.image.source.base64.data: The image was specified using the "
+                           "image/jpeg media type, but does not appear to be a valid jpeg image\"}}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, toolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"image\""));
+  for (size_t r = 1; r < 3; ++r) {
+    TEST_ASSERT_FALSE(bodyHas(d, r, "\"type\":\"image\""));
+    TEST_ASSERT_TRUE(bodyHas(d, r, "(machine transcription by anthropic: photo 2 shows a label)"));
+  }
+  TEST_ASSERT_TRUE(fx.set->rejected);
+  // A 400 about something else is not an image refusal: no blind re-send.
+  TEST_ASSERT_FALSE(providers::imageparts::refusedImages(400, "max_tokens: must be at most 64000"));
+  TEST_ASSERT_FALSE(providers::imageparts::refusedImages(500, "image service down"));
+  TEST_ASSERT_TRUE(providers::imageparts::refusedImages(413, "request_too_large"));
+  TEST_ASSERT_TRUE(providers::imageparts::refusedImages(422, "Invalid Image URL"));
+}
+
+// The single shot (tool loop off) shows no photo: the transcriptions ride its text.
+static void test_r1_single_shot_reads_transcriptions() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.toolLoop = false;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, singleShotBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "(machine transcription by anthropic: photo 1 shows a label)"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"type\":\"image\""));
+}
+
+// No photo in flight: the request is byte-for-byte the pre-R1 shape (the seeded
+// message is one text block, nothing spliced).
+static void test_r1_no_photos_no_change() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr));
+  JsonDocument req;
+  deserializeJson(req, reqBody(d, 0), DeserializationOption::NestingLimit(64));
+  TEST_ASSERT_EQUAL(1, (int)req["messages"][0]["content"].size());
+  TEST_ASSERT_EQUAL_STRING("USER", str(req["messages"][0]["content"][0]["text"]));
+  TEST_ASSERT_TRUE(d.http.spliced[0].empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_fold_request_has_its_own_budget_and_no_tool);
@@ -937,6 +1212,15 @@ int main(int, char**) {
   RUN_TEST(test_cum514_short_report_still_drops_notes);
   RUN_TEST(test_sub_cancel_sends_interrupt);
   RUN_TEST(test_cap_table_rows_retry_keeps_more_room_under_the_clamp);
+  RUN_TEST(test_r1_images_ride_the_newest_user_message);
+  RUN_TEST(test_r1_anthropic_uploads_once_and_references_file_ids);
+  RUN_TEST(test_r1_upload_delete_retries_only_transient_failures);
+  RUN_TEST(test_r1_failed_upload_falls_back_inline);
+  RUN_TEST(test_r1_upload_boundary_is_not_in_the_bytes);
+  RUN_TEST(test_r1_model_without_image_input_reads_transcriptions);
+  RUN_TEST(test_r1_refused_images_are_resent_as_transcriptions);
+  RUN_TEST(test_r1_single_shot_reads_transcriptions);
+  RUN_TEST(test_r1_no_photos_no_change);
   UNITY_END();
   return 0;
 }

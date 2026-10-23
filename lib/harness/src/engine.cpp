@@ -27,6 +27,7 @@
 #include "nimbus/harness/conversation.h"   // histV2: historyTurns / fitHistory / foldSlice
 #include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
 #include "nimbus/harness/turn_inbox.h"     // histV2: what the channel says the sender sent
+#include "nimbus/orch/turn_images.h"       // R1: the turn's photos, shown to the head as images
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
@@ -1147,6 +1148,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       tf.chain.note(host, err.empty() ? std::string("failed with no error text") : err);
     if (!tf.metered) {
       tf.metered = true;
+      orch::takeVisionSpend(tf.spend);   // R1: the caption step's spend since the last turn
       meterSpend(tf.spend, attribution_);
     }
     const orch::TokenUsage total = tf.spend.total();
@@ -1199,7 +1201,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // one attempt's spend under another host, and a failed attempt's billed rounds
     // are still filed. Only this attempt's echo can name its model (gate G5).
     orch::TokenUsage attempt;
-    const bool r = d_.hosts.run(h, cv, instructions, inputs, outJson, err, headToolsPtr, &attempt);
+    // R1: a head loop whose model takes images shows the turn's photos itself; any
+    // other path (a single shot, a model without image input) reads them as their
+    // machine transcriptions in place of their labels.
+    orch::TurnImages* photos = orch::activeTurnImages();
+    const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
+    const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
+    const bool r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(inputs) : inputs, outJson, err,
+                                headToolsPtr, &attempt);
     tf.spend.add(h.c_str(),
                  d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
     if (r) {
@@ -1838,6 +1847,11 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
 
 void TurnEngine::handleMessage(const std::string& text, const std::string& fromName,
                                const std::string& chatId) {
+  // R1: the photos the channel offered for this turn (their bytes, refs and labels),
+  // taken first so a refused or duplicate turn still frees them, and held until the
+  // turn ends: every head loop of the turn shows them to the head as images.
+  const std::unique_ptr<nimbus::orch::TurnImages> photos = nimbus::orch::takeTurnImages(chatId, text);
+  const nimbus::orch::ActiveTurnImages photosInFlight(photos.get());
   // CUM-211: fail HONEST, never silent. With no routable provider a turn would
   // otherwise burn a keyless round-trip and deliver a misleading cause (a 401
   // "rejected this device's key" when there IS no key), or - on a build without
