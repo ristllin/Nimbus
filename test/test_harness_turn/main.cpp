@@ -3509,8 +3509,12 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("custom", r.attempts[0].host.c_str(), c.code);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.memCalls.size(), c.code);
-    const std::string want = c.lands ? std::string("Saved it to memory.")
-                                     : std::string("Saved it to memory.\n\n") + harness_test::kNotSavedLine;
+    const std::string want =
+        c.lands ? std::string("Saved it to memory.")
+                : std::string("Saved it to memory.\n\n") +
+                      (std::strcmp(c.code, orch::kMemOutcomeQueued) == 0
+                           ? "(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
+                           : harness_test::kNotSavedLine);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("serial", r.delivered[0].first.c_str(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.code);

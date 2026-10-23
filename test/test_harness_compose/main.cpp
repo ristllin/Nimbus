@@ -308,7 +308,7 @@ static void test_chat_summary_section_above_window() {
 static void test_chat_summary_yields_to_window_by_clipping() {
   ComposeInputs in = cannedInputs();
   in.chatSummary = "\n## CONVERSATION SUMMARY (compacted earlier)\n" +
-                   std::string(3000, 's') + "\n";
+                   std::string(3500, 's') + "\n";
   in.recentConversation = "\n## RECENT CONVERSATION\n- [user] KEEP-ME\n";
   // A budget with room for the base prompt + the WINDOW but not both bulk blocks.
   // The window keeps priority (it is the fresher signal), but since Context

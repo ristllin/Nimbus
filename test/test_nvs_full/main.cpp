@@ -1607,7 +1607,10 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
   // main.cpp lost two (24 -> 22) when C2 checked the battModel and lbPingEp writes.
   const std::map<std::string, size_t> baseline = {
       {"src/agent/memory_subsystem.cpp", 2},
-      {"src/agent/orchestrator.cpp", 16},   {"src/agent/provider_verify.cpp", 6},
+      // orchestrator.cpp 16 -> 4 (23 Oct, lane S2): the device config executor now
+      // consumes each setter's verdict (did a stored value change?), so only the
+      // reviewed (void) discards remain.
+      {"src/agent/orchestrator.cpp", 4},    {"src/agent/provider_verify.cpp", 6},
       {"src/agent/store_config.cpp", 1},
       {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 22},
       {"src/net/cloud_mint.cpp", 2},        {"src/net/relay_client.cpp", 6},
