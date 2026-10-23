@@ -318,6 +318,7 @@ class StormBench:
         self.dates: Dict[int, int] = {}  # update id -> the date its first delivery carried
         self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
         self.windows: List[Tuple[str, List[str]]] = []  # (log source, lines) of each closed window
+        self.sent_texts: List[str] = []  # what reached the owner over Telegram in the windows (bot mode)
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
 
     # ---- reads --------------------------------------------------------------------
@@ -747,6 +748,16 @@ class StormBench:
             self.verb("NVSFILL 0", "NVSFILL", timeout=20.0)
 
     # ---- evidence and the table ---------------------------------------------------------------
+    def begin(self, leg: str) -> None:
+        """A candidate run records itself as unfinished (FAIL) before it starts; finish()
+        replaces the record."""
+        if self.role == g.CANDIDATE and leg:
+            now = time.time()
+            g.write_evidence(
+                EVIDENCE_DIR,
+                g.unfinished_record(g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, now)),
+            )
+
     def finish(self, leg: str, metrics: g.Metrics, bounds: g.Bounds) -> dict:
         """Write this run's evidence and print the leg's before/after table (the newest
         control record in the evidence directory is the 'before')."""
@@ -755,6 +766,8 @@ class StormBench:
             # unit's hour was used up before the leg, not by its storm.
             metrics.blocked_by = CEILING_BLOCKED
         metrics.extra.setdefault("logSource", ",".join(src for src, _ in self.windows) or self.tap.source)
+        if self.sent_texts:
+            metrics.extra.setdefault("telegramSent", [t[:160] for t in self.sent_texts])
         rec = g.evidence_record(
             g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, time.time()), metrics, bounds
         )
@@ -912,6 +925,7 @@ class Window:
         self.mock_requests = (len(self.bench.mock.completions()) - self.mock_before) if self.bench.mock else 0
         out = self.bench.outbound()
         self.sent = None if out is None else out[self.out_before :]
+        self.bench.sent_texts += [str(r.get("text") or "") for r in self.sent or []]
         return self
 
     def notices(self, notice_re) -> int:

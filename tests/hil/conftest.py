@@ -420,6 +420,7 @@ def storm(device, net, request):
                 device.reopen_after_reenumerate()
         device.ensure_mode(1)
         bench = kit.StormBench(device, net, mock=mock, leg=getattr(request.module, "LEG", ""))
+        bench.begin(bench.leg)
         bench.settle()
         print(f"\n[storm] unit {bench.unit or '?'} build {bench.build} ({bench.role})")
         yield bench

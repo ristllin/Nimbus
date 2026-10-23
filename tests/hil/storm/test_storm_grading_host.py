@@ -455,3 +455,17 @@ def test_a_slow_crash_boot_is_seen_by_its_boot_number(monkeypatch):
     bench.settle = lambda: None
     bench.wait_back(timeout=5.0, before_ms=(300000, 7))
     assert seen == [400000]
+
+
+def test_an_unfinished_run_is_a_fail_that_its_own_record_replaces(tmp_path):
+    run = g.RunId("e_low_heap", g.CANDIDATE, "v", "eb50beb8", "A", 100.0, 100.0)
+    first = g.write_evidence(str(tmp_path), g.unfinished_record(run))
+    rec = g.load_evidence(str(tmp_path))[0]
+    assert rec["grade"] == g.FAIL and g.UNFINISHED in rec["verdicts"]["usable"]["detail"]
+    m = g.Metrics(paid_turns=1, provider_requests=1, parked_requests=0, notices=1, identical_peak=1, usable=True)
+    done = g.evidence_record(
+        g.RunId("e_low_heap", g.CANDIDATE, "v", "eb50beb8", "A", 100.0, 500.0), m, g.Bounds(3, 12, 5, notices=(0, 1))
+    )
+    assert g.write_evidence(str(tmp_path), done) == first  # the same file: replaced
+    records = g.load_evidence(str(tmp_path))
+    assert len(records) == 1 and records[0]["grade"] == g.PASS

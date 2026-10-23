@@ -460,9 +460,30 @@ def evidence_record(run: RunId, metrics: Metrics, bounds: Optional[Bounds]) -> d
     }
 
 
+UNFINISHED = "the leg did not finish (an error or an interrupted run)"
+
+
+def unfinished_record(run: RunId) -> dict:
+    """The record a candidate run writes when it starts: graded FAIL until the leg's own
+    record replaces it (same file), so a run that errors out can never leave an older
+    PASS as the newest evidence for the release gate."""
+    vs = {p: Verdict(FAIL, UNFINISHED) for p in PROPERTIES}
+    return {
+        "schema": EVIDENCE_SCHEMA,
+        **asdict(run),
+        "finishedUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(run.finished)),
+        "metrics": asdict(Metrics(notes=[UNFINISHED])),
+        "bounds": None,
+        "verdicts": {k: {"status": v.status, "detail": v.detail} for k, v in vs.items()},
+        "grade": FAIL,
+    }
+
+
 def write_evidence(directory: str, record: dict) -> str:
+    """One file per run, named by the run's start: the leg's record replaces the
+    unfinished record its start wrote."""
     os.makedirs(directory, exist_ok=True)
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(record["finished"]))
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(record["started"]))
     path = os.path.join(directory, f"{record['leg']}-{record['role']}-{stamp}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1, sort_keys=True)
