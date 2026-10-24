@@ -58,8 +58,17 @@ def _dump(session, ip: str) -> str:
 
 
 def _history(dump: str) -> str:
-    """The RECENT CONVERSATION block of the live prompt (the dump opens with a
-    legend naming every heading, so the block is the LAST occurrence)."""
+    """The history the live prompt carries. The merged histV2 (G0/G1) rides it
+    as REAL MESSAGES: the [user]/[assistant] lines between the 'conversation
+    history' header and the 'cached blocks end' line - there is no '## RECENT
+    CONVERSATION' heading anymore (the pre-G0 legs parsed that text block and
+    read an empty window on the merged image). With histV2 switched OFF (the
+    switch-off leg restores the old shape) the old text block returns, so the
+    parser falls back to it."""
+    at = dump.find("[----- conversation history:")
+    if at >= 0:
+        end = dump.find("[----- cached blocks end", at)
+        return dump[at : end if end >= 0 else len(dump)]
     at = dump.rfind("## RECENT CONVERSATION")
     if at < 0:
         return ""
@@ -166,7 +175,7 @@ def test_telegram_storm_keeps_the_history(device: Device, net):
     if copies == 1:
         assert re.search(r"\(x\d+\)", hist), "a captured storm row carries no count"
     assert f"{RUN} tg seed: the gate code is 5521" in hist, "the distinct owner message was pushed out"
-    assert "- assistant" in hist, "no assistant reply left in the history"
+    assert "[assistant]" in hist, "no assistant reply left in the history"
     assert _folds(s, ip, str(chat)) - folds0 <= 1, "the storm caused more than one fold"
 
 

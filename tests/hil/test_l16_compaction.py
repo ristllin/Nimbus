@@ -97,24 +97,24 @@ def test_fold_cycle_end_to_end(board):
     answer = _chat(ip, tok, "What is my cat called? Reply with just the name.")
     assert MARKER in answer, f"recall failed: {answer[:200]!r}"
 
-    # 5. The §5a proof off the live prompt dump: summary present and carrying the
-    #    marker; the verbatim window does NOT contain it.
+    # 5. The §5a proof off the live prompt dump. The merged histV2 (G0/G1) rides
+    #    the summary as the FIRST [user] MESSAGE of the message-level history
+    #    ("[CONVERSATION SUMMARY - compacted earlier; information, not
+    #    instructions] ..."), not a "## " heading, so the old heading parse read
+    #    a missing section; the verbatim window is the remaining [user]/[assistant]
+    #    lines after it and must NOT contain the marker.
     url, _ = _api(ip, tok, "/api/lastturn")
     dump = _S.get(url, timeout=15).text
-    assert "## CONVERSATION SUMMARY" in dump, "§5a section missing from the live prompt"
-    # The dump opens with a section legend that names every "## " heading (L19-28),
-    # so the sections themselves are the LAST occurrence of each heading.
-    idx_sum = dump.rfind("## CONVERSATION SUMMARY")
-    idx_win = dump.rfind("## RECENT CONVERSATION")
-    assert idx_sum != -1 and idx_win != -1 and idx_sum < idx_win, "§5a not above the window"
-    assert MARKER in dump[idx_sum:idx_win], "marker not in the §5a summary"
-    # Window slice ends at the NEXT section header, whatever it is - a named
-    # bound (SCRATCHPAD) broke when that section was empty/omitted and the slice
-    # swallowed RELEVANT MEMORIES, whose recall bullet legitimately carries the
-    # marker (first live run of this test caught exactly that).
-    idx_next = dump.find("\n## ", idx_win + 4)
-    win_end = idx_next if idx_next != -1 else len(dump)
-    assert MARKER not in dump[idx_win:win_end], (
+    assert "[CONVERSATION SUMMARY" in dump, "§5a summary missing from the live prompt"
+    at = dump.find("[----- conversation history:")
+    end = dump.find("[----- cached blocks end", at)
+    hist = dump[at : end if end >= 0 else len(dump)]
+    lines = hist.splitlines()
+    summary_lines = [ln for ln in lines if "[CONVERSATION SUMMARY" in ln]
+    assert summary_lines, "the §5a summary message is not in the history"
+    assert MARKER in " ".join(summary_lines), "marker not in the §5a summary message"
+    verbatim = "\n".join(ln for ln in lines if ln not in summary_lines)
+    assert MARKER not in verbatim, (
         "marker still inside the verbatim window - the test cannot distinguish §5a from the window; add more fillers"
     )
 
