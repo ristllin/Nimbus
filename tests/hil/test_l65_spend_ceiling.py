@@ -143,6 +143,18 @@ def _mcp(tool: str, args: dict) -> str:
     return " ".join(c.get("text", "") for c in r.json().get("result", {}).get("content", []))
 
 
+def _mcp_as_owner(tool: str, args: dict) -> str:
+    """The same tool call through the test astool route as chat=web (the admin
+    pseudo-channel). The LAN /mcp endpoint is deliberately USER-role (its own
+    namespace, v3.7.0), and the merged RBAC now refuses admin-only tools there
+    ('only an admin's conversation can arm wakeups') - correct behavior; the
+    owner-shaped drives go through this seam (item 2, leg 2)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
+    r = _S.post(f"http://{_IP}/api/test/astool", data={"chat": "web", "body": body}, timeout=20)
+    assert r.status_code == 200, f"astool {tool} -> {r.status_code}: {r.text[:160]}"
+    return r.text
+
+
 @pytest.fixture(scope="module")
 def board(device):
     global _S, _IP
@@ -241,7 +253,7 @@ def test_2_every_seam_refuses_with_zero_requests(board):
         data={"action": "create", "name": "l65-routine", "prompt": "Say ok.", "schedule": sched},
         timeout=10,
     )
-    wk = _mcp("wakeup.set", {"minutes": 2, "note": "l65 wakeup"})
+    wk = _mcp_as_owner("wakeup.set", {"minutes": 2, "note": "l65 wakeup"})
     try:
         # The DREAM drill (the nightly dream's scheduled path).
         device.send("DREAM")
@@ -276,7 +288,26 @@ def test_3_telegram_gets_exactly_one_notice(board, secrets):
 
     def notices() -> int:
         page = _S.get(f"http://{_IP}/api/tg/archive", params={"chat": str(chat), "day": day, "limit": 200}, timeout=15)
-        return sum(1 for row in page.json().get("rows", []) if row.get("dir") == "out" and FREEZE_WORDS in str(row))
+        rows = page.json().get("rows", [])
+        # An outbound ROW names its stored item; the text itself is served by
+        # /api/tg/archive/item (the storm kit fetches it the same way). The old
+        # substring check over the ROW json never matched, so a delivered
+        # notice read as 0 (item 2, leg 3).
+        n = 0
+        for row in rows:
+            if row.get("dir") != "out":
+                continue
+            raw = str(row.get("raw") or "")
+            if not raw:
+                continue
+            item = _S.get(
+                f"http://{_IP}/api/tg/archive/item",
+                params={"chat": str(chat), "day": day, "name": raw, "inline": "1"},
+                timeout=15,
+            )
+            if FREEZE_WORDS in str(item.text):
+                n += 1
+        return n
 
     r = _S.post(f"http://{_IP}/api/orch", data={"tgToken": str(token), "tgAllow": str(chat)}, timeout=10)
     assert r.status_code == 200
