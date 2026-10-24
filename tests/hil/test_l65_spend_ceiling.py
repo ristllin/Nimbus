@@ -98,20 +98,39 @@ def _web_turn(text: str, timeout_s: int = 120):
     pytest.fail(f"turn {turn} was not answered within {timeout_s}s")
 
 
-def _web_notices(words: str) -> int:
+def _web_page() -> list:
+    r = _S.get(f"http://{_IP}/api/mem/episodic", params={"session": "web", "limit": 200}, timeout=15)
+    assert r.status_code == 200, f"/api/mem/episodic -> {r.status_code}"
+    return r.json().get("messages", [])
+
+
+def _web_floor() -> str:
+    """The newest row id the web page holds right now. The boot's bounded
+    episodic backfill surfaces older card rows for seconds-to-minutes after a
+    restart (the fixture reboots the board), so a plain page count can GROW
+    mid-leg with rows that predate the episode (live proof, item 2: a fresh
+    crossing's count read +8 while the row ids showed ONE new notice). Row ids
+    mint monotonically (m%08x; the counter seeds past the card's highest id
+    each boot), so the floor scopes every later count to rows written after
+    it - the same class as the claim-check bench's stale-row fix."""
+    return max((str(r.get("id") or "") for r in _web_page()), default="")
+
+
+def _web_notices(words: str, floor: str = "") -> int:
     """The web chat's NOTICE rows that carry `words`: assistant rows TAGGED
     ev:spend, the notice pump's own marker. The merged honest-refusal wording
     (item 2, leg 2) puts freeze words into the refused seams' reply rows too -
     the old raw substring count read 51 where one notice was owed - so the
-    counter is scoped to the notice's own tag, never the words alone."""
-    r = _S.get(f"http://{_IP}/api/mem/episodic", params={"session": "web", "limit": 200}, timeout=15)
-    assert r.status_code == 200, f"/api/mem/episodic -> {r.status_code}"
+    counter is scoped to the notice's own tag, never the words alone; `floor`
+    (from _web_floor) further scopes it to rows minted after the caller's
+    snapshot."""
     n = 0
-    for row in r.json().get("messages", []):
+    for row in _web_page():
         if (
             row.get("role") == "assistant"
             and words in str(row.get("text") or "")
             and "ev:spend" in str(row.get("tags") or "")
+            and str(row.get("id") or "") > floor
         ):
             n += 1
     return n
@@ -160,7 +179,7 @@ def test_1_the_crossing_freezes_and_tells_the_web_chat_once(board):
     while time.time() < deadline and _spend(device)["state"]["frozen"]:
         time.sleep(2.0)
     assert _spend(device)["state"]["frozen"] is False, "raising the limit did not end the old freeze episode"
-    before = _web_notices(FREEZE_WORDS)
+    floor = _web_floor()  # taken with the old episode closed: only this episode's rows count
     _console(device, f"SPENDSET limit {LIMIT_CENTS}", "SPENDSET")
     _console(device, f"SPENDSET {LIMIT_CENTS - 10}", "SPENDSET")
     assert _spend(device)["state"]["frozen"] is False
@@ -175,11 +194,11 @@ def test_1_the_crossing_freezes_and_tells_the_web_chat_once(board):
     # channel past the old fixed 12 s; poll for the notice instead of sleeping.
     deadline, n = time.time() + 45.0, 0
     while time.time() < deadline:
-        n = _web_notices(FREEZE_WORDS)
-        if n >= before + 1:
+        n = _web_notices(FREEZE_WORDS, floor)
+        if n >= 1:
             break
         time.sleep(3.0)
-    assert n == before + 1, "the web chat must get exactly one freeze notice"
+    assert n == 1, f"the web chat must get exactly one freeze notice (got {n})"
 
 
 def _loops() -> list:
@@ -204,9 +223,13 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     # A spawn (the dispatch is refused at the wire before it leaves).
     _mcp("session.spawn", {"task": "list three fruits", "provider": "anthropic", "name": "l65"})
     log += _lines(device, 20.0)
-    # Image generation.
+    # Image generation. The merged build made image.generate TURN-SCOPED: an
+    # out-of-turn /mcp call is refused for availability ("only available during a
+    # turn") - an even stronger zero-request proof (no request can leave without a
+    # turn), but it never consults the freeze gate, so the gate assert below drops
+    # the image-gen seam for the out-of-turn shape (item 2's leg 2 finding).
     img = _mcp("image.generate", {"prompt": "a red circle"})
-    assert "spend ceiling" in img, img[:300]
+    assert "spend ceiling" in img or "during a turn" in img, img[:300]
     # A routine (the owner's, every 5 minutes) and a one-time wakeup (2 minutes): each
     # fire is deferred (not a fire, no request). Wake-ups are set to run without asking
     # for the leg and the owner's mode is put back.
@@ -240,7 +263,7 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     assert "scheduled routine refused" in log, "the routine fire was not refused"
     assert "TEST override answered" not in log, "a request reached the provider while frozen"
     gate1 = _spend(device)["gate"]
-    for seam in ("head", "image-gen", "dream", "wakeup", "routine"):
+    for seam in ("head", "dream", "wakeup", "routine"):  # image-gen: turn-scoped now (see above)
         assert gate1[seam][1] > gate0.get(seam, (0, 0))[1], f"the {seam} seam was not refused: {gate1}"
 
 
@@ -273,16 +296,19 @@ def test_3_telegram_gets_exactly_one_notice(board, secrets):
 
 def test_4_a_restart_keeps_the_freeze_and_sends_nothing_new(board):
     device = board
-    before = _web_notices(FREEZE_WORDS)
+    floor = _web_floor()
     device.reboot_and_confirm()
     st = _spend(device)["state"]
     assert st["frozen"] is True, f"the freeze did not survive the restart: {st}"
     time.sleep(15.0)
-    assert _web_notices(FREEZE_WORDS) == before, "a restart must not send the notice again"
+    assert _web_notices(FREEZE_WORDS, floor) == 0, "a restart must not send the notice again"
 
 
 def test_5_a_full_settings_store_changes_nothing(board):
     device = board
+    # PROVFAULT is RAM-only and leg 4's reboot cleared it: re-arm the fake
+    # provider, or this leg's turn runs on the live one (item 2, leg 5).
+    _console(device, f"PROVFAULT api.anthropic.com 200 {FAKE_TURN}", "PROVFAULT")
     fill = _console(device, "NVSFILL 4000", "NVSFILL", timeout=30.0)
     assert "full=1" in fill, f"NVSFILL did not fill the settings store: {fill}"
     try:
@@ -317,7 +343,7 @@ def test_7_the_month_rollover_clears_the_freeze_quietly(board):
     _console(device, f"SPENDSET limit {LIMIT_CENTS}", "SPENDSET limit")
     _console(device, f"SPENDSET {LIMIT_CENTS + 500}", "SPENDSET")
     time.sleep(12.0)  # this episode's notice goes out
-    before = _web_notices(FREEZE_WORDS)
+    floor = _web_floor()
     st = _spend(device)["state"]
     assert st["frozen"] is True
     month = int(st["month"])
@@ -329,7 +355,7 @@ def test_7_the_month_rollover_clears_the_freeze_quietly(board):
     time.sleep(75.0)  # the month rolls once a minute (the Telegram poll task)
     st = _spend(device)["state"]
     assert st["frozen"] is False and st["spentCents"] == 0, f"the rollover did not clear the freeze: {st}"
-    assert _web_notices(FREEZE_WORDS) == before, "the rollover must send no notice"
+    assert _web_notices(FREEZE_WORDS, floor) == 0, "the rollover must send no notice"
 
 
 def test_8_first_boot_after_the_update_tells_the_owner_once(board):
@@ -337,6 +363,8 @@ def test_8_first_boot_after_the_update_tells_the_owner_once(board):
     if os.environ.get("NIMBUS_L65_AFTER_OTA") != "1":
         pytest.skip("run right after the OTA from v4.5.14 with NIMBUS_L65_AFTER_OTA=1")
     device = board
+    # A total count (not a floor): the first-boot notice may land any time during
+    # the post-OTA boot, and the leg proves it exists once and does not repeat.
     time.sleep(15.0)
     assert _web_notices(MIGRATION_WORDS) == 1, "one first-boot notice about the ceiling"
     device.reboot_and_confirm()
