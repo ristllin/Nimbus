@@ -1714,6 +1714,27 @@ static bool processVoice(int slot, std::string& transcript) {
 }
 
 // One plain owner notice from the storm breakers, on this task's own outbound path.
+// The ceiling-notice wording (the guard split keeps each kind's text in its own lane).
+static String guardCeilingText(const nimbus::net::TgNotice& n) {
+  char when[32] = "";
+  const time_t at = (time_t)n.resumeAt;
+  if (time(nullptr) >= kClockSet) {
+    struct tm tm = {};
+    localtime_r(&at, &tm);
+    strftime(when, sizeof(when), "until %H:%M", &tm);
+  } else {
+    const uint32_t mins = (n.resumeAt > deviceEpoch() ? n.resumeAt - deviceEpoch() : 0) / 60 + 1;
+    snprintf(when, sizeof(when), "for about %u minutes", (unsigned)mins);
+  }
+  if (n.owner)
+    return String("Replies are paused ") + when + ": " + (unsigned)nimbus::net::kInboundTurnsPerHour +
+           " messages were answered in the last hour, the most it answers in an hour. Messages sent "
+           "before then are not answered; send them again after that.";
+  return String("Replies to other chats are paused ") + when + ": they used their share of the " +
+      (unsigned)nimbus::net::kInboundTurnsPerHour + " answers an hour. Your own messages still get "
+      "answers.";
+}
+
 // The duplicate-notice wording (the guard split keeps each kind's text in its own lane).
 static String guardDuplicateText(const nimbus::net::TgNotice& n) {
   return n.verdict == nimbus::net::DupVerdict::Replay
@@ -1732,24 +1753,7 @@ static void sendGuardNotice(const nimbus::net::TgNotice& n) {
   if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) {
     text = guardDuplicateText(n);
   } else if (n.kind == nimbus::net::TgNotice::Kind::Ceiling) {
-    char when[32] = "";
-    const time_t at = (time_t)n.resumeAt;
-    if (time(nullptr) >= kClockSet) {
-      struct tm tm = {};
-      localtime_r(&at, &tm);
-      strftime(when, sizeof(when), "until %H:%M", &tm);
-    } else {
-      const uint32_t mins = (n.resumeAt > deviceEpoch() ? n.resumeAt - deviceEpoch() : 0) / 60 + 1;
-      snprintf(when, sizeof(when), "for about %u minutes", (unsigned)mins);
-    }
-    if (n.owner)
-      text = String("Replies are paused ") + when + ": " + (unsigned)nimbus::net::kInboundTurnsPerHour +
-             " messages were answered in the last hour, the most it answers in an hour. Messages sent "
-             "before then are not answered; send them again after that.";
-    else
-      text = String("Replies to other chats are paused ") + when + ": they used their share of the " +
-             (unsigned)nimbus::net::kInboundTurnsPerHour + " answers an hour. Your own messages still get "
-             "answers.";
+    text = guardCeilingText(n);
   } else if (n.items == 1) {
     text = "Something you sent could not be processed: the device restarted twice while working on it. "
            "Send it again.";
