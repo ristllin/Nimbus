@@ -310,8 +310,7 @@ def _astool(be, tool: str, args: dict) -> dict:
     cost and state measurements. The route takes the chat and the JSON-RPC body
     as FORM FIELDS (like every other suite's astool call: chat + body); a JSON
     body with ?chat= in the URL is a 400 "need chat + body" (item 1, B2)."""
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": tool, "arguments": args}})
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
     r = be.net.post("/api/test/astool", data={"chat": TURN_CHAT, "body": body}, ip=be.ip, timeout=30.0)
     assert r.status_code == 200, f"astool {tool} -> {r.status_code} {r.text[:160]!r}"
     return r.json()
@@ -396,7 +395,8 @@ def test_l1b_a_failed_turn_is_diagnosed_from_the_device_log(custom_backend):  # 
     finally:
         be.device.cmd("FAULT provider off", expect="FAULT", timeout=6.0)
     reply = _turn_on_real_model(
-        be, "Something failed on your last turn. CALL the device.log tool (scan_kb 64, lines 60) now and tell me exactly what the matter was."
+        be,
+        "Something failed on your last turn. CALL the device.log tool (scan_kb 64, lines 60) now and tell me exactly what the matter was.",
     )
     rows = _tool_rows(be)
     assert any(r.startswith("device.log(") or r.startswith("device_log(") for r in rows), (
