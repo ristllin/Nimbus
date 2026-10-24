@@ -2258,6 +2258,28 @@ void pumpOrch() {
   }
 }
 
+void pumpBoot() {
+  // See test_console.h. A setup()-time reader that answers PING only: the full
+  // dispatch() needs the hooks main.cpp wires late in setup(), and before this
+  // pump nothing read Serial at all mid-boot (the kit's reopen after a restart
+  // met a healthy but PING-silent board for the whole of setup()).
+  static String s_bootLine;
+  int budget = kByteBudget;
+  while (Serial.available() > 0 && budget-- > 0) {
+    const int c = Serial.read();
+    if (c < 0) break;
+    if (c == '\n' || c == '\r') {
+      if (s_bootLine == "PING") {
+        Serial.printf("PONG\n");   // F13 liveness / reconnect probe
+        Serial.flush();
+      }
+      s_bootLine = static_cast<const char*>(nullptr);   // free the line's heap block
+    } else if (s_bootLine.length() < kLineCap) {
+      s_bootLine += char(c);
+    }
+  }
+}
+
 void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
               bool dark, uint8_t bright) {
   // Same schema as the RENDER? reply so L3 render tests can poll OR consume this

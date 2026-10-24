@@ -245,6 +245,16 @@ void ready();
 // frame transport now, so Serial never carries frame data to tee out.
 void pumpOrch();
 
+// The BOOT pump: setup()-time calls (the BOOT_STAGE marks, the orchestrator boot
+// join) that answer PING - and only PING - before the hooks below are wired and
+// loop() takes over as the sole reader. The bench reattaches the console at any
+// point of a boot (unit A's port-open itself resets the chip, so a reopen after
+// a restart lands seconds into a fresh boot); without this pump a healthy board
+// stays PING-silent for the whole setup() and a probe deadline reads it as
+// dead. Other lines are discarded: nothing else is serviceable mid-boot, and
+// before this pump nothing read them at all.
+void pumpBoot();
+
 // Emit one machine-readable render summary on each render (screen/posture/ring
 // summary). Same schema as the RENDER? reply so L3 tests can poll OR consume the
 // push stream deterministically (F2/F4). Always on under NIMBUS_TEST.
@@ -286,6 +296,7 @@ void setTtsMuted(bool on);
 inline void begin(const Hooks&) {}
 inline void ready() {}
 inline void pumpOrch() {}
+inline void pumpBoot() {}
 inline void onRender(uint8_t, uint8_t, int, bool, bool, uint8_t) {}
 inline bool popSaverCmd(int&) { return false; }
 inline void onWifiReason(int) {}

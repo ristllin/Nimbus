@@ -2666,6 +2666,7 @@ static void persistConfig() {
 // ("prev=1s/storage" = it passed the SD mount and died in web/memory).
 #if defined(NIMBUS_TEST)
 #define BOOT_STAGE(r, g, b, st) do { nimbus::crash::stage(nimbus::sys::Stage::st); \
+        tc::pumpBoot(); \
         solide::leds::clearFrame(); \
         solide::leds::show(solide::leds::Pattern::Solid, (r), (g), (b)); } while (0)
 #else
@@ -2860,7 +2861,11 @@ static void orchestratorBeginOffLoopTask() {
   if (gate == nimbus::heapwatch::SpawnVerdict::Ok)
     spawned = xTaskCreate(orchBootTask, "orchboot", kOrchBootStackBytes, done, 1, nullptr) == pdPASS;
   if (spawned) {
-    xSemaphoreTake(done, portMAX_DELAY);   // joined: single-task again before loop()
+    // Joined: single-task again before loop(). Poll the handshake at 100 ms and
+    // pump the console between waits, so a bench reattach that lands mid-boot
+    // (unit A's reopen after a restart strobes a chip reset - the storm finding)
+    // still gets its PING answered while this stage runs.
+    while (xSemaphoreTake(done, pdMS_TO_TICKS(100)) != pdTRUE) tc::pumpBoot();
   } else {
     if (gate != nimbus::heapwatch::SpawnVerdict::Ok)
       agent::alogf("orchboot: spawn gate %s - the orchestrator boot runs inline on loopTask",
@@ -3297,6 +3302,7 @@ static void otaLoopUx() {
 
 
 void setup() {
+  tc::pumpBoot();   // the console answers PING from the first moment (test builds)
   // Where the previous run stopped (crash forensics F4): read the RTC breadcrumb
   // before anything rewrites it, then mark this run as entering the boot guard. Pure
   // RTC memory (no allocation, no flash, cannot fail), so the guard stays effectively
