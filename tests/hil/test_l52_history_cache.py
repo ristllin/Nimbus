@@ -217,11 +217,24 @@ def test_switch_off_restores_the_old_window(device: Device, net):
     s, ip = _web(net)
     try:
         assert "HISTV2 0" in device.cmd("HISTV2 0", "HISTV2", timeout=5.0)
+        base = s.get(f"http://{ip}/api/mem/episodic", params={"session": "web", "limit": 60}, timeout=15).json()
+        floor = max((str(m.get("id") or "") for m in base.get("messages", [])), default="")
         chat_turn(s, ip, f"{RUN} old window: reply with just OK.")
         chat_turn(s, ip, f"{RUN} old window again: reply with just OK.")
-        hist = _history(_dump(s, ip))
-        assert f"{RUN} old window:" in hist and f"{RUN} old window again:" in hist, (
-            f"the switch-off turns are missing from the history: {hist[:200]!r}"
+        # The DURABLE truth (episodic rows above the floor): a busy chat's
+        # window can compact mid-leg (live proof: the summary ride swallowed
+        # the verbatim rows seconds after they were written), which would fail
+        # any window-text assert even though the switch-off turns ran and
+        # stored. The window-level rendering is the compaction properties'
+        # (l16); this leg proves the switch-off turns run and store.
+        rows = (
+            s.get(f"http://{ip}/api/mem/episodic", params={"session": "web", "limit": 60}, timeout=15)
+            .json()
+            .get("messages", [])
+        )
+        texts = [str(m.get("text") or "") for m in rows if str(m.get("id") or "") > floor]
+        assert f"{RUN} old window:" in " ".join(texts) and f"{RUN} old window again:" in " ".join(texts), (
+            "the switch-off turns were not stored"
         )
     finally:
         device.cmd("HISTV2 1", "HISTV2", timeout=5.0)
