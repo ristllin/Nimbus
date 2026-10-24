@@ -831,7 +831,16 @@ def assert_graded(rec: dict) -> None:
 # ---- the shared replay drive (legs a and b) -----------------------------------------------
 
 ANSWER_RE = re.compile(r"pong|mock says hi|held reply", re.I)
-REPLAY_NOTICE_RE = re.compile(r"storage|settings|duplicate|already|again|repeat|paused|could not be processed", re.I)
+# The replay legs' two notice classes (run 3, 24 Oct). The SUBJECT a replay leg
+# grades is the storm breaker's own notice: the re-served page the duplicate guard
+# skipped. The drive's own side effect - the settings store the kit itself filled -
+# honestly raises the once-per-boot "settings storage is almost full" notice, a
+# different class the owner must hear; grading the two as one told_once failed a
+# correct episode on the bot unit (2 notices). The storage notice is recorded per
+# run (extra["storageNotices"], once per boot, so at most 2 with the leg's restart)
+# and does not count toward the replay leg's bound.
+REPLAY_NOTICE_RE = re.compile(r"duplicate|already|again|repeat|paused|could not be processed", re.I)
+STORAGE_NOTICE_RE = re.compile(r"storage|settings", re.I)
 # Lines the drive itself causes on every delivery: not part of the device's behaviour.
 DRIVE_LINES = ("injected page", "TGINJECT", "test inject")
 
@@ -887,6 +896,9 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
             "logNotices": g.log_notices(lines),
             "inboundLogged": len(g.inbound_texts(lines, bench.chat)),
             "telegramSent": [str(r.get("text") or "")[:120] for r in w.sent] if w.sent is not None else None,
+            # The drive's own side effect (the filled settings store), recorded but
+            # not graded: once per boot, so at most 2 with the leg's mid-episode restart.
+            "storageNotices": w.notices(STORAGE_NOTICE_RE),
         }
     )
     if not bench.control:
