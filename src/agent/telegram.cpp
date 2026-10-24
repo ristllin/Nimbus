@@ -1714,6 +1714,15 @@ static bool processVoice(int slot, std::string& transcript) {
 }
 
 // One plain owner notice from the storm breakers, on this task's own outbound path.
+// The duplicate-notice wording (the guard split keeps each kind's text in its own lane).
+static String guardDuplicateText(const nimbus::net::TgNotice& n) {
+  return n.verdict == nimbus::net::DupVerdict::Replay
+      ? String("Telegram delivered a message again that was already answered, so the repeat was skipped.")
+      : String("The same message arrived twice within ") + (unsigned)(nimbus::net::kRepeatWindowS / 60) +
+            " minutes, before the first was answered, so the repeat was skipped. Send it again if you "
+            "meant to.";
+}
+
 static void sendGuardNotice(const nimbus::net::TgNotice& n) {
   const String owner = ownerChat();
   if (!owner.length()) return;
@@ -1721,11 +1730,7 @@ static void sendGuardNotice(const nimbus::net::TgNotice& n) {
   if (!name.length()) name = "Nimbus";
   String text;
   if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) {
-    text = n.verdict == nimbus::net::DupVerdict::Replay
-        ? "Telegram delivered a message again that was already answered, so the repeat was skipped."
-        : String("The same message arrived twice within ") + (unsigned)(nimbus::net::kRepeatWindowS / 60) +
-              " minutes, before the first was answered, so the repeat was skipped. Send it again if you "
-              "meant to.";
+    text = guardDuplicateText(n);
   } else if (n.kind == nimbus::net::TgNotice::Kind::Ceiling) {
     char when[32] = "";
     const time_t at = (time_t)n.resumeAt;
