@@ -396,7 +396,7 @@ def test_l1b_a_failed_turn_is_diagnosed_from_the_device_log(custom_backend):  # 
     finally:
         be.device.cmd("FAULT provider off", expect="FAULT", timeout=6.0)
     reply = _turn_on_real_model(
-        be, "Something failed on your last turn. Read your own device log and tell me exactly what the matter was."
+        be, "Something failed on your last turn. CALL the device.log tool (scan_kb 64, lines 60) now and tell me exactly what the matter was."
     )
     rows = _tool_rows(be)
     assert any(r.startswith("device.log(") or r.startswith("device_log(") for r in rows), (
@@ -434,7 +434,7 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (
     skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-1"))
     try:
         _turn_on_real_model(
-            be, "Read your device log with scan_kb 64 and lines 60, then tell me what the oldest lines say."
+            be, "CALL the device.log tool with scan_kb 64 and lines 60 now, then tell me what the oldest lines say."
         )
         rows = _tool_rows(be)
         clipped = [r for r in rows if r.startswith("device.log(")]
@@ -448,7 +448,7 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (
         be.device.cmd("FAULT sram_ballast 0", expect="FAULT", timeout=10.0)
     # The counter-test: with the ballast gone the same read parks its sidecar.
     blob_fails = _state_int(be, "blobWriteFails")
-    _turn_on_real_model(be, "Read your device log again with scan_kb 64 and lines 60, and tell me what changed.")
+    _turn_on_real_model(be, "CALL the device.log tool again with scan_kb 64 and lines 60, and tell me what changed.")
     rows = _tool_rows(be)
     clipped = [r for r in rows if r.startswith("device.log(")]
     assert clipped and not any(LOST_SIDECAR in r for r in clipped[-2:]), "the mark appears without starvation"
