@@ -35,6 +35,7 @@ Run: python3 -m pytest tests/hil/test_claim_check_bench.py -m "hil and net" --al
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -78,7 +79,15 @@ def assistant_replies(page: dict) -> dict:
 
 
 def new_replies(before: dict, after: dict) -> dict:
-    return {k: v for k, v in after.items() if k not in before}
+    """The episode's own deliveries: new ids ABOVE the snapshot's newest id. The
+    boot's bounded episodic backfill surfaces older card rows seconds to
+    minutes after the boot (item 1, C1: five rows from earlier legs appeared as
+    'new' mid-episode); a stale row's id sits below everything the snapshot
+    already held, while the turn's fresh writes mint above it (the m%08x
+    counter seeds past the card's highest id each boot), so the id floor keeps
+    the count to this episode's replies."""
+    floor = max(before) if before else ""
+    return {k: v for k, v in after.items() if k not in before and k > floor}
 
 
 def the_one_reply(got: dict, model: str) -> str:
@@ -298,9 +307,12 @@ LOST_SIDECAR = "full text not kept: low memory"
 def _astool(be, tool: str, args: dict) -> dict:
     """Dispatch one registry tool over the test-only /api/test/astool route
     (MCP tools/call). Not a turn: no trace rows, no claim check - the seam for
-    cost and state measurements."""
-    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}
-    r = be.net.post(f"/api/test/astool?chat={TURN_CHAT}", body, ip=be.ip, timeout=30.0)
+    cost and state measurements. The route takes the chat and the JSON-RPC body
+    as FORM FIELDS (like every other suite's astool call: chat + body); a JSON
+    body with ?chat= in the URL is a 400 "need chat + body" (item 1, B2)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": tool, "arguments": args}})
+    r = be.net.post("/api/test/astool", data={"chat": TURN_CHAT, "body": body}, ip=be.ip, timeout=30.0)
     assert r.status_code == 200, f"astool {tool} -> {r.status_code} {r.text[:160]!r}"
     return r.json()
 
@@ -413,7 +425,10 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (
         pytest.skip("the state carries no internal free figure")
     hold = max(0, free - 16384)
     out = be.device.cmd(f"FAULT sram_ballast {hold}", expect="FAULT", timeout=10.0)
-    if "holds=" not in out:
+    # The verb prints "held=" (FAULT sram_ballast=<want> held=<n> intFree=...), the
+    # same field the storm kit's BALLAST_RE parses; the merged file grepped
+    # "holds=" and could never arm the ballast (item 1, L24).
+    if "held=" not in out:
         pytest.skip(f"FAULT sram_ballast is not bound in this build ({out.strip()!r})")
     blob_fails_before = _state_int(be, "blobWriteFails")
     skipped_before = int(be.net.get("/api/log", ip=be.ip, timeout=10.0).headers.get("X-Log-Durable-Skipped", "-1"))
