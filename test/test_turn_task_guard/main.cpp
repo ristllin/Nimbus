@@ -153,6 +153,32 @@ static void test_no_console_hook_runs_a_turn_inline() {
   TEST_ASSERT_EQUAL(1, countOf(block, "agent::telegram::injectMessage(\"serial\""));
 }
 
+// Storm run 3 (24 Oct), the pong question: the console's liveness PING must answer
+// on the CONSOLE seam only. The boot pump (tc::pumpBoot) and dispatch's PING verb
+// write Serial and nothing else - never the Telegram send queue, never a captured
+// row - and the boot pump's answer is MARKED "(boot console)" so no transcript can
+// mistake it for the assistant's word (the storm legs' probes ask the model to
+// answer "pong"; run 3's 'pong' rows were those answers, not this echo). This pin
+// keeps the pump provably unable to leak into any owner-facing channel.
+static void test_console_ping_answers_only_on_the_console_seam() {
+  // The boot pump: Serial in, the marked PONG out, the line freed. No owner-facing
+  // call may appear inside it.
+  const std::string pump =
+      between("src/test_console.cpp", "voidpumpBoot(){", "voidonRender(");
+  TEST_ASSERT_TRUE(pump.size() > 60);
+  TEST_ASSERT_EQUAL(1, countOf(pump, "Serial.printf(\"PONG(bootconsole)\\n\");"));
+  for (const char* leak : {"telegram::send(", "captureMessage(", "handleMessage(", "injectMessage("})
+    TEST_ASSERT_EQUAL_MESSAGE(0, countOf(pump, leak), leak);
+  // dispatch's PING verb: the reply goes to Serial through reply(), and the verb
+  // consumes the line before anything owner-facing could see it.
+  const std::string ping = between("src/test_console.cpp", "if(line==\"PING\"){",
+                                   "if(line.startsWith(\"SFXVOL\"))");
+  TEST_ASSERT_TRUE(ping.size() > 10);
+  TEST_ASSERT_EQUAL(1, countOf(ping, "reply(\"PONG\");"));
+  for (const char* leak : {"telegram::send(", "captureMessage(", "handleMessage(", "injectMessage("})
+    TEST_ASSERT_EQUAL_MESSAGE(0, countOf(ping, leak), leak);
+}
+
 static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   size_t fires = 0, pumps = 0, reconciles = 0;
   for (const Source& s : firmware()) {
@@ -225,6 +251,7 @@ static void test_the_atomic_writer_refuses_an_unmounted_file_area_first() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_no_console_hook_runs_a_turn_inline);
+  RUN_TEST(test_console_ping_answers_only_on_the_console_seam);
   RUN_TEST(test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump);
   RUN_TEST(test_raw_sd_file_work_stays_in_the_gated_sound_tier);
   RUN_TEST(test_the_atomic_writer_refuses_an_unmounted_file_area_first);

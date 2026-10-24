@@ -2263,6 +2263,12 @@ void pumpBoot() {
   // dispatch() needs the hooks main.cpp wires late in setup(), and before this
   // pump nothing read Serial at all mid-boot (the kit's reopen after a restart
   // met a healthy but PING-silent board for the whole of setup()).
+  // Storm run 3 (24 Oct): the answer stays on the CONSOLE seam by construction -
+  // Serial only, never telegram::send, never a captured row - and it is MARKED
+  // "(boot console)" so no transcript or owner-facing scan can ever mistake it
+  // for the assistant's word (the storm legs' probes ask the model to answer
+  // "pong"; this line is the kit's liveness echo, not owner content). The kit's
+  // PING expect() is a substring match, so the mark keeps the F13 contract.
   static String s_bootLine;
   int budget = kByteBudget;
   while (Serial.available() > 0 && budget-- > 0) {
@@ -2270,7 +2276,7 @@ void pumpBoot() {
     if (c < 0) break;
     if (c == '\n' || c == '\r') {
       if (s_bootLine == "PING") {
-        Serial.printf("PONG\n");   // F13 liveness / reconnect probe
+        Serial.printf("PONG (boot console)\n");   // F13 liveness / reconnect probe
         Serial.flush();
       }
       s_bootLine = static_cast<const char*>(nullptr);   // free the line's heap block
