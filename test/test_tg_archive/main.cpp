@@ -1335,6 +1335,52 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   }
 }
 
+// Storm leg a, run 3 (24 Oct): the SPONTANEOUS owner notices - the once-per-boot
+// settings-full notice (sendOwnerNotice) and the storm breakers' notices
+// (sendGuardNotice) - were pumped only with a bot token and never captured as the
+// owner chat's history row, so a device with no armed Telegram channel told its
+// owner nothing (told_once 0 on the no-bot unit). The reply-borne class was fixed
+// at the engine seam (finding 2); this pins the device seam the spontaneous class
+// crosses: the pumps run with or without a token, and a notice the queue took is
+// captured as the chat's assistant row - the unarmed owner's one channel - with
+// the log line worded so the storm's notice counting never double-counts a row
+// plus a "sent"/"queued" log line for the same notice.
+static void test_spontaneous_owner_notices_reach_the_unarmed_channel() {
+  const std::string code = src::stripComments(src::readFile("src/agent/telegram.cpp"));
+  TEST_ASSERT_TRUE_MESSAGE(code.size() > 10000, "telegram.cpp not found (run from the repo root)");
+
+  // 1. Both senders capture the delivered notice as the owner chat's assistant row,
+  //    and only after the queue took it (the capture follows the send check).
+  const auto owner = src::bodyOf(code, "static void sendOwnerNotice(");
+  const auto guard = src::bodyOf(code, "static void sendGuardNotice(");
+  TEST_ASSERT_TRUE(owner.second > owner.first);
+  TEST_ASSERT_TRUE(guard.second > guard.first);
+  for (auto b : {owner, guard}) {
+    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "memory::captureMessage(", b));
+    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "\"assistant\"", b));
+    TEST_ASSERT_TRUE(code.find("if (!send(", b.first) < code.find("memory::captureMessage(", b.first));
+  }
+
+  // 2. The pumps run on every poll cycle, token or not: no haveToken gate may
+  //    return before them (leg a graded 0 notices on the no-bot unit because of it).
+  TEST_ASSERT_EQUAL_INT(0, (int)src::findAll(code, "haveToken) sendStorageNotice").size());
+  TEST_ASSERT_EQUAL_INT(0, (int)src::findAll(code, "haveToken) sendFileStoreNotice").size());
+  const auto poll = src::bodyOf(code, "void pollTask(void*) {");
+  TEST_ASSERT_TRUE(poll.second > poll.first);
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "sendStorageNotice();", poll));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "sendFileStoreNotice();", poll));
+
+  // 3. The log line names the delivery honestly: the armed line ("sent"/"queued for
+  //    the owner", what the storm's log grading counts) only under enabled(); the
+  //    unarmed line says "captured for the owner", which never double-counts with
+  //    the row the senders now write.
+  for (auto b : {owner, guard}) {
+    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "enabled()", b));
+    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "captured for the owner", b));
+    TEST_ASSERT_TRUE(code.find("captured for the owner", b.first) > code.find("enabled()", b.first));
+  }
+}
+
 namespace src {
 
 // Offsets of `code` that lie inside an #ifdef NIMBUS_TEST block (not its #else).
@@ -1577,6 +1623,7 @@ int main(int, char**) {
   RUN_TEST(test_absent_card_never_crashes);
   RUN_TEST(test_reading_helpers);
   RUN_TEST(test_every_outbound_send_site_passes_an_archive_hook);
+  RUN_TEST(test_spontaneous_owner_notices_reach_the_unarmed_channel);
   RUN_TEST(test_factory_sweep_covers_the_archive_root);
   RUN_TEST(test_tginject_media_is_test_build_only);
   RUN_TEST(test_replay_against_a_large_index_costs_no_scan);

@@ -881,8 +881,13 @@ static void test_failures_feed_the_ring_and_the_notice() {
     takers += n;
   }
   TEST_ASSERT_EQUAL_size_t(3, takers);   // the declaration, the definition, the poll task
+  // Storm leg a, run 3 (24 Oct): the notice pump runs with OR without a bot token -
+  // the owner chat comes from the allowlist and the notice's history row is the
+  // unarmed owner's channel (sendOwnerNotice captures it). The old haveToken gate
+  // left the no-bot unit's owner untold; it must not come back.
   const std::string tg = readFile("src/agent/telegram.cpp");
-  TEST_ASSERT_TRUE(tg.find("if (haveToken) sendStorageNotice();") != std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("if (haveToken) sendStorageNotice();") == std::string::npos);
+  TEST_ASSERT_TRUE(tg.find("sendStorageNotice();") != std::string::npos);
 }
 
 // GET /api/nvs/stats counts entries the way the partition does: the listing's string

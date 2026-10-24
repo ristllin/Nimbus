@@ -1047,15 +1047,25 @@ static void persistOffset() {
 // A raised-once owner notice, "<device name>: <text>", sent on the poll task's own
 // outbound path, never from the task that raised it. `take` consumes it (false: none
 // is due); nothing is taken until an owner chat exists. `which` names it in the log.
+// The notice is also captured as the owner chat's assistant row: with no bot token
+// the reply queue is drained-and-discarded, so the history row is the one channel
+// the unarmed owner sees (the web page renders it; the storm kit reads it) - the
+// same one-row-per-message-received rule the turn replies follow (finding 2).
 static void sendOwnerNotice(bool (*take)(), const char* text, const char* which) {
   const String owner = ownerChat();
   if (!owner.length() || !take()) return;
   String name = nimbus::sys::deviceName();
   if (!name.length()) name = "Nimbus";
-  if (send(owner, name + ": " + text, /*block=*/false))
+  const String full = name + ": " + text;
+  if (!send(owner, full, /*block=*/false)) {
+    alogf("telegram: storage-full notice%s dropped: reply queue full", which);
+    return;
+  }
+  agent::memory::captureMessage(owner.c_str(), "assistant", nimbus::orch::MsgKind::Message, full);
+  if (enabled())
     alogf("telegram: storage-full notice sent to the owner%s", which);
   else
-    alogf("telegram: storage-full notice%s dropped: reply queue full", which);
+    alogf("telegram: storage-full notice captured for the owner%s (no token: the queue discards)", which);
 }
 
 // The once-per-boot "settings storage is almost full" notice (raised by any failed
@@ -1743,10 +1753,24 @@ static void sendGuardNotice(const nimbus::net::TgNotice& n) {
            " items you sent could not be processed: the device restarted twice while working on them. "
            "Send them again.";
   }
-  send(owner, name + ": " + text, /*block=*/false);
-  alogf("telegram: guard notice (%s) queued for the owner",
-        n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
-        : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+  const String full = name + ": " + text;
+  if (!send(owner, full, /*block=*/false)) {
+    alogf("telegram: guard notice (%s) dropped: reply queue full",
+          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
+          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+    return;
+  }
+  // The row is the unarmed owner's channel (finding 2's rule): the queue discards
+  // without a token, so the notice the owner received is captured like any message.
+  agent::memory::captureMessage(owner.c_str(), "assistant", nimbus::orch::MsgKind::Message, full);
+  if (enabled())
+    alogf("telegram: guard notice (%s) queued for the owner",
+          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
+          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+  else
+    alogf("telegram: guard notice (%s) captured for the owner (no token: the queue discards)",
+          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
+          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
 }
 
 // The running image's id for the guard record: a record written by another build
@@ -2236,8 +2260,12 @@ void pollTask(void*) {
       }
     }
 
-    if (haveToken) sendStorageNotice();   // once per boot, after a failed NVS write
-    if (haveToken) sendFileStoreNotice();   // once per full-store episode an assistant save raised
+    // The notice pumps run with or without a token (storm leg a, run 3): the
+    // owner chat comes from the allowlist, not the token, and the notice's row
+    // (captured by the senders) is the unarmed owner's channel. A token only
+    // adds the real Telegram send on top of the row.
+    sendStorageNotice();      // once per boot, after a failed NVS write
+    sendFileStoreNotice();    // once per full-store episode an assistant save raised
 
     // Drain reply queue. With a token, deliver to Telegram (retry a few times on a
     // transient TLS failure). Without a token the reply was already mirrored to
