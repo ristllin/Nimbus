@@ -290,7 +290,7 @@ void ProviderHosts::noteFailed(const std::string& host, const std::string& err) 
   failed(host, kind, status);
 }
 
-void TurnEngine::deliver(const std::string& chatId, const std::string& text) {
+bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
   // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
   // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
   // (the nightly dream, the post-update awareness turn) has nobody waiting for it,
@@ -300,9 +300,18 @@ void TurnEngine::deliver(const std::string& chatId, const std::string& text) {
   if (holdingNotices()) {
     ++quietNoticesHeld_;
     hlog::logf("quiet turn: notice held, not sent (%.96s)", text.c_str());
-    return;
+    return false;
   }
   if (d_.deliver) d_.deliver(chatId, text);
+  // Storm finding 2 (24 Oct): one history row per message the owner received.
+  // A failed turn's honest refusal, the parked short answer, a rate-limit or
+  // pre-turn local reply is a message the owner received, so it is captured as the
+  // chat's assistant row like a served turn's reply. Without this, a device with
+  // no armed Telegram channel (the storm protocol's no-bot unit) delivered its
+  // notices into a queue it drains-and-discards, and the owner - who reads the
+  // history rows on the web page - never saw a word.
+  captureAssistantRow(chatId, text, "reply");
+  return true;
 }
 
 // One notice per billing episode on every path that meets the refusal (the fabric's
@@ -1743,9 +1752,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
+      // deliver() captures the row: one message the owner received (salvage text
+      // plus any folded credit line), one history row.
       deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold);
-      // A notice a quiet turn held never reached the owner, so it is no history row either.
-      if (!holdingNotices()) captureAssistantRow(chatId, so.text, "reply");
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -1870,8 +1879,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
-    deliver(chatId, so.text);
-    if (!holdingNotices()) captureAssistantRow(chatId, so.text, "reply");
+    deliver(chatId, so.text);   // deliver() captures the delivered text as the row
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
     // row name it (the provider answered; the device could not use the answer).

@@ -660,6 +660,51 @@ static void test_oom_transport_error_yields_low_memory_reply_no_failover() {
   TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
 }
 
+// Storm finding 2 (release gate, 24 Oct): on the no-bot unit legs c/d/e graded
+// told_once 0 because a failed turn's honest reply was queued for Telegram only -
+// a queue an unarmed device drains-and-discards - and never captured as the chat's
+// history row, the one channel an unarmed owner sees (the web page renders the
+// episodic rows; the storm kit reads exactly those). The rig models the unarmed
+// state the same way: d.deliver only records, nothing leaves it, so the refusal must
+// also arrive as a captureAssistant row or it reached nobody.
+static void test_failed_turn_reply_is_captured_to_history_unarmed() {
+  Rig r;
+  r.cfg.keyed = {"anthropic"};   // the storm clears every other key
+  r.cfg.priority = "anthropic";
+  Rig::Script bad;
+  bad.ok = false;
+  bad.err = "chat HTTP 400: Invalid request: messages.1.content: unexpected field 'x_bench'.";
+  r.scripts["anthropic"] = {bad};
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.anyDelivered("refused the request"));
+  // The delivered reply is the chat's history row too (row == message).
+  TEST_ASSERT_EQUAL(1, (int)r.assistantRows.size());
+  TEST_ASSERT_EQUAL_STRING("1001", r.assistantRows[0].first.c_str());
+  TEST_ASSERT_TRUE(r.assistantRows[0].second.find("refused the request") != std::string::npos);
+  TEST_ASSERT_TRUE(r.assistantRows[0].second.find("Your message was not answered") != std::string::npos);
+}
+
+// The parked episode's one notice and the owner's next short answer (leg c's two
+// messages) are both owner-facing messages of failed turns: the unarmed owner must
+// see both, so both are history rows.
+static void test_parked_notice_and_short_answer_are_captured_to_history_unarmed() {
+  Rig r;
+  r.cfg.keyed = {"anthropic"};
+  r.cfg.priority = "anthropic";
+  Rig::Script refused;
+  refused.ok = false;
+  refused.err = "chat HTTP 402: Payment required: add credit to continue.";
+  r.scripts["anthropic"] = {refused};
+  r.eng->handleMessage("hi there", "Roy", "1001");       // the episode's one notice
+  r.eng->handleMessage("again please", "Roy", "1001");   // the owner's next message: short answer
+  TEST_ASSERT_EQUAL(1, r.countDelivered("out of credit"));
+  TEST_ASSERT_TRUE(r.anyDelivered("was not answered"));
+  // One row per message the owner received: the notice, then the short answer.
+  TEST_ASSERT_EQUAL(2, (int)r.assistantRows.size());
+  TEST_ASSERT_TRUE(r.assistantRows[0].second.find("out of credit") != std::string::npos);
+  TEST_ASSERT_TRUE(r.assistantRows[1].second.find("was not answered") != std::string::npos);
+}
+
 // CUM-404 v2 regression: a GENUINE network error must still fail over, even on a
 // fragmented board. transport_tls tags a failure "low memory" ONLY when the exchange
 // began starved (startedStarved from the pre-attempt largest block); a real outage
@@ -4572,6 +4617,8 @@ static void runFirstHalf() {
   RUN_TEST(test_chat_gate_admits_at_the_recalibrated_floor);
   RUN_TEST(test_chat_gate_admits_fragmented_cyd_is_not_deferred);
   RUN_TEST(test_oom_transport_error_yields_low_memory_reply_no_failover);
+  RUN_TEST(test_failed_turn_reply_is_captured_to_history_unarmed);
+  RUN_TEST(test_parked_notice_and_short_answer_are_captured_to_history_unarmed);
   RUN_TEST(test_network_error_still_fails_over_not_misclassified_oom);
   RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);

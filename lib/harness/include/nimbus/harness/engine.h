@@ -504,7 +504,13 @@ class TurnEngine {
   std::string jobsSummaryText() const;
   static const char* channelOf(const std::string& chatId);
   void emitHead(uint8_t ringStatus);
-  void deliver(const std::string& chatId, const std::string& text);
+  // One seam for every ENGINE notice (failure replies, provider-switch and budget
+  // notices, the pre-turn local replies). True when the owner received it (false:
+  // a quiet turn held it), and a delivered notice is also the chat's history row -
+  // a device with no armed Telegram channel drains-and-discards its reply queue,
+  // so the row is the one channel an unarmed owner (the web page, the episodic
+  // reads) ever sees (storm finding 2, 24 Oct).
+  bool deliver(const std::string& chatId, const std::string& text);
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
   // Largest contiguous free INTERNAL block (CUM-404). Unwired => 0xFFFFFFFF, so the
