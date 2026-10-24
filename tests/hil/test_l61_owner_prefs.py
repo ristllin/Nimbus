@@ -143,16 +143,20 @@ def test_standing_rules_ride_every_turn_kind(board):
     assert r.status_code == 200, r.text[:200]
     turn = r.json().get("turn", "")
     deadline = time.time() + 120
-    last = {}
     while time.time() < deadline:
         time.sleep(3)
         j = _S.get(_u(ip, "/api/chat"), params={"turn": turn} if turn else None, timeout=10).json()
         if not j.get("pending", True):
-            last = j
             break
-    trace = json.dumps(last)
-    assert "STANDING RULES" in trace, "the rules block does not ride the web turn"
-    assert RULE in trace
+    # The rules ride the TURN'S PROMPT: /api/lastturn is the one view that carries
+    # the full instructions of the last completed turn (its docstring names it);
+    # /api/chat?turn= is the status view (reply + pending) and has never carried
+    # the prompt (item 1, J: the leg asserted on the wrong view).
+    r2 = _S.get(_u(ip, "/api/lastturn"), timeout=15)
+    assert r2.status_code == 200, f"/api/lastturn -> {r2.status_code} {r2.text[:120]!r}"
+    trace = r2.text
+    assert "STANDING RULES" in trace, "the rules block does not ride the web turn (/api/lastturn)"
+    assert RULE in trace, "the added rule text does not ride the web turn (/api/lastturn)"
     _clear(ip, tok)
 
 
