@@ -195,8 +195,13 @@ def test_twelve_turns_and_a_restart(device: Device, net):
     assert net.wait_reachable(), "the board did not come back on the LAN"
     chat_turn(s, ip, f"{RUN} after the restart: reply with just OK.")
     after = _history(_dump(s, ip))
-    if _folds(s, ip, "web") != folds0:
-        pytest.skip("a fold ran across the restart; the byte check needs none")
+    # The merged histV2 also compacts the WINDOW itself into a summary message
+    # (the [CONVERSATION SUMMARY] ride - a different machinery from the
+    # ev:compact folds). On a busy chat the restart crossing the window budget
+    # legitimately replaces the verbatim rows with a summary, and the byte
+    # comparison is inapplicable; the compaction property is l16's §5a proof.
+    if _folds(s, ip, "web") != folds0 or "[CONVERSATION SUMMARY" in after:
+        pytest.skip("a fold/compaction ran across the restart; the byte check needs none")
     assert _body(after).startswith(_body(before).rstrip("\n")), (
         "the history after the restart does not continue the one before it"
     )
