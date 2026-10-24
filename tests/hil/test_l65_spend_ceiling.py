@@ -309,18 +309,23 @@ def test_3_telegram_gets_exactly_one_notice(board, secrets):
                 n += 1
         return n
 
+    # The archive day holds every earlier episode's notices too (this leg ran
+    # earlier today and delivered its own), so count ABOVE the baseline taken
+    # before this episode's token lands (item 2, leg 3: the old total-count
+    # read the morning run's notices as this episode's).
+    before = notices()
     r = _S.post(f"http://{_IP}/api/orch", data={"tgToken": str(token), "tgAllow": str(chat)}, timeout=10)
     assert r.status_code == 200
     try:
         deadline, n = time.time() + 60.0, 0
         while time.time() < deadline:
             n = notices()
-            if n:
+            if n > before:
                 break
             time.sleep(5.0)
-        assert n == 1, f"the owner chat must get exactly one freeze notice, got {n}"
+        assert n == before + 1, f"the owner chat must get exactly one freeze notice (before {before}, got {n})"
         time.sleep(20.0)
-        assert notices() == 1, "a second freeze notice went to the owner chat"
+        assert notices() == before + 1, "a second freeze notice went to the owner chat"
     finally:
         _S.post(f"http://{_IP}/api/orch", data={"clr_tgToken": "1"}, timeout=10)
 
