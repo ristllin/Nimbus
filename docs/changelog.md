@@ -69,6 +69,8 @@ Provider failures, spend and long reports:
 - **A cut answer gets more room.** When a long tool call late in a turn is cut, the one retry now always has more room than the first attempt, so it is not cut twice and handed to another provider.
 - **A request the device could not send is not blamed on the provider.** It is resent once only after memory recovers, never switched to another provider, and the reply says the device was short of memory.
 - **No working memory spent on these additions.** The machinery behind turns and helpers now lives in the device's larger external memory, so about 3.8 KB of the scarce internal memory every reply needs is back, more than this release's additions took.
+- **The device starts reliably however much it grew.** A fault that entered late in this release's development could put the device in a restart loop moments after it started: the startup path had grown to fill the small space the start itself runs in. The heavy startup work now runs in its own larger space, every start is checked against a floor that leaves room, and the check fails a release loudly before it can reach a device.
+- **A notice reaches you without Telegram too.** A one-time notice about your device, such as a settings storage that filled up, used to reach you only over Telegram. It now reaches the web chat as well when Telegram is not set up, and a notice raised during a restart is kept for you, so nothing goes unsaid because of how you reach the device.
 
 PDFs, connectors and the web page:
 
@@ -107,6 +109,7 @@ Spend ceiling and default models:
   light reasoning, whatever the assistant runs on.
 - **A release check on internal memory.** A release image whose static internal RAM
   grows past its recorded ceiling now fails the release gate.
+- **A storm check before every release.** Both bench devices now run eight storms before this update ships: a full settings storage, the same message served many times, a provider refusing payment, a provider stuck on the same error, low memory, a crash in the middle of an answer, a full file store and an assistant claiming a save it did not make. The release refuses to ship until the device stays usable, never loops, stops paying for repeats and tells you exactly once through all eight, on the very image being released.
 
 Settings storage and helpers:
 
