@@ -231,7 +231,13 @@ def test_self_approve_switch_default_off_and_on(board):
     assert r.status_code == 200 and r.json().get("auto") is True, r.text[:200]
     try:
         out = _agent_edit(ip, tok, "l25-user", f"{MARK} live edit")
-        assert "in use" in out.lower(), f"the save did not go live: {out[:200]}"
+        # The MCP save tool answers the LIVE save with "skill <id>: done." (its
+        # WentLive outcome; the "in use" wording is the /skill command's, not the
+        # tool's). Liveness is proven by the STATE below (not pendingEdit, the live
+        # md) - here only assert it is not the pending reply ("waiting"/"approv").
+        assert "waiting" not in out.lower() and "approv" not in out.lower(), (
+            f"the save did not go live: {out[:200]}"
+        )
         sk = _skills_list(ip, tok)["l25-user"]
         assert not sk.get("pendingEdit"), f"a live save left an edit pending: {sk}"
         md = _S.get(_u(ip, tok, "/api/skills/get?id=l25-user"), timeout=10).json()["md"]
