@@ -168,15 +168,27 @@ class Secrets:
             )
 
     # -- Telegram: DEDICATED test bot ONLY -----------------------------------
-    # Read from the environment, NOT from a production bot's token - sharing a
-    # production bot's token collides on getUpdates long-poll (F18).
+    # Read from the environment FIRST, NOT from a production bot's token -
+    # sharing a production bot's token collides on getUpdates long-poll (F18).
+    # A run that passed only NIMBUS_ENV_FILE (the runner env pattern, item 2's
+    # leg 3) still finds the bench bot through the same-named .env key; an
+    # exported variable always wins.
+    def _env_or_envfile(self, name: str) -> Secret:
+        env = os.environ.get(name, "")
+        if env:
+            return Secret(env)
+        try:
+            return self.get(name)
+        except SecretsUnavailable:
+            return Secret("")
+
     @property
     def tg_test_token(self) -> Secret:
-        return _env_secret("NIMBUS_TEST_TG_TOKEN")
+        return self._env_or_envfile("NIMBUS_TEST_TG_TOKEN")
 
     @property
     def tg_test_chat(self) -> Secret:
-        return _env_secret("NIMBUS_TEST_TG_CHAT")
+        return self._env_or_envfile("NIMBUS_TEST_TG_CHAT")
 
     def bench_bot(self) -> BenchBot:
         """The dedicated test bot as one redacted value (call

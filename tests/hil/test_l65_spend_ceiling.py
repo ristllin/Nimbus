@@ -99,10 +99,22 @@ def _web_turn(text: str, timeout_s: int = 120):
 
 
 def _web_notices(words: str) -> int:
-    """How many web chat history rows carry `words` (the page renders this history)."""
+    """The web chat's NOTICE rows that carry `words`: assistant rows TAGGED
+    ev:spend, the notice pump's own marker. The merged honest-refusal wording
+    (item 2, leg 2) puts freeze words into the refused seams' reply rows too -
+    the old raw substring count read 51 where one notice was owed - so the
+    counter is scoped to the notice's own tag, never the words alone."""
     r = _S.get(f"http://{_IP}/api/mem/episodic", params={"session": "web", "limit": 200}, timeout=15)
     assert r.status_code == 200, f"/api/mem/episodic -> {r.status_code}"
-    return r.text.count(words)
+    n = 0
+    for row in r.json().get("messages", []):
+        if (
+            row.get("role") == "assistant"
+            and words in str(row.get("text") or "")
+            and "ev:spend" in str(row.get("tags") or "")
+        ):
+            n += 1
+    return n
 
 
 def _mcp(tool: str, args: dict) -> str:
@@ -137,6 +149,17 @@ def board(device):
 
 def test_1_the_crossing_freezes_and_tells_the_web_chat_once(board):
     device = board
+    # A FRESH episode first (item 2, leg 1): the notice latches live in the
+    # ceiling file for the OPEN episode, and a bench unit restored over its
+    # limit (yesterday's storm seeding) is already mid-episode with the web
+    # notice already delivered - a re-crossing would owe nothing and the leg
+    # would fail on a latch, not on the ceiling. Raising the limit ends the
+    # episode (and lifts the park), so the crossing below opens a new one.
+    _console(device, "SPENDSET limit 100000", "SPENDSET")
+    deadline = time.time() + 30.0
+    while time.time() < deadline and _spend(device)["state"]["frozen"]:
+        time.sleep(2.0)
+    assert _spend(device)["state"]["frozen"] is False, "raising the limit did not end the old freeze episode"
     before = _web_notices(FREEZE_WORDS)
     _console(device, f"SPENDSET limit {LIMIT_CENTS}", "SPENDSET")
     _console(device, f"SPENDSET {LIMIT_CENTS - 10}", "SPENDSET")
@@ -147,8 +170,16 @@ def test_1_the_crossing_freezes_and_tells_the_web_chat_once(board):
     st = _spend(device)["state"]
     assert st["frozen"] is True, f"the turn that crossed the ceiling did not freeze it: {st}"
     assert st["spentCents"] >= LIMIT_CENTS
-    time.sleep(12.0)  # the notice pump runs every ~5 s (the Telegram poll task)
-    assert _web_notices(FREEZE_WORDS) == before + 1, "the web chat must get exactly one freeze notice"
+    # The notice lands on the poll task's pump (~5 s cadence), but a busy cycle
+    # (the turn's teardown, the episodic writes) can stretch the unarmed web
+    # channel past the old fixed 12 s; poll for the notice instead of sleeping.
+    deadline, n = time.time() + 45.0, 0
+    while time.time() < deadline:
+        n = _web_notices(FREEZE_WORDS)
+        if n >= before + 1:
+            break
+        time.sleep(3.0)
+    assert n == before + 1, "the web chat must get exactly one freeze notice"
 
 
 def _loops() -> list:
