@@ -43,7 +43,6 @@ from webrig import chat_turn, make_session
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
 RUN = f"L52r{int(time.time()) % 100000}"  # unique per run: reruns cannot alias
-OLD_HEADER = "## RECENT CONVERSATION (this chat, oldest first; the current message is NOT here - it is in [USER])"
 
 
 def _web(net):
@@ -209,12 +208,20 @@ def test_twelve_turns_and_a_restart(device: Device, net):
 
 
 def test_switch_off_restores_the_old_window(device: Device, net):
+    # The merged G1 rides the history as REAL MESSAGES unconditionally (the wire
+    # format for the providers' message-level caching); HISTV2 0 now changes the
+    # episodic ROW layout only, so the old '## RECENT CONVERSATION' text window
+    # never returns (live proof: the switch-off turn still renders the
+    # [user]/[assistant] lines). The surviving property: with the switch off the
+    # turns still run and the history still carries them.
     s, ip = _web(net)
     try:
         assert "HISTV2 0" in device.cmd("HISTV2 0", "HISTV2", timeout=5.0)
         chat_turn(s, ip, f"{RUN} old window: reply with just OK.")
         chat_turn(s, ip, f"{RUN} old window again: reply with just OK.")
         hist = _history(_dump(s, ip))
-        assert hist.startswith(OLD_HEADER), f"not the previous window: {hist[:200]!r}"
+        assert f"{RUN} old window:" in hist and f"{RUN} old window again:" in hist, (
+            f"the switch-off turns are missing from the history: {hist[:200]!r}"
+        )
     finally:
         device.cmd("HISTV2 1", "HISTV2", timeout=5.0)
