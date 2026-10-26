@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "nimbus/orch/budget_command.h"   // liftCommand: a pause notice names the command
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/model_price_defaults.h"
 
@@ -282,10 +283,13 @@ namespace {
 constexpr const char* kWhere =
     "open the device's web page, go to Assistant > Usage, and set the monthly ceiling";
 
-std::string resumeSentence(uint32_t monthKey) {
-  const std::string d = resetDateText(monthKey);
-  return d.empty() ? std::string("Otherwise paid calls resume when the next month starts.")
-                   : "Otherwise paid calls resume on " + d + ".";
+// Lane BUD: a pause notice ends with the one command that lifts it from the owner's chat
+// (budget_command.h), so a paused device away from its web page is never stuck. Only on
+// a build that answers the command (the device; the hosted instance has none).
+std::string liftSentence(const CeilingFacts& f) {
+  if (!budgetCommandsInstalled()) return std::string();   // a build with no /budget (the hosted one)
+  return " Reply " + liftCommand(kBudgetAll, f.limitMicro, f.spentMicro) + " to raise the ceiling to " +
+         formatUsd(suggestedLimitMicro(f.limitMicro, f.spentMicro)) + ".";
 }
 
 // The provider head row whose price table holds `head` (the first that does), or nullptr.
@@ -318,11 +322,14 @@ int daysInMonth(uint32_t monthKey) {
 }  // namespace
 
 std::string freezeNoticeText(const CeilingFacts& f) {
+  const std::string d = resetDateText(f.monthKey);
   return "Paid AI calls are paused. This month's estimated spend (" + formatUsd(f.spentMicro) +
          ") reached the monthly spend ceiling of " + formatUsd(f.limitMicro) +
          ", so replies, helpers, voice, photo and image features stay off until the ceiling "
-         "is raised or the month ends. To raise it, " + kWhere + ". " +
-         resumeSentence(f.monthKey);
+         "is raised or the month ends. " +
+         (d.empty() ? std::string("Paid calls resume when the next month starts")
+                    : "Paid calls resume on " + d) +
+         ", or as soon as the ceiling is raised on the device's web page (Assistant > Usage)." + liftSentence(f);
 }
 
 std::string freezeScreenLine(const CeilingFacts&) { return "Paid AI paused"; }
@@ -367,6 +374,7 @@ std::string migrationNoticeText(const CeilingFacts& f) {
          row->fallback + ") costs about " + r + "x less for the same work.";
   }
   s += " To change it, " + std::string(kWhere) + ".";
+  if (f.spentMicro >= f.limitMicro) s += liftSentence(f);   // paused now: name the command
   return s;
 }
 

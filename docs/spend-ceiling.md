@@ -131,10 +131,45 @@ A heads-up goes out once a month when the estimate reaches **80%** of the ceilin
 
 ## Lifting the pause
 
-- **Raise the ceiling**: open the device's web page, go to **Assistant > Usage**, and
+- **From your chat with the device**: the pause message ends with the command that
+  lifts it, for example `/budget all 31`. Send it, then `/budget confirm` within 2
+  minutes. This works on Telegram and in the web chat, even while every provider is
+  paused: see [Commands](#commands).
+- **Or on the web page**: open the device's web page, go to **Assistant > Usage**, and
   set a higher **Monthly spend ceiling**. Paid calls resume at once.
 - **Or wait for the month to end**: on the 1st (device time) the count starts again and
   paid calls resume, with no message.
+
+## Commands
+
+The owner can see and change the limits from Telegram (the owner's own chat with the
+device, never a group) or from the web chat. The commands never call a model, so they
+work while every provider is paused.
+
+| Command | What it does |
+|---|---|
+| `/usage` (or `/budget` on its own) | This month's estimated spend per provider against its limit, the overall ceiling and whether it is on, today's spend and the daily warning, what is paused and why, and when the counts start again. |
+| `/budget <provider> <USD>` | Proposes a new monthly limit for one provider: `anthropic`, `openai`, `mistral`, `zai`, `cumulo`, `custom` or `tavily`. Dollars and cents, for example `/budget anthropic 70` or `/budget mistral 12.50`. |
+| `/budget all <USD>` | Proposes a new overall monthly ceiling, or turns one on. |
+| `/budget <provider> off` | Proposes removing a provider's limit. The overall ceiling is turned off only on the web page. |
+| `/budget confirm` | Applies the change just proposed. |
+| `/budget cancel` | Drops it. |
+| `/model` | Which provider and model the assistant uses, the provider and model the last reply ran on, and what is paused. |
+
+Every change asks first. The reply states the exact change and what it pauses or
+resumes: a limit still under this month's spend says the pause stays, and removing your
+last provider limit says the overall ceiling applies again. The change applies only
+when you send `/budget confirm` from the same chat within 2 minutes; any other message
+cancels it, and a restart drops it.
+
+Two guards stop a slip of the finger. A limit is between 1 USD and 100,000 USD. A raise
+above 250 USD a month, or to more than 10 times the current limit, needs the word
+`force` after the amount, for example `/budget anthropic 500 force`. Lowering a limit
+or setting a new one never does.
+
+Each applied change is written to the device log, listed on the web page under
+**Assistant > Usage** (the last few, with when and from where), and copied once into
+the web chat when it was made on Telegram.
 
 ## Monthly limits per provider
 
@@ -153,7 +188,8 @@ limit is a hard stop for that provider alone:
   stopped (one message names it; raising the limit does not restart it), and its memory,
   voice and photo calls stop. A provider with no limit is never paused by one.
 - **One message per channel** (Telegram and the web chat) names the provider, the
-  limit and how to raise it; a heads-up goes out at 80% of the limit. The Usage page
+  limit and how to raise it, ending with the command that raises it from your chat; a
+  heads-up goes out at 80% of the limit. The Usage page
   lists each limit with this month's count and marks a paused one.
 - **Raising the limit lifts the pause at once**; the next month starts a new count
   with no message.

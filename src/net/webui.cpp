@@ -82,6 +82,8 @@
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
+#include "nimbus/orch/command.h"             // lane BUD: a slash command passes the paused web chat
+#include "../agent/budget_command.h"         // lane BUD: the /budget changes the Usage page lists
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
 #include "nimbus/theme.h"
@@ -1405,11 +1407,16 @@ static void buildOrchState(String& out) {
         u["byProvider"] = pd.as<JsonArray>();   // deep-copied into d
     }
     // Lane DEF: the monthly spend ceiling across all providers (the Usage meter).
+    // Lane BUD: plus the limit changes made with /budget ("changes", newest first).
     {
       const SpendFacts& sp = readSpendFacts();
       JsonDocument cd;
-      if (!sp.state.empty() && deserializeJson(cd, sp.state) == DeserializationError::Ok)
+      if (!sp.state.empty() && deserializeJson(cd, sp.state) == DeserializationError::Ok) {
+        JsonDocument ch;
+        if (deserializeJson(ch, agent::budget::changesJson()) == DeserializationError::Ok)
+          cd["changes"] = ch.as<JsonArray>();
         u["ceiling"] = cd.as<JsonObject>();
+      }
     }
   }
   d["sfxLvlN"]  = agent::store::sfxLevelNotif();
@@ -3191,18 +3198,21 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     const int mode = s_wc.currentMode ? s_wc.currentMode() : (int)solide::memory::getInt("mode", 0);
     if (mode != 1) { r->send(409, "application/json", "{\"error\":\"switch to Orchestrator mode to chat\"}"); return; }
-    // Lane DEF: at the monthly spend ceiling no turn can run; say so at once instead of
-    // a message that waits for a reply that never comes (the chat's one notice already
-    // explains it; this is the send's answer, not a chat message).
-    if (nimbus::orch::spendFrozen()) {
-      r->send(409, "application/json",
-              "{\"error\":\"Paid AI calls are paused: this month's spend ceiling is reached. "
-              "Raise it on Assistant > Usage.\",\"code\":\"spend_ceiling\"}");
-      return;
-    }
     String text = r->hasParam("text", true) ? r->getParam("text", true)->value() : "";
     text.trim();
     if (text.length() == 0) { r->send(400, "application/json", "{\"error\":\"empty message\"}"); return; }
+    // Lane DEF: at the monthly spend ceiling no turn can run; say so at once instead of
+    // a message that waits for a reply that never comes (the chat's one notice already
+    // explains it; this is the send's answer, not a chat message). Lane BUD: a slash
+    // command never calls a model, so it still goes through (the pause notice ends with
+    // the /budget command that lifts it, and /usage says what is paused).
+    if (nimbus::orch::spendFrozen() && !nimbus::orch::isCommandText(std::string(text.c_str()))) {
+      r->send(409, "application/json",
+              "{\"error\":\"Paid AI calls are paused: this month's spend ceiling is reached. "
+              "Raise it on Assistant > Usage, or send the /budget command from the pause message.\","
+              "\"code\":\"spend_ceiling\"}");
+      return;
+    }
     if (!s_wc.chatSend) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     const String turn = s_wc.chatSend(text);
     if (!turn.length()) {

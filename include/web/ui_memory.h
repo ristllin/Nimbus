@@ -178,6 +178,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 </div>
 <p class=hint id=ceilmsg>All providers together, this calendar month. At the ceiling, paid AI calls pause until you raise it or the month ends.</p>
 <div id=ceilProv></div>
+<div id=budLog></div>
 <div id=dailyRow>
 <label for=daily_usd>Daily spend warning</label>
 <div class=row>

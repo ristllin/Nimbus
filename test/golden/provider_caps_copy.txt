@@ -1,5 +1,5 @@
 [provider freeze]
-Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($50.12) reached the $50.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. To raise it, open the device's web page, go to Assistant > Usage, and raise its monthly limit. Otherwise it resumes on 1 November.
+Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($50.12) reached the $50.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage).
 [provider warning]
 This month's estimated Anthropic spend is $40.10, 80% of the $50.00 monthly limit you set. At the limit, paid calls to Anthropic pause until it is raised or the period ends. To change it, open the device's web page, go to Assistant > Usage, and raise its monthly limit.
 [daily warning]

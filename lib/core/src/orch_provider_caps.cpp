@@ -1,5 +1,7 @@
 #include "nimbus/orch/provider_caps.h"
 
+#include "nimbus/orch/budget_command.h"   // liftCommand: the freeze notice names the command
+
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -353,16 +355,21 @@ constexpr const char* kCapWhere = "open the device's web page, go to Assistant >
                                   "its monthly limit";
 }  // namespace
 
+// Lane BUD: the notice ends with the one command that lifts the pause from the owner's
+// chat (budget_command.h), so a paused device away from its web page is never stuck.
 std::string providerFreezeText(const CapFacts& f) {
   const std::string name = providerName(f.provider);
   std::string s = "Paid AI calls to " + name + " are paused. This month's estimated " + name +
                   " spend (" + formatUsd(f.spentMicro) + ") reached the " + formatUsd(f.capMicro) +
                   " monthly limit you set, so replies, helpers, memory, voice, photos and images "
-                  "stop using " + name + "; other providers keep working. To raise it, " + kCapWhere +
-                  ".";
+                  "stop using " + name + "; other providers keep working.";
   const std::string d = capResetText(f.periodKey, f.resetDay);
-  s += d.empty() ? " Otherwise it resumes when the next period starts."
-                 : " Otherwise it resumes on " + d + ".";
+  s += d.empty() ? " It resumes when the next period starts" : " It resumes on " + d;
+  s += ", or as soon as the limit is raised on the device's web page (Assistant > Usage).";
+  if (!budgetCommandsInstalled()) return s;   // a build with no /budget names no command
+  const uint64_t lift = suggestedLimitMicro(f.capMicro, f.spentMicro);
+  s += " Reply " + liftCommand(f.provider, f.capMicro, f.spentMicro) + " to raise its monthly limit to " +
+       formatUsd(lift) + ".";
   return s;
 }
 

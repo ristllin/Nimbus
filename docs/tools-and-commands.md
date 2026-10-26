@@ -55,6 +55,9 @@ confused.
 | `/fetch approve\|deny <id>` | Approve or deny a download the assistant queued (the same list as Downloads under Assistant, then Safety on the web page). |
 | `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 | `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |
+| `/usage` | This month's estimated spend per provider against its limit, the overall ceiling, today's spend, what is paused and why, and when the counts start again. `/budget` on its own does the same. |
+| `/budget <provider\|all> <USD>` | Change a provider's monthly limit (`all`: the overall ceiling); `/budget <provider> off` removes one. Every change asks first and applies only on `/budget confirm` from the same chat within 2 minutes; a raise above 250 USD, or to more than 10 times the limit, needs the word `force` after the amount. Works while every provider is paused. Not in group chats. See [Monthly spend ceiling](spend-ceiling.md#commands). |
+| `/model` | Which provider and model the assistant uses, the provider and model the last reply ran on, and what is paused. |
 
 A command always runs on its own, even inside a burst. When several messages arrive
 together, the device answers them as one turn, but a command is never folded into

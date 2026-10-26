@@ -1,5 +1,5 @@
 [freeze]
-Paid AI calls are paused. This month's estimated spend ($20.13) reached the monthly spend ceiling of $20.00, so replies, helpers, voice, photo and image features stay off until the ceiling is raised or the month ends. To raise it, open the device's web page, go to Assistant > Usage, and set the monthly ceiling. Otherwise paid calls resume on 1 November.
+Paid AI calls are paused. This month's estimated spend ($20.13) reached the monthly spend ceiling of $20.00, so replies, helpers, voice, photo and image features stay off until the ceiling is raised or the month ends. Paid calls resume on 1 November, or as soon as the ceiling is raised on the device's web page (Assistant > Usage).
 [screen]
 Paid AI paused / $20.00 monthly ceiling reached. Raise it on the web page.
 [warn]

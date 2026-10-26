@@ -30,6 +30,7 @@
 #include "files_subsystem.h"            // files::available - E1 capability manifest
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "prefs_subsystem.h"            // standing rules: the block, /prefs, the delivery filter
+#include "budget_command.h"             // lane BUD: /usage, /budget, /model (the spending commands)
 #include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
@@ -1545,6 +1546,8 @@ static TurnEngine::Deps buildTurnDeps() {
     static_assert(ORCH_TRACE_END_MAX >= nimbus::orch::kTurnEndRowMin,
                   "the turn-end row is always produced only within kTurnEndRowMin");
     const char* src = agent::turnSourceSlug(ev.source, ev.attribution);
+    // Lane BUD: /model's "last reply" (the served provider and the model it billed under).
+    budget::noteTurnEnd(ev.host, ev.servedModel.empty() ? ev.model : ev.servedModel, ev.requestedHost, src, ev.ok);
     if (memory::traceActive() && g_turnTag[0] && !ev.chatId.empty()) {
       // Served-by disclosure (CUM-236 device leg): the turn view (_turnChip) reads
       // model+fallback off this row. The shared rule decides it; it never names a
@@ -1868,6 +1871,9 @@ void handleMessage(const String& text, const String& fromName, const String& cha
   {
     const bool pseudo = (chatId == "web" || chatId == "serial" || chatId == "voice");
     nimbus::orch::Command cmd = nimbus::orch::parseCommand(std::string(text.c_str()));
+    // Lane BUD: a spending change waits for "/budget confirm" from the same chat; any
+    // other message from that chat cancels it (before anything else runs).
+    budget::noteMessage(chatId, cmd);
     if (cmd.isCommand && (isChatAllowed(chatId) || pseudo)) {
       const std::string& v = cmd.verb;
       // Owner-only verbs: they schedule unattended turns, install firmware, or
@@ -2113,6 +2119,20 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         say(selfTag + agent::skillResultText(id, r).c_str());
         return;
       }
+      if (v == "usage" || v == "budget" || v == "model") {
+        // Lane BUD: the spending commands and /model - deterministic, owner-only, never
+        // a paid turn, so they work while every provider is paused. The module refuses a
+        // group chat and a change by voice on its own; an applied change is mirrored once
+        // to the web chat (a change made in the web chat is already there).
+        const budget::Reply r = budget::handle(v, cmd.args, chatId, owner);
+        say(selfTag + String(r.text.c_str()));
+        if (!r.mirror.empty() && chatId != "web") {
+          memory::captureMessage("web", "assistant", orch::MsgKind::Message, String(r.mirror.c_str()), "",
+                                 "ev:budget");
+          deliver("web", String(r.mirror.c_str()), /*system=*/true);
+        }
+        return;
+      }
       if (v == "help" || v == "start") {
         say("Hi - I'm " + String(nimbus::sys::deviceName().c_str()) +
                         " (firmware " NIMBUS_FW_VERSION
@@ -2128,7 +2148,10 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/skill list|show <id> - see saved skills and what waits for you\n"
                         "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
                         "/skill auto on|off - may the assistant approve its own skill changes\n"
-                        "/prefs - list your standing rules; /prefs add <rule> saves one");
+                        "/prefs - list your standing rules; /prefs add <rule> saves one\n"
+                        "/usage - this month's spending, limits and what is paused\n"
+                        "/budget <provider|all> <USD> - change a monthly limit (asks you to confirm)\n"
+                        "/model - which provider and model the assistant uses, and what is paused");
         return;
       }
       // Any other slash command: deterministic reply, never a paid LLM turn.

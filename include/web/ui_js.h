@@ -2707,7 +2707,7 @@ function loadUsageHistory(){
 function loadUsageModels(f){
   fetch('/api/usage/models').then(jok).then(d=>{_usageModels=(d&&Array.isArray(d.models))?d:null;renderUsageAll(f);}).catch(()=>{});
 }
-function renderUsageAll(f){renderCeiling();renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
+function renderUsageAll(f){renderCeiling();renderBudgetLog();renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
 // Lane DEF: the monthly spend ceiling across all providers (GET /api/orch usage.ceiling):
 // this month's estimate against the ceiling, and whether paid calls are paused.
 let _usageCeil=null;
@@ -2746,6 +2746,17 @@ function renderCeiling(){
   if(day&&document.activeElement!==day&&!day.dataset.edited)day.value=c.dailyWarnCents>0?(c.dailyWarnCents/100):'';
   if($('dailymsg')&&c.dailyWarnCents>0&&!$('dailymsg').dataset.said)
     $('dailymsg').textContent='Today so far: '+_usd(c.todayCents||0,true)+'. One message a day past the warning.';
+}
+// Lane BUD: the limit changes made with /budget from Telegram or the web chat (GET
+// /api/orch usage.ceiling.changes, newest first): when, from where, what changed.
+function renderBudgetLog(){
+  const box=$('budLog'),c=_usageCeil; if(!box)return;
+  const rows=(c&&Array.isArray(c.changes))?c.changes.slice(0,3):[];
+  if(!rows.length){box.innerHTML='';return;}
+  const src={telegram:'Telegram',web:'web chat',serial:'serial console'};
+  const when=t=>t?new Date(t*1000).toLocaleString([],{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Time not known';
+  box.innerHTML='<p class=hint style="margin:6px 0 2px">Changed by command:</p>'+rows.map(r=>
+    '<div class=hint>'+_sEsc(when(r.t))+' ('+_sEsc(src[r.src]||String(r.src||''))+'): '+_sEsc(String(r.text||''))+'</div>').join('');
 }
 if($('ceil_usd'))$('ceil_usd').oninput=()=>{$('ceil_usd').dataset.edited='1';};
 if($('ceil_on'))$('ceil_on').onchange=()=>{$('ceil_on').dataset.edited='1';};
