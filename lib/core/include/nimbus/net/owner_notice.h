@@ -11,7 +11,8 @@
 // its assistant row, which the web chat shows too. A device with no Telegram owner (a
 // web-only setup, the usual first one) gets them in the web chat as an assistant row
 // tagged as a device event, the same row the memory-card and spend-ceiling notices
-// write. (Those two also refresh an already open page at once; these show on the page's
+// write, at most once per kWebNoticeRepeatHours for the same notice (once per episode,
+// not once per boot while the store stays full). (Those two also refresh an already open page at once; these show on the page's
 // next history read, which the poll task cannot trigger: the web chat's live channel is
 // outside it.) Every kind has a route (pinned by test/test_owner_notice over every kind).
 namespace nimbus::net {
@@ -35,6 +36,26 @@ inline const char* ownerNoticeTag(OwnerNotice k) {
     case OwnerNotice::Guard: return "ev:guard";
   }
   return "ev:notice";
+}
+
+// The web route writes a notice once per episode, not once per boot while the store
+// stays full: a web chat row of the last kWebNoticeRepeatHours that already carries it
+// (sameNoticeRow) means it is not written again.
+constexpr uint32_t kWebNoticeRepeatHours = 24;
+
+// A history row that already carries this notice: `tag` among its comma-separated tags
+// and the same words.
+inline bool sameNoticeRow(const std::string& rowTags, const std::string& rowText, const char* tag,
+                          const std::string& text) {
+  if (rowText != text) return false;
+  const std::string t(tag);
+  for (size_t at = 0; at <= rowTags.size();) {
+    size_t end = rowTags.find(',', at);
+    if (end == std::string::npos) end = rowTags.size();
+    if (rowTags.compare(at, end - at, t) == 0) return true;
+    at = end + 1;
+  }
+  return false;
 }
 
 // The route of a notice of `kind` for the owner chat `ownerChat` ("" when there is none).

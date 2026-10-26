@@ -282,14 +282,31 @@ static void test_one_owner_rule_for_every_notice() {
 // web-only device lost the storage notices that way), and both senders go through the
 // one router, which asks the owner rule.
 static void test_every_notice_routes_without_an_owner() {
-  const std::string route = bodyOf(code(), "static Routed routeNotice(");
-  TEST_ASSERT_TRUE(route.find("nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind)") !=
+  const std::string pick = bodyOf(code(), "static nimbus::net::NoticeRoute noticeRoute(");
+  TEST_ASSERT_TRUE(pick.find("nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind)") !=
                    std::string::npos);
+  const std::string route = bodyOf(code(), "static Routed routeNotice(");
   TEST_ASSERT_TRUE(route.find("agent::memory::captureMessage(r.chat.c_str()") != std::string::npos);
   for (const char* fn : {"static void sendOwnerNotice(", "static void sendGuardNotice("}) {
     const std::string b = bodyOf(code(), fn);
     TEST_ASSERT_TRUE_MESSAGE(b.find("ownerChat()") == std::string::npos, fn);
     TEST_ASSERT_TRUE_MESSAGE(b.find("routeNotice(") != std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("noticeRoute(nimbus::net::OwnerNotice::") != std::string::npos ||
+                                 b.find("noticeRoute(kind)") != std::string::npos,
+                             fn);
+    // No path around the router: no direct send, no direct capture (exactly one row).
+    TEST_ASSERT_TRUE_MESSAGE(b.find("send(") == std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("captureMessage(") == std::string::npos, fn);
+  }
+  // The web route writes a storage notice once per episode, and a guard notice there is
+  // worded for the web chat's reader (never "you" about a Telegram sender's message).
+  const std::string owner = bodyOf(code(), "static void sendOwnerNotice(");
+  TEST_ASSERT_TRUE(owner.find("if (!r.telegram && webNoticeRecent(r.tag, full))") < owner.find("routeNotice("));
+  const std::string guard = bodyOf(code(), "static void sendGuardNotice(");
+  TEST_ASSERT_TRUE(guard.find("guardText(n, !r.telegram)") != std::string::npos);
+  for (const char* fn : {"static String guardCeilingWebText("}) {
+    const std::string b = bodyOf(code(), fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("you") == std::string::npos && b.find("You") == std::string::npos, fn);
   }
   // The storm grading reads these lines: the owner-routed wording is unchanged.
   TEST_ASSERT_TRUE(code().find("\"telegram: guard notice (%s) queued for the owner\"") != std::string::npos);
@@ -321,6 +338,24 @@ static void test_text_before_a_photo_is_its_context() {
   const std::string tb = bodyOf(code(), "static String textBefore(");
   TEST_ASSERT_TRUE(tb.find("!u->forwarded") != std::string::npos);   // someone else's words never are
   TEST_ASSERT_TRUE(tb.find("id >= mediaId") != std::string::npos);   // only what came before the photo
+}
+
+// A held page: the typing indicator rides the open poll socket (no new TLS session, no
+// handshake) and never waits past its bound; the archive hook skips a re-poll that
+// returned the same page; the memory-recall query never carries the crossed note.
+static void test_hold_seams() {
+  const std::string ty = bodyOf(code(), "static void holdTyping(const std::string& chat) {");
+  TEST_ASSERT_TRUE(ty.find("!g_pollScOpen") != std::string::npos);
+  TEST_ASSERT_TRUE(ty.find("g_pollSc.print(") != std::string::npos);
+  for (const char* no : {"workConnect(", "tlsConnect(", "WiFiClientSecure"}) TEST_ASSERT_TRUE_MESSAGE(ty.find(no) == std::string::npos, no);
+  TEST_ASSERT_TRUE(ty.find("kHoldTypingWaitMs") != std::string::npos);
+  TEST_ASSERT_TRUE(code().find("void typing(const std::string& chat) { holdTyping(chat); }") != std::string::npos);
+  const std::string fetch = bodyOf(code(), "static void fetchOnePage(");
+  const size_t gate = fetch.find("if (!g_archivedPage.repeat(offset,");
+  TEST_ASSERT_TRUE(gate != std::string::npos && gate < fetch.find("agent::tgarchive::onInboundPage("));
+  const std::string eng = readCode("lib/harness/src/engine.cpp");
+  TEST_ASSERT_TRUE(eng.find("recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(") != std::string::npos);
+  TEST_ASSERT_TRUE(eng.find("recall = d_.recall(userText, turnWho)") == std::string::npos);
 }
 
 // The reset reason reaches the guard from main.cpp, and the guard record is booted and
@@ -379,6 +414,7 @@ int main(int, char**) {
   RUN_TEST(test_every_notice_routes_without_an_owner);
   RUN_TEST(test_settle_marked_pages_run_the_receive_cycle);
   RUN_TEST(test_text_before_a_photo_is_its_context);
+  RUN_TEST(test_hold_seams);
   RUN_TEST(test_reset_reason_hook);
   RUN_TEST(test_turn_media_list_follows_the_turn);
   return UNITY_END();

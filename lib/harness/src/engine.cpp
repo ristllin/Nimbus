@@ -32,6 +32,7 @@
 #include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
 #include "nimbus/harness/turn_inbox.h"     // histV2: what the channel says the sender sent
 #include "nimbus/orch/turn_images.h"       // R1: the turn's photos, shown to the head as images
+#include "nimbus/net/tg_settle.h"          // withoutCrossedNote: the recall query is what was sent
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"   // lastFabricSwitch - the switch notice cause
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
@@ -1064,8 +1065,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // advertised one capability set and judged by another (W14).
   const orch::Principal turnWho = d_.apply.whoFor(chatId);
   orch::RecallOut recall;
-  if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)
-    recall = d_.recall(userText, turnWho);
+  if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)   // a channel's note never steers recall
+    recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())), turnWho);
   const std::vector<std::string>& recalled = recall.hits;
   {
     // The figure check's sources: the input block (the owner's text, captions,

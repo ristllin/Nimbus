@@ -254,7 +254,7 @@ strands it again.
 | `POST /api/chat` | `409 {"code":"spend_ceiling"}` | Paid calls are paused: the send is answered at once instead of waiting for a reply that will not come |
 | Test console `STATUS` | `nvs=<used>/<total> nvsfree=<free> nvsfail=<n>` | The same numbers, in bytes, at the end of the line |
 | Device log (`GET /api/log`, durable `nvs` class) | `nvs: write FAILED [<k>] - storage full? (<free> B free of <total> B)` | One line per failing key per minute. The key sits in brackets so the log's secret masking (which hides any `key=` value) leaves it readable |
-| Telegram, to the owner | "settings storage is almost full, so some changes may not be saved..." | Sent once per boot, after the first write that did not land, by the Telegram task on its own send path: to the owner chat on Telegram (delivered only with a bot token) and as that chat's history row. With no Telegram owner (a web-only device) it is a message in the web chat instead, shown the next time the chat page reads its history |
+| Telegram, to the owner | "settings storage is almost full, so some changes may not be saved..." | Sent once per boot, after the first write that did not land, by the Telegram task on its own send path: to the owner chat on Telegram (delivered only with a bot token) and as that chat's history row. With no Telegram owner (a web-only device) it is a message in the web chat instead, shown the next time the chat page reads its history, and not written again while one from the last 24 hours is there |
 
 ## NVS keys
 

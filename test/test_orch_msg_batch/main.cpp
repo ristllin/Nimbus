@@ -864,29 +864,81 @@ static void test_command_boundary_next_to_media() {
   TEST_ASSERT_EQUAL_INT(1, b.mediaSlotAt(2, 0));
 }
 
-// The voice boundary: photos, a voice note, a text. The voice note is a turn of its own
-// between them (its transcript), so replies come in the order things were sent.
-static void test_voice_boundary_next_to_media() {
+// A voice note joins its chat's open bucket like a photo (25 Oct class: a text and the
+// voice note sent right after it are one turn), a text after a voice note joins it too,
+// one voice note per turn (a second one starts the next bucket), and a command still
+// seals its own bucket. A lone voice note renders its bare transcript, byte for byte.
+static void test_voice_note_joins_the_open_bucket() {
   MessageBatcher b;
-  b.addMedia("77", "Ana", "lunch", 0, 1);
-  b.addMedia("77", "Ana", "", 1, 2);
-  TEST_ASSERT_TRUE(BatchAdd::VoiceBoundary == b.addVoice("77", "Ana", 2, 3));
-  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("77", "Ana", "and a coffee", 4));
-  TEST_ASSERT_EQUAL_UINT(3, b.turnCount());
-  TEST_ASSERT_EQUAL_UINT(2, b.mediaCountAt(0));
-  TEST_ASSERT_TRUE(b.voiceAt(1));
-  TEST_ASSERT_EQUAL_INT(2, b.voiceSlotAt(1));
-  TEST_ASSERT_EQUAL_UINT(0, b.mediaCountAt(1));   // a voice note is not a media segment
-  b.setVoiceText(1, "it was a big salad");
-  TEST_ASSERT_EQUAL_STRING("it was a big salad", b.render(1).c_str());
-  TEST_ASSERT_EQUAL_STRING("and a coffee", b.render(2).c_str());
-  TEST_ASSERT_EQUAL_UINT(3, b.mediaInDrain());   // the voice note holds a slot too
-  // Two voice notes in a row are two turns; a voice note never joins a text bucket.
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.add("77", "Ana", "about dinner", 1));
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == b.addVoice("77", "Ana", 0, 2));
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());
+  TEST_ASSERT_TRUE(b.voiceAt(0));
+  TEST_ASSERT_EQUAL_INT(0, b.voiceSlotAt(0));
+  TEST_ASSERT_EQUAL_UINT(0, b.mediaCountAt(0));   // a voice note is not a media segment
+  TEST_ASSERT_EQUAL_UINT(1, b.mediaInDrain());    // but it holds a slot
+  b.setVoiceText(0, "it was a big salad");
+  TEST_ASSERT_EQUAL_STRING("Message 1 of 2 from Ana:\nabout dinner\n\nMessage 2 of 2 from Ana:\n(voice note) it was a big salad",
+                           b.render(0).c_str());
+  // Voice then text, and photos, a voice note and a text: one bucket each.
   MessageBatcher v;
-  v.add("9", "x", "first");
-  v.addVoice("9", "x", 0, 2);
-  v.addVoice("9", "x", 1, 3);
-  TEST_ASSERT_EQUAL_UINT(3, v.turnCount());
+  v.addVoice("77", "Ana", 0, 1);
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == v.add("77", "Ana", "and a coffee", 2));
+  TEST_ASSERT_EQUAL_UINT(1, v.turnCount());
+  MessageBatcher m;
+  m.addMedia("77", "Ana", "lunch", 0, 1);
+  m.addMedia("77", "Ana", "", 1, 2);
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == m.addVoice("77", "Ana", 2, 3));
+  m.add("77", "Ana", "and a coffee", 4);
+  TEST_ASSERT_EQUAL_UINT(1, m.turnCount());
+  TEST_ASSERT_EQUAL_UINT(2, m.mediaCountAt(0));
+  TEST_ASSERT_EQUAL_INT(2, m.voiceSlotAt(0));
+  TEST_ASSERT_EQUAL_UINT(3, m.mediaInDrain());
+  // A second voice note starts the next bucket; the text after it joins that one.
+  MessageBatcher two;
+  two.add("9", "x", "first");
+  two.addVoice("9", "x", 0, 2);
+  TEST_ASSERT_TRUE(BatchAdd::VoiceBoundary == two.addVoice("9", "x", 1, 3));
+  two.add("9", "x", "after the second", 4);
+  TEST_ASSERT_EQUAL_UINT(2, two.turnCount());
+  TEST_ASSERT_EQUAL_INT(1, two.voiceSlotAt(1));
+  TEST_ASSERT_EQUAL_UINT(2, two.messageCountAt(1));
+  // A command still seals: text, /status, voice note are three turns.
+  MessageBatcher c;
+  c.add("9", "x", "first", 1);
+  c.add("9", "x", "/status", 2);
+  TEST_ASSERT_TRUE(BatchAdd::Accepted == c.addVoice("9", "x", 0, 3));
+  TEST_ASSERT_EQUAL_UINT(3, c.turnCount());
+  TEST_ASSERT_TRUE(c.voiceAt(2) && !c.voiceAt(0));
+  // A lone voice note is its transcript, byte for byte.
+  MessageBatcher lone;
+  lone.addVoice("9", "x", 0, 1);
+  lone.setVoiceText(0, "just the transcript");
+  TEST_ASSERT_EQUAL_STRING("just the transcript", lone.render(0).c_str());
+}
+
+// Checkpoint safety: on a page that holds a command (contiguous mode) a voice note joins
+// only the drain's newest bucket, and only when it is its chat's, so every bucket stays
+// one contiguous run of update ids (a restart re-runs at most the bucket in flight).
+static void test_contiguous_mode_keeps_voice_in_id_runs() {
+  MessageBatcher b;
+  b.setContiguous(true);
+  b.add("A", "u", "a1", 11);
+  b.add("B", "u", "b1", 12);
+  b.addVoice("A", "u", 0, 13);   // A's bucket is not the newest: a new bucket
+  b.add("A", "u", "a2", 14);     // joins the voice note's bucket (the newest, A's)
+  b.add("A", "u", "/status", 15);
+  b.addVoice("A", "u", 1, 16);
+  TEST_ASSERT_EQUAL_UINT(5, b.turnCount());
+  const int32_t first[] = {11, 12, 13, 15, 16};
+  const size_t count[] = {1, 1, 2, 1, 1};
+  int32_t expect = 11;
+  for (size_t i = 0; i < b.turnCount(); ++i) {
+    TEST_ASSERT_EQUAL_INT32(first[i], b.firstIdAt(i));
+    TEST_ASSERT_EQUAL_UINT(count[i], b.messageCountAt(i));
+    for (size_t k = 0; k < b.messageCountAt(i); ++k) TEST_ASSERT_EQUAL_INT32(expect++, b.updateIdAt(i, k));
+  }
+  TEST_ASSERT_TRUE(b.voiceAt(2) && b.voiceAt(4));
 }
 
 // Full-length captions: the old 256-byte cut is gone (a 3000-byte caption reaches the
@@ -962,10 +1014,11 @@ static void test_drain_routes_media_and_voice() {
   TEST_ASSERT_TRUE(r.stopped);
   TEST_ASSERT_EQUAL_INT32(13, r.ackOffset);   // acked through the voice note, not past the stop
   TEST_ASSERT_EQUAL_INT(3, r.messagesBatched);
-  TEST_ASSERT_EQUAL_UINT(2, b.turnCount());
+  TEST_ASSERT_EQUAL_UINT(1, b.turnCount());   // the voice note joins the photos' turn
   TEST_ASSERT_EQUAL_UINT(2, b.mediaCountAt(0));
   TEST_ASSERT_EQUAL_STRING("caption", b.mediaCaptionAt(0, 0));
-  TEST_ASSERT_TRUE(b.voiceAt(1));
+  TEST_ASSERT_TRUE(b.voiceAt(0));
+  TEST_ASSERT_EQUAL_INT(2, b.voiceSlotAt(0));
   TEST_ASSERT_EQUAL_UINT(4, srv.handledIdx.size());   // never classified past the stop
 }
 
@@ -1005,7 +1058,8 @@ int main(int, char**) {
   RUN_TEST(test_ten_media_one_turn_eleventh_deferred);
   RUN_TEST(test_media_slots_cap_the_drain_across_chats);
   RUN_TEST(test_command_boundary_next_to_media);
-  RUN_TEST(test_voice_boundary_next_to_media);
+  RUN_TEST(test_voice_note_joins_the_open_bucket);
+  RUN_TEST(test_contiguous_mode_keeps_voice_in_id_runs);
   RUN_TEST(test_full_length_captions_and_their_cap);
   RUN_TEST(test_late_text_carries_its_send_time);
   RUN_TEST(test_largest_turn_stays_bounded);

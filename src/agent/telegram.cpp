@@ -346,6 +346,7 @@ static size_t s_settleCount = 0;       // pages held (s_settleMux)
 static bool   s_settleFresh = false;   // a page arrived since the rule last looked (s_settleMux)
 static bool   s_settleRunning = false; // the held pages were dispatched and run (s_settleMux)
 static nimbus::net::TgSettle s_injSettle;   // the hold state (poll task only)
+static nimbus::net::HoldTyping s_injTyping; // its typing indicator (poll task only)
 
 static bool settleInjectFresh() {
   portENTER_CRITICAL(&s_settleMux);
@@ -783,6 +784,9 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, 
 // ---- getUpdates (persistent keep-alive poll socket) -------------------------
 static WiFiClientSecure g_pollSc;
 static bool             g_pollScOpen = false;
+// The archive hook skips a fetch that returned the very page the last one did (a held
+// page re-polled with nothing new): no re-read, no repeated log line every second.
+static nimbus::net::SamePage g_archivedPage;
 
 void closePollSocket() {
   if (!g_pollScOpen) return;
@@ -1012,9 +1016,11 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   if (serverClose) closePollSocket();
   // Archive hook (inbound): the raw page as read, before the turn path parses,
   // classifies, batches or deduplicates it (whole updates are kept even when the
-  // rest of the page will not parse). A replay, or a held page seen again, is
-  // deduplicated by update_id inside (this boot's ring costs no card read).
-  agent::tgarchive::onInboundPage(body, (size_t)stored, g_token);
+  // rest of the page will not parse). A replay is deduplicated by update_id inside
+  // (this boot's ring costs no card read); a held page re-polled with nothing new (the
+  // same bytes at the same offset) is not handed over again at all.
+  if (!g_archivedPage.repeat(offset, (uint32_t)stored, nimbus::sys::crc32((const uint8_t*)body, (size_t)stored)))
+    agent::tgarchive::onInboundPage(body, (size_t)stored, g_token);
   const bool parsedOk = parsePageBody(body, (size_t)stored, out);
   rp.count = (int)out.size();
   for (const nimbus::tg::Update& u : out) noteServerDate(u.date);
@@ -1101,19 +1107,54 @@ enum class Routed : uint8_t { Dropped, Owner, Web };
 // captured as an assistant row of the web chat, tagged as a device event, which the chat
 // page renders on its next history read. Dropped when the reply queue was full (the
 // caller logs it).
-static Routed routeNotice(nimbus::net::OwnerNotice kind, const String& full) {
-  const nimbus::net::NoticeRoute r = nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind);
+static Routed routeNotice(const nimbus::net::NoticeRoute& r, const String& full) {
   if (r.telegram && !send(String(r.chat.c_str()), full, /*block=*/false)) return Routed::Dropped;
   agent::memory::captureMessage(r.chat.c_str(), "assistant", nimbus::orch::MsgKind::Message, full, "", r.tag);
   return r.telegram ? Routed::Owner : Routed::Web;
 }
 
+// The route of a notice of `kind` now (the owner rule, nimbus/net/owner_notice.h).
+static nimbus::net::NoticeRoute noticeRoute(nimbus::net::OwnerNotice kind) {
+  return nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind);
+}
+
+// The web chat already holds this notice from the last kWebNoticeRepeatHours (the same
+// tag and words): the web route writes a notice once per episode, not once per boot
+// while the store stays full (a web chat is a record the owner scrolls and the model
+// reads back).
+static bool webNoticeRecent(const char* tag, const String& full) {
+  if (!agent::memory::storageResolved()) return false;
+  nimbus::orch::MsgQuery q;
+  q.sessionId = "web";
+  q.haveKind = true;
+  q.kind = nimbus::orch::MsgKind::Message;
+  const uint32_t now = agent::memory::nowHours();
+  q.sinceHours = now > nimbus::net::kWebNoticeRepeatHours ? now - nimbus::net::kWebNoticeRepeatHours : 0;
+  q.limit = 40;
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  {
+    agent::memory::Lock lk;
+    rows = agent::memory::episodic().query(q);
+  }
+  const std::string words(full.c_str(), full.length());
+  for (const nimbus::orch::EpisodicMessage& m : rows)
+    if (m.role == "assistant" && nimbus::net::sameNoticeRow(m.tags, m.text, tag, words)) return true;
+  return false;
+}
+
 // A raised-once owner notice, sent on the poll task's own outbound path, never from the
 // task that raised it. `take` consumes it (false: none is due). `which` names it in the
-// log. Every device has a route for it (routeNotice), so it is never left owed.
+// log. Every device has a route for it (routeNotice), so it is never left owed; on the
+// web route a notice already in the web chat today is not written again.
 static void sendOwnerNotice(nimbus::net::OwnerNotice kind, bool (*take)(), const char* text, const char* which) {
   if (!take()) return;
-  const Routed routed = routeNotice(kind, noticeText(text));
+  const nimbus::net::NoticeRoute r = noticeRoute(kind);
+  const String full = noticeText(text);
+  if (!r.telegram && webNoticeRecent(r.tag, full)) {
+    alogf("telegram: storage-full notice%s already in the web chat today: not repeated", which);
+    return;
+  }
+  const Routed routed = routeNotice(r, full);
   if (routed == Routed::Dropped)
     alogf("telegram: storage-full notice%s dropped: reply queue full", which);
   else if (routed == Routed::Web)
@@ -1792,7 +1833,9 @@ static bool processVoice(int slot, std::string& transcript) {
 
 // One plain owner notice from the storm breakers, on this task's own outbound path.
 // The ceiling-notice wording (the guard split keeps each kind's text in its own lane).
-static String guardCeilingText(const nimbus::net::TgNotice& n) {
+// When the hourly ceiling lets replies resume: "until 14:05", or "for about N minutes"
+// before the clock is set.
+static String ceilingWhen(const nimbus::net::TgNotice& n) {
   char when[32] = "";
   const time_t at = (time_t)n.resumeAt;
   if (time(nullptr) >= kClockSet) {
@@ -1803,6 +1846,11 @@ static String guardCeilingText(const nimbus::net::TgNotice& n) {
     const uint32_t mins = (n.resumeAt > deviceEpoch() ? n.resumeAt - deviceEpoch() : 0) / 60 + 1;
     snprintf(when, sizeof(when), "for about %u minutes", (unsigned)mins);
   }
+  return String(when);
+}
+
+static String guardCeilingText(const nimbus::net::TgNotice& n) {
+  const String when = ceilingWhen(n);
   if (n.owner)
     return String("Replies are paused ") + when + ": " + (unsigned)nimbus::net::kInboundTurnsPerHour +
            " messages were answered in the last hour, the most it answers in an hour. Messages sent "
@@ -1813,12 +1861,46 @@ static String guardCeilingText(const nimbus::net::TgNotice& n) {
 }
 
 // The duplicate-notice wording (the guard split keeps each kind's text in its own lane).
-static String guardDuplicateText(const nimbus::net::TgNotice& n) {
-  return n.verdict == nimbus::net::DupVerdict::Replay
-      ? String("Telegram delivered a message again that was already answered, so the repeat was skipped.")
-      : String("The same message arrived twice within ") + (unsigned)(nimbus::net::kRepeatWindowS / 60) +
-            " minutes, before the first was answered, so the repeat was skipped. Send it again if you "
-            "meant to.";
+// `web`: the notice goes to the web chat (no Telegram owner), whose reader did not send
+// the message, so it never says "you".
+static String guardDuplicateText(const nimbus::net::TgNotice& n, bool web) {
+  if (n.verdict == nimbus::net::DupVerdict::Replay)
+    return String("Telegram delivered a message again that was already answered, so the repeat was skipped.");
+  const String head = String(web ? "The same Telegram message" : "The same message") + " arrived twice within " +
+                      (unsigned)(nimbus::net::kRepeatWindowS / 60) +
+                      " minutes, before the first was answered, so the repeat was skipped.";
+  return web ? head : head + " Send it again if you meant to.";
+}
+
+// The hourly-ceiling wording for the web chat (no Telegram owner: every Telegram chat is
+// one of "the others", and the web chat itself is not limited).
+static String guardCeilingWebText(const nimbus::net::TgNotice& n) {
+  return String("Telegram replies are paused ") + ceilingWhen(n) + ": Telegram chats used the " +
+         (unsigned)nimbus::net::kInboundTurnsPerHour + " answers an hour. The web chat still gets answers.";
+}
+
+// The poison-notice wording: what the device skipped after two crash restarts.
+static String guardPoisonText(const nimbus::net::TgNotice& n, bool web) {
+  if (web && n.items == 1)
+    return "A Telegram message could not be processed: the device restarted twice while working on it, so it "
+           "was skipped.";
+  if (web)
+    return String("The last ") + n.items +
+           " Telegram items could not be processed: the device restarted twice while working on them, so they "
+           "were skipped.";
+  if (n.items == 1)
+    return "Something you sent could not be processed: the device restarted twice while working on it. "
+           "Send it again.";
+  return String("The last ") + n.items +
+         " items you sent could not be processed: the device restarted twice while working on them. "
+         "Send them again.";
+}
+
+// A guard notice's words for its route.
+static String guardText(const nimbus::net::TgNotice& n, bool web) {
+  if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) return guardDuplicateText(n, web);
+  if (n.kind == nimbus::net::TgNotice::Kind::Ceiling) return web ? guardCeilingWebText(n) : guardCeilingText(n);
+  return guardPoisonText(n, web);
 }
 
 // A guard notice's kind, as the log names it (the storm grading reads these words).
@@ -1832,21 +1914,9 @@ static const char* guardKindName(nimbus::net::TgNotice::Kind k) {
 }
 
 static void sendGuardNotice(const nimbus::net::TgNotice& n) {
-  String text;
-  if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) {
-    text = guardDuplicateText(n);
-  } else if (n.kind == nimbus::net::TgNotice::Kind::Ceiling) {
-    text = guardCeilingText(n);
-  } else if (n.items == 1) {
-    text = "Something you sent could not be processed: the device restarted twice while working on it. "
-           "Send it again.";
-  } else {
-    text = String("The last ") + n.items +
-           " items you sent could not be processed: the device restarted twice while working on them. "
-           "Send them again.";
-  }
+  const nimbus::net::NoticeRoute r = noticeRoute(nimbus::net::OwnerNotice::Guard);
   const char* kind = guardKindName(n.kind);
-  const Routed routed = routeNotice(nimbus::net::OwnerNotice::Guard, noticeText(text));
+  const Routed routed = routeNotice(r, noticeText(guardText(n, !r.telegram)));
   if (routed == Routed::Dropped)
     alogf("telegram: guard notice (%s) dropped: reply queue full", kind);
   else if (routed == Routed::Web)
@@ -1888,6 +1958,51 @@ static void bootGuard() {
 }
 
 static void noteHistory(const nimbus::orch::PsString& text);
+
+// The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
+// sight, again when Telegram's action lapses), sent on the open keep-alive poll socket:
+// no handshake, still one TLS session. Best effort and bounded: skipped with no token, no
+// open socket (a handshake for a hint is not worth it) or a chat that is not a real,
+// allowed Telegram chat (the text's own chat sees it, nobody else); a socket whose answer
+// is not read whole within kHoldTypingWaitMs is closed (the next poll reconnects), so a
+// failure never holds the poll task longer than that.
+static constexpr uint32_t kHoldTypingWaitMs = 1500;
+
+static bool realChatId(const std::string& chat) {
+  if (chat.empty()) return false;
+  for (const char c : chat)
+    if (!((c >= '0' && c <= '9') || c == '-')) return false;
+  return true;
+}
+
+// Read the sendChatAction answer whole within `deadline`: false on anything else (the
+// caller then closes the socket rather than leave half an answer on it).
+static bool readTypingAnswer(uint32_t deadline) {
+  char line[MAX_LINE];
+  const bool ok = readLine(g_pollSc, line, sizeof(line), deadline) > 0 && httpStatusCode(line) == 200;
+  long contentLen = -1;
+  bool serverClose = false;
+  readPollHeaders(deadline, contentLen, serverClose);
+  char body[128];
+  const bool drained = contentLen >= 0 && contentLen < (long)sizeof(body) &&
+                       readBodyN(g_pollSc, body, sizeof(body), contentLen, deadline) >= 0;
+  return ok && drained && !serverClose;
+}
+
+static void holdTyping(const std::string& chat) {
+  if (!g_token.length() || !g_pollScOpen || !realChatId(chat) || !allowed(String(chat.c_str()))) return;
+  char req[256];
+  const int n = snprintf(req, sizeof(req),
+                         "GET /bot%s/sendChatAction?chat_id=%s&action=typing HTTP/1.1\r\n"
+                         "Host: " TG_HOST "\r\nConnection: keep-alive\r\n\r\n",
+                         g_token.c_str(), chat.c_str());
+  if (n <= 0 || n >= (int)sizeof(req)) return;
+  const bool ok = g_pollSc.print(req) > 0 && readTypingAnswer(millis() + kHoldTypingWaitMs);
+  if (!ok) closePollSocket();   // the next poll reconnects
+  s_typedOnce = true;   // the photo path's own indicator waits its gap after this one
+  s_lastTypingMs = millis();
+  alogif("telegram: typing shown for a held text (%s)", ok ? "ok" : "no answer");
+}
 
 // A turn whose first message was sent before its chat's previous answer went out ends
 // with the crossed-answer note (tg_receive.h): say so in the log.
@@ -1941,6 +2056,7 @@ struct TgIo {
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
   }
   void notice(const nimbus::net::TgNotice& n) { sendGuardNotice(n); }
+  void typing(const std::string& chat) { holdTyping(chat); }
   void checkpoint() { checkpointOffset(); }
   void endPage() {
     s_turnMedia = 0;
@@ -2139,7 +2255,11 @@ static void drainSettledInject() {
     rp.count = (int)ups.size();
     auto allowedChat = [](const std::string& c) { return telegram::allowed(String(c.c_str())); };
     const nimbus::net::SettlePage sp = nimbus::net::settlePageOf(ups, rp, allowedChat);
-    if (s_injSettle.observe(-1, sp, millis(), TgIo().nowEpoch()) == nimbus::net::Settle::Hold) {
+    const uint32_t now = millis();
+    const bool held = s_injSettle.observe(-1, sp, now, TgIo().nowEpoch()) == nimbus::net::Settle::Hold;
+    if (s_injTyping.due(held && sp.tail == nimbus::net::SettleTail::Text, now))
+      holdTyping(nimbus::net::newestTextChatOf(ups, allowedChat));
+    if (held) {
       alogif("telegram: settle hold (injected, re-poll %d)", s_injSettle.repolls());
       return;
     }

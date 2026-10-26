@@ -37,10 +37,11 @@
 //
 // kSettleQuietTextMs comes from the owner's traffic: in four days the one text and photo
 // that belonged together were 5 s apart by Telegram's whole-second dates (4 to 6 s in
-// fact), and the nearest pair that did not (two separate meals) was 10 s apart. 5 s is
-// the longest window the release allows; it joins a follow-up that arrives within 5 s
-// of the device first seeing the text (never earlier than the send) plus the last
-// re-poll's round trip. The windows run from that first sight.
+// fact), and the nearest pair that did not (two separate meals) was 10 s apart. 6 s joins
+// every pair 5 s apart by those dates (owner ruling, 26 Oct 2026): a follow-up that
+// arrives within 6 s of the device first seeing the text (never earlier than the send),
+// plus the last re-poll's round trip. The windows run from that first sight. While a
+// text is held the chat sees Telegram's typing indicator (HoldTyping).
 //
 // A hold is a per-cycle state on the one poll task, never a wait: the device re-polls
 // the same offset with timeout 0 after repollInMs(), keeping the keep-alive socket
@@ -49,12 +50,12 @@
 // kSettleRepollMs, or less when the window ends sooner, so a page that stopped growing
 // is answered at the end of its window plus the rest of one poll loop, never a whole
 // extra pause later (on the bench a held page was looked at every 2.5 s or so, and a
-// plain text was held 5.7 to 5.9 s). A page that does not grow re-polls at most
-// ceil(quiet / repoll) + 1 times.
+// plain text held for a 5 s window was answered after 5.7 to 5.9 s). A page that does not
+// grow re-polls at most ceil(quiet / repoll) + 1 times.
 namespace nimbus::net {
 
 constexpr uint32_t kSettleQuietMediaMs = 3000;
-constexpr uint32_t kSettleQuietTextMs = 5000;
+constexpr uint32_t kSettleQuietTextMs = 6000;
 constexpr uint32_t kSettleMaxHoldMs = 15000;
 constexpr uint32_t kSettleDateMarginS = 2;
 constexpr uint32_t kSettleRepollMs = 1000;
@@ -203,6 +204,54 @@ class TgSettle {
   int       repolls_ = 0;
   uint32_t  lastHeldMs_ = 0;
   SettleWhy why_ = SettleWhy::Empty;
+};
+
+// Telegram's typing indicator for a held plain text: the chat sees activity during the
+// wait. Due at the first sight of a held text and again once Telegram's action has lapsed
+// (it shows for about 5 s; kHoldTypingRepeatMs), never otherwise; a hold that ends, or
+// stops being a text's, starts over.
+constexpr uint32_t kHoldTypingRepeatMs = 4500;
+
+class HoldTyping {
+ public:
+  // `textHeld`: this cycle holds a page whose newest allowed turn candidate is a plain
+  // text. True when the indicator should be sent now.
+  bool due(bool textHeld, uint32_t nowMs) {
+    if (!textHeld) {
+      sent_ = false;
+      return false;
+    }
+    if (sent_ && nowMs - lastMs_ < kHoldTypingRepeatMs) return false;
+    sent_ = true;
+    lastMs_ = nowMs;
+    return true;
+  }
+
+ private:
+  bool     sent_ = false;
+  uint32_t lastMs_ = 0;
+};
+
+// A fetch that returned the very page the last fetch did (same offset, same bytes): a
+// held page re-polled with nothing new. The archive hook and its log line skip it, so a
+// hold does not re-read and re-log the same page every second; a page that grew (or
+// moved) is seen again.
+class SamePage {
+ public:
+  bool repeat(int32_t offset, uint32_t len, uint32_t crc) {
+    const bool same = seen_ && offset == offset_ && len == len_ && crc == crc_;
+    seen_ = true;
+    offset_ = offset;
+    len_ = len;
+    crc_ = crc;
+    return same;
+  }
+
+ private:
+  bool     seen_ = false;
+  int32_t  offset_ = 0;
+  uint32_t len_ = 0;
+  uint32_t crc_ = 0;
 };
 
 // The turn after a page that missed an earlier turn of its chat: its earliest message

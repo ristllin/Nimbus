@@ -5,7 +5,8 @@ plate's photo 5 s later by Telegram's dates (no media group). The device answere
 text alone ("If a photo or message was meant to arrive, it didn't reach me"), then the
 photo as a second turn. The settle rule (``lib/core/include/nimbus/net/tg_settle.h``,
 host-tested in ``test/test_tg_settle`` and end to end in ``test/test_tg_burst``) now
-holds a plain text for 5 s for what follows it, commands never wait, and a photo that
+holds a plain text for 6 s for what follows it (a photo, file or voice note), shows the
+chat Telegram's typing indicator meanwhile, never holds a command, and a photo that
 misses the window is the next turn, told the earlier answer is already in the chat.
 
 No phone and no user account can message the test bot, so these legs replay the
@@ -27,8 +28,12 @@ Unit A (SD card, TEST build, the head on ``claude-haiku-5-5``, a few cents a run
   two turns, and the second is told the text's answer is already in the chat (its log
   line); both replies are printed.
 * ``test_l48w_plain_text_latency``: a plain text with nothing after it, three times: the
-  settle hold (device log) is at least the 5 s window and at most the window plus one
-  re-poll; the hold and the reply time are printed (the before/after table in the PR).
+  settle hold (device log) is at least the 6 s window and at most the window plus one
+  re-poll, and the typing indicator was shown for it; the hold and the reply time are
+  printed (the before/after table in the PR).
+* ``test_l48w_text_then_voice_is_one_turn``: a text, 3 s, a voice note (spoken words made
+  with macOS ``say`` and ffmpeg): one turn, the text first, then ``(voice note)`` and the
+  transcript; one reply (printed).
 
 Run (unit A, ``NIMBUS_BENCH_LOCKS=<program>/locks``)::
 
@@ -51,13 +56,14 @@ import tg_archive_bench as tb
 from device import ExpectTimeout
 
 MODEL = "claude-haiku-5-5"
-TEXT_WINDOW_MS = 5000  # nimbus::net::kSettleQuietTextMs
+TEXT_WINDOW_MS = 6000  # nimbus::net::kSettleQuietTextMs
 REPOLL_MS = 1000  # nimbus::net::kSettleRepollMs
 STAGE_PROJECT = "l48w"
 GAP_S = 3.0  # the replay's text-to-photo gap (the DoD's 3 s)
 DISPATCH_RE = re.compile(r"settle dispatch \(injected\) n=(\d+) after (\d+) ms \(([^)\s]+)\)")
 RAN_RE = re.compile(r"settled page ran: (\d+) messages? in (\d+) turn")
 CROSSED_LOG = "was sent before its chat's last answer went out"
+TYPING_OK = "typing shown for a held text (ok)"
 SPEND_RE = re.compile(r"fabric-spend: (\S+) in=(\d+) out=(\d+) cR=(\d+) cW=(\d+)")
 MISSING_RE = re.compile(
     r"(did ?n.t|did not|never) (reach|arrive|come through|get through|receive)|no (photo|image|picture)", re.I
@@ -147,6 +153,27 @@ def plate_jpeg(seed: int = 25) -> bytes:
     out = io.BytesIO()
     img.save(out, "JPEG", quality=90)
     return out.getvalue()
+
+
+def speech_ogg(words: str) -> bytes:
+    """Spoken words as a Telegram-style voice note (OGG/Opus, mono 16 kHz): macOS ``say``
+    renders them, ffmpeg encodes them."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    say, ff = shutil.which("say"), shutil.which("ffmpeg")
+    if not (say and ff):
+        raise RuntimeError("macOS say and ffmpeg are needed to build the spoken voice note")
+    with tempfile.TemporaryDirectory() as d:
+        aiff, ogg = f"{d}/v.aiff", f"{d}/v.ogg"
+        subprocess.run([say, "-o", aiff, words], check=True)
+        subprocess.run(
+            [ff, "-loglevel", "error", "-i", aiff, "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "24k", ogg],
+            check=True,
+        )
+        with open(ogg, "rb") as f:
+            return f.read()
 
 
 # ---- device helpers -----------------------------------------------------------------
@@ -387,8 +414,58 @@ def test_l48w_plain_text_latency(device, net, coalesce_bench):
             f"inject->reply row {1000 * (replied - sent):.0f} ms"
         )
         assert TEXT_WINDOW_MS <= held <= TEXT_WINDOW_MS + REPOLL_MS, f"a plain text held {held} ms"
+        assert any(TYPING_OK in ln for ln in lines), "no typing indicator during the hold"
         time.sleep(5.0)
     print(f"[plain] holds {holds}")
+
+
+@pytest.fixture
+def voice(net):
+    """A spoken voice note staged in the Files store over HTTP: (card path, size). The
+    project is removed afterwards."""
+    import requests
+
+    data = speech_ogg("Make that the chicken salad instead of the roast, please.")
+    name = "voice.ogg"
+    url = f"http://{net.ip}/api/files/upload?project={STAGE_PROJECT}&name={name}"
+    r = requests.post(url, files={"file": (name, data, "audio/ogg")}, headers=net._auth(), timeout=60)
+    assert r.status_code < 400, f"staging the voice note: HTTP {r.status_code} {r.text[:120]}"
+    try:
+        yield f"/mem/files/{STAGE_PROJECT}/{name}", len(data)
+    finally:
+        net.post(f"/api/files/rmproject?project={STAGE_PROJECT}&confirm=DELETE", {}, timeout=20.0)
+
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_l48w_text_then_voice_is_one_turn(device, net, coalesce_bench, voice):
+    chat = int(str(coalesce_bench.chat))
+    uid = tb.first_update_id() + 4960
+    words = "For dinner tonight"
+    _quiet(device)
+    _inject(device, settle_page([tb.text_update(uid, chat, words)]))
+    lines = _collect(device, GAP_S)
+    note = tb.local_file_update(uid + 1, chat, "voice", voice[0], voice[1], {"mime_type": "audio/ogg", "duration": 3})
+    _inject(device, settle_page([note]))
+    lines += _collect(device, 120.0, until="settle dispatch (injected)")
+    lines += _collect(device, 300.0, until="settled page ran")
+    lines += _collect(device, 8.0)
+    _report("voice", lines)
+    if any("Voice messages aren't available" in ln for ln in lines):
+        pytest.skip("no speech-to-text provider on the unit")
+    got = [d for d in map(dispatch_of, lines) if d]
+    ran = [r for r in map(ran_of, lines) if r]
+    assert got and got[0][0] == 2, f"the text and the voice note did not dispatch together: {got}"
+    assert ran and ran[0] == (2, 1), f"the text and the voice note did not run as one turn: {ran}"
+    rows = _wait(lambda: _rows(net, f"tg:{uid + 1}x2"), 120)
+    assert rows, "no user row and reply for the text and the voice note (one turn of both)"
+    users, replies = rows
+    text = users[0]["text"]
+    at_text, at_voice = text.find(words), text.find("(voice note)")
+    assert 0 <= at_text < at_voice, f"the text must come first, then the voice note: {text[:300]}"
+    print(f"[voice] turn: {text[:300]}")
+    print(f"[voice] reply: {replies[0]['text'][:400]}")
 
 
 # ---- host tests ---------------------------------------------------------------------

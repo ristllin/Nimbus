@@ -41,9 +41,24 @@ static void test_tags() {
   TEST_ASSERT_EQUAL_STRING("ev:guard", noticeRouteOf("", OwnerNotice::Guard).tag);
 }
 
+// Once per episode on the web route: a row of the last day that already carries the
+// notice (its tag among the row's tags, the same words) means it is not written again;
+// another notice under the same tag, or a near-miss tag, does not count.
+static void test_same_notice_row() {
+  using nimbus::net::sameNoticeRow;
+  const std::string text = "Nimbus: settings storage is almost full, so some changes may not be saved.";
+  TEST_ASSERT_TRUE(sameNoticeRow("ev:storage", text, "ev:storage", text));
+  TEST_ASSERT_TRUE(sameNoticeRow("from:x,ev:storage", text, "ev:storage", text));
+  TEST_ASSERT_FALSE(sameNoticeRow("ev:storagex", text, "ev:storage", text));
+  TEST_ASSERT_FALSE(sameNoticeRow("ev:storage", "Nimbus: the file store is full.", "ev:storage", text));
+  TEST_ASSERT_FALSE(sameNoticeRow("", text, "ev:storage", text));
+  TEST_ASSERT_TRUE(nimbus::net::kWebNoticeRepeatHours >= 24);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_notice_has_a_route);
   RUN_TEST(test_tags);
+  RUN_TEST(test_same_notice_row);
   return UNITY_END();
 }

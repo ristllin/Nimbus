@@ -28,11 +28,13 @@
 // A slash command never shares a turn (CommandBoundary): inside a "Message 1 of N"
 // block it would reach the model as conversation instead of running as a command.
 // So a command gets a bucket of its own, and a chat's messages after it start
-// another. A voice note ends the batch the same way (VoiceBoundary): it is a turn of
-// its own (its transcript), so the reply order follows the order things were sent.
-// A chat can therefore own several buckets in one drain; each bucket is one turn,
-// emitted in creation order, so the chat's order is kept. The bucket count is bounded
-// by kBatchMaxChats (turns per drain).
+// another. A voice note joins its chat's open bucket like a photo (a text and the voice
+// note sent right after it are one turn, and a text after a voice note joins it), with
+// one voice note per turn: a second one starts another bucket (VoiceBoundary), so its
+// transcript is answered in the order things were sent. A chat can therefore own
+// several buckets in one drain; each bucket is one turn, emitted in creation order, so
+// the chat's order is kept. The bucket count is bounded by kBatchMaxChats (turns per
+// drain).
 //
 // Contiguous mode (setContiguous, set by the drain for a page that holds a command):
 // a message joins only the newest bucket of the whole drain, and only when that bucket
@@ -65,8 +67,8 @@ enum class BatchAdd : uint8_t {
   CommandBoundary,  // buffered as a turn of its own: a slash command never shares a
                     // turn. The chat's earlier messages stay one turn, the command is
                     // the next, and the chat's next message starts another.
-  VoiceBoundary,    // buffered as a turn of its own: a voice note (its transcript),
-                    // with the same boundaries as a command.
+  VoiceBoundary,    // buffered as the first message of a new bucket: a voice note whose
+                    // chat's open bucket already holds one (one voice note per turn).
   Deferred,         // NOT buffered: a cap prevented it (this chat's bucket is full, the
                     // bucket-count cap is hit for a new turn, the total-bytes cap is hit,
                     // or the media caps). The caller must stop advancing its ack point
@@ -77,7 +79,7 @@ enum class BatchAdd : uint8_t {
 enum class SegKind : uint8_t {
   Text,    // a text message (or a caption with no media the device could take)
   Media,   // a photo or document: its segment text comes from the device (setMediaText)
-  Voice,   // a voice note: a turn of its own, its text is the transcript (setVoiceText)
+  Voice,   // a voice note: its text is the transcript (setVoiceText); one per bucket
 };
 
 class MessageBatcher {
@@ -99,7 +101,8 @@ class MessageBatcher {
   BatchAdd addMedia(const std::string& chatId, const std::string& from, const std::string& caption,
                     int slot, int32_t updateId = 0);
 
-  // Add a voice note as a turn of its own (VoiceBoundary); it takes a media slot.
+  // Add a voice note to chatId's open bucket (or a new one: the chat has none open, or
+  // its open bucket already holds a voice note, VoiceBoundary); it takes a media slot.
   BatchAdd addVoice(const std::string& chatId, const std::string& from, int slot,
                     int32_t updateId = 0);
 
@@ -107,7 +110,7 @@ class MessageBatcher {
   void setContiguous(bool on) { contiguous_ = on; }
 
   // Buckets (one turn each) in this drain. A chat owns more than one when a command
-  // or a voice note split it.
+  // or a second voice note split it.
   size_t turnCount() const { return buckets_.size(); }
   bool   empty()     const { return buckets_.empty(); }
 
@@ -138,9 +141,10 @@ class MessageBatcher {
   // Media items held by this drain (every bucket), for the device's slot budget.
   size_t  mediaInDrain() const { return mediaTotal_; }
 
-  // The bucket is one voice note; its slot, and its transcript once the device has it.
+  // The bucket holds a voice note (at most one); its slot, and its transcript once the
+  // device has it.
   bool voiceAt(size_t i) const { return buckets_[i].voice; }
-  int  voiceSlotAt(size_t i) const { return buckets_[i].msgs[0].slot; }
+  int  voiceSlotAt(size_t i) const;
   void setVoiceText(size_t i, const std::string& transcript);
 
   // Render bucket i's buffered messages into ONE model-facing turn text:
@@ -151,7 +155,8 @@ class MessageBatcher {
   //   - a voice note -> its transcript;
   //   - two or more -> each message as a delimited block in arrival order, so the
   //     model reads them as distinct messages, not one run-on, with per-message from;
-  //     a photo's block holds its segment text and caption;
+  //     a photo's block holds its segment text and caption, a voice note's block reads
+  //     "(voice note) <transcript>";
   //   - if this chat was capped (messages were shed because a cap fired) an honest
   //     trailing note says more are waiting.
   // The note and delimiters follow device copy rules (no em dash, no " - ").
@@ -177,7 +182,7 @@ class MessageBatcher {
     size_t   media   = 0;      // media segments in this bucket
     bool     capped  = false;  // a message for this chat was shed (more waiting)
     bool     command = false;  // sealed: one slash command, a turn of its own
-    bool     voice   = false;  // sealed: one voice note, a turn of its own
+    bool     voice   = false;  // holds a voice note (one per bucket)
     int32_t  firstId = 0;      // update id of the first message (0: none)
   };
   struct NewMsg {
@@ -193,7 +198,7 @@ class MessageBatcher {
   // or in contiguous mode the drain's newest bucket if it is this chat's (else none).
   Bucket* lastBucket(const std::string& chatId);
   static bool full(const Bucket& b);
-  static bool sealed(const Bucket& b) { return b.command || b.voice; }
+  static bool sealed(const Bucket& b) { return b.command; }
   const Msg& mediaSeg(size_t i, size_t k) const;
   Msg*    mediaSegMut(size_t i, size_t k);
   void    append(Bucket& b, const NewMsg& m);

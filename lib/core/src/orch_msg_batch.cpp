@@ -2,8 +2,8 @@
 
 #include <cstdio>
 
-// CUM-398 rapid-message batcher, with the command and voice boundaries and media
-// segments (albums as one turn). See msg_batch.h. Pure logic, host-tested; the device
+// CUM-398 rapid-message batcher, with the command boundary, media and voice segments
+// (albums, and a text with the photo or voice note sent after it, as one turn). See msg_batch.h. Pure logic, host-tested; the device
 // seam (src/agent/telegram.cpp) fills it on the tg_poll task and emits one turn per
 // bucket. No concurrency, no I/O.
 namespace nimbus {
@@ -45,9 +45,16 @@ void MessageBatcher::setMediaText(size_t i, size_t k, const std::string& text) {
   if (Msg* m = mediaSegMut(i, k)) m->segText.assign(text.data(), text.size());
 }
 
+int MessageBatcher::voiceSlotAt(size_t i) const {
+  for (const Msg& m : buckets_[i].msgs)
+    if (m.kind == SegKind::Voice) return m.slot;
+  return -1;
+}
+
 void MessageBatcher::setVoiceText(size_t i, const std::string& transcript) {
-  if (i < buckets_.size() && buckets_[i].voice)
-    buckets_[i].msgs[0].text.assign(transcript.data(), transcript.size());
+  if (i >= buckets_.size()) return;
+  for (Msg& m : buckets_[i].msgs)
+    if (m.kind == SegKind::Voice) m.text.assign(transcript.data(), transcript.size());
 }
 
 void MessageBatcher::append(Bucket& b, const NewMsg& m) {
@@ -63,6 +70,7 @@ void MessageBatcher::append(Bucket& b, const NewMsg& m) {
   totalBytes_ += m.text.size();
   if (m.kind != SegKind::Text) ++mediaTotal_;
   if (m.kind == SegKind::Media) ++b.media;
+  if (m.kind == SegKind::Voice) b.voice = true;
 }
 
 // Another message for a chat whose newest bucket is still open: enforce the per-turn
@@ -81,29 +89,29 @@ BatchAdd MessageBatcher::addToOpen(Bucket& b, const NewMsg& m) {
   return full(b) ? BatchAdd::TurnFull : BatchAdd::Accepted;
 }
 
-// A new turn: the chat's first message in this drain, a command or voice note, or the
-// first message after one. Two ceilings gate it; either means "re-serve this message,
-// it did not fit this drain", never a silent drop. A lone message always fits a fresh
-// accumulator (one Telegram or injected message is smaller than the total cap), so a
-// message can never be stuck. When the chat already has an open bucket, that bucket is
-// marked capped so its render says more are waiting; a sealed bucket (a command or a
-// voice note) is never marked, so it always renders byte for byte.
+// A new turn: the chat's first message in this drain, a command or the first message
+// after one, or a second voice note. Two ceilings gate it; either means "re-serve this
+// message, it did not fit this drain", never a silent drop. A lone message always fits a
+// fresh accumulator (one Telegram or injected message is smaller than the total cap), so
+// a message can never be stuck. When the chat already has an open bucket, that bucket is
+// marked capped so its render says more are waiting; a sealed bucket (a command) is
+// never marked, so it always renders byte for byte.
 BatchAdd MessageBatcher::addNewBucket(Bucket* last, const std::string& chatId, const NewMsg& m,
                                       bool command) {
   if (buckets_.size() >= kBatchMaxChats || totalBytes_ + m.text.size() > kBatchMaxTotalBytes) {
     if (last && !sealed(*last)) last->capped = true;
     return BatchAdd::Deferred;
   }
+  const bool secondVoice = m.kind == SegKind::Voice && last && last->voice;
   buckets_.emplace_back();   // may move the buckets: `last` is not used past this point
   Bucket& b = buckets_.back();
   b.chatId.assign(chatId.data(), chatId.size());
   b.turnFrom.assign(m.from.data(), m.from.size());
   b.command = command;
-  b.voice = m.kind == SegKind::Voice;
   b.firstId = m.updateId;
   append(b, m);
   if (command) return BatchAdd::CommandBoundary;
-  if (b.voice) return BatchAdd::VoiceBoundary;
+  if (secondVoice) return BatchAdd::VoiceBoundary;
   return full(b) ? BatchAdd::TurnFull : BatchAdd::Accepted;
 }
 
@@ -116,7 +124,8 @@ BatchAdd MessageBatcher::addAny(const std::string& chatId, const NewMsg& m, bool
     return BatchAdd::Deferred;
   }
   Bucket* last = lastBucket(chatId);
-  const bool boundary = command || m.kind == SegKind::Voice;
+  // One voice note per turn: a second one starts the next bucket.
+  const bool boundary = command || (m.kind == SegKind::Voice && last && last->voice);
   if (last && !sealed(*last) && !boundary) return addToOpen(*last, m);
   return addNewBucket(last, chatId, m, command);
 }
@@ -183,6 +192,7 @@ PsString MessageBatcher::render(size_t i) const {
       out += b.msgs[k].chatFrom;
     }
     out += ":\n";
+    if (b.msgs[k].kind == SegKind::Voice) out += "(voice note) ";
     renderBody(out, b.msgs[k]);
   }
   if (b.capped)

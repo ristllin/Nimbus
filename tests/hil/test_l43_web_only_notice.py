@@ -10,10 +10,12 @@ and ``test/test_tg_hooks``), which the chat page renders.
 Leg (unit A or L, TEST build: ``NVSFILL``; no bot token on the unit, no spend):
 
 * ``test_l43_web_only_storage_notice``: the allowlist cleared (web-only), a fresh boot
-  (the notice is once per boot), the store filled to the reserve plus one, a growing
-  save refused (507); then the web chat holds the notice as an assistant row of chat
-  ``web`` tagged ``ev:storage`` and the device logs it as captured for the web chat. The
-  store is freed and the allowlist put back in a finally.
+  (the notice is raised once per boot), the store filled to the reserve plus one, a
+  growing save refused (507); then the web chat holds the notice as an assistant row of
+  chat ``web`` tagged ``ev:storage`` and the device logs it as captured for the web chat.
+  Then a restart with the store still full and another refused save: the notice is
+  recognised as already in the web chat (once per episode) and no second row appears.
+  The store is freed and the allowlist put back in a finally.
 
 Run: ``python3 -m pytest tests/hil/test_l43_web_only_notice.py --allow-hardware -s``
 
@@ -32,6 +34,7 @@ from device import ExpectTimeout
 
 NOTICE_TEXT = "settings storage is almost full"
 CAPTURED_LOG = "storage-full notice captured for the web chat (no Telegram owner)"
+REPEAT_LOG = "storage-full notice already in the web chat today: not repeated"
 
 
 # ---- pure helpers (host-tested) ---------------------------------------------------
@@ -51,7 +54,33 @@ def web_notice(rows: List[dict]) -> Optional[dict]:
     return None
 
 
+def storage_rows(rows: List[dict]) -> List[str]:
+    """The ids of every web chat row that carries the storage notice."""
+    out = []
+    for r in rows:
+        if web_notice([r]):
+            out.append(r.get("id"))
+    return out
+
+
 # ---- device helpers -----------------------------------------------------------------
+
+
+def _rows(net) -> List[dict]:
+    return net.get_json("/api/mem/episodic?limit=60", timeout=8.0).get("messages", [])
+
+
+def _lines_until(device, needle: str, seconds: float) -> List[str]:
+    """Console lines for ``seconds`` or up to and with the first holding ``needle``."""
+    out, end = [], time.time() + seconds
+    while time.time() < end:
+        try:
+            out.append(device.expect_re(r".", timeout=end - time.time()).string)
+        except ExpectTimeout:
+            break
+        if needle in out[-1]:
+            break
+    return out
 
 
 def _wait(pred, timeout: float, every: float = 2.0):
@@ -72,6 +101,22 @@ def _settled(net, uptime_ms: int = 30000, timeout: float = 120.0) -> None:
             return False
 
     assert _wait(up, timeout, every=3.0), f"the device did not come back ({uptime_ms} ms up) within {timeout:.0f} s"
+
+
+def _check_once_per_episode(device, net) -> None:
+    """The store stays full across a restart, the next refused save raises the notice
+    again, and the web chat does not get a second row (once per episode)."""
+    before_rows = storage_rows(_rows(net))
+    device.reboot_and_confirm()
+    _settled(net)
+    r = net.post("/api/orch", {"sysPrompt": l43.GROWING_DIRECTIVE}, timeout=8.0)
+    assert l43.is_storage_full(r), f"a growing save after the restart: HTTP {r.status_code}"
+    again = _lines_until(device, REPEAT_LOG, 30.0)
+    for ln in again:
+        if "storage-full notice" in ln:
+            print(f"[web-only] after the restart: {ln[:200]}")
+    assert any(REPEAT_LOG in ln for ln in again), "the notice was not recognised as already in the web chat"
+    assert storage_rows(_rows(net)) == before_rows, "a second storage notice row was written in one episode"
 
 
 @pytest.mark.hil
@@ -113,6 +158,7 @@ def test_l43_web_only_storage_notice(device, net):
         assert row, "the storage notice did not reach the web chat"
         print(f"[web-only] web chat row {row.get('id')} tags={row.get('tags')}: {row.get('text')}")
         assert any(CAPTURED_LOG in ln for ln in lines), "the device did not log the web chat capture"
+        _check_once_per_episode(device, net)
     finally:
         try:
             l43.nvs_free(device)
@@ -121,6 +167,16 @@ def test_l43_web_only_storage_notice(device, net):
 
 
 # ---- host tests ---------------------------------------------------------------------
+
+
+@pytest.mark.host
+def test_storage_rows_counts_every_notice_row():
+    rows = [
+        {"id": "m9", "session": "web", "role": "assistant", "tags": "ev:storage", "text": NOTICE_TEXT},
+        {"id": "m8", "session": "web", "role": "assistant", "tags": "ev:spend", "text": "spend"},
+        {"id": "m7", "session": "web", "role": "assistant", "tags": "x,ev:storage", "text": "Nimbus: " + NOTICE_TEXT},
+    ]
+    assert storage_rows(rows) == ["m9", "m7"]
 
 
 @pytest.mark.host

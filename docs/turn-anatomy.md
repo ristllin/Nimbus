@@ -182,7 +182,8 @@ history): `k/N` is the item's place among the turn's media, `ref` is its content
 an earlier photo again), and the text after the bracket is the class
 (`(could not be fetched: too large)`, a file's name). A late or
 redelivered item carries its original send time: `(sent 09:58)` before a text,
-`, sent 09:58` inside a label. A voice note is its own turn (its transcript); a
+`, sent 09:58` inside a label. A voice note on its own is its transcript; in a turn with
+other messages its block reads `(voice note) <transcript>` (one voice note per turn); a
 command is always its own turn. A turn sent before its chat's previous answer went out
 ends with one more line, "[sent while you were still answering the previous message;
 that answer is already in the chat above]"; the history row does not keep it.

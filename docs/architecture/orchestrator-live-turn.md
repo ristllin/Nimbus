@@ -222,19 +222,24 @@ is `src/agent/telegram.cpp`). One cycle:
    then the photo it is about a few seconds later. The page is held (re-polled with
    timeout 0 on the same keep-alive socket after a pause of up to 1 s, shorter at the
    end of the window, plus the rest of the poll loop) until it has not grown for its
-   window, which follows the newest message:
-   5 s after a plain text (for the photo, file or voice note sent next) and 3 s after a
-   photo, file or voice note (for the rest of an album). Only a message from an allowed
-   chat that could become a turn restarts the window (a stranger's message or an edit
-   does not). It is answered at once when it holds a slash command from an allowed chat
-   (commands never wait) or nothing that could become a turn, when it is full (10 updates), when its
-   newest Telegram date is older than its window plus 2 s, or once 15 s have passed
-   since its first item was seen (the cap on a burst). The text window is 5 s, the
-   longest the release allows: it joins a photo sent about 5 s after its text, and a
-   photo that arrives later runs as the next turn (step 4). A plain text with nothing
-   after it is answered when its window ends, about 6 s after it was first seen. A hold
-   classifies, acks and stores
-   nothing; local turns, job polling and reply sends keep running between re-polls.
+   window, which follows the newest message: 6 s after a plain text (for the photo,
+   file or voice note sent next) and 3 s after a photo, file or voice note (for the rest
+   of an album). Only a message from an allowed chat that could become a turn restarts
+   the window (a stranger's message or an edit does not). It is answered at once when it
+   holds a slash command from an allowed chat (commands never wait) or nothing that
+   could become a turn, when it is full (10 updates), when its newest Telegram date is
+   older than its window plus 2 s, or once 15 s have passed since its first item was
+   seen (the cap on a burst). The 6 s text window joins a photo sent 5 s after its text
+   by Telegram's whole-second dates (the 25 Oct 2026 pair); a photo that arrives later
+   runs as the next turn (step 4). While a text is held its chat sees Telegram's typing
+   indicator: once at first sight, again if the hold outlives the indicator's 5 s, sent
+   on the open poll socket (no handshake; a socket that does not answer within 1.5 s is
+   closed). A plain text with nothing after it is answered when its window ends. The
+   hold is page-wide: another allowed chat's message can extend it (up to the 15 s cap)
+   and another allowed chat's command answers the page at once. A hold classifies, acks
+   and stores nothing, and a re-poll that returns the same page is not handed to the
+   archive again; local turns, job polling and reply sends keep running between
+   re-polls.
    Keeping the poll socket open is safe only because every other TLS session of the
    task opens through `workConnect`, which closes it first.
 3. **Break duplicates and classify** (`nimbus/net/tg_dup_guard.h`). A message already
@@ -242,8 +247,12 @@ is `src/agent/telegram.cpp`). One cycle:
    within 2 minutes and before its answer went out, is acked and skipped, with one
    owner notice per episode. Text joins its chat's turn; a photo or document becomes a
    media segment of that turn (its caption with it, at full length) and takes one of
-   ten download slots (a lazily allocated PSRAM array); a voice note is a turn of its
-   own; a command is a turn of its own. An eleventh media item waits for the next page.
+   ten download slots (a lazily allocated PSRAM array); a voice note joins its chat's
+   turn the same way (one per turn: a second voice note starts the next turn) and takes
+   a slot; a command is a turn of its own. On a page that holds a command every turn is
+   one unbroken run of update ids (so a restart re-runs at most the turn in flight), so
+   a chat's messages split around another chat's message there. An eleventh media item
+   waits for the next page.
    A photo with no caption is described with the text sent just before it in the same
    turn, as a caption would be.
 4. **Run each turn in order.** Past the hourly ceiling (60 inbound head turns in any
@@ -256,10 +265,12 @@ is `src/agent/telegram.cpp`). One cycle:
    item of its bucket (`MessageBatcher::render`, the one label
    `nimbus/orch/media_label.h`). A failed item is part of the turn, never a separate
    reply, unless the turn has nothing else (no text, no caption, nothing fetched): then
-   one plain reply says why, instead of a paid turn. A turn whose first message was sent
-   before its chat's previous answer went out (a photo that missed its text's turn, a
-   voice note after a text) ends with a short note to the model that the previous answer
-   is already in the chat, so it is answered with that answer in mind; the history keeps
+   one plain reply says why, instead of a paid turn. A voice note that cannot be fetched
+   or transcribed is named in its turn ("could not be heard"; the sender was told); alone
+   it gets that plain reply and no turn. A turn whose first message was sent
+   before its chat's previous answer went out (a photo that missed its text's turn) ends
+   with a short note to the model that the previous answer is already in the chat, so it
+   is answered with that answer in mind; the history and the memory-recall query keep
    what was sent, without the note. How each photo reaches the head is described under
    "Photos go to the head as images" below.
 5. **Commit.** Only after the page's turns returned does the cursor move past it (a
@@ -270,7 +281,9 @@ The owner notices this cycle raises (a repeat skipped, the hourly ceiling, work 
 crashed the device twice), and the settings-storage and file-store notices the poll task
 sends, go to the owner chat on Telegram with a copy in its history. A device with no
 Telegram owner (a web-only setup) gets them as messages in the web chat instead
-(`nimbus/net/owner_notice.h`).
+(`nimbus/net/owner_notice.h`), worded for the web chat's reader (a guard notice names the
+Telegram message, never "you"), and a storage notice already in the web chat from the last
+24 hours is not written again while the store stays full.
 
 **Photos go to the head as images.** A photo is sent to the head model as an image,
 not as a description of it (`nimbus/orch/turn_images.h`). When the configured head reads

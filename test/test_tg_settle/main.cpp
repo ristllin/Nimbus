@@ -110,10 +110,11 @@ static void test_growth_restarts_the_window() {
   TEST_ASSERT_EQUAL_INT(5, s.repolls());
 }
 
-// A plain text waits the text window (5 s) for what the owner sends next; a lone text is
-// answered at its end.
+// A plain text waits the text window (6 s, the owner's ruling: it joins every text and
+// photo 5 s apart by Telegram's whole-second dates) for what the owner sends next; a lone
+// text is answered at its end.
 static void test_lone_text_waits_the_text_window() {
-  TEST_ASSERT_EQUAL_UINT32(5000, kSettleQuietTextMs);
+  TEST_ASSERT_EQUAL_UINT32(6000, kSettleQuietTextMs);
   TgSettle s;
   for (uint32_t t = 0; t < kSettleQuietTextMs; t += 1000)
     TEST_ASSERT_EQUAL_INT(kHold, dispatchOf(s, 50, page(1, SettleTail::Text), t));
@@ -122,11 +123,11 @@ static void test_lone_text_waits_the_text_window() {
   TEST_ASSERT_EQUAL_UINT32(kSettleQuietTextMs, s.lastHeldMs());
 }
 
-// Text then a photo 1, 3 or 5 s after the text was first seen: the photo grows the page
+// Text then a photo 1, 3, 5 or 6 s after the text was first seen: the photo grows the page
 // inside the text window, the page is held on for the rest of the album (the media
 // window), and both are dispatched together.
 static void test_text_then_photo_inside_the_window() {
-  for (uint32_t gap : {1000u, 3000u, 5000u}) {
+  for (uint32_t gap : {1000u, 3000u, 5000u, 5900u}) {
     TgSettle s;
     uint32_t t = 0;
     for (; t < gap; t += 500) TEST_ASSERT_EQUAL_INT(kHold, dispatchOf(s, 50, page(1, SettleTail::Text), t));
@@ -211,7 +212,7 @@ static void test_old_date_dispatches_at_once() {
   TEST_ASSERT_EQUAL_INT((int)SettleWhy::OldDate, (int)s.why());
   TgSettle edge;
   TEST_ASSERT_EQUAL_INT(kHold, dispatchOf(edge, 50, page(2, SettleTail::Media, kNow - media), 0));
-  // Text: 5 s + 2 s = 7 s.
+  // Text: 6 s + 2 s = 8 s.
   const int64_t text = kSettleQuietTextMs / 1000 + 2;
   TgSettle txt;
   TEST_ASSERT_EQUAL_INT(kHold, dispatchOf(txt, 50, page(1, SettleTail::Text, kNow - text), 0));
@@ -255,8 +256,9 @@ static void test_repoll_pause_ends_at_the_window() {
   TEST_ASSERT_EQUAL_UINT32(kSettleRepollMs, s.repollInMs(0));   // not holding
   s.observe(50, page(1, SettleTail::Text), 0, kNow);
   TEST_ASSERT_EQUAL_UINT32(kSettleRepollMs, s.repollInMs(0));
-  TEST_ASSERT_EQUAL_UINT32(800, s.repollInMs(4200));
-  TEST_ASSERT_EQUAL_UINT32(kSettleRepollMinMs, s.repollInMs(4990));
+  TEST_ASSERT_EQUAL_UINT32(kSettleRepollMs, s.repollInMs(4200));
+  TEST_ASSERT_EQUAL_UINT32(800, s.repollInMs(kSettleQuietTextMs - 800));
+  TEST_ASSERT_EQUAL_UINT32(kSettleRepollMinMs, s.repollInMs(kSettleQuietTextMs - 10));
   TEST_ASSERT_EQUAL_UINT32(kSettleRepollMinMs, s.repollInMs(9000));   // past it: never a spin
   // The maximum hold binds a page that keeps growing.
   TgSettle g;
@@ -353,6 +355,40 @@ static void test_hold_never_exceeds_the_maximum() {
   }
 }
 
+// The typing indicator while a text is held: once at its first sight, again only after
+// Telegram's action lapsed (kHoldTypingRepeatMs), never while nothing text-like is held;
+// a hold that ends starts over. Absence of thrash: at most ceil(hold / repeat) sends.
+static void test_hold_typing_is_rate_limited() {
+  using nimbus::net::HoldTyping;
+  using nimbus::net::kHoldTypingRepeatMs;
+  HoldTyping h;
+  TEST_ASSERT_FALSE(h.due(false, 0));   // nothing held
+  TEST_ASSERT_TRUE(h.due(true, 100));   // first sight of a held text
+  int sent = 1;
+  for (uint32_t t = 1100; t <= 100 + kSettleQuietTextMs; t += 1000) sent += h.due(true, t);
+  TEST_ASSERT_EQUAL_INT(2, sent);       // once more after 4.5 s, inside a 6 s window
+  TEST_ASSERT_FALSE(h.due(true, 100 + kSettleQuietTextMs + 1));
+  TEST_ASSERT_FALSE(h.due(false, 9000));   // the hold ended (dispatch, or a photo is the newest)
+  TEST_ASSERT_TRUE(h.due(true, 9100));     // a new hold: at once
+  // Over a whole 15 s maximum hold, re-polled every 300 ms: at most ceil(15000 / 4500).
+  HoldTyping m;
+  int n = 0;
+  for (uint32_t t = 0; t <= kSettleMaxHoldMs; t += 300) n += m.due(true, t);
+  TEST_ASSERT_TRUE(n <= (int)((kSettleMaxHoldMs + kHoldTypingRepeatMs - 1) / kHoldTypingRepeatMs) + 1);
+}
+
+// The archive gate: the same bytes at the same offset are a repeat (a held page with
+// nothing new); a page that grew, moved or changed is not.
+static void test_same_page_gate() {
+  nimbus::net::SamePage g;
+  TEST_ASSERT_FALSE(g.repeat(50, 120, 0xAAAA));   // the first fetch
+  TEST_ASSERT_TRUE(g.repeat(50, 120, 0xAAAA));    // re-polled, nothing new
+  TEST_ASSERT_FALSE(g.repeat(50, 260, 0xBBBB));   // it grew: archive again
+  TEST_ASSERT_TRUE(g.repeat(50, 260, 0xBBBB));
+  TEST_ASSERT_FALSE(g.repeat(51, 260, 0xBBBB));   // the cursor moved
+  TEST_ASSERT_FALSE(g.repeat(51, 260, 0xCCCC));   // same size, other bytes
+}
+
 // The crossed-answer rule: a message sent before its chat's previous answer went out
 // missed that turn; the same second is not counted, and an unknown time never is.
 static void test_crossed_answer_rule() {
@@ -395,5 +431,7 @@ int main(int, char**) {
   RUN_TEST(test_repoll_bound_for_a_still_page);
   RUN_TEST(test_hold_never_exceeds_the_maximum);
   RUN_TEST(test_crossed_answer_rule);
+  RUN_TEST(test_hold_typing_is_rate_limited);
+  RUN_TEST(test_same_page_gate);
   return UNITY_END();
 }

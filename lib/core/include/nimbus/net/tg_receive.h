@@ -43,11 +43,14 @@
 //   void       skipMedia(size_t turn, size_t k, size_t n, int slot, std::string& seg);
 //                                               the label of an item the poison guard skips
 //   bool       processVoice(int slot, std::string& transcript);
+//                                               (false: the sender was told why)
 //   void       mediaFailed(const std::string& chat, size_t turn);   a turn of failed media only:
 //                                               one plain reply instead of a paid turn
 //   void       runTurn(const std::string& from, const std::string& chat,
 //                      const orch::PsString& text, bool command);
 //   void       notice(const Notice& n);         one plain owner notice
+//   void       typing(const std::string& chat); Telegram's typing indicator while that
+//                                               chat's text is held (best effort)
 //   void       checkpoint();                    a command page's per-bucket store
 //   void       endPage();                       free this page's media slots
 namespace nimbus::net {
@@ -133,6 +136,21 @@ inline SettlePage settlePageOf(const std::vector<tg::Update>& page, const orch::
   return sp;
 }
 
+// Model-facing (copy rules exempt; no em dash): a voice note of a turn with other
+// messages that could not be fetched or transcribed (the sender was already told).
+inline constexpr char kVoiceNotHeard[] = "[this voice note could not be heard; the sender was told]";
+
+// The chat of the page's newest plain-text turn candidate from an allowed chat (the held
+// text the typing indicator is for); "" when there is none.
+template <class Allowed>
+inline std::string newestTextChatOf(const std::vector<tg::Update>& page, Allowed allowed) {
+  for (size_t k = page.size(); k-- > 0;) {
+    const tg::Update& u = page[k];
+    if (turnCandidate(u) && u.attachment.kind == tg::Attachment::Kind::None && allowed(u.chatId)) return u.chatId;
+  }
+  return std::string();
+}
+
 class TgReceiver {
  public:
   TgReceiver(core::TgOffsetCursor& cursor, orch::MessageBatcher& batch, TgGuard& guard)
@@ -168,7 +186,10 @@ class TgReceiver {
       return kind(out, TgCycle::Kind::FetchError);
     }
     auto allowed = [&](const std::string& chat) { return io.allowed(chat); };
-    const Settle s = settle_.observe(cursor_.offset(), settlePageOf(page_, f.rp, allowed), io.nowMs(), io.nowEpoch());
+    const SettlePage sp = settlePageOf(page_, f.rp, allowed);
+    const uint32_t now = io.nowMs();
+    const Settle s = settle_.observe(cursor_.offset(), sp, now, io.nowEpoch());
+    if (typing_.due(s == Settle::Hold && sp.tail == SettleTail::Text, now)) io.typing(newestTextChatOf(page_, allowed));
     if (s == Settle::Hold) return kind(out, TgCycle::Kind::Held);
     if (page_.empty()) return kind(out, TgCycle::Kind::Idle);
     if (pagePoisoned()) return poisoned(io, out);
@@ -395,8 +416,11 @@ class TgReceiver {
     if (batch_.voiceAt(i)) {
       std::string transcript;
       if (!io.processVoice(batch_.voiceSlotAt(i), transcript)) {
-        rememberBucket(i, io.bestEpoch());   // handled: the sender was told why
-        return;
+        if (batch_.messageCountAt(i) == 1) {   // the voice note alone: the sender was told why
+          rememberBucket(i, io.bestEpoch());
+          return;
+        }
+        transcript = kVoiceNotHeard;   // the rest of the turn is still answered
       }
       batch_.setVoiceText(i, transcript);
     }
@@ -479,6 +503,7 @@ class TgReceiver {
   orch::MessageBatcher& batch_;
   TgGuard& guard_;
   TgSettle settle_;
+  HoldTyping typing_;
   std::vector<tg::Update> page_;
   std::vector<std::pair<int32_t, DupKey>> keys_;
   bool polled_ = true;   // the page came from getUpdates (poison marks apply)

@@ -116,6 +116,9 @@ struct World {
   }
   Msg& send(const std::string& chat, Attachment::Kind kind, const std::string& text, uint32_t at,
             const std::string& group = "") {
+    // Telegram numbers updates in the order they arrive: a message never gets a higher
+    // update id than one that arrives after it (a later id never jumps the queue).
+    if (!all.empty() && at < all.back().arriveMs) at = all.back().arriveMs;
     Msg m;
     m.uid = nextUid++;
     m.chat = chat;
@@ -173,6 +176,8 @@ struct Device {
   uint32_t turnMinMs = 5000, turnMaxMs = 120000;
   int dupNotices = 0, ceilingNotices = 0, poisonNotices = 0, failedReplies = 0;
   std::vector<int32_t> lastPage;   // uids of the page fetched last
+  std::vector<std::pair<uint32_t, std::string>>* typingsOut = nullptr;   // the run's typing log
+  std::vector<std::pair<uint32_t, std::string>> typings;
   std::set<int32_t>* poisoned = nullptr;   // uids acked unprocessed by the poison guard
 
   Device(World& world, std::mt19937& r, std::vector<Turn>& t, BootKind boot)
@@ -317,6 +322,8 @@ struct Device {
     const int32_t uid = slots.at(slot);
     maybeRestart();
     work(3000);
+    const Msg* m = w.byUid(uid);
+    if (m && m->fetchFails) return false;   // not fetched or not transcribed: the sender is told
     transcript = "voice #" + std::to_string(uid) + "#";
     return true;
   }
@@ -341,6 +348,7 @@ struct Device {
     work(turnMinMs + rng() % (turnMaxMs - turnMinMs + 1));
     maybeRestart();
   }
+  void typing(const std::string& chat) { typings.push_back({w.now, chat}); }
   void notice(const TgNotice& n) {
     if (n.kind == TgNotice::Kind::Duplicate) ++dupNotices;
     if (n.kind == TgNotice::Kind::Ceiling) ++ceilingNotices;
@@ -425,7 +433,9 @@ struct Run {
       if (m.uid >= w.confirmed) return true;
     return false;
   }
+  std::vector<std::pair<uint32_t, std::string>> typings;   // (when, chat) of every typing indicator
   void tally(const Device& d) {
+    typings.insert(typings.end(), d.typings.begin(), d.typings.end());
     dupNotices += d.dupNotices;
     ceilingNotices += d.ceilingNotices;
     poisonNotices += d.poisonNotices;
@@ -1072,19 +1082,70 @@ static void test_burst_caps() {
   }
 }
 
-// A voice note after a text stays a turn of its own (its transcript): the text waits for
-// it, both run in the order sent, and the voice turn knows the text's answer exists.
-static void test_text_then_voice_note() {
-  Run r(45);
-  r.turnMinMs = r.turnMaxMs = 4000;
-  const int32_t tuid = sendText(r.w, "77", "about dinner", 30000).uid;
-  const int32_t vuid = r.w.send("77", Attachment::Kind::Voice, "", 33000).uid;
-  r.go(200000);
-  TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
-  TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[0]);
-  TEST_ASSERT_EQUAL_INT32(vuid, r.turns[1].uids[0]);
-  TEST_ASSERT_TRUE(crossed(r.turns[1]));
-  TEST_ASSERT_FALSE(crossed(r.turns[0]));
+// A voice note sent right after a text joins the text's turn like a photo (the text
+// first, then its transcript), and a text sent right after a voice note joins it; a
+// voice note past the window is the next turn and knows the text's answer exists.
+static void test_text_and_voice_note_are_one_turn() {
+  for (uint32_t gap : {1000u, 3000u, 5500u}) {
+    Run r(45 + gap);
+    r.turnMinMs = r.turnMaxMs = 4000;
+    const int32_t tuid = sendText(r.w, "77", "about dinner", 30000).uid;
+    const int32_t vuid = r.w.send("77", Attachment::Kind::Voice, "", 30000 + gap).uid;
+    r.go(200000);
+    TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+    TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[0]);
+    TEST_ASSERT_EQUAL_INT32(vuid, r.turns[0].uids[1]);
+    TEST_ASSERT_TRUE(inOrder(r.turns[0].text, "about dinner", "(voice note) voice #"));
+  }
+  Run v(46);
+  const int32_t vuid = v.w.send("77", Attachment::Kind::Voice, "", 30000).uid;
+  const int32_t tuid = sendText(v.w, "77", "and the rest", 31500).uid;
+  v.go(200000);
+  TEST_ASSERT_EQUAL_UINT(1, v.turns.size());
+  TEST_ASSERT_EQUAL_INT32(vuid, v.turns[0].uids[0]);
+  TEST_ASSERT_EQUAL_INT32(tuid, v.turns[0].uids[1]);
+  Run late(48);
+  late.turnMinMs = late.turnMaxMs = 6000;
+  sendText(late.w, "77", "about dinner", 30000);
+  late.w.send("77", Attachment::Kind::Voice, "", 39000);
+  late.go(200000);
+  TEST_ASSERT_EQUAL_UINT(2, late.turns.size());
+  TEST_ASSERT_TRUE(crossed(late.turns[1]));
+}
+
+// A voice note that cannot be heard does not take its text down with it: the turn still
+// runs, the voice note named as not heard (the sender was told); alone, it is no turn.
+static void test_unheard_voice_note_keeps_its_text() {
+  Run r(49);
+  sendText(r.w, "77", "about dinner", 30000);
+  Msg& v = r.w.send("77", Attachment::Kind::Voice, "", 31000);
+  v.fetchFails = true;
+  Msg& lone = r.w.send("77", Attachment::Kind::Voice, "", 120000);
+  lone.fetchFails = true;
+  r.go(300000);
+  TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+  TEST_ASSERT_TRUE(inOrder(r.turns[0].text, "about dinner", nimbus::net::kVoiceNotHeard));
+  TEST_ASSERT_FALSE(r.pending());
+}
+
+// The typing indicator: a held plain text shows it at its first sight and once more after
+// Telegram's action lapsed (a 6 s window), to that text's chat only; a command, a photo
+// alone and a stranger's text never do.
+static void test_typing_while_a_text_is_held() {
+  Run r(50);
+  const Msg& t = sendText(r.w, "77", "what's for dinner", 30000);
+  const uint32_t arrived = t.arriveMs;
+  r.go(100000);
+  TEST_ASSERT_EQUAL_UINT(2, r.typings.size());
+  for (const auto& ty : r.typings) TEST_ASSERT_EQUAL_STRING("77", ty.second.c_str());
+  TEST_ASSERT_TRUE(r.typings[0].first - arrived <= 2 * kRoundTripMs);   // at first sight
+  TEST_ASSERT_TRUE(r.typings[1].first - r.typings[0].first >= nimbus::net::kHoldTypingRepeatMs);
+  Run q(51);
+  sendText(q.w, "77", "/status", 30000);
+  q.w.send("77", Attachment::Kind::Photo, "", 60000);
+  sendText(q.w, "666", "a stranger", 90000);
+  q.go(200000);
+  TEST_ASSERT_EQUAL_UINT(0, q.typings.size());
 }
 
 // A stranger's message (or an edit) in the page never restarts the owner's hold: the
@@ -1137,7 +1198,9 @@ int main(int, char**) {
   RUN_TEST(test_text_alone_waits_only_the_window);
   RUN_TEST(test_command_alone_runs_at_once);
   RUN_TEST(test_burst_caps);
-  RUN_TEST(test_text_then_voice_note);
+  RUN_TEST(test_text_and_voice_note_are_one_turn);
+  RUN_TEST(test_unheard_voice_note_keeps_its_text);
+  RUN_TEST(test_typing_while_a_text_is_held);
   RUN_TEST(test_crossed_note_is_per_chat);
   RUN_TEST(test_strangers_never_extend_a_hold);
   return UNITY_END();
