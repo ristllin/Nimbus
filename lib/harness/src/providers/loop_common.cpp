@@ -463,6 +463,12 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                              pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
                              before, hostUse[hostIdx]);
       if (sr.ok) { unparkHost(hostList[hostIdx]); return sr; }
+      // A round too big to SEND never left the device: the controller folds older
+      // tool rounds and runs it again (head_loop.h refitToBudget). It is not a host
+      // failure and not a cause in the engine's chain (the owner hears the chain's
+      // first cause); if no refit fits, the engine records the refusal at turn end.
+      size_t budget = 0, size = 0;
+      if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
       typeStep(sr);
       noteFailed(sr);   // every failed attempt, the no-retry exits below included (lane T)
       if (orch::isSpendFrozenError(sr.error)) {

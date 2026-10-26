@@ -238,9 +238,11 @@ bool isAckWrite(const std::string& loopName) {
 }  // namespace
 
 namespace {
-// Room kept under the body budget after a refit: the folded rounds leave a stub
-// line each in the seeded message, and the wire escapes what remains.
+// Room kept under the body budget after a refit: folded rounds leave a stub line
+// each in the seeded message (only then the full slack), and the wire escapes
+// what remains.
 constexpr size_t kBudgetRefitSlack = 4096;
+constexpr size_t kBudgetClipSlack = 512;
 // Refits per round: older rounds first, then the newest round's clip, then one
 // more for a fold whose stub lines ate the room it made.
 constexpr int kBudgetRefits = 3;
@@ -259,26 +261,36 @@ size_t newestRoundBytes(const Transcript& tr) {
 // A round the provider refused to SEND because its body outgrew the wire budget
 // (body_budget.h): nothing left the device and nothing was billed, so the loop
 // folds the older tool rounds to one-line stubs and runs the same round again; the
-// newest round is clipped only when folding the older ones frees nothing more.
-// Without it a long loop failed the whole turn after paying every round (Lumi,
-// v4.6.0: 8 paid rounds, then an 86,865 B final round refused, and no answer).
-// True when something was reclaimed and a re-run can fit.
+// newest round is clipped only when folding the older ones frees nothing more
+// (why it matters: body_budget.h). True when something was reclaimed and a re-run
+// can fit.
 bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   size_t budget = 0, size = 0;
   if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
     return false;
   Transcript& tr = *hooks.transcript;
-  const size_t want = (size - budget) + kBudgetRefitSlack;
   const size_t have = tr.toolBytes();
-  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
   const size_t newest = newestRoundBytes(tr);
-  size_t freed = cap < newest ? tr.trimToolOutputs(newest) : 0;   // the older rounds only
+  const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
+  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
+  // trimToolOutputs(newest) folds every older round and never clips the newest:
+  // it folds down to half its cap, and the newest round alone is over that.
+  size_t freed = cap < newest ? tr.trimToolOutputs(newest) : 0;
   if (freed == 0) freed = tr.trimToolOutputs(cap);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
               std::to_string(budget) + " B budget - folded " + std::to_string(freed) +
               " B of tool results" + (freed ? ", running the round again" : ", nothing left to fold"));
   return freed > 0;
+}
+
+// One model turn, refitted and re-run while the provider refuses it for size.
+HeadStep stepWithRefit(const HeadLoopHooks& hooks, bool allowTools, const std::vector<HeadToolResult>& prior,
+                       uint32_t budgetMs, const std::string& reason, int round) {
+  HeadStep sr = hooks.step(allowTools, prior, budgetMs, reason);
+  for (int refit = 0; refit < kBudgetRefits && refitToBudget(sr, hooks, round); ++refit)
+    sr = hooks.step(allowTools, prior, budgetMs, reason);
+  return sr;
 }
 }  // namespace
 
@@ -372,9 +384,7 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     // the adapter can tell the model that this is its last turn (see
     // kFinalRoundNotice - a silent capability removal produced confabulated
     // "I'll report back" replies on every provider).
-    HeadStep sr = hooks.step(allowTools, prior, budgetMs, reason);
-    for (int refit = 0; refit < kBudgetRefits && refitToBudget(sr, hooks, round); ++refit)
-      sr = hooks.step(allowTools, prior, budgetMs, reason);
+    HeadStep sr = stepWithRefit(hooks, allowTools, prior, budgetMs, reason, round);
     if (!sr.ok) {  // transport/parse failure - fail soft to the caller
       out.ok = false;
       out.error = sr.error.empty() ? "provider step failed" : sr.error;

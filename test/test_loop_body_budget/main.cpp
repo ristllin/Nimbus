@@ -228,6 +228,27 @@ std::string finalResponse(const std::string& host) {
   return "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"abc123def\","
          "\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}}]}}]}";
 }
+// Lumi's turn shape on a provider rig: eight tool rounds of 2.6 KB results, then the
+// answer, over the 42-tool manifest, a device-scale prompt and a long seed (a ~70 KB
+// round-0 body).
+const std::string kLumiIns = "You are the head. " + std::string(30000, 's');
+const std::string kLumiUser = "[FIRMWARE UPDATED] notes " + std::string(14000, 'u');
+void lumiRig(FakeProviderDeps& d, FakeProviderDeps::ToolRig& rig, const std::string& host, int& n) {
+  for (int i = 1; i <= 8; i++) d.http.script.push_back({"", "", 200, toolResponse(host, i)});
+  d.http.script.push_back({"", "", 200, finalResponse(host)});
+  d.fillTools(rig);
+  for (const auto& s : deviceShapedSpecs()) rig.ht.specs.push_back(s);
+  rig.ht.cfg.maxRounds = 8;
+  rig.ht.cfg.maxToolResultBytes = 8192;
+  rig.ht.cfg.maxTotalToolBytes = 65536;
+  rig.ht.dispatch = [&n](const HeadToolCall& c) {
+    HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    r.output = "entry " + std::to_string(++n) + " " + std::string(2600, 'e') + " |end" + std::to_string(n) + "|";
+    return r;
+  };
+}
 }  // namespace
 
 // Lumi's turn on every loop wire: a ~70 KB round-0 body (the 42-tool manifest, a
@@ -239,30 +260,15 @@ static void test_lumi_shape_on_every_loop_wire() {
     LogCapture::install();
     FakeProviderDeps d;
     const std::string h = host;
-    for (int i = 1; i <= 8; i++) d.http.script.push_back({"", "", 200, toolResponse(h, i)});
-    d.http.script.push_back({"", "", 200, finalResponse(h)});
-    auto pd = d.contract();
     FakeProviderDeps::ToolRig rig;
-    d.fillTools(rig);
-    for (const auto& s : deviceShapedSpecs()) rig.ht.specs.push_back(s);
-    rig.ht.cfg.maxRounds = 8;
-    rig.ht.cfg.maxToolResultBytes = 8192;
-    rig.ht.cfg.maxTotalToolBytes = 65536;
     int n = 0;
-    rig.ht.dispatch = [&n](const HeadToolCall& c) {
-      HeadToolResult r;
-      r.id = c.id;
-      r.name = c.name;
-      r.output = "entry " + std::to_string(++n) + " " + std::string(2600, 'e') + " |end" + std::to_string(n) + "|";
-      return r;
-    };
-    const std::string ins = "You are the head. " + std::string(30000, 's');
-    const std::string user = "[FIRMWARE UPDATED] notes " + std::string(14000, 'u');
+    lumiRig(d, rig, h, n);
+    auto pd = d.contract();
     std::string conv, out, err;
     bool ok = false;
-    if (h == "anthropic") ok = providers::orchTurnAnthropic(pd, conv, ins, user, out, err, &rig.ht, nullptr);
-    if (h == "openai") ok = providers::orchTurnOpenAI(pd, conv, ins, user, out, err, &rig.ht, nullptr);
-    if (h == "mistral") ok = providers::orchTurnMistral(pd, conv, ins, user, out, err, &rig.ht, nullptr);
+    if (h == "anthropic") ok = providers::orchTurnAnthropic(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
+    if (h == "openai") ok = providers::orchTurnOpenAI(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
+    if (h == "mistral") ok = providers::orchTurnMistral(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
     size_t largest = 0;
     for (const auto& r : d.http.seen) largest = std::max(largest, r.body.size());
     char msg[200];
@@ -281,6 +287,41 @@ static void test_lumi_shape_on_every_loop_wire() {
   TEST_ASSERT_TRUE(refitSeen);
 }
 
+// The production path (the fabric loop): a refit is not a failed step. The engine's
+// chain, whose FIRST cause is what the owner hears when a turn fails, never records
+// a refusal the loop recovered from; a refusal no refit can fit still fails the turn
+// with that refusal as its error.
+static void test_fabric_refit_is_not_a_failed_step() {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  int n = 0;
+  lumiRig(d, rig, "mistral", n);
+  auto pd = d.contract();
+  std::vector<std::string> stepErrors;
+  rig.ht.onStepError = [&stepErrors](const std::string&, const std::string& e) { stepErrors.push_back(e); };
+  LogCapture::install();
+  std::string out, err;
+  nimbus::orch::TurnSpend sp;
+  const bool ok = providers::runFabricLoop(pd, {"mistral"}, kLumiIns, kLumiUser, out, err, rig.ht, &sp, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("B budget - folded"));   // the refit really ran
+  TEST_ASSERT_EQUAL_INT(0, (int)stepErrors.size());
+  TEST_ASSERT_EQUAL_INT(9, (int)d.http.seen.size());
+  // Nothing can fit (the prompt alone is over the budget): the turn fails with the
+  // refusal as its error, and still nothing is sent.
+  FakeProviderDeps big;
+  auto pdb = big.contract();
+  FakeProviderDeps::ToolRig rb;
+  big.fillTools(rb);
+  for (const auto& s : deviceShapedSpecs()) rb.ht.specs.push_back(s);
+  std::string out2, err2;
+  const bool ok2 = providers::runFabricLoop(pdb, {"mistral"}, std::string(59000, 's'), std::string(40000, 'u'),
+                                            out2, err2, rb.ht, nullptr, nullptr);
+  TEST_ASSERT_FALSE(ok2);
+  TEST_ASSERT_TRUE_MESSAGE(err2.find("request body over the 85 KB budget") == 0, err2.c_str());
+  TEST_ASSERT_EQUAL_INT(0, (int)big.http.seen.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_refusal_wording_round_trips);
@@ -288,5 +329,6 @@ int main(int, char**) {
   RUN_TEST(test_every_growing_loop_ends_with_an_answer);
   RUN_TEST(test_unfittable_round_fails_honestly);
   RUN_TEST(test_lumi_shape_on_every_loop_wire);
+  RUN_TEST(test_fabric_refit_is_not_a_failed_step);
   return UNITY_END();
 }
