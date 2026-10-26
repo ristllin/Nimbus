@@ -301,9 +301,9 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(tg.find("nimbus::orch::storeFullFact(") != std::string::npos);
   TEST_ASSERT_TRUE(count(tg, "sendFileStoreNotice()") >= 3);   // the sender, the photo path, the poll loop
   const std::string fs = readFile("src/agent/files_subsystem.cpp");
-  // artifact.save, files.append (plain and keyed), image.generate, a helper's saved
-  // report, the definition.
-  TEST_ASSERT_EQUAL_size_t(6, count(fs, "refusalForHead("));
+  // artifact.save, files.append (plain, a cut row set aside, keyed), image.generate,
+  // a helper's saved report, the definition.
+  TEST_ASSERT_EQUAL_size_t(7, count(fs, "refusalForHead("));
   TEST_ASSERT_TRUE(count(fs, "noteRefusal(err)") >= 4);   // the URL fetch's begin and finish, both paths
   TEST_ASSERT_EQUAL_size_t(2, count(fs, "g_full.room()"));   // removeFile, removeProject
 }

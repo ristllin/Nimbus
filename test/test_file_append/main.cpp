@@ -364,8 +364,13 @@ static void test_qw3_header_mismatch_is_refused_not_misindexed() {
   CsvUpsert up = planCsvUpsert(ex, "meal,date,kcal\nlunch,2026-10-25,520\n", "meal", "kcal", "2026-10-25");
   TEST_ASSERT_FALSE(up.ok);
   TEST_ASSERT_TRUE(up.err.find("(meal,date,kcal)") != std::string::npos);   // the model's own header
-  TEST_ASSERT_TRUE(up.err.find("the stored header (3 columns)") != std::string::npos);
-  TEST_ASSERT_TRUE(up.err.find("date,meal,kcal") == std::string::npos);   // stored text is never quoted
+  // The stored header is named when it is plain labels, so the retry is one call.
+  TEST_ASSERT_TRUE_MESSAGE(up.err.find("the stored header (date,meal,kcal)") != std::string::npos, up.err.c_str());
+  // A stored header that is not plain labels is only counted (stored free text is never quoted).
+  up = planCsvUpsert("date,meal,kcal \"x\"\n2026-10-25,lunch,450\n", "date,meal,kcal\n2026-10-25,lunch,520\n", "meal",
+                     "kcal", "2026-10-25");
+  TEST_ASSERT_FALSE(up.ok);
+  TEST_ASSERT_TRUE_MESSAGE(up.err.find("(3 columns; read it with files.read") != std::string::npos, up.err.c_str());
   up = planCsvUpsert(ex, "date,meal,kcal,protein_g\n2026-10-25,lunch,520,30\n", "meal", "kcal", "2026-10-25");
   TEST_ASSERT_FALSE(up.ok);
   // Case and spaces around names do not matter; the order and the count do.
@@ -442,9 +447,10 @@ static void test_qw3_new_rows_are_checked_before_any_write() {
     const char* why;
   };
   const Case cases[] = {
-      {"26/10/2026,dinner,x,600,30", "is not a YYYY-MM-DD date"},
-      {"2026-13-01,dinner,x,600,30", "is not a YYYY-MM-DD date"},
-      {"2026-10-00,dinner,x,600,30", "is not a YYYY-MM-DD date"},
+      {"26/10/2026,dinner,x,600,30", "the date column 'date' must hold YYYY-MM-DD dates (row 1: '26/10/2026')"},
+      {"2026-13-01,dinner,x,600,30", "must hold YYYY-MM-DD dates"},
+      {"2026-10-00,dinner,x,600,30", "must hold YYYY-MM-DD dates"},
+      {"2026-10-26,dinner,x,600,30\n26/10/2026,tea,x,52,1", "the date column 'date' must hold YYYY-MM-DD dates (row 2: '26/10/2026')"},
       {"#2026-10-26,dinner,x,600,30", "starts with # (a comment row)"},
       {"2026-10-26,  ,x,600,30", "has no value in 'meal'"},
       {"2026-10-26,dinner,x,1234567890123,30", "is not a plain number"},
@@ -484,15 +490,16 @@ static void test_qw3_new_rows_are_checked_before_any_write() {
   TEST_ASSERT_TRUE(noClock.replaced + noClock.appended >= 1);
 }
 
-// A power cut mid-row: the stored last row has no line end. It is never taken as
-// complete - a new row with its identity replaces it, otherwise it is kept as a
-// #cut: row that never counts or matches again; the reply says which.
-static void test_qw3_cut_last_row_is_never_taken_as_complete() {
-  const std::string cut = "date,meal,kcal\n2026-10-26,lunch,450\n2026-10-26,dinner,60";   // of 600
+// A power cut mid-row: the stored last row has no line end AND is provably
+// incomplete (here: fewer fields than the header). A new row with its identity
+// replaces it, otherwise it is kept as a #cut: row that never counts or matches
+// again; the reply says which.
+static void test_qw3_provably_cut_last_row_is_set_aside() {
+  const std::string cut = "date,meal,kcal\n2026-10-26,lunch,450\n2026-10-26,dinner";   // cut before ",600"
   // Another meal: the cut row is kept but marked, and NOT counted.
   CsvUpsert up = planCsvUpsert(cut, "date,meal,kcal\n2026-10-26,snack-1530,95\n", "meal", "kcal", "2026-10-26");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-26,lunch,450\n#cut: 2026-10-26,dinner,60\n2026-10-26,snack-1530,95\n",
+  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-26,lunch,450\n#cut: 2026-10-26,dinner\n2026-10-26,snack-1530,95\n",
                            up.out.c_str());
   TEST_ASSERT_EQUAL_INT(545, (int)up.todayTotal);
   TEST_ASSERT_TRUE(up.cut);
@@ -503,7 +510,7 @@ static void test_qw3_cut_last_row_is_never_taken_as_complete() {
   TEST_ASSERT_TRUE_MESSAGE(again.ok, again.err.c_str());
   TEST_ASSERT_EQUAL_INT(0, again.replaced);
   TEST_ASSERT_EQUAL_INT(1145, (int)again.todayTotal);   // 450 + 95 + 600
-  TEST_ASSERT_TRUE(again.out.find("#cut: 2026-10-26,dinner,60\n") != std::string::npos);   // kept, never lost
+  TEST_ASSERT_TRUE(again.out.find("#cut: 2026-10-26,dinner\n") != std::string::npos);   // kept, never lost
   // The same meal logged again in full: it replaces the cut row.
   up = planCsvUpsert(cut, "date,meal,kcal\n2026-10-26,dinner,600\n", "meal", "kcal", "2026-10-26");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
@@ -512,13 +519,53 @@ static void test_qw3_cut_last_row_is_never_taken_as_complete() {
   TEST_ASSERT_EQUAL_INT(1050, (int)up.todayTotal);
   // The tail view's total never counts a cut row either.
   TEST_ASSERT_EQUAL_INT(450, (int)dayTotal(cut, "2026-10-26"));
-  // The reply names the cut row.
+  // Every proof of a cut: an open quote, fewer fields, no number where the row
+  // before has one, an empty number column.
+  for (const char* row : {"2026-10-26,\"din", "2026-10-26,dinner", "2026-10-26,dinner,6x0", "2026-10-26,dinner,"})
+    TEST_ASSERT_TRUE_MESSAGE(csvLastRowCut("date,meal,kcal", "2026-10-26,lunch,450", row), row);
+  // The reply names the cut row by its date only.
   const std::string reply = renderUpsertReply(planCsvUpsert(cut, "date,meal,kcal\n2026-10-26,tea,52\n", "meal",
                                                             "kcal", "2026-10-26"),
                                               "owner/food-log.csv", "kcal", "GMT");
   TEST_ASSERT_TRUE(reply.find("- the stored last row (dated 2026-10-26) was cut mid-write; it is kept as a #cut: "
                                "row and not counted - log it again in full") != std::string::npos);
-  TEST_ASSERT_TRUE(reply.find("dinner,60") == std::string::npos);   // the cut row's text is never quoted
+  TEST_ASSERT_TRUE(reply.find("dinner") == std::string::npos);   // the cut row's text is never quoted
+}
+
+// MUST (merge review): a WELL-FORMED last row without a line end (artifact.save, a
+// spreadsheet upload, a hand edit) is complete - counted, matched, and given its
+// line end - never demoted to #cut:.
+static void test_qw3_well_formed_last_row_without_line_end_is_complete() {
+  const std::string saved = "date,meal,items,kcal\n2026-10-25,lunch,salad,450\n2026-10-25,dinner,pasta,800";
+  // Another meal: the dinner stays, gains its line end, and counts.
+  CsvUpsert up = planCsvUpsert(saved, "date,meal,items,kcal\n2026-10-25,tea,cake,52\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "date,meal,items,kcal\n2026-10-25,lunch,salad,450\n2026-10-25,dinner,pasta,800\n2026-10-25,tea,cake,52\n",
+      up.out.c_str());
+  TEST_ASSERT_EQUAL_INT(1302, (int)up.todayTotal);
+  TEST_ASSERT_FALSE(up.cut);
+  // A correction of that dinner replaces it (it is matched like any row).
+  up = planCsvUpsert(saved, "date,meal,items,kcal\n2026-10-25,dinner,pasta,760\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1210, (int)up.todayTotal);
+  // The same row re-sent: only its line end is added.
+  up = planCsvUpsert(saved, "date,meal,items,kcal\n2026-10-25,dinner,pasta,800\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_TRUE(up.ok && up.changed);
+  TEST_ASSERT_EQUAL_STRING((saved + "\n").c_str(), up.out.c_str());
+  // The tail view counts it, and does not call it incomplete.
+  TEST_ASSERT_EQUAL_INT(1250, (int)dayTotal(saved, "2026-10-25"));
+  const TailView v = tailRows(saved, 0, 5);
+  TEST_ASSERT_TRUE(v.lastCut);   // the bytes do end without a line end...
+  TEST_ASSERT_TRUE(renderTail(v, "f.csv", saved.size(), "date,meal,items,kcal").find("incomplete") ==
+                   std::string::npos);   // ...but the row is whole
+  const std::string torn = saved.substr(0, saved.size() - 4);   // "...,dinner,pasta": a field short
+  TEST_ASSERT_TRUE(renderTail(tailRows(torn, 0, 5), "f.csv", torn.size(), "date,meal,items,kcal")
+                       .find("the last row is incomplete") != std::string::npos);
+  TEST_ASSERT_FALSE(csvLastRowCut("date,meal,items,kcal", "2026-10-25,lunch,salad,450", "2026-10-25,dinner,pasta,800"));
+  // The first data row with no line end and nothing before it: whole when wide enough.
+  TEST_ASSERT_FALSE(csvLastRowCut("date,kcal", "", "2026-10-25,800"));
 }
 
 // Comment rows (#...) and blank rows are kept as written and never counted.
@@ -586,10 +633,10 @@ static void test_qw3_reply_states_rows_days_and_zone() {
   none.date = "2026-10-26";
   TEST_ASSERT_EQUAL_STRING("today's kcal (2026-10-26, GMT): 0 - no rows are dated 2026-10-26",
                            renderDayTotal(none, "kcal", true, "GMT").c_str());
-  // No date column: the reply says there is no day total and why.
+  // No date column: a keyed write is refused (it would replace other days' rows).
   const CsvUpsert nodate = planCsvUpsert("", "meal,kcal\nlunch,450\n", "meal", "kcal", "2026-10-25");
-  TEST_ASSERT_TRUE(renderUpsertReply(nodate, "o/f.csv", "kcal", "GMT").find("[no day total: the file has no date column]") !=
-                   std::string::npos);
+  TEST_ASSERT_FALSE(nodate.ok);
+  TEST_ASSERT_TRUE(nodate.err.find("no date column") != std::string::npos);
 }
 
 // The device's read and write seams (mergeKeyed): a card read that fails or ends
@@ -724,12 +771,12 @@ static void test_qw3_review_edges() {
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
   TEST_ASSERT_EQUAL_INT(1, up.replaced);
   TEST_ASSERT_EQUAL_INT(520, (int)up.todayTotal);
-  // key=date: one complete row of the day plus a cut one - the cut one is set
-  // aside (#cut:), never a reason to refuse or a second match.
-  up = planCsvUpsert("date,kcal\n2026-10-25,450\n2026-10-25,9", "date,kcal\n2026-10-25,500\n", "date", "kcal",
+  // key=date: one complete row of the day plus a provably cut one (its number
+  // column empty) - the cut one is set aside (#cut:), never a second match.
+  up = planCsvUpsert("date,kcal\n2026-10-25,450\n2026-10-25,", "date,kcal\n2026-10-25,500\n", "date", "kcal",
                      "2026-10-25");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,kcal\n2026-10-25,500\n#cut: 2026-10-25,9\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,kcal\n2026-10-25,500\n#cut: 2026-10-25,\n", up.out.c_str());
   TEST_ASSERT_EQUAL_INT(500, (int)up.todayTotal);
   // Rows with no YYYY-MM-DD date count toward no day, and the reply says so.
   up = planCsvUpsert("date,meal,kcal\n25/10/2026,lunch,450\nOct 25,tea,52\n", "date,meal,kcal\n2026-10-25,dinner,600\n",
@@ -785,8 +832,99 @@ static void test_qw3_review_edges() {
                      "meal", "kcal", "2026-10-25");
   TEST_ASSERT_FALSE(up.ok);
   TEST_ASSERT_TRUE(up.err.find("nothing was written") != std::string::npos);
-  TEST_ASSERT_TRUE(up.err.find("one-off repair") != std::string::npos);
+  TEST_ASSERT_TRUE(up.err.find("replace: \"all\"") != std::string::npos);
   TEST_ASSERT_TRUE(up.err.find("95") == std::string::npos && up.err.find("150") == std::string::npos);
+}
+
+// SHOULD (merge review): a way out of the duplicate refusal the model can take on
+// a log of any size - the same call with replace: "all". The new row replaces the
+// first duplicate, the others stay as #superseded: rows, never counted; other
+// days and other meals are untouched.
+static void test_qw3_replace_all_resolves_old_duplicates_in_place() {
+  const std::string old = "date,meal,kcal\n2026-10-24,dinner,1200\n2026-10-24,lunch,500\n2026-10-24,dinner,1100\n"
+                          "2026-10-23,dinner,700\n";
+  CsvUpsert up = planCsvUpsert(old, "date,meal,kcal\n2026-10-24,dinner,990\n", "meal", "kcal", "2026-10-25", true);
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-24,dinner,990\n2026-10-24,lunch,500\n#superseded: 2026-10-24,dinner,1100\n"
+                           "2026-10-23,dinner,700\n",
+                           up.out.c_str());
+  TEST_ASSERT_EQUAL_INT(1, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1, up.superseded);
+  TEST_ASSERT_EQUAL_INT(1490, (int)dayTotal(up.out, "2026-10-24"));   // 990 + 500, counted once
+  TEST_ASSERT_EQUAL_INT(700, (int)dayTotal(up.out, "2026-10-23"));
+  const std::string reply = renderUpsertReply(up, "o/f.csv", "kcal", "GMT");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("- replaced 2026-10-24 'dinner' (was 1200 kcal)\n- set aside 1 more row of 2026-10-24 "
+                                      "'dinner' as #superseded: (not counted)") != std::string::npos,
+                           reply.c_str());
+  // Without replace: "all" the same call is refused and nothing is written.
+  TEST_ASSERT_FALSE(planCsvUpsert(old, "date,meal,kcal\n2026-10-24,dinner,990\n", "meal", "kcal", "2026-10-25").ok);
+  // A daily ledger of running totals keyed by date resolves the same way.
+  up = planCsvUpsert("date,kcal\n2026-10-24,800\n2026-10-24,1500\n", "date,kcal\n2026-10-24,2354\n", "date", "kcal",
+                     "2026-10-25", true);
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(2354, (int)dayTotal(up.out, "2026-10-24"));
+}
+
+// MUST (merge review): whatever the date column is called - or when only its
+// content says it is the date - a keyed write never touches a row of another
+// date; with no date column at all a keyed write is refused, never keyed by the
+// meal alone.
+static void test_qw3_any_header_naming_keeps_days_apart() {
+  const char* names[] = {"date", "Day", "timestamp", "datetime", "logged_at", "when", "ts", "d", "x1", "Eaten On"};
+  const char* days[] = {"2026-10-23", "2026-10-24", "2026-10-25"};
+  const char* meals[] = {"breakfast", "lunch", "dinner"};
+  for (const char* dn : names) {
+    for (int dateFirst = 0; dateFirst < 2; dateFirst++) {
+      const std::string head = dateFirst ? std::string(dn) + ",meal,kcal" : std::string("meal,") + dn + ",kcal";
+      const auto row = [&](const std::string& day, const std::string& meal, int kcal) {
+        const std::string stamp = day + (std::string(dn) == "timestamp" ? "T08:30" : "");
+        return (dateFirst ? stamp + "," + meal : meal + "," + stamp) + "," + std::to_string(kcal);
+      };
+      std::string file = head + "\n";
+      unsigned seed = 11;
+      for (int step = 0; step < 60; step++) {
+        seed = seed * 1103515245u + 12345u;
+        const std::string day = days[(seed >> 8) % 3], meal = meals[(seed >> 12) % 3];
+        const CsvUpsert up = planCsvUpsert(file, head + "\n" + row(day, meal, 100 + step) + "\n", "meal", "kcal",
+                                           "2026-10-25");
+        TEST_ASSERT_TRUE_MESSAGE(up.ok, (std::string(dn) + ": " + up.err).c_str());
+        const std::string next = applied(file, up);
+        // Every row of ANOTHER date is byte-identical and in order.
+        const auto others = [&](const std::string& text) {
+          std::string kept;
+          size_t p = 0;
+          while (p < text.size()) {
+            const size_t nl = text.find('\n', p);
+            const std::string r = text.substr(p, nl - p);
+            p = nl + 1;
+            if (r.find(day) == std::string::npos) kept += r + "\n";
+          }
+          return kept;
+        };
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(others(file).c_str(), others(next).c_str(), dn);
+        file = next;
+      }
+    }
+  }
+  // No date column at all: refused with the way out, nothing written.
+  CsvUpsert up = planCsvUpsert("meal,kcal\nbreakfast,557\n", "meal,kcal\nbreakfast,600\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_FALSE(up.ok);
+  TEST_ASSERT_TRUE(up.err.find("no date column") != std::string::npos);
+  TEST_ASSERT_TRUE(up.out.empty());
+  // A column named like a date that holds no dates: refused, naming it.
+  up = planCsvUpsert("", "time,meal,kcal\n08:30,breakfast,557\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_FALSE(up.ok);
+  TEST_ASSERT_TRUE_MESSAGE(up.err.find("the date column 'time' must hold YYYY-MM-DD dates (row 1: '08:30')") !=
+                               std::string::npos,
+                           up.err.c_str());
+  // ...unless another column holds the dates: then that one is the date column.
+  up = planCsvUpsert("", "time,meal,eaten,kcal\n08:30,breakfast,2026-10-25,557\n", "meal", "kcal", "2026-10-25");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(557, (int)up.todayTotal);
+  // The tail view's total finds a date column by its content too.
+  double t = 0;
+  TEST_ASSERT_TRUE(csvDayTotal("meal,eaten,kcal\nlunch,2026-10-25,450\ntea,2026-10-24,52\n", "kcal", "2026-10-25", t));
+  TEST_ASSERT_EQUAL_INT(450, (int)t);
 }
 
 int main(int, char**) {
@@ -806,11 +944,14 @@ int main(int, char**) {
   RUN_TEST(test_qw3_header_mismatch_is_refused_not_misindexed);
   RUN_TEST(test_qw3_quoted_fields_and_honest_totals);
   RUN_TEST(test_qw3_new_rows_are_checked_before_any_write);
-  RUN_TEST(test_qw3_cut_last_row_is_never_taken_as_complete);
+  RUN_TEST(test_qw3_provably_cut_last_row_is_set_aside);
+  RUN_TEST(test_qw3_well_formed_last_row_without_line_end_is_complete);
   RUN_TEST(test_qw3_comment_rows_are_kept_and_never_counted);
   RUN_TEST(test_qw3_stream_equals_whole_for_any_chunking);
   RUN_TEST(test_qw3_reply_states_rows_days_and_zone);
   RUN_TEST(test_qw3_read_failure_or_short_write_never_rewrites_the_log);
   RUN_TEST(test_qw3_review_edges);
+  RUN_TEST(test_qw3_replace_all_resolves_old_duplicates_in_place);
+  RUN_TEST(test_qw3_any_header_naming_keeps_days_apart);
   return UNITY_END();
 }

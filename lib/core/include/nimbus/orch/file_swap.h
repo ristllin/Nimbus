@@ -23,6 +23,7 @@ class SwapFs {
   virtual bool remove(const std::string& path) = 0;
   virtual bool writeText(const std::string& path, const std::string& text) = 0;
   virtual std::string readText(const std::string& path) = 0;   // "" = missing
+  virtual long long size(const std::string& path) = 0;          // -1 = missing
 };
 
 // The swap's fixed paths: the finished new copy, the backup, and the note.
@@ -42,11 +43,19 @@ bool swapIn(SwapFs& fs, const SwapPaths& paths, const std::string& dst, std::str
 void swapDone(SwapFs& fs, const SwapPaths& paths);
 
 // The new copy was refused after it landed (the file index said no): remove it
-// and put the old copy back (a new file simply goes away).
+// and put the old copy back (a new file simply goes away). Only the backup this
+// swap made (the note names dst) is ever put back.
 bool swapUndo(SwapFs& fs, const SwapPaths& paths, const std::string& dst);
 
+// Is a replace of `dst` still unfinished (a double fault left its only good copy
+// in the backup)? Tries recoverSwap first. Every write path to `dst` refuses
+// while this is true, so nothing can recreate the file over its backup.
+bool swapPendingFor(SwapFs& fs, const SwapPaths& paths, const std::string& dst);
+
 // Boot: finish or roll back a swap a power cut interrupted. Returns what it did,
-// for the log ("" = nothing to do).
-std::string recoverSwap(SwapFs& fs, const SwapPaths& paths);
+// for the log ("" = nothing to do). When the file and a LARGER backup both exist
+// the backup is never deleted: it is kept as <name>.recovered, named in
+// `keptAside`.
+std::string recoverSwap(SwapFs& fs, const SwapPaths& paths, std::string* keptAside = nullptr);
 
 }  // namespace nimbus::orch

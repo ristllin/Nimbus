@@ -113,6 +113,7 @@ class SdSwapFs : public nimbus::orch::SwapFs {
     return n == t.size();
   }
   std::string readText(const std::string& p) override {
+    if (!memory::dataFs().exists(p.c_str())) return std::string();   // no open of a missing file: the VFS logs each miss
     File f = memory::dataFs().open(p.c_str(), FILE_READ);
     if (!f) return std::string();
     std::string out;
@@ -121,6 +122,14 @@ class SdSwapFs : public nimbus::orch::SwapFs {
       out.append(buf, size_t(n));
     f.close();
     return out;
+  }
+  long long size(const std::string& p) override {
+    if (!memory::dataFs().exists(p.c_str())) return -1;
+    File f = memory::dataFs().open(p.c_str(), FILE_READ);
+    if (!f) return -1;
+    const long long n = (long long)f.size();
+    f.close();
+    return n;
   }
 };
 const nimbus::orch::SwapPaths kSwap{kPartPath, "/mem/files/.bak", "/mem/files/.swapnote"};
@@ -142,6 +151,22 @@ bool commitPart(const nimbus::orch::FileEntry& e, std::string& err) {
   return true;
 }
 
+// A replace of project/name a double fault left unfinished (its only good copy is
+// in the backup): every write path to it refuses until the backup is back, so
+// nothing can recreate the file over it (file_swap.h swapPendingFor). Caller
+// holds memory::Lock.
+const char kSwapPending[] = "an earlier file replace is not finished - restart the device, then try again";
+bool swapPending(const std::string& project, const std::string& name) {
+  SdSwapFs sfs;
+  return nimbus::orch::swapPendingFor(sfs, kSwap, pathOf(project, name));
+}
+// The same question without trying the recovery (renames): for the web upload
+// path, which must not do card work beyond a read while it holds the lock.
+bool swapNoted(const std::string& project, const std::string& name) {
+  SdSwapFs sfs;
+  return sfs.readText(kSwap.note) == pathOf(project, name);
+}
+
 // "/mem/files/<project>/<name>" -> its two valid segments, or false.
 bool splitStorePath(const std::string& path, std::string& project, std::string& name) {
   const std::string root = std::string(kRoot) + "/";
@@ -153,6 +178,8 @@ bool splitStorePath(const std::string& path, std::string& project, std::string& 
   return nimbus::orch::FileStore::validSegment(project, g_store.limits().maxProjectLen) &&
          nimbus::orch::FileStore::validSegment(name, g_store.limits().maxNameLen);
 }
+
+std::string g_keptAside;   // a larger backup a boot recovery kept beside its file
 
 // Boot: finish or roll back a whole-file replace a power cut interrupted. Returns
 // the path it named ("" = none), for reindexRecovered once the index is loaded.
@@ -167,8 +194,10 @@ std::string recoverInterruptedSwap() {
     sfs.remove(kSwap.note);
     dst.clear();
   }
-  const std::string did = nimbus::orch::recoverSwap(sfs, kSwap);
+  std::string aside;
+  const std::string did = nimbus::orch::recoverSwap(sfs, kSwap, &aside);
   if (!did.empty()) alogf("files: %s", did.c_str());
+  g_keptAside = aside;   // indexed with the recovered file once the index is loaded
   return dst;
 }
 
@@ -309,6 +338,7 @@ void begin() {
     persistIndex();
   }
   reindexRecovered(swapped);
+  reindexRecovered(g_keptAside);   // the owner sees it in the Files list
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
@@ -374,6 +404,7 @@ static bool beginSession(const std::string& project, const std::string& name,
     err = "that project/name belongs to someone else";
     return false;
   }
+  if (swapNoted(project, name)) { err = kSwapPending; return false; }
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -716,6 +747,7 @@ static std::string appendGate(const std::string& project, const std::string& nam
     return "invalid project or name";
   if (!g_store.writeAllowed(project, name, who.ns, who.owner))
     return "that project/name belongs to someone else - choose another name";
+  if (swapPending(project, name)) return kSwapPending;
   return std::string();
 }
 
@@ -731,19 +763,77 @@ static std::string appendRefusal(const std::string& project, const std::string& 
   return std::string();
 }
 
-// The file's size and last byte - all an append needs to know about what is stored.
-static void fileEnd(const std::string& path, size_t& size, char& last) {
+// The file's size and last byte - all an append needs to know about what is
+// stored. False when a file the index lists cannot be opened, or its last byte
+// cannot be read: the append then fails instead of writing blind.
+static bool fileEnd(const std::string& path, bool listed, size_t& size, char& last) {
   size = 0;
   last = '\0';
   File r = memory::dataFs().open(path.c_str(), FILE_READ);
-  if (!r) return;
+  if (!r) return !listed;   // a new file
   size = r.size();
-  if (size && r.seek(size - 1)) {
-    const int c = r.read();
-    last = c < 0 ? '\0' : (char)c;
+  bool ok = true;
+  if (size) {
+    const int c = r.seek(size - 1) ? r.read() : -1;
+    ok = c >= 0;
+    last = ok ? (char)c : '\0';
   }
   r.close();
+  return ok;
 }
+
+// A CSV whose last row has no line end: its header, the row before and that row,
+// and where that row starts - enough to tell a provably cut row from a whole one
+// (file_append.h csvLastRowCut). False (err set) when it cannot be read.
+struct CsvTail {
+  std::string header, prev, last;
+  size_t lastStart = 0;   // 0 = the file is one line (its header): never a data row
+};
+// The file's first line and its last `span` bytes (the window), or false.
+static bool readEnds(const std::string& path, size_t size, std::string& first, std::string& w, size_t& start) {
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return false;
+  const size_t span = nimbus::orch::RowSplitter::kRowMaxBytes * 2;
+  start = size > span ? size - span : 0;
+  w.assign(size - start, '\0');
+  bool ok = f.seek(start) && f.read((uint8_t*)&w[0], w.size()) == w.size();
+  char head[1024];
+  const int hn = ok && f.seek(0) ? f.read((uint8_t*)head, sizeof head) : -1;
+  f.close();
+  ok = ok && hn >= 0;
+  if (ok) first.assign(head, (size_t)hn);
+  return ok;
+}
+
+static void dropCr(std::string& r) {
+  if (!r.empty() && r.back() == '\r') r.pop_back();
+}
+
+static bool readCsvTail(const std::string& path, size_t size, CsvTail& t, std::string& err) {
+  std::string first, w;
+  size_t start = 0;
+  if (!readEnds(path, size, first, w, start)) {
+    err = "the card read failed - nothing was added; try again";
+    return false;
+  }
+  t.header = first.substr(0, first.find('\n'));
+  const size_t nl = w.rfind('\n');
+  if (nl == std::string::npos) {
+    if (start == 0) return true;   // one line: the header itself
+    err = "the last row is longer than 16 KB - this is not a log; nothing was added";
+    return false;
+  }
+  t.last = w.substr(nl + 1);
+  t.lastStart = start + nl + 1;
+  const size_t pb = nl == 0 ? std::string::npos : w.rfind('\n', nl - 1);
+  const size_t ps = pb == std::string::npos ? 0 : pb + 1;
+  t.prev = w.substr(ps, nl - ps);
+  dropCr(t.header);
+  dropCr(t.prev);
+  dropCr(t.last);
+  return true;
+}
+
 
 // The index entry after `added` bytes landed at the end of a `size`-byte file.
 static bool commitAppend(const std::string& project, const std::string& name, size_t size,
@@ -874,11 +964,14 @@ static bool commitMerged(const std::string& project, const std::string& name, si
 // card (any log size), and reports what each row did and the day totals. The
 // whole merge holds the store lock, so nothing else writes the log between the
 // read and the swap.
-static nimbus::orch::ToolResult upsertRows(const std::string& project, const std::string& name,
-                                           const std::string& text, const std::string& key,
-                                           const std::string& sum,
-                                           const nimbus::orch::Principal& who) {
+struct AppendArgs {
+  std::string project, name, text, key, sum;
+  bool replaceAll = false;   // replace: "all" - stored duplicates of a key are set aside
+};
+
+static nimbus::orch::ToolResult upsertRows(const AppendArgs& a, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
+  const std::string &project = a.project, &name = a.name, &sum = a.sum;
   if (!fileKindIsCsv(name))
     return ToolResult::fail("the keyed upsert is for CSV files (.csv) - name the file .csv");
   const nimbus::orch::LogDay day = logDay();   // an NVS read: before the lock
@@ -887,9 +980,10 @@ static nimbus::orch::ToolResult upsertRows(const std::string& project, const std
   // write this file must never learn what is in it either.
   const std::string gate = appendGate(project, name, who);
   if (!gate.empty()) return ToolResult::fail(gate);
-  nimbus::orch::CsvUpsertStream m(key, sum, day.date);
+  nimbus::orch::CsvUpsertStream m(a.key, sum, day.date);
   m.setZone(day.zone);
-  if (!m.begin(text)) return ToolResult::fail(m.result().err);
+  m.setSupersede(a.replaceAll);
+  if (!m.begin(a.text)) return ToolResult::fail(m.result().err);
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   const std::string path = pathOf(project, name);
@@ -918,47 +1012,121 @@ static nimbus::orch::ToolResult upsertRows(const std::string& project, const std
   return ToolResult::ok(nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone));
 }
 
-// files.append: the new rows go on the END of a text document (created when
-// missing); nothing already stored is read back or rewritten (file_append.h).
-static nimbus::orch::ToolResult appendRows(const std::string& project, const std::string& name,
-                                           const std::string& text, const std::string& key,
-                                           const std::string& sum,
-                                           const nimbus::orch::Principal& who) {
+// Copy the first `upto` bytes of `src` into the .part.
+static bool copyPrefix(File& src, PartWriter& w, size_t upto) {
+  char buf[512];
+  for (size_t done = 0; done < upto;) {
+    const size_t want = upto - done < sizeof buf ? upto - done : sizeof buf;
+    const int n = (int)src.read((uint8_t*)buf, want);
+    if (n <= 0 || !w.put(std::string(buf, (size_t)n))) return false;
+    done += (size_t)n;
+  }
+  return true;
+}
+
+// The .part of a cut-aside append: the file up to its cut last row, then `tail`.
+static bool writeCutAsidePart(const std::string& path, size_t upto, const std::string& tail, size_t& bytes) {
+  fs::FS& fs = memory::dataFs();
+  File src = fs.open(path.c_str(), FILE_READ);
+  fs.remove(kPartPath);
+  PartWriter w;
+  w.f = fs.open(kPartPath, FILE_WRITE);
+  const bool ok = src && w.f && copyPrefix(src, w, upto) && w.put(tail) && w.flush();
+  if (src) src.close();
+  if (w.f) w.f.close();
+  bytes = w.bytes;
+  if (!ok) fs.remove(kPartPath);
+  return ok;
+}
+
+// files.append on a CSV whose last row was provably cut by a power loss: that row
+// is set aside as a "#cut: " comment row (never counted again, the keyed path's
+// rule) and the new rows follow, through the same .part and swap as any rewrite.
+// Caller holds memory::Lock.
+static nimbus::orch::ToolResult appendCutAside(const AppendArgs& a, size_t size, const CsvTail& t,
+                                               const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
-  if (project.empty() || name.empty() || text.empty())
-    return ToolResult::fail("need 'project', 'name' and 'text'");
-  if (!textDocName(name))
-    return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
-  if (!key.empty()) return upsertRows(project, name, text, key, sum, who);
-  memory::Lock g;
-  const std::string gate = appendGate(project, name, who);
-  if (!gate.empty()) return ToolResult::fail(gate);
-  const std::string path = pathOf(project, name);
-  size_t size = 0;
-  char last = '\0';
-  fileEnd(path, size, last);
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
+  const nimbus::orch::FileEntry* old = g_store.find(a.project, a.name);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, 0, '\n');
   if (!plan.ok) return ToolResult::fail(plan.err);
-  const std::string refusal = appendRefusal(project, name, plan.bytes.size(), size + plan.bytes.size(), who);
+  if (!old) return ToolResult::fail("the file is not in the file list - nothing was added");
+  const std::string tail = "#cut: " + t.last + "\n" + plan.bytes;
+  const size_t newSize = t.lastStart + tail.size();
+  const std::string refusal = appendRefusal(a.project, a.name, newSize - size, newSize, who);
+  if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
+  size_t bytes = 0;
+  if (!writeCutAsidePart(pathOf(a.project, a.name), t.lastStart, tail, bytes) || bytes != newSize) {
+    memory::dataFs().remove(kPartPath);
+    return ToolResult::fail("the card read or write failed - nothing was added; try again");
+  }
+  nimbus::orch::FileEntry e = *old;
+  e.bytes = uint32_t(newSize);
+  e.hash = 0;
+  std::string err;
+  if (!commitPart(e, err)) return ToolResult::fail(err);
+  alogf("files: appended %d row(s) to %s/%s, a cut last row set aside (%u B)", plan.rows, a.project.c_str(),
+        a.name.c_str(), unsigned(newSize));
+  return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
+                        a.project + "/" + a.name + " (now " + std::to_string((unsigned)newSize) +
+                        " bytes); its last row was cut mid-write: it is kept as a #cut: row and not counted - "
+                        "log that row again in full");
+}
+
+// The plain append's bytes on the end of the file. Caller holds memory::Lock.
+static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, const nimbus::orch::AppendPlan& plan,
+                                            const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  const std::string refusal = appendRefusal(a.project, a.name, plan.bytes.size(), size + plan.bytes.size(), who);
   if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
   fs::FS& fs = memory::dataFs();
-  fs.mkdir(dirOf(project).c_str());
-  File f = fs.open(path.c_str(), FILE_APPEND);
+  fs.mkdir(dirOf(a.project).c_str());
+  File f = fs.open(pathOf(a.project, a.name).c_str(), FILE_APPEND);
   if (!f) return ToolResult::fail("SD open failed");
   const size_t n = f.write(reinterpret_cast<const uint8_t*>(plan.bytes.data()), plan.bytes.size());
   f.close();
   std::string err;
-  if (!commitAppend(project, name, size, n, who.ns, err)) return ToolResult::fail(err);
+  if (!commitAppend(a.project, a.name, size, n, who.ns, err)) return ToolResult::fail(err);
   if (n != plan.bytes.size())
     return ToolResult::fail("SD short write: " + std::to_string((unsigned)n) + " of " +
                             std::to_string((unsigned)plan.bytes.size()) +
                             " B landed - read the tail before adding the rows again");
-  alogf("files: appended %d row(s) to %s/%s (%u B)", plan.rows, project.c_str(), name.c_str(),
+  alogf("files: appended %d row(s) to %s/%s (%u B)", plan.rows, a.project.c_str(), a.name.c_str(),
         unsigned(size + n));
-  return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") +
-                        " to " + project + "/" + name + " (now " + std::to_string((unsigned)(size + n)) +
-                        " bytes)" +
-                        (plan.repairedCut ? "; its last row was incomplete and is left as it was" : ""));
+  const char* closed = !plan.repairedCut      ? ""
+                       : fileKindIsCsv(a.name) ? "; its last row had no line end, so the new rows start on a fresh line"
+                                               : "; its last row was incomplete and is left as it was";
+  return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
+                        a.project + "/" + a.name + " (now " + std::to_string((unsigned)(size + n)) + " bytes)" +
+                        closed);
+}
+
+// files.append: the new rows go on the END of a text document (created when
+// missing); nothing already stored is read back or rewritten (file_append.h) -
+// except a CSV's provably cut last row, which is set aside first.
+static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (a.project.empty() || a.name.empty() || a.text.empty())
+    return ToolResult::fail("need 'project', 'name' and 'text'");
+  if (!textDocName(a.name))
+    return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
+  if (!a.key.empty()) return upsertRows(a, who);
+  memory::Lock g;
+  const std::string gate = appendGate(a.project, a.name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
+  const std::string path = pathOf(a.project, a.name);
+  size_t size = 0;
+  char last = '\0';
+  if (!fileEnd(path, g_store.find(a.project, a.name) != nullptr, size, last))
+    return ToolResult::fail("the card read failed - nothing was added; try again");
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
+  if (!plan.ok) return ToolResult::fail(plan.err);
+  if (plan.repairedCut && fileKindIsCsv(a.name)) {
+    CsvTail t;
+    std::string err;
+    if (!readCsvTail(path, size, t, err)) return ToolResult::fail(err);
+    if (t.lastStart > 0 && nimbus::orch::csvLastRowCut(t.header, t.prev, t.last)) return appendCutAside(a, size, t, who);
+  }
+  return appendBytes(a, size, plan, who);
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1475,16 +1643,24 @@ void registerTools() {
           "Add rows to a TEXT document (a log, a CSV); creates it when missing (put a "
           "CSV's header row first). Up to 4 KB per call. Use it to log a row instead of "
           "reading and re-saving the whole file. Without 'key' the rows go on the END and "
-          "nothing stored is rewritten. For a dated CSV such as a food log pass 'key' (the "
-          "column that tells one day's rows apart, like meal): a row is its date plus its "
-          "key, so the same date and key again REPLACES that row (a correction) and other "
-          "days are never touched; text = the stored header row, then the rows. 'sum' (a "
-          "numeric column) puts the day totals in the reply.",
+          "nothing stored is rewritten. For a dated CSV such as a food log (it needs a date "
+          "column of YYYY-MM-DD dates) pass 'key' (the column that tells one day's rows "
+          "apart, like meal): a row is its date plus its key, so the same date and key "
+          "again REPLACES that row (a correction) and other days are never touched; text = "
+          "the stored header row, then the rows. 'sum' (a numeric column) puts the day "
+          "totals in the reply. replace: \"all\" only when a refusal says the key names "
+          "several stored rows that are one item logged twice.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            return appendRows(argStr(a, "project"), argStr(a, "name"), argStr(a, "text"),
-                              argStr(a, "key"), argStr(a, "sum"), who);
+            AppendArgs args;
+            args.project = argStr(a, "project");
+            args.name = argStr(a, "name");
+            args.text = argStr(a, "text");
+            args.key = argStr(a, "key");
+            args.sum = argStr(a, "sum");
+            args.replaceAll = argStr(a, "replace") == "all";
+            return appendRows(args, who);
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"}},"required":["project","name","text"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");
 
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "

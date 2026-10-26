@@ -68,25 +68,30 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 // the model's context; the merge happens on the device, row by row.
 //
 // The rules (each refusal writes nothing and names the row and the reason):
-//   - an update never touches another day's row: the date is part of the identity;
-//     a log with no date column is keyed by the key column alone;
+//   - an update never touches another day's row: the date is part of the identity.
+//     The date column is found by its name (date, day, or a name holding date, day
+//     or time) or else by its content (the column the new rows fill with
+//     YYYY-MM-DD dates); a log with no date column is refused for keyed writes;
 //   - a key that names two or more stored rows (key "date" on a day with several
 //     rows, a log that already holds duplicates), or two rows of one call with the
-//     same identity, is ambiguous and refused;
+//     same identity, is ambiguous and refused - unless the call says replace: "all"
+//     for stored duplicates, which keeps the others as "#superseded: " rows;
 //   - the text's header must equal the stored header (same columns, same order);
 //   - every new row has the header's field count, a key value, a YYYY-MM-DD date
-//     not after today (when the log has a date column and today is known) and a
-//     plain number in the sum column;
-//   - a stored last row with no line end (cut by a power loss) is never taken as
-//     complete: a new row with its identity replaces it, otherwise it is kept as a
-//     "#cut: " comment row that never matches or counts again;
+//     not after today (when today is known) and a plain number in the sum column;
+//   - a stored last row with no line end is complete when it is well-formed (a file
+//     saved without a final line end: it gets its line end). Only a PROVABLY cut
+//     one (a quote left open, fewer fields than the header, no plain number where
+//     the row before holds one, or in the sum column) is set aside: a new row with
+//     its identity replaces it, otherwise it is kept as a "#cut: " comment row that
+//     never matches or counts again;
 //   - a stored row starting with '#' is a comment: kept, never matched or counted.
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a
 // quote. A stored row with more fields than the header (an unquoted comma) is kept
 // but never matched or counted, and the total says so; so is a row with no
 // YYYY-MM-DD date. A key compares without case or surrounding spaces. The replies
-// never quote a stored row's free text (only dates, the model's own keys and plain
-// numbers), so the tool's output stays the device's own.
+// never quote a stored row's free text (only dates, the model's own keys, plain
+// numbers and a header of plain labels), so the tool's output stays the device's own.
 
 // One day's total of the sum column.
 struct DayTotal {
@@ -102,6 +107,7 @@ struct RowChange {
   std::string key;    // its key value
   bool replaced = false;
   std::string was;    // the replaced row's sum figure ("" = none or not a plain number)
+  int superseded = 0; // more stored rows of this identity set aside (replace: "all")
 };
 
 struct CsvUpsert {
@@ -111,6 +117,7 @@ struct CsvUpsert {
   bool changed = false;    // the file differs from what was stored
   int replaced = 0;        // rows whose date and key already existed
   int appended = 0;        // rows with a new date or key
+  int superseded = 0;      // duplicate stored rows set aside as #superseded: (replace: "all")
   bool hasTotal = false;   // today's total is known
   double todayTotal = 0;   // the sum column over today's rows
   std::vector<RowChange> changes;   // one per new row, in the text's order
@@ -132,6 +139,10 @@ class CsvUpsertStream {
   // The time zone `today` is in ("GMT"; "UTC, no time zone is set"), named in an
   // after-today refusal so the model can tell the owner why. Optional; before begin().
   void setZone(const std::string& zone) { zone_ = zone; }
+  // replace: "all" - a key naming several stored rows (an older log's repeated
+  // corrections) replaces the first and sets the others aside as "#superseded: "
+  // rows instead of refusing. Optional; before begin().
+  void setSupersede(bool on) { supersede_ = on; }
   // Parse and check the new rows.
   bool begin(const std::string& newText);
   // One stored row without its line end; `complete` = false for a final row that
@@ -147,16 +158,20 @@ class CsvUpsertStream {
     std::vector<std::string> fields;
     bool used = false;   // it replaced a stored row
     std::string was;     // that row's sum figure
+    int superseded = 0;  // more stored rows of its identity set aside
   };
   bool fail(const std::string& why);
-  bool checkNewRow(size_t n, const std::string& raw, NewRow& row);
+  bool parseHeader(const std::string& line);
+  bool parseNewRow(size_t n, const std::string& raw, NewRow& row);
+  bool findDateColumn(const std::vector<NewRow>& rows);
+  bool checkNewRow(size_t n, NewRow& row);
   void planDays();
   bool feedHeader(const std::string& row, bool complete, std::string& out);
   bool feedData(const std::string& row, bool complete, std::string& out);
   void feedCut(const std::vector<std::string>& f, const std::string& row, NewRow* hit, std::string& out);
   NewRow* match(const std::string& id);
   void replaceWith(NewRow& n, const std::vector<std::string>& stored, bool same, std::string& out);
-  bool ambiguous(const NewRow& n);
+  bool secondMatch(NewRow& n, const std::string& row, std::string& out);
   void countUndated(const std::vector<std::string>& f);
   std::string identity(const std::vector<std::string>& f) const;
   void tally(const std::vector<std::string>& f);
@@ -165,7 +180,8 @@ class CsvUpsertStream {
   std::string headerRaw_;
   int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1;
   std::vector<NewRow> rows_;
-  bool begun_ = false, sawHeader_ = false, failed_ = false;
+  std::vector<std::string> prev_;   // the last well-formed stored row (judges a cut last row)
+  bool begun_ = false, sawHeader_ = false, failed_ = false, supersede_ = false;
   size_t storedRows_ = 0, outRows_ = 0;
   CsvUpsert r_;
 };
@@ -175,7 +191,7 @@ class CsvUpsertStream {
 // `keyCol`; with `sumCol`, report the day totals. `out` is the new file.
 CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
                         const std::string& keyCol, const std::string& sumCol,
-                        const std::string& today);
+                        const std::string& today, bool supersede = false);
 
 // One day's total as a stream (the files.read tail view): feed every row of the
 // file in order, header first.
@@ -184,13 +200,14 @@ class CsvDayTally {
   CsvDayTally(const std::string& sumCol, const std::string& day);
   void feed(const std::string& row, bool complete);
   // The header names a date column and the sum column (else whyNot() says which).
-  bool ok() const { return dateIdx_ >= 0 && sumIdx_ >= 0 && !day_.empty(); }
+  bool ok() const;
   std::string whyNot() const;
   const DayTotal& total() const { return t_; }
   int undated() const { return undated_; }   // data rows with no YYYY-MM-DD date
 
  private:
   std::string sumCol_, day_;
+  std::vector<std::string> header_, prev_;
   int dateIdx_ = -1, sumIdx_ = -1;
   size_t width_ = 0;
   bool sawHeader_ = false;
@@ -242,6 +259,12 @@ bool mergeKeyed(CsvUpsertStream& m, bool stored, size_t size, const ReadFn& read
 // The YYYY-MM-DD day a date field starts with ("2026-10-25 08:30" -> "2026-10-25"),
 // or "" when it does not start with one.
 std::string isoDayOf(const std::string& field);
+
+// A CSV's final row that has no line end: is it PROVABLY cut by a power loss (a
+// quote left open, fewer fields than `header`, or no plain number where the
+// well-formed row before it, `prev`, holds one)? A well-formed row only lacks its
+// line end (a file saved without one) and is complete.
+bool csvLastRowCut(const std::string& header, const std::string& prev, const std::string& row);
 
 // The log's day: the device's local date ("YYYY-MM-DD", "" while the clock is not
 // set) in the process time zone, which the device sets from its time-zone

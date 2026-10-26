@@ -52,6 +52,10 @@ class FakeFs : public SwapFs {
     auto it = files.find(p);
     return it == files.end() ? std::string() : it->second;
   }
+  long long size(const std::string& p) override {
+    auto it = files.find(p);
+    return it == files.end() ? -1 : (long long)it->second.size();
+  }
   // The next boot: power is back, no fault armed; the recovery runs, then the
   // device drops a stale part (files_subsystem begin()).
   void reboot() {
@@ -249,6 +253,60 @@ static void test_a_pending_restore_is_never_overwritten() {
   TEST_ASSERT_EQUAL_STRING("old ledger", g.files[other].c_str());
 }
 
+// MUST (merge review): the exact double-fault sequence. The new copy cannot be
+// renamed in AND the old one cannot be put back: the food log's only copy is the
+// backup. While that is so, every write path to the log refuses (swapPendingFor);
+// once the card answers again the backup is restored first. And should a stray
+// small file appear at the log's name anyway, the next boot keeps the larger
+// backup as <name>.recovered instead of deleting it.
+static void test_double_fault_never_loses_the_log() {
+  FakeFs fs = seeded(true);
+  fs.fails = {3, 5};   // part -> dst fails, then bak -> dst fails
+  std::string err;
+  TEST_ASSERT_FALSE(swapIn(fs, kPaths, kDst, err));
+  TEST_ASSERT_TRUE(fs.files.count(kDst) == 0);
+  TEST_ASSERT_EQUAL_STRING(kOld.c_str(), fs.files[kPaths.bak].c_str());
+  // The card still refuses renames: a plain append (or an upload, or a keyed
+  // write) to the log is refused - it would recreate the log over its backup.
+  fs.fails = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  TEST_ASSERT_TRUE(swapPendingFor(fs, kPaths, kDst));
+  TEST_ASSERT_FALSE(swapPendingFor(fs, kPaths, "/mem/files/owner/other.csv"));   // other files carry on
+  TEST_ASSERT_EQUAL_STRING(kOld.c_str(), fs.files[kPaths.bak].c_str());
+  // The card answers again: the next write first restores the log, then proceeds.
+  fs.fails.clear();
+  TEST_ASSERT_FALSE(swapPendingFor(fs, kPaths, kDst));
+  TEST_ASSERT_EQUAL_STRING(kOld.c_str(), fs.files[kDst].c_str());
+  TEST_ASSERT_TRUE(fs.files.count(kPaths.bak) == 0 && fs.files.count(kPaths.note) == 0);
+  // The old failure mode, replayed: a stray one-row file at the log's name while
+  // the note is pending, then a boot. The larger backup is kept, never deleted.
+  FakeFs b;
+  b.files[kPaths.note] = kDst;
+  b.files[kPaths.bak] = kOld + "2026-10-25,breakfast,945\n";
+  b.files[kDst] = "2026-10-25,coffee,66\n";
+  std::string aside;
+  const std::string did = recoverSwap(b, kPaths, &aside);
+  TEST_ASSERT_EQUAL_STRING((kDst + ".recovered").c_str(), aside.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(did.find("larger backup is kept as") != std::string::npos, did.c_str());
+  TEST_ASSERT_EQUAL_STRING((kOld + "2026-10-25,breakfast,945\n").c_str(), b.files[aside].c_str());
+  TEST_ASSERT_EQUAL_STRING("2026-10-25,coffee,66\n", b.files[kDst].c_str());
+  TEST_ASSERT_TRUE(b.files.count(kPaths.note) == 0);
+  // A backup no larger than the new copy is an ordinary finished swap: dropped.
+  FakeFs c;
+  c.files[kPaths.note] = kDst;
+  c.files[kPaths.bak] = kOld;
+  c.files[kDst] = kNew;
+  aside.clear();
+  recoverSwap(c, kPaths, &aside);
+  TEST_ASSERT_TRUE(aside.empty() && c.files.count(kPaths.bak) == 0);
+  // A backup that cannot be removed before a swap: refused, nothing changed.
+  FakeFs d = seeded(true);
+  d.files[kPaths.bak] = "stale";
+  d.fails = {0};   // the stale backup's remove fails
+  TEST_ASSERT_FALSE(swapIn(d, kPaths, kDst, err));
+  TEST_ASSERT_TRUE(err.find("SD remove failed") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(kOld.c_str(), d.files[kDst].c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_swap_replaces_and_leaves_nothing_behind);
@@ -257,5 +315,6 @@ int main(int, char**) {
   RUN_TEST(test_counter_old_remove_then_rename_loses_the_file);
   RUN_TEST(test_stale_backup_and_note_are_cleared);
   RUN_TEST(test_a_pending_restore_is_never_overwritten);
+  RUN_TEST(test_double_fault_never_loses_the_log);
   return UNITY_END();
 }
