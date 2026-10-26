@@ -270,9 +270,9 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 |---|---|---|---|
 | `files.list` | List the device's durable artifact store: projects and files. | `project` (string, optional filter) | live |
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
-| `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200) | live |
+| `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200), `sum` (optional, a numeric column), `date` (optional, `YYYY-MM-DD`; default today) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
-| `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written. With `key`, a keyed CSV upsert: a row whose key matches an existing one UPDATES it instead of adding a duplicate. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call), `key` (optional, the column whose value identifies a row), `sum` (optional, a numeric column - the reply carries its total for today) | live |
+| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row (a correction) and other days are never touched. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`), `sum` (optional, a numeric column - the reply carries the day totals) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
@@ -291,12 +291,28 @@ Notes:
   new rows (line ends normalized, a final line end added). When the file's last
   row was cut mid-write, the new rows start on a fresh line and the result says
   so. It follows the same ownership and quota rules as `artifact.save`.
-- The keyed upsert (a `key` column) is the one exception to "never rewrites":
-  the merge happens on the device, so only the new rows cross the model's
-  context - never a whole-file read plus a whole-file save. The reply names how
-  many rows were updated and appended, and - with `sum` - the day's running
-  total, so a log update never needs a second read. `files.read {tail}` takes
-  the same `sum` argument for the same total.
+- The keyed update (a `key` column) is the one exception to "never rewrites":
+  the merge happens on the device, row by row from the card, so only the new
+  rows cross the model's context and a log of any size fits. A row is
+  identified by its date (the `date` or `day` column, `YYYY-MM-DD`) plus its key
+  column; a log with no date column is keyed by the key alone. The same date
+  and key again replaces that row, so a correction never counts twice in a
+  day's total. The call is refused, and nothing is written, when the key names
+  more than one stored row or two rows of the call, when the header differs
+  from the stored one, or when a row has the wrong field count (a comma inside
+  a field needs double quotes), no key, a date that is not `YYYY-MM-DD` or is
+  after today, or no plain number in the `sum` column. A stored last row cut
+  by a power loss is replaced by a new row with its date and key, or kept as a
+  `#cut:` row that is never counted; rows starting with `#` are comments. The
+  reply says what each row did (a replaced row with what it was) and, with
+  `sum`, each day's total with its row count: today first, with its time zone
+  (`today's kcal (2026-10-25, GMT): 976 from 2 rows`), then every other date
+  written. With no time zone set the device's day is the UTC day and the reply
+  says so. `files.read {tail, sum, date}` gives any day's total the same way.
+- A whole-file write (`artifact.save`, a keyed update, an upload) never removes
+  the stored copy before the new one is in place: the old copy is kept as a
+  backup until the new one lands, a failure puts it back, and a power cut in
+  between is repaired at the next start.
 - `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
   returns the last complete rows, oldest first, plus a CSV's header row when it
   is not among them; an incomplete last row is reported, not hidden.

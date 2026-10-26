@@ -25,9 +25,9 @@
 #include "nimbus/orch/blob_store.h"      // BlobHasher (streamed content hash)
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
+#include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
-#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/tool_registry.h"
 
 namespace agent::files {
@@ -94,6 +94,106 @@ void persistIndex() {
   if (n != blob.size()) { fs.remove(tmp); alogf("files: index short write"); return; }
   fs.remove(kIndexPath);
   fs.rename(tmp, kIndexPath);
+}
+
+// The card calls a whole-file replace needs (nimbus/orch/file_swap.h). Caller
+// holds memory::Lock.
+class SdSwapFs : public nimbus::orch::SwapFs {
+ public:
+  bool exists(const std::string& p) override { return memory::dataFs().exists(p.c_str()); }
+  bool rename(const std::string& a, const std::string& b) override {
+    return memory::dataFs().rename(a.c_str(), b.c_str());
+  }
+  bool remove(const std::string& p) override { return memory::dataFs().remove(p.c_str()); }
+  bool writeText(const std::string& p, const std::string& t) override {
+    File f = memory::dataFs().open(p.c_str(), FILE_WRITE);
+    if (!f) return false;
+    const size_t n = f.write(reinterpret_cast<const uint8_t*>(t.data()), t.size());
+    f.close();
+    return n == t.size();
+  }
+  std::string readText(const std::string& p) override {
+    File f = memory::dataFs().open(p.c_str(), FILE_READ);
+    if (!f) return std::string();
+    std::string out;
+    char buf[128];
+    for (int n; out.size() < 512 && (n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof buf)) > 0;)
+      out.append(buf, size_t(n));
+    f.close();
+    return out;
+  }
+};
+const nimbus::orch::SwapPaths kSwap{kPartPath, "/mem/files/.bak", "/mem/files/.swapnote"};
+
+// Make the finished .part the stored file `e` names, and index it. The stored
+// copy is never removed before the new one is in place (file_swap.h): a failed
+// rename or a power cut keeps the old copy, and an index refusal puts it back.
+// Caller holds memory::Lock.
+bool commitPart(const nimbus::orch::FileEntry& e, std::string& err) {
+  SdSwapFs sfs;
+  const std::string dst = pathOf(e.project, e.name);
+  if (!nimbus::orch::swapIn(sfs, kSwap, dst, err)) return false;
+  if (!g_store.add(e, err)) {
+    nimbus::orch::swapUndo(sfs, kSwap, dst);
+    return false;
+  }
+  persistIndex();
+  nimbus::orch::swapDone(sfs, kSwap);
+  return true;
+}
+
+// "/mem/files/<project>/<name>" -> its two valid segments, or false.
+bool splitStorePath(const std::string& path, std::string& project, std::string& name) {
+  const std::string root = std::string(kRoot) + "/";
+  if (path.compare(0, root.size(), root) != 0) return false;
+  const size_t slash = path.find('/', root.size());
+  if (slash == std::string::npos) return false;
+  project = path.substr(root.size(), slash - root.size());
+  name = path.substr(slash + 1);
+  return nimbus::orch::FileStore::validSegment(project, g_store.limits().maxProjectLen) &&
+         nimbus::orch::FileStore::validSegment(name, g_store.limits().maxNameLen);
+}
+
+// Boot: finish or roll back a whole-file replace a power cut interrupted. Returns
+// the path it named ("" = none), for reindexRecovered once the index is loaded.
+std::string recoverInterruptedSwap() {
+  SdSwapFs sfs;
+  std::string dst = sfs.readText(kSwap.note);
+  std::string project, name;
+  if (!dst.empty() && !splitStorePath(dst, project, name)) {
+    // A torn note (a cut during its own write: no rename had happened yet) is
+    // never trusted with a rename; the stale backup goes with it.
+    alogf("files: ignored an unreadable swap note");
+    sfs.remove(kSwap.note);
+    dst.clear();
+  }
+  const std::string did = nimbus::orch::recoverSwap(sfs, kSwap);
+  if (!did.empty()) alogf("files: %s", did.c_str());
+  return dst;
+}
+
+// The recovered file's index entry matches the bytes on the card (the power cut
+// may have come between the swap and the index write): its size is re-read, and
+// a file the index never heard of is adopted as rebuildByScan would.
+void reindexRecovered(const std::string& dst) {
+  std::string project, name;
+  if (!splitStorePath(dst, project, name)) return;
+  File f = memory::dataFs().open(dst.c_str(), FILE_READ);
+  if (!f) return;
+  const uint32_t size = uint32_t(f.size());
+  f.close();
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  if (old && old->bytes == size) return;
+  nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
+  if (!old) {
+    e.project = project;
+    e.name = name;
+    e.kind = nimbus::orch::fileKindForName(name);
+  }
+  e.bytes = size;
+  e.hash = 0;
+  std::string err;
+  if (g_store.add(e, err)) persistIndex();
 }
 
 // Rebuild the index by scanning /mem/files/<project>/<name> (index missing or
@@ -190,6 +290,9 @@ void begin() {
           (unsigned)(lim.maxTotalBytes >> 20), (unsigned)cardMB,
           g_cardUnsupported ? ", UNSUPPORTED <1GB" : "");
   }
+  // A whole-file replace a power cut interrupted is finished or rolled back
+  // FIRST, so a rebuild by scan below sees the file where it belongs.
+  const std::string swapped = recoverInterruptedSwap();
   // Load the index; rebuild by scan when missing/corrupt.
   File f = fs.open(kIndexPath, FILE_READ);
   bool loaded = false;
@@ -205,6 +308,7 @@ void begin() {
     rebuildByScan();
     persistIndex();
   }
+  reindexRecovered(swapped);
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
@@ -325,13 +429,6 @@ bool finishWrite(bool ok, std::string& err) {
     err = "that project/name belongs to someone else";
     return false;
   }
-  const std::string dst = pathOf(g_w.project, g_w.name);
-  fs.remove(dst.c_str());                     // overwrite semantics
-  if (!fs.rename(kPartPath, dst.c_str())) {
-    fs.remove(kPartPath); g_w = WriteSession{};
-    err = "SD rename failed";
-    return false;
-  }
   nimbus::orch::FileEntry e;
   e.owner = g_w.ownerNs;                       // v4.1 data boundary ("" = owner)
   e.project = g_w.project; e.name = g_w.name;
@@ -339,13 +436,10 @@ bool finishWrite(bool ok, std::string& err) {
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(g_w.name);
   e.hash = strtoull(g_w.hasher.hex().c_str(), nullptr, 16);
-  std::string aerr;
-  if (!g_store.add(e, aerr)) {   // shouldn't happen after wouldExceed, but be honest
-    fs.remove(dst.c_str()); g_w = WriteSession{};
-    err = aerr;
+  if (!commitPart(e, err)) {   // overwrite semantics, the old copy kept on any failure
+    g_w = WriteSession{};
     return false;
   }
-  persistIndex();
   alogf("files: stored %s/%s (%u B)", e.project.c_str(), e.name.c_str(), unsigned(e.bytes));
   g_w = WriteSession{};
   return true;
@@ -398,18 +492,13 @@ bool saveStream(const std::string& project, const std::string& name,
   src.close();
   dstf.close();
   if (!ok || written != total) { fs.remove(kPartPath); err = "SD short write"; return false; }
-  const std::string dst = pathOf(project, name);
-  fs.remove(dst.c_str());
-  if (!fs.rename(kPartPath, dst.c_str())) { fs.remove(kPartPath); err = "SD rename failed"; return false; }
   nimbus::orch::FileEntry e;
   e.owner = ownerNs;
   e.project = project; e.name = name;
   e.bytes = (uint32_t)written;
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(name);
-  if (!g_store.add(e, err)) { fs.remove(dst.c_str()); return false; }
-  persistIndex();
-  return true;
+  return commitPart(e, err);
 }
 
 bool saveText(const std::string& project, const std::string& name,
@@ -427,9 +516,6 @@ bool saveText(const std::string& project, const std::string& name,
   const size_t n = f.write(reinterpret_cast<const uint8_t*>(text.data()), text.size());
   f.close();
   if (n != text.size()) { fs.remove(kPartPath); err = "SD short write"; return false; }
-  const std::string dst = pathOf(project, name);
-  fs.remove(dst.c_str());
-  if (!fs.rename(kPartPath, dst.c_str())) { fs.remove(kPartPath); err = "SD rename failed"; return false; }
   nimbus::orch::FileEntry e;
   e.owner = ownerNs;                       // v3.7.0 data boundary
   e.project = project; e.name = name;
@@ -437,8 +523,7 @@ bool saveText(const std::string& project, const std::string& name,
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(name);
   e.hash = strtoull(nimbus::orch::blobHash(text).c_str(), nullptr, 16);
-  if (!g_store.add(e, err)) { fs.remove(dst.c_str()); return false; }
-  persistIndex();
+  if (!commitPart(e, err)) return false;
   alogf("files: artifact %s/%s (%u B)", project.c_str(), name.c_str(), unsigned(text.size()));
   return true;
 }
@@ -469,17 +554,13 @@ bool saveBytes(const std::string& project, const std::string& name,
   // silently drops, which would otherwise commit a truncated file to the index.
   { File chk = fs.open(kPartPath, FILE_READ); size_t on = chk ? chk.size() : 0; if (chk) chk.close();
     if (on != len) { fs.remove(kPartPath); err = "SD write not persisted"; return false; } }
-  const std::string dst = pathOf(project, name);
-  fs.remove(dst.c_str());
-  if (!fs.rename(kPartPath, dst.c_str())) { fs.remove(kPartPath); err = "SD rename failed"; return false; }
   nimbus::orch::FileEntry e;
   e.owner = ownerNs;
   e.project = project; e.name = name;
   e.bytes = (uint32_t)len;
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(name);
-  if (!g_store.add(e, err)) { fs.remove(dst.c_str()); return false; }
-  persistIndex();
+  if (!commitPart(e, err)) return false;
   alogf("files: artifact %s/%s (%u B, binary)", project.c_str(), name.c_str(), unsigned(len));
   return true;
 }
@@ -508,10 +589,13 @@ static bool fileKindIsCsv(const std::string& name) {
   return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".csv") == 0;
 }
 
-// Bounded SD read of one doc through a PSRAM buffer (never internal SRAM).
+// Bounded SD read of one doc through a PSRAM buffer (never internal SRAM). `ok`
+// (optional) is false when the file could not be opened or read in full up to
+// the cap, so a caller can tell a card fault from an empty file.
 static std::string readWhole(const std::string& project, const std::string& name,
-                             size_t cap) {
+                             size_t cap, bool* ok = nullptr) {
   memory::Lock g;
+  if (ok) *ok = false;
   if (!available() || !g_store.find(project, name)) return std::string();
   File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
   if (!f) return std::string();
@@ -523,64 +607,102 @@ static std::string readWhole(const std::string& project, const std::string& name
   f.close();
   std::string out(buf, got);
   heap_caps_free(buf);
+  if (ok) *ok = got == n;
   return out;
+}
+
+// The log's day and its zone (file_append.h logDayOf): the device's local date
+// under the owner's time zone; with none set, UTC, and the reply says so.
+static nimbus::orch::LogDay logDay() {
+  return nimbus::orch::logDayOf(time(nullptr), store::deviceTz().length() > 0);
+}
+
+// Read a stored file start to end through `rows`, 512 bytes at a time (any size,
+// no whole-file buffer; file_append.h streamRows). ReadFailed when it cannot be
+// opened or reads short (a card fault). Caller holds memory::Lock.
+static nimbus::orch::StreamEnd streamFile(const std::string& path, nimbus::orch::RowSplitter& rows) {
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return nimbus::orch::StreamEnd::ReadFailed;
+  const nimbus::orch::StreamEnd end = nimbus::orch::streamRows(
+      f.size(), [&](char* d, size_t n) { return (int)f.read(reinterpret_cast<uint8_t*>(d), n); }, rows);
+  f.close();
+  return end;
+}
+
+// files.read {tail, sum}: one day's total of `sumCol` over the whole file,
+// streamed. `dayArg` "" = today (the log's day). Caller holds memory::Lock.
+static std::string dayTotalLine(const std::string& path, size_t size, const std::string& sumCol,
+                                const std::string& dayArg, const nimbus::orch::LogDay& today) {
+  if (size > nimbus::orch::kKeyedMaxBytes) return "[no day total: the file is over 1 MB]\n";
+  if (!dayArg.empty() && nimbus::orch::isoDayOf(dayArg) != dayArg)
+    return "[no day total: 'date' must be YYYY-MM-DD]\n";
+  const std::string day = dayArg.empty() ? today.date : dayArg;
+  nimbus::orch::CsvDayTally tally(sumCol, day);
+  nimbus::orch::RowSplitter rows([&](const std::string& row, bool complete) {
+    tally.feed(row, complete);
+    return true;
+  });
+  const nimbus::orch::StreamEnd end = streamFile(path, rows);
+  if (end == nimbus::orch::StreamEnd::ReadFailed) return "[no day total: the card read failed - try again]\n";
+  if (end == nimbus::orch::StreamEnd::Stopped) return "[no day total: a row is too long - this is not a log]\n";
+  if (!tally.ok()) return "[no day total: " + tally.whyNot() + "]\n";
+  std::string line = nimbus::orch::renderDayTotal(tally.total(), sumCol, day == today.date, today.zone) + "\n";
+  if (tally.undated() > 0) line += nimbus::orch::renderUndated(tally.undated()) + "\n";
+  return line;
+}
+
+// A CSV's header row for the tail view: the window's first line when the window
+// is the whole file, else the file's own first line (read from its start).
+static std::string csvHeader(File& f, const std::string& window, size_t start) {
+  std::string first = window;
+  if (start > 0) {
+    char head[512];
+    f.seek(0);
+    const int n = f.read((uint8_t*)head, sizeof head);
+    first.assign(head, n > 0 ? (size_t)n : 0);
+    if (first.find('\n') == std::string::npos) return std::string();
+  }
+  std::string h = first.substr(0, first.find('\n'));
+  if (!h.empty() && h.back() == '\r') h.pop_back();
+  return h;
 }
 
 // files.read {tail}: the last rows of a text document, read from the END of the
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
 // A CSV's first line rides along as the header when it is not in the window.
-// The device's local date ("YYYY-MM-DD", "" when the clock is unset) - the day
-// the upsert and the tail view total.
-static std::string todayStr() {
-  const nimbus::orch::LocalDate d = nimbus::orch::localDateOf((time_t)nowEpoch());
-  if (!d.valid()) return std::string();
-  char buf[16];
-  snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
-  return buf;
-}
-
-static std::string numLine(double v) {
-  char buf[32];
-  snprintf(buf, sizeof buf, "%g", v);
-  return buf;
-}
-
 static nimbus::orch::ToolResult readTail(const std::string& project, const std::string& name,
-                                         size_t rows, const std::string& sumCol) {
+                                         size_t rows, const std::string& sumCol,
+                                         const std::string& day) {
+  const nimbus::orch::LogDay today = sumCol.empty() ? nimbus::orch::LogDay{} : logDay();   // NVS: before the lock
   memory::Lock g;
   if (!available() || !g_store.find(project, name))
     return nimbus::orch::ToolResult::fail("not found");
-  File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
+  const std::string path = pathOf(project, name);
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
   if (!f) return nimbus::orch::ToolResult::fail("SD open failed");
   const size_t size = f.size();
   const size_t start = size > nimbus::orch::kTailWindowBytes ? size - nimbus::orch::kTailWindowBytes - 1 : 0;
   std::string window(size - start, '\0');
-  f.seek(start);
-  window.resize(f.read((uint8_t*)&window[0], window.size()));
-  std::string header;
-  if (start > 0 && fileKindIsCsv(name)) {
-    char head[512];
-    f.seek(0);
-    const int got = f.read((uint8_t*)head, sizeof head);
-    const std::string first(head, got > 0 ? (size_t)got : 0);
-    const size_t nl = first.find('\n');
-    if (nl != std::string::npos) header = first.substr(0, nl > 0 && first[nl - 1] == '\r' ? nl - 1 : nl);
+  const bool seeked = f.seek(start);
+  const size_t got = seeked ? f.read((uint8_t*)&window[0], window.size()) : 0;
+  if (got != window.size()) {   // a short read is said, never shown as a shorter file
+    f.close();
+    return nimbus::orch::ToolResult::fail("the file could not be read - try again");
   }
+  const std::string header = fileKindIsCsv(name) ? csvHeader(f, window, start) : std::string();
   f.close();
   const nimbus::orch::TailView v = nimbus::orch::tailRows(window, start, rows);
   std::string text = nimbus::orch::renderTail(v, name, size, header);
-  // G1 (rows 32/33): the day total rides the same reply, so a log row never
-  // costs a second files.read round.
-  if (!sumCol.empty()) {
-    double total = 0;
-    if (nimbus::orch::csvDayTotal(readWhole(project, name, 256 * 1024), sumCol, todayStr(), total))
-      text += "today's " + sumCol + ": " + numLine(total) + "\n";
-    else
-      text += "[no day total: the file has no date column or no column '" + sumCol + "']\n";
-  }
+  // The day total rides the same reply, so a log row never costs a second read.
+  if (!sumCol.empty()) text += dayTotalLine(path, size, sumCol, day, today);
   return nimbus::orch::ToolResult::ok(text);
 }
+
+// The quota refusal of every assistant write that would pass the caller's share.
+static const char kStorageLimit[] =
+    "this conversation has reached its file-storage limit - ask the device's admin to "
+    "raise it, or delete something first";
 
 // files.append helpers (caller holds memory::Lock). Why an append may not touch
 // the file at all, or "" when it may: checked BEFORE anything on the card is
@@ -603,8 +725,7 @@ static std::string appendRefusal(const std::string& project, const std::string& 
                                  size_t addBytes, size_t newSize, const nimbus::orch::Principal& who) {
   const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
   if (q.maxBytes && g_store.bytesFor(who.ns) + addBytes > q.maxBytes)
-    return "this conversation has reached its file-storage limit - ask the device's admin to "
-           "raise it, or delete something first";
+    return kStorageLimit;
   std::string err;
   if (g_store.wouldExceed(project, name, newSize, err)) return err;
   return std::string();
@@ -645,10 +766,114 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
-// files.append with a key: the keyed CSV upsert (G1, rows 32/33). The model
-// sends only the new rows; the device merges them by key and reports the day
-// total, so a log update is one call instead of a read plus a whole-file save.
-// The whole-file rewrite happens here, on the device - never over the prompt.
+// The .part writer of a streamed rewrite: buffered, counts what landed.
+struct PartWriter {
+  File f;
+  std::string buf;
+  size_t bytes = 0;
+  bool bad = false;
+  bool put(const std::string& s) {
+    buf += s;
+    return buf.size() < 1024 || flush();
+  }
+  bool flush() {
+    if (!bad && !buf.empty()) {
+      const size_t n = f.write(reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+      bytes += n;
+      bad = n != buf.size();
+    }
+    buf.clear();
+    return !bad;
+  }
+};
+
+// Stream the stored log (when there is one) through the merger into the .part
+// (file_append.h mergeKeyed): every stored row is written back as it was or
+// replaced in place, then the new rows. True with the .part complete and its size
+// in `bytes`; false with `err` and no .part. A card read fault refuses - a short
+// read is never taken for a shorter log. Caller holds memory::Lock.
+static bool writeMergedPart(const std::string& path, bool stored,
+                            nimbus::orch::CsvUpsertStream& m, size_t& bytes, std::string& err) {
+  fs::FS& fs = memory::dataFs();
+  File src;
+  if (stored && !(src = fs.open(path.c_str(), FILE_READ))) {
+    err = "the card read failed - the log was not changed; try again";
+    return false;
+  }
+  if (src && src.size() > nimbus::orch::kKeyedMaxBytes) {
+    src.close();
+    err = "the log is over 1 MB - start a new log file (like food-log-2027.csv) and log there; nothing was changed";
+    return false;
+  }
+  fs.remove(kPartPath);
+  PartWriter w;
+  w.f = fs.open(kPartPath, FILE_WRITE);
+  if (!w.f) {
+    if (src) src.close();
+    err = "SD open failed - the log was not changed";
+    return false;
+  }
+  const bool done = nimbus::orch::mergeKeyed(
+                        m, stored, stored ? src.size() : 0,
+                        [&](char* d, size_t n) { return (int)src.read(reinterpret_cast<uint8_t*>(d), n); },
+                        [&](const std::string& b) { return w.put(b); }, err) &&
+                    w.flush();
+  if (src) src.close();
+  w.f.close();
+  // The bytes must have persisted (a flaky card can accept a write it drops).
+  File chk = done ? fs.open(kPartPath, FILE_READ) : File();
+  const size_t on = chk ? chk.size() : 0;
+  if (chk) chk.close();
+  if (!done || on != w.bytes) {
+    fs.remove(kPartPath);
+    if (err.empty()) err = "SD write not persisted - the log was not changed";
+    return false;
+  }
+  bytes = w.bytes;
+  return true;
+}
+
+// Commit a merged .part of `bytes` over project/name: the quota, then the swap
+// (the old copy is kept on any failure). Caller holds memory::Lock.
+static bool commitMerged(const std::string& project, const std::string& name, size_t bytes,
+                         const nimbus::orch::Principal& who, std::string& err) {
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  // The caller's usage without the copy being replaced - when that copy counts
+  // toward the caller at all (bytesFor's own owner rule).
+  const uint64_t used = g_store.bytesFor(who.ns);
+  const bool mine = old && (old->owner.empty() ? std::string(nimbus::orch::kOwnerNs) : old->owner) == who.ns;
+  const uint64_t replaced = mine && used >= old->bytes ? old->bytes : 0;
+  const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
+  if (q.maxBytes && used - replaced + bytes > q.maxBytes) {
+    memory::dataFs().remove(kPartPath);
+    err = kStorageLimit;
+    return false;
+  }
+  if (g_store.wouldExceed(project, name, bytes, err)) {
+    memory::dataFs().remove(kPartPath);
+    err = refusalForHead(err);
+    return false;
+  }
+  nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
+  if (!old) {
+    e.owner = who.ns;
+    e.project = project;
+    e.name = name;
+    e.createdAt = nowEpoch();
+    e.kind = nimbus::orch::fileKindForName(name);
+  }
+  e.bytes = uint32_t(bytes);
+  e.hash = 0;                 // streamed: unknown until the next whole write
+  e.providerTag.clear();      // an uploaded provider copy is stale now
+  e.providerFileId.clear();
+  return commitPart(e, err);
+}
+
+// files.append with a key: the keyed CSV upsert (file_append.h). The model sends
+// only the new rows; the device merges them by date and key, row by row from the
+// card (any log size), and reports what each row did and the day totals. The
+// whole merge holds the store lock, so nothing else writes the log between the
+// read and the swap.
 static nimbus::orch::ToolResult upsertRows(const std::string& project, const std::string& name,
                                            const std::string& text, const std::string& key,
                                            const std::string& sum,
@@ -656,37 +881,41 @@ static nimbus::orch::ToolResult upsertRows(const std::string& project, const std
   using nimbus::orch::ToolResult;
   if (!fileKindIsCsv(name))
     return ToolResult::fail("the keyed upsert is for CSV files (.csv) - name the file .csv");
-  {   // the ownership gate BEFORE anything on the card is opened (appendGate's
-      // own rule - the merge below reads the file, and a caller who cannot
-      // write this file must never learn what is in it either).
-    memory::Lock g;
-    const std::string gate = appendGate(project, name, who);
-    if (!gate.empty()) return ToolResult::fail(gate);
+  const nimbus::orch::LogDay day = logDay();   // an NVS read: before the lock
+  memory::Lock g;
+  // The ownership gate BEFORE anything on the card is opened: a caller who cannot
+  // write this file must never learn what is in it either.
+  const std::string gate = appendGate(project, name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
+  nimbus::orch::CsvUpsertStream m(key, sum, day.date);
+  m.setZone(day.zone);
+  if (!m.begin(text)) return ToolResult::fail(m.result().err);
+  fs::FS& fs = memory::dataFs();
+  fs.mkdir(dirOf(project).c_str());
+  const std::string path = pathOf(project, name);
+  size_t bytes = 0;
+  std::string err;
+  // A file on the card that the index lost (a power cut before the index write) is
+  // merged too, never replaced as if new - by the owner only: whose it was is
+  // unknown, so nobody else may read or take it over.
+  const bool indexed = g_store.find(project, name) != nullptr;
+  const bool stored = indexed || fs.exists(path.c_str());
+  if (stored && !indexed && !who.owner)
+    return ToolResult::fail("that project/name belongs to someone else - choose another name");
+  if (!writeMergedPart(path, stored, m, bytes, err)) return ToolResult::fail(err);
+  const nimbus::orch::CsvUpsert& up = m.result();
+  if (!up.changed) {
+    fs.remove(kPartPath);
+  } else {
+    if (!commitMerged(project, name, bytes, who, err)) return ToolResult::fail(err);
+    if (up.replaced == 0)   // only new rows: the plain append's log line, honestly
+      alogf("files: appended %d row(s) to %s/%s (keyed, %u B)", up.appended, project.c_str(),
+            name.c_str(), unsigned(bytes));
+    else
+      alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
+            up.replaced, up.appended, unsigned(bytes));
   }
-  const std::string existing = readWhole(project, name, 256 * 1024);
-  const nimbus::orch::CsvUpsert up =
-      nimbus::orch::planCsvUpsert(existing, text, key, sum, todayStr());
-  if (!up.ok) return ToolResult::fail(up.err);
-  if (up.changed) {
-    {   // then the quota, the same rule as artifact.save
-      memory::Lock g;
-      const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
-      if (q.maxBytes && g_store.bytesFor(who.ns) + up.out.size() > q.maxBytes)
-        return ToolResult::fail(
-            "this conversation has reached its file-storage limit - ask the "
-            "device's admin to raise it, or delete something first");
-    }
-    std::string err;
-    if (!saveText(project, name, up.out, err, who.ns)) return ToolResult::fail(err);
-    alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
-          up.replaced, up.appended, (unsigned)up.out.size());
-  }
-  std::string msg = "updated " + std::to_string(up.replaced) +
-                    (up.replaced == 1 ? " row" : " rows") + ", appended " +
-                    std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " +
-                    project + "/" + name;
-  if (up.hasTotal) msg += "; today's " + sum + ": " + numLine(up.todayTotal);
-  return ToolResult::ok(msg);
+  return ToolResult::ok(nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone));
 }
 
 // files.append: the new rows go on the END of a text document (created when
@@ -1106,7 +1335,8 @@ void registerTools() {
           "are paged: pass 'offset' to continue from where the previous view ended. "
           "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
           "'sum' (a numeric column) the tail also reports that column's total for "
-          "today, so a log read and its day total are one call.",
+          "today (the owner's local date), or for 'date' (YYYY-MM-DD), counted from "
+          "the file's own rows, so a log read and a day total are one call.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             if (project.empty() || name.empty())
@@ -1125,12 +1355,16 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
             if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-              return readTail(project, name, (size_t)a["tail"].as<double>(), argStr(a, "sum"));
+              return readTail(project, name, (size_t)a["tail"].as<double>(), argStr(a, "sum"),
+                              argStr(a, "date"));
             const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
             // Whole-file read through PSRAM, then a bounded UTF-8-safe window -
             // page size leaves header room inside the loop's per-result clamp
             // (the results.get viewCap rule).
-            std::string text = readWhole(project, name, 256 * 1024);
+            bool readOk = false;
+            std::string text = readWhole(project, name, 256 * 1024, &readOk);
+            if (!readOk)   // a card or memory fault is said, never shown as an empty file
+              return nimbus::orch::ToolResult::fail("the file could not be read - try again");
             const size_t total = text.size();
             if (offset >= total && total > 0)
               return nimbus::orch::ToolResult::ok(
@@ -1149,7 +1383,7 @@ void registerTools() {
                                std::to_string((unsigned)total) + "\n";
             return nimbus::orch::ToolResult::ok(head + text.substr(off, (size_t)keep));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -1238,13 +1472,14 @@ void registerTools() {
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 
   reg.add("files.append",
-          "Add rows to the END of a TEXT document (a log, a CSV): only the new rows are "
-          "written, nothing stored is read or rewritten. Creates the file when missing "
-          "(put a CSV's header row first). Up to 4 KB per call. Use it to log a row "
-          "instead of reading and re-saving the whole file. For a keyed CSV pass 'key' "
-          "(the column whose value identifies a row, like a date or a meal slot) to "
-          "UPDATE that row instead of adding a duplicate, and 'sum' (a numeric column) "
-          "to get its total for today in the reply.",
+          "Add rows to a TEXT document (a log, a CSV); creates it when missing (put a "
+          "CSV's header row first). Up to 4 KB per call. Use it to log a row instead of "
+          "reading and re-saving the whole file. Without 'key' the rows go on the END and "
+          "nothing stored is rewritten. For a dated CSV such as a food log pass 'key' (the "
+          "column that tells one day's rows apart, like meal): a row is its date plus its "
+          "key, so the same date and key again REPLACES that row (a correction) and other "
+          "days are never touched; text = the stored header row, then the rows. 'sum' (a "
+          "numeric column) puts the day totals in the reply.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             return appendRows(argStr(a, "project"), argStr(a, "name"), argStr(a, "text"),
                               argStr(a, "key"), argStr(a, "sum"), who);

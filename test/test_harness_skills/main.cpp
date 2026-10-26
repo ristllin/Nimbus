@@ -461,6 +461,14 @@ static void test_cum523_builtin_capsules_follow_the_turn() {
   const std::string rows = agent::builtinSkillBody("log-rows", true);
   TEST_ASSERT_TRUE(rows.find("files.append {project, name, text}") != std::string::npos);
   TEST_ASSERT_TRUE(rows.find("files.read {project, name, tail: 5}") != std::string::npos);
+  // QW3: ONE correction model, shared with the tool and the total (file_append.h):
+  // a dated log is keyed by date + key, a correction REPLACES its row; the old
+  // "a correction adds its own row" rule (which double-counted) never comes back.
+  TEST_ASSERT_TRUE(rows.find("files.append {project, name, text, key, sum}") != std::string::npos);
+  TEST_ASSERT_TRUE(rows.find("REPLACES that row") != std::string::npos);
+  TEST_ASSERT_TRUE(rows.find("NEVER add a second row for the same meal to correct it") != std::string::npos);
+  TEST_ASSERT_TRUE(rows.find("a correction adds its own row") == std::string::npos);
+  TEST_ASSERT_TRUE(rows.find("the latest row for a date is the current one") == std::string::npos);
   TEST_ASSERT_TRUE(webPdf.find("files.read {project, name, tail: N}") != std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("no-such-skill", true).c_str());
   TEST_ASSERT_FALSE(agent::isBuiltinSkill("no-such-skill"));

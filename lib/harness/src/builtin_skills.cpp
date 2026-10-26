@@ -175,34 +175,61 @@ const Part kDeliverPdf[] = {
 // Logging a row (the meal-photo addendum, and any tracker): files.append writes
 // only the new rows and files.read {tail} reads only the end, so a logged meal is
 // one tool call instead of a whole-file read plus a whole-file rewrite (on 15 Oct
-// a typical meal turn read three CSVs whole and re-saved all three).
+// a typical meal turn read three CSVs whole and re-saved all three). A dated CSV
+// is keyed by date plus a key column (nimbus/orch/file_append.h): a correction
+// REPLACES its row, so the day total (the sum of the day's rows) never counts a
+// corrected figure twice - the one correction rule the tool, the total and this
+// playbook share.
 const Part kLogRows[] = {
     {Side::Both,
      "# Logging rows (food log, ledger, any tracker)\n"
      "A log is a text file that grows by rows: a CSV (date,meal,kcal,...) or a .log.\n"
-     "1. Add rows with files.append {project, name, text}: only the new rows are\n"
-     "   written. NEVER files.read a whole log and artifact.save it back to add a\n"
-     "   row - that reads and rewrites the whole file, and every byte rides your turn.\n"
+     "1. Add rows with files.append {project, name, text}: the device writes only\n"
+     "   the new rows. NEVER files.read a whole log and artifact.save it back to add\n"
+     "   or fix a row - that rewrites the whole file, and every byte rides your turn.\n"
      "2. You do not need to read the log first when you know its columns. To see\n"
      "   the columns or the latest rows, read only the end:\n"
      "   files.read {project, name, tail: 5} (a CSV's header row comes with it).\n"
      "3. A new log: the first files.append carries the header row, then the row.\n"
-     "4. A running total (a daily ledger): append a NEW row with the updated totals;\n"
-     "   the latest row for a date is the current one. Never rewrite earlier rows.\n"
-     "5. The food log is ONE file (the CSV you keep for meals, e.g. food-log.csv in the\n"
-     "   owner's project): never split a day's meals across files. Before estimating\n"
-     "   anything you logged before - an earlier meal, a figure the owner corrects,\n"
-     "   a day total - read the log's tail first, and compute the day's total from the\n"
-     "   file's own rows with the files tool, never from memory. If the owner's stated\n"
-     "   total and the file's disagree, say both.\n"
-     "6. EVERY owner-stated figure and EVERY correction appends a row with files.append\n"
-     "   (a correction adds its own row; never rewrite an earlier one). Never say a\n"
-     "   figure was updated or corrected without the appended row that shows it.\n"
-     "7. A meal photo: estimate it, then one files.append to the food log (and one\n"
-     "   to the ledger if you keep one), then reply with the row you added. Several\n"
+     "4. A dated CSV (the food log, a daily ledger) is KEYED: a row is its date plus\n"
+     "   its key column. Write it with files.append {project, name, text, key, sum}:\n"
+     "   text = the stored header row, then the rows; key = the column that tells\n"
+     "   one day's rows apart (meal in the food log; date in a ledger that keeps one\n"
+     "   row per day); sum = the figure to total (kcal). The same date and key again\n"
+     "   REPLACES that row; a new key adds a row; other days are never touched.\n"
+     "5. Dates are the owner's local date as YYYY-MM-DD, from the Current date line.\n"
+     "   What was eaten before midnight belongs to that day, even when logged later.\n"
+     "6. The food log is ONE file (the CSV you keep for meals, e.g. food-log.csv in\n"
+     "   the owner's project), columns like date,meal,items,kcal,protein_g. Never\n"
+     "   split a day's meals across files. Each eating occasion gets its own meal\n"
+     "   name for that day: breakfast, lunch, dinner, and for anything else snack\n"
+     "   plus the time eaten (snack-1126). An item added to a meal already logged:\n"
+     "   re-send that meal's row with the combined figures. Separate items with +\n"
+     "   (a field that holds a comma goes in double quotes).\n"
+     "7. A correction (the owner fixes a figure, or a meal sits on the wrong day):\n"
+     "   re-send the row with the same date and meal and the corrected figures; it\n"
+     "   replaces the old row, so nothing counts twice. To take a row off a day,\n"
+     "   re-send it with 0 in the figures and the reason in items (moved to\n"
+     "   2026-10-25). NEVER add a second row for the same meal to correct it.\n"
+     "8. Before estimating anything you logged before (an earlier meal, a figure\n"
+     "   the owner corrects, a day total), read the log's tail first. Totals come\n"
+     "   from the files tool, never from memory or the conversation: a keyed\n"
+     "   files.append reply states each day's total (today's kcal (2026-10-25,\n"
+     "   GMT): 976 from 2 rows), and files.read {project, name, tail: 5, sum:\n"
+     "   \"kcal\", date: \"2026-10-24\"} gives any day's. If the owner's stated total\n"
+     "   and the file's disagree, say both.\n"
+     "9. Never say a figure was logged, updated or corrected without the\n"
+     "   files.append reply that shows it (replaced or added). A refused\n"
+     "   files.append wrote nothing: fix what it names and send again, or tell\n"
+     "   the owner. If it says the log already holds 2 or more rows for that date\n"
+     "   and meal (an older log), tell the owner; only with their OK, repair it\n"
+     "   once: files.read the whole log, then artifact.save it with one row per\n"
+     "   date and meal.\n"
+     "10. A meal photo: estimate it, then one files.append to the food log (and one\n"
+     "   to the ledger if you keep one), then reply with the row you wrote. Several\n"
      "   rows for one meal go in ONE call, one row per line.\n"
-     "8. If files.append says the last row was incomplete, the file was cut\n"
-     "   mid-write: say so, and check the tail before adding that row again.\n"},
+     "11. If a reply says the stored last row was cut mid-write, say so and log\n"
+     "   that row again in full.\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.

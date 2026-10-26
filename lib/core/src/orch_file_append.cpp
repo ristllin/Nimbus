@@ -1,7 +1,11 @@
 #include "nimbus/orch/file_append.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <vector>
+
+#include "nimbus/mem_cap.h"   // utf8CapLen - a quoted row is cut on a character boundary
 
 namespace nimbus::orch {
 
@@ -83,22 +87,96 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 }
 
 namespace {
-// The CSV row helpers of the keyed upsert (G1, rows 32/33). A field is the
-// text between commas, surrounding spaces trimmed; a quoted field is used as
-// written (quotes included): a log row, not a spreadsheet formula.
-std::vector<std::string> splitCsvRow(const std::string& row) {
+// ---- the CSV helpers of the keyed upsert and the day total -------------------
+
+constexpr size_t kMaxColumns = 64;   // a log's header; a wider one is not a log
+
+bool isBlank(char c) { return c == ' ' || c == '\t'; }
+
+char lowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
+
+std::string lowered(const std::string& s) {
+  std::string out(s);
+  for (char& c : out) c = lowerAscii(c);
+  return out;
+}
+
+bool sameText(const std::string& a, const std::string& b) { return lowered(a) == lowered(b); }
+
+// A key value as identity compares it: no case, no spaces around it (a quoted
+// " lunch " and lunch are one key).
+std::string keyText(const std::string& s) {
+  size_t b = 0, e = s.size();
+  while (b < e && (s[b] == ' ' || s[b] == '\t')) b++;
+  while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t')) e--;
+  return lowered(s.substr(b, e - b));
+}
+
+// One quoted field from `p` (just past the opening quote) to just past the
+// closing one; false when it never closes.
+bool readQuoted(const std::string& row, size_t& p, std::string& field) {
+  while (p < row.size()) {
+    const char c = row[p++];
+    if (c != '"') {
+      field += c;
+    } else if (p < row.size() && row[p] == '"') {
+      field += '"';   // "" inside quotes is one quote
+      p++;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+// One field from `p` up to (not including) the next separator. False when a
+// quote never closes or text follows a closing quote.
+bool readField(const std::string& row, size_t& p, std::string& field) {
+  while (p < row.size() && isBlank(row[p])) p++;
+  if (p < row.size() && row[p] == '"') {
+    p++;
+    if (!readQuoted(row, p, field)) return false;
+    while (p < row.size() && isBlank(row[p])) p++;
+    return p >= row.size() || row[p] == ',';
+  }
+  const size_t b = p;
+  while (p < row.size() && row[p] != ',') p++;
+  size_t e = p;
+  while (e > b && isBlank(row[e - 1])) e--;
+  field.assign(row, b, e - b);
+  return true;
+}
+
+// The fields of one CSV row: commas separate, a field in double quotes may hold
+// commas, spaces around a field are trimmed. `ok` false when a quote is left open
+// or text follows a closing quote (the rest of the row is then one field). At
+// most `maxFields` + 1 fields come back (a row of thousands of commas costs no
+// more): the extra one stands for "wider than that", the rest of the row.
+std::vector<std::string> csvFields(const std::string& row, bool* ok = nullptr,
+                                   size_t maxFields = kMaxColumns) {
   std::vector<std::string> out;
+  bool good = true;
   size_t p = 0;
   while (true) {
-    size_t c = row.find(',', p);
-    const size_t end = c == std::string::npos ? row.size() : c;
-    size_t b = p, e = end;
-    while (b < e && (row[b] == ' ' || row[b] == '\t')) b++;
-    while (e > b && (row[e - 1] == ' ' || row[e - 1] == '\t')) e--;
-    out.push_back(row.substr(b, e - b));
-    if (c == std::string::npos) break;
-    p = c + 1;
+    if (out.size() == maxFields) {   // wider than the cap: the rest as one field
+      out.emplace_back(row, p < row.size() ? p : row.size(), std::string::npos);
+      break;
+    }
+    std::string field;
+    if (!readField(row, p, field)) {
+      good = false;
+      field.assign(row, p < row.size() ? p : row.size(), std::string::npos);
+      p = row.size();
+    }
+    out.push_back(field);
+    if (p >= row.size()) break;
+    p++;   // past the comma
+    if (p == row.size()) {
+      out.emplace_back();   // a trailing comma: one more, empty field
+      break;
+    }
   }
+  if (ok) *ok = good;
   return out;
 }
 
@@ -118,157 +196,550 @@ std::vector<std::string> splitRows(const std::string& text) {
   return out;
 }
 
-// The leading number of a field ("450" or "450 kcal"); 0 when none.
-double numPrefix(const std::string& f) {
-  if (f.empty()) return 0;
-  char* end = nullptr;
-  const double v = std::strtod(f.c_str(), &end);
-  return end == f.c_str() ? 0 : v;
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+// The YYYY-MM-DD day a date field starts with ("2026-10-25" or
+// "2026-10-25 08:30"), or "" when it does not start with one.
+std::string isoDay(const std::string& f) {
+  if (f.size() < 10) return std::string();
+  for (size_t i = 0; i < 10; i++) {
+    const bool dash = i == 4 || i == 7;
+    if (dash ? f[i] != '-' : !isDigit(f[i])) return std::string();
+  }
+  if (f.size() > 10 && f[10] != ' ' && f[10] != 'T') return std::string();
+  const int month = (f[5] - '0') * 10 + (f[6] - '0'), day = (f[8] - '0') * 10 + (f[9] - '0');
+  if (month < 1 || month > 12 || day < 1 || day > 31) return std::string();
+  return f.substr(0, 10);
+}
+
+bool isLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+// What may follow a number: nothing, or spaces then a unit in letters ("kcal").
+bool unitTail(const std::string& f, size_t p) {
+  while (p < f.size() && isBlank(f[p])) p++;
+  for (; p < f.size(); p++)
+    if (!isLetter(f[p])) return false;
+  return true;
+}
+
+// A plain number ("450", "-2.5", "450 kcal"): an optional sign, digits with at
+// most one decimal point (12 digits at most), then nothing or a unit in letters.
+// "~450", "450-500", "1,046", "1e5", "inf" and "0x1A" are not plain numbers.
+bool plainNumber(const std::string& f, double& v) {
+  size_t p = (!f.empty() && (f[0] == '-' || f[0] == '+')) ? 1 : 0;
+  int digits = 0, dots = 0;
+  for (; p < f.size() && (isDigit(f[p]) || f[p] == '.'); p++) (f[p] == '.' ? dots : digits)++;
+  if (digits == 0 || digits > 12 || dots > 1 || !unitTail(f, p)) return false;
+  v = std::strtod(f.substr(0, p).c_str(), nullptr);
+  return true;
 }
 
 int columnIndex(const std::vector<std::string>& header, const std::string& name) {
   for (size_t i = 0; i < header.size(); i++)
-    if (header[i] == name) return (int)i;
+    if (sameText(header[i], name)) return (int)i;
   return -1;
 }
 
 // The date column ("date", then "day"), or -1.
 int dateColumnOf(const std::vector<std::string>& header) {
-  int c = columnIndex(header, "date");
+  const int c = columnIndex(header, "date");
   return c >= 0 ? c : columnIndex(header, "day");
 }
 
-void dayTotalOf(const std::vector<std::string>& rows, int dateCol, int sumCol,
-                const std::string& today, CsvUpsert& out) {
-  if (dateCol < 0 || sumCol < 0 || today.empty()) return;
-  double total = 0;
-  for (size_t r = 1; r < rows.size(); r++) {
-    const std::vector<std::string> f = splitCsvRow(rows[r]);
-    if (f.size() <= (size_t)dateCol || f.size() <= (size_t)sumCol) continue;
-    if (f[(size_t)dateCol].rfind(today, 0) != 0) continue;
-    total += numPrefix(f[(size_t)sumCol]);
-  }
-  out.todayTotal = total;
-  out.hasTotal = true;
+bool isCommentRow(const std::string& row) {
+  size_t p = 0;
+  while (p < row.size() && isBlank(row[p])) p++;
+  return p < row.size() && row[p] == '#';
 }
-// The column indexes a keyed upsert needs; -1 when the column is absent.
-struct UpsertCols {
-  int key = -1, sum = -1, date = -1;
-};
 
-// The header checks' outcome: the column indexes when the headers can merge,
-// else the reason they cannot.
-struct UpsertHeader {
-  bool        ok = false;
-  UpsertCols  cols;
-  std::string err;
-};
+bool isBlankRow(const std::string& row) {
+  for (char c : row)
+    if (!isBlank(c)) return false;
+  return true;
+}
 
-// The header checks: the text's header must name the key (and the sum) column,
-// and a stored file must carry the key column too (its header is the first
-// row; an empty or new file adopts the text's header, and `rows` receives it).
-UpsertHeader upsertColumns(const std::vector<std::string>& fresh,
-                           const std::string& keyCol, const std::string& sumCol,
-                           std::vector<std::string>& rows, std::vector<std::string>& header) {
-  UpsertHeader h;
-  const std::vector<std::string> newHeader = splitCsvRow(fresh.front());
-  h.cols.key = columnIndex(newHeader, keyCol);
-  if (h.cols.key < 0) {
-    h.err = "the text's header has no column '" + keyCol + "'";
-    return h;
-  }
-  h.cols.sum = sumCol.empty() ? -1 : columnIndex(newHeader, sumCol);
-  if (!sumCol.empty() && h.cols.sum < 0) {
-    h.err = "the text's header has no column '" + sumCol + "'";
-    return h;
-  }
-  if (!rows.empty()) {
-    header = splitCsvRow(rows.front());
-    if (columnIndex(header, keyCol) < 0) {
-      h.err = "the stored file has no column '" + keyCol + "' - its header differs";
-      return h;
-    }
+// The header as written, without a UTF-8 byte order mark (a hand-edited file).
+std::string withoutBom(const std::string& row) {
+  return row.compare(0, 3, "\xEF\xBB\xBF") == 0 ? row.substr(3) : row;
+}
+
+bool sameHeader(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); i++)
+    if (!sameText(a[i], b[i])) return false;
+  return true;
+}
+
+// The model's own header as quoted back in a refusal: about 160 bytes at most.
+std::string quoteRow(const std::string& row) {
+  if (row.size() <= 160) return row;
+  return row.substr(0, (size_t)nimbus::utf8CapLen(row.c_str(), (int)row.size(), 157)) + "...";
+}
+
+std::string rowNo(size_t n) { return "row " + std::to_string((unsigned)n); }
+
+// Count one row into `d` when it is dated d.date: its sum field must be a plain
+// number in a row no wider than the header (a wider row has a shifted column).
+void tallyInto(DayTotal& d, const std::vector<std::string>& f, size_t width, int dateIdx,
+               int sumIdx) {
+  if (dateIdx < 0 || sumIdx < 0 || f.size() <= (size_t)dateIdx) return;
+  if (isoDay(f[(size_t)dateIdx]) != d.date) return;
+  double v = 0;
+  if (f.size() <= width && f.size() > (size_t)sumIdx && plainNumber(f[(size_t)sumIdx], v)) {
+    d.total += v;
+    d.rows++;
   } else {
-    rows.push_back(fresh.front());   // the header lands as the file's first row
-    header = newHeader;
-  }
-  h.cols.date = dateColumnOf(header);
-  h.ok = true;
-  return h;
-}
-
-// Merge each new data row by key: a row whose key exists replaces it, anything
-// else appends. A stray row (no key value) is skipped.
-void mergeRowsByKey(std::vector<std::string>& rows, const std::vector<std::string>& fresh,
-                    int keyIdx, int& replaced, int& appended) {
-  for (size_t i = 1; i < fresh.size(); i++) {
-    const std::vector<std::string> f = splitCsvRow(fresh[i]);
-    if (f.size() <= (size_t)keyIdx || f[(size_t)keyIdx].empty()) continue;   // a stray row: skip
-    const std::string& key = f[(size_t)keyIdx];
-    bool hit = false;
-    for (size_t r = 1; r < rows.size() && !hit; r++) {
-      const std::vector<std::string> g = splitCsvRow(rows[r]);
-      if (g.size() > (size_t)keyIdx && g[(size_t)keyIdx] == key) {
-        rows[r] = fresh[i];
-        replaced++;
-        hit = true;
-      }
-    }
-    if (!hit) {
-      rows.push_back(fresh[i]);
-      appended++;
-    }
+    d.unread++;
   }
 }
 
+std::string numText(double v) {
+  char buf[40];
+  std::snprintf(buf, sizeof buf, "%.10g", v);
+  return buf;
+}
 
 }  // namespace
+
+// ---- CsvUpsertStream ----------------------------------------------------------
+// The replies never quote a stored row's free text: only the identity the model
+// itself sent, a stored date, and a stored figure that is a plain number. What a
+// log holds may once have come from outside (files.read, which returns it, is an
+// External tool); files.append stays a tool whose output is the device's own.
+
+CsvUpsertStream::CsvUpsertStream(const std::string& keyCol, const std::string& sumCol,
+                                 const std::string& today)
+    : keyCol_(keyCol), sumCol_(sumCol), today_(today) {}
+
+bool CsvUpsertStream::fail(const std::string& why) {
+  failed_ = true;
+  r_.ok = false;
+  r_.err = why;
+  return false;
+}
+
+// Date plus key (the key alone in a log with no date column; the date alone when
+// the key IS the date column). "" = the row has neither (never matched).
+std::string CsvUpsertStream::identity(const std::vector<std::string>& f) const {
+  // A row wider than the header has a shifted column (an unquoted comma): its
+  // date and key cannot be trusted, so it is never matched (nor counted).
+  if (keyIdx_ < 0 || f.size() <= (size_t)keyIdx_ || f.size() > header_.size()) return std::string();
+  const std::string key = keyText(f[(size_t)keyIdx_]);
+  if (dateIdx_ < 0) return key.empty() ? std::string() : "\x1f" + key;
+  if (f.size() <= (size_t)dateIdx_) return std::string();
+  const std::string day = isoDay(f[(size_t)dateIdx_]);
+  if (day.empty()) return std::string();
+  return keyIdx_ == dateIdx_ ? day : day + "\x1f" + key;
+}
+
+bool CsvUpsertStream::checkNewRow(size_t n, const std::string& raw, NewRow& row) {
+  if (isCommentRow(raw)) return fail(rowNo(n) + " starts with # (a comment row) - start it with its first column");
+  bool quotes = true;
+  row.raw = raw;
+  row.fields = csvFields(raw, &quotes, header_.size());
+  if (!quotes) return fail(rowNo(n) + " has a broken quote (an unclosed quote, or text after a closing one)");
+  if (row.fields.size() != header_.size())
+    return fail(rowNo(n) + " has " + std::to_string((unsigned)row.fields.size()) +
+                " fields but the header has " + std::to_string((unsigned)header_.size()) +
+                " - put a field that holds a comma in double quotes");
+  row.key = row.fields[(size_t)keyIdx_];
+  if (keyText(row.key).empty()) return fail(rowNo(n) + " has no value in '" + keyCol_ + "'");
+  if (dateIdx_ >= 0) {
+    row.date = isoDay(row.fields[(size_t)dateIdx_]);
+    if (row.date.empty())
+      return fail(rowNo(n) + "'s date '" + row.fields[(size_t)dateIdx_] + "' is not a YYYY-MM-DD date");
+    if (!today_.empty() && row.date > today_)
+      return fail(rowNo(n) + " is dated " + row.date + ", after today (" + today_ +
+                  (zone_.empty() ? std::string() : ", " + zone_) + ") - log the owner's local date");
+  }
+  double v = 0;
+  if (sumIdx_ >= 0 && !plainNumber(row.fields[(size_t)sumIdx_], v))
+    return fail(rowNo(n) + "'s '" + sumCol_ + "' value '" + row.fields[(size_t)sumIdx_] +
+                "' is not a plain number - write one number, like 450");
+  row.id = identity(row.fields);
+  for (size_t i = 0; i < rows_.size(); i++)
+    if (rows_[i].id == row.id)
+      return fail(rowNo(i + 1) + " and " + rowNo(n) + " both name " +
+                  (row.date.empty() ? std::string() : row.date + " ") + "'" + row.key +
+                  "' - send one row per date and key");
+  return true;
+}
+
+bool CsvUpsertStream::begin(const std::string& newText) {
+  begun_ = true;
+  if (keyCol_.empty()) return fail("need 'key': the column whose value identifies a row");
+  if (newText.size() > kAppendMaxBytes)
+    return fail("text too large for one call (max " + std::to_string((unsigned)kAppendMaxBytes) +
+                " B) - send fewer rows per call");
+  std::vector<std::string> lines;
+  for (const std::string& l : splitRows(newText))
+    if (!isBlankRow(l)) lines.push_back(l);
+  if (lines.size() < 2) return fail("need 'text': the header row, then at least one data row");
+  headerRaw_ = withoutBom(lines.front());
+  header_ = csvFields(headerRaw_);
+  if (header_.size() > kMaxColumns)
+    return fail("the header has more than " + std::to_string((unsigned)kMaxColumns) + " columns - this is not a log");
+  keyIdx_ = columnIndex(header_, keyCol_);
+  if (keyIdx_ < 0) return fail("the text's header has no column '" + keyCol_ + "'");
+  sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
+  if (!sumCol_.empty() && sumIdx_ < 0) return fail("the text's header has no column '" + sumCol_ + "'");
+  dateIdx_ = dateColumnOf(header_);
+  for (size_t i = 1; i < lines.size(); i++) {
+    NewRow row;
+    if (!checkNewRow(i, lines[i], row)) return false;
+    rows_.push_back(std::move(row));
+  }
+  planDays();
+  return true;
+}
+
+// The days the reply totals: today first, then every other date the text writes.
+void CsvUpsertStream::planDays() {
+  if (sumIdx_ < 0) return;
+  if (dateIdx_ < 0) {
+    r_.noTotal = "the file has no date column";
+    return;
+  }
+  if (today_.empty()) r_.noTotal = "the device clock is not set";
+  else r_.days.push_back(DayTotal{today_});
+  for (const NewRow& n : rows_) {
+    bool seen = false;
+    for (const DayTotal& d : r_.days) seen = seen || d.date == n.date;
+    if (!seen) r_.days.push_back(DayTotal{n.date});
+  }
+}
+
+bool CsvUpsertStream::feedHeader(const std::string& row, bool complete, std::string& out) {
+  outRows_++;
+  out = row + "\n";
+  if (!complete) r_.changed = true;      // the line end the row was missing
+  if (isBlankRow(row)) return true;      // blank lines above the header are kept as they are
+  sawHeader_ = true;
+  const std::vector<std::string> stored = csvFields(withoutBom(row));
+  if (!sameHeader(stored, header_))
+    return fail("the text's header (" + quoteRow(headerRaw_) + ") differs from the stored header (" +
+                (stored.size() > kMaxColumns ? std::string("too many") : std::to_string((unsigned)stored.size())) +
+                " columns) - read it with files.read {project, name, tail: 1}, then send the stored header "
+                "and its column order");
+  return true;
+}
+
+CsvUpsertStream::NewRow* CsvUpsertStream::match(const std::string& id) {
+  if (id.empty()) return nullptr;
+  for (NewRow& n : rows_)
+    if (n.id == id) return &n;
+  return nullptr;
+}
+
+void CsvUpsertStream::replaceWith(NewRow& n, const std::vector<std::string>& stored, bool same,
+                                  std::string& out) {
+  double v = 0;
+  n.used = true;
+  if (sumIdx_ >= 0 && stored.size() > (size_t)sumIdx_ && plainNumber(stored[(size_t)sumIdx_], v))
+    n.was = numText(v);   // the replaced figure, a plain number: never stored free text
+  r_.replaced++;
+  if (!same) r_.changed = true;
+  out = n.raw + "\n";
+  tally(n.fields);
+}
+
+// A last row cut mid-write: the new row with its identity replaces it, or it is
+// kept as a comment row that never matches or counts again.
+void CsvUpsertStream::feedCut(const std::vector<std::string>& f, const std::string& row, NewRow* hit,
+                              std::string& out) {
+  r_.cut = true;
+  r_.cutDate = dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
+  r_.changed = true;
+  if (hit && !hit->used) {
+    replaceWith(*hit, f, false, out);
+    r_.cutReplaced = true;
+    return;
+  }
+  out = "#cut: " + row + "\n";
+}
+
+// Two stored rows answer to one identity: refused, with the way out.
+bool CsvUpsertStream::ambiguous(const NewRow& n) {
+  if (keyIdx_ == dateIdx_)
+    return fail(n.date + " has 2 or more rows - key '" + keyCol_ +
+                "' cannot tell them apart; nothing was written. Pass the column that tells one day's "
+                "rows apart (like meal) as the key");
+  return fail("2 or more stored rows are " + (n.date.empty() ? std::string() : n.date + " ") + "'" + n.key +
+              "' - the key cannot tell them apart; nothing was written. A new item: log it under its own '" +
+              keyCol_ + "' value. To correct one of those rows the log needs a one-off repair: tell the "
+              "owner, and with their OK read it whole and save it with one row per date and '" + keyCol_ + "'");
+}
+
+void CsvUpsertStream::countUndated(const std::vector<std::string>& f) {
+  if (dateIdx_ >= 0 && sumIdx_ >= 0 && (f.size() <= (size_t)dateIdx_ || isoDay(f[(size_t)dateIdx_]).empty()))
+    r_.undated++;
+}
+
+bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::string& out) {
+  outRows_++;
+  if (isCommentRow(row) || isBlankRow(row)) {   // kept as written, never matched or counted
+    out = row + "\n";
+    if (!complete) r_.changed = true;
+    return true;
+  }
+  const std::vector<std::string> f = csvFields(row, nullptr, header_.size());
+  NewRow* hit = match(identity(f));
+  if (!complete) {
+    feedCut(f, row, hit, out);
+    return true;
+  }
+  if (!hit) {
+    out = row + "\n";
+    countUndated(f);
+    tally(f);
+    return true;
+  }
+  if (hit->used) return ambiguous(*hit);
+  replaceWith(*hit, f, hit->raw == row, out);
+  return true;
+}
+
+bool CsvUpsertStream::feed(const std::string& row, bool complete, std::string& out) {
+  out.clear();
+  if (failed_ || !begun_) return false;
+  storedRows_++;
+  return sawHeader_ ? feedData(row, complete, out) : feedHeader(row, complete, out);
+}
+
+void CsvUpsertStream::tally(const std::vector<std::string>& f) {
+  for (DayTotal& d : r_.days) tallyInto(d, f, header_.size(), dateIdx_, sumIdx_);
+}
+
+bool CsvUpsertStream::finish(std::string& out) {
+  out.clear();
+  if (failed_ || !begun_) return false;
+  if (!sawHeader_) {
+    out += headerRaw_ + "\n";   // a new (or blank) file adopts the text's header
+    outRows_++;
+    r_.changed = true;
+  }
+  for (NewRow& n : rows_) {
+    r_.changes.push_back({n.date, n.key, n.used, n.was});
+    if (n.used) continue;
+    out += n.raw + "\n";
+    outRows_++;
+    r_.appended++;
+    r_.changed = true;
+    tally(n.fields);
+  }
+  // Every stored row is written back (replaced in place, or as it was), plus the
+  // appended rows: no update can drop a row.
+  const size_t expect = storedRows_ + (size_t)r_.appended + (sawHeader_ ? 0 : 1);
+  if (outRows_ != expect) return fail("internal row count mismatch - nothing was written");
+  if (!today_.empty() && !r_.days.empty() && r_.days.front().date == today_) {
+    r_.hasTotal = true;
+    r_.todayTotal = r_.days.front().total;
+  }
+  r_.ok = true;
+  return true;
+}
+
+// ---- rows from chunks, and the whole-text forms -------------------------------
+
+bool RowSplitter::push(const char* data, size_t n) {
+  for (size_t i = 0; i < n && ok_; i++) {
+    const char c = data[i];
+    if (c != '\n') {
+      if (cur_.size() >= kRowMaxBytes) {
+        ok_ = false;
+        tooLong_ = true;
+        break;
+      }
+      cur_ += c;
+      continue;
+    }
+    if (!cur_.empty() && cur_.back() == '\r') cur_.pop_back();
+    ok_ = onRow_(cur_, true);
+    cur_.clear();
+  }
+  return ok_;
+}
+
+bool RowSplitter::end() {
+  if (ok_ && !cur_.empty()) {
+    if (cur_.back() == '\r') cur_.pop_back();
+    ok_ = onRow_(cur_, false);
+  }
+  cur_.clear();
+  return ok_;
+}
 
 CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
                         const std::string& keyCol, const std::string& sumCol,
                         const std::string& today) {
-  CsvUpsert out;
-  if (keyCol.empty()) {
-    out.err = "need 'key': the column whose value identifies a row";
-    return out;
+  // The device's own path (mergeKeyed) over a text instead of the card.
+  CsvUpsertStream m(keyCol, sumCol, today);
+  if (!m.begin(newText)) return m.result();
+  size_t pos = 0;
+  std::string joined, err;
+  const bool ok = mergeKeyed(
+      m, true, existing.size(),
+      [&](char* dst, size_t n) {
+        const size_t k = n < existing.size() - pos ? n : existing.size() - pos;
+        existing.copy(dst, k, pos);
+        pos += k;
+        return (int)k;
+      },
+      [&](const std::string& bytes) {
+        joined += bytes;
+        return true;
+      },
+      err);
+  CsvUpsert r = m.result();
+  if (!ok) {
+    r.ok = false;
+    r.err = err;
+    return r;
   }
-  std::vector<std::string> rows = splitRows(existing);
-  const std::vector<std::string> fresh = splitRows(newText);
-  if (fresh.empty()) {
-    out.err = "need 'text': the header row and at least one data row";
-    return out;
+  r.changed = r.changed && joined != existing;
+  r.out = r.changed ? joined : std::string();
+  return r;
+}
+
+CsvDayTally::CsvDayTally(const std::string& sumCol, const std::string& day)
+    : sumCol_(sumCol), day_(day) {
+  t_.date = day;
+}
+
+void CsvDayTally::feed(const std::string& row, bool complete) {
+  if (!sawHeader_) {
+    if (isBlankRow(row)) return;   // blank lines above the header
+    sawHeader_ = true;
+    const std::vector<std::string> h = csvFields(withoutBom(row));
+    width_ = h.size();
+    dateIdx_ = dateColumnOf(h);
+    sumIdx_ = sumCol_.empty() ? -1 : columnIndex(h, sumCol_);
+    return;
   }
-  std::vector<std::string> header;
-  const UpsertHeader h = upsertColumns(fresh, keyCol, sumCol, rows, header);
-  if (!h.ok) {
-    out.err = h.err;
-    return out;
-  }
-  mergeRowsByKey(rows, fresh, h.cols.key, out.replaced, out.appended);
-  // Join and report.
-  std::string joined;
-  for (const std::string& r : rows) joined += r + "\n";
-  out.changed = joined != existing;
-  out.out = out.changed ? joined : std::string();
-  dayTotalOf(rows, h.cols.date, h.cols.sum, today, out);
-  out.ok = true;
-  return out;
+  if (!complete || !ok() || isCommentRow(row) || isBlankRow(row)) return;   // a cut row never counts
+  const std::vector<std::string> f = csvFields(row, nullptr, width_);
+  if (f.size() <= (size_t)dateIdx_ || isoDay(f[(size_t)dateIdx_]).empty()) undated_++;
+  tallyInto(t_, f, width_, dateIdx_, sumIdx_);
+}
+
+std::string CsvDayTally::whyNot() const {
+  if (day_.empty()) return "the device clock is not set";
+  if (dateIdx_ < 0) return "the file has no date column";
+  if (sumIdx_ < 0) return "the file has no column '" + sumCol_ + "'";
+  return std::string();
 }
 
 bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
                  const std::string& today, double& total) {
   if (sumCol.empty() || today.empty()) return false;
-  const std::vector<std::string> rows = splitRows(fileText);
-  if (rows.empty()) return false;
-  const std::vector<std::string> header = splitCsvRow(rows.front());
-  const int sumIdx = columnIndex(header, sumCol);
-  const int dateIdx = dateColumnOf(header);
-  if (sumIdx < 0 || dateIdx < 0) return false;
-  CsvUpsert tmp;
-  dayTotalOf(rows, dateIdx, sumIdx, today, tmp);
-  if (!tmp.hasTotal) return false;
-  total = tmp.todayTotal;
+  CsvDayTally tally(sumCol, today);
+  RowSplitter rows([&](const std::string& row, bool complete) {
+    tally.feed(row, complete);
+    return true;
+  });
+  rows.push(fileText.data(), fileText.size());
+  rows.end();
+  if (!tally.ok()) return false;
+  total = tally.total().total;
   return true;
+}
+
+StreamEnd streamRows(size_t size, const ReadFn& read, RowSplitter& rows) {
+  char buf[512];
+  size_t got = 0;
+  while (got < size && rows.ok()) {
+    const int n = read(buf, size - got < sizeof buf ? size - got : sizeof buf);
+    if (n <= 0) break;
+    got += (size_t)n;
+    rows.push(buf, (size_t)n);
+  }
+  if (!rows.ok()) return StreamEnd::Stopped;
+  if (got != size) return StreamEnd::ReadFailed;
+  return rows.end() ? StreamEnd::Done : StreamEnd::Stopped;
+}
+
+bool mergeKeyed(CsvUpsertStream& m, bool stored, size_t size, const ReadFn& read,
+                const WriteFn& write, std::string& err) {
+  std::string piece;
+  bool wrote = true;
+  RowSplitter rows([&](const std::string& row, bool complete) {
+    if (!m.feed(row, complete, piece)) return false;
+    wrote = write(piece);
+    return wrote;
+  });
+  const StreamEnd end = stored ? streamRows(size, read, rows) : StreamEnd::Done;
+  if (end == StreamEnd::Done && m.finish(piece) && (wrote = write(piece))) return true;
+  if (end == StreamEnd::ReadFailed) err = "the card read failed - the log was not changed; try again";
+  else if (!m.result().err.empty()) err = m.result().err;
+  else if (!wrote) err = "SD short write - the log was not changed";
+  else if (rows.tooLong()) err = "a stored row is longer than 16 KB - this is not a log; nothing was changed";
+  else err = "the merge stopped - nothing was changed";
+  return false;
+}
+
+std::string isoDayOf(const std::string& field) { return isoDay(field); }
+
+// ---- the log's day ----------------------------------------------------------------
+
+LogDay logDayOf(time_t now, bool tzSet) {
+  LogDay d;
+  struct tm lt;
+  if (now < 1600000000 || !localtime_r(&now, &lt)) return d;   // never synced: no day
+  char buf[16];
+  std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+  d.date = buf;
+  if (!tzSet) {
+    d.zone = "UTC, no time zone is set";
+    return d;
+  }
+  char zone[16] = "";
+  std::strftime(zone, sizeof zone, "%Z", &lt);
+  d.zone = zone;
+  return d;
+}
+
+// ---- the reply ------------------------------------------------------------------
+
+std::string renderDayTotal(const DayTotal& d, const std::string& sumCol, bool isToday,
+                           const std::string& zone) {
+  std::string out = isToday ? "today's " + sumCol + " (" + d.date + (zone.empty() ? "" : ", " + zone) + "): "
+                            : sumCol + " on " + d.date + ": ";
+  out += numText(d.total);
+  if (d.rows == 0) out += " - no rows are dated " + d.date;
+  else out += " from " + std::to_string(d.rows) + (d.rows == 1 ? " row" : " rows");
+  if (d.unread > 0)
+    out += "; " + std::to_string(d.unread) + (d.unread == 1 ? " row" : " rows") + " dated " + d.date +
+           (d.unread == 1 ? " is not counted: its '" : " are not counted: their '") + sumCol +
+           "' field could not be read (not a plain number, or an unquoted comma shifted it)";
+  return out;
+}
+
+std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
+                              const std::string& sumCol, const std::string& zone) {
+  std::string out = "replaced " + std::to_string(up.replaced) + (up.replaced == 1 ? " row" : " rows") +
+                    ", added " + std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") +
+                    " in " + where + (up.changed ? "" : " (no change: the rows were already as sent)") + "\n";
+  for (const RowChange& c : up.changes) {
+    const std::string what = (c.date.empty() ? std::string() : c.date + " ") + "'" + c.key + "'";
+    if (!c.replaced) out += "- added " + what + "\n";
+    else out += "- replaced " + what + (c.was.empty() ? std::string() : " (was " + c.was + " " + sumCol + ")") + "\n";
+  }
+  if (up.cut) {
+    const std::string which = up.cutDate.empty() ? std::string() : " (dated " + up.cutDate + ")";
+    out += up.cutReplaced ? "- the stored last row" + which + " was cut mid-write; a new row replaced it\n"
+                          : "- the stored last row" + which +
+                                " was cut mid-write; it is kept as a #cut: row and not counted - log it again in full\n";
+  }
+  for (size_t i = 0; i < up.days.size(); i++)
+    out += renderDayTotal(up.days[i], sumCol, i == 0 && up.hasTotal, zone) + "\n";
+  if (up.undated > 0) out += renderUndated(up.undated) + "\n";
+  if (!up.noTotal.empty()) out += "[no day total: " + up.noTotal + "]\n";
+  return out;
+}
+
+std::string renderUndated(int rows) {
+  return "[" + std::to_string(rows) + (rows == 1 ? " row has" : " rows have") +
+         " no YYYY-MM-DD date and count toward no day's total]";
 }
 
 }  // namespace nimbus::orch

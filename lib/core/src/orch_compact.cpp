@@ -99,8 +99,9 @@ bool isContextOverflowError(const std::string& err) {
 // about tools/actions - they are structurally inert here.
 // L19-27: the prompt states the byte budget (a summary that runs long is
 // trimmed section-aware, durable sections first in the ORDER too, so a trim
-// takes the volatile tail and never the durable facts at the old tail position)
-// and keeps every section short enough that the whole summary fits.
+// takes the volatile sections first; durable lines go, from the end, only once
+// no volatile section is left) and keeps every section short enough that the
+// whole summary fits.
 const char* const ORCH_COMPACT_PROMPT =
     "You are compacting a long-running conversation between an owner and their "
     "assistant device into an anchored summary. Your reply IS the summary - plain "
