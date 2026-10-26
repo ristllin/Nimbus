@@ -77,6 +77,12 @@ reply. A voice note is a turn of its own, in its place among your messages. A ph
 that could not be fetched (too large, no memory card in the device) is named in the
 same reply; one sent on its own, with no caption, gets a short reply saying why.
 
+A plain text waits too: the device holds it about 5 seconds for a photo, file or voice
+note sent next, and a photo or file that arrives in that time is answered with the text
+in one reply, read with the text as its caption. A command never waits. A photo that
+arrives after the reply to its text has started gets its own reply, and the assistant
+knows the earlier reply is already in the chat.
+
 Repeats and floods are bounded. When Telegram delivers a message that was already
 answered, or the same message arrives twice within 2 minutes before the first one
 was answered, the repeat is skipped and the owner is told once. The device answers
@@ -269,8 +275,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days). Replies `EPIPRUNE days=<n> status=<ran\|deferred-turn\|deferred-busy\|no-store\|clock-unset>`; a pass that ran adds `dayfiles=<n> blobs=<n> kept=<n>`, with `blobs=deferred` while the history index is still being rebuilt after a restart. A deferred pass removed nothing. |
 | `CLOCK <epoch>` | Set the wall clock to a chosen moment (seconds since 1970), to test routines and time zones without waiting. |
 | `TZCHK <posix-tz> <epoch>` | Show the local time, weekday, daylight-saving flag, and offset a POSIX time-zone string gives for a moment. |
-| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive), through the duplicate breaker and the hourly limit; a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The page is never held for more and the offset never moves. The page rides one command line, and a test-image line holds up to 4096 bytes. |
-| `TGGUARD?` | Print the Telegram storm guards since their record was last cleared (it survives restarts, not a power cycle): `dups` (repeats skipped), `ceiling` (turns skipped at the hourly limit), `poison` (pages skipped after crashing the device twice), `tries` (crash restarts counted against the page in flight), `holding` (a page is waiting for the rest of an album) and `booted` (1 once the record has been read at boot; the counters are zero before that) and `kept` (1 when that boot found the record intact, 0 when it started a fresh one). |
+| `TGINJECT <json>` | Feed a raw Telegram update page through the receive path, so the inbound Telegram flow runs with no phone. Text, commands, photos, albums, voice and files all run (and land in the Telegram archive), through the duplicate breaker and the hourly limit; a file whose `file_id` is `LOCAL_/mem/<path>` is read from that file on the card. The offset never moves. A page runs at once, except one whose body starts `{"ok":true,"settle":true,`: it is held by the same wait as a polled page (5 s after a plain text, 3 s after a photo, file or voice note, none for a command), and the settle pages sent after it join it (up to 4), so a text and the photo sent seconds later replay in real time. The reply ends `settle=1`. The page rides one command line, and a test-image line holds up to 4096 bytes. |
+| `TGGUARD?` | Print the Telegram storm guards since their record was last cleared (it survives restarts, not a power cycle): `dups` (repeats skipped), `ceiling` (turns skipped at the hourly limit), `poison` (pages skipped after crashing the device twice), `tries` (crash restarts counted against the page in flight), `holding` (a page is waiting for the rest of an album, or for the photo sent after a text) and `booted` (1 once the record has been read at boot; the counters are zero before that) and `kept` (1 when that boot found the record intact, 0 when it started a fresh one). |
 | `AUDIOINJECT <path>` / `AUDIOINJECT off` | Run the hold-to-talk path on a recorded 16 kHz mono 16-bit WAV already on the card (put it there with `FSPUT`): the clip replaces the microphone, then the real speech-to-text call and the voice turn run. Spoken replies stay off until `AUDIOINJECT off`. |
 | `MODE <0\|1>` | Switch operating mode (0 = Notifier, 1 = Orchestrator); persists and restarts. |
 

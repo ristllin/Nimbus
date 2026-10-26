@@ -220,20 +220,20 @@ is `src/agent/telegram.cpp`). One cycle:
 2. **Settle** (`nimbus/net/tg_settle.h`). A phone uploads an album one photo at a time,
    so the first poll often holds only part of it, and an owner often sends a text and
    then the photo it is about a few seconds later. The page is held (re-polled with
-   timeout 0 on the same keep-alive socket, every 1 s and once more right at the end of
-   the window) until it has not grown for its window, which follows the newest message:
+   timeout 0 on the same keep-alive socket after a pause of up to 1 s, shorter at the
+   end of the window, plus the rest of the poll loop) until it has not grown for its
+   window, which follows the newest message:
    5 s after a plain text (for the photo, file or voice note sent next) and 3 s after a
    photo, file or voice note (for the rest of an album). Only a message from an allowed
    chat that could become a turn restarts the window (a stranger's message or an edit
-   does not). It is answered at once when it holds a slash command (commands never
-   wait) or nothing that could become a turn, when it is full (10 updates), when its
+   does not). It is answered at once when it holds a slash command from an allowed chat
+   (commands never wait) or nothing that could become a turn, when it is full (10 updates), when its
    newest Telegram date is older than its window plus 2 s, or once 15 s have passed
-   since its first item was seen (the cap on a burst). The 5 s text window comes from
-   the owner's traffic: the one text and photo in four days that belonged together were
-   5 s apart by Telegram's whole-second dates (4 to 6 s in fact), the nearest pair that
-   did not were 10 s apart, and 5 s is the longest window the release allows. A photo
-   that arrives later than that runs as the next turn (step 4). A plain text with
-   nothing after it waits the window and no longer. A hold classifies, acks and stores
+   since its first item was seen (the cap on a burst). The text window is 5 s, the
+   longest the release allows: it joins a photo sent about 5 s after its text, and a
+   photo that arrives later runs as the next turn (step 4). A plain text with nothing
+   after it is answered when its window ends, about 6 s after it was first seen. A hold
+   classifies, acks and stores
    nothing; local turns, job polling and reply sends keep running between re-polls.
    Keeping the poll socket open is safe only because every other TLS session of the
    task opens through `workConnect`, which closes it first.

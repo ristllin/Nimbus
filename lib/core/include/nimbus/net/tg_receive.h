@@ -139,7 +139,7 @@ class TgReceiver {
       : cursor_(cursor), batch_(batch), guard_(guard) {}
 
   // A page is being held: the next poll is an immediate re-poll (timeout 0) after the
-  // normal pause, at the same offset.
+  // settle pause (TgSettle::repollInMs, at most kSettleRepollMs), at the same offset.
   bool holding() const { return settle_.holding(); }
   const TgSettle& settle() const { return settle_; }
   // Inside Io::runTurn: the batch bucket that turn renders (its update ids, media

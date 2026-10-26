@@ -63,9 +63,12 @@ void setResetReason(int reason);
 // parser, the archive hook, the duplicate breaker and the hourly ceiling, the
 // allowlist, classification, the batcher with its command and voice boundaries, the
 // media processing inside each turn, and one turn per bucket - exactly as a polled
-// page, except that it is never held and never moves the getUpdates offset (its ids
-// are not Telegram's). Returns false when a page is already waiting, the body is empty
-// or over 64 KB, or PSRAM is short.
+// page, except that it never moves the getUpdates offset (its ids are not Telegram's)
+// and runs at once. A body that opens with {"ok":true,"settle":true, is a settle page:
+// it is held by the settle rule like a polled page, and later settle pages join it (up
+// to 4) until the rule dispatches them as one page. Returns false when a page is
+// already waiting (a settle page: while a plain page runs, while held pages run, or
+// with 4 held), the body is empty or over 64 KB, or PSRAM is short.
 // Test builds only: an injected page can name any chat, the owner's included.
 bool injectRawUpdates(const char* body, size_t len);
 // TGINJECT (the console verb): the same seam, returning the console's one-line
@@ -107,7 +110,8 @@ struct GuardStatus {
   uint32_t ceilingDrops;
   uint32_t poisonAcks;
   uint8_t  tries;
-  bool     holding;   // a page is being held for the rest of an album or burst
+  bool     holding;   // a page is being held for the rest of an album or burst, or for
+                      // the photo sent after a text
   bool     booted;    // the record was read this boot (false: Notifier mode, no counts)
   bool     kept;      // this boot found the record intact (false: rebuilt, a fresh count)
 };

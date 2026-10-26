@@ -47,9 +47,10 @@
 // open, and classifies, acks and stores nothing in between (no settings write). Local
 // turns, job polling and reply sends keep running between re-polls. repollInMs() is
 // kSettleRepollMs, or less when the window ends sooner, so a page that stopped growing
-// is answered at the end of its window, never up to a whole pause later: a plain text
-// with nothing after it waits the text window and no longer. A page that does not grow
-// re-polls at most ceil(quiet / repoll) + 1 times.
+// is answered at the end of its window plus the rest of one poll loop, never a whole
+// extra pause later (on the bench a held page was looked at every 2.5 s or so, and a
+// plain text was held 5.7 to 5.9 s). A page that does not grow re-polls at most
+// ceil(quiet / repoll) + 1 times.
 namespace nimbus::net {
 
 constexpr uint32_t kSettleQuietMediaMs = 3000;

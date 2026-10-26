@@ -104,12 +104,19 @@ def tags_of(row: dict) -> List[str]:
     return [t.strip() for t in (row.get("tags") or "").split(",") if t.strip()]
 
 
-def turn_rows(rows: List[dict], marker: str) -> Tuple[List[dict], List[dict]]:
-    """The user rows holding ``marker`` and the assistant rows answering them (tagged
-    ``turn:<user row id>``), oldest first (the store answers newest first)."""
-    users = [r for r in rows if r.get("role") == "user" and marker in (r.get("text") or "")]
+def is_message(row: dict) -> bool:
+    """A chat message row (not a tool trace or a model-response trace row)."""
+    return (row.get("kind") or "message") == "message"
+
+
+def turn_rows(rows: List[dict], src: str) -> Tuple[List[dict], List[dict]]:
+    """The user rows of the turn whose source tag is ``src`` (``tg:<newest update
+    id>x<messages>``) and the assistant messages answering them (tagged ``turn:<user row
+    id>``), oldest first (the store answers newest first). The words carry no marker:
+    a number in the text only puzzles the model."""
+    users = [r for r in rows if r.get("role") == "user" and is_message(r) and f"src:{src}" in tags_of(r)]
     wanted = {f"turn:{r.get('id')}" for r in users if r.get("id")}
-    replies = [r for r in rows if r.get("role") == "assistant" and wanted & set(tags_of(r))]
+    replies = [r for r in rows if r.get("role") == "assistant" and is_message(r) and wanted & set(tags_of(r))]
     return users[::-1], replies[::-1]
 
 
@@ -159,6 +166,19 @@ def _collect(device, seconds: float, until: str = "") -> List[str]:
     return out
 
 
+def _quiet(device, gap_s: float = 8.0, limit_s: float = 90.0) -> None:
+    """Wait until the console has been silent for ``gap_s`` (the device finished the
+    background work after a turn: a photo's record, a fold), at most ``limit_s``. A text
+    injected while the poll task is busy is first seen late, and the date rule then
+    answers it at once: the window is not what such a run measures."""
+    end = time.time() + limit_s
+    while time.time() < end:
+        try:
+            device.expect_re(r".", timeout=min(gap_s, max(0.1, end - time.time())))
+        except ExpectTimeout:
+            return
+
+
 def _inject(device, page: str, tries: int = 60) -> str:
     """TGINJECT one settle page; a busy answer (the held page was dispatched and is
     still running) is retried every 2 s."""
@@ -172,8 +192,24 @@ def _inject(device, page: str, tries: int = 60) -> str:
     return line
 
 
+def _state(net, tries: int = 4) -> dict:
+    """/api/state, read again when a busy device answers with a cut or non-JSON body."""
+    for t in range(tries):
+        try:
+            return net.get_json("/api/state", timeout=8.0)
+        except ValueError:
+            if t + 1 == tries:
+                raise
+            time.sleep(2.0)
+    return {}
+
+
 def _episodic(net, limit: int = 80) -> List[dict]:
-    return net.get_json(f"/api/mem/episodic?limit={limit}", timeout=8.0).get("messages", [])
+    """The newest history rows; [] while the device answers busy (a turn holds the store)."""
+    try:
+        return net.get_json(f"/api/mem/episodic?limit={limit}", timeout=8.0).get("messages", [])
+    except ValueError:  # "Device busy, try again." is not JSON: the caller polls again
+        return []
 
 
 def _wait(pred, timeout: float, every: float = 2.0):
@@ -186,10 +222,10 @@ def _wait(pred, timeout: float, every: float = 2.0):
     return pred()
 
 
-def _rows(net, marker: str, replies: int = 1):
-    """(user rows, reply rows) for ``marker`` once at least ``replies`` replies landed,
-    else None."""
-    users, answers = turn_rows(_episodic(net), marker)
+def _rows(net, src: str, replies: int = 1):
+    """(user rows, reply rows) of the turn with source tag ``src`` once at least
+    ``replies`` replies landed, else None."""
+    users, answers = turn_rows(_episodic(net), src)
     return (users, answers) if users and len(answers) >= replies else None
 
 
@@ -199,6 +235,21 @@ def _report(tag: str, lines: List[str]) -> None:
             print(f"[{tag}] log: {ln[:220]}")
     for model, i, o, cr, cw in spend_of(lines):
         print(f"[{tag}] usage {model} in={i} out={o} cR={cr} cW={cw}")
+
+
+def _lift_spend_pause(net) -> Optional[str]:
+    """Lift a paused monthly ceiling by 10 USD for the legs; returns the ceiling to put
+    back (None when nothing was paused). Skips, saying so, when calls stay paused."""
+    spend = _state(net).get("spend") or {}
+    if not spend.get("frozen"):
+        return None
+    ceiling = str(spend["limitCents"]) if spend.get("limitCents") else "off"
+    net.post("/api/orch", {"spendCeil": str(int(spend.get("spentCents", 0)) + 1000)}, timeout=8.0)
+    print("[bench] the monthly spend ceiling had paused paid calls: lifted by 10 USD for the legs")
+    if (_state(net).get("spend") or {}).get("frozen"):
+        net.post("/api/orch", {"spendCeil": ceiling}, timeout=8.0)
+        pytest.skip("paid calls stay paused on this unit after lifting the ceiling")
+    return ceiling
 
 
 @pytest.fixture
@@ -216,12 +267,7 @@ def coalesce_bench(bench, net):
     }
     r = net.post("/api/orch", BENCH_SETTINGS, timeout=8.0)
     assert r.status_code == 200, f"bench settings -> {r.status_code} {r.text[:200]}"
-    spend = net.get_json("/api/state", timeout=8.0).get("spend") or {}
-    ceiling = None
-    if spend.get("frozen"):
-        ceiling = str(spend["limitCents"]) if spend.get("limitCents") else "off"
-        net.post("/api/orch", {"spendCeil": str(int(spend.get("spentCents", 0)) + 300)}, timeout=8.0)
-        print("[bench] the monthly spend ceiling had paused paid calls: lifted by 3 USD for the legs")
+    ceiling = _lift_spend_pause(net)
     time.sleep(20.0)  # a message still queued for the test bot runs first (the token swap reset the offset)
     try:
         yield bench
@@ -259,12 +305,13 @@ def plate(net):
 def test_l48w_sunday_roast_is_one_reply(device, net, coalesce_bench, plate):
     chat = int(str(coalesce_bench.chat))
     uid = tb.first_update_id() + 4900
-    marker = f"Without the mac and cheese. Just the Sunday roast ({uid})"
+    marker = "Without the mac and cheese. Just the Sunday roast"  # the 25 Oct words
+    _quiet(device)
     _inject(device, settle_page([tb.text_update(uid, chat, marker)]))
     lines = _collect(device, GAP_S)
     _inject(device, settle_page([tb.local_photo_update(uid + 1, chat, plate[0], plate[1])]))
     lines += _collect(device, 120.0, until="settle dispatch (injected)")
-    lines += _collect(device, 180.0, until="settled page ran")
+    lines += _collect(device, 300.0, until="settled page ran")
     lines += _collect(device, 8.0)
     _report("roast", lines)
     got = [d for d in map(dispatch_of, lines) if d]
@@ -272,8 +319,8 @@ def test_l48w_sunday_roast_is_one_reply(device, net, coalesce_bench, plate):
     assert got and got[0][0] == 2, f"the text and the photo did not dispatch together: {got}"
     assert ran and ran[0] == (2, 1), f"the text and the photo did not run as one turn: {ran}"
     assert got[0][1] >= GAP_S * 1000, f"held {got[0][1]} ms: the photo joined the held text"
-    rows = _wait(lambda: _rows(net, marker), 120)
-    assert rows, "no user row and reply for the replay"
+    rows = _wait(lambda: _rows(net, f"tg:{uid + 1}x2"), 120)
+    assert rows, "no user row and reply for the replay (one turn of both updates)"
     users, replies = rows
     assert len(users) == 1, f"expected one turn holding the text, got {len(users)}"
     text = users[0]["text"]
@@ -292,7 +339,8 @@ def test_l48w_sunday_roast_is_one_reply(device, net, coalesce_bench, plate):
 def test_l48w_late_photo_knows_the_answer(device, net, coalesce_bench, plate):
     chat = int(str(coalesce_bench.chat))
     uid = tb.first_update_id() + 4920
-    marker = f"Just the Sunday roast tonight ({uid})"
+    marker = "Just the Sunday roast tonight"
+    _quiet(device)
     _inject(device, settle_page([tb.text_update(uid, chat, marker)]))
     lines = _collect(device, 60.0, until="settle dispatch (injected)")  # logged as the text's turn starts
     lines += _collect(device, 1.0)
@@ -303,11 +351,12 @@ def test_l48w_late_photo_knows_the_answer(device, net, coalesce_bench, plate):
     lines += _collect(device, 8.0)
     _report("late", lines)
     assert any(CROSSED_LOG in ln for ln in lines), "the late photo's turn was not told the answer exists"
-    rows = _wait(lambda: _rows(net, marker), 60)
-    assert rows, "no reply to the text"
-    for r in _episodic(net, 20)[::-1]:
-        if r.get("role") == "assistant":
-            print(f"[late] reply: {(r.get('text') or '')[:400]}")
+    first = _wait(lambda: _rows(net, f"tg:{uid}x1"), 60)
+    second = _wait(lambda: _rows(net, f"tg:{uid + 1}x1"), 120)
+    assert first and second, f"two turns, each answered: text {bool(first)}, photo {bool(second)}"
+    print(f"[late] reply to the text: {first[1][0]['text'][:400]}")
+    print(f"[late] reply to the photo: {second[1][0]['text'][:400]}")
+    assert "sent while you were" not in second[0][0]["text"], "the history row keeps what was sent, not the note"
 
 
 @pytest.mark.hil
@@ -318,12 +367,13 @@ def test_l48w_plain_text_latency(device, net, coalesce_bench):
     holds = []
     for k in range(3):
         uid = tb.first_update_id() + 4940 + 2 * k
-        marker = f"What is {k + 2} plus {k + 3}? ({uid})"
+        marker = f"What is {k + 2} plus {k + 3}?"
+        _quiet(device)
         sent = time.time()
         _inject(device, settle_page([tb.text_update(uid, chat, marker)]))
         lines = _collect(device, 60.0, until="settle dispatch (injected)")
         dispatched = time.time()
-        rows = _wait(lambda: _rows(net, marker), 120, every=0.5)
+        rows = _wait(lambda: _rows(net, f"tg:{uid}x1"), 120, every=0.5)
         replied = time.time()
         lines += _collect(device, 5.0)
         _report(f"plain{k}", lines)
@@ -359,14 +409,16 @@ def test_settle_page_mark_and_parse_helpers():
 @pytest.mark.host
 def test_turn_rows_pairs_replies_by_turn_tag():
     rows = [
-        {"id": "m4", "role": "assistant", "text": "other", "tags": "via:telegram,turn:m23"},
-        {"id": "m3", "role": "assistant", "text": "logged", "tags": "via:telegram,turn:m2"},
-        {"id": "m2", "role": "user", "text": "Sunday roast (5) [image 1/1 ref=ab]"},
+        {"id": "m5", "role": "assistant", "kind": "message", "text": "other", "tags": "out:reply,turn:m23"},
+        {"id": "m4", "role": "assistant", "kind": "message", "text": "logged", "tags": "out:reply,turn:m2"},
+        {"id": "m3", "role": "assistant", "kind": "llm_response", "text": "trace", "tags": "turn:m2"},
+        {"id": "m2", "role": "user", "kind": "message", "text": "Sunday roast", "tags": "from:Bench,src:tg:9x2"},
         {"id": "m1", "role": "assistant", "text": "older", "tags": "turn:m0"},
     ]
-    users, replies = turn_rows(rows, "Sunday roast (5)")
+    users, replies = turn_rows(rows, "tg:9x2")
     assert [u["id"] for u in users] == ["m2"]
-    assert [r["id"] for r in replies] == ["m3"]  # turn:m23 is not turn:m2
+    assert [r["id"] for r in replies] == ["m4"]  # not the trace row, not turn:m23
+    assert turn_rows(rows, "tg:9x1") == ([], [])
     assert MISSING_RE.search("If a photo or message was meant to arrive, it didn't reach me")
     assert not MISSING_RE.search("Sunday roast logged, mac and cheese excluded: ~755 kcal")
 
