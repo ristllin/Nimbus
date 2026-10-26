@@ -91,21 +91,39 @@ skipped so the log call never stalls the watchdog-guarded loop. A contention ski
 never a silent loss: the RAM ring and serial still hold the line, a dropped-line count
 is recorded into the durable log itself at the next successful write, and the running
 totals (`X-Log-Durable-Skipped`, `X-Log-Durable-Bytes`) are returned as headers on
-`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. If you need
+`GET /api/log` (the bytes header is left out while a tool holds the card), in
+`GET /api/errlog?list=1`, and on the device health row. If you need
 every line during a heavy-churn incident, read the RAM ring (`GET /api/log`)
 continuously rather than relying on the durable log alone.
 
-**The main loop never waits for the card lock.** The loop is the only task the 8 s task
-watchdog watches, and a turn holds the card lock for the whole of each tool call, which
-can include a provider round trip (an embedding) or a long card scan. So every piece of
-card work the loop does (the SD health probe, the held timeline rows, the battery
-history row, a timeline event such as an SD edge) tries for the lock for at most 20 ms
-and, when a tool holds it, skips that pass or parks the event for a later one. A tool
-call that holds the lock for 3 s or more is named in the durable log
-(`memory: tool <name> held the card lock for <ms> ms`), and a loop pass of 2 s or more
-is logged too (`loop: one pass took <ms> ms ...`). Earlier firmware waited for the
-lock there, so a tool call that held it past 8 s stopped the loop and the watchdog
-restarted the device.
+**No task the watchdog watches waits for the card lock.** The 8 s task watchdog
+watches two tasks: the main loop and the web server's task (every web request, the
+cloud tunnel's included, runs on it). A turn holds the card lock for the whole of each
+tool call, which can include a long card scan. So every piece of card work the loop
+does (the SD health probe, the held timeline rows, the battery history row, a timeline
+event such as an SD edge) tries for the lock for at most 20 ms and, when a tool holds
+it, skips that pass or parks the event for a later one. A web request tries for at most
+150 ms (a streaming download's next chunk, 20 ms) and, when the lock stays busy,
+`GET /api/state` answers at once with the last card figures it read and
+`"cardBusy": true`, while the other card routes answer `503` with `Retry-After: 5` and
+`{"error":"busy"}`. A tool call that holds the lock for 3 s or more is named in the
+durable log (`memory: tool <name> held the card lock for <ms> ms`), and a loop pass of
+2 s or more is logged too (`loop: one pass took <ms> ms ...`). Earlier firmware waited
+for the lock: a tool call that held it past 8 s stopped the loop (fixed in v4.5.16), and
+on v4.6.0 a `GET /api/state` that arrived while a photo look-up held it stopped the web
+task, and the watchdog restarted the device.
+
+**No task holds the card lock across a network request.** A tool that waits on the
+network (`image.look`, `image.generate`, `web.search`, `reply.telegram`,
+`reply.speak`, `device.control` with its speech action, and the tools of a connected
+tool server, `mcp.*`) runs outside the tool dispatcher's card lock and takes the lock
+only around its own card reads and writes; a memory tool's embedding gives the lock up
+for its request and takes it back after. The LAN `/mcp` endpoint, whose request runs on
+the web task, refuses those tools with an error. A web request's own network wait is
+bounded too: the host must already be in the device's name cache (an uncached name
+starts a lookup and the request answers busy), at most 250 ms for the device's network
+slot and 5 s for the whole exchange. The test build's `WEBGUARD?` console verb reads the counters that prove it on
+a bench unit.
 
 **No line is lost before storage mounts.** The first lines of a boot (the boot record,
 the HAL and network lines, an `[sd] mount FAILED` diagnosis) are emitted about a second

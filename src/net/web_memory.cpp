@@ -184,6 +184,8 @@ void nsRoleQuota(const std::vector<nimbus::orch::Tenant>& tenants, const std::st
 // ---- GET /api/mem/stats ----
 void handleStats(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
+  mem::WebLock card;   // never wait for a turn's tool on the web task (web_guard.h)
+  if (!card) return net::admission::sendCardBusy(r);
   mem::Stats s = mem::stats();
   JsonDocument d;
   d["vectors"]        = s.vectorCount;
@@ -260,7 +262,8 @@ void handleVectorGet(AsyncWebServerRequest* r) {
                            : agent::orchestrator::tenantSnapshot();
 
   {
-    mem::Lock lk;   // guard all VectorMemory access (shared with the turn task)
+    mem::WebLock card;   // guard all VectorMemory access (shared with the turn task)
+    if (!card) return net::admission::sendCardBusy(r);
     if (query.length()) {
       if (qv.empty()) { d["error"] = String("embed: ") + err; }
       else {
@@ -321,7 +324,8 @@ void handleNsUsageGet(AsyncWebServerRequest* r) {
   JsonArray arr = d["namespaces"].to<JsonArray>();
   int total = 0;
   {
-    mem::Lock lk;   // usageByNamespace reads the shared VectorMemory
+    mem::WebLock card;   // usageByNamespace reads the shared VectorMemory
+    if (!card) return net::admission::sendCardBusy(r);
     for (const auto& u : mem::vectors().usageByNamespace()) {
       nimbus::orch::Role role; nimbus::orch::Quota q;
       nsRoleQuota(tenants, u.ns, role, q);
@@ -346,7 +350,8 @@ void handleVectorPost(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   String op = qparam(r, "op");
   String id = qparam(r, "id");
-  mem::Lock lk;   // op + persist + size all touch VectorMemory (shared with the turn task)
+  mem::WebLock card;   // op + persist + size all touch VectorMemory (shared with the turn task)
+  if (!card) return net::admission::sendCardBusy(r);
   int n = 0; bool ok = true;
   if (op == "delete")         ok = mem::vectors().remove(std::string(id.c_str()));
   else if (op == "permanent") ok = mem::vectors().markPermanent(std::string(id.c_str()));
@@ -369,7 +374,8 @@ void handleVectorPost(AsyncWebServerRequest* r) {
 // ---- scratchpad ----
 void handleScratchGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
-  mem::Lock lk;   // Scratchpad is shared with the turn task
+  mem::WebLock card;   // Scratchpad is shared with the turn task
+  if (!card) return net::admission::sendCardBusy(r);
   Scratchpad& sp = mem::scratchpad();
   JsonDocument d;
   d["active"] = sp.activeTask();
@@ -391,7 +397,8 @@ void handleScratchGet(AsyncWebServerRequest* r) {
 void handleScratchPost(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   nimbus::sys::SaveScope save;
-  mem::Lock lk;   // memory.scratchpad dispatch + persist mutate the shared Scratchpad
+  mem::WebLock card;   // memory.scratchpad dispatch + persist mutate the shared Scratchpad
+  if (!card) return net::admission::sendCardBusy(r);
   JsonDocument args;
   args["action"]    = qparam(r, "action", "view");
   if (r->hasParam("tier", true)) args["tier"] = qparam(r, "tier");
@@ -431,8 +438,9 @@ void handleConfigGet(AsyncWebServerRequest* r) {
 void handleConfigPut(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   nimbus::sys::SaveScope save;
+  mem::WebLock card;   // MemConfig is read by the turn task (recall); applyConfig touches the VDB
+  if (!card) return net::admission::sendCardBusy(r);
   {
-    mem::Lock lk;   // MemConfig is read by the turn task (recall); applyConfig touches the VDB
     MemConfig& c = mem::config();
     if (r->hasParam("retrieval_count", true))     c.setRetrievalCount(qparam(r, "retrieval_count").toInt());
     if (r->hasParam("relevance_threshold", true)) c.setRelevanceThreshold(qparam(r, "relevance_threshold").toFloat());
@@ -455,7 +463,8 @@ void handleConfigPut(AsyncWebServerRequest* r) {
 // ---- episodic ----
 void handleEpisodicGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
-  mem::Lock lk;   // episodic query/count shared with the turn task's captureMessage
+  mem::WebLock card;   // episodic query/count shared with the turn task's captureMessage
+  if (!card) return net::admission::sendCardBusy(r);
   MsgQuery q;
   q.limit = qparam(r, "limit", "50").toInt();
   if (q.limit <= 0 || q.limit > 200) q.limit = 50;
@@ -587,6 +596,8 @@ void addConnectorRows(JsonArray& arr, const ProviderState& ps, const char* kUnav
 
 void handleToolsGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
+  mem::WebLock card;   // the stored skills are read off the card: tried (web_guard.h)
+  if (!card) return net::admission::sendCardBusy(r);
   JsonDocument d;
   JsonArray arr = d["tools"].to<JsonArray>();   // create ONCE - .to<>() clears on each call
   // availability (CUM-159): where each capability is reachable from -
@@ -646,7 +657,8 @@ void handleToolsGet(AsyncWebServerRequest* r) {
 // ---- embed config (SET-ONCE) ----
 void handleEmbedCfgGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
-  mem::Lock lk;   // reads vectors().size()
+  mem::WebLock card;   // reads vectors().size()
+  if (!card) return net::admission::sendCardBusy(r);
   JsonDocument d;
   d["provider"] = agent::store::embedProvider();
   d["model"]    = agent::store::embedModel();
@@ -655,6 +667,9 @@ void handleEmbedCfgGet(AsyncWebServerRequest* r) {
   d["vectors"]  = mem::vectors().size();
   String out; serializeJson(d, out); sendJson(r, 200, out);
 }
+// The embedding providers the device can use.
+bool embedProviderOk(const String& p) { return p == "openai" || p == "mistral" || p == "cumulo"; }
+
 // POST embedverify: run a REAL embeddings API call with a CANDIDATE provider/model/
 // dims (owner: "once replaced, a quick real api call to validate"). Saves nothing -
 // the UI calls this first and only proceeds to save if the config actually works.
@@ -663,7 +678,7 @@ void handleEmbedVerify(AsyncWebServerRequest* r) {
   String provider = qparam(r, "provider", "openai");
   String model    = qparam(r, "model");
   int dims        = qparam(r, "dims", "0").toInt();
-  if (provider != "openai" && provider != "mistral" && provider != "cumulo") { sendJson(r, 400, "{\"ok\":false,\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
+  if (!embedProviderOk(provider)) { sendJson(r, 400, "{\"ok\":false,\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
   if (!model.length()) { sendJson(r, 400, "{\"ok\":false,\"error\":\"model required\"}"); return; }
   String err;
   auto v = agent::embeddings::embedWith("nimbus embedding check", err, provider, model, dims);
@@ -696,7 +711,7 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
   String model    = qparam(r, "model");
   int dims        = qparam(r, "dims", "256").toInt();
   bool reset      = qparam(r, "reset") == "1";
-  if (provider != "openai" && provider != "mistral" && provider != "cumulo") { sendJson(r, 400, "{\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
+  if (!embedProviderOk(provider)) { sendJson(r, 400, "{\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
   if (!model.length()) { sendJson(r, 400, "{\"error\":\"model required\"}"); return; }
 
   static const char* kLocked =
@@ -724,7 +739,8 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
     dims = (int)v.size();
   }
   {
-    mem::Lock lk;   // WIPE + reconfigure the VDB atomically wrt the turn task
+    mem::WebLock card;   // WIPE + reconfigure the VDB atomically wrt the turn task
+    if (!card) return net::admission::sendCardBusy(r);
     // Re-check under the lock: the dims=0 call above can take seconds, and a turn may
     // have stored the first vector meanwhile. Re-widening a store that holds vectors
     // without the wipe would leave them at the old width (search reads past them and
@@ -736,9 +752,11 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
     // Store the new config FIRST (CUM-479). On a full NVS it does not land - the
     // store puts back any part that did, so the stored config stays whole - and then
     // nothing below may run: a reset must never wipe the owner's memories for a config
-    // that was not saved. Under the lock no turn can embed between this write and the
-    // wipe; only a power cut in that window could leave old-width vectors under the new
-    // config, which a second reset=1 clears.
+    // that was not saved. Under the lock no turn can store a vector between this write
+    // and the wipe (a turn's embedding gives the lock up for its request, but stores only
+    // after taking it back, and the store refuses a vector of another width); only a
+    // power cut in that window could leave old-width vectors under the new config, which
+    // a second reset=1 clears.
     if (!agent::store::setEmbedConfig(provider, model, dims)) {
       sendJson(r, nimbus::store::kStorageFullStatus, nimbus::store::storageFullJson().c_str());
       return;
@@ -751,8 +769,8 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
       agent::store::setEmbedLocked(false);
     }
     applyEmbedWidthLocked(dims);
+    mem::noteEmbedConfigChanged();   // a new config: try embeddings again at once
   }
-  mem::noteEmbedConfigChanged();   // a new config: try embeddings again at once
   handleEmbedCfgGet(r);
 }
 
@@ -790,6 +808,10 @@ void registerMemoryRoutes(AsyncWebServer& server) {
       r->send(400, "text/plain", "bad path");
       return;
     }
+    // The card is read under its lock like every other card user; on the web task the
+    // lock is only tried (web_guard.h). The read is capped at 512 KB (well under a second).
+    mem::WebLock card;
+    if (!card) return net::admission::sendCardBusy(r);
     File f = agent::memory::dataFs().open(p, FILE_READ);
     if (!f) { r->send(404, "text/plain", "This item was removed to save space."); return; }
     const size_t n = f.size();
@@ -825,9 +847,14 @@ void registerMemoryRoutes(AsyncWebServer& server) {
     // Durable-log meta (CUM-407/CUM-409): lines the durable log dropped under card-lock
     // contention (never a silent loss - also recorded in the log itself), and bytes written
     // to the durable log this boot (flash-wear watch). Headers, so the body stays the RAM
-    // ring byte-for-byte. Both reads are lock-free atomics.
+    // ring byte-for-byte. The skipped count is a lock-free atomic.
     res->addHeader("X-Log-Durable-Skipped", String(nimbus::errlog::durableSkipped()));
-    res->addHeader("X-Log-Durable-Bytes", String((unsigned long)nimbus::errlog::durableBytes()));
+    {
+      // durableBytes reads the writer under the card lock: tried, and the header is left
+      // out while a turn's tool holds the card (web_guard.h).
+      mem::WebLock card;
+      if (card) res->addHeader("X-Log-Durable-Bytes", String((unsigned long)nimbus::errlog::durableBytes()));
+    }
     r->send(res);
   });
 
@@ -854,7 +881,8 @@ void registerMemoryRoutes(AsyncWebServer& server) {
       // which the main loop's tickSdHealth() also probes - same race the promoteSd() fix
       // closed, one level up (prism residual). promoteSd() takes the same recursive Lock
       // internally; nesting is safe.
-      agent::memory::Lock g;
+      mem::WebLock card;   // tried, never waited for, on the web task (web_guard.h)
+      if (!card) return net::admission::sendCardBusy(r);
       promoted = agent::memory::sdLost() && agent::memory::promoteSd();
       ok = solide::storage::begin();
       // Late mount onto the card begin() mounted: on an SDMMC board that is SD_MMC,
@@ -906,6 +934,8 @@ void registerMemoryRoutes(AsyncWebServer& server) {
               if (!acc->authed)      { sendJson(r, 401, "{\"ok\":false,\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
               if (acc->oom)          { sendJson(r, 503, "{\"ok\":false,\"error\":\"device low on memory - retry\"}"); return; }
               if (acc->bytes.over)   { sendJson(r, 413, "{\"ok\":false,\"error\":\"import body too large\"}"); return; }
+              mem::WebLock card;   // restoreImport applies under the card lock (web_guard.h)
+              if (!card) return net::admission::sendCardBusy(r);
               std::string resp = mem::restoreImport(acc->data(), acc->bytes.len);
               sendJson(r, 200, String(resp.c_str()));
               // acc (header + PSRAM payload, one block) is freed by the framework with
@@ -958,6 +988,10 @@ void registerMemoryRoutes(AsyncWebServer& server) {
               nimbus::orch::Principal who = nimbus::orch::principalForRole(
                   nimbus::orch::kMcpNs, nimbus::orch::Role::User);
               who.ns = nimbus::orch::kMcpNs;   // its own namespace, not a chat's
+              // The dispatch runs under the card lock: tried here, so the handler's own
+              // take re-enters (web_guard.h). Busy is the JSON-RPC client's retry.
+              mem::WebLock card;
+              if (!card) return net::admission::sendCardBusy(r);
               std::string resp = mem::handleMcp(body, who);
               AsyncWebServerResponse* res =
                   r->beginResponse(200, "application/json", resp.c_str());

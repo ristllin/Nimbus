@@ -98,18 +98,14 @@ const char* inlineType(const char* ctype) {
 void streamItem(AsyncWebServerRequest* r, const std::string& chat, const std::string& day,
                 const std::string& name, bool wantInline) {
   const std::string path = arc::dayDirPath(chat, day) + "/" + name;
-  auto f = std::shared_ptr<File>(new File(), [](File* fp) {
-    agent::memory::Lock g;
-    fp->close();
-    delete fp;
-  });
-  size_t size = 0;
-  {
-    agent::memory::Lock g;
-    *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
-    if (!*f || f->isDirectory()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
-    size = f->size();
-  }
+  // The caller's WebLock is held, so this one re-enters at once; the filler and the
+  // handle's deleter only try the card lock (web_guard.h).
+  agent::memory::WebLock card;
+  if (!card) return admission::sendCardBusy(r);
+  auto f = admission::cardFileHandle();
+  *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!*f || f->isDirectory()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
+  const size_t size = f->size();
   const char* ctype = contentTypeFor(name);
   const char* shown = wantInline ? inlineType(ctype) : nullptr;
   // Up to 20 MB: through the internal-SRAM admission like every big response (prism,
@@ -189,8 +185,13 @@ String rowsJson(arc::Fs& fs, const std::string& chat, const std::string& day, si
   return out;
 }
 
+void impReapOwedLocked();   // below, with the import
+
 void handleList(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
+  impReapOwedLocked();   // an import cut while the card was busy: dropped now
   const String stats = agent::tgarchive::statsJson();
   if (!agent::tgarchive::available()) {
     sendJson(r, 200, String("{\"stats\":") + stats + ",\"chats\":[]}");
@@ -215,6 +216,9 @@ void handleList(AsyncWebServerRequest* r) {
 
 void handleItem(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
+  impReapOwedLocked();   // an import cut while the card was busy: dropped now
   if (!agent::tgarchive::available()) {
     sendJson(r, 503, "{\"error\":\"The archive needs the SD card.\"}");
     return;
@@ -233,6 +237,9 @@ void handleItem(AsyncWebServerRequest* r) {
 // each read takes the card lock, and the response goes through the admission gate.
 void handleZip(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
+  impReapOwedLocked();   // an import cut while the card was busy: dropped now
   if (!agent::tgarchive::available()) {
     sendJson(r, 503, "{\"error\":\"The archive needs the SD card.\"}");
     return;
@@ -252,6 +259,8 @@ void handleZip(AsyncWebServerRequest* r) {
     return;
   }
   AwsResponseFiller fill = [zip](uint8_t* buf, size_t maxLen, size_t) -> size_t {
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // every read is card I/O
+    if (!card) return RESPONSE_TRY_AGAIN;                        // busy: the next poll
     return zip->fill(buf, maxLen);
   };
   if (!admission::admit(r, (size_t)zip->estimatedBytes(), /*html=*/false, fill)) return;
@@ -271,16 +280,23 @@ File        g_impFile;
 std::string g_impPart;   // the open "<file>.part", removed if the upload is cut
 uint32_t    g_impGen = 0;
 bool        g_impBusy = false;
+// An import aborted while the card lock was busy (impAbort runs on the web task, which
+// never waits for it, nimbus/sys/web_guard.h): dropped by the next archive request.
+nimbus::sys::OwedAbort g_impAbortOwed;
 
 struct ImportState {
   uint32_t gen;
   uint16_t code;      // the refusal's HTTP status
+  bool     opened;    // the first authorized chunk ran impOpen
   bool     refused;
   bool     skipped;
   bool     done;
   uint64_t bytes;
   char     reason[72];
 };
+
+// A chunk refused because a turn's tool held the card: 503 + Retry-After.
+const char* const kImpCardBusy = "card busy";
 
 void impRefuse(ImportState* st, uint16_t code, const char* why) {
   st->refused = true;
@@ -306,8 +322,8 @@ bool importParamsOk(const arc::Restored& it) {
          it.kind.size() <= 24 && it.role.size() <= 12 && it.note.size() <= 40;
 }
 
-void impAbort(uint32_t gen) {
-  agent::memory::Lock g;
+// Caller holds the card lock.
+void impDropLocked(uint32_t gen) {
   if (!g_impBusy || gen != g_impGen) return;
   g_impFile.close();
   agent::memory::dataFs().remove(g_impPart.c_str());
@@ -315,11 +331,20 @@ void impAbort(uint32_t gen) {
   agent::tgarchive::noteImport(false);
 }
 
-// First chunk: authorize, validate, and open "<file>.part". A file already on the
+void impAbort(uint32_t gen) {
+  agent::memory::WebLock card;   // the disconnect callback never waits (web_guard.h)
+  if (!card) return g_impAbortOwed.owe(gen);
+  impDropLocked(gen);
+}
+
+// Drops an import whose abort is owed. Caller holds the card lock (a WebLock).
+void impReapOwedLocked() { impDropLocked(g_impAbortOwed.take()); }
+
+// First authorized chunk: validate, and open "<file>.part". A file already on the
 // card is a rerun of the tool: nothing is overwritten, but its index line is handed
 // over again (recorded once), so a rerun repairs a line an earlier run lost.
 void impOpen(AsyncWebServerRequest* r, ImportState* st, size_t total) {
-  if (!webAuthOk(r)) return impRefuse(st, 401, "auth required");
+  st->opened = true;   // the caller authorized the request and holds a WebLock
   if (!agent::tgarchive::available()) return impRefuse(st, 503, "no SD card");
   const arc::Restored it = importParams(r);
   if (!importParamsOk(it)) return impRefuse(st, 400, "bad chat, day, name, kind, role or note");
@@ -334,7 +359,7 @@ void impOpen(AsyncWebServerRequest* r, ImportState* st, size_t total) {
     st->skipped = true;
     return;
   }
-  agent::memory::Lock g;
+  impReapOwedLocked();   // a busy-card abort, owed since then (the caller holds the lock)
   if (g_impBusy) return impRefuse(st, 429, "another import is in progress");
   if (!fs.mkdirs(arc::dayDirPath(it.chat, it.day))) return impRefuse(st, 500, "SD write failed");
   g_impPart = path + ".part";
@@ -350,11 +375,8 @@ void impOpen(AsyncWebServerRequest* r, ImportState* st, size_t total) {
 void impFinish(AsyncWebServerRequest* r, ImportState* st) {
   arc::Restored it = importParams(r);
   const std::string path = arc::itemPath(it.chat, it.day, it.file);
-  {
-    agent::memory::Lock g;
-    g_impFile.close();
-    g_impBusy = false;
-  }
+  g_impFile.close();   // the caller (impBody) holds the card lock
+  g_impBusy = false;
   const bool renamed = agent::tgarchive::cardFs().rename(path + ".part", path);
   agent::tgarchive::noteImport(false);
   if (!renamed) return impRefuse(st, 500, "SD rename failed");
@@ -365,23 +387,35 @@ void impFinish(AsyncWebServerRequest* r, ImportState* st) {
   st->done = true;
 }
 
-// One body chunk, under memory::Lock and behind the factory-erase barrier (the
-// erase takes the same lock before it sets that barrier).
-void impBody(AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t index, size_t total) {
+// The request's import state; the first chunk allocates it and decides auth, before
+// any card work.
+ImportState* impStateFor(AsyncWebServerRequest* r) {
   ImportState* st = static_cast<ImportState*>(r->_tempObject);
-  if (!st) {
-    st = static_cast<ImportState*>(calloc(1, sizeof(ImportState)));
-    r->_tempObject = st;
-    if (!st) return;
+  if (st) return st;
+  st = static_cast<ImportState*>(calloc(1, sizeof(ImportState)));
+  r->_tempObject = st;
+  if (st && !webAuthOk(r)) impRefuse(st, 401, "auth required");
+  return st;
+}
+
+// One body chunk, under the card lock (a WebLock) and behind the factory-erase barrier
+// (the erase takes the same lock before it sets that barrier).
+void impBody(AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t index, size_t total) {
+  ImportState* st = impStateFor(r);
+  if (!st || st->refused || st->skipped || index != st->bytes) return;
+  // Every chunk is card work: tried, never waited for (web_guard.h). A busy card
+  // refuses the import (503, the tool retries) and drops its partial file once free.
+  agent::memory::WebLock card;
+  if (!card) {
+    if (st->gen) impAbort(st->gen);
+    return impRefuse(st, 503, kImpCardBusy);
+  }
+  if (!st->opened) {
     impOpen(r, st, total);
+    if (st->refused || st->skipped) return;
   }
-  if (st->refused || st->skipped || index != st->bytes) return;
-  bool ok;
-  {
-    agent::memory::Lock g;
-    ok = agent::tgarchive::available() && g_impBusy && st->gen == g_impGen &&
-         g_impFile.write(data, len) == len;
-  }
+  const bool ok = agent::tgarchive::available() && g_impBusy && st->gen == g_impGen &&
+                  g_impFile.write(data, len) == len;
   if (!ok) {
     impAbort(st->gen);
     return impRefuse(st, 500, "SD write failed");
@@ -397,6 +431,7 @@ void impReply(AsyncWebServerRequest* r) {
     return;
   }
   if (st->refused) {
+    if (!strcmp(st->reason, kImpCardBusy)) return admission::sendCardBusy(r);
     sendJson(r, st->code, String("{\"error\":\"") + st->reason + "\"}");
     return;
   }
@@ -448,6 +483,8 @@ bool tgArchiveIsItem(const std::string& project, const std::string& name) {
 }
 
 void tgArchiveAppendFiles(String& filesJson, const String& project) {
+  agent::memory::WebLock card;   // re-enters the route's lock (web_guard.h)
+  if (!card) return;             // busy: the list goes out without the archive folders
   const std::string proj(project.c_str());
   if (!agent::tgarchive::available() || filesJson.length() < 2) return;
   const std::string chat = folderChat(proj);
@@ -475,6 +512,11 @@ void tgArchiveAppendFiles(String& filesJson, const String& project) {
 bool tgArchiveServeFile(AsyncWebServerRequest* r, const std::string& project,
                         const std::string& name) {
   if (!tgArchiveIsItem(project, name)) return false;
+  agent::memory::WebLock card;   // re-enters the route's lock (web_guard.h)
+  if (!card) {
+    admission::sendCardBusy(r);
+    return true;
+  }
   const size_t slash = name.find('/');
   const std::string day = name.substr(0, slash), file = name.substr(slash + 1);
   if (!agent::tgarchive::available() || !arc::validDay(day) || !arc::isMediaName(file)) {

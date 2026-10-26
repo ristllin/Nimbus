@@ -9,6 +9,7 @@
 #include "nimbus/orch/owner_prefs.h"
 #include "nimbus/orch/prefs_tools.h"
 #include "webui.h"   // webAuthOk() - token gate
+#include "web_admission.h"   // the card-busy answer (web_guard.h)
 
 namespace nimbus::net {
 
@@ -39,6 +40,8 @@ String qparam(AsyncWebServerRequest* r, const char* name, const char* def = "") 
 void registerPrefsRoutes(AsyncWebServer& server) {
   server.on("/api/prefs", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     std::string body;
     const bool ran = prefs::withStore([&](orch::OwnerPrefs& p) { body = orch::prefsJson(p); });
     if (!ran) { sendJson(r, 507, "{\"error\":\"The rules file area is not available.\"}"); return; }
@@ -47,6 +50,8 @@ void registerPrefsRoutes(AsyncWebServer& server) {
 
   server.on("/api/prefs", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const std::string action(qparam(r, "action").c_str());
     const std::string id(qparam(r, "id").c_str());
     const std::string text(qparam(r, "text").c_str());

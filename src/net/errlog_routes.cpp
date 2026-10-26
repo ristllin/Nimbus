@@ -9,7 +9,7 @@
 #include "web_admission.h"               // big log files trickle or answer busy (internal SRAM)
 #include "../sys/errlog.h"               // portable policy: planRetrieval, pathFor, names
 #include "../sys/errlog_fs.h"            // activeFs()/readRecent()/listJson()
-#include "../agent/memory_subsystem.h"   // agent::memory::Lock (serializes card I/O)
+#include "../agent/memory_subsystem.h"   // agent::memory::WebLock (serializes card I/O)
 
 // Retrieval surface for the durable error log. Three routes, all token-gated:
 //   GET /api/errlog                 -> stream the active log file (attachment)
@@ -35,21 +35,17 @@ std::string qparam(AsyncWebServerRequest* r, const char* name, const char* def =
 
 // Chunk-stream a known log file straight off the card/flash - never buffers the whole
 // file in RAM. Mirrors the /api/files/dl pattern: the File is opened and every chunk
-// read under agent::memory::Lock, and the custom deleter closes it under the lock too,
-// so a client disconnect mid-download still closes cleanly.
+// read under the card lock, and the handle's deleter closes it, so a client disconnect
+// mid-download still closes cleanly.
 void streamFile(AsyncWebServerRequest* r, const std::string& name) {
-  auto f = std::shared_ptr<::File>(new ::File(), [](::File* fp) {
-    agent::memory::Lock g;
-    fp->close();
-    delete fp;
-  });
-  size_t size = 0;
-  {
-    agent::memory::Lock g;
-    *f = nimbus::errlog::activeFs().open(nimbus::errlog::pathFor(name).c_str(), FILE_READ);
-    if (!*f) { r->send(404, "application/json", "{\"error\":\"no such log file\"}"); return; }
-    size = f->size();
-  }
+  // The caller's WebLock is held (handleErrlog), so this one re-enters at once. The
+  // filler and the handle's deleter only try the card lock (web_guard.h).
+  agent::memory::WebLock card;
+  if (!card) return net::admission::sendCardBusy(r);
+  auto f = net::admission::cardFileHandle();
+  *f = nimbus::errlog::activeFs().open(nimbus::errlog::pathFor(name).c_str(), FILE_READ);
+  if (!*f) { r->send(404, "application/json", "{\"error\":\"no such log file\"}"); return; }
+  const size_t size = f->size();
   AwsResponseFiller fill = net::admission::cardFileFiller(f);
   // Internal-SRAM admission: a big log file trickles, or waits (busy) while memory is short.
   if (!net::admission::admit(r, size, /*html=*/false, fill)) return;
@@ -64,6 +60,8 @@ void streamFile(AsyncWebServerRequest* r, const std::string& name) {
 
 void handleErrlog(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // every branch reads the card: tried (web_guard.h)
+  if (!card) return net::admission::sendCardBusy(r);
   const bool wantList = r->hasParam("list");
   const std::string fileParam = qparam(r, "file");
   // Validate against the ACTIVE tier's retention count, so a flash-tier device rejects
@@ -93,6 +91,8 @@ void handleRecent(AsyncWebServerRequest* r) {
   long bytes = 4096;
   if (r->hasParam("bytes")) bytes = r->getParam("bytes")->value().toInt();
   if (bytes <= 0) bytes = 4096;
+  agent::memory::WebLock card;   // readRecent reads the card: tried (web_guard.h)
+  if (!card) return net::admission::sendCardBusy(r);
   r->send(200, "text/plain", String(nimbus::errlog::readRecent((size_t)bytes).c_str()));
 }
 

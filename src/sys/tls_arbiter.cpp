@@ -3,9 +3,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-// agent::store::tlsSlots() - boot-latched slot count. Forward-declared so this
-// sys-level TU carries no include dependency on the agent subsystem.
+#include "nimbus/sys/web_guard.h"   // slotWaitMs: the web task's bounded slot wait
+#include "web_task.h"                 // onWebTask
+
+// agent::store::tlsSlots() - boot-latched slot count, and agent::memory::noteNetworkStart
+// - the card-lock check every TLS request passes. Forward-declared so this sys-level TU
+// carries no include dependency on the agent subsystem.
 namespace agent { namespace store { int tlsSlots(); } }
+namespace agent { namespace memory { void noteNetworkStart(uintptr_t caller); } }
 
 // Ported from Nuage-Solide src/tls_arbiter.cpp (Head Orchestrator v2), extended
 // for the S3 + 8 MB PSRAM (v2.0.0): the work slot is now a COUNTING semaphore.
@@ -35,9 +40,15 @@ void begin() {
   g_sem = xSemaphoreCreateCounting(g_slots, g_slots);
 }
 
+// Every work TLS session starts here, so this is where two rules are checked
+// (nimbus/sys/web_guard.h): a request started while holding the card lock is counted
+// and named, and the web task (watched by the task watchdog) waits for the slot at
+// most kWebSlotWaitMs - a turn holds it for minutes.
 bool acquireWork(uint32_t timeoutMs) {
+  agent::memory::noteNetworkStart((uintptr_t)__builtin_return_address(0));
   if (!g_sem) return true;         // arbiter not started => no contention
-  return xSemaphoreTake(g_sem, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  const uint32_t waitMs = nimbus::sys::slotWaitMs(nimbus::sys::onWebTask(), timeoutMs);
+  return xSemaphoreTake(g_sem, pdMS_TO_TICKS(waitMs)) == pdTRUE;
 }
 
 void releaseWork() {

@@ -32,6 +32,17 @@ struct WriteSession {
 WriteSession g_w;
 uint32_t     g_gen = 0;        // never reused; identifies which session a stale
                               // onDisconnect belonged to
+// An upload aborted while the card lock was busy (uploadAbortGen runs on the web task,
+// which never waits for it, nimbus/sys/web_guard.h): dropped by the next uploadBegin.
+nimbus::sys::OwedAbort g_abortOwed;
+
+// Caller holds the card lock. Ends session `gen` if it is still the live one.
+void dropSessionLocked(uint32_t gen) {
+  if (!g_w.active || g_w.gen != gen) return;
+  g_w.f.close();
+  solide::storage::activeFs().remove(kPartPath);
+  g_w = WriteSession{};
+}
 
 std::string fullPath(const std::string& name) { return std::string(kDir) + "/" + name; }
 
@@ -45,6 +56,7 @@ bool uploadBegin(const std::string& name, std::string& err) {
   // track" - the same check the player and /play use, so the two can't drift.
   if (!nimbus::orch::musicUploadAllowed(name.c_str(), agent::memory::haveSd(), err))
     return false;
+  dropSessionLocked(g_abortOwed.take());   // a busy-card abort, owed since then
   if (g_w.active) { err = "Another upload is in progress. Try again in a moment."; return false; }
   fs::FS& fs = solide::storage::activeFs();
   fs.mkdir(kDir);
@@ -96,11 +108,9 @@ void uploadAbort() {
 }
 
 void uploadAbortGen(uint32_t gen) {
-  agent::memory::Lock g;
-  if (!g_w.active || g_w.gen != gen) return;   // a stale disconnect must not nuke a newer session
-  g_w.f.close();
-  solide::storage::activeFs().remove(kPartPath);
-  g_w = WriteSession{};
+  agent::memory::WebLock g;   // the web task's disconnect callback never waits (web_guard.h)
+  if (!g) return g_abortOwed.owe(gen);
+  dropSessionLocked(gen);   // a stale disconnect must not nuke a newer session
 }
 
 bool removeTrack(const std::string& name, std::string& err) {

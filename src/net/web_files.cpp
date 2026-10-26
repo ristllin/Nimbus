@@ -47,8 +47,12 @@ struct UpState {
   bool refused;
   bool finished;
   bool ok;
+  uint32_t gen;      // the write session this upload opened (0: none)
   char reason[96];
 };
+
+// An upload refused because a turn's tool held the card (web_guard.h): 503 + Retry-After.
+const char* const kCardBusyReason = "card busy";
 
 void refuse(UpState* st, const std::string& why) {
   if (st->refused) return;
@@ -93,6 +97,32 @@ bool inlineViewable(const char* mime) {
          !strcmp(mime, "text/plain") || !strcmp(mime, "text/csv");
 }
 
+// The first authorized chunk of a file upload opens its write session. Caller holds a
+// WebLock (this one re-enters).
+bool openUpload(AsyncWebServerRequest* r, const String& filename, UpState* st) {
+  agent::memory::WebLock card;
+  if (!card) { refuse(st, kCardBusyReason); return false; }
+  const std::string project(qparam(r, "project", "uploads").c_str());
+  String nm = qparam(r, "name");
+  if (nm.length() == 0) nm = filename;          // multipart filename fallback
+  const std::string name(nm.c_str());
+  // contentLength includes multipart overhead - an UPPER bound, which is
+  // exactly what the quota pre-check wants; the exact size re-checks at
+  // finish. (A lying client is stopped by the per-chunk hard cap too.)
+  std::string err;
+  if (!files::beginWrite(project, name, r->contentLength(), err)) {
+    refuse(st, err);
+    return false;
+  }
+  // Scope the disconnect-abort to THIS session's generation: a stale
+  // onDisconnect from a finished upload must not abort a later one that
+  // took the slot (review finding).
+  const uint32_t gen = files::writeGen();
+  st->gen = gen;
+  r->onDisconnect([gen]() { files::abortWriteGen(gen); });
+  return true;
+}
+
 }  // namespace
 
 void registerMusicRoutes(AsyncWebServer& server);   // CUM-40: SD /music routes (below)
@@ -105,6 +135,8 @@ void registerFileRoutes(AsyncWebServer& server) {
   // now distinct siblings under /api/files/ - none is a prefix of another.
   server.on("/api/files/list", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // never wait for a turn's tool (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     files::StorageTruth t = files::storageTruth();
     if (!t.present) {
       // Absent card, or a mounted card too small to support the store.
@@ -138,6 +170,7 @@ void registerFileRoutes(AsyncWebServer& server) {
         UpState* st = static_cast<UpState*>(r->_tempObject);
         if (!st) { sendJson(r, 400, "{\"error\":\"no file part (multipart form-data required)\"}"); return; }
         if (st->refused) {
+          if (!strcmp(st->reason, kCardBusyReason)) return net::admission::sendCardBusy(r);
           const bool auth = strncmp(st->reason, "auth", 4) == 0;
           const bool busy = strstr(st->reason, "in progress") != nullptr;
           String body = String("{\"error\":\"") + st->reason + "\"}";
@@ -149,7 +182,7 @@ void registerFileRoutes(AsyncWebServer& server) {
         // st is free()d by the framework with the request.
       },
       // onUpload: per-chunk streaming. First chunk authorizes + opens the session;
-      // every chunk writes under memory::Lock (short hold, no network inside).
+      // every chunk tries the card lock (a WebLock) for its one short write.
       [](AsyncWebServerRequest* r, String filename, size_t index, uint8_t* data,
          size_t len, bool final) {
         UpState* st = static_cast<UpState*>(r->_tempObject);
@@ -159,28 +192,19 @@ void registerFileRoutes(AsyncWebServer& server) {
           if (!st) return;
           // Gate BEFORE the first byte hits the SD (the framework has already
           // buffered this chunk; nothing is written unless authorized).
-          if (!webAuthOk(r)) { refuse(st, "auth required"); }
-          else {
-            const std::string project(qparam(r, "project", "uploads").c_str());
-            String nm = qparam(r, "name");
-            if (nm.length() == 0) nm = filename;          // multipart filename fallback
-            const std::string name(nm.c_str());
-            // contentLength includes multipart overhead - an UPPER bound, which is
-            // exactly what the quota pre-check wants; the exact size re-checks at
-            // finish. (A lying client is stopped by the per-chunk hard cap too.)
-            std::string err;
-            if (!files::beginWrite(project, name, r->contentLength(), err)) {
-              refuse(st, err);
-            } else {
-              // Scope the disconnect-abort to THIS session's generation: a stale
-              // onDisconnect from a finished upload must not abort a later one that
-              // took the slot (review finding).
-              const uint32_t gen = files::writeGen();
-              r->onDisconnect([gen]() { files::abortWriteGen(gen); });
-            }
-          }
+          if (!webAuthOk(r)) refuse(st, "auth required");
         }
         if (st->refused) return;                           // swallow remaining chunks
+        // Every chunk is card work: tried, never waited for (web_guard.h). A busy card
+        // refuses the upload (503, the client retries) and its write session is dropped
+        // as soon as the card is free (abortWriteGen).
+        agent::memory::WebLock card;
+        if (!card) {
+          refuse(st, kCardBusyReason);
+          if (st->gen) files::abortWriteGen(st->gen);
+          return;
+        }
+        if (!st->gen && !openUpload(r, filename, st)) return;
         if (len && !files::writeChunk(data, len)) {
           refuse(st, "SD write failed (or size cap exceeded)");
           files::abortWrite();
@@ -200,28 +224,22 @@ void registerFileRoutes(AsyncWebServer& server) {
     const std::string project(qparam(r, "project").c_str());
     const String nameQ = qparam(r, "name");
     const std::string name(nameQ.c_str());
+    agent::memory::WebLock card;   // the open and its size: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     if (tgArchiveServeFile(r, project, name)) return;   // a "telegram-<chat>" folder
     const std::string path = files::absPath(project, name);
     if (path.empty()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
 
     // Open under the lock; stream chunk reads under the SAME lock (per chunk - SD
     // I/O is serialized by memory::Lock across every task in this firmware, and
-    // the lock is never held across the network send of the chunk). The custom
-    // deleter closes the File under the lock too, so the close is serialized
-    // whether we reach EOF or the client disconnects mid-download (the framework
-    // then destroys the response, dropping this shared_ptr's last ref).
-    auto f = std::shared_ptr<File>(new File(), [](File* fp) {
-      agent::memory::Lock g;
-      fp->close();
-      delete fp;
-    });
-    size_t size = 0;
-    {
-      agent::memory::Lock g;
-      *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
-      if (!*f) { sendJson(r, 500, "{\"error\":\"SD open failed\"}"); return; }
-      size = f->size();
-    }
+    // the lock is never held across the network send of the chunk). The filler and
+    // the handle's deleter only try the lock (web_guard.h): a busy chunk is sent on
+    // the server's next poll, and the handle closes whether we reach EOF or the
+    // client disconnects mid-download.
+    auto f = net::admission::cardFileHandle();
+    *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!*f) { sendJson(r, 500, "{\"error\":\"SD open failed\"}"); return; }
+    const size_t size = f->size();
     const char* ctype = contentTypeFor(nameQ);
     AwsResponseFiller fill = net::admission::cardFileFiller(f);
     // Internal-SRAM admission: a big file trickles, or waits (busy) while memory is short.
@@ -249,6 +267,8 @@ void registerFileRoutes(AsyncWebServer& server) {
   // ---- POST /api/files/rm  project=&name= - delete -------------------------------
   server.on("/api/files/rm", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // never wait for a turn's tool (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const std::string project(qparam(r, "project").c_str());
     const std::string name(qparam(r, "name").c_str());
     if (tgArchiveIsItem(project, name)) { sendJson(r, 403, kArchiveReadOnly); return; }
@@ -265,6 +285,8 @@ void registerFileRoutes(AsyncWebServer& server) {
     // Server-side confirm (mirrors /api/sdreset + the memory flush): a folder-wide
     // delete shouldn't ride on the token alone from a stale/scripted caller.
     if (qparam(r, "confirm") != "DELETE") { sendJson(r, 400, "{\"error\":\"confirm phrase required\"}"); return; }
+    agent::memory::WebLock card;   // never wait for a turn's tool (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const std::string project(qparam(r, "project").c_str());
     const int n = files::removeProject(project);
     if (n < 0) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
@@ -291,6 +313,7 @@ void musicUploadReply(AsyncWebServerRequest* r) {
   UpState* st = static_cast<UpState*>(r->_tempObject);
   if (!st) { sendJson(r, 400, "{\"error\":\"no file part (multipart form-data required)\"}"); return; }
   if (st->refused) {
+    if (!strcmp(st->reason, kCardBusyReason)) return net::admission::sendCardBusy(r);
     const bool auth = strncmp(st->reason, "auth", 4) == 0;
     const bool busy = strstr(st->reason, "in progress") != nullptr;
     sendJson(r, auth ? 401 : (busy ? 429 : 400), String("{\"error\":\"") + st->reason + "\"}");
@@ -300,14 +323,16 @@ void musicUploadReply(AsyncWebServerRequest* r) {
   sendJson(r, 200, "{\"ok\":true}");
 }
 
-// First-chunk gate: authorize, then open the streaming /music write session.
+// First authorized chunk: open the streaming /music write session.
 void musicUploadOpen(AsyncWebServerRequest* r, const String& filename, UpState* st) {
-  if (!webAuthOk(r)) { refuse(st, "auth required"); return; }
+  agent::memory::WebLock card;   // re-enters the chunk's lock (web_guard.h)
+  if (!card) { refuse(st, kCardBusyReason); return; }
   String nm = qparam(r, "name");
   if (nm.length() == 0) nm = filename;              // multipart filename fallback
   std::string err;
   if (!music::store::uploadBegin(std::string(nm.c_str()), err)) { refuse(st, err); return; }
   const uint32_t gen = music::store::uploadGen();
+  st->gen = gen;
   r->onDisconnect([gen]() { music::store::uploadAbortGen(gen); });
 }
 
@@ -319,9 +344,19 @@ void musicUploadChunk(AsyncWebServerRequest* r, const String& filename, size_t,
     st = static_cast<UpState*>(calloc(1, sizeof(UpState)));
     r->_tempObject = st;
     if (!st) return;
-    musicUploadOpen(r, filename, st);
+    if (!webAuthOk(r)) refuse(st, "auth required");   // before any card work
   }
   if (st->refused) return;
+  agent::memory::WebLock card;   // every chunk is card work: tried (web_guard.h)
+  if (!card) {
+    refuse(st, kCardBusyReason);
+    if (st->gen) music::store::uploadAbortGen(st->gen);
+    return;
+  }
+  if (!st->gen) {
+    musicUploadOpen(r, filename, st);
+    if (st->refused) return;
+  }
   if (len && !music::store::uploadChunk(data, len)) {
     refuse(st, "SD write failed (or file too large)");
     music::store::uploadAbort();
@@ -337,6 +372,8 @@ void musicUploadChunk(AsyncWebServerRequest* r, const String& filename, size_t,
 
 // Apply a playback control verb (or a bare/`all` play-everything).
 void musicApplyPlay(const String& action, const String& name) {
+  agent::memory::WebLock card;   // re-enters the route's lock: play-all scans the card
+  if (!card) return;
   if (action == "stop")        music::stop();
   else if (action == "pause")  music::pause();
   else if (action == "resume") music::resume();
@@ -354,6 +391,8 @@ void registerMusicRoutes(AsyncWebServer& server) {
   // GET /api/music/list - tracks in /music + the current player state.
   server.on("/api/music/list", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the folder scan: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     if (!agent::memory::haveSd()) { sendJson(r, 200, "{\"present\":false,\"tracks\":[]}"); return; }
     String body = "{\"present\":true,\"tracks\":[";
     auto tracks = music::listMusicDir();
@@ -365,6 +404,8 @@ void registerMusicRoutes(AsyncWebServer& server) {
   // POST /api/music/play  action=all|stop|pause|resume|next  OR  name=.
   server.on("/api/music/play", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // play-all scans the folder: tried (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     musicApplyPlay(qparam(r, "action"), qparam(r, "name"));
     sendJson(r, 200, String("{\"ok\":true,\"player\":") + music::statusJson() + "}");
   });
@@ -372,6 +413,8 @@ void registerMusicRoutes(AsyncWebServer& server) {
   // POST /api/music/rm  name= - delete one track from /music.
   server.on("/api/music/rm", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // never wait for a turn's tool (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     std::string err;
     if (!music::store::removeTrack(std::string(qparam(r, "name").c_str()), err)) {
       sendJson(r, 404, String("{\"error\":\"") + err.c_str() + "\"}");

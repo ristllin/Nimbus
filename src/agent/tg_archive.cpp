@@ -92,7 +92,11 @@ class CardReader : public arc::Reader {
  public:
   explicit CardReader(File f) : f_(f) {}
   ~CardReader() override {
-    memory::Lock g;
+    // An export ZIP's last reader dies with its response, on the web task, which never
+    // waits for the card lock (nimbus/sys/web_guard.h): LoopLock tries there and blocks
+    // anywhere else. A read handle's close writes nothing to the card, so it closes
+    // even when the try finds the lock busy.
+    memory::LoopLock g(nimbus::sys::kWebFillerWaitMs);
     f_.close();
   }
   int read(uint8_t* d, size_t cap) override {

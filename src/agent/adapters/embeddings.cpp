@@ -13,6 +13,10 @@
 #include "nimbus/harness/providers.h"    // testStatusOverride - the bench's scripted answer (test builds)
 #include "../provider_gate.h"            // the one per-provider park (L19-8)
 #include "nimbus/orch/seam_meter.h"      // meterSeamAnswerBody - its spend (lane DEF)
+#include "nimbus/sys/web_guard.h"        // the web task's network budget
+#include "../../sys/web_task.h"          // onWebTask
+#include <lwip/dns.h>                    // dns_gethostbyname: the web task's cache-only lookup
+#include <lwip/tcpip.h>                  // LOCK_TCPIP_CORE around it
 
 namespace agent {
 namespace embeddings {
@@ -69,6 +73,19 @@ void failFromStatus(const String& provider, const String& key, int code, const c
   alogf("embed: HTTP %d %s", code, rc.c_str());
 }
 
+// From a web request the host must already be in lwIP's DNS cache (web_guard.h): a
+// lookup that goes out to the network can outlast the watchdog, and the TLS client's
+// connect resolves before its own timers start. An uncached host starts the lookup in
+// the background (the next request finds it cached) and the request answers busy now.
+bool webDnsReady(const String& host) {
+  ip_addr_t addr;
+  const bool own = sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
+  if (!own) LOCK_TCPIP_CORE();
+  const err_t e = dns_gethostbyname(host.c_str(), &addr, [](const char*, const ip_addr_t*, void*) {}, nullptr);
+  if (!own) UNLOCK_TCPIP_CORE();
+  return e == ERR_OK;
+}
+
 // The park closed this provider (out of credit or a refused key learned on any seam,
 // or the pause switch): no request, and an err token the memory engines read as the
 // same class the refusal itself would have been.
@@ -114,14 +131,20 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
   std::string body = nimbus::orch::buildEmbeddingRequest(
       std::string(provider.c_str()), std::string(model.c_str()), std::string(text.c_str()), dims);
 
+  const bool web = nimbus::sys::onWebTask();   // the web task: its network budget (web_guard.h)
+  if (web && !webDnsReady(host)) { err = "tls busy"; return {}; }
   if (!arbiter::acquireWork(12000)) { err = "tls busy"; return {}; }
 
   std::vector<int8_t> out;
   {
+    // From a web request (the AsyncTCP task, which the task watchdog watches) the whole
+    // exchange fits nimbus::sys::kWebNetBudgetMs (web_guard.h): one connect within the
+    // budget's connect and handshake shares, the reply read against the same clock.
+    const uint32_t startedMs = millis();
     WiFiClientSecure client;
     tlsSetup(client);
-    client.setHandshakeTimeout(12);
-    client.setConnectionTimeout(EMBED_TIMEOUT_MS);  // F25: real socket bound
+    client.setHandshakeTimeout(web ? nimbus::sys::kWebNetHandshakeS : 12);
+    client.setConnectionTimeout(web ? nimbus::sys::kWebNetConnectMs : EMBED_TIMEOUT_MS);  // F25: real socket bound
 
     // Back-to-back handshakes to the same host intermittently fail (each chat
     // adapter learned this live and retries) - and a mid-turn mem_write is
@@ -131,10 +154,11 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     // the idle web embed-verify succeeded (owner field bug 2026-07-16). Same
     // 3-attempt + fresh-socket + 400 ms settle pattern as openai_adapter.
     bool connected = false;
-    for (int attempt = 0; attempt < 3 && !connected; attempt++) {
+    const int attempts = web ? 1 : 3;
+    for (int attempt = 0; attempt < attempts && !connected; attempt++) {
       if (client.connect(host.c_str(), 443)) { connected = true; break; }
       tlsClose(client);
-      if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(400));
+      if (attempt < attempts - 1) vTaskDelay(pdMS_TO_TICKS(400));
     }
     if (!connected) {
       arbiter::releaseWork();
@@ -153,7 +177,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     client.print(req);
     client.print(body.c_str());
 
-    uint32_t deadline = millis() + EMBED_TIMEOUT_MS;
+    uint32_t deadline = (web ? startedMs : millis()) + nimbus::sys::netBudgetMs(web, EMBED_TIMEOUT_MS);
     // status line
     int code = 0;
     String status;

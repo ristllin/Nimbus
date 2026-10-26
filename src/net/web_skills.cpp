@@ -4,8 +4,10 @@
 
 #include <string>
 
+#include "../agent/memory_subsystem.h"   // WebLock
 #include "../agent/skills.h"
 #include "webui.h"   // webAuthOk() - token gate
+#include "web_admission.h"   // the card-busy answer (web_guard.h)
 
 namespace nimbus::net {
 
@@ -58,6 +60,8 @@ String resultJson(const std::string& id, const agent::SkillResult& res) {
 void ownerOp(AsyncWebServerRequest* r,
              agent::SkillResult (*op)(const std::string&, const agent::SkillCaller&)) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+  if (!card) return net::admission::sendCardBusy(r);
   const std::string id(qparam(r, "id").c_str());
   const agent::SkillResult res = op(id, agent::SkillCaller::ownerCall());
   sendJson(r, res.ok ? 200 : 400, resultJson(id, res));
@@ -69,6 +73,8 @@ void registerSkillRoutes(AsyncWebServer& server) {
   // ---- GET /api/skills/list - built-ins + stored skills ------------------------
   server.on("/api/skills/list", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     JsonDocument d;
     d["sd"] = skills::sdAvailable();
     d["auto"] = skills::selfApproveOn();   // the D-4 switch, shown in the panel
@@ -103,6 +109,8 @@ void registerSkillRoutes(AsyncWebServer& server) {
   // built-ins return their body read-only.
   server.on("/api/skills/get", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const std::string id(qparam(r, "id").c_str());
     std::string md = skills::raw(id);
     const bool stored = !md.empty();
@@ -124,6 +132,8 @@ void registerSkillRoutes(AsyncWebServer& server) {
   // lint findings ride as warnings, never a refusal.
   server.on("/api/skills/save", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const std::string id(qparam(r, "id").c_str());
     const std::string md(qparam(r, "md").c_str());
     const agent::SkillResult res = skills::save(id, md, agent::SkillCaller::ownerCall());
@@ -152,6 +162,8 @@ void registerSkillRoutes(AsyncWebServer& server) {
   // ---- POST /api/skills/auto on|off - the D-4 self-approve switch --------------
   server.on("/api/skills/auto", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
+    if (!card) return net::admission::sendCardBusy(r);
     const String arg = qparam(r, "on", "off");
     if (arg != "on" && arg != "off") {
       sendJson(r, 400, "{\"error\":\"send on or off\"}");

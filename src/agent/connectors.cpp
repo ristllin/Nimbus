@@ -1035,8 +1035,9 @@ static std::string callToolPreflight(const std::string& slug, const Principal& w
 }
 
 // The handler body for a discovered tool: proxy the call out to its server.
-// Runs on the turn task under the dispatch (memory) Lock, so it is bounded by a
-// short timeout + the per-server breaker (like web.search) - never a long hold.
+// Runs on the turn task outside the dispatcher's card lock (nimbus/sys/web_guard.h:
+// a tool server's connect and handshake can take seconds), bounded by a short timeout
+// and the per-server breaker (like web.search); the LAN /mcp endpoint refuses it.
 ToolResult callTool(const std::string& slug, const std::string& toolName,
                     ArduinoJson::JsonObjectConst args, const Principal& who) {
   String url, bearer, name;
@@ -1045,48 +1046,55 @@ ToolResult callTool(const std::string& slug, const std::string& toolName,
   if (!pre.empty()) return ToolResult::fail(pre);
   const std::string nameS = name.c_str();
 
-  // Guard the shared s_srv slot (see the s_srv note): this handler is reachable on
-  // the AsyncTCP /mcp task, so hold the same Lock sync() uses. The Lock is
-  // recursive, so nesting under handleMcp's own Lock is a no-op. exchange()'s
-  // work-slot wait is capped (kCallAcquire) so the hold stays under the watchdog.
-  agent::memory::Lock lk;
-  ServerState* st = slotFor(String(slug.c_str()), true);
-  const uint32_t now = millis();
-  if (st && !st->breaker.allow(now)) {
-    uint32_t left = st->breaker.cooldownRemaining(now) / 1000;
-    return ToolResult::fail("MCP server " + nameS + " is cooling down after repeated failures. "
-                            "Try again in about " + std::to_string(left) + "s.");
+  // The shared s_srv slot (see the s_srv note) is read and written under the lock
+  // sync() uses, never held across the request: no task holds the card lock across a
+  // network request.
+  String session;
+  {
+    agent::memory::Lock lk;
+    ServerState* st = slotFor(String(slug.c_str()), true);
+    const uint32_t now = millis();
+    if (st && !st->breaker.allow(now)) {
+      uint32_t left = st->breaker.cooldownRemaining(now) / 1000;
+      return ToolResult::fail("MCP server " + nameS + " is cooling down after repeated failures. "
+                              "Try again in about " + std::to_string(left) + "s.");
+    }
+    if (st) session = st->sessionId;
   }
 
   std::string argsJson;
   serializeJson(args, argsJson);
-  // Single attempt on the hot path, with a bounded work-slot wait + I/O deadline
-  // so the memory-Lock hold stays under the main-loop watchdog; the breaker
-  // handles a server that keeps failing.
+  // Single attempt on the hot path, with a bounded work-slot wait + I/O deadline; the
+  // breaker handles a server that keeps failing.
   McpReq q;
   q.u = u;
   q.bearer = bearer;
-  q.session = st ? st->sessionId : String("");
+  q.session = session;
   q.body = mc::buildToolsCall(toolName, argsJson);
   q.timeoutMs = kCallTimeout;
   q.acquireMs = kCallAcquire;
   McpResp resp;
   exchange(q, resp);
-  if (st && resp.session.length()) st->sessionId = resp.session;
+  // The outcome back into the slot (it may have been retracted meanwhile: then dropped).
+  auto settle = [&](bool ok) {
+    agent::memory::Lock lk;
+    ServerState* st = slotFor(String(slug.c_str()), false);
+    if (!st) return;
+    if (resp.session.length()) st->sessionId = resp.session;
+    if (ok) st->breaker.onSuccess();
+    else st->breaker.onFailure(millis());
+  };
   // A transport-detected failure (the body capped at kMaxBodyBytes, or no usable
   // response) can't be reconstructed by parsing the partial body - the truncated
   // prefix would read as Malformed and bury the honest reason. Surface the honest
   // line ("sent more data than the device can hold" etc.) straight from the kind.
   if (mc::isTransportError(resp.kind)) {
-    if (st) st->breaker.onFailure(millis());
+    settle(false);
     return ToolResult::fail(mc::nextStepError(resp.kind, nameS));
   }
   mc::CallToolResult r = mc::parseCallTool(resp.status, resp.ctype, resp.body, nameS);
-  if (!r.ok) {
-    if (st) st->breaker.onFailure(millis());
-    return ToolResult::fail(r.errorMsg);
-  }
-  if (st) st->breaker.onSuccess();
+  settle(r.ok);
+  if (!r.ok) return ToolResult::fail(r.errorMsg);
   if (r.isError) return ToolResult::fail(r.text.empty() ? "the tool reported an error" : r.text);
   return ToolResult::ok(r.text);
 }

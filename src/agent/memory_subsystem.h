@@ -15,6 +15,7 @@
 #include "nimbus/orch/vector_memory.h"
 #include "memory_restore.h"   // CUM-406: restore report types (portable, Arduino-free)
 #include "nimbus/sys/loop_guard.h"   // kLoopLockWaitMs: LoopLock's longest try
+#include "nimbus/sys/web_guard.h"    // kWebLockWaitMs: WebLock's longest try
 
 // memory_subsystem - the device integration hub for the orchestrator "World"
 // memory (Part B). It owns the portable engines (VectorMemory + Scratchpad +
@@ -96,10 +97,10 @@ struct Lock {
 };
 
 // The loop's way into the card lock (nimbus/sys/loop_guard.h). A turn holds the lock
-// across a whole tool dispatch, which can include a provider round trip, so a task
-// the watchdog watches (the main loop) must never wait for it: on such a task LoopLock
-// tries for at most kLoopLockWaitMs and reports busy; on any other task, or when the
-// caller already holds the lock, it acquires like Lock. Every nested Lock under a held
+// across a whole tool dispatch, which can include a long card scan, so a task the
+// watchdog watches (the main loop, and the web task) must never wait for it: on such a
+// task LoopLock tries for at most kLoopLockWaitMs and reports busy; on any other task,
+// or when the caller already holds the lock, it acquires like Lock. Every nested Lock under a held
 // LoopLock re-enters the recursive mutex at once. Use it as
 //   LoopLock g; if (!g) return;   // busy: skip, a later pass retries
 // (LoopLock g(0) for work the loop retries every pass: it never waits at all).
@@ -115,6 +116,44 @@ class LoopLock {
  private:
   bool held_ = false;
 };
+
+// The web server's way into the card lock (nimbus/sys/web_guard.h). Web handlers run
+// on the AsyncTCP task, which the task watchdog watches, and a turn can hold the card
+// lock for a whole tool call, so a web path never waits for it unbounded: WebLock tries
+// for at most kWebLockWaitMs and reports busy, and the route answers degraded or 503
+// with Retry-After. Every nested Lock under a held WebLock re-enters the recursive
+// mutex at once, so it is taken once at the top of the handler (or filler):
+//   WebLock g; if (!g) return sendBusy(r);
+// test_web_guard checks that every web path that reaches the card lock opens with one.
+class WebLock {
+ public:
+  explicit WebLock(uint32_t maxWaitMs = nimbus::sys::kWebLockWaitMs);
+  ~WebLock();
+  explicit operator bool() const { return held_; }
+  WebLock(const WebLock&) = delete;
+  WebLock& operator=(const WebLock&) = delete;
+
+ private:
+  bool held_ = false;
+};
+
+// Web guard counters (test console WEBGUARD?, the HIL web-stall leg).
+struct WebGuardStats {
+  uint32_t webBlockingTakes = 0;     // blocking lock() calls on the web task (a bug)
+  uintptr_t lastWebBlockingCaller = 0;
+  uint32_t webBusy = 0;              // WebLock found the lock busy (a degraded or 503 answer)
+  uint32_t netUnderLock = 0;         // network requests started while holding the card lock (a bug)
+  uintptr_t lastNetCaller = 0;
+  uint32_t netLockReleases = 0;      // embeddings that released the card lock for their request
+  bool webTaskKnown = false;         // the AsyncTCP task is recorded
+  bool webTaskWatched = false;       // ... and subscribed to the task watchdog
+};
+WebGuardStats webGuardStats();
+
+// Called at the start of every TLS work-slot request (agent::arbiter::acquireWork): a
+// network request by a task that holds the card lock is counted and named once per
+// boot (the caller's return address, for addr2line). The request still runs.
+void noteNetworkStart(uintptr_t caller);
 
 // Loop guard counters (test console LOOPGUARD?, the HIL stall leg).
 struct LoopGuardStats {

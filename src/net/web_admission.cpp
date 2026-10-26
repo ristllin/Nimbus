@@ -3,7 +3,8 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 
-#include "../agent/memory_subsystem.h"   // agent::memory::Lock (serializes card I/O)
+#include "../agent/memory_subsystem.h"   // agent::memory::WebLock (serializes card I/O)
+#include "nimbus/sys/web_guard.h"        // the card-busy answer, the filler's try
 #include "../agent/orchestrator.h"   // turnInFlight
 #include "../sys/heap_watch.h"       // the lan.big activity tag
 #include "nimbus/cloud/relay_slot.h" // Retry-After values, the busy text
@@ -53,6 +54,13 @@ nimbus::cloud::ServeDecision decide(AsyncWebServerRequest* r, size_t bodyBytes) 
   return nimbus::cloud::lanServeDecision(bodyBytes, turn, intFree);
 }
 
+void sendCardBusy(AsyncWebServerRequest* r) {
+  AsyncWebServerResponse* res = r->beginResponse(503, "application/json", nimbus::sys::cardBusyJson());
+  res->addHeader("Retry-After", String((unsigned)nimbus::sys::kCardBusyRetryS));
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+}
+
 void sendBusy(AsyncWebServerRequest* r, bool html) {
   const uint32_t retryS = agent::orchestrator::turnInFlight() ? nimbus::cloud::kBusyRetryTurnS
                                                               : nimbus::cloud::kBusyRetryLowMemS;
@@ -73,12 +81,24 @@ AwsResponseFiller trickle(AwsResponseFiller inner) {
 
 AwsResponseFiller cardFileFiller(std::shared_ptr<::File> f) {
   return [f](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-    agent::memory::Lock g;
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);
+    if (!card) return RESPONSE_TRY_AGAIN;   // a turn's tool holds the card: next poll
     if (!*f) return 0;
     const int n = f->read(buf, maxLen);
     if (n <= 0) { f->close(); return 0; }   // EOF/error ends the stream
     return size_t(n);
   };
+}
+
+std::shared_ptr<::File> cardFileHandle() {
+  return std::shared_ptr<::File>(new ::File(), [](::File* fp) {
+    // The response is gone (sent, or the client left mid-stream). A stream that reached
+    // its end closed the file under the lock already; a read handle's close writes
+    // nothing to the card, so a busy lock is never waited for here.
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);
+    fp->close();
+    delete fp;
+  });
 }
 
 AwsResponseFiller bufferFiller(std::shared_ptr<char> body, size_t len) {

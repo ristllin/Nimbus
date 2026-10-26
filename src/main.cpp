@@ -3607,11 +3607,13 @@ void setup() {
   nimbus::heapwatch::install();
   sramSnap("boot-hal");   // CUM-185: internal-SRAM baseline once PSRAM routing is armed
 
-  // Task watchdog on the MAIN LOOP only (F12): a hung loop panics + reboots in
-  // ~8 s instead of wedging the device (and its USB) until a physical reset.
-  // tg_poll is deliberately NOT subscribed - its Telegram long-poll legitimately
-  // blocks for ~25 s per cycle. Arduino may have already initialized the TWDT
-  // (idle-task watch), so reconfigure on INVALID_STATE instead of failing.
+  // Task watchdog (F12): a hung loop panics + reboots in ~8 s instead of wedging the
+  // device (and its USB) until a physical reset. Two tasks are watched: the main loop
+  // (subscribed at the end of setup) and the AsyncTCP web task (the library subscribes
+  // it, platformio.ini CONFIG_ASYNC_TCP_USE_WDT; nimbus/sys/web_guard.h). tg_poll is
+  // deliberately NOT subscribed - its Telegram long-poll legitimately blocks for ~25 s
+  // per cycle. Arduino may have already initialized the TWDT (idle-task watch), so
+  // reconfigure on INVALID_STATE instead of failing.
   {
     // Single source (nimbus/cloud/relay_timing.h): the relay's TLS slot-hold budget
     // is derived from this same constant, so the two can never drift (CUM-160).

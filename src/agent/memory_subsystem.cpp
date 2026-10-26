@@ -57,6 +57,8 @@
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
 #include "nimbus/sys/loop_guard.h"        // the loop never waits for the card lock
+#include "nimbus/sys/web_guard.h"         // nor does the web task; no network under it
+#include "../sys/web_task.h"              // onWebTask, webTask
 #include "nimbus/sys/boot_record.h"       // fieldValue: a tool name is model text
 
 // The Arduino core's loop task (setup() and loop() run on it); the core defines it in
@@ -113,6 +115,13 @@ ToolRegistry          g_reg;
 bool                  g_begun = false;
 fs::FS*               g_fs = &LittleFS;   // data store: SD when mounted, else LittleFS
 SemaphoreHandle_t     g_memMux = nullptr; // recursive: guards g_vec/g_epi/g_scratch across tasks
+// How many times the card lock's holder has taken it (lock/tryLock add one, unlock takes
+// one away). Only the holder writes it, between its take and its give, so it needs no
+// lock of its own; CardRelease reads it to give the lock back the right number of times.
+int                   g_holdDepth = 0;
+// Milliseconds the holder has given the card lock up for network requests (CardRelease),
+// so a tool's hold (noteToolHold) does not count its embedding. Holder-written only.
+uint32_t              g_releasedMs = 0;
 bool                  g_haveSd = false;   // resolved in begin(): is the store the SD card?
 bool                  g_tierResolved = false;  // begin() has resolved g_haveSd
 // CUM-405: no card mounted this boot, yet evidence (a card seen last boot, or a
@@ -247,11 +256,45 @@ constexpr uint32_t kDrainBootGraceMs = 60000;   // none in the first minute: let
 const char* kEmbedFaultToken = "HTTP 429 credit_balance_exhausted";
 #endif
 
-// One embedding call for the memory engines, honoring the test fault.
+bool ownsCardLock();   // below, with the loop guard
+
+// Gives the card lock up for one network request and takes it back after (web_guard.h:
+// no task holds the card lock across a network request). A turn's memory tool runs
+// under the tool dispatcher's whole-call lock (handleMcp), possibly nested; the engine
+// code around its embedding keeps no reference into the engines across it
+// (orch_memory_tools.cpp tryEmbed: "the network call: never under the lock"). The web
+// task keeps the lock: its request is budgeted (kWebSlotWaitMs + kWebNetBudgetMs) and
+// taking the lock back would be a wait the watched task may not make.
+class CardRelease {
+ public:
+  CardRelease() {
+    if (!ownsCardLock() || nimbus::sys::onWebTask()) return;
+    depth_ = g_holdDepth;
+    from_ = millis();
+    for (int i = 0; i < depth_; ++i) unlock();
+  }
+  ~CardRelease() {
+    for (int i = 0; i < depth_; ++i) lock();
+    if (depth_) g_releasedMs += millis() - from_;   // the lock is ours again
+  }
+  bool released() const { return depth_ > 0; }
+  CardRelease(const CardRelease&) = delete;
+  CardRelease& operator=(const CardRelease&) = delete;
+
+ private:
+  int depth_ = 0;
+  uint32_t from_ = 0;
+};
+std::atomic<uint32_t> g_netLockReleases{0};
+
+// One embedding call for the memory engines, honoring the test fault. Never under the
+// card lock on a task other than the web task (CardRelease).
 std::vector<int8_t> embedRaw(const String& text, String& err) {
 #ifdef NIMBUS_TEST
   if (nimbus::fault::active(nimbus::fault::EMBED_FAIL)) { err = kEmbedFaultToken; return {}; }
 #endif
+  CardRelease forTheRequest;
+  if (forTheRequest.released()) g_netLockReleases.fetch_add(1);
   return embeddings::embed(text, err);
 }
 
@@ -523,15 +566,81 @@ static void noteWatchedBlockingTake(uintptr_t caller) {
   alogf("memory: the main loop waited for the card lock (caller 0x%08x)", (unsigned)caller);
 }
 
+// ---- web guard (nimbus/sys/web_guard.h) ---------------------------------------
+namespace {
+WebGuardStats g_webGuard;   // counters, read by webGuardStats(); under g_loopGuardMux
+bool g_webBlockingLogged = false;
+bool g_netUnderLockLogged = false;
+}  // namespace
+
+// A blocking take on the web task: the bug class web_guard.h describes. Counted, and the
+// caller named once per boot; the take still happens (callers assume the lock is held).
+static void noteWebBlockingTake(uintptr_t caller) {
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_webGuard.webBlockingTakes++;
+  g_webGuard.lastWebBlockingCaller = caller;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  if (g_webBlockingLogged) return;
+  g_webBlockingLogged = true;
+  alogf("memory: a web request waited for the card lock (caller 0x%08x)", (unsigned)caller);
+}
+
+void noteNetworkStart(uintptr_t caller) {
+  // The web task's own budgeted request may run under the lock it holds (CardRelease).
+  if (!ownsCardLock() || nimbus::sys::onWebTask()) return;
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_webGuard.netUnderLock++;
+  g_webGuard.lastNetCaller = caller;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  if (g_netUnderLockLogged) return;
+  g_netUnderLockLogged = true;   // set first: the log line below re-enters the card lock
+  alogf("memory: a network request started while holding the card lock (caller 0x%08x)", (unsigned)caller);
+}
+
+WebGuardStats webGuardStats() {
+  portENTER_CRITICAL(&g_loopGuardMux);
+  WebGuardStats s = g_webGuard;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+  s.netLockReleases = g_netLockReleases.load();
+  const TaskHandle_t web = nimbus::sys::webTask();
+  s.webTaskKnown = web != nullptr;
+  s.webTaskWatched = web != nullptr && esp_task_wdt_status(web) == ESP_OK;
+  return s;
+}
+
+WebLock::WebLock(uint32_t maxWaitMs) {
+  held_ = tryLock(maxWaitMs);   // an owner's re-take returns at once
+  if (held_) return;
+  portENTER_CRITICAL(&g_loopGuardMux);
+  g_webGuard.webBusy++;
+  portEXIT_CRITICAL(&g_loopGuardMux);
+}
+
+WebLock::~WebLock() {
+  if (held_) unlock();
+}
+
 void lock() {
   if (!g_memMux) return;
-  if (onWatchedTask() && !ownsCardLock()) noteWatchedBlockingTake((uintptr_t)__builtin_return_address(0));
+  const uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+  if (!ownsCardLock()) {
+    if (onWatchedTask()) noteWatchedBlockingTake(caller);
+    else if (nimbus::sys::onWebTask()) noteWebBlockingTake(caller);
+  }
   xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY);
+  ++g_holdDepth;
 }
-void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
+void unlock() {
+  if (!g_memMux) return;
+  --g_holdDepth;
+  xSemaphoreGiveRecursive(g_memMux);
+}
 
+// Bounded on both tasks the watchdog watches: the main loop (kLoopLockWaitMs) and the
+// web task, where an accessor that opens with a LoopLock (stats) answers busy too.
 LoopLock::LoopLock(uint32_t maxWaitMs) {
-  const uint32_t waitMs = nimbus::sys::lockWaitMs(onWatchedTask(), ownsCardLock(), maxWaitMs);
+  const bool web = nimbus::sys::onWebTask();
+  const uint32_t waitMs = nimbus::sys::lockWaitMs(onWatchedTask() || web, ownsCardLock(), maxWaitMs);
   if (waitMs == UINT32_MAX) {
     lock();
     held_ = true;
@@ -540,7 +649,8 @@ LoopLock::LoopLock(uint32_t maxWaitMs) {
   held_ = tryLock(waitMs);
   if (held_) return;
   portENTER_CRITICAL(&g_loopGuardMux);
-  g_loopGuard.loopBusySkips++;
+  if (web) g_webGuard.webBusy++;
+  else g_loopGuard.loopBusySkips++;
   portEXIT_CRITICAL(&g_loopGuardMux);
 }
 
@@ -647,7 +757,9 @@ bool storageResolved() { return g_tierResolved; }
 // no-op. Otherwise wait at most timeoutMs.
 bool tryLock(uint32_t timeoutMs) {
   if (!g_memMux) return true;
-  return xSemaphoreTakeRecursive(g_memMux, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  if (xSemaphoreTakeRecursive(g_memMux, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) return false;
+  ++g_holdDepth;
+  return true;
 }
 
 // CUM-405 primary evidence: is a non-empty vector blob still readable off the card,
@@ -2978,12 +3090,23 @@ static bool isMutatingTool(const std::string& name, const std::string& action) {
 }
 
 // Tools that own a long network or speaker wait and take the card lock themselves,
-// only around their own card work, so handleMcp runs them outside its whole-call Lock:
-// image.generate (a 90-120 s image download, see image_gen.cpp) and the output-channel
-// tools (a text-to-speech download, a Telegram upload, a wait for playback: 25 s under
-// the Lock on 22 Oct), whose one card touch is the history row captureMessage locks.
-static bool locksItself(const std::string& name) {
-  return name == "image.generate" || name == "reply.telegram" || name == "reply.speak";
+// only around their own card work, so handleMcp runs them outside its whole-call Lock
+// (nimbus::sys::toolWaitsOnNetwork): image.generate (a 90-120 s image download),
+// image.look (a photo caption request through up to two providers: 120 s under the
+// Lock on 26 Oct, the hold the web task waited on before the watchdog reset),
+// web.search, and the output-channel tools (a text-to-speech download, a Telegram
+// upload, a wait for playback: 25 s under the Lock on 22 Oct), whose one card touch is
+// the history row captureMessage locks.
+static bool locksItself(const std::string& name) { return nimbus::sys::toolWaitsOnNetwork(name); }
+
+// A tool that locks itself, outside the whole-call Lock; refused on the web task (the
+// LAN endpoint), which the watchdog watches: its wait is longer than the watchdog's.
+static std::string dispatchUnlocked(const std::string& req, const JsonDocument& d, const std::string& name,
+                                    const nimbus::orch::Principal& who) {
+  if (!nimbus::sys::onWebTask()) return g_reg.handleRpc(req, who);
+  std::string idJson;
+  serializeJson(d["id"], idJson);
+  return nimbus::sys::turnOnlyToolRpcError(name, idJson);
 }
 
 // The write tools reach their handler even under FAULT memory, which refuses and
@@ -3020,16 +3143,17 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   // OUTSIDE the long wait, under their OWN brief Lock (they decode to PSRAM first),
   // so they dispatch outside this one. See image_gen.cpp.
   // The reply tools refuse outside a turn, and a turn never runs on the main loop, so
-  // their history row needs no LoopLock.
-  if (locksItself(name)) return g_reg.handleRpc(jsonRpcRequest, who);
+  // their history row needs no LoopLock. Over the LAN endpoint such a tool is refused.
+  if (locksItself(name)) return dispatchUnlocked(jsonRpcRequest, d, name, who);
   // Serialize the whole dispatch with the turn task's engine access. Recursive, so the
-  // nested applyConfig/persist* below re-enter safely. (A memory.write tool embeds via
-  // TLS while holding this - a rare, brief stall for a concurrent turn, never a
-  // deadlock; the poll task already tolerates multi-second long-poll waits.)
-  // The main loop never waits for this lock (LoopLock), so a slow tool here no longer
-  // stalls it; a hold of kLongHoldMs or more is still named in the log (noteToolHold).
+  // nested applyConfig/persist* below re-enter safely. A memory tool's embedding gives
+  // this lock up for its request and takes it back (embedRaw, CardRelease); on the web
+  // task the route already holds it (a WebLock, so this re-enters) and the request is
+  // budgeted. Neither watched task waits for it (LoopLock, WebLock); a hold of
+  // kLongHoldMs or more is still named in the log (noteToolHold).
   Lock g;
   const uint32_t heldFrom = millis();
+  const uint32_t releasedBefore = g_releasedMs;
 #ifdef NIMBUS_TEST
   if (isToolCall) testToolStallPoint(name);
 #endif
@@ -3044,7 +3168,7 @@ std::string handleMcp(const std::string& jsonRpcRequest,
     if (name != "memory.scratchpad") persistScratchpad();
     if (name == "memory.config") persistMemConfig();   // survive reboot (was silently lost)
   }
-  if (isToolCall) noteToolHold(name, millis() - heldFrom);
+  if (isToolCall) noteToolHold(name, millis() - heldFrom - (g_releasedMs - releasedBefore));
   return resp;
 }
 

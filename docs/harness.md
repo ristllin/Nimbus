@@ -392,6 +392,11 @@ dir separately - include them relatively).
   `ProviderTurnFn`.
 - **New tool**: `memory::registry().add(...)` - it surfaces automatically to
   the model (tool loop), the LAN MCP server (`POST /mcp`), and `/api/tools`.
+  A tool whose handler waits on the network must be listed in
+  `nimbus::sys::toolWaitsOnNetwork` (`lib/core/include/nimbus/sys/web_guard.h`; a
+  connected tool server's `mcp.*` tools are covered by their prefix): the dispatcher
+  then runs it outside its card lock and the LAN endpoint refuses it.
+  `test_web_guard` fails a registration that calls a network seam without the entry.
 - **Hooks**: fill a slot in the `Hooks` struct at `begin()` - observers only;
   they must never block or mutate the turn.
 - **Skills**: `skill.list`/`skill.get` capsules; SD-stored dynamic skills under

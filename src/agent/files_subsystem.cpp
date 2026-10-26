@@ -57,6 +57,24 @@ struct WriteSession {
 WriteSession g_w;
 uint32_t     g_writeGen = 0;        // never reused; identifies which session a stale
                                     // onDisconnect belonged to
+// A web upload aborted while the card lock was busy (abortWriteGen runs on the web task,
+// which never waits for it): dropped by the next writer that holds the lock.
+nimbus::sys::OwedAbort g_abortOwed;
+
+// Caller holds memory::Lock. Ends session `gen` if it is still the live one.
+void dropSessionLocked(uint32_t gen) {
+  if (!g_w.active || g_w.gen != gen) return;
+  g_w.f.close();
+  memory::dataFs().remove(kPartPath);
+  g_w = WriteSession{};
+}
+
+// Caller holds memory::Lock. Drops a session whose abort is owed, then says whether an
+// upload still holds the write slot.
+bool uploadActiveLocked() {
+  dropSessionLocked(g_abortOwed.take());
+  return g_w.active;
+}
 
 std::string dirOf(const std::string& project) { return std::string(kRoot) + "/" + project; }
 std::string pathOf(const std::string& project, const std::string& name) {
@@ -241,7 +259,7 @@ static bool beginSession(const std::string& project, const std::string& name,
                          std::string& err) {
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
-  if (g_w.active) { err = "another upload is in progress"; return false; }
+  if (uploadActiveLocked()) { err = "another upload is in progress"; return false; }
   // Refuse BEFORE the first chunk (quota + path safety live in the core).
   if (g_store.wouldExceed(project, name, expectedBytes, err)) return false;
   // Ownership boundary (prism v4.1 #10): (project,name) is the identity and the
@@ -345,14 +363,12 @@ void abortWrite() {
 // onDisconnect from a finished upload A (its gen no longer matches) must NOT nuke a
 // new upload B that legitimately took the slot.
 void abortWriteGen(uint32_t gen) {
-  memory::Lock g;
-  if (!g_w.active || g_w.gen != gen) return;
-  g_w.f.close();
-  memory::dataFs().remove(kPartPath);
-  g_w = WriteSession{};
+  memory::WebLock g;   // the web task's disconnect callback never waits (web_guard.h)
+  if (!g) return g_abortOwed.owe(gen);   // dropped by the next writer that holds the lock
+  dropSessionLocked(gen);
 }
 
-bool writeBusy() { memory::Lock g; return g_w.active; }
+bool writeBusy() { memory::Lock g; return uploadActiveLocked(); }
 
 // ---- direct ops ----------------------------------------------------------------
 
@@ -361,7 +377,7 @@ bool saveStream(const std::string& project, const std::string& name,
                 const std::string& ownerNs) {
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
-  if (g_w.active) { err = "an upload is in progress - try again"; return false; }
+  if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
   File src = srcFs.open(srcPath, FILE_READ);
   if (!src) { err = "couldn't read the staged file"; return false; }
   const size_t total = src.size();
@@ -401,7 +417,7 @@ bool saveText(const std::string& project, const std::string& name,
   // (ownerNs stamps the entry below - v3.7.0 data boundary.)
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
-  if (g_w.active) { err = "an upload is in progress - try again"; return false; }
+  if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
   if (g_store.wouldExceed(project, name, text.size(), err)) return false;
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
@@ -432,7 +448,7 @@ bool saveBytes(const std::string& project, const std::string& name,
                const std::string& ownerNs) {
   memory::Lock g;   // brief hold: serializes the non-re-entrant SD bus for this write
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
-  if (g_w.active) { err = "an upload is in progress - try again"; return false; }
+  if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
   if (!data || len == 0) { err = "empty buffer"; return false; }
   if (g_store.wouldExceed(project, name, len, err)) return false;
   fs::FS& fs = memory::dataFs();
@@ -572,7 +588,7 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
 static std::string appendGate(const std::string& project, const std::string& name,
                               const nimbus::orch::Principal& who) {
   if (!available()) return "no SD card - artifact store absent";
-  if (g_w.active) return "an upload is in progress - try again";
+  if (uploadActiveLocked()) return "an upload is in progress - try again";
   if (!nimbus::orch::FileStore::validSegment(project, g_store.limits().maxProjectLen) ||
       !nimbus::orch::FileStore::validSegment(name, g_store.limits().maxNameLen))
     return "invalid project or name";

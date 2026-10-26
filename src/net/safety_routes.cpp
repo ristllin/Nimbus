@@ -4,6 +4,8 @@
 
 #include "webui.h"                          // nimbus::net::webAuthOk (token gate)
 #include "errlog_routes.h"                  // registerDeferredWebRoute (self-registration)
+#include "web_admission.h"                  // the card-busy answer (web_guard.h)
+#include "../agent/memory_subsystem.h"      // WebLock
 #include "../agent/safety_activity_store.h" // agent::safety:: surface
 #include "../agent/store.h"                 // agent::store::hasCumuloKey
 #include "nimbus/store/persist.h"           // the 507 answer for a change not saved
@@ -25,12 +27,16 @@ std::string postParam(AsyncWebServerRequest* r, const char* name) {
 
 void handleList(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the safety log is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
   r->send(200, "application/json",
           String(agent::safety::listJson(agent::store::hasCumuloKey()).c_str()));
 }
 
 void handleDismiss(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the safety log is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
   if (!agent::safety::dismiss(id)) { r->send(404, "application/json", "{\"error\":\"unknown entry\"}"); return; }
@@ -39,6 +45,8 @@ void handleDismiss(AsyncWebServerRequest* r) {
 
 void handleApprove(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the safety log is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
   nimbus::orch::AllowScope scope;
@@ -70,6 +78,8 @@ void handleApprove(AsyncWebServerRequest* r) {
 
 void handleRevoke(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the safety log is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
   switch (agent::safety::revokeAllow(id)) {
@@ -91,6 +101,8 @@ void handleRevoke(AsyncWebServerRequest* r) {
 
 void handleReport(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+  agent::memory::WebLock card;   // the safety log is on the card: tried (web_guard.h)
+  if (!card) return admission::sendCardBusy(r);
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
   // The actual Cumulo POST runs on a worker task (never inline on the AsyncTCP task):

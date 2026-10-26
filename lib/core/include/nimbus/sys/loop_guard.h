@@ -6,11 +6,12 @@
 
 // loop_guard - the rules that keep the main loop inside its task watchdog.
 //
-// The loop task is the only task the 8 s task watchdog watches (src/main.cpp). It
-// shares one lock with every task that touches the card and the memory engines
-// (agent::memory::lock, a recursive mutex). The turn task holds that lock across a
-// whole tool dispatch, which can include a provider round trip (an embedding) or a
-// card scan, and the web task holds it across its memory routes. A loop that waits
+// The 8 s task watchdog watches the loop task (src/main.cpp) and the web server's
+// AsyncTCP task (its rules: nimbus/sys/web_guard.h). The loop shares one lock with
+// every task that touches the card and the memory engines (agent::memory::lock, a
+// recursive mutex). The turn task holds that lock across a whole tool dispatch, which
+// can include a card scan (a tool that waits on the network runs outside it since
+// 26 Oct 2026), and the web task holds it across its memory routes. A loop that waits
 // for the lock waits as long as the slowest of those: past 8 s the watchdog resets
 // the device. On the owner's device every boot from 19 to 21 Oct 2026 ended inside a
 // tool dispatch this way.

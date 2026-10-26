@@ -597,6 +597,21 @@ void tzCheck(const String& tz, long long epoch) {
   tzset();
 }
 
+// WEBGUARD?: the web guard counters (nimbus/sys/web_guard.h). blocking= (a web request
+// that waited for the card lock) and netUnderLock= (a network request started while
+// holding it) must stay 0; busy= counts the degraded or 503 answers a held lock caused.
+void webGuardStatus() {
+  const agent::memory::WebGuardStats g = agent::memory::webGuardStats();
+  char buf[224];
+  snprintf(buf, sizeof buf,
+           "WEBGUARD blocking=%u caller=0x%08x busy=%u netUnderLock=%u netCaller=0x%08x "
+           "releases=%u webTask=%d watched=%d",
+           (unsigned)g.webBlockingTakes, (unsigned)g.lastWebBlockingCaller, (unsigned)g.webBusy,
+           (unsigned)g.netUnderLock, (unsigned)g.lastNetCaller, (unsigned)g.netLockReleases,
+           g.webTaskKnown ? 1 : 0, g.webTaskWatched ? 1 : 0);
+  reply(buf);
+}
+
 // TGGUARD?: the Telegram storm breakers since their RTC record was cleared (lane D):
 // duplicates dropped, turns skipped at the hourly ceiling, pages acked unprocessed by
 // the poison guard, crash resets counted against the page in flight, and whether a
@@ -2176,6 +2191,7 @@ void dispatch(String line) {
     return;
   }
   if (line == "TGGUARD?") { tgGuardStatus(); return; }
+  if (line == "WEBGUARD?") { webGuardStatus(); return; }
   if (line == "MODELS?" || line == "MODELS passive") { modelsTest(line.substring(line.indexOf(' ') + 1)); return; }
   if (line == "HISTV2" || line.startsWith("HISTV2 ")) {
     // HISTV2 [0|1]: the turn-structured history switch (RAM only, on at boot).

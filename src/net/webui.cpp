@@ -62,6 +62,8 @@
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
+#include "../sys/web_task.h"            // setWebTask once the server runs (web_guard.h)
+#include "../sys/agent_log.h"           // alog
 #include "../sys/config_nvs.h"          // device identity (devName, P2)
 #include "../sys/nvs_inventory.h"       // GET /api/nvs/stats - key names + entry counts
 #include "../hw/tft_out.h"                     // /api/screenshot - the bytes on the glass
@@ -558,6 +560,41 @@ static void addReserveState(JsonDocument& d) {
   d["usageSaved"] = agent::store::usageLedgerSaved();
 }
 
+// The card's figures for /api/state (storeSD/Total/Free and files{}), read under the
+// card lock. The page polls this route every few seconds, so it never waits for a
+// turn's tool (nimbus/sys/web_guard.h): while the lock is busy it serves the last
+// figures it read, which change slowly, and says so (cardBusy).
+struct CardFacts {
+  bool sd = false;
+  uint64_t totalMB = 0;
+  uint64_t freeMB = 0;
+  agent::files::StorageTruth truth;
+};
+
+static CardFacts readCardFacts(bool& busy) {
+  static CardFacts s_last;          // the AsyncTCP task only
+  static bool s_haveLast = false;
+  agent::memory::WebLock card;
+  busy = !card;
+  if (busy) {
+    if (s_haveLast) return s_last;
+    CardFacts f;                    // nothing read yet this boot: the lock-free flags only
+    f.sd = solide::storage::available();
+    f.truth.present = agent::files::available();
+    return f;
+  }
+  CardFacts f;
+  f.sd = solide::storage::available();
+  if (f.sd) {
+    f.totalMB = solide::storage::cardSizeMB();
+    f.freeMB = solide::storage::freeMB();
+  }
+  f.truth = agent::files::storageTruth();   // re-enters the held lock
+  s_last = f;
+  s_haveLast = true;
+  return f;
+}
+
 static void buildState(String& out) {
   JsonDocument d;
   const int mode = s_wc.currentMode ? s_wc.currentMode()
@@ -646,17 +683,19 @@ static void buildState(String& out) {
       dj["streak"] = ds.streak;
     }
   }
-  const bool sd = solide::storage::available();
+  bool cardBusy = false;
+  const CardFacts card = readCardFacts(cardBusy);
+  d["cardBusy"]   = cardBusy;   // true: the card figures below are the last ones read
+  const bool sd = card.sd;
   d["storeSD"]    = sd;
   d["storeLabel"] = sd ? "SD card" : "internal flash";
-  d["storeTotal"] = sd ? (double)solide::storage::cardSizeMB() * 1048576.0 : (double)fsTotal;
-  d["storeFree"]  = sd ? (double)solide::storage::freeMB()   * 1048576.0
-                       : (double)(fsTotal - fsUsed);
+  d["storeTotal"] = sd ? (double)card.totalMB * 1048576.0 : (double)fsTotal;
+  d["storeFree"]  = sd ? (double)card.freeMB * 1048576.0 : (double)(fsTotal - fsUsed);
   // Named-unit twins (owner: storeFree/Total read ambiguously vs sdprobe's MB
   // fields). The unnamed originals stay in BYTES for the page's sz() formatter.
   if (sd) {
-    d["storeTotalMB"] = (uint32_t)solide::storage::cardSizeMB();
-    d["storeFreeMB"]  = (uint32_t)solide::storage::freeMB();
+    d["storeTotalMB"] = (uint32_t)card.totalMB;
+    d["storeFreeMB"]  = (uint32_t)card.freeMB;
   }
   // NVS (the 20 KB settings partition, every namespace) in BYTES, CUM-479: used/free/
   // total from nvs_get_stats (free excludes the page NVS holds back for garbage
@@ -838,7 +877,7 @@ static void buildState(String& out) {
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
   {
-    agent::files::StorageTruth t = agent::files::storageTruth();
+    const agent::files::StorageTruth& t = card.truth;
     JsonObject fl = d["files"].to<JsonObject>();
     fl["present"]     = t.present;
     fl["unsupported"] = t.unsupported;   // CUM-7: mounted card < 1 GB
@@ -2541,6 +2580,8 @@ void beginWeb(const WebConfig& wc) {
   // chat can be honest instead of showing a blank panel.
   s_server.on("/api/trace", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the trace file is on the card: tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     if (!r->hasParam("turn")) { r->send(400, "text/plain", "turn required"); return; }
     const String turn = r->getParam("turn")->value();
     size_t len = 0;
@@ -3502,6 +3543,8 @@ void beginWeb(const WebConfig& wc) {
   // net layer) supplies the BLE/WiFi/battery bits the aggregator can't see.
   s_server.on("/api/health", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;  // strict gate: NO data before identification (owner R2)
+    agent::memory::WebLock card;   // the report reads the memory store: the card, tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     agent::health::Env env;
     env.wifiKnown = true;
     env.wifiUp = staConnected();
@@ -3885,6 +3928,8 @@ void beginWeb(const WebConfig& wc) {
   });
   s_server.on("/api/test/memfill", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the fill writes the card: tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     String kind = r->hasParam("kind", true) ? r->getParam("kind", true)->value() : "";
     int n     = r->hasParam("n", true) ? r->getParam("n", true)->value().toInt() : 0;
     int bytes = r->hasParam("bytes", true) ? r->getParam("bytes", true)->value().toInt() : 64;
@@ -3923,6 +3968,8 @@ void beginWeb(const WebConfig& wc) {
   // real LLM turn per assertion (slow, and it spends the owner's credits).
   s_server.on("/api/test/astool", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // the dispatch runs under the card lock: tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     String chat = r->hasParam("chat", true) ? r->getParam("chat", true)->value() : "";
     String body = r->hasParam("body", true) ? r->getParam("body", true)->value() : "";
     if (!chat.length() || !body.length()) {
@@ -3975,6 +4022,8 @@ void beginWeb(const WebConfig& wc) {
   // the bytes that actually reach the model.
   s_server.on("/api/test/recall", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // recall reads the memory store: tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     String chat = r->hasParam("chat", true) ? r->getParam("chat", true)->value() : "";
     String q    = r->hasParam("q", true) ? r->getParam("q", true)->value() : "";
     if (!chat.length() || !q.length()) {
@@ -4000,6 +4049,8 @@ void beginWeb(const WebConfig& wc) {
 
   s_server.on("/api/fault", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    agent::memory::WebLock card;   // applyConfig takes the card lock: tried (web_guard.h)
+    if (!card) return admission::sendCardBusy(r);
     String cap = r->hasParam("cap", true) ? r->getParam("cap", true)->value() : "";
     const bool on = r->hasParam("on", true) ? (r->getParam("on", true)->value().toInt() != 0) : true;
     if (cap == "all" || cap == "clear") {
@@ -4344,6 +4395,10 @@ void beginWeb(const WebConfig& wc) {
   });
 
   s_server.begin();
+  // The AsyncTCP task exists from the first begin(): record it, so the card lock and
+  // the TLS arbiter know a web request when they see one (nimbus/sys/web_guard.h).
+  nimbus::sys::setWebTask(xTaskGetHandle("async_tcp"));
+  if (!nimbus::sys::webTask()) agent::alog("web: the AsyncTCP task was not found - web guard off");
 }
 
 bool consumeRingRefresh() {

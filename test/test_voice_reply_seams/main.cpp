@@ -113,10 +113,13 @@ static void test_every_voice_upload_is_receipted_and_cleaned_up() {
 static void test_the_reply_tools_run_outside_the_card_lock() {
   const std::string mem = code("src/agent/memory_subsystem.cpp");
   const std::string mcp = bodyOf(mem, "std::string handleMcp(const std::string& jsonRpcRequest,");
-  TEST_ASSERT_TRUE(before(mcp, "if (locksItself(name)) return g_reg.handleRpc(jsonRpcRequest, who);", "Lock g;"));
+  TEST_ASSERT_TRUE(before(mcp, "if (locksItself(name)) return dispatchUnlocked(", "Lock g;"));
+  // The list is the web guard's (nimbus/sys/web_guard.h toolWaitsOnNetwork).
   const std::string tools = bodyOf(mem, "static bool locksItself(const std::string& name) {");
-  TEST_ASSERT_TRUE(tools.find("\"reply.telegram\"") != std::string::npos);
-  TEST_ASSERT_TRUE(tools.find("\"reply.speak\"") != std::string::npos);
+  TEST_ASSERT_TRUE(tools.find("toolWaitsOnNetwork(") != std::string::npos);
+  const std::string guard = code("lib/core/src/sys_web_guard.cpp");
+  TEST_ASSERT_TRUE(guard.find("\"reply.telegram\"") != std::string::npos);
+  TEST_ASSERT_TRUE(guard.find("\"reply.speak\"") != std::string::npos);
   // The history row they write takes the lock for itself.
   const std::string capture = bodyOf(mem, "static String captureMessageAt(");
   TEST_ASSERT_TRUE(capture.find("Lock g;") != std::string::npos);
