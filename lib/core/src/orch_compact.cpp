@@ -480,21 +480,41 @@ void FoldStore::noteTurn(const std::string& chatId) {
   persist();
 }
 
+namespace {
+// The counters every fold restarts: over them again soon after a fold means the
+// fold is not shrinking this chat.
+bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold) {
+  return f.bytesSinceFold >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
+}
+// H3: an overflow shift hides rows the summary does not cover yet.
+bool hidesRows(const ChatFold& f) {
+  return !f.softStart.empty() && (f.thru.empty() || rowIdAfter(f.softStart, f.thru));
+}
+}  // namespace
+
 FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
                                uint32_t msgsThreshold) {
   if (bytesThreshold == 0) return FoldDue::No;   // auto-fold disabled
   Slot* s = find(stripCtl(chatId));
   if (!s) return FoldDue::No;
-  if (s->f.breakerPaused) return FoldDue::No;
-  // H3: an overflow shift hides rows the summary does not cover yet.
-  const bool hidden = !s->f.softStart.empty() && (s->f.thru.empty() || rowIdAfter(s->f.softStart, s->f.thru));
-  const bool over = s->f.bytesSinceFold >= bytesThreshold ||
-                    (msgsThreshold > 0 && s->f.msgsSinceFold >= msgsThreshold) || hidden;
-  if (!over) return FoldDue::No;
-  // Thrash guard: due again within kThrashTurns of a COMPLETED fold means the
-  // fold isn't shrinking this chat - pause (alert edge) instead of burning
-  // summarization calls in a loop.
-  if (s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
+  const bool refill = refilled(s->f, bytesThreshold, msgsThreshold);
+  const bool hidden = hidesRows(s->f);
+  if (s->f.breakerPaused) {
+    // A pause with no failure behind it is a thrash pause. One that rests on
+    // hidden rows alone is a backlog the guard below no longer pauses (v4.6.0
+    // paused Lumi's first histV2 catch-up this way), so it is lifted here.
+    if (s->f.breakerFails != 0 || refill || !hidden) return FoldDue::No;
+    s->f.breakerPaused = false;
+    persist();
+  }
+  if (!refill && !hidden) return FoldDue::No;
+  // Thrash guard: over the restarted counters again within kThrashTurns of a
+  // COMPLETED fold means the fold isn't shrinking this chat - pause (alert
+  // edge) instead of burning summarization calls in a loop. Hidden rows alone
+  // are not that: a fold digests them oldest first, at most its digest cap at
+  // a time, and moves the anchor forward each time (an empty slice gives the
+  // rest up), so a backlog larger than one fold is folded again, never paused.
+  if (refill && s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
     s->f.breakerPaused = true;
     persist();
     return FoldDue::ThrashPaused;
@@ -513,6 +533,10 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   if (!id.empty() && (s.f.thru.empty() || rowIdAfter(id, s.f.thru))) s.f.thru = id;
   if (!s.f.softStart.empty() && !s.f.thru.empty() && !rowIdAfter(s.f.softStart, s.f.thru))
     s.f.softStart.clear();   // the summary now covers everything the shift hid
+  // A fold with no anchor (the pre-histV2 digest of the whole live conversation)
+  // leaves no row hidden behind a shift: `hidden` stays a histV2-only trigger, so
+  // it can never re-fire on a fold that cannot move the anchor.
+  if (id.empty()) s.f.softStart.clear();
   s.f.summary        = capSummary(summary);
   s.f.bytesSinceFold = 0;
   s.f.msgsSinceFold  = 0;
