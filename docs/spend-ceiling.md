@@ -14,7 +14,12 @@ control. This page explains both, in plain words.
   priced with the same per-model prices the **Usage** page shows. Every paid call
   counts, not only replies: see [What counts](#what-counts). A model with no known
   price is counted at its provider's highest price, so the estimate never reads lower
-  than the bill.
+  than the bill. A custom endpoint is counted too: see
+  [A custom endpoint](#a-custom-endpoint).
+- **From the first paid call**, even on a new device whose clock is not set yet: the
+  count starts at once, the ceiling applies at once, and the count joins the month
+  as soon as the clock is set. Until the clock is set the count cannot start a new
+  month either.
 - **Calendar month in the device's time zone** (set it under **Device**; UTC when it
   is not set). The count starts again on the 1st.
 - **At the ceiling, paid calls pause.** The device's side stops them before any
@@ -32,7 +37,7 @@ Everything that calls a paid model:
 | Feature | While paused |
 |---|---|
 | Replies to your messages (Telegram, the web chat, voice, the device) | No reply is generated. The web chat's send button answers at once that paid calls are paused. |
-| Helpers (sub-agents) | Not started. Helpers that were already running finish, and their results reach you. |
+| Helpers (sub-agents) | Not started. Helpers that were already running finish, and their results reach you. Stopping a running helper always works, and what it spent until then counts. |
 | Photos and images | Not described or generated. |
 | Voice | Dictation and spoken replies are off. |
 | Routines and the nightly dream | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
@@ -41,7 +46,12 @@ Everything that calls a paid model:
 | Screening of guests' messages | Off. A guest's message gets a short line that it could not be processed. |
 
 Things that cost nothing keep working: the ring, the screen, the web page, your files,
-your memory, settings, and checking a provider key.
+your memory and settings.
+
+Checking a provider key also keeps working. A full check ends with one tiny paid test
+request that confirms your chosen models run (a fraction of a cent, counted). The
+device's own scheduled checks skip it while paid calls are paused or that provider is
+paused; pressing **Verify** yourself still sends it.
 
 ## What counts
 
@@ -51,7 +61,9 @@ Everything that calls a paid model or service counts toward the ceiling:
 - helpers (sub-agents) on every provider, including the web searches they run;
 - memory: saving a memory and searching it by meaning;
 - photo descriptions, speech to text, spoken replies, generated images;
-- the safety check on downloaded files, screening of guests' messages, and web search.
+- the safety check on downloaded files, screening of guests' messages, and web search;
+- a custom endpoint (see below), and the tiny test request a key check sends to confirm
+  your chosen models work (a fraction of a cent).
 
 Where the provider reports the usage of a call, that usage is counted at the model's
 price. Where it reports none, the device estimates on the high side, so the count
@@ -70,11 +82,32 @@ never reads lower than the bill:
 Helpers' tokens also show on the **Usage** page under their provider. Everything else
 in this list (the web searches helpers run included) counts toward the ceiling only.
 
+### A custom endpoint
+
+A custom endpoint is counted at the price you set for its model under **Prices** on
+the **Usage** page (set both the input and the output price: a price left empty stays
+at the estimate below). Until you set one:
+
+- **On a paid service** (any other address, for example OpenRouter or Together, or any
+  endpoint with a key): every token it reports is
+  counted at the highest built-in price of any provider (10 USD per million input
+  tokens and 50 USD per million output tokens), above what almost every model costs.
+  The **Usage** page marks the figure as an estimate. A service that charges more than
+  that for your model needs its real price set, or the estimate reads low.
+- **On your own network with no key** (a private address: `10.x.x.x`,
+  `172.16.x.x` to `172.31.x.x` or `192.168.x.x`, a loopback or link-local address,
+  `localhost`, or a `.local` name; for example Ollama): a local model, counted as free.
+  Other names (a bare name such as `nas`, `.lan`, `.home.arpa`), IPv6 addresses and
+  VPN addresses count as paid, and so does a local endpoint with a key, which usually
+  means a proxy in front of a paid service.
+
 ## How you hear about it
 
 Once per pause, on each channel:
 
-- **Telegram**: one message in your owner chat.
+- **Telegram**: one message in your owner chat. Every Telegram message the pause
+  leaves unanswered also gets a short reply saying it was not answered and how to
+  raise the ceiling, so you hear about it even if that one message did not arrive.
 - **The web chat**: one message in the conversation. A message you send while the
   pause lasts is answered at once with the reason instead of waiting.
 - **The device screen**: a line in place of **Hold to talk** that says paid AI is
@@ -83,9 +116,9 @@ Once per pause, on each channel:
 The **Providers** row on the **Health** page also says paid requests to every provider
 are paused while it lasts.
 
-The message names the ceiling, this month's estimate, and how to raise it. It is not
-repeated for every message you send while the pause lasts, and a restart does not
-send it again.
+The message names the ceiling, this month's estimate, and how to raise it. The full
+message is not repeated for every message you send while the pause lasts (each gets
+only the short reply), and a restart does not send it again.
 
 A heads-up goes out once a month when the estimate reaches **80%** of the ceiling.
 
@@ -183,7 +216,9 @@ Other defaults keep a single request from turning into a long bill:
 ## Virtual Nimbus
 
 A Virtual Nimbus instance has the same ceiling, counted the same way (replies,
-helpers and memory). Its default models are set by the hosted service. Router usage
+helpers and memory). Its default models are set by the hosted service. If its saved
+count ever cannot be read back, the instance pauses paid calls (it never starts again
+from zero) until you raise the ceiling or the month ends. Router usage
 is also limited by your Cumulo Nimbus balance; the ceiling is a second limit on top
 of it.
 

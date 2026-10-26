@@ -4,6 +4,7 @@
 //     notices sent survive a restart, raising the ceiling lifts it at once;
 //   * the process-wide paid-call gate answers from it (every paid seam reads that gate);
 //   * an instance that already ran an earlier release owes its web chat one notice;
+//   * a file that does not read back (cut short, foreign) starts paused, never at zero;
 //   * the web surface: /api/state spend + setupDefaults, /api/orch usage.ceiling,
 //     POST spendCeil (cents; 0 refused), POST /api/chat answered 409 while paused,
 //     and the engine thread's tick delivers the freeze notice to the web chat once.
@@ -105,6 +106,42 @@ static void checkSeamMeter(ndtest::Ctx& c, const std::string& dir) {
   sub.responses = 1;
   orch::meterSeamUsage(orch::SpendSeam::Sub, "anthropic", "claude-haiku-5-5", sub);
   c.ok(has(v.stateJson(), "\"spentCents\":25,"), "a sub-agent's usage counts: " + v.stateJson());
+}
+
+// Lane QW4: a ceiling file that does not read back (torn, foreign, unreadable) is never
+// a zero count: the instance starts paused at the default ceiling, one notice owed, and
+// raising the ceiling resumes it. A save leaves no temporary file behind.
+static void checkUnreadable(ndtest::Ctx& c, const std::string& dir) {
+  const std::string path = dir + "/torn.txt";
+  {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    std::fputs("!v|1;20000", f);   // cut mid-way through the first field
+    std::fclose(f);
+  }
+  {
+    SpendCeilingVn v(path, false, false);
+    v.install();
+    std::string t;
+    c.ok(v.frozen() && orch::spendFrozen(), "a torn file starts paused, never at zero: " + v.stateJson());
+    c.ok(!orch::paidCallAllowed(orch::SpendSeam::Head), "the paid-call gate refuses");
+    c.ok(v.nextNotice(orch::NoticeChannel::Web, t) == SpendCeilingVn::Kind::Freeze &&
+             has(t, "Paid AI calls are paused"),
+         "one freeze notice says how to resume");
+    c.ok(v.setLimitMicro(25000000) && !v.frozen(), "raising the ceiling resumes paid calls");
+    c.ok(!fsutil::readFile(path + ".tmp", t), "the save leaves no temporary file");
+  }
+  {
+    SpendCeilingVn v(path, false, false);   // the repaired file reads back
+    c.ok(!v.frozen() && has(v.stateJson(), "\"limitCents\":2500"), "the repaired state survives a restart");
+  }
+  const std::string garbage = dir + "/foreign.txt";
+  {
+    std::FILE* f = std::fopen(garbage.c_str(), "wb");
+    std::fputs("not a ceiling file", f);
+    std::fclose(f);
+  }
+  SpendCeilingVn g(garbage, false, false);
+  c.ok(g.frozen(), "a foreign file starts paused too");
 }
 
 struct Out { int status = 0; std::string body; };
@@ -212,6 +249,7 @@ int main() {
   fsutil::mkdirs(dir);
   checkFile(c, dir);
   checkSeamMeter(c, dir);
+  checkUnreadable(c, dir);
   checkWeb(c, dir + "/data");
   ndtest::rmTree(dir);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

@@ -1,11 +1,12 @@
 #pragma once
+#include <sys/stat.h>
+
 #include <cstdio>
 #include <ctime>
-#include <fstream>
 #include <mutex>
-#include <sstream>
 #include <string>
 
+#include "posix_fs.h"   // fsutil::readFile, writeFileAtomic - fsync'd tmp + rename
 #include "nimbus/orch/seam_meter.h"   // the meter every paid call outside a turn reports to
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/usage_ledger.h"
@@ -18,7 +19,10 @@
 // that every paid request consults (the process-wide gate the engine, the wire and
 // the tools read), one owner notice per channel per pause. The state lives in one
 // file on the instance volume (<dataDir>/spend_ceiling.txt), written whole through a
-// temporary file and a rename.
+// temporary file, an fsync and a rename (a full volume never leaves a cut file in its
+// place). A file that is there but cannot be read back is never taken for a zero count:
+// the instance starts paused at the default ceiling until the owner raises it or the
+// month ends (lane QW4, fail-closed money).
 //
 // Pricing: a hosted instance keeps no owner prices, so a record is priced with the
 // built-in table through a UsageLedger (a model with no price of its own at its
@@ -149,29 +153,50 @@ class SpendCeilingVn {
   static uint32_t monthNow() { return nimbus::orch::ceilingMonthKey(time(nullptr)); }
 
   // Caller holds mu_. No file: a new instance starts at zero for this month; one that
-  // already had state (an earlier release ran here) owes its web chat one notice.
+  // already had state (an earlier release ran here) owes its web chat one notice. A
+  // file that is there but does not read back (unreadable, torn, foreign) is the one
+  // case with no count to trust and no ledger to recount from: the instance starts
+  // paused, at the default ceiling over a count at that ceiling (one freeze notice
+  // says how to raise it), never at zero.
   void load(bool hadState) {
-    std::ifstream f(path_, std::ios::binary);
-    if (f) {
-      std::stringstream ss;
-      ss << f.rdbuf();
-      if (!c_.deserialize(ss.str())) c_ = nimbus::orch::SpendCeiling();
+    struct stat st;
+    const bool exists = ::stat(path_.c_str(), &st) == 0;
+    std::string text;
+    bool read = false;
+    for (int attempt = 0; exists && !read && attempt < 3; ++attempt)   // a transient read error
+      read = fsutil::readFile(path_, text);
+    if (read && wholeLine(text) && c_.deserialize(text)) {
       c_.roll(monthNow());
+      return;
+    }
+    if (exists) {
+      c_ = nimbus::orch::SpendCeiling();
+      c_.monthKey = monthNow();
+      c_.add(c_.limitMicro, c_.monthKey);
+      std::fprintf(stderr, "[nimbusd] spend: %s did not read back - paid calls paused until the ceiling is raised\n",
+                   path_.c_str());
+      save();
       return;
     }
     c_ = nimbus::orch::SpendCeiling::firstBoot(monthNow(), hadState, 0, telegram_);
     save();
   }
 
-  // Caller holds mu_. Whole-file write through a temporary file and a rename.
+  // Every field the instance has ever written (nine, the last one present): a file cut
+  // short (the old unsynced save on a full volume) parses with its tail read as 0,
+  // which would un-freeze a frozen instance, so it does not count as read back.
+  static bool wholeLine(const std::string& text) {
+    const size_t semi = text.find(';');
+    if (semi == std::string::npos) return false;
+    size_t bars = 0;
+    for (size_t i = semi + 1; i < text.size(); ++i) bars += text[i] == '|';
+    return bars >= 8 && text.back() != '|';
+  }
+
+  // Caller holds mu_. Whole-file write: a temporary file, fsync'd, renamed over the
+  // state only once every byte landed (a full volume leaves the previous good file).
   bool save() {
-    const std::string tmp = path_ + ".tmp";
-    {
-      std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
-      o << c_.serialize();
-      if (!o.good()) { dirty_ = true; return false; }
-    }
-    dirty_ = std::rename(tmp.c_str(), path_.c_str()) != 0;
+    dirty_ = !fsutil::writeFileAtomic(path_, c_.serialize());
     return !dirty_;
   }
 

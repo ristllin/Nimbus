@@ -550,3 +550,8 @@ Notes, all deliberate:
   anything.
 - A small model is honest but limited: expect terse replies and the occasional
   odd spawn. It is a great sub-agent workhorse and a private fallback head.
+- Spend: a keyless endpoint on your own network (a private or loopback address, or
+  a `.local` name) counts as free toward the monthly spend ceiling. Any other host,
+  or any endpoint with a key, is treated as a paid service and counted at the
+  highest built-in price until you set the model's price under Usage > Prices (see
+  [Monthly spend ceiling](spend-ceiling.md#a-custom-endpoint)).

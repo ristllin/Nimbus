@@ -14,7 +14,9 @@
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/harness/reply_overflow.h"   // the whole text of a reply the envelope cut (L19-36)
 #include "nimbus/orch/provider_error.h"   // providerErrLine, oneLineText - the one error-line shape (CUM-620)
+#include "nimbus/orch/seam_meter.h"     // lane QW4: a cancelled job's usage counted
 #include "nimbus/orch/spend_ceiling.h"  // lane DEF: the paid-call gate before any request
+#include "nimbus/orch/token_usage_json.h"   // lane QW4: tokenUsageFromJson - that usage read
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
@@ -129,6 +131,89 @@ inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, int
              nimbus::orch::parkKindSlug(kind), status);
 }
 
+// ---- a cancel always goes out, and what the job spent is counted (lane QW4) -------
+// The two requests that STOP paid work on the provider's side: OpenAI's
+// POST .../v1/responses/<id>/cancel and Anthropic's user.interrupt event
+// (POST .../v1/sessions/<id>/events with nothing but interrupts in it), direct or
+// through the router (".../router/<upstream>/v1/..."). While the monthly ceiling pauses
+// paid calls every other POST is refused before it leaves the device, but refusing a
+// cancel leaves the job billing on the provider's side, so a cancel always goes out.
+// The job engine forgets a cancelled job at once (it is never polled to its end), so
+// the usage the job reached is read right after the cancel, with a free GET of the job
+// itself, and counted toward the ceiling; a read that fails counts the session estimate
+// (fail-closed, never zero).
+enum class CancelKind : uint8_t { None = 0, Response, Session };
+inline constexpr uint32_t kCancelUsageReadMs = 30000;   // the GET of the cancelled job
+struct CancelOf {
+  CancelKind kind = CancelKind::None;
+  std::string jobPath;   // the job's own object: GET it for the usage so far
+};
+
+// True for a path ".../<prefix><id><suffix>" whose id is one non-empty segment.
+inline bool isJobPath(const std::string& path, const char* prefix, const char* suffix) {
+  const size_t at = path.find(prefix);
+  const size_t sl = std::strlen(suffix);
+  if (at == std::string::npos || path.size() < sl ||
+      path.compare(path.size() - sl, sl, suffix) != 0)
+    return false;
+  const size_t from = at + std::strlen(prefix);
+  if (path.size() - sl <= from) return false;
+  return path.find('/', from) >= path.size() - sl;   // no '/' inside the id
+}
+
+// True when every event in an Anthropic events body is a user.interrupt (and there is
+// one): an answer (user.message) starts paid work and is never let through.
+inline bool onlyInterrupts(const std::string& body) {
+  static const char kType[] = "\"type\":\"";
+  static const char kInterrupt[] = "user.interrupt\"";
+  size_t at = body.find(kType), n = 0;
+  for (; at != std::string::npos; at = body.find(kType, at + 1), ++n)
+    if (body.compare(at + sizeof(kType) - 1, sizeof(kInterrupt) - 1, kInterrupt) != 0) return false;
+  return n > 0;
+}
+
+inline CancelOf cancelRequestOf(const char* method, const std::string& path, const std::string& body) {
+  CancelOf c;
+  if (std::strcmp(method, "POST") != 0) return c;
+  const std::string p = path.substr(0, path.find('?'));
+  if (isJobPath(p, "/v1/responses/", "/cancel")) {
+    c.kind = CancelKind::Response;
+    c.jobPath = p.substr(0, p.size() - std::strlen("/cancel"));
+  } else if (isJobPath(p, "/v1/sessions/", "/events") && onlyInterrupts(body)) {
+    c.kind = CancelKind::Session;
+    c.jobPath = p.substr(0, p.size() - std::strlen("/events"));
+  }
+  return c;
+}
+
+inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
+                              const std::vector<std::pair<std::string, std::string>>& headers,
+                              const CancelOf& c);
+
+// Runs meterCancelledJob when exchange() returns from a cancel (every return path),
+// keeping the cancel's own transport record for its caller.
+struct CancelMeterOnExit {
+  const ProviderDeps& pd;
+  const char* host;
+  uint16_t port;
+  bool tls;
+  std::vector<std::pair<std::string, std::string>> headers;   // copied: the request moves its own
+  CancelOf cancel;
+  CancelMeterOnExit(const ProviderDeps& p, const char* h, uint16_t po, bool t,
+                    const std::vector<std::pair<std::string, std::string>>& hd, const CancelOf& c)
+      : pd(p), host(h), port(po), tls(t), cancel(c) {
+    if (cancel.kind != CancelKind::None) headers = hd;
+  }
+  CancelMeterOnExit(const CancelMeterOnExit&) = delete;
+  CancelMeterOnExit& operator=(const CancelMeterOnExit&) = delete;
+  ~CancelMeterOnExit() {
+    if (cancel.kind == CancelKind::None) return;
+    const LastExchange cancelled = lastExchange();
+    meterCancelledJob(pd, host, port, tls, headers, cancel);
+    lastExchange() = cancelled;
+  }
+};
+
 // One provider REST exchange through the transport: complete request in, HTTP
 // status out, response body filter-parsed into `doc` (the same bounded-memory
 // ArduinoJson filter reads the pre-split adapters did from the socket - now
@@ -149,17 +234,23 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   doc.clear();
   lastExchange() = LastExchange{};
   // Lane DEF: the monthly spend ceiling. A request that starts paid work (anything but
-  // a GET poll or a DELETE cancel of work already running) is refused before it leaves
-  // the device - head rounds, sub dispatch, the fold, every provider and the router -
-  // so the freeze never relies on the provider to stop (auto-recharge cannot run away).
-  // Ahead of the bench's scripted answer below, so a fake provider is refused too.
+  // a GET poll, a DELETE, or a cancel of work already running) is refused before it
+  // leaves the device - head rounds, sub dispatch, the fold, every provider and the
+  // router - so the freeze never relies on the provider to stop (auto-recharge cannot
+  // run away). Ahead of the bench's scripted answer below, so a fake provider is
+  // refused too. Lane QW4: a cancel stops spend, so it always goes out (cancelRequestOf).
+  const CancelOf cancel = cancelRequestOf(method, path, body);
   if (std::strcmp(method, "GET") != 0 && std::strcmp(method, "DELETE") != 0 &&
+      cancel.kind == CancelKind::None &&
       !nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Wire)) {
     lastExchange().spendFrozen = true;
     hlog::logf("provider: %s%s refused - %s", host, path.c_str(), nimbus::orch::kSpendFrozenError);
     return 0;
   }
   if (!pd.http) return 0;
+  // Lane QW4: once a cancel was answered (or failed), on whichever return below, the
+  // job's usage so far is read and counted; the caller still reads the cancel's outcome.
+  const CancelMeterOnExit meterAfter(pd, host, port, tls, headers, cancel);
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   {   // test and host builds only: the bench's scripted provider answer
     int ovStatus = 0;
@@ -236,6 +327,79 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     }
   }
   return status;
+}
+
+// Lane QW4: what a cancelled job's own object says it billed: the tokens, the model, and
+// the runs billed per call beside the tokens (OpenAI's web_search_call and
+// code_interpreter_call output items; an Anthropic session's server tool counts).
+struct CancelledBill {
+  nimbus::orch::TokenUsage u;
+  std::string model;
+  uint32_t webRuns = 0;
+  bool container = false;
+  bool worked = false;   // the job lists output: it ran, whatever its usage says
+};
+
+inline CancelledBill openaiJobBill(const JsonDocument& doc) {
+  CancelledBill b;
+  b.u = nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+  b.model = doc["model"] | "";
+  for (ArduinoJson::JsonObjectConst item : doc["output"].as<ArduinoJson::JsonArrayConst>()) {
+    b.worked = true;
+    const std::string ty = item["type"] | "";
+    if (ty == "web_search_call") ++b.webRuns;
+    if (ty == "code_interpreter_call") b.container = true;
+  }
+  return b;
+}
+
+inline CancelledBill anthropicJobBill(const JsonDocument& doc) {
+  CancelledBill b;
+  b.u = nimbus::orch::anthropicSessionUsage(doc["usage"].as<ArduinoJson::JsonVariantConst>());
+  const ArduinoJson::JsonVariantConst m = doc["agent"]["model"];
+  b.model = m.is<const char*>() ? std::string(m.as<const char*>()) : std::string(m["id"] | "");
+  const ArduinoJson::JsonVariantConst tools = doc["usage"]["server_tool_use"];
+  b.webRuns = (tools["web_search_requests"] | 0u) + (tools["web_fetch_requests"] | 0u);
+  return b;
+}
+
+// Lane QW4: the usage a cancelled job reached, read with a GET of the job (it passes
+// the paid-call gate) and counted as the sub-agent's spend. A job that never started
+// (no tokens, no output: a cancelled OpenAI run reports 0/0, as recorded live on
+// 26 Oct 2026) counts nothing, and so does a job the provider no longer has (404, 410);
+// a job that lists output but reports no tokens, or whose read could not be made
+// (no answer, a refused key, a busy or failing provider), counts the session estimate at
+// the provider's price (fail-closed).
+inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
+                              const std::vector<std::pair<std::string, std::string>>& headers,
+                              const CancelOf& c) {
+  JsonDocument filter;
+  filter["usage"] = true;
+  filter["model"] = true;
+  filter["agent"]["model"] = true;
+  filter["output"].add<JsonObject>()["type"] = true;
+  JsonDocument doc;
+  const int code = exchange(pd, host, port, tls, "GET", c.jobPath, headers, std::string(),
+                            kCancelUsageReadMs, doc, filter);
+  CancelledBill b;
+  if (code == 200) b = c.kind == CancelKind::Response ? openaiJobBill(doc) : anthropicJobBill(doc);
+  const bool noTokens = b.u.empty() && !b.u.cacheReadTokens && !b.u.cacheWriteTokens;
+  const bool unread = code <= 0 || code == 401 || code == 403 || code == 429 || code >= 500;
+  const bool estimate = unread || (code == 200 && b.worked && noTokens);
+  if (estimate) {
+    b.u = nimbus::orch::TokenUsage{};
+    b.u.promptTokens = nimbus::orch::kSessionInputEstimateTokens;   // unread or unreported: never zero
+    b.u.responses = 1;
+  }
+  const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(host, c.jobPath.c_str(), b.model.c_str());
+  nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Sub, r.provider.c_str(), r.model.c_str(), b.u);
+  nimbus::orch::meterSubSearchRuns(r.provider.c_str(), b.webRuns);
+  if (b.container)
+    nimbus::orch::meterSeamMicro(nimbus::orch::SpendSeam::Sub, r.provider.c_str(),
+                                 nimbus::orch::kProviderContainerMicro);
+  hlog::logf("provider: cancelled job %s%s counted (%s in=%u out=%u web=%u%s)", host, c.jobPath.c_str(),
+             r.provider.c_str(), (unsigned)b.u.promptTokens, (unsigned)b.u.completionTokens,
+             (unsigned)b.webRuns, estimate ? ", estimated" : "");
 }
 
 // ---- typed step failures (lane K) ------------------------------------------------

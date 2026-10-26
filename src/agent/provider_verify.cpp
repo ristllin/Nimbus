@@ -25,10 +25,17 @@
 #include "../sys/heap_watch.h"    // resting largest block, the worker spawn gate, activity tags
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
+#include "provider_gate.h"        // lane QW4: the probe asks the park and tells it the answer
+#include "nimbus/orch/seam_meter.h"   // lane QW4: meterSeamAnswerBody - the probe is counted
+#include "nimbus/orch/spend_guard.h"  // lane QW4: verifyProbeAllowed, httpBodyOf
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
 #include "workspace_probe.h"       // CUM-537 probe queue + yielding fetch (host-tested)
 #include "model_refresh.h"         // a deferred LLM verify still gets its model list
 #include "nimbus/orch/model_refresh.h"  // kRefreshMinLargest - a list refresh's floor
+
+// The Arduino core's loop task (cores/esp32/main.cpp): the device's own re-checks start
+// there (lane QW4, askedByOwner).
+extern TaskHandle_t loopTaskHandle;
 
 namespace agent {
 namespace provider_verify {
@@ -142,6 +149,9 @@ static DeferralRetry g_retry[kNRetry];
 // A verify refused only because a turn was in flight: the pump starts it once the turn
 // ends (a key save during a turn kicks a verify that must not be dropped).
 static bool g_wantStart[kNRetry] = {};
+// Lane QW4: a start a turn refused that the owner had asked for keeps that standing when
+// the pump restarts it from the loop task.
+static bool g_wantOwner[kNRetry] = {};
 static int retryIdx(const String& provider) {
   for (int i = 0; i < kNRetry; ++i)
     if (provider == kRetryProv[i]) return i;
@@ -180,10 +190,18 @@ static bool (*g_ownerWaiting)() = nullptr;
 static bool g_yielded = false;
 void setOwnerWaiting(bool (*waiting)()) { g_ownerWaiting = waiting; }
 static bool inlineYieldNow() { return inlineRefreshYields(g_inline, g_ownerWaiting && g_ownerWaiting()); }
+// Lane QW4: the claimed task was asked for by the owner (the Verify button, a key saved
+// on the web page: the web server's task). The device's own re-checks (the capability
+// re-verify, the low-memory retries, the router price refill) start on the main loop
+// task, and they never send a paid probe while paid calls are paused or the provider is
+// parked. Written after the claim like g_wsOnly.
+static bool                g_ownerAsked = false;
+static bool askedByOwner() { return xTaskGetCurrentTaskHandle() != loopTaskHandle; }
 
 static void deferLowMemory(const String& provider, uint32_t max8);
 
-static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = false) {
+static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = false,
+                      bool ownerHint = false) {
   bool idle = false;
   if (!g_pending.compare_exchange_strong(idle, true)) return false;  // one verify at a time
   strncpy(g_provider, provider, sizeof(g_provider) - 1);
@@ -191,6 +209,7 @@ static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = fals
   g_wsOnly = wsOnly;
   g_refreshOnly = refreshOnly;
   g_inline = false;
+  g_ownerAsked = ownerHint || askedByOwner();
   // Memory before the stack: never while a turn is in flight, only with room for the
   // stack plus 16 KB, and only when the RESTING largest block clears the handshake
   // floor (a single sample inside a transient read 7,156 B on a device resting at
@@ -209,7 +228,10 @@ static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = fals
     if (wsOnly || refreshOnly) return false;
     const int ri = retryIdx(provider);
     if (sv == nimbus::heapwatch::SpawnVerdict::TurnInFlight) {
-      if (ri >= 0) g_wantStart[ri] = true;
+      if (ri >= 0) {
+        g_wantStart[ri] = true;
+        g_wantOwner[ri] = g_wantOwner[ri] || g_ownerAsked;
+      }
     } else {
       deferLowMemory(provider, resting);
     }
@@ -251,6 +273,7 @@ InlineRun runRefreshHere(const String& provider) {
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = false;
   g_refreshOnly = true;
+  g_ownerAsked = false;   // the device's own refresh: never inherits the last Verify's owner flag
   alogf("verify: %s model list refresh on the Telegram poll task (free %u, resting largest %u)",
         provider.c_str(), (unsigned)freeB, (unsigned)resting);
   nimbus::heapwatch::Scope verifying(nimbus::heapwatch::kVerify);
@@ -549,6 +572,40 @@ static int readProbeResponse(WiFiClientSecure& client, String& errBody, size_t m
   return code;
 }
 
+// The key a probe of `provider` carries (the park is keyed by it).
+static String probeKey(const String& provider) {
+  if (provider == "openai") return store::openaiKey();
+  if (provider == "anthropic") return store::anthropicKey();
+  if (provider == "mistral") return store::mistralKey();
+  return String();
+}
+
+// Lane QW4: what a sent probe cost, counted like every paid call outside a turn (the
+// usage its answer reports when the bounded read holds it, else the high estimate: two
+// characters a token of the request and the whole answer allowance). A refused probe
+// (4xx, 5xx) bills nothing; an answer that never came back may have been billed, so it
+// counts the estimate.
+static void meterProbe(const String& provider, const String& model, int code,
+                       const std::string& raw, size_t requestChars) {
+  if (code != 0 && (code < 200 || code >= 300)) return;
+  const uint32_t outCap = provider == "openai" ? 16 : 1;   // buildProbeRequest's caps
+  const std::string body = code ? nimbus::orch::httpBodyOf(raw) : std::string();
+  nimbus::orch::meterSeamAnswerBody(nimbus::orch::SpendSeam::Wire, provider.c_str(), model.c_str(),
+                                    body.c_str(), requestChars, outCap);
+}
+
+// Lane QW4: a billing refusal or a refused key (401) learned on a probe closes the
+// provider for every seam, and a success ends a park episode, like any paid answer. A
+// 403 or 404 names the one model the key may not use: the probe's own verdict, never a
+// park.
+static void noteProbeAnswer(const String& provider, int code, const std::string& raw) {
+  const bool parkable = code == 401 || (code >= 200 && code < 300) ||
+                        nimbus::orch::parkKindFor(code, raw) == nimbus::orch::ParkKind::Billing;
+  if (code <= 0 || !parkable) return;
+  gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Chat, probeKey(provider), code,
+                   raw.c_str());
+}
+
 static nimbus::orch::ProbeVerdict probeModel(const String& provider, const String& model) {
   const char* host = nullptr;
   String req;
@@ -560,9 +617,27 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
   if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
   client.print(req);
   String errBody;
-  const int code = readProbeResponse(client, errBody);
+  const int code = readProbeResponse(client, errBody, 4096);   // room for the answer's usage
   tlsClose(client);
-  return nimbus::orch::probeVerdict(code, std::string(errBody.c_str()));
+  const std::string raw(errBody.c_str(), errBody.length());
+  const int bodyAt = req.indexOf("\r\n\r\n");
+  meterProbe(provider, model, code, raw, bodyAt >= 0 ? req.length() - (size_t)bodyAt - 4 : req.length());
+  noteProbeAnswer(provider, code, raw);
+  return nimbus::orch::probeVerdict(code, raw);
+}
+
+// Lane QW4: may a paid probe of `provider` go out now? The owner's Verify always may;
+// the device's own re-checks wait while paid calls are paused or the provider is parked
+// (gate::check asks the ceiling first and logs a closed verdict).
+static bool paidProbeAllowed(const String& provider) {
+  if (g_ownerAsked) return true;
+  const bool frozen = nimbus::orch::spendFrozen();
+  const bool open = !frozen && gate::check(provider.c_str(), nimbus::orch::PaidSeam::Chat,
+                                           probeKey(provider)).open;
+  if (nimbus::orch::verifyProbeAllowed(false, frozen, open)) return true;
+  alogf("verify: %s paid probe skipped (%s) - press Verify to run it", provider.c_str(),
+        frozen ? "paid calls are paused" : "the provider is parked");
+  return false;
 }
 
 // Probe the owner's SELECTED models for a provider (bounded to protect the single
@@ -570,6 +645,7 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
 // verdict leaves the model as-is for a later retry; a definitive verdict marks the
 // model probed and sets usable, so an unusable selection stops appearing.
 static void probeSelectedModels(const String& provider) {
+  if (!paidProbeAllowed(provider)) return;
   String cands[2];
   int nc = 0;
   const String om = store::orchModel(provider);
@@ -880,6 +956,13 @@ static void runOne() {
   else if (isTav)                   { host = "api.tavily.com"; key = store::tavilyKey();
                                       path = "/search"; }
   else { g_pending = false; return; }  // web handler validates; defensive
+  // Lane QW4: the Tavily verify is a paid search (1 credit). The device's own retry never
+  // sends it while paid calls are paused; the owner's Verify does, and it is counted.
+  if (isTav && !nimbus::orch::verifyProbeAllowed(g_ownerAsked, nimbus::orch::spendFrozen(), true)) {
+    alogf("verify: tavily skipped (paid calls are paused) - press Verify to run it");
+    g_pending = false;
+    return;
+  }
 
   if (!key.length()) {  // nothing to verify - rejected, no TLS spent
     store::setVerify(provider, 0, (uint32_t)millis());
@@ -975,6 +1058,7 @@ static void runOne() {
               code, host);
         result = zaiVerdict(result, zaiHostKnown);
       }
+      if (isTav && code == 200) store::recordProviderCall("tavily");   // lane QW4: the search it billed
       // vfyReason for the -1 cases (contract in lanes/L1/PROGRESS.md). 402 from the
       // router probe = no credits/subscription; 404 from the cumulo /router/models
       // probe = a router that predates the wave-2 deploy. Any other non-2xx/4xx
@@ -1081,7 +1165,9 @@ static void verifyTask(void*) {
 static bool pumpOneRetry(int i, uint32_t now, uint32_t resting) {
   if (g_wantStart[i]) {
     g_wantStart[i] = false;
-    return request(kRetryProv[i]);
+    const bool owner = g_wantOwner[i];
+    g_wantOwner[i] = false;
+    return startTask(kRetryProv[i], false, false, owner);
   }
   // A list refresh ended the deferral's streak but the owner's full verify is still owed:
   // once memory allows it, it runs (once; a refusal defers it again).

@@ -3804,7 +3804,10 @@ function renderByModel(){
     u.models.filter(has).forEach(x=>{h+=row(_sEsc(_mLabel(p.prov,x.m))+' <span class="'+_bcls(x.src)+'">'+(SRCLBL[x.src]||x.src)+'</span>',
       kt((x.pIn||0)+(x.pOut||0))+' tokens',x.est,x.src==='est');});
     (u.residual||[]).filter(has).forEach(r=>{h+=row('Earlier usage, model not recorded',kt((r.pIn||0)+(r.pOut||0))+' tokens',r.est,r.src==='est');});
-    if(p.calls>0)h+=row('Searches',kt(p.calls)+' calls',pr.callEst,pr.srcCall==='est');});
+    if(p.calls>0)h+=row('Searches',kt(p.calls)+' calls',pr.callEst,pr.srcCall==='est');
+    // A paid custom endpoint with no price of yours counts at the highest built-in rate.
+    if(p.prov==='custom'&&u.models.some(x=>has(x)&&x.src==='est'))
+      h+='<p class=hint style="margin:2px 0 6px">Custom endpoint: an estimate at the highest built-in price until you set its real price under Prices.</p>';});
   box.innerHTML=h+'</div>';
 }
 function loadUsageHistory(){

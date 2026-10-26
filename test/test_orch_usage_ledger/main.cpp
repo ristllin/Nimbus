@@ -21,7 +21,9 @@ using nimbus::orch::ProviderBudget;
 using nimbus::orch::UsageLedger;
 using nimbus::orch::usagePeriodKey;
 
-void setUp() {}
+// Lane QW4: a test that prices a local custom endpoint flips the process-wide switch;
+// every test starts from the default (a paid endpoint).
+void setUp() { nimbus::orch::setCustomEndpointPaid(true); }
 void tearDown() {}
 
 // ---- period key (rolling month with a per-provider reset day) ----------------
@@ -356,7 +358,10 @@ static void test_cost_budget_gates_only_with_rates() {
   // Built-in openai default ~$2.50/M in, ~$10/M out: 750 + 1000 = 1750 cents.
   TEST_ASSERT_EQUAL_UINT64(1750, L.estCents("openai"));
   TEST_ASSERT_TRUE_MESSAGE(L.overBudget("openai"), "D1: built-in estimates arm the $ cap");
-  UsageLedger C;                                              // custom: no price anywhere
+  // A custom endpoint on the local network (lane QW4: a paid host is estimated, never
+  // free): no price anywhere.
+  nimbus::orch::setCustomEndpointPaid(false);
+  UsageLedger C;
   C.setLimits("custom", 0, 0, 1, 1);
   C.recordTokens("custom", 3000000, 1000000, 1);
   TEST_ASSERT_FALSE_MESSAGE(C.overBudget("custom"), "nothing priced -> must not gate");
@@ -544,8 +549,11 @@ static void test_rate_resolution_is_per_field() {
   r = L.effectiveRate("cumulo", "openai/gpt-5.6");
   TEST_ASSERT_EQUAL((int)RateSrc::Owner, (int)r.srcIn);       // the owner beats the router
   TEST_ASSERT_EQUAL((int)RateSrc::Router, (int)r.srcOut);
-  // Custom has no built-in price: none.
+  // A custom endpoint on the local network has no built-in price: none (lane QW4: a
+  // paid host reads the highest built-in estimate instead).
+  nimbus::orch::setCustomEndpointPaid(false);
   r = L.effectiveRate("custom", "llama3.1:8b");
+  nimbus::orch::setCustomEndpointPaid(true);
   TEST_ASSERT_EQUAL((int)RateSrc::None, (int)r.src());
   TEST_ASSERT_EQUAL_STRING("none", nimbus::orch::rateSrcName(r.src()));
   TEST_ASSERT_EQUAL_STRING("est", nimbus::orch::rateSrcName(RateSrc::BuiltinProv));
@@ -1908,7 +1916,9 @@ static void test_d1_arming_none_saturation_and_dated_ungate() {
   TEST_ASSERT_EQUAL_UINT64(800, L.estCents("tavily"));
   TEST_ASSERT_TRUE(L.overCostBudget("tavily"));   // armed by the built-in call price
   TEST_ASSERT_TRUE(L.anyPriced("tavily"));
-  // Nothing priced: never trips, however large the spend.
+  // Nothing priced (a custom endpoint on the local network; lane QW4): never trips,
+  // however large the spend.
+  nimbus::orch::setCustomEndpointPaid(false);
   UsageLedger N;
   N.setLimits("custom", 0, 0, 1, 1);
   turn(N, "custom", "llama3.1:8b", 900000000, 900000000);

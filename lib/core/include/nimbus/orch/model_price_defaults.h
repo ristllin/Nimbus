@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -15,7 +16,9 @@
 // A per-slot '*' row is that provider's default for any other model: it carries the
 // per-provider defaults the web page used to hold client-side (openai 2.5/10,
 // anthropic 3/15, mistral 2/6, zai glm-5.3 1.4/4.4, tavily $8 per 1000 searches).
-// Custom endpoints have none (a LAN model is often free; the owner prices it).
+// A custom endpoint has no row of its own: one on a paid host is estimated at the
+// highest price of every row (builtinCustomPaidRow) until the owner prices it, and
+// one on the device's own network (a LAN model, often free) costs nothing.
 
 namespace nimbus {
 namespace orch {
@@ -92,11 +95,42 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
 };
 inline constexpr size_t kBuiltinPriceCount = sizeof(kBuiltinPrices) / sizeof(kBuiltinPrices[0]);
 
-// The provider-default ('*') row of a slot, or nullptr (custom, unknown).
+// ---- the custom endpoint (fail-closed money) ---------------------------------------
+// A custom endpoint is any OpenAI-compatible host the owner names: a model on their own
+// network (often free) or a paid service (OpenRouter, Together, ...) whose prices the
+// device cannot know. The device classifies the configured base URL
+// (customEndpointIsLocal, spend_guard.h) and sets this switch; until it has, and for any
+// host that is not on its own network, the endpoint is PAID: every token it reports is
+// estimated at the highest built-in price of any provider, never 0, so its spend reaches
+// the monthly ceiling. An owner price for the model (Usage > Prices) wins over it.
+inline std::atomic<bool>& customEndpointPaidSwitch() {
+  static std::atomic<bool> paid{true};
+  return paid;
+}
+inline void setCustomEndpointPaid(bool paid) { customEndpointPaidSwitch().store(paid); }
+inline bool customEndpointPaid() { return customEndpointPaidSwitch().load(); }
+inline bool isCustomSlot(const char* slot) { return slot && std::strcmp(slot, "custom") == 0; }
+
+// The paid custom endpoint's estimate: per field, the highest price of every row.
+inline const BuiltinPrice* builtinCustomPaidRow() {
+  static const BuiltinPrice row = [] {
+    BuiltinPrice r{"custom", "*", 0, 0, 0};
+    for (const BuiltinPrice& p : kBuiltinPrices) {
+      if (p.microIn > r.microIn) r.microIn = p.microIn;
+      if (p.microOut > r.microOut) r.microOut = p.microOut;
+    }
+    return r;
+  }();
+  return &row;
+}
+
+// The provider-default ('*') row of a slot, or nullptr (unknown, a local custom
+// endpoint). A paid custom endpoint reads builtinCustomPaidRow.
 inline const BuiltinPrice* builtinSlotDefault(const char* slot) {
   if (!slot) return nullptr;
   for (const BuiltinPrice& p : kBuiltinPrices)
     if (std::strcmp(p.slot, slot) == 0 && std::strcmp(p.family, "*") == 0) return &p;
+  if (isCustomSlot(slot) && customEndpointPaid()) return builtinCustomPaidRow();
   return nullptr;
 }
 
@@ -151,12 +185,13 @@ inline const BuiltinPrice* builtinDefaultPrice(const char* prov, const char* key
 }
 
 // The highest built-in token price, per field, of any row `prov` can be priced from:
-// its own slot, or every slot for Cumulo (whose keys read their upstream's rows).
-// 0 when there is none (custom).
+// its own slot, or every slot for Cumulo (whose keys read their upstream's rows) and
+// for a paid custom endpoint. 0 when there is none (a local custom endpoint).
 inline void builtinHighestPrice(const char* prov, uint32_t& microIn, uint32_t& microOut) {
   microIn = microOut = 0;
   if (!prov) return;
-  const bool anySlot = std::strcmp(prov, "cumulo") == 0;
+  if (isCustomSlot(prov) && !customEndpointPaid()) return;
+  const bool anySlot = std::strcmp(prov, "cumulo") == 0 || isCustomSlot(prov);
   for (const BuiltinPrice& p : kBuiltinPrices) {
     if (!anySlot && std::strcmp(p.slot, prov) != 0) continue;
     if (p.microIn > microIn) microIn = p.microIn;
@@ -166,8 +201,8 @@ inline void builtinHighestPrice(const char* prov, uint32_t& microIn, uint32_t& m
 
 // The price of a model with NO row of its own (owner ruling R4, fail-closed money):
 // per field, the highest built-in price of the slot it is priced from - a Cumulo key
-// "<upstream>/<bare>" reads its upstream's rows, any other Cumulo key every slot. 0 when
-// the slot has no rows (custom).
+// "<upstream>/<bare>" reads its upstream's rows, any other Cumulo key (and a paid custom
+// endpoint) every slot. 0 for a local custom endpoint.
 inline void builtinUnknownPrice(const char* prov, const char* key, uint32_t& microIn,
                                 uint32_t& microOut) {
   char up[kModelKeyCap];

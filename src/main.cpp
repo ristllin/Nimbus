@@ -858,6 +858,17 @@ static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   }
 }
 
+// Lane QW4: replies the sink handed to Telegram for the chat whose message is being
+// handled (orchOnMessage names it by a hash, 0 between messages). A send to any other
+// chat, from any task, never counts as that message's answer.
+static std::atomic<uint32_t> g_turnChatHash{0};
+static std::atomic<uint32_t> g_turnChatSends{0};
+static uint32_t chatHash(const String& chatId) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < chatId.length(); ++i) h = (h ^ (uint8_t)chatId[i]) * 16777619u;
+  return h ? h : 1;
+}
+
 // SendSink: deliver an orchestrator reply to the owner over Telegram. Thread-safe
 // queue on the device; returns false when Telegram isn't provisioned OR the reply
 // queue is full, so the orchestrator can log a dropped message instead of losing it
@@ -905,6 +916,7 @@ static bool orchSendSink(const String& chatId, const String& text) {
     }
     return true;
   }
+  if (chatHash(chatId) == g_turnChatHash.load()) g_turnChatSends.fetch_add(1);   // lane QW4
   return agent::telegram::send(chatId, text);
 }
 
@@ -925,15 +937,19 @@ static void sendSdOutageNotice() {
 }
 
 // Lane DEF: the monthly spend ceiling's owner notices (the poll task). Telegram goes to
-// the owner chat (kept owed while the bot is off or has no owner yet); the web chat
-// gets a history row the page renders plus an async delivery an open page re-reads.
-// The device screen's line is drawn from the state itself (fillVoiceCtx).
+// the owner chat (kept owed while the bot is off, has no owner yet or its reply queue is
+// full); the web chat gets a history row the page renders plus an async delivery an open
+// page re-reads. The device screen's line is drawn from the state itself (fillVoiceCtx).
+// Lane QW4: the owner chat is the one every device notice uses (telegram::ownerChat: the
+// first explicit owner still on the allowlist). The reply queue can still lose a queued
+// notice (retries exhausted, a restart), so it is never the only word: every Telegram
+// message the pause leaves unanswered gets the short reply (orchOnMessage).
 static void spendNoticePump() {
   using nimbus::orch::NoticeChannel;
   std::string text;
   if (agent::telegram::enabled()) {
     const agent::spend::Owed k = agent::spend::nextNotice(NoticeChannel::Telegram, text);
-    const String owner = k.any() ? agent::orchestrator::firstAllowedChat() : String();
+    const String owner = k.any() ? agent::telegram::ownerChat() : String();
     if (owner.length() && agent::telegram::send(owner, String(text.c_str()), /*block=*/false))
       agent::spend::delivered(NoticeChannel::Telegram, k);
   }
@@ -971,6 +987,19 @@ static void orchSpeakSink(const String& text) {
   agent::voicereply::deliver(chat, text);   // logs the receipt, or why nothing arrived
 }
 
+// Lane QW4: a Telegram message the device left unanswered because the overall spend
+// ceiling holds (the engine refuses the turn and sends nothing, so the notice pump's one
+// notice is the owner's only word, and a queued notice can be lost) gets the short reply
+// saying so, every time. A message something already answered (a command, a failure
+// reply) gets nothing more.
+static void answerIfPaused(const String& chatId, bool answered) {
+  const std::string text = agent::spend::frozenReplyFor(std::string(chatId.c_str()), answered);
+  if (text.empty()) return;
+  const bool queued = agent::telegram::send(chatId, String(text.c_str()), /*block=*/false);
+  agent::alogf("spend: a message went unanswered while paid calls are paused - told %s (%s)",
+               chatId.c_str(), queued ? "queued" : "reply queue full");
+}
+
 // Incoming Telegram message -> one orchestrator turn (runs on the poll task, with
 // the Telegram TLS socket already closed by the client).
 static void orchOnMessage(const String& from, const String& chatId,
@@ -984,11 +1013,16 @@ static void orchOnMessage(const String& from, const String& chatId,
     std::lock_guard<std::mutex> lk(g_webChatMx);
     g_webChat.begin(std::string(text.c_str(), text.length()));
   }
+  g_turnChatHash.store(chatHash(chatId));
+  const uint32_t sentBefore = g_turnChatSends.load();
   agent::orchestrator::handleMessage(text, from, chatId);
+  const bool answered = g_turnChatSends.load() != sentBefore;
+  g_turnChatHash.store(0);
   if (web) {
     std::lock_guard<std::mutex> lk(g_webChatMx);
     g_webChat.end();
   }
+  answerIfPaused(chatId, answered);
 }
 
 // TickCallback: advance background jobs once per poll cycle; returns active count.

@@ -10,6 +10,7 @@
 #include "../sys/psram_static.h"   // psramOrInternalCalloc - the park's records in PSRAM
 #include "orchestrator.h"   // inScheduledTurn, firstAllowedChat - the daily spend notice
 #include "store.h"          // modelRankPrice - the ledger's prices (CUM-708)
+#include "nimbus/orch/spend_ceiling.h"  // spendFrozen - the freeze reaches the park first
 #include "nimbus/orch/usage_ledger.h"   // setRankPriceSource
 #include "telegram.h"       // send - the daily spend notice
 
@@ -20,13 +21,23 @@ namespace orch = nimbus::orch;
 
 constexpr const char* kParkPath = "/data/provpark.txt";
 
-// The park's flash file: 1 = read, 0 = none yet, -1 = storage not mounted (the park
-// asks again on its next call, so a park learned before a restart is never lost to
-// an early question).
+// The park's flash file: 1 = read, 0 = none yet, -1 = storage not ready (the park asks
+// again on its next call, so a park learned before a restart is never lost to an early
+// question). Lane QW4: a file that exists but would not open is "not ready", never "none
+// yet" - read as none, the park's next save would overwrite the refusals it holds.
 int loadPark(std::string& blob) {
   if (!agent::flashMounted()) return -1;
+  if (!LittleFS.exists(kParkPath)) return 0;
   File f = LittleFS.open(kParkPath, "r");
-  if (!f) return 0;
+  if (!f) {
+    static uint32_t s_lastLog = 0;   // once a minute: the park asks on every request
+    const uint32_t now = (uint32_t)millis();
+    if (s_lastLog == 0 || now - s_lastLog > 60000) {
+      s_lastLog = now ? now : 1;
+      alog("park: the provider park file would not open - asking again on the next request");
+    }
+    return -1;
+  }
   const String s = f.readString();
   f.close();
   blob.assign(s.c_str(), s.length());
@@ -68,6 +79,12 @@ const bool kStorageRegistered = [] {
 
 orch::ParkVerdict check(const char* provider, orch::PaidSeam seam, const String& key) {
   (void)kStorageRegistered;
+  // Lane QW4: the park holds the spend ceiling's freeze only once the ceiling store has
+  // reported it, and the seams that ask the park alone (embeddings, speech, the
+  // download scan, images) can run before any turn did (a voice note in the boot
+  // backlog, the embedding backfill). Ask the ceiling first: it loads its file and hands
+  // the park the current freeze before the park answers.
+  (void)nimbus::orch::spendFrozen();
   const orch::ParkVerdict v = orch::providerPark().available(
       provider, seam, orch::parkKeyFingerprint(std::string(key.c_str())), (uint32_t)millis());
   if (v.probe) alogf("park: %s re-check due - one probe request (%s)", provider, orch::paidSeamSlug(seam));

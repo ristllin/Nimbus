@@ -19,7 +19,11 @@
 // Loaded lazily once the file area is mounted (Orchestrator mode). The first load on a
 // device with no file is the first boot on this release: a device that already spent
 // (its usage ledger has history) starts this month's counts from the ledger's estimates
-// and owes the owner one notice (naming its provider limits when it has any).
+// and owes the owner one notice (naming its provider limits when it has any). With no
+// clock yet (a new device before its first time sync) the counts load anyway, into a
+// provisional month with the ceiling enforced at once; the ledger's part, which needs
+// the date, is added when the clock is set (fail-closed: once the file area is mounted,
+// the clock never opens a window with no ceiling).
 //
 // Thread-safe: the turn task commits spend, the web task edits the limits and reads the
 // state, the Telegram poll task (orchTick) rolls the periods and pumps the notices, and
@@ -84,6 +88,13 @@ void delivered(nimbus::orch::NoticeChannel ch, const Owed& owed);
 // The device screen's line while the overall ceiling holds: the title ("" when not
 // frozen) and its detail. Lock-free (the watched main loop calls it every frame).
 std::string screenLine(std::string& detail);
+
+// Lane QW4: the short reply owed to a message on `chatId` that just finished: "" unless
+// `chatId` is a Telegram chat, the overall ceiling holds and nothing was sent to it while
+// the message was handled (`answered`). The notice pump says it once per pause; this
+// answers every message the pause leaves unanswered, so a lost notice never leaves the
+// bot silent.
+std::string frozenReplyFor(const std::string& chatId, bool answered);
 
 // The state for /api/state and /api/orch: {"limitCents":..,"spentCents":..,"frozen":..,
 // "ownerSet":..,"active":..,"month":..,"resetsOn":"..","saved":..,"loaded":..,

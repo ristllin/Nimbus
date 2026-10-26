@@ -296,7 +296,11 @@ rest could not be saved, and why; the cut is never presented as the whole report
 metered: OpenAI's terminal poll carries its usage, a finished Anthropic session's usage
 is read once from `GET /v1/sessions/<id>`, and the synchronous subs (Mistral, Z.ai,
 Cumulo, custom) are metered at their one request; the web searches a sub runs on its
-provider count too (see [Monthly spend ceiling](spend-ceiling.md)). An
+provider count too (see [Monthly spend ceiling](spend-ceiling.md)). Stopping a running
+OpenAI or Anthropic sub (`session.terminate`, or the assistant ending it) always sends
+the cancel, even while paid calls are paused, and the job is read back once right after
+it (a free `GET` of the response or session) so what it spent until then is counted; a
+read that fails counts the session estimate. An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.
