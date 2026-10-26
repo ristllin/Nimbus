@@ -67,6 +67,7 @@
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
+#include "nimbus/orch/owner_first.h"    // OwnerFirstGate - background work waits for the owner
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
 #include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
 #include "nimbus/orch/trace_rows.h"    // the tool trace row + the lost-sidecar mark (L19-24)
@@ -127,6 +128,9 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
+// Background work (an auto fold, the staged system turn) starts only when nobody is
+// waiting (owner_first.h): onTurnEnd and pollJobs feed it, tg_poll only.
+static nimbus::orch::OwnerFirstGate g_ownerFirst;
 // Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
 static std::atomic<uint32_t> s_voiceHandled{0};
 static std::atomic<bool>     s_voiceOk{false};
@@ -1447,6 +1451,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
     nimbus::crash::turnEnded();   // the turn finished: no crash notice will name it
+    g_ownerFirst.noteTurnEnd(millis());   // the next pump pass waits for a Telegram poll first
     // Hold-to-talk (CUM-456): the voice message's own turn answered? A salvaged
     // reply (parse failed, text recovered) still answered the owner; the honest
     // failure paths deliver their own line and pass 0 bytes.
@@ -2230,6 +2235,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // handoff as the telegram token swap. One slot; the latest stager wins.
 static char          (&s_sysTurnPrompt)[512] = ::nimbus::psramStatic<char[512]>();   // PSRAM
 static char          s_sysTurnName[32] = {};
+static uint32_t      s_sysTurnStagedAt = 0;   // millis() when staged (owner_first.h quiet window)
 static volatile bool s_sysTurnPending = false;
 static portMUX_TYPE  s_sysTurnMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -2239,12 +2245,21 @@ void stageSystemTurn(const String& prompt, const String& name) {
   s_sysTurnPrompt[sizeof(s_sysTurnPrompt) - 1] = 0;
   strncpy(s_sysTurnName, name.c_str(), sizeof(s_sysTurnName) - 1);
   s_sysTurnName[sizeof(s_sysTurnName) - 1] = 0;
+  s_sysTurnStagedAt = millis();
   s_sysTurnPending = true;
   portEXIT_CRITICAL(&s_sysTurnMux);
 }
 
+// The staged turn yields to the owner (owner_first.h): it stays staged until a pump
+// pass follows a Telegram poll that found nobody waiting, and the owner has been
+// quiet for two minutes. It then runs bounded (TurnBounds: two tool rounds, a small
+// tool-output budget, single-shot on a fallback head), never the owner's 8-round loop.
 static void drainSystemTurn() {
   if (!s_sysTurnPending) return;
+  portENTER_CRITICAL(&s_sysTurnMux);
+  const uint32_t stagedAt = s_sysTurnStagedAt;
+  portEXIT_CRITICAL(&s_sysTurnMux);
+  if (!g_ownerFirst.systemTurnMayStart(telegram::guardStatus().holding, millis(), stagedAt)) return;
   String prompt, name;
   portENTER_CRITICAL(&s_sysTurnMux);
   prompt = s_sysTurnPrompt; name = s_sysTurnName;
@@ -2252,7 +2267,8 @@ static void drainSystemTurn() {
   portEXIT_CRITICAL(&s_sysTurnMux);
   String chat = firstAllowedChat();
   if (chat.length() == 0 || !g_engine) return;   // nowhere to deliver - drop quietly
-  injectScheduledTurn(chat, prompt, name, "system", /*quietOk=*/true);
+  g_engine->injectBoundedTurn(std::string(chat.c_str()), std::string(prompt.c_str()),
+                              std::string(name.c_str()), agent::TurnEngine::TurnBounds{});
 }
 
 #ifdef NIMBUS_TEST
@@ -2453,6 +2469,10 @@ static void compactTick() {
   portEXIT_CRITICAL(&g_foldSpin);
   if (!manual && g_lastTurnChat[0]) chat = g_lastTurnChat;
   if (chat.empty()) return;
+  // An auto fold never holds up the owner (owner_first.h): it waits for a pass that
+  // follows a Telegram poll which found nobody waiting. A manual /compact is owner
+  // work and runs at once.
+  if (!manual && !g_ownerFirst.backgroundMayStart(telegram::guardStatus().holding)) return;
 
   // Pseudo channels (web/serial/voice) hold ONE reply slot: any async fold
   // notice lands in it and offsets the request/reply pairing by one (live-
@@ -2465,11 +2485,12 @@ static void compactTick() {
   } else {
     const uint32_t kb = store::compactAtKB();
     FoldDue due = g_folds.evaluateDue(chat, kb * 1024u, nimbus::orch::kFoldMsgsThreshold);
-    if (due == FoldDue::ThrashPaused) {
+    if (due == FoldDue::ThrashPaused) {   // a real refill only (evaluateDue)
       if (!pseudo)
         deliver(String(chat.c_str()),
-                String("\xE2\x9A\xA0 Conversation compaction paused for this chat - it "
-                       "kept refilling immediately. Send /compact to run it manually."),
+                String("\xE2\x9A\xA0 Automatic summaries are paused for this chat because the "
+                       "conversation grew too long again right after the last one. Send /compact "
+                       "to summarize it now."),
                 /*system=*/true);
       return;
     }
@@ -2617,6 +2638,7 @@ int pollJobs() {
   int n = g_jobs->pump();
   refreshSessionSnapshot();  // mirror the post-pump journal for AsyncTCP readers (F24)
   compactTick();             // v3.6.0 fold pump (after loops consumed their usage)
+  g_ownerFirst.notePumpEnd();   // the next pass follows this cycle's Telegram poll
   return n;
 }
 

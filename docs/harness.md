@@ -95,7 +95,9 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
     /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])
   → host pick (resolveHeadHost: a keyed orchHost, else the first keyed provider) + per-chat conv chain
   → budget gate → head tool loop (≤8 rounds / 600 s wall clock / heap re-gate
-    / byte budgets; each round's socket timeout clamped to the REMAINING budget)
+    / byte budgets; each round's socket timeout clamped to the REMAINING budget;
+    a round whose request would outgrow the 85 KB body budget folds the older
+    tool rounds to one-line stubs and runs again, so a long loop still answers)
       round: model → tool calls → registry dispatch (memory.*, web.search,
       device.control, files.*, loop.*, session terminate…) → results fed back;
       thinking + merged tool rows captured to episodic (glass box)
@@ -274,6 +276,12 @@ a quiet background turn; the next owner turn says it).
   back and logged instead of sent; the outcome is recorded where the owner reads
   it later (the timeline row, the routine's last error). A turn's own reply still
   delivers if the model decides the owner must see it.
+- **The post-update awareness turn is bounded and waits for the owner**
+  (`TurnEngine::injectBoundedTurn`, `nimbus/orch/owner_first.h`): at most two
+  tool rounds and a 4 KB tool-output budget, and single-shot (no tool loop)
+  while the head runs on a fallback provider. It runs only after the owner has
+  been quiet for two minutes and a Telegram poll found no message waiting; an
+  automatic fold waits for such a poll too. Owner turns never wait on either.
 - **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
   `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
   at both the apply layer and the tool-dispatch seam, because sub-agent results

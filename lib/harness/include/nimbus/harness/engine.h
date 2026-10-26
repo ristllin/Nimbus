@@ -322,6 +322,23 @@ class TurnEngine {
                                                 bool once = false,
                                                 bool ownerReminder = false);
 
+  // A quiet system turn held to tighter bounds than the owner's loop config
+  // (v4.6.1: the post-update awareness turn ran the full 8-round loop on Lumi,
+  // 167K input tokens, and failed): at most `maxRounds` tool rounds, a small
+  // tool-output budget (each later request grows by at most that much), and no
+  // tool loop at all (single-shot) while the head is on a fallback provider.
+  struct TurnBounds {
+    int maxRounds = 2;
+    size_t maxToolBytes = 4096;     // the whole turn's tool output
+    size_t maxResultBytes = 2048;   // one tool result
+    bool singleShotOnFallback = true;
+  };
+  nimbus::orch::FireOutcome injectBoundedTurn(const std::string& chatId, const std::string& prompt,
+                                              const std::string& name, const TurnBounds& bounds);
+  // The configured head is not where a turn would run now: it is over its token
+  // budget, parked or paused, so the turn fails over to another provider.
+  bool headOnFallback() const;
+
   // The auto-synthesis (consolidation) turn - wired as the JobEngine's
   // synthesize closure by the device.
   void maybeConsolidate(const std::string& chatId);
@@ -568,6 +585,11 @@ class TurnEngine {
   // injectScheduledTurn "loop:<id>") and reset to the owner default after.
   std::string attribution_ = "turn";
   TurnSource  turnSource_ = TurnSource::Owner;
+  // The bounds of the turn in flight (injectBoundedTurn), when bounded_.
+  TurnBounds bounds_;
+  bool bounded_ = false;
+  bool boundedSingleShot() const { return bounded_ && bounds_.singleShotOnFallback && headOnFallback(); }
+  static void boundLoop(nimbus::orch::HeadLoopConfig& cfg, const TurnBounds& b);
 
   nimbus::orch::TokenUsage sessionUsage_;   // running sum of billed tokens since boot
   uint32_t                 turnCount_ = 0;  // non-empty turns since boot

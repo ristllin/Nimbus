@@ -435,6 +435,7 @@ void TurnEngine::setHeadArc(bool lit) {
 // corrupted by recall's transient dip; the out-of-band callers below pass live
 // heap, which is fine - they are describing capability, not gating a turn.
 bool TurnEngine::loopActiveAt(uint32_t heap) const {
+  if (boundedSingleShot()) return false;   // a bounded turn on a fallback head: no loop
   // +2000 (was +6000): a tool round's INTERNAL cost is a few hundred bytes (the
   // body/JSON are PSRAM-routed), so the old 34 KB gate silently dropped the loop to
   // single-shot on basically every turn in the 28-34 KB band. See docs/memory-model.md.
@@ -442,6 +443,24 @@ bool TurnEngine::loopActiveAt(uint32_t heap) const {
          heap > (t_.loopMinHeap + 2000U);
 }
 bool TurnEngine::loopActiveNow() const { return loopActiveAt(freeHeap()); }
+
+bool TurnEngine::headOnFallback() const {
+  const std::string host = resolveTurnHost(d_);
+  if (host.empty()) return false;
+  return (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(host)) || d_.hosts.isParked(host);
+}
+
+namespace {
+// The tighter of a configured cap and a bound (0 = unlimited on either side).
+size_t tighterCap(size_t cfg, size_t bound) { return bound && (!cfg || bound < cfg) ? bound : cfg; }
+}  // namespace
+
+// A bounded turn's loop: the tighter of each cap (injectBoundedTurn).
+void TurnEngine::boundLoop(orch::HeadLoopConfig& cfg, const TurnBounds& b) {
+  if (b.maxRounds >= 0 && b.maxRounds < cfg.maxRounds) cfg.maxRounds = b.maxRounds;
+  cfg.maxTotalToolBytes = tighterCap(cfg.maxTotalToolBytes, b.maxToolBytes);
+  cfg.maxToolResultBytes = tighterCap(cfg.maxToolResultBytes, b.maxResultBytes);
+}
 
 // CUM-536: what a tool call gets on a turn that stores nothing in long-term
 // memory, "" when the call stores nothing. memory.update stores new content too
@@ -1120,7 +1139,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // to a single-shot turn (still fully functional - no tools mid-turn) and tell
   // the model why, rather than risk a mid-loop OOM. The ~2x round floor margin
   // keeps this rare on the SD-mounted firmware (~30 KB at turn time).
-  if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn)
+  if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn && boundedSingleShot())
+    hlog::logf("orchestrator: tool-loop OFF - a bounded turn on a fallback head runs single-shot");
+  else if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn)
     hlog::logf("orchestrator: tool-loop DEFERRED - low entry heap %u (single-shot this turn)",
                (unsigned)heapAtEntry);
   if (loopOnThisTurn) {
@@ -1308,6 +1329,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // legacy constants so their pins stay meaningful.
     headTools.cfg.maxToolResultBytes = d_.cfg.loop.resultCap ? budget.toolResultBytes : 4096;
     headTools.cfg.maxTotalToolBytes  = d_.cfg.loop.totalCap ? budget.toolTotalBytes : 24576;
+    if (bounded_) boundLoop(headTools.cfg, bounds_);   // a bounded turn takes the tighter caps
     if (d_.spillResult)
       headTools.spill = [this, loopWho](const orch::HeadToolResult& full) {
         return d_.spillResult(full.name, full.output, loopWho.ns);
@@ -2130,6 +2152,15 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
+
+nimbus::orch::FireOutcome TurnEngine::injectBoundedTurn(const std::string& chatId, const std::string& prompt,
+                                                        const std::string& name, const TurnBounds& bounds) {
+  bounds_ = bounds;
+  bounded_ = true;
+  const nimbus::orch::FireOutcome o = injectScheduledTurn(chatId, prompt, name, "system", /*quietOk=*/true);
+  bounded_ = false;
+  return o;
+}
 
 nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& chatId,
                                                           const std::string& prompt,
