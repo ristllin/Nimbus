@@ -61,9 +61,11 @@ std::vector<std::string> pausedProviders(const LimitsView& v) {
 }
 
 std::string pausedLine(const LimitsView& v) {
-  if (v.frozen) return "Paused now: every provider, because the overall ceiling is reached.";
   std::vector<std::string> items;
   for (const std::string& p : pausedProviders(v)) items.push_back(NameOf(p) + " (" + pauseReason(v, p) + ")");
+  if (v.frozen)
+    return "Paused now: every provider, because the overall ceiling is reached." +
+           (items.empty() ? std::string() : " Also paused on their own: " + joinList(items) + ".");
   return items.empty() ? std::string("Nothing is paused.") : "Paused now: " + joinList(items) + ".";
 }
 
@@ -98,32 +100,44 @@ std::string hintLine(const LimitsView& v) {
 
 // What a change does to paid calls. `now`: it was applied (present tense), else it
 // waits for the confirmation.
-std::vector<std::string> providerEffects(const BudgetPlan& p, const LimitsView& v, bool now) {
-  std::vector<std::string> out;
+// The target provider's own pause before and after its limit changes ("" when neither).
+std::string targetEffect(const BudgetPlan& p, const LimitsView& v, const std::string& when) {
   const std::string name = NameOf(p.req.target);
-  const std::string when = now ? " now." : " once it is applied.";
-  const std::string other = pauseReason(v, p.req.target, /*withLimit=*/false);
-  if (p.req.verb == BudgetVerb::Off) out.push_back(name + (now ? " has" : " will have") + " no monthly limit.");
   if (p.targetFrozenBefore && !p.targetFrozenAfter) {
-    if (p.overallFrozenAfter)
-      out.push_back(name + " stays paused: the overall ceiling is reached.");
-    else if (!other.empty())
-      out.push_back(name + " stays paused for another reason: " + other + ".");
-    else
-      out.push_back("Paid calls to " + nameOf(p.req.target) + " resume" + when);
-  } else if (!p.targetFrozenBefore && p.targetFrozenAfter) {
-    out.push_back("Paid calls to " + nameOf(p.req.target) + " pause" + when +
-                  " This month's spend is already at or over the new limit.");
-  } else if (p.targetFrozenAfter) {
-    out.push_back(name + " stays paused: this month's spend is already over the new limit.");
+    const std::string other = pauseReason(v, p.req.target, /*withLimit=*/false);
+    if (p.overallFrozenAfter) return name + " stays paused: the overall ceiling is reached.";
+    if (!other.empty()) return name + " stays paused for another reason: " + other + ".";
+    return "Paid calls to " + nameOf(p.req.target) + " resume" + when;
   }
-  if (!p.overallActiveBefore && p.overallActiveAfter) {
-    std::string s = "With no provider limits left, the overall ceiling of " + formatUsd(p.overallLimitAfter) +
-                    " applies again";
-    s += p.overallFrozenAfter ? ", and this month's spend is over it, so paid calls to every provider pause" + when
-                              : std::string(".");
-    out.push_back(s);
-  }
+  if (!p.targetFrozenBefore && p.targetFrozenAfter)
+    return "Paid calls to " + nameOf(p.req.target) + " pause" + when +
+           " This month's spend is already at or over the new limit.";
+  if (p.targetFrozenAfter) return name + " stays paused: this month's spend is already over the new limit.";
+  return std::string();
+}
+
+// What the overall ceiling does around a provider change ("" when nothing to say).
+std::string overallAroundProvider(const BudgetPlan& p, const LimitsView& v, const std::string& when) {
+  if (!p.overallActiveBefore && p.overallActiveAfter)
+    return "With no provider limits left, the overall ceiling of " + formatUsd(p.overallLimitAfter) +
+           " applies again" +
+           (p.overallFrozenAfter ? ", and this month's spend is over it, so paid calls to every provider pause" + when
+                                 : std::string("."));
+  // The overall ceiling holds before and after: say so (unless the target's line did).
+  const bool toldOverall = p.targetFrozenBefore && !p.targetFrozenAfter;
+  if (p.overallFrozenBefore && p.overallFrozenAfter && !toldOverall)
+    return "Every provider stays paused: the overall ceiling is reached. Send " +
+           liftCommand(kBudgetAll, v.limitMicro, v.spentMicro) + " to raise it.";
+  return std::string();
+}
+
+std::vector<std::string> providerEffects(const BudgetPlan& p, const LimitsView& v, bool now) {
+  const std::string when = now ? " now." : " once it is applied.";
+  std::vector<std::string> out;
+  if (p.req.verb == BudgetVerb::Off)
+    out.push_back(NameOf(p.req.target) + (now ? " has" : " will have") + " no monthly limit.");
+  for (const std::string& line : {targetEffect(p, v, when), overallAroundProvider(p, v, when)})
+    if (!line.empty()) out.push_back(line);
   return out;
 }
 
@@ -204,7 +218,7 @@ std::string lastLine(const ModelFacts& f) {
 
 std::string modelPausedLine(const ModelFacts& f) {
   const LimitsView& v = f.limits;
-  if (v.frozen) return "Paused now: every provider, because the overall ceiling is reached.";
+  if (v.frozen) return pausedLine(v);
   std::vector<std::string> items;
   bool headPaused = false;
   for (const std::string& p : pausedProviders(v)) {

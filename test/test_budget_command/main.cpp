@@ -297,6 +297,13 @@ static void test_the_overall_ceiling_plans() {
   TEST_ASSERT_TRUE(text.find("Turn on an overall monthly ceiling of $30.00?") == 0);
   TEST_ASSERT_TRUE(text.find("so paid calls to every provider pause once it is applied") != std::string::npos);
   TEST_ASSERT_TRUE(text.find("Your provider limits keep applying as well.") != std::string::npos);
+  // A provider raise while the overall ceiling holds says every provider stays paused.
+  LimitsView both = defaultView(2013 * kCent);
+  both.ownerSet = true;   // with provider limits set, only an owner-set ceiling stays on
+  both.rows = {{"mistral", 5 * kUsd, 1 * kUsd, false, "1 November"}};
+  p = planBudgetChange(set("mistral", 8 * kUsd), both);
+  TEST_ASSERT_TRUE(proposalText(p, both).find("Every provider stays paused: the overall ceiling is reached. Send "
+                                              "/budget all 31 to raise it.") != std::string::npos);
   // Same value: unchanged.
   LimitsView owner = defaultView(0);
   owner.ownerSet = true;
@@ -499,6 +506,10 @@ static void test_copy_goldens() {
   credit.rows.push_back({"zai", 15 * kUsd, 2 * kUsd, false, "15 November"});
   out += "[usage, out of credit, a reset day]\n" + usageText(credit) + "\n";
   out += "[usage, not loaded]\n" + usageText(LimitsView()) + "\n";
+  LimitsView bothPaused = frozen;
+  bothPaused.ownerSet = true;
+  bothPaused.rows = {{"anthropic", 10 * kUsd, 12 * kUsd, true, "1 November"}};
+  out += "[usage, overall and a provider limit]\n" + usageText(bothPaused) + "\n";
   BudgetPlan p = planBudgetChange(set("anthropic", 400 * kUsd, true), lumi);
   out += "[proposal, provider raise]\n" + proposalText(p, lumi) + "\n";
   out += "[applied, provider raise]\n" + appliedText(p, lumi) + "\n";

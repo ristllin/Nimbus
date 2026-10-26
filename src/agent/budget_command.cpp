@@ -151,13 +151,15 @@ bool storeProviderCents(const std::string& provider, uint64_t cents) {
   uint32_t callLimit = 0;
   uint8_t resetDay = 1;
   JsonDocument d;
-  if (deserializeJson(d, agent::store::providerBudgetJson()) == DeserializationError::Ok) {
-    for (JsonObjectConst e : d.as<JsonArrayConst>()) {
-      if (provider != (const char*)(e["prov"] | "")) continue;
-      tokenLimit = e["tokenLimit"] | (uint64_t)0;
-      callLimit = e["callLimit"] | (uint32_t)0;
-      resetDay = e["resetDay"] | (uint8_t)1;
-    }
+  // Fail closed: a budget list that does not read (no memory for it) stores nothing,
+  // rather than a dollar change that silently wipes the provider's token and call limits.
+  if (deserializeJson(d, agent::store::providerBudgetJson()) != DeserializationError::Ok || !d.is<JsonArray>())
+    return false;
+  for (JsonObjectConst e : d.as<JsonArrayConst>()) {
+    if (provider != (const char*)(e["prov"] | "")) continue;
+    tokenLimit = e["tokenLimit"] | (uint64_t)0;
+    callLimit = e["callLimit"] | (uint32_t)0;
+    resetDay = e["resetDay"] | (uint8_t)1;
   }
   if (resetDay < 1 || resetDay > 28) resetDay = 1;
   return agent::store::setProviderBudget(String(provider.c_str()), tokenLimit, callLimit, resetDay, cents);
@@ -234,8 +236,10 @@ Reply modelReply() {
 
 Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner) {
   const BudgetAccess access = nimbus::orch::budgetAccessFor(chatId.c_str(), owner);
-  if (access == BudgetAccess::Group || access == BudgetAccess::NotOwner)
+  if (access == BudgetAccess::Group || access == BudgetAccess::NotOwner) {
+    alogf("budget: /%s refused from %s", verb.c_str(), access == BudgetAccess::Group ? "a group chat" : "a member chat");
     return {nimbus::orch::budgetAccessText(access), std::string()};
+  }
   if (verb == "model") return modelReply();
   BudgetRequest req;
   if (verb == "usage") req.verb = BudgetVerb::Show;
@@ -250,7 +254,10 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
     }
     default: break;
   }
-  if (access == BudgetAccess::ReadOnly) return {nimbus::orch::budgetAccessText(access), std::string()};
+  if (access == BudgetAccess::ReadOnly) {
+    alogf("budget: a change by voice refused (read-only channel)");
+    return {nimbus::orch::budgetAccessText(access), std::string()};
+  }
   return req.verb == BudgetVerb::Confirm ? confirm(chatId) : propose(chatId, req);
 }
 

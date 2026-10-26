@@ -35,6 +35,14 @@ Monthly counts start again on 1 November.
 Send /budget anthropic 450 force to raise the Anthropic limit.
 [usage, not loaded]
 Spending figures are not ready yet: the device is still starting, or its clock is not set. Try again in a minute.
+[usage, overall and a provider limit]
+Spending this month (estimated): $20.13 across all providers.
+Overall ceiling: $20.00, reached.
+Anthropic: $12.00 of its $10.00 limit.
+Today: $0.00, with the built-in daily warning.
+Paused now: every provider, because the overall ceiling is reached. Also paused on their own: Anthropic (monthly limit reached).
+Monthly counts start again on 1 November.
+Send /budget all 31 to raise the ceiling.
 [proposal, provider raise]
 Change the Anthropic monthly limit from $250.00 to $400.00?
 This month's Anthropic spend so far: $296.82.
