@@ -163,14 +163,24 @@ def run_lab(t: Task, files: dict) -> dict:
     return {"attempts": attempts, "driver": None, "error": stderr or "driver failed"}
 
 
-def judge_run(t: Task, turns: list[dict]) -> list[dict]:
+def run_device(t: Task, files: dict) -> dict:
+    import device_leg
+
+    return device_leg.run_task(t, files)
+
+
+def judge_run(t: Task, turns: list[dict], history: list[dict] | None = None) -> list[dict]:
+    """Judge a transcript. `history` is the earlier chat as it happened (the device leg's
+    live replies); the scenario's seeded history otherwise."""
     rubric = (fcworld.HERE / "rubric.md").read_text(encoding="utf-8")
     facts = fcworld.facts_for(t.scn, t.cfg)
-    history = t.scn["world"].get("history", [])
+    history = t.scn["world"].get("history", []) if history is None else history
     user = fcjudge.build_user_prompt(rubric, t.scn, facts, fcjudge.render_transcript(history, turns))
     sha = fcjudge.rubric_sha(rubric, t.scn, facts)
     out = []
     for spec in t.judges:
+        if out and t.extra.get("second_on_pass") and not out[0]["pass"]:
+            break  # the second judge only re-checks a pass: a failure needs no second opinion
         try:
             verdict, usage = fcjudge.call_judge(spec, t.keys, user)
             norm = fcjudge.normalize(verdict, t.scn)
@@ -207,12 +217,12 @@ def execute(t: Task, budget: Budget) -> dict:
         return json.loads(files["final"].read_text())
     if budget.exhausted():
         return {"scenario": t.scn["id"], "rep": t.rep, "skipped": "budget"}
-    ran = run_lab(t, files) if t.backend == "lab" else {"attempts": 0, "driver": None, "error": "backend"}
+    ran = run_lab(t, files) if t.backend == "lab" else run_device(t, files)
     drv = ran["driver"] or {}
     turns = drv.get("turns", [])
     errored = not turns or not all(x.get("ok") for x in turns)
-    judges = judge_run(t, turns) if turns else []
-    head = head_cost(files["rec"]) if files["rec"].exists() else {"total": 0.0, "by": {}}
+    judges = judge_run(t, turns, drv.get("history")) if turns else []
+    head = ran.get("cost") or (head_cost(files["rec"]) if files["rec"].exists() else {"total": 0.0, "by": {}})
     rec = {
         "scenario": t.scn["id"],
         "rep": t.rep,
@@ -224,6 +234,7 @@ def execute(t: Task, budget: Budget) -> dict:
         "attempts": ran["attempts"],
         "error": ran["error"],
         "turns": turns,
+        "history": drv.get("history"),
         "banner": drv.get("banner", ""),
         "judges": judges,
         "verdict": decide(judges, errored),

@@ -54,7 +54,8 @@ What is real: the system prompt composition, the skills index and the playbooks,
 set and its schemas, the provider adapters and their output caps (the reasoning effort is
 the one the device sends), prompt caching, the turn-structured history, associative recall
 over real embeddings, and the model. What is a stand-in: files and the skill store live in
-RAM instead of an SD card, and Telegram, voice and the display are absent. Memory pressure
+RAM instead of an SD card, the connector and sub-agent catalogs are empty, and Telegram, voice and
+the display are absent. Memory pressure
 is not modelled (the lab reports plenty of heap), so a failure that depends on it needs a
 board.
 
@@ -79,9 +80,10 @@ python3 tests/evals/food_coach/run_eval.py report --label try --out <dir>
 ```
 
 Models are parameters; `config.json` holds the defaults. Use a small, cheap head for
-iterations and the model the device runs for graded numbers. `--judge2` adds a second judge
-from another provider: the report then shows how often the two agree and a stricter count
-where both must pass.
+iterations and the model the device runs for graded numbers. `--judge2` adds second
+judges (a comma list) from another provider: the report then shows how often the two agree and a stricter count
+where both must pass; with `--judge2-on-pass` the other judges only re-check the runs the first judge
+passes, which saves their cost because a failure needs no second opinion.
 
 Each run writes, under `<dir>/<label>/<scenario>/`: the run input (`repN.run.json`), the driver
 transcript, the saved record with both judges' verdicts and evidence (`repN.json`), the raw
@@ -89,6 +91,37 @@ provider usage (`repN.rec/`) and, for the first repetition, the full system prom
 (`rep1.system.json`). `<label>/summary.json` and `results.md` summarize. A saved run is not
 repeated, so an interrupted batch resumes. `rejudge` re-grades saved transcripts with other
 judges without calling the head again.
+
+## Device leg
+
+The same scenarios, judge and records can run on a bench unit over its web API, as a
+confirmation that the host lab and a real board agree. It needs a `test` build (the tool seam
+`/api/test/astool` seeds the memory), a unit that holds an Anthropic key, and nothing else.
+
+```bash
+python3 tests/evals/food_coach/run_eval.py run --backend device --unit A --label try-device \
+    --model <head-model> --reps 2 --scenarios plan-stated,no-inventory-guard --max-minutes 40
+```
+
+- **Only a bench unit.** The unit comes from the bench secrets (`unitA_*` or `unitL_*`); any other
+  device is refused, and so is Lumi's address. The leg holds the unit's bench lock (an atomic
+  `mkdir` under `NIMBUS_BENCH_LOCKS`) for the whole run and stops starting runs after
+  `--max-minutes`.
+- **What it changes and puts back.** The head provider and model, the stored directive, the
+  monthly spend ceiling (raised only when the month's room is gone), the web chat's history, the
+  vector memory, the `nutrition` file project and the `meal-photo-science` skill. All of it is
+  restored or removed in a `finally`.
+- **Earlier chat turns are replayed live.** A device cannot be given assistant replies it never
+  wrote, so a scenario's earlier owner messages are sent for real and the unit's own replies are
+  the earlier chat the judge reads.
+- **Cost** comes from the unit's own usage record (the tokens each provider reported, priced
+  with the lab's table), because a device has no provider-side recorder.
+- **A parked provider ends the leg.** A unit that learned a billing or key refusal earlier (another
+  leg's fault injection, for example) refuses every turn without a request. The leg reads that from
+  the unit's turn log, stops, and says to clear it on the console (`PARK clear`), then run again.
+- Differences from the lab: the targets reach the unit as a stored memory and the unit's real
+  clock, hardware manifest and channel are in the prompt; the unit's other settings (its own
+  directive aside) are whatever the bench holds.
 
 ## Cost
 

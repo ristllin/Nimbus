@@ -328,3 +328,64 @@ def test_cli_lists_and_parses(capsys):
     assert "qty-vague" in capsys.readouterr().out
     args = run_eval.build_parser().parse_args(["run", "--label", "x", "--model", "m", "--reps", "2"])
     assert args.effort == "adapter" and args.backend == "lab" and args.reps == 2
+
+
+def test_the_second_judge_only_rechecks_a_pass(tmp_path, fakes, monkeypatch):
+    def failing(spec, keys, user):
+        calls = fakes
+        calls.append(spec)
+        ids = re.findall(r"^- ([a-z\-]+):", user, re.M)
+        verdict = {"criteria": [{"id": i, "verdict": "fail", "evidence": "no"} for i in ids], "summary": "s"}
+        return verdict, {"input_tokens": 100, "output_tokens": 10}
+
+    monkeypatch.setattr(fcjudge, "call_judge", failing)
+    task = _task(tmp_path)
+    task.extra["second_on_pass"] = True
+    rec = fcrun.execute(task, fcrun.Budget(1.0))
+    assert fakes == ["a/x"], "a failure needs no second opinion"
+    assert not rec["verdict"]["pass"] and rec["verdict"]["judges_agree"] is None
+
+
+def test_a_device_run_is_judged_on_the_history_it_really_had(tmp_path, fakes, monkeypatch):
+    live = [{"role": "user", "text": "earlier"}, {"role": "assistant", "text": "the unit's own reply"}]
+    ran = {
+        "attempts": 1,
+        "error": "",
+        "cost": {"total": 0.07, "by": {"anthropic m": 0.07}},
+        "driver": {"turns": [_turn()], "history": live, "banner": "device unit A"},
+    }
+    monkeypatch.setattr(fcrun, "run_device", lambda t, files: ran)
+    seen = []
+    real = fcjudge.render_transcript
+    monkeypatch.setattr(fcjudge, "render_transcript", lambda h, t: seen.append(h) or real(h, t))
+    task = _task(tmp_path)
+    task.backend = "device"
+    rec = fcrun.execute(task, fcrun.Budget(1.0))
+    assert seen == [live] and rec["history"] == live
+    assert rec["cost_usd"]["head"]["total"] == 0.07 and rec["backend"] == "device"
+
+
+def test_a_stopped_run_unwinds_so_a_device_leg_restores_the_unit():
+    import signal
+
+    old = signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  # what a background shell job starts with
+        run_eval.install_signal_handlers()
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+        with pytest.raises(KeyboardInterrupt):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGINT, old[0])
+        signal.signal(signal.SIGTERM, old[1])
+
+
+def test_judge_lists_are_a_first_judge_and_comma_separated_second_opinions():
+    parse = run_eval.build_parser().parse_args
+    base = ["run", "--label", "x", "--model", "m"]
+    one = parse(base + ["--judge", "a/x", "--judge2", "none"])
+    assert run_eval._judges(one, CFG) == ["a/x"]
+    many = parse(base + ["--judge", "a/x", "--judge2", "b/y,c/z"])
+    assert run_eval._judges(many, CFG) == ["a/x", "b/y", "c/z"]
+    default = parse(base)
+    assert run_eval._judges(default, CFG) == [CFG["models"]["judge"], CFG["models"]["judge2"]]
