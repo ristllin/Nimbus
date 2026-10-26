@@ -185,11 +185,65 @@ def board(device):
 # ---- leg 1: a custom endpoint on a paid host reaches the ceiling ---------------------
 
 
+def _cross_on_custom(device) -> None:
+    """Seeded 5 cents under the ceiling, one turn on the custom endpoint crosses it."""
+    _seed(device, f"limit {LIMIT_CENTS}")
+    _seed(device, str(LIMIT_CENTS - 5))
+    st = _spend(device)
+    assert st["frozen"] is False, f"seeded 5 cents under the ceiling but frozen: {st}"
+    device.drain(quiet=0.3)
+    status, reply = _web_turn("Say ok.")
+    lines = _collect(device, r"turn spend: .*custom/", 30.0)
+    spend_line = next((ln for ln in lines if "turn spend:" in ln and "custom/" in ln), "")
+    print(f"[l65q] leg 1 turn: http={status} reply={reply[:60]!r}\n[l65q]   {spend_line}")
+    assert status == 200 and reply, f"the custom endpoint turn did not answer: {status} {reply[:120]}"
+    assert spend_line, "no turn spend line for the custom endpoint (did the turn run on it?)"
+    deadline = time.time() + 20.0
+    st = _spend(device)
+    while time.time() < deadline and not st["frozen"]:
+        time.sleep(2.0)
+        st = _spend(device)
+    print(f"[l65q] leg 1 after the turn: spent={st['spentCents']} of {st['limitCents']} frozen={st['frozen']}")
+    assert st["frozen"] is True and st["spentCents"] >= LIMIT_CENTS, (
+        f"the custom endpoint's spend did not reach the ceiling (priced at 0?): {st}"
+    )
+
+
+def _next_turn_refused(device) -> None:
+    """The turn after the crossing is refused before any request leaves."""
+    device.drain(quiet=0.3)
+    status, reply = _web_turn("Say ok again.")
+    window = _collect(device, r"turn refused|refused - spend ceiling", 20.0)
+    print(f"[l65q] leg 1 next turn: http={status} reply={reply[:80]!r}")
+    assert status == 409 or "paused" in reply.lower(), f"the next turn was not refused: {status} {reply[:120]}"
+    assert not any("turn spend:" in ln and "custom/" in ln for ln in window), (
+        "a turn ran on the custom endpoint after the freeze"
+    )
+
+
+def _restore_custom(device, prior: dict, prior_host: str) -> None:
+    """The borrowed custom endpoint back as it was (base, wire, model, no key) and the head."""
+    _post(
+        {
+            "custBase": prior.get("base", ""),
+            "clr_custKey": "1",
+            "custModel": prior.get("model", ""),
+            "custConv": prior.get("conv", "openai") or "openai",
+            "orchHost": prior_host,
+            "convReset": "1",
+        }
+    )
+    _restart(device)
+    back = _orch().get("cust", {})
+    print(f"[l65q] leg 1 restored: custom endpoint base={back.get('base')!r} key={back.get('hasKey')}")
+    assert back.get("base", "") == prior.get("base", "") and not back.get("hasKey"), back
+
+
 def test_1_custom_endpoint_on_a_paid_host_freezes_at_the_ceiling(board, secrets):
     device = board
     prior = _orch().get("cust", {})
-    if prior.get("base"):
-        pytest.skip(f"the board already uses a custom endpoint ({prior.get('base')}): not clobbered")
+    if prior.get("hasKey"):  # a key cannot be read back, so it could not be restored
+        pytest.skip(f"the board's custom endpoint ({prior.get('base')}) has a key: not clobbered")
     key = secrets.get("MISTRAL_API_KEY")
     if not key:
         pytest.skip("no MISTRAL_API_KEY in NIMBUS_ENV_FILE for the custom endpoint leg")
@@ -206,47 +260,10 @@ def test_1_custom_endpoint_on_a_paid_host_freezes_at_the_ceiling(board, secrets)
             }
         )
         _restart(device)  # the custom head registers at boot
-        _seed(device, f"limit {LIMIT_CENTS}")
-        _seed(device, str(LIMIT_CENTS - 5))
-        st = _spend(device)
-        assert st["frozen"] is False, f"seeded 5 cents under the ceiling but frozen: {st}"
-        device.drain(quiet=0.3)
-        status, reply = _web_turn("Say ok.")
-        lines = _collect(device, r"turn spend: .*custom/", 30.0)
-        spend_line = next((ln for ln in lines if "turn spend:" in ln and "custom/" in ln), "")
-        print(f"[l65q] leg 1 turn: http={status} reply={reply[:60]!r}\n[l65q]   {spend_line}")
-        assert status == 200 and reply, f"the custom endpoint turn did not answer: {status} {reply[:120]}"
-        assert spend_line, "no turn spend line for the custom endpoint (did the turn run on it?)"
-        deadline = time.time() + 20.0
-        st = _spend(device)
-        while time.time() < deadline and not st["frozen"]:
-            time.sleep(2.0)
-            st = _spend(device)
-        print(f"[l65q] leg 1 after the turn: spent={st['spentCents']} of {st['limitCents']} frozen={st['frozen']}")
-        assert st["frozen"] is True and st["spentCents"] >= LIMIT_CENTS, (
-            f"the custom endpoint's spend did not reach the ceiling (priced at 0?): {st}"
-        )
-        # The next turn is refused before any request leaves.
-        device.drain(quiet=0.3)
-        status2, reply2 = _web_turn("Say ok again.")
-        window = _collect(device, r"turn refused|refused - spend ceiling", 20.0)
-        print(f"[l65q] leg 1 next turn: http={status2} reply={reply2[:80]!r}")
-        assert status2 == 409 or "paused" in reply2.lower(), f"the next turn was not refused: {status2} {reply2[:120]}"
-        assert not any("turn spend:" in ln and "custom/" in ln for ln in window), (
-            "a turn ran on the custom endpoint after the freeze"
-        )
+        _cross_on_custom(device)
+        _next_turn_refused(device)
     finally:
-        _post(
-            {
-                "custBase": "",
-                "clr_custKey": "1",
-                "custModel": prior.get("model", ""),
-                "custConv": prior.get("conv", "openai") or "openai",
-                "orchHost": prior_host,
-                "convReset": "1",
-            }
-        )
-        _restart(device)
+        _restore_custom(device, prior, prior_host)
 
 
 # ---- legs 2 and 3: stopping a running helper while paid calls are paused --------------

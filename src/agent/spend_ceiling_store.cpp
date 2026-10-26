@@ -471,13 +471,21 @@ void report(bool global, const ProviderFreezes& providers) {
 
 // Lane QW4: the custom endpoint's estimate follows its configuration: a keyless host on
 // the device's own network is a local model (free until priced), anything else a paid
-// service (the highest built-in price until priced; model_price_defaults.h). Read before
-// every paid request (frozen() runs first), at the first load and once a minute, so a
-// base or key changed on the web page is priced right from its first request.
+// service (the highest built-in price until priced; model_price_defaults.h). Read at the
+// first load and then at most every few seconds from the paid-call gate (frozen() runs
+// before every paid request), so a base or key changed on the web page is priced right
+// within seconds, and the hot path does not read (allocate) the settings on every call.
+constexpr uint32_t kCustomRefreshMs = 3000;
 void refreshCustomPricing() {
   static std::mutex mx;
-  static uint32_t lastHash = 0;
+  static uint32_t lastHash = 0, lastAt = 0;
   static bool seen = false;
+  {
+    std::lock_guard<std::mutex> lk(mx);
+    const uint32_t now = millis();
+    if (seen && now - lastAt < kCustomRefreshMs) return;
+    lastAt = now;
+  }
   const String base = store::customBase();
   const bool keyed = store::customKey().length() > 0;
   uint32_t h = keyed ? 0x9e3779b9u : 2166136261u;   // FNV-1a: the base itself is not kept

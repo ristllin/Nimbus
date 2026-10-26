@@ -95,6 +95,9 @@ static void test_only_requests_that_stop_paid_work_are_cancels() {
       {"POST", "/v1/sessions/sesn_1/events", interrupt, wire::CancelKind::Session, "/v1/sessions/sesn_1"},
       {"POST", "/router/anthropic/v1/sessions/s2/events", interrupt, wire::CancelKind::Session,
        "/router/anthropic/v1/sessions/s2"},
+      {"POST", "/v1/responses/resp_2/cancel?trace=1", "", wire::CancelKind::Response, "/v1/responses/resp_2"},
+      {"POST", "/v1/responses/resp_2/cancel/more", "", wire::CancelKind::None, ""},
+      {"POST", "/v1/responses?x=/v1/responses/r/cancel", "", wire::CancelKind::None, ""},
       // Everything that starts or continues paid work is not a cancel.
       {"POST", "/v1/responses", "{\"model\":\"m\"}", wire::CancelKind::None, ""},
       {"POST", "/v1/sessions/sesn_1/events",

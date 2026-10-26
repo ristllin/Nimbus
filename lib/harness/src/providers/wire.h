@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -149,16 +150,17 @@ struct CancelOf {
   std::string jobPath;   // the job's own object: GET it for the usage so far
 };
 
-// True for a path ".../<prefix><id><suffix>" whose id is one non-empty segment.
-inline bool isJobPath(const std::string& path, const char* prefix, const char* suffix) {
-  const size_t at = path.find(prefix);
+// True for a path whose first `end` characters read ".../<prefix><id><suffix>" with an id
+// of one non-empty segment. Reads in place: every request passes here, and nothing that
+// is not a cancel allocates.
+inline bool isJobPath(const std::string& path, size_t end, const char* prefix, const char* suffix) {
   const size_t sl = std::strlen(suffix);
-  if (at == std::string::npos || path.size() < sl ||
-      path.compare(path.size() - sl, sl, suffix) != 0)
-    return false;
+  if (end < sl || path.compare(end - sl, sl, suffix) != 0) return false;
+  const size_t at = path.find(prefix);
+  if (at == std::string::npos || at >= end) return false;
   const size_t from = at + std::strlen(prefix);
-  if (path.size() - sl <= from) return false;
-  return path.find('/', from) >= path.size() - sl;   // no '/' inside the id
+  if (end - sl <= from) return false;
+  return path.find('/', from) >= end - sl;   // no '/' inside the id
 }
 
 // True when every event in an Anthropic events body is a user.interrupt (and there is
@@ -175,13 +177,13 @@ inline bool onlyInterrupts(const std::string& body) {
 inline CancelOf cancelRequestOf(const char* method, const std::string& path, const std::string& body) {
   CancelOf c;
   if (std::strcmp(method, "POST") != 0) return c;
-  const std::string p = path.substr(0, path.find('?'));
-  if (isJobPath(p, "/v1/responses/", "/cancel")) {
+  const size_t end = std::min(path.find('?'), path.size());   // the path without a query
+  if (isJobPath(path, end, "/v1/responses/", "/cancel")) {
     c.kind = CancelKind::Response;
-    c.jobPath = p.substr(0, p.size() - std::strlen("/cancel"));
-  } else if (isJobPath(p, "/v1/sessions/", "/events") && onlyInterrupts(body)) {
+    c.jobPath = path.substr(0, end - std::strlen("/cancel"));
+  } else if (isJobPath(path, end, "/v1/sessions/", "/events") && onlyInterrupts(body)) {
     c.kind = CancelKind::Session;
-    c.jobPath = p.substr(0, p.size() - std::strlen("/events"));
+    c.jobPath = path.substr(0, end - std::strlen("/events"));
   }
   return c;
 }
