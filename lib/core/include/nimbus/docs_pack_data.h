@@ -4938,7 +4938,8 @@ control. This page explains both, in plain words.)NIMBUSDOC"},
 - **You change it** on the web page under **Assistant > Usage**, in the
   **Monthly spend ceiling** row of Budgets. Any amount from 1 USD to 100,000 USD.
 - **Kept on the device's flash**, not in its settings store, so a restart or a full
-  settings store changes nothing.)NIMBUSDOC"},
+  settings store changes nothing. After a restart the count is never lower than this
+  month's estimate on the **Usage** page.)NIMBUSDOC"},
   {"spend-ceiling#what-pauses", "What pauses",
    R"NIMBUSDOC(Everything that calls a paid model:
 
