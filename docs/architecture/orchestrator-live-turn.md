@@ -218,14 +218,25 @@ is `src/agent/telegram.cpp`). One cycle:
 1. **Fetch** one `getUpdates` page at the RAM offset cursor (the archive sees it as
    read, before anything else; an update already saved this boot costs no card read).
 2. **Settle** (`nimbus/net/tg_settle.h`). A phone uploads an album one photo at a time,
-   so the first poll often holds only part of it. The page is held (re-polled with
-   timeout 0 after the 1 s pause, on the same keep-alive socket) until it has not grown
-   for 3 s with media or 1.5 s for text only, or it is full, or its newest Telegram date
-   is older than that window plus 2 s, or 15 s have passed since its first item was
-   seen. A hold classifies, acks and stores nothing; local turns, job polling and reply
-   sends keep running between re-polls. Keeping the poll socket open is safe only
-   because every other TLS session of the task opens through `workConnect`, which
-   closes it first.
+   so the first poll often holds only part of it, and an owner often sends a text and
+   then the photo it is about a few seconds later. The page is held (re-polled with
+   timeout 0 on the same keep-alive socket, every 1 s and once more right at the end of
+   the window) until it has not grown for its window, which follows the newest message:
+   5 s after a plain text (for the photo, file or voice note sent next) and 3 s after a
+   photo, file or voice note (for the rest of an album). Only a message from an allowed
+   chat that could become a turn restarts the window (a stranger's message or an edit
+   does not). It is answered at once when it holds a slash command (commands never
+   wait) or nothing that could become a turn, when it is full (10 updates), when its
+   newest Telegram date is older than its window plus 2 s, or once 15 s have passed
+   since its first item was seen (the cap on a burst). The 5 s text window comes from
+   the owner's traffic: the one text and photo in four days that belonged together were
+   5 s apart by Telegram's whole-second dates (4 to 6 s in fact), the nearest pair that
+   did not were 10 s apart, and 5 s is the longest window the release allows. A photo
+   that arrives later than that runs as the next turn (step 4). A plain text with
+   nothing after it waits the window and no longer. A hold classifies, acks and stores
+   nothing; local turns, job polling and reply sends keep running between re-polls.
+   Keeping the poll socket open is safe only because every other TLS session of the
+   task opens through `workConnect`, which closes it first.
 3. **Break duplicates and classify** (`nimbus/net/tg_dup_guard.h`). A message already
    answered (same chat, message id and date), or the same content in the same chat
    within 2 minutes and before its answer went out, is acked and skipped, with one
@@ -233,6 +244,8 @@ is `src/agent/telegram.cpp`). One cycle:
    media segment of that turn (its caption with it, at full length) and takes one of
    ten download slots (a lazily allocated PSRAM array); a voice note is a turn of its
    own; a command is a turn of its own. An eleventh media item waits for the next page.
+   A photo with no caption is described with the text sent just before it in the same
+   turn, as a caption would be.
 4. **Run each turn in order.** Past the hourly ceiling (60 inbound head turns in any
    rolling hour, 12 of them reserved for the owner's chat, so the other allowed chats
    stop at 48; commands do not count) a turn is skipped, with one owner notice per
@@ -243,11 +256,21 @@ is `src/agent/telegram.cpp`). One cycle:
    item of its bucket (`MessageBatcher::render`, the one label
    `nimbus/orch/media_label.h`). A failed item is part of the turn, never a separate
    reply, unless the turn has nothing else (no text, no caption, nothing fetched): then
-   one plain reply says why, instead of a paid turn. How each photo reaches the head is
-   described under "Photos go to the head as images" below.
+   one plain reply says why, instead of a paid turn. A turn whose first message was sent
+   before its chat's previous answer went out (a photo that missed its text's turn, a
+   voice note after a text) ends with a short note to the model that the previous answer
+   is already in the chat, so it is answered with that answer in mind; the history keeps
+   what was sent, without the note. How each photo reaches the head is described under
+   "Photos go to the head as images" below.
 5. **Commit.** Only after the page's turns returned does the cursor move past it (a
    page holding a command checkpoints after each bucket), so a reset anywhere re-serves
    the page and the duplicate breaker skips what was already answered.
+
+The owner notices this cycle raises (a repeat skipped, the hourly ceiling, work that
+crashed the device twice), and the settings-storage and file-store notices the poll task
+sends, go to the owner chat on Telegram with a copy in its history. A device with no
+Telegram owner (a web-only setup) gets them as messages in the web chat instead
+(`nimbus/net/owner_notice.h`).
 
 **Photos go to the head as images.** A photo is sent to the head model as an image,
 not as a description of it (`nimbus/orch/turn_images.h`). When the configured head reads

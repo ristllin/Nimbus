@@ -29,7 +29,12 @@
 //     and no hold outlives the maximum;
 //   - the poison guard acks a page after 2 crash resets on it;
 //   - the 15 Oct sequence: the turn that contains the follow-up text also contains all
-//     three photo segments, and no turn with that text runs before photo 3 is rendered.
+//     three photo segments, and no turn with that text runs before photo 3 is rendered;
+//   - the 25 Oct sequence and every window rule end to end: a text and the photo (or
+//     album) sent up to 5 s after it are one turn, the text first; a photo past the
+//     window is the next turn and is told the text's answer is already in the chat; a
+//     photo and the text 2 s after it are one turn; a plain text waits the text window
+//     and no longer; a command never waits; a burst is capped in items and in time.
 
 using nimbus::core::TgOffsetCursor;
 using nimbus::net::BootKind;
@@ -53,6 +58,8 @@ static constexpr size_t kSlots = nimbus::orch::kBatchMaxMediaPerDrain;
 // PSRAM model (wf2 section 1.7): the 128 KB poll body, the slot array, one image's
 // base64 while it is described, the vision reply, and the descriptions held.
 static constexpr size_t kPollBody = 128 * 1024, kSlotBytes = 600, kB64 = 699056, kVisionReply = 16384;
+// The fake Telegram's timing: a fresh TLS handshake and a getUpdates round trip.
+static constexpr uint32_t kHandshakeMs = 1200, kRoundTripMs = 150;
 static constexpr size_t kPsramBudget = 1024 * 1024;
 
 struct Restart {
@@ -209,7 +216,7 @@ struct Device {
     maybeRestart();
     TgFetch f;
     f.rp.limit = 10;
-    if (!w.pollOpen) w.now += 1200;   // handshake
+    if (!w.pollOpen) w.now += kHandshakeMs;
     w.pollOpen = true;
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, w.workSessions, "poll while a work session is open");
     w.confirmed = std::max(w.confirmed, offset);   // getUpdates confirms below its offset
@@ -226,7 +233,7 @@ struct Device {
         if (m.uid >= from && m.arriveMs > w.now) next = std::min(next, m.arriveMs);
       w.now = next;
     }
-    w.now += 150;   // round trip
+    w.now += kRoundTripMs;
     for (const Msg& m : w.all)
       if (m.uid >= from && m.arriveMs <= w.now && (int)out.size() < f.rp.limit) out.push_back(toUpdate(m));
     f.rp.count = (int)out.size();
@@ -358,7 +365,9 @@ struct Device {
     const TgCycle c = rx.cycle(*this, 30);
     w.holding = rx.holding();
     if (!rx.holding()) cursor.persist(w.now, [&](int32_t v) { return w.writeOffset(v); });
-    w.now += nimbus::net::kSettleRepollMs;   // the inter-cycle pause
+    // The inter-cycle pause: a held page re-polls after the settle pace (shorter at the
+    // end of its window), anything else after the normal pause.
+    w.now += rx.holding() ? rx.settle().repollInMs(w.now) : nimbus::net::kSettleRepollMs;
     return c;
   }
 };
@@ -371,6 +380,7 @@ struct Run {
   std::vector<Turn> turns;
   int restarts = 0, powerOns = 0;
   int restartPct = 0;
+  uint32_t turnMinMs = 5000, turnMaxMs = 120000;   // each turn's duration (uniform)
   int maxHeldRun = 0;
   std::set<int32_t> replayable;   // uids of pages in flight at a restart
   std::set<int32_t> poisoned;     // uids of pages the poison guard acked unprocessed
@@ -383,6 +393,8 @@ struct Run {
     for (int lives = 0; lives < 200 && (w.now < untilMs || pending()); ++lives) {
       Device d(w, rng, turns, boot);
       d.restartPct = restartPct;
+      d.turnMinMs = turnMinMs;
+      d.turnMaxMs = turnMaxMs;
       d.poisoned = &poisoned;
       try {
         int held = 0;
@@ -861,6 +873,249 @@ static void test_injected_pages() {
   TEST_ASSERT_EQUAL_INT(1, notices);
 }
 
+// ---- the coalesce window (25 Oct 2026) -------------------------------------------
+
+static Msg& sendText(World& w, const std::string& chat, const std::string& words, uint32_t at) {
+  Msg& m = w.send(chat, Attachment::Kind::None, "", at);
+  m.text = words + " #" + std::to_string(m.uid) + "#";
+  return m;
+}
+
+static bool crossed(const Turn& t) { return t.text.find(nimbus::net::kCrossedNote) != std::string::npos; }
+
+// `a` and `b` are both in `text`, `a` first (a bare find(a) < find(b) passes when b is
+// missing: npos is the largest offset).
+static bool inOrder(const std::string& text, const char* a, const char* b) {
+  const size_t pa = text.find(a), pb = text.find(b);
+  return pa != std::string::npos && pb != std::string::npos && pa < pb;
+}
+
+// Long after any answer: a message sent then never crossed one.
+static constexpr uint32_t kLongAfterMs = 200000;
+
+// 25 Oct 2026: "Without the mac and cheese. Just the Sunday roast", then the plate 5 s
+// later by Telegram's dates, no media group. A text and a photo sent 0 to 5 s after it
+// (1, 3 and 5 s among them) are ONE turn, the text first, so the photo reads with the
+// text as its context; an album after the text joins the same way.
+static void test_text_then_photo_is_one_turn() {
+  for (uint32_t gap = 0; gap <= nimbus::net::kSettleQuietTextMs; gap += 250) {
+    Run r(25 + gap);
+    const Msg& t = sendText(r.w, "77", "Without the mac and cheese. Just the Sunday roast", 30000);
+    const int32_t tuid = t.uid;
+    const int32_t puid = r.w.send("77", Attachment::Kind::Photo, "", 30000 + gap).uid;
+    r.go(200000);
+    char msg[64];
+    std::snprintf(msg, sizeof msg, "text then photo %u ms apart", (unsigned)gap);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1, r.turns.size(), msg);
+    const Turn& one = r.turns[0];
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(2, one.uids.size(), msg);
+    TEST_ASSERT_EQUAL_INT32(tuid, one.uids[0]);
+    TEST_ASSERT_EQUAL_INT32(puid, one.uids[1]);
+    TEST_ASSERT_TRUE(inOrder(one.text, "Sunday roast", "[image 1/1 ref="));
+    TEST_ASSERT_FALSE(crossed(one));
+  }
+  // The real dates: 1792931799 and 1792931804 (the photo 5 s after the text).
+  Run r(1025);
+  sendText(r.w, "77", "Without the mac and cheese. Just the Sunday roast", 1799000);
+  r.w.send("77", Attachment::Kind::Photo, "", 1804000);
+  TEST_ASSERT_EQUAL_INT64(5, r.w.all[1].date - r.w.all[0].date);
+  r.go(1900000);
+  TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+  // Text then a 3-photo album starting 4 s later: one turn, the text and all three.
+  Run a(1026);
+  sendText(a.w, "77", "lunch, both plates", 30000);
+  for (int i = 0; i < 3; ++i) a.w.send("77", Attachment::Kind::Photo, "", 34000 + 400 * (uint32_t)i, "GA");
+  a.go(200000);
+  TEST_ASSERT_EQUAL_UINT(1, a.turns.size());
+  TEST_ASSERT_EQUAL_UINT(4, a.turns[0].uids.size());
+  TEST_ASSERT_TRUE(a.turns[0].text.find("[image 3/3 ref=") != std::string::npos);
+}
+
+// Past the window: a photo sent while its text's turn already runs (8 s after it, the
+// turn taking 6 s) is the next turn, and that turn is told the text's answer is already
+// in the chat; a photo sent long after the answer is a plain new turn, no note.
+static void test_late_photo_is_the_next_turn_and_knows_the_answer() {
+  for (uint32_t gap : {8000u, 9000u, 10000u, kLongAfterMs}) {
+    Run r(26);
+    r.turnMinMs = r.turnMaxMs = 6000;
+    const int32_t tuid = sendText(r.w, "77", "Just the Sunday roast", 30000).uid;
+    const int32_t puid = r.w.send("77", Attachment::Kind::Photo, "", 30000 + gap).uid;
+    r.go(400000);
+    TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
+    TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[0]);
+    TEST_ASSERT_EQUAL_INT32(puid, r.turns[1].uids[0]);
+    TEST_ASSERT_FALSE(crossed(r.turns[0]));
+    const bool late = gap < kLongAfterMs;
+    TEST_ASSERT_EQUAL_MESSAGE(late, crossed(r.turns[1]), "the late photo's turn and the note");
+    // The note closes the turn text, after the photo.
+    if (late) TEST_ASSERT_TRUE(inOrder(r.turns[1].text, "[image 1/1 ref=", "\n\n[sent while"));
+  }
+}
+
+// Photo then text: a text 2 s after the photo joins it (one turn, the photo first); a
+// text sent while the photo's turn runs is the next turn, with the note.
+static void test_photo_then_text() {
+  {
+    Run r(27);
+    const int32_t puid = r.w.send("77", Attachment::Kind::Photo, "", 30000).uid;
+    const int32_t tuid = sendText(r.w, "77", "without the gravy", 32000).uid;
+    r.go(200000);
+    TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+    TEST_ASSERT_EQUAL_INT32(puid, r.turns[0].uids[0]);
+    TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[1]);
+  }
+  {
+    Run r(28);
+    r.turnMinMs = r.turnMaxMs = 6000;
+    r.w.send("77", Attachment::Kind::Photo, "", 30000);
+    const int32_t tuid = sendText(r.w, "77", "without the gravy", 42000).uid;
+    r.go(300000);
+    TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
+    TEST_ASSERT_EQUAL_INT32(tuid, r.turns[1].uids[0]);
+    TEST_ASSERT_TRUE(crossed(r.turns[1]));
+  }
+}
+
+// When `id` started its turn (the first turn holding it), and when it arrived.
+static uint32_t startOf(const Run& r, int32_t id) {
+  for (const Turn& t : r.turns)
+    if (std::count(t.uids.begin(), t.uids.end(), id)) return t.startMs;
+  TEST_FAIL_MESSAGE("never ran");
+  return 0;
+}
+
+// A plain text with nothing after it waits the text window and no longer: its turn
+// starts no earlier than the window after it arrived and at most two round trips and
+// the shortest pause after that (the poll that saw it, the last re-poll).
+static void test_text_alone_waits_only_the_window() {
+  for (uint32_t seed = 30; seed < 40; ++seed) {
+    Run r(seed);
+    const Msg& t = sendText(r.w, "77", "1 clementine", 30000 + 137 * seed);
+    const uint32_t arrived = t.arriveMs;
+    const int32_t uid = t.uid;
+    r.go(200000);
+    TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+    const uint32_t latency = startOf(r, uid) - arrived;
+    TEST_ASSERT_TRUE(latency >= nimbus::net::kSettleQuietTextMs);
+    TEST_ASSERT_TRUE_MESSAGE(
+        latency <= nimbus::net::kSettleQuietTextMs + 2 * kRoundTripMs + nimbus::net::kSettleRepollMinMs,
+        "a plain text waited beyond its window");
+    if (seed == 30) std::printf("plain text: arrived -> turn start %u ms (window %u ms)\n", (unsigned)latency,
+                                (unsigned)nimbus::net::kSettleQuietTextMs);
+  }
+}
+
+// Commands never wait: "/status" alone starts its turn on the poll that saw it. Sent
+// while a text is held, it ends the hold at the next re-poll (the text runs first, in
+// order, as its own turn).
+static void test_command_alone_runs_at_once() {
+  {
+    Run r(41);
+    const Msg& c = sendText(r.w, "77", "/status", 30000);
+    const uint32_t arrived = c.arriveMs;
+    const int32_t uid = c.uid;
+    r.go(100000);
+    TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+    TEST_ASSERT_TRUE(r.turns[0].command);
+    TEST_ASSERT_TRUE_MESSAGE(startOf(r, uid) - arrived <= kRoundTripMs, "a command waited");
+    TEST_ASSERT_FALSE(crossed(r.turns[0]));
+  }
+  {
+    Run r(42);
+    r.turnMinMs = r.turnMaxMs = 3000;
+    const int32_t tuid = sendText(r.w, "77", "what's on today", 30000).uid;
+    const Msg& c = sendText(r.w, "77", "/status", 31500);
+    const uint32_t arrived = c.arriveMs;
+    r.go(100000);
+    TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
+    TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[0]);
+    TEST_ASSERT_TRUE(r.turns[1].command);
+    TEST_ASSERT_TRUE_MESSAGE(startOf(r, tuid) - arrived <= nimbus::net::kSettleRepollMs + 2 * kRoundTripMs,
+                             "the command waited for the text window");
+    // A command renders byte for byte: never a note.
+    TEST_ASSERT_FALSE(crossed(r.turns[1]));
+  }
+}
+
+// The burst caps through the cycle: a chat that sends a text every 4 s (each inside the
+// text window) is answered at the maximum hold, never later, every message once and in
+// order; a fast burst of 12 texts is answered 10 at once (the page is full), then 2.
+static void test_burst_caps() {
+  {
+    constexpr uint32_t kTurnMs = 2000;
+    Run r(43);
+    r.turnMinMs = r.turnMaxMs = kTurnMs;
+    for (int i = 0; i < 10; ++i) sendText(r.w, "77", "and another thing", 30000 + 4000 * (uint32_t)i);
+    r.go(300000);
+    checkExactlyOnce(r, false);
+    checkOrderPerChat(r);
+    // Measured from when the device could first see the turn's first message: its
+    // arrival, or the end of the turn running then; the poll after a turn reconnects
+    // and the hold ends on a re-poll.
+    for (size_t i = 0; i < r.turns.size(); ++i) {
+      const Turn& t = r.turns[i];
+      const uint32_t arrived = r.w.byUid(t.uids[0])->arriveMs;
+      const uint32_t seen = i ? std::max(arrived, r.turns[i - 1].startMs + kTurnMs) : arrived;
+      TEST_ASSERT_TRUE_MESSAGE(t.startMs - seen <= nimbus::net::kSettleMaxHoldMs + kHandshakeMs + 2 * kRoundTripMs +
+                                                         nimbus::net::kSettleRepollMs,
+                               "a burst held a message beyond the maximum hold");
+    }
+    TEST_ASSERT_TRUE(r.turns.size() >= 2);   // the cap split the endless burst
+  }
+  {
+    Run r(44);
+    for (int i = 0; i < 12; ++i) sendText(r.w, "77", "x", 30000 + 100 * (uint32_t)i);
+    r.go(200000);
+    TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
+    TEST_ASSERT_EQUAL_UINT(10, r.turns[0].uids.size());
+    TEST_ASSERT_EQUAL_UINT(2, r.turns[1].uids.size());
+  }
+}
+
+// A voice note after a text stays a turn of its own (its transcript): the text waits for
+// it, both run in the order sent, and the voice turn knows the text's answer exists.
+static void test_text_then_voice_note() {
+  Run r(45);
+  r.turnMinMs = r.turnMaxMs = 4000;
+  const int32_t tuid = sendText(r.w, "77", "about dinner", 30000).uid;
+  const int32_t vuid = r.w.send("77", Attachment::Kind::Voice, "", 33000).uid;
+  r.go(200000);
+  TEST_ASSERT_EQUAL_UINT(2, r.turns.size());
+  TEST_ASSERT_EQUAL_INT32(tuid, r.turns[0].uids[0]);
+  TEST_ASSERT_EQUAL_INT32(vuid, r.turns[1].uids[0]);
+  TEST_ASSERT_TRUE(crossed(r.turns[1]));
+  TEST_ASSERT_FALSE(crossed(r.turns[0]));
+}
+
+// A stranger's message (or an edit) in the page never restarts the owner's hold: the
+// owner's text is answered at the end of its own window, not a window after the
+// stranger wrote.
+static void test_strangers_never_extend_a_hold() {
+  Run r(47);
+  const Msg& t = sendText(r.w, "77", "what's for dinner", 30000);
+  const uint32_t arrived = t.arriveMs;
+  const int32_t uid = t.uid;
+  sendText(r.w, "666", "hi, let me in", 33000);
+  r.go(100000);
+  const uint32_t latency = startOf(r, uid) - arrived;
+  TEST_ASSERT_TRUE_MESSAGE(
+      latency <= nimbus::net::kSettleQuietTextMs + 2 * kRoundTripMs + nimbus::net::kSettleRepollMinMs,
+      "a stranger's message extended the owner's hold");
+}
+
+// The note is per chat: another chat's turn in between never makes a message crossed,
+// and a chat's own answer does only for what was sent before it went out.
+static void test_crossed_note_is_per_chat() {
+  Run r(46);
+  r.turnMinMs = r.turnMaxMs = 6000;
+  sendText(r.w, "77", "first", 30000);
+  const int32_t other = sendText(r.w, "88", "hello from another chat", 50000).uid;
+  const int32_t again = sendText(r.w, "77", "much later", 90000).uid;
+  r.go(300000);
+  for (const Turn& t : r.turns)
+    if (t.uids[0] == other || t.uids[0] == again) TEST_ASSERT_FALSE(crossed(t));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_random_bursts_exactly_once_in_order);
@@ -876,5 +1131,14 @@ int main(int, char**) {
   RUN_TEST(test_poison_every_phase);
   RUN_TEST(test_failed_media_alone_gets_a_plain_reply);
   RUN_TEST(test_injected_pages);
+  RUN_TEST(test_text_then_photo_is_one_turn);
+  RUN_TEST(test_late_photo_is_the_next_turn_and_knows_the_answer);
+  RUN_TEST(test_photo_then_text);
+  RUN_TEST(test_text_alone_waits_only_the_window);
+  RUN_TEST(test_command_alone_runs_at_once);
+  RUN_TEST(test_burst_caps);
+  RUN_TEST(test_text_then_voice_note);
+  RUN_TEST(test_crossed_note_is_per_chat);
+  RUN_TEST(test_strangers_never_extend_a_hold);
   return UNITY_END();
 }

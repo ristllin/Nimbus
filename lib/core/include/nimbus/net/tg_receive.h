@@ -13,9 +13,11 @@
 #include "nimbus/tg_updates.h"
 
 // tg_receive - one Telegram receive cycle on the poll task, as portable code: fetch a
-// page at the offset cursor, settle it (hold for the rest of an album or burst, or
-// answer now), break duplicates, classify every update, process each turn's media in
-// order, run one turn per bucket, and only then move the cursor past the page. The
+// page at the offset cursor, settle it (hold for the rest of an album or burst, or for
+// the photo sent right after a text, or answer now: tg_settle.h), break duplicates,
+// classify every update, process each turn's media in order, run one turn per bucket,
+// and only then move the cursor past the page. A bucket sent before its chat's previous
+// answer went out (it missed that turn) is told the answer is already in the chat. The
 // device (src/agent/telegram.cpp) supplies the I/O; the host tests (test_tg_burst)
 // drive the very same code with fakes, so the properties they prove are the device's.
 //
@@ -103,17 +105,30 @@ inline bool turnCandidate(const tg::Update& u) {
   return a == Kind::Photo || a == Kind::Document || a == Kind::Voice || !u.text.empty();
 }
 
-// What the settle rule needs from a page.
-inline SettlePage settlePageOf(const std::vector<tg::Update>& page, const orch::RawPage& rp) {
+// An update that becomes a command turn: plain text (not a caption), not a forward,
+// starting with '/'.
+inline bool commandUpdate(const tg::Update& u) {
+  return u.attachment.kind == tg::Attachment::Kind::None && !u.forwarded && orch::isCommandText(u.text);
+}
+
+// What the settle rule needs from a page: its size and newest Telegram date, and over the
+// turn candidates of allowed chats (`allowed(chatId)`) whether one is a slash command
+// (commands never wait) and the newest one: its update id (growth: a stranger's message
+// or an edit never restarts a hold) and its kind (what may follow it: the text window
+// after a plain text, the media window after a photo, file or voice note).
+template <class Allowed>
+inline SettlePage settlePageOf(const std::vector<tg::Update>& page, const orch::RawPage& rp, Allowed allowed) {
   using Kind = tg::Attachment::Kind;
   SettlePage sp;
   sp.count = rp.count;
   sp.limit = rp.limit;
   for (const tg::Update& u : page) {
-    const Kind a = u.attachment.kind;
-    sp.hasMedia = sp.hasMedia || a == Kind::Photo || a == Kind::Document || a == Kind::Voice;
-    if (u.updateId > sp.newestId) sp.newestId = u.updateId;
     if (u.date > sp.newestDate) sp.newestDate = u.date;
+    if (!turnCandidate(u) || !allowed(u.chatId)) continue;
+    sp.command = sp.command || commandUpdate(u);
+    if (u.updateId <= sp.newestId) continue;
+    sp.newestId = u.updateId;
+    sp.tail = u.attachment.kind == Kind::None ? SettleTail::Text : SettleTail::Media;
   }
   return sp;
 }
@@ -130,6 +145,14 @@ class TgReceiver {
   // Inside Io::runTurn: the batch bucket that turn renders (its update ids, media
   // segments and voice note), for the history's source and stored-media note.
   size_t currentTurn() const { return current_; }
+  // An update of the page being run, by id (nullptr: not in it). Valid inside the Io
+  // calls of a dispatched page (processMedia, runTurn): the words a photo's sender wrote
+  // just before it are its context when it has no caption.
+  const tg::Update* updateOf(int32_t id) const {
+    for (const tg::Update& u : page_)
+      if (u.updateId == id) return &u;
+    return nullptr;
+  }
 
   // One polled cycle at the cursor. `longPollS` is the wait for a fresh poll; a held
   // page is re-polled with timeout 0.
@@ -144,7 +167,8 @@ class TgReceiver {
       out.retryAfterS = f.rp.retryAfterS;
       return kind(out, TgCycle::Kind::FetchError);
     }
-    const Settle s = settle_.observe(cursor_.offset(), settlePageOf(page_, f.rp), io.nowMs(), io.nowEpoch());
+    auto allowed = [&](const std::string& chat) { return io.allowed(chat); };
+    const Settle s = settle_.observe(cursor_.offset(), settlePageOf(page_, f.rp, allowed), io.nowMs(), io.nowEpoch());
     if (s == Settle::Hold) return kind(out, TgCycle::Kind::Held);
     if (page_.empty()) return kind(out, TgCycle::Kind::Idle);
     if (pagePoisoned()) return poisoned(io, out);
@@ -199,9 +223,7 @@ class TgReceiver {
   template <class Io>
   bool pageHasCommand(Io& io) const {
     for (const tg::Update& u : page_)
-      if (u.attachment.kind == tg::Attachment::Kind::None && !u.forwarded && orch::isCommandText(u.text) &&
-          io.allowed(u.chatId))
-        return true;
+      if (commandUpdate(u) && io.allowed(u.chatId)) return true;
     return false;
   }
 
@@ -394,12 +416,55 @@ class TgReceiver {
       return;
     }
     if (polled_) guard_.mark(batch_.firstIdAt(i), kPhaseBucket);   // the turn is the risk now
+    runTurnOf(io, i, chat, from);
+    ++out.turns;
+  }
+
+  // Bucket i's turn. A bucket sent before its chat's previous answer went out (it
+  // missed that turn: a photo seconds too late for its text) carries kCrossedNote, so
+  // the turn knows that answer is already in the chat. Commands render byte for byte.
+  template <class Io>
+  void runTurnOf(Io& io, size_t i, const std::string& chat, const std::string& from) {
     const bool command = batch_.commandAt(i);
     if (!command) guard_.noteTurn(io.bestEpoch());
     current_ = i;   // currentTurn(): the bucket the turn below routes (histV2's source)
-    io.runTurn(from, chat, batch_.render(i), command);
-    ++out.turns;
-    rememberBucket(i, io.bestEpoch());
+    orch::PsString text = batch_.render(i);
+    if (!command && crossedAnswer(earliestSentAt(i), answeredAt(chat))) text += kCrossedNote;
+    io.runTurn(from, chat, text, command);
+    const uint32_t now = io.bestEpoch();
+    rememberBucket(i, now);
+    noteAnswered(chat, now);
+  }
+
+  // The earliest Telegram date among bucket i's messages (0: none known).
+  int64_t earliestSentAt(size_t i) const {
+    int64_t at = 0;
+    for (size_t m = 0; m < batch_.messageCountAt(i); ++m) {
+      const tg::Update* u = updateOf(batch_.updateIdAt(i, m));
+      if (u && u->date > 0 && (at == 0 || u->date < at)) at = u->date;
+    }
+    return at;
+  }
+
+  // When `chat`'s last turn returned (device epoch; 0: none this boot).
+  uint32_t answeredAt(const std::string& chat) const {
+    const uint32_t h = dupHash(chat);
+    for (const Answered& a : answered_)
+      if (a.at && a.chat == h) return a.at;
+    return 0;
+  }
+  void noteAnswered(const std::string& chat, uint32_t at) {
+    const uint32_t h = dupHash(chat);
+    Answered* slot = &answered_[0];
+    for (Answered& a : answered_) {
+      if (a.at && a.chat == h) {
+        slot = &a;
+        break;
+      }
+      if (a.at < slot->at) slot = &a;   // else the oldest (or an empty) entry
+    }
+    slot->chat = h;
+    slot->at = at;
   }
 
   template <class Io>
@@ -418,6 +483,14 @@ class TgReceiver {
   std::vector<std::pair<int32_t, DupKey>> keys_;
   bool polled_ = true;   // the page came from getUpdates (poison marks apply)
   size_t current_ = 0;   // the bucket of the turn being routed (valid inside runTurn)
+  // When the last few chats' turns returned, for the crossed-answer note (chat by its
+  // dupHash; the oldest entry is replaced). RAM only: a restart forgets it.
+  struct Answered {
+    uint32_t chat = 0;
+    uint32_t at = 0;
+  };
+  static constexpr size_t kAnsweredChats = 4;
+  Answered answered_[kAnsweredChats];
 };
 
 }  // namespace nimbus::net

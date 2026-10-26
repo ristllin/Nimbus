@@ -16,7 +16,11 @@
 //     held for the rest of an album may keep that socket open between re-polls;
 //   - a hold stores nothing (no settings write while a page is held);
 //   - the media slots are a lazily allocated PSRAM array, never a static;
-//   - one owner rule for every device notice.
+//   - one owner rule for every device notice, and a route for every notice when there
+//     is no Telegram owner (the web chat);
+//   - a held page re-polls at the settle pace, its last re-poll at the window's end;
+//   - the bench's settle-marked injected pages run the receive cycle too, never the
+//     cursor.
 
 #include "nimbus/net/tg_owner.h"
 
@@ -198,7 +202,10 @@ static void test_a_hold_writes_no_settings() {
   const std::string poll = bodyOf(code(), "void pollTask(void*) {");
   TEST_ASSERT_TRUE(poll.find("if (haveToken && !g_receiver.holding()) persistOffset();") != std::string::npos);
   TEST_ASSERT_EQUAL_size_t(1, findAll(poll, "persistOffset();").size() - findAll(poll, "g_cursor.reset();\n      persistOffset();").size());
-  TEST_ASSERT_TRUE(poll.find("g_receiver.holding() ? nimbus::net::kSettleRepollMs") != std::string::npos);
+  TEST_ASSERT_TRUE(poll.find("idlePause(heldRepollMs(") != std::string::npos);
+  const std::string pace = bodyOf(code(), "static uint32_t heldRepollMs(uint32_t normalMs) {");
+  TEST_ASSERT_TRUE(pace.find("g_receiver.holding() ? g_receiver.settle().repollInMs(now) : normalMs") !=
+                   std::string::npos);
   // No other path writes the offset.
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "store::setTelegramOffset(").size());
 }
@@ -218,18 +225,28 @@ static void test_media_slots_are_lazy_psram() {
 
 // A forwarded "/command" is someone else's words: it enters the batch labeled
 // (orch::forwardedText, host-tested in test_orch_command_parse), and it does not make
-// the page a command page (the receive cycle's rule, nimbus/net/tg_receive.h).
+// the page a command page, nor end a settle hold as a command (the receive cycle's one
+// rule, commandUpdate in nimbus/net/tg_receive.h).
 static void test_forwarded_commands_never_reach_the_command_path() {
   const std::string bt = bodyOf(code(), "static void batchTextInto(");
   TEST_ASSERT_TRUE(bt.find("cu.text   = u.forwarded ? nimbus::orch::forwardedText(u.text) : u.text;") !=
                    std::string::npos);
   const std::string rx = readCode("lib/core/include/nimbus/net/tg_receive.h");
+  const std::string cu = bodyOf(rx, "inline bool commandUpdate(const tg::Update& u) {");
+  for (const char* cond : {"u.attachment.kind == tg::Attachment::Kind::None", "!u.forwarded",
+                           "orch::isCommandText(u.text)"})
+    TEST_ASSERT_TRUE_MESSAGE(cu.find(cond) != std::string::npos, cond);
   const size_t at = rx.find("bool pageHasCommand(Io& io) const {");
   TEST_ASSERT_TRUE(at != std::string::npos);
   const std::string pc = rx.substr(at, rx.find("\n  }\n", at) - at);
-  for (const char* cond : {"u.attachment.kind == tg::Attachment::Kind::None", "!u.forwarded",
-                           "orch::isCommandText(u.text)", "io.allowed(u.chatId)"})
-    TEST_ASSERT_TRUE_MESSAGE(pc.find(cond) != std::string::npos, cond);
+  TEST_ASSERT_TRUE(pc.find("commandUpdate(u) && io.allowed(u.chatId)") != std::string::npos);
+  // The settle input counts a command (and a hold's growth) only from an allowed chat.
+  const std::string settle = bodyOf(rx, "inline SettlePage settlePageOf(");
+  const size_t gate = settle.find("if (!turnCandidate(u) || !allowed(u.chatId)) continue;");
+  TEST_ASSERT_TRUE(gate != std::string::npos);
+  TEST_ASSERT_TRUE(settle.find("commandUpdate(u)") != std::string::npos && gate < settle.find("commandUpdate(u)"));
+  TEST_ASSERT_TRUE(settle.find("sp.newestId = u.updateId;") != std::string::npos &&
+                   gate < settle.find("sp.newestId = u.updateId;"));
   // Every text that reaches the batcher goes through batchTextInto, and a media item's
   // caption takes the same forwarded label.
   TEST_ASSERT_EQUAL_size_t(1, findAll(code(), "cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;").size());
@@ -258,6 +275,52 @@ static void test_one_owner_rule_for_every_notice() {
   TEST_ASSERT_EQUAL_STRING("333", ownerChatOf("  ", " 333 ,444", allow("333,444")).c_str());
   TEST_ASSERT_EQUAL_STRING("", ownerChatOf("", "", allow("")).c_str());
   TEST_ASSERT_EQUAL_STRING("444", ownerChatOf(",,444", "444", allow("444")).c_str());
+}
+
+// Every device notice the poll task raises has a route with or without a Telegram owner
+// (nimbus/net/owner_notice.h): no sender returns early on an empty owner chat (a
+// web-only device lost the storage notices that way), and both senders go through the
+// one router, which asks the owner rule.
+static void test_every_notice_routes_without_an_owner() {
+  const std::string route = bodyOf(code(), "static Routed routeNotice(");
+  TEST_ASSERT_TRUE(route.find("nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind)") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(route.find("agent::memory::captureMessage(r.chat.c_str()") != std::string::npos);
+  for (const char* fn : {"static void sendOwnerNotice(", "static void sendGuardNotice("}) {
+    const std::string b = bodyOf(code(), fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("ownerChat()") == std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("routeNotice(") != std::string::npos, fn);
+  }
+  // The storm grading reads these lines: the owner-routed wording is unchanged.
+  TEST_ASSERT_TRUE(code().find("\"telegram: guard notice (%s) queued for the owner\"") != std::string::npos);
+  TEST_ASSERT_TRUE(code().find("\"telegram: storage-full notice sent to the owner%s\"") != std::string::npos);
+}
+
+// The bench's settle-marked injected pages: held by the same settle rule as a polled
+// page (settlePageOf, TgSettle), then run through the receive cycle's injected path;
+// they never move the getUpdates cursor (their ids are not Telegram's).
+static void test_settle_marked_pages_run_the_receive_cycle() {
+  const std::string drain = bodyOf(code(), "static void drainSettledInject() {");
+  TEST_ASSERT_TRUE(drain.find("nimbus::net::settlePageOf(ups, rp, allowedChat)") != std::string::npos);
+  TEST_ASSERT_TRUE(drain.find("s_injSettle.observe(") != std::string::npos);
+  TEST_ASSERT_TRUE(drain.find("g_cursor") == std::string::npos);
+  const std::string run = bodyOf(code(), "static void runSettledPage(");
+  TEST_ASSERT_TRUE(run.find("io.polled = false;") != std::string::npos);
+  TEST_ASSERT_TRUE(run.find("g_receiver.injected(io, ups, first, c)") != std::string::npos);
+  TEST_ASSERT_TRUE(run.find("g_cursor") == std::string::npos);
+  const std::string poll = bodyOf(code(), "void pollTask(void*) {");
+  TEST_ASSERT_TRUE(poll.find("drainSettledInject();") != std::string::npos);
+}
+
+// A photo with no caption is described with the text its sender wrote just before it in
+// the same turn (25 Oct: the text, then the plate), as a caption would be.
+static void test_text_before_a_photo_is_its_context() {
+  const std::string vc = bodyOf(code(), "static String visionContext(");
+  TEST_ASSERT_TRUE(vc.find("if (!cap.length()) cap = textBefore(turn, g_batch.mediaUpdateIdAt(turn, k));") !=
+                   std::string::npos);
+  const std::string tb = bodyOf(code(), "static String textBefore(");
+  TEST_ASSERT_TRUE(tb.find("!u->forwarded") != std::string::npos);   // someone else's words never are
+  TEST_ASSERT_TRUE(tb.find("id >= mediaId") != std::string::npos);   // only what came before the photo
 }
 
 // The reset reason reaches the guard from main.cpp, and the guard record is booted and
@@ -313,6 +376,9 @@ int main(int, char**) {
   RUN_TEST(test_media_slots_are_lazy_psram);
   RUN_TEST(test_forwarded_commands_never_reach_the_command_path);
   RUN_TEST(test_one_owner_rule_for_every_notice);
+  RUN_TEST(test_every_notice_routes_without_an_owner);
+  RUN_TEST(test_settle_marked_pages_run_the_receive_cycle);
+  RUN_TEST(test_text_before_a_photo_is_its_context);
   RUN_TEST(test_reset_reason_hook);
   RUN_TEST(test_turn_media_list_follows_the_turn);
   return UNITY_END();

@@ -1318,10 +1318,17 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   // 4. Inbound: one hook, where the page is read, before the turn path parses it.
   TEST_ASSERT_EQUAL_INT(2, (int)src::findAll(code, "tgarchive::onInboundPage(").size());
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onInboundPage(", page));
-  // The other: the TGINJECT page (test builds only), through the same receive path.
+  // The other: the TGINJECT pages (test builds only), plain and settle-marked, both
+  // through archiveInjected and the same receive path.
+  const auto arc = src::bodyOf(code, "static void archiveInjected(const char* body, size_t len) {");
+  TEST_ASSERT_TRUE(arc.second > arc.first);
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onInboundPage(", arc));
   const auto inj = src::bodyOf(code, "static void drainInjectedPage() {");
   TEST_ASSERT_TRUE(inj.second > inj.first);
-  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onInboundPage(", inj));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "archiveInjected(", inj));
+  const auto settled = src::bodyOf(code, "static void drainSettledInject() {");
+  TEST_ASSERT_TRUE(settled.second > settled.first);
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "archiveInjected(", settled));
   TEST_ASSERT_TRUE(code.find("tgarchive::onInboundPage(", page.first) < code.find("parsePageBody(", page.first));
 
   // 5. No other source file talks to the Telegram send API.
@@ -1349,17 +1356,21 @@ static void test_spontaneous_owner_notices_reach_the_unarmed_channel() {
   const std::string code = src::stripComments(src::readFile("src/agent/telegram.cpp"));
   TEST_ASSERT_TRUE_MESSAGE(code.size() > 10000, "telegram.cpp not found (run from the repo root)");
 
-  // 1. Both senders capture the delivered notice as the owner chat's assistant row,
-  //    and only after the queue took it (the capture follows the send check).
+  // 1. Both senders route through routeNotice, which captures the delivered notice as
+  //    the chat's assistant row (the owner chat's, or with no Telegram owner the web
+  //    chat's), and only after the queue took it (the capture follows the send check).
   const auto owner = src::bodyOf(code, "static void sendOwnerNotice(");
   const auto guard = src::bodyOf(code, "static void sendGuardNotice(");
+  const auto route = src::bodyOf(code, "static Routed routeNotice(");
   TEST_ASSERT_TRUE(owner.second > owner.first);
   TEST_ASSERT_TRUE(guard.second > guard.first);
-  for (auto b : {owner, guard}) {
-    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "memory::captureMessage(", b));
-    TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "\"assistant\"", b));
-    TEST_ASSERT_TRUE(code.find("if (!send(", b.first) < code.find("memory::captureMessage(", b.first));
-  }
+  TEST_ASSERT_TRUE(route.second > route.first);
+  for (auto b : {owner, guard}) TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "routeNotice(", b));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "memory::captureMessage(", route));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "\"assistant\"", route));
+  const size_t sendCheck = code.find("!send(", route.first);
+  TEST_ASSERT_TRUE(sendCheck < route.second);
+  TEST_ASSERT_TRUE(sendCheck < code.find("memory::captureMessage(", route.first));
 
   // 2. The pumps run on every poll cycle, token or not: no haveToken gate may
   //    return before them (leg a graded 0 notices on the no-bot unit because of it).

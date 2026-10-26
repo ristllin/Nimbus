@@ -38,6 +38,7 @@
 #include "nimbus/orch/blob_store.h"   // BlobHasher: the content hash of an inbound file
 #include "nimbus/net/tg_receive.h"    // the receive cycle: settle, breakers, turns (host-tested)
 #include "nimbus/net/tg_owner.h"      // which chat the device's notices go to (host-tested)
+#include "nimbus/net/owner_notice.h"  // a notice with no Telegram owner goes to the web chat (host-tested)
 #include "nimbus/net/tg_media_memo.h" // blob-hash dedupe of the description step (host-tested)
 #include <new>                        // placement new: the memo lives in PSRAM
 #include "nimbus/sys/breadcrumb.h"    // crc32: the firmware build id of the guard record
@@ -327,10 +328,49 @@ static bool (*g_stagedPending)() = nullptr;
 static void (*g_stagedRun)() = nullptr;
 static bool stagedWorkWaiting() { return g_stagedPending && g_stagedRun && g_stagedPending(); }
 
+#if defined(NIMBUS_TEST)
+// Settle-marked injected pages (test builds; injectRawUpdates, drainSettledInject): a
+// TGINJECT page that opens with {"ok":true,"settle":true, is held by the same settle rule
+// as a polled page instead of running at once, and each later settle page joins it
+// until the rule dispatches, so the bench replays a sequence in real time (the 25 Oct
+// text, then its photo 3 s later) with the device's own timing. No phone and no user
+// account can message the test bot, so this is the bench's way through the window.
+static constexpr size_t kSettleInjectMax = 4;   // pages held at once
+struct HeldPage {
+  char*  body;   // a PSRAM copy
+  size_t len;
+};
+static portMUX_TYPE s_settleMux = portMUX_INITIALIZER_UNLOCKED;
+static HeldPage s_settlePages[kSettleInjectMax] = {};   // in arrival order (s_settleMux)
+static size_t s_settleCount = 0;       // pages held (s_settleMux)
+static bool   s_settleFresh = false;   // a page arrived since the rule last looked (s_settleMux)
+static bool   s_settleRunning = false; // the held pages were dispatched and run (s_settleMux)
+static nimbus::net::TgSettle s_injSettle;   // the hold state (poll task only)
+
+static bool settleInjectFresh() {
+  portENTER_CRITICAL(&s_settleMux);
+  const bool fresh = s_settleFresh;
+  portEXIT_CRITICAL(&s_settleMux);
+  return fresh;
+}
+static bool settleInjectHeld() {
+  portENTER_CRITICAL(&s_settleMux);
+  const bool held = s_settleCount > 0;
+  portEXIT_CRITICAL(&s_settleMux);
+  return held;
+}
+#endif  // NIMBUS_TEST
+
 // The idle waits (the inter-cycle pause, a poll-error backoff, an idle long-poll)
 // end for a waiting local turn (CUM-462), for staged work, and for a quiesce
-// (!g_running): each means "stop idling, let the loop come around".
-static bool idleWaitEnds() { return localTurnWaiting() || stagedWorkWaiting() || !g_running; }
+// (!g_running): each means "stop idling, let the loop come around". In a test build a
+// fresh settle-marked injected page ends them too.
+static bool idleWaitEnds() {
+#if defined(NIMBUS_TEST)
+  if (settleInjectFresh()) return true;
+#endif
+  return localTurnWaiting() || stagedWorkWaiting() || !g_running;
+}
 
 // Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short
 // slices, ending it as soon as idleWaitEnds() says so (nimbus/net/tg_poll_sched.h).
@@ -1044,25 +1084,41 @@ static void persistOffset() {
   publishPollStatus();
 }
 
-// A raised-once owner notice, "<device name>: <text>", sent on the poll task's own
-// outbound path, never from the task that raised it. `take` consumes it (false: none
-// is due); nothing is taken until an owner chat exists. `which` names it in the log.
-// The notice is also captured as the owner chat's assistant row: with no bot token
-// the reply queue is drained-and-discarded, so the history row is the one channel
-// the unarmed owner sees (the web page renders it; the storm kit reads it) - the
-// same one-row-per-message-received rule the turn replies follow (finding 2).
-static void sendOwnerNotice(bool (*take)(), const char* text, const char* which) {
-  const String owner = ownerChat();
-  if (!owner.length() || !take()) return;
+// "<device name>: <text>", the way every device notice opens.
+static String noticeText(const String& text) {
   String name = nimbus::sys::deviceName();
   if (!name.length()) name = "Nimbus";
-  const String full = name + ": " + text;
-  if (!send(owner, full, /*block=*/false)) {
+  return name + ": " + text;
+}
+
+// Where routeNotice put a notice.
+enum class Routed : uint8_t { Dropped, Owner, Web };
+
+// Route one device notice (nimbus/net/owner_notice.h): with a Telegram owner chat it is
+// queued there and captured as that chat's assistant row (with no bot token the queue
+// is drained-and-discarded, so the row is what the unarmed owner sees: the web page
+// renders it, the storm kit reads it); with no Telegram owner (a web-only device) it is
+// captured as an assistant row of the web chat, tagged as a device event, which the chat
+// page renders on its next history read. Dropped when the reply queue was full (the
+// caller logs it).
+static Routed routeNotice(nimbus::net::OwnerNotice kind, const String& full) {
+  const nimbus::net::NoticeRoute r = nimbus::net::noticeRouteOf(std::string(ownerChat().c_str()), kind);
+  if (r.telegram && !send(String(r.chat.c_str()), full, /*block=*/false)) return Routed::Dropped;
+  agent::memory::captureMessage(r.chat.c_str(), "assistant", nimbus::orch::MsgKind::Message, full, "", r.tag);
+  return r.telegram ? Routed::Owner : Routed::Web;
+}
+
+// A raised-once owner notice, sent on the poll task's own outbound path, never from the
+// task that raised it. `take` consumes it (false: none is due). `which` names it in the
+// log. Every device has a route for it (routeNotice), so it is never left owed.
+static void sendOwnerNotice(nimbus::net::OwnerNotice kind, bool (*take)(), const char* text, const char* which) {
+  if (!take()) return;
+  const Routed routed = routeNotice(kind, noticeText(text));
+  if (routed == Routed::Dropped)
     alogf("telegram: storage-full notice%s dropped: reply queue full", which);
-    return;
-  }
-  agent::memory::captureMessage(owner.c_str(), "assistant", nimbus::orch::MsgKind::Message, full);
-  if (enabled())
+  else if (routed == Routed::Web)
+    alogf("telegram: storage-full notice%s captured for the web chat (no Telegram owner)", which);
+  else if (enabled())
     alogf("telegram: storage-full notice sent to the owner%s", which);
   else
     alogf("telegram: storage-full notice captured for the owner%s (no token: the queue discards)", which);
@@ -1071,14 +1127,16 @@ static void sendOwnerNotice(bool (*take)(), const char* text, const char* which)
 // The once-per-boot "settings storage is almost full" notice (raised by any failed
 // NVS write, nimbus::sys::takeStorageNotice).
 static void sendStorageNotice() {
-  sendOwnerNotice([] { return nimbus::sys::takeStorageNotice(); }, nimbus::store::kStorageNoticeText, "");
+  sendOwnerNotice(nimbus::net::OwnerNotice::Storage, [] { return nimbus::sys::takeStorageNotice(); },
+                  nimbus::store::kStorageNoticeText, "");
 }
 
 // The once-per-episode "the file store is full" notice (agent::files::noteRefusal
 // raises it). The photo path sends it at once, so it reaches the owner before that
 // photo's reply; the poll loop sends one an assistant save raised.
 static void sendFileStoreNotice() {
-  sendOwnerNotice([] { return agent::files::takeFullNotice(); }, nimbus::orch::kStoreFullNotice, " (file store)");
+  sendOwnerNotice(nimbus::net::OwnerNotice::FileStore, [] { return agent::files::takeFullNotice(); },
+                  nimbus::orch::kStoreFullNotice, " (file store)");
 }
 
 // ---- sendMessage ------------------------------------------------------------
@@ -1363,12 +1421,31 @@ static const char* refusalOf(const MediaSlot& m, const nimbus::orch::Principal& 
   return "";
 }
 
+static const nimbus::tg::Update* pageUpdate(int32_t id);
+
+// The words the sender wrote just before media `mediaId` in bucket `turn`: the newest
+// plain text of that bucket sent before it, not a forward ("" when none). 25 Oct:
+// "Without the mac and cheese. Just the Sunday roast", then the plate with no caption,
+// now one turn: the text is the photo's context, as a caption would be.
+static String textBefore(size_t turn, int32_t mediaId) {
+  const nimbus::tg::Update* best = nullptr;
+  for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m) {
+    const int32_t id = g_batch.updateIdAt(turn, m);
+    if (g_batch.kindAt(turn, m) != nimbus::orch::SegKind::Text || id >= mediaId) continue;
+    const nimbus::tg::Update* u = pageUpdate(id);
+    if (u && !u->forwarded && (!best || id > best->updateId)) best = u;
+  }
+  return best ? String(best->text.c_str()) : String();
+}
+
 // The vision call's caption context for photo k of n of a turn (the captioner reads it
-// after "The sender wrote: "): the album's caption (the first one among its media) and
-// the item's place in it, so every photo of an album is described with its caption.
+// after "The sender wrote: "): the album's caption (the first one among its media), else
+// the text sent just before the photo in the same turn, and the item's place in it, so
+// every photo of an album is described with its caption.
 static String visionContext(size_t turn, size_t k, size_t n) {
   String cap;
   for (size_t j = 0; j < n && !cap.length(); ++j) cap = g_batch.mediaCaptionAt(turn, j);
+  if (!cap.length()) cap = textBefore(turn, g_batch.mediaUpdateIdAt(turn, k));
   if (n <= 1) return cap;
   const String place = String("(photo ") + (unsigned)(k + 1) + " of " + (unsigned)n + " sent together)";
   return cap.length() ? cap + " " + place : place;
@@ -1744,11 +1821,17 @@ static String guardDuplicateText(const nimbus::net::TgNotice& n) {
             "meant to.";
 }
 
+// A guard notice's kind, as the log names it (the storm grading reads these words).
+static const char* guardKindName(nimbus::net::TgNotice::Kind k) {
+  switch (k) {
+    case nimbus::net::TgNotice::Kind::Duplicate: return "duplicate";
+    case nimbus::net::TgNotice::Kind::Ceiling: return "ceiling";
+    case nimbus::net::TgNotice::Kind::Poison: break;
+  }
+  return "poison";
+}
+
 static void sendGuardNotice(const nimbus::net::TgNotice& n) {
-  const String owner = ownerChat();
-  if (!owner.length()) return;
-  String name = nimbus::sys::deviceName();
-  if (!name.length()) name = "Nimbus";
   String text;
   if (n.kind == nimbus::net::TgNotice::Kind::Duplicate) {
     text = guardDuplicateText(n);
@@ -1762,24 +1845,16 @@ static void sendGuardNotice(const nimbus::net::TgNotice& n) {
            " items you sent could not be processed: the device restarted twice while working on them. "
            "Send them again.";
   }
-  const String full = name + ": " + text;
-  if (!send(owner, full, /*block=*/false)) {
-    alogf("telegram: guard notice (%s) dropped: reply queue full",
-          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
-          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
-    return;
-  }
-  // The row is the unarmed owner's channel (finding 2's rule): the queue discards
-  // without a token, so the notice the owner received is captured like any message.
-  agent::memory::captureMessage(owner.c_str(), "assistant", nimbus::orch::MsgKind::Message, full);
-  if (enabled())
-    alogf("telegram: guard notice (%s) queued for the owner",
-          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
-          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+  const char* kind = guardKindName(n.kind);
+  const Routed routed = routeNotice(nimbus::net::OwnerNotice::Guard, noticeText(text));
+  if (routed == Routed::Dropped)
+    alogf("telegram: guard notice (%s) dropped: reply queue full", kind);
+  else if (routed == Routed::Web)
+    alogf("telegram: guard notice (%s) captured for the web chat (no Telegram owner)", kind);
+  else if (enabled())
+    alogf("telegram: guard notice (%s) queued for the owner", kind);
   else
-    alogf("telegram: guard notice (%s) captured for the owner (no token: the queue discards)",
-          n.kind == nimbus::net::TgNotice::Kind::Duplicate ? "duplicate"
-          : n.kind == nimbus::net::TgNotice::Kind::Ceiling ? "ceiling" : "poison");
+    alogf("telegram: guard notice (%s) captured for the owner (no token: the queue discards)", kind);
 }
 
 // The running image's id for the guard record: a record written by another build
@@ -1813,6 +1888,13 @@ static void bootGuard() {
 }
 
 static void noteHistory(const nimbus::orch::PsString& text);
+
+// A turn whose first message was sent before its chat's previous answer went out ends
+// with the crossed-answer note (tg_receive.h): say so in the log.
+static void noteCrossed(const std::string& chat, const nimbus::orch::PsString& text) {
+  if (nimbus::net::withoutCrossedNote(text.c_str(), text.size()) != text.size())
+    alogf("telegram: a turn for %s was sent before its chat's last answer went out (the turn is told)", chat.c_str());
+}
 
 // The receive cycle's I/O on this task (nimbus/net/tg_receive.h): one TLS session at a
 // time, every fetch and turn after the poll socket closed.
@@ -1853,6 +1935,7 @@ struct TgIo {
     // them with the turn and frees them when it ends; a turn that never took them, a
     // command or a refusal, frees them here).
     agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
+    noteCrossed(chat, text);
     if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
@@ -1883,6 +1966,19 @@ struct TgIo {
 // (checkpointOffset), so a restart re-runs at most the bucket in flight.
 static nimbus::net::TgReceiver g_receiver(g_cursor, g_batch, g_guard);
 
+static const nimbus::tg::Update* pageUpdate(int32_t id) { return g_receiver.updateOf(id); }
+
+// The pause before the next cycle: a held page's settle pace (tg_settle.h repollInMs:
+// the last re-poll of a window lands at its end), else `normalMs`.
+static uint32_t heldRepollMs(uint32_t normalMs) {
+  const uint32_t now = millis();
+  uint32_t ms = g_receiver.holding() ? g_receiver.settle().repollInMs(now) : normalMs;
+#if defined(NIMBUS_TEST)
+  if (s_injSettle.holding()) ms = std::min(ms, s_injSettle.repollInMs(now));
+#endif
+  return ms;
+}
+
 // histV2 (lib/harness turn_inbox.h): what the turn about to run hands its history row -
 // its source (the bucket's newest update id and message count, so a re-served page is
 // captured once), the refs of the media rows its items left (album order) and what the
@@ -1901,7 +1997,11 @@ static void noteHistory(const nimbus::orch::PsString& text) {
   }
   agent::history::Inbound in = agent::history::inboundForBucket(g_batch, i, refs);
   if (g_batch.voiceAt(i) && !voiceRef.empty()) in.refs.push_back(voiceRef);
-  agent::history::noteInbound(in, std::string(text.c_str(), text.size()));
+  const std::string routed(text.c_str(), text.size());
+  // A crossed turn's note is for the model, not the record: the row keeps what was sent.
+  const size_t sent = nimbus::net::withoutCrossedNote(routed.c_str(), routed.size());
+  if (in.said.empty() && sent != routed.size()) in.said = routed.substr(0, sent);
+  agent::history::noteInbound(in, routed);
 }
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
@@ -1930,6 +2030,9 @@ static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, 
 }
 
 #if defined(NIMBUS_TEST)
+// The archive hook of an injected page (plain or settle-marked).
+static void archiveInjected(const char* body, size_t len) { agent::tgarchive::onInboundPage(body, len, g_token); }
+
 // Run an injected page through the same receive path as a polled one (the archive
 // hook, the duplicate breaker, handleUpdate, the batcher, the media processing, one turn
 // per bucket), without fetching and without touching the offset cursor (its ids are not
@@ -1942,7 +2045,7 @@ static void drainInjectedPage() {
   const size_t len = s_rawInjectLen;
   portEXIT_CRITICAL(&s_rawMux);
   if (!body) return;
-  if (!s_injArchived) agent::tgarchive::onInboundPage(body, len, g_token);   // archive hook
+  if (!s_injArchived) archiveInjected(body, len);
   s_injArchived = true;
   std::vector<nimbus::tg::Update> ups;
   const bool ok = parsePageBody(body, len, ups);   // parsePageBody logs a failure
@@ -1968,6 +2071,85 @@ static void drainInjectedPage() {
   s_rawInject = nullptr;
   portEXIT_CRITICAL(&s_rawMux);
   heap_caps_free(body);
+}
+
+// The held settle-marked pages, parsed in arrival order into one page (false: one of
+// them does not parse; it is logged).
+static bool settledUpdates(const HeldPage* pages, size_t n, std::vector<nimbus::tg::Update>& ups) {
+  ups.clear();
+  std::vector<nimbus::tg::Update> one;
+  for (size_t i = 0; i < n; ++i) {
+    if (!parsePageBody(pages[i].body, pages[i].len, one)) return false;
+    ups.insert(ups.end(), one.begin(), one.end());
+  }
+  return true;
+}
+
+// Run the dispatched settle page through the injected receive path (no cursor, no
+// poison marks), resuming past a cap stop at once (the stop freed its slots). The
+// dispatch is logged before its turns run (the bench times the hold and the turn from
+// it), their count after.
+static void runSettledPage(const std::vector<nimbus::tg::Update>& ups) {
+  alogf("telegram: settle dispatch (injected) n=%u after %u ms (%s)", (unsigned)ups.size(),
+        (unsigned)s_injSettle.lastHeldMs(), nimbus::net::settleWhyName(s_injSettle.why()));
+  TgIo io;
+  io.polled = false;
+  int messages = 0, turns = 0;
+  for (size_t first = 0; first < ups.size();) {
+    nimbus::net::TgCycle c;
+    const size_t next = g_receiver.injected(io, ups, first, c);
+    messages += c.messages;
+    turns += c.turns;
+    if (next <= first) break;
+    first = next;
+  }
+  alogf("telegram: settled page ran: %d message%s in %d turn%s", messages, messages == 1 ? "" : "s", turns,
+        turns == 1 ? "" : "s");
+}
+
+// Free the first `n` held pages (the ones just run or dropped); a page that arrived
+// meanwhile moves up and is looked at on the next cycle.
+static void releaseSettledPages(size_t n) {
+  HeldPage gone[kSettleInjectMax];
+  portENTER_CRITICAL(&s_settleMux);
+  for (size_t i = 0; i < n; ++i) gone[i] = s_settlePages[i];
+  for (size_t i = n; i < s_settleCount; ++i) s_settlePages[i - n] = s_settlePages[i];
+  s_settleCount -= n;
+  s_settleFresh = s_settleCount > 0;
+  s_settleRunning = false;
+  portEXIT_CRITICAL(&s_settleMux);
+  s_injSettle.reset();
+  for (size_t i = 0; i < n; ++i) heap_caps_free(gone[i].body);
+}
+
+// The settle-marked injected pages (see s_settlePages): observed by the settle rule on
+// every cycle like a held polled page, dispatched as one page when the rule says so.
+static void drainSettledInject() {
+  HeldPage pages[kSettleInjectMax];
+  portENTER_CRITICAL(&s_settleMux);
+  const size_t n = s_settleCount;
+  for (size_t i = 0; i < n; ++i) pages[i] = s_settlePages[i];
+  s_settleFresh = false;
+  portEXIT_CRITICAL(&s_settleMux);
+  if (!n) return;
+  std::vector<nimbus::tg::Update> ups;
+  const bool ok = settledUpdates(pages, n, ups);
+  if (ok) {
+    nimbus::orch::RawPage rp;
+    rp.count = (int)ups.size();
+    auto allowedChat = [](const std::string& c) { return telegram::allowed(String(c.c_str())); };
+    const nimbus::net::SettlePage sp = nimbus::net::settlePageOf(ups, rp, allowedChat);
+    if (s_injSettle.observe(-1, sp, millis(), TgIo().nowEpoch()) == nimbus::net::Settle::Hold) {
+      alogif("telegram: settle hold (injected, re-poll %d)", s_injSettle.repolls());
+      return;
+    }
+    portENTER_CRITICAL(&s_settleMux);
+    s_settleRunning = true;   // later settle pages wait for the next hold
+    portEXIT_CRITICAL(&s_settleMux);
+    for (size_t i = 0; i < n; ++i) archiveInjected(pages[i].body, pages[i].len);
+    runSettledPage(ups);
+  }
+  releaseSettledPages(n);
 }
 #endif  // NIMBUS_TEST
 
@@ -2155,6 +2337,11 @@ void pollTask(void*) {
     nimbus::net::TgPoll plan =
         haveToken ? g_pollSched.plan(localTurnWaiting()) : nimbus::net::TgPoll::LongPoll;
     if (haveToken && ranStaged) plan = nimbus::net::TgPoll::Check;   // Telegram's turn first
+#if defined(NIMBUS_TEST)
+    // A held settle-marked injected page is re-checked at the settle pace, not after a
+    // long-poll: the poll is an immediate one while it is held.
+    if (haveToken && plan == nimbus::net::TgPoll::LongPoll && settleInjectHeld()) plan = nimbus::net::TgPoll::Check;
+#endif
     // Inside a getUpdates backoff the cycle does not poll (a local turn still runs).
     if (haveToken) plan = nimbus::net::tgPlanWithBackoff(plan, g_backoff.mayPoll(millis()));
     if (haveToken && plan == nimbus::net::TgPoll::Skip) {
@@ -2201,7 +2388,8 @@ void pollTask(void*) {
     if (!g_running) break;
 
 #if defined(NIMBUS_TEST)
-    drainInjectedPage();   // a test build's TGINJECT page, if one is waiting
+    drainInjectedPage();    // a test build's TGINJECT page, if one is waiting
+    drainSettledInject();   // and its settle-marked pages, held like a polled page
 #endif
 
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
@@ -2297,10 +2485,9 @@ void pollTask(void*) {
     // should not run another drain/turn cycle before the exit check - the
     // factory reset is waiting on this task.
     if (!g_running) break;
-    // A held page re-polls after the settle pace; otherwise the normal pause. Either
-    // ends for a local turn (CUM-462).
-    idlePause(g_receiver.holding() ? nimbus::net::kSettleRepollMs
-                                   : (activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS));
+    // A held page re-polls after the settle pace (shorter at the end of its window);
+    // otherwise the normal pause. Either ends for a local turn (CUM-462).
+    idlePause(heldRepollMs(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS));
   }
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
   // touching a dead task's state. Queues are deliberately left alive (reboot or
@@ -2417,14 +2604,44 @@ bool sendMediaSd(const String& chatId, const char* kind, const char* filePath,
 }
 
 #if defined(NIMBUS_TEST)
+// A settle-marked page opens with exactly this (see s_settlePages).
+static constexpr char kSettleMark[] = "{\"ok\":true,\"settle\":true,";
+
+static bool settleMarked(const char* body, size_t len) {
+  const size_t mark = sizeof(kSettleMark) - 1;
+  return len > mark && memcmp(body, kSettleMark, mark) == 0;
+}
+
+// Hold a settle-marked page with the others (false: a plain page is running, the held
+// pages were dispatched and run, or kSettleInjectMax are held).
+static bool holdSettlePage(char* copy, size_t len) {
+  portENTER_CRITICAL(&s_settleMux);
+  const bool take = !s_settleRunning && s_settleCount < kSettleInjectMax;
+  if (take) {
+    s_settlePages[s_settleCount++] = HeldPage{copy, len};
+    s_settleFresh = true;
+  }
+  portEXIT_CRITICAL(&s_settleMux);
+  return take;
+}
+
 bool injectRawUpdates(const char* body, size_t len) {
   if (!body || len == 0 || len > kRawInjectMax) return false;
   char* copy = (char*)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM);
   if (!copy) return false;
   memcpy(copy, body, len);   // outside the lock: a 64 KB copy must not run with interrupts off
   copy[len] = 0;
+  if (settleMarked(copy, len)) {
+    portENTER_CRITICAL(&s_rawMux);
+    const bool plainRunning = s_rawInject != nullptr;
+    portEXIT_CRITICAL(&s_rawMux);
+    const bool held = !plainRunning && holdSettlePage(copy, len);
+    if (!held) heap_caps_free(copy);
+    return held;
+  }
+  const bool settling = settleInjectHeld();
   portENTER_CRITICAL(&s_rawMux);
-  const bool busy = s_rawInject != nullptr;
+  const bool busy = settling || s_rawInject != nullptr;
   if (!busy) {
     s_rawInject = copy;
     s_rawInjectLen = len;
@@ -2449,7 +2666,8 @@ String injectRawPage(const String& body) {
     if (u.attachment.kind != nimbus::tg::Attachment::Kind::None) media++;
     else if (u.text.size()) text++;
   }
-  return String("TGINJECT queued parsed=") + (unsigned)ups.size() + " text=" + text + " media=" + media;
+  return String("TGINJECT queued parsed=") + (unsigned)ups.size() + " text=" + text + " media=" + media +
+         (settleMarked(body.c_str(), body.length()) ? " settle=1" : "");
 }
 #endif  // NIMBUS_TEST
 
