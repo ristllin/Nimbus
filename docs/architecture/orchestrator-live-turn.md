@@ -236,8 +236,9 @@ is `src/agent/telegram.cpp`). One cycle:
 4. **Run each turn in order.** Past the hourly ceiling (60 inbound head turns in any
    rolling hour, 12 of them reserved for the owner's chat, so the other allowed chats
    stop at 48; commands do not count) a turn is skipped, with one owner notice per
-   trip. Otherwise every photo of the turn is fetched, hashed, handed to the archive
-   (one download per file) and stored, in album order, with a typing indicator at most
+   trip. Otherwise every photo of the turn is fetched (its 800 px size), hashed, handed
+   to the archive (which fetches its own largest size later) and stored, in album
+   order, with a typing indicator at most
    once per photo and only 4 s or more after the last; then the turn runs with every
    item of its bucket (`MessageBatcher::render`, the one label
    `nimbus/orch/media_label.h`). A failed item is part of the turn, never a separate
@@ -263,10 +264,14 @@ image part never carries the cache point, so later rounds read the photos from t
 provider's cache. The bytes are never a JSON string: the renderer writes a marker, the
 body records a splice (`http.h` `BodySplice`), and the transport base64-encodes each
 4,096 B slice from the PSRAM copy at send time, so a 2 MB album costs one 4 KB slice
-buffer, never internal heap. Before each slice after the first, the transport waits in
-short steps (at most 1.5 s) while the largest free internal block is under 12 KB, so
-the TCP window drains before the next slice needs its buffers (`http.h`
-`sliceShouldWait`; large bodies used to fail an allocation now and then). On an Anthropic head with a direct key each photo is
+buffer, never internal heap. Before each slice after the first, while the largest free
+internal block is under 12 KB, the transport waits in 10 ms steps for the previous
+slice's acknowledged segments to free their buffers (large bodies used to fail an
+allocation now and then). It stops as soon as the block has room or has set no new
+high for 100 ms (one round trip; on a fragmented heap the block never grows), at most
+1.5 s per slice, and one request waits at most 2 s in all, or a tenth of its deadline
+when that is less; after that every slice goes out at once (`http.h` `SliceWait`,
+`paceSlice`, `paceCapMs`). On an Anthropic head with a direct key each photo is
 uploaded once per turn (the Files API, raw bytes) and every round references it by
 file_id; the uploads are deleted afterwards, one per poll cycle. Bounds: 10 photos,
 512 KB each, 2 MB per turn; a photo past them, an animated GIF, a format no head reads,

@@ -4086,12 +4086,10 @@ turn and at every clip site:
   {"memory#4-the-telegram-archive-sd-card", "4. The Telegram archive (SD card) (1/2)",
    R"NIMBUSDOC(Everything exchanged with the device over Telegram is kept on the SD card, at full
 fidelity, separate from the conversation memory above. The conversation keeps its own
-bounded copy of a photo (the 512 KB rendition the vision step reads); the archive is
-the record. Each file is downloaded once: when the conversation's copy is the same
-file as the archive's (the usual case: Telegram's largest size of a phone photo is
-under 512 KB), the archive takes it from the conversation's download, and an update
-served again reuses the archived file. Only when the archive wants a larger size than
-the conversation can read does it fetch its own.
+smaller copy of a photo (Telegram's 800 px size, the one the model reads); the archive
+is the record and fetches the largest size itself, after the turn. A voice note or a
+document is downloaded once: the archive takes it from the conversation's download,
+and an update served again reuses the archived file.
 
 **What is saved, and when.**
 
@@ -4136,12 +4134,12 @@ most 8 s per poll cycle, and resumes from the bytes already on the card. A local
 or a factory reset cuts a transfer short; it resumes later. A card write error leaves
 the `.part` file and an `incomplete` line; a network error is retried up to four times.
 An outbound message from another task is queued in PSRAM and written by the Telegram
-task, so no caller waits on the card.)NIMBUSDOC"},
-  {"memory#4-the-telegram-archive-sd-card-2", "4. The Telegram archive (SD card) (2/2)",
-   R"NIMBUSDOC(**Retention.** The archive is not part of the episodic retention window or the blob
-clean-up: those passes never touch `/mem/tg`. It is removed only by:
+task, so no caller waits on the card.
 
-- the storage-pressure policy: when free space falls below 5% of the card (at least
+**Retention.** The archive is not part of the episodic retention window or the blob
+clean-up: those passes never touch `/mem/tg`. It is removed only by:)NIMBUSDOC"},
+  {"memory#4-the-telegram-archive-sd-card-2", "4. The Telegram archive (SD card) (2/2)",
+   R"NIMBUSDOC(- the storage-pressure policy: when free space falls below 5% of the card (at least
   512 MB on a card that can spare it), day folders are deleted until free space is
   back above one and a half times that mark: every day of the chats not on the
   allowlist first, then the allowlisted chats' oldest days. The newest allowlisted

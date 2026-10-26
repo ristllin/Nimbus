@@ -524,12 +524,10 @@ turn and at every clip site:
 
 Everything exchanged with the device over Telegram is kept on the SD card, at full
 fidelity, separate from the conversation memory above. The conversation keeps its own
-bounded copy of a photo (the 512 KB rendition the vision step reads); the archive is
-the record. Each file is downloaded once: when the conversation's copy is the same
-file as the archive's (the usual case: Telegram's largest size of a phone photo is
-under 512 KB), the archive takes it from the conversation's download, and an update
-served again reuses the archived file. Only when the archive wants a larger size than
-the conversation can read does it fetch its own.
+smaller copy of a photo (Telegram's 800 px size, the one the model reads); the archive
+is the record and fetches the largest size itself, after the turn. A voice note or a
+document is downloaded once: the archive takes it from the conversation's download,
+and an update served again reuses the archived file.
 
 **What is saved, and when.**
 
