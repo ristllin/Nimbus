@@ -102,6 +102,20 @@ secrets, token and key rotation) is an operator task covered by the
 maintainer-internal runbook. The sections below describe what a device does with
 a release once it is published.
 
+## Release notes line
+
+Every OTA release carries one plain line for the people who own the devices, in
+`docs/release-notes/<tag>.txt` (a release candidate `vX.Y.Z-rcN` may use
+`vX.Y.Z.txt`). The release workflow signs it into the manifest's `notes`. A device
+shows it on **Device > Software update** ("What's new"), next to an available
+update and, after updating, for the version it runs, and the assistant is told it in
+the turn that follows a verified update, so it can mention what changed.
+
+The device keeps 95 bytes of it, so the release gate
+(`tools/release_gate/check_release_notes.py`, run by the release workflow before the
+build and by `run_gate.py`) refuses a release whose line is missing, longer than 95
+bytes, more than one line, not printable ASCII, or naming a ticket number.
+
 ## Release tags: firmware and Virtual Nimbus image
 
 One release workflow serves two channels, and the tag that is pushed picks the channel.

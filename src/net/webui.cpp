@@ -104,6 +104,7 @@
 #include "cloud_mint.h"                  // CUM-397: user-triggered device-key mint
 #include "nimbus/cloud/device_key.h"     // CUM-397: capacity validation (one source of truth)
 #include "nimbus/orch/key_shape.h"       // CUM-514: posted key/token shape check
+#include "nimbus/orch/key_home.h"        // QW5: a key posted into another provider's slot
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -1588,6 +1589,15 @@ static void buildFallbacks(String& out) {
   serializeJson(d, out);
 }
 
+// The /api/orch fields that change a key long-term memory can embed with.
+static bool isEmbedKeyField(const String& n) {
+  static const char* const kFields[] = {"oaiKey", "mistKey", "cumuloKey",
+                                        "clr_oaiKey", "clr_mistKey", "clr_cumuloKey"};
+  for (const char* f : kFields)
+    if (n == f) return true;
+  return false;
+}
+
 // Apply one POSTed orchestrator field. Key writes invalidate that provider's
 // verify cache (result -1, ts 0 = "never verified") so a swapped key can't ride
 // a stale "verified" badge. Returns true if the field was recognized.
@@ -2712,7 +2722,11 @@ void beginWeb(const WebConfig& wc) {
           prm->isPost() ? nimbus::orch::keyShapeFor(prm->name().c_str()) : nullptr;
       if (!ks) continue;
       const String& v = prm->value();
-      const std::string err = nimbus::orch::keyShapeError(*ks, std::string(v.c_str(), v.length()));
+      const std::string posted(v.c_str(), v.length());
+      std::string err = nimbus::orch::keyShapeError(*ks, posted);
+      // QW5: a key whose published prefix names another provider (an Anthropic key in
+      // the Cumulo slot) is refused with where it goes, never stored and then blamed.
+      if (err.empty()) err = nimbus::orch::misplacedKeyError(prm->name().c_str(), posted);
       if (!err.empty()) {
         JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
         r->send(400, "application/json", out);
@@ -2722,14 +2736,19 @@ void beginWeb(const WebConfig& wc) {
     // CUM-479: the scope covers every NVS write any field below makes, including the
     // ones nested inside a setter (verify reset, telegram offset, the usage ledger).
     nimbus::sys::SaveScope save;
-    bool touched = false, cfgDirty = false;
+    bool touched = false, cfgDirty = false, embedKeys = false;
     String fieldErr;   // CUM-530: a refused value (model pick) names what is allowed
     const size_t np = r->params();
     for (size_t i = 0; i < np; i++) {
       const AsyncWebParameter* prm = r->getParam(i);
       if (!prm->isPost()) continue;
       if (applyOrchField(prm->name(), prm->value(), cfgDirty, fieldErr)) touched = true;
+      embedKeys = embedKeys || isEmbedKeyField(prm->name());
     }
+    // QW5: memory embeds with whichever keyed provider can (embed_pick.h); a saved or
+    // cleared OpenAI, Mistral or Cumulo key re-decides it now, so the Memory page and
+    // the wizard show the truth right after the save.
+    if (embedKeys) agent::memory::noteProviderKeysChanged();
     // A directive edit is consumed by the orchestrator at its next turn-task
     // drain; a token/allowlist change needs a reboot (the poll task captured
     // them at begin) - the page surfaces that hint.
@@ -3056,7 +3075,16 @@ void beginWeb(const WebConfig& wc) {
       return;
     }
     if (!agent::provider_verify::request(p)) {
-      r->send(409, "application/json", "{\"error\":\"verify busy, retry\"}");
+      // QW5: say WHY, so the page can show the real cause instead of spinning. A turn
+      // in flight queues the check to run after it (provider_verify startTask); low
+      // memory records the deferral and retries on its own; otherwise another check
+      // is running and the page retries in a moment.
+      const char* why = agent::provider_verify::pending()          ? "busy"
+                        : agent::orchestrator::turnInFlight()        ? "turn"
+                        : agent::provider_verify::reason(p) == "low-memory" ? "low-memory"
+                                                                     : "busy";
+      r->send(409, "application/json",
+              String("{\"error\":\"verify busy, retry\",\"why\":\"") + why + "\"}");
       return;
     }
     r->send(200, "application/json", "{\"ok\":true}");

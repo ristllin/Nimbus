@@ -38,6 +38,7 @@ Enumerated with their consumer, so a rename is caught before it ships:
 | `release/make_webflash_manifest.py` | `.github/workflows/release.yml` | web-flasher manifest |
 | `release/check_known_patterns.sh` | `.pre-commit-config.yaml` | the pre-commit leak gate |
 | `release_gate/tag_shape.py` | `.github/workflows/release.yml` (job tag-shape) | every release: the channel gate (a rename skips every job) |
+| `release_gate/check_release_notes.py` | `.github/workflows/release.yml` (gate step + manifest `--notes`) | every OTA release: the notes gate and the line signed into the manifest |
 
 Rename or move one of these and you must update its consumer in the same change.
 

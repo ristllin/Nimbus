@@ -84,11 +84,8 @@ test('the wizard summary names the monthly spend ceiling', async ({ page }) => {
       contentType: 'application/json',
       body: JSON.stringify({ ...STATE, needsOnboarding: true, sta: true, provVerified: true }),
     }));
-  // The last step (done) by its saved index: only the provider step deep-links.
-  await page.addInitScript(() => {
-    try { localStorage.setItem('nimbusOnboardStep', '9'); } catch (e) {}
-  });
-  await page.goto('/');
+  // The last step (done) by its deep link (QW5: any step id; the saved step is per device).
+  await page.goto('/?onboard=done');
   await expect(page.locator('#onb_summary')).toContainText('Monthly spend ceiling: $20.00 across all providers');
 });
 

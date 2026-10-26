@@ -48,13 +48,13 @@ from box to running: buy one board, plug in USB-C, flash.
    Notifier mode uses Bluetooth instead and needs a computer with Bluetooth and
    Python 3 (see [Notifier quick start](notifier-quick-start.md)).
 5. **One AI provider key** for Orchestrator mode. The setup wizard needs one
-   verified key; skip this if you only want the Notifier status light. Start with
-   [Mistral](https://console.mistral.ai/): its free tier is enough to set up and
-   try Nimbus, and it is the default voice provider. OpenAI and Anthropic also
-   work and can be added later; image generation needs an OpenAI key. If you
-   would rather prepay one balance that covers every provider, use a
-   [Cumulo key](../cloud/cumulo-key.md). Step-by-step instructions for each
-   provider are in **[Get your provider key](provider-keys.md)**.
+   verified key; skip this if you only want the Notifier status light. The
+   recommended key is a [Cumulo key](../cloud/cumulo-key.md): one prepaid balance
+   that covers every provider, voice and long-term memory. To try Nimbus for free,
+   use [Mistral](https://console.mistral.ai/): its free tier is enough to set up,
+   and it covers voice and memory too. OpenAI and Anthropic also work and can be
+   added later; image generation needs an OpenAI key. Step-by-step instructions for
+   each provider are in **[Get your provider key](provider-keys.md)**.
 6. **Optional, recommended:** a microSD card (formatted FAT32) for long-term
    memory and media, and a Telegram account to chat with the assistant.
 

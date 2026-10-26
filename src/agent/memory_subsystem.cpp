@@ -54,6 +54,7 @@
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/billing_refusal.h"   // one owner notice per billing episode (shared with chat)
 #include "nimbus/orch/pending_embed.h"     // memory writes that survive an embedding outage
+#include "nimbus/orch/embed_pick.h"        // which keyed provider embeds (QW5)
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
@@ -288,9 +289,80 @@ class CardRelease {
 };
 std::atomic<uint32_t> g_netLockReleases{0};
 
+// ---- which provider embeds (QW5) ---------------------------------------------
+// Memory follows the keys the owner has (nimbus/orch/embed_pick.h): a device set up
+// with only a Cumulo Nimbus (or Mistral) key embeds through it instead of failing on
+// the stored OpenAI default. The pick is stored before the next embedding, so the
+// first vector lands in the chosen space and the set-once lock keeps its meaning.
+// It runs again whenever the usable keys change, on whatever path changed them (a
+// web save, a cloud-minted key, a verify that rejected one): the last-seen set is
+// kept as a bit mask (-1 = no pick yet), read lock-free by the cheap due-check.
+std::atomic<int> g_pickedKeys{-1};
+std::atomic<bool> g_pickReady{false};   // begin() loaded the stored vectors (a pick needs them)
+
+int keyMask(const nimbus::orch::EmbedKeys& k) {
+  return (k.openai ? 1 : 0) | (k.cumulo ? 2 : 0) | (k.mistral ? 4 : 0);
+}
+
+// A key is usable when it is stored and its provider's last verify did not reject it.
+nimbus::orch::EmbedKeys usableEmbedKeys() {
+  auto usable = [](const char* p, bool keyed) { return keyed && store::verifyResult(p) != 0; };
+  nimbus::orch::EmbedKeys k;
+  k.openai = usable("openai", store::hasOpenaiKey());
+  k.cumulo = usable("cumulo", store::hasCumuloKey());
+  k.mistral = usable("mistral", store::hasMistralKey());
+  return k;
+}
+
+// Whether the usable keys changed since the last pick (fills `keys` either way).
+bool pickDue(nimbus::orch::EmbedKeys& keys) {
+  keys = usableEmbedKeys();
+  return keyMask(keys) != g_pickedKeys.load();
+}
+
+// Decide and store. Caller holds the card lock (g_vec, g_archive).
+void applyEmbedPickLocked(const nimbus::orch::EmbedKeys& keys) {
+  g_pickedKeys = keyMask(keys);
+  const nimbus::orch::EmbedConfig cur{std::string(store::embedProvider().c_str()),
+                                      std::string(store::embedModel().c_str()), store::embedDims()};
+  const bool hasVectors = store::embedLocked() || g_vec.size() > 0 || g_archive.size() > 0;
+  const nimbus::orch::EmbedPick p = nimbus::orch::pickEmbedProvider(cur, keys, hasVectors);
+  if (p.act != nimbus::orch::EmbedPickAct::Switch) return;
+  if (!store::setEmbedConfig(p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims)) {
+    alog("memory: embedding provider switch not stored (settings storage full)");
+    return;
+  }
+  // A new width only ever comes with no stored vectors (embed_pick), so both stores
+  // are empty and simply take it.
+  if (p.pick.dims != g_vec.dims()) {
+    g_vec.configure(p.pick.dims);
+    g_archive.configure(p.pick.dims);
+  }
+  g_park.clear();   // a new provider: try embeddings again at once
+  alogf("memory: embeddings now via %s (%s, %d wide); %s has no usable key",
+        p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims, cur.provider.c_str());
+}
+
+// Pick again when the keys changed, if the card lock frees within waitMs (a turn may
+// hold it across a provider round trip; the next embedding or memory read retries).
+void repickIfDue(uint32_t waitMs) {
+  nimbus::orch::EmbedKeys keys;
+  if (!g_pickReady || !pickDue(keys)) return;
+  if (!tryLock(waitMs)) return;
+  applyEmbedPickLocked(keys);
+  unlock();
+}
+
+// The same, for a caller that already holds the card lock.
+void repickLockedIfDue() {
+  nimbus::orch::EmbedKeys keys;
+  if (g_pickReady && pickDue(keys)) applyEmbedPickLocked(keys);
+}
+
 // One embedding call for the memory engines, honoring the test fault. Never under the
 // card lock on a task other than the web task (CardRelease).
 std::vector<int8_t> embedRaw(const String& text, String& err) {
+  repickIfDue(50);   // a key saved since the last pick decides this call's provider
 #ifdef NIMBUS_TEST
   if (nimbus::fault::active(nimbus::fault::EMBED_FAIL)) { err = kEmbedFaultToken; return {}; }
 #endif
@@ -920,6 +992,13 @@ void begin() {
     }
     g_archive.setMaxEntries(kArchiveMaxEntries);
     g_vec.setArchiveSink(&g_archive);
+  }
+  // The embeddings provider follows the keys this device has (QW5), decided with the
+  // stored vectors known, before any tool can embed.
+  {
+    Lock g;
+    g_pickReady = true;
+    repickLockedIfDue();   // never picked yet this boot: always runs
   }
   // Load the scratchpad (its file, else the legacy NVS copy: the moved-store rule)
   // and the retrieval config (NVS, orchmem namespace).
@@ -2019,7 +2098,11 @@ nimbus::orch::RecallOut recallFor(const String& queryText, int k,
   if (queryText.length() == 0) return res;
   // Quick locked empty-check: skip the embed. Facts queued during an outage count:
   // a fresh device's first facts may all be waiting.
-  { Lock g; if (g_vec.size() == 0 && g_pending.empty()) return res; }
+  {
+    Lock g;
+    repickLockedIfDue();   // a key saved or cleared since the last pick (QW5)
+    if (g_vec.size() == 0 && g_pending.empty()) return res;
+  }
   if (k <= 0) k = g_cfg.retrievalCount;
   if (!embeddings::available())
     return keywordRecall(queryText, k, who,
@@ -2195,6 +2278,9 @@ String embedParkedWhy() {
 }
 
 void noteEmbedConfigChanged() { Lock g; g_park.clear(); }
+void noteProviderKeysChanged() {
+  repickIfDue(200);   // usually immediate, so the Memory page and the wizard show it at once
+}
 
 // RAM-only predicate polled by the Telegram task's staged-work slot (cheap: no
 // I/O). Due when facts wait, the park allows a try, the device has the memory a
@@ -3216,6 +3302,7 @@ Stats stats() {
                    g_scratch.count(Tier::Short) + g_scratch.count(Tier::Mid) +
                    g_scratch.count(Tier::Long);
   s.episodicMsgs = g_epiActive->messageCount();
+  repickLockedIfDue();   // a key saved or cleared since: show the new pick (QW5)
   s.embedAvailable = embeddings::available();
   s.embedLocked = store::embedLocked();
   s.maxVectors = g_vec.maxEntries();

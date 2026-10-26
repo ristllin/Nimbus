@@ -393,7 +393,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `fetchPol` | int | `1` (ask) | Download trust for `files.fetch`: `0` off / `1` ask per link / `2` scan then keep / `3` full trust (Assistant > Safety > Downloads). | Yes |
 | `onbrded` | bool | `false` | First-run onboarding completed. Plain NVS bool (survives a restart with no SD), not the profile override blob. | Yes |
 | `scrModel` | string | `"tft"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value and the default: a fresh or NVS-erased device comes up on the color panel silently. Only an **explicit** stored `"eink"` (a real e-ink migration) boots the unsupported-display notice - an absent key never does. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
-| `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
+| `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines, food-log days and the device clock display (Settings → Mode & identity). The setup wizard and the **Use this computer's timezone** button derive it from the browser's timezone. Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | Legacy: fnv64-hex of the scratchpad after the last dream. Read once to migrate the quiet-night baseline into `/data/dream.json`, never written since v4.5.14. Device-managed. | Yes |
 | `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = the board-model default (also the fresh-boot state, which arms the one-time first-run calibration on a resistive panel). Set by the first-run step, Settings > Display > Calibrate touch, or the web/console field; clearing it restores the board-model default. | Yes |
 | `lbRing` | bool | `false` | Low-battery ring cue (owner opt-in; off by default) | Yes |
@@ -528,7 +528,12 @@ are read back into the web UI.
 ### Embedding config for the vector memory (`src/agent/store.cpp`)
 
 **Set-once** - see the invariant below. Defaults are OpenAI
-`text-embedding-3-small` truncated to 256 dims.
+`text-embedding-3-small` truncated to 256 dims. These keys follow the provider keys:
+when the stored provider has no usable key (none stored, or rejected by its last
+verify), the device stores a provider it does have before the first vector is
+embedded: Cumulo Nimbus or OpenAI with the same model and width, else Mistral
+(`mistral-embed`, `1024`). Once vectors exist only the same-space switch (OpenAI to
+Cumulo Nimbus or back) happens on its own.
 
 | Key | Type | Default | Holds |
 |---|---|---|---|

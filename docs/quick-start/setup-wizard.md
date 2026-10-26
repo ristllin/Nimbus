@@ -24,7 +24,7 @@ sequenceDiagram
   Dev-->>You: wizard carries you to the device's LAN address
   You->>Dev: wizard: pick a provider, paste its key, Save & Verify (required)
   opt skippable steps
-    You->>Dev: mode · Telegram · voice · directive · device name
+    You->>Dev: timezone · mode · Telegram · voice · directive · device name
   end
   Dev-->>You: dashboard at the device's LAN address
 ```
@@ -59,15 +59,18 @@ no code to copy.
 
 ## 3. Walk the wizard
 
-The wizard asks for two required things and lets you skip the rest:
+The wizard asks for two required things and lets you skip the rest. It takes about
+five minutes. If you close the page or the device restarts, setup picks up on this
+device where you left it, at the first required step that is not done yet.
 
 | Step | Required? | Notes |
 |---|---|---|
 | Choose your display | Skippable | Shown before Wi-Fi. Tick **Flip display 180 degrees** if the screen is mounted upside down; it applies right away. |
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
-| **Add an AI provider** | Yes - one verified key | Pick the provider, paste its API key, click **Save & Verify**. The device checks the key with the provider before you continue. Providers: Cumulo Nimbus, Anthropic, OpenAI, Mistral, Z.ai; [Get your provider key](provider-keys.md) helps you choose. Have the key ready before you start: you cannot fetch one while connected to the device's own Wi-Fi. The key stays on the device and is never shown again. |
-| Choose a mode | Skippable | Keeps the mode the board started in (see [Power on](#1-power-on)). Applied when you finish; a mode change restarts the device. |
-| Telegram | Skippable | Paste a bot token from @BotFather, or add it later under **Assistant → Connectors → Telegram**. |
+| **Add an AI provider** | Yes - one verified key | Pick the provider, paste its API key, click **Save & Verify**. The device checks the key with the provider before you continue. Providers: Cumulo Nimbus (preselected, recommended), Anthropic, OpenAI, Mistral, Z.ai; [Get your provider key](provider-keys.md) helps you choose. A key pasted under the wrong provider is recognized and saved under its own. A check that fails says why: the key was rejected, the account has no credit, the provider could not be reached, or the device was busy, each with the next step. Have the key ready before you start: you cannot fetch one while connected to the device's own Wi-Fi. The key stays on the device and is never shown again. |
+| Your timezone | Skippable | Shows this computer's timezone (for example Europe/London) and sets the device to it with one tap, then checks the device's clock against this computer's. Routines, reminders and each day's food log follow it; a device left on UTC dates an evening meal in the wrong day for most of the world. Change it later under **Device → Mode & identity → Timezone**. |
+| Choose a mode | Skippable | **Orchestrator** is the assistant, managed from this web page. **Notifier** is a Bluetooth status light: it turns Wi-Fi and this web page off, so the wizard asks you to confirm, and the way back is **Settings → Mode** on the device's screen. Applied when you finish; a mode change restarts the device. |
+| Telegram | Skippable | Paste a bot token from @BotFather and click **Save & Verify**: the wizard shows the check's result and the bot it reached. It works right away, no restart. Or add it later under **Assistant → Connectors → Telegram**. |
 | Voice | Skippable | Speech-to-text and text-to-speech provider: Mistral (default) or OpenAI. |
 | Directive | Skippable | Standing guidance that shapes how the assistant behaves for you. Keep the default or edit it. |
 | Name this device | Skippable | One name drives the setup network name, the LAN address, the Bluetooth name, and what the assistant calls itself. Applies after the next restart. |
@@ -76,7 +79,9 @@ The **Add an AI provider** step and the last step of the wizard say what the dev
 starts with: the provider's standard model for the assistant, its cheapest model for
 helpers, photo captions, routines and the nightly dream, and a **monthly spend
 ceiling of 20 USD** across all providers, after which paid calls pause until you
-raise it (**Assistant > Usage**) or the month ends. See
+raise it (**Assistant > Usage**) or the month ends. The ceiling starts counting once
+the device clock has synced with the internet, usually within a minute of joining
+Wi-Fi, and the wizard says so while it has not. See
 [Monthly spend ceiling and default models](../spend-ceiling.md).
 
 On a **touchscreen board**, keep the wizard open while the device joins your
@@ -85,14 +90,12 @@ its own radio), and the wizard carries you to the device's new LAN address
 automatically. "Home Wi-Fi connected + setup hotspot off" is the healthy end
 state, not a failure.
 
-:::danger Using only a Mistral or Cumulo Nimbus key? Set the embedding provider before your first conversation
-Long-term memory embeds with **OpenAI** by default. Once the first memory is
-stored the choice locks: changing the provider, model, or dimensions later means
-erasing every stored memory and starting fresh. If Mistral or a Cumulo Nimbus key
-is your only key, open **Memory → Long-term memory → Embedding model**, set
-**Provider** to **Mistral** or **Cumulo Nimbus** to match, and click **Save**
-before your first conversation, while the memory is still empty. Anthropic and
-Z.ai keys cannot embed; semantic memory needs a Cumulo Nimbus, OpenAI, or Mistral key.
+:::note Long-term memory needs a Cumulo Nimbus, OpenAI or Mistral key
+Memory turns what you share into embeddings, which only these providers make. The
+device uses whichever of them you add, chosen before the first memory is stored, so
+a Cumulo Nimbus key alone or a Mistral key alone gives working memory. With only an
+Anthropic or Z.ai key, chat works and the wizard and the **Memory** page say that
+long-term memory is off until you add one of the three.
 :::
 
 ## What works with which provider
@@ -107,7 +110,7 @@ specific provider or key:
 | Spoken replies as Telegram audio (when the device cannot play them) | ✓ *(default)* | ✓ | - | - |
 | Spoken replies on the device speaker | ✓ *(default)* | ✓ | - | - |
 | Image generation (`image.generate`) | - | ✓ | - | - |
-| Long-term memory embeddings | ✓ *(switch before first use)* | ✓ *(default)* | - | - |
+| Long-term memory embeddings | ✓ | ✓ | - | - |
 | Web search | needs a separate **Tavily** key (Assistant → Tools → Web search) | same | same | same |
 
 A Cumulo Nimbus key routes to these providers, so each feature works when the

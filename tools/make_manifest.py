@@ -35,6 +35,24 @@ import tempfile
 from pathlib import Path
 
 
+# The device reads `notes` into char[96] (lib/core ota_logic.h): 95 bytes survive.
+NOTES_MAX_BYTES = 95
+
+
+def notes_error(notes: str) -> str:
+    """ "" when `notes` fits the device's notes field intact, else why not. The release
+    gate (tools/release_gate/check_release_notes.py) holds the full rule; this is the
+    last check before the line is signed into a manifest."""
+    if "\n" in notes or "\r" in notes:
+        return "notes must be one line"
+    b = notes.encode("utf-8")
+    if len(b) > NOTES_MAX_BYTES:
+        return f"notes are {len(b)} bytes; the device keeps {NOTES_MAX_BYTES}"
+    if any(c < 0x20 or c > 0x7E for c in b):
+        return "notes must be printable ASCII"
+    return ""
+
+
 def sig_message(version: str, variant: str, sha_hex: str, schema: int = 2) -> bytes:
     return f"nimbus-ota-v{schema}\n{version}\n{variant}\n{sha_hex}\n".encode()
 
@@ -75,6 +93,8 @@ def main() -> None:
 
     if not (a.key and a.out and a.pairs):
         sys.exit("need --key, --out and at least one variant=file pair")
+    if notes_error(a.notes):
+        sys.exit(notes_error(a.notes))
     url_base = a.url_base.rstrip("/") or (
         f"https://github.com/ristllin/nimbus-fw-releases/releases/download/{a.version}"
     )

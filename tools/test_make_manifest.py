@@ -112,8 +112,46 @@ def test_sign_verify_roundtrip():
         assert r.returncode == 0, r.stdout + r.stderr
 
 
+def test_notes_ride_the_manifest_and_must_fit_the_device_field():
+    """QW5 (owner decision D5): the release line lands in `notes`, and a line the
+    device's char[96] field would cut (or a multi-line or non-ASCII one) is refused."""
+    import json
+
+    ok = "First public release: guided setup, honest errors, a firm monthly spend limit."
+    assert M.notes_error(ok) == ""
+    assert M.notes_error("x" * 95) == ""
+    assert "96 bytes" in M.notes_error("x" * 96)
+    assert M.notes_error("two\nlines") != ""
+    assert M.notes_error("caf\u00e9") != ""
+    with tempfile.TemporaryDirectory() as d:
+        dd = pathlib.Path(d)
+        fw = dd / "firmware-nimbus-tft.bin"
+        fw.write_bytes(b"\x00" * (1024 * 1024))
+        out = dd / "manifest.json"
+        _cli("--version", "v5.0.0", "--key", str(KEY), "--out", str(out), "--notes", ok, f"nimbus-tft={fw}")
+        assert json.loads(out.read_text())["notes"] == ok
+        r = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "make_manifest.py"),
+                "--version",
+                "v5.0.0",
+                "--key",
+                str(KEY),
+                "--out",
+                str(dd / "bad.json"),
+                "--notes",
+                "x" * 96,
+                f"nimbus-tft={fw}",
+            ],
+            capture_output=True,
+        )
+        assert r.returncode != 0 and not (dd / "bad.json").exists()
+
+
 if __name__ == "__main__":
     test_print_message_golden_v2()
     test_print_message_schema1_transition()
     test_sign_verify_roundtrip()
+    test_notes_ride_the_manifest_and_must_fit_the_device_field()
     print("make_manifest: v2 golden byte-locked; v1 transition intact; sign/verify round-trip OK")

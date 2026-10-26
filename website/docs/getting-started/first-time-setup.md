@@ -149,17 +149,18 @@ The wizard asks for two required things and lets you skip the rest.
 |---|---|---|
 | Choose your display | Optional | Flip the display 180 degrees if it is mounted upside down. |
 | **Connect to Wi-Fi** | Yes | Tap **Scan**, pick your home network, type its password, **Connect**. |
-| **Add an AI provider** | Yes, one verified key | Pick the provider, paste the API key, and click **Save & Verify**. |
-| Choose a mode | Optional | Keep the current mode, or change it (a change restarts the device). |
-| Telegram | Optional | Add a bot token later. |
+| **Add an AI provider** | Yes, one verified key | Pick the provider, paste the API key, and click **Save & Verify**. A key under the wrong provider is saved under its own; a failed check says why. |
+| Your timezone | Optional | One tap sets the device to this computer's timezone. |
+| Choose a mode | Optional | Keep Orchestrator, or choose Notifier (a Bluetooth status light that turns Wi-Fi and this page off; the way back is **Settings > Mode** on the device). A change restarts the device. |
+| Telegram | Optional | Paste a bot token and click **Save & Verify**, or add it later. |
 | Voice | Optional | Dictation and spoken replies default to Mistral. |
 | Directive | Optional | Keep the default standing guidance or edit it. |
 | Name this device | Optional | Rename it now or later. |
 
-**Which provider key?** Any one verified key runs the assistant. **Mistral is the
-easiest start:** free tier, and the voice default. A **Cumulo Nimbus** key (the
-wizard's preselected choice) works across providers on one prepaid balance and
-also covers voice. OpenAI, Anthropic, and Z.ai work too.
+**Which provider key?** Any one verified key runs the assistant. The recommended
+key is **Cumulo Nimbus** (the wizard's preselected choice): one prepaid balance
+across providers, voice and memory included. **Mistral** is free to try and also
+covers voice and memory. OpenAI, Anthropic, and Z.ai work too.
 [Get your provider key](../quick-start/provider-keys.md) covers each provider
 step by step. Keys are write-only: a saved key shows as "set"
 and is never displayed again.
@@ -170,13 +171,10 @@ When the device joins your Wi-Fi, its setup network shuts down and the wizard
 it lands on the dashboard.
 :::
 
-:::caution Using only a Mistral or Cumulo Nimbus key? Set embeddings before your first turn
-Long-term memory's embedding provider defaults to OpenAI, and it is a
-**set-once** choice: changing it later erases the stored memory. If Mistral or a
-Cumulo Nimbus key is your only key, open
-**Memory > Long-term memory > Embedding model**, set **Provider** to **Mistral**
-or **Cumulo Nimbus** to match, and click **Save**, all **before your first
-conversation**, while the memory is still empty and there is nothing to lose.
+:::note Long-term memory needs a Cumulo Nimbus, OpenAI or Mistral key
+The device embeds memories with whichever of these keys you add, chosen before the
+first memory is stored. With only an Anthropic or Z.ai key, chat works and the
+wizard and the **Memory** page say that memory is off until you add one.
 :::
 
 That is the whole setup. The wizard lands on the **dashboard** at the device's

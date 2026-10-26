@@ -3,6 +3,7 @@
                                       // largest-block floor (kRelayHeapFloorLargest) for the
                                       // chat hot path - same handshake, CYD-safe (pure lib/core)
 #include "nimbus/orch/model_choices.h"  // CUM-486: the cold-start model lists live in lib/core
+#include "nimbus/orch/embed_pick.h"     // QW5: the keyed-provider embed defaults (asserted below)
 // agent_config - device-side constants for the Orchestrator subsystem, ported
 // from Nuage-Solide include/config.h (the Head-Orchestrator / heavy-fabric block).
 //
@@ -417,7 +418,10 @@ static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLarge
 // changing any of these invalidates the whole VDB (wipe + re-embed). AKEY_EMBED_
 // LOCKED flips true the first time a vector is embedded; the web UI must warn +
 // require an explicit reset before changing a locked config. Defaults are the
-// design's choice: OpenAI text-embedding-3-small truncated to 256 dims.
+// design's choice: OpenAI text-embedding-3-small truncated to 256 dims. A device
+// without a usable OpenAI key does not keep them: memory switches to a keyed provider
+// before its first vector (Cumulo Nimbus in the same space, else Mistral), see
+// nimbus/orch/embed_pick.h, whose kEmbedOpenAi* constants are asserted equal below.
 #define AKEY_EMBED_PROVIDER "embProv"     // "openai" | "mistral" | "cumulo"
 #define AKEY_EMBED_MODEL    "embModel"
 #define AKEY_EMBED_DIMS     "embDims"     // int, the model's output width (embedcfg resolves 0 to it)
@@ -426,6 +430,10 @@ static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLarge
 #define EMBED_DEFAULT_PROVIDER "openai"
 #define EMBED_DEFAULT_MODEL    "text-embedding-3-small"
 #define EMBED_DEFAULT_DIMS     256
+// A provider switch writes embed_pick's defaults: they must be the same space as these.
+static_assert(EMBED_DEFAULT_DIMS == nimbus::orch::kEmbedOpenAiDims, "embed default width drifted");
+static_assert(nimbus::orch::embedTextEq(EMBED_DEFAULT_MODEL, nimbus::orch::kEmbedOpenAiModel),
+              "embed default model drifted");
 // Provider embeddings endpoints (both OpenAI-compatible /v1/embeddings shape).
 #define OPENAI_EMBED_PATH   "/v1/embeddings"
 #define MISTRAL_EMBED_PATH  "/v1/embeddings"

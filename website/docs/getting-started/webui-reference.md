@@ -116,8 +116,11 @@ cloud. Three groups:
   (the assistant's working notes), **Recall tuning** (memories per turn, relevance
   threshold, storage limit - at the limit, the least valuable memory is dropped),
   and the **Embedding model**, which is verified with a real embedding call on
-  save and locks once vectors are stored - changing it erases the stored memories
-  (they are not re-embedded), and the UI warns first.
+  save and locks once vectors are stored: changing it then erases the stored
+  memories (they are not re-embedded), and the UI warns first. The device picks
+  one of your keys for it on its own before the first memory, and a line at the
+  top says which provider memory embeds through, or that memory needs a Cumulo
+  Nimbus, OpenAI or Mistral key.
 - **Files** - files persist across restarts and are never deleted automatically.
   The caption shows the real card size and free space plus the file quota. The
   assistant saves reports here with `artifact.save`; you can filter by project,
@@ -257,7 +260,8 @@ Display, sound, power, network, updates, and cloud - all in one place, as
 collapsible groups:
 
 - **Mode & identity** - the operating mode (**Notifier** or **Orchestrator**;
-  switching restarts the device), the **Timezone**, the
+  switching restarts the device), the **Timezone** (with **Use this computer's
+  timezone**), the
   **Device clock** (set automatically from the internet; a badge shows **synced**
   or **waiting**, with **Sync now**), and the **Device sign-in code** (only needed
   when a QR cannot be scanned; tap to copy).
@@ -285,7 +289,8 @@ collapsible groups:
   series, sense resistors) so the readings match the pack fitted. Inside it,
   **Customize battery mode** starts every parameter at the selected battery
   mode's default; set a value to override it, or **Revert to Defaults**.
-- **Software update** - installed and latest versions, **Check for Updates**
+- **Software update** - installed and latest versions, the release's one-line
+  **What's new**, **Check for Updates**
   (which reports whether an update was found, you are up to date, or the check
   failed), **Install Update**, **Automatic updates** (installs new firmware when
   the device is idle and charged, then restarts), and **Confirm USB updates**

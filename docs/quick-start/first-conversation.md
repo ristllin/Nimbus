@@ -8,11 +8,12 @@ walks through each one and ends with a short tour of the device's web page.
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and paste its **bot
    token** into **Assistant → Connectors → Telegram** on the device's web
-   page.
-2. Restart the device (token changes are read at boot).
-3. **Message your bot once** from your own account. Your message appears on
+   page (or the Telegram step of the setup wizard). The device checks the token
+   at once and shows the result with the bot's name. It works right away: no
+   restart needed.
+2. **Message your bot once** from your own account. Your message appears on
    the Telegram card as a **pending approval**. Click **Approve**.
-4. Say hello. The assistant replies in text. With **Voice replies** on (the
+3. Say hello. The assistant replies in text. With **Voice replies** on (the
    default, on the same Telegram card) it may also speak the reply on the
    device speaker when that fits; if the device cannot play it, the audio goes
    to Telegram instead. Spoken replies need a Mistral, OpenAI or Cumulo key;

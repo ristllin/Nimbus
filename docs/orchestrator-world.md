@@ -202,7 +202,11 @@ Record:
 embedder. Nimbus embeds via provider API
 (default **OpenAI `text-embedding-3-small`, `dimensions=256`**, int8-quantized
 ≈ 256 B/vector + text) through a new adapter method on the existing HTTPS
-path. Storage: vectors + metadata in one serialized blob (`/mem/vectors.bin` on
+path. A device without a usable key for the configured provider switches, before
+its first vector, to one it has: Cumulo Nimbus or OpenAI in the same space (the
+router serves OpenAI's embedding models byte for byte), else Mistral
+(`mistral-embed`, 1024 wide); with stored vectors, only the same-space switch is
+allowed. Storage: vectors + metadata in one serialized blob (`/mem/vectors.bin` on
 SD, `/data/orchvec.bin` without a card), recall =
 brute-force cosine over int8 (thousands of entries ≈ ms on the S3, PSRAM).
 The embed config `{provider, model, dims}` is stored beside the table;

@@ -59,6 +59,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <details class=setgroup><summary>Long-term memory <span class="badge" id=memstat></span><span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <div id=tierbanner style="display:none;margin:6px 0;padding:8px;border-radius:8px;background:#3a2a15;color:#f0c890;font-size:13px;line-height:1.35"></div>
+<p class=hint id=embstate></p>
 <b style="display:block">Recall <button class=qh type=button aria-expanded=false aria-label="About recall">?</button></b>
 <p class="hint tip">Memories the assistant searches by meaning. The list shows the top matches; search to find specific ones.</p>
 <div class=row>

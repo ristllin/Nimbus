@@ -67,8 +67,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <option value=1>Orchestrator: AI assistant</option>
 </select>
 <label>Timezone <button class=qh type=button aria-expanded=false aria-label="About the timezone">?</button></label>
-<p class="hint tip">Sets when daily and weekly routines, including nightly memory upkeep, fire. POSIX format: pick a suggestion or type one, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately: check the clock below after saving.</p>
+<p class="hint tip">Sets the device's local time: when daily and weekly routines (including nightly memory upkeep) fire, and which day each food-log entry belongs to. Tap <b>Use this computer's timezone</b>, or pick a suggestion or type one in POSIX format, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately: check the clock below after saving.</p>
 <div class=row><input id=devTz list=tzlist placeholder="UTC0" maxlength=48><button id=devTzSave type=button>Save</button></div>
+<div class=row><button id=devTzDetect type=button>Use this computer's timezone</button></div>
 <datalist id=tzlist>
 <option value="UTC0">UTC</option>
 <option value="GMT0BST,M3.5.0/1,M10.5.0/2">UK</option>
@@ -229,6 +230,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <table><tbody>
 <tr><td>Installed</td><td id=fwCur>-</td></tr>
 <tr><td>Latest</td><td id=fwLatest>-</td></tr>
+<tr id=fwNotesRow style="display:none"><td>What's new</td><td id=fwNotes>-</td></tr>
 <tr><td>Status</td><td id=fwState>-</td></tr>
 <tr><td>Last result</td><td id=fwLast>-</td></tr>
 </tbody></table>

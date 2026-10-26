@@ -27,6 +27,7 @@ import check_config_mapping
 import check_driver_pin
 import check_elf_symbols
 import check_ota_preserves_nvs
+import check_release_notes
 import check_sram_staging
 import check_static_dram
 import check_storm_evidence
@@ -140,6 +141,7 @@ def run_host_checks() -> bool:
         ("test-console guard (p18-N)", check_test_console_guard.main),
         ("model-id lint (p18-N)", model_id_lint.main),
         ("static-dram ceiling (p18-DEF)", check_static_dram.main),
+        ("release notes line (D5)", check_release_notes.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))

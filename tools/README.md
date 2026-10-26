@@ -73,6 +73,7 @@ a generated file.
 | `test_device_http_auth.py` | Every tool that calls the device API signs in with the `X-Nimbus-Token` header, never a URL token (fake device, no network). |
 | `test_tcal_wizard.py` | Unit tests for `tcal_wizard.py`. |
 | **⚠ `release_gate/tag_shape.py`** | Release channel gate (release.yml): OTA tag vs virtual vn- tag, version.h coherence. |
+| **⚠ `release_gate/check_release_notes.py`** | Release notes gate (release.yml, run_gate.py): the one-line `docs/release-notes/<tag>.txt` the manifest carries, at most 95 bytes, ASCII, plain words. |
 
 Bench-only and board-specific scripts (a live connector-QA harness, the quality
 benchmark, panic-capture, the connector-shape grid) live in the private `ops/`

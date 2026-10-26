@@ -24,16 +24,18 @@ from your account.
 
 Any one verified key runs the assistant. If you are not sure:
 
-- **Easiest and free to try: Mistral.** Its free tier is enough to set up and use
-  Nimbus, and no card is required to start. It is also the voice default.
-- **One key for everything: a Cumulo key.** Prepay once and it works across
-  Mistral, OpenAI, Anthropic, and Z.ai, with no per-provider accounts to manage. It also
-  covers voice, both dictation and spoken replies, so a one-key device needs no
-  separate voice provider.
+- **Recommended: a Cumulo key.** One key for everything: prepay once and it works
+  across Mistral, OpenAI, Anthropic, and Z.ai, with no per-provider accounts to
+  manage. It also covers voice (dictation and spoken replies) and long-term memory,
+  so a one-key device needs nothing else. The setup wizard preselects it.
+- **Free to try: Mistral.** Its free tier is enough to set up and use Nimbus, and no
+  card is required to start. It also covers voice and long-term memory.
 - **OpenAI** adds image generation. **Anthropic** is strong at conversation and
   reasoning. Both need a paid balance to start.
-- **Z.ai** runs conversation and tools only: no dictation, spoken replies, image
-  generation, or memory embeddings.
+- **Anthropic** and **Z.ai** cannot make the embeddings long-term memory uses. With
+  only one of these keys, chat works and memory stays off until you add a Cumulo,
+  OpenAI or Mistral key; the wizard and the **Memory** page say so. **Z.ai** also has
+  no dictation, spoken replies or image generation.
 
 You can add more providers later. You only need one to finish setup.
 
@@ -54,7 +56,11 @@ you are told, and how to lift it.
 ## After you paste a key
 
 Tap **Save & Verify** (or **Verify** for a key that is already stored). The device
-checks the key against the provider and shows a badge:
+checks the key against the provider. A key pasted under the wrong provider is not
+saved there: the setup wizard moves it to its own provider (the page reads the key's
+published prefix, such as `sk-ant-` or `cumulo_sk_`), and the **Models** page names
+the row it belongs in. The wizard shows the result as a sentence with the next step;
+the **Models** page shows a badge:
 
 - **verified**: the key works. You can continue.
 - **key rejected**: the provider did not accept the key. Check for a copy error and
@@ -70,7 +76,7 @@ checks the key against the provider and shows a badge:
 
 ---
 
-## Mistral (recommended start)
+## Mistral (free to try)
 
 Free to try, no card needed to begin.
 

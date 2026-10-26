@@ -42,6 +42,7 @@
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
 #include "nimbus/config/identity_keys.h"  // keys that must survive a factory reset
 #include "nimbus/orch/danger_zone.h"      // CUM-15: device-name keep-list preserved across a reset
+#include "nimbus/orch/onboard_gate.h"     // QW5: when boot counts a device as already set up
 #include <mbedtls/platform.h>  // mbedtls_platform_set_calloc_free (route TLS -> PSRAM)
 #include <solide/solide.h>
 
@@ -3831,12 +3832,15 @@ void setup() {
   }
   sramSnap("post-net");   // CUM-185: after Wi-Fi AP+STA (Orch) / radio-off (Notifier)
 
-  // Onboarding migration: a device already provisioned before the wizard existed
-  // must NOT be dropped into first-run setup on upgrade. Treat any device with
-  // stored STA creds as already-onboarded. A factory reset wipes NVS (creds AND
-  // this flag), so a truly-fresh or reset device keeps onboarded=false and gets
-  // the wizard.
-  if (!agent::store::onboarded() && net::provisioned())
+  // Onboarding migration: a device already set up before the wizard existed must NOT
+  // be dropped into first-run setup on upgrade. Set up means saved Wi-Fi AND a
+  // verified provider (the wizard's own finish gate): Wi-Fi alone is what a wizard
+  // abandoned at the provider step leaves behind, and it must resume, not be marked
+  // finished (QW5, nimbus/orch/onboard_gate.h). A factory reset wipes NVS (creds,
+  // verdicts AND this flag), so a fresh or reset device keeps the wizard.
+  if (nimbus::orch::migrateOnboarded(
+          agent::store::onboarded(), net::provisioned(),
+          nimbus::orch::anySlotWhere([](const char* p) { return agent::store::verifyResult(p) == 1; })))
     agent::store::setOnboarded(true);
 
   // First paint: a factory-fresh device (no stored STA creds) opens on the
