@@ -141,6 +141,51 @@ inline bool sliceShouldWait(uint32_t largestFree, uint32_t waitedMs) {
   return largestFree < kSliceHeadroom && waitedMs < kSliceWaitMaxMs;
 }
 
+// Waiting only helps while it is working (v4.6.1). The wait above frees memory only
+// while acknowledged segments are releasing their buffers, that is while the largest
+// block is GROWING. A heap that is fragmented but stable never grows: Lumi on v4.6.0
+// rested at 7,156 B all through its first hour, so every slice waited the full
+// 1,500 ms and every 70 to 85 KB model request paid 24 to 30 s. So a slice stops
+// waiting once the largest block has not grown for kSliceStallMs, and one request
+// never waits more than kRequestPaceMaxMs in all (after that every slice is written
+// at once).
+//
+// Measured on bench unit L (26 Oct, the v4.6.0 rule run to the end with every new high
+// of the largest block logged): 225 short slices over 130 KB photo uploads and photo
+// requests, all of them draining. The block comes back in one step (219 of 225; two
+// steps in the rest) when the slice's segments are acknowledged (8,692-11,252 B ->
+// 12,788-14,324 B), one round trip later: 10 to 110 ms, median 40, p90 61, p99 90.
+// Before that step it does not grow at all, so the window must cover the round trip.
+// Replayed, a 60 ms window would have written 31 of the 225 slices before their buffers
+// came back, 80 ms 5, 100 ms 1; a slice that misses the step goes out at 8 to 11 KB, as
+// every slice did before v4.6.0 (allocation failures began near 7 KB). The request cap
+// covers the measured drains (1,080 to 1,340 ms per 130 KB upload, 400 to 790 ms per
+// photo request) and bounds a stable heap's cost: the 100 ms window per slice, at most
+// 2 s per request.
+constexpr uint32_t kSliceStallMs = 100;
+constexpr uint32_t kRequestPaceMaxMs = 2000;
+
+// One slice's wait. Before each step, next() takes a fresh sample of the largest free
+// block and the request's wait before this slice; true means wait one more
+// kSliceWaitStepMs (already counted in waitedMs).
+struct SliceWait {
+  uint32_t waitedMs = 0;   // this slice's wait so far
+  uint32_t best = 0;       // the largest block seen during it
+  uint32_t grewAtMs = 0;   // waitedMs when `best` last grew
+
+  bool next(uint32_t largestFree, uint32_t requestPacedMs) {
+    if (!sliceShouldWait(largestFree, waitedMs)) return false;           // room, or the slice bound
+    if (requestPacedMs + waitedMs >= kRequestPaceMaxMs) return false;   // the request's cap
+    if (largestFree > best) {
+      best = largestFree;
+      grewAtMs = waitedMs;
+    }
+    if (waitedMs - grewAtMs >= kSliceStallMs) return false;             // stopped growing
+    waitedMs += kSliceWaitStepMs;
+    return true;
+  }
+};
+
 // The whole logical body as one string (host fakes and tests; never on the device).
 inline std::string materializeBody(const HttpRequest& r) {
   if (r.splices.empty()) return r.body;
