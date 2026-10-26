@@ -1,0 +1,11 @@
+{
+  "models": {
+    "head": "claude-sonnet-5-5",
+    "iterate": "claude-haiku-5-5",
+    "judge": "anthropic/claude-sonnet-5-5",
+    "judge2": "openai/gpt-5.6-terra"
+  },
+  "targets": {"kcal": 2400, "protein_g": 155},
+  "reps": 5,
+  "pass_target_reps": 4
+}

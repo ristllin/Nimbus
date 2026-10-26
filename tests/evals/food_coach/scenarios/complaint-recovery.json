@@ -1,0 +1,86 @@
+{
+  "id": "complaint-recovery",
+  "title": "Recovery after the owner says the plan invented food",
+  "kind": "defect",
+  "seen": "After 'you invented things I did not say we have', the assistant asked what the owner had on hand; the owner had already listed it.",
+  "world": {
+    "log_set": "dinner-day",
+    "skills": [
+      "meal-photo-science"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "hours_ago": 3,
+        "text": "Lets plan dinner.\nSome salad (tomatoes, lettuce, cucumber...), about 100 g of beef fillet. Got skyr 5% with blueberries and raspberries, and chicken breast. Give me a composition, rough weights for these please."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 3,
+        "text": "Rough weights for that plate:\n- Beef fillet 100 g: about 190 kcal / 28 g protein\n- Salad (tomato, lettuce, cucumber) about 150 g: about 30 kcal / 1.5 g protein\n- Skyr 5% 150 g with 50 g blueberries and 50 g raspberries: about 190 kcal / 15 g protein\n- Chicken breast about 100 g: about 165 kcal / 31 g protein\n\nThat is about 575 kcal / 75 g protein, against tonight's dinner budget of about 1,000 kcal and 60 g protein. There is room left if you want to add more."
+      },
+      {
+        "role": "user",
+        "hours_ago": 2,
+        "text": "Got eggplant in the oven, got tofu, strawberries, bread..."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 2,
+        "text": "Noted: eggplant, tofu, strawberries and bread. Say when you want the dinner plan sized."
+      },
+      {
+        "role": "user",
+        "hours_ago": 1,
+        "text": "You tell me quantities for dinner. Assume 100 g beef fillet, 200 g skyr 5% and about 150 g berries. You tell me the rest to make a nice meal."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 1,
+        "text": "Here is the plan for your 1,000 kcal / 60 g protein dinner.\n\nFixed (your amounts):\n- Beef fillet 100 g: about 190 kcal / 28 g protein\n- Skyr 5% 200 g: about 220 kcal / 18 g protein\n- Berries 150 g: about 80 kcal / 1.5 g protein\n\nTo make it a full plate:\n- Salad (tomato, lettuce, cucumber) about 150 g: about 30 kcal / 1.5 g\n- Roasted vegetables (courgette, pepper, onion) about 150 g with a little olive oil: about 150 kcal / 3 g\n- Cooked rice or potatoes about 180 g: about 220 kcal / 4 g\n- Olive oil drizzle, 1 tbsp: about 120 kcal / 0 g\n\nFull dinner: about 1,010 kcal / 56 g protein."
+      }
+    ]
+  },
+  "turns": [
+    "You invented things I didn't say we have. You can only reference food I said I have."
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so the dinner budget is about {remaining_kcal} kcal and {remaining_protein} g protein.",
+    "The only foods the owner has, as stated earlier in the chat: salad vegetables (tomatoes, lettuce, cucumber), beef fillet, skyr 5%, blueberries, raspberries, chicken breast, eggplant, tofu, strawberries and bread. The owner fixed beef fillet 100 g, skyr 200 g and berries about 150 g.",
+    "The previous plan wrongly added roasted vegetables (courgette, pepper, onion), cooked rice or potatoes and olive oil. These are the invented items the owner is objecting to.",
+    "Plausible values: beef fillet 190 kcal and 28 g protein per 100 g; skyr 5% 110 kcal and 9 g per 100 g; chicken breast about 165 kcal and 31 g per 100 g cooked; tofu about 145 kcal and 15 g per 100 g; bread about 250 kcal and 9 g per 100 g; eggplant about 25 kcal per 100 g; salad vegetables about 20 kcal per 100 g."
+  ],
+  "criteria": [
+    {
+      "id": "brief-acknowledgement",
+      "required": true,
+      "text": "The reply acknowledges the mistake in at most two short sentences (naming the wrong items is fine) and goes straight to the corrected plan. It FAILS with a paragraph of apology, an analysis of why it happened, a justification, or a promise of a standing rule instead of the plan."
+    },
+    {
+      "id": "corrected-plan",
+      "required": true,
+      "text": "The same reply contains a complete corrected plan with an amount for every food, not a promise to redo it and not a question."
+    },
+    {
+      "id": "only-stated-foods",
+      "required": true,
+      "text": "The corrected plan drops the invented items (roasted vegetables beyond the listed ones, rice, potatoes, olive oil or any cooking fat) and counts only foods the owner listed. An unlisted food may appear only as an explicitly optional suggestion kept out of the totals."
+    },
+    {
+      "id": "no-reask",
+      "required": true,
+      "text": "The reply does not ask what the owner has, or ask them to list the foods again; they already did, earlier in the chat."
+    },
+    {
+      "id": "fits-budget",
+      "required": true,
+      "text": "The plan's own listed amounts, summed by the judge, give a total within about 10 percent of the dinner budget in kcal and at least about 55 g protein (the protein target is a floor, so more is fine). Fixed amounts from the owner are kept as stated."
+    },
+    {
+      "id": "totals-consistent",
+      "required": false,
+      "text": "The totals the reply states match the sum of its own parts (within a few percent). Advisory: reported, not part of the verdict."
+    }
+  ]
+}

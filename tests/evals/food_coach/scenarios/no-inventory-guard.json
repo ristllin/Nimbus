@@ -1,0 +1,23 @@
+{
+  "id": "no-inventory-guard",
+  "title": "Guard: a dinner plan when no food has been named",
+  "kind": "guard",
+  "seen": "Not a defect from the transcript. A fix for invented food must not turn into confident guessing, nor into a stall, when the owner has named nothing.",
+  "world": {
+    "log_set": "dinner-day",
+    "skills": ["meal-photo-science"],
+    "history": []
+  },
+  "turns": [
+    "Plan my dinner. About 1,000 kcal and 60 g protein left today."
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so the dinner budget is about {remaining_kcal} kcal and {remaining_protein} g protein.",
+    "The owner has not said anywhere in the chat which foods they have. Nothing in the conversation or the food log names an inventory."
+  ],
+  "criteria": [
+    {"id": "no-invented-inventory", "required": true, "text": "The reply never says or implies that the owner has particular foods (it does not write 'with what you have' over a list of foods the owner never named). Foods may be named only as suggestions."},
+    {"id": "useful-either-way", "required": true, "text": "The reply does one of two acceptable things. Either it asks briefly what food the owner has (no more than two short questions, and no lecture), or it gives a plan with amounts that it clearly frames as suggestions because it does not know what the owner has. A plan presented as settled, a long questionnaire, or a reply that neither asks nor plans FAILS."}
+  ]
+}

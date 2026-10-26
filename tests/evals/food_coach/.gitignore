@@ -1,0 +1,4 @@
+# host driver build output and local run artifacts (transcripts live with the lane evidence)
+driver/build/
+runs/
+__pycache__/

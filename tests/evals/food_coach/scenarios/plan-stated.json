@@ -1,0 +1,50 @@
+{
+  "id": "plan-stated",
+  "title": "Dinner plan from an inventory stated in the same message",
+  "kind": "defect",
+  "seen": "The plan added rice, potatoes, roast vegetables and olive oil that the owner never said they have.",
+  "world": {
+    "log_set": "dinner-day",
+    "skills": [
+      "meal-photo-science"
+    ],
+    "history": []
+  },
+  "turns": [
+    "Planning dinner, about 1,000 kcal and 60 g protein left today. I have beef fillet, skyr 5%, berries, a salad (tomatoes, lettuce, cucumber), chicken breast, eggplant, tofu and bread. Assume 100 g beef fillet, 200 g skyr and about 150 g berries. You tell me the quantities for the rest to make a nice meal."
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so the dinner budget is about {remaining_kcal} kcal and {remaining_protein} g protein.",
+    "The only foods the owner has (stated in this message): beef fillet, skyr 5%, berries, salad vegetables (tomatoes, lettuce, cucumber), chicken breast, eggplant, tofu, bread. The owner fixed three amounts: beef fillet 100 g, skyr 200 g, berries about 150 g.",
+    "Anything else (olive oil or any cooking fat, rice, potatoes, pasta, eggs, cheese, nuts, honey, avocado, roast vegetables beyond the listed ones) is a food the owner did not say they have. Zero-calorie seasonings (salt, pepper, herbs, spices, lemon juice, vinegar) are fine.",
+    "Plausible values: beef fillet 190 kcal and 28 g protein per 100 g; skyr 5% 110 kcal and 9 g per 100 g; chicken breast about 165 kcal and 31 g per 100 g cooked; tofu about 145 kcal and 15 g per 100 g; bread about 250 kcal and 9 g per 100 g; eggplant about 25 kcal per 100 g; salad vegetables about 20 kcal per 100 g."
+  ],
+  "criteria": [
+    {
+      "id": "only-stated-foods",
+      "required": true,
+      "text": "Every food that is counted in the plan's quantities or totals is one the owner listed. Any other food or cooking fat appears only as an explicitly optional suggestion that is kept out of the totals, or not at all. A plan that includes unlisted food as part of the meal FAILS, even with a hedge such as 'if you like'."
+    },
+    {
+      "id": "quantities",
+      "required": true,
+      "text": "Each food in the plan has an amount (grams, or slices for bread), and the three amounts the owner fixed are kept as stated."
+    },
+    {
+      "id": "fits-budget",
+      "required": true,
+      "text": "The plan's own listed amounts, summed by the judge, give a total within about 10 percent of the dinner budget in kcal and at least about 55 g protein (the protein target is a floor, so more is fine). Fixed amounts from the owner are kept as stated."
+    },
+    {
+      "id": "no-question",
+      "required": true,
+      "text": "The reply does not ask the owner what foods they have or ask them to confirm the list they just gave."
+    },
+    {
+      "id": "totals-consistent",
+      "required": false,
+      "text": "The totals the reply states match the sum of its own parts (within a few percent). Advisory: reported, not part of the verdict."
+    }
+  ]
+}

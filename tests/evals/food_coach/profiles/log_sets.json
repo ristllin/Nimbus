@@ -1,0 +1,31 @@
+{
+  "columns": "date,time,meal_id,meal_type,item,quantity,quantity_unit,kcal,protein_g,method,confidence,notes",
+  "sets": {
+    "light-day": {
+      "note": "Logged 1,600 kcal and 88 g protein, so 800 kcal remain to reach 2,400.",
+      "rows": [
+        ["breakfast", "skyr 5%", 200, "g", 220, 18],
+        ["breakfast", "blueberries", 100, "g", 57, 0.7],
+        ["breakfast", "granola", 40, "g", 180, 4],
+        ["lunch", "salmon sandwich", 1, "sandwich", 540, 34],
+        ["snack", "almonds", 30, "g", 175, 6.5],
+        ["snack", "cappuccino", 1, "cup", 70, 3.5],
+        ["afternoon", "banana", 1, "piece", 105, 1.3],
+        ["afternoon", "protein bar", 1, "bar", 205, 20],
+        ["afternoon", "tea with honey", 1, "cup", 48, 0]
+      ]
+    },
+    "dinner-day": {
+      "note": "Logged 1,400 kcal and 95 g protein, so 1,000 kcal and 60 g protein remain for dinner.",
+      "rows": [
+        ["breakfast", "3-egg omelette", 1, "portion", 270, 21],
+        ["breakfast", "cappuccino", 1, "cup", 70, 3.5],
+        ["breakfast", "toast", 2, "slices", 160, 6],
+        ["lunch", "salmon sandwich", 1, "sandwich", 560, 38],
+        ["lunch", "apple", 1, "piece", 80, 0.4],
+        ["snack", "almonds", 30, "g", 175, 6.5],
+        ["snack", "whey shake", 1, "scoop", 85, 19.6]
+      ]
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "id": "qty-vague",
+  "title": "Direct quantity ask, loosely worded",
+  "kind": "defect",
+  "seen": "The owner asked how much pasta and cheese would use up the day's calories and was given a non-answer ('eat all of it') before any usable number.",
+  "world": {
+    "log_set": "light-day",
+    "skills": [
+      "meal-photo-science"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "hours_ago": 3,
+        "text": "Dinner will be a bowl of cold pasta salad. No meat or cheese in it."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 3,
+        "text": "Pasta salad estimate: roughly 300 to 350 g, about 380 to 460 kcal and 9 to 11 g protein. With the whole bowl you finish around 2,020 kcal, about 380 under your 2,400 target, and protein stays the real gap (about 100 g against your 155 g floor)."
+      }
+    ]
+  },
+  "turns": [
+    "I have some mozzarella slices, 25 g each. Just tell me how much pasta and cheese to max out on calories for today."
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so {remaining_kcal} kcal remain to reach {target_kcal}.",
+    "Earlier in the chat the owner described a bowl of pasta salad (estimated 300 to 350 g, 380 to 460 kcal). The owner has more pasta than that if needed; the goal is to use up the day's remaining calories.",
+    "The owner wants amounts of cooked pasta (grams) and cheese (slices) that use up the remaining calories without going over.",
+    "Plausible densities: cooked pasta or pasta salad 110 to 165 kcal per 100 g (dry pasta 350 to 375); one 25 g mozzarella slice 60 to 90 kcal.",
+    "Acceptable total for the two foods: {lo_kcal} to {hi_kcal} kcal, computed with the densities the reply states (or, if none are stated, the plausible ones above)."
+  ],
+  "criteria": [
+    {
+      "id": "answer-first",
+      "required": true,
+      "text": "The first sentence (or first line) of the reply states the amounts: a specific number of grams of pasta AND a specific amount of cheese (slices or grams; a range no wider than about 20 percent is acceptable). Nothing but a few connecting words may come before it. It FAILS if the reply opens with the owner's logged totals, an apology, agreement without numbers (for example 'eat all of it'), a refusal or 'you do not need to', a question, or a list of alternatives."
+    },
+    {
+      "id": "right-amounts",
+      "required": true,
+      "text": "Take the amounts the reply gives as its main answer (ignore alternatives it offers afterwards). Under the reply's own stated densities (or the plausible ones in the facts) they add up to the acceptable total in the facts, so they reach the day's target without going meaningfully over."
+    },
+    {
+      "id": "no-question-first",
+      "required": true,
+      "text": "The reply does not ask the owner for more information (weights, labels, photos) before giving the amounts or instead of giving them."
+    },
+    {
+      "id": "units-clear",
+      "required": true,
+      "text": "The pasta amount is in grams (cooked pasta or the pasta salad as eaten; only a dry weight has to say it is dry) and the cheese amount is a number of slices or grams, not an unquantified 'some'."
+    }
+  ]
+}

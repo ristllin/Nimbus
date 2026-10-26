@@ -1,0 +1,81 @@
+{
+  "id": "plan-earlier",
+  "title": "Dinner plan from an inventory stated earlier in the chat",
+  "kind": "defect",
+  "seen": "The owner listed what they had two messages earlier; the plan ignored most of it and the assistant later asked what they had.",
+  "world": {
+    "log_set": "dinner-day",
+    "skills": [
+      "meal-photo-science"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "hours_ago": 3,
+        "text": "Lets plan dinner.\nSome salad (tomatoes, lettuce, cucumber...), about 100 g of beef fillet. Got skyr 5% with blueberries and raspberries, and chicken breast. Give me a composition, rough weights for these please."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 3,
+        "text": "Rough weights for that plate:\n- Beef fillet 100 g: about 190 kcal / 28 g protein\n- Salad (tomato, lettuce, cucumber) about 150 g: about 30 kcal / 1.5 g protein\n- Skyr 5% 150 g with 50 g blueberries and 50 g raspberries: about 190 kcal / 15 g protein\n- Chicken breast about 100 g: about 165 kcal / 31 g protein\n\nThat is about 575 kcal / 75 g protein, against tonight's dinner budget of about 1,000 kcal and 60 g protein. There is room left if you want to add more."
+      },
+      {
+        "role": "user",
+        "hours_ago": 2,
+        "text": "How long should I rest between heavy sets?"
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 2,
+        "text": "2 to 3 minutes for heavy compound sets, 60 to 90 seconds for lighter accessory work."
+      },
+      {
+        "role": "user",
+        "hours_ago": 1,
+        "text": "Got eggplant in the oven, got tofu, strawberries, bread..."
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 1,
+        "text": "Noted: eggplant, tofu, strawberries and bread. Say when you want the dinner plan sized."
+      }
+    ]
+  },
+  "turns": [
+    "You tell me quantities for dinner. Assume 100 g beef fillet, 200 g skyr 5% and about 150 g berries. You tell me the rest to make a nice meal."
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so the dinner budget is about {remaining_kcal} kcal and {remaining_protein} g protein.",
+    "The only foods the owner has, as stated in the earlier chat: salad vegetables (tomatoes, lettuce, cucumber), beef fillet, skyr 5%, blueberries, raspberries, chicken breast (all in the first message), then eggplant (in the oven), tofu, strawberries and bread (in the third message). In the last message the owner fixed beef fillet 100 g, skyr 200 g and berries about 150 g.",
+    "Anything else (olive oil or any cooking fat, rice, potatoes, pasta, eggs, cheese, nuts, honey, avocado, roast vegetables beyond the listed ones) is a food the owner did not say they have. Zero-calorie seasonings (salt, pepper, herbs, spices, lemon juice, vinegar) are fine.",
+    "Plausible values: beef fillet 190 kcal and 28 g protein per 100 g; skyr 5% 110 kcal and 9 g per 100 g; chicken breast about 165 kcal and 31 g per 100 g cooked; tofu about 145 kcal and 15 g per 100 g; bread about 250 kcal and 9 g per 100 g; eggplant about 25 kcal per 100 g; salad vegetables about 20 kcal per 100 g."
+  ],
+  "criteria": [
+    {
+      "id": "uses-earlier-list",
+      "required": true,
+      "text": "The plan uses at least two foods from the earlier messages that the last message did not repeat (chicken breast, eggplant, tofu, bread, salad vegetables, strawberries). A plan built only from the three foods restated in the last message FAILS."
+    },
+    {
+      "id": "no-reask",
+      "required": true,
+      "text": "The reply does not ask what the owner has, and does not ask the owner to repeat or confirm the foods they listed earlier."
+    },
+    {
+      "id": "only-stated-foods",
+      "required": true,
+      "text": "Every food that is counted in the plan's quantities or totals is one the owner listed. Any other food or cooking fat appears only as an explicitly optional suggestion kept out of the totals, or not at all."
+    },
+    {
+      "id": "quantities-fit",
+      "required": true,
+      "text": "Each food has an amount, and the three amounts the owner fixed are kept. The plan's own listed amounts, summed by the judge, give a total within about 10 percent of the dinner budget in kcal and at least about 55 g protein (the protein target is a floor, so more is fine). Fixed amounts from the owner are kept as stated."
+    },
+    {
+      "id": "totals-consistent",
+      "required": false,
+      "text": "The totals the reply states match the sum of its own parts (within a few percent). Advisory: reported, not part of the verdict."
+    }
+  ]
+}
