@@ -141,7 +141,12 @@ serves:
   its replay budget for a measured mid-loop worst of about 80 KB; a body
   over the budget is refused before the send (fail closed, named), so a
   component that escapes its cap costs one honest turn instead of a TLS
-  stall. Photos splice in after the check: they are their own bounded channel.
+  stall. Inside a tool loop the refusal does not end the turn: nothing was
+  sent, so the loop (`runHeadLoop`) folds the older tool rounds to one-line
+  stubs, clips the newest round only if it alone does not fit, and runs the
+  same round again (`nimbus/orch/body_budget.h` holds the one wording both
+  sides read). Photos splice in after the check: they are their own bounded
+  channel.
 - **Valid UTF-8, whole strings**: every provider answers a body that is not
   valid UTF-8 with a 400 that is the same on every host, and ArduinoJson stores a
   string of 64 KB or more as null. So every registry tool's text is repaired

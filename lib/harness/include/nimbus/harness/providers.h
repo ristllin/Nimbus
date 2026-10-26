@@ -8,6 +8,7 @@
 #include "nimbus/harness/fabric.h"      // Directive / ResultEnvelope / FabricErr
 #include "nimbus/harness/head_tools.h"  // HeadTools - the multi-turn tool-use loop glue
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
+#include "nimbus/orch/body_budget.h"    // bodyBudgetError - the refusal the tool loop reads back
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/provider_park.h"  // the one per-provider park (the host park's store)
 #include "nimbus/orch/token_usage.h"
@@ -52,16 +53,18 @@ namespace providers {
 // a body over it is REFUSED before the send (fail closed, named, the way
 // serializeChecked refuses an over-long string): a component that escapes
 // its cap costs one honest turn, not a TLS stall (lane O3's memory pressure).
+// Inside a tool loop the refusal is not the end of the turn: nothing was sent,
+// so the loop folds older tool results to one-line stubs and runs the same
+// round again (head_loop.h), and the owner still gets an answer.
 // Photos splice in AFTER the check: they are their own bounded channel.
 inline constexpr size_t kWireBodyMax = 85000;
 
 // The last step of a body build, after serializeChecked: hold the assembled
 // body under kWireBodyMax. False + err (the provider refuses the send) when
-// the turn outgrew the budget.
+// the turn outgrew the budget; err is nimbus::orch::bodyBudgetError's wording.
 inline bool bodyWithinBudget(const std::string& body, std::string& err) {
   if (body.size() <= kWireBodyMax) return true;
-  err = "request body over the " + std::to_string(kWireBodyMax / 1000) +
-        " KB budget: " + std::to_string(body.size()) + " B";
+  err = nimbus::orch::bodyBudgetError(kWireBodyMax, body.size());
   return false;
 }
 

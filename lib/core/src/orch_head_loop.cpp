@@ -1,6 +1,7 @@
 #include "nimbus/orch/head_loop.h"
 
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
+#include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - a round too big to send
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
 
 namespace nimbus {
@@ -236,6 +237,51 @@ bool isAckWrite(const std::string& loopName) {
 }
 }  // namespace
 
+namespace {
+// Room kept under the body budget after a refit: the folded rounds leave a stub
+// line each in the seeded message, and the wire escapes what remains.
+constexpr size_t kBudgetRefitSlack = 4096;
+// Refits per round: older rounds first, then the newest round's clip, then one
+// more for a fold whose stub lines ate the room it made.
+constexpr int kBudgetRefits = 3;
+
+// The replayed bytes of the newest round (the results the model has not seen yet).
+size_t newestRoundBytes(const Transcript& tr) {
+  int newest = -1;
+  for (const auto& it : tr.entries())
+    if (it.kind != TranscriptItem::Kind::User && it.round > newest) newest = it.round;
+  size_t bytes = 0;
+  for (const auto& it : tr.entries())
+    if (it.kind != TranscriptItem::Kind::User && it.round == newest) bytes += it.text.size();
+  return bytes;
+}
+
+// A round the provider refused to SEND because its body outgrew the wire budget
+// (body_budget.h): nothing left the device and nothing was billed, so the loop
+// folds the older tool rounds to one-line stubs and runs the same round again; the
+// newest round is clipped only when folding the older ones frees nothing more.
+// Without it a long loop failed the whole turn after paying every round (Lumi,
+// v4.6.0: 8 paid rounds, then an 86,865 B final round refused, and no answer).
+// True when something was reclaimed and a re-run can fit.
+bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
+  size_t budget = 0, size = 0;
+  if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
+    return false;
+  Transcript& tr = *hooks.transcript;
+  const size_t want = (size - budget) + kBudgetRefitSlack;
+  const size_t have = tr.toolBytes();
+  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
+  const size_t newest = newestRoundBytes(tr);
+  size_t freed = cap < newest ? tr.trimToolOutputs(newest) : 0;   // the older rounds only
+  if (freed == 0) freed = tr.trimToolOutputs(cap);
+  if (hooks.log)
+    hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
+              std::to_string(budget) + " B budget - folded " + std::to_string(freed) +
+              " B of tool results" + (freed ? ", running the round again" : ", nothing left to fold"));
+  return freed > 0;
+}
+}  // namespace
+
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
@@ -327,6 +373,8 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     // kFinalRoundNotice - a silent capability removal produced confabulated
     // "I'll report back" replies on every provider).
     HeadStep sr = hooks.step(allowTools, prior, budgetMs, reason);
+    for (int refit = 0; refit < kBudgetRefits && refitToBudget(sr, hooks, round); ++refit)
+      sr = hooks.step(allowTools, prior, budgetMs, reason);
     if (!sr.ok) {  // transport/parse failure - fail soft to the caller
       out.ok = false;
       out.error = sr.error.empty() ? "provider step failed" : sr.error;
