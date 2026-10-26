@@ -38,7 +38,7 @@ Everything that calls a paid model:
 | Feature | While paused |
 |---|---|
 | Replies to your messages (Telegram, the web chat, voice, the device) | No reply is generated. The web chat's send button answers at once that paid calls are paused. |
-| Helpers (sub-agents) | Not started. Helpers that were already running finish, and their results reach you. Stopping a running helper always works, and what it spent until then counts. |
+| Helpers (sub-agents) | Not started. A helper still running on a provider's side (OpenAI, Anthropic) is stopped, and what it used until then counts; one message names the helpers that stopped. Raising the ceiling does not restart them. A helper that ran inside its one request (Mistral, Z.ai, Cumulo Nimbus, a custom endpoint) had already finished and keeps its result. Stopping a helper yourself always works. |
 | Photos and images | Not described or generated. |
 | Voice | Dictation and spoken replies are off. |
 | Routines and the nightly dream | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
@@ -79,6 +79,7 @@ never reads lower than the bill:
 | Generated images | the largest size at the requested quality: 0.016 (low), 0.063 (medium), 0.25 USD (high or other models) |
 | A web search a helper runs on its provider | 0.03 USD each |
 | An OpenAI helper's code interpreter | 0.03 USD a run |
+| A request that was sent and got no answer (it timed out, or the answer was cut) | one token per two characters sent (a photo counts 16,000 tokens), no answer tokens: the provider may well have run it |
 
 Helpers' tokens also show on the **Usage** page under their provider. Everything else
 in this list (the web searches helpers run included) counts toward the ceiling only.
@@ -143,8 +144,9 @@ limit is a hard stop for that provider alone:
   zone).
 - **At its limit, that provider pauses** for every paid call, and the others keep
   working: a reply that would have used it runs on the next provider in your order, a
-  helper meant for it starts on another provider, and its memory, voice and photo calls
-  stop. A provider with no limit is never paused by one.
+  helper meant for it starts on another provider, a helper still running on it is
+  stopped (one message names it; raising the limit does not restart it), and its memory,
+  voice and photo calls stop. A provider with no limit is never paused by one.
 - **One message per channel** (Telegram and the web chat) names the provider, the
   limit and how to raise it; a heads-up goes out at 80% of the limit. The Usage page
   lists each limit with this month's count and marks a paused one.

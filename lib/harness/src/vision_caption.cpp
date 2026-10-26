@@ -10,6 +10,7 @@
 #include "nimbus/harness/providers.h"     // testStatusOverride - the bench's scripted answer
 #include "nimbus/orch/billing_refusal.h"  // billingNoticeDue, billingNotice
 #include "nimbus/orch/model_catalog.h"    // gptGeneration
+#include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer, sentRequestEstimate
 #include "nimbus/orch/model_defaults.h"   // the role-default table: the caption fallback (lane DEF)
 #include "nimbus/orch/spend_ceiling.h"    // paidCallAllowed - the monthly spend ceiling (lane DEF)
 #include "nimbus/orch/provider_error.h"   // oneLineText
@@ -395,6 +396,14 @@ CaptionResult askOne(const CaptionDeps& d, const std::string& p, const Route& ro
     readAnswer(req, route, doc, terr, in.len, r);
   } else {
     readRefusal(req, route, doc, orch::parkKeyFingerprint(key), now, r);
+  }
+  // Lane QW4 (CUM-776): the photo went out and no usable answer came back (no response,
+  // or an answer cut mid-way): it may well have been billed, so it counts an estimate
+  // (the request's text at two characters a token, the photo at the image estimate).
+  if (r.usage.empty() && !r.usage.cacheReadTokens && orch::sentWithoutAnswer(r.status, terr)) {
+    r.usage = orch::sentRequestEstimate(req.body.size(), req.splices.size());
+    hlog::logf("vision: %s %s sent but no usable answer - counted at an estimate (%u input tokens)",
+               req.host.c_str(), route.model.c_str(), (unsigned)r.usage.promptTokens);
   }
   return r;
 }

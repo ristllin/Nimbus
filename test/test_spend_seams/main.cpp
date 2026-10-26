@@ -144,6 +144,9 @@ const SeamRow kSeams[] = {
      "gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts", true, nimbus::orch::SpendSeam::Tts},
     {"url_fetch scan", "src/agent/adapters/url_fetch.cpp", "int scanVerdict(", "resolveScan(p, reason)", true,
      nimbus::orch::SpendSeam::UrlFetch},
+    // Lane QW4 (CUM-777): the scan consults the ceiling itself, not only the park.
+    {"url_fetch scan: the ceiling", "src/agent/adapters/url_fetch.cpp", "int scanVerdict(",
+     "paidCallAllowed(nimbus::orch::SpendSeam::UrlFetch)", false, nimbus::orch::SpendSeam::UrlFetch},
     {"url_fetch scan: the provider pick", "src/agent/adapters/url_fetch.cpp", "bool resolveScan(",
      "nimbus::orch::PaidSeam::UrlFetch", true, nimbus::orch::SpendSeam::UrlFetch},
     {"moderation", "src/agent/adapters/moderation.cpp", "ClassifierVerdict classify(const std::string& text,",
@@ -201,6 +204,14 @@ const MeterRow kMeters[] = {
     {"image generation", S::ImageGen, "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(", "meterImage("},
     {"url_fetch scan", S::UrlFetch, "src/agent/adapters/url_fetch.cpp", "int scanVerdict(", "SpendSeam::UrlFetch"},
     {"moderation", S::Moderation, "src/agent/adapters/moderation.cpp", "static ClassifierVerdict classifyMistral(", "SpendSeam::Moderation"},
+    // Lane QW4 (CUM-776): a request that left and got no usable answer is counted at an
+    // estimate: every provider request (the wire), the caption step, the download scan.
+    {"a sent request with no answer", S::Wire, "lib/harness/src/providers/wire.h", "inline int exchange(",
+     "meterUnanswered(pd, host, req)"},
+    {"a caption with no answer", S::VisionFallback, "lib/harness/src/vision_caption.cpp",
+     "CaptionResult askOne(", "sentRequestEstimate("},
+    {"a scan with no answer", S::UrlFetch, "src/agent/adapters/url_fetch.cpp", "int scanVerdict(",
+     "meterUnansweredScan(p, body.length())"},
 };
 
 // The two sinks the meter reports reach (the device's ceiling, the hosted one's).

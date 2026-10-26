@@ -491,10 +491,30 @@ class JobEngine {
   // Stuck-job watchdog (RAM only - JobRecord is an NVS-persisted POD whose
   // layout must not change; a reboot resetting these clocks just restarts the
   // generous ceilings). Keyed by tag; entries clear on any terminal outcome.
-  struct JobWatch { char tag[12] = {}; uint32_t firstErrMs = 0; bool parked = false; };
+  // Lane QW4 (CUM-774): `cancelling` - a cancel the provider did not confirm; the job
+  // stays polled (its spend is counted at its end) and the cancel is asked again at
+  // cancelAtMs, with a growing wait.
+  struct JobWatch {
+    char tag[12] = {};
+    uint32_t firstErrMs = 0;
+    bool parked = false;
+    bool cancelling = false;
+    uint8_t cancelTries = 0;
+    uint32_t cancelAtMs = 0;
+  };
   JobWatch watch_[nimbus::orch::kAgentMaxJobs];
   JobWatch& watchFor(const char* tag);   // find-or-claim (evicts a free/stale slot)
+  const JobWatch* watchFind(const char* tag) const;   // nullptr: no watch for it
   void watchClear(const char* tag);
+  // Lane QW4 (CUM-774, CUM-778): stop a job on its provider (true: confirmed and
+  // finished; false: kept, the cancel asked again later); finish a stopped job; stop
+  // the helpers a spend freeze paused (one message per chat).
+  bool stopJob(const nimbus::orch::JobRecord& rec);
+  void finishStopped(const nimbus::orch::JobRecord& rec);
+  void stopFrozenHelpers();
+  std::vector<nimbus::orch::JobRecord> frozenHelpers() const;
+  void retryDueCancels();
+  uint32_t frozenCheckAt_ = 0;
 
   std::vector<PendingSpawn> pending_;
   uint32_t nextDispatchAt_ = 0;

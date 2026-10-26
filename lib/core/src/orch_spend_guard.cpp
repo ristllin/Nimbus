@@ -3,6 +3,7 @@
 #include <cstdlib>
 
 #include "nimbus/orch/connectors_wire.h"   // urlRoutableToProviderHead - the one private-host rule
+#include "nimbus/orch/seam_meter.h"        // kEstimateCharsPerToken, kImageEstimateChars
 
 namespace nimbus {
 namespace orch {
@@ -122,6 +123,49 @@ bool verifyProbeAllowed(bool ownerAsked, bool frozen, bool parkOpen) {
 std::string httpBodyOf(const std::string& raw) {
   const size_t at = raw.find("\r\n\r\n");
   return at == std::string::npos ? std::string() : raw.substr(at + 4);
+}
+
+std::string helpersStoppedText(const std::vector<std::string>& labels, bool ceiling,
+                               const std::vector<std::string>& providers) {
+  if (labels.empty()) return std::string();
+  std::string list;
+  for (size_t i = 0; i < labels.size(); ++i)
+    list += (i == 0 ? "" : (i + 1 == labels.size() ? " and " : ", ")) + labels[i];
+  std::string why = "this month's spend ceiling is reached";
+  if (!ceiling) {
+    std::string names;
+    for (size_t i = 0; i < providers.size(); ++i)
+      names += (i == 0 ? "" : (i + 1 == providers.size() ? " and " : ", ")) + providers[i];
+    why = (providers.size() == 1 ? names + "'s monthly limit is" : "the monthly limits of " + names + " are") +
+          " reached";
+  }
+  const bool one = labels.size() == 1;
+  return "Paid AI calls are paused (" + why + "), so the device stopped " +
+         (one ? std::string("a running helper: ") : std::to_string(labels.size()) + " running helpers: ") +
+         list + ". What " + (one ? "it" : "they") + " used until now is counted. Raising the limit does not "
+         "restart " + (one ? "it" : "them") + "; ask again if you still need the work.";
+}
+
+bool sentWithoutAnswer(int status, const std::string& transportError) {
+  if (transportError.empty() || (status != 0 && (status < 200 || status >= 300))) return false;
+  // The request went out and no status line came back (the deadline, a peer close), or
+  // an answer began and was cut (headers, or a body that did not parse whole or was too
+  // large to hold). A refused request (4xx, 5xx) bills nothing and is not counted.
+  static const char* const kSent[] = {"no response", "response headers cut short", "response parse failed",
+                                      "IncompleteInput", "NoMemory", "too large"};
+  for (const char* k : kSent)
+    if (transportError.find(k) != std::string::npos) return true;
+  return false;
+}
+
+TokenUsage sentRequestEstimate(size_t bodyChars, size_t images) {
+  TokenUsage u;
+  const uint64_t chars = (uint64_t)bodyChars + (uint64_t)images * kImageEstimateChars;
+  const uint64_t tokens = (chars + kEstimateCharsPerToken - 1) / kEstimateCharsPerToken;
+  u.promptTokens = tokens > UINT32_MAX ? UINT32_MAX : (uint32_t)tokens;
+  u.completionTokens = 0;
+  u.responses = 1;
+  return u;
 }
 
 }  // namespace orch

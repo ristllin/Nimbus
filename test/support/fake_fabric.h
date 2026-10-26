@@ -79,7 +79,15 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
     return agent::FabricErr::Ok;
   }
 
-  agent::FabricErr cancel(const char*) override { return agent::FabricErr::Ok; }
+  // Lane QW4 (CUM-774): what each cancel answers, in order (the last repeats); empty =
+  // always Ok. `cancels` counts the calls.
+  std::vector<agent::FabricErr> cancelScript;
+  int cancels = 0;
+  agent::FabricErr cancel(const char*) override {
+    const size_t i = (size_t)cancels < cancelScript.size() ? (size_t)cancels : cancelScript.size() - 1;
+    ++cancels;
+    return cancelScript.empty() ? agent::FabricErr::Ok : cancelScript[i];
+  }
 };
 
 }  // namespace harness_test

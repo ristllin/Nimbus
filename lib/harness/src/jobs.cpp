@@ -17,7 +17,10 @@
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/model_choices.h"  // modelInChoices, cheapestChoice - validated spawn-model coercion
 #include "nimbus/orch/models_tool.h"   // L19-39: router ids on a direct provider
+#include "nimbus/orch/provider_caps.h"  // providerName - the helpers-stopped message (lane QW4)
 #include "nimbus/orch/provider_park.h"  // the one per-provider park: a closed provider gets no spawn
+#include "nimbus/orch/spend_ceiling.h"  // spendFrozen - the freeze reaches the park (lane QW4)
+#include "nimbus/orch/spend_guard.h"    // helpersStoppedText (lane QW4)
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/usage_ledger.h"   // cheapestByEffectivePrice - the ledger's price (CUM-708)
@@ -190,6 +193,12 @@ JobEngine::JobWatch& JobEngine::watchFor(const char* tag) {
   watch_[freeSlot] = JobWatch{};
   strncpy(watch_[freeSlot].tag, tag, sizeof(watch_[freeSlot].tag) - 1);
   return watch_[freeSlot];
+}
+
+const JobEngine::JobWatch* JobEngine::watchFind(const char* tag) const {
+  for (int i = 0; i < nimbus::orch::kAgentMaxJobs; i++)
+    if (watch_[i].tag[0] && strncmp(watch_[i].tag, tag, sizeof(watch_[i].tag)) == 0) return &watch_[i];
+  return nullptr;
 }
 
 void JobEngine::watchClear(const char* tag) {
@@ -1271,6 +1280,8 @@ std::string JobEngine::finishedBeforeRestartText() const {
 int JobEngine::pump() {
   if (!d_.fabric || !d_.journal) return 0;
   reapDone();     // collapse any delivered sub-agent arcs whose grace has elapsed
+  stopFrozenHelpers();   // lane QW4 (CUM-778): a spend freeze stops paid helpers
+  retryDueCancels();     // lane QW4 (CUM-774): a cancel not yet confirmed is asked again
 
   // Synthesis fires only when ALL spawned work has drained (owner design,
   // 2026-08-10, superseding R5b's per-completion synthesis): "if you spin 50
@@ -1461,6 +1472,16 @@ int JobEngine::pump() {
       if (!u.empty() || u.cacheReadTokens || u.cacheWriteTokens)
         d_.recordSpawnUsage(rec.backend, rec.model, u);
     }
+    // Lane QW4 (CUM-774): a job whose cancel was not confirmed has now stopped on its
+    // provider (its spend was just counted): it ends as stopped, its result not delivered.
+    const JobWatch* stopped = watchFind(rec.tag);
+    if (stopped && stopped->cancelling && orch::isTerminal(env_ref().state)) {
+      hlog::logf("orchestrator: %s stopped on its provider after the cancel (state %d)", rec.tag,
+                 (int)env_ref().state);
+      finishStopped(rec);
+      scheduleReap(rec.tag);
+      return d_.journal->count();
+    }
     const bool done = env_ref().state == orch::JobState::Done;
     // L19-36: a reply longer than the envelope is saved whole to the card first, and
     // the envelope ends with a marker naming that file and its real size.
@@ -1553,6 +1574,38 @@ int JobEngine::pump() {
 
 // ---- cancel / await / queries -----------------------------------------------
 
+// Lane QW4 (CUM-774): a stopped job is finished (the ledger, the ring, the journal).
+void JobEngine::finishStopped(const orch::JobRecord& rec) {
+  ledgerFinished(rec.tag, LedgerState::Cancelled);
+  emitJobState(rec.tag, rec.backend, orch::JobState::Cancelled);
+  finishJob(rec, std::string(), orch::JobState::Cancelled);
+  watchClear(rec.tag);
+}
+
+// Lane QW4 (CUM-774): stop a job on its provider. A confirmed cancel finishes it (the
+// wire read the job back and counted what it used). One the provider did not confirm (no
+// answer, a refusal) never drops the job: it stays in the journal and is polled as
+// before, so its spend is counted when it ends, and the cancel is asked again after 30 s,
+// doubling up to 5 minutes, until the provider confirms or the job ends by itself.
+static constexpr uint32_t kCancelRetryMs = 30000;
+static constexpr uint32_t kCancelRetryMaxMs = 300000;
+
+bool JobEngine::stopJob(const orch::JobRecord& rec) {
+  const FabricErr err = d_.fabric->cancel(rec.jobId);
+  if (err == FabricErr::Ok) {
+    finishStopped(rec);
+    return true;
+  }
+  JobWatch& w = watchFor(rec.tag);
+  const uint32_t wait = std::min<uint32_t>(kCancelRetryMs << std::min<uint8_t>(w.cancelTries, 4), kCancelRetryMaxMs);
+  w.cancelling = true;
+  if (w.cancelTries < 0xFF) ++w.cancelTries;
+  w.cancelAtMs = nowMs() + wait;
+  hlog::logf("orchestrator: %s cancel not confirmed (err %d) - kept and polled, asking again in %u s",
+             rec.tag, (int)err, (unsigned)(wait / 1000));
+  return false;
+}
+
 bool JobEngine::cancel(const char* tagOrJobId) {
   if (!d_.fabric || !d_.journal) return false;
   int n = d_.journal->count();
@@ -1560,15 +1613,70 @@ bool JobEngine::cancel(const char* tagOrJobId) {
     orch::JobRecord rec;
     if (!d_.journal->get(i, rec)) continue;
     if (strcmp(rec.tag, tagOrJobId) == 0 || strcmp(rec.jobId, tagOrJobId) == 0) {
-      d_.fabric->cancel(rec.jobId);
-      ledgerFinished(rec.tag, LedgerState::Cancelled);
-      emitJobState(rec.tag, rec.backend, orch::JobState::Cancelled);
-      finishJob(rec, std::string(), orch::JobState::Cancelled);
-      watchClear(rec.tag);
-      return true;
+      stopJob(rec);
+      return true;   // stopped, or being stopped (asked again until the provider confirms)
     }
   }
   return false;
+}
+
+// Lane QW4 (CUM-774): every job whose cancel is due again is asked again, whatever the
+// poll cadence (a job is polled every 15 s at best; the retry keeps its own clock).
+void JobEngine::retryDueCancels() {
+  for (int i = 0; i < d_.journal->count(); i++) {
+    orch::JobRecord rec;
+    if (!d_.journal->get(i, rec)) continue;
+    const JobWatch* w = watchFind(rec.tag);
+    if (!w || !w->cancelling || (int32_t)(nowMs() - w->cancelAtMs) < 0) continue;
+    if (stopJob(rec)) --i;   // the record left the journal: the next one moved into slot i
+  }
+}
+
+// Lane QW4 (CUM-778, owner ruling, defensive defaults): when the monthly spend ceiling
+// or a provider's monthly limit pauses paid calls, every helper still running on a
+// paused provider's side is stopped (a cancel always goes out, and what the helper used
+// is counted), and its chat is told once which helpers stopped. Raising the limit does
+// not restart them. A helper that ran inside its one request (Mistral, Z.ai, Cumulo, a
+// custom endpoint) has nothing left running and keeps its result. Checked every 5 s.
+static constexpr uint32_t kFrozenCheckMs = 5000;
+
+// The remote-running jobs a spend freeze pauses (not already being stopped).
+std::vector<orch::JobRecord> JobEngine::frozenHelpers() const {
+  const uint8_t spendCauses = nimbus::orch::kPauseSpendCeiling | nimbus::orch::kPauseProviderLimit;
+  std::vector<orch::JobRecord> out;
+  for (int i = 0; i < d_.journal->count(); i++) {
+    orch::JobRecord rec;
+    if (!d_.journal->get(i, rec) || rec.resultSeen || orch::isTerminal(rec.state)) continue;
+    const JobWatch* w = watchFind(rec.tag);
+    const bool stopping = w && w->cancelling;
+    if (!stopping && !backendRunsSync(rec.backend) &&
+        (nimbus::orch::providerPark().pausedBy(rec.backend) & spendCauses))
+      out.push_back(rec);
+  }
+  return out;
+}
+
+void JobEngine::stopFrozenHelpers() {
+  if ((int32_t)(nowMs() - frozenCheckAt_) < 0 || d_.journal->count() == 0) return;
+  frozenCheckAt_ = nowMs() + kFrozenCheckMs;
+  (void)nimbus::orch::spendFrozen();   // the freeze reaches the park before it is read
+  struct Told { std::vector<std::string> labels, providers; bool ceiling = false; };
+  std::vector<std::pair<std::string, Told>> chats;
+  for (const orch::JobRecord& rec : frozenHelpers()) {
+    const bool ceiling = nimbus::orch::providerPark().pausedBy(rec.backend) & nimbus::orch::kPauseSpendCeiling;
+    hlog::logf("orchestrator: %s stopped - paid calls to %s are paused (%s)", rec.tag, rec.backend,
+               ceiling ? "the spend ceiling" : "its monthly limit");
+    stopJob(rec);
+    auto it = std::find_if(chats.begin(), chats.end(), [&](const auto& c) { return c.first == rec.chatId; });
+    if (it == chats.end()) it = chats.insert(chats.end(), {std::string(rec.chatId), Told{}});
+    Told& t = it->second;
+    t.labels.push_back(jobLabel(rec));
+    t.ceiling = t.ceiling || ceiling;
+    const std::string name = nimbus::orch::providerName(rec.backend);
+    if (std::find(t.providers.begin(), t.providers.end(), name) == t.providers.end()) t.providers.push_back(name);
+  }
+  for (const auto& c : chats)
+    deliver(c.first, nimbus::orch::helpersStoppedText(c.second.labels, c.second.ceiling, c.second.providers));
 }
 
 void JobEngine::awaitTag(const std::string& firstTag) {

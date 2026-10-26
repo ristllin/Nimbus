@@ -15,7 +15,9 @@
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/harness/reply_overflow.h"   // the whole text of a reply the envelope cut (L19-36)
 #include "nimbus/orch/provider_error.h"   // providerErrLine, oneLineText - the one error-line shape (CUM-620)
+#include "nimbus/orch/model_key.h"      // lane QW4: kModelKeyCap - the model an estimate names
 #include "nimbus/orch/seam_meter.h"     // lane QW4: a cancelled job's usage counted
+#include "nimbus/orch/spend_guard.h"    // lane QW4: sentWithoutAnswer, sentRequestEstimate
 #include "nimbus/orch/spend_ceiling.h"  // lane DEF: the paid-call gate before any request
 #include "nimbus/orch/token_usage_json.h"   // lane QW4: tokenUsageFromJson - that usage read
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
@@ -192,8 +194,57 @@ inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t
                               const std::vector<std::pair<std::string, std::string>>& headers,
                               const CancelOf& c);
 
-// Runs meterCancelledJob when exchange() returns from a cancel (every return path),
-// keeping the cancel's own transport record for its caller.
+// ---- a paid request that got no answer is counted (lane QW4, CUM-776) --------------
+// A request that left the device and got no usable answer (no response by the deadline,
+// a peer close, an answer cut in its headers or body) may well have been billed: the
+// provider ran it whether or not the device heard back. No step meters a request with
+// no answer, so the wire counts it at a conservative estimate (sentRequestEstimate: one
+// input token per two characters sent, each photo at the image estimate, no output), on
+// the provider and model the request named. One place for every head round, fold,
+// single shot and sub-agent dispatch on every provider.
+
+// The model a request body names ("" when none: priced at the provider's highest row).
+inline std::string bodyModel(const std::string& body) {
+  static const char kKey[] = "\"model\":\"";
+  const size_t at = body.find(kKey);
+  if (at == std::string::npos) return std::string();
+  const size_t from = at + sizeof(kKey) - 1;
+  const size_t end = body.find('"', from);
+  if (end == std::string::npos || end - from >= nimbus::orch::kModelKeyCap) return std::string();
+  return body.substr(from, end - from);
+}
+
+// True when `host` is the custom endpoint's (the base URL read like the custom adapter's
+// parseBase: scheme, path and port dropped).
+inline bool isCustomHost(const ProviderDeps& pd, const char* host) {
+  std::string base = pd.customBase ? pd.customBase() : std::string();
+  const size_t sch = base.find("://");
+  if (sch != std::string::npos) base = base.substr(sch + 3);
+  base = base.substr(0, base.find_first_of("/:"));
+  return !base.empty() && base == host;
+}
+
+// Where an estimate is filed: a routed request at its upstream's price (seamRouteFor), the
+// custom endpoint as "custom" (priced by its switch: a keyless local model stays free),
+// every other host by seamRouteFor (an unknown host fail-closed at the highest row).
+inline nimbus::orch::SeamRoute estimateRoute(const ProviderDeps& pd, const char* host, const std::string& path,
+                                             const std::string& model) {
+  if (path.rfind("/router/", 0) != 0 && isCustomHost(pd, host)) return nimbus::orch::SeamRoute{"custom", model};
+  return nimbus::orch::seamRouteFor(host, path.c_str(), model.c_str());
+}
+
+inline void meterUnanswered(const ProviderDeps& pd, const char* host, const HttpRequest& req) {
+  const nimbus::orch::TokenUsage u = nimbus::orch::sentRequestEstimate(req.body.size(), req.splices.size());
+  const std::string model = bodyModel(req.body);
+  const nimbus::orch::SeamRoute r = estimateRoute(pd, host, req.path, model);
+  nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Wire, r.provider.c_str(), r.model.c_str(), u);
+  hlog::logf("provider: %s%s sent but no usable answer - counted at an estimate (%s %s, %u input tokens)",
+             host, req.path.c_str(), r.provider.c_str(), r.model.empty() ? "(no model)" : r.model.c_str(),
+             (unsigned)u.promptTokens);
+}
+
+// Runs meterCancelledJob when exchange() returns from a confirmed cancel (every return
+// path), keeping the cancel's own transport record for its caller.
 struct CancelMeterOnExit {
   const ProviderDeps& pd;
   const char* host;
@@ -201,6 +252,7 @@ struct CancelMeterOnExit {
   bool tls;
   std::vector<std::pair<std::string, std::string>> headers;   // copied: the request moves its own
   CancelOf cancel;
+  int status = 0;   // the cancel's own answer (exchange sets it on its return)
   CancelMeterOnExit(const ProviderDeps& p, const char* h, uint16_t po, bool t,
                     const std::vector<std::pair<std::string, std::string>>& hd, const CancelOf& c)
       : pd(p), host(h), port(po), tls(t), cancel(c) {
@@ -208,8 +260,11 @@ struct CancelMeterOnExit {
   }
   CancelMeterOnExit(const CancelMeterOnExit&) = delete;
   CancelMeterOnExit& operator=(const CancelMeterOnExit&) = delete;
+  // A confirmed cancel (2xx) only: one the provider did not confirm leaves the job with
+  // the job engine, which keeps polling it and counts its spend when it ends (CUM-774);
+  // reading it back here as well would count it twice.
   ~CancelMeterOnExit() {
-    if (cancel.kind == CancelKind::None) return;
+    if (cancel.kind == CancelKind::None || status < 200 || status >= 300) return;
     const LastExchange cancelled = lastExchange();
     meterCancelledJob(pd, host, port, tls, headers, cancel);
     lastExchange() = cancelled;
@@ -242,9 +297,9 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // run away). Ahead of the bench's scripted answer below, so a fake provider is
   // refused too. Lane QW4: a cancel stops spend, so it always goes out (cancelRequestOf).
   const CancelOf cancel = cancelRequestOf(method, path, body);
-  if (std::strcmp(method, "GET") != 0 && std::strcmp(method, "DELETE") != 0 &&
-      cancel.kind == CancelKind::None &&
-      !nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Wire)) {
+  const bool paidRequest = std::strcmp(method, "GET") != 0 && std::strcmp(method, "DELETE") != 0 &&
+                           cancel.kind == CancelKind::None;
+  if (paidRequest && !nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Wire)) {
     lastExchange().spendFrozen = true;
     hlog::logf("provider: %s%s refused - %s", host, path.c_str(), nimbus::orch::kSpendFrozenError);
     return 0;
@@ -252,7 +307,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   if (!pd.http) return 0;
   // Lane QW4: once a cancel was answered (or failed), on whichever return below, the
   // job's usage so far is read and counted; the caller still reads the cancel's outcome.
-  const CancelMeterOnExit meterAfter(pd, host, port, tls, headers, cancel);
+  CancelMeterOnExit meterAfter(pd, host, port, tls, headers, cancel);
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   {   // test and host builds only: the bench's scripted provider answer
     int ovStatus = 0;
@@ -266,7 +321,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
       deserializeJson(doc, ovBody, DeserializationOption::Filter(filter));
       hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
       noteParkRefusal(pd, host, ovStatus, doc);
-      return ovStatus;
+      return meterAfter.status = ovStatus;
     }
   }
 #endif
@@ -290,6 +345,8 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
+  // Lane QW4 (CUM-776): sent, no usable answer: counted at an estimate.
+  if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr)) meterUnanswered(pd, host, req);
   lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
   noteParkRefusal(pd, host, status, doc);
   if (status == 0) {
@@ -328,7 +385,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
       return 0;
     }
   }
-  return status;
+  return meterAfter.status = status;
 }
 
 // Lane QW4: what a cancelled job's own object says it billed: the tokens, the model, and

@@ -300,7 +300,12 @@ provider count too (see [Monthly spend ceiling](spend-ceiling.md)). Stopping a r
 OpenAI or Anthropic sub (`session.terminate`, or the assistant ending it) always sends
 the cancel, even while paid calls are paused, and the job is read back once right after
 it (a free `GET` of the response or session) so what it spent until then is counted; a
-read that fails counts the session estimate. An
+read that fails counts the session estimate. A cancel the provider does not confirm
+never drops the job: it stays polled (its spend counts when it ends) and the cancel is
+asked again after 30 s, doubling up to 5 minutes. When the monthly spend ceiling or a
+provider's monthly limit pauses paid calls, every sub still running on a paused
+provider's side is stopped this way and its chat gets one message naming them; raising
+the limit does not restart them. An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.

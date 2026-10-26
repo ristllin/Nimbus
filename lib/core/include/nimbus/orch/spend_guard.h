@@ -1,8 +1,11 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nimbus/orch/spend_ceiling.h"
+#include "nimbus/orch/token_usage.h"
 
 // spend_guard - the rules that keep every paid call inside the monthly spend ceiling
 // where the ceiling's own counter could be bypassed (lane QW4, owner requirement: max
@@ -101,6 +104,22 @@ bool verifyProbeAllowed(bool ownerAsked, bool frozen, bool parkOpen);
 // headers), or "" when the headers never ended. The probe's metered usage is read from
 // it; a cut body prices at the high estimate instead.
 std::string httpBodyOf(const std::string& raw);
+
+// Lane QW4 (CUM-778, owner ruling): the one message a chat gets when the spend ceiling or
+// a provider's monthly limit stopped its running helpers. `labels` are the helpers' owner
+// labels; `ceiling` says the overall ceiling paused them, else `providers` (display
+// names) are the ones whose limits did. Plain words, ASCII.
+std::string helpersStoppedText(const std::vector<std::string>& labels, bool ceiling,
+                               const std::vector<std::string>& providers);
+
+// Lane QW4 (CUM-776): a paid request that left the device and got no usable answer (no
+// response, or an answer cut in its headers or body; a 4xx or 5xx refusal is not one).
+// The provider may well have billed it, so it is
+// counted at a conservative estimate: one input token per two characters sent (each
+// photo the request carried counts kImageEstimateChars), no output tokens.
+// `transportError` is the transport's error text; `status` the HTTP status it returned.
+bool sentWithoutAnswer(int status, const std::string& transportError);
+TokenUsage sentRequestEstimate(size_t bodyChars, size_t images);
 
 }  // namespace orch
 }  // namespace nimbus

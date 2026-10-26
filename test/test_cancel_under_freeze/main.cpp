@@ -189,27 +189,35 @@ static void test_work_without_reported_tokens_and_per_call_runs_are_counted() {
   TEST_ASSERT_EQUAL_UINT64(orch::kProviderContainerMicro, g_meter[2].estimate);
 }
 
-// A job the provider no longer has (404) counts nothing: no phantom estimate.
-static void test_a_job_that_is_gone_counts_nothing() {
+// A job the provider no longer has (404) counts nothing: no phantom estimate. A cancel
+// the provider did not confirm is not read back at all (CUM-774: the job engine keeps
+// polling the job and counts it when it ends; a read-back here would count it twice).
+static void test_an_unconfirmed_cancel_is_not_read_back() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "/cancel", 404, "{\"error\":{\"message\":\"not found\"}}"});
-  d.http.script.push_back({"", "/v1/responses/resp_5", 404, "{}"});
   auto pd = d.contract();
   providers::oaiCancel(pd, "api.openai.com", "sk-fake-oai", "openai:resp_5");
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
   TEST_ASSERT_EQUAL(0, (int)g_meter.size());
+  FakeProviderDeps e;   // a cancel with no answer: kept by the engine, nothing read here
+  e.http.script.push_back(harness_test::transportCut(0, "no response"));
+  auto pe = e.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail,
+                    (int)providers::oaiCancel(pe, "api.openai.com", "sk-fake-oai", "openai:resp_6"));
+  TEST_ASSERT_TRUE(wire::lastExchange().noResponse);   // the caller reads the cancel's own outcome
+  TEST_ASSERT_EQUAL(1, (int)e.http.seen.size());
+  TEST_ASSERT_EQUAL(0, (int)g_meter.size());   // a cancel is free: no estimate either
 }
 
-// The cancel's caller reads the cancel's own transport record, not the read-back's: a
-// cancel that got no answer still says so after the GET succeeded.
-static void test_the_cancels_own_outcome_survives_the_read_back() {
+// A job the provider no longer has when it is read back (404) counts nothing.
+static void test_a_job_that_is_gone_counts_nothing() {
   FakeProviderDeps d;
-  d.http.script.push_back(harness_test::transportCut(0, "no response"));
-  d.http.script.push_back({"", "/v1/responses/resp_6", 200, kOaiJob});
+  d.http.script.push_back({"", "/cancel", 200, "{\"status\":\"cancelled\"}"});
+  d.http.script.push_back({"", "/v1/responses/resp_7", 404, "{}"});
   auto pd = d.contract();
-  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail,
-                    (int)providers::oaiCancel(pd, "api.openai.com", "sk-fake-oai", "openai:resp_6"));
-  TEST_ASSERT_TRUE(wire::lastExchange().noResponse);
-  TEST_ASSERT_EQUAL(1, (int)g_meter.size());   // the read-back still counted the job
+  providers::oaiCancel(pd, "api.openai.com", "sk-fake-oai", "openai:resp_7");
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, (int)g_meter.size());
 }
 
 // Not frozen, the same: the job engine forgets a cancelled job either way.
@@ -271,8 +279,8 @@ int main(int, char**) {
   RUN_TEST(test_a_job_that_reports_no_tokens_counts_nothing);
   RUN_TEST(test_an_unread_job_counts_the_estimate);
   RUN_TEST(test_work_without_reported_tokens_and_per_call_runs_are_counted);
+  RUN_TEST(test_an_unconfirmed_cancel_is_not_read_back);
   RUN_TEST(test_a_job_that_is_gone_counts_nothing);
-  RUN_TEST(test_the_cancels_own_outcome_survives_the_read_back);
   RUN_TEST(test_a_cancel_is_counted_when_nothing_is_frozen_too);
   RUN_TEST(test_anthropic_interrupt_goes_out_while_frozen_and_counts_the_session);
   RUN_TEST(test_paid_work_is_still_refused_while_frozen);

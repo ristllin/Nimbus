@@ -1,0 +1,267 @@
+#include <unity.h>
+
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "../support/fake_fabric.h"
+#include "../support/fake_platform.h"
+#include "nimbus/harness/jobs.h"
+#include "nimbus/orch/journal.h"
+#include "nimbus/orch/provider_park.h"
+#include "nimbus/orch/spend_guard.h"
+
+// Lane QW4: a helper is never dropped while it can still bill, and a spend freeze stops
+// the helpers it pauses.
+//   CUM-774: a cancel the provider did not confirm (no answer, a refusal) used to drop the
+//   job from the journal at once, so a job still running on the provider billed with
+//   nothing counting it. Now it stays tracked and polled (its spend is counted when it
+//   ends), the cancel is asked again with a growing wait, and it ends as stopped (its
+//   result not delivered) once the provider confirms or the job stops.
+//   CUM-778 (owner ruling, defensive defaults): when the monthly spend ceiling or a
+//   provider's monthly limit pauses paid calls, every helper still running on a paused
+//   provider's side is stopped, and its chat is told once which helpers stopped; raising
+//   the limit restarts none of them. A helper that ran inside its one request keeps its
+//   result (nothing of it is still running).
+
+using agent::JobEngine;
+using harness_test::FakeAdapter;
+using harness_test::FakePlatform;
+using harness_test::LogCapture;
+namespace orch = nimbus::orch;
+
+namespace {
+
+struct Store : orch::JournalStore {
+  std::map<int, std::string> slots;
+  std::string get(int slot) override {
+    auto it = slots.find(slot);
+    return it == slots.end() ? std::string() : it->second;
+  }
+  bool put(int slot, const std::string& v) override {
+    slots[slot] = v;
+    return true;
+  }
+  bool remove(int slot) override {
+    slots.erase(slot);
+    return true;
+  }
+  void clearNs() override { slots.clear(); }
+};
+
+struct Rig {
+  FakePlatform plat;
+  FakeAdapter openai, mistral;
+  agent::HeavyFabric fabric;
+  Store store;
+  orch::Journal journal;
+  std::vector<std::pair<std::string, std::string>> delivered;
+  struct Usage { std::string backend; uint32_t in; };
+  std::vector<Usage> usage;
+  std::unique_ptr<JobEngine> eng;
+
+  Rig() {
+    openai.backend = "openai";   // runs remotely: polled, cancelled on its provider
+    mistral.backend = "mistral";   // runs inside its one request
+    openai.pollScript = {agent::JobState::Running};
+    mistral.pollScript = {agent::JobState::Running};
+    fabric.registerAdapter(&openai);
+    fabric.registerAdapter(&mistral);
+    journal.begin(&store);
+    JobEngine::Deps d;
+    d.platform = plat.contract();
+    d.fabric = &fabric;
+    d.journal = &journal;
+    d.deliver = [this](const std::string& c, const std::string& t) {
+      delivered.push_back({c, t});
+      return true;
+    };
+    d.subPriority = [] { return std::string("openai,mistral"); };
+    d.providerHasKey = [](const std::string&) { return true; };
+    d.subModel = [](const std::string& p) { return "sub-" + p; };
+    d.modelIsValid = [](const std::string&, const std::string&) { return true; };
+    d.recordSpawnUsage = [this](const std::string& b, const std::string&, const orch::TokenUsage& u) {
+      usage.push_back({b, u.promptTokens});
+    };
+    eng.reset(new JobEngine(std::move(d)));
+  }
+
+  // Spawn on `provider` and dispatch it (one pump).
+  void spawn(const char* provider, const char* chat = "chat1") {
+    orch::Spawn s;
+    s.task = "research tea";
+    s.provider = provider;
+    s.model = "m";
+    s.category = "research";
+    eng->enqueueSpawn(s, chat);
+    plat.ms += 3000;
+    eng->pump();
+  }
+  void at(uint32_t ms) {
+    plat.ms = ms;
+    eng->pump();
+  }
+};
+
+void unpauseAll() {
+  orch::providerPark().resume(orch::kPauseAllProviders, orch::kPauseSpendCeiling);
+  for (const char* p : {"openai", "mistral", "anthropic"})
+    orch::providerPark().resume(p, orch::kPauseProviderLimit);
+}
+
+}  // namespace
+
+void setUp() {
+  LogCapture::install();
+  unpauseAll();
+}
+void tearDown() {
+  agent::hlog::setSink(nullptr);
+  unpauseAll();
+}
+
+// ---- CUM-774 ------------------------------------------------------------------------
+
+static void test_a_confirmed_cancel_drops_the_job() {
+  Rig r;
+  r.spawn("openai");
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));
+  TEST_ASSERT_EQUAL(1, r.openai.cancels);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+}
+
+static void test_an_unconfirmed_cancel_keeps_the_job_and_asks_again_with_a_growing_wait() {
+  Rig r;
+  r.openai.cancelScript = {agent::FabricErr::RemoteFail, agent::FabricErr::Network, agent::FabricErr::Ok};
+  r.spawn("openai");
+  const uint32_t t0 = r.plat.ms;
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));   // being stopped
+  TEST_ASSERT_EQUAL(1, r.openai.cancels);
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());   // kept: it may still be billing
+  r.at(t0 + 29000);                               // before the 30 s retry: polled, not cancelled
+  TEST_ASSERT_EQUAL(1, r.openai.cancels);
+  TEST_ASSERT_TRUE(r.openai.pollCount >= 1);
+  r.at(t0 + 30500);                               // second try fails: the wait doubles to 60 s
+  TEST_ASSERT_EQUAL(2, r.openai.cancels);
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+  r.at(t0 + 30500 + 59000);
+  TEST_ASSERT_EQUAL(2, r.openai.cancels);
+  r.at(t0 + 30500 + 61000);                       // third try confirmed: stopped
+  TEST_ASSERT_EQUAL(3, r.openai.cancels);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+}
+
+// The job stopped on its own (or finished) before a cancel was confirmed: its spend is
+// counted once at its end, and it ends as stopped, its result not delivered.
+static void test_a_kept_job_is_counted_when_it_ends_and_its_result_is_not_delivered() {
+  Rig r;
+  r.openai.cancelScript = {agent::FabricErr::RemoteFail};
+  r.openai.pollScript = {agent::JobState::Running, agent::JobState::Done};
+  r.openai.usageIn = 1234;
+  r.spawn("openai");
+  const size_t before = r.delivered.size();
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));
+  for (int i = 0; i < 10 && r.eng->activeJobCount(); ++i) r.at(r.plat.ms + 16000);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL(1, (int)r.usage.size());      // counted once
+  TEST_ASSERT_EQUAL_UINT32(1234, r.usage[0].in);
+  TEST_ASSERT_EQUAL(before, r.delivered.size());  // the owner asked it to stop
+  TEST_ASSERT_FALSE(r.eng->hasFreshResults());
+}
+
+// ---- CUM-778 --------------------------------------------------------------------------
+
+static void test_a_provider_limit_stops_its_running_helpers_and_tells_once() {
+  Rig r;
+  r.spawn("openai");
+  r.spawn("mistral");
+  TEST_ASSERT_EQUAL(2, r.eng->activeJobCount());
+  const size_t before = r.delivered.size();   // the spawn notes
+  orch::providerPark().pause("openai", orch::kPauseProviderLimit);
+  r.at(r.plat.ms + 6000);
+  TEST_ASSERT_EQUAL(1, r.openai.cancels);           // the OpenAI helper stopped
+  TEST_ASSERT_EQUAL(0, r.mistral.cancels);          // the in-request one keeps its result
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL(before + 1, r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("chat1", r.delivered.back().first.c_str());
+  const std::string t = r.delivered.back().second;
+  TEST_ASSERT_TRUE(t.find("OpenAI's monthly limit is reached") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("stopped a running helper") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("does not restart") != std::string::npos);
+  r.at(r.plat.ms + 6000);                           // told once
+  TEST_ASSERT_EQUAL(before + 1, r.delivered.size());
+  // Raising the limit restarts nothing.
+  orch::providerPark().resume("openai", orch::kPauseProviderLimit);
+  const size_t dispatched = r.openai.dispatched.size();
+  r.at(r.plat.ms + 6000);
+  TEST_ASSERT_EQUAL(dispatched, r.openai.dispatched.size());
+}
+
+static void test_the_ceiling_stops_every_remote_helper_in_one_message_per_chat() {
+  Rig r;
+  r.spawn("openai", "chat1");
+  r.spawn("openai", "chat1");
+  r.spawn("openai", "chat2");
+  const size_t before = r.delivered.size();
+  orch::providerPark().pause(orch::kPauseAllProviders, orch::kPauseSpendCeiling);
+  r.at(r.plat.ms + 6000);
+  TEST_ASSERT_EQUAL(3, r.openai.cancels);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL(before + 2, r.delivered.size());    // one per chat
+  TEST_ASSERT_EQUAL_STRING("chat1", r.delivered[before].first.c_str());
+  TEST_ASSERT_TRUE(r.delivered[before].second.find("2 running helpers") != std::string::npos);
+  TEST_ASSERT_TRUE(r.delivered[before].second.find("spend ceiling") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("chat2", r.delivered[before + 1].first.c_str());
+}
+
+// A stop the provider does not confirm keeps the job (CUM-774) and is not announced
+// twice; the owner's own pause stops nothing (only the spend limits do).
+static void test_an_unconfirmed_stop_is_retried_not_repeated_and_an_owner_pause_stops_nothing() {
+  Rig r;
+  r.openai.cancelScript = {agent::FabricErr::Network, agent::FabricErr::Ok};
+  r.spawn("openai");
+  const size_t before = r.delivered.size();
+  orch::providerPark().pause("openai", orch::kPauseProviderLimit);
+  r.at(r.plat.ms + 6000);
+  TEST_ASSERT_EQUAL(1, r.openai.cancels);
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL(before + 1, r.delivered.size());
+  r.at(r.plat.ms + 31000);                          // the retry confirms
+  TEST_ASSERT_EQUAL(2, r.openai.cancels);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+  TEST_ASSERT_EQUAL(before + 1, r.delivered.size());
+
+  Rig o;
+  o.spawn("openai");
+  orch::providerPark().pause("openai", orch::kPauseOwner);
+  o.at(o.plat.ms + 6000);
+  TEST_ASSERT_EQUAL(0, o.openai.cancels);
+  orch::providerPark().resume("openai", orch::kPauseOwner);
+}
+
+static void test_the_stopped_message_names_what_paused_them() {
+  const std::string one = orch::helpersStoppedText({"research (gpt-6-luna)"}, false, {"OpenAI"});
+  TEST_ASSERT_TRUE(one.find("Paid AI calls are paused (OpenAI's monthly limit is reached)") != std::string::npos);
+  TEST_ASSERT_TRUE(one.find("a running helper: research (gpt-6-luna)") != std::string::npos);
+  const std::string two = orch::helpersStoppedText({"a", "b", "c"}, false, {"OpenAI", "Anthropic"});
+  TEST_ASSERT_TRUE(two.find("the monthly limits of OpenAI and Anthropic are reached") != std::string::npos);
+  TEST_ASSERT_TRUE(two.find("3 running helpers: a, b and c") != std::string::npos);
+  TEST_ASSERT_TRUE(orch::helpersStoppedText({"a"}, true, {}).find("spend ceiling") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", orch::helpersStoppedText({}, true, {}).c_str());
+  for (unsigned char ch : two) TEST_ASSERT_TRUE(ch >= 0x20 && ch < 0x7f);
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  RUN_TEST(test_a_confirmed_cancel_drops_the_job);
+  RUN_TEST(test_an_unconfirmed_cancel_keeps_the_job_and_asks_again_with_a_growing_wait);
+  RUN_TEST(test_a_kept_job_is_counted_when_it_ends_and_its_result_is_not_delivered);
+  RUN_TEST(test_a_provider_limit_stops_its_running_helpers_and_tells_once);
+  RUN_TEST(test_the_ceiling_stops_every_remote_helper_in_one_message_per_chat);
+  RUN_TEST(test_an_unconfirmed_stop_is_retried_not_repeated_and_an_owner_pause_stops_nothing);
+  RUN_TEST(test_the_stopped_message_names_what_paused_them);
+  return UNITY_END();
+}

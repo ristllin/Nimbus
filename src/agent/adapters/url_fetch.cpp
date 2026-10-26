@@ -12,6 +12,8 @@
 #include "../../sys/agent_log.h"
 #include "nimbus/orch/reply_text.h"
 #include "nimbus/orch/seam_meter.h"   // meterSeamAnswer - the scan's spend (lane DEF)
+#include "nimbus/orch/spend_ceiling.h"   // paidCallAllowed - the scan's gate (lane QW4)
+#include "nimbus/orch/spend_guard.h"     // sentRequestEstimate (lane QW4)
 #include "../../sys/net_util.h"
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/fetch_policy.h"
@@ -233,10 +235,27 @@ bool resolveScan(ScanProv& p, std::string& reason) {
   p.key = String(scanKeyOf(p.slug).c_str());
   return true;
 }
+// Lane QW4 (CUM-776): a scan that left the device and got no usable answer may have been
+// billed: it counts the conservative estimate (two characters a token of the request, no
+// output) on the provider and model it named.
+void meterUnansweredScan(const ScanProv& p, size_t bodyChars) {
+  const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(p.host, p.path, p.model);
+  nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::UrlFetch, r.provider.c_str(), r.model.c_str(),
+                               nimbus::orch::sentRequestEstimate(bodyChars, 0));
+  alogf("fetch: scan sent but no usable answer - counted at an estimate");
+}
 }  // namespace
 
 int scanVerdict(const std::string& headText, const std::string& url,
                 const std::string& name, std::string& reason) {
+  // Lane QW4 (CUM-777): the scan is a paid request like every other seam. While the
+  // monthly spend ceiling pauses paid calls it is refused before any request (and the
+  // download stays out of the store, fail-closed); asking the gate also hands the park the
+  // current freeze before the provider pick below reads it.
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::UrlFetch)) {
+    reason = std::string("scan: ") + nimbus::orch::kSpendFrozenError;
+    return -1;
+  }
   ScanProv p;
   if (!resolveScan(p, reason)) return -1;
 
@@ -300,6 +319,7 @@ int scanVerdict(const std::string& headText, const std::string& url,
     tlsClose(c);
     slot.release();
     gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
+    meterUnansweredScan(p, body.length());   // lane QW4 (CUM-776): sent, no answer
     reason = "scan: no response";
     return -1;
   }
@@ -318,7 +338,11 @@ int scanVerdict(const std::string& headText, const std::string& url,
     return -1;
   }
   gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, status, "");
-  if (je) { reason = "scan: bad response"; return -1; }
+  if (je) {
+    meterUnansweredScan(p, body.length());   // lane QW4 (CUM-776): answered, cut mid-body
+    reason = "scan: bad response";
+    return -1;
+  }
   // Lane DEF: an answer is billed: its reported usage (else an estimate from the request
   // and the 60-token cap) counts toward the monthly spend ceiling. An error answer has
   // no usage and no choices: nothing billed, nothing counted.
