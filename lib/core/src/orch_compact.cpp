@@ -490,6 +490,14 @@ bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold
 bool hidesRows(const ChatFold& f) {
   return !f.softStart.empty() && (f.thru.empty() || rowIdAfter(f.softStart, f.thru));
 }
+// A pause with no failure behind it is a thrash pause. One whose chat is due on
+// hidden rows is what v4.6.0 set on Lumi's first histV2 catch-up (the guard no
+// longer pauses on them): lifted at once while the counters are under the
+// threshold, and once per boot after they have grown since (a pause this boot set
+// itself is a real refill and stays).
+bool liftsThrashPause(const ChatFold& f, bool refill, bool hidden) {
+  return f.breakerFails == 0 && hidden && (!refill || !f.pauseRechecked);
+}
 }  // namespace
 
 FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
@@ -500,11 +508,9 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   const bool refill = refilled(s->f, bytesThreshold, msgsThreshold);
   const bool hidden = hidesRows(s->f);
   if (s->f.breakerPaused) {
-    // A pause with no failure behind it is a thrash pause. One that rests on
-    // hidden rows alone is a backlog the guard below no longer pauses (v4.6.0
-    // paused Lumi's first histV2 catch-up this way), so it is lifted here.
-    if (s->f.breakerFails != 0 || refill || !hidden) return FoldDue::No;
+    if (!liftsThrashPause(s->f, refill, hidden)) return FoldDue::No;
     s->f.breakerPaused = false;
+    s->f.pauseRechecked = true;
     persist();
   }
   if (!refill && !hidden) return FoldDue::No;
@@ -516,6 +522,7 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   // rest up), so a backlog larger than one fold is folded again, never paused.
   if (refill && s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
     s->f.breakerPaused = true;
+    s->f.pauseRechecked = true;   // a real refill: never lifted this boot
     persist();
     return FoldDue::ThrashPaused;
   }
@@ -560,7 +567,7 @@ bool FoldStore::noteFoldFailed(const std::string& chatId) {
 
 void FoldStore::markOverflow(const std::string& chatId) {
   Slot& s = upsert(chatId);
-  s.f.bytesSinceFold += 1u << 20;   // 1 MB - over any configurable threshold
+  s.f.bytesSinceFold += kOverflowMarkBytes;   // 1 MB - over any configurable threshold
   persist();
 }
 

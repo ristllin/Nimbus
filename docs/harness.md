@@ -279,9 +279,12 @@ a quiet background turn; the next owner turn says it).
 - **The post-update awareness turn is bounded and waits for the owner**
   (`TurnEngine::injectBoundedTurn`, `nimbus/orch/owner_first.h`): at most two
   tool rounds and a 4 KB tool-output budget, and single-shot (no tool loop)
-  while the head runs on a fallback provider. It runs only after the owner has
-  been quiet for two minutes and a Telegram poll found no message waiting; an
-  automatic fold waits for such a poll too. Owner turns never wait on either.
+  while the head runs on a fallback provider. It starts only after two minutes
+  with no turn and two minutes after it was staged; an automatic fold also waits
+  for two quiet minutes (a fold a context overflow queued runs at once), so
+  neither starts between the messages of a conversation. A message that arrives
+  while either is already running waits for it to finish (the turn task is
+  single by design).
 - **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
   `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
   at both the apply layer and the tool-dispatch seam, because sub-agent results
@@ -296,7 +299,8 @@ a quiet background turn; the next owner turn says it).
   device mid-install); the ring becomes the progress bar; voice is refused;
   every phase writes a timeline row; after the post-update boot validates, a
   staged system turn tells the model what changed (release notes persisted
-  across the restart in NVS).
+  across the restart in NVS), bounded and once the owner has been quiet for two
+  minutes (see the quiet background turns above).
 - **Voice hold-to-talk**: blocks the main loop (WDT suspended around record and
   STT); `tg_poll` keeps running and the transcript is injected as a normal turn.
   A waiting injected turn (voice, web or serial) ends `tg_poll`'s idle waits

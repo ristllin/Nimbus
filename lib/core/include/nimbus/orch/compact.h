@@ -149,6 +149,9 @@ struct ChatFold {
   // RAM only (L19-26, fold on content): a hash of the chat's last owner message,
   // so a re-served copy of it adds nothing toward the next fold.
   uint32_t lastOwnerHash = 0;
+  // RAM only: this boot already decided the chat's thrash pause (set it, or
+  // re-checked one an older image left), so evaluateDue does not lift it again.
+  bool pauseRechecked = false;
 };
 
 // Owner messages a chat may gather before a fold is due by count alone (the
@@ -162,9 +165,11 @@ struct FoldStoreIO {
   virtual void        save(const std::string& blob) = 0;
 };
 
-// The fold-due decision, including the thrash guard (revision 7): a chat that is
-// due again within kThrashTurns turns of a completed fold is paused instead of
-// re-folded (the fold isn't shrinking it - alert the owner once).
+// The fold-due decision, including the thrash guard (revision 7): a chat over
+// the byte or message threshold again within kThrashTurns turns of a completed
+// fold is paused instead of re-folded (the fold isn't shrinking it - alert the
+// owner once). Hidden rows alone never pause: a backlog larger than one fold is
+// folded again, each fold moving the anchor forward.
 enum class FoldDue : uint8_t { No = 0, Yes, ThrashPaused };
 constexpr uint32_t kThrashTurns = 2;
 
@@ -197,7 +202,9 @@ class FoldStore {
   // Evaluate the auto-fold trigger. bytesThreshold==0 disables (manual only).
   // Also due when the history's overflow shift hides rows the summary does not
   // cover yet (softStart after thru).
-  // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam).
+  // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam). A pause
+  // with no failures behind it whose chat is due on hidden rows is lifted (once
+  // per boot when the counters are over the threshold too).
   FoldDue evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
                       uint32_t msgsThreshold);
 
@@ -221,6 +228,12 @@ class FoldStore {
   // existing zero-tools fresh-retry already recovered the TURN; this recovers
   // the trajectory. Persisted.
   void markOverflow(const std::string& chatId);
+  // An overflow fold is queued for the chat (the next turn needs it, so it does
+  // not wait for a quiet moment).
+  bool overflowQueued(const std::string& chatId) const {
+    return get(chatId).bytesSinceFold >= kOverflowMarkBytes;
+  }
+  static constexpr uint32_t kOverflowMarkBytes = 1u << 20;   // over any compactKB
 
   size_t chatCount() const { return chats_.size(); }
   std::string serialize() const;               // exposed for tests/diagnostics

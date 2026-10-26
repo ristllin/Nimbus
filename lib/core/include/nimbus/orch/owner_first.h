@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// owner_first - background work on the turn task waits for the owner.
+// owner_first - the automatic fold and the staged system turn wait for the owner.
 //
 // Every turn, fold and staged job runs on one task (tg_poll), one at a time, and
 // a Telegram message is only seen when that task polls between its jobs. Lumi on
@@ -9,45 +9,42 @@
 // minutes, the fold pump started a 74 s fold in the same pass, and the owner's
 // message, sent during the turn, was fetched and answered 5.5 minutes later.
 //
-// The rule, decided here and wired by the orchestrator's pump (pollJobs):
-//   * background work (an automatic fold) starts only in a pump pass where no
-//     turn ended since the previous pass ended - so the channel poll that ran in
-//     between found nobody waiting - and no inbound page is being held for the
-//     rest of an album;
-//   * a staged system turn (the post-update awareness turn) also waits until the
-//     owner has been quiet for kSystemTurnQuietMs since it was staged and since
-//     the last turn ended, so an owner who writes right after the update notice
-//     is answered first.
+// The rule, decided here and wired by the orchestrator's pump (pollJobs): an
+// automatic fold and the staged system turn (the post-update awareness turn)
+// start only after kQuietMs with no turn ending, and never while an inbound page
+// is being held for the rest of an album; the system turn also waits kQuietMs
+// after it was staged. An owner in a conversation (a message within two minutes
+// of the last reply) is therefore never queued behind either, on any channel and
+// whatever order the poll loop runs its steps in.
+// This decides only what STARTS: a message that arrives while a fold or the system
+// turn is already running waits for it to finish (the turn task is single by
+// design). Routines, sub-agent synthesis and the nightly upkeep are not gated, and
+// a fold queued by a context overflow is not either (the next turn needs it).
 // Owner work never waits on this gate. Arduino-free, host-tested (test_owner_first).
 namespace nimbus {
 namespace orch {
 
 class OwnerFirstGate {
  public:
-  static constexpr uint32_t kSystemTurnQuietMs = 120000;
+  static constexpr uint32_t kQuietMs = 120000;
 
   // Any turn ended (owner, local, scheduled or synthesis; failed ones too).
   void noteTurnEnd(uint32_t nowMs) {
-    ++turnEnds_;
     lastTurnEndMs_ = nowMs;
     anyTurn_ = true;
   }
-  // The pump pass ended: the next pass follows a channel poll.
-  void notePumpEnd() { turnEndsAtPump_ = turnEnds_; }
 
-  // An automatic fold (or other background work) may start in this pass.
-  bool backgroundMayStart(bool pageHeld) const { return !pageHeld && turnEnds_ == turnEndsAtPump_; }
+  // An automatic fold may start now.
+  bool backgroundMayStart(bool pageHeld, uint32_t nowMs) const {
+    return !pageHeld && (!anyTurn_ || nowMs - lastTurnEndMs_ >= kQuietMs);
+  }
 
-  // The staged system turn may run in this pass (staged at `stagedAtMs`).
+  // The staged system turn (staged at `stagedAtMs`) may start now.
   bool systemTurnMayStart(bool pageHeld, uint32_t nowMs, uint32_t stagedAtMs) const {
-    if (!backgroundMayStart(pageHeld)) return false;
-    if (nowMs - stagedAtMs < kSystemTurnQuietMs) return false;
-    return !anyTurn_ || nowMs - lastTurnEndMs_ >= kSystemTurnQuietMs;
+    return backgroundMayStart(pageHeld, nowMs) && nowMs - stagedAtMs >= kQuietMs;
   }
 
  private:
-  uint32_t turnEnds_ = 0;
-  uint32_t turnEndsAtPump_ = 0;
   uint32_t lastTurnEndMs_ = 0;
   bool anyTurn_ = false;
 };

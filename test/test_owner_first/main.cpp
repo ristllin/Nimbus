@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -8,7 +9,9 @@
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/owner_first.h"
+#include "nimbus/orch/transcript.h"
 
 // The owner is never queued behind background work, and the post-update awareness
 // turn is bounded (Lumi, v4.6.0, 26 Oct 2026: the awareness turn ran the 8-round loop
@@ -84,14 +87,13 @@ struct Cycle {
       systemTurns++;
       foldDue = true;   // the turn grew the history past the fold trigger (Lumi)
     }
-    const bool foldOk = gated ? gate.backgroundMayStart(pageHeld) : true;
+    const bool foldOk = gated ? gate.backgroundMayStart(pageHeld, now) : true;
     if (foldDue && foldOk) {
       foldDue = false;
       foldStart = now;
       now += tm.foldMs;
       folds++;
     }
-    gate.notePumpEnd();
   }
   void stage() {
     staged = true;
@@ -156,7 +158,7 @@ static void test_lumi_timeline_with_the_gate() {
 static void test_message_during_the_system_turn_skips_the_fold_queue() {
   Cycle c;
   c.stage();
-  c.runUntil(c.now + OwnerFirstGate::kSystemTurnQuietMs + c.tm.longPollMs + 2000);
+  c.runUntil(c.now + OwnerFirstGate::kQuietMs + c.tm.longPollMs + 2000);
   TEST_ASSERT_EQUAL_INT(1, c.systemTurns);
   c.arrivals = {c.systemStart + 5000};
   c.runUntil(c.now + 900000);
@@ -174,30 +176,53 @@ static void test_system_turn_runs_once_the_owner_is_quiet() {
   c.runUntil(c.now + 1800000);
   TEST_ASSERT_EQUAL_INT(1, c.systemTurns);
   const uint32_t lastReply = c.arrivals.back() + c.latency.back();
-  TEST_ASSERT_TRUE(c.systemStart >= lastReply + OwnerFirstGate::kSystemTurnQuietMs);
-  TEST_ASSERT_TRUE(c.systemStart <= lastReply + OwnerFirstGate::kSystemTurnQuietMs + c.tm.longPollMs + 2000);
+  TEST_ASSERT_TRUE(c.systemStart >= lastReply + OwnerFirstGate::kQuietMs);
+  TEST_ASSERT_TRUE(c.systemStart <= lastReply + OwnerFirstGate::kQuietMs + c.tm.longPollMs + 2000);
   for (uint32_t l : c.latency) TEST_ASSERT_TRUE(l <= c.tm.ownerTurnMs + c.tm.pauseMs);
+}
+
+// An owner in a conversation is never queued behind a fold that came due: each
+// follow-up within two minutes of the last reply goes first, on a Telegram long-poll
+// loop and on a device without Telegram (web and voice only: no poll wait at all).
+// The fold runs once the owner has been quiet for two minutes.
+static void test_owner_conversation_never_waits_behind_a_fold() {
+  for (uint32_t longPoll : {25000u, 1000u}) {
+    Cycle c;
+    c.tm.longPollMs = longPoll;
+    c.foldDue = true;   // the last turn pushed the chat past the fold trigger
+    c.gate.noteTurnEnd(c.now);
+    for (int i = 0; i < 10; i++) c.arrivals.push_back(c.now + 20000 + (uint32_t)i * 100000);
+    c.runUntil(c.now + 1800000);
+    TEST_ASSERT_EQUAL_INT(10, (int)c.latency.size());
+    for (uint32_t l : c.latency) TEST_ASSERT_TRUE(l <= c.tm.ownerTurnMs + c.tm.pauseMs);
+    const uint32_t lastReply = c.arrivals.back() + c.latency.back();
+    TEST_ASSERT_EQUAL_INT(1, c.folds);
+    TEST_ASSERT_TRUE(c.foldStart >= lastReply + OwnerFirstGate::kQuietMs);
+    TEST_ASSERT_TRUE(c.foldStart <= lastReply + OwnerFirstGate::kQuietMs + c.tm.longPollMs + 2000);
+  }
 }
 
 // The gate's own rules, edge by edge.
 static void test_gate_rules() {
+  const uint32_t q = OwnerFirstGate::kQuietMs;
   OwnerFirstGate g;
-  TEST_ASSERT_TRUE(g.backgroundMayStart(false));
-  TEST_ASSERT_FALSE(g.backgroundMayStart(true));   // a held inbound page waits too
-  g.noteTurnEnd(1000);
-  TEST_ASSERT_FALSE(g.backgroundMayStart(false));  // a turn ended since the last pass
-  g.notePumpEnd();
-  TEST_ASSERT_TRUE(g.backgroundMayStart(false));
-  // The staged turn: quiet since staging and since the last turn.
-  TEST_ASSERT_FALSE(g.systemTurnMayStart(false, 1000 + OwnerFirstGate::kSystemTurnQuietMs - 1, 1000));
-  TEST_ASSERT_TRUE(g.systemTurnMayStart(false, 1000 + OwnerFirstGate::kSystemTurnQuietMs, 1000));
-  TEST_ASSERT_FALSE(g.systemTurnMayStart(true, 1000 + OwnerFirstGate::kSystemTurnQuietMs, 1000));
+  TEST_ASSERT_TRUE(g.backgroundMayStart(false, 5000));    // no turn yet this boot
+  TEST_ASSERT_FALSE(g.backgroundMayStart(true, 5000));    // a held inbound page waits too
+  g.noteTurnEnd(10000);
+  TEST_ASSERT_FALSE(g.backgroundMayStart(false, 10000 + q - 1));
+  TEST_ASSERT_TRUE(g.backgroundMayStart(false, 10000 + q));
+  // The staged turn: quiet since it was staged and since the last turn.
+  TEST_ASSERT_FALSE(g.systemTurnMayStart(false, 10000 + q, 10000 + q - 5));
+  TEST_ASSERT_TRUE(g.systemTurnMayStart(false, 10000 + q, 5000));
+  TEST_ASSERT_FALSE(g.systemTurnMayStart(true, 10000 + q, 5000));
   g.noteTurnEnd(500000);
-  g.notePumpEnd();
   TEST_ASSERT_FALSE(g.systemTurnMayStart(false, 500000 + 1000, 1000));
   // millis() wraps: the quiet window still reads as elapsed time.
   OwnerFirstGate w;
-  TEST_ASSERT_TRUE(w.systemTurnMayStart(false, 0x00010000u, 0xFFFF0000u + 1 - OwnerFirstGate::kSystemTurnQuietMs));
+  w.noteTurnEnd(0xFFFFFF00u);
+  TEST_ASSERT_FALSE(w.backgroundMayStart(false, 0xFFFFFF00u + q - 1));
+  TEST_ASSERT_TRUE(w.backgroundMayStart(false, 0xFFFFFF00u + q));
+  TEST_ASSERT_TRUE(w.systemTurnMayStart(false, 0xFFFFFF00u + q, 0xFFFFFF00u));
 }
 
 // ---- part 2: the bounded turn in the engine ----------------------------------------
@@ -214,7 +239,41 @@ struct MiniRig {
     int maxRounds = -1;
     size_t totalBytes = 0, resultBytes = 0;
     std::string instructions;
+    int requests = 0;          // runLoop: model requests the real loop controller made
+    size_t replayBytes = 0;    // ...and the most replayed tool bytes any of them carried
   };
+  bool runLoop = false;   // the host drives the real loop controller with the engine's caps
+
+  // A model that always asks for one more tool with a 3 KB result until its tools
+  // are taken away, run through runHeadLoop with the config the engine handed over.
+  static void driveLoop(const agent::HeadTools& t, Call& c) {
+    nimbus::orch::Transcript tr;
+    tr.addUser("[FIRMWARE UPDATED]");
+    nimbus::orch::HeadLoopHooks h;
+    h.nowMs = [] { return 1000u; };
+    h.transcript = &tr;
+    h.dispatch = [](const nimbus::orch::HeadToolCall& call) {
+      nimbus::orch::HeadToolResult r;
+      r.id = call.id;
+      r.name = call.name;
+      r.output = std::string(3000, 'n');
+      return r;
+    };
+    h.step = [&c, &tr](bool allowTools, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t,
+                       const std::string&) {
+      c.requests++;
+      c.replayBytes = std::max(c.replayBytes, tr.toolBytes());
+      nimbus::orch::HeadStep st;
+      if (!allowTools) {
+        st.finished = true;
+        st.finalTurn = "{\"reply\":\"\"}";
+        return st;
+      }
+      st.toolCalls.push_back({"c" + std::to_string(c.requests), "memory_search", "{}"});
+      return st;
+    };
+    nimbus::orch::runHeadLoop(t.cfg, h);
+  }
   std::vector<Call> calls;
   std::vector<std::string> delivered;
   std::unique_ptr<JobEngine> jobs;
@@ -250,6 +309,7 @@ struct MiniRig {
           c.maxRounds = t->cfg.maxRounds;
           c.totalBytes = t->cfg.maxTotalToolBytes;
           c.resultBytes = t->cfg.maxToolResultBytes;
+          if (runLoop) driveLoop(*t, c);
         }
         c.instructions = ins;
         calls.push_back(c);
@@ -276,6 +336,8 @@ static void test_bounded_turn_never_runs_the_owner_loop() {
   TEST_ASSERT_EQUAL_INT(2, r.calls[0].maxRounds);
   TEST_ASSERT_EQUAL_UINT32(4096, (uint32_t)r.calls[0].totalBytes);
   TEST_ASSERT_EQUAL_UINT32(2048, (uint32_t)r.calls[0].resultBytes);
+  // The prompt states the same cap the loop runs (CUM-514's rule).
+  TEST_ASSERT_TRUE(r.calls[0].instructions.find("several rounds (at most 2)") != std::string::npos);
   TEST_ASSERT_EQUAL_INT(0, (int)r.delivered.size());   // quiet: silence is a valid outcome
   // The bounds end with the turn: the next scheduled turn has the configured loop.
   r.eng->injectScheduledTurn("1001", "check the weather", "morning");
@@ -288,6 +350,22 @@ static void test_bounded_turn_never_runs_the_owner_loop() {
   small.bounded();
   TEST_ASSERT_EQUAL_INT(1, small.calls[0].maxRounds);
   TEST_ASSERT_EQUAL_UINT32(2048, (uint32_t)small.calls[0].totalBytes);
+}
+
+// The token bound, end to end: the engine's bounded caps through the REAL loop
+// controller, against a model that would loop forever. At most three requests (two
+// tool rounds, then the forced answer), and no request replays more than two
+// clamped results - so every request is the base prompt plus a few KB, where the
+// v4.6.0 turn sent eight ever-growing requests (166,975 input tokens on Lumi). An
+// owner turn under the same model runs the configured loop, the counter-case.
+static void test_bounded_turn_token_bound_through_the_loop() {
+  MiniRig r;
+  r.runLoop = true;
+  r.bounded();
+  TEST_ASSERT_EQUAL_INT(3, r.calls[0].requests);
+  TEST_ASSERT_TRUE(r.calls[0].replayBytes <= 2 * (2048 + 64));
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.calls.back().requests > 3);   // the owner keeps the configured loop
 }
 
 // On a fallback head (the configured head over its token budget, or parked or
@@ -318,8 +396,10 @@ int main(int, char**) {
   RUN_TEST(test_lumi_timeline_with_the_gate);
   RUN_TEST(test_message_during_the_system_turn_skips_the_fold_queue);
   RUN_TEST(test_system_turn_runs_once_the_owner_is_quiet);
+  RUN_TEST(test_owner_conversation_never_waits_behind_a_fold);
   RUN_TEST(test_gate_rules);
   RUN_TEST(test_bounded_turn_never_runs_the_owner_loop);
   RUN_TEST(test_bounded_turn_on_a_fallback_is_single_shot);
+  RUN_TEST(test_bounded_turn_token_bound_through_the_loop);
   return UNITY_END();
 }

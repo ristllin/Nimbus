@@ -87,6 +87,8 @@ struct Device {
   size_t sliceCap = 0;
   uint32_t epoch = 1793026543;
   int folds_run = 0, skips = 0, thrash = 0, shifts = 0;
+  size_t turnReply = 420;    // an owner turn's reply size
+  size_t lastDigest = 0;     // the newest fold's digest bytes
 
   Device() {
     hist.highBytes = deriveBudget(200000, {}).recentConvBytes;   // "budget: ctx=200K" on Lumi
@@ -107,7 +109,7 @@ struct Device {
     folds.noteOwnerMessage(kChat, text);
     history();
     const size_t before = chat.rows.size();
-    chat.exchange(i, 420);
+    chat.exchange(i, turnReply);
     folds.noteMessage(kChat, chat.rows[before + 1].text.size());   // the reply row
     folds.noteTurn(kChat);
   }
@@ -132,6 +134,7 @@ struct Device {
       return due;
     }
     folds.applyFold(kChat, f.summary, ++epoch, s.thru);
+    lastDigest = s.digest.size();
     folds_run++;
     return due;
   }
@@ -143,8 +146,8 @@ struct Device {
 
 // Lumi before the update: weeks of chat, a summary from an older fold, and no
 // histV2 anchor yet (v4.5.16 never wrote one).
-void seedLumi(Device& d) {
-  for (int i = 0; i < 360; i++) d.chat.exchange(i, 300 + (i % 5) * 60);
+void seedLumi(Device& d, int exchanges = 360, size_t replyBase = 300, size_t replyStep = 60) {
+  for (int i = 0; i < exchanges; i++) d.chat.exchange(i, replyBase + (size_t)(i % 5) * replyStep);
   std::string summary = "1. Decisions & preferences\n";
   while (summary.size() < 2942) summary += "- Logs meals with kcal and protein; UK time.\n";
   d.folds.applyFold(kChat, summary, 1792000000);   // the old image's fold: no anchor
@@ -186,6 +189,30 @@ static void test_lumi_first_histv2_hour_raises_no_thrash() {
   // folds) plus one fold per later history shift, never a fold per pump pass.
   printf("replay: folds=%d skips=%d shifts=%d cap=%u\n", d.folds_run, d.skips, d.shifts, (unsigned)d.sliceCap);
   TEST_ASSERT_TRUE(d.folds_run + d.skips <= d.shifts + 3);
+}
+
+// The second way a fold left rows hidden (found in review): with short exchanges the
+// history window shifts on its ROW budget (64 high, 32 low) while the fold keeps a
+// BYTE tail (half the history budget), so even an uncapped fold can end before the
+// shift. v4.6.0 alarmed on the next turn here too; now there is no alarm and the
+// hidden rows clear.
+static void test_short_rows_shift_raises_no_thrash() {
+  Device d;
+  d.turnReply = 80;
+  seedLumi(d, 120, 60, 15);
+  d.awarenessTurn();
+  TEST_ASSERT_TRUE(d.hidden());
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)d.pump());
+  printf("short rows: digest=%u cap=%u hidden-after-fold=%d\n", (unsigned)d.lastDigest, (unsigned)d.sliceCap,
+         (int)d.hidden());
+  TEST_ASSERT_TRUE(d.lastDigest < d.sliceCap);   // not the capped-slice path
+  for (int i = 0; i < 40; i++) {
+    d.ownerTurn(2000 + i);
+    d.pump();
+  }
+  TEST_ASSERT_EQUAL_INT(0, d.thrash);
+  TEST_ASSERT_FALSE(d.hidden());
+  TEST_ASSERT_FALSE(d.folds.get(kChat).breakerPaused);
 }
 
 // The same chat with no backlog: a fold, then ordinary turns, never an alarm and
@@ -236,43 +263,90 @@ static void test_real_refill_still_pauses_once() {
 // A pause the old guard set on hidden rows alone (no failure, no refill) lifts at
 // the next evaluation; a failure pause and a refill pause do not.
 static void test_false_thrash_pause_heals() {
+  // What v4.6.0 persisted on Lumi: paused with no failures, hidden rows due, the
+  // counters under the threshold. The current guard never pauses on hidden rows, so
+  // the state is built through the API: a refill pause, its counters zeroed by a
+  // skip, then a shift past the anchor - and read back from the blob, as after the OTA.
   FakeIO io;
   FoldStore fs;
   fs.begin(&io);
   fs.applyFold("c", "sum", 1000, "m00000010");
+  fs.noteMessage("c", 60000);
+  fs.noteTurn("c");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  fs.noteFoldSkipped("c");
   fs.setSoftStart("c", "m00000040");
   fs.noteTurn("c");   // the turn's blob write carries the shift
-  // What v4.6.0 persisted: paused, no failures (a blob round trip, as after the OTA).
-  std::string blob = io.blob;
-  const size_t paused = blob.rfind("\x1F" "0\x1F" "0\x1F");
-  TEST_ASSERT_TRUE(paused != std::string::npos);
-  blob.replace(paused, 5, "\x1F" "0\x1F" "1\x1F");
   FakeIO io2;
-  io2.blob = blob;
+  io2.blob = io.blob;
   FoldStore after;
   after.begin(&io2);
   TEST_ASSERT_TRUE(after.get("c").breakerPaused);
+  TEST_ASSERT_EQUAL_INT(0, after.get("c").breakerFails);
   TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
   TEST_ASSERT_FALSE(after.get("c").breakerPaused);
-  TEST_ASSERT_TRUE(io2.blob.find("\x1F" "0\x1F" "0\x1F") != std::string::npos);   // persisted
+  FakeIO io3;   // the lift was persisted
+  io3.blob = io2.blob;
+  FoldStore reread;
+  reread.begin(&io3);
+  TEST_ASSERT_FALSE(reread.get("c").breakerPaused);
   // A failure pause stays.
-  FakeIO io3;
+  FakeIO io4;
   FoldStore failed;
-  failed.begin(&io3);
+  failed.begin(&io4);
   failed.setSoftStart("f", "m00000040");
   for (int i = 0; i < 3; i++) failed.noteFoldFailed("f");
   TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold));
   TEST_ASSERT_TRUE(failed.get("f").breakerPaused);
-  // A refill pause stays.
-  FakeIO io4;
+  // A refill pause stays, hidden rows or not.
+  FakeIO io5;
   FoldStore refill;
-  refill.begin(&io4);
+  refill.begin(&io5);
   refill.applyFold("r", "sum", 1000, "m00000010");
   refill.noteMessage("r", 60000);
   refill.noteTurn("r");
   TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)refill.evaluateDue("r", kCompactBytes, 0));
   refill.setSoftStart("r", "m00000040");
   TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)refill.evaluateDue("r", kCompactBytes, 0));
+}
+
+// The pause v4.6.0 left on Lumi keeps collecting bytes while it waits for the
+// update: past the threshold it is still lifted, once per boot, and a pause this
+// boot sets itself on a real refill is never lifted (one notice, not a loop).
+static void test_false_pause_with_grown_counters_heals_once_per_boot() {
+  FakeIO io;
+  FoldStore fs;
+  fs.begin(&io);
+  fs.applyFold("c", "sum", 1000, "m00000010");
+  fs.noteMessage("c", 60000);
+  fs.noteTurn("c");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  fs.setSoftStart("c", "m00000040");
+  for (int i = 0; i < 6; i++) fs.noteTurn("c");
+  // This boot set the pause on a refill: hidden rows do not lift it.
+  for (int i = 0; i < 5; i++)
+    TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  // After the update (a fresh boot reads the blob): lifted once, counters and all.
+  FakeIO io2;
+  io2.blob = io.blob;
+  FoldStore after;
+  after.begin(&io2);
+  TEST_ASSERT_TRUE(after.get("c").bytesSinceFold >= kCompactBytes);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  TEST_ASSERT_FALSE(after.get("c").breakerPaused);
+  // A real refill right after that fold pauses again, once, and stays paused.
+  after.applyFold("c", "sum2", 2000, "m00000050");
+  after.noteMessage("c", 60000);
+  after.noteTurn("c");
+  after.setSoftStart("c", "m00000070");
+  int paused = 0, dues = 0;
+  for (int i = 0; i < 10; i++) {
+    const FoldDue due = after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold);
+    paused += due == FoldDue::ThrashPaused;
+    dues += due == FoldDue::Yes;
+  }
+  TEST_ASSERT_EQUAL_INT(1, paused);
+  TEST_ASSERT_EQUAL_INT(0, dues);
 }
 
 // A fold with no anchor (the pre-histV2 path) leaves no hidden rows behind, so the
@@ -297,9 +371,11 @@ static void test_anchorless_fold_clears_the_shift() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lumi_first_histv2_hour_raises_no_thrash);
+  RUN_TEST(test_short_rows_shift_raises_no_thrash);
   RUN_TEST(test_fold_then_normal_turns_no_notice);
   RUN_TEST(test_real_refill_still_pauses_once);
   RUN_TEST(test_false_thrash_pause_heals);
+  RUN_TEST(test_false_pause_with_grown_counters_heals_once_per_boot);
   RUN_TEST(test_anchorless_fold_clears_the_shift);
   return UNITY_END();
 }

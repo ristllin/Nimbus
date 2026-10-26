@@ -349,9 +349,10 @@ summary instead of an ever-growing transcript.
   command (owner-only, also listed in /help).
 - **What you see**: automatic compaction is silent - its record is the
   "Conversation compacted: … folded into a … summary" row in the chat history.
-  It never holds up a reply: an automatic fold starts only after a Telegram
-  poll found no message waiting, so a message sent right after a turn is
-  answered before the fold runs.
+  An automatic fold waits until the chat has been quiet for two minutes, so it
+  never starts between the messages of a conversation; a message that arrives
+  while a fold is already running waits for it to finish. A fold that a context
+  overflow queued runs at once (the next turn needs it).
   A manual `/compact` acknowledges immediately and then confirms with
   "✓ Compacted." (or tells you it couldn't, with the next step). The web chat
   never gets notices (they would desync the reply pairing).
@@ -369,7 +370,8 @@ summary instead of an ever-growing transcript.
   automatic compaction pauses for that chat and you get ONE alert;
   `/compact` always remains available and un-pauses it. A long backlog that
   takes more than one summary to catch up (the first summary of a long chat
-  after an update) keeps folding, one summary per pass, and never alerts.
+  after an update) keeps folding, one summary at a time, and never alerts; a
+  pause an older version set on such a backlog lifts by itself.
 
 ### How it works (the design, in one page)
 
@@ -439,8 +441,8 @@ Host: `test_orch_compact` (trigger math, breaker, thrash guard, codec,
 UTF-8-safe caps, fold-prompt contract, the anchor and shift round trip, a
 repeat counted once), `test_fold_backlog` (a replay of a long chat's first
 anchored fold: a backlog folds again without an alert, a real refill still
-pauses once), `test_owner_first` (an automatic fold waits for a poll that found
-nobody waiting), `test_harness_chatwindow` (the fold slice: 500 identical
+pauses once), `test_owner_first` (an automatic fold never starts between the
+messages of a conversation), `test_harness_chatwindow` (the fold slice: 500 identical
 messages never fold, 200 distinct 30-byte lines do), `test_harness_history`
 (the slice starts after the anchor), `test_harness_turn` (runFold's
 no-side-effects contract incl. a hostile summary carrying device actions -

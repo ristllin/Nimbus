@@ -452,15 +452,8 @@ bool TurnEngine::headOnFallback() const {
 
 namespace {
 // The tighter of a configured cap and a bound (0 = unlimited on either side).
-size_t tighterCap(size_t cfg, size_t bound) { return bound && (!cfg || bound < cfg) ? bound : cfg; }
+size_t tighterCap(size_t cfg, size_t bound) { return (bound && (!cfg || bound < cfg)) ? bound : cfg; }
 }  // namespace
-
-// A bounded turn's loop: the tighter of each cap (injectBoundedTurn).
-void TurnEngine::boundLoop(orch::HeadLoopConfig& cfg, const TurnBounds& b) {
-  if (b.maxRounds >= 0 && b.maxRounds < cfg.maxRounds) cfg.maxRounds = b.maxRounds;
-  cfg.maxTotalToolBytes = tighterCap(cfg.maxTotalToolBytes, b.maxToolBytes);
-  cfg.maxToolResultBytes = tighterCap(cfg.maxToolResultBytes, b.maxResultBytes);
-}
 
 // CUM-536: what a tool call gets on a turn that stores nothing in long-term
 // memory, "" when the call stores nothing. memory.update stores new content too
@@ -1056,6 +1049,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // (a cached-manifest property), never this turn's heap gate.
   ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
+  if (bounds_) ci.loopRounds = std::min(ci.loopRounds, bounds_->maxRounds);   // a bounded turn's cap
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
   // channel the tool list just withheld.
@@ -1139,11 +1133,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // to a single-shot turn (still fully functional - no tools mid-turn) and tell
   // the model why, rather than risk a mid-loop OOM. The ~2x round floor margin
   // keeps this rare on the SD-mounted firmware (~30 KB at turn time).
-  if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn && boundedSingleShot())
-    hlog::logf("orchestrator: tool-loop OFF - a bounded turn on a fallback head runs single-shot");
-  else if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn)
-    hlog::logf("orchestrator: tool-loop DEFERRED - low entry heap %u (single-shot this turn)",
-               (unsigned)heapAtEntry);
+  if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn) {
+    if (boundedSingleShot())
+      hlog::logf("orchestrator: tool-loop OFF - a bounded turn on a fallback head runs single-shot");
+    else
+      hlog::logf("orchestrator: tool-loop DEFERRED - low entry heap %u (single-shot this turn)",
+                 (unsigned)heapAtEntry);
+  }
   if (loopOnThisTurn) {
     // Advertise only tools that are LIVE on this fabric, under the SANITIZED names
     // the wire accepts (loopToolHidden/loopToolName - shared with the prompt block
@@ -1329,7 +1325,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // legacy constants so their pins stay meaningful.
     headTools.cfg.maxToolResultBytes = d_.cfg.loop.resultCap ? budget.toolResultBytes : 4096;
     headTools.cfg.maxTotalToolBytes  = d_.cfg.loop.totalCap ? budget.toolTotalBytes : 24576;
-    if (bounded_) boundLoop(headTools.cfg, bounds_);   // a bounded turn takes the tighter caps
+    if (bounds_) {   // a bounded turn takes the tighter byte caps (its rounds are in ci.loopRounds)
+      headTools.cfg.maxTotalToolBytes = tighterCap(headTools.cfg.maxTotalToolBytes, bounds_->maxToolBytes);
+      headTools.cfg.maxToolResultBytes = tighterCap(headTools.cfg.maxToolResultBytes, bounds_->maxResultBytes);
+    }
     if (d_.spillResult)
       headTools.spill = [this, loopWho](const orch::HeadToolResult& full) {
         return d_.spillResult(full.name, full.output, loopWho.ns);
@@ -2155,10 +2154,9 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
 
 nimbus::orch::FireOutcome TurnEngine::injectBoundedTurn(const std::string& chatId, const std::string& prompt,
                                                         const std::string& name, const TurnBounds& bounds) {
-  bounds_ = bounds;
-  bounded_ = true;
+  bounds_ = &bounds;
   const nimbus::orch::FireOutcome o = injectScheduledTurn(chatId, prompt, name, "system", /*quietOk=*/true);
-  bounded_ = false;
+  bounds_ = nullptr;
   return o;
 }
 
