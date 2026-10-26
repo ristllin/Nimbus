@@ -167,6 +167,24 @@ int64_t localDay(uint32_t tsHours, int32_t offMin) {
   return mins >= 0 ? mins / 1440 : (mins - 1439) / 1440;
 }
 
+// The local day of a unix time in seconds (the send-time twin of localDay).
+int64_t localDaySec(uint32_t unix, int32_t offMin) {
+  return ((int64_t)unix + (int64_t)offMin * 60) / 86400;
+}
+
+// Two identical owner messages are one repeated message (xN) only when they were
+// sent close together on the same day: with both send times known, at most
+// kRepeatWindowSec apart and on the same local day; without them, in the same hour
+// (a row without a send time keeps only its hour). A habitual "dinner 600" sent
+// yesterday and again today stays two messages under their own days.
+bool closeRepeat(uint32_t sentA, uint32_t sentB, uint32_t hourA, uint32_t hourB, int32_t offMin) {
+  if (sentA && sentB) {
+    const uint32_t gap = sentA > sentB ? sentA - sentB : sentB - sentA;
+    return gap <= kRepeatWindowSec && localDaySec(sentA, offMin) == localDaySec(sentB, offMin);
+  }
+  return hourA == hourB;
+}
+
 std::string dayLabel(uint32_t tsHours, int32_t offMin) {
   const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)localDay(tsHours, offMin));
   char buf[24];
@@ -480,12 +498,13 @@ class Grouper {
 };
 
 // Consecutive turns that repeat one owner message with nothing answered in
-// between become one turn with a count (L19-26).
-void collapseTurns(std::vector<HistTurn>& turns) {
+// between, sent close together on one day, become one turn with a count (L19-26).
+void collapseTurns(std::vector<HistTurn>& turns, int32_t offMin) {
   std::vector<HistTurn> out;
   for (auto& t : turns) {
     HistTurn* last = out.empty() ? nullptr : &out.back();
-    if (last && !last->seedless && !t.seedless && last->assistant.empty() && last->user == t.user) {
+    if (last && !last->seedless && !t.seedless && last->assistant.empty() && last->user == t.user &&
+        closeRepeat(last->sentUnix, t.sentUnix, last->tsHours, t.tsHours, offMin)) {
       last->repeats += t.repeats;
       last->lastId = t.lastId;
       last->assistant = t.assistant;
@@ -547,10 +566,12 @@ void spillToPsram(std::string& s) {
   if (s.capacity() > std::string().capacity() && s.capacity() < kSpillBytes) s.reserve(kSpillBytes);
 }
 
-bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older) {
+bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, int32_t utcOffsetMin) {
   return isOwnerRow(newer) && isOwnerRow(older) && !newer.text.empty() && newer.text == older.text &&
          tagValue(newer.tags, kAttTag).empty() && tagValue(older.tags, kAttTag).empty() &&
-         !isClearBoundary(newer) && !isClearBoundary(older);
+         !isClearBoundary(newer) && !isClearBoundary(older) &&
+         closeRepeat(toU32(tagValue(newer.tags, kSentTag)), toU32(tagValue(older.tags, kSentTag)),
+                     newer.tsHours, older.tsHours, utcOffsetMin);
 }
 
 std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFirst,
@@ -561,7 +582,7 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   std::vector<HistTurn> turns;
   turns.reserve(g.turns.size());
   for (const Building& b : g.turns) turns.push_back(finish(b));
-  collapseTurns(turns);
+  collapseTurns(turns, opt.utcOffsetMin);
   return turns;
 }
 

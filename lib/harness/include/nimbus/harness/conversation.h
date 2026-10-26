@@ -119,9 +119,12 @@ std::vector<HistTurn> historyTurns(const std::vector<nimbus::orch::EpisodicMessa
                                    const std::vector<uint32_t>* repeats = nullptr);
 
 // Two rows the reader may fold into one (xN): consecutive owner messages with
-// the same text and no attachment.
+// the same text and no attachment, sent close together on one day - with both
+// send times known, at most kRepeatWindowSec apart on the same local day
+// (`utcOffsetMin`; 0 = the UTC day); without them, in the same hour.
+constexpr uint32_t kRepeatWindowSec = 120;
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
-                 const nimbus::orch::EpisodicMessage& older);
+                 const nimbus::orch::EpisodicMessage& older, int32_t utcOffsetMin = 0);
 
 // One turn as RECENT CONVERSATION lines. `prev` is the turn rendered just before
 // it (nullptr for the first): it decides the day marker and whether the item

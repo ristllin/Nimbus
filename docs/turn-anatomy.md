@@ -259,7 +259,10 @@ called by the engine for every turn:
   sent before the previous reply (a late or redelivered message) shows its send
   time (`[image, sent 09:58]`).
 - **Repeats collapse.** Consecutive identical owner messages with nothing
-  answered in between are one line with a count: `- user (x37): ...`.
+  answered in between are one line with a count: `- user (x37): ...`. Only
+  messages sent close together on one local day fold: within 2 minutes when
+  both carry their send time, else in the same hour. The same message sent
+  yesterday and again today stays two lines under their own days.
 - **Append-only between boundaries.** A closed turn's bytes depend only on its
   own rows, so each turn's history continues the previous one byte for byte.
   The start moves only at a `/clear`, at a fold (the history starts after the

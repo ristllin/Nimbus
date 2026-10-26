@@ -442,6 +442,85 @@ static void test_hist_identical_rows_collapse_and_keep_the_newest_distinct() {
   TEST_ASSERT_EQUAL(5, (int)c.turns().size());
 }
 
+// QW3: the (xN) fold is bounded in time and to one day. A habitual "dinner 600"
+// sent yesterday and again today, with no reply between (a failed turn), stays two
+// messages under their own day markers - never one "(x2)" under today.
+static void test_hist_repeat_fold_is_bounded_to_a_short_window_and_one_day() {
+  const uint32_t sat2000 = (kH + 20) * 3600u;   // Sat 8 Nov 2025 20:00 UTC
+  // A day apart, both with send times: two turns, two days.
+  {
+    HistChat c;
+    c.hour = kH + 20;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000));
+    c.hour = kH + 24 + 20;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000 + 86400));
+    const auto t = c.turns();
+    TEST_ASSERT_EQUAL(2, (int)t.size());
+    TEST_ASSERT_EQUAL(1, (int)t[0].repeats);
+    const std::string w = c.block();
+    TEST_ASSERT_EQUAL(0, (int)count(w, "(x2)"));
+    TEST_ASSERT_TRUE(w.find("(Sat 8 Nov)\n- user: dinner 600") != std::string::npos);
+    TEST_ASSERT_TRUE(w.find("(Sun 9 Nov)\n- user: dinner 600") != std::string::npos);
+  }
+  // 60 s apart: one message sent twice, folded.
+  {
+    HistChat c;
+    c.hour = kH + 20;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000));
+    c.user("dinner 600", "sent:" + std::to_string(sat2000 + 60));
+    TEST_ASSERT_EQUAL(1, (int)c.turns().size());
+    TEST_ASSERT_EQUAL(2, (int)c.turns()[0].repeats);
+  }
+  // 3 minutes apart in the same hour: past the window, two messages.
+  {
+    HistChat c;
+    c.hour = kH + 20;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000));
+    c.user("dinner 600", "sent:" + std::to_string(sat2000 + 180));
+    TEST_ASSERT_EQUAL(2, (int)c.turns().size());
+  }
+  // No send times (a web chat row keeps only its hour): the same hour folds, the
+  // next hour does not.
+  {
+    HistChat c;
+    c.hour = kH + 20;
+    c.user("dinner 600");
+    c.user("dinner 600");
+    c.hour = kH + 21;
+    c.user("dinner 600");
+    const auto t = c.turns();
+    TEST_ASSERT_EQUAL(2, (int)t.size());
+    TEST_ASSERT_EQUAL(2, (int)t[0].repeats);
+    TEST_ASSERT_EQUAL(1, (int)t[1].repeats);
+  }
+  // Within the window but across the owner's local midnight (UTC+1: 23:59:30 and
+  // 00:00:30 local): two days, never folded.
+  {
+    const uint32_t lateUtc = (kH + 22) * 3600u + 59 * 60 + 30;   // 22:59:30 UTC = 23:59:30 local
+    EpisodicMessage a, b;
+    a.role = b.role = "user";
+    a.kind = b.kind = MsgKind::Message;
+    a.text = b.text = "dinner 600";
+    a.tsHours = b.tsHours = kH + 22;
+    b.tags = "sent:" + std::to_string(lateUtc);
+    a.tags = "sent:" + std::to_string(lateUtc + 60);
+    TEST_ASSERT_TRUE(agent::isRepeatRow(a, b, 0));     // same UTC day, 60 s apart
+    TEST_ASSERT_FALSE(agent::isRepeatRow(a, b, 60));   // UTC+1: different local days
+    a.tags = "sent:" + std::to_string(lateUtc + 86400);
+    a.tsHours = kH + 46;
+    TEST_ASSERT_FALSE(agent::isRepeatRow(a, b, 0));    // a day later
+  }
+  // The fold input of a chat with no turn history keeps the same bound.
+  {
+    HistChat c;
+    c.hour = kH + 20;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000));
+    c.hour = kH + 44;
+    c.user("dinner 600", "sent:" + std::to_string(sat2000 + 86400));
+    TEST_ASSERT_EQUAL(2, (int)agent::collapseRepeats(c.newestFirst()).size());
+  }
+}
+
 // The window is turns, not 12 rows: 12 distinct exchanges render all 12.
 static void test_hist_twelve_distinct_turns_render_all_twelve() {
   HistChat c;
@@ -749,6 +828,7 @@ int main(int, char**) {
   RUN_TEST(test_hist_seedless_turns_have_a_user_half);
   RUN_TEST(test_hist_did_renders_the_fx_tag);
   RUN_TEST(test_hist_identical_rows_collapse_and_keep_the_newest_distinct);
+  RUN_TEST(test_hist_repeat_fold_is_bounded_to_a_short_window_and_one_day);
   RUN_TEST(test_hist_twelve_distinct_turns_render_all_twelve);
   RUN_TEST(test_hist_boundaries);
   RUN_TEST(test_hist_day_markers_and_late_items);
