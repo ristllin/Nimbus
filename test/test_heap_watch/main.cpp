@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -335,14 +336,76 @@ static void test_loop_stack_floor_line_healthy_and_fault() {
   TEST_ASSERT_TRUE(noTask.find("no task handle") != std::string::npos);
 }
 
-// The orchestrator's one-shot boot task asks the same gate the four worker
-// sites share: a 12 KB stack is granted at boot-like free (plenty, no turn),
-// refused under the 16 KB margin, and always refused once a turn is in flight.
+// A 12 KB stack under the gate the four worker sites share: granted at boot-like
+// free (plenty, no turn), refused under the 16 KB margin, and always refused once a
+// turn is in flight. (The orchestrator's boot task asks the boot form, below.)
 static void test_spawn_gate_answers_the_boot_task_shape() {
   TEST_ASSERT_EQUAL(SpawnVerdict::Ok, spawnVerdict(12288, 80 * 1024, false));
   TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, spawnVerdict(12288, 12288 + 16384 - 1, false));
   TEST_ASSERT_EQUAL(SpawnVerdict::Ok, spawnVerdict(12288, 12288 + 16384, false));
   TEST_ASSERT_EQUAL(SpawnVerdict::TurnInFlight, spawnVerdict(12288, 80 * 1024, true));
+}
+
+// The boot task asks before any turn exists, so it needs its stack plus the boot
+// margin only (never "turn in flight"), with no wrap on a garbage size.
+static void test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin() {
+  for (uint32_t freeB = 0; freeB < 40 * 1024; freeB += 256) {
+    const SpawnVerdict v = spawnVerdictAtBoot(12288, freeB);
+    if (freeB >= 12288 + kBootSpawnMarginBytes) TEST_ASSERT_EQUAL(SpawnVerdict::Ok, v);
+    else TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, v);
+  }
+  TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, spawnVerdictAtBoot(0xFFFFFFFFu, 0xFFFFFFFFu));
+  // Counter-test: the boot margin is smaller than a worker's, never larger.
+  TEST_ASSERT_TRUE(kBootSpawnMarginBytes < kSpawnMarginBytes);
+}
+
+// The orchboot floor: the chain's own watermark gets the same 1 KB floor, both lines
+// loud, and a task that never reported reads as a fault, never a pass.
+static void test_orchboot_stack_floor_line_healthy_fault_and_unmeasured() {
+  TEST_ASSERT_TRUE(orchBootStackUnderFloor(0));
+  TEST_ASSERT_TRUE(orchBootStackUnderFloor(kOrchBootStackFloorBytes - 1));
+  TEST_ASSERT_FALSE(orchBootStackUnderFloor(kOrchBootStackFloorBytes));
+  const std::string ok = orchBootStackFloorLine(4210, 12288, true);
+  TEST_ASSERT_TRUE(ok.find("boot stack: orchboot min free 4210 B of 12288 B, floor 1024 B - ok") != std::string::npos);
+  const std::string fault = orchBootStackFloorLine(600, 12288, true);
+  TEST_ASSERT_TRUE(fault.find("BOOT FAULT") != std::string::npos);
+  TEST_ASSERT_TRUE(fault.find("600 B of 12288 B is under the 1024 B floor") != std::string::npos);
+  const std::string none = orchBootStackFloorLine(0, 0, false);
+  TEST_ASSERT_TRUE(none.find("BOOT FAULT") != std::string::npos);
+  TEST_ASSERT_TRUE(none.find("no stack watermark") != std::string::npos);
+}
+
+// The device seams: the boot task reports its watermark, the floor check reads it,
+// and the chain is never run inline on loopTask (the 88 B crash path).
+static std::string readFile(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static void test_orchboot_reports_its_watermark_and_never_runs_inline() {
+  const std::string main = readFile("src/main.cpp");
+  const size_t a = main.find("static void orchBootTask(void* pv)");
+  const size_t b = main.find("// Live device state for the self-test engine");
+  TEST_ASSERT_TRUE(a != std::string::npos && b != std::string::npos && a < b);
+  const std::string region = main.substr(a, b - a);
+  TEST_ASSERT_TRUE(region.find("noteOrchBootStack(") != std::string::npos);
+  TEST_ASSERT_TRUE(region.find("spawnGate(kOrchBootStackBytes, who, /*atBoot=*/true)") != std::string::npos);
+  // orchestratorBegin() runs only inside the boot task: one call in the region.
+  size_t calls = 0;
+  for (size_t p = region.find("orchestratorBegin();"); p != std::string::npos;
+       p = region.find("orchestratorBegin();", p + 1))
+    ++calls;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)calls, "the orchestrator boot chain must never run inline on loopTask");
+  TEST_ASSERT_TRUE(region.find("esp_restart()") != std::string::npos);   // the honest refusal
+  const std::string hw = readFile("src/sys/heap_watch.cpp");
+  TEST_ASSERT_TRUE(hw.find("orchBootStackFloorLine(") != std::string::npos);
+  TEST_ASSERT_TRUE(hw.find("mem[\"orchBootStackMin\"]") != std::string::npos);
 }
 
 int main() {
@@ -363,5 +426,8 @@ int main() {
   RUN_TEST(test_loop_stack_floor_catches_the_eroded_boots);
   RUN_TEST(test_loop_stack_floor_line_healthy_and_fault);
   RUN_TEST(test_spawn_gate_answers_the_boot_task_shape);
+  RUN_TEST(test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin);
+  RUN_TEST(test_orchboot_stack_floor_line_healthy_fault_and_unmeasured);
+  RUN_TEST(test_orchboot_reports_its_watermark_and_never_runs_inline);
   return UNITY_END();
 }

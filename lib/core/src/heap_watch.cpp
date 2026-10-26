@@ -176,6 +176,11 @@ SpawnVerdict spawnVerdict(uint32_t stackBytes, uint32_t intFree, bool turnInFlig
   return (uint64_t)intFree >= need ? SpawnVerdict::Ok : SpawnVerdict::LowMemory;
 }
 
+SpawnVerdict spawnVerdictAtBoot(uint32_t stackBytes, uint32_t intFree) {
+  const uint64_t need = (uint64_t)stackBytes + kBootSpawnMarginBytes;   // no wrap
+  return (uint64_t)intFree >= need ? SpawnVerdict::Ok : SpawnVerdict::LowMemory;
+}
+
 const char* spawnVerdictName(SpawnVerdict v) {
   switch (v) {
     case SpawnVerdict::Ok: return "ok";
@@ -199,6 +204,28 @@ std::string loopStackFloorLine(uint32_t minBytes, bool taskPresent) {
                 "the boot path grew past the loopTask stack (see docs/memory.md)",
                 taskPresent ? "" : "?? (no task handle) ", (unsigned)minBytes,
                 (unsigned)kLoopStackFloorBytes);
+  return b;
+}
+
+// ---- the orchestrator boot task's stack floor ---------------------------------
+
+std::string orchBootStackFloorLine(uint32_t minBytes, uint32_t stackBytes, bool measured) {
+  char b[208];
+  if (!measured) {
+    std::snprintf(b, sizeof b,
+                  "boot stack: BOOT FAULT - orchboot left no stack watermark (the orchestrator "
+                  "boot task did not report; see docs/memory.md)");
+    return b;
+  }
+  if (!orchBootStackUnderFloor(minBytes)) {
+    std::snprintf(b, sizeof b, "boot stack: orchboot min free %u B of %u B, floor %u B - ok",
+                  (unsigned)minBytes, (unsigned)stackBytes, (unsigned)kOrchBootStackFloorBytes);
+    return b;
+  }
+  std::snprintf(b, sizeof b,
+                "boot stack: BOOT FAULT - orchboot min free %u B of %u B is under the %u B floor: "
+                "the orchestrator boot chain grew past its task stack (see docs/memory.md)",
+                (unsigned)minBytes, (unsigned)stackBytes, (unsigned)kOrchBootStackFloorBytes);
   return b;
 }
 

@@ -58,6 +58,17 @@ uint32_t restingLargest();
 // The worker-spawn gate (sites: provider verify, cloud key mint, voice catalog, safety
 // report). Logs a refusal with its reason. Ok means the caller may xTaskCreate now.
 SpawnVerdict spawnGate(uint32_t stackBytes, const char* who);
+// The boot form (the orchestrator boot task): no turn exists yet, so it asks only
+// for the stack plus kBootSpawnMarginBytes. A null `who` refuses without a log line
+// (the boot's retries log once, not every attempt).
+SpawnVerdict spawnGate(uint32_t stackBytes, const char* who, bool atBoot);
+
+// PSRAM-first small allocations for the length of a turn (the L24 fix,
+// nimbus/harness/turn_memory.h): on drops the general-malloc spill limit to 0, so
+// every plain malloc/new goes to PSRAM first; off restores the boot limit
+// (kSmallAllocInternalLimit). A no-op on a unit without PSRAM. Explicit
+// MALLOC_CAP_INTERNAL/DMA allocations (Wi-Fi, lwIP, drivers) are never affected.
+void psramFirst(bool on);
 
 // The local-minimum monitor around one transport exchange (inside the TLS work slot
 // only: it is one global monitor). monitorStart() returns false when another exchange
@@ -77,17 +88,23 @@ uint32_t tlsOverlaps();
 // The low-water mark (UINT32_MAX before the first sample).
 uint32_t lowWater();
 
-// The boot ladder's loopTask stack floor (release-v451x bisect): reads the
-// loopTask high-water mark once, after the orchestrator boot, writes the floor
-// line (healthy AND fault - the bench leg greps it) and records the verdict for
-// /api/state. Returns true when the boot is under the floor (a BOOT FAULT).
+// The orchestrator boot task's deepest point: it reports its own free-stack
+// watermark (bytes) and stack size just before it ends.
+void noteOrchBootStack(uint32_t minFreeBytes, uint32_t stackBytes);
+
+// The boot ladder's stack floors (release-v451x bisect): reads the loopTask
+// high-water mark once, after the orchestrator boot, and the orchboot watermark
+// that task reported, writes one floor line each (healthy AND fault - the bench leg
+// greps them) and records the verdict for /api/state. Returns true when either is
+// under its floor (a BOOT FAULT).
 bool bootStackFloorCheck();
 // The verdict bootStackFloorCheck() recorded (false before it ran).
 bool bootStackFault();
 
 // /api/state.mem: lowWater, lowWaterTags, lowWaterUp (s), allocFails, allocFailLast,
 // restingLargest, tlsOverlaps, bootStackFault, and the stack high-water marks the
-// stack-health suite reads (loopStackMin, panelStackMin, vrelStackMin).
+// stack-health suite reads (loopStackMin, panelStackMin, vrelStackMin, and
+// orchBootStackMin, the boot task's watermark when it reported one).
 void stateInto(JsonObject mem);
 
 }  // namespace nimbus::heapwatch

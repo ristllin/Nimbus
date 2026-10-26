@@ -204,6 +204,21 @@ SpawnVerdict spawnGate(uint32_t stackBytes, const char* who) {
   return v;
 }
 
+SpawnVerdict spawnGate(uint32_t stackBytes, const char* who, bool atBoot) {
+  if (!atBoot) return spawnGate(stackBytes, who);
+  const uint32_t freeB = intFree();
+  const SpawnVerdict v = spawnVerdictAtBoot(stackBytes, freeB);
+  if (v != SpawnVerdict::Ok && who)
+    agent::alogf("%s: boot task not started (%s; internal free %u, needs %u)", who,
+                 spawnVerdictName(v), (unsigned)freeB, (unsigned)(stackBytes + kBootSpawnMarginBytes));
+  return v;
+}
+
+void psramFirst(bool on) {
+  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) return;   // the boot never routed either
+  heap_caps_malloc_extmem_enable(on ? 0 : kSmallAllocInternalLimit);
+}
+
 bool monitorStart() {
   bool expected = false;
   if (!s_monitorOn.compare_exchange_strong(expected, true)) return false;
@@ -241,15 +256,28 @@ uint32_t lowWater() {
   return v;
 }
 
-// ---- the boot ladder's loopTask stack floor ----------------------------------
+// ---- the boot ladder's stack floors (loopTask, orchboot) --------------------
 
 static bool s_bootStackFault = false;
+static bool s_orchBootMeasured = false;
+static uint32_t s_orchBootMin = 0;
+static uint32_t s_orchBootStack = 0;
+
+void noteOrchBootStack(uint32_t minFreeBytes, uint32_t stackBytes) {
+  s_orchBootMin = minFreeBytes;
+  s_orchBootStack = stackBytes;
+  s_orchBootMeasured = true;
+}
 
 bool bootStackFloorCheck() {
   const TaskHandle_t t = xTaskGetHandle("loopTask");
   const uint32_t min = t ? (uint32_t)uxTaskGetStackHighWaterMark(t) : 0;
-  s_bootStackFault = loopStackUnderFloor(min);
+  const bool loopFault = t == nullptr || loopStackUnderFloor(min);
   agent::alogf("%s", loopStackFloorLine(min, t != nullptr).c_str());
+  // The chain itself runs on orchboot (main.cpp): its own watermark, its own floor.
+  const bool bootFault = !s_orchBootMeasured || orchBootStackUnderFloor(s_orchBootMin);
+  agent::alogf("%s", orchBootStackFloorLine(s_orchBootMin, s_orchBootStack, s_orchBootMeasured).c_str());
+  s_bootStackFault = loopFault || bootFault;
   return s_bootStackFault;
 }
 
@@ -275,13 +303,14 @@ void stateInto(JsonObject mem) {
   }
   mem["restingLargest"] = restingLargest();
   mem["tlsOverlaps"] = tlsOverlaps();
-  mem["bootStackFault"] = s_bootStackFault;   // the boot ladder's loopTask floor check
+  mem["bootStackFault"] = s_bootStackFault;   // the boot ladder's loopTask + orchboot floor checks
   // Stack high-water marks (bytes: StackType_t is uint8_t on this port) for the
   // tasks the stack-health suite reads: the main loop, the display render task and
   // the voice release watcher.
   if (TaskHandle_t t = xTaskGetHandle("loopTask")) mem["loopStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(t);
   if (TaskHandle_t t = xTaskGetHandle("tft")) mem["panelStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(t);
   if (TaskHandle_t t = xTaskGetHandle("vrel")) mem["vrelStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(t);
+  if (s_orchBootMeasured) mem["orchBootStackMin"] = s_orchBootMin;   // the boot task is gone; its report stays
 }
 
 }  // namespace nimbus::heapwatch

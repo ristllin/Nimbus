@@ -70,10 +70,15 @@ typically has ~8 MB free at the same moment.
   8 KB stack had ~88 B of headroom left after it on the last release - the next
   lane's ~100 B of registration depth tipped the canary (the release-v451x boot
   crash). Nothing runs in parallel: the task is joined before `loop()` starts, the
-  same one-shot shape `provider_verify` uses. The boot ladder then checks the
-  `loopTask` watermark against a 1 KB floor (`boot stack: loopTask min free ...
-  floor 1024 B - ok`, or a `BOOT FAULT` line that also sets `mem.bootStackFault`),
-  so stack erosion fails a bench leg loudly instead of a release-gate boot.
+  same one-shot shape `provider_verify` uses. The task reports its own stack
+  watermark before it ends, and the boot ladder checks both stacks against a 1 KB
+  floor (`boot stack: loopTask min free ... floor 1024 B - ok` and `boot stack:
+  orchboot min free ... of 12288 B, floor 1024 B - ok`, or a `BOOT FAULT` line that
+  also sets `mem.bootStackFault`), so stack erosion fails a bench leg loudly instead
+  of a release-gate boot. The chain never runs inline on `loopTask` (that was the
+  88 B crash path): when the task cannot start (it needs its stack plus 4 KB at
+  boot), `setup()` retries for up to 30 s, then logs `orchboot: BOOT FAULT ...
+  restarting` and restarts, since a fresh boot has the whole internal heap.
 - **DMA buffers** - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
   `MALLOC_CAP_DMA` explicitly and bypass the PSRAM spill entirely.
 - **lwIP pbufs + the TLS record working set** - the ~24 KB "danger zone." A
@@ -94,6 +99,17 @@ Installed in `main.cpp` at boot:
   frees more internal** at a small PSRAM-speed cost - this alone took internal
   free from 16 KB → ~48 KB and made Telegram turns run (they had been
   deferring at the 34 KB floor).
+- **Every small block too, while a turn runs.** The turn drops the spill threshold
+  to 0 for its length and puts 128 B back after (`PsramFirstScope` in
+  `nimbus/harness/turn_memory.h`, the switch in `heapwatch::psramFirst`). Before
+  this, a turn's setup spent ~16 KB of internal SRAM in blocks under 128 B (the
+  per-turn copies of the tool specs, the tool-name map, closures, prompt pieces),
+  measured on unit A: the registry's tool specs 3.8 KB, the prompt's tool list
+  1.7 KB, the head loop's tool set 8 KB. A turn admitted at ~17 KB reached 772 B
+  free and 20 B largest before its provider request, the Wi-Fi task's own 32 B
+  internal allocation failed, and IDF aborted (a panic). IDF already places a small
+  block in PSRAM once internal is empty, so no code meets a placement it does not
+  meet today; the spill just starts before internal is gone.
 
 Also PSRAM-backed by design: the vector-DB working set
 (`setWorkingAllocators`), ArduinoJson node pools (`ps_json.h`) - including the
@@ -182,6 +198,17 @@ the lwIP/TLS working set, so admission has two parts:
 A `static_assert` keeps the turn floor below the pre-PSRAM 28 KB danger zone and
 the background floor above the interactive one.
 
+The turn re-checks before it asks a provider anything. Its setup samples internal
+SRAM at each phase (`turn memory: admit=... recall=... tools=... dispatch=...`) and
+checks the **dispatch floor**: 8 KB free and a 5 KB largest block, the relay's
+per-connection floors. Under it the turn ends with one reply, "I'm short of memory
+right now. Please try again in a minute.", recorded in the chat history, and no
+provider request; a routine's fire is deferred instead (no message). A failed C++
+allocation in a turn ends it the same way instead of aborting. The 12 KB admission
+floor covers the dispatch floor plus the setup's measured worst case
+(`kTurnSetupCostBytes`, asserted against `ORCH_TURN_HARD_FLOOR`), so a turn that is
+admitted normally reaches its request.
+
 **Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while
 PSRAM is free, move more internal churn to PSRAM (lower the spill threshold)
@@ -244,7 +271,7 @@ still fails over.
    Wi-Fi static-buffer counts) - potentially the largest single win; needs an
    `sdkconfig.defaults`.
 2. **Lower the malloc spill threshold** (`heap_caps_malloc_extmem_enable`,
-   main.cpp).
+   main.cpp; already 0 for the length of a turn).
 3. **Right-size / statically-place buffers** (framebuffers, static arrays)
    into PSRAM.
 4. **Re-anchor over-conservative internal floors** (above, done).
@@ -276,10 +303,12 @@ task's serve), so the device also keeps evidence of its own:
 - `mem.restingLargest`: the largest internal block at rest (the verify gate's input).
 - `mem.tlsOverlaps`: concurrent work-TLS seen (it stays 0 under the single slot).
 - `mem.loopStackMin`, `mem.panelStackMin`, `mem.vrelStackMin`: worst free stack of
-  the main loop, the display render task and the voice-release watcher.
+  the main loop, the display render task and the voice-release watcher;
+  `mem.orchBootStackMin`: the orchestrator boot task's worst free stack (it reports
+  once, before it ends).
 - `mem.bootStackFault`: the boot ladder's stack-floor check faulted - the `loopTask`
-  watermark after the orchestrator boot dropped under 1 KB (`boot stack: BOOT FAULT`
-  in the log). False on a healthy boot.
+  watermark after the orchestrator boot, or the boot task's own, dropped under 1 KB
+  (`boot stack: BOOT FAULT` in the log). False on a healthy boot.
 - Every provider exchange logs one `transport: heaptrace` line on every path, with
   the heap at four phases and `fail=` (where it stopped: `connect`, `head`,
   `body@<bytes sent>`, `read`, `headers`, `parse`, `none`), `af=` (failed
@@ -306,8 +335,9 @@ the heavy-connector-write restart, 2026-07).
   continuously as the parser pulls bytes instead of piling up while a whole
   body is buffered. This is the real fix for the heavy-connector-write
   restart.
-- **Small (< 128 B) allocations** - stay internal by the extmem threshold;
-  cheap and not worth lowering the threshold (churn).
+- **Small (< 128 B) allocations outside a turn** - stay internal by the extmem
+  threshold; cheap and not worth lowering it for the whole device. During a turn
+  they go to PSRAM (above), because a turn's setup made thousands of them.
 - **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
   runs the whole turn. Internal by nature. The response parse is bounded to
   `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.

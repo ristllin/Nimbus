@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <new>   // std::bad_alloc: a failed allocation ends a turn honestly
 #include <set>
 
 #include "nimbus/mem_cap.h"              // utf8CapLen - the owner notice's cause cap
@@ -36,6 +37,7 @@
 #include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
 #include "nimbus/harness/router_refusal.h"   // a router refusal is not an outage (failover notice)
 #include "nimbus/harness/turn_contract.h"    // lane L: pseudo-tool salvage, final check, salvage
+#include "nimbus/harness/turn_memory.h"      // a turn never spends the last internal SRAM (L24)
 #include "nimbus/orch/reply_markup.h"        // lane L: cleanReplyMarkup at every reply seam
 #include "nimbus/orch/tool_taint.h"          // lane L: the per-turn external-content flag
 #include "nimbus/orch/turn.h"
@@ -184,6 +186,34 @@ using solide::ring::Status;
 // sentence on every channel, before any request or paid turn.
 static const char* const kNoProviderKeyReply =
     "No AI provider has a key: add one under Assistant > Models.";
+
+// The turn's internal-SRAM record from admission to the provider request
+// (turn_memory.h). Turn task only: turns are serialized. handleMessage starts it at
+// its admission sample; runTurn starts it for a turn that came another way (a
+// routine, a synthesis turn). Heap-held, not static: static internal RAM never comes
+// back, and the first access is inside a turn, so the device places it in PSRAM.
+namespace {
+struct TurnMemoryState {
+  TurnMemoryGate gate;
+  bool admitted = false;   // handleMessage took this turn's admission sample
+  bool started = false;    // onTurnStart fired, so the turn's end hook is owed
+  bool refused = false;    // the turn ended for memory (a routine reads it as a defer)
+};
+TurnMemoryState& turnMem() {
+  static TurnMemoryState* const s = new TurnMemoryState();
+  return *s;
+}
+
+bool ownerWaits(TurnSource s) { return s == TurnSource::Owner || s == TurnSource::Serial; }
+// A turn whose setup cost at least this much internal SRAM logs its memory line.
+constexpr uint32_t kTurnMemoryLogCost = 1024;
+}  // namespace
+// The default floors keep the rule the device floors are asserted on
+// (orchestrator.cpp): admission leaves the dispatch floor after the setup.
+static_assert(admissionCoversSetup(TurnEngine::Tuning{}.turnHardFloor),
+              "the turn admission floor must cover the dispatch floor plus the setup cost");
+static_assert(TurnEngine::Tuning{}.turnMinLargestBlock >= kDispatchFloorLargest,
+              "admission must not admit a largest block the dispatch floor refuses");
 
 // A provider's display name for an owner notice ("Anthropic"; the LAN endpoint is
 // "your custom endpoint"), else its slug.
@@ -853,7 +883,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 }
 
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
-                         const std::string& userText, bool telegram) {
+                         const std::string& userText, bool telegram) try {
+  // The whole turn keeps its small blocks in PSRAM (L24, turn_memory.h); a turn
+  // handleMessage admitted already holds the scope and its admission sample.
+  const PsramFirstScope psramFirst;
+  const bool admitted = turnMem().admitted;   // else the entry sample below starts the record
+  turnMem().admitted = false;                 // the next turn takes its own sample
+  turnMem().started = false;
+  turnMem().refused = false;
   // Turn lifecycle guard: flags the in-flight state AND paints the head turn on
   // the ring as a live Running job ("head" key, blue comet in Full) so the user
   // SEES the device thinking - previously a text/voice turn gave no ring feedback
@@ -906,6 +943,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.chatId = chatId;
     d_.hooks.onTurnStart(ev);
   }
+  turnMem().started = true;
   struct TurnGuard {
     TurnEngine* e;
     explicit TurnGuard(TurnEngine* eng) : e(eng) {
@@ -945,6 +983,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Rounds AFTER the first still re-gate live (ORCH_LOOP_MIN_HEAP), and a round-0
   // OOM fails soft, so this cannot wedge the device.
   const uint32_t heapAtEntry = freeHeap();
+  if (admitted) turnMem().gate.phase("entry", heapAtEntry, largestFreeBlock());
+  else turnMem().gate.begin(heapAtEntry, largestFreeBlock());
   const bool loopOnThisTurn = loopActiveAt(heapAtEntry);
   // ONE principal for the whole turn: recall, the tool advertisement below, and
   // applyTurn's dispatch all read the same identity, so a chat cannot be
@@ -963,6 +1003,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     claims_.setSources(inputs, rec);
   }
   const uint32_t heapAfterRecall = freeHeap();
+  turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());
 
   // Gather the LIVE inputs (device closure: HAL health, faults, sessions,
   // scratchpad); the engine fills tools/loopOn/recalled so the prompt's
@@ -997,6 +1038,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                  return !dream::toolAllowed(s.name);
                                }),
                 specs.end());
+  turnMem().gate.phase("specs", freeHeap(), largestFreeBlock());
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
   // allowed for the task), so the model must be known when the prompt is sized.
@@ -1011,6 +1053,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
 
   ComposeInputs ci = d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{};
+  turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
   // W10 (prism): the speaker line is for a REAL human message only. The device
   // closure knows the chat, not the turn source - a synthesis turn ([FRESH
   // RESULTS] from untrusted sub-agent output) and a scheduled loop both carry a
@@ -1044,6 +1087,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   } else if (!ci.chatSummary.empty()) {
     ci.history = renderHistory({}, ci.chatSummary, 0);   // the summary pair alone
   }
+  turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.
   turnGaps_.note(chatId, nowMs());
   ci.cache.longTtl = turnGaps_.longTtl(chatId);
@@ -1104,6 +1148,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
   std::string instructions = agent::composeInstructions(ci);
+  turnMem().gate.phase("prompt", freeHeap(), largestFreeBlock());
   // ONE line, only when the loop was actually withheld - the interesting case,
   // and it keeps a healthy device's log clean. entry -> recall -> compose shows
   // which phase spent the headroom that the gate then found missing.
@@ -1352,6 +1397,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                (int)headTools.specs.size(), headTools.cfg.maxRounds,
                d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600);
   }
+  turnMem().gate.phase("tools", freeHeap(), largestFreeBlock());
 
   std::string outJson, err;
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
@@ -1409,6 +1455,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
     d_.hooks.onTurnEnd(ev);
+  };
+  // L24: under the dispatch floor the turn ends before any provider request, with
+  // one honest reply an owner reads in the chat history (deliver() records it); a
+  // routine or synthesis turn ends quietly and its fire is a defer.
+  auto endShortOfMemory = [&]() -> bool {
+    turnMem().refused = true;
+    hlog::logf("orchestrator: turn ended for memory before the provider request (under the "
+               "dispatch floor at %s)", turnMem().gate.refusedAt());
+    hlog::log(turnMem().gate.line(true).c_str());
+    tf.chain.noteDevice(("low memory: internal memory under the dispatch floor at " +
+                         std::string(turnMem().gate.refusedAt())).c_str());
+    if (ownerWaits(turnSource_)) deliver(chatId, kShortOfMemoryReply);
+    fireTurnEnd(false, 0);
+    return false;
   };
   // runTurnHost: OpenAI / Anthropic / Mistral through the ProviderHosts registry.
   // Every host receives the SAME canonical orch schema via its structured-output
@@ -1590,6 +1650,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Introspection: a provider-side conversation at entry (a stateless marker such
   // as "messages" holds nothing on the provider, so it is not one).
   bool convContinued = providerChainHeld(convId);   // false again if the turn starts past a parked head
+  // The setup is done: one last sample, then the dispatch floor decides (L24).
+  turnMem().gate.phase("dispatch", freeHeap(), largestFreeBlock());
+  if (!turnMem().gate.ok()) return endShortOfMemory();
+  if (turnMem().gate.setupCost() >= kTurnMemoryLogCost) hlog::log(turnMem().gate.line(true).c_str());
   hlog::logf("orchestrator: turn host=%s (conv=%d heap=%u)", host.c_str(),
              (int)convContinued, (unsigned)freeHeap());
   // Stage 2 phase 5: LOOP turns run the engine-owned FABRIC loop when the gate
@@ -2018,6 +2082,37 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   lastTurnSpoke_ = !turn.reply.empty() || !turn.ask.empty() || toolReplied_;
   fireTurnEnd(true, lastReply_.size());
   return true;
+} catch (const std::bad_alloc&) {
+  // L24: a failed allocation ends the turn honestly, never an abort. The body's
+  // guards already ran (the in-flight flag, the head arc, the apply hooks); what is
+  // left is the turn end the body would have fired: its spend metered once, the
+  // owner told, the end hook paired with the start hook.
+  turnMem().refused = true;
+  TurnFacts& tf = facts();
+  tf.chain.noteDevice("low memory: an allocation failed during the turn");
+  hlog::log("orchestrator: turn ended for memory - an allocation failed");
+  const bool ended = tf.metered;   // fireTurnEnd ran already (it meters exactly once)
+  if (!ended) {
+    tf.metered = true;
+    orch::takeVisionSpend(tf.spend);
+    meterSpend(tf.spend, attribution_);
+    lastTurnUsage_ = tf.spend.total();
+    if (!lastTurnUsage_.empty()) sessionUsage_ += lastTurnUsage_;
+    if (ownerWaits(turnSource_) && !toolReplied_) deliver(chatId, kShortOfMemoryReply);
+  }
+  if (!ended && turnMem().started && d_.hooks.onTurnEnd) {
+    TurnEndEv ev;
+    ev.ok = false;
+    ev.chatId = chatId;
+    ev.usage = lastTurnUsage_;
+    ev.error = "low memory: an allocation failed";
+    ev.source = turnSource_;
+    ev.attribution = attribution_;
+    ev.spend = &tf.spend;
+    ev.chain = &tf.chain;
+    d_.hooks.onTurnEnd(ev);
+  }
+  return false;
 }
 
 // ---- consolidation ----------------------------------------------------------
@@ -2105,7 +2200,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
 // ---- owner-message turn core ------------------------------------------------
 
 void TurnEngine::handleMessage(const std::string& text, const std::string& fromName,
-                               const std::string& chatId) {
+                               const std::string& chatId) try {
   // R1: the photos the channel offered for this turn (their bytes, refs and labels),
   // taken first so a refused or duplicate turn still frees them, and held until the
   // turn ends: every head loop of the turn shows them to the head as images.
@@ -2136,6 +2231,12 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
                     "working memory. Please resend in a few seconds.");
     return;
   }
+  // L24: the admission floor leaves the dispatch floor after the setup's measured
+  // worst case (admissionCoversSetup, asserted on the device floor). From here to
+  // the turn's end the turn keeps its small blocks in PSRAM, and its setup samples
+  // internal SRAM for the dispatch floor (turn_memory.h).
+  const PsramFirstScope psramFirst;
+  turnMem().gate.begin(freeHeap(), largestFreeBlock());
   // Episodic auto-capture (Q2): record the owner's message before the turn so the
   // history is durable + queryable even if the turn later fails.
   // Tag the row with the SENDER (owner ask: "who sent what" in the unified chat -
@@ -2151,6 +2252,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     }
   }
   if (!captureOwnerRow(chatId, text, fromTag)) return;   // H7: already captured, no paid call
+  turnMem().gate.phase("row", freeHeap(), largestFreeBlock());
 
   attribution_ = "turn";                       // owner-driven spend (the default)
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
@@ -2176,7 +2278,18 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     " the one and only answer; never send the same answer twice." +
     loopHint +
     "\n\n[USER]\n" + text;
+  turnMem().gate.phase("inputs", freeHeap(), largestFreeBlock());
+  turnMem().admitted = true;   // runTurn continues this record
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall
+  unverifiedTurn_ = false;
+  freshInTurn_ = false;
+  freshSourced_ = freshUnsourced_ = 0;
+} catch (const std::bad_alloc&) {
+  // L24: an allocation failed before the turn began (runTurn ends its own): the
+  // same honest reply, no provider request.
+  turnMem().admitted = false;
+  hlog::log("orchestrator: turn ended for memory - an allocation failed before it began");
+  deliver(chatId, kShortOfMemoryReply);
   unverifiedTurn_ = false;
   freshInTurn_ = false;
   freshSourced_ = freshUnsourced_ = 0;
@@ -2301,7 +2414,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // without a row the spend reads as a lost turn. The still-pending trigger row
   // (nothing flushed it: no reply was captured) lands now, tagged with the
   // quiet reason, so the fire leaves a trace in the chat's history.
-  if (quietOk && triggerPending_ && lastReply_.find_first_not_of(" \t\r\n") == std::string::npos) {
+  if (quietOk && triggerPending_ && !turnMem().refused &&
+      lastReply_.find_first_not_of(" \t\r\n") == std::string::npos) {
     triggerTags_ += ",silent:quiet-routine";
     hlog::logf("loop: %s stayed silent (quiet routine, empty reply) in=%u out=%u",
                loopId.c_str(), (unsigned)lastTurnUsage_.promptTokens,
@@ -2320,6 +2434,11 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   o.held = std::move(heldReply_);
   heldReply_.clear();
   if (!o.ok) o.error = facts().chain.render(nimbus::orch::FailureChain::kTextMax);
+  if (!o.ok && turnMem().refused) {   // L24: a memory end is a defer, not a failure (CUM-403)
+    o.deferred = true;
+    o.detail = "deferred: low memory";
+    o.error.clear();
+  }
   return o;
 }
 

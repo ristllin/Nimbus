@@ -222,6 +222,20 @@ enum class SpawnVerdict : uint8_t { Ok, TurnInFlight, LowMemory };
 SpawnVerdict spawnVerdict(uint32_t stackBytes, uint32_t intFree, bool turnInFlight);
 const char* spawnVerdictName(SpawnVerdict v);
 
+// The orchestrator's one-shot boot task (main.cpp orchBootTask) asks at boot, before
+// any turn can exist, so the turn's 16 KB transient margin does not apply: its stack
+// plus a small margin for the boot's own transients is enough. Never TurnInFlight.
+inline constexpr uint32_t kBootSpawnMarginBytes = 4 * 1024;
+SpawnVerdict spawnVerdictAtBoot(uint32_t stackBytes, uint32_t intFree);
+
+// ---- general-malloc placement ---------------------------------------------------
+
+// The boot's spill limit for plain malloc/new (main.cpp, heap_caps_malloc_extmem_enable):
+// a block of this size or more goes to PSRAM first, a smaller one prefers internal
+// SRAM. A turn drops it to 0 for its length (src/sys heap_watch psramFirst, the L24
+// fix in nimbus/harness/turn_memory.h) and puts this value back after.
+inline constexpr uint32_t kSmallAllocInternalLimit = 128;
+
 // ---- the boot's loopTask stack floor ---------------------------------------------
 
 // The loopTask free-stack floor for the boot ladder, in BYTES (the high-water
@@ -245,5 +259,20 @@ inline bool loopStackUnderFloor(uint32_t minBytes) { return minBytes < kLoopStac
 //    the boot path grew past the loopTask stack (see docs/memory.md)"
 // `taskPresent` false (no loopTask handle) always reads as a fault.
 std::string loopStackFloorLine(uint32_t minBytes, bool taskPresent);
+
+// ---- the orchestrator boot task's stack floor ------------------------------------
+
+// The boot chain (orchestratorBegin) runs on its own one-shot task; its free-stack
+// watermark gets the same 1 KB floor, so erosion of that chain shows up as a loud
+// boot line in the lane battery era, not as a release-gate panic.
+inline constexpr uint32_t kOrchBootStackFloorBytes = 1024;
+inline bool orchBootStackUnderFloor(uint32_t minBytes) { return minBytes < kOrchBootStackFloorBytes; }
+
+// The orchboot line of the boot ladder, healthy or fault:
+//   "boot stack: orchboot min free 4210 B of 12288 B, floor 1024 B - ok"
+//   "boot stack: BOOT FAULT - orchboot min free 600 B of 12288 B is under the 1024 B
+//    floor: the orchestrator boot chain grew past its task stack (see docs/memory.md)"
+// `measured` false (the task never reported a watermark) always reads as a fault.
+std::string orchBootStackFloorLine(uint32_t minBytes, uint32_t stackBytes, bool measured);
 
 }  // namespace nimbus::heapwatch

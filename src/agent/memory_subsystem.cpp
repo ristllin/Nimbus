@@ -50,6 +50,7 @@
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/row_overlay.h"   // R1/L19-5: a photo row's text replaced after it was stored
 #include "nimbus/orch/episodic_log.h"
+#include "nimbus/orch/store_full.h"     // mediaRowLanded: a media row's claim follows its write
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/billing_refusal.h"   // one owner notice per billing episode (shared with chat)
 #include "nimbus/orch/pending_embed.h"     // memory writes that survive an embedding outage
@@ -2806,6 +2807,15 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
   if (path.length()) captureMessage(sessionId, role, kind, text, path);
 }
 
+// Did the row captureMessageAt just wrote reach the card (nimbus::orch::mediaRowLanded:
+// a refused write is held in RAM and queues newer rows behind it)? Call under the
+// Lock that covered the capture, so the log state is that write's.
+static bool capturedRowLanded(const String& id) {
+  const bool sdLog = effHaveSd() && g_epiLog;
+  return nimbus::orch::mediaRowLanded(id.length() > 0, sdLog, sdLog && g_epiLog->lastAppendOk(),
+                                      sdLog ? g_epiLog->heldCount() : 0);
+}
+
 bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
                       const String& text, const char* srcPath, const char* ext, int64_t sentEpoch,
                       std::string* refOut) {
@@ -2841,9 +2851,18 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
   char tag[32] = "";
   if (sent) snprintf(tag, sizeof(tag), "sent:%lld", (long long)sentEpoch);
   const String blob(path.c_str()), tags(tag);
-  captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0});
+  // Prism row 2: the item "stays in this chat's history" (storeFullFact) only when its
+  // row landed too, not just its blob. The Lock is recursive: the capture takes it
+  // again, and the check reads that same write before any other task appends.
+  bool landed;
+  {
+    Lock g;
+    landed = capturedRowLanded(
+        captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0}));
+  }
+  if (!landed) alog("memory: media row not written to the card (its blob is kept)");
   if (refOut) *refOut = hasher.hex();
-  return true;
+  return landed;
 }
 
 // Battery telemetry day-files (audit 2026-07-24: the ONE unbounded SD writer -

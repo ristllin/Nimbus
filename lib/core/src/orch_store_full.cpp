@@ -32,6 +32,12 @@ std::string storeFullFact(bool photo, bool inHistory) {
   return out + "]";
 }
 
+bool mediaRowLanded(bool captured, bool sdLog, bool lastAppendOk, int heldRows) {
+  if (!captured) return false;
+  if (!sdLog) return true;
+  return lastAppendOk && heldRows == 0;
+}
+
 const char kStoreFullToolNote[] =
     " The file store is full. The device tells the owner once, with how to make room; say "
     "in a few words that this was not saved, and do not explain the store or ask which "

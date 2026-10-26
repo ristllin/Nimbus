@@ -2851,29 +2851,38 @@ static void orchestratorBegin() {
 // frozen no-concurrency rule holds (nothing runs in parallel: this is the same
 // one-shot shape provider_verify/cloud_mint use, gated by heapwatch::spawnGate,
 // and tg_poll still comes up exactly where it did - inside the moved body).
-// The join is short (file loads + registrations, no TLS), so the blocked
-// loopTask cannot trip the task watchdog. When the gate refuses or the spawn
-// fails, the work runs inline on loopTask as before and the boot says so -
-// a degraded boot, never a silent one.
+// The join is short (file loads + registrations, no TLS), and loopTask joins the
+// task watchdog only at the end of setup(), so the wait cannot trip it.
+//
+// The chain NEVER runs inline on loopTask: that was the 88 B crash path. The task
+// reports its own stack watermark for the boot ladder's floor check
+// (heapwatch::bootStackFloorCheck). When it cannot start (no room for its stack at
+// boot, or the spawn fails), setup() waits for room, retrying, and if it never
+// comes the device says so in the durable log and restarts: a fresh boot has the
+// whole internal heap, so this is a loud, rate-limited recovery, never a stack
+// overflow.
 static constexpr uint32_t kOrchBootStackBytes = 12288;
+static constexpr uint32_t kOrchBootRetryMs = 250;
+static constexpr uint32_t kOrchBootWaitMs = 30000;
 
 static void orchBootTask(void* pv) {
   orchestratorBegin();
+  // The chain's deepest point on its own stack (bytes on this port), for the floor
+  // check that runs on loopTask once the join returns.
+  nimbus::heapwatch::noteOrchBootStack((uint32_t)uxTaskGetStackHighWaterMark(nullptr),
+                                       kOrchBootStackBytes);
   xSemaphoreGive((SemaphoreHandle_t)pv);   // the handshake: boot proceeds when done
   vTaskDelete(nullptr);
 }
 
-static void orchestratorBeginOffLoopTask() {
+// One try: true when the boot task ran and was joined. `who` names the refusal in
+// the log (null = silent, for the retries).
+static bool orchBootTry(const char* who) {
   SemaphoreHandle_t done = xSemaphoreCreateBinary();
-  if (!done) {
-    agent::alog("orchboot: no RAM for the join semaphore - orchestrator boot runs inline");
-    orchestratorBegin();
-    return;
-  }
-  const nimbus::heapwatch::SpawnVerdict gate =
-      nimbus::heapwatch::spawnGate(kOrchBootStackBytes, "orchboot");
-  bool spawned = false;
-  if (gate == nimbus::heapwatch::SpawnVerdict::Ok)
+  if (!done) return false;
+  bool spawned = nimbus::heapwatch::spawnGate(kOrchBootStackBytes, who, /*atBoot=*/true) ==
+                 nimbus::heapwatch::SpawnVerdict::Ok;
+  if (spawned)
     spawned = xTaskCreate(orchBootTask, "orchboot", kOrchBootStackBytes, done, 1, nullptr) == pdPASS;
   if (spawned) {
     // Joined: single-task again before loop(). Poll the handshake at 100 ms and
@@ -2881,15 +2890,30 @@ static void orchestratorBeginOffLoopTask() {
     // (unit A's reopen after a restart strobes a chip reset - the storm finding)
     // still gets its PING answered while this stage runs.
     while (xSemaphoreTake(done, pdMS_TO_TICKS(100)) != pdTRUE) tc::pumpBoot();
-  } else {
-    if (gate != nimbus::heapwatch::SpawnVerdict::Ok)
-      agent::alogf("orchboot: spawn gate %s - the orchestrator boot runs inline on loopTask",
-                    nimbus::heapwatch::spawnVerdictName(gate));
-    else
-      agent::alog("orchboot: task spawn failed - the orchestrator boot runs inline on loopTask");
-    orchestratorBegin();
   }
   vSemaphoreDelete(done);
+  return spawned;
+}
+
+static void orchestratorBeginOffLoopTask() {
+  if (orchBootTry("orchboot")) return;
+  agent::alog("orchboot: the orchestrator boot task could not start - waiting for room (never inline)");
+  const uint32_t t0 = millis();
+  while ((uint32_t)(millis() - t0) < kOrchBootWaitMs) {
+    tc::pumpBoot();
+    delay(kOrchBootRetryMs);
+    if (orchBootTry(nullptr)) {
+      agent::alogf("orchboot: started after %u ms", (unsigned)(millis() - t0));
+      return;
+    }
+  }
+  agent::alogf("orchboot: BOOT FAULT - the orchestrator boot task could not start in %u s "
+               "(internal free %u B, largest %u B); restarting",
+               (unsigned)(kOrchBootWaitMs / 1000),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  delay(200);   // the durable line is flushed per write; let Serial drain too
+  esp_restart();
 }
 
 // Live device state for the self-test engine (hw::selftest reaches nothing on its

@@ -49,9 +49,20 @@ extern const char kStoreFullNotice[];
 
 // What the head reads after an inbound item the full store did not keep: the store
 // state as a fact the owner already has. `photo` names the item ("photo" or "file");
-// `inHistory` adds that the item itself is still in the chat's history (its media row
-// and blob landed).
+// `inHistory` adds that the item itself is still in the chat's history: the caller
+// passes it only when the item's media row reached the card, not just its blob
+// (captureMediaFile's result).
 std::string storeFullFact(bool photo, bool inHistory);
+
+// Did an inbound item's media row reach the card, so it stays in the chat's history?
+// (captureMediaFile's answer, the `inHistory` above.) `captured`: a row was minted;
+// `sdLog`: the store is the SD append-log; `lastAppendOk` and `heldRows`: that log's
+// state right after the row's write. A refused write holds the row in RAM until the
+// card answers (a restart before that loses it), and a held row queues every newer
+// one behind it, so a row is on the card only when the write was taken AND nothing is
+// held: the last write can be taken while it only moved older held rows. The no-log
+// stores keep a captured row as their only copy.
+bool mediaRowLanded(bool captured, bool sdLog, bool lastAppendOk, int heldRows);
 
 // Appended to an assistant save the full store refused (artifact.save, files.append,
 // files.pdf, image.generate, a helper's saved report, a provider sandbox file), so the
