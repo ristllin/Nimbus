@@ -1121,8 +1121,9 @@ static nimbus::net::NoticeRoute noticeRoute(nimbus::net::OwnerNotice kind) {
 // The web chat already holds this notice from the last kWebNoticeRepeatHours (the same
 // tag and words): the web route writes a notice once per episode, not once per boot
 // while the store stays full (a web chat is a record the owner scrolls and the model
-// reads back).
-static bool webNoticeRecent(const char* tag, const String& full) {
+// reads back). A text search for the notice's own words, so a busy day of chat rows
+// cannot push the earlier copy out of reach.
+static bool webNoticeRecent(const char* tag, const char* words, const String& full) {
   if (!agent::memory::storageResolved()) return false;
   nimbus::orch::MsgQuery q;
   q.sessionId = "web";
@@ -1130,15 +1131,16 @@ static bool webNoticeRecent(const char* tag, const String& full) {
   q.kind = nimbus::orch::MsgKind::Message;
   const uint32_t now = agent::memory::nowHours();
   q.sinceHours = now > nimbus::net::kWebNoticeRepeatHours ? now - nimbus::net::kWebNoticeRepeatHours : 0;
-  q.limit = 40;
+  q.textContains = words;
+  q.limit = 5;
   std::vector<nimbus::orch::EpisodicMessage> rows;
   {
     agent::memory::Lock lk;
     rows = agent::memory::episodic().query(q);
   }
-  const std::string words(full.c_str(), full.length());
+  const std::string row(full.c_str(), full.length());
   for (const nimbus::orch::EpisodicMessage& m : rows)
-    if (m.role == "assistant" && nimbus::net::sameNoticeRow(m.tags, m.text, tag, words)) return true;
+    if (m.role == "assistant" && nimbus::net::sameNoticeRow(m.tags, m.text, tag, row)) return true;
   return false;
 }
 
@@ -1150,7 +1152,7 @@ static void sendOwnerNotice(nimbus::net::OwnerNotice kind, bool (*take)(), const
   if (!take()) return;
   const nimbus::net::NoticeRoute r = noticeRoute(kind);
   const String full = noticeText(text);
-  if (!r.telegram && webNoticeRecent(r.tag, full)) {
+  if (!r.telegram && webNoticeRecent(r.tag, text, full)) {
     alogf("telegram: storage-full notice%s already in the web chat today: not repeated", which);
     return;
   }

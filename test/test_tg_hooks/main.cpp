@@ -301,7 +301,9 @@ static void test_every_notice_routes_without_an_owner() {
   // The web route writes a storage notice once per episode, and a guard notice there is
   // worded for the web chat's reader (never "you" about a Telegram sender's message).
   const std::string owner = bodyOf(code(), "static void sendOwnerNotice(");
-  TEST_ASSERT_TRUE(owner.find("if (!r.telegram && webNoticeRecent(r.tag, full))") < owner.find("routeNotice("));
+  TEST_ASSERT_TRUE(owner.find("if (!r.telegram && webNoticeRecent(r.tag, text, full))") < owner.find("routeNotice("));
+  const std::string recent = bodyOf(code(), "static bool webNoticeRecent(");
+  TEST_ASSERT_TRUE(recent.find("q.textContains = words;") != std::string::npos);   // found however busy the day
   const std::string guard = bodyOf(code(), "static void sendGuardNotice(");
   TEST_ASSERT_TRUE(guard.find("guardText(n, !r.telegram)") != std::string::npos);
   for (const char* fn : {"static String guardCeilingWebText("}) {

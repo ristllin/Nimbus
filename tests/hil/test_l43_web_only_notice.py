@@ -70,15 +70,17 @@ def _rows(net) -> List[dict]:
     return net.get_json("/api/mem/episodic?limit=60", timeout=8.0).get("messages", [])
 
 
-def _lines_until(device, needle: str, seconds: float) -> List[str]:
-    """Console lines for ``seconds`` or up to and with the first holding ``needle``."""
+def _lines_until(device, needle, seconds: float) -> List[str]:
+    """Console lines for ``seconds`` or up to and with the first holding ``needle`` (a
+    string, or a tuple of strings: any of them)."""
+    needles = (needle,) if isinstance(needle, str) else tuple(needle)
     out, end = [], time.time() + seconds
     while time.time() < end:
         try:
             out.append(device.expect_re(r".", timeout=end - time.time()).string)
         except ExpectTimeout:
             break
-        if needle in out[-1]:
+        if any(n in out[-1] for n in needles):
             break
     return out
 
@@ -135,17 +137,20 @@ def test_l43_web_only_storage_notice(device, net):
         device.reboot_and_confirm()  # the notice is once per boot: start a fresh one
         _settled(net)
         assert net.get_json("/api/orch", timeout=8.0).get("tgAllow", "x") == "", "the unit still has an allowlist"
-        before = web_notice(net.get_json("/api/mem/episodic?limit=40", timeout=8.0).get("messages", []))
+        before = web_notice(_rows(net))
+        before_rows = storage_rows(_rows(net))
         st = l43.fill_to_reserve_plus_one(device, net)
         print(f"[web-only] filled: {l43.free_entries(st)} entries free")
         r = net.post("/api/orch", {"sysPrompt": l43.GROWING_DIRECTIVE}, timeout=8.0)
         assert l43.is_storage_full(r), f"a growing save at reserve+1: HTTP {r.status_code} {r.text[:200]}"
-        end = time.time() + 30.0
-        while time.time() < end and not any(CAPTURED_LOG in ln for ln in lines):
-            try:
-                lines.append(device.expect_re(r".", timeout=end - time.time()).string)
-            except ExpectTimeout:
-                break
+        lines = _lines_until(device, (CAPTURED_LOG, REPEAT_LOG), 30.0)
+        if any(REPEAT_LOG in ln for ln in lines):
+            # An earlier notice of this episode (the last 24 h; a bench unit re-run) is in the
+            # web chat: the device recognised it, and no second row is written.
+            print("[web-only] a notice from the last 24 h is already in the web chat: not repeated (once per episode)")
+            time.sleep(5.0)
+            assert storage_rows(_rows(net)) == before_rows, "a second storage notice row was written in one episode"
+            return
 
         def landed():
             row = web_notice(net.get_json("/api/mem/episodic?limit=40", timeout=8.0).get("messages", []))
