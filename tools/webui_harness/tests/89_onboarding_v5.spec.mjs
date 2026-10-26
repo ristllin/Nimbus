@@ -61,7 +61,12 @@ async function wire(page, dev) {
   await page.route('**/api/state', (r) => json(r, dev.state));
   await page.route('**/api/mem/stats', (r) => json(r, dev.mem));
   await page.route('**/api/config', (r) => {
-    if (r.request().method() === 'POST') dev.posts.push(new URLSearchParams(r.request().postData() || ''));
+    if (r.request().method() !== 'POST') return json(r, { ok: true });
+    const body = new URLSearchParams(r.request().postData() || '');
+    // The device refuses a rule its C library cannot read (posix_tz.h, host-tested).
+    if (body.get('devTz') === 'EST')
+      return json(r, { error: "That timezone rule is not one the device can read. Pick a suggestion from the list, or use this computer's timezone." }, 400);
+    dev.posts.push(body);
     return json(r, { ok: true });
   });
   await page.route('**/api/orch', (r) => {
@@ -107,10 +112,37 @@ test('keyHome agrees with the device table (test/support/fixtures/key_home_cases
   const tbl = JSON.parse(readFileSync(new URL('../../../test/support/fixtures/key_home_cases.json', import.meta.url)));
   await seedToken(page);
   await page.goto('/');
+  const guarded = ['oaiKey', 'antKey', 'mistKey', 'zaiKey', 'cumuloKey', 'tgToken', 'tavKey'];
+  const slotOf = { cumulo: 'cumuloKey', anthropic: 'antKey', openai: 'oaiKey', mistral: 'mistKey', zai: 'zaiKey', tavily: 'tavKey', telegram: 'tgToken' };
+  const ownForm = { cumuloKey: 'cumulo', tgToken: 'telegram', tavKey: 'tavily' };
   for (const c of tbl.cases) {
     const key = c.prefix + c.fill.repeat(c.len) + c.suffix;
-    expect(await page.evaluate((k) => keyHome(k), key), `key starting ${JSON.stringify(key.slice(0, 12))}`).toBe(c.home);
+    const ctx = `key starting ${JSON.stringify(key.slice(0, 12))}`;
+    const got = await page.evaluate(([k, fields]) => ({ home: keyHome(k), sure: keyHomeSure(k),
+      errs: Object.fromEntries(fields.map((f) => [f, slotError(f, k)])) }), [key, guarded]);
+    expect(got.home, ctx).toBe(c.home);
+    expect(got.sure, ctx).toBe(c.sure);
+    // The same refusal rule as key_home.h misplacedKeyError (test_key_home's class test).
+    for (const f of guarded) {
+      const blank = !key.trim();
+      const want = !blank && ((slotOf[c.home] && c.sure && slotOf[c.home] !== f) || (ownForm[f] !== undefined && ownForm[f] !== c.home));
+      expect(!!got.errs[f], `${ctx} in ${f}`).toBe(want);
+    }
   }
+});
+
+test('a provider key pasted into the Telegram or Tavily field is refused before it is sent', async ({ page }) => {
+  const dev = makeDevice({ state: { needsOnboarding: false } });
+  await wire(page, dev);
+  await page.goto('/');
+  // The Settings Save buttons call orchApply with the field's value (ui_agent.h).
+  await page.evaluate((k) => { const el = document.getElementById('tgToken'); el.value = k; el.nextElementSibling.click(); },
+    'sk-ant-api03-' + 'g'.repeat(95));
+  await expect(page.locator('#toast')).toContainText('That is an Anthropic key. Save it under Anthropic.');
+  await page.evaluate((k) => { document.getElementById('tavKey').value = k; document.getElementById('tavKey').nextElementSibling.click(); },
+    'sk-proj-' + 'h'.repeat(48));
+  await expect(page.locator('#toast')).toContainText('That is an OpenAI key. Save it under OpenAI.');
+  expect(dev.posts.filter((b) => b.has('tgToken') || b.has('tavKey')).length).toBe(0);
 });
 
 // ---- the provider step -------------------------------------------------------------
@@ -358,8 +390,8 @@ test('the provider step does not promise a ceiling that is not in force', async 
   await wire(page, dev);
   await page.goto('/?onboard=provider');
   const d = page.locator('#onb_defaults');
-  await expect(d).toContainText('standard model for the assistant');
   await expect(d).not.toContainText('Paid AI calls pause once');
+  await expect(d).toContainText('Each provider starts on cost-conscious default models');
   await expect(d).toContainText('It starts counting once the device clock has synced');
 });
 
@@ -388,14 +420,25 @@ test('the Software update panel shows the release notes line', async ({ page }) 
 });
 
 // ---- review fixes ---------------------------------------------------------------------
-test('a shape-only key is moved with "looks like", a published prefix with "is"', async ({ page }) => {
+test('a shape-only guess is never moved: the wizard points at the provider and saves nothing', async ({ page }) => {
   const dev = makeDevice();
   await wire(page, dev);
   await page.goto('/?onboard=provider');
   await page.locator('#onb_key').fill('a'.repeat(32));
   await page.locator('#onb_provsave').click();
-  await expect(page.locator('#onb_provmsg')).toContainText('That looks like a Mistral key, so it is saved under Mistral.');
+  await expect(page.locator('#onb_provmsg')).toContainText('That looks like a Mistral key. Mistral is now selected above: tap Save & Verify again.');
   await expect(page.locator('#onb_prov')).toHaveValue('mistral');
+  // An sk- key that is not a published OpenAI shape (DeepSeek, a proxy) is a guess too.
+  await page.locator('#onb_prov').selectOption('cumulo');
+  await page.locator('#onb_key').fill('sk-' + 'a'.repeat(32));
+  await page.locator('#onb_provsave').click();
+  await expect(page.locator('#onb_provmsg')).toContainText('That looks like an OpenAI key. OpenAI is now selected above');
+  expect(dev.posts.length).toBe(0);
+  // Under the provider the owner chose, a guess is saved there and that provider decides.
+  await page.locator('#onb_prov').selectOption('anthropic');
+  await page.locator('#onb_key').fill('sk-' + 'a'.repeat(32));
+  await page.locator('#onb_provsave').click();
+  await expect.poll(() => dev.posts.filter((b) => b.has('antKey')).length).toBe(1);
 });
 
 test('a Telegram check that cannot reach Telegram says so, not "unexpected answer"', async ({ page }) => {
@@ -448,4 +491,29 @@ test('the Memory page says when memory\'s provider is refusing right now', async
   await page.locator('.tab[data-p=memory]').click();
   await page.locator('details.setgroup:has(#memstat)').evaluate((el) => { el.open = true; });
   await expect(page.locator('#embstate')).toContainText('Long-term memory embeds through Cumulo Nimbus, which is refusing right now (out of embedding credit at cumulo).');
+});
+
+test('a typed timezone rule the device cannot read is not reported as saved', async ({ page }) => {
+  const dev = makeDevice({ state: { provVerified: true } });
+  await wire(page, dev);
+  await page.goto('/?onboard=timezone');
+  await expect(page.locator('#onbBody')).toContainText('Or type a timezone rule');
+  await page.locator('#onb_tzother').fill('EST');
+  await page.locator('#onb_tzsave').click();
+  await expect(page.locator('#onb_tzmsg')).toContainText('That timezone rule is not one the device can read.');
+  await expect(page.locator('#onb_tzmsg')).not.toContainText('Saved');
+});
+
+test('a provider check that outlives the poll is still watched, and the wizard continues', async ({ page }) => {
+  test.setTimeout(200000);
+  test.skip(test.info().project.name !== 'desktop', 'one project: it waits out the 48 s poll');
+  const dev = makeDevice({ verifyPlan: { cumulo: { after: 75, land: { verify: 1 } } } });
+  await wire(page, dev);
+  await page.goto('/?onboard=provider');
+  await page.locator('#onb_key').fill('cumulo_sk_' + 'e'.repeat(48));
+  await page.locator('#onb_provsave').click();
+  await expect(page.locator('#onb_provmsg')).toContainText('The check is still running. Your key is saved; this page continues when it finishes', { timeout: 70000 });
+  await expect(page.locator('#onb_provmsg')).toContainText('Verified ✓', { timeout: 90000 });
+  await page.locator('#onbNext').click();
+  await expect(page.locator('#onbTitle')).toHaveText('Your timezone');
 });

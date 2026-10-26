@@ -161,6 +161,34 @@ static void test_a_width_conflict_with_stored_vectors_switches_nothing() {
   TEST_ASSERT_TRUE(pickEmbedProvider(def, keysFrom(2), true, 256).act == EmbedPickAct::Switch);
 }
 
+// A fresh device must not choose a key that cannot embed: with an empty store, a key
+// out of credit, on an outdated router or parked after a refusal does not count, so
+// the pick falls through to the next keyed provider. With stored vectors the rule is
+// only "stored and not rejected" (a refusal is waited out, never routed around).
+static void test_a_key_that_cannot_embed_does_not_count_for_a_fresh_pick() {
+  static const char* const kReasons[] = {"", "nocredits", "router_outdated", "connectfail",
+                                         "tlsbusy", "low-memory"};
+  for (int keyed = 0; keyed < 2; ++keyed)
+    for (int verify = -1; verify <= 1; ++verify)
+      for (const char* reason : kReasons)
+        for (int parked = 0; parked < 2; ++parked)
+          for (int empty = 0; empty < 2; ++empty) {
+            const std::string r(reason);
+            const bool want = keyed && verify != 0 &&
+                              (!empty || (!parked && r != "nocredits" && r != "router_outdated"));
+            TEST_ASSERT_EQUAL_MESSAGE(want, embedKeyServes(keyed, verify, r, parked, empty), reason);
+          }
+  // The reported case: an unfunded Cumulo key and a working Mistral key on a fresh
+  // device. The Cumulo key does not count, so memory goes to Mistral.
+  EmbedKeys k;
+  k.cumulo = embedKeyServes(true, -1, "nocredits", false, true);
+  k.mistral = embedKeyServes(true, 1, "", false, true);
+  const EmbedConfig def{"openai", kEmbedOpenAiModel, kEmbedOpenAiDims};
+  const EmbedPick p = pickEmbedProvider(def, k, false);
+  TEST_ASSERT_TRUE(p.act == EmbedPickAct::Switch);
+  TEST_ASSERT_EQUAL_STRING("mistral", p.pick.provider.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_state_obeys_the_rules);
@@ -169,5 +197,6 @@ int main(int, char**) {
   RUN_TEST(test_stored_openai_space_moves_to_the_router_unchanged);
   RUN_TEST(test_no_embed_capable_key_is_none);
   RUN_TEST(test_a_width_conflict_with_stored_vectors_switches_nothing);
+  RUN_TEST(test_a_key_that_cannot_embed_does_not_count_for_a_fresh_pick);
   return UNITY_END();
 }

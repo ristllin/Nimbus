@@ -60,14 +60,14 @@ no code to copy.
 ## 3. Walk the wizard
 
 The wizard asks for two required things and lets you skip the rest. It takes about
-five minutes. If you close the page or the device restarts, setup picks up on this
-device where you left it, at the first required step that is not done yet.
+five minutes. If you close the page or the device restarts, setup picks up where you
+left it in the same browser, never past a required step that is not done yet.
 
 | Step | Required? | Notes |
 |---|---|---|
 | Choose your display | Skippable | Shown before Wi-Fi. Tick **Flip display 180 degrees** if the screen is mounted upside down; it applies right away. |
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
-| **Add an AI provider** | Yes - one verified key | Pick the provider, paste its API key, click **Save & Verify**. The device checks the key with the provider before you continue. Providers: Cumulo Nimbus (preselected, recommended), Anthropic, OpenAI, Mistral, Z.ai; [Get your provider key](provider-keys.md) helps you choose. A key pasted under the wrong provider is recognized and saved under its own. A check that fails says why: the key was rejected, the account has no credit, the provider could not be reached, or the device was busy, each with the next step. Have the key ready before you start: you cannot fetch one while connected to the device's own Wi-Fi. The key stays on the device and is never shown again. |
+| **Add an AI provider** | Yes - one verified key | Pick the provider, paste its API key, click **Save & Verify**. The device checks the key with the provider before you continue. Providers: Cumulo Nimbus (preselected, recommended), Anthropic, OpenAI, Mistral, Z.ai; [Get your provider key](provider-keys.md) helps you choose. A key pasted under the wrong provider is saved under its own when its published prefix names it (`sk-ant-`, `sk-proj-`, `cumulo_sk_`); a key recognized by its shape alone is pointed at, never moved. A check that fails says why: the key was rejected, the account has no credit, the provider could not be reached, or the device was busy, each with the next step. Have the key ready before you start: you cannot fetch one while connected to the device's own Wi-Fi. The key stays on the device and is never shown again. |
 | Your timezone | Skippable | Shows this computer's timezone (for example Europe/London) and sets the device to it with one tap, then checks the device's clock against this computer's. Routines, reminders and each day's food log follow it; a device left on UTC can date a late meal on the wrong day anywhere UTC is not the local time. Change it later under **Device → Mode & identity → Timezone**. |
 | Choose a mode | Skippable | **Orchestrator** is the assistant, managed from this web page. **Notifier** is a Bluetooth status light: it turns Wi-Fi and this web page off, so the wizard asks you to confirm, skips the assistant-only steps, and the way back is **Settings → Mode** on the device's screen. Applied when you finish; a mode change restarts the device. Only want the status light? You need no key: switch on the device under **Settings → Mode** instead of finishing the wizard. |
 | Telegram | Skippable | Paste a bot token from @BotFather and click **Save & Verify**: the wizard shows the check's result and the bot it reached. It works right away, no restart. Or add it later under **Assistant → Connectors → Telegram**. |

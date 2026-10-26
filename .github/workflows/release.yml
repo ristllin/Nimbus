@@ -39,6 +39,15 @@ jobs:
         id: shape
         run: python3 tools/release_gate/tag_shape.py --tag "${GITHUB_REF_NAME}"
 
+      # RELEASE GATE (owner decision D5): the owners' one-line release notes
+      # (docs/release-notes/<tag>.txt). Checked HERE, in the job every other job needs,
+      # so a release tag without its line fails before anything is built or pushed: the
+      # nimbusd image job needs only this job, and image tags are immutable. A Virtual
+      # Nimbus image tag needs no line; a release candidate may go without one (a line
+      # it has is still checked). The device keeps 95 bytes of it.
+      - name: Release gate - release notes line
+        run: python3 tools/release_gate/check_release_notes.py --tag="${GITHUB_REF_NAME}"
+
   # Firmware OTA release: OTA tags only. A virtual tag skips this whole job.
   release:
     needs: tag-shape
@@ -89,15 +98,6 @@ jobs:
       - name: Release gate - config-to-image mapping (CUM-388)
         working-directory: Nimbus
         run: python3 tools/release_gate/check_config_mapping.py
-
-      # RELEASE GATE (owner decision D5): every OTA release carries one plain line for
-      # its owners in docs/release-notes/<tag>.txt (an -rc tag may use its version's).
-      # The device shows it on the Software update panel and tells the assistant after
-      # the update; its notes field keeps 95 bytes, so a line that would be cut fails
-      # here, before the build.
-      - name: Release gate - release notes line
-        working-directory: Nimbus
-        run: python3 tools/release_gate/check_release_notes.py --tag="${GITHUB_REF_NAME}"
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0 (pinned SHA)
         with:
@@ -183,7 +183,8 @@ jobs:
           OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
           test -n "$OTA_SIGNING_KEY" || { echo "::error::OTA_SIGNING_KEY secret is not set"; exit 1; }
-          # The owners' one-line release notes (checked by the gate step above), read
+          # The owners' one-line release notes (checked in the tag-shape job; empty for a
+          # release candidate without one), read
           # before the key touches the disk.
           NOTES="$(python3 tools/release_gate/check_release_notes.py --tag "${GITHUB_REF_NAME}" --print)"
           printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem

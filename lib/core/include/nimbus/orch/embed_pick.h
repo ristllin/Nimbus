@@ -62,6 +62,16 @@ struct EmbedPick {
   EmbedConfig pick;   // set only for Switch
 };
 
+// Whether one provider's key counts as usable for the pick: stored, and not rejected by
+// its last verify (verify 0). With no stored vectors (storeEmpty) the bar is higher: a
+// key whose last check said the account has no credit ("nocredits") or the router is
+// too old ("router_outdated"), or whose provider is parked after a refusal right now,
+// does not count either, so a fresh device falls through to a key that can actually
+// embed instead of choosing one that refuses every call. With vectors only the
+// same-space switch exists, and a refusal is waited out, never routed around.
+bool embedKeyServes(bool keyed, int verify, const std::string& vfyReason, bool parked,
+                    bool storeEmpty);
+
 // Whether `provider` (an embedRouteFor slug) has a usable key in `keys`.
 bool embedKeyUsable(const EmbedKeys& keys, const std::string& provider);
 

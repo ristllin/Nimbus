@@ -57,9 +57,11 @@ you are told, and how to lift it.
 
 Tap **Save & Verify** (or **Verify** for a key that is already stored). The device
 checks the key against the provider. A key pasted under the wrong provider is not
-saved there: the setup wizard moves it to its own provider (the page reads the key's
-published prefix, such as `sk-ant-` or `cumulo_sk_`), and the **Models** page names
-the row it belongs in. The wizard shows the result as a sentence with the next step;
+saved there: when the key's published prefix names its provider (such as `sk-ant-` or
+`cumulo_sk_`) the setup wizard saves it under that provider, a key recognized only by
+its shape is pointed at, not moved, and the **Models** page names the row it belongs
+in. The device also refuses a provider key pasted into the Telegram bot token or
+Tavily key field, so it is never sent to those services. The wizard shows the result as a sentence with the next step;
 the **Models** page shows a badge:
 
 - **verified**: the key works. You can continue.

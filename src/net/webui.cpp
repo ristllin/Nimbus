@@ -105,6 +105,7 @@
 #include "nimbus/cloud/device_key.h"     // CUM-397: capacity validation (one source of truth)
 #include "nimbus/orch/key_shape.h"       // CUM-514: posted key/token shape check
 #include "nimbus/orch/key_home.h"        // QW5: a key posted into another provider's slot
+#include "nimbus/orch/posix_tz.h"        // QW5: a timezone rule the device cannot read is refused
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -2363,6 +2364,18 @@ void beginWeb(const WebConfig& wc) {
   // loopWeb() fires onChanged() to persist after draining the staged edits.
   s_server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    // QW5: a timezone rule the C library cannot parse would be read as UTC while the
+    // page said "Saved": refuse it with the sentence to show, before anything is stored.
+    if (r->hasParam("devTz", true)) {
+      String tz = r->getParam("devTz", true)->value();
+      tz.trim();
+      const std::string err = nimbus::orch::posixTzError(std::string(tz.c_str()));
+      if (!err.empty()) {
+        JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
+        r->send(400, "application/json", out);
+        return;
+      }
+    }
     nimbus::sys::SaveScope save;   // CUM-479: every NVS write below answers through sendSaved
     bool touched = false;
     String battWarn;   // set when a battery param is clamped, surfaced as a toast
@@ -2403,8 +2416,7 @@ void beginWeb(const WebConfig& wc) {
     // guarantees the drain reads the new value.
     if (r->hasParam("devTz", true)) {
       String tz = r->getParam("devTz", true)->value();
-      tz.trim();
-      if (tz.length() > 48) tz = tz.substring(0, 48);
+      tz.trim();   // checked above (posixTzError): a valid rule fits the 48-byte setting
       // Only apply on a REAL change: a no-op re-save (the field is pre-filled,
       // so a reflexive Save is one click) would otherwise rebase every
       // wall-clock loop and erase a due-but-not-yet-fired one (prism).

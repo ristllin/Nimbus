@@ -11,8 +11,17 @@ would not survive that field intact.
 The line must be: one line (a single trailing newline is fine), 1 to 95 bytes,
 printable ASCII (the device screen and serial are ASCII only, and a multi-byte
 character could be cut in half at the 95-byte edge), and in plain words: no ticket
-numbers. A release candidate (vX.Y.Z-rcN) may use its own file or fall back to
-vX.Y.Z.txt.
+numbers.
+
+Which tags need one (the channels tag_shape.py decides):
+  vX.Y.Z           an OTA release: the line is required.
+  vX.Y.Z-rcN       a release candidate: its own file, else vX.Y.Z.txt, else none; a
+                   line it has is still checked.
+  vn-...           a Virtual Nimbus image only (no OTA manifest): no line.
+The release workflow runs this in its first job (tag-shape), which every build and
+publish job needs, so a missing line stops the release before anything is built or
+pushed. The tools/release_gate tests also check the current include/version.h on
+every push, so a version bump without its line fails CI before anyone tags.
 
 Usage:
     python3 tools/release_gate/check_release_notes.py --tag "$GITHUB_REF_NAME" [--print]
@@ -27,6 +36,9 @@ import argparse
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tag_shape  # noqa: E402  (the channel prefixes: one source)
 
 REPO = Path(__file__).resolve().parents[2]
 NOTES_DIR = REPO / "docs" / "release-notes"
@@ -81,6 +93,30 @@ def notes_for(tag: str) -> tuple[str | None, str]:
     return None, f"no release notes for {tag}: write one line of at most {MAX_BYTES} bytes to {names}"
 
 
+REQUIRED, OPTIONAL, NONE = "required", "optional", "none"
+
+
+def policy(tag: str) -> str:
+    """Whether `tag` needs a line: required (an OTA release), optional (a release
+    candidate), none (a Virtual Nimbus image tag, which has no OTA manifest)."""
+    if tag.startswith(tag_shape.VIRTUAL_PREFIX):
+        return NONE
+    if "-rc" in tag:
+        return OPTIONAL
+    return REQUIRED
+
+
+def line_for(tag: str) -> tuple[str | None, str]:
+    """The line `tag` carries ("" when it needs none and has none), else (None, why)."""
+    pol = policy(tag)
+    if pol == NONE:
+        return "", f"{tag} is a Virtual Nimbus image tag: no release notes line"
+    line, why = notes_for(tag)
+    if line is None and pol == OPTIONAL and why.startswith("no release notes"):
+        return "", f"{tag} is a release candidate with no line: none is sent"
+    return line, why
+
+
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Release notes gate (one line per OTA release)")
     ap.add_argument("--tag", help="the release tag (default: include/version.h NIMBUS_FW_VERSION)")
@@ -90,14 +126,16 @@ def main(argv: "list[str] | None" = None) -> int:
     if not tag:
         print("::error::include/version.h has no NIMBUS_FW_VERSION")
         return 1
-    line, why = notes_for(tag)
+    line, why = line_for(tag)
     if line is None:
         print(f"::error::release notes: {why}")
         return 1
     if args.print:
         print(line)
-    else:
+    elif line:
         print(f"release notes for {tag}: OK ({len(line)} bytes): {line}")
+    else:
+        print(f"release notes: {why}")
     return 0
 
 

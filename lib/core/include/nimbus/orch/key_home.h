@@ -12,19 +12,24 @@
 // The setup wizard preselects Cumulo Nimbus. A direct OpenAI, Anthropic or Mistral key
 // pasted there was stored in the Cumulo slot, checked against the router, and came
 // back "Rejected - check the key": a valid key blamed, and a wrong key left stored.
+// The same mistake in the Telegram or Tavily field sent a provider key to
+// api.telegram.org or Tavily on every poll.
 //
 // Shapes, most specific first:
 //   cumulo     cumulo_sk_...                 (the router mints cumulo_sk_<48 hex>)
 //   anthropic  sk-ant-...
-//   openai     sk-...                        (sk-proj-, sk-svcacct-, legacy sk-)
+//   (unknown)  sk-or-...                     (OpenRouter: not a key this device uses)
+//   openai     sk-proj-, sk-svcacct-, sk-admin-, or sk- + exactly 48 letters/digits;
+//              any other sk-... (DeepSeek, proxies) only LOOKS like an OpenAI key
 //   tavily     tvly-...
-//   telegram   <digits>:<30+ of A-Z a-z 0-9 _ ->   (a BotFather bot token)
+//   telegram   <5-12 digits>:<30+ of A-Z a-z 0-9 _ ->   (a BotFather bot token)
 //   zai        <20-64 alnum>.<8-64 alnum>   (id.secret)
 //   mistral    exactly 32 alnum
-// The first four are published prefixes and the bot token's digits:colon form is
-// unmistakable, so those five are certain. Z.ai and Mistral are shapes only: the page
-// moves such a key to its provider with a hedged "looks like", and the device never
-// refuses a save on a shape alone, in case a provider changes its format.
+// keyHomeSure() says whether the home is certain: the published prefixes above and the
+// bot token's digits:colon form. Z.ai, Mistral and the other sk- keys are shapes only:
+// the page names them with a hedged "looks like" and never moves them on its own, and
+// the device refuses them only in a slot with a fixed form of its own (Cumulo,
+// Telegram, Tavily), never in another provider's slot, in case a format changes.
 namespace nimbus {
 namespace orch {
 
@@ -58,16 +63,30 @@ inline bool zaiShape(const std::string& k) {
 }
 }  // namespace keyhome_detail
 
-// The provider slug a key's shape names ("cumulo", "anthropic", "openai", "tavily",
-// "telegram", "zai", "mistral"), or "" when the shape is unknown. Spaces around the
-// key are ignored (the shape check trims them the same way).
-inline const char* keyHomeFor(std::string k) {
-  using namespace keyhome_detail;
+namespace keyhome_detail {
+// Spaces around a key are ignored (the shape check trims them the same way).
+inline std::string trimmed(const std::string& k) {
   const size_t b = k.find_first_not_of(' ');
-  if (b == std::string::npos) return "";
-  k = k.substr(b, k.find_last_not_of(' ') - b + 1);
+  if (b == std::string::npos) return std::string();
+  return k.substr(b, k.find_last_not_of(' ') - b + 1);
+}
+// An OpenAI key by its published prefix, or the legacy sk- plus exactly 48 alnum.
+inline bool openAiSure(const std::string& k) {
+  if (startsWith(k, "sk-proj-") || startsWith(k, "sk-svcacct-") || startsWith(k, "sk-admin-"))
+    return true;
+  return k.size() == 51 && alnumRun(k, 3, k.size());
+}
+}  // namespace keyhome_detail
+
+// The provider slug a key's shape names ("cumulo", "anthropic", "openai", "tavily",
+// "telegram", "zai", "mistral"), or "" when the shape is unknown.
+inline const char* keyHomeFor(const std::string& key) {
+  using namespace keyhome_detail;
+  const std::string k = trimmed(key);
+  if (k.empty()) return "";
   if (startsWith(k, "cumulo_sk_")) return "cumulo";
   if (startsWith(k, "sk-ant-")) return "anthropic";
+  if (startsWith(k, "sk-or-")) return "";
   if (startsWith(k, "sk-")) return "openai";
   if (startsWith(k, "tvly-")) return "tavily";
   if (telegramShape(k)) return "telegram";
@@ -76,51 +95,82 @@ inline const char* keyHomeFor(std::string k) {
   return "";
 }
 
-// The /api/orch field a provider's key is saved in, and where the owner finds it.
+// Whether keyHomeFor(key) is certain (a published prefix or the bot token's form),
+// not a shape alone.
+inline bool keyHomeSure(const std::string& key) {
+  using namespace keyhome_detail;
+  const std::string home = keyHomeFor(key);
+  if (home == "openai") return openAiSure(trimmed(key));
+  return home == "cumulo" || home == "anthropic" || home == "tavily" || home == "telegram";
+}
+
+// The /api/orch field a key or token is saved in, and where the owner finds it.
 struct KeyHomeSlot {
   const char* home;
   const char* field;
   const char* noun;    // "an Anthropic key"
   const char* where;   // where to save it instead
-  bool certain;        // read from a published prefix or form, not a shape alone
 };
 inline const KeyHomeSlot* keyHomeSlot(const std::string& home) {
   static const KeyHomeSlot kSlots[] = {
-      {"cumulo", "cumuloKey", "a Cumulo Nimbus key", "under Cumulo Nimbus", true},
-      {"anthropic", "antKey", "an Anthropic key", "under Anthropic", true},
-      {"openai", "oaiKey", "an OpenAI key", "under OpenAI", true},
-      {"mistral", "mistKey", "a Mistral key", "under Mistral", false},
-      {"zai", "zaiKey", "a Z.ai key", "under Z.ai", false},
-      {"tavily", "tavKey", "a Tavily web search key", "under Assistant > Tools > Web search", true},
-      {"telegram", "tgToken", "a Telegram bot token", "under Assistant > Connectors > Telegram", true},
+      {"cumulo", "cumuloKey", "a Cumulo Nimbus key", "under Cumulo Nimbus"},
+      {"anthropic", "antKey", "an Anthropic key", "under Anthropic"},
+      {"openai", "oaiKey", "an OpenAI key", "under OpenAI"},
+      {"mistral", "mistKey", "a Mistral key", "under Mistral"},
+      {"zai", "zaiKey", "a Z.ai key", "under Z.ai"},
+      {"tavily", "tavKey", "a Tavily web search key", "under Assistant > Tools > Web search"},
+      {"telegram", "tgToken", "a Telegram bot token", "under Assistant > Connectors > Telegram"},
   };
   for (const KeyHomeSlot& s : kSlots)
     if (home == s.home) return &s;
   return nullptr;
 }
 
-// Whether `home` was read with certainty (see the table above), not a shape alone.
-inline bool keyHomeCertain(const std::string& home) {
-  const KeyHomeSlot* s = keyHomeSlot(home);
-  return s && s->certain;
+namespace keyhome_detail {
+// The refusal for a slot with a fixed form of its own (Cumulo, Telegram, Tavily) when
+// the value is not that form: where it seems to belong, else what the slot expects.
+inline std::string notThisForm(const std::string& home, bool sure, const char* what,
+                               const char* expect) {
+  const KeyHomeSlot* slot = keyHomeSlot(home);
+  if (slot)
+    return std::string(sure ? "That is " : "That looks like ") + slot->noun + ", not " + what +
+           ". Save it " + slot->where + ".";
+  return std::string("That is not ") + what + ": " + expect;
 }
+}  // namespace keyhome_detail
 
 // "" when `value` may be stored in `field`, else the owner-facing refusal naming where
-// the key goes. Refuses only on certainty: a published prefix that belongs to another
-// slot, or a Cumulo slot value without the cumulo_sk_ prefix every router key has.
-// Fields that are not provider key slots (and empty values) are never refused here.
+// the key goes. Guards every provider key slot and the two other secret slots that
+// send their value to a fixed host (the Telegram bot token, the Tavily key):
+//  - a key whose home is certain is refused in any slot but its own;
+//  - the Cumulo, Telegram and Tavily slots take only their own form (cumulo_sk_..., a
+//    bot token, tvly-...), so a provider key never goes to the router, api.telegram.org
+//    or Tavily;
+//  - a shape-only guess (Mistral, Z.ai, an unfamiliar sk- key) is never refused in
+//    another provider's slot.
+// Other fields (the custom endpoint key takes anything) and empty values pass.
 inline std::string misplacedKeyError(const std::string& field, const std::string& value) {
-  static const char* const kKeyFields[] = {"oaiKey", "antKey", "mistKey", "zaiKey", "cumuloKey"};
-  bool keyField = false;
-  for (const char* f : kKeyFields) keyField = keyField || field == f;
-  if (!keyField || value.find_first_not_of(' ') == std::string::npos) return std::string();
+  using namespace keyhome_detail;
+  static const char* const kGuarded[] = {"oaiKey",    "antKey",  "mistKey", "zaiKey",
+                                         "cumuloKey", "tgToken", "tavKey"};
+  bool guarded = false;
+  for (const char* f : kGuarded) guarded = guarded || field == f;
+  if (!guarded || trimmed(value).empty()) return std::string();
   const std::string home = keyHomeFor(value);
+  const bool sure = keyHomeSure(value);
   const KeyHomeSlot* slot = keyHomeSlot(home);
-  if (slot && slot->certain && field != slot->field)
+  if (slot && sure && field != slot->field)
     return std::string("That is ") + slot->noun + ". Save it " + slot->where + ".";
   if (field == "cumuloKey" && home != "cumulo")
-    return "That is not a Cumulo Nimbus key: those start with cumulo_sk_. Choose the provider "
-           "your key comes from and save it there.";
+    return notThisForm(home, sure, "a Cumulo Nimbus key",
+                       "those start with cumulo_sk_. Choose the provider your key comes from "
+                       "and save it there.");
+  if (field == "tgToken" && home != "telegram")
+    return notThisForm(home, sure, "a Telegram bot token",
+                       "a bot token looks like 123456789:AAH... Copy it from @BotFather.");
+  if (field == "tavKey" && home != "tavily")
+    return notThisForm(home, sure, "a Tavily key",
+                       "those start with tvly-. Copy it from your Tavily account.");
   return std::string();
 }
 

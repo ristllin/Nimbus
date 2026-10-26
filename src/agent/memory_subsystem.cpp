@@ -55,6 +55,8 @@
 #include "nimbus/orch/billing_refusal.h"   // one owner notice per billing episode (shared with chat)
 #include "nimbus/orch/pending_embed.h"     // memory writes that survive an embedding outage
 #include "nimbus/orch/embed_pick.h"        // which keyed provider embeds (QW5)
+#include "nimbus/orch/provider_park.h"     // a parked provider does not count for a fresh pick (QW5)
+#include "provider_verify.h"                // the last check's reason (nocredits, router_outdated)
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
@@ -296,8 +298,9 @@ std::atomic<uint32_t> g_netLockReleases{0};
 // first vector lands in the chosen space and the set-once lock keeps its meaning.
 // It runs again whenever the usable keys change, on whatever path changed them (a
 // web save, a cloud-minted key, a verify that rejected one): the last-seen set is
-// kept as a bit mask (-1 = no pick yet). The lazy callers (stats, recall, the drain)
-// look at most once per kPickCheckEveryMs, since a look reads six settings. A pick
+// kept as a bit mask (-1 = no pick yet, -2 = the last switch could not be stored).
+// The lazy callers (stats, recall, the drain) look at most once per kPickCheckEveryMs,
+// since a look reads six settings; only a device that never picked looks every time. A pick
 // never runs inside an embedding call: the memory tools read the store's width
 // before they embed, so a width change there would refuse the vector it waited for.
 std::atomic<int> g_pickedKeys{-1};
@@ -309,9 +312,16 @@ int keyMask(const nimbus::orch::EmbedKeys& k) {
   return (k.openai ? 1 : 0) | (k.cumulo ? 2 : 0) | (k.mistral ? 4 : 0);
 }
 
-// A key is usable when it is stored and its provider's last verify did not reject it.
-nimbus::orch::EmbedKeys usableEmbedKeys() {
-  auto usable = [](const char* p, bool keyed) { return keyed && store::verifyResult(p) != 0; };
+// Which keys count for the pick (nimbus/orch/embed_pick.h embedKeyServes): stored and
+// not rejected; with an empty store, also not out of credit, not on an outdated router
+// and not parked after a refusal.
+nimbus::orch::EmbedKeys usableEmbedKeys(bool storeEmpty) {
+  auto usable = [storeEmpty](const char* p, bool keyed) {
+    const bool parked = keyed && storeEmpty && nimbus::orch::providerPark().recheckInMs(p) > 0;
+    return nimbus::orch::embedKeyServes(keyed, store::verifyResult(p),
+                                        std::string(provider_verify::reason(p).c_str()), parked,
+                                        storeEmpty);
+  };
   nimbus::orch::EmbedKeys k;
   k.openai = usable("openai", store::hasOpenaiKey());
   k.cumulo = usable("cumulo", store::hasCumuloKey());
@@ -323,10 +333,10 @@ nimbus::orch::EmbedKeys usableEmbedKeys() {
 // recorded only once it is handled, so a switch the settings storage refused is tried
 // again at the next look.
 void applyEmbedPickLocked() {
-  const nimbus::orch::EmbedKeys keys = usableEmbedKeys();
+  const bool hasVectors = store::embedLocked() || g_vec.size() > 0 || g_archive.size() > 0;
+  const nimbus::orch::EmbedKeys keys = usableEmbedKeys(!hasVectors);
   const nimbus::orch::EmbedConfig cur{std::string(store::embedProvider().c_str()),
                                       std::string(store::embedModel().c_str()), store::embedDims()};
-  const bool hasVectors = store::embedLocked() || g_vec.size() > 0 || g_archive.size() > 0;
   // The live store's width is the stored vectors' own (deserialize adopts the blob's).
   const nimbus::orch::EmbedPick p = nimbus::orch::pickEmbedProvider(cur, keys, hasVectors, g_vec.dims());
   if (p.act == nimbus::orch::EmbedPickAct::Conflict)
@@ -335,6 +345,7 @@ void applyEmbedPickLocked() {
   if (p.act == nimbus::orch::EmbedPickAct::Switch) {
     if (!store::setEmbedConfig(p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims)) {
       alog("memory: embedding provider switch not stored (settings storage full) - retried later");
+      g_pickedKeys = -2;   // tried: the 10 s throttle applies to the retries
       return;
     }
     // A new width only ever comes with no stored vectors (embed_pick), so both
@@ -355,10 +366,12 @@ void applyEmbedPickLocked() {
 bool pickDue(bool force) {
   if (!g_pickReady.load()) return false;
   const uint32_t now = millis();
-  if (!force && g_pickedKeys.load() >= 0 && (uint32_t)(now - g_pickCheckMs.load()) < kPickCheckEveryMs)
+  if (!force && g_pickedKeys.load() != -1 && (uint32_t)(now - g_pickCheckMs.load()) < kPickCheckEveryMs)
     return false;
   g_pickCheckMs = now;
-  return keyMask(usableEmbedKeys()) != g_pickedKeys.load();
+  // The lock-free look uses the set-once flag for "vectors exist"; the decision itself
+  // (under the card lock) also counts the live and archived stores.
+  return keyMask(usableEmbedKeys(!store::embedLocked())) != g_pickedKeys.load();
 }
 
 // Pick again when the keys changed, if the card lock frees within waitMs (a turn may

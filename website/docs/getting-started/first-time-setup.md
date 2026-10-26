@@ -149,7 +149,7 @@ The wizard asks for two required things and lets you skip the rest.
 |---|---|---|
 | Choose your display | Optional | Flip the display 180 degrees if it is mounted upside down. |
 | **Connect to Wi-Fi** | Yes | Tap **Scan**, pick your home network, type its password, **Connect**. |
-| **Add an AI provider** | Yes, one verified key | Pick the provider, paste the API key, and click **Save & Verify**. A key under the wrong provider is saved under its own; a failed check says why. |
+| **Add an AI provider** | Yes, one verified key | Pick the provider, paste the API key, and click **Save & Verify**. A key whose prefix names another provider is saved under that provider; a failed check says why. |
 | Your timezone | Optional | One tap sets the device to this computer's timezone. |
 | Choose a mode | Optional | Keep Orchestrator, or choose Notifier (a Bluetooth status light that turns Wi-Fi and this page off; the way back is **Settings > Mode** on the device). A change restarts the device. |
 | Telegram | Optional | Paste a bot token and click **Save & Verify**, or add it later. |

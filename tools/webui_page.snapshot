@@ -3024,6 +3024,7 @@ function keyHome(k){
   if(!k)return '';
   if(k.indexOf('cumulo_sk_')===0)return 'cumulo';
   if(k.indexOf('sk-ant-')===0)return 'anthropic';
+  if(k.indexOf('sk-or-')===0)return '';
   if(k.indexOf('sk-')===0)return 'openai';
   if(k.indexOf('tvly-')===0)return 'tavily';
   if(/^[0-9]{5,12}:[A-Za-z0-9_-]{30,}$/.test(k))return 'telegram';
@@ -3031,7 +3032,37 @@ function keyHome(k){
   if(/^[A-Za-z0-9]{32}$/.test(k))return 'mistral';
   return '';
 }
+// Whether keyHome(k) is certain (a published prefix or the bot token's form), not a
+// shape alone (key_home.h keyHomeSure).
+function keyHomeSure(k){
+  k=(k||'').replace(/^ +| +$/g,'');
+  const h=keyHome(k);
+  if(h==='openai')return /^sk-(proj|svcacct|admin)-/.test(k)||/^sk-[A-Za-z0-9]{48}$/.test(k);
+  return h==='cumulo'||h==='anthropic'||h==='tavily'||h==='telegram';
+}
 const PROVNOUN={cumulo:'a Cumulo Nimbus key',anthropic:'an Anthropic key',openai:'an OpenAI key',mistral:'a Mistral key',zai:'a Z.ai key'};
+// Every guarded secret slot: [field, noun, where] (key_home.h keyHomeSlot).
+const KEYSLOT={cumulo:['cumuloKey','a Cumulo Nimbus key','under Cumulo Nimbus'],anthropic:['antKey','an Anthropic key','under Anthropic'],
+  openai:['oaiKey','an OpenAI key','under OpenAI'],mistral:['mistKey','a Mistral key','under Mistral'],zai:['zaiKey','a Z.ai key','under Z.ai'],
+  tavily:['tavKey','a Tavily web search key','under Assistant > Tools > Web search'],
+  telegram:['tgToken','a Telegram bot token','under Assistant > Connectors > Telegram']};
+// The refusal for a value posted to a guarded slot, or '' (key_home.h misplacedKeyError,
+// row for row): a certain home is refused in any other slot; the Cumulo, Telegram and
+// Tavily slots take only their own form, so a provider key never reaches the router,
+// api.telegram.org or Tavily; a shape-only guess is never refused in another provider's
+// slot. The device refuses the same values; this also guards a Virtual Nimbus.
+function slotError(field,v){
+  const own={cumuloKey:['cumulo','a Cumulo Nimbus key','those start with cumulo_sk_. Choose the provider your key comes from and save it there.'],
+    tgToken:['telegram','a Telegram bot token','a bot token looks like 123456789:AAH... Copy it from @BotFather.'],
+    tavKey:['tavily','a Tavily key','those start with tvly-. Copy it from your Tavily account.']};
+  if(!Object.values(KEYSLOT).some(x=>x[0]===field)||!(v||'').trim())return '';
+  const home=keyHome(v),sure=keyHomeSure(v),slot=KEYSLOT[home];
+  if(slot&&sure&&slot[0]!==field)return 'That is '+slot[1]+'. Save it '+slot[2]+'.';
+  const f=own[field];
+  if(!f||home===f[0])return '';
+  if(slot)return (sure?'That is ':'That looks like ')+slot[1]+', not '+f[1]+'. Save it '+slot[2]+'.';
+  return 'That is not '+f[1]+': '+f[2];
+}
 const PROVCONSOLE={cumulo:'app.cumulo-nimbus.ai',anthropic:'platform.claude.com',openai:'platform.openai.com',mistral:'console.mistral.ai',zai:'z.ai'};
 // A key that is not an AI provider key at all: where it goes instead, or ''.
 function notProviderKeyText(home){
@@ -3076,8 +3107,8 @@ function runVerify(p,say,done,afterSave){
       if(st&&st.vts&&st.vts!==prevVts)return done(vfyOutcome(p,st),st);
       if(needStart&&!d.verifyPending)return start();
       if(left>0)return poll(left-1,2000);
-      done({ok:false,txt:d.verifyPending?'The check is still running. Your key is saved; Assistant > Models shows the result in a minute.'
-        :'The check did not finish. Your key is saved; tap Save & Verify to try again.'},st);
+      done(d.verifyPending?{ok:false,wait:true,txt:'The check is still running. Your key is saved; this page continues when it finishes, or tap Save & Verify to check again.'}
+        :{ok:false,txt:'The check did not finish. Your key is saved; tap Save & Verify to try again.'},st);
     },()=>left>0?poll(left-1,2000):lost()),ms);
   const start=()=>{
     if(++starts>6)return done({ok:false,txt:'The device is still busy with another check. Your key is saved; tap Save & Verify again in a minute.'},null);
@@ -4257,6 +4288,10 @@ function saveConnectors(){
 }
 function orchApply(body){
   // Resolves to true/false (never rejects) - see apply() / audit P1.5.
+  // QW5: a key or token in the wrong slot is refused here with where it goes, for
+  // every caller (the device refuses it too; a Virtual Nimbus relies on this).
+  for(const f in body){const err=slotError(f,String(body[f]));
+    if(err){_refuseErr=err;_lastFail=400;failToast(400);return Promise.resolve(false);}}
   return fetch('/api/orch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams(body).toString()})
    .then(jok).then(()=>{toast('Saved');loadOrch();return true;})
@@ -4278,10 +4313,8 @@ function saveAndVerify(p){
   }
   // QW5: every other key the page can place (key_home.h rules): say exactly where it
   // goes instead of saving it here to be rejected (the device refuses it too).
-  const home=keyHome(val), notHere=notProviderKeyText(home);
+  const notHere=val?slotError(keyField(p),val):'';
   if(notHere){setProvMsg(p,notHere,true);return;}
-  if(home&&home!==p&&PROVNOUN[home]){setProvMsg(p,'That is '+PROVNOUN[home]+'. Paste it in the '+PROVLBL[home]+' row.',true);return;}
-  if(val&&p==='cumulo'&&home!=='cumulo'){setProvMsg(p,'That is not a Cumulo Nimbus key: those start with cumulo_sk_. Paste it in the row of the provider it comes from.',true);return;}
   if(inp&&inp.value) body[keyField(p)]=inp.value;
   // Hosted (CUM-279): no cheap verify path, but the key applies in-app immediately
   // (device parity, via the same /api/orch seam). Save and report; no dead spinner.
@@ -5831,8 +5864,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     if(s.id==='timezone')return '<p class=hint>Routines, reminders and each day\'s food log follow the device\'s local time. A new device runs on UTC until you set its timezone.</p>'+
       '<p id=onb_tzdetect class=hint></p>'+
       '<div class=row><button type=button id=onb_tzuse>Use this timezone</button></div>'+
-      '<label style="margin-top:10px">Or choose another (POSIX format)</label>'+
-      '<div class=row><input id=onb_tzother list=tzlist placeholder="UTC0" maxlength=48><button type=button id=onb_tzsave>Save</button></div>'+
+      '<label style="margin-top:10px">Or type a timezone rule</label>'+
+      '<div class=row><input id=onb_tzother list=tzlist placeholder="for example GMT0BST,M3.5.0/1,M10.5.0" maxlength=48><button type=button id=onb_tzsave>Save</button></div>'+
+      '<p class=hint>Pick a suggestion from the list, or type the rule in POSIX form. The device checks it before saving.</p>'+
       '<p class=hint id=onb_tzmsg></p>';
     if(s.id==='mode')return '<p class=hint><b>Orchestrator</b> turns the device into an AI assistant: Telegram, voice and memory, managed from this web page.</p>'+
       '<p class=hint><b>Notifier</b> makes the LED ring a status light for AI coding sessions, connected over Bluetooth. Notifier turns Wi-Fi and this web page off, so the provider key you just added goes unused. To come back, use Settings &gt; Mode on the device\'s screen.</p>'+
@@ -5901,11 +5935,13 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     }).catch(()=>cb(''));
   }
   function showMem(){memLine(t=>{const mm=el('onb_memmsg');if(mm)mm.innerHTML=t;});}
-  // The device's own defaults line, unless the ceiling it promises is not in force.
+  // The device's own defaults line when the ceiling it promises is in force (the
+  // structured spend.active / spend.loaded say so); otherwise the page's own line,
+  // never an edit of the device's sentence.
   function defaultsHtml(st){
     const sp=st.spend;
     if(!sp||(sp.active!==false&&sp.loaded!==false))return esc(st.setupDefaults);
-    return esc(st.setupDefaults.replace(/ Paid AI calls pause once[\s\S]*?(?= Change models|$)/,''))+' '+ceilingLine(sp)+'.';
+    return 'Each provider starts on cost-conscious default models (change them on Assistant &rarr; Models). '+ceilingLine(sp)+'.';
   }
   function wireProvider(){
     // Per-provider setup guidance, updated as the selection changes.
@@ -5976,8 +6012,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function wireTelegram(){
     el('onb_tgsave').onclick=()=>{const v=el('onb_tg').value.trim(),m=el('onb_tgmsg'),b=el('onb_tgsave');
       if(!v){m.textContent='Enter a token first.';return;}
-      const home=keyHome(v);
-      if(home&&home!=='telegram'){m.textContent=(PROVNOUN[home]?'That is '+PROVNOUN[home]+', not a Telegram bot token. Add it on the provider step or under Assistant > Models.':notProviderKeyText(home));return;}
+      const wrong=slotError('tgToken',v);
+      if(wrong){m.textContent=wrong;return;}
       b.disabled=true;m.textContent='Saving & verifying…';
       orchApply({tgToken:v}).then(ok=>{
         if(!ok){b.disabled=false;m.textContent=lastFailText('Couldn\'t save - try again.');return;}
@@ -6148,22 +6184,19 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function verifyProvider(p,lead,afterSave){
     const b=el('onb_provsave'),out=t=>provOut(lead+t);
     b.disabled=true;out('Verifying…');
-    runVerify(p,out,(o)=>{b.disabled=false;out(o.txt);
+    runVerify(p,out,(o,st)=>{b.disabled=false;out(o.txt);
       if(o.ok)provVerified(p);
-      // A low-memory deferral retries by itself: keep watching for a while.
-      else if(o.wait)watchDeferred(p,out,0);},afterSave);
+      // A low-memory deferral retries by itself, and a slow check is still running:
+      // keep watching, so the page continues when the verdict lands.
+      else if(o.wait)watchVerdict(p,out,0,st?st.vts:0);},afterSave);
   }
-  function watchDeferred(p,out,n){
-    if(n>30||provOk)return;
+  function watchVerdict(p,out,n,lastVts){
+    if(n>40||provOk)return;
     setTimeout(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{const st=vfyState(d,p);
-      if(st&&st.verify===1){out('Verified ✓');provVerified(p);}
-      else watchDeferred(p,out,n+1);},()=>watchDeferred(p,out,n+1)),4000);
-  }
-  // A key pasted under another provider: where it goes, worded as sure only when its
-  // published prefix says so (a Mistral or Z.ai key is recognized by shape alone).
-  function movedLead(home){
-    const sure=home!=='mistral'&&home!=='zai';
-    return (sure?'That is ':'That looks like ')+PROVNOUN[home]+', so it is saved under '+PROVLBL[home]+'. ';
+      if(st&&st.verify===1){out('Verified ✓');provVerified(p);return;}
+      // A new verdict that is not another deferral is the answer: say it and stop.
+      if(st&&st.vts&&st.vts!==lastVts&&st.vfyReason!=='low-memory'){out(vfyOutcome(p,st).txt);return;}
+      watchVerdict(p,out,n+1,st?st.vts:lastVts);},()=>watchVerdict(p,out,n+1,lastVts)),4000);
   }
   function doProvider(){
     const sel=el('onb_prov'),key=el('onb_key').value.trim();
@@ -6176,10 +6209,17 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const home=keyHome(key), not=notProviderKeyText(home);
     if(not){provOut(not);return;}
     let lead='';
-    if(home&&home!==p&&PROVNOUN[home]){
-      // A direct key under the wrong provider (the Cumulo default above): move it.
-      lead=movedLead(home);
-      p=home;sel.value=p;if(sel.onchange)sel.onchange();
+    const choose=h=>{p=h;sel.value=h;if(sel.onchange)sel.onchange();};
+    if(home&&home!==p&&PROVNOUN[home]&&keyHomeSure(key)){
+      // A key whose published prefix names its provider: save it there.
+      lead='That is '+PROVNOUN[home]+', so it is saved under '+PROVLBL[home]+'. ';
+      choose(home);
+    } else if(home&&home!==p&&PROVNOUN[home]&&p==='cumulo'){
+      // A shape alone (Mistral, Z.ai, an unfamiliar sk- key) is only a guess: point at
+      // the provider, never move a key on a guess. Under another provider the owner's
+      // choice stands and that provider's check gives the verdict.
+      choose(home);
+      provOut('That looks like '+PROVNOUN[home]+'. '+PROVLBL[home]+' is now selected above: tap Save & Verify again.');return;
     } else if(p==='cumulo'&&home!=='cumulo'){
       provOut('That is not a Cumulo Nimbus key: those start with cumulo_sk_. Choose the provider your key comes from above.');return;}
     const b=el('onb_provsave');b.disabled=true;provOut(lead+'Saving…');

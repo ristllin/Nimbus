@@ -22,6 +22,13 @@ EmbedPick switchTo(const EmbedConfig& c) {
 
 }  // namespace
 
+bool embedKeyServes(bool keyed, int verify, const std::string& vfyReason, bool parked,
+                    bool storeEmpty) {
+  if (!keyed || verify == 0) return false;
+  if (!storeEmpty) return true;
+  return !parked && vfyReason != "nocredits" && vfyReason != "router_outdated";
+}
+
 bool embedKeyUsable(const EmbedKeys& keys, const std::string& provider) {
   if (provider == "openai") return keys.openai;
   if (provider == "cumulo") return keys.cumulo;

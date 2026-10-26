@@ -115,9 +115,12 @@ which signs the version, the device type and the image hash: the device treats i
 plain text from the release server.
 
 The device keeps 95 bytes of it, so the release gate
-(`tools/release_gate/check_release_notes.py`, run by the release workflow before the
-build and by `run_gate.py`) refuses a release whose line is missing, longer than 95
-bytes, more than one line, not printable ASCII, or naming a ticket number.
+(`tools/release_gate/check_release_notes.py`) refuses a release whose line is missing,
+longer than 95 bytes, more than one line, not printable ASCII, or naming a ticket
+number. It runs in the release workflow's first job, before anything is built or
+published (a Virtual Nimbus image tag needs no line; a release candidate may go without
+one), in `run_gate.py`, and in the `tools/release_gate` tests on every push, so a
+version bump in `include/version.h` without its line fails CI before anyone tags it.
 
 ## Release tags: firmware and Virtual Nimbus image
 
