@@ -183,15 +183,16 @@ jobs:
           OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
           test -n "$OTA_SIGNING_KEY" || { echo "::error::OTA_SIGNING_KEY secret is not set"; exit 1; }
-          printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem
-          # The owners' one-line release notes (checked by the gate step above).
+          # The owners' one-line release notes (checked by the gate step above), read
+          # before the key touches the disk.
           NOTES="$(python3 tools/release_gate/check_release_notes.py --tag "${GITHUB_REF_NAME}" --print)"
+          printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem
           # One typed manifest keyed on the device TYPE. Each Freenove panel size
           # is its own image, compiled at that panel's resolution, signed over its
           # own type in the message.
           python3 tools/make_manifest.py \
             --version "${GITHUB_REF_NAME}" \
-            --notes "${NOTES}" \
+            --notes="${NOTES}" \
             --build "$(git describe --tags --always --match 'v[0-9]*')" \
             --key /tmp/ota_priv.pem \
             --url-base "https://github.com/ristllin/nimbus-fw-releases/releases/download/${GITHUB_REF_NAME}" \

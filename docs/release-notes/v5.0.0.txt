@@ -1,1 +1,1 @@
-Ready for new owners: guided setup, clearer errors, safer food logs, firm monthly spend limit.
+Clearer setup and errors, memory on Cumulo or Mistral keys, safer food logs, firmer spend cap.

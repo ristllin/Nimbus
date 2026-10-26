@@ -1334,6 +1334,7 @@ static void buildOrchState(String& out) {
   d["tgVerify"] = tgAuthFail ? (int8_t)0 : agent::store::verifyResult("telegram");   // 1 ok / 0 rejected / -1 unknown
   d["tgAuthFail"] = tgAuthFail;                            // live poll auth failure (revoked token)
   d["tgVts"]    = agent::store::verifyTs("telegram");       // 0 => never verified
+  d["tgVfyReason"] = agent::provider_verify::reason("telegram");   // QW5: why a check could not finish
   d["tgBot"]    = agent::store::tgBotName();                // @username from getMe ("" = unknown)
   d["tgAllow"]  = agent::store::telegramAllowlist();
   d["orchHost"] = agent::store::orchHost();
@@ -1587,6 +1588,16 @@ static void buildFallbacks(String& out) {
   root["syncedAt"] = sync;
   root["embeddingsCrossProvider"] = false;  // hard invariant: embeddings never cross-provider
   serializeJson(d, out);
+}
+
+// Why POST /api/verify could not start a check (QW5), for the page to say so: another
+// check running, a reply in flight (the check is queued to run right after it), or a
+// low-memory deferral (recorded, retried by the device). Called right after a refusal.
+static const char* verifyBusyWhy(const String& p) {
+  if (agent::provider_verify::pending()) return "busy";
+  if (agent::orchestrator::turnInFlight()) return "turn";
+  if (agent::provider_verify::reason(p) == "low-memory") return "low-memory";
+  return "busy";
 }
 
 // The /api/orch fields that change a key long-term memory can embed with.
@@ -2750,8 +2761,7 @@ void beginWeb(const WebConfig& wc) {
     // the wizard show the truth right after the save.
     if (embedKeys) agent::memory::noteProviderKeysChanged();
     // A directive edit is consumed by the orchestrator at its next turn-task
-    // drain; a token/allowlist change needs a reboot (the poll task captured
-    // them at begin) - the page surfaces that hint.
+    // drain; a token or allowlist change applies live (applyToken, reloadAllowlist).
     if (cfgDirty) agent::orchestrator::noteConfigChanged();
     // A refused model pick answers 400 with the allowed values - unless storage
     // is full, whose 507 (sendSaved) is the more urgent truth.
@@ -3079,12 +3089,8 @@ void beginWeb(const WebConfig& wc) {
       // in flight queues the check to run after it (provider_verify startTask); low
       // memory records the deferral and retries on its own; otherwise another check
       // is running and the page retries in a moment.
-      const char* why = agent::provider_verify::pending()          ? "busy"
-                        : agent::orchestrator::turnInFlight()        ? "turn"
-                        : agent::provider_verify::reason(p) == "low-memory" ? "low-memory"
-                                                                     : "busy";
       r->send(409, "application/json",
-              String("{\"error\":\"verify busy, retry\",\"why\":\"") + why + "\"}");
+              String("{\"error\":\"verify busy, retry\",\"why\":\"") + verifyBusyWhy(p) + "\"}");
       return;
     }
     r->send(200, "application/json", "{\"ok\":true}");

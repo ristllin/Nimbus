@@ -21,9 +21,10 @@
 //   telegram   <digits>:<30+ of A-Z a-z 0-9 _ ->   (a BotFather bot token)
 //   zai        <20-64 alnum>.<8-64 alnum>   (id.secret)
 //   mistral    exactly 32 alnum
-// The first five are published prefixes and are certain. The last two are shapes only:
-// the page uses them to move a key to its provider, but the device never refuses a
-// save on a shape alone, in case a provider changes its format.
+// The first four are published prefixes and the bot token's digits:colon form is
+// unmistakable, so those five are certain. Z.ai and Mistral are shapes only: the page
+// moves such a key to its provider with a hedged "looks like", and the device never
+// refuses a save on a shape alone, in case a provider changes its format.
 namespace nimbus {
 namespace orch {
 
@@ -38,7 +39,7 @@ inline bool alnumRun(const std::string& s, size_t b, size_t e) {
 }
 inline bool telegramShape(const std::string& k) {
   const size_t colon = k.find(':');
-  if (colon < 5 || colon > 12 || colon == std::string::npos) return false;
+  if (colon < 5 || colon > 12) return false;   // npos is larger than 12
   for (size_t i = 0; i < colon; ++i)
     if (!std::isdigit(static_cast<unsigned char>(k[i]))) return false;
   if (k.size() - colon - 1 < 30) return false;
@@ -75,32 +76,33 @@ inline const char* keyHomeFor(std::string k) {
   return "";
 }
 
-// Whether `home` was read from a published prefix (certain), not a shape alone.
-inline bool keyHomeCertain(const std::string& home) {
-  return home == "cumulo" || home == "anthropic" || home == "openai" || home == "tavily" ||
-         home == "telegram";
-}
-
 // The /api/orch field a provider's key is saved in, and where the owner finds it.
 struct KeyHomeSlot {
   const char* home;
   const char* field;
   const char* noun;    // "an Anthropic key"
   const char* where;   // where to save it instead
+  bool certain;        // read from a published prefix or form, not a shape alone
 };
 inline const KeyHomeSlot* keyHomeSlot(const std::string& home) {
   static const KeyHomeSlot kSlots[] = {
-      {"cumulo", "cumuloKey", "a Cumulo Nimbus key", "under Cumulo Nimbus"},
-      {"anthropic", "antKey", "an Anthropic key", "under Anthropic"},
-      {"openai", "oaiKey", "an OpenAI key", "under OpenAI"},
-      {"mistral", "mistKey", "a Mistral key", "under Mistral"},
-      {"zai", "zaiKey", "a Z.ai key", "under Z.ai"},
-      {"tavily", "tavKey", "a Tavily web search key", "under Assistant > Tools > Web search"},
-      {"telegram", "tgToken", "a Telegram bot token", "under Assistant > Connectors > Telegram"},
+      {"cumulo", "cumuloKey", "a Cumulo Nimbus key", "under Cumulo Nimbus", true},
+      {"anthropic", "antKey", "an Anthropic key", "under Anthropic", true},
+      {"openai", "oaiKey", "an OpenAI key", "under OpenAI", true},
+      {"mistral", "mistKey", "a Mistral key", "under Mistral", false},
+      {"zai", "zaiKey", "a Z.ai key", "under Z.ai", false},
+      {"tavily", "tavKey", "a Tavily web search key", "under Assistant > Tools > Web search", true},
+      {"telegram", "tgToken", "a Telegram bot token", "under Assistant > Connectors > Telegram", true},
   };
   for (const KeyHomeSlot& s : kSlots)
     if (home == s.home) return &s;
   return nullptr;
+}
+
+// Whether `home` was read with certainty (see the table above), not a shape alone.
+inline bool keyHomeCertain(const std::string& home) {
+  const KeyHomeSlot* s = keyHomeSlot(home);
+  return s && s->certain;
 }
 
 // "" when `value` may be stored in `field`, else the owner-facing refusal naming where
@@ -114,7 +116,7 @@ inline std::string misplacedKeyError(const std::string& field, const std::string
   if (!keyField || value.find_first_not_of(' ') == std::string::npos) return std::string();
   const std::string home = keyHomeFor(value);
   const KeyHomeSlot* slot = keyHomeSlot(home);
-  if (slot && keyHomeCertain(home) && field != slot->field)
+  if (slot && slot->certain && field != slot->field)
     return std::string("That is ") + slot->noun + ". Save it " + slot->where + ".";
   if (field == "cumuloKey" && home != "cumulo")
     return "That is not a Cumulo Nimbus key: those start with cumulo_sk_. Choose the provider "

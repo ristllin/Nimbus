@@ -51,9 +51,10 @@ struct EmbedKeys {
 };
 
 enum class EmbedPickAct : unsigned char {
-  Keep,     // the configured provider has a usable key: change nothing
-  Switch,   // store `pick` before the next embedding
-  None,     // no usable key can embed into this memory (the owner needs to add one)
+  Keep,       // the configured provider has a usable key: change nothing
+  Switch,     // store `pick` before the next embedding
+  None,       // no usable key can embed into this memory (the owner needs to add one)
+  Conflict,   // stored vectors and the stored config disagree on the width: switch nothing
 };
 
 struct EmbedPick {
@@ -70,8 +71,12 @@ bool embedKeyUsable(const EmbedKeys& keys, const std::string& provider);
 EmbedConfig embedDefaultsFor(const std::string& provider);
 
 // The decision. `hasVectors`: any stored vector at all (the set-once lock, or a live
-// or archived entry).
-EmbedPick pickEmbedProvider(const EmbedConfig& cur, const EmbedKeys& keys, bool hasVectors);
+// or archived entry). `storedWidth`: the width the stored vectors actually have (the
+// vector store's own, from its blob), 0 when unknown. Stored vectors ARE the space: a
+// config whose width disagrees with them (a card from another device, a cut write) is
+// a Conflict and nothing switches; the Memory page's reset is the way out.
+EmbedPick pickEmbedProvider(const EmbedConfig& cur, const EmbedKeys& keys, bool hasVectors,
+                            int storedWidth = 0);
 
 }  // namespace orch
 }  // namespace nimbus

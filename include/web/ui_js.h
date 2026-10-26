@@ -752,11 +752,10 @@ function applyState(d){
   if(d.ota!==undefined&&$('fwState')){
     $('fwCur').textContent=(d.fw||'')+' ('+(d.build||'')+')';
     $('fwLatest').textContent=d.otaLatest||'not checked yet';
-    // The release's one-line notes from the signed manifest (QW5, owner decision D5):
+    // The release's one-line notes from the release manifest (QW5, owner decision D5):
     // what the available update brings, or what the installed version brought.
     const fnr=$('fwNotesRow'),fn=$('fwNotes');
-    if(fnr&&fn){fnr.style.display=d.otaNotes?'':'none';
-      fn.textContent=d.otaNotes?((d.otaLatest&&d.otaLatest===d.fw?'In this version: ':'In '+(d.otaLatest||'the update')+': ')+d.otaNotes):'';}
+    if(fnr&&fn){fnr.style.display=d.otaNotes?'':'none';fn.textContent=otaNotesText(d);}
     var st=d.ota; if(st==='error'&&d.otaErr)st+=' ('+d.otaErr+')';
     var busy=(d.ota==='downloading'||d.ota==='verifying'||d.ota==='rebooting'||d.ota==='checking');
     $('fwState').textContent=st+(d.ota==='downloading'&&d.otaPct>=0?(' '+d.otaPct+'%'):'');
@@ -1227,15 +1226,24 @@ function uiConfirmAll(steps){
     if(!ok)return false; if(!s.cond)return true; return uiConfirm(s.msg,s.opts||{}); }); },
     Promise.resolve(true));
 }
+// The Software update panel's What's new line: the notes of the release the device
+// last saw, said as this version's or the update's.
+function otaNotesText(d){
+  if(!d.otaNotes)return '';
+  const whose=(d.otaLatest&&d.otaLatest===d.fw)?'In this version: ':'In '+(d.otaLatest||'the update')+': ';
+  return whose+d.otaNotes;
+}
 // ---- Timezone from this browser (QW5) ------------------------------------------
 // Routines, reminders and each day's food log follow the device's POSIX TZ (devTz),
 // and a new device runs on UTC. The browser knows this computer's zone (Intl), so
-// derive the POSIX rule from the browser's own clock for this year: the standard and
-// daylight offsets, and each change as month.week.weekday/time in the local time in
-// force just before it. Names come from Intl when it has a plain one (GMT, BST, PST),
-// else the quoted numeric form (<+09>). A zone whose rule is not "Nth weekday of a
-// month" in every year gets its known-good string from TZ_KNOWN.
-const TZ_KNOWN={'Asia/Jerusalem':'IST-2IDT,M3.4.4/26,M10.5.0','Asia/Tel_Aviv':'IST-2IDT,M3.4.4/26,M10.5.0'};
+// derive the POSIX rule from the browser's own clock: the standard and daylight
+// offsets, and each change as month.week.weekday/time in the local time in force
+// just before it. A change can be written several ways (the last Friday, the 4th
+// Friday, the 4th Thursday at 26:00); the one kept is the first that matches the
+// browser's real changes for this year and the next six, so a rule like "the Friday
+// before the last Sunday" or "Saturday at 24:00" stays right in later years. Names
+// come from Intl when it has a plain one (GMT, BST, PST), else the quoted numeric
+// form (<+09>).
 function _tzPad(n){return (n<10?'0':'')+n;}
 // POSIX offset text from minutes WEST of UTC: 480 -> "8", -330 -> "-5:30".
 function _tzOffStr(minWest){const a=Math.abs(minWest),h=Math.floor(a/60),m=a%60;
@@ -1254,32 +1262,58 @@ function _tzName(iana,t,offEast){
 function _tzEdge(a,b){const o=_tzOffAt(a);
   while(b-a>60000){const m=a+Math.floor((b-a)/120000)*60000;if(_tzOffAt(m)===o)a=m;else b=m;}
   return b;}
-// The rule for a change at instant t, in the local time before it (offset oldEast).
-function _tzRule(t,oldEast){
-  const l=new Date(t+oldEast*60000);   // read with getUTC*: the wall time before the change
-  const y=l.getUTCFullYear(),mo=l.getUTCMonth(),dom=l.getUTCDate();
-  const dim=new Date(Date.UTC(y,mo+1,0)).getUTCDate();
-  const w=dom+7>dim?5:Math.ceil(dom/7), mins=l.getUTCHours()*60+l.getUTCMinutes();
-  return 'M'+(mo+1)+'.'+w+'.'+l.getUTCDay()+(mins===120?'':'/'+Math.floor(mins/60)+(mins%60?':'+_tzPad(mins%60):''));
+// Every offset change in year y: [{t, from, to}] (minutes east).
+function _tzChanges(y){
+  const out=[],day=86400000;
+  for(let t=Date.UTC(y,0,1);t<Date.UTC(y+1,0,1);t+=day){
+    const a=_tzOffAt(t),b=_tzOffAt(t+day);
+    if(a!==b)out.push({t:_tzEdge(t,t+day),from:a,to:b});
+  }
+  return out;
+}
+// When rule r ({m, w, d, mins}; w 5 = the last) fires in year y, at offset oldEast.
+function _tzRuleAt(r,y,oldEast){
+  const first=new Date(Date.UTC(y,r.m-1,1)).getUTCDay(), dim=new Date(Date.UTC(y,r.m,0)).getUTCDate();
+  let dom=1+((r.d-first+7)%7)+7*(r.w-1);
+  if(r.w===5)while(dom>dim)dom-=7;
+  return Date.UTC(y,r.m-1,dom)+r.mins*60000-oldEast*60000;
+}
+// The ways to write a change at instant t (offset oldEast before it): that day, or the
+// day before at 24:00 and later; "last" before "Nth" where both describe the day.
+function _tzCandidates(t,oldEast){
+  const l=new Date(t+oldEast*60000), y=l.getUTCFullYear(), mo=l.getUTCMonth();
+  const dom=l.getUTCDate(), mins=l.getUTCHours()*60+l.getUTCMinutes(), wd=l.getUTCDay();
+  const dim=new Date(Date.UTC(y,mo+1,0)).getUTCDate(), out=[];
+  for(const [dd,mm,dw] of [[dom,mins,wd],[dom-1,mins+1440,(wd+6)%7]]){
+    if(dd<1)continue;
+    if(dd+7>dim)out.push({m:mo+1,w:5,d:dw,mins:mm});
+    out.push({m:mo+1,w:Math.ceil(dd/7),d:dw,mins:mm});
+  }
+  return out;
+}
+// The POSIX rule part for the change in year y into offset `to`, checked against the
+// same change in the next six years (stopping at a year that has none).
+function _tzRuleFor(y,to){
+  const c=_tzChanges(y).find(x=>x.to===to);
+  if(!c)return '';
+  const later=[];
+  for(let k=1;k<=6;k++){const x=_tzChanges(y+k).find(z=>z.to===to);if(!x)break;later.push([y+k,x]);}
+  const cands=_tzCandidates(c.t,c.from);
+  const r=cands.find(r=>later.every(([yy,x])=>_tzRuleAt(r,yy,x.from)===x.t))||cands[0];
+  return 'M'+r.m+'.'+r.w+'.'+r.d+(r.mins===120?'':'/'+Math.floor(r.mins/60)+(r.mins%60?':'+_tzPad(r.mins%60):''));
 }
 // {iana, posix} for this browser's zone, or null when the browser has no Intl.
 function tzFromBrowser(now){
   let iana='';
   try{iana=Intl.DateTimeFormat().resolvedOptions().timeZone||'';}catch(e){return null;}
-  if(TZ_KNOWN[iana])return {iana,posix:TZ_KNOWN[iana]};
-  const y=(now||new Date()).getFullYear(), t0=Date.UTC(y,0,1), t6=Date.UTC(y,6,1), day=86400000;
+  const y=(now||new Date()).getFullYear(), t0=Date.UTC(y,0,1), t6=Date.UTC(y,6,1);
   const jan=_tzOffAt(t0), jul=_tzOffAt(t6), std=Math.min(jan,jul), dst=Math.max(jan,jul);
-  const base=_tzName(iana,std===jan?t0:t6,std)+_tzOffStr(-std);
+  const tStd=std===jan?t0:t6, tDst=std===jan?t6:t0;
+  const base=_tzName(iana,tStd,std)+_tzOffStr(-std);
   if(std===dst)return {iana,posix:base};
-  let start='',end='';
-  for(let t=t0;t<Date.UTC(y+1,0,1);t+=day){
-    const a=_tzOffAt(t),b=_tzOffAt(t+day);
-    if(a===b)continue;
-    const r=_tzRule(_tzEdge(t,t+day),a);
-    if(b===dst&&!start)start=r; else if(b===std&&!end)end=r;
-  }
+  const start=_tzRuleFor(y,dst), end=_tzRuleFor(y,std);
   if(!start||!end)return {iana,posix:base};   // no clean yearly change: standard time only
-  return {iana,posix:base+_tzName(iana,std===jan?t6:t0,dst)+(dst-std===60?'':_tzOffStr(-dst))+','+start+','+end};
+  return {iana,posix:base+_tzName(iana,tDst,dst)+(dst-std===60?'':_tzOffStr(-dst))+','+start+','+end};
 }
 // "YYYY-MM-DD HH:MM" in this browser's local time: the shape of the device's clock.local.
 function _tzLocalStr(ms){const d=new Date(ms);
@@ -1898,7 +1932,7 @@ function notProviderKeyText(home){
 // The plain-words outcome of a finished provider check, with the one next step: what
 // the Models page badge says (vfyBadge), in a sentence. pv is /api/orch providers[p].
 function vfyOutcome(p,pv){
-  const lbl=PROVLBL[p]||p, con=PROVCONSOLE[p], at=con?' at '+con:'';
+  const lbl=PROVLBL[p]||(p==='telegram'?'Telegram':p), con=PROVCONSOLE[p], at=con?' at '+con:'';
   if(pv.verify===1)return {ok:true,txt:'Verified ✓'};
   if(pv.verify===0)return {ok:false,txt:lbl+' rejected this key. Check that you copied all of it, or create a new key'+at+'.'};
   const r=pv.vfyReason;
@@ -1911,7 +1945,7 @@ function vfyOutcome(p,pv){
 }
 // One check's live state from /api/orch: a provider row, or Telegram's own fields.
 function vfyState(d,p){
-  if(p==='telegram')return {verify:d.tgVerify,vts:d.tgVts,bot:d.tgBot};
+  if(p==='telegram')return {verify:d.tgVerify,vts:d.tgVts,bot:d.tgBot,vfyReason:d.tgVfyReason||''};
   return (d.providers&&d.providers[p])||null;
 }
 // Start a check of provider p and report once it LANDS (QW5: the wizard ignored a
@@ -1925,6 +1959,8 @@ function vfyState(d,p){
 function runVerify(p,say,done,afterSave){
   let prevVts=0,starts=0,needStart=true;
   const lost=()=>done({ok:false,txt:'Lost contact with the device. Check that this computer is on the same Wi-Fi, then try again.'},null);
+  // Two-argument then: only a failed request retries; a throw in say/done is a page
+  // bug, never reported as "lost contact".
   const poll=(left,ms)=>setTimeout(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{
       const st=vfyState(d,p);
       if(st&&st.vts&&st.vts!==prevVts)return done(vfyOutcome(p,st),st);
@@ -1932,20 +1968,21 @@ function runVerify(p,say,done,afterSave){
       if(left>0)return poll(left-1,2000);
       done({ok:false,txt:d.verifyPending?'The check is still running. Your key is saved; Assistant > Models shows the result in a minute.'
         :'The check did not finish. Your key is saved; tap Save & Verify to try again.'},st);
-    }).catch(()=>left>0?poll(left-1,2000):lost()),ms);
+    },()=>left>0?poll(left-1,2000):lost()),ms);
   const start=()=>{
     if(++starts>6)return done({ok:false,txt:'The device is still busy with another check. Your key is saved; tap Save & Verify again in a minute.'},null);
     fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:'provider='+encodeURIComponent(p)})
-    .then(r=>r.ok?{ok:true}:r.json().catch(()=>({})).then(j=>({ok:false,status:r.status,why:j.why||''})))
+    .then(r=>r.ok?{ok:true}:r.json().catch(()=>({})).then(j=>({ok:false,status:r.status,why:j.why||''})),()=>null)
     .then(res=>{
+      if(!res)return lost();
       if(res.ok){needStart=false;return poll(24,2000);}
       if(res.status!==409)return done({ok:false,txt:'Couldn\'t start the check (HTTP '+res.status+'). Reload the page and try again.'},null);
       if(res.why==='turn'){needStart=false;say('The assistant is finishing a reply. Your key is saved and is checked right after.');return poll(45,2000);}
       if(res.why==='low-memory'){needStart=false;return poll(3,1000);}
       say('Another check is running. Waiting for it…');
       poll(30,2000);
-    }).catch(lost);
+    });
   };
   if(afterSave)return poll(30,300);
   // A re-check of a stored key lands as a NEW verdict time: read the current one first.
@@ -3131,7 +3168,7 @@ function saveAndVerify(p){
   }
   // QW5: every other key the page can place (key_home.h rules): say exactly where it
   // goes instead of saving it here to be rejected (the device refuses it too).
-  const home=val?keyHome(val):'', notHere=notProviderKeyText(home);
+  const home=keyHome(val), notHere=notProviderKeyText(home);
   if(notHere){setProvMsg(p,notHere,true);return;}
   if(home&&home!==p&&PROVNOUN[home]){setProvMsg(p,'That is '+PROVNOUN[home]+'. Paste it in the '+PROVLBL[home]+' row.',true);return;}
   if(val&&p==='cumulo'&&home!=='cumulo'){setProvMsg(p,'That is not a Cumulo Nimbus key: those start with cumulo_sk_. Paste it in the row of the provider it comes from.',true);return;}
@@ -3169,7 +3206,7 @@ function saveAndVerify(p){
     .then(r=>{
       // QW5: a refused start says why (the poll below would otherwise wait 40 s for a
       // check that never ran). A reply in flight or low memory still lands a verdict.
-      if(r&&r.status===409)r.json().catch(()=>({})).then(j=>{
+      if(r.status===409)r.json().catch(()=>({})).then(j=>{
         if(j.why==='turn')setProvMsg(p,'The assistant is finishing a reply. The key is checked right after.');
         else if(j.why!=='low-memory')setProvMsg(p,'Waiting for another check to finish…');});
       clearInterval(VPOLL[p]); let tries=0;   // clear only THIS provider's poll
@@ -3584,7 +3621,7 @@ function loadMemStats(){
       ? 'SD not detected: memories are on the card'
       : d.vectors+' memories · '+d.scratchItems+' scratch · '+
         (d.store||'')+' (cap '+(d.maxVectors||0)+') · '+(d.embedAvailable?'memory on':'memory off');
-    const es=$('embstate'); if(es){const t=embStateText(d);es.textContent=t;es.style.color=d.embedAvailable&&t.indexOf('rejected')<0?'':'#e0b870';}
+    const es=$('embstate'); if(es){const t=embStateText(d);es.textContent=t.txt;es.style.color=t.warn?'#e0b870':'';}
     // Storage-tier banner: sdMissing -> loud "card not detected, data is on it";
     // no card at all -> degraded on flash; flashFull -> persist paused.
     const tb=$('tierbanner');
@@ -3616,15 +3653,16 @@ function loadMemStats(){
 function embStateText(d){
   const prov=d.embed&&d.embed.provider, lbl=PROVLBL[prov]||prov||'';
   const pv=ORCH&&ORCH.providers&&ORCH.providers[prov];
-  if(d.embedAvailable){
-    if(pv&&pv.verify===0)return 'Long-term memory embeds through '+lbl+', but that key was rejected. Fix it on Assistant > Models; new memories wait on the device until then.';
-    return 'Long-term memory embeds through '+lbl+'.';
-  }
+  if(d.embedAvailable&&pv&&pv.verify===0)
+    return {warn:true,txt:'Long-term memory embeds through '+lbl+', but that key was rejected. Fix it on Assistant > Models; new memories wait on the device until then.'};
+  if(d.embedAvailable&&d.embedParked)
+    return {warn:true,txt:'Long-term memory embeds through '+lbl+', which is refusing right now ('+d.embedParked+'). New memories wait on the device and are stored once it works again.'};
+  if(d.embedAvailable)return {warn:false,txt:'Long-term memory embeds through '+lbl+'.'};
   if(d.embedLocked){
-    const need=(prov==='openai'||prov==='cumulo')?'an OpenAI or Cumulo Nimbus key':(PROVNOUN[prov]||'its key');
-    return 'Your stored memories were made with '+lbl+', and this device has no '+(need.replace(/^an? /,''))+' now. Add '+need+' on Assistant > Models, or change the embedding model below (that erases the stored memories).';
+    const need=(prov==='openai'||prov==='cumulo')?'an OpenAI or Cumulo Nimbus key':(PROVNOUN[prov]||'a key for it');
+    return {warn:true,txt:'Your stored memories were made with '+lbl+', and this device has no key that can add to them. Add '+need+' on Assistant > Models, or change the embedding model below (that erases the stored memories).'};
   }
-  return 'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to store and search memories (Anthropic and Z.ai can\'t create embeddings). Add one on Assistant > Models. Chat works without it.';
+  return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to store and search memories (Anthropic and Z.ai can\'t create embeddings). Add one on Assistant > Models. Chat works without it.'};
 }
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
@@ -4638,8 +4676,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     {id:'done',t:'All set'},
   ];
   const stepIdx=id=>STEPS.findIndex(x=>x.id===id);
-  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, onbProvider='';
-  let handoffProbe=null, tzSet='';
+  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, voiceCap='';
+  let handoffProbe=null, tzSet='', dir=1;
   // Display step: bootDisp is the display the device booted with. A unit whose
   // stored setting still reads the deprecated value is nudged to its touch panel
   // here. dispSel is the owner's saved choice.
@@ -4659,7 +4697,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function savedStep(){try{return stepIdx(localStorage.getItem(stepKey())||'');}catch(e){return -1;}}
   function bodyHtml(s){
     if(s.id==='welcome')return '<p class=hint>Two required steps, Wi-Fi and one AI provider key, then a few optional extras you can skip. It takes about five minutes.</p>'+
-      '<p class=hint><b>Have your AI provider key ready.</b> This setup network has no internet, so get the key first (see Get your provider key in the docs) and keep it in a note on this phone or computer.</p>';
+      '<p class=hint><b>Have your AI provider key ready.</b> This setup network has no internet, so get the key first (the guide is at docs.cumulo-nimbus.ai, under Get your provider key) and keep it in a note on this phone or computer.</p>'+
+      '<p class=hint>Only want the Notifier status light for AI coding sessions? It needs no Wi-Fi or key: switch on the device instead, under Settings &gt; Mode.</p>';
     if(s.id==='display')return '<p class=hint>This device has a touch screen. If it is mounted upside down, flip the display so it reads the right way up.</p>'+
       '<label class=pr style="margin-top:8px"><input type=checkbox id=onb_flip> Flip display 180 degrees</label>'+
       '<p class=hint id=onb_dispmsg>Applies to the screen right away.</p>';
@@ -4710,7 +4749,16 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=hint id=onb_summary></div>';
     return '';
   }
+  // Steps with nothing to offer right now: voice without a voice-capable provider,
+  // and the assistant's extras once Notifier is chosen (Wi-Fi and the page go off).
+  function skipped(s){
+    if(pendingMode===0&&(s.id==='telegram'||s.id==='voice'||s.id==='directive'))return true;
+    return s.id==='voice'&&!voiceCap;
+  }
   function render(){
+    // Move past a skipped step in the direction of travel, so Back is never bounced
+    // forward again by a step that skips itself.
+    while(skipped(STEPS[idx])&&idx+dir>=0&&idx+dir<STEPS.length)idx+=dir;
     const s=STEPS[idx];
     el('onbTitle').textContent=s.t;
     el('onbDots').innerHTML=STEPS.map((x,i)=>'<span style="width:9px;height:9px;border-radius:50%;background:'+(i===idx?'var(--teal)':i<idx?'var(--ok)':'var(--line2)')+'"></span>').join('');
@@ -4721,7 +4769,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     msg('');
     wire(s);
   }
-  function next(){ idx=Math.min(idx+1,STEPS.length-1);rememberStep();render(); }
+  function go(d){ dir=d;idx=Math.max(0,Math.min(idx+d,STEPS.length-1));rememberStep();render(); }
+  const next=()=>go(1);
   // The monthly spend ceiling as it really stands (QW5): the 20 USD line used to
   // show whether or not the ceiling was in force.
   function ceilingLine(sp){
@@ -4737,19 +4786,26 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function memLine(cb){
     fetch('/api/mem/stats').then(r=>r.json()).then(m=>{
       const prov=m&&m.embed&&m.embed.provider;
-      if(m&&m.embedAvailable)cb(true,'Long-term memory: on, through '+(PROVLBL[prov]||prov)+'.');
-      else cb(false,'Long-term memory needs a Cumulo Nimbus, OpenAI or Mistral key (Anthropic and Z.ai can\'t create the embeddings it uses). Chat works without it; add one later under Assistant &rarr; Models.');
-    }).catch(()=>cb(null,''));
+      cb(m&&m.embedAvailable?'Long-term memory: on, through '+esc(PROVLBL[prov]||prov)+'.'
+        :'Long-term memory needs a Cumulo Nimbus, OpenAI or Mistral key (Anthropic and Z.ai can\'t create the embeddings it uses). Chat works without it; add one later under Assistant &rarr; Models.');
+    }).catch(()=>cb(''));
+  }
+  function showMem(){memLine(t=>{const mm=el('onb_memmsg');if(mm)mm.innerHTML=t;});}
+  // The device's own defaults line, unless the ceiling it promises is not in force.
+  function defaultsHtml(st){
+    const sp=st.spend;
+    if(!sp||(sp.active!==false&&sp.loaded!==false))return esc(st.setupDefaults);
+    return esc(st.setupDefaults.replace(/ Paid AI calls pause once[\s\S]*?(?= Change models|$)/,''))+' '+ceilingLine(sp)+'.';
   }
   function wireProvider(){
     // Per-provider setup guidance, updated as the selection changes.
     const pv=el('onb_prov'),pg=el('onb_provguide'),k=el('onb_key');
     const offline=location.hostname==='192.168.4.1';   // still on the setup network: no internet here
     const G={cumulo:'Cumulo Nimbus (recommended): one key and one prepaid balance for every provider, voice included. Create a key at app.cumulo-nimbus.ai under API keys.',
-      anthropic:'Anthropic: sign up at platform.claude.com, add credit, then create an API key. Text only: no voice on the device.',
+      anthropic:'Anthropic: sign up at platform.claude.com, add credit, then create an API key. Text only: no voice on the device, and long-term memory needs a second key (Cumulo Nimbus, OpenAI or Mistral).',
       openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
       mistral:'Mistral: free to try. Sign up at console.mistral.ai and create an API key. It also powers voice on the device.',
-      zai:'Z.ai: sign up at z.ai, add credit, then create an API key. Conversation and tools only.'};
+      zai:'Z.ai: sign up at z.ai, add credit, then create an API key. Conversation and tools only: long-term memory needs a second key (Cumulo Nimbus, OpenAI or Mistral).'};
     const PH={cumulo:'cumulo_sk_…',anthropic:'sk-ant-…',openai:'sk-…'};
     const upd=()=>{pg.textContent=(G[pv.value]||'')+(offline?' This setup network has no internet: get the key on another device if you do not have it yet.':'');
       k.placeholder=PH[pv.value]||('Paste your '+(PROVLBL[pv.value]||'')+' API key');};
@@ -4757,35 +4813,45 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     el('onb_provsave').onclick=doProvider;
     // Resume: a provider verified before a reload or a restart counts (the field was
     // cleared, and the key is never shown again).
-    fetch('/api/state').then(r=>r.json()).then(st=>{const d=el('onb_defaults');
-      const pm=el('onb_provmsg');
-      if(st&&st.provVerified&&pm&&!pm.textContent){provOk=true;pm.textContent='A provider is already verified. Continue, or add another key.';
-        memLine((ok,t)=>{const mm=el('onb_memmsg');if(mm)mm.innerHTML=t;});}
-      if(d&&st&&st.setupDefaults){
-        // The device's own defaults line, unless the ceiling it promises is not in force.
-        const sp=st.spend, real=!sp||(sp.active!==false&&sp.loaded!==false);
-        d.innerHTML=real?esc(st.setupDefaults):esc(st.setupDefaults.replace(/ Paid AI calls pause once[\s\S]*?(?= Change models|$)/,''))+' '+ceilingLine(sp)+'.';
-      }}).catch(()=>{});
+    fetch('/api/state').then(r=>r.json()).then(st=>{
+      const d=el('onb_defaults'),pm=el('onb_provmsg');
+      if(st.provVerified&&pm&&!pm.textContent){provOk=true;pm.textContent='A provider is already verified. Continue, or add another key.';showMem();}
+      if(d&&st.setupDefaults)d.innerHTML=defaultsHtml(st);
+    }).catch(()=>{});
+  }
+  // The confirm line for a saved zone, from the device's clock (c) once it applies.
+  function tzConfirmText(label,c,compare){
+    if(!c||!c.synced)return 'Saved: '+label+'. The device shows its local time once its clock syncs with the internet.';
+    if(!compare||tzMatchesBrowser(c))return 'Saved: '+label+'. Device time is '+c.local.slice(11)+(compare?', the same as this computer.':'.');
+    return 'Saved, but the device shows '+c.local.slice(11)+' while this computer shows '+_tzLocalStr(c.epoch*1000).slice(11)+'. Choose your zone below.';
   }
   function wireTimezone(){
     const tz=tzFromBrowser(), det=el('onb_tzdetect'), m=el('onb_tzmsg');
-    const save=(posix,label)=>{m.textContent='Saving…';
+    const say=t=>{const e=el('onb_tzmsg');if(e)e.textContent=t;};
+    // The device applies a new zone on its assistant task, a moment after the save:
+    // read its clock until it shows this computer's time (or 10 s pass).
+    const confirmTz=(label,compare,n)=>setTimeout(()=>fetch('/api/state').then(r=>r.json()).then(st=>{
+      const c=st&&st.clock;
+      if(compare&&c&&c.synced&&!tzMatchesBrowser(c)&&n<8)return confirmTz(label,compare,n+1);
+      say(tzConfirmText(label,c,compare));
+    }).catch(()=>say('Saved: '+label+'.')),1250);
+    const save=(posix,label,compare)=>{say('Saving…');
       apply({devTz:posix}).then(ok=>{
-        if(!ok){m.textContent=lastFailText('Couldn\'t save - try again.');return;}
-        tzSet=label||posix;
-        // Confirm against the device's own local clock once the change applies.
-        setTimeout(()=>fetch('/api/state').then(r=>r.json()).then(st=>{
-          const c=st&&st.clock;
-          if(!c||!c.synced){m.textContent='Saved: '+tzSet+'. The device shows its local time once its clock syncs with the internet.';return;}
-          const same=tzMatchesBrowser(c);
-          m.textContent=same?('Saved: '+tzSet+'. Device time is '+c.local.slice(11)+', the same as this computer.')
-            :('Saved, but the device shows '+c.local.slice(11)+' while this computer shows '+_tzLocalStr(c.epoch*1000).slice(11)+'. Choose your zone below.');
-        }).catch(()=>{m.textContent='Saved: '+tzSet+'.';}),1500);
+        if(!ok){say(lastFailText('Couldn\'t save - try again.'));return;}
+        tzSet=label;confirmTz(label,compare,0);
       });};
     if(tz){det.innerHTML='This computer is set to <b>'+esc(tz.iana||'an unnamed zone')+'</b> (device format: '+esc(tz.posix)+').';
-      el('onb_tzuse').onclick=()=>save(tz.posix,tz.iana||tz.posix);}
+      el('onb_tzuse').onclick=()=>save(tz.posix,tz.iana||tz.posix,true);}
     else{det.textContent='This browser does not report a timezone. Choose yours below.';el('onb_tzuse').style.display='none';}
-    el('onb_tzsave').onclick=()=>{const v=el('onb_tzother').value.trim();if(!v){m.textContent='Pick or type a timezone first.';return;}save(v,v);};
+    el('onb_tzsave').onclick=()=>{const v=el('onb_tzother').value.trim();
+      if(!v){m.textContent='Pick or type a timezone first.';return;}
+      // A zone name like Europe/London is not the device's format: use the detected
+      // rule when it names this computer's zone, else ask for the POSIX form.
+      if(v.indexOf('/')>0&&!/[0-9]/.test(v)){
+        if(tz&&tz.iana===v)return save(tz.posix,v,true);
+        m.textContent=v+' is a zone name, and the device needs its rule (POSIX form, like GMT0BST,M3.5.0/1,M10.5.0). Pick a suggestion from the list, or use this computer\'s zone above.';
+        return;}
+      save(v,v,false);};
   }
   function wireMode(){
     [...document.querySelectorAll('.onbmb')].forEach(b=>{
@@ -4812,11 +4878,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   }
   function wireVoice(){
     // Only mistral/openai do on-device voice. Offer ONLY the provider the owner
-    // configured; if the configured provider is Anthropic (no voice), skip this
-    // step entirely - nothing here would be usable.
-    const cap=(onbProvider==='mistral'||onbProvider==='openai')?onbProvider:'';
-    if(!cap){next();return;}
-    const lbl=cap==='mistral'?'Mistral':'OpenAI';
+    // verified; without one this step is skipped (skipped(): nothing here would work).
+    const cap=voiceCap, lbl=cap==='mistral'?'Mistral':'OpenAI';
     el('onb_stt').innerHTML='<option value='+cap+'>'+lbl+'</option>';
     el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
     el('onb_voicesave').onclick=()=>orchApply({sttProv:cap,ttsProv:cap})
@@ -4845,6 +4908,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         .then(()=>{el('onb_dispmsg').textContent=fl.checked?'Flipped - applied.':'Normal - applied.';})
         .catch(e=>{el('onb_dispmsg').textContent=saveFailText(e,'Couldn\'t save - try again.');});};}
   }
+  function tzLine(st){
+    if(!st||!st.clock)return '';
+    if(!st.clock.tz)return 'UTC (not set: Device > Mode & identity > Timezone)';
+    return tzSet||st.clock.tz;
+  }
   function wireDone(){
     // Derive the summary from LIVE server state, not page-load-local flags: wifiOk
     // resets across the setup-AP -> LAN handoff (the page reloads on the new IP), so
@@ -4857,8 +4925,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_done_head').textContent=(wifi&&prov)
         ? 'You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.'
         : 'Almost there - complete the Wi-Fi and provider steps, then finish.';
-      const tz=st&&st.clock?(st.clock.tz?(tzSet||st.clock.tz):'UTC (not set: Device > Mode & identity > Timezone)'):'';
-      const ceil=ceilingLine(st&&st.spend);
+      const tz=tzLine(st), ceil=ceilingLine(st&&st.spend);
       el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifi?'connected':'not connected')+'<br>&bull; Provider: '+(prov?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
         (tz?'<br>&bull; Timezone: '+esc(tz):'')+
         (memTxt?'<br>&bull; '+memTxt:'')+
@@ -4871,27 +4938,20 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     // server-authoritative regardless.
     let last=null;
     fetch('/api/state').then(r=>r.json()).then(st=>{last=st;paint(st);}).catch(()=>{});
-    memLine((ok,t)=>{memTxt=t;paint(last);});
+    memLine(t=>{memTxt=t;paint(last);});
   }
-  function wire(s){
-    if(s.id==='display')wireDisplay();
-    else if(s.id==='wifi'){
-      el('onb_scan').onclick=doScan;
-      el('onb_wifisave').onclick=doWifi;
-      refreshWifiState();
-    }
-    else if(s.id==='provider')wireProvider();
-    else if(s.id==='timezone')wireTimezone();
-    else if(s.id==='mode')wireMode();
-    else if(s.id==='telegram')wireTelegram();
-    else if(s.id==='voice')wireVoice();
-    else if(s.id==='directive')wireDirective();
-    else if(s.id==='name'){
-      el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
-        apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':lastFailText('Rejected');});};
-    }
-    else if(s.id==='done')wireDone();
+  function wireWifi(){
+    el('onb_scan').onclick=doScan;
+    el('onb_wifisave').onclick=doWifi;
+    refreshWifiState();
   }
+  function wireName(){
+    el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
+      apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':lastFailText('Rejected');});};
+  }
+  const WIRE={display:wireDisplay,wifi:wireWifi,provider:wireProvider,timezone:wireTimezone,mode:wireMode,
+    telegram:wireTelegram,voice:wireVoice,directive:wireDirective,name:wireName,done:wireDone};
+  function wire(s){if(WIRE[s.id])WIRE[s.id]();}
   function doScan(){
     if(scanTimer)return; const b=el('onb_scan'); b.disabled=true; let left=12;
     const nets=el('onb_nets'); nets.textContent='Scanning…';
@@ -4966,46 +5026,56 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function refreshWifiState(){fetch('/api/state').then(r=>r.json()).then(st=>{if(st.sta&&st.staIp){wifiOk=true;const m=el('onb_wifimsg');
       if(st.scrModel==='tft')beginWifiHandoff(st,el('onb_wifisave'),'your Wi-Fi');
       else if(m)m.textContent='Already connected: '+st.staIp;}}).catch(()=>{});}
-  function provVerified(p,mm){
-    provOk=true;onbProvider=p;el('onb_key').value='';
-    memLine((ok,t)=>{if(mm)mm.innerHTML=t;});
+  const provOut=t=>{const e=el('onb_provmsg');if(e)e.textContent=t;};   // null-safe: the step may be gone
+  function provVerified(p){
+    provOk=true;
+    if(p==='mistral'||p==='openai')voiceCap=voiceCap||p;
+    const k=el('onb_key');if(k)k.value='';
+    showMem();
   }
-  // Check provider p (its key is saved): show the outcome in plain words.
+  // Check provider p (its key is saved): show the outcome in plain words. lead is the
+  // sentence that says the key was moved to its provider, kept in front of the result.
   function verifyProvider(p,lead,afterSave){
-    const b=el('onb_provsave'),out=t=>{el('onb_provmsg').textContent=(lead||'')+t;},mm=el('onb_memmsg');
+    const b=el('onb_provsave'),out=t=>provOut(lead+t);
     b.disabled=true;out('Verifying…');
-    runVerify(p,out,(o,st)=>{b.disabled=false;out(o.txt);
-      if(o.ok)provVerified(p,mm);
+    runVerify(p,out,(o)=>{b.disabled=false;out(o.txt);
+      if(o.ok)provVerified(p);
       // A low-memory deferral retries by itself: keep watching for a while.
-      else if(o.wait)watchDeferred(p,lead,0);},afterSave);
+      else if(o.wait)watchDeferred(p,out,0);},afterSave);
   }
-  function watchDeferred(p,lead,n){
+  function watchDeferred(p,out,n){
     if(n>30||provOk)return;
     setTimeout(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{const st=vfyState(d,p);
-      if(st&&st.verify===1){el('onb_provmsg').textContent=(lead||'')+'Verified ✓';provVerified(p,el('onb_memmsg'));}
-      else watchDeferred(p,lead,n+1);}).catch(()=>watchDeferred(p,lead,n+1)),4000);
+      if(st&&st.verify===1){out('Verified ✓');provVerified(p);}
+      else watchDeferred(p,out,n+1);},()=>watchDeferred(p,out,n+1)),4000);
+  }
+  // A key pasted under another provider: where it goes, worded as sure only when its
+  // published prefix says so (a Mistral or Z.ai key is recognized by shape alone).
+  function movedLead(home){
+    const sure=home!=='mistral'&&home!=='zai';
+    return (sure?'That is ':'That looks like ')+PROVNOUN[home]+', so it is saved under '+PROVLBL[home]+'. ';
   }
   function doProvider(){
-    const sel=el('onb_prov'),out=t=>{el('onb_provmsg').textContent=t;};
-    let p=sel.value;const key=el('onb_key').value.trim();
+    const sel=el('onb_prov'),key=el('onb_key').value.trim();
+    let p=sel.value;
     if(!key){
       // A key saved before a reload or restart is checked as it is (never shown again).
       fetch('/api/orch').then(r=>r.json()).then(d=>{const pv=d.providers&&d.providers[p];
-        if(pv&&pv.hasKey)verifyProvider(p,'',false);else out('Paste an API key.');}).catch(()=>out('Paste an API key.'));
+        if(pv&&pv.hasKey)verifyProvider(p,'',false);else provOut('Paste an API key.');},()=>provOut('Paste an API key.'));
       return;}
     const home=keyHome(key), not=notProviderKeyText(home);
-    if(not){out(not);return;}
+    if(not){provOut(not);return;}
     let lead='';
     if(home&&home!==p&&PROVNOUN[home]){
       // A direct key under the wrong provider (the Cumulo default above): move it.
-      lead='That is '+PROVNOUN[home]+', so it is saved under '+PROVLBL[home]+'. ';
+      lead=movedLead(home);
       p=home;sel.value=p;if(sel.onchange)sel.onchange();
     } else if(p==='cumulo'&&home!=='cumulo'){
-      out('That is not a Cumulo Nimbus key: those start with cumulo_sk_. Choose the provider your key comes from above.');return;}
-    const b=el('onb_provsave');b.disabled=true;out(lead+'Saving…');
+      provOut('That is not a Cumulo Nimbus key: those start with cumulo_sk_. Choose the provider your key comes from above.');return;}
+    const b=el('onb_provsave');b.disabled=true;provOut(lead+'Saving…');
     const body={};body[keyField(p)]=key;
     orchApply(body).then(ok=>{
-      if(ok===false){b.disabled=false;out(lead+lastFailText('Couldn\'t save - try again.'));return;}
+      if(ok===false){b.disabled=false;provOut(lead+lastFailText('Couldn\'t save - try again.'));return;}
       verifyProvider(p,lead,true);
     });
   }
@@ -5031,7 +5101,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     }).catch(e=>{b.disabled=false;
       msg(e===507?saveFailText(e):'Couldn\'t finish: '+e+' - complete the Wi-Fi and provider steps.');});
   }
-  el('onbBack').onclick=()=>{if(idx>0){idx--;rememberStep();render();}};
+  el('onbBack').onclick=()=>{if(idx>0)go(-1);};
   el('onbSkip').onclick=()=>next();
   el('onbNext').onclick=()=>{
     const s=STEPS[idx];
@@ -5045,23 +5115,27 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   // never past a required step that is not done (a reload, a restart, a factory
   // reset or another device all land on the first step still to do).
   function startIdx(st){
-    wifiOk=!!(st.sta&&st.staIp);provOk=!!st.provVerified;
-    // ?onboard=<step> (the Wi-Fi handoff sends "provider"), else this device's saved
-    // step, else Welcome.
-    let i=stepIdx(new URLSearchParams(location.search).get('onboard')||'');
+    const q=new URLSearchParams(location.search);
+    let i=stepIdx(q.get('onboard')||'');
+    if(q.has('onboard')){q.delete('onboard');try{history.replaceState(null,'',location.pathname+(q.toString()?'?'+q:''));}catch(e){}}
     if(i<0)i=savedStep();
     if(i<0)return 0;
-    if(!wifiOk)i=Math.min(i,stepIdx('wifi'));
-    if(!provOk)i=Math.min(i,stepIdx('provider'));
+    if(!(st.sta&&st.staIp))i=Math.min(i,stepIdx('wifi'));
+    if(!st.provVerified)i=Math.min(i,stepIdx('provider'));
     return i;
   }
   // Kick off: only when we have a token (a fresh AP device gets one via /?t=).
   function maybeStart(){
     if(!nimbusTok())return;
-    fetch('/api/state').then(r=>r.json()).then(s=>{curMode=s.mode||0;bootDisp=s.scrModel||'tft';if(s.needsOnboarding){
+    fetch('/api/state').then(r=>r.json()).then(s=>{curMode=s.mode||0;bootDisp=s.scrModel||'tft';if(!s.needsOnboarding)return;
+      // Resume: the required gates and the voice step's provider come from the device.
+      wifiOk=!!(s.sta&&s.staIp);provOk=!!s.provVerified;
       idx=startIdx(s);
-      rememberStep();show();
-    }}).catch(()=>{});
+      const begin=()=>{rememberStep();show();};
+      if(!provOk)return begin();
+      fetch('/api/orch').then(r=>r.json()).then(d=>{const pv=d.providers||{};
+        voiceCap=['mistral','openai'].find(p=>pv[p]&&pv[p].verify===1)||'';}).catch(()=>{}).then(begin);
+    }).catch(()=>{});
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',maybeStart);else maybeStart();
 })();

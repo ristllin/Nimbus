@@ -40,9 +40,12 @@ NOTES_MAX_BYTES = 95
 
 
 def notes_error(notes: str) -> str:
-    """ "" when `notes` fits the device's notes field intact, else why not. The release
-    gate (tools/release_gate/check_release_notes.py) holds the full rule; this is the
-    last check before the line is signed into a manifest."""
+    """Return "" when `notes` fits the device's notes field intact, else why not.
+
+    The release gate (tools/release_gate/check_release_notes.py) holds the full rule;
+    this is the last check before the line is written into a manifest. The line is
+    not part of the signed message (sig_message): the device treats it as plain text.
+    """
     if "\n" in notes or "\r" in notes:
         return "notes must be one line"
     b = notes.encode("utf-8")
@@ -93,8 +96,8 @@ def main() -> None:
 
     if not (a.key and a.out and a.pairs):
         sys.exit("need --key, --out and at least one variant=file pair")
-    if notes_error(a.notes):
-        sys.exit(notes_error(a.notes))
+    if err := notes_error(a.notes):
+        sys.exit(err)
     url_base = a.url_base.rstrip("/") or (
         f"https://github.com/ristllin/nimbus-fw-releases/releases/download/{a.version}"
     )

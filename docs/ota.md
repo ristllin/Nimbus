@@ -106,10 +106,13 @@ a release once it is published.
 
 Every OTA release carries one plain line for the people who own the devices, in
 `docs/release-notes/<tag>.txt` (a release candidate `vX.Y.Z-rcN` may use
-`vX.Y.Z.txt`). The release workflow signs it into the manifest's `notes`. A device
-shows it on **Device > Software update** ("What's new"), next to an available
-update and, after updating, for the version it runs, and the assistant is told it in
-the turn that follows a verified update, so it can mention what changed.
+`vX.Y.Z.txt`). The release workflow writes it into the manifest's `notes`. A device
+shows it on **Device > Software update** ("What's new") next to an available update,
+and for the version it runs once its next update check has run (a couple of minutes
+after it starts); the assistant is told it in the turn that follows a verified update,
+so it can mention what changed. The line is not covered by the release signature,
+which signs the version, the device type and the image hash: the device treats it as
+plain text from the release server.
 
 The device keeps 95 bytes of it, so the release gate
 (`tools/release_gate/check_release_notes.py`, run by the release workflow before the

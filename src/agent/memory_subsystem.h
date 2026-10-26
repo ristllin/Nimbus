@@ -473,8 +473,8 @@ std::string pendingNotes(const std::string& ns);
 String embedParkedWhy();      // "" when embeddings are not parked
 void noteEmbedConfigChanged();// an embed config or key save: the park ends
 // A provider key was saved or cleared: re-decide which keyed provider embeds
-// (nimbus/orch/embed_pick.h), now if the card lock is free, else at the next
-// embedding or memory read. Safe on any task, before begin() too.
+// (nimbus/orch/embed_pick.h), now if the card lock frees within 200 ms, else at the
+// next memory read or drain. Safe on any task, before begin() too.
 void noteProviderKeysChanged();
 // The Telegram task's staged-work slot: a cheap RAM-only "due" predicate and one
 // drain step. Never inside a turn.

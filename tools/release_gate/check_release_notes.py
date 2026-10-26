@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Release notes gate: every OTA release carries one short line for its owners.
 
-The signed OTA manifest has a `notes` field that the device already reads into a
+The OTA release manifest has a `notes` field that the device already reads into a
 96-byte field (95 characters and the terminator, lib/core ota_logic.h), shows on the
 web page's Software update panel, and hands the assistant after the update so it can
 tell the owner what changed. The release workflow fills it from

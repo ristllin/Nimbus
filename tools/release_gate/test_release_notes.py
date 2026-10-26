@@ -1,7 +1,7 @@
 """Tests for the release notes gate (check_release_notes.py, owner decision D5).
 
 Every OTA release carries one plain line in docs/release-notes/<tag>.txt; the
-release workflow signs it into the manifest's `notes`, which the device keeps in a
+release workflow writes it into the manifest's `notes`, which the device keeps in a
 96-byte field and shows on the Software update panel and to the assistant after the
 update. The gate refuses a line that is missing or would not arrive intact.
 """
@@ -67,7 +67,7 @@ def test_cli_print_writes_the_line_alone(capsys):
     assert rn.main(["--tag", "v0.0.1"]) == 1
 
 
-def test_release_workflow_gates_the_line_and_signs_it_in():
+def test_release_workflow_gates_the_line_and_writes_it_in():
     """release.yml: the gate runs before the build, and the manifest step passes the
     gated line to make_manifest.py --notes (the device's only source for it)."""
     text = (REPO / ".github" / "workflows" / "release.yml").read_text()
@@ -78,10 +78,25 @@ def test_release_workflow_gates_the_line_and_signs_it_in():
     assert re.search(
         r'NOTES="\$\(python3 tools/release_gate/check_release_notes\.py --tag "\$\{GITHUB_REF_NAME\}" --print\)"', sign
     )
-    assert '--notes "${NOTES}"' in sign
+    assert '--notes="${NOTES}"' in sign  # = form: a line starting with '-' is never an option
+    assert sign.find("NOTES=") < sign.find("ota_priv.pem"), "read the line before the key hits the disk"
 
 
 def test_run_gate_host_checks_include_the_line():
     src = (REPO / "tools" / "release_gate" / "run_gate.py").read_text()
     assert "check_release_notes.main" in src
     assert hasattr(run_gate, "check_release_notes")
+
+
+def test_the_95_byte_limit_is_the_device_field():
+    """The gate, make_manifest.py and the device must agree on the bound: the device's
+    ManifestInfo::notes is char[N], so N-1 bytes survive."""
+    import importlib.util
+
+    h = (REPO / "lib" / "core" / "include" / "nimbus" / "ota" / "ota_logic.h").read_text()
+    m = re.search(r"char\s+notes\[(\d+)\]", h)
+    assert m, "ota_logic.h no longer declares char notes[N]"
+    spec = importlib.util.spec_from_file_location("make_manifest", REPO / "tools" / "make_manifest.py")
+    mm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mm)
+    assert rn.MAX_BYTES == mm.NOTES_MAX_BYTES == int(m.group(1)) - 1

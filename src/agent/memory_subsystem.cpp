@@ -296,9 +296,14 @@ std::atomic<uint32_t> g_netLockReleases{0};
 // first vector lands in the chosen space and the set-once lock keeps its meaning.
 // It runs again whenever the usable keys change, on whatever path changed them (a
 // web save, a cloud-minted key, a verify that rejected one): the last-seen set is
-// kept as a bit mask (-1 = no pick yet), read lock-free by the cheap due-check.
+// kept as a bit mask (-1 = no pick yet). The lazy callers (stats, recall, the drain)
+// look at most once per kPickCheckEveryMs, since a look reads six settings. A pick
+// never runs inside an embedding call: the memory tools read the store's width
+// before they embed, so a width change there would refuse the vector it waited for.
 std::atomic<int> g_pickedKeys{-1};
-std::atomic<bool> g_pickReady{false};   // begin() loaded the stored vectors (a pick needs them)
+std::atomic<bool> g_pickReady{false};      // begin() loaded the stored vectors (a pick needs them)
+std::atomic<uint32_t> g_pickCheckMs{0};    // when a lazy caller last looked
+constexpr uint32_t kPickCheckEveryMs = 10000;
 
 int keyMask(const nimbus::orch::EmbedKeys& k) {
   return (k.openai ? 1 : 0) | (k.cumulo ? 2 : 0) | (k.mistral ? 4 : 0);
@@ -314,55 +319,64 @@ nimbus::orch::EmbedKeys usableEmbedKeys() {
   return k;
 }
 
-// Whether the usable keys changed since the last pick (fills `keys` either way).
-bool pickDue(nimbus::orch::EmbedKeys& keys) {
-  keys = usableEmbedKeys();
-  return keyMask(keys) != g_pickedKeys.load();
-}
-
-// Decide and store. Caller holds the card lock (g_vec, g_archive).
-void applyEmbedPickLocked(const nimbus::orch::EmbedKeys& keys) {
-  g_pickedKeys = keyMask(keys);
+// Decide and store. Caller holds the card lock (g_vec, g_archive). The key set is
+// recorded only once it is handled, so a switch the settings storage refused is tried
+// again at the next look.
+void applyEmbedPickLocked() {
+  const nimbus::orch::EmbedKeys keys = usableEmbedKeys();
   const nimbus::orch::EmbedConfig cur{std::string(store::embedProvider().c_str()),
                                       std::string(store::embedModel().c_str()), store::embedDims()};
   const bool hasVectors = store::embedLocked() || g_vec.size() > 0 || g_archive.size() > 0;
-  const nimbus::orch::EmbedPick p = nimbus::orch::pickEmbedProvider(cur, keys, hasVectors);
-  if (p.act != nimbus::orch::EmbedPickAct::Switch) return;
-  if (!store::setEmbedConfig(p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims)) {
-    alog("memory: embedding provider switch not stored (settings storage full)");
-    return;
+  // The live store's width is the stored vectors' own (deserialize adopts the blob's).
+  const nimbus::orch::EmbedPick p = nimbus::orch::pickEmbedProvider(cur, keys, hasVectors, g_vec.dims());
+  if (p.act == nimbus::orch::EmbedPickAct::Conflict)
+    alogf("memory: embedding config %d wide but the stored vectors are %d wide - not switching",
+          cur.dims, g_vec.dims());
+  if (p.act == nimbus::orch::EmbedPickAct::Switch) {
+    if (!store::setEmbedConfig(p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims)) {
+      alog("memory: embedding provider switch not stored (settings storage full) - retried later");
+      return;
+    }
+    // A new width only ever comes with no stored vectors (embed_pick), so both
+    // stores are empty and simply take it.
+    if (!hasVectors && p.pick.dims != g_vec.dims()) {
+      g_vec.configure(p.pick.dims);
+      g_archive.configure(p.pick.dims);
+    }
+    g_park.clear();   // a new provider: try embeddings again at once
+    alogf("memory: embeddings now via %s (%s, %d wide); %s has no usable key",
+          p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims, cur.provider.c_str());
   }
-  // A new width only ever comes with no stored vectors (embed_pick), so both stores
-  // are empty and simply take it.
-  if (p.pick.dims != g_vec.dims()) {
-    g_vec.configure(p.pick.dims);
-    g_archive.configure(p.pick.dims);
-  }
-  g_park.clear();   // a new provider: try embeddings again at once
-  alogf("memory: embeddings now via %s (%s, %d wide); %s has no usable key",
-        p.pick.provider.c_str(), p.pick.model.c_str(), p.pick.dims, cur.provider.c_str());
+  g_pickedKeys = keyMask(keys);
+}
+
+// Whether the usable keys changed since the last pick. A lazy caller (force false)
+// looks at most once per kPickCheckEveryMs; a key save and boot always look.
+bool pickDue(bool force) {
+  if (!g_pickReady.load()) return false;
+  const uint32_t now = millis();
+  if (!force && g_pickedKeys.load() >= 0 && (uint32_t)(now - g_pickCheckMs.load()) < kPickCheckEveryMs)
+    return false;
+  g_pickCheckMs = now;
+  return keyMask(usableEmbedKeys()) != g_pickedKeys.load();
 }
 
 // Pick again when the keys changed, if the card lock frees within waitMs (a turn may
-// hold it across a provider round trip; the next embedding or memory read retries).
-void repickIfDue(uint32_t waitMs) {
-  nimbus::orch::EmbedKeys keys;
-  if (!g_pickReady || !pickDue(keys)) return;
-  if (!tryLock(waitMs)) return;
-  applyEmbedPickLocked(keys);
+// hold it across a provider round trip; the next lazy look retries).
+void repickIfDue(uint32_t waitMs, bool force) {
+  if (!pickDue(force) || !tryLock(waitMs)) return;
+  applyEmbedPickLocked();
   unlock();
 }
 
 // The same, for a caller that already holds the card lock.
 void repickLockedIfDue() {
-  nimbus::orch::EmbedKeys keys;
-  if (g_pickReady && pickDue(keys)) applyEmbedPickLocked(keys);
+  if (pickDue(false)) applyEmbedPickLocked();
 }
 
 // One embedding call for the memory engines, honoring the test fault. Never under the
 // card lock on a task other than the web task (CardRelease).
 std::vector<int8_t> embedRaw(const String& text, String& err) {
-  repickIfDue(50);   // a key saved since the last pick decides this call's provider
 #ifdef NIMBUS_TEST
   if (nimbus::fault::active(nimbus::fault::EMBED_FAIL)) { err = kEmbedFaultToken; return {}; }
 #endif
@@ -2279,7 +2293,7 @@ String embedParkedWhy() {
 
 void noteEmbedConfigChanged() { Lock g; g_park.clear(); }
 void noteProviderKeysChanged() {
-  repickIfDue(200);   // usually immediate, so the Memory page and the wizard show it at once
+  repickIfDue(200, true);   // usually immediate, so the Memory page and the wizard show it at once
 }
 
 // RAM-only predicate polled by the Telegram task's staged-work slot (cheap: no
@@ -2318,6 +2332,7 @@ static bool principalForNs(const std::string& ns, nimbus::orch::Principal& who) 
 void drainPendingStep() {
   g_lastDrainMs = millis();
   if (g_pending.empty()) return;
+  { Lock g; repickLockedIfDue(); }   // before the drain reads the store's width (QW5)
   nimbus::orch::EmbedDrainDeps d;
   d.principalForNs = principalForNs;
   d.withLock = [](const std::function<void()>& fn) { Lock g; fn(); };
@@ -2335,6 +2350,7 @@ int drainPendingBurst(int maxEntries, uint32_t budgetMs) {
   for (int i = 0; i < maxEntries && !g_pending.empty() && millis() - t0 < budgetMs; i++) {
     {
       Lock g;
+      repickLockedIfDue();   // before the drain reads the store's width (QW5)
       if (g_park.blocked(millis())) break;
     }
     nimbus::orch::EmbedDrainDeps d;

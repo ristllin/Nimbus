@@ -140,6 +140,27 @@ static void test_no_embed_capable_key_is_none() {
   TEST_ASSERT_TRUE(embedDefaultsFor("zai").provider.empty());
 }
 
+// The guard against a mixed store (prism review): stored vectors whose width differs
+// from the stored config (a card from another device, a cut write) are never re-widened
+// or moved, whatever keys exist; only an agreeing width lets the same-space switch run.
+static void test_a_width_conflict_with_stored_vectors_switches_nothing() {
+  for (const EmbedConfig& cur : allConfigs()) {
+    for (unsigned mask = 0; mask < 8; ++mask) {
+      const int otherWidth = cur.dims == 1024 ? 256 : 1024;
+      const EmbedPick p = pickEmbedProvider(cur, keysFrom(mask), true, otherWidth);
+      TEST_ASSERT_TRUE(p.act == EmbedPickAct::Conflict);
+      // No vectors: the width the empty store carries does not matter.
+      TEST_ASSERT_FALSE(pickEmbedProvider(cur, keysFrom(mask), false, otherWidth).act ==
+                        EmbedPickAct::Conflict);
+    }
+  }
+  // The finding's case: a card with 1024-wide Mistral vectors in a device whose config
+  // is the OpenAI default, with only a Cumulo key.
+  const EmbedConfig def{"openai", kEmbedOpenAiModel, kEmbedOpenAiDims};
+  TEST_ASSERT_TRUE(pickEmbedProvider(def, keysFrom(2), true, 1024).act == EmbedPickAct::Conflict);
+  TEST_ASSERT_TRUE(pickEmbedProvider(def, keysFrom(2), true, 256).act == EmbedPickAct::Switch);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_state_obeys_the_rules);
@@ -147,5 +168,6 @@ int main(int, char**) {
   RUN_TEST(test_mistral_only_fresh_device_takes_the_native_width);
   RUN_TEST(test_stored_openai_space_moves_to_the_router_unchanged);
   RUN_TEST(test_no_embed_capable_key_is_none);
+  RUN_TEST(test_a_width_conflict_with_stored_vectors_switches_nothing);
   return UNITY_END();
 }

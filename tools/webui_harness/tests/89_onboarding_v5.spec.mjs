@@ -80,7 +80,7 @@ async function wire(page, dev) {
       return json(r, { ok: true });
     }
     dev.tick();
-    return json(r, { ...ORCH, providers: dev.providers, verifyPending: dev.pending, tgVerify: dev.tg.verify, tgVts: dev.tg.vts, tgBot: dev.tg.bot });
+    return json(r, { ...ORCH, providers: dev.providers, verifyPending: dev.pending, tgVerify: dev.tg.verify, tgVts: dev.tg.vts, tgBot: dev.tg.bot, tgVfyReason: dev.tg.vfyReason || '' });
   });
   await page.route('**/api/verify', (r) => {
     const p = new URLSearchParams(r.request().postData() || '').get('provider');
@@ -100,7 +100,7 @@ async function wire(page, dev) {
 }
 
 const shot = (page, name, info) =>
-  page.screenshot({ path: `screenshots/qw5-${name}-${info.project.name}.png`, fullPage: true });
+  page.screenshot({ path: `screenshots/qw5-${name}-${info.project.name}.png` });
 
 // ---- the key reader: page and device agree on every row ----------------------------
 test('keyHome agrees with the device table (test/support/fixtures/key_home_cases.json)', async ({ page }) => {
@@ -199,9 +199,12 @@ test.describe('timezone', () => {
   test.use({ timezoneId: 'Europe/London' });
   test('detects this browser\'s zone, saves its POSIX form, and confirms against the device clock', async ({ page }, info) => {
     const dev = makeDevice({ state: { provVerified: true } });
+    // The device's clock.local for London at the same instant, formatted in the PAGE's
+    // zone (Europe/London), never the test runner's own zone.
     const now = Math.floor(Date.now() / 1000);
-    const d = new Date(now * 1000), pad = (n) => String(n).padStart(2, '0');
-    const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now * 1000)).map((x) => [x.type, x.value]));
+    const local = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
     dev.state.clock = { synced: true, epoch: now, local, tz: '' };
     await wire(page, dev);
     await page.goto('/?onboard=timezone');
@@ -217,7 +220,7 @@ test.describe('timezone', () => {
 });
 
 // Zone -> the POSIX rule the page derives (2026). Every one was checked hour by hour
-// against the IANA zone for 2026-2028 (lanes/QW5/evidence/tz-semantic-check.txt).
+// against the IANA zone for 2026-2032 (lanes/QW5/evidence/tz-semantic-check.txt).
 const ZONES = {
   'UTC': 'UTC0',
   'Europe/London': 'GMT0BST,M3.5.0/1,M10.5.0',
@@ -228,7 +231,11 @@ const ZONES = {
   'America/St_Johns': '<-0330>3:30<-0230>,M3.2.0,M11.1.0',
   'Asia/Kolkata': '<+0530>-5:30',
   'Asia/Tokyo': '<+09>-9',
-  'Asia/Jerusalem': 'IST-2IDT,M3.4.4/26,M10.5.0',
+  // "The Friday before the last Sunday" kept right in later years (4th Thursday, 26:00).
+  'Asia/Jerusalem': '<+02>-2<+03>,M3.4.4/26,M10.5.0',
+  // "Saturday at 24:00" and "the last Thursday at 24:00", not this year's Sunday/Friday.
+  'America/Santiago': '<-04>4<-03>,M9.1.6/24,M4.1.6/24',
+  'Africa/Cairo': 'EET-2EEST,M4.5.5/0,M10.5.4/24',
   'Australia/Sydney': '<+10>-10<+11>,M10.1.0,M4.1.0/3',
   'Pacific/Chatham': '<+1245>-12:45<+1345>,M9.5.0/2:45,M4.1.0/3:45',
 };
@@ -320,6 +327,7 @@ test('the welcome step says to have the key ready and gives one time estimate', 
   await expect(page.locator('#onbBody')).toContainText('about five minutes');
   await expect(page.locator('#onbBody')).toContainText('Have your AI provider key ready');
   await expect(page.locator('#onbBody')).not.toContainText('about a minute');
+  await expect(page.locator('#onbBody')).toContainText('Only want the Notifier status light');
   await shot(page, 'welcome', info);
 });
 
@@ -377,4 +385,67 @@ test('the Software update panel shows the release notes line', async ({ page }) 
   await page.locator('#fwsec').evaluate((el) => { el.open = true; });
   await expect(page.locator('#fwNotes')).toHaveText('In this version: First public release: guided setup, honest errors, a monthly spend ceiling.');
   await expect(page.locator('#fwLatest')).toHaveText('v5.0.0');
+});
+
+// ---- review fixes ---------------------------------------------------------------------
+test('a shape-only key is moved with "looks like", a published prefix with "is"', async ({ page }) => {
+  const dev = makeDevice();
+  await wire(page, dev);
+  await page.goto('/?onboard=provider');
+  await page.locator('#onb_key').fill('a'.repeat(32));
+  await page.locator('#onb_provsave').click();
+  await expect(page.locator('#onb_provmsg')).toContainText('That looks like a Mistral key, so it is saved under Mistral.');
+  await expect(page.locator('#onb_prov')).toHaveValue('mistral');
+});
+
+test('a Telegram check that cannot reach Telegram says so, not "unexpected answer"', async ({ page }) => {
+  const dev = makeDevice({ state: { provVerified: true }, verifyPlan: { telegram: { land: { verify: -1, vfyReason: 'connectfail' } } } });
+  await wire(page, dev);
+  await page.goto('/?onboard=telegram');
+  await page.locator('#onb_tg').fill('123456789:' + 'B'.repeat(35));
+  await page.locator('#onb_tgsave').click();
+  await expect(page.locator('#onb_tgmsg')).toContainText("Couldn't reach Telegram. Check that the device's Wi-Fi has internet", { timeout: 15000 });
+});
+
+test('Back from a step after a skipped one goes back, never bounced forward', async ({ page }) => {
+  // Anthropic only: no voice-capable provider, so the voice step skips itself.
+  const dev = makeDevice({ state: { provVerified: true }, providers: { anthropic: { hasKey: true, verify: 1, vts: 5 } } });
+  await wire(page, dev);
+  await page.goto('/?onboard=telegram');
+  await page.locator('#onbSkip').click();
+  await expect(page.locator('#onbTitle')).toHaveText('Directive');
+  await page.locator('#onbBack').click();
+  await expect(page.locator('#onbTitle')).toHaveText('Telegram');
+});
+
+test('after choosing Notifier, the assistant-only steps are skipped', async ({ page }) => {
+  const dev = makeDevice({ state: { provVerified: true, mode: 1 } });
+  await wire(page, dev);
+  await page.goto('/?onboard=mode');
+  await page.locator('.onbmb[data-m="0"]').click();
+  await page.locator('#modalOk').click();
+  await page.locator('#onbNext').click();
+  await expect(page.locator('#onbTitle')).toHaveText('Name this device');
+  await page.locator('#onbBack').click();
+  await expect(page.locator('#onbTitle')).toHaveText('Choose a mode');
+});
+
+test('typing a zone name asks for the rule instead of saving something the device cannot use', async ({ page }) => {
+  const dev = makeDevice({ state: { provVerified: true } });
+  await wire(page, dev);
+  await page.goto('/?onboard=timezone');
+  await page.locator('#onb_tzother').fill('Asia/Tokyo');
+  await page.locator('#onb_tzsave').click();
+  await expect(page.locator('#onb_tzmsg')).toContainText('Asia/Tokyo is a zone name, and the device needs its rule');
+  expect(dev.posts.find((b) => b.has('devTz'))).toBeUndefined();
+});
+
+test('the Memory page says when memory\'s provider is refusing right now', async ({ page }) => {
+  const dev = makeDevice({ state: { needsOnboarding: false },
+    mem: { embedAvailable: true, embedParked: 'out of embedding credit at cumulo', embed: { provider: 'cumulo', model: 'text-embedding-3-small', dims: 256 } } });
+  await wire(page, dev);
+  await page.goto('/');
+  await page.locator('.tab[data-p=memory]').click();
+  await page.locator('details.setgroup:has(#memstat)').evaluate((el) => { el.open = true; });
+  await expect(page.locator('#embstate')).toContainText('Long-term memory embeds through Cumulo Nimbus, which is refusing right now (out of embedding credit at cumulo).');
 });

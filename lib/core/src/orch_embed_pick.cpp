@@ -36,7 +36,10 @@ EmbedConfig embedDefaultsFor(const std::string& provider) {
   return EmbedConfig{};
 }
 
-EmbedPick pickEmbedProvider(const EmbedConfig& cur, const EmbedKeys& keys, bool hasVectors) {
+EmbedPick pickEmbedProvider(const EmbedConfig& cur, const EmbedKeys& keys, bool hasVectors,
+                            int storedWidth) {
+  if (hasVectors && storedWidth > 0 && cur.dims != storedWidth)
+    return EmbedPick{EmbedPickAct::Conflict, EmbedConfig{}};
   if (embedKeyUsable(keys, cur.provider)) return EmbedPick{EmbedPickAct::Keep, EmbedConfig{}};
   // The same model and width through the other OpenAI route keeps every stored vector
   // comparable, so it is the first choice with or without vectors.
