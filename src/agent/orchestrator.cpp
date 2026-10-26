@@ -5,7 +5,7 @@
 #include "nimbus/harness/apply.h"       // portable turn-application policy (Stage E)
 #include "nimbus/harness/jobs.h"        // portable sub-agent job machinery (Stage F)
 #include "nimbus/harness/engine.h"      // portable turn orchestration (Stage G)
-#include "nimbus/harness/turn_memory.h" // L24: PSRAM-first turns, the dispatch floor
+#include "nimbus/harness/turn_memory.h" // L24: a turn keeps its small blocks in PSRAM
 #include "../sys/heap_watch.h"          // heapwatch::psramFirst - the turn's malloc placement
 #include "nimbus/harness/turn_inbox.h"  // histV2 switch (the turn-structured history)
 #include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
@@ -1127,13 +1127,9 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   // L24 (turn_memory.h): a turn keeps its small blocks in PSRAM - the switch drops the
   // general-malloc spill limit to 0 for the turn's length and puts the boot limit back
-  // after - and the admission floor leaves the dispatch floor after the setup's
-  // measured worst case.
+  // after - so the turn's setup costs no internal SRAM and the admission floors above
+  // still hold at its provider request, where the engine checks them again.
   setPsramFirstSwitch([](bool on) { nimbus::heapwatch::psramFirst(on); });
-  static_assert(admissionCoversSetup(ORCH_TURN_HARD_FLOOR),
-                "ORCH_TURN_HARD_FLOOR must cover the dispatch floor plus the turn setup's cost");
-  static_assert(ORCH_TURN_MIN_LARGEST_BLOCK >= kDispatchFloorLargest,
-                "the admission largest-block floor must not admit what the dispatch floor refuses");
   d.platform.delayMs  = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
   d.jobs  = g_jobs;
   d.apply = buildApplyDeps();

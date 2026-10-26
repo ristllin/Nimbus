@@ -2856,14 +2856,31 @@ static void orchestratorBegin() {
 //
 // The chain NEVER runs inline on loopTask: that was the 88 B crash path. The task
 // reports its own stack watermark for the boot ladder's floor check
-// (heapwatch::bootStackFloorCheck). When it cannot start (no room for its stack at
-// boot, or the spawn fails), setup() waits for room, retrying, and if it never
-// comes the device says so in the durable log and restarts: a fresh boot has the
-// whole internal heap, so this is a loud, rate-limited recovery, never a stack
-// overflow.
+// (heapwatch::bootStackFloorCheck). When it cannot start (no room for its stack plus
+// the Telegram task's that the chain makes next, or the spawn fails), setup() waits
+// for room, retrying, and if none
+// comes in 30 s it says so in the durable log and restarts: a transient shortfall
+// (a boot that met a burst of web or relay work) clears on a fresh boot. A lasting
+// one would restart forever, so the restarts are counted in RTC memory: after two in
+// a row the boot stops restarting and keeps waiting, retrying every few seconds with
+// a BOOT FAULT line each minute and the console answering, until memory allows or
+// someone restarts it.
 static constexpr uint32_t kOrchBootStackBytes = 12288;
 static constexpr uint32_t kOrchBootRetryMs = 250;
 static constexpr uint32_t kOrchBootWaitMs = 30000;
+static constexpr uint32_t kOrchBootHoldRetryMs = 5000;
+// Deliberate orchboot restarts in a row (the policy: heapwatch::orchBootShouldRestart).
+// RTC no-init: it survives the restart; a power cycle fails the magic and reads 0.
+struct OrchBootRestarts {
+  uint32_t magic;
+  uint32_t count;
+};
+RTC_NOINIT_ATTR static OrchBootRestarts s_orchBootRestarts;
+
+static void setOrchBootRestarts(uint32_t n) {
+  s_orchBootRestarts.magic = nimbus::heapwatch::kOrchBootRestartMagic;
+  s_orchBootRestarts.count = n;
+}
 
 static void orchBootTask(void* pv) {
   orchestratorBegin();
@@ -2895,25 +2912,54 @@ static bool orchBootTry(const char* who) {
   return spawned;
 }
 
-static void orchestratorBeginOffLoopTask() {
-  if (orchBootTry("orchboot")) return;
-  agent::alog("orchboot: the orchestrator boot task could not start - waiting for room (never inline)");
+// Retry the boot task until `untilMs` (0 = forever), pumping the console; a BOOT
+// FAULT line every minute while it waits forever. True once it ran.
+static bool orchBootWait(uint32_t retryMs, uint32_t untilMs) {
   const uint32_t t0 = millis();
-  while ((uint32_t)(millis() - t0) < kOrchBootWaitMs) {
+  uint32_t told = t0;
+  while (untilMs == 0 || (uint32_t)(millis() - t0) < untilMs) {
     tc::pumpBoot();
-    delay(kOrchBootRetryMs);
+    delay(retryMs);
     if (orchBootTry(nullptr)) {
       agent::alogf("orchboot: started after %u ms", (unsigned)(millis() - t0));
-      return;
+      return true;
+    }
+    if (untilMs == 0 && (uint32_t)(millis() - told) >= 60000) {
+      told = millis();
+      agent::alogf("orchboot: BOOT FAULT - still no room for the orchestrator boot task "
+                   "(internal free %u B); the assistant stays off until it starts or a restart",
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }
   }
+  return false;
+}
+
+static void orchestratorBeginOffLoopTask() {
+  bool ran = orchBootTry("orchboot");
+  if (!ran) {
+    agent::alog("orchboot: the orchestrator boot task could not start - waiting for room (never inline)");
+    ran = orchBootWait(kOrchBootRetryMs, kOrchBootWaitMs);
+  }
+  if (ran) {
+    setOrchBootRestarts(0);
+    return;
+  }
+  const uint32_t inARow =
+      nimbus::heapwatch::orchBootRestartsInARow(s_orchBootRestarts.magic, s_orchBootRestarts.count);
+  const bool restart = nimbus::heapwatch::orchBootShouldRestart(inARow);
   agent::alogf("orchboot: BOOT FAULT - the orchestrator boot task could not start in %u s "
-               "(internal free %u B, largest %u B); restarting",
+               "(internal free %u B, largest %u B); %s",
                (unsigned)(kOrchBootWaitMs / 1000),
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-  delay(200);   // the durable line is flushed per write; let Serial drain too
-  esp_restart();
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+               restart ? "restarting" : "not restarting again; waiting");
+  if (restart) {
+    setOrchBootRestarts(inARow + 1);
+    delay(200);   // the durable line is flushed per write; let Serial drain too
+    esp_restart();
+  }
+  orchBootWait(kOrchBootHoldRetryMs, 0);   // returns only once the task ran
+  setOrchBootRestarts(0);
 }
 
 // Live device state for the self-test engine (hw::selftest reaches nothing on its

@@ -88,9 +88,11 @@ static void test_media_row_landed_truth_table() {
         }
 }
 
-// The SD append-log in every state: a refused write is held (not landed); with the
-// card back, a row that queues behind held rows lands only once every held row is on
-// the card - the write being "taken" alone is not enough when it only moved older rows.
+// The SD append-log in every state: a refused write is held in RAM only (not landed,
+// the prism case: the blob landed, the row did not); with the card answering again,
+// a row queued behind three held rows is still in RAM after its capture moved the
+// two oldest (the write was taken, but this row was not written: not landed); once
+// the step writes the queue, the next row lands.
 static void test_the_claim_follows_the_row_on_the_append_log() {
   CardFs fs;
   AppendLogEpisodicStore st(fs, "/mem/episodic");
@@ -106,7 +108,7 @@ static void test_the_claim_follows_the_row_on_the_append_log() {
   st.addMessage(photoRow());                  // moves 2 of the 4 queued rows
   TEST_ASSERT_TRUE(st.lastAppendOk());        // the write was taken...
   TEST_ASSERT_TRUE(st.heldCount() > 0);
-  TEST_ASSERT_FALSE(landed(st));              // ...but this photo's row is still held
+  TEST_ASSERT_FALSE(landed(st));              // ...but this photo's row is still in RAM
   while (st.heldCount() > 0) st.flushHeld(8);
   st.addMessage(photoRow());
   TEST_ASSERT_TRUE(landed(st));               // nothing held: the newest row is on the card
@@ -139,6 +141,10 @@ static void test_capture_media_file_returns_the_rows_answer() {
   const size_t b = mem.find("\n}\n", a);
   const std::string body = mem.substr(a, b - a);
   TEST_ASSERT_TRUE(body.find("capturedRowLanded(") != std::string::npos);
+  // The log is read before the capture: a refused write can demote the card and hide it.
+  const size_t sdLog = body.find("const bool sdLog = effHaveSd() && g_epiLog;");
+  TEST_ASSERT_TRUE(sdLog != std::string::npos);
+  TEST_ASSERT_TRUE(sdLog < body.find("captureMessageAt("));
   TEST_ASSERT_TRUE(body.find("return landed;") != std::string::npos);
   // After the capture, no path answers a plain true.
   const size_t cap = body.find("captureMessageAt(");

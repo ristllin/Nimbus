@@ -34,8 +34,7 @@ std::string storeFullFact(bool photo, bool inHistory) {
 
 bool mediaRowLanded(bool captured, bool sdLog, bool lastAppendOk, int heldRows) {
   if (!captured) return false;
-  if (!sdLog) return true;
-  return lastAppendOk && heldRows == 0;
+  return !sdLog || (lastAppendOk && heldRows == 0);
 }
 
 const char kStoreFullToolNote[] =

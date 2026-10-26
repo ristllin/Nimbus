@@ -364,8 +364,9 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
 // content-addressed sidecar in a small buffer - never loading the whole file into RAM
 // (for large media like the ~480 KB mic recording). Content-address dedup: an
 // identical blob isn't re-copied. Returns true only when the row itself reached the
-// card (the blob alone is not enough: a refused row write is held in RAM and lost by a
-// restart, so storeFullFact must not say the item stays in history). SD-gated
+// card too (the blob alone is not enough: a refused or queued row write is held in RAM
+// and lost by a restart, so storeFullFact must not say the item stays in history; the
+// Telegram caller also skips the photo's vision record and history ref then). SD-gated
 // no-op (returns false with no card). The caller keeps owning/deleting `srcPath`.
 // `sentEpoch` (an inbound Telegram item's send time, 0 when none) stamps the row with
 // that time instead of the arrival hour and tags it "sent:<epoch>". `refOut`

@@ -8,17 +8,26 @@ namespace agent {
 
 const char kShortOfMemoryReply[] = "I'm short of memory right now. Please try again in a minute.";
 
-void TurnMemoryGate::begin(uint32_t freeB, uint32_t largest) {
+void TurnMemoryGate::begin(uint32_t freeB, uint32_t largest, uint32_t floorFree, uint32_t floorLargest) {
+  floorFree_ = floorFree;
+  floorLargest_ = floorLargest;
   n_ = 0;
   dropped_ = 0;
   refusedAt_ = nullptr;
+  firstUnder_ = nullptr;
   phase("admit", freeB, largest);
 }
 
 void TurnMemoryGate::phase(const char* name, uint32_t freeB, uint32_t largest) {
   if (n_ < kMaxMarks) marks_[n_++] = Mark{name, freeB, largest};
   else ++dropped_;
-  if (!refusedAt_ && (freeB < floorFree_ || largest < floorLargest_)) refusedAt_ = name;
+  if (!firstUnder_ && !holds(freeB, largest)) firstUnder_ = name;
+}
+
+bool TurnMemoryGate::dispatch(const char* name, uint32_t freeB, uint32_t largest) {
+  phase(name, freeB, largest);
+  refusedAt_ = holds(freeB, largest) ? nullptr : name;
+  return refusedAt_ == nullptr;
 }
 
 uint32_t TurnMemoryGate::lowFree() const {
@@ -61,7 +70,8 @@ std::string TurnMemoryGate::line(bool full) const {
   std::snprintf(b, sizeof b, " cost=%u floor=%u/%u", (unsigned)setupCost(), (unsigned)floorFree_,
                 (unsigned)floorLargest_);
   out += b;
-  out += refusedAt_ ? std::string(" UNDER at ") + refusedAt_ : std::string(" ok");
+  if (refusedAt_) out += std::string(" UNDER at ") + refusedAt_;
+  else out += firstUnder_ ? std::string(" ok (dipped at ") + firstUnder_ + ")" : std::string(" ok");
   return out;
 }
 

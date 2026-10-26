@@ -60,7 +60,8 @@ uint32_t restingLargest();
 SpawnVerdict spawnGate(uint32_t stackBytes, const char* who);
 // The boot form (the orchestrator boot task): no turn exists yet, so it asks only
 // for the stack plus kBootSpawnMarginBytes. A null `who` refuses without a log line
-// (the boot's retries log once, not every attempt).
+// (the boot's retries log once, not every attempt). An overload, not a new name: the
+// L40 source guard requires every worker spawn site to call spawnGate(.
 SpawnVerdict spawnGate(uint32_t stackBytes, const char* who, bool atBoot);
 
 // PSRAM-first small allocations for the length of a turn (the L24 fix,

@@ -349,14 +349,26 @@ static void test_spawn_gate_answers_the_boot_task_shape() {
 // The boot task asks before any turn exists, so it needs its stack plus the boot
 // margin only (never "turn in flight"), with no wrap on a garbage size.
 static void test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin() {
-  for (uint32_t freeB = 0; freeB < 40 * 1024; freeB += 256) {
+  for (uint32_t freeB = 0; freeB < 64 * 1024; freeB += 256) {
     const SpawnVerdict v = spawnVerdictAtBoot(12288, freeB);
     if (freeB >= 12288 + kBootSpawnMarginBytes) TEST_ASSERT_EQUAL(SpawnVerdict::Ok, v);
     else TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, v);
   }
   TEST_ASSERT_EQUAL(SpawnVerdict::LowMemory, spawnVerdictAtBoot(0xFFFFFFFFu, 0xFFFFFFFFu));
-  // Counter-test: the boot margin is smaller than a worker's, never larger.
-  TEST_ASSERT_TRUE(kBootSpawnMarginBytes < kSpawnMarginBytes);
+  // The margin carries the Telegram poll task's 24 KB stack the chain creates next.
+  TEST_ASSERT_TRUE(kBootSpawnMarginBytes >= 24u * 1024u);
+}
+
+// The bounded restarts: power-on garbage reads as none in a row, each count up to the
+// cap restarts, the cap and anything past it (a corrupt count) stops restarting.
+static void test_orchboot_restarts_are_bounded() {
+  TEST_ASSERT_EQUAL_UINT32(0, orchBootRestartsInARow(0xDEADBEEFu, 1));   // power-on garbage
+  TEST_ASSERT_EQUAL_UINT32(0, orchBootRestartsInARow(0, 0));
+  TEST_ASSERT_EQUAL_UINT32(1, orchBootRestartsInARow(kOrchBootRestartMagic, 1));
+  for (uint32_t n = 0; n < kOrchBootMaxRestarts; ++n) TEST_ASSERT_TRUE(orchBootShouldRestart(n));
+  TEST_ASSERT_FALSE(orchBootShouldRestart(kOrchBootMaxRestarts));
+  TEST_ASSERT_FALSE(orchBootShouldRestart(0xFFFFFFFFu));
+  TEST_ASSERT_TRUE(kOrchBootMaxRestarts >= 1 && kOrchBootMaxRestarts <= 3);   // a cap, never a loop
 }
 
 // The orchboot floor: the chain's own watermark gets the same 1 KB floor, both lines
@@ -396,13 +408,18 @@ static void test_orchboot_reports_its_watermark_and_never_runs_inline() {
   const std::string region = main.substr(a, b - a);
   TEST_ASSERT_TRUE(region.find("noteOrchBootStack(") != std::string::npos);
   TEST_ASSERT_TRUE(region.find("spawnGate(kOrchBootStackBytes, who, /*atBoot=*/true)") != std::string::npos);
-  // orchestratorBegin() runs only inside the boot task: one call in the region.
+  // orchestratorBegin() runs only inside the boot task: one call in the WHOLE file
+  // (setup() calls orchestratorBeginOffLoopTask), and it is in that task's body.
   size_t calls = 0;
-  for (size_t p = region.find("orchestratorBegin();"); p != std::string::npos;
-       p = region.find("orchestratorBegin();", p + 1))
+  for (size_t p = main.find("orchestratorBegin();"); p != std::string::npos;
+       p = main.find("orchestratorBegin();", p + 1))
     ++calls;
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)calls, "the orchestrator boot chain must never run inline on loopTask");
-  TEST_ASSERT_TRUE(region.find("esp_restart()") != std::string::npos);   // the honest refusal
+  TEST_ASSERT_TRUE(region.find("orchestratorBegin();") != std::string::npos);
+  // The honest refusal: a restart, bounded by a count that survives it (no restart loop).
+  TEST_ASSERT_TRUE(region.find("esp_restart()") != std::string::npos);
+  TEST_ASSERT_TRUE(main.find("RTC_NOINIT_ATTR static OrchBootRestarts") != std::string::npos);
+  TEST_ASSERT_TRUE(region.find("heapwatch::orchBootShouldRestart(") != std::string::npos);
   const std::string hw = readFile("src/sys/heap_watch.cpp");
   TEST_ASSERT_TRUE(hw.find("orchBootStackFloorLine(") != std::string::npos);
   TEST_ASSERT_TRUE(hw.find("mem[\"orchBootStackMin\"]") != std::string::npos);
@@ -427,6 +444,7 @@ int main() {
   RUN_TEST(test_loop_stack_floor_line_healthy_and_fault);
   RUN_TEST(test_spawn_gate_answers_the_boot_task_shape);
   RUN_TEST(test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin);
+  RUN_TEST(test_orchboot_restarts_are_bounded);
   RUN_TEST(test_orchboot_stack_floor_line_healthy_fault_and_unmeasured);
   RUN_TEST(test_orchboot_reports_its_watermark_and_never_runs_inline);
   return UNITY_END();

@@ -223,17 +223,30 @@ SpawnVerdict spawnVerdict(uint32_t stackBytes, uint32_t intFree, bool turnInFlig
 const char* spawnVerdictName(SpawnVerdict v);
 
 // The orchestrator's one-shot boot task (main.cpp orchBootTask) asks at boot, before
-// any turn can exist, so the turn's 16 KB transient margin does not apply: its stack
-// plus a small margin for the boot's own transients is enough. Never TurnInFlight.
-inline constexpr uint32_t kBootSpawnMarginBytes = 4 * 1024;
+// any turn can exist, so the turn's transient margin does not apply. What the chain
+// needs next is the Telegram poll task's 24 KB stack (tg_poll, created inside it) plus
+// a few KB of the boot's own transients. Never TurnInFlight.
+inline constexpr uint32_t kBootSpawnMarginBytes = 28 * 1024;
 SpawnVerdict spawnVerdictAtBoot(uint32_t stackBytes, uint32_t intFree);
+
+// The boot task's bounded restarts (main.cpp): when it cannot start, the boot waits,
+// then restarts; the restarts in a row are kept in RTC no-init memory (magic + count)
+// so a lasting shortfall is never a restart loop. Power-on garbage fails the magic.
+inline constexpr uint32_t kOrchBootRestartMagic = 0x4F42524Eu;   // "OBRN"
+inline constexpr uint32_t kOrchBootMaxRestarts = 2;
+inline uint32_t orchBootRestartsInARow(uint32_t magic, uint32_t count) {
+  return magic == kOrchBootRestartMagic ? count : 0;
+}
+// After the wait failed: restart again (true), or stop restarting and keep waiting.
+inline bool orchBootShouldRestart(uint32_t restartsInARow) { return restartsInARow < kOrchBootMaxRestarts; }
 
 // ---- general-malloc placement ---------------------------------------------------
 
 // The boot's spill limit for plain malloc/new (main.cpp, heap_caps_malloc_extmem_enable):
-// a block of this size or more goes to PSRAM first, a smaller one prefers internal
-// SRAM. A turn drops it to 0 for its length (src/sys heap_watch psramFirst, the L24
-// fix in nimbus/harness/turn_memory.h) and puts this value back after.
+// a block larger than this goes to PSRAM first, one of this size or smaller prefers
+// internal SRAM (IDF compares size <= limit). A turn drops it to 0 for its length (src/sys
+// heap_watch psramFirst, the L24 fix in nimbus/harness/turn_memory.h) and puts this value
+// back after.
 inline constexpr uint32_t kSmallAllocInternalLimit = 128;
 
 // ---- the boot's loopTask stack floor ---------------------------------------------

@@ -56,12 +56,13 @@ std::string storeFullFact(bool photo, bool inHistory);
 
 // Did an inbound item's media row reach the card, so it stays in the chat's history?
 // (captureMediaFile's answer, the `inHistory` above.) `captured`: a row was minted;
-// `sdLog`: the store is the SD append-log; `lastAppendOk` and `heldRows`: that log's
-// state right after the row's write. A refused write holds the row in RAM until the
-// card answers (a restart before that loses it), and a held row queues every newer
-// one behind it, so a row is on the card only when the write was taken AND nothing is
-// held: the last write can be taken while it only moved older held rows. The no-log
-// stores keep a captured row as their only copy.
+// `sdLog`: the store was the SD append-log when the row was captured (read BEFORE the
+// capture: a refused write can demote the card); `lastAppendOk` and `heldRows`: that
+// log's state right after the write. A refused write holds the row in RAM only (a
+// restart before the card answers loses it), and a held row queues every newer one
+// behind it (the capture moves at most two of them), so a row is on the card only when
+// the write was taken AND nothing is held. The no-log stores keep a captured row as
+// their only copy.
 bool mediaRowLanded(bool captured, bool sdLog, bool lastAppendOk, int heldRows);
 
 // Appended to an assistant save the full store refused (artifact.save, files.append,

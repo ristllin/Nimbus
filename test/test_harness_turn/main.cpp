@@ -3999,9 +3999,9 @@ static std::vector<ExitCase> exitCases() {
   sched.exitName = "generic (scheduled fire)";
   sched.scheduled = true;
   v.push_back(sched);
-  // L24: the turn's setup left internal SRAM under the dispatch floor: no provider
+  // L24: the turn's setup left internal SRAM under the turn floor: no provider
   // request, the device's own cause (turn_memory.h).
-  v.push_back({"setup memory", "device", "dispatch floor", [](Rig& r) { r.plat.heap = 7000; }});
+  v.push_back({"setup memory", "device", "turn floor", [](Rig& r) { r.plat.heap = 7000; }});
   return v;
 }
 

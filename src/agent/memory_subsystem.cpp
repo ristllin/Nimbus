@@ -2807,11 +2807,10 @@ void captureMedia(const char* sessionId, const char* role, nimbus::orch::MsgKind
   if (path.length()) captureMessage(sessionId, role, kind, text, path);
 }
 
-// Did the row captureMessageAt just wrote reach the card (nimbus::orch::mediaRowLanded:
-// a refused write is held in RAM and queues newer rows behind it)? Call under the
-// Lock that covered the capture, so the log state is that write's.
-static bool capturedRowLanded(const String& id) {
-  const bool sdLog = effHaveSd() && g_epiLog;
+// Did the row captureMessageAt just wrote reach the card (nimbus::orch::mediaRowLanded)?
+// `sdLog` is read before the capture (a refused write can demote the card and hide
+// the log); call under the Lock that covered both, so the log state is that write's.
+static bool capturedRowLanded(const String& id, bool sdLog) {
   return nimbus::orch::mediaRowLanded(id.length() > 0, sdLog, sdLog && g_epiLog->lastAppendOk(),
                                       sdLog ? g_epiLog->heldCount() : 0);
 }
@@ -2857,8 +2856,10 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
   bool landed;
   {
     Lock g;
+    const bool sdLog = effHaveSd() && g_epiLog;
     landed = capturedRowLanded(
-        captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0}));
+        captureMessageAt(sessionId, role, kind, text, RowRefs{blob, tags, sent ? (uint32_t)(sentEpoch / 3600) : 0}),
+        sdLog);
   }
   if (!landed) alog("memory: media row not written to the card (its blob is kept)");
   if (refOut) *refOut = hasher.hex();
