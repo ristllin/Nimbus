@@ -53,12 +53,13 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   d["input"].add(text);   // array of one
   String body; serializeJson(d, body);
 
-  if (!arbiter::acquireWork(acquireMs)) { alog("moderation: device busy (TLS slot)"); return ClassifierVerdict::Error; }
+  arbiter::WorkSlot slot(acquireMs);
+  if (!slot) { alog("moderation: device busy (TLS slot)"); return ClassifierVerdict::Error; }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(15);
   c.setConnectionTimeout(15000);
-  if (!c.connect("api.mistral.ai", 443)) { arbiter::releaseWork(); alog("moderation: connect failed"); return ClassifierVerdict::Error; }
+  if (!c.connect("api.mistral.ai", 443)) { slot.release(); alog("moderation: connect failed"); return ClassifierVerdict::Error; }
   c.printf("POST /v1/moderations HTTP/1.0\r\nHost: api.mistral.ai\r\n");
   c.printf("Authorization: Bearer %s\r\n", key.c_str());
   c.printf("Content-Type: application/json\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
@@ -67,7 +68,7 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
 
   const uint32_t deadline = millis() + 30000;
   String line;
-  if (!readLine(c, line, deadline)) { tlsClose(c); arbiter::releaseWork(); alog("moderation: no response"); return ClassifierVerdict::Error; }
+  if (!readLine(c, line, deadline)) { tlsClose(c); slot.release(); alog("moderation: no response"); return ClassifierVerdict::Error; }
   while (readLine(c, line, deadline) && line.length() > 0) {}   // skip headers
 
   // Filtered parse: only the per-category booleans of the first result (and the billed
@@ -78,7 +79,7 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   JsonDocument resp;
   DeserializationError je = deserializeJson(resp, c, ArduinoJson::DeserializationOption::Filter(filter));
   tlsClose(c);
-  arbiter::releaseWork();
+  slot.release();
   if (je) { alog("moderation: bad response"); return ClassifierVerdict::Error; }
 
   JsonObject cats = resp["results"][0]["categories"];

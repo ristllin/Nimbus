@@ -359,16 +359,28 @@ static void test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin() {
   TEST_ASSERT_TRUE(kBootSpawnMarginBytes >= 24u * 1024u);
 }
 
-// The bounded restarts: power-on garbage reads as none in a row, each count up to the
-// cap restarts, the cap and anything past it (a corrupt count) stops restarting.
-static void test_orchboot_restarts_are_bounded() {
+// The fallback when the boot task cannot start, over every case: a trial image always
+// rolls back (whatever the count or reset reason: waiting would keep the update's
+// guard from ever counting it out); a crash boot never restarts (the restart would hide
+// the crash notice); otherwise restart up to the cap, then boot on degraded - never a
+// restart loop, never a wait in place. Power-on garbage in the RTC record reads 0.
+static void test_orchboot_fallback_over_every_case() {
+  using F = OrchBootFallback;
   TEST_ASSERT_EQUAL_UINT32(0, orchBootRestartsInARow(0xDEADBEEFu, 1));   // power-on garbage
   TEST_ASSERT_EQUAL_UINT32(0, orchBootRestartsInARow(0, 0));
   TEST_ASSERT_EQUAL_UINT32(1, orchBootRestartsInARow(kOrchBootRestartMagic, 1));
-  for (uint32_t n = 0; n < kOrchBootMaxRestarts; ++n) TEST_ASSERT_TRUE(orchBootShouldRestart(n));
-  TEST_ASSERT_FALSE(orchBootShouldRestart(kOrchBootMaxRestarts));
-  TEST_ASSERT_FALSE(orchBootShouldRestart(0xFFFFFFFFu));
+  for (uint32_t n = 0; n < 6; ++n) {
+    for (int crash = 0; crash < 2; ++crash) {
+      TEST_ASSERT_TRUE(orchBootFallback(true, crash, n) == F::RollBack);
+      const F f = orchBootFallback(false, crash, n);
+      if (crash) TEST_ASSERT_TRUE(f == F::Degraded);
+      else if (n < kOrchBootMaxRestarts) TEST_ASSERT_TRUE(f == F::Restart);
+      else TEST_ASSERT_TRUE(f == F::Degraded);
+    }
+  }
+  TEST_ASSERT_TRUE(orchBootFallback(false, false, 0xFFFFFFFFu) == F::Degraded);   // a corrupt count
   TEST_ASSERT_TRUE(kOrchBootMaxRestarts >= 1 && kOrchBootMaxRestarts <= 3);   // a cap, never a loop
+  TEST_ASSERT_EQUAL_STRING("restarting", orchBootFallbackName(F::Restart));
 }
 
 // The orchboot floor: the chain's own watermark gets the same 1 KB floor, both lines
@@ -416,11 +428,23 @@ static void test_orchboot_reports_its_watermark_and_never_runs_inline() {
     ++calls;
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)calls, "the orchestrator boot chain must never run inline on loopTask");
   TEST_ASSERT_TRUE(region.find("orchestratorBegin();") != std::string::npos);
-  // The honest refusal: a restart, bounded by a count that survives it (no restart loop).
+  // The honest refusal: the policy decides, a trial image rolls back, a restart is
+  // counted in RTC memory, and the last resort boots on degraded (loop() alive), never
+  // a wait in place.
+  TEST_ASSERT_TRUE(region.find("heapwatch::orchBootFallback(!otaupd::imageValidAtBoot(), crashBoot, inARow)") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(region.find("otaupd::rollbackNow()") != std::string::npos);
   TEST_ASSERT_TRUE(region.find("esp_restart()") != std::string::npos);
   TEST_ASSERT_TRUE(main.find("RTC_NOINIT_ATTR static OrchBootRestarts") != std::string::npos);
-  TEST_ASSERT_TRUE(region.find("heapwatch::orchBootShouldRestart(") != std::string::npos);
+  TEST_ASSERT_TRUE(region.find("g_orchBootDegraded = true") != std::string::npos);
+  TEST_ASSERT_TRUE(region.find("orchBootWait(kOrchBootRetryMs, kOrchBootWaitMs)") != std::string::npos);
+  TEST_ASSERT_TRUE(main.find("kOrchBootHoldRetryMs") == std::string::npos);   // no wait in place
+  // The degraded boot is visible: the screen notice, the web-chat row from loop(), the
+  // state flag.
+  TEST_ASSERT_TRUE(main.find("g_askOverride = kOrchBootDegradedScreen;") != std::string::npos);
+  TEST_ASSERT_TRUE(main.find("if (g_orchMode) orchBootDegradedTick();") != std::string::npos);
   const std::string hw = readFile("src/sys/heap_watch.cpp");
+  TEST_ASSERT_TRUE(hw.find("mem[\"orchBootDegraded\"]") != std::string::npos);
   TEST_ASSERT_TRUE(hw.find("orchBootStackFloorLine(") != std::string::npos);
   TEST_ASSERT_TRUE(hw.find("mem[\"orchBootStackMin\"]") != std::string::npos);
 }
@@ -444,7 +468,7 @@ int main() {
   RUN_TEST(test_loop_stack_floor_line_healthy_and_fault);
   RUN_TEST(test_spawn_gate_answers_the_boot_task_shape);
   RUN_TEST(test_boot_spawn_verdict_needs_the_stack_plus_the_boot_margin);
-  RUN_TEST(test_orchboot_restarts_are_bounded);
+  RUN_TEST(test_orchboot_fallback_over_every_case);
   RUN_TEST(test_orchboot_stack_floor_line_healthy_fault_and_unmeasured);
   RUN_TEST(test_orchboot_reports_its_watermark_and_never_runs_inline);
   return UNITY_END();

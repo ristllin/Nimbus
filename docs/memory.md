@@ -76,11 +76,15 @@ typically has ~8 MB free at the same moment.
   orchboot min free ... of 12288 B, floor 1024 B - ok`, or a `BOOT FAULT` line that
   also sets `mem.bootStackFault`), so stack erosion fails a bench leg loudly instead
   of a release-gate boot. The chain never runs inline on `loopTask` (that was the
-  88 B crash path): when the task cannot start (it needs its stack plus 4 KB at
-  boot), `setup()` retries for up to 30 s, then logs `orchboot: BOOT FAULT ...
-  restarting` and restarts. The restarts are counted in RTC memory: after two in a
-  row the boot stops restarting and keeps retrying in place, with a `BOOT FAULT`
-  line each minute, so a lasting shortfall is never a restart loop.
+  88 B crash path): when the task cannot start (it needs its stack plus room for
+  the Telegram task the chain creates next), `setup()` retries for up to 30 s, logs
+  `orchboot: BOOT FAULT ...`, and falls back. An update still on trial rolls back to
+  the previous image at once. Otherwise the device restarts, counted in RTC memory;
+  after two restarts in a row, or on a boot that followed a crash (a restart would
+  hide the crash notice), it boots on without the assistant: Wi-Fi, updates, the web
+  page and the screen keep running, the screen says "The assistant could not
+  start", the web chat gets one row once the network is up, and `/api/state`
+  reports `mem.orchBootDegraded`. Never a restart loop, never a wait in place.
 - **DMA buffers** - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
   `MALLOC_CAP_DMA` explicitly and bypass the PSRAM spill entirely.
 - **lwIP pbufs + the TLS record working set** - the ~24 KB "danger zone." A
@@ -112,9 +116,12 @@ Installed in `main.cpp` at boot:
   internal allocation failed, and IDF aborted (a panic). With the switch the same
   turn's setup costs no internal SRAM. The threshold is device-wide, so for the
   turn's length every task's plain small malloc (the web server, the relay, audio
-  and card code) goes to PSRAM first too. IDF already does that once internal is
-  empty, so this is a placement that code already meets under pressure, now met
-  before internal runs out; explicit internal or DMA allocations never move. The
+  and card code, and lwIP's and the Wi-Fi driver's own: PCBs, TX pbufs, TCP
+  segments, pbuf headers, as with `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) goes to
+  PSRAM first too. IDF already does that once internal is empty, so this is a
+  placement that code already meets under pressure, now met before internal runs
+  out; explicit internal or DMA allocations (the Wi-Fi RX buffers, driver DMA,
+  FreeRTOS stacks and objects) never move. The
   bench legs that run with it: the storm low-memory leg (a turn, the nightly
   upkeep and card writes under the ballast) and the starvation leg (card log reads
   in the turn).
@@ -218,8 +225,13 @@ buffers (freed a few ms after its connection closes) or work beside the turn (a 
 page being served), is sampled again up to five times, 200 ms apart. Still under it,
 the turn ends with one reply, "I'm short of memory right now. Please try again in a
 minute.", recorded in the chat history, and no provider request; a routine's fire is
-deferred instead (no message). A failed C++ allocation in a turn ends it the same way
-instead of aborting.
+deferred instead (no message; a one-shot reminder retries in two minutes, the
+post-update awareness turn in one). What the turn had already taken from its queues
+(sub-agent results, the last turn's memory results, spawn notes) is put back for the
+next turn, so a synthesis turn waits and synthesizes later rather than handing the
+owner a raw dump. A failed C++ allocation in a turn ends it the same way instead of
+aborting, and nothing it held stays taken: the TLS work slot, the card lock, the file
+store's upload slot and the mutexes on the turn's path are held by scope guards.
 
 **Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while
@@ -338,8 +350,9 @@ the heavy-connector-write restart, 2026-07).
 
 ### What is STILL internal (and why)
 
-- **lwIP RX pbufs** - inbound TLS/socket data queues as pbufs in
-  `MALLOC_CAP_INTERNAL/DMA` by design; the extmem hook cannot move them. This
+- **Wi-Fi RX buffers** - inbound TLS/socket data arrives in Wi-Fi RX buffers
+  allocated `MALLOC_CAP_INTERNAL/DMA` by design; the extmem hook cannot move them
+  (the pbuf header lwIP wraps around each one is a plain malloc). This
   was the dominant internal spike when the device buffered a whole large
   response. **Mitigation: streaming.** The transport stream-parses the
   response off the socket (`transport_tls.cpp` `execJson` →

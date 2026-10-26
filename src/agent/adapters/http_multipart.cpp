@@ -106,7 +106,8 @@ bool post(const char* host, int port, const char* path, const String& bearer,
     const uint32_t spent = millis() - t0;
     budgetLeft = spent < connectBudgetMs ? connectBudgetMs - spent : 1;
   }
-  if (!arbiter::acquireWork(10000)) { err = nimbus::voice::kErrSlotBusy; return false; }
+  arbiter::WorkSlot slot(10000);
+  if (!slot) { err = nimbus::voice::kErrSlotBusy; return false; }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);
@@ -130,7 +131,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
   if (!connected) {
-    arbiter::releaseWork();
+    slot.release();
     err = nimbus::voice::kErrConnectFailed;
     alogf("multipart: connect %s failed heap=%u", host, ESP.getFreeHeap());
     return false;
@@ -235,7 +236,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   if (chunked) core::dechunkHttpBody(body);   // false = not actually chunked; body kept as-is
   respBody = body.c_str();  // JSON body, no embedded NULs
   tlsClose(c);
-  arbiter::releaseWork();
+  slot.release();
 
   if (status < 200 || status >= 300) {
     err = String(nimbus::voice::kErrHttpPrefix) + status;

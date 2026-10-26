@@ -268,6 +268,19 @@ static void drainStaged() {
 // The turn's OWN session_ops[] terminate stays synchronous: it runs on tg_poll via
 // d.cancelSession -> cancel(), already the journal's writer task, so it's untouched.
 static SemaphoreHandle_t        g_sessMux = nullptr;   // guards g_sessSnapshot
+// A FreeRTOS mutex held for one scope and given back on every path out, an exception
+// included (a turn catches std::bad_alloc, L24). A null mutex holds nothing.
+struct MuxHold {
+  SemaphoreHandle_t m;
+  explicit MuxHold(SemaphoreHandle_t mux) : m(mux) {
+    if (m) xSemaphoreTake(m, portMAX_DELAY);
+  }
+  ~MuxHold() {
+    if (m) xSemaphoreGive(m);
+  }
+  MuxHold(const MuxHold&) = delete;
+  MuxHold& operator=(const MuxHold&) = delete;
+};
 static std::vector<nimbus::orch::SessionInfo> g_sessSnapshot;
 static portMUX_TYPE             g_termSpin = portMUX_INITIALIZER_UNLOCKED;
 static std::vector<std::string> g_termQueue;           // guarded by g_termSpin
@@ -278,9 +291,8 @@ static std::vector<std::string> g_termQueue;           // guarded by g_termSpin
 static void refreshSessionSnapshot() {
   std::vector<nimbus::orch::SessionInfo> fresh =
       g_jobs ? g_jobs->sessionInfos() : std::vector<nimbus::orch::SessionInfo>{};
-  if (g_sessMux) xSemaphoreTake(g_sessMux, portMAX_DELAY);
+  MuxHold hold(g_sessMux);
   g_sessSnapshot.swap(fresh);
-  if (g_sessMux) xSemaphoreGive(g_sessMux);
 }
 
 // Apply web-staged terminates on tg_poll (the journal's single writer). Swap the
@@ -2303,15 +2315,36 @@ void stageSystemTurn(const String& prompt, const String& name) {
   portEXIT_CRITICAL(&s_sysTurnMux);
 }
 
+// L24: a system turn deferred for memory is staged again and tried after this long,
+// never dropped (the post-update awareness turn runs once memory allows). A turn
+// staged meanwhile is newer and wins the slot (the deferred one is not put back over it).
+static constexpr uint32_t kSysTurnRetryMs = 60000;
+static bool     s_sysTurnWaiting = false;
+static uint32_t s_sysTurnDeferredAt = 0;
+
+static void restageSystemTurn(const String& prompt, const String& name) {
+  portENTER_CRITICAL(&s_sysTurnMux);
+  if (!s_sysTurnPending) {
+    strncpy(s_sysTurnPrompt, prompt.c_str(), sizeof(s_sysTurnPrompt) - 1);
+    s_sysTurnPrompt[sizeof(s_sysTurnPrompt) - 1] = 0;
+    strncpy(s_sysTurnName, name.c_str(), sizeof(s_sysTurnName) - 1);
+    s_sysTurnName[sizeof(s_sysTurnName) - 1] = 0;
+    s_sysTurnPending = true;   // keeps its original staging time: the same turn, not a newer one
+  }
+  portEXIT_CRITICAL(&s_sysTurnMux);
+}
+
 // The staged turn yields to the owner (owner_first.h): it stays staged until two
 // minutes passed since it was staged and since the last turn. It then runs bounded (TurnBounds: two tool rounds, a small
 // tool-output budget, single-shot on a fallback head), never the owner's 8-round loop.
 static void drainSystemTurn() {
   if (!s_sysTurnPending) return;
+  if (s_sysTurnWaiting && millis() - s_sysTurnDeferredAt < kSysTurnRetryMs) return;   // wrap-safe
   portENTER_CRITICAL(&s_sysTurnMux);
   const uint32_t stagedAt = s_sysTurnStagedAt;
   portEXIT_CRITICAL(&s_sysTurnMux);
   if (!g_ownerFirst.systemTurnMayStart(telegram::guardStatus().holding, millis(), stagedAt)) return;
+  s_sysTurnWaiting = false;
   String prompt, name;
   portENTER_CRITICAL(&s_sysTurnMux);
   const bool restaged = s_sysTurnStagedAt != stagedAt;   // a newer staging waits its own window
@@ -2323,8 +2356,14 @@ static void drainSystemTurn() {
   if (restaged) return;
   String chat = firstAllowedChat();
   if (chat.length() == 0 || !g_engine) return;   // nowhere to deliver - drop quietly
-  g_engine->injectBoundedTurn(std::string(chat.c_str()), std::string(prompt.c_str()),
-                              std::string(name.c_str()), agent::TurnEngine::TurnBounds{});
+  const nimbus::orch::FireOutcome o =
+      g_engine->injectBoundedTurn(std::string(chat.c_str()), std::string(prompt.c_str()),
+                                  std::string(name.c_str()), agent::TurnEngine::TurnBounds{});
+  if (o.deferred && o.error.empty()) {   // a memory defer (a spend-ceiling one names its error)
+    s_sysTurnWaiting = true;
+    s_sysTurnDeferredAt = millis();
+    restageSystemTurn(prompt, name);
+  }
 }
 
 #ifdef NIMBUS_TEST
@@ -2880,19 +2919,16 @@ std::vector<nimbus::orch::SessionInfo> sessionInfos() {
 // Cross-task-safe read of the session snapshot (see refreshSessionSnapshot).
 std::vector<nimbus::orch::SessionInfo> sessionInfosSnapshot() {
   std::vector<nimbus::orch::SessionInfo> out;
-  if (g_sessMux) xSemaphoreTake(g_sessMux, portMAX_DELAY);
+  MuxHold hold(g_sessMux);   // the copy allocates: given back on every path out (L24)
   out = g_sessSnapshot;
-  if (g_sessMux) xSemaphoreGive(g_sessMux);
   return out;
 }
 
 bool sessionKnown(const std::string& id) {
-  bool found = false;
-  if (g_sessMux) xSemaphoreTake(g_sessMux, portMAX_DELAY);
+  MuxHold hold(g_sessMux);
   for (const auto& s : g_sessSnapshot)
-    if (s.id == id) { found = true; break; }
-  if (g_sessMux) xSemaphoreGive(g_sessMux);
-  return found;
+    if (s.id == id) return true;
+  return false;
 }
 
 // ---- recent-results ring (results.get/list) ---------------------------------
@@ -2903,25 +2939,19 @@ static SemaphoreHandle_t g_resultsMux = xSemaphoreCreateMutex();
 
 std::string resultsPut(const char* kind, const std::string& name, const std::string& fullText,
                        const std::string& jobTag, const std::string& ns) {
-  if (g_resultsMux) xSemaphoreTake(g_resultsMux, portMAX_DELAY);
-  std::string tag = g_results.put(kind, name, fullText, millis(), jobTag, ns);
-  if (g_resultsMux) xSemaphoreGive(g_resultsMux);
-  return tag;
+  MuxHold hold(g_resultsMux);   // the store allocates: given back on every path out (L24)
+  return g_results.put(kind, name, fullText, millis(), jobTag, ns);
 }
 
 bool resultsGet(const std::string& tag, size_t offset, size_t maxBytes, std::string& out,
                 size_t& total, const nimbus::orch::Principal& who) {
-  if (g_resultsMux) xSemaphoreTake(g_resultsMux, portMAX_DELAY);
-  bool ok = g_results.get(tag, offset, maxBytes, out, total, who);
-  if (g_resultsMux) xSemaphoreGive(g_resultsMux);
-  return ok;
+  MuxHold hold(g_resultsMux);
+  return g_results.get(tag, offset, maxBytes, out, total, who);
 }
 
 std::string resultsList(const nimbus::orch::Principal& who) {
-  if (g_resultsMux) xSemaphoreTake(g_resultsMux, portMAX_DELAY);
-  std::string o = g_results.list(who);
-  if (g_resultsMux) xSemaphoreGive(g_resultsMux);
-  return o;
+  MuxHold hold(g_resultsMux);
+  return g_results.list(who);
 }
 
 void stageTerminate(const std::string& id) {

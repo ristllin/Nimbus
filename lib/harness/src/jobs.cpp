@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <iterator>    // make_move_iterator - restoreFresh keeps the taken results first
 
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/rate_limit.h" // rateLimitReply - a refused spawn names its window
@@ -455,6 +456,7 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
   fresh_.clear();
+  drainedBeforeTake_ = drained_;   // restoreFresh puts the clock back with the results
   drained_ = false;   // single reset point: EVERY consumer (batch consolidation, a user
                       // turn folding results in, the raw fallback) clears the stuck
                       // clock - a stale t0 made the next batch false-trip the 60 s raw
@@ -693,6 +695,21 @@ void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
     n.text += kSpawnNotesFold;
     n.folded = true;
   }
+}
+
+void JobEngine::restoreFresh(std::vector<FreshResult> taken) {
+  if (taken.empty()) return;
+  taken.insert(taken.end(), std::make_move_iterator(fresh_.begin()), std::make_move_iterator(fresh_.end()));
+  fresh_ = std::move(taken);
+  drained_ = drainedBeforeTake_;   // the stuck clock keeps its drain time (drainedAtMs_)
+}
+
+void JobEngine::restoreSpawnNotes(const std::string& chatId, const std::string& notes, bool mayHaveRun) {
+  if (notes.empty()) return;
+  SpawnNotes* np = spawnNotesFor(chatId, mayHaveRun);
+  if (!np) return;   // the bound refused a plain note (its owner was told it at once)
+  np->text = notes + np->text;   // the taken ones first: they are older
+  if (mayHaveRun) np->mayHaveRun = true;
 }
 
 std::string JobEngine::takeSpawnNotes(const std::string& chatId, bool* mayHaveRun) {

@@ -109,10 +109,27 @@ int runExchange(Io& io, ExchangeTrace& t) {
 }
 
 // runExchange plus the one trace line: `finish(t)` runs exactly once, on every path
-// (the device closes the socket, releases the slot, takes the done sample and logs).
+// (the device closes the socket, releases the slot, takes the done sample and logs),
+// an exception included: a turn catches std::bad_alloc (L24), so an allocation that
+// fails mid-exchange (a body growing) unwinds through here, and finish still gives the
+// slot back. On that path a second failure inside finish is swallowed (it must not
+// escape a destructor); the exception that unwound carries on.
 template <class Io, class Finish>
 int tracedExchange(Io& io, ExchangeTrace& t, Finish finish) {
+  struct OnUnwind {
+    ExchangeTrace& t;
+    Finish& finish;
+    bool done;
+    ~OnUnwind() {
+      if (done) return;
+      try {
+        finish(t);
+      } catch (...) {
+      }
+    }
+  } onUnwind{t, finish, false};
   const int code = runExchange(io, t);
+  onUnwind.done = true;
   finish(t);
   return code;
 }

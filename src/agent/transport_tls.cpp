@@ -304,7 +304,8 @@ class TlsTransport : public HttpTransport {
       return 0;
     }
 
-    if (!arbiter::acquireWork(10000)) { err = "tls work-slot busy"; return 0; }
+    arbiter::WorkSlot slot(10000);   // a guard: an exception unwinding below gives it back (L24)
+    if (!slot) { err = "tls work-slot busy"; return 0; }
 
     // The exchange trace (heap F1): ONE line on every path out of here, with the
     // internal heap at four phase boundaries (free/largest; divergence =
@@ -321,6 +322,16 @@ class TlsTransport : public HttpTransport {
     const uint32_t afStart = nimbus::heapwatch::allocFails();
     const bool monitored = nimbus::heapwatch::monitorStart();
     nimbus::heapwatch::tlsIoBegin("transport");
+    // The heap monitor and the TLS I/O mark end in finish; until it runs (a failed
+    // allocation before the exchange starts), this undoes them on the way out.
+    struct Marks {
+      bool monitored, open = true;
+      ~Marks() {
+        if (!open) return;
+        nimbus::heapwatch::tlsIoEnd();
+        nimbus::heapwatch::monitorStop(monitored);
+      }
+    } marks{monitored};
 
     // CUM-404 v2: without allocation evidence, a failure reads as MEMORY pressure only
     // when this exchange BEGAN below the handshake's largest-block need (the same
@@ -352,11 +363,12 @@ class TlsTransport : public HttpTransport {
     TlsIo io{req, client, tls, plain, out, doc, filter, millis() + req.timeoutMs, {}, {}};
 
     const int code = nimbus::heapwatch::tracedExchange(io, trace, [&](ExchangeTrace& t) {
+      marks.open = false;
       io.close();
       nimbus::heapwatch::tlsIoEnd();
       t.minFree = nimbus::heapwatch::monitorStop(monitored);
       t.durMs = millis() - t.atMs;
-      arbiter::releaseWork();
+      slot.release();
       t.af = nimbus::heapwatch::allocFails() - afStart;
       t.done = sampleHeap();
       // Forensic window (heap F1.5): a healthy exchange's trace stays in the RAM ring and

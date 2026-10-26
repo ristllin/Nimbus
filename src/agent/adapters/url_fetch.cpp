@@ -55,13 +55,14 @@ uint64_t httpsGetStream(const std::string& url,
     ParsedUrl u = parseHttpsUrl(cur);
     if (!u.ok) { err = "invalid or non-https URL"; return 0; }
 
-    if (!arbiter::acquireWork(15000)) { err = "device busy (TLS slot)"; return 0; }
+    arbiter::WorkSlot slot(15000);
+    if (!slot) { err = "device busy (TLS slot)"; return 0; }
     WiFiClientSecure c;
     tlsSetup(c);
     c.setHandshakeTimeout(15);
     c.setConnectionTimeout(15000);
     if (!c.connect(u.host.c_str(), u.port)) {
-      arbiter::releaseWork();
+      slot.release();
       err = "connect failed: " + u.host;
       return 0;
     }
@@ -73,7 +74,7 @@ uint64_t httpsGetStream(const std::string& url,
     const uint32_t deadline = millis() + kFetchTimeoutMs;
     String line;
     if (!readLine(c, line, deadline)) {
-      tlsClose(c); arbiter::releaseWork();
+      tlsClose(c); slot.release();
       err = "no response: " + u.host;
       return 0;
     }
@@ -90,19 +91,19 @@ uint64_t httpsGetStream(const std::string& url,
     }
 
     if (code >= 301 && code <= 308 && location.length()) {
-      tlsClose(c); arbiter::releaseWork();
+      tlsClose(c); slot.release();
       std::string next = resolveRedirect(u, std::string(location.c_str()));
       if (next.empty()) { err = "redirect refused (non-https or relative)"; return 0; }
       cur = next;
       continue;
     }
     if (code != 200) {
-      tlsClose(c); arbiter::releaseWork();
+      tlsClose(c); slot.release();
       err = "HTTP " + std::to_string(code);
       return 0;
     }
     if (contentLen > 0 && (uint64_t)contentLen > maxBytes) {
-      tlsClose(c); arbiter::releaseWork();
+      tlsClose(c); slot.release();
       err = "file is " + std::to_string(contentLen / 1024) + " KB - over the " +
             std::to_string(maxBytes / 1024) + " KB per-file limit";
       return 0;
@@ -112,7 +113,7 @@ uint64_t httpsGetStream(const std::string& url,
     // ---- body stream: 4 KB PSRAM buffer -> sink ----
     uint8_t* buf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
     if (!buf) buf = (uint8_t*)malloc(4096);
-    if (!buf) { tlsClose(c); arbiter::releaseWork(); err = "out of memory"; return 0; }
+    if (!buf) { tlsClose(c); slot.release(); err = "out of memory"; return 0; }
     uint64_t total = 0;
     bool aborted = false;
     // ⚠ prism (the provider_file_fetch "outEof" lesson, prism v4.1 #9): with no
@@ -143,7 +144,7 @@ uint64_t httpsGetStream(const std::string& url,
     }
     free(buf);
     tlsClose(c);
-    arbiter::releaseWork();
+    slot.release();
     if (aborted) return 0;
     if (!eof) {
       err = "download timed out mid-body (" + std::to_string(total) +
@@ -268,13 +269,14 @@ int scanVerdict(const std::string& headText, const std::string& url,
   m["role"] = "user"; m["content"] = prompt;
   String body; serializeJson(d, body);
 
-  if (!arbiter::acquireWork(15000)) { reason = "device busy"; return -1; }
+  arbiter::WorkSlot slot(15000);
+  if (!slot) { reason = "device busy"; return -1; }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(15);
   c.setConnectionTimeout(15000);
   if (!c.connect(p.host, 443)) {
-    arbiter::releaseWork();
+    slot.release();
     gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
     reason = "scan connect failed";
     return -1;
@@ -296,7 +298,7 @@ int scanVerdict(const std::string& headText, const std::string& url,
   String line;
   if (!readLine(c, line, deadline)) {
     tlsClose(c);
-    arbiter::releaseWork();
+    slot.release();
     gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
     reason = "scan: no response";
     return -1;
@@ -307,7 +309,7 @@ int scanVerdict(const std::string& headText, const std::string& url,
   JsonDocument resp;
   DeserializationError je = deserializeJson(resp, c);
   tlsClose(c);
-  arbiter::releaseWork();
+  slot.release();
   if (status < 200 || status >= 300) {   // a refusal: the park learns it; the scan fails closed
     std::string said;
     if (!je) serializeJson(resp, said);

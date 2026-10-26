@@ -24,8 +24,11 @@
 //     is device-wide, so every task's plain malloc spills for the turn's length.
 //     IDF already places a small block in PSRAM whenever internal is empty, so code
 //     that allocates plain small blocks already meets PSRAM under pressure; the spill
-//     now starts before internal is gone instead of after. Explicit INTERNAL/DMA
-//     allocations (Wi-Fi, lwIP, drivers, FreeRTOS) are never affected. With it the
+//     now starts before internal is gone instead of after. That includes lwIP's and
+//     the Wi-Fi driver's own plain mallocs (PCBs, TX pbufs, TCP segments, pbuf
+//     headers): during a turn they go PSRAM-first too, as with IDF's
+//     SPIRAM_TRY_ALLOCATE_WIFI_LWIP. Explicit INTERNAL/DMA allocations (the Wi-Fi RX
+//     buffers, driver DMA, FreeRTOS stacks and objects) never move. With it the
 //     same turn's setup measured 0 B of internal cost (was ~16 KB), so the admission
 //     floor now covers the setup: an admitted turn reaches its request on the floor
 //     it was admitted on.

@@ -219,6 +219,30 @@ static const char* otaVariant() {
 static bool g_validAtBoot = false;
 bool imageValidAtBoot() { return g_validAtBoot; }
 
+bool rollbackNow() {
+  if (g_validAtBoot) return false;   // not a trial boot: nothing to roll back to
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  char prev[17] = {0};
+  rawGetStr(h, AKEY_OTA_PREV, prev, sizeof prev);
+  const esp_partition_t* p =
+      prev[0] ? esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, prev) : nullptr;
+  if (!p || esp_ota_set_boot_partition(p) != ESP_OK) {
+    nvs_close(h);
+    return false;
+  }
+  rawSetI32(h, AKEY_OTA_PENDING, 0);
+  rawSetI32(h, AKEY_OTA_BOOTS, 0);
+#ifdef NIMBUS_TEST
+  rawSetI32(h, kSimCrashKey, 0);   // like the guard's rollback: the drill ends here
+#endif
+  rawSetStr(h, AKEY_OTA_LASTRES, "rollback " NIMBUS_FW_VERSION);
+  nvs_commit(h);
+  nvs_close(h);
+  esp_restart();   // boots the previous, untouched image
+  return true;
+}
+
 // Stores this boot's attempt count; true only when it landed and reads back.
 static bool storeBootAttempt(nvs_handle_t h, int32_t boots) {
   return rawSetI32(h, AKEY_OTA_BOOTS, boots) && rawGetI32(h, AKEY_OTA_BOOTS, -1) == boots;

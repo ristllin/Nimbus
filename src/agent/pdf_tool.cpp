@@ -42,9 +42,11 @@ nimbus::orch::ToolResult writeTool(ArduinoJson::JsonObjectConst a, const nimbus:
   if (!files::available()) return ToolResult::fail("no SD card: the device cannot keep the PDF");
   std::string err;
   if (!files::binaryWriteBegin(project, name, 0, who.ns, err)) return ToolResult::fail(files::refusalForHead(err));
+  files::OpenWrite session;   // aborted if the PDF writer unwinds (L24)
   const nimbus::orch::PdfResult r = nimbus::orch::writePdf(title, text, [](const char* d, size_t n) {
     return files::writeChunk(reinterpret_cast<const uint8_t*>(d), n);
   });
+  session.finished();
   if (!files::finishWrite(r.ok, err)) return ToolResult::fail(r.ok ? files::refusalForHead(err) : r.error);
   alogf("files: wrote %s/%s (%u B, %d page%s) with the device PDF writer", project.c_str(),
         name.c_str(), (unsigned)r.bytes, r.pages, r.pages == 1 ? "" : "s");

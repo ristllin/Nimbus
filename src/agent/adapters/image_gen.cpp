@@ -49,7 +49,8 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   uint8_t* buf = (uint8_t*)ps_malloc(kGenMaxBytes);
   if (!buf) { errOut = "out of memory"; alog("imagegen: ps_malloc failed"); return nullptr; }
 
-  if (!arbiter::acquireWork(10000)) { free(buf); errOut = "device busy"; alog("imagegen: arbiter busy"); return nullptr; }
+  arbiter::WorkSlot slot(10000);
+  if (!slot) { free(buf); errOut = "device busy"; alog("imagegen: arbiter busy"); return nullptr; }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);
@@ -65,7 +66,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
-  if (!connected) { free(buf); arbiter::releaseWork(); errOut = "connect failed"; alogf("imagegen: connect failed heap=%u", ESP.getFreeHeap()); return nullptr; }
+  if (!connected) { free(buf); slot.release(); errOut = "connect failed"; alogf("imagegen: connect failed heap=%u", ESP.getFreeHeap()); return nullptr; }
 
   c.printf("POST /v1/images/generations HTTP/1.0\r\n");
   c.printf("Host: %s\r\n", host);
@@ -93,7 +94,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     while ((int32_t)(millis() - deadline) < 0 && n < (int)sizeof(errb) - 1 && (c.available() || c.connected())) {
       if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
     }
-    free(buf); tlsClose(c); arbiter::releaseWork();
+    free(buf); tlsClose(c); slot.release();
     gate::noteAnswer("openai", nimbus::orch::PaidSeam::ImageGen, key, status, errb);
     errOut = "HTTP " + String(status);
     alogf("imagegen: HTTP %d: %.140s", status, errb);
@@ -130,7 +131,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     else vTaskDelay(1);
   }
   tlsClose(c);
-  arbiter::releaseWork();
+  slot.release();
   {
     const String& src = rest.indexOf("\"usage\"") >= 0 ? rest : head;
     const int u = src.indexOf("\"usage\"");

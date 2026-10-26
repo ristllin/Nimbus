@@ -24,6 +24,7 @@
 // recorded in the chat history and no provider request; a failed allocation at any
 // hook ends the turn the same way instead of aborting; Lumi at rest is still served.
 
+using agent::JobEngine;
 using agent::kShortOfMemoryReply;
 using agent::PsramFirstScope;
 using agent::TurnEngine;
@@ -56,6 +57,7 @@ struct Rig {
   struct Attempt {
     std::string host;
     bool psramFirst = false;   // the switch state while the provider was asked
+    std::string inputs;        // what the turn sent
   };
   std::vector<Attempt> attempts;
   std::vector<agent::TurnStartEv> starts;
@@ -75,10 +77,22 @@ struct Rig {
     throwAt.clear();
     throw std::bad_alloc();
   }
+  std::string memNote;   // a queued memory write's confirmation, drained once by the turn
+  std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
 
   Rig() {
+    JobEngine::Deps jd;   // fresh sub-agent results and spawn notes (no fabric: nothing dispatches)
+    jd.platform = plat.contract();
+    jd.deliver = [this](const std::string& c, const std::string& t) { delivered.push_back({c, t}); };
+    jobs.reset(new JobEngine(std::move(jd)));
     TurnEngine::Deps d;
+    d.jobs = jobs.get();
+    d.memNotes = [this](const std::string&) {
+      std::string n;
+      n.swap(memNote);
+      return n;
+    };
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.platform.delayMs = [this](uint32_t ms) {
@@ -130,9 +144,9 @@ struct Rig {
       endCauses.push_back(ev.chain && !ev.chain->empty() ? ev.chain->first()->text : std::string());
     };
     for (const char* h : {"openai", "anthropic", "mistral"})
-      d.hosts.add(h, [this, h](std::string& conv, const std::string&, const std::string&, std::string& out,
+      d.hosts.add(h, [this, h](std::string& conv, const std::string&, const std::string& inputs, std::string& out,
                                std::string&, const agent::HeadTools*, orch::TokenUsage* usage) {
-        attempts.push_back({h, switchOn()});
+        attempts.push_back({h, switchOn(), inputs});
         maybeThrow("provider");
         conv = "c1";
         out = kGoodTurn;
@@ -145,6 +159,36 @@ struct Rig {
     for (const auto& p : delivered)
       if (p.second.find(needle) != std::string::npos) return true;
     return false;
+  }
+  // The three inputs a turn takes before it knows it can run (merge review, major 2).
+  void queueInputs() {
+    jobs->addFreshResult("job0001", "modelX", "sub finding about the dentist");
+    memNote = "- stored: the boiler service is on Friday\n";
+    jobs->noteSpawnIntentRefused("1001", "alpha", "look up trains", "no provider has a key");
+  }
+  static bool sawAllInputs(const Attempt& a) {
+    return a.inputs.find("sub finding about the dentist") != std::string::npos &&
+           a.inputs.find("the boiler service is on Friday") != std::string::npos &&
+           a.inputs.find("'alpha' did not start") != std::string::npos;
+  }
+  static bool sawAnyInput(const Attempt& a) {
+    return a.inputs.find("sub finding about the dentist") != std::string::npos ||
+           a.inputs.find("the boiler service is on Friday") != std::string::npos ||
+           a.inputs.find("'alpha' did not start") != std::string::npos;
+  }
+  // The next owner turn, served, and the one after it: the put-back inputs reach the
+  // first exactly once (never dropped, never repeated).
+  void assertNextTurnGetsThemOnce(const char* why) {
+    duringSetup = nullptr;
+    plat.heap = 100000;
+    plat.largest = 100000;
+    const size_t before = attempts.size();
+    eng->handleMessage("and now?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(before + 1, attempts.size(), why);
+    TEST_ASSERT_TRUE_MESSAGE(sawAllInputs(attempts.back()), why);
+    eng->handleMessage("thanks", "Roy", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(before + 2, attempts.size(), why);
+    TEST_ASSERT_FALSE_MESSAGE(sawAnyInput(attempts.back()), why);
   }
 };
 
@@ -519,6 +563,112 @@ static void test_admission_floor_turn_dispatches_when_the_setup_costs_nothing() 
   TEST_ASSERT_TRUE(over.anyDelivered(kShortOfMemoryReply));
 }
 
+// ---- nothing a refused turn took is lost (merge review, major 2) --------------------
+
+// A turn refused at its provider request had already taken the chat's fresh sub-agent
+// results, its parked memory results and its spawn-refusal notes into its input. They
+// go back: the next turn sees each of them once. Counter-test: a served turn consumes
+// them (the turn after it sees none).
+static void test_a_memory_refused_turn_puts_back_what_it_took() {
+  Rig r;
+  r.queueInputs();
+  r.duringSetup = [](Rig& rr) { rr.plat.heap = 700; };
+  r.eng->handleMessage("hi", "Roy", "1001");
+  assertShortOfMemoryEnd(r, "refused at dispatch");
+  TEST_ASSERT_TRUE(r.jobs->hasFreshResults());
+  r.assertNextTurnGetsThemOnce("refused at dispatch");
+}
+
+// The class: a failed allocation at every hook before the provider request puts the
+// inputs back too (from the turn's own handler, or the entry's before the turn began).
+static void test_a_failed_allocation_before_the_request_puts_back_what_it_took() {
+  for (const char* at : {"row", "context", "recall", "specs", "compose"}) {
+    Rig r;
+    r.queueInputs();
+    r.throwAt = at;
+    r.eng->handleMessage("hi", "Roy", "1001");
+    TEST_ASSERT_TRUE_MESSAGE(r.throwAt.empty(), at);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.attempts.size(), at);
+    TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered(kShortOfMemoryReply), at);
+    r.assertNextTurnGetsThemOnce(at);
+  }
+}
+
+// A synthesis turn refused at its provider request defers: its results are parked
+// again (no raw dump on the owner), and the next pump synthesizes them. The same for a
+// failed allocation while its input is built. Counter-test: a synthesis that fails at
+// the provider (not for memory) still delivers them raw (never lost).
+static void test_a_memory_refused_synthesis_defers_instead_of_dumping() {
+  for (int viaThrow = 0; viaThrow < 2; ++viaThrow) {
+    Rig r;
+    r.jobs->addFreshResult("job0001", "modelX", "sub finding about the dentist");
+    if (viaThrow) r.throwAt = "context";
+    else r.duringSetup = [](Rig& rr) { rr.plat.heap = 700; };
+    r.eng->maybeConsolidate("1001");
+    TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("raw findings"), "a memory defer dumped the raw results");
+    TEST_ASSERT_TRUE(r.jobs->hasFreshResults());
+    TEST_ASSERT_TRUE(LogCapture::contains("synthesis turn deferred for memory - results kept for the next try"));
+    r.duringSetup = nullptr;
+    r.plat.heap = 100000;
+    r.eng->maybeConsolidate("1001");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    TEST_ASSERT_TRUE(r.attempts[0].inputs.find("sub finding about the dentist") != std::string::npos);
+    TEST_ASSERT_FALSE(r.jobs->hasFreshResults());
+  }
+  Rig f;
+  f.jobs->addFreshResult("job0001", "modelX", "sub finding about the dentist");
+  f.throwAt = "provider";   // asked, then failed: not a memory refusal before the request
+  f.eng->maybeConsolidate("1001");
+  TEST_ASSERT_EQUAL(1, (int)f.attempts.size());
+  TEST_ASSERT_TRUE_MESSAGE(f.anyDelivered("raw findings"), "a failed synthesis lost its results");
+}
+
+// A one-shot reminder or wakeup deferred for memory asks to fire again soon (its next
+// slot is its whole delay again); a routine keeps its next slot. Both on the floor
+// refusal and on a failed allocation while it is set up.
+static void test_a_memory_deferred_one_shot_retries_soon() {
+  for (int viaThrow = 0; viaThrow < 2; ++viaThrow) {
+    for (int kind = 0; kind < 3; ++kind) {   // routine, one-shot wakeup, owner reminder
+      Rig r;
+      if (viaThrow) r.throwAt = "context";
+      else r.duringSetup = [](Rig& rr) { rr.plat.heap = 700; };
+      const orch::FireOutcome o =
+          r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+      TEST_ASSERT_TRUE(o.deferred);
+      TEST_ASSERT_TRUE(o.error.empty());
+      TEST_ASSERT_EQUAL_UINT32(kind == 0 ? 0u : 120u, o.retryAfterSec);
+      TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+    }
+  }
+}
+
+// The short-of-memory reply goes out once even when its own history row fails to
+// allocate (the turn's handler must not say it again).
+static void test_a_failed_reply_row_does_not_send_the_short_reply_twice() {
+  Rig r;
+  r.duringSetup = [](Rig& rr) { rr.plat.heap = 700; };
+  r.throwAt = "reply";   // the refusal's history capture
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.throwAt.empty());
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(kShortOfMemoryReply, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(r.starts.size(), r.ends.size());
+  TEST_ASSERT_FALSE(r.eng->turnInFlight());
+  TEST_ASSERT_EQUAL(0, PsramFirstScope::depth());
+}
+
+// The post-update system turn deferred for memory is staged again, never dropped,
+// and a newer staged turn is not overwritten by it (device seam, source guard).
+static void test_a_memory_deferred_system_turn_is_staged_again() {
+  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  TEST_ASSERT_TRUE(orch.find("if (o.deferred && o.error.empty()) {") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("restageSystemTurn(prompt, name);") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("if (!s_sysTurnPending) {") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("millis() - s_sysTurnDeferredAt < kSysTurnRetryMs") != std::string::npos);
+}
+
 // ---- the device seams (source guards) ------------------------------------------------
 
 // The switch restores exactly the boot's spill limit, and the boot still sets it.
@@ -554,6 +704,12 @@ int main() {
   RUN_TEST(test_scheduled_fire_under_the_floor_is_a_defer);
   RUN_TEST(test_lumi_at_rest_is_admitted_and_dispatched);
   RUN_TEST(test_admission_floor_turn_dispatches_when_the_setup_costs_nothing);
+  RUN_TEST(test_a_memory_refused_turn_puts_back_what_it_took);
+  RUN_TEST(test_a_failed_allocation_before_the_request_puts_back_what_it_took);
+  RUN_TEST(test_a_memory_refused_synthesis_defers_instead_of_dumping);
+  RUN_TEST(test_a_memory_deferred_one_shot_retries_soon);
+  RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
+  RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
   return UNITY_END();
 }

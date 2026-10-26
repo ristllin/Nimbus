@@ -80,6 +80,7 @@ struct Rig {
   std::vector<std::string> synthChats;
   bool turnInFlight = false;
   bool synthConsumes = true;   // synthesize consumes the fresh results (turn ran)
+  bool synthPutsBack = false;  // L24: the synthesis turn takes them, ends for memory, puts them back
   std::set<std::string> keyed{"anthropic", "openai"};
   std::function<std::string()> fileRoute;   // the device PDF route provider (nullable)
   std::map<std::string, std::string> connectorProv;  // skill -> hosting provider
@@ -147,7 +148,13 @@ struct Rig {
     if (fileRoute) d.fileSpawnProvider = fileRoute;
     d.synthesize = [this](const std::string& chat) {
       synthChats.push_back(chat);
-      if (synthConsumes) (void)eng->takeFreshResults();
+      if (synthPutsBack) {   // the engine's memory refusal: peek, take, put back
+        std::vector<JobEngine::FreshResult> kept = eng->peekFresh();
+        (void)eng->takeFreshResults();
+        eng->restoreFresh(std::move(kept));
+      } else if (synthConsumes) {
+        (void)eng->takeFreshResults();
+      }
     };
     d.turnInFlight = [this] { return turnInFlight; };
     d.hooks.onSpawn = [this](const agent::SpawnEv& ev) { hookSpawns.push_back(ev); };
@@ -1577,6 +1584,56 @@ static void test_stuck_synthesis_falls_back_60s_after_drain() {
   TEST_ASSERT_EQUAL((int)synthAtFallback, (int)r.synthChats.size());   // nothing left to retry
 }
 
+// L24: a synthesis turn that takes the results and ends for memory puts them back
+// (TurnEngine putBackTaken). The take re-arms the stuck clock, so the put-back must
+// restore it: else a board short of memory on every pump never meets the fallback
+// and the owner never sees the results. Mutation check: drop the clock restore in
+// restoreFresh and the fallback never fires here.
+static void test_a_put_back_synthesis_still_meets_the_stuck_fallback() {
+  Rig r;
+  r.synthPutsBack = true;
+  const uint32_t drainedAt = subsFinishApart(r, 95000);
+  for (int i = 0; i < 10; i++) { r.plat.ms += 4000; r.eng->pump(); }   // refused on every pump
+  TEST_ASSERT_TRUE_MESSAGE(r.synthChats.size() >= 3, "synthesis was retried while refused");
+  TEST_ASSERT_TRUE(r.eng->hasFreshResults());   // put back, never lost
+  TEST_ASSERT_FALSE(LogCapture::contains("synthesis stuck"));
+  r.plat.ms = drainedAt + JobEngine::kSynthFallbackMs;
+  r.eng->pump();
+  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: synthesis stuck - delivering raw results (fallback)"));
+  TEST_ASSERT_EQUAL(1, deliveredContaining(r, "raw findings"));
+  TEST_ASSERT_FALSE(r.eng->hasFreshResults());
+}
+
+// The put-back order: what the turn took goes back in front of a result that arrived
+// while it ran, and a restore of nothing changes nothing.
+static void test_restore_fresh_keeps_the_taken_results_first() {
+  Rig r;
+  r.eng->addFreshResult("job0001", "m1", "first finding");
+  std::vector<JobEngine::FreshResult> kept = r.eng->peekFresh();
+  (void)r.eng->takeFreshResults();
+  TEST_ASSERT_FALSE(r.eng->hasFreshResults());
+  r.eng->addFreshResult("job0002", "m2", "later finding");
+  r.eng->restoreFresh(std::move(kept));
+  const std::vector<JobEngine::FreshResult> now = r.eng->peekFresh();
+  TEST_ASSERT_EQUAL(2, (int)now.size());
+  TEST_ASSERT_EQUAL_STRING("job0001", now[0].tag.c_str());
+  TEST_ASSERT_EQUAL_STRING("job0002", now[1].tag.c_str());
+  r.eng->restoreFresh({});
+  TEST_ASSERT_EQUAL(2, (int)r.eng->peekFresh().size());
+  // Spawn notes the same: the taken lines first, then any noted since.
+  r.eng->noteSpawnIntentRefused("chat1", "alpha", "task a", "no provider");
+  bool mayHaveRun = true;
+  const std::string taken = r.eng->takeSpawnNotes("chat1", &mayHaveRun);
+  TEST_ASSERT_FALSE(taken.empty());
+  TEST_ASSERT_TRUE(r.eng->takeSpawnNotes("chat1").empty());
+  r.eng->noteSpawnIntentRefused("chat1", "beta", "task b", "no provider");
+  r.eng->restoreSpawnNotes("chat1", taken, mayHaveRun);
+  const std::string back = r.eng->takeSpawnNotes("chat1");
+  TEST_ASSERT_TRUE(back.find("alpha") != std::string::npos);
+  TEST_ASSERT_TRUE(back.find("beta") != std::string::npos);
+  TEST_ASSERT_TRUE(back.find("alpha") < back.find("beta"));
+}
+
 // New work starting re-arms the clock: a drained batch whose results are still
 // parked when the head spawns a follow-up generation is not "stuck" while that
 // generation runs, however long it takes.
@@ -2534,6 +2591,8 @@ int main(int, char**) {
   RUN_TEST(test_synthesis_coalesce_blocked_by_turn_in_flight);
   RUN_TEST(test_subs_90s_apart_synthesize_once_no_fallback);
   RUN_TEST(test_stuck_synthesis_falls_back_60s_after_drain);
+  RUN_TEST(test_a_put_back_synthesis_still_meets_the_stuck_fallback);
+  RUN_TEST(test_restore_fresh_keeps_the_taken_results_first);
   RUN_TEST(test_new_work_rearms_the_drain_clock);
   RUN_TEST(test_owner_fallback_body_has_no_scaffolding);
   RUN_TEST(test_every_job_delivery_is_captured_to_history);

@@ -242,8 +242,11 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   std::string err;
   if (!files::binaryWriteBegin(prj, name, 0, ownerNs, err))
     return "[file FAILED: " + files::refusalForHead(err) + "]";
+  files::OpenWrite session;   // aborted if the download unwinds (L24)
 
-  if (!arbiter::acquireWork(10000)) {
+  arbiter::WorkSlot slot(10000);
+  if (!slot) {
+    session.finished();
     files::finishWrite(false, err);            // discard the .part
     return "[file FAILED: busy]";
   }
@@ -252,7 +255,7 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   bool eof = false;
   const int code =
       httpsGetToSink(host, path, key, chunkSink, &sc, &expected, &eof, backend == "anthropic");
-  arbiter::releaseWork();
+  slot.release();
 
   // A partial file registered as saved is a LIE the head then repeats to the
   // owner (prism v4.1 #9): the portable, host-tested verdict requires a clean EOF
@@ -260,6 +263,7 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   // byte match - plus HTTP 200, no write error, and a non-empty body.
   const nimbus::orch::CaptureVerdict v =
       nimbus::orch::captureVerdict(code, sc.bytes, expected, eof, sc.writeErr);
+  session.finished();
   if (!files::finishWrite(v.ok, err)) {
     std::string why = v.ok ? files::refusalForHead(err) : v.reason;
     return "[file FAILED: " + why + "]";

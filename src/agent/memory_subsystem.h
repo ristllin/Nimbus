@@ -312,6 +312,11 @@ String mintRowId();
 // (session "system", since_hours/before_hours) and rendered by the web timeline.
 // ev: short slug ("boot","mode","ota","sd","dream","error").
 void captureEvent(const char* ev, const String& text);
+// A chat row the main loop writes itself (the degraded boot's owner notice, main.cpp):
+// it opens with a LoopLock, so a busy card lock returns false at once and a later pass
+// retries (the loop never waits for the card), and so does an unset clock (a row needs
+// the real time). True once the row was attempted.
+bool captureLoopMessage(const char* sessionId, const char* role, const String& text, const String& tags);
 // Flush events held while the clock was unsynced (pre-SNTP boot rows). Cheap
 // no-op when none pending; called from the main loop tick + on later captures.
 void flushPendingEvents();

@@ -2858,18 +2858,34 @@ static void orchestratorBegin() {
 // reports its own stack watermark for the boot ladder's floor check
 // (heapwatch::bootStackFloorCheck). When it cannot start (no room for its stack plus
 // the Telegram task's that the chain makes next, or the spawn fails), setup() waits
-// for room, retrying, and if none
-// comes in 30 s it says so in the durable log and restarts: a transient shortfall
-// (a boot that met a burst of web or relay work) clears on a fresh boot. A lasting
-// one would restart forever, so the restarts are counted in RTC memory: after two in
-// a row the boot stops restarting and keeps waiting, retrying every few seconds with
-// a BOOT FAULT line each minute and the console answering, until memory allows or
-// someone restarts it.
+// 30 s for room, retrying, then falls back (heapwatch::orchBootFallback), loudly:
+//   - an OTA image still on trial rolls back to the previous image now;
+//   - otherwise it restarts (a transient shortfall clears on a fresh boot), counted in
+//     RTC memory so a lasting one is never a restart loop;
+//   - after two restarts in a row, or on a crash boot (a restart would hide the crash
+//     notice), it boots on WITHOUT the assistant: loop() keeps Wi-Fi, updates, the web
+//     page and the screen running, the screen says why, and the web chat gets one
+//     row once the network is up (Telegram cannot carry it: its task is part of what
+//     did not start). /api/state reports mem.orchBootDegraded.
 static constexpr uint32_t kOrchBootStackBytes = 12288;
 static constexpr uint32_t kOrchBootRetryMs = 250;
 static constexpr uint32_t kOrchBootWaitMs = 30000;
-static constexpr uint32_t kOrchBootHoldRetryMs = 5000;
-// Deliberate orchboot restarts in a row (the policy: heapwatch::orchBootShouldRestart).
+// The assistant could not start this boot (the degraded fallback above).
+static bool g_orchBootDegraded = false;
+static bool g_orchBootDegradedTold = false;
+static bool g_orchBootAfterCrash = false;   // this boot followed a crash (its notice cannot go out)
+static constexpr const char* kOrchBootDegradedScreen =
+    "The assistant could not start.\n"
+    "The device was short of memory.\n"
+    "Restart the device to try again.";
+static constexpr const char* kOrchBootDegradedChat =
+    "The assistant could not start after the last restart: the device was short of "
+    "memory. Restart the device to try again.";
+// Telegram is part of what did not start, so a crash notice queued for it never goes
+// out: the web chat row says it instead (the boot row and the log keep the details).
+static constexpr const char* kOrchBootDegradedCrash =
+    " Before that, the device restarted after a crash; the device log has the details.";
+// Deliberate orchboot restarts in a row (the policy: heapwatch::orchBootFallback).
 // RTC no-init: it survives the restart; a power cycle fails the magic and reads 0.
 struct OrchBootRestarts {
   uint32_t magic;
@@ -2912,23 +2928,16 @@ static bool orchBootTry(const char* who) {
   return spawned;
 }
 
-// Retry the boot task until `untilMs` (0 = forever), pumping the console; a BOOT
-// FAULT line every minute while it waits forever. True once it ran.
+// Retry the boot task for up to `untilMs`, pumping the console (test builds). True
+// once it ran.
 static bool orchBootWait(uint32_t retryMs, uint32_t untilMs) {
   const uint32_t t0 = millis();
-  uint32_t told = t0;
-  while (untilMs == 0 || (uint32_t)(millis() - t0) < untilMs) {
+  while ((uint32_t)(millis() - t0) < untilMs) {
     tc::pumpBoot();
     delay(retryMs);
     if (orchBootTry(nullptr)) {
       agent::alogf("orchboot: started after %u ms", (unsigned)(millis() - t0));
       return true;
-    }
-    if (untilMs == 0 && (uint32_t)(millis() - told) >= 60000) {
-      told = millis();
-      agent::alogf("orchboot: BOOT FAULT - still no room for the orchestrator boot task "
-                   "(internal free %u B); the assistant stays off until it starts or a restart",
-                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }
   }
   return false;
@@ -2946,20 +2955,45 @@ static void orchestratorBeginOffLoopTask() {
   }
   const uint32_t inARow =
       nimbus::heapwatch::orchBootRestartsInARow(s_orchBootRestarts.magic, s_orchBootRestarts.count);
-  const bool restart = nimbus::heapwatch::orchBootShouldRestart(inARow);
+  const bool crashBoot = nimbus::crash::crashBoot();
+  nimbus::heapwatch::OrchBootFallback next =
+      nimbus::heapwatch::orchBootFallback(!otaupd::imageValidAtBoot(), crashBoot, inARow);
   agent::alogf("orchboot: BOOT FAULT - the orchestrator boot task could not start in %u s "
                "(internal free %u B, largest %u B); %s",
                (unsigned)(kOrchBootWaitMs / 1000),
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-               restart ? "restarting" : "not restarting again; waiting");
-  if (restart) {
+               nimbus::heapwatch::orchBootFallbackName(next));
+  if (next == nimbus::heapwatch::OrchBootFallback::RollBack) {
+    setOrchBootRestarts(0);
+    delay(200);              // the durable line is flushed per write; let Serial drain too
+    otaupd::rollbackNow();   // restarts into the previous image; returns only when it cannot
+    agent::alog("orchboot: no previous image to roll back to");
+    next = nimbus::heapwatch::orchBootFallback(false, crashBoot, inARow);
+  }
+  if (next == nimbus::heapwatch::OrchBootFallback::Restart) {
     setOrchBootRestarts(inARow + 1);
-    delay(200);   // the durable line is flushed per write; let Serial drain too
+    delay(200);
     esp_restart();
   }
-  orchBootWait(kOrchBootHoldRetryMs, 0);   // returns only once the task ran
-  setOrchBootRestarts(0);
+  g_orchBootDegraded = true;   // boot on without the assistant (loop() stays alive)
+  g_orchBootAfterCrash = crashBoot;
+  nimbus::heapwatch::noteOrchBootDegraded();
+}
+
+// The degraded boot's one web-chat row, once the network is up and the clock is
+// set (loop(); a no-op otherwise).
+static void orchBootDegradedTick() {
+  if (!g_orchBootDegraded || g_orchBootDegradedTold) return;
+  static uint32_t s_lastTry = 0;   // a try a second at most (each one tries the card lock)
+  if (!net::staConnected() || millis() - s_lastTry < 1000) return;
+  s_lastTry = millis();
+  String text(kOrchBootDegradedChat);
+  if (g_orchBootAfterCrash) text += kOrchBootDegradedCrash;
+  // The loop never waits for the card lock: busy, a later pass tries again.
+  if (!agent::memory::captureLoopMessage("web", "assistant", text, "ev:orchboot")) return;
+  g_orchBootDegradedTold = true;
+  agent::alog("orchboot: the owner was told in the web chat (the assistant did not start)");
 }
 
 // Live device state for the self-test engine (hw::selftest reaches nothing on its
@@ -4554,6 +4588,13 @@ void setup() {
     g_askSticky = true; g_askPage = 0;
     renderScreen(attn::ScreenId::Ask, -1);
   }
+  // The assistant could not start (orchboot's degraded fallback): one plain, sticky
+  // notice on the screen, held like the one above.
+  if (g_orchBootDegraded && g_screenIsTft) {
+    g_askOverride = kOrchBootDegradedScreen;
+    g_askSticky = true; g_askPage = 0;
+    renderScreen(attn::ScreenId::Ask, -1);
+  }
 
   nimbus::crash::stage(nimbus::sys::Stage::Idle);   // start-up done (RTC breadcrumb)
   tc::ready();  // "READY mode=<n> ip=<..>" boot beacon (no-op in production)
@@ -5757,6 +5798,7 @@ static bool runFactoryResetStep(nimbus::orch::ResetStep step) {
 
 void loop() {
   esp_task_wdt_reset();
+  if (g_orchMode) orchBootDegradedTick();   // a degraded boot tells the owner once (cheap otherwise)
   nimbus::loopwatch::notePass();       // a slow pass names itself before the watchdog must
   nimbus::heapwatch::pump(millis());   // alloc-failure lines + the 1 Hz low-water ladder
   nimbus::crash::breadcrumbTick();   // RTC breadcrumb: uptime + heap low-water every 5 s

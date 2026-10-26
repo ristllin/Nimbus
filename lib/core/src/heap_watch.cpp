@@ -181,6 +181,15 @@ SpawnVerdict spawnVerdictAtBoot(uint32_t stackBytes, uint32_t intFree) {
   return (uint64_t)intFree >= need ? SpawnVerdict::Ok : SpawnVerdict::LowMemory;
 }
 
+const char* orchBootFallbackName(OrchBootFallback f) {
+  switch (f) {
+    case OrchBootFallback::RollBack: return "rolling back to the previous image";
+    case OrchBootFallback::Restart: return "restarting";
+    case OrchBootFallback::Degraded: return "booting without the assistant";
+  }
+  return "?";
+}
+
 const char* spawnVerdictName(SpawnVerdict v) {
   switch (v) {
     case SpawnVerdict::Ok: return "ok";

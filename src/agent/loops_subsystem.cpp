@@ -518,11 +518,12 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       }
       s_memDefer = true;
       // A fire whose pre-work is idempotent (the dream runs maintenance once per local
-      // day) asks for a same-night retry instead of waiting for its next slot.
+      // day) asks for a same-night retry instead of waiting for its next slot; so does a
+      // one-shot reminder or wakeup (L24: its next slot is its whole delay again).
       if (o.retryAfterSec) l->nextRun = nowEpoch + o.retryAfterSec;
       persist();
       alogf("loops: '%s' fire deferred (low memory) - not counted, retries %s",
-            l->name.c_str(), o.retryAfterSec ? "tonight" : "next slot");
+            l->name.c_str(), o.retryAfterSec ? "soon" : "next slot");
       return;
     }
     // NOTE (prism finding #2, partial): o.tokens is the scheduled turn's REAL

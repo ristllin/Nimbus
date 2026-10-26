@@ -2796,6 +2796,13 @@ void captureEvent(const char* ev, const String& text) {
                  String("ev:") + (ev ? ev : "misc"));
 }
 
+bool captureLoopMessage(const char* sessionId, const char* role, const String& text, const String& tags) {
+  LoopLock loopGuard;
+  if (!loopGuard || !g_begun || !clockSynced()) return false;   // a row needs the real time
+  captureMessage(sessionId, role, nimbus::orch::MsgKind::Message, text, "", tags);
+  return true;
+}
+
 // Capture a media message with a DURABLE sidecar (§4): store the bytes content-
 // addressed under /mem/blobs and record an episodic row referencing it. SD-gated -
 // with no card persistBlobSidecar returns "" and (matching degraded mode: "media

@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "nimbus/held_slot.h"   // WorkSlot: the slot comes back on every path out
+
 // Ported verbatim from Nuage-Solide src/tls_arbiter.h (Head Orchestrator v2).
 //
 // Sequential work-slot arbitration. Telegram runs on its own persistent TLS
@@ -23,15 +25,24 @@
 // Heartbeats, acks and small frames take no slot. tests/hil/test_l41_tls_slot_guard.py
 // checks every TLS connect in src/ against this rule.
 //
-// Usage:
-//   if (!arbiter::acquireWork(10000)) { /* timeout, try later */ }
+// Usage (a guard, so the slot comes back on every path out, an exception included):
+//   arbiter::WorkSlot slot(10000);
+//   if (!slot) { /* timeout, try later */ }
 //   // ... open client, do HTTP, close client ...
-//   arbiter::releaseWork();
+//   slot.release();   // or let the guard release it when the scope ends
+// A turn catches std::bad_alloc (L24), so code a turn can reach never holds the slot
+// by hand: test_held_slot's source guard lists the few non-turn sites that still do.
 namespace agent {
 namespace arbiter {
 void begin();
 bool acquireWork(uint32_t timeoutMs = 30000);
 void releaseWork();
 int  slots();   // configured slot count (0 = arbiter not started)
+
+// One work slot held by a scope guard (nimbus/held_slot.h).
+class WorkSlot : public nimbus::HeldSlot {
+ public:
+  explicit WorkSlot(uint32_t timeoutMs) : nimbus::HeldSlot(&acquireWork, &releaseWork, timeoutMs) {}
+};
 }  // namespace arbiter
 }  // namespace agent

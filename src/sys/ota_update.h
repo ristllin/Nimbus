@@ -59,6 +59,13 @@ void bootGuard();
 // not an OTA trial boot. Gates the erase of legacy NVS copies of moved stores.
 bool imageValidAtBoot();
 
+// An OTA trial image that cannot finish booting (the orchestrator boot task found no
+// room, main.cpp): roll back to the previous image now instead of waiting for the
+// guard to count the attempts out. Records "rollback <version>" like the guard and
+// restarts; returns false (and changes nothing) when this image is not on trial or
+// the previous slot is gone.
+bool rollbackNow();
+
 // Cheap periodic driver (mark-valid, scheduled checks, auto-install). Call
 // every loop() pass; it self-limits to ~1 Hz.
 void tick();

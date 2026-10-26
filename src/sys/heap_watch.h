@@ -67,8 +67,9 @@ SpawnVerdict spawnGate(uint32_t stackBytes, const char* who, bool atBoot);
 // PSRAM-first small allocations for the length of a turn (the L24 fix,
 // nimbus/harness/turn_memory.h): on drops the general-malloc spill limit to 0, so
 // every plain malloc/new goes to PSRAM first; off restores the boot limit
-// (kSmallAllocInternalLimit). A no-op on a unit without PSRAM. Explicit
-// MALLOC_CAP_INTERNAL/DMA allocations (Wi-Fi, lwIP, drivers) are never affected.
+// (kSmallAllocInternalLimit). A no-op on a unit without PSRAM. Device-wide: lwIP's
+// and the Wi-Fi driver's plain mallocs go PSRAM-first during a turn too; explicit
+// MALLOC_CAP_INTERNAL/DMA allocations (Wi-Fi RX buffers, driver DMA, FreeRTOS) never.
 void psramFirst(bool on);
 
 // The local-minimum monitor around one transport exchange (inside the TLS work slot
@@ -92,6 +93,9 @@ uint32_t lowWater();
 // The orchestrator boot task's deepest point: it reports its own free-stack
 // watermark (bytes) and stack size just before it ends.
 void noteOrchBootStack(uint32_t minFreeBytes, uint32_t stackBytes);
+// The boot task never started and the device booted on without the assistant
+// (main.cpp's degraded fallback): /api/state mem.orchBootDegraded.
+void noteOrchBootDegraded();
 
 // The boot ladder's stack floors (release-v451x bisect): reads the loopTask
 // high-water mark once, after the orchestrator boot, and the orchboot watermark

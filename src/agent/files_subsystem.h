@@ -90,6 +90,25 @@ bool finishWrite(bool ok, std::string& err);
 void abortWrite();
 bool writeBusy();
 
+// The session a caller opened, aborted on every path out unless finished: the one
+// upload slot must not stay taken when an exception unwinds (a turn catches
+// std::bad_alloc, L24). Construct right after a successful begin; call finished()
+// just before handing the session to finishWrite.
+class OpenWrite {
+ public:
+  OpenWrite() : gen_(writeGen()) {}
+  ~OpenWrite() {
+    if (open_) abortWriteGen(gen_);
+  }
+  void finished() { open_ = false; }
+  OpenWrite(const OpenWrite&) = delete;
+  OpenWrite& operator=(const OpenWrite&) = delete;
+
+ private:
+  uint32_t gen_;
+  bool open_ = true;
+};
+
 // ---- direct ops (tools + endpoints) ----
 // Persist a (bounded) text artifact from a turn. Overwrites same project/name.
 // ownerNs (v3.7.0) stamps WHOSE artifact this is; empty = the device owner.

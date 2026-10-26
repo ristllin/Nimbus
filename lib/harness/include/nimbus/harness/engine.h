@@ -454,6 +454,10 @@ class TurnEngine {
   // turn sample before they write their hint / delivery line into the inputs.
   bool runTurn(const std::string& inputs, const std::string& chatId,
                const std::string& userText, bool telegram);
+  // L24: what is left of a turn a failed allocation unwound (runTurn's handler): its
+  // spend metered once, its inputs put back if it asked nobody, the owner told once,
+  // the end hook paired. May itself throw (the handler swallows a second failure).
+  void endTurnAfterFailedAllocation(const std::string& chatId);
   // CUM-523: the live Telegram predicate for a turn on `chatId`
   // (HarnessConfig::telegramDeliverable; unset = true). Sampled ONCE, at turn
   // entry; everything after reads turnTelegram().

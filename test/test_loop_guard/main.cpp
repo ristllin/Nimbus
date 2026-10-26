@@ -371,7 +371,7 @@ static void test_every_loop_storage_call_is_bounded() {
 
   // Open the card lock with a LoopLock (busy: skip or park).
   const std::set<std::string> kGuarded = {"tickSdHealth", "appendBatteryHistory", "captureEvent",
-                                          "flushPendingEvents", "promoteSd"};
+                                          "flushPendingEvents", "promoteSd", "captureLoopMessage"};
   // Try with a timeout of their own (the name: the call that does the timed try).
   const std::map<std::string, std::string> kBoundedTry = {{"pruneRetention", "tryLock"},
                                                           {"episodicBackfillTick", "runBackfillSlice"},

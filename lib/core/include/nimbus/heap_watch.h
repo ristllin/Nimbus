@@ -229,16 +229,31 @@ const char* spawnVerdictName(SpawnVerdict v);
 inline constexpr uint32_t kBootSpawnMarginBytes = 28 * 1024;
 SpawnVerdict spawnVerdictAtBoot(uint32_t stackBytes, uint32_t intFree);
 
-// The boot task's bounded restarts (main.cpp): when it cannot start, the boot waits,
-// then restarts; the restarts in a row are kept in RTC no-init memory (magic + count)
-// so a lasting shortfall is never a restart loop. Power-on garbage fails the magic.
+// When the boot task cannot start (main.cpp), the boot waits, then falls back. The
+// restarts in a row are kept in RTC no-init memory (magic + count), so a lasting
+// shortfall is never a restart loop. Power-on garbage fails the magic and reads 0.
 inline constexpr uint32_t kOrchBootRestartMagic = 0x4F42524Eu;   // "OBRN"
 inline constexpr uint32_t kOrchBootMaxRestarts = 2;
 inline uint32_t orchBootRestartsInARow(uint32_t magic, uint32_t count) {
   return magic == kOrchBootRestartMagic ? count : 0;
 }
-// After the wait failed: restart again (true), or stop restarting and keep waiting.
-inline bool orchBootShouldRestart(uint32_t restartsInARow) { return restartsInARow < kOrchBootMaxRestarts; }
+enum class OrchBootFallback : uint8_t {
+  RollBack,   // an OTA image still on trial: back to the previous image (the update's guard)
+  Restart,    // a fresh boot has the whole internal heap; counted, bounded
+  Degraded,   // boot on without the assistant: Wi-Fi, updates, the web page and the
+              // screen stay up, the screen and the web chat say why
+};
+// The fallback after the wait failed. A trial image rolls back, whatever else holds:
+// that is what its guard is for, and waiting would keep it from ever being counted out.
+// A crash boot never restarts: the restart would read as a software reset and hide the
+// crash notice and the request the crash cut short. Otherwise restart up to the cap,
+// then degrade.
+inline OrchBootFallback orchBootFallback(bool imageOnTrial, bool crashBoot, uint32_t restartsInARow) {
+  if (imageOnTrial) return OrchBootFallback::RollBack;
+  if (crashBoot) return OrchBootFallback::Degraded;
+  return restartsInARow < kOrchBootMaxRestarts ? OrchBootFallback::Restart : OrchBootFallback::Degraded;
+}
+const char* orchBootFallbackName(OrchBootFallback f);
 
 // ---- general-malloc placement ---------------------------------------------------
 

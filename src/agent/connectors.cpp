@@ -178,13 +178,14 @@ String refreshAccess(const Info& c) {
               + "&client_id="     + c.oauthClientId;
   if (c.oauthSecret.length()) form += "&client_secret=" + c.oauthSecret;
 
-  if (!arbiter::acquireWork(10000)) return "";
+  arbiter::WorkSlot slot(10000);
+  if (!slot) return "";
   WiFiClientSecure client;
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout is inert here)
   if (!client.connect(host.c_str(), 443)) {
-    arbiter::releaseWork();
+    slot.release();
     alogf("connectors: oauth connect %s failed", host.c_str());
     return "";
   }
@@ -214,7 +215,7 @@ String refreshAccess(const Info& c) {
   JsonDocument doc;
   if (headersDone) deserializeJson(doc, client);
   tlsClose(client);
-  arbiter::releaseWork();
+  slot.release();
 
   const char* at = doc["access_token"] | "";
   if (!at[0]) {
@@ -225,15 +226,15 @@ String refreshAccess(const Info& c) {
   const long ttl = doc["expires_in"] | 3600;
   // Cache (evict the stalest slot), expire 60 s early so an attach never rides
   // a token that dies mid-request.
-  int slot = 0;
+  int cached = 0;
   for (int i = 0; i < 4; i++) {
-    if (s_tok[i].name == c.name) { slot = i; break; }
-    if (s_tok[i].expiresAt < s_tok[slot].expiresAt) slot = i;
+    if (s_tok[i].name == c.name) { cached = i; break; }
+    if (s_tok[i].expiresAt < s_tok[cached].expiresAt) cached = i;
   }
-  s_tok[slot] = {c.name, String(at), millis() + (uint32_t)(ttl > 120 ? (ttl - 60) * 1000UL : 60000UL)};
+  s_tok[cached] = {c.name, String(at), millis() + (uint32_t)(ttl > 120 ? (ttl - 60) * 1000UL : 60000UL)};
   alogf("connectors: oauth minted for %s (ttl %lds)", c.name.c_str(), ttl);
   noteAuth(c.name, 1);   // the credential provably works (mint succeeded)
-  return s_tok[slot].access;
+  return s_tok[cached].access;
 }
 }  // namespace
 
@@ -820,7 +821,8 @@ int mcpReadHead(Client& c, uint32_t deadline, McpResp& r, bool& chunked, long& c
 // transport failure r.status == 0 and r.kind says why. Bounded by q.timeoutMs.
 void exchange(const McpReq& q, McpResp& r) {
   r = McpResp{};
-  if (!arbiter::acquireWork(q.acquireMs ? q.acquireMs : q.timeoutMs)) {
+  arbiter::WorkSlot slot(q.acquireMs ? q.acquireMs : q.timeoutMs);
+  if (!slot) {
     r.kind = mc::ErrorKind::Timeout;
     return;
   }
@@ -838,7 +840,7 @@ void exchange(const McpReq& q, McpResp& r) {
   }
   const uint32_t deadline = millis() + q.timeoutMs;
   if (!mcpConnect(*c, q.u, deadline)) {
-    c->stop(); arbiter::releaseWork();
+    c->stop(); slot.release();
     r.kind = mc::ErrorKind::Connect;
     return;
   }
@@ -847,7 +849,7 @@ void exchange(const McpReq& q, McpResp& r) {
   long clen;
   r.status = mcpReadHead(*c, deadline, r, chunked, clen);
   if (r.status == 0) {
-    c->stop(); arbiter::releaseWork();
+    c->stop(); slot.release();
     r.kind = mc::ErrorKind::Timeout;
     return;
   }
@@ -856,7 +858,7 @@ void exchange(const McpReq& q, McpResp& r) {
   else if (clen >= 0) readN(*c, deadline, (size_t)clen, r.body, tooLarge);
   else                readToClose(*c, deadline, r.body, tooLarge);
   c->stop();
-  arbiter::releaseWork();
+  slot.release();
   if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
 }
 
@@ -1242,7 +1244,8 @@ void httpDo(const HttpReq& q, HttpResp& r) {
   const UrlParts& u = q.u;
   r = HttpResp{};
   if (!u.ok) { r.kind = mc::ErrorKind::Connect; return; }
-  if (!arbiter::acquireWork(q.timeoutMs)) { r.kind = mc::ErrorKind::Timeout; return; }
+  arbiter::WorkSlot slot(q.timeoutMs);
+  if (!slot) { r.kind = mc::ErrorKind::Timeout; return; }
   WiFiClientSecure tls;
   WiFiClient plain;
   Client* c;
@@ -1257,7 +1260,7 @@ void httpDo(const HttpReq& q, HttpResp& r) {
   }
   const uint32_t deadline = millis() + q.timeoutMs;
   if (!mcpConnect(*c, u, deadline)) {
-    c->stop(); arbiter::releaseWork();
+    c->stop(); slot.release();
     r.kind = mc::ErrorKind::Connect;
     return;
   }
@@ -1276,7 +1279,7 @@ void httpDo(const HttpReq& q, HttpResp& r) {
   r.status = mcpReadHead(*c, deadline, head, chunked, clen);
   r.ctype = head.ctype;
   if (r.status == 0) {
-    c->stop(); arbiter::releaseWork();
+    c->stop(); slot.release();
     r.kind = mc::ErrorKind::Timeout;
     return;
   }
@@ -1285,7 +1288,7 @@ void httpDo(const HttpReq& q, HttpResp& r) {
   else if (clen >= 0) readN(*c, deadline, (size_t)clen, r.body, tooLarge);
   else                readToClose(*c, deadline, r.body, tooLarge);
   c->stop();
-  arbiter::releaseWork();
+  slot.release();
   if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
 }
 

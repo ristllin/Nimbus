@@ -252,11 +252,15 @@ void append(const std::string& redacted, const char* cat) {
     g_skipUnpersisted.fetch_add(1);   // delta, recorded to disk at the next successful write
     return;
   }
+  // Given back on every path out: a turn logs, and a turn catches std::bad_alloc (L24),
+  // so a failed allocation inside the write must not leave the card lock taken.
+  struct Held {
+    ~Held() { agent::memory::unlock(); }
+  } held;
   maybeRetier();
   // Before storage attaches this queues the line in the early backlog; after, it is
   // one write + flush on the held handle (degrading to RAM only if the file is gone).
   if (g_log.append(line, millis()) && g_log.attached()) recordContentionDrops();
-  agent::memory::unlock();
 }
 
 std::string readRecent(size_t maxBytes) {

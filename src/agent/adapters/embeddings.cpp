@@ -133,7 +133,8 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
 
   const bool web = nimbus::sys::onWebTask();   // the web task: its network budget (web_guard.h)
   if (web && !webDnsReady(host)) { err = "tls busy"; return {}; }
-  if (!arbiter::acquireWork(12000)) { err = "tls busy"; return {}; }
+  arbiter::WorkSlot slot(12000);
+  if (!slot) { err = "tls busy"; return {}; }
 
   std::vector<int8_t> out;
   {
@@ -144,7 +145,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     // shares, the reply read against the same clock.
     const nimbus::sys::WebNetShare share =
         web ? nimbus::sys::webNetShare(nimbus::sys::webNetLeftNow()) : nimbus::sys::WebNetShare{};
-    if (web && !share.go) { arbiter::releaseWork(); err = "tls busy"; return {}; }
+    if (web && !share.go) { slot.release(); err = "tls busy"; return {}; }
     const uint32_t startedMs = millis();
     WiFiClientSecure client;
     tlsSetup(client);
@@ -166,7 +167,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
       if (attempt < attempts - 1) vTaskDelay(pdMS_TO_TICKS(400));
     }
     if (!connected) {
-      arbiter::releaseWork();
+      slot.release();
       gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, 0, "");
       err = "connect failed";
       alogf("embed: connect %s failed x3 heap=%u", host.c_str(), ESP.getFreeHeap());
@@ -214,7 +215,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
       else delay(2);
     }
     tlsClose(client);
-    arbiter::releaseWork();
+    slot.release();
 
     // No status line parsed: separate a read timeout (deadline exceeded) from the
     // provider dropping the connection, so the memory tools can say which (CUM-435).

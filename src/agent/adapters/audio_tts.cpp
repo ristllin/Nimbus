@@ -310,7 +310,8 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   String body;
   serializeJson(doc, body);
 
-  if (!arbiter::acquireWork(10000)) {
+  arbiter::WorkSlot slot(10000);
+  if (!slot) {
     alog("tts: arbiter busy");
     setWhy(why, "the network was busy");
     return 0;
@@ -334,7 +335,7 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     res = requestAndStream(c, prov, TtsRequest{body, outPath, deadline}, why);
   }
   tlsClose(c);
-  arbiter::releaseWork();
+  slot.release();
   // Lane DEF: an answered synthesis is billed per character of the text (the answer is
   // audio, with no usage), counted toward the monthly spend ceiling, even when the
   // clip arrived cut and is not used.

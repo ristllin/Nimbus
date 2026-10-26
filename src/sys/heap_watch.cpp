@@ -263,6 +263,9 @@ static bool s_orchBootMeasured = false;
 static uint32_t s_orchBootMin = 0;
 static uint32_t s_orchBootStack = 0;
 
+static bool s_orchBootDegraded = false;
+void noteOrchBootDegraded() { s_orchBootDegraded = true; }
+
 void noteOrchBootStack(uint32_t minFreeBytes, uint32_t stackBytes) {
   s_orchBootMin = minFreeBytes;
   s_orchBootStack = stackBytes;
@@ -311,6 +314,7 @@ void stateInto(JsonObject mem) {
   if (TaskHandle_t t = xTaskGetHandle("tft")) mem["panelStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(t);
   if (TaskHandle_t t = xTaskGetHandle("vrel")) mem["vrelStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(t);
   if (s_orchBootMeasured) mem["orchBootStackMin"] = s_orchBootMin;   // the boot task is gone; its report stays
+  mem["orchBootDegraded"] = s_orchBootDegraded;   // the assistant did not start this boot
 }
 
 }  // namespace nimbus::heapwatch

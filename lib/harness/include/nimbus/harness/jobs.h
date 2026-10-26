@@ -249,8 +249,29 @@ class JobEngine {
   // line each, newest first, for the turn context; "" when there are none.
   std::string finishedBeforeRestartText() const;
 
+  // ringTag is the ACTUAL recent-results ring tag spillResult() returned (e.g.
+  // "sub:job0007") - carried so an overflow stub points at the real entry instead
+  // of reconstructing "sub:"+tag, which only matches while job tags stay short and
+  // punctuation-free (prism 2026-08-05: make it correct-by-construction).
+  // `text` is the (UTF-8 capped) finding itself; `hint` is the model-facing
+  // widen handle appended after it (" [full N B: results.get(...)]", or "") - kept
+  // apart so the owner rendering can drop it while the seed stays byte-identical.
+  struct FreshResult {
+    std::string tag, model, text, hint, ringTag;
+    std::string provenance;    // " [tools: n, web: m]" / " [no tools ran]" ("" = engine line)
+    bool failed = false;   // an engine failure line, not a sub-agent's finding
+    bool unverified = false;   // its connector never ran (CUM-536), or a live task ran no tool
+  };
   // Fresh sub-agent results parked for the next consolidation turn.
   bool hasFreshResults() const { return !fresh_.empty(); }
+  // L24: a turn takes these before it knows it can run. One that then ends for memory
+  // before asking any provider puts back what it took (a copy taken just before the
+  // take), in front of any that arrived since, so the next turn sees them; never a drop.
+  // The stuck-synthesis clock comes back as the take found it.
+  std::vector<FreshResult> peekFresh() const { return fresh_; }
+  void restoreFresh(std::vector<FreshResult> taken);
+  // The same for a chat's spawn-refusal notes (what takeSpawnNotes returned).
+  void restoreSpawnNotes(const std::string& chatId, const std::string& notes, bool mayHaveRun);
   // `unverified` (optional, CUM-536) reports whether any taken result opened with
   // the connector-not-called marker, so the turn that reads them can refuse to
   // store their contents as memory.
@@ -354,19 +375,6 @@ class JobEngine {
     std::string task;
     std::vector<std::string> attach;  // "<project>/<name>" docs to splice at dispatch
     bool quiet = false;  // scheduled/loop turn: suppress the "On it." spawn ack (in-RAM only)
-  };
-  // ringTag is the ACTUAL recent-results ring tag spillResult() returned (e.g.
-  // "sub:job0007") - carried so an overflow stub points at the real entry instead
-  // of reconstructing "sub:"+tag, which only matches while job tags stay short and
-  // punctuation-free (prism 2026-08-05: make it correct-by-construction).
-  // `text` is the (UTF-8 capped) finding itself; `hint` is the model-facing
-  // widen handle appended after it (" [full N B: results.get(...)]", or "") - kept
-  // apart so the owner rendering can drop it while the seed stays byte-identical.
-  struct FreshResult {
-    std::string tag, model, text, hint, ringTag;
-    std::string provenance;    // " [tools: n, web: m]" / " [no tools ran]" ("" = engine line)
-    bool failed = false;   // an engine failure line, not a sub-agent's finding
-    bool unverified = false;   // its connector never ran (CUM-536), or a live task ran no tool
   };
   // Which dispatched jobs asked for live data (a status, today's figures):
   // read when the result lands, RAM only (a reboot forgets it: no marker).
@@ -503,6 +511,10 @@ class JobEngine {
   // just because its first result is old (CUM-480).
   bool     drained_ = false;
   uint32_t drainedAtMs_ = 0;
+  // drained_ as the last take found it: restoreFresh puts it back with the results, so
+  // a synthesis refused for memory on every pump still meets the stuck fallback (the
+  // take re-arms the clock; without this the fallback never came).
+  bool     drainedBeforeTake_ = false;
   void deliverOwnerFallback();           // the stuck-synthesis raw delivery
 
   std::vector<ReapEntry> reap_;
