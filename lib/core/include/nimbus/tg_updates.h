@@ -24,10 +24,33 @@ namespace tg {
 // At most one media attachment per message (Telegram never mixes them). Metadata
 // only - the download is the device's job (and, for documents/photos, the files
 // lane). fileId is the getFile handle.
-// Largest photo rendition the device will fetch for a description. Sized so the
-// download, its base64 in PSRAM, and the vision-token bill all stay modest; a
-// ~500 KB JPEG is already far more detail than a one-paragraph description uses.
+// Largest inbound photo or document the device will download (the download cap and the
+// size check before it). Sized so the download, its base64 in PSRAM, and the
+// vision-token bill all stay modest.
 constexpr uint32_t kPhotoBudget = 512u * 1024;
+// The photo rendition a model reads: the one download both the head's image part and
+// the vision caption take (the Telegram archive keeps its own largest copy). Telegram
+// offers a phone photo at 90, 320, 800 and 1280 px; the 1280 px copy is 140-170 KB, so
+// its request body (base64 plus the conversation) is 220-280 KB. Bench unit L, 26 Oct,
+// internal heap fragmented to a 7,156-11,252 B largest block (Lumi's state), 17-30 KB
+// free: with v4.6.1's pacing the 1280 px bodies went out 10 times of 11 (one cut at
+// 98,304 B) and 800 px bodies (86-152 KB) 14 of 14; v4.6.0 paced every 220 KB photo
+// request with a 60 s deadline into that deadline (4 of 4 lost). The 800 px copy halves
+// the body, the pacing and the vision tokens, and a label stays legible at it (a cheap
+// vision call read every value of a nutrition label at 800 px). So the photo path takes
+// the LARGEST legible rendition within kPhotoPickBudget, which is the 800 px one (50-80
+// KB), and when none fits, the SMALLEST legible one within kPhotoBudget: never a
+// thumbnail a label cannot be read from while a legible copy exists. A photo with no
+// legible copy keeps the old rule (the largest within kPhotoBudget). The archive's own
+// largest copy is then a second download, made by the archive in its own time.
+constexpr uint32_t kPhotoPickBudget = 80u * 1024;
+constexpr uint32_t kPhotoMinLongSide = 640;   // 800 px copies qualify, 320 px ones do not
+static_assert(kPhotoPickBudget < kPhotoBudget, "the pick budget sits under the download cap");
+// Legible: the long side reaches kPhotoMinLongSide (Telegram always reports a photo's
+// width and height; a rendition without them is not counted as legible).
+inline bool photoLegible(uint32_t width, uint32_t height) {
+  return (width > height ? width : height) >= kPhotoMinLongSide;
+}
 
 struct Attachment {
   // Append new kinds before Count, never reorder: the Telegram archive maps every

@@ -126,15 +126,14 @@ struct TlsIo {
                        (unsigned)pacedMs);
   }
 
-  // R1 (http.h SliceWait): let the TCP window drain before the next slice when the
+  // R1 (http.h paceSlice): let the TCP window drain before the next slice when the
   // internal heap is short, instead of failing an allocation mid-body; only while the
-  // largest block is still growing, and never past the request's cap (v4.6.1).
+  // largest block is still growing, and never past the exchange's cap: 2 s, at most a
+  // tenth of its deadline (v4.6.1).
   void paceForHeadroom() {
-    SliceWait w;
-    while (!expired() &&
-           w.next((uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), pacedMs))
-      vTaskDelay(pdMS_TO_TICKS(kSliceWaitStepMs));
-    pacedMs += w.waitedMs;
+    auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); };
+    auto sleep = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
+    paceSlice(pacedMs, paceCapMs(req.timeoutMs), largest, sleep, [this] { return expired(); });
   }
 
   bool expired() const { return (int32_t)(millis() - deadline) >= 0; }

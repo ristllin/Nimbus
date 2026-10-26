@@ -150,31 +150,35 @@ bool parseUpdates(const char* body, size_t len, std::vector<Update>& out,
         a.fileSize = msg["document"]["file_size"] | 0u;
       } else if (!msg["photo"].isNull()) {
         // Telegram offers the same photo at several resolutions. Pick the LARGEST
-        // that fits kPhotoBudget, not the largest outright: the device downloads
-        // it over one TLS socket, base64s it into PSRAM, and pays for it in vision
-        // tokens, and a full-resolution phone photo is several megabytes of all
-        // three for a description a mid-size rendition answers just as well.
-        // If every rendition is over budget (or none reports a size), take the
-        // smallest - something legible beats refusing the photo.
+        // legible one that fits kPhotoPickBudget, not the largest outright: the device
+        // downloads it over one TLS socket, base64s it into PSRAM, writes it into every
+        // request that reads it and pays for it in vision tokens, and on a fragmented
+        // heap a 1280 px copy's request body is too large to send reliably (see
+        // kPhotoPickBudget). When no legible rendition fits, take the SMALLEST legible
+        // one within kPhotoBudget (something legible beats a thumbnail), then the
+        // largest within kPhotoBudget, then the smallest.
         // file_size is OPTIONAL in the Bot API. When it is missing everywhere,
         // there is nothing to compare, so take the LAST entry: Telegram lists
         // renditions ascending, and the last is the full-size one the old
         // largest-wins code chose. (Falling back to "smallest" here pinned every
         // sizeless photo to the ~90px thumbnail - legible to nobody.)
-        JsonVariantConst best, smallest, last;
-        uint32_t bestSz = 0, smallestSz = 0;
+        JsonVariantConst best, smallest, last, bestAny, smallestLegible;
+        uint32_t bestSz = 0, smallestSz = 0, bestAnySz = 0, smallestLegibleSz = 0;
         bool anySize = false;
         for (JsonVariantConst ph : msg["photo"].as<JsonArrayConst>()) {
           const uint32_t sz = ph["file_size"] | 0u;
           last = ph;
-          if (sz) {
-            anySize = true;
-            if (smallest.isNull() || sz < smallestSz) { smallest = ph; smallestSz = sz; }
-            if (sz <= kPhotoBudget && sz >= bestSz) { best = ph; bestSz = sz; }
-          }
+          if (!sz) continue;
+          anySize = true;
+          if (smallest.isNull() || sz < smallestSz) { smallest = ph; smallestSz = sz; }
+          if (sz > kPhotoBudget) continue;   // over the download cap: only the smallest fallback
+          if (sz >= bestAnySz) { bestAny = ph; bestAnySz = sz; }
+          if (!photoLegible(ph["width"] | 0u, ph["height"] | 0u)) continue;
+          if (smallestLegible.isNull() || sz < smallestLegibleSz) { smallestLegible = ph; smallestLegibleSz = sz; }
+          if (sz <= kPhotoPickBudget && sz >= bestSz) { best = ph; bestSz = sz; }
         }
-        // Every rendition over budget: take the smallest - something legible
-        // beats refusing the photo.
+        if (best.isNull() && !smallestLegible.isNull()) { best = smallestLegible; bestSz = smallestLegibleSz; }
+        if (best.isNull() && !bestAny.isNull()) { best = bestAny; bestSz = bestAnySz; }
         if (best.isNull() && anySize) { best = smallest; bestSz = smallestSz; }
         if (best.isNull()) { best = last; bestSz = 0; }
         if (!best.isNull() && best["file_id"].is<const char*>()) {

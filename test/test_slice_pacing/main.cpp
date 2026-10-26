@@ -16,6 +16,7 @@
 // and the request cap in all; a draining heap waits until it has room, stops growing,
 // or a bound.
 
+using agent::kPaceDeadlineShare;
 using agent::kRequestPaceMaxMs;
 using agent::kSliceHeadroom;
 using agent::kSliceStallMs;
@@ -28,16 +29,21 @@ void tearDown() {}
 
 using Heap = std::function<uint32_t(uint32_t slice, uint32_t waitedMs)>;
 
-// One slice's wait, as paceForHeadroom runs it; returns the ms it waited.
-static uint32_t paceSlice(const Heap& heap, uint32_t slice, uint32_t requestPacedMs) {
-  SliceWait w;
-  uint32_t steps = 0;
-  while (w.next(heap(slice, w.waitedMs), requestPacedMs)) {
-    ++steps;
-    TEST_ASSERT_TRUE_MESSAGE(steps <= kSliceWaitMaxMs / kSliceWaitStepMs, "a slice waited past its bound");
-  }
-  TEST_ASSERT_EQUAL_UINT32(steps * kSliceWaitStepMs, w.waitedMs);
-  return w.waitedMs;
+// One slice's wait through the helper the device runs (agent::paceSlice), on a fake
+// clock that only the helper's sleep advances; returns the ms it waited and checks the
+// helper slept exactly that long and added it to the exchange's total.
+static uint32_t paceOne(const Heap& heap, uint32_t slice, uint32_t requestPacedMs) {
+  uint32_t clock = 0, steps = 0, paced = requestPacedMs;
+  auto largest = [&] { return heap(slice, clock); };
+  auto sleep = [&](uint32_t ms) {
+    TEST_ASSERT_EQUAL_UINT32(kSliceWaitStepMs, ms);
+    clock += ms;
+    TEST_ASSERT_TRUE_MESSAGE(++steps <= kSliceWaitMaxMs / kSliceWaitStepMs, "a slice waited past its bound");
+  };
+  const uint32_t w = agent::paceSlice(paced, kRequestPaceMaxMs, largest, sleep, [] { return false; });
+  TEST_ASSERT_EQUAL_UINT32(clock, w);
+  TEST_ASSERT_EQUAL_UINT32(requestPacedMs + w, paced);
+  return w;
 }
 
 // A whole request body of `bytes`: the waits of every slice after the first.
@@ -45,7 +51,7 @@ static std::vector<uint32_t> paceRequest(const Heap& heap, uint32_t bytes) {
   std::vector<uint32_t> waits;
   uint32_t paced = 0;
   for (uint32_t off = 4096, slice = 1; off < bytes; off += 4096, ++slice) {
-    const uint32_t w = paceSlice(heap, slice, paced);
+    const uint32_t w = paceOne(heap, slice, paced);
     waits.push_back(w);
     paced += w;
   }
@@ -73,14 +79,14 @@ static void test_stable_fragmented_heap_waits_only_the_stall_window() {
   // Lumi's resting heap on v4.6.0 and its neighbors, down to an almost empty heap.
   for (uint32_t largest : {7156u, kSliceHeadroom - 1, 4096u, 0u}) {
     const Heap heap = [largest](uint32_t, uint32_t) { return largest; };
-    TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceSlice(heap, 1, 0));
+    TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceOne(heap, 1, 0));
   }
 }
 
 static void test_stable_fragmented_chat_request_stays_under_the_cap() {
   const Heap lumi = [](uint32_t, uint32_t) { return 7156u; };
-  // Lumi's model requests on v4.6.0 (70,198 to 84,439 B, paced 24,000 to 30,000 ms each)
-  // and the largest it sent (185,517 B, paced 67,500 ms).
+  // Lumi's chat requests on v4.6.0 (70,198 B paced 25,500 ms; 84,439 B paced 30,000 ms),
+  // the largest it sent (185,517 B, paced 67,500 ms) and a 600 KB body.
   for (uint32_t body : {70198u, 84439u, 185517u, 600u * 1024u}) {
     const std::vector<uint32_t> waits = paceRequest(lumi, body);
     const uint32_t paced = total(waits);
@@ -97,7 +103,7 @@ static void test_a_jittering_heap_does_not_keep_the_wait_alive() {
   // Other tasks allocate and free while the transport waits: the block dips and comes
   // back to the same size. Only a new high counts as growth.
   const Heap jitter = [](uint32_t, uint32_t t) { return (t / kSliceWaitStepMs) % 2 ? 6900u : 7156u; };
-  TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceSlice(jitter, 1, 0));
+  TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceOne(jitter, 1, 0));
 }
 
 // ---- draining: wait while it grows, until room or a bound -----------------------------
@@ -106,7 +112,7 @@ static void test_draining_heap_waits_until_it_has_room() {
   // Acknowledged segments free a buffer every 20 ms: 7 KB grows 1,460 B a step pair and
   // has room again after 80 ms. The wait ends exactly there, not at a bound.
   const Heap drain = [](uint32_t, uint32_t t) { return 7168u + (t / 20) * 1460u; };
-  const uint32_t w = paceSlice(drain, 1, 0);
+  const uint32_t w = paceOne(drain, 1, 0);
   TEST_ASSERT_EQUAL_UINT32(80, w);
   TEST_ASSERT_TRUE(drain(1, w) >= kSliceHeadroom);
   TEST_ASSERT_TRUE(drain(1, w - kSliceWaitStepMs) < kSliceHeadroom);
@@ -119,48 +125,179 @@ static void test_one_step_recovery_within_the_window_is_waited_for() {
   // and the slice goes out the moment it lands.
   for (uint32_t at = kSliceWaitStepMs; at <= kSliceStallMs; at += kSliceWaitStepMs) {
     const Heap ack = [at](uint32_t, uint32_t t) { return t < at ? 9204u : 14324u; };
-    TEST_ASSERT_EQUAL_UINT32(at, paceSlice(ack, 1, 0));
+    TEST_ASSERT_EQUAL_UINT32(at, paceOne(ack, 1, 0));
   }
   // A step later than the window is not waited for: the slice goes out at the window.
   const Heap late = [](uint32_t, uint32_t t) { return t < kSliceStallMs + 10 ? 9204u : 14324u; };
-  TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceSlice(late, 1, 0));
+  TEST_ASSERT_EQUAL_UINT32(kSliceStallMs, paceOne(late, 1, 0));
 }
 
 static void test_growth_within_the_stall_window_keeps_waiting() {
   // A slow drain whose steps come just inside the stall window still reaches room.
   const uint32_t gap = kSliceStallMs - kSliceWaitStepMs;
   const Heap slow = [gap](uint32_t, uint32_t t) { return 7168u + (t / gap) * 1024u; };
-  const uint32_t w = paceSlice(slow, 1, 0);
+  const uint32_t w = paceOne(slow, 1, 0);
   TEST_ASSERT_TRUE(slow(1, w) >= kSliceHeadroom);
   TEST_ASSERT_TRUE(w > kSliceStallMs);
+}
+
+static void test_growth_at_the_window_edge_counts() {
+  // A new high that lands exactly one window after the baseline, still short of room,
+  // restarts the window: the slice waits one more window after it.
+  const Heap edge = [](uint32_t, uint32_t t) { return t < kSliceStallMs ? 7168u : 8192u; };
+  TEST_ASSERT_EQUAL_UINT32(2 * kSliceStallMs, paceOne(edge, 1, 0));
 }
 
 static void test_a_drain_that_stops_short_stops_the_wait() {
   // Grows for 100 ms, then rests below the headroom: the wait ends one stall window
   // after the last growth.
   const Heap stalls = [](uint32_t, uint32_t t) { return 7168u + (t < 100 ? t : 100u) * 20u; };
-  TEST_ASSERT_EQUAL_UINT32(100 + kSliceStallMs, paceSlice(stalls, 1, 0));
+  TEST_ASSERT_EQUAL_UINT32(100 + kSliceStallMs, paceOne(stalls, 1, 0));
 }
 
 static void test_a_slice_never_waits_past_its_bound() {
   // Grows by one byte every step and never reaches the headroom: the slice bound ends it.
   const Heap creep = [](uint32_t, uint32_t t) { return 7168u + t; };
-  TEST_ASSERT_EQUAL_UINT32(kSliceWaitMaxMs, paceSlice(creep, 1, 0));
+  TEST_ASSERT_EQUAL_UINT32(kSliceWaitMaxMs, paceOne(creep, 1, 0));
 }
 
-static void test_the_request_cap_holds_against_a_draining_heap() {
-  // Every slice starts short and grows the whole time it waits: without the cap a
-  // 600 KB body would wait 1.5 s on each of 149 slices.
+static void test_the_request_cap_holds_against_a_creeping_heap() {
+  // Every slice starts short and creeps upward the whole time it waits: without the cap
+  // a 600 KB body would wait 1.5 s on each of 149 slices.
   const Heap creep = [](uint32_t, uint32_t t) { return 7168u + t; };
   const std::vector<uint32_t> waits = paceRequest(creep, 600 * 1024);
   TEST_ASSERT_EQUAL_UINT32(kRequestPaceMaxMs, total(waits));
   // Once the cap is spent every later slice goes out at once.
   TEST_ASSERT_EQUAL_UINT32(0, waits.back());
   // A request that already paid its cap waits nothing more, whatever the heap does.
-  TEST_ASSERT_EQUAL_UINT32(0, paceSlice(creep, 9, kRequestPaceMaxMs));
-  TEST_ASSERT_EQUAL_UINT32(0, paceSlice(creep, 9, kRequestPaceMaxMs + 500));
+  TEST_ASSERT_EQUAL_UINT32(0, paceOne(creep, 9, kRequestPaceMaxMs));
+  TEST_ASSERT_EQUAL_UINT32(0, paceOne(creep, 9, kRequestPaceMaxMs + 500));
   // The last slice before the cap is clipped to what is left of it.
-  TEST_ASSERT_EQUAL_UINT32(30, paceSlice(creep, 9, kRequestPaceMaxMs - 30));
+  TEST_ASSERT_EQUAL_UINT32(30, paceOne(creep, 9, kRequestPaceMaxMs - 30));
+}
+
+static void test_the_cap_leaves_a_measured_upload_its_drain() {
+  // The counter-test for the cap: a 130 KB photo upload (31 slices after the first)
+  // whose every slice drains one round trip later. Up to 60 ms a slice (the measured
+  // median is 40 ms) every slice waits for its step under the cap; the measured uploads
+  // paced 1,105 to 1,363 ms in all and none reached it.
+  for (uint32_t rtt : {40u, 60u}) {
+    const Heap upload = [rtt](uint32_t, uint32_t t) { return t < rtt ? 9204u : 14324u; };
+    const std::vector<uint32_t> waits = paceRequest(upload, 130435);
+    TEST_ASSERT_EQUAL_UINT32(31, waits.size());
+    for (uint32_t w : waits) TEST_ASSERT_EQUAL_UINT32(rtt, w);
+    TEST_ASSERT_TRUE(total(waits) < kRequestPaceMaxMs);
+  }
+  // The trade the cap makes: at 70 ms on every slice the first 28 slices get their step
+  // and the tail goes out at once, as every slice did before v4.6.0.
+  const Heap slow = [](uint32_t, uint32_t t) { return t < 70 ? 9204u : 14324u; };
+  const std::vector<uint32_t> waits = paceRequest(slow, 130435);
+  for (size_t i = 0; i < 28; ++i) TEST_ASSERT_EQUAL_UINT32(70, waits[i]);
+  TEST_ASSERT_EQUAL_UINT32(kRequestPaceMaxMs, total(waits));
+  TEST_ASSERT_EQUAL_UINT32(0, waits.back());
+  // A 0.6 MB inline body draining at the median on every slice: the first 50 slices get
+  // their step, the other 99 go out at once (the trade the http.h comment names).
+  const Heap inlineBody = [](uint32_t, uint32_t t) { return t < 40 ? 9204u : 14324u; };
+  const std::vector<uint32_t> big = paceRequest(inlineBody, 600 * 1024);
+  TEST_ASSERT_EQUAL_UINT32(149, big.size());
+  for (size_t i = 0; i < big.size(); ++i) TEST_ASSERT_EQUAL_UINT32(i < 50 ? 40 : 0, big[i]);
+}
+
+static void test_each_slice_is_judged_on_its_own() {
+  // Stable for three slices, then draining: the first three pay the window, the rest
+  // wait for their step; a stall in one slice never shortens the next.
+  const Heap mixed = [](uint32_t slice, uint32_t t) {
+    if (slice <= 3) return 7156u;
+    return t < 40 ? 9204u : 14324u;
+  };
+  const std::vector<uint32_t> waits = paceRequest(mixed, 6 * 4096 + 1);
+  const std::vector<uint32_t> want = {kSliceStallMs, kSliceStallMs, kSliceStallMs, 40, 40, 40};
+  TEST_ASSERT_EQUAL_UINT32(want.size(), waits.size());
+  for (size_t i = 0; i < want.size(); ++i) TEST_ASSERT_EQUAL_UINT32(want[i], waits[i]);
+}
+
+static void test_bounds_hold_on_any_heap() {
+  // The class: pseudo-random heaps (rest, jumps, creeps, dips, room) over whole
+  // requests. Every wait is whole steps, no slice passes its bound, no request passes
+  // the cap, a slice that starts with room never waits, and a wait that ends without
+  // room, the slice bound or the cap ends exactly one window after the last new high.
+  uint32_t seed = 12345;
+  auto rnd = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 8) & 0xFFFFu;
+  };
+  for (int run = 0; run < 400; ++run) {
+    const uint32_t base = 2000 + rnd() % 14000, jumpAt = rnd() % 400, jumpTo = rnd() % 16000;
+    const uint32_t creep = rnd() % 4, dip = rnd() % 2;
+    const Heap heap = [=](uint32_t slice, uint32_t t) {
+      uint32_t l = (base + slice * 97) % 16000 + creep * t;
+      if (t >= jumpAt) l = jumpTo > l ? jumpTo : l;
+      if (dip && (t / kSliceWaitStepMs) % 3 == 1) l = l > 300 ? l - 300 : 0;
+      return l;
+    };
+    uint32_t paced = 0;
+    for (uint32_t slice = 1; slice < 40; ++slice) {
+      SliceWait w;
+      uint32_t best = 0, lastHigh = 0, last = 0;
+      for (;;) {
+        last = heap(slice, w.waitedMs);
+        if (last > best) {
+          best = last;
+          lastHigh = w.waitedMs;
+        }
+        if (!w.next(last, paced, kRequestPaceMaxMs)) break;
+      }
+      TEST_ASSERT_EQUAL_UINT32(0, w.waitedMs % kSliceWaitStepMs);
+      TEST_ASSERT_TRUE(w.waitedMs <= kSliceWaitMaxMs);
+      if (heap(slice, 0) >= kSliceHeadroom) TEST_ASSERT_EQUAL_UINT32(0, w.waitedMs);
+      const bool room = last >= kSliceHeadroom, bound = w.waitedMs >= kSliceWaitMaxMs;
+      const bool capped = paced + w.waitedMs >= kRequestPaceMaxMs;
+      if (!room && !bound && !capped) TEST_ASSERT_EQUAL_UINT32(lastHigh + kSliceStallMs, w.waitedMs);
+      paced += w.waitedMs;
+      TEST_ASSERT_TRUE(paced <= kRequestPaceMaxMs);
+    }
+  }
+}
+
+static void test_the_deadline_ends_the_wait_and_counts_only_slept_steps() {
+  // The exchange's deadline passes during a wait: the helper stops at once and the
+  // total holds only the steps it slept (expired() is asked before next()).
+  uint32_t paced = 300, clock = 0;
+  auto largest = [] { return 7156u; };
+  auto sleep = [&](uint32_t ms) { clock += ms; };
+  auto expired = [&] { return clock >= 30; };
+  TEST_ASSERT_EQUAL_UINT32(30, agent::paceSlice(paced, kRequestPaceMaxMs, largest, sleep, expired));
+  TEST_ASSERT_EQUAL_UINT32(330, paced);
+  // Already past the deadline: no wait, nothing added.
+  TEST_ASSERT_EQUAL_UINT32(0, agent::paceSlice(paced, kRequestPaceMaxMs, largest, sleep, [] { return true; }));
+  TEST_ASSERT_EQUAL_UINT32(330, paced);
+}
+
+static void test_pacing_never_eats_the_deadline() {
+  // The cap is 2 s and never more than a tenth of the exchange's deadline: Lumi's v4.6.0
+  // photo request paced 58,280 ms of its 60,000 and got no answer.
+  TEST_ASSERT_EQUAL_UINT32(kRequestPaceMaxMs, agent::paceCapMs(120000));   // a head round
+  TEST_ASSERT_EQUAL_UINT32(kRequestPaceMaxMs, agent::paceCapMs(60000));    // a vision caption
+  TEST_ASSERT_EQUAL_UINT32(kRequestPaceMaxMs, agent::paceCapMs(30000));    // the default
+  TEST_ASSERT_EQUAL_UINT32(1000, agent::paceCapMs(10000));
+  TEST_ASSERT_EQUAL_UINT32(800, agent::paceCapMs(8090));   // whole steps, never 809
+  TEST_ASSERT_EQUAL_UINT32(0, agent::paceCapMs(5));
+  // The class: for every deadline (a prime step, so caps off the 10 ms grid are hit), a
+  // whole request on a heap that never recovers (a 245 KB photo body, Lumi's largest)
+  // paces at most a tenth of it, in whole steps.
+  const Heap stuck = [](uint32_t, uint32_t) { return 7156u; };
+  for (uint32_t timeout = 0; timeout <= 130000; timeout += 997) {
+    const uint32_t cap = agent::paceCapMs(timeout);
+    TEST_ASSERT_TRUE(cap * kPaceDeadlineShare <= timeout);
+    TEST_ASSERT_EQUAL_UINT32(0, cap % kSliceWaitStepMs);
+    uint32_t paced = 0, clock = 0;
+    for (uint32_t off = 4096; off < 245 * 1024; off += 4096)
+      agent::paceSlice(paced, cap, [&] { return stuck(0, clock); }, [&](uint32_t ms) { clock += ms; },
+                       [] { return false; });
+    TEST_ASSERT_EQUAL_UINT32(cap, paced);   // the stuck heap spends the whole cap, never more
+    TEST_ASSERT_TRUE(paced * kPaceDeadlineShare <= timeout);
+    TEST_ASSERT_EQUAL_UINT32(clock, paced);
+  }
 }
 
 static void test_the_bounds_are_ordered() {
@@ -172,6 +309,8 @@ static void test_the_bounds_are_ordered() {
   TEST_ASSERT_TRUE(kSliceStallMs < kSliceWaitMaxMs);
   TEST_ASSERT_TRUE(kSliceWaitMaxMs <= kRequestPaceMaxMs);
   TEST_ASSERT_TRUE(kRequestPaceMaxMs <= 3000);
+  TEST_ASSERT_EQUAL_UINT32(0, kSliceStallMs % kSliceWaitStepMs);
+  TEST_ASSERT_EQUAL_UINT32(0, kRequestPaceMaxMs % kSliceWaitStepMs);
 }
 
 int main(int, char**) {
@@ -183,9 +322,15 @@ int main(int, char**) {
   RUN_TEST(test_draining_heap_waits_until_it_has_room);
   RUN_TEST(test_one_step_recovery_within_the_window_is_waited_for);
   RUN_TEST(test_growth_within_the_stall_window_keeps_waiting);
+  RUN_TEST(test_growth_at_the_window_edge_counts);
   RUN_TEST(test_a_drain_that_stops_short_stops_the_wait);
   RUN_TEST(test_a_slice_never_waits_past_its_bound);
-  RUN_TEST(test_the_request_cap_holds_against_a_draining_heap);
+  RUN_TEST(test_the_request_cap_holds_against_a_creeping_heap);
+  RUN_TEST(test_the_cap_leaves_a_measured_upload_its_drain);
+  RUN_TEST(test_each_slice_is_judged_on_its_own);
+  RUN_TEST(test_bounds_hold_on_any_heap);
+  RUN_TEST(test_the_deadline_ends_the_wait_and_counts_only_slept_steps);
+  RUN_TEST(test_pacing_never_eats_the_deadline);
   RUN_TEST(test_the_bounds_are_ordered);
   return UNITY_END();
 }
