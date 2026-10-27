@@ -39,8 +39,16 @@ bool requestRefresh(const String& provider);
 // The same model-list refresh run on the CALLING task: the Telegram poll task's staged
 // work (model_refresh), when the verify task's 8 KB stack does not fit in one internal
 // block (nimbus::orch::refreshRoute). Same claim, same work slot, same GET; at a turn's
-// floors. False (nothing ran) while a verify runs, a turn is in flight or memory is short.
-bool runRefreshHere(const String& provider);
+// floors. Refused (nothing ran) while a verify runs, a turn is in flight or memory is
+// short; Yielded when an owner message waits (setOwnerWaiting), before the run or during
+// it (once the work slot is held, between the status line and the body: no list stored).
+enum class InlineRun : uint8_t { Ran, Refused, Yielded };
+InlineRun runRefreshHere(const String& provider);
+
+// Is an owner message waiting for the Telegram task (a local turn queued, a held Telegram
+// page)? The run on that task gives way to it (HFM round 3). Set once at boot (main.cpp);
+// nullptr = none.
+void setOwnerWaiting(bool (*waiting)());
 
 // True while a verify is queued or running.
 bool pending();

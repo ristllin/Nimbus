@@ -444,9 +444,17 @@ write) is tried again after 2 minutes, doubling up to an hour, six times, then l
 the next passive pass. A refresh needs only the memory one connection needs (the same
 floor as a turn request); when its own worker cannot start on a fragmented memory, it
 runs on the Telegram task between messages instead, within 15 seconds in all (one page,
-no extra connections; a list it cannot finish in that time is tried again later). A
-provider paused by a spend limit or parked by a refusal is still refreshed: the list
-request is free.
+no extra connections; a list it cannot finish in that time is tried again later). There it
+gives way to a waiting owner message (a web chat, voice or serial message queued, or a
+Telegram album still arriving): it does not start, or stops before reading the list, and
+tries again 30 seconds later without counting a try. A Z.ai key with no stored host is
+asked on api.z.ai only there, so a refusal from it reads "couldn't verify", never
+rejected (the key may belong to open.bigmodel.cn). A key verify that low memory deferred
+asks for the list on its first deferral (at once for a key not verified yet), then within
+the hourly limit, six times at most; when the list answers, the verify's retries stop, and
+the full verify (the selected models' check, the Cumulo and Mistral syncs) runs once memory
+allows it. A provider paused by a spend limit or parked by a refusal is still refreshed:
+the list request is free.
 
 ## `tenant.*` - people & roles
 

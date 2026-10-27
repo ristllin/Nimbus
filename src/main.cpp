@@ -76,6 +76,7 @@
 #include <vector>
 #include "agent/provider_verify.h"
 #include "agent/model_refresh.h"      // R5: models.list + the refresh queue
+#include "nimbus/orch/model_refresh.h"   // LocalTurnWait - local turns the poll task has not run yet
 #include "agent/store.h"
 #include "agent/telegram.h"
 #include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
@@ -212,6 +213,19 @@ static agent::WebChatBook  g_webChat;   // seeded at the first POST (see chatSen
 // replying (a fan-out head turn may legitimately run for minutes).
 static volatile uint32_t g_webTurnDeadlineMs = 0;
 static constexpr uint32_t kWebTurnMaxMs = 12UL * 60UL * 1000UL;
+// HFM round 3: local turns (the web chat, voice, serial) queued for the Telegram task that its
+// drain has not handed on yet. A model-list refresh run on that task gives way to them, and to
+// a Telegram page held for the rest of an album (provider_verify::setOwnerWaiting). The
+// test-only injects (/api/test/inject, the test console) are not counted.
+static nimbus::orch::LocalTurnWait g_localTurns;
+static bool injectLocalTurn(const char* chat, const String& text) {
+  if (!agent::telegram::injectMessage(chat, text)) return false;
+  g_localTurns.queued((uint32_t)millis());
+  return true;
+}
+static bool ownerMessageWaiting() {
+  return g_localTurns.waiting((uint32_t)millis()) || agent::telegram::guardStatus().holding;
+}
 // millis() of the last sub-agent start/finish, for the Calm-level ring activity blink
 // (set when the session set changes; 0 = no recent activity).
 static uint32_t      g_lastActivityMs = 0;
@@ -964,6 +978,7 @@ static void orchOnMessage(const String& from, const String& chatId,
   // of its handleMessage - the turn runs synchronously on this task, so every
   // delivery to chat "web" in between is this turn's and nothing else's.
   const bool web = chatId == "web";
+  if (web || chatId == "voice" || chatId == "serial") g_localTurns.served();   // handed on: no longer waiting
   if (web) {
     std::lock_guard<std::mutex> lk(g_webChatMx);
     g_webChat.begin(std::string(text.c_str(), text.length()));
@@ -1577,7 +1592,7 @@ class VoicePort : public nimbus::voice::Port {
     g_voiceEndTarget = handled + 1;
     // The reply routes back to the panel (see orchSendSink); loop() ends the
     // processing state on the voice turn's own end (voiceLoopStep).
-    if (agent::telegram::injectMessage("voice", msg)) return true;
+    if (injectLocalTurn("voice", msg)) return true;
     agent::alog("voice: inbound queue full - transcript dropped");
     return false;
   }
@@ -3330,6 +3345,8 @@ void setup() {
   // telegram::begin() so the hooks are set before that task starts.
   otaupd::setPollProbe([] { return g_orchMode; }, agent::telegram::taskAlive);
   agent::telegram::setStagedWork(stagedWorkPending, stagedWorkRun);
+  // A model-list refresh on that task gives way to a waiting owner message (HFM round 3).
+  agent::provider_verify::setOwnerWaiting(ownerMessageWaiting);
   // Owner-only Telegram `/update` approves + installs a pending OTA. Runs on the
   // tg_poll task (handleMessage); returns the reply text the owner sees.
   // ⚠ The OTA state is IN-RAM and resets on every boot, so "not available" here
@@ -3867,7 +3884,7 @@ void setup() {
     if (!s_seeded) { g_webChat.reseed(esp_random()); s_seeded = true; }
     const std::string id = g_webChat.open(std::string(t.c_str(), t.length()), millis());
     if (id.empty()) return String();   // every booked turn still unanswered: busy
-    if (!agent::telegram::injectMessage("web", t)) {
+    if (!injectLocalTurn("web", t)) {
       g_webChat.cancel(id);
       return String();
     }
@@ -4171,7 +4188,7 @@ void setup() {
       // blocks 5-30 s on TLS and this hook runs on the watchdog-subscribed main
       // loop, so an inline handleMessage() reboots the board. injectMessage()
       // enqueues to g_inboundQ, drained on tg_poll (not watchdog-subscribed).
-      if (!agent::telegram::injectMessage("serial", t))
+      if (!injectLocalTurn("serial", t))
         Serial.println("TURN busy - inbound queue full, resend");
     };
     h.wifi   = [](const String& s, const String& p) {
@@ -6734,7 +6751,7 @@ void loop() {
           // here runs a 5-30 s TLS turn on the watchdog-subscribed main loop
           // (reboot) AND races the tg_poll-owned turn state + glass-box statics
           // across tasks (prism Release-A finding).
-          if (!agent::telegram::injectMessage("serial", t))
+          if (!injectLocalTurn("serial", t))
         Serial.println("TURN busy - inbound queue full, resend");
         } else if (s_cmd == "IP") {
           Serial.printf("IP %s rssi=%d sta=%d\n", net::staIp().c_str(),

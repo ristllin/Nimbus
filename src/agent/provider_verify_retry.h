@@ -38,6 +38,8 @@ struct DeferralRetry {
   uint32_t nextAtMs  = 0;       // earliest the next retry may fire
   uint32_t firstAtMs = 0;       // when this deferral streak began (drives the health line)
   uint32_t lastAtMs  = 0;       // when the last deferral was recorded
+  uint8_t  refreshAsks = 0;     // model-list refresh asks this streak made (nextRefreshAsk)
+  bool     fullOwed  = false;   // the owner's full verify was deferred and has not run since
 
   // A verify came back low-memory-deferred at `now`: grow the backoff and re-arm
   // (the backoff and the recovery trigger both).
@@ -49,10 +51,31 @@ struct DeferralRetry {
     lastAtMs = now;
     armed    = true;
     recovery = true;
+    fullOwed = true;   // a deferral is the owner's full verify not run (provider_verify deferLowMemory)
   }
 
   // Memory was sufficient (or a definitive verdict landed): stop retrying.
-  void clear() { armed = false; recovery = false; delayMs = 0; nextAtMs = 0; firstAtMs = 0; lastAtMs = 0; }
+  void clear() {
+    armed = false; recovery = false; delayMs = 0; nextAtMs = 0; firstAtMs = 0; lastAtMs = 0;
+    refreshAsks = 0; fullOwed = false;
+  }
+
+  // A model-list refresh answered 200 (HFM round 3): the streak ends (no more backoff
+  // retries, no more refresh asks) but the owner's full verify stays owed (fullOwed) and runs
+  // once memory allows it (owedDue). lastAtMs stays: it spaces that run from the deferral.
+  void endStreak() {
+    armed = false; recovery = false; delayMs = 0; nextAtMs = 0; firstAtMs = 0; refreshAsks = 0;
+  }
+
+  // The owed full verify may run now: no streak is armed (an armed one runs it through due /
+  // dueOnRecovery), the device is free, the resting largest block reaches the verify's floor,
+  // and kRecoverGapMs has passed since the last deferral.
+  bool owedDue(uint32_t now, bool inTurn, bool online, bool busy, uint32_t restingLargest, uint32_t floor) const {
+    if (!fullOwed || armed || inTurn || !online || busy) return false;
+    return restingLargest >= floor && (uint32_t)(now - lastAtMs) >= kRecoverGapMs;
+  }
+  // The owed verify was started: owed no more (a refusal defers it again: onDeferred).
+  void onOwedFired() { fullOwed = false; }
 
   // Is a retry DUE now? Armed, past the backoff, and the device is free to run one:
   // never during a turn (the turn holds the TLS slot), never offline, never while a
@@ -91,16 +114,47 @@ struct LowMemoryDefer {
 };
 inline LowMemoryDefer onLowMemoryDefer(bool wasVerified) { return {true, !wasVerified}; }
 
-// A verify the memory gate deferred still gets its provider's model list (the refresh needs
-// one connection's memory only). Only a key not verified yet (just saved: the web marks it
-// -1) forces that refresh past the hourly window, since a new key may see another list. A
-// verified key's deferral keeps the hour: on a heap that never reaches the verify's floor
-// (Lumi: 7,156 B against 8,000 B) the deferral retry fires every 16 min for good, and a
-// forced refresh each time refetched the whole list on the Telegram task (HFM review).
-inline bool deferredVerifyForcesRefresh(bool wasVerified) { return !wasVerified; }
-// A refresh-only run whose list GET answered 200 serves what the deferral was waiting for (the
-// key works, the list is fresh): it ends the deferral, so the retry stops re-firing.
-inline bool refreshEndsDeferral(bool refreshOnly, int8_t result) { return refreshOnly && result == 1; }
+// HFM round 3: what a low-memory deferral asks of the model-list refresh queue (a verify the
+// memory gate deferred still gets its provider's list: the refresh needs one connection's
+// memory only). The FIRST deferral of a streak asks, forcing past the hourly window only for
+// a key not verified yet (just saved: the web marks it -1; a new key may see another list);
+// later deferrals ask within the hour; after kDeferralAsksMax asks in one streak, none (the
+// queue's own retries, then the 6-hourly passive pass, carry on). Before: a verified key's
+// deferral forced a refetch every 16 min on Lumi's heap (7,156 B against 8,000 B), and later
+// an unverified key whose list GET kept failing still forced one at every deferral, for good.
+enum class DeferralAsk : uint8_t { None, Hourly, Forced };
+static const uint8_t kDeferralAsksMax = 6;   // = ModelRefreshQueue::kRetryTries (static_assert in provider_verify.cpp)
+inline DeferralAsk deferralRefreshAsk(bool wasVerified, uint8_t asksThisStreak) {
+  if (asksThisStreak >= kDeferralAsksMax) return DeferralAsk::None;
+  return (asksThisStreak == 0 && !wasVerified) ? DeferralAsk::Forced : DeferralAsk::Hourly;
+}
+// The ask for `r`'s next deferral, counted against its streak (endStreak and clear reset it).
+inline DeferralAsk nextRefreshAsk(DeferralRetry& r, bool wasVerified) {
+  const DeferralAsk a = deferralRefreshAsk(wasVerified, r.refreshAsks);
+  if (a != DeferralAsk::None) ++r.refreshAsks;
+  return a;
+}
+
+// What a verdict does to a provider's deferral. A transient -1 keeps it (CUM-451). A full
+// verify's definitive verdict, or a refused key, ends it all. A model-list refresh whose GET
+// answered 200 serves what the streak waited for (the key works, the list is fresh): it ends
+// the streak, so the retry stops re-firing, but the owner's full verify stays owed (HFM).
+enum class DeferralEnd : uint8_t { Keep, Streak, All };
+inline DeferralEnd deferralEndFor(bool refreshOnly, int8_t result) {
+  if (result == -1) return DeferralEnd::Keep;
+  return (refreshOnly && result == 1) ? DeferralEnd::Streak : DeferralEnd::All;
+}
+
+// A Z.ai list GET's verdict. With no pinned host and no probe (the run on the Telegram task
+// asks api.z.ai only) a 401/403 says nothing about a key open.bigmodel.cn issued: it is
+// "couldn't verify", never rejected (HFM round 3).
+inline int8_t zaiVerdict(int8_t result, bool hostKnown) { return (result == 0 && !hostKnown) ? -1 : result; }
+
+// A refresh on the Telegram task gives way to a waiting owner message (a local turn queued, a
+// held Telegram page): that task's drain runs the message only after the refresh. Checked
+// before the run starts, once the work slot is held and between the status line and the body.
+inline bool inlineRefreshYields(bool onPollTask, bool ownerWaiting) { return onPollTask && ownerWaiting; }
+
 // One hard budget for a refresh run on the Telegram poll task (it holds Telegram and every
 // turn while it runs): each wait is the smaller of its own cap and what is left before
 // `untilMs`, 0 once the budget is spent. Wrap-safe.

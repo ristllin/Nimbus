@@ -150,7 +150,12 @@ static void test_no_console_hook_runs_a_turn_inline() {
   for (const char* runner : kTurnRunners)
     TEST_ASSERT_EQUAL_MESSAGE(0, countOf(block, runner), runner);
   TEST_ASSERT_EQUAL(1, countOf(block, "agent::dream::requestDrill("));
-  TEST_ASSERT_EQUAL(1, countOf(block, "agent::telegram::injectMessage(\"serial\""));
+  // TURN queues to the turn task through injectLocalTurn (main.cpp: telegram::injectMessage,
+  // counted so an inline model-list refresh steps aside for it; HFM round 3).
+  TEST_ASSERT_EQUAL(1, countOf(block, "injectLocalTurn(\"serial\""));
+  const std::string wrap = between("src/main.cpp", "staticboolinjectLocalTurn(", "staticboolownerMessageWaiting(");
+  TEST_ASSERT_EQUAL(1, countOf(wrap, "agent::telegram::injectMessage(chat,text)"));
+  for (const char* runner : kTurnRunners) TEST_ASSERT_EQUAL_MESSAGE(0, countOf(wrap, runner), runner);
 }
 
 // Storm run 3 (24 Oct), the pong question: the console's liveness PING must answer

@@ -207,8 +207,15 @@ void runStaged() {
     std::memcpy(slug, g_staged, sizeof(slug));
   }
   // A refusal runs nothing: the next pass settles it as a failed run (the retry delay applies).
-  if (slug[0]) (void)provider_verify::runRefreshHere(String(slug));
+  // A run that gave way to a waiting owner message is queued again after a short hold and
+  // counts no try (ModelRefreshQueue::yielded): it is not settled as a run at all.
+  using provider_verify::InlineRun;
+  const InlineRun r = slug[0] ? provider_verify::runRefreshHere(String(slug)) : InlineRun::Refused;
   std::lock_guard<std::mutex> lk(g_mx);
+  if (r == InlineRun::Yielded) {
+    g_q.yielded(slug, (uint32_t)millis());
+    g_running[0] = 0;
+  }
   g_staged[0] = 0;   // cleared after the run: tick reads "busy" until here
 }
 

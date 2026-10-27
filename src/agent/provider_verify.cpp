@@ -84,6 +84,8 @@ static_assert(kVerifyStackBytes == nimbus::orch::kRefreshTaskStackBytes,
               "the refresh route (model_refresh.h refreshRoute) sizes this worker's stack");
 static_assert(nimbus::orch::kRefreshPollMinFree == ORCH_TURN_HARD_FLOOR,
               "a refresh on the poll task takes a turn's total-free floor");
+static_assert(kDeferralAsksMax == nimbus::orch::ModelRefreshQueue::kRetryTries,
+              "a deferral's refresh asks stop at the refresh queue's retry cap");
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
 
@@ -172,6 +174,13 @@ static uint32_t runWaitMs(uint32_t capMs) {
   return g_inline ? inlineWaitMs((uint32_t)millis(), g_inlineUntil, capMs) : capMs;
 }
 
+// Is an owner message waiting for the Telegram task (setOwnerWaiting)? An inline run gives way
+// to it (inlineRefreshYields) and says so in g_yielded (runRefreshHere returns Yielded).
+static bool (*g_ownerWaiting)() = nullptr;
+static bool g_yielded = false;
+void setOwnerWaiting(bool (*waiting)()) { g_ownerWaiting = waiting; }
+static bool inlineYieldNow() { return inlineRefreshYields(g_inline, g_ownerWaiting && g_ownerWaiting()); }
+
 static void deferLowMemory(const String& provider, uint32_t max8);
 
 static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = false) {
@@ -227,13 +236,17 @@ bool requestRefresh(const String& provider) { return startTask(provider.c_str(),
 
 static void runOne();   // below: one claimed verify, refresh or probe
 
-bool runRefreshHere(const String& provider) {
+InlineRun runRefreshHere(const String& provider) {
   const uint32_t resting = nimbus::heapwatch::restingLargest();
   const uint32_t freeB = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   if (orchestrator::turnInFlight() || !nimbus::orch::refreshHeapOk(resting) || freeB < ORCH_TURN_HARD_FLOOR)
-    return false;
+    return InlineRun::Refused;
+  if (inlineRefreshYields(true, g_ownerWaiting && g_ownerWaiting())) {
+    alogf("verify: %s model list refresh gave way to a waiting owner message", provider.c_str());
+    return InlineRun::Yielded;
+  }
   bool idle = false;
-  if (!g_pending.compare_exchange_strong(idle, true)) return false;   // a verify runs
+  if (!g_pending.compare_exchange_strong(idle, true)) return InlineRun::Refused;   // a verify runs
   strncpy(g_provider, provider.c_str(), sizeof(g_provider) - 1);
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = false;
@@ -242,10 +255,11 @@ bool runRefreshHere(const String& provider) {
         provider.c_str(), (unsigned)freeB, (unsigned)resting);
   nimbus::heapwatch::Scope verifying(nimbus::heapwatch::kVerify);
   g_inlineUntil = (uint32_t)millis() + kInlineBudgetMs;
+  g_yielded = false;
   g_inline = true;
   runOne();   // clears g_pending on every exit path
   g_inline = false;
-  return true;
+  return g_yielded ? InlineRun::Yielded : InlineRun::Ran;
 }
 
 bool pending() { return g_pending; }
@@ -605,11 +619,14 @@ static bool zaiHostAnswers(const char* h, const String& key) {
 
 // Resolve the Z.ai host: the pinned one if known, else probe api.z.ai then
 // open.bigmodel.cn and pin the winner. Falls back to the primary host so the main
-// verify still runs (and records couldn't-verify) if neither answered.
-static String zaiPickHost(const String& key) {
+// verify still runs (and records couldn't-verify) if neither answered. `known`: the host
+// was pinned or probed, so its 401/403 is the key's verdict (zaiVerdict).
+static String zaiPickHost(const String& key, bool& known) {
   const String pinned = store::zaiBase();
-  if (pinned.length()) return pinned;
+  known = pinned.length() > 0;
+  if (known) return pinned;
   if (!key.length() || g_inline) return String(ZAI_HOST_PRIMARY);   // no probe connections on the Telegram task
+  known = true;   // both hosts asked below
   const char* cands[] = {ZAI_HOST_PRIMARY, ZAI_HOST_FALLBACK};
   for (const char* h : cands) {
     if (zaiHostAnswers(h, key)) {
@@ -757,7 +774,15 @@ static void runWorkspaceProbeOnly() {
 // definitive VERIFIED (1): the capProbe=2 tick re-verifies unattended (WiFi still
 // rejoining, TLS slot busy behind a turn), and one blip was erasing the catalog's
 // VERIFIED marking until the next success. Definitive verdicts (1 / 0) always overwrite.
-static void recordVerify(const String& prov, int8_t result, const char* rsn = "") {
+// What a verdict does to `prov`'s deferral (deferralEndFor): nothing, the streak, or all of it.
+static void endDeferral(const String& prov, DeferralEnd e) {
+  const int ri = retryIdx(prov);
+  if (ri < 0 || e == DeferralEnd::Keep) return;
+  if (e == DeferralEnd::Streak) g_retry[ri].endStreak();
+  else g_retry[ri].clear();
+}
+
+static void recordVerify(const String& prov, int8_t result, const char* rsn = "", bool refreshOnly = false) {
   if (result == -1 && store::verifyResult(prov) == 1) {
     alogf("verify: %s transient failure - keeping cached verified", prov.c_str());
     setReason(prov, "");   // displayed state is still verified: no badge reason
@@ -775,22 +800,20 @@ static void recordVerify(const String& prov, int8_t result, const char* rsn = ""
   // the provider is stuck "deferred" with no way back (CUM-451; the live Cumulo
   // stuck-verify). The low-memory path passes -1 then arms onDeferred(), so the
   // retry survives until a verdict lands or memory + the slot are both free.
-  if (result != -1) { int ri = retryIdx(prov); if (ri >= 0) g_retry[ri].clear(); }
+  // A list refresh's 200 ends only the streak: the owner's full verify stays owed.
+  endDeferral(prov, deferralEndFor(refreshOnly, result));
 }
 
 // A model-list refresh (R5) touches the cached verdict only when the answer changed
 // it (a key revoked since the last verify, or a first verdict): an unchanged verdict
 // writes nothing to NVS, and a transient failure leaves verdict and reason alone.
 static void recordOutcome(const String& prov, int8_t result, const char* rsn, bool refreshOnly) {
-  // A list GET that answered 200 serves a low-memory deferral (the key works, the list is
-  // fresh): end it here too, or on a heap that never reaches the verify's floor it re-fires
-  // every 16 min for good (HFM review).
-  if (refreshEndsDeferral(refreshOnly, result)) {
-    const int ri = retryIdx(prov);
-    if (ri >= 0) g_retry[ri].clear();
-  }
+  // A list GET that answered 200 serves a low-memory deferral's streak (the key works, the
+  // list is fresh): end it here too, or on a heap that never reaches the verify's floor it
+  // re-fires every 16 min for good (HFM review). The owner's full verify stays owed.
+  endDeferral(prov, deferralEndFor(refreshOnly, result));
   if (refreshOnly && (result == -1 || store::verifyResult(prov) == result)) return;
-  recordVerify(prov, result, rsn);
+  recordVerify(prov, result, rsn, refreshOnly);
 }
 
 // A verify the memory gate refused (startTask). recordVerify keeps a cached VERIFIED
@@ -809,11 +832,12 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
   alogf("verify: %s deferred low-memory (resting largest %u, need %u)", provider.c_str(),
         (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
   // The model list needs only one connection: a key verify the device cannot run yet
-  // still refreshes the list (a no-op for telegram/tavily, which have no list). Only a key
-  // not verified yet skips the hourly window ("verify"); a verified key's deferral retries
-  // ask within it ("verify-deferred").
-  (void)model_refresh::request(provider.c_str(),
-                               deferredVerifyForcesRefresh(wasVerified) ? "verify" : "verify-deferred");
+  // still refreshes the list (a no-op for telegram/tavily, which have no list). The first
+  // deferral of a streak asks, past the hourly window ("verify") only for a key not verified
+  // yet; later ones ask within it ("verify-deferred"); none after the queue's retry cap.
+  const DeferralAsk ask = ri >= 0 ? nextRefreshAsk(g_retry[ri], wasVerified) : deferralRefreshAsk(wasVerified, 0);
+  if (ask != DeferralAsk::None)
+    (void)model_refresh::request(provider.c_str(), ask == DeferralAsk::Forced ? "verify" : "verify-deferred");
 }
 
 static void runOne() {
@@ -883,10 +907,18 @@ static void runOne() {
     g_pending = false;
     return;
   }
+  if (inlineYieldNow()) {   // an owner message arrived during the slot wait: no connection opened
+    arbiter::releaseWork();
+    g_yielded = true;
+    alogf("verify: %s model list refresh gave way to a waiting owner message", provider.c_str());
+    g_pending = false;
+    return;
+  }
 
   // Z.ai endpoint probe (inside the held slot): pick whichever host the token
   // answers, pinned in NVS for next time.
-  if (isZai) { hostBuf = zaiPickHost(key); host = hostBuf.c_str(); }
+  bool zaiHostKnown = true;
+  if (isZai) { hostBuf = zaiPickHost(key, zaiHostKnown); host = hostBuf.c_str(); }
 
   int8_t result = -1;  // couldn't verify; 1 on HTTP 200, 0 on 401/403
   const char* rsn = "";  // vfyReason token for the couldn't-verify (-1) cases
@@ -938,6 +970,11 @@ static void runOne() {
       result = (code == 200) ? 1
              : (code == 401 || code == 403 || (isTg && code == 404)) ? 0
              : -1;
+      if (isZai && zaiVerdict(result, zaiHostKnown) != result) {
+        alogf("verify: zai HTTP %d from %s, no pinned host and the other host not asked here - not a rejection",
+              code, host);
+        result = zaiVerdict(result, zaiHostKnown);
+      }
       // vfyReason for the -1 cases (contract in lanes/L1/PROGRESS.md). 402 from the
       // router probe = no credits/subscription; 404 from the cumulo /router/models
       // probe = a router that predates the wave-2 deploy. Any other non-2xx/4xx
@@ -957,7 +994,15 @@ static void runOne() {
       if (result != -1) recordOutcome(provider, result, rsn, refreshOnly);
       // LLM providers: the verify already fetched the model list - store it (lane F:
       // the whole list, streamed, in the provider's model store; no NVS write).
-      if (!isTg && !isTav && code == 200) fetchModelList(provider, client, key);
+      // Between the status line and the body: an owner message that arrived meanwhile goes
+      // first (the inline run stops here; the list is fetched again after the hold).
+      const bool yieldBody = code == 200 && inlineYieldNow();
+      if (yieldBody) {
+        g_yielded = true;
+        alogf("verify: %s model list refresh gave way to a waiting owner message before the body",
+              provider.c_str());
+      }
+      if (!isTg && !isTav && code == 200 && !yieldBody) fetchModelList(provider, client, key);
       // Telegram bonus (owner ask: show WHICH bot is connected in the web app):
       // getMe's tiny body carries the bot's username - read the rest of the
       // response (bounded) and pull it out. Display-only NVS sidecar.
@@ -1009,7 +1054,7 @@ static void runOne() {
   // transient -1 is left for a later retry.
   if (result != -1 && store::verifyResult(provider) != result) {
     const int freed = store::evictLegacyCatalogCaches();
-    recordVerify(provider, result, rsn);
+    recordVerify(provider, result, rsn, refreshOnly);
     alogf("verify: %s verdict was NVS-starved - evicted %d catalog cache(s), verdict now %d",
           provider.c_str(), freed, (int)store::verifyResult(provider));
   }
@@ -1036,6 +1081,14 @@ static void verifyTask(void*) {
 static bool pumpOneRetry(int i, uint32_t now, uint32_t resting) {
   if (g_wantStart[i]) {
     g_wantStart[i] = false;
+    return request(kRetryProv[i]);
+  }
+  // A list refresh ended the deferral's streak but the owner's full verify is still owed:
+  // once memory allows it, it runs (once; a refusal defers it again).
+  if (g_retry[i].owedDue(now, false, true, /*busy=*/false, resting, (uint32_t)VERIFY_MIN_MAX8)) {
+    g_retry[i].onOwedFired();
+    alogf("verify: %s full verify owed since a list refresh - memory allows it now (resting largest %u)",
+          kRetryProv[i], (unsigned)resting);
     return request(kRetryProv[i]);
   }
   const bool recovered = g_retry[i].dueOnRecovery(now, false, true, /*busy=*/false, resting,

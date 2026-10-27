@@ -15,7 +15,11 @@
 #include <string>
 #include <vector>
 
+using agent::provider_verify::DeferralAsk;
+using agent::provider_verify::DeferralEnd;
 using agent::provider_verify::DeferralRetry;
+using agent::provider_verify::deferralEndFor;
+using agent::provider_verify::nextRefreshAsk;
 using agent::provider_verify::deferReason;
 using agent::provider_verify::WorkspaceProbeQueue;
 using agent::provider_verify::FetchIo;
@@ -451,7 +455,8 @@ static void test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once() {
   auto deferNow = [&](uint32_t now) {   // the memory gate refused the verify (7,156 < 8,000)
     ++deferrals;
     retry.onDeferred(now);
-    q.request("cumulo", true, now, agent::provider_verify::deferredVerifyForcesRefresh(/*wasVerified=*/true));
+    const DeferralAsk a = nextRefreshAsk(retry, /*wasVerified=*/true);
+    if (a != DeferralAsk::None) q.request("cumulo", true, now, a == DeferralAsk::Forced);
   };
   deferNow(150000);   // the boot router-price refill (or one Verify press) arms it
   for (uint32_t now = 151000; now < 3u * 3600u * 1000u; now += 1000) {
@@ -460,7 +465,7 @@ static void test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once() {
       q.started(due, now);
       ++refreshes;
       q.finished(due, false, now + 3000);   // the list GET answered 200 and the list was stored
-      if (agent::provider_verify::refreshEndsDeferral(/*refreshOnly=*/true, /*result=*/1)) retry.clear();
+      if (deferralEndFor(/*refreshOnly=*/true, /*result=*/1) == DeferralEnd::Streak) retry.endStreak();
     }
   }
   TEST_ASSERT_EQUAL_MESSAGE(1, refreshes, "a deferral loop refetched the list");
@@ -468,16 +473,105 @@ static void test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once() {
   TEST_ASSERT_EQUAL(1, deferrals);
 }
 
-// A key NOT verified yet (just saved: the web marks it -1) may see another list: its
-// deferred verify forces the refresh past the hour. A refresh that does not answer 200 (no
-// list, a refused key) ends nothing.
+// A key NOT verified yet (just saved: the web marks it -1) may see another list: the FIRST
+// deferral of its streak forces the refresh past the hour; a verified key's asks keep the hour.
+// A refresh that does not answer 200 (no list) ends nothing; a refused key ends everything.
 static void test_a_new_key_forces_the_refresh_and_only_a_200_ends_the_deferral() {
-  TEST_ASSERT_TRUE(agent::provider_verify::deferredVerifyForcesRefresh(false));
-  TEST_ASSERT_FALSE(agent::provider_verify::deferredVerifyForcesRefresh(true));
-  TEST_ASSERT_TRUE(agent::provider_verify::refreshEndsDeferral(true, 1));
-  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(true, -1));
-  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(true, 0));
-  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(false, 1));   // a full verify: recordVerify's
+  using agent::provider_verify::deferralRefreshAsk;
+  TEST_ASSERT_TRUE(deferralRefreshAsk(false, 0) == DeferralAsk::Forced);
+  TEST_ASSERT_TRUE(deferralRefreshAsk(true, 0) == DeferralAsk::Hourly);
+  TEST_ASSERT_TRUE(deferralEndFor(true, 1) == DeferralEnd::Streak);
+  TEST_ASSERT_TRUE(deferralEndFor(true, -1) == DeferralEnd::Keep);
+  TEST_ASSERT_TRUE(deferralEndFor(true, 0) == DeferralEnd::All);
+  TEST_ASSERT_TRUE(deferralEndFor(false, 1) == DeferralEnd::All);   // a full verify's verdict
+  TEST_ASSERT_TRUE(deferralEndFor(false, 0) == DeferralEnd::All);
+  TEST_ASSERT_TRUE(deferralEndFor(false, -1) == DeferralEnd::Keep);
+}
+
+// HFM round 3, LOW (review item 3): a key not verified yet whose list GET keeps failing (a
+// 503, a timeout: no verdict) on a heap that never reaches the verify's floor. Before, every
+// deferral (every 16 min, for good) forced a refresh past the queue's retry delay. Now only
+// the first deferral of the streak forces; later ones ask within the hour (here: always while
+// the queue's own retry is pending); after six asks none, so the refresh stops at the queue's
+// retry cap (the start, six retries) and is left to the 6-hourly passive pass.
+static void test_an_unverified_key_whose_list_never_lands_forces_one_refresh_a_streak() {
+  using nimbus::orch::ModelRefreshQueue;
+  DeferralRetry retry;
+  ModelRefreshQueue q;
+  int forced = 0, asks = 0, refreshes = 0;
+  auto deferNow = [&](uint32_t now) {   // the memory gate refused the owner's verify of a new key
+    retry.onDeferred(now);
+    const DeferralAsk a = nextRefreshAsk(retry, /*wasVerified=*/false);
+    if (a == DeferralAsk::None) return;
+    ++asks;
+    if (a == DeferralAsk::Forced) ++forced;
+    q.request("zai", true, now, a == DeferralAsk::Forced);
+  };
+  deferNow(1000);
+  for (uint32_t now = 2000; now < 6u * 3600u * 1000u; now += 1000) {
+    if (retry.due(now, false, true, false)) deferNow(now);
+    if (const char* due = q.due(false, true, false, true, now)) {
+      q.started(due, now);
+      ++refreshes;
+      q.finished(due, true, now + 3000);   // the list GET answered 503: the list is still due
+      if (deferralEndFor(/*refreshOnly=*/true, /*result=*/-1) != DeferralEnd::Keep) retry.clear();
+    }
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, forced, "a later deferral forced the refresh again");
+  TEST_ASSERT_EQUAL_MESSAGE(6, asks, "the deferral kept asking past the cap");
+  TEST_ASSERT_EQUAL_MESSAGE(7, refreshes, "the refresh went on past the queue's retry cap");
+  TEST_ASSERT_TRUE(retry.armed);   // the verify itself still waits for memory
+}
+
+// HFM round 3, LOW (review item 4): a list refresh that answers 200 ends the deferral's
+// streak (no more backoff retries), but the owner pressed Verify: the full verify (the
+// selected-model probes, the Cumulo fallback sync, the Mistral connector sync) stays owed and
+// runs once, when memory allows it.
+static void test_a_refresh_that_ends_the_deferral_keeps_the_full_verify_owed() {
+  DeferralRetry r;
+  r.onDeferred(1000);   // the owner's verify, refused at Lumi's 7,156 B
+  TEST_ASSERT_TRUE(r.fullOwed);
+  TEST_ASSERT_TRUE(deferralEndFor(/*refreshOnly=*/true, /*result=*/1) == DeferralEnd::Streak);
+  r.endStreak();
+  TEST_ASSERT_FALSE(r.armed);
+  TEST_ASSERT_FALSE(r.due(10u * 3600u * 1000u, false, true, false));   // no backoff retries
+  TEST_ASSERT_TRUE_MESSAGE(r.fullOwed, "the owner's full verify was dropped");
+  TEST_ASSERT_FALSE(r.owedDue(60000, false, true, false, 7156, kFloor));   // still fragmented
+  TEST_ASSERT_FALSE(r.owedDue(60000, true, true, false, 9000, kFloor));    // a turn runs
+  TEST_ASSERT_FALSE(r.owedDue(60000, false, false, false, 9000, kFloor));  // offline
+  TEST_ASSERT_FALSE(r.owedDue(60000, false, true, true, 9000, kFloor));    // a verify runs
+  TEST_ASSERT_FALSE(r.owedDue(20000, false, true, false, 9000, kFloor));   // inside the recovery gap
+  TEST_ASSERT_TRUE(r.owedDue(60000, false, true, false, 9000, kFloor));    // memory allows it: run once
+  r.onOwedFired();
+  TEST_ASSERT_FALSE(r.owedDue(90000, false, true, false, 9000, kFloor));
+  r.onDeferred(100000);   // refused again: owed again, with its own retries
+  TEST_ASSERT_TRUE(r.fullOwed);
+  TEST_ASSERT_TRUE(r.armed);
+  r.clear();              // a full verify's verdict (or a refused key) ends both
+  TEST_ASSERT_FALSE(r.fullOwed);
+}
+
+// HFM round 3, MEDIUM (review item 2): with no pinned Z.ai host the run on the Telegram task
+// asks api.z.ai only (no host probe there). A 401/403 from it says nothing about a key issued
+// by open.bigmodel.cn, so it records "couldn't verify", never REJECTED (which cleared the
+// retries and stopped the refreshes for a working key). A pinned or probed host still rejects.
+static void test_an_inline_zai_refresh_with_no_pinned_host_never_rejects_the_key() {
+  using agent::provider_verify::zaiVerdict;
+  TEST_ASSERT_EQUAL_INT8(-1, zaiVerdict(0, /*hostKnown=*/false));
+  TEST_ASSERT_EQUAL_INT8(0, zaiVerdict(0, true));
+  TEST_ASSERT_EQUAL_INT8(1, zaiVerdict(1, false));
+  TEST_ASSERT_EQUAL_INT8(-1, zaiVerdict(-1, false));
+  TEST_ASSERT_TRUE(deferralEndFor(true, zaiVerdict(0, false)) == DeferralEnd::Keep);   // nothing cleared
+}
+
+// HFM round 3, MEDIUM (review item 2 of round 2): a refresh on the Telegram task holds the
+// task whose drain runs the owner's waiting message: it gives way (before it starts, once the
+// work slot is held, and between the status line and the body). On its own task it does not.
+static void test_the_inline_refresh_gives_way_to_a_waiting_owner_message() {
+  using agent::provider_verify::inlineRefreshYields;
+  TEST_ASSERT_TRUE(inlineRefreshYields(/*onPollTask=*/true, /*ownerWaiting=*/true));
+  TEST_ASSERT_FALSE(inlineRefreshYields(true, false));
+  TEST_ASSERT_FALSE(inlineRefreshYields(false, true));
 }
 
 // HFM review, MEDIUM: a refresh run on the Telegram poll task holds Telegram and every turn,
@@ -515,5 +609,9 @@ int main() {
   RUN_TEST(test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once);
   RUN_TEST(test_a_new_key_forces_the_refresh_and_only_a_200_ends_the_deferral);
   RUN_TEST(test_the_inline_refresh_has_one_hard_budget);
+  RUN_TEST(test_an_unverified_key_whose_list_never_lands_forces_one_refresh_a_streak);
+  RUN_TEST(test_a_refresh_that_ends_the_deferral_keeps_the_full_verify_owed);
+  RUN_TEST(test_an_inline_zai_refresh_with_no_pinned_host_never_rejects_the_key);
+  RUN_TEST(test_the_inline_refresh_gives_way_to_a_waiting_owner_message);
   return UNITY_END();
 }

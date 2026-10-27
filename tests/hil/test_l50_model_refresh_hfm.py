@@ -26,7 +26,9 @@ test build, Orchestrator mode, Anthropic and Mistral keyed). LAN legs need
    holding internal SRAM so the largest block sits under the refresh worker's 8 KB stack
    (as on Lumi), a key verify (which defers for low memory) still refreshes that list, on
    the Telegram poll task (the durable "model list refresh on the Telegram poll task" and
-   "models stored" lines). No paid call.
+   "models stored" lines). No paid call. Run it right after a boot (its own pytest session:
+   unit L resets when the console opens): a verified key's deferral asks within the hourly
+   window, and the boot + 10 min pass has already refreshed every list in a longer session.
 3. ``test_hfm_a_frozen_head_is_not_moved``: Anthropic as the head, frozen by a 1-cent
    monthly limit (its spend seeded over it); the owner writes "switch to mistral since
    anthropic is out of budget"; the turn fails over to Mistral (about $0.001) and
@@ -318,6 +320,9 @@ def test_hfm_refresh_runs_on_the_poll_task_on_a_fragmented_heap(board, device):
     ballast = int(os.environ.get("NIMBUS_HFM_BALLAST", "0") or 0)
     if not ballast:
         pytest.skip("set NIMBUS_HFM_BALLAST (bytes) so the largest internal block sits under 8.7 KB")
+    up = _uptime_s(board)
+    if up > 540:
+        pytest.skip(f"run right after a boot, before the boot + 10 min pass (uptime {up} s)")
     prov = "mistral" if "mistral" in _keyed(board) else _keyed(board)[0]
     before = int(_models(board, prov).get("fetchedAt") or 0)
     print("\n" + device.cmd(f"FAULT sram_ballast {ballast}", "FAULT", timeout=10.0).strip())

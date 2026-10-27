@@ -445,6 +445,58 @@ static void test_a_waiting_retry_is_not_pending() {
 
 // ---- the texts ----------------------------------------------------------------
 
+// HFM round 3, MEDIUM: a local turn (web chat, voice, serial) queued for the Telegram task
+// reads waiting until the drain hands it to the orchestrator; one queued during that turn
+// waits again. A message lost on the way (a quiesce) holds nothing off past kStaleMs.
+static void test_a_local_turn_reads_waiting_until_the_drain_hands_it_on() {
+  LocalTurnWait w;
+  TEST_ASSERT_FALSE(w.waiting(1000));
+  w.queued(1000);   // the web chat posted a message
+  TEST_ASSERT_TRUE_MESSAGE(w.waiting(1500), "a queued local turn was not seen");
+  w.served();       // the drain's turn callback
+  TEST_ASSERT_FALSE(w.waiting(1600));
+  w.queued(2000);   // two more while that turn runs
+  w.queued(2100);
+  TEST_ASSERT_TRUE(w.waiting(30000));
+  TEST_ASSERT_TRUE(w.waiting(2100 + LocalTurnWait::kStaleMs - 1));
+  TEST_ASSERT_FALSE(w.waiting(2100 + LocalTurnWait::kStaleMs));   // stale: never held off for good
+  w.served();
+  TEST_ASSERT_FALSE(w.waiting(3000));
+  LocalTurnWait z;   // the clock wraps
+  z.queued(0xFFFFFF00u);
+  TEST_ASSERT_TRUE(z.waiting(0x00000100u));
+}
+
+// HFM round 3: a refresh on the Telegram task that gave way to the owner is queued again
+// after a short hold and counts no try: ten owner messages in a row leave all six retries
+// for runs that really fail.
+static void test_a_refresh_that_gave_way_to_the_owner_counts_no_try() {
+  ModelRefreshQueue q;
+  q.request("mistral", true, 0, true);
+  uint32_t now = 1000;
+  for (int i = 0; i < 10; i++) {
+    const char* due = q.due(false, true, false, true, now);
+    TEST_ASSERT_NOT_NULL_MESSAGE(due, "a refresh that gave way was not queued again after the hold");
+    q.started(due, now);
+    q.yielded(due, now);
+    TEST_ASSERT_TRUE(q.queued("mistral"));
+    TEST_ASSERT_NULL(q.due(false, true, false, true, now + ModelRefreshQueue::kYieldHoldMs - 1));
+    now += ModelRefreshQueue::kYieldHoldMs;
+  }
+  int retries = 0;
+  for (int i = 0; i < 9; i++) {
+    const char* due = nullptr;
+    for (uint32_t t = now; !due && t < now + 2u * 3600u * 1000u; t += 1000) {
+      due = q.due(false, true, false, true, t);
+      if (due) now = t;
+    }
+    if (!due) break;
+    q.started(due, now);
+    if (q.finished(due, true, now)) ++retries;
+  }
+  TEST_ASSERT_EQUAL(6, retries);
+}
+
 static void test_miss_texts() {
   TEST_ASSERT_EQUAL_STRING("not in anthropic list cached 2026-10-20; refresh queued",
                            modelMissText("anthropic", 1792454400, RefreshAsk::Queued).c_str());
@@ -480,6 +532,8 @@ int main(int, char**) {
   RUN_TEST(test_a_waiting_retry_is_not_pending);
   RUN_TEST(test_a_key_verify_skips_the_hour_and_the_retry_delay);
   RUN_TEST(test_a_refresh_that_never_lands_gives_up_after_six_tries);
+  RUN_TEST(test_a_local_turn_reads_waiting_until_the_drain_hands_it_on);
+  RUN_TEST(test_a_refresh_that_gave_way_to_the_owner_counts_no_try);
   RUN_TEST(test_miss_texts);
   return UNITY_END();
 }

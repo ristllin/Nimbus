@@ -70,6 +70,19 @@ uint32_t ModelRefreshQueue::finished(const char* slug, bool failed, uint32_t now
   return delay;
 }
 
+void ModelRefreshQueue::yielded(const char* slug, uint32_t nowMs) {
+  const int i = indexOf(slug);
+  if (i < 0) return;
+  Slot& s = slots_[i];
+  s.wanted = true;   // no try counted: `fails` and the retry delay are for runs that failed
+  s.retry = true;
+  s.retryAt = nowMs + kYieldHoldMs;
+}
+
+bool LocalTurnWait::waiting(uint32_t nowMs) const {
+  return queued_.load() != served_.load() && (uint32_t)(nowMs - lastMs_.load()) < kStaleMs;
+}
+
 bool ModelRefreshQueue::queued(const char* slug) const {
   const int i = indexOf(slug);
   return i >= 0 && slots_[i].wanted;

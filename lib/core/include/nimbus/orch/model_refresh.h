@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -51,6 +52,27 @@ RefreshRoute refreshRoute(bool inTurn, bool pollAlive, uint32_t intFree, uint32_
                           uint32_t restingLargest);
 const char* refreshRouteToken(RefreshRoute r);   // "wait" | "task" | "poll"
 
+// Local turns (the web chat, voice, serial) queued for the Telegram task that its drain has
+// not handed on yet (HFM round 3). A refresh on that task gives way to them: it holds the
+// task, and the drain runs after it. queued() from any task, served() from the drain's turn
+// callback, waiting() on the poll task. A message lost on the way (a quiesce) cannot hold the
+// refresh off for good: kStaleMs after the last queued one it no longer reads waiting.
+class LocalTurnWait {
+ public:
+  static constexpr uint32_t kStaleMs = 60000;
+  void queued(uint32_t nowMs) {
+    lastMs_.store(nowMs);
+    queued_.fetch_add(1);
+  }
+  void served() { served_.store(queued_.load()); }
+  bool waiting(uint32_t nowMs) const;
+
+ private:
+  std::atomic<uint32_t> queued_{0};
+  std::atomic<uint32_t> served_{0};
+  std::atomic<uint32_t> lastMs_{0};
+};
+
 class ModelRefreshQueue {
  public:
   // One refresh per provider per this window, counted from the last start.
@@ -85,6 +107,12 @@ class ModelRefreshQueue {
   // left to the passive pass. A landed refresh ends the streak. Returns the retry
   // delay in ms (0 when it landed or gave up).
   uint32_t finished(const char* slug, bool failed, uint32_t nowMs);
+
+  // `slug`'s refresh, started on the Telegram task, gave way to a waiting owner message at
+  // `nowMs` (HFM round 3): it is queued again for kYieldHoldMs from now and counts no try
+  // (the retry delay and the six-try cap are for refreshes that ran and failed).
+  static constexpr uint32_t kYieldHoldMs = 30000;
+  void yielded(const char* slug, uint32_t nowMs);
 
   // A queued refresh that could not start (the verify task refused it): it stays
   // queued and is tried again on a later pass.
