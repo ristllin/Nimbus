@@ -160,9 +160,33 @@ def render_conversation(sc: dict, transcript: dict) -> str:
     return "\n\n".join(lines)
 
 
+# A criterion graded in code, never by the judge (the device's own record is the
+# oracle). "no-correction": the delivered replies carry no device correction line
+# ("\n\n(Correction: ..." / "\n\n(Note: ..."), which is what the zero-correction
+# eval of ordinary replies grades (the review's ruling).
+def mechanical_verdict(sc: dict, transcript: dict) -> dict:
+    for c in sc["criteria"]:
+        if c.get("mechanical") != "no-correction":
+            continue
+        hits = []
+        for t in transcript.get("turns") or []:
+            for mark in ("\n\n(Correction:", "\n\n(Note:"):
+                if mark in (t.get("reply") or ""):
+                    hits.append(t.get("reply", "")[t["reply"].find(mark) :][:80])
+                    break
+        return {
+            "id": c["id"],
+            "pass": not hits,
+            "evidence": ("; ".join(hits) if hits else "no correction line in any reply"),
+        }
+    return {}
+
+
 def judge_prompt(sc: dict, transcript: dict) -> str:
     crit = "\n".join(
-        f"- {c['id']} ({'required' if c.get('required') else 'advisory'}): {c['text']}" for c in sc["criteria"]
+        f"- {c['id']} ({'required' if c.get('required') else 'advisory'}): {c['text']}"
+        for c in sc["criteria"]
+        if not c.get("mechanical")
     )
     return (
         f"FACTS THE DEVICE RECORDED\n{sc['facts']}\n\n"
@@ -286,10 +310,17 @@ def run_records(out: Path) -> list[Path]:
 
 
 def grade(record: dict, sc: dict, judge: str, env_file: str) -> None:
-    """One judge's verdict on a record, with its spend."""
-    judged, usage = call_judge(
-        judge, (HERE / "rubric.md").read_text(), judge_prompt(sc, record["transcript"]), env_file
-    )
+    """One judge's verdict on a record, with its spend. A mechanical criterion is graded
+    in code and merged in; the judge never sees it."""
+    mech = mechanical_verdict(sc, record["transcript"])
+    judged = {"criteria": [mech] if mech else []}
+    if any(not c.get("mechanical") for c in sc["criteria"]):
+        judged_new, usage = call_judge(
+            judge, (HERE / "rubric.md").read_text(), judge_prompt(sc, record["transcript"]), env_file
+        )
+        judged["criteria"] += judged_new.get("criteria", [])
+    else:
+        usage = {}
     prov, usd = judge_cost(judge, usage)
     record.setdefault("judges", {})[judge] = {"raw": judged, "verdict": verdict(sc, judged), "usage": usage}
     record["spend"][prov] = record["spend"].get(prov, 0.0) + usd
