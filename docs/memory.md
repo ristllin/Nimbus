@@ -238,7 +238,11 @@ store's upload slot and the mutexes on the turn's path are held by scope guards.
 the turn has asked a provider, a failed allocation is no longer a deferral: a round may
 already have billed and run tools (a Telegram reply sent, a memory written), so a
 routine's or the awareness turn's fire counts as a failure, never a memory deferral
-(the awareness turn is not staged again), and the rounds it billed are metered.
+(the awareness turn is not staged again), and the rounds it billed are metered. A fire
+whose turn reached the owner before it failed is never run again early: a one-shot
+reminder or wakeup retires instead of taking its one short retry, and a routine keeps
+its next slot, so the owner never gets the same message twice. An allocation that fails
+in the fire after its turn ended follows the same rules.
 
 **Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while

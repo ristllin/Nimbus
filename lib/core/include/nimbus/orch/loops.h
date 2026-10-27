@@ -215,6 +215,10 @@ struct FireOutcome {
   // messages nobody while it runs, and its glue hands this text to the owner at
   // their next conversation. "" = nothing held.
   std::string held;
+  // CUM-826: the fire's turn reached the owner (its answer was delivered, or a tool
+  // replied mid-loop) - also when the fire then failed. Such a fire is never run again
+  // early: a retry would send the owner the same message twice.
+  bool        answered = false;
 };
 // A fire was ATTEMPTED (reached a provider) unless it was deferred for memory. Only
 // an attempt rolls the outcome (consecFails / daily fire / semantic-repeat); a memory
@@ -244,16 +248,22 @@ bool      isDue(uint64_t nextRun, uint64_t nowEpoch);
 // Parse+validate a `schedule` JSON object into a SchedSpec (min-interval floor,
 // ranges, non-empty weekMask). Returns false + err on a bad spec.
 // What to do with a Once loop after its single fire: retire it - except ONE
-// short retry when the turn itself failed (a wakeup silently lost to a
-// transient provider error would break the model's follow-up promise); a
-// second failure retires it and the caller alerts the owner.
+// short retry when the turn itself failed before it reached the owner (a wakeup
+// silently lost to a transient provider error would break the model's follow-up
+// promise); a second failure retires it and the caller alerts the owner. A fire
+// that failed AFTER its turn reached the owner (o.answered) retires at once: the
+// retry would repeat the message (CUM-826).
 enum class OnceAfterFire : uint8_t { NotOnce = 0, Retire, RetryShort };
-inline OnceAfterFire onceAfterFire(const LoopRecord& l, bool ok) {
+inline OnceAfterFire onceAfterFire(const LoopRecord& l, const FireOutcome& o) {
   if (l.sched.kind != SchedKind::Once) return OnceAfterFire::NotOnce;
-  if (!ok && l.consecFails <= 1) return OnceAfterFire::RetryShort;
+  if (!o.ok && !o.answered && l.consecFails <= 1) return OnceAfterFire::RetryShort;
   return OnceAfterFire::Retire;
 }
 constexpr uint32_t kWakeupRetrySec = 300;
+// A recurring fire that failed runs again before its next slot only when it asked
+// to (retryAfterSec: idempotent pre-work, the dream) and its turn never reached the
+// owner (CUM-826); otherwise it keeps its next slot. The failure still counts.
+inline bool retriesSoon(const FireOutcome& o) { return !o.ok && o.retryAfterSec > 0 && !o.answered; }
 
 bool parseSpec(ArduinoJson::JsonObjectConst schedule, const LoopCaps& caps,
                SchedSpec& out, std::string& err);

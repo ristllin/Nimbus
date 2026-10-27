@@ -400,15 +400,42 @@ static void test_wakeups_api_contract() {
 // itself failed (a silently lost wakeup breaks the model's follow-up promise);
 // the second failure retires it.
 static void test_once_after_fire_retires_with_one_retry() {
+  FireOutcome ok, failed;
+  ok.ok = true;
   LoopRecord l;
   l.sched.kind = SchedKind::Once;
-  TEST_ASSERT_EQUAL((int)OnceAfterFire::Retire, (int)onceAfterFire(l, true));
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::Retire, (int)onceAfterFire(l, ok));
   l.consecFails = 1;                            // first failure just recorded
-  TEST_ASSERT_EQUAL((int)OnceAfterFire::RetryShort, (int)onceAfterFire(l, false));
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::RetryShort, (int)onceAfterFire(l, failed));
   l.consecFails = 2;                            // second failure
-  TEST_ASSERT_EQUAL((int)OnceAfterFire::Retire, (int)onceAfterFire(l, false));
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::Retire, (int)onceAfterFire(l, failed));
   l.sched.kind = SchedKind::Interval;           // recurring loops: not ours
-  TEST_ASSERT_EQUAL((int)OnceAfterFire::NotOnce, (int)onceAfterFire(l, false));
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::NotOnce, (int)onceAfterFire(l, failed));
+}
+
+// CUM-826: a one-shot whose turn reached the owner and THEN failed retires at once -
+// the short retry would send the same message again. Recurring loops keep their next
+// slot after such a fire (no early re-fire), while a failed fire that asked for a
+// retry (the dream's idempotent pre-work) and reached nobody still retries soon.
+static void test_a_fire_that_answered_then_failed_is_never_run_again_early() {
+  FireOutcome answered;
+  answered.answered = true;
+  answered.retryAfterSec = 120;
+  LoopRecord l;
+  l.sched.kind = SchedKind::Once;
+  l.consecFails = 1;   // its failure just recorded
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::Retire, (int)onceAfterFire(l, answered));
+  TEST_ASSERT_FALSE(retriesSoon(answered));
+  FireOutcome quiet;   // failed before it reached anyone
+  quiet.retryAfterSec = 120;
+  TEST_ASSERT_EQUAL((int)OnceAfterFire::RetryShort, (int)onceAfterFire(l, quiet));
+  TEST_ASSERT_TRUE(retriesSoon(quiet));
+  FireOutcome okRun;   // a served fire never retries
+  okRun.ok = true;
+  okRun.retryAfterSec = 120;
+  TEST_ASSERT_FALSE(retriesSoon(okRun));
+  FireOutcome noAsk;   // a failure that asked for no retry keeps its next slot
+  TEST_ASSERT_FALSE(retriesSoon(noAsk));
 }
 
 // W22: /remind's duration parser. Bare number = minutes; s/m/h/d units;
@@ -782,6 +809,7 @@ int main() {
   RUN_TEST(test_wakeup_ask_first_gate_table);
   RUN_TEST(test_wakeups_api_contract);
   RUN_TEST(test_once_after_fire_retires_with_one_retry);
+  RUN_TEST(test_a_fire_that_answered_then_failed_is_never_run_again_early);
   RUN_TEST(test_parse_duration_secs);
   RUN_TEST(test_clamp_loop_caps);
   RUN_TEST(test_wallclock_defers_unsynced_then_recovers);

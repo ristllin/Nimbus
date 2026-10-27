@@ -536,29 +536,35 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     orch::noteFireError(*l, o.ok, o.error);   // why it failed, on the record (lane T)
     g_dev.tokensToday += o.tokens.total();
     // W20: a one-shot wakeup fires ONCE then retires. Exception: if the TURN
-    // failed (provider outage), one short retry - a silently lost wakeup would
-    // break the model's follow-up promise; a second failure retires it and the
-    // owner hears about it once.
-    switch (orch::onceAfterFire(*l, o.ok)) {
+    // failed (provider outage) before it reached the owner, one short retry - a
+    // silently lost wakeup would break the model's follow-up promise; a second
+    // failure retires it and the owner hears about it once. A turn that failed
+    // after it reached the owner retires at once (CUM-826: a retry repeats it).
+    switch (orch::onceAfterFire(*l, o)) {
       case orch::OnceAfterFire::RetryShort:
         l->nextRun = nowEpoch + orch::kWakeupRetrySec;
         persist();
         return;
       case orch::OnceAfterFire::Retire: {
         const std::string wid = l->id;
+        const std::string wname = l->name;
         const bool failed = !o.ok;
         for (auto it = g_loops.begin(); it != g_loops.end(); ++it)
           if (it->id == wid) { g_loops.erase(it); break; }
         persist();
-        if (failed && g_alert)
+        if (failed && o.answered)
+          alogf("loops: '%s' failed after it reached the owner (%s) - retired, not repeated", wname.c_str(),
+                o.error.c_str());
+        else if (failed && g_alert)
           g_alert(AlertLevel::Warn, wid,
                   "a wakeup the assistant set for itself failed twice and was dropped");
         return;
       }
       case orch::OnceAfterFire::NotOnce: break;
     }
-    // A transiently failed fire with idempotent pre-work retries soon (lane M).
-    if (!o.ok && o.retryAfterSec) l->nextRun = nowEpoch + o.retryAfterSec;
+    // A transiently failed fire with idempotent pre-work retries soon (lane M), unless
+    // its turn reached the owner (CUM-826).
+    if (orch::retriesSoon(o)) l->nextRun = nowEpoch + o.retryAfterSec;
     if (orch::isSemanticRepeat(*l, g_caps.maxRepeats)) {
       l->enabled = false; l->lastResult = orch::LastResult::Paused;
       l->pauseReason = orch::PauseReason::Repeated;

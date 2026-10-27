@@ -265,6 +265,16 @@ void putBackTaken(TurnMemoryState& tm, JobEngine* jobs, Parked& parked, uint32_t
   tm.putBack = true;
 }
 
+// The turn reached the owner: apply delivered its answer, or a tool replied mid-loop
+// (reply.telegram). A retry of such a turn would send the same message again.
+bool turnAnswered(const TurnMemoryState& tm, bool toolReplied) { return tm.applied || toolReplied; }
+// Nothing went out and nothing answered: no provider was asked (putBackTaken's rule:
+// once asked, a request may have left, billed and run tools) and the turn did not reach
+// the owner. Only such a turn may end as a memory deferral a retry repeats (F2).
+bool nothingWentOut(const TurnMemoryState& tm, bool toolReplied) {
+  return !tm.asked && !turnAnswered(tm, toolReplied);
+}
+
 bool ownerWaits(TurnSource s) { return s == TurnSource::Owner || s == TurnSource::Serial; }
 // A turn whose setup cost at least this much internal SRAM logs its memory line.
 constexpr uint32_t kTurnMemoryLogCost = 1024;
@@ -2201,12 +2211,10 @@ void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {
   TurnFacts& tf = facts();
   const bool ended = tm.started && tf.metered;   // fireTurnEnd ran for this turn
   // A routine is deferred (fired again later) only when nothing went out and nothing
-  // answered: no provider was asked (putBackTaken's rule: once asked, a request may
-  // have left, billed and run tools), no reply was applied and no tool replied
-  // (reply.telegram). A retry must never repeat a paid round or a sent reply (F2: the
-  // post-update turn ran twice and messaged the owner twice). Then what the turn took
-  // is put back too, for the next turn.
-  tm.refused = !tm.asked && !tm.applied && !toolReplied_;
+  // answered (nothingWentOut): a retry must never repeat a paid round or a sent reply
+  // (F2: the post-update turn ran twice and messaged the owner twice). Then what the
+  // turn took is put back too, for the next turn.
+  tm.refused = nothingWentOut(tm, toolReplied_);
   if (tm.refused) putBackTaken(tm, d_.jobs, pendingMemResults_, pendingMemSeq_);
   hlog::log("orchestrator: turn ended for memory - an allocation failed");
   const bool endOwed = !ended && tm.started;   // the start hook fired, its end did not
@@ -2464,6 +2472,12 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                                                           const std::string& loopId,
                                                           bool quietOk, bool once,
                                                           bool ownerReminder) try {
+  // This fire's turn flags start clear before anything can throw: the handler below
+  // reads them to tell a fire whose turn never went out (a memory deferral) from one
+  // that asked a provider or reached the owner (never a deferral).
+  turnMem().asked = false;
+  turnMem().applied = false;
+  toolReplied_ = false;
   nimbus::orch::FireOutcome o;
   // CUM-404: gate a scheduled fire BEFORE the handshake alloc (round 0) on BOTH the
   // total-free backstop AND the largest-contiguous-block guard - fragmentation (a low
@@ -2568,6 +2582,9 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
     setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   turnMem().admitted = true;   // runTurn continues this record
   o.ok = runTurn(inputs, target, prompt, telegram);
+  // CUM-826: whether the turn reached the owner. A failed fire that did is not run
+  // again (a one-shot retires instead of its short retry): the retry would repeat it.
+  o.answered = turnAnswered(turnMem(), toolReplied_);
   // 22 Oct amendment (SILENT-ROUTINE-COST): a quiet routine that ends silent
   // records WHY it stayed silent - the run still spent its provider rounds, and
   // without a row the spend reads as a lost turn. The still-pending trigger row
@@ -2603,14 +2620,34 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   }
   return o;
 } catch (const std::bad_alloc&) {
-  // L24: an allocation failed while the fire was set up (runTurn ends its own): a
-  // defer like any memory refusal, the fire's flags put back as its normal end does.
+  // L24: an allocation failed while the fire was set up, or after its turn ended
+  // (runTurn ends its own failures). The fire's flags are put back as its normal end
+  // does. It is a defer like any memory refusal only when its turn never went out
+  // (nothingWentOut, the turn's own rule); a turn that asked a provider or reached the
+  // owner is reported failed, never deferred, so it is not run again for memory.
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
   dreamTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
+  bool wentOut = false;   // the flags are unreadable only if the record never existed
+  try {
+    const TurnMemoryState& tm = turnMem();
+    wentOut = !nothingWentOut(tm, toolReplied_);
+    o.answered = turnAnswered(tm, toolReplied_);
+  } catch (...) {
+  }
+  if (wentOut) {
+    try {   // allocating from here on: a second failure still returns a failure, not a defer
+      attribution_ = "turn";
+      o.tokens = lastTurnUsage_;
+      o.error = "low memory: an allocation failed after the turn ran";
+      hlog::log("loops: scheduled turn ran, then an allocation failed - reported failed, not deferred");
+    } catch (...) {
+    }
+    return o;
+  }
   o.deferred = true;
   if (once || ownerReminder) o.retryAfterSec = kMemoryRetrySec;
   try {   // allocating from here on: a second failure still returns the defer

@@ -13,6 +13,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/turn_memory.h"
 #include "nimbus/heap_watch.h"   // kSmallAllocInternalLimit
+#include "nimbus/orch/loops.h"   // CUM-826: the scheduler's own rules over a fire's outcome
 
 // L24 (no panic under combined memory starvation): a turn never spends the device's
 // last internal SRAM. On unit A (26 Oct) a turn admitted at ~17 KB internal free
@@ -76,6 +77,8 @@ struct Rig {
   // the owner) inside the host call, then round 2's request throws std::bad_alloc.
   bool billThenThrow = false;
   bool roundReplies = false;
+  std::string hostOut = kGoodTurn;   // what a served attempt answers
+  bool histV2 = false;               // the turn-structured history (a scheduled fire's trigger row)
   void maybeThrow(const char* at) {
     if (throwAt != at) return;
     throwAt.clear();
@@ -134,6 +137,14 @@ struct Rig {
       in.hostLabel = "anthropic / model-anthropic";
       return in;
     };
+    d.histV2 = [this] { return histV2; };
+    d.historyRows = [](const std::string&, size_t, const std::string&) {
+      return std::vector<orch::EpisodicMessage>{};
+    };
+    d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m1"); };
+    d.captureTrigger = [this](const std::string&, const std::string&, const std::string&) {
+      maybeThrow("trigger");   // a quiet routine's silent row, written after its turn ended
+    };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) { starts.push_back(ev); };
     d.recall = [this](const std::string&, const orch::Principal&) {
       maybeThrow("recall");
@@ -162,7 +173,7 @@ struct Rig {
           throw std::bad_alloc();           // round 2's request is being built
         }
         conv = "c1";
-        out = kGoodTurn;
+        out = hostOut;
         if (usage) usage->add(100, 20);
         return true;
       });
@@ -709,6 +720,92 @@ static void test_a_failed_allocation_after_a_billed_round_is_not_a_defer() {
   }
 }
 
+// CUM-826 (F2 follow-through): a one-shot wakeup or owner reminder whose turn reached
+// the owner and then failed is retired, never given its short retry (the owner would
+// get the message twice). One that failed before it said anything keeps its one retry;
+// a memory defer stays a defer. A recurring routine that reached the owner and failed
+// counts the failure and keeps its next slot (no early re-fire). The engine's
+// FireOutcome is run through the scheduler's own pure rules (nimbus/orch/loops.h).
+static void test_a_one_shot_that_answered_then_failed_is_retired_not_retried() {
+  for (int kind = 1; kind <= 2; ++kind) {   // a wakeup, an owner reminder
+    const bool once = kind == 1, reminder = kind == 2;
+    Rig a;
+    a.billThenThrow = true;
+    a.roundReplies = true;
+    const orch::FireOutcome o = a.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_TRUE(orch::fireWasAttempted(o));
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_TRUE(o.answered);
+    orch::LoopRecord l;
+    l.sched.kind = orch::SchedKind::Once;
+    orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+    TEST_ASSERT_EQUAL(1, (int)l.consecFails);   // the failure is on the record
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, (int)orch::onceAfterFire(l, o));
+    TEST_ASSERT_FALSE(orch::retriesSoon(o));
+
+    Rig q;   // billed, failed, said nothing: one short retry, then retired
+    q.billThenThrow = true;
+    const orch::FireOutcome f = q.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_TRUE(orch::fireWasAttempted(f));
+    TEST_ASSERT_FALSE(f.answered);
+    orch::LoopRecord m;
+    m.sched.kind = orch::SchedKind::Once;
+    orch::onFireResult(m, f.ok, f.tokens, orch::fnv64(f.detail), 1000);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::RetryShort, (int)orch::onceAfterFire(m, f));
+    orch::onFireResult(m, f.ok, f.tokens, orch::fnv64(f.detail), 1300);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, (int)orch::onceAfterFire(m, f));
+
+    Rig d;   // a memory defer before any request: deferred, retried soon, nothing counted
+    d.throwAt = "context";
+    const orch::FireOutcome g = d.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_FALSE(orch::fireWasAttempted(g));
+    TEST_ASSERT_FALSE(g.answered);
+    TEST_ASSERT_EQUAL_UINT32(120u, g.retryAfterSec);
+  }
+  Rig r;   // a recurring routine
+  r.billThenThrow = true;
+  r.roundReplies = true;
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+  TEST_ASSERT_TRUE(o.answered);
+  orch::LoopRecord l;
+  l.sched.kind = orch::SchedKind::Interval;
+  orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+  TEST_ASSERT_EQUAL(1, (int)l.consecFails);
+  TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::NotOnce, (int)orch::onceAfterFire(l, o));
+  TEST_ASSERT_FALSE(orch::retriesSoon(o));
+  Rig s;   // a served routine answered too, and is no failure
+  const orch::FireOutcome ok = s.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+  TEST_ASSERT_TRUE(ok.ok);
+  TEST_ASSERT_TRUE(ok.answered);
+}
+
+// The fire's own handler (an allocation that fails after its turn ended, here the quiet
+// routine's silent row) follows the same rule: a turn that asked a provider is reported
+// failed, never deferred, so it is not run again for memory; its spend stays metered.
+// Counter-test: a failure in the fire's setup, before the turn, is still a defer.
+static void test_a_failed_allocation_after_the_fire_ran_is_not_a_defer() {
+  Rig r;
+  r.histV2 = true;
+  r.hostOut = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";   // the quiet routine stays silent
+  r.throwAt = "trigger";
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "tidy up", "Upkeep", "lp1", /*quietOk=*/true);
+  TEST_ASSERT_TRUE(r.throwAt.empty());   // the silent row was written after the turn and threw
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_FALSE(o.ok);
+  TEST_ASSERT_FALSE(o.deferred);
+  TEST_ASSERT_FALSE(o.error.empty());
+  TEST_ASSERT_EQUAL_UINT32(0u, o.retryAfterSec);
+  TEST_ASSERT_EQUAL(100, meteredPromptTokens(r));
+  TEST_ASSERT_EQUAL(100, (int)o.tokens.promptTokens);
+  TEST_ASSERT_FALSE(r.eng->turnInFlight());
+  Rig e;
+  e.histV2 = true;
+  e.throwAt = "context";
+  const orch::FireOutcome d = e.eng->injectScheduledTurn("1001", "tidy up", "Upkeep", "lp1", /*quietOk=*/true);
+  TEST_ASSERT_TRUE(d.deferred);
+  TEST_ASSERT_TRUE(d.error.empty());
+}
+
 // The same rule for an owner turn: round 1's reply already reached the owner, so no
 // short-of-memory reply rides on top of it, and round 1 is metered once.
 static void test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once() {
@@ -790,6 +887,8 @@ int main() {
   RUN_TEST(test_a_memory_deferred_one_shot_retries_soon);
   RUN_TEST(test_a_failed_allocation_after_a_billed_round_is_not_a_defer);
   RUN_TEST(test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once);
+  RUN_TEST(test_a_one_shot_that_answered_then_failed_is_retired_not_retried);
+  RUN_TEST(test_a_failed_allocation_after_the_fire_ran_is_not_a_defer);
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
   RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
