@@ -57,8 +57,8 @@ std::string headPauseNote(const std::string& label, const HeadPause& p) {
 
 bool pauseHolds(const HeadPause& p) { return pauseWords(p.causes, p.park, p.overBudget, p.parkStatus) != nullptr; }
 
-HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen) {
-  ProviderPark& park = providerPark();
+HeadPause headPauseIn(ProviderPark& park, const std::string& provider, PaidSeam seam, uint32_t nowMs,
+                      bool dueIsOpen) {
   HeadPause hp;
   ParkEntry e[ProviderPark::kMaxProviders];
   const size_t n = park.snapshot(e, ProviderPark::kMaxProviders, nowMs);
@@ -70,6 +70,10 @@ HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, 
   }
   hp.causes = park.pausedBy(provider.c_str());
   return hp;
+}
+
+HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen) {
+  return headPauseIn(providerPark(), provider, seam, nowMs, dueIsOpen);
 }
 
 std::string headPauseFact(const std::string& label, const HeadPause& p) {

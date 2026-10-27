@@ -1,6 +1,6 @@
 #include <unity.h>
 
-#include "nimbus/orch/head_switch.h"   // parkPause
+#include "nimbus/orch/head_switch.h"   // parkPause, headPauseIn: the closed head as the device reads it
 
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
@@ -11,6 +11,7 @@
 #include "nimbus/harness/prompt_layout.h"   // the static/summary/per-turn split
 
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -31,6 +32,7 @@
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
+#include "nimbus/orch/provider_park.h"     // the pause the owner's provider limits set
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
 #include "nimbus/orch/budget.h"
@@ -124,6 +126,10 @@ struct Rig {
   std::string fabricStart;
   std::string fabricLead;
   std::string fabricInstructions;
+  // QW6: with fabricStart empty, start where the real fabric does (runFabricLoop's
+  // nextUnparked: the first listed host the park leaves open); fabricStarted records it.
+  bool fabricSkipsParked = false;
+  std::string fabricStarted;
   std::function<orch::HeadPause(const std::string&)> headPause;   // ApplyDeps.headPause
   std::function<orch::HeadPause(const std::string&)> spawnPause;  // TurnEngine::Deps.spawnPause
   std::function<bool(const std::string&)> headRunsTools;          // TurnEngine::Deps.headRunsTools
@@ -441,6 +447,16 @@ struct Rig {
     return fabricOk;
   }
 
+  // The host a scripted fabric run starts on: fabricStart when set, else (fabricSkipsParked)
+  // the first listed host the park leaves open, as runFabricLoop does, else the first listed.
+  std::string fabricStartIn(const std::vector<std::string>& hl) {
+    if (!fabricStart.empty()) return fabricStart;
+    if (fabricSkipsParked)
+      for (const std::string& h : hl)
+        if (!agent::providers::hostParked(parkDeps, h, nullptr)) return h;
+    return hl[0];
+  }
+
   // Like providers::runFabricLoop: each host bills into its own counter, filed into
   // the spend table under the model configured for it.
   bool fabricRun(const std::vector<std::string>& hl, std::string& out, std::string& err,
@@ -458,7 +474,8 @@ struct Rig {
       toolResults.push_back(ht.dispatch(c));
     }
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
-    const std::string& start = fabricStart.empty() ? hl[0] : fabricStart;
+    const std::string start = fabricStartIn(hl);
+    fabricStarted = start;
     fabricLead = ht.inputLead ? ht.inputLead(start) : std::string();
     if (start != hl[0]) {   // started past a paused head: the real fabric notifies the move
       if (notify) notify(hl[0], start);
@@ -1881,6 +1898,218 @@ static void test_head_host_is_the_host_the_turn_runs_on() {
     TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
     TEST_ASSERT_EQUAL_STRING_MESSAGE(r.attempts[0].host.c_str(), h.c_str(), only);
   }
+}
+
+// ---- QW6 on HFM's per-turn line: the identity follows the dispatch ---------------------------
+
+static size_t countOf(const std::string& hay, const std::string& needle);
+
+// The first request's input on the path the turn took: the fabric's seeded lead, or the
+// single-shot attempt's input.
+static std::string firstInput(Rig& r, bool fabric) {
+  if (fabric) return r.fabricLead;
+  TEST_ASSERT_FALSE_MESSAGE(r.attempts.empty(), "the turn made no request");
+  return r.attempts.back().inputs;
+}
+static std::string startedOn(Rig& r, bool fabric) {
+  if (fabric) return r.fabricStarted;
+  TEST_ASSERT_FALSE_MESSAGE(r.attempts.empty(), "the turn made no request");
+  return r.attempts.back().host;
+}
+static bool startsWith(const std::string& s, const std::string& lead) { return s.rfind(lead, 0) == 0; }
+static const char kOnlyThis[] = " When asked which model you run, name this one only.\n";
+static const char kSayWhy[] =
+    " When asked which model you run, name this one and say why the chosen head is not running this turn.\n";
+
+// The cached prompt carries no model claim of any shape (v4.6.1): not the line, not the old
+// static identity sentence, not the old catalog line, not the chosen-head fact.
+static void assertNoModelClaim(const std::string& instructions, const char* tag) {
+  for (const char* claim : {"THIS TURN RUNS ON", "Your brain right now", "[YOUR MODEL]", "the chosen head"})
+    TEST_ASSERT_TRUE_MESSAGE(instructions.find(claim) == std::string::npos, tag);
+}
+
+// QW6 (25 Oct: the owner asked "what model are you running?" and the prompt named the raw pin):
+// on every device shape where the raw pin or first priority token is not the head the turn runs
+// on, the request's line names the host it really goes to, and nothing else names a model.
+static void test_the_per_turn_line_names_the_resolved_head_on_every_device_shape() {
+  struct Row { const char* what; std::set<std::string> keyed; std::string router, pin, priority; };
+  const Row rows[] = {
+      {"pinned host lost its key", {"anthropic"}, "", "openai", "openai,anthropic,mistral"},
+      {"default priority, anthropic only", {"anthropic"}, "", "", "openai,anthropic,mistral"},
+      {"Cumulo only", {}, "cumulo", "", "openai,anthropic,mistral"},
+      {"Z.ai only", {}, "zai", "", "openai,anthropic,mistral"},
+      {"keyed pin", {"openai", "anthropic"}, "cumulo", "anthropic", "openai,anthropic,mistral"},
+  };
+  for (const Row& row : rows) {
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.keyed = row.keyed;
+    r.cfg.routerKeyed = !row.router.empty();
+    r.cfg.routerHost = row.router;
+    r.cfg.orchHost = row.pin;
+    r.cfg.priority = row.priority;
+    const std::string ran = r.eng->headHost();
+    r.eng->handleMessage("what model are you running?", "Roy", "web");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), row.what);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(ran.c_str(), r.attempts[0].host.c_str(), row.what);
+    TEST_ASSERT_TRUE_MESSAGE(
+        startsWith(r.attempts[0].inputs, "[THIS TURN RUNS ON] " + ran + " / model-" + ran + "." + kOnlyThis),
+        row.what);
+    assertNoModelClaim(r.attempts[0].instructions, row.what);
+  }
+}
+
+// QW6: a head parked for credit (the real park lane K writes, read the way the device reads it:
+// headPauseIn, Chat) - every request names the open host the DISPATCH starts on and says once why the
+// chosen head is not running, on the single-shot path and on the fabric, until the head answers
+// again. The fabric drives only anthropic, openai and mistral, so with Z.ai second in priority the
+// same park starts a single-shot turn on zai but a fabric turn on openai: the line follows each.
+static void test_the_per_turn_line_names_the_open_host_while_the_head_is_parked() {
+  struct Row { const char* what; std::string priority, head, headLabel; std::set<std::string> extraKeyed; };
+  const Row rows[] = {
+      {"default order", "anthropic,openai,mistral", "anthropic", "Anthropic", {}},
+      {"a host the fabric cannot drive comes second", "mistral,zai,openai,anthropic", "mistral", "Mistral", {"zai"}},
+  };
+  for (const Row& row : rows)
+    for (int fabric = 0; fabric < 2; fabric++) {
+      nimbus::orch::clearServedModels();
+      Rig r;
+      r.cfg.toolLoop = fabric != 0;
+      r.cfg.midFail = fabric != 0;
+      r.fabricSkipsParked = true;
+      r.headPause = [&r](const std::string& h) {
+        return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+      };
+      r.cfg.priority = row.priority;
+      for (const std::string& k : row.extraKeyed) r.cfg.keyed.insert(k);
+      const std::string tag = std::string(row.what) + (fabric ? ", fabric" : ", single shot");
+      const std::string head = r.eng->headHost();
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(row.head.c_str(), head.c_str(), tag.c_str());
+      r.eng->handleMessage("hi", "Roy", "1001");   // the head is open: it alone is named
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(firstInput(r, fabric != 0), "[THIS TURN RUNS ON] " + head + " / model-" + head + "." + kOnlyThis),
+          tag.c_str());
+      agent::providers::noteHostFailed(r.parkDeps, head, orch::StepErr::Billing, 402);
+      TEST_ASSERT_TRUE(agent::providers::hostParked(r.parkDeps, head, nullptr));
+      r.attempts.clear();
+      r.fabricCalls.clear();
+      r.eng->handleMessage("what model are you running?", "Roy", "1001");
+      const std::string ran = startedOn(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(ran != head, tag.c_str());   // the parked head is not asked
+      if (std::string(row.what) != "default order")   // the row that tells the two paths apart
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(fabric ? "openai" : "zai", ran.c_str(), tag.c_str());
+      const std::string want = "[THIS TURN RUNS ON] " + ran + " / model-" + ran + ". " + row.headLabel +
+                               ", the chosen head, is out of credit and returns automatically once credit is added." +
+                               kSayWhy;
+      const std::string in = firstInput(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(startsWith(in, want), (tag + ": " + in.substr(0, 300)).c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)countOf(in, "the chosen head,"), tag.c_str());
+      assertNoModelClaim(r.debug.back().instructions, tag.c_str());   // a park never rewrites the cache
+      // The head answers again: its park ends and the next request names it alone once more.
+      agent::providers::unparkHost(head);
+      r.attempts.clear();
+      r.eng->handleMessage("and now?", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(firstInput(r, fabric != 0), "[THIS TURN RUNS ON] " + head + " / model-" + head + "." + kOnlyThis),
+          tag.c_str());
+    }
+}
+
+// QW6 on HFC's wording: a head whose chat seam refused a request with HTTP 403 (one model or endpoint
+// the project may not use) is named with the 403 and comes back on the re-check, never "once its key
+// is replaced" - the line reads parkStatus through the same reader as the device.
+static void test_the_per_turn_line_names_a_403_head_with_its_recheck() {
+  for (int fabric = 0; fabric < 2; fabric++) {
+    const char* tag = fabric ? "fabric" : "single shot";
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.toolLoop = fabric != 0;
+    r.cfg.midFail = fabric != 0;
+    r.fabricSkipsParked = true;
+    r.headPause = [&r](const std::string& h) {
+      return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+    };
+    agent::providers::noteHostFailed(r.parkDeps, "anthropic", orch::StepErr::Auth, 403);
+    TEST_ASSERT_TRUE(agent::providers::hostParked(r.parkDeps, "anthropic", nullptr));
+    r.eng->handleMessage("what model are you running?", "Roy", "1001");
+    const std::string ran = startedOn(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(ran != "anthropic", tag);
+    const std::string want = "[THIS TURN RUNS ON] " + ran + " / model-" + ran +
+                             ". Anthropic, the chosen head, refused a request (HTTP 403) and returns automatically "
+                             "when it is checked again." +
+                             kSayWhy;
+    const std::string in = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(in, want), (std::string(tag) + ": " + in.substr(0, 300)).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(in.find("key is replaced") == std::string::npos, tag);
+    agent::providers::unparkHost("anthropic");
+  }
+}
+
+// QW6, production 26 Oct (Lumi v4.6.0): Anthropic and OpenAI frozen by the owner's caps, the turn
+// on mistral/mistral-medium, the reply "Running on anthropic / claude-opus-5". A head closed by a
+// cap (the token budget hook, or the pause the provider limits set on the park) is named only as
+// the chosen head with its reason, on both paths; the model it answered with earlier this boot
+// (HFM's served-model record) never rides along as the answering host's; when the cap lifts, the
+// head's line carries that recorded model again.
+struct LimitPause {
+  std::vector<std::string> hosts;
+  void on(const char* host) {
+    orch::providerPark().pause(host, orch::kPauseProviderLimit);
+    hosts.push_back(host);
+  }
+  void lift() {
+    for (const std::string& h : hosts) orch::providerPark().resume(h.c_str(), orch::kPauseProviderLimit);
+    hosts.clear();
+  }
+  ~LimitPause() { lift(); }
+};
+
+static void test_the_per_turn_line_names_the_open_host_while_the_head_is_capped() {
+  for (int how = 0; how < 2; how++)          // 0: the token-budget hook, 1: the provider-limit pause
+    for (int fabric = 0; fabric < 2; fabric++) {
+      const std::string tag = std::string(how ? "paused" : "over budget") + (fabric ? ", fabric" : ", single shot");
+      nimbus::orch::clearServedModels();
+      nimbus::orch::noteServedModel("anthropic", "claude-opus-5", "claude-opus-5-20260101");
+      Rig r;
+      r.cfg.toolLoop = fabric != 0;
+      r.cfg.midFail = fabric != 0;
+      r.fabricSkipsParked = true;
+      r.headPause = [&r](const std::string& h) {
+        return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+      };
+      r.cfg.orchModels["anthropic"] = "claude-opus-5";
+      r.cfg.orchModels["mistral"] = "mistral-medium";
+      LimitPause pause;   // lifted when this round ends, even on a failed assert
+      if (how == 0) {
+        r.cfg.overBudgetHosts = {"anthropic", "openai"};
+      } else {
+        pause.on("anthropic");
+        pause.on("openai");
+      }
+      r.eng->handleMessage("What model are you running?", "Roy", "1001");
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("mistral", startedOn(r, fabric != 0).c_str(), tag.c_str());
+      const std::string why = how ? "is paused by the owner's monthly limit and returns automatically when it lifts."
+                                  : "is over its monthly budget and returns automatically when its budget resets.";
+      const std::string in = firstInput(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(in, "[THIS TURN RUNS ON] mistral / mistral-medium. Anthropic, the chosen head, " + why + kSayWhy),
+          (tag + ": " + in.substr(0, 300)).c_str());
+      TEST_ASSERT_TRUE_MESSAGE(in.find("claude-opus-5") == std::string::npos, tag.c_str());
+      const std::string& ins = r.debug.back().instructions;
+      assertNoModelClaim(ins, tag.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(ins.find("claude-opus-5") == std::string::npos, tag.c_str());
+      // The cap lifts: the head is named again, with the model it really answered with.
+      r.cfg.overBudgetHosts.clear();
+      pause.lift();
+      r.attempts.clear();
+      r.eng->handleMessage("And now?", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(startsWith(firstInput(r, fabric != 0),
+                                          std::string("[THIS TURN RUNS ON] anthropic / claude-opus-5-20260101 (asked for "
+                                                      "claude-opus-5).") +
+                                              kOnlyThis),
+                               tag.c_str());
+    }
+  nimbus::orch::clearServedModels();
 }
 
 // ---- CUM-495: a Z.ai prose reply is the answer, not a formatting error -------
@@ -4969,6 +5198,10 @@ static void runSecondHalf() {
   RUN_TEST(test_cum495_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_truncated_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
+  RUN_TEST(test_the_per_turn_line_names_the_resolved_head_on_every_device_shape);
+  RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_parked);
+  RUN_TEST(test_the_per_turn_line_names_a_403_head_with_its_recheck);
+  RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_capped);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);

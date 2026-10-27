@@ -820,8 +820,9 @@ static JobEngine::Deps buildJobDeps() {
 
 // What holds paid requests to `p` off now on `seam` (nimbus::orch::HeadPause): the pause switch
 // (the owner, the overall ceiling, the provider's monthly limit), a refusal park covering that
-// seam, the monthly budget check. The park's re-check request is never taken; the budget check is
-// the one every turn makes at its start. Chat for the head; Spawn for the catalog (providerPause).
+// seam (parkPause -> headPauseIn, host-tested), the monthly budget check. The park's re-check
+// request is never taken; the budget check is the one every turn makes at its start. Chat for
+// the head; Spawn for the catalog (providerPause).
 static nimbus::orch::HeadPause headPauseFor(const std::string& p,
                                             nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat,
                                             bool dueIsOpen = false) {

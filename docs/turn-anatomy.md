@@ -337,15 +337,20 @@ the reply names that real cause instead. The device never goes silent on a chat.
 
 The per-turn input opens with one line naming what the request runs on, so the model
 can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
-mistral-large-2512 (asked for mistral-large-latest).` It ends one of two ways. When the
-chosen head is the one answering, it closes with "When asked which model you run, name
-this one only." When it is not, it says why ("Anthropic, the chosen head, is paused by
-the owner's monthly limit and returns automatically when it lifts.") and closes with
-"When asked which model you run, name this one and say why the chosen head is not running
-this turn." The line is built for each request from the provider that request goes to: each
-host a single-shot turn tries, the host a tool-loop turn starts on (after a paused head is
-skipped) and the host it moves to mid-turn. It rides the input, never the cached system
-prompt, which names no model at all.
+mistral-large-2512 (asked for mistral-large-latest).` The model is the one that provider
+last answered with for that alias since the device started (else the alias resolved through
+its stored list), and "(asked for ...)" appears only when the two differ. When the chosen
+head is not the one answering and something holds it off, one sentence says what and when
+it comes back: paused by the owner, by the owner's monthly limit or by the overall spending
+limit, out of credit, its key refused, a request refused with HTTP 403 (back when it is
+checked again), or over its monthly budget ("Anthropic, the chosen head, is out of credit
+and returns automatically once credit is added."). The line then ends "When asked
+which model you run, name this one and say why the chosen head is not running this turn."
+Without that sentence it ends "When asked which model you run, name this one only." The
+line is built for each request from the provider that request goes to: each host a
+single-shot turn tries, the host a tool-loop turn starts on (past a parked or paused head)
+and the host it moves to mid-turn. It rides the input, never the cached system prompt,
+which names no model at all. The turn page (`/api/lastturn`) shows it as the first line of the input section.
 
 ## Diagnosing a confusing reply
 
