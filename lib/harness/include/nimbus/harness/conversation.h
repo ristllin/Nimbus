@@ -104,6 +104,7 @@ struct HistTurn {
   // tag, else sent:, else its hour) with the offset valid then. kDayUnresolved: the render
   // functions' fixed offset applies to tsHours instead.
   int32_t localDay = kDayUnresolved;
+  bool dayStamped = false;      // localDay came from a stamp (at:/sent:), not from the stored hour
   int32_t lastDay = kDayNone;   // the local day of the turn's latest row (the floor for what follows)
   int32_t sentOffMin = 0;  // minutes east of UTC when it was sent (the "sent hh:mm" label)
   uint32_t replyHours = 0; // the hour of the turn's last assistant row (0 = none)

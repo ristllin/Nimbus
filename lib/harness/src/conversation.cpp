@@ -194,14 +194,18 @@ uint32_t stampOf(uint32_t sentUnix, uint32_t atUnix) {
 // The unix second a row's day marker is told at. The at: tag (the device's own clock) or the
 // sent: tag refines the stored hour; it never overrules it: a delivery hours late keeps the day
 // it arrived, and two clock reads an hour boundary apart still agree. Otherwise the hour's
-// first second. 0 = the row was stored before the clock was set: no date.
-uint32_t placedSecond(const EpisodicMessage& m) {
+// first second (`stamped` false). 0 = the row was stored before the clock was set: no date.
+uint32_t placedSecond(const EpisodicMessage& m, bool* stamped = nullptr) {
+  if (stamped) *stamped = false;
   if (m.tsHours < kClockValidHours) return 0;
   const int64_t first = (int64_t)m.tsHours * 3600;
   const char* const keys[] = {kAtTag, kSentTag};
   for (const char* key : keys) {
     const int64_t s = toU32(tagValue(m.tags, key));
-    if (s >= first - 3600 && s < first + 7200) return (uint32_t)s;
+    if (s >= first - 3600 && s < first + 7200) {
+      if (stamped) *stamped = true;
+      return (uint32_t)s;
+    }
   }
   return (uint32_t)first;
 }
@@ -399,7 +403,10 @@ HistTurn finish(const Building& b, const OffsetAt& zone) {
   if (!head && !b.asst.empty()) head = b.asst.front();
   if (head) {
     t.tsHours = head->tsHours;
-    t.localDay = rowLocalDay(*head, zone);
+    bool stamped = false;
+    const uint32_t at = placedSecond(*head, &stamped);
+    t.localDay = at ? (int32_t)localDaySec(at, zone) : kDayNone;
+    t.dayStamped = stamped;
   }
   if (b.lastRow) t.lastDay = rowLocalDay(*b.lastRow, zone);
   if (b.userRow) {
@@ -580,13 +587,18 @@ void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
 
 // A turn without a stamp on its first row (an on-device voice row, a reply nobody asked for) is
 // told at the start of its hour, which in a half-hour zone can fall on the day before the turn
-// that precedes it. Days never run backwards: the marker would step back a day and repeat. The
-// floor is the latest day any earlier row was told at, starting from the row the window starts
-// after (`floorDay`), so a window's days do not change when its start moves.
+// that precedes it: the marker would step back a day and repeat. So an unstamped turn follows the
+// turn before it, by at most the one day an hour can be wrong by. A stamped turn is exact and is
+// never moved: a clock that was set back (or glitched far ahead) must not hold later turns up.
+// The turn before it is the latest day that turn was told at; for the first turn of a window it
+// is the row the window starts after (`floorDay`), so a window's days do not change when its
+// start moves.
 void keepDaysForward(std::vector<HistTurn>& turns, int32_t floorDay) {
   for (HistTurn& t : turns) {
-    if (t.localDay != kDayNone && t.localDay < floorDay) t.localDay = floorDay;   // no date stays no date
-    floorDay = std::max(floorDay, std::max(t.localDay, t.lastDay));   // kDayNone is below every real day
+    const bool lifts = !t.dayStamped && t.localDay != kDayNone && t.localDay < floorDay &&
+                       floorDay - t.localDay <= 1;   // kDayNone is below every real day
+    if (lifts) t.localDay = floorDay;
+    floorDay = std::max(t.localDay, t.lastDay);
   }
 }
 

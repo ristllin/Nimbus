@@ -674,6 +674,34 @@ static void test_a_shifted_window_keeps_the_days_of_the_full_history() {
   TEST_ASSERT_EQUAL_MESSAGE(0, (int)count(s, "(Sat 8 Nov)"), s.c_str());
 }
 
+// The failure found on hardware, through the engine: older rows stamped LATER than the turns that
+// follow them (an earlier test had placed the clock in the future). The new turns keep their own
+// days and their markers; nothing is dragged to the older rows' day.
+static void test_turns_stamped_before_older_history_keep_their_own_days() {
+  const uint32_t nov12 = (kH - 9 + 24 * 4 + 10) * 3600u;   // Wed 12 Nov 2025 10:00 UTC
+  Rig r;
+  r.offMin = 60;
+  r.hour = nov12 / 3600u;
+  const std::string old = r.add("123", "user", MsgKind::Message, "from the future", "from:Roy,at:" + std::to_string(nov12));
+  r.add("123", "assistant", MsgKind::Message, "ok", "fx:none,out:reply,turn:" + old + ",at:" + std::to_string(nov12 + 5));
+  const uint32_t turns[] = {(kH - 9 + 22) * 3600u + 30u * 60u,    // Sat 8 Nov 22:30 UTC = 23:30 local
+                            (kH - 9 + 23) * 3600u + 30u * 60u,    // 23:30 UTC = 00:30 Sun 9 Nov local
+                            (kH - 9 + 24 + 12) * 3600u};          // Sun 9 Nov 12:00
+  for (const uint32_t sec : turns) {
+    r.plat.epoch = sec;
+    r.hour = sec / 3600u;
+    r.eng->handleMessage("turn at " + std::to_string(sec), "Roy", "123");
+  }
+  r.plat.epoch = turns[2] + 600u;
+  r.hour = r.plat.epoch / 3600u;
+  r.eng->handleMessage("and now?", "Roy", "123");
+  const std::string w = r.lastWindow();
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Wed 12 Nov) from the future") != std::string::npos, w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sat 8 Nov) turn at " + std::to_string(turns[0])) != std::string::npos, w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sun 9 Nov) turn at " + std::to_string(turns[1])) != std::string::npos, w.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "(Sun 9 Nov)"), w.c_str());
+}
+
 // The engine path through a prefix check: turns 5 minutes apart across an India midnight (18:30 UTC),
 // an unstamped voice row now and then in the half hour after it. Each turn's history continues the
 // previous turn's byte for byte, and the day appears once.
@@ -787,6 +815,7 @@ int main(int, char**) {
   RUN_TEST(test_a_job_delivery_inside_a_run_of_repeats_is_transparent);
   RUN_TEST(test_a_shifted_window_keeps_the_days_of_the_full_history);
   RUN_TEST(test_history_stays_append_only_across_a_half_hour_zone_midnight);
+  RUN_TEST(test_turns_stamped_before_older_history_keep_their_own_days);
   RUN_TEST(test_engine_stamps_the_second_a_row_was_stored);
   RUN_TEST(test_owner_row_tags_and_stored_text);
   RUN_TEST(test_image_row_is_capped_to_about_300_chars);

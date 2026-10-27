@@ -439,6 +439,39 @@ static void test_days_never_decrease_whatever_mix_of_stamped_and_unstamped_turns
   }
 }
 
+// A clock that was set back (or glitched ahead) must not hold later turns up. Found on hardware: a
+// bench unit's web chat held turns stamped 3 Nov by an earlier test with the clock placed there; the
+// next leg's turns, stamped 24-26 Oct, were all told 3 Nov and opened no marker. A stamped turn is
+// exact and is never moved; an unstamped one follows the turn before it by at most one day, and that
+// turn is the previous turn, not the highest day ever seen.
+static void test_a_clock_that_went_back_does_not_hold_later_days_up() {
+  const agent::OffsetAt india = agent::fixedZone(330);
+  Chat c;
+  c.user("from the future", utc(2026, 11, 3, 10, 0, 0));
+  c.user("stamped one", utc(2026, 10, 24, 22, 30, 0));
+  c.user("stamped two", utc(2026, 10, 25, 23, 30, 0));
+  const auto t = c.turns(agent::fixedZone(0));
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 11, 3), t[0].localDay);
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 10, 24), t[1].localDay);
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 10, 25), t[2].localDay);
+  const std::string w = c.block(agent::fixedZone(0));
+  TEST_ASSERT_TRUE_MESSAGE(has(w, "(Tue 3 Nov)\n- user: from the future"), w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(w, "(Sat 24 Oct)\n- user: stamped one"), w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(w, "(Sun 25 Oct)\n- user: stamped two"), w.c_str());
+  // An unstamped turn right after the glitched one is not dragged a week ahead; one after a normal
+  // turn follows it (India: 18:40 UTC is 00:10 the next day, the voice row's hour starts a day earlier).
+  Chat d;
+  d.user("from the future", utc(2026, 11, 3, 10, 0, 0));
+  d.add("user", "[voice note] a", utc(2026, 10, 24, 18, 5, 0), "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc00008.ogg");
+  d.user("normal", utc(2026, 10, 24, 18, 40, 0));
+  d.add("user", "[voice note] b", utc(2026, 10, 24, 18, 45, 0), "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc00009.ogg");
+  const auto u = d.turns(india);
+  TEST_ASSERT_EQUAL(4, (int)u.size());
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 10, 24), u[1].localDay);   // not 3 Nov
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 10, 25), u[2].localDay);
+  TEST_ASSERT_EQUAL_INT32((int32_t)daysFromCivil(2026, 10, 25), u[3].localDay);   // lifted by the turn before it
+}
+
 // A window does not depend on the turns before it. The history starts after a soft start or a fold
 // anchor, so its first turn has no turn before it; its days start from the day of the row it
 // starts after (the window's dayFloor), which is the same floor the full list gives it. India:
@@ -662,6 +695,7 @@ int main(int, char**) {
   RUN_TEST(test_days_never_run_backwards_for_a_turn_without_a_stamp);
   RUN_TEST(test_days_never_decrease_whatever_mix_of_stamped_and_unstamped_turns);
   RUN_TEST(test_a_window_starts_from_the_day_of_the_row_before_it);
+  RUN_TEST(test_a_clock_that_went_back_does_not_hold_later_days_up);
   RUN_TEST(test_repeat_window_edge_and_stamp_sources);
   RUN_TEST(test_the_process_zone_rule_gives_the_offset_in_force_at_each_time);
   RUN_TEST(test_history_stays_append_only_across_a_clock_change);

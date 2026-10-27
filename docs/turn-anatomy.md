@@ -265,8 +265,10 @@ called by the engine for every turn:
   starts at the exact local midnight in half-hour and 45-minute zones too. Changing
   the device's time zone re-tells every earlier turn in the new zone, once. A row
   stored before this tag existed keeps only its hour: its day is told at the start
-  of that hour, and never earlier than the turn before it (days do not run
-  backwards, so a half-hour zone cannot repeat a day). A history that starts after
+  of that hour, and follows the turn before it by at most the one day an hour can
+  be wrong by (so a half-hour zone cannot repeat a day). A turn with a time to the
+  second is never moved, so a clock that was set back does not hold later turns up.
+  A history that starts after
   a fold or an overflow shift tells its days from the row it starts after, so they
   match the full history. A row stored before the clock was set has no date and
   opens no marker.
