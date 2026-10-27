@@ -21,9 +21,12 @@ The head, the photo mode, the ballast and the allowlist are restored.
   request is made during the turn or in the idle steps after it; the photo's row is
   settled by the turn ("row settled"); the archive item reads ok at turn time. A
   follow-up "look at that photo again" turn views the pixels again ("image.look ...
-  goes to the head as an image", still no caption request) and the reply names the
-  number. On Anthropic a third turn follows, and the cache-read tokens rise over the
-  three turns (the history, the re-attached photo included, is read from the cache).
+  goes to the head as an image", still no caption request) and the reply counts the
+  dots printed on the label - a count a one-line note does not carry, so the head
+  must read the pixels, not its own record. On Anthropic a third turn follows, and
+  every turn's per-round cache read sits at or above the first turn's (the history,
+  the re-attached photo included, is read from the cache; a turn's total also scales
+  with its round count, so the comparison is per round).
 
 The pure helpers are host-tested at the bottom (``-m host``).
 """
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import re
 import time
 from typing import Dict, List, Optional, Tuple
@@ -55,7 +59,9 @@ ATTACHED_RE = re.compile(r"telegram: media (\d+)/(\d+) attached for the head \((
 SETTLED_RE = re.compile(r"vision: photo (\d+)/(\d+) row settled \(([^)]*)\)")
 LOOK_RE = re.compile(r"vision: image\.look ([0-9a-f]{16}) goes to the head as an image \((\d+) bytes\)")
 SPEND_RE = re.compile(r"turn spend: (ok|FAIL) .*")
-SLOT_RE = re.compile(r"(?P<host>[a-z]+)/(?P<model>\S+) in=(?P<inp>\d+) out=(?P<out>\d+) cR=(?P<cr>\d+) cW=(?P<cw>\d+)")
+SLOT_RE = re.compile(
+    r"(?P<host>[a-z]+)/(?P<model>\S+) in=(?P<inp>\d+) out=(?P<out>\d+) cR=(?P<cr>\d+) cW=(?P<cw>\d+) n=(?P<n>\d+)"
+)
 BALLAST_RE = re.compile(r"held=(\d+) intFree=(\d+) intLargest=(\d+)")
 REF_RE = re.compile(r"\[image 1/1 ref=([0-9a-f]{16})")
 REATTACH_RE = re.compile(r"anthropic: (\d+) recent photo\(s\) ride their history message")
@@ -63,7 +69,7 @@ LUMI_LARGEST = 7700
 LUMI_FREE = 33000
 IDLE_WATCH_S = 45  # the old record call ran in the idle steps right after the reply
 LABEL_VALUE = "58213"
-CORNER_CODE = "Q7K"  # small print in the corner: what a note or a first reply is unlikely to carry
+DOTS_MIN, DOTS_MAX = 11, 15  # the countable dots on the label (per-run random): a count a one-line note does not carry
 
 
 # ---- pure helpers (host-tested) ---------------------------------------------------
@@ -86,7 +92,7 @@ def spend_slots(lines: List[str]) -> List[Dict[str, object]]:
     out = []
     for m in SLOT_RE.finditer(last):
         d: Dict[str, object] = {"host": m.group("host"), "model": m.group("model")}
-        for k in ("inp", "out", "cr", "cw"):
+        for k in ("inp", "out", "cr", "cw", "n"):
             d[k] = int(m.group(k))
         out.append(d)
     return out
@@ -105,9 +111,10 @@ def head_spec(value: str) -> Tuple[str, str]:
     return host, model or "claude-haiku-5-5"
 
 
-def label_photo(value: str, seed: int) -> bytes:
-    """A JPEG label with a large number (only a reader of the pixels can know it),
-    kept under the turn's 80 KB pick budget."""
+def label_photo(value: str, seed: int, dots: int = 0) -> bytes:
+    """A JPEG label with a large number (only a reader of the pixels can know it)
+    and, when `dots` > 0, a row of that many filled dots along the bottom (a count
+    one note line does not carry), kept under the turn's 80 KB pick budget."""
     from PIL import Image, ImageDraw, ImageFont
 
     img = Image.new("RGB", (640, 420), (250, 248, 240))
@@ -119,11 +126,8 @@ def label_photo(value: str, seed: int) -> bytes:
     d.rectangle([14, 14, 626, 406], outline=(20, 20, 20), width=6)
     d.text((40, 60), "LOT", fill=(10, 10, 10), font=font)
     d.text((40, 220), value, fill=(10, 10, 10), font=font)
-    try:
-        small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 34)
-    except OSError:
-        small = ImageFont.load_default()
-    d.text((520, 350), CORNER_CODE, fill=(10, 10, 10), font=small)
+    for i in range(dots):
+        d.ellipse([30 + i * 40, 352, 50 + i * 40, 372], fill=(30, 30, 30))
     d.point([(seed % 640, 412)], fill=(0, 0, 0))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
@@ -202,10 +206,10 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
         _http(lambda: net.post("/api/orch", restore, timeout=8.0), "restoring the head")
 
 
-def _stage_label(net, value: str, seed: int) -> Tuple[str, int]:
+def _stage_label(net, value: str, seed: int, dots: int = 0) -> Tuple[str, int]:
     import requests
 
-    data = label_photo(value, seed)
+    data = label_photo(value, seed, dots)
     name = f"img{seed}.jpg"
     url = f"http://{net.ip}/api/files/upload?project=l48&name={name}"
     files = {"file": (name, data, "image/jpeg")}
@@ -255,9 +259,12 @@ def _archive_status(net, chat: int, uid: int) -> Optional[str]:
 # ---- legs ---------------------------------------------------------------------------
 
 
-def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str]:
-    """Turn 1: a label photo the head sees itself. Returns the console lines and the ref."""
-    item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000)
+def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str, int]:
+    """Turn 1: a label photo the head sees itself. Returns the console lines, the ref and
+    the number of dots printed on it (turn 2's truth: a count a one-line note of the
+    label does not carry, so the head must view the photo again)."""
+    dots = random.randint(DOTS_MIN, DOTS_MAX)
+    item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000, dots=dots)
     lines = _inject(device, album_page(uid, chat, [item], caption=f"what is the big number on this label? ({uid})"))
     lines += _idle_lines(device, IDLE_WATCH_S)
     print("\n".join(ln for ln in lines if "telegram:" in ln or "vision" in ln or "turn spend" in ln))
@@ -271,15 +278,18 @@ def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str]:
     rows = [r for r in _episodic(net, 40) if r.get("kind") == "image" and REF_RE.search(r.get("text", ""))]
     assert rows, "no stored row for the photo"
     print("stored row:", rows[0].get("text", "")[:200])
-    return lines, REF_RE.search(rows[0]["text"]).group(1)
+    return lines, REF_RE.search(rows[0]["text"]).group(1), dots
 
 
-def _look_turn(device, net, chat: int, uid: int, ref: str) -> List[str]:
+def _look_turn(device, net, chat: int, uid: int, ref: str, dots: int) -> List[str]:
     """Turn 2: the head views the photo again (image.look returns the pixels, or on
-    Anthropic the kept file rides its history message); no caption request."""
+    Anthropic the kept file rides its history message) and counts what only a reader
+    of the pixels can count; no caption request."""
+    truth = f"dots: {dots}"
     t2 = (
-        "Look at that photo again yourself with image.look (do not rely on your earlier reply) and tell me "
-        f"the small code printed in its bottom-right corner ({uid})"
+        "Look at that photo again yourself with image.look (do not answer from memory or your note) and "
+        "count exactly how many filled dots are printed in its bottom row. "
+        f"Start your reply with '{truth}'. ({uid})"
     )
     lines = _inject(device, tb.page([tb.text_update(uid, chat, t2)]))
     lines += _idle_lines(device, 10)
@@ -293,10 +303,10 @@ def _look_turn(device, net, chat: int, uid: int, ref: str) -> List[str]:
         assert looks, "with nothing re-attached the photo must come back through image.look"
     assert not looks or looks[0][0] == ref, (looks, ref)
     assert not caption_calls(lines), f"a caption request was made on a seeing head: {caption_calls(lines)}"
-    text = _reply(net, CORNER_CODE)
+    text = _reply(net, truth)
     if not text:
         print("replies:", [r.get("text", "")[:160] for r in _episodic(net, 6) if r.get("role") == "assistant"])
-    assert text, f"no reply named the corner code {CORNER_CODE}"
+    assert text, f"no reply named the dot count ({dots})"
     return lines
 
 
@@ -307,19 +317,27 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     chat, host = img_head["chat"], img_head["host"]
     print(f"head {host}/{img_head['model']} at Lumi's heap {lumi_heap}")
     uid = tb.first_update_id() + 7100
-    lines, ref = _photo_turn(device, net, chat, uid)
-    lines2 = _look_turn(device, net, chat, uid + 1, ref)
-    cr = [head_cache_read(lines, host), head_cache_read(lines2, host)]
+    lines, ref, dots = _photo_turn(device, net, chat, uid)
+    lines2 = _look_turn(device, net, chat, uid + 1, ref, dots)
     if host != "anthropic":
-        print(f"cache reads (informational on {host}): {cr}")
+        print(f"cache reads (informational on {host}): {[head_cache_read(l, host) for l in (lines, lines2)]}")
         return
-    # Turn 3: on Anthropic the cache-read tokens rise over the three turns.
+    # Turn 3: on Anthropic the per-round cached prefix never shrinks. A turn's total
+    # cache read scales with its round count, so the fair comparison is the per-round
+    # average: every later turn's must sit at or above the first turn's.
     lines3 = _inject(device, tb.page([tb.text_update(uid + 2, chat, f"thanks, and the first word on it? ({uid + 2})")]))
-    cr.append(head_cache_read(lines3, host))
     assert not caption_calls(lines3)
-    print(f"cache reads over three turns: {cr}")
-    assert all(c is not None for c in cr), cr
-    assert cr[0] < cr[1] < cr[2], f"cache reads did not rise: {cr}"
+    per = []
+    for l in (lines, lines2, lines3):
+        mine = [s for s in spend_slots(l) if s["host"] == host]
+        assert mine, "no turn-spend slot for the head"
+        per.append((mine[0]["cr"], mine[0]["n"]))
+    print(f"cache reads (total, rounds) over three turns: {per}")
+    first = per[0][0] / max(per[0][1], 1)
+    for i in (1, 2):
+        assert per[i][0] / max(per[i][1], 1) >= first, (
+            f"turn {i + 1}'s per-round cache read fell below the first turn's: {per}"
+        )
 
 
 # ---- host tests ---------------------------------------------------------------------
