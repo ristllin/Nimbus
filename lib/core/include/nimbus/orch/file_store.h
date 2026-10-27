@@ -177,7 +177,10 @@ class FileStore {
   // Versioned, line-oriented, tab-separated (names are segment-safe so no
   // escaping is needed - tabs/newlines are rejected by validSegment).
   std::string dump() const;
-  bool load(const std::string& blob);   // tolerant: bad lines skipped
+  // Tolerant: bad lines are skipped. Case-variant duplicate rows (a pre-fix,
+  // case-sensitive index could hold two per one FAT file) collapse to the
+  // owner-controlled row; see load() in orch_file_store.cpp.
+  bool load(const std::string& blob);
 
  private:
   int indexOf(const std::string& project, const std::string& name) const;

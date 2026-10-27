@@ -434,8 +434,10 @@ void test_identity_is_case_blind_like_fat() {
   TEST_ASSERT_TRUE(st.remove("NOTES", "secret.md"));
   TEST_ASSERT_EQUAL_UINT32(0, st.count());
 
-  // Two entries that differ ONLY by case can never coexist (the dump from an
-  // older, case-sensitive build collapses them to the last one on load).
+  // Two entries that differ ONLY by case can never coexist through add() (a
+  // case-variant add REPLACES the first match: one FAT file, one index row).
+  // A PRE-FIX index can still carry such a pair - load() collapses it; see
+  // test_load_collapses_case_variant_rows_to_owner_control below.
   FileEntry a = e, b = e;
   a.name = "plan.md"; b.name = "PLAN.md";
   b.owner = "chat:alice";
@@ -443,6 +445,59 @@ void test_identity_is_case_blind_like_fat() {
   TEST_ASSERT_TRUE(st.add(b, err));
   TEST_ASSERT_EQUAL_UINT32(1, st.count());
   TEST_ASSERT_EQUAL_STRING("chat:alice", st.find("notes", "plan.MD")->owner.c_str());
+}
+
+// CUM-836 follow-up (review finding 2): a pre-fix, case-sensitive index can
+// hold TWO rows for one FAT file - the member saved "SECRET.MD" first (their
+// row landed first), then the owner's "secret.md" write landed in that same
+// physical file and appended the owner's row SECOND. load() must collapse the
+// pair to ONE row, and to the row that keeps the DEVICE OWNER in control -
+// never to the member's row, or the member keeps readableBy() over the
+// physical file that now holds the OWNER's bytes (cross-tenant read), and the
+// pair never self-heals (add() replaces only the first match).
+void test_load_collapses_case_variant_rows_to_owner_control() {
+  // The poisoned order: the MEMBER's row first, the owner's second.
+  FileStore st;
+  std::string blob = "FILESv1\n";
+  blob += "notes\tSECRET.MD\t5\t0\t0\t0000000000000001\t\t\tchat:alice\n";
+  blob += "notes\tsecret.md\t9\t0\t0\t0000000000000002\t\t\t\n";
+  TEST_ASSERT_TRUE(st.load(blob));
+  TEST_ASSERT_EQUAL(1, int(st.count()));                 // one FAT file, one row
+  const FileEntry* e = st.find("notes", "secret.md");
+  TEST_ASSERT_NOT_NULL(e);
+  TEST_ASSERT_EQUAL_UINT32(9, e->bytes);                 // the OWNER's row survived
+  TEST_ASSERT_FALSE(st.readableBy(*e, "chat:alice", false));   // member cannot read the owner's file
+  TEST_ASSERT_FALSE(st.writeAllowed("notes", "SECRET.MD", "chat:alice", false));
+  TEST_ASSERT_TRUE(st.readableBy(*e, nimbus::orch::kOwnerNs, true));
+  TEST_ASSERT_TRUE(st.writeAllowed("notes", "secret.md", nimbus::orch::kOwnerNs, true));
+
+  // The typical pre-fix order (owner's row first, the member's variant second)
+  // collapses the same way: the owner keeps the file, the member loses the row.
+  FileStore st2;
+  std::string blob2 = "FILESv1\n";
+  blob2 += "notes\tsecret.md\t9\t0\t0\t0000000000000002\t\t\t\n";
+  blob2 += "notes\tSECRET.MD\t5\t0\t0\t0000000000000001\t\t\tchat:alice\n";
+  TEST_ASSERT_TRUE(st2.load(blob2));
+  TEST_ASSERT_EQUAL(1, int(st2.count()));
+  const FileEntry* e2 = st2.find("NOTES", "SeCrEt.Md");
+  TEST_ASSERT_NOT_NULL(e2);
+  TEST_ASSERT_EQUAL_UINT32(9, e2->bytes);
+  TEST_ASSERT_FALSE(st2.readableBy(*e2, "chat:alice", false));
+
+  // No owner row in the group (two members fought over one name pre-fix):
+  // the FIRST row wins - pre-fix first-writer semantics, fail-closed for the
+  // later dup; the loser is refused, the winner keeps their row.
+  FileStore st3;
+  std::string blob3 = "FILESv1\n";
+  blob3 += "notes\tPLAN.MD\t5\t0\t0\t0000000000000001\t\t\tchat:alice\n";
+  blob3 += "notes\tplan.md\t7\t0\t0\t0000000000000003\t\t\tchat:bob\n";
+  TEST_ASSERT_TRUE(st3.load(blob3));
+  TEST_ASSERT_EQUAL(1, int(st3.count()));
+  const FileEntry* e3 = st3.find("notes", "plan.md");
+  TEST_ASSERT_NOT_NULL(e3);
+  TEST_ASSERT_EQUAL_STRING("chat:alice", e3->owner.c_str());
+  TEST_ASSERT_FALSE(st3.readableBy(*e3, "chat:bob", false));
+  TEST_ASSERT_TRUE(st3.readableBy(*e3, "chat:alice", false));
 }
 
 int main() {
@@ -465,5 +520,6 @@ int main() {
   RUN_TEST(test_list_and_projects);
   RUN_TEST(test_food_ledger_names_are_reserved);
   RUN_TEST(test_identity_is_case_blind_like_fat);
+  RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
   return UNITY_END();
 }

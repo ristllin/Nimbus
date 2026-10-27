@@ -1,4 +1,5 @@
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/word_match.h"   // words::lowerAscii: the one ASCII fold
 
 #include <algorithm>
 #include <cctype>
@@ -61,11 +62,18 @@ std::string FileStore::relPath(const std::string& project, const std::string& na
 // letter-case variant (CUM-836: a member writing "MEALS.CSV" onto the owner's
 // "meals.csv" was a NEW file to the index, and the card then wrote the owner's
 // file). validSegment() admits printable ASCII only, so folding ASCII is exact.
+// The SAME fold as the food-ledger gate (words::lowerAscii) is used here on
+// purpose: the index-identity rule and the reserved-ledger-name rule are two
+// gates over one case-blind FAT, and they must not drift (review finding 4).
 static bool fatSameSegment(const std::string& a, const std::string& b) {
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); ++i)
-    if (::tolower((unsigned char)a[i]) != ::tolower((unsigned char)b[i])) return false;
-  return true;
+  return words::lowerAscii(a) == words::lowerAscii(b);
+}
+
+// A row the device owner controls: the owner field is empty (the v4.1 data
+// boundary) or explicitly the owner namespace. load()'s case-variant dedupe
+// uses this to pick which row of a pre-fix duplicate pair survives.
+static bool ownerControlled(const FileEntry& e) {
+  return e.owner.empty() || e.owner == kOwnerNs;
 }
 
 int FileStore::indexOf(const std::string& project, const std::string& name) const {
@@ -224,11 +232,26 @@ bool FileStore::load(const std::string& blob) {
       }
     }   // else legacy -> adopted as the owner's below
     // Re-validate on load: a corrupted/hand-edited index can't smuggle a bad path.
-    std::string err;
-    if (validSegment(e.project, lim_.maxProjectLen) &&
-        validSegment(e.name, lim_.maxNameLen) &&
-        entries_.size() < lim_.maxEntries)
-      entries_.push_back(e);
+    if (!validSegment(e.project, lim_.maxProjectLen) ||
+        !validSegment(e.name, lim_.maxNameLen))
+      continue;
+    // CUM-836 migration (review finding 2): a pre-fix, case-SENSITIVE index can
+    // hold two rows whose (project, name) differ only by letter case - one FAT
+    // file, two owners. Collapse to ONE row per folded identity. Which row
+    // survives: the one that keeps the DEVICE OWNER in control. A surviving
+    // member row would keep readableBy(member) over the physical file, and in
+    // the poisoned order (the member's variant landed first, the owner's write
+    // then landed IN that file) the file physically holds the OWNER's content -
+    // a cross-tenant read. The owner's row grants a member nothing, and the
+    // owner passes every ownership check on it. If NO row of the group is
+    // owner-controlled (two members fought over one name pre-fix), the FIRST
+    // row wins: pre-fix first-writer semantics, fail-closed for the later dup.
+    const int dup = indexOf(e.project, e.name);
+    if (dup < 0) {
+      if (entries_.size() < lim_.maxEntries) entries_.push_back(e);
+    } else if (ownerControlled(e) && !ownerControlled(entries_[size_t(dup)])) {
+      entries_[size_t(dup)] = e;   // the owner's row takes the identity over
+    }                               // else: the earlier row already rules this file
   }
   return true;
 }
