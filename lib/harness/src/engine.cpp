@@ -311,6 +311,14 @@ static std::string providerLabel(const std::string& slug) {
 
 static void trimInPlace(std::string& s);
 
+// What holds provider `p` off now (head_switch.h HeadPause): the device's read, plus the
+// monthly budget check every turn makes.
+static orch::HeadPause providerPauseOf(const TurnEngine::Deps& d, const std::string& p) {
+  orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(p) : orch::HeadPause();
+  if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
+  return hp;
+}
+
 // The per-turn line for a request on host `h` (served_model.h runsOnLine): its asked model, the
 // concrete model it answered with this boot (else the alias resolved through its stored list),
 // and, when `h` is not the chosen head, why the chosen head is not answering.
@@ -323,11 +331,7 @@ static std::string runsOnText(const TurnEngine::Deps& d, const std::string& h, c
     concrete = b;
   }
   std::string fact;
-  if (!chosen.empty() && h != chosen) {
-    orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(chosen) : orch::HeadPause();
-    if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(chosen)) hp.overBudget = true;
-    fact = orch::headPauseFact(providerLabel(chosen), hp);
-  }
+  if (!chosen.empty() && h != chosen) fact = orch::headPauseFact(providerLabel(chosen), providerPauseOf(d, chosen));
   return orch::runsOnLine(h, asked, concrete, fact);
 }
 
@@ -743,6 +747,8 @@ std::string TurnEngine::jobsSummaryText() const {
 // (kDeviceBackendSync) - the old line named only mistral, so a cumulo, zai or
 // custom sub that blocked the device and lost its result on a timeout was a
 // surprise. No wait times here: each adapter owns its own.
+// CUM-821: a provider held off now (paused, parked, over its budget) is left out, so
+// "use openai for ... anything that needs the web" never names one that cannot answer.
 std::string TurnEngine::syncCapacityText() const {
   std::vector<std::string> sync, async;
   for (int i = 0; i < kDeviceBackendCount; i++) {
@@ -750,6 +756,7 @@ std::string TurnEngine::syncCapacityText() const {
     const bool keyed = !d_.cfg.provider.hasKey || d_.cfg.provider.hasKey(b) ||
                        (b == "custom" && d_.hosts.has("custom"));
     if (!keyed) continue;
+    if (!orch::headPauseNote(b, providerPauseOf(d_, b)).empty()) continue;
     (kDeviceBackendSync[i] ? sync : async).push_back(b);
   }
   auto list = [](const std::vector<std::string>& v, const char* last) {
@@ -916,10 +923,31 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_, bool modelsTo
 // static prompt block (ComposeInputs::catalogs, prompt_layout.h), where a
 // provider reads them from its cache, instead of the per-turn input after the
 // volatile session counters.
+// The sub-session priority list, each provider held off now marked "(paused)" (CUM-821: on
+// Lumi the list named openai and anthropic as if they could run while both were paused; the
+// catalog row says why). Unchanged, byte for byte, while nothing is held off.
+static std::string subPriorityText(const TurnEngine::Deps& d) {
+  const std::string pri = d.cfg.provider.subPriority ? d.cfg.provider.subPriority() : std::string();
+  std::string out;
+  bool marked = false;
+  for (size_t at = 0; at <= pri.size();) {
+    size_t comma = pri.find(',', at);
+    if (comma == std::string::npos) comma = pri.size();
+    std::string tok = pri.substr(at, comma - at);
+    trimInPlace(tok);
+    at = comma + 1;
+    if (tok.empty()) continue;
+    out += (out.empty() ? "" : ",") + tok;
+    if (orch::headPauseNote(tok, providerPauseOf(d, tok)).empty()) continue;
+    out += " (paused)";
+    marked = true;
+  }
+  return marked ? out : pri;
+}
+
 std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   std::string ctx = "\n";
-  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
-         (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
+  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " + subPriorityText(d_) + "\n";
   // The model the agent runs on is NOT named here: this block is cached and outlives a
   // failover, so a "[YOUR MODEL]" line named the configured head while a paused head's turns
   // ran elsewhere (Lumi, 26 Oct). Each request's input names its own host and model instead

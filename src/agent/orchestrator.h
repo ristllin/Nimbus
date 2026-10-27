@@ -11,6 +11,7 @@
 #include "nimbus/orch/world.h"  // SessionInfo (session.list / running-sessions digest)
 #include "nimbus/orch/token_usage.h"  // TokenUsage - Phase 0 cost seam (lastTurnUsage)
 #include "nimbus/orch/loops.h"        // FireOutcome - Local Loops scheduled-turn result
+#include "nimbus/orch/head_switch.h"  // HeadPause - what holds a provider off
 
 // orchestrator - the Head-Orchestrator-v2 turn loop for Nimbus, ported from
 // Nuage-Solide src/agent/orchestrator.{h,cpp}. Single-task by design: handleMessage()
@@ -117,6 +118,10 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // True while a scheduled-loop turn is executing - the device-action validator
 // refuses `reboot` and `loop.create` in this window (prism fork-bomb/reset guard).
 bool inScheduledTurn();
+// What holds paid requests to provider `p` off now (the pause switch, a refusal park on
+// the chat seam, its monthly budget): the one read the orch_model guard, the per-turn
+// [THIS TURN RUNS ON] line and the connectors catalog share (CUM-821).
+nimbus::orch::HeadPause providerPause(const std::string& p);
 // Lane J: did the running turn read outside content (a folded-in media row or
 // an external-tainted tool result)? The standing rules' taint rail reads it.
 bool turnReadOutsideContent();

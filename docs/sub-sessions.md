@@ -180,7 +180,12 @@ with bash/web/files tools; Mistral: *"You are an autonomous assistant agent.
 Complete the user's task fully and reply with the final result only - no
 preamble. If a tool or connector you need does not run, fails, or returns
 nothing, say so plainly; never invent events, messages, files or other
-records."*
+records. Facts from the public web (weather, travel, news, prices, opening
+hours) come from the web_search tool, with the source of each; use a connector
+(Notion, Gmail, Calendar, Drive) only for the owner's own data in it."* A spawn
+whose skill is `web_search` carries Mistral's built-in tools only: the owner's
+Studio connectors stay off that request, so a public-web lookup cannot wander
+into Notion.
 
 ## What a spawn can carry
 
@@ -212,8 +217,18 @@ connectors); the head assembles the results and delivers them to the owner.**
 Give each sub a `project` so its full reply auto-saves as a document the head can
 then deliver. This is exactly what the model is told each turn - the
 `[SUB-AGENT CAPABILITIES]` block, generated per keyed provider in `catalogText`
-(`lib/core/src/orch_connectors_wire.cpp`). See [connectors.md](connectors.md) for
-which provider hosts which connector.
+(`lib/core/src/orch_connectors_wire.cpp`). A provider that is paused right now (its
+own monthly limit, the overall spending limit, paused by the owner, out of credit, a
+rejected key, or over its monthly budget) gets no spawn line and is named in no
+advice about web or long work until it returns. See [connectors.md](connectors.md)
+for which provider hosts which connector.
+
+Facts from the public web (weather, travel and train status, news, prices, opening
+hours) come from web search, and the head is told which open provider has it: a
+Mistral sub with the `web_search` skill (the task says "use the web_search tool"),
+an OpenAI sub (hosted web search), an Anthropic sub (web search and fetch), or the
+head's own `web.search` tool when a Tavily key is set. Connectors hold only the
+owner's own data and are never used for public facts.
 
 ## Provider/model resolution
 

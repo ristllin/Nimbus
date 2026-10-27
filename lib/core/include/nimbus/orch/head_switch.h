@@ -51,6 +51,9 @@ inline std::string headPauseNote(const std::string& label, const HeadPause& p) {
 // The same fact for the model (the per-turn line): "Anthropic, the chosen head, is paused by the
 // owner's monthly limit and returns automatically when it lifts." "" when nothing holds it off.
 std::string headPauseFact(const std::string& label, const HeadPause& p);
+// The same fact for any provider (the catalog's provider row, CUM-821): "OpenAI is paused by the
+// owner's monthly limit and returns automatically when it lifts." "" when nothing holds it off.
+std::string providerPauseFact(const std::string& label, const HeadPause& p);
 
 // The explanation for a refused switch, owner-facing and plain: the note, then
 // 'To make <target> your main provider anyway, say "switch to <target>" again, or pick it

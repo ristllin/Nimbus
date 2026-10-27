@@ -852,11 +852,16 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
 
 // The no-invention sentence is CUM-536: with a calendar connector attached but
 // never called, the sub answered "fetch this week's events" with an invented week.
+// The web sentence is CUM-822: a rail and weather lookup searched the attached Notion
+// twice and reported "nothing found in Notion", with web_search on the same request.
 static const char* MISTRAL_AGENT_SYS =
     "You are an autonomous assistant agent. Complete the user's task fully and "
     "reply with the final result only - no preamble. If a tool or connector you "
     "need does not run, fails, or returns nothing, say so plainly; never invent "
-    "events, messages, files or other records.";
+    "events, messages, files or other records. Facts from the public web (weather, "
+    "travel, news, prices, opening hours) come from the web_search tool, with the "
+    "source of each; use a connector (Notion, Gmail, Calendar, Drive) only for the "
+    "owner's own data in it.";
 
 namespace {
 struct Cached {
@@ -924,6 +929,24 @@ Provenance provenanceOf(const ProviderDeps& pd, const JsonDocument& req, const D
   return p;
 }
 
+// CUM-822: a spawn whose skill is Mistral's web search is a public-web lookup. Live on
+// unit A (27 Oct) a mistral-small sub told "use the web_search tool" still called the
+// attached Notion once beside two searches, so such a sub carries the built-ins only:
+// the owner's Studio connectors stay off its request. Returns how many it removed.
+bool webSearchSpawn(const Directive& d) {
+  return d.skill && (!strcmp(d.skill, "web_search") || !strcmp(d.skill, "web_search_premium"));
+}
+size_t dropStudioConnectors(JsonDocument& doc) {
+  JsonArray tools = doc["tools"].as<JsonArray>();
+  size_t dropped = 0;
+  for (size_t i = tools.size(); i-- > 0;) {
+    if (strcmp(tools[i]["type"] | "", "connector") != 0) continue;
+    tools.remove(i);
+    dropped++;
+  }
+  return dropped;
+}
+
 // The provider's own run counts for one sub (copied into the ResultEnvelope).
 struct RunCounts {
   uint16_t connector = 0;   // runs of the asked connector (CUM-536)
@@ -976,6 +999,11 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     // Studio connectors ride the conversation and run server-side (auto tool_choice
     // - no forcing, so no 422). Free-text result (no response_format schema).
     if (pd.attachMistral) pd.attachMistral(doc);
+    if (webSearchSpawn(d)) {
+      const size_t dropped = dropStudioConnectors(doc);
+      if (dropped)
+        hlog::logf("mistral sub: web_search spawn - %u Studio connector(s) left off", (unsigned)dropped);
+    }
     prov = provenanceOf(pd, doc, d);
     body = serializeBody(doc);
   }

@@ -137,8 +137,10 @@ static void testProbeFlipsAndKeeps(ndtest::Ctx& c) {
   c.eqi(authOf(rig, "ghost"), 2, "a Studio connector the workspace does not list => refused");
   c.eqi(authOf(rig, "web_search"), -1, "a built-in stays provider-side (-1)");
   const std::string cat = rig.connectorsCatalog();
-  c.ok(has(cat, "gcal (usable: always try it first."),
-       "the catalog carries the not-signed-in hint for gcal");
+  c.ok(has(cat, "gcal (for the owner's gcal data only: call it for that even though Mistral says it is not "
+                "signed in;"),
+       "the catalog carries the not-signed-in hint for gcal, scoped to its own data (CUM-822)");
+  c.ok(!has(cat, "always try it first"), "the hint claims no priority over web search (CUM-822)");
   c.ok(!has(cat, "gcal (not usable"), "the hint never gates: gcal is not called unusable");
   c.ok(has(cat, "ghost (not attached: the owner's Mistral workspace does not offer it"),
        "the unlisted connector points the owner at Mistral and is not sent");

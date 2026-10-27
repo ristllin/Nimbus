@@ -1366,26 +1366,90 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
     return " (NO credential - not usable until the owner adds one)";
   }
   // Usable. is_authenticated is a hint, never a gate: a listed connector that
-  // reports it false still ran live, so say what an empty result may mean.
+  // reports it false still ran live. CUM-822 (Lumi, 27 Oct): "always try it first"
+  // read as "Notion first for anything", so a rail and weather lookup searched Notion
+  // twice and found nothing. The note is scoped to the owner's data in it.
   if (c.workspace == W::ListedNotSignedIn)
-    return " (usable: always try it first. Mistral's signed-in flag is unreliable for "
-           "it, so never skip it on that basis; only if it returns nothing or asks to "
-           "sign in, tell the owner to connect it in Mistral)";
+    return " (for the owner's " + c.name + " data only: call it for that even though "
+           "Mistral says it is not signed in; only a reply asking to sign in means it is "
+           "not connected, then tell the owner to connect it in Mistral)";
   return "";
 }
+
+namespace {
+// CUM-821: a provider's display name ("OpenAI"), else its slug.
+std::string providerDisplay(const char* prov) {
+  const ProviderSlot* s = findProviderSlot(prov);
+  return s ? std::string(s->label) : std::string(prov);
+}
+
+// Mistral's hosted web search rides its sub-agents only while the built-in is on
+// the wire (the attachMistralWire rule).
+bool mistralWebSearchOnWire(const std::vector<ConnectorInfo>& cs) {
+  for (const ConnectorInfo& c : cs)
+    if (c.kind == "builtin" && (c.name == "web_search" || c.name == "web_search_premium") &&
+        forwardsToProviderHead(c, "mistral"))
+      return true;
+  return false;
+}
+
+// CUM-822 (Lumi, 27 Oct): a rail and weather lookup on Mistral went to Notion and the
+// head then told the owner Notion was its only source, with web search on the same
+// request. Public facts come from web search on a provider that is open now; a
+// connector only holds the owner's own data.
+std::string webFactsLine(const std::vector<ConnectorInfo>& cs, const ProviderState& ps,
+                         bool oaiUp, bool antUp, bool misUp) {
+  std::vector<std::string> routes;
+  if (ps.webSearchTool) routes.push_back("call web.search on your own turn");
+  if (misUp && mistralWebSearchOnWire(cs))
+    routes.push_back("spawn on mistral with skill web_search and write \"use the web_search "
+                     "tool\" in the task");
+  if (oaiUp) routes.push_back("spawn on openai (hosted web_search)");
+  if (antUp) routes.push_back("spawn on anthropic (web search/fetch)");
+  std::string out = "PUBLIC WEB FACTS (weather, travel and train status, news, prices, opening "
+                    "hours) come from web search: ";
+  if (routes.empty()) {
+    out += "none is available right now, so say so plainly";
+  } else {
+    for (size_t i = 0; i < routes.size(); i++) out += (i ? "; or " : "") + routes[i];
+  }
+  out += ". Connectors (Notion, Gmail, Calendar, Drive) hold only the owner's own data: use "
+         "one only for that data, never for public facts.\n";
+  return out;
+}
+}  // namespace
 
 std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
   std::string out = "\n[PROVIDERS & CONNECTORS]\n";
   const std::string& host = ps.currentHost;
   const bool hostKnown = (host == "openai" || host == "anthropic" || host == "mistral");
-  if (hostKnown) {
+  // CUM-821: a provider held off right now (ProviderState.*Pause) is PAUSED, not
+  // available: its row says why and when it lifts, and no line routes work to it.
+  const std::string oaiPaused = providerPauseFact(providerDisplay("openai"), ps.openaiPause);
+  const std::string antPaused = providerPauseFact(providerDisplay("anthropic"), ps.anthropicPause);
+  const std::string misPaused = providerPauseFact(providerDisplay("mistral"), ps.mistralPause);
+  const bool oaiUp = ps.openaiKeyed && oaiPaused.empty();
+  const bool antUp = ps.anthropicKeyed && antPaused.empty();
+  const bool misUp = ps.mistralKeyed && misPaused.empty();
+  const bool hostPaused = (host == "openai" && !oaiPaused.empty()) ||
+                          (host == "anthropic" && !antPaused.empty()) ||
+                          (host == "mistral" && !misPaused.empty());
+  if (hostKnown && hostPaused) {
+    // The turns of a paused head run elsewhere, named per request in [THIS TURN RUNS ON].
+    out += "Your chosen head, " + host + ", is PAUSED (see its row), so each turn runs on "
+           "another provider, named in the turn's [THIS TURN RUNS ON] line. Connectors on "
+           "that provider are callable on YOUR OWN turns; connectors on the other providers "
+           "are reachable only by spawning a sub-agent on that provider.\n";
+  } else if (hostKnown) {
     out += "You are currently running on ";
     out += host;
     out += ". Connectors on ";
     out += host;
     out += " are callable on YOUR OWN turns; connectors on the other providers are "
            "reachable only by spawning a sub-agent on that provider.\n";
-    if (host == "mistral" && !ps.mistralHeadCarriesStudio)
+  }
+  if (hostKnown) {
+    if (host == "mistral" && !hostPaused && !ps.mistralHeadCarriesStudio)
       out += "EXCEPTION: Mistral Studio connectors (calendar, Notion, Slack, Gmail, "
              "Drive, GitHub...) are NOT attached to your own turns here; they run ONLY "
              "on a sub-agent you spawn on mistral (session_ops spawn: provider = "
@@ -1402,17 +1466,18 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     const char* prov;
     bool keyed;
     int8_t verified;    // 1 ok / 0 rejected / -1 unchecked
+    const std::string* paused;   // providerPauseFact, "" = open
     const char* native;
   };
   const Row rows[] = {
-      {"openai", ps.openaiKeyed, ps.openaiVerified,
+      {"openai", ps.openaiKeyed, ps.openaiVerified, &oaiPaused,
        "connectors/MCP run server-side on your own turns AND on sub-agents; "
        "hosted web_search on sub-agents"},
-      {"anthropic", ps.anthropicKeyed, ps.anthropicVerified,
+      {"anthropic", ps.anthropicKeyed, ps.anthropicVerified, &antPaused,
        "sub-agents run in a cloud sandbox with bash, file read/write, web "
        "search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, "
        "not your own turns"},
-      {"mistral", ps.mistralKeyed, ps.mistralVerified,
+      {"mistral", ps.mistralKeyed, ps.mistralVerified, &misPaused,
        ps.mistralHeadCarriesStudio
            ? "connectors + built-ins attach to a single-shot turn AND to sub-agents "
              "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
@@ -1426,7 +1491,14 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   for (const Row& r : rows) {
     out += "- ";
     out += r.prov;
-    if (hostKnown && host == r.prov) out += " (YOU are here)";
+    if (hostKnown && host == r.prov) out += hostPaused ? " (your chosen head)" : " (YOU are here)";
+    if (r.keyed && !r.paused->empty()) {
+      // Nothing on a paused provider runs, so neither its tools nor its connectors
+      // are listed: the model plans only around what can answer now.
+      out += ": PAUSED. " + *r.paused + " Nothing on it runs until then: no sub-agents, "
+             "no connectors.\n";
+      continue;
+    }
     // key-presence is NOT validity: say which it is (owner: truly tested). With
     // validation OFF (capProbe==0) the device makes no verified/rejected claim -
     // it just reports the key is present and trusts it.
@@ -1446,6 +1518,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     }
     out += "\n";
   }
+  out += webFactsLine(cs, ps, oaiUp, antUp, misUp);
   // Per-connector real capabilities/limits - so you use only tools that EXIST and
   // never fake an outcome (owner-caught: claimed 'email sent' when Gmail only drafts).
   int kn = 0;
@@ -1454,6 +1527,10 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   bool ciCaps = false;   // the code_interpreter line once, not once per provider
   for (const ConnectorInfo& c : cs) {
     if (!c.enabled) continue;
+    // A paused provider's connectors do not run (its row says so): no caps line.
+    if ((c.prov == "openai" && !oaiPaused.empty()) || (c.prov == "anthropic" && !antPaused.empty()) ||
+        (c.prov == "mistral" && !misPaused.empty()))
+      continue;
     if (isCodeInterpreter(c)) {
       if (ciCaps) continue;
       ciCaps = true;
@@ -1540,14 +1617,17 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
          "(and run connectors); the HEAD assembles the results and delivers to the "
          "owner. Give each sub a project so its full reply auto-saves as a doc you "
          "can then deliver.\n";
-  auto spawnTargets = [&](const char* prov, bool keyed) {
-    if (!keyed) return;
+  // A paused provider is no spawn target (CUM-821): its row says why and until when.
+  auto spawnTargets = [&](const char* prov, bool up) {
+    if (!up) return;
     std::string line = std::string("- spawn on ") + prov + ": ";
     std::vector<std::string> names;
     for (const ConnectorInfo& c : cs)
       if (provMatches(c, prov)) names.push_back(c.name);
     if (!std::strcmp(prov, "anthropic"))
       line += "cloud sandbox (bash, file read/write, web search/fetch)";
+    else if (!std::strcmp(prov, "mistral") && !mistralWebSearchOnWire(cs))
+      line += "hosted tools (its web_search is off)";
     else
       line += "web_search + hosted tools";
     if (!names.empty()) {
@@ -1556,9 +1636,9 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     }
     out += line + "\n";
   };
-  spawnTargets("openai", ps.openaiKeyed);
-  spawnTargets("anthropic", ps.anthropicKeyed);
-  spawnTargets("mistral", ps.mistralKeyed);
+  spawnTargets("openai", oaiUp);
+  spawnTargets("anthropic", antUp);
+  spawnTargets("mistral", misUp);
   // W12 (owner ask): what each sandbox is FOR - "can a sub be used for coding?"
   // had no honest answer in the prompt.
   // Verified live against the hosted GitHub MCP (tools/list): create_repository
@@ -1578,17 +1658,16 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   // fine. Routing is the ONLY lever - the cap is a provider limitation, not a knob
   // (and NEVER a reason to add device concurrency; see the stability constraint in
   // AGENTS.md). Emitted only for the providers that are actually keyed.
-  if (ps.mistralKeyed && (ps.openaiKeyed || ps.anthropicKeyed)) {
+  if (misUp && (oaiUp || antUp)) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
            "SECONDS (this is not a limit on your own turns or the nightly dream) - its "
            "API is synchronous, so the device cannot wait past that and the sub's "
            "work is LOST, not delayed. Keep mistral subs to ONE focused lookup. "
            "For anything longer - a multi-source sweep, reading several pages, "
            "producing a document - spawn on ";
-    out += ps.openaiKeyed ? (ps.anthropicKeyed ? "openai or anthropic" : "openai")
-                          : "anthropic";
+    out += oaiUp ? (antUp ? "openai or anthropic" : "openai") : "anthropic";
     out += ", which run asynchronously and may take minutes.\n";
-  } else if (ps.mistralKeyed) {
+  } else if (misUp) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
            "SECONDS (its API is synchronous; this is not a limit on your own turns or "
            "the nightly dream) and its work is LOST past that, so keep each sub "

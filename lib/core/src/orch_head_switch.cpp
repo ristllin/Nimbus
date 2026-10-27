@@ -51,6 +51,12 @@ std::string headPauseFact(const std::string& label, const HeadPause& p) {
   return label + ", the chosen head," + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
 }
 
+std::string providerPauseFact(const std::string& label, const HeadPause& p) {
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget);
+  if (!w) return std::string();
+  return label + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
+}
+
 std::string headSwitchRefusal(const std::string& note, const std::string& targetLabel) {
   return note + " To make " + targetLabel + " your main provider anyway, say \"switch to " + targetLabel +
          "\" again, or pick it under Assistant > Models.";

@@ -132,9 +132,11 @@ pick Mistral on a card, the connector-id field fills in Mistral's own name for i
 (Google Calendar is `google_calendar`, GitHub `github_app`).
 
 Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
-can read false for connectors that work. So a listed connector is used, and the
-assistant is told that an empty result may mean the account still needs
-connecting in Mistral. A Virtual Nimbus runs the same check at
+can read false for connectors that work. So a listed connector is used for your own
+data in it, and only a reply asking to sign in is taken to mean the account still
+needs connecting in Mistral. A connector is never used for facts from the public
+web (weather, travel, news, prices): the assistant and its Mistral sub-agents use
+web search for those. A Virtual Nimbus runs the same check at
 startup, after a Mistral key is saved, and when its first Studio connector is
 added (the hosted page has no Verify button).
 
@@ -170,7 +172,11 @@ Whatever the mode, the model is told the truth every turn: its
 `[PROVIDERS & CONNECTORS]` block marks each provider **available, verified** /
 **key present, not yet verified** / **key present but rejected on last check** /
 **no key** - and with validation off, **key present (validation off - trusting
-key presence)**.
+key presence)**. A provider that is paused right now is marked **paused**, with the
+reason and when it returns (its own monthly limit or the overall spending limit
+lifts, you resume it, credit is added, its key is replaced, or its monthly budget
+resets); its tools and connectors are not listed and it is offered for no
+sub-agent until then.
 
 **The Telegram bot token is watched live, not just at save time.** The token is
 verified once (a `getMe` call) when you save it, and that verdict is cached. If

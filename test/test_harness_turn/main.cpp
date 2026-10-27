@@ -3893,6 +3893,78 @@ static void test_lane_l_capacity_names_every_keyed_provider_by_its_mode() {
 }
 
 
+// CUM-821 (Lumi, 27 Oct): with OpenAI and Anthropic paused by their monthly limits,
+// [SPAWN CAPACITY] still said "use anthropic or openai for research, long work or
+// anything that needs the web". A provider held off (any pause cause, a park, its
+// budget) is left out; the open ones keep their clause.
+static void test_cum821_capacity_leaves_out_paused_providers() {
+  const auto capacity = [](Rig& r) {
+    r.eng->handleMessage("hi", "Roy", "1001");
+    const std::string& in = r.attempts.back().inputs;
+    const size_t cap = in.find("[SPAWN CAPACITY]");
+    TEST_ASSERT_TRUE(cap != std::string::npos);
+    return in.substr(cap, in.find('\n', cap) - cap);
+  };
+  {
+    Rig r;   // the Lumi state: the pause switch holds openai and anthropic
+    r.cfg.keyed = {"anthropic", "openai", "mistral"};
+    r.headPause = [](const std::string& h) {
+      orch::HeadPause p;
+      if (h == "anthropic" || h == "openai") p.causes = nimbus::orch::kPauseProviderLimit;
+      return p;
+    };
+    const std::string line = capacity(r);
+    TEST_ASSERT_TRUE_MESSAGE(line.find("mistral") != std::string::npos &&
+                                 line.find("sub-agents run one at a time INSIDE the device") != std::string::npos,
+                             line.c_str());
+    TEST_ASSERT_TRUE(line.find("anthropic") == std::string::npos);
+    TEST_ASSERT_TRUE(line.find("openai") == std::string::npos);
+    TEST_ASSERT_TRUE(line.find("needs the web") == std::string::npos);
+    TEST_ASSERT_TRUE(line.find("Keep each sub-agent to one focused step.") != std::string::npos);
+  }
+  {
+    Rig r;   // over its monthly budget is held off too
+    r.cfg.keyed = {"anthropic", "openai", "mistral"};
+    r.cfg.overBudgetHosts = {"openai"};
+    const std::string line = capacity(r);
+    TEST_ASSERT_TRUE(line.find("use anthropic for research, long work or anything that needs the web.") !=
+                     std::string::npos);
+    TEST_ASSERT_TRUE(line.find("openai") == std::string::npos);
+  }
+  {
+    Rig r;   // counter-test: nothing held off, both async providers named
+    r.cfg.keyed = {"anthropic", "openai", "mistral"};
+    const std::string line = capacity(r);
+    TEST_ASSERT_TRUE(line.find("use anthropic or openai for research") != std::string::npos ||
+                     line.find("use openai or anthropic for research") != std::string::npos);
+  }
+}
+
+// CUM-821: the [AVAILABLE PROVIDERS] priority list marks a provider held off "(paused)"
+// (Lumi's read "openai,mistral,anthropic" with both paused) and is byte-identical while
+// nothing is held off.
+static void test_cum821_sub_priority_marks_paused_providers() {
+  Rig r;
+  r.cfg.keyed = {"anthropic", "openai", "mistral"};
+  r.cfg.subPriority = "openai,mistral,anthropic";
+  r.headPause = [](const std::string& h) {
+    orch::HeadPause p;
+    if (h == "openai") p.causes = nimbus::orch::kPauseProviderLimit;
+    return p;
+  };
+  r.cfg.overBudgetHosts = {"anthropic"};
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_TRUE(r.attempts.back().instructions.find(
+                       "[AVAILABLE PROVIDERS] sub-session priority: openai (paused),mistral,anthropic (paused)\n") !=
+                   std::string::npos);
+  Rig c;   // counter-test: nothing held off, the configured text as it is
+  c.cfg.keyed = {"anthropic", "openai", "mistral"};
+  c.cfg.subPriority = "openai, mistral,anthropic";
+  c.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_TRUE(c.attempts.back().instructions.find(
+                       "[AVAILABLE PROVIDERS] sub-session priority: openai, mistral,anthropic\n") != std::string::npos);
+}
+
 // The conservation law at synthesis: a turn that succeeds with nothing to say
 // must not swallow the results it was handed (seen live on a mistral-small head).
 static void test_lane_l_a_silent_synthesis_never_drops_the_results() {
@@ -4751,6 +4823,8 @@ static void runFirstHalf() {
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
   RUN_TEST(test_lane_l_the_spawn_ledger_rides_the_next_turn);
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);
+  RUN_TEST(test_cum821_capacity_leaves_out_paused_providers);
+  RUN_TEST(test_cum821_sub_priority_marks_paused_providers);
   RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
   RUN_TEST(test_owner_notice_names_the_first_cause);
   RUN_TEST(test_failure_notice_retry_advice_only_when_transient);

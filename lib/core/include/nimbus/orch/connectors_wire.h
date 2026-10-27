@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/head_switch.h"   // HeadPause - what holds a provider off
+
 // connectors_wire - the PORTABLE half of the connectors subsystem (host-tested
 // via pio test -e native). It owns the pure decisions: given a parsed connector
 // list + provider state, (a) build the per-provider request-body attach JSON and
@@ -132,6 +134,17 @@ struct ProviderState {
   // The device's own PDF writer (the files.pdf tool: headings, text and simple
   // tables, no charts) is registered.
   bool pdfWriter = false;
+  // CUM-821: what holds each provider off right now - the pause switch (the owner, the
+  // overall spending limit, its own monthly limit), a billing or key park, its monthly
+  // budget - the same HeadPause the per-turn [THIS TURN RUNS ON] line reads. A held-off
+  // provider renders PAUSED with the reason and when it lifts, never "available", and is
+  // never offered as a spawn target or as the route for web or long work.
+  HeadPause openaiPause;
+  HeadPause anthropicPause;
+  HeadPause mistralPause;
+  // CUM-822: the head's own web.search tool (Tavily) is listed: its key is present and its
+  // budget is open.
+  bool webSearchTool = false;
 };
 
 // --- Code sandbox and file delivery: ONE rule (wf_plan 3 and 4a) ---------------

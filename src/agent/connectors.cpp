@@ -12,6 +12,7 @@
 #include "fs_atomic.h"              // writeFileAtomic, flashMounted: the last good workspace answer
 #include "files_subsystem.h"         // files::available - the file routes need an SD card
 #include "pdf_tool.h"                // the device PDF writer (one of the PDF routes)
+#include "adapters/tavily.h"         // tavily::available - the head's own web.search
 
 #include <LittleFS.h>
 
@@ -496,6 +497,11 @@ String catalog() {
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
   ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
+  // CUM-821: a provider held off now renders PAUSED and is no spawn or web route.
+  ps.openaiPause    = orchestrator::providerPause("openai");
+  ps.anthropicPause = orchestrator::providerPause("anthropic");
+  ps.mistralPause   = orchestrator::providerPause("mistral");
+  ps.webSearchTool  = tavily::available() && !store::providerOverBudget("tavily");   // CUM-822
   std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
   // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
   // up here), then append their live status so the model plans around them.

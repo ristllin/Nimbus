@@ -560,7 +560,54 @@ static void test_sub_connector_attached_but_never_called() {
   TEST_ASSERT_EQUAL_STRING("Mon 12 Oct 09:00 Team Stand-up", env.reply);   // the text is untouched here
   // The sub's own system prompt forbids inventing records.
   TEST_ASSERT_TRUE(bodyHas(d, 0, "never invent events, messages, files or other records"));
+  // CUM-822: and sends public facts to web_search, a connector only for the owner's data.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "Facts from the public web (weather, travel, news, prices, opening hours) "
+                                 "come from the web_search tool, with the source of each; use a connector "
+                                 "(Notion, Gmail, Calendar, Drive) only for the owner's own data in it."));
   TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
+}
+
+// CUM-822 (unit A, 27 Oct): a sub spawned with skill web_search and told "use the
+// web_search tool" still called the attached Notion once. A web_search spawn carries
+// Mistral's built-ins only; any other spawn keeps the owner's connectors.
+static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
+  for (const char* skill : {"web_search", "web_search_premium"}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+        "{\"type\":\"message.output\",\"content\":\"16 C, showers (bbc.co.uk/weather)\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "Use the web_search tool: today's weather in Cambridge.";
+    dir.instruction = dir.task;
+    dir.skill = skill;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "{\"type\":\"web_search\"}"), skill);
+    TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, 0, "\"connector\""), skill);
+    TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: web_search spawn - 1 Studio connector(s) left off"));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL(1, env.webRuns);
+    TEST_ASSERT_EQUAL(0, env.connectorCalls);
+  }
+  // Counter-test: a connector spawn (and one with no skill) keeps the connector.
+  for (const char* skill : {"gcal", static_cast<const char*>(nullptr)}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"message.output\",\"content\":\"ok\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "List my calendar events today.";
+    dir.instruction = dir.task;
+    dir.skill = skill;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "{\"type\":\"web_search\"}"));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  }
 }
 
 static void test_sub_connector_called_counts_the_execution() {
@@ -1386,6 +1433,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_captures_code_interpreter_file);
   RUN_TEST(test_sub_dispatch_file_only_no_prose);
   RUN_TEST(test_sub_connector_attached_but_never_called);
+  RUN_TEST(test_cum822_web_search_spawn_leaves_studio_connectors_off);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);

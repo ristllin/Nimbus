@@ -803,7 +803,7 @@ static JobEngine::Deps buildJobDeps() {
 // What holds paid requests to `p` off now (nimbus::orch::HeadPause): the pause switch (the
 // owner, the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
 // the monthly budget check. The park's re-check request is never taken; the budget check is the
-// one every turn makes at its start.
+// one every turn makes at its start. The connectors catalog reads it too (providerPause).
 static nimbus::orch::HeadPause headPauseFor(const std::string& p) {
   nimbus::orch::ProviderPark& park = nimbus::orch::providerPark();
   nimbus::orch::HeadPause hp;
@@ -815,6 +815,8 @@ static nimbus::orch::HeadPause headPauseFor(const std::string& p) {
   hp.overBudget = store::providerOverBudget(String(p.c_str()));
   return hp;
 }
+
+nimbus::orch::HeadPause providerPause(const std::string& p) { return headPauseFor(p); }
 
 static agent::ApplyDeps buildApplyDeps() {
   agent::ApplyDeps d;
