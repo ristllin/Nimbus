@@ -539,7 +539,7 @@ static void test_verify_probe_policy_and_its_metering() {
   TEST_ASSERT_TRUE(has(bodyOf(src, "static void meterProbe("), "meterSeamAnswerBody("));
   const std::string sel = bodyOf(src, "static void probeSelectedModels(const String& provider)");
   TEST_ASSERT_TRUE(sel.find("paidProbeAllowed(provider)") < sel.find("probeModel("));
-  const std::string run = bodyOf(src, "static void runOne()");
+  const std::string run = bodyOf(src, "static void runOne() {");   // the definition, not the forward declaration
   TEST_ASSERT_TRUE(has(run, "store::recordProviderCall(\"tavily\")"));
   TEST_ASSERT_TRUE(has(run, "verifyProbeAllowed(g_ownerAsked"));
 }
