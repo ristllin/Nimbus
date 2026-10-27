@@ -270,15 +270,20 @@ def _restart(net) -> None:
 
 
 def _chat(net, text: str, wait: float = 90.0) -> str:
+    """Send one web-chat message and return THAT turn's reply (``GET /api/chat?turn=<id>``,
+    never the legacy slot, which still holds the previous reply while this one waits)."""
     r = net.post("/api/chat", {"text": text}, timeout=15.0)
     assert r.status_code in (200, 202), r.status_code
+    turn = str(r.json().get("turn") or "")
+    assert turn, f"/api/chat gave no turn id: {r.text[:200]}"
     end = time.time() + wait
     while time.time() < end:
         time.sleep(3)
-        d = net.get_json("/api/chat", timeout=10.0)
-        if not d.get("pending") and d.get("reply"):
-            return d["reply"]
-    pytest.fail("no reply")
+        d = net.get_json(f"/api/chat?turn={turn}", timeout=10.0)
+        assert not d.get("gone"), f"turn {turn} is gone before it was answered"
+        if d.get("done"):
+            return str(d.get("reply") or "")
+    pytest.fail(f"turn {turn} was not answered within {wait:.0f}s")
 
 
 def test_l50_g_keyless_pinned_head_runs_on_a_keyed_host(net, mock_llm):  # noqa: F811
