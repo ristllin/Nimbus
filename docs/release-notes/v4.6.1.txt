@@ -1,1 +1,1 @@
-Faster replies, photos read first try, no restarts from the web page, real model named
+Faster replies, photos read first try, web search back, no duplicate messages or restarts
