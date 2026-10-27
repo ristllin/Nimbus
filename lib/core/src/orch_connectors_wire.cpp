@@ -1,4 +1,5 @@
 #include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/connector_grant.h"   // attachBuiltinsOnly - whose request it is (CUM-828)
 #include "nimbus/orch/provider_slots.h"   // kProviderSlots - the keyed walk past the priority list
 
 #include <cstring>   // std::strcmp (provider match, connector tools[] scan)
@@ -429,6 +430,7 @@ const char* pdfRouteProvider(const PdfRoute& r) {
 
 void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer,
                       bool builtinsOnly) {
+  builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   for (const ConnectorInfo& c : cs) {
     if (builtinsOnly && c.kind != "builtin") continue;  // cumulo route: built-ins only
     if (!forwardsToProviderHead(c, "openai")) continue;
@@ -1305,6 +1307,7 @@ const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, 
 }
 
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
+  builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   // Two shapes, per the Mistral Conversations API (docs.mistral.ai):
   //   hosted built-in TOOL (web_search, code_interpreter, image_generation,
   //     document_library): {type:"<name>"} - the name IS the tool type.
@@ -1349,6 +1352,7 @@ int mistralWireToolCount(const std::vector<ConnectorInfo>& cs) {
 
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer, bool builtinsOnly) {
+  builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   for (const ConnectorInfo& c : cs) {
     // Anthropic has no built-in connector kind here, so a cumulo route (built-ins
     // only) attaches NOTHING - the owner's BYO MCP servers stay off the shared key.

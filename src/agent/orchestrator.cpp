@@ -649,8 +649,18 @@ static bool anyContextOverflow(const TurnEndEv& ev) {
 // Execution-only closures for the portable job machinery - every decision
 // (dispatch gates, backoff, refusal strings, synthesis clock) lives in
 // lib/harness jobs.cpp and is host-tested (test_harness_jobs).
+// The whole principal for a chat (namespace, role and quota) from the tenant table:
+// the one answer to "who is this chat" for the turn (ApplyDeps) and for the
+// sub-agents it starts (JobEngine), so the two can never disagree (CUM-828).
+static nimbus::orch::Principal chatPrincipal(const std::string& chatId) {
+  nimbus::orch::Quota q;
+  tenantQuotaOf(chatId, q);
+  return nimbus::orch::principalForRole(chatId, roleOfChat(String(chatId.c_str())), q);
+}
+
 static JobEngine::Deps buildJobDeps() {
   JobEngine::Deps d;
+  d.principalFor = chatPrincipal;   // a sub-agent inherits its chat's principal (CUM-828/830)
   d.platform.nowMs    = [] { return (uint32_t)millis(); };
   d.platform.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
   d.fabric  = g_fabric;      // set by begin() before the engine is constructed
@@ -934,12 +944,7 @@ static agent::ApplyDeps buildApplyDeps() {
   // Every rail then enforced defaults nobody had chosen: a Guest wrote like a
   // User, and revoking someone changed nothing. The bool could not carry the
   // answer, so it had to go.
-  d.principalFor = [](const std::string& chatId) {
-    const String cid(chatId.c_str());
-    nimbus::orch::Quota q;
-    tenantQuotaOf(chatId, q);
-    return nimbus::orch::principalForRole(chatId, roleOfChat(cid), q);
-  };
+  d.principalFor = chatPrincipal;
   d.persistMemory = [] { memory::persistVectors(); memory::persistScratchpad(); };
   d.enqueueSpawn = [](const orch::Spawn& s, const std::string& chatId, bool quiet) {
     return g_jobs && g_jobs->enqueueSpawn(s, chatId, quiet);
@@ -1298,7 +1303,10 @@ static TurnEngine::Deps buildTurnDeps() {
       for (const auto& t : tenantSnapshot())
         if (t.chatId == chatId) { in.speakerLabel = t.label; break; }
     }
-    in.sessions   = sessionInfos();
+    // CUM-830: the sub-agents this chat may see (the owner every one, a member or a
+    // guest only its own chat's).
+    in.sessions   = nimbus::orch::visibleSessions(
+        sessionInfos(), nimbus::orch::actionCaller(chatPrincipal(chatId), false, chatId));
     in.scratchpad = &memory::scratchpad();
     in.budgetBytes = memory::config().maxContextBytes;  // was a dead knob (compile-time default won)
     return in;
@@ -1911,7 +1919,10 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       // not run these. One table (nimbus::orch::kCommandVerbs) says which; the
       // batcher's command boundary and the dispatcher guard iterate the same table.
       const bool ownerCmd = nimbus::orch::isOwnerVerb(v);
-      const bool owner = pseudo || agent::telegram::isOwner(chatId);
+      // The tenant role decides (the table every conversational rail reads): a demoted
+      // or revoked chat loses the owner verbs, an Admin row has them wherever it sits on
+      // the allowlist. A chat with no row follows the Telegram owner rule (roleOfChat).
+      const bool owner = pseudo || nimbus::orch::mayRunOwnerCommands(roleOfChat(chatId));
       // Every deterministic command reply SELF-IDENTIFIES (device name + fw).
       // Live confusion 2026-07-24: two devices sharing one bot token take turns
       // consuming messages, so an update notice from one board and the /update
@@ -2443,7 +2454,9 @@ static void drainSystemTurn() {
   }
   portEXIT_CRITICAL(&s_sysTurnMux);
   if (restaged) return;
-  String chat = firstAllowedChat();
+  // The owner's chat by the owners list (the post-update turn is the owner's), not
+  // merely the first allow-listed chat, which can be a member (CUM-813 review).
+  String chat = agent::telegram::ownerChat();
   if (chat.length() == 0 || !g_engine) return;   // nowhere to deliver - drop quietly
   const nimbus::orch::FireOutcome o =
       g_engine->injectBoundedTurn(std::string(chat.c_str()), std::string(prompt.c_str()),
@@ -2504,17 +2517,23 @@ nimbus::orch::Role roleOfChat(const String& chatId) {
   const std::string id(chatId.c_str());
   Role r;
   bool known;
-  { TenantLock lk; known = g_tenants.known(id); r = g_tenants.roleOf(id); }
+  bool tableHasAdmin;
+  {
+    TenantLock lk;
+    known = g_tenants.known(id);
+    r = g_tenants.roleOf(id);
+    tableHasAdmin = g_tenants.adminCount() > 0;
+  }
   // An EXPLICIT row is the answer, including an explicit Unknown - that is what
   // revoking someone writes, and revoking must not be undone by the fallback
   // below. (A revoked chat deliberately stays on the Telegram allowlist so they
   // can still be told they no longer have access.)
   if (known) return r;
-  // No row at all: the chat the Telegram owner rule names is the owner (the same
-  // rule the owner-only commands use, so a freshly onboarded owner may change the
-  // device before the table holds a row); another allow-listed chat is a User; anyone
-  // else is Unknown until approved (nimbus::orch::roleWithoutRow).
-  return nimbus::orch::roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId));
+  // No row at all: while no Admin row exists, the chat the Telegram owner rule names
+  // is the owner (a freshly onboarded owner may change the device before the table
+  // holds a row); otherwise an allow-listed chat is a User; anyone else is Unknown
+  // until approved (nimbus::orch::roleWithoutRow).
+  return nimbus::orch::roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin);
 }
 
 // ---- tenant mutations (locked; every surface goes through these) -------------

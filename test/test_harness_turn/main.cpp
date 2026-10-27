@@ -4,6 +4,8 @@
 
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
+#include "nimbus/orch/connector_grant.h"   // CUM-828: the grant a turn's requests carry
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -147,6 +149,10 @@ struct Rig {
   std::vector<std::string> memCalls;   // ApplyDeps.memDispatch recorder (tool names)
   orch::ToolResult memResult = orch::ToolResult::ok("stored");   // what every memory tool answers
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
+  // CUM-828/830: per-chat roles (a chat listed here is that role for the turn AND the
+  // sub-agents it starts); empty = the legacy rig (the job engine sees every chat as
+  // the owner's).
+  std::map<std::string, orch::Role> roles;
   std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
   std::string chatSummary;          // L19-28: the compacted summary composeInputs hands the engine
   // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
@@ -204,6 +210,11 @@ struct Rig {
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
+    };
+    jd.principalFor = [this](const std::string& chat) {
+      if (roles.empty()) return orch::principalForRole(chat, orch::Role::Admin);
+      auto it = roles.find(chat);
+      return orch::principalForRole(chat, it == roles.end() ? orch::Role::Unknown : it->second);
     };
     if (withSubFabric) {
       subAdapter.backend = "anthropic";
@@ -298,6 +309,8 @@ struct Rig {
     };
     // Default = the harness's deny-all principal; adminChats = true opts into admin.
     d.apply.principalFor = [this](const std::string& chat) {
+      auto it = roles.find(chat);
+      if (it != roles.end()) return orch::principalForRole(chat, it->second);
       if (adminChats) return orch::principalForRole(chat, orch::Role::Admin);
       orch::Principal p;
       p.ns = orch::nsForChat(chat, false);
@@ -3438,6 +3451,7 @@ static void test_lane_l_a_reported_cut_salvages_the_partial_turn() {
 // A stringified session_ops (the Anthropic head's shape) starts exactly one sub.
 static void test_lane_l_a_stringified_spawn_list_starts_its_sub() {
   Rig r(true);
+  r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   r.cfg.toolLoop = false;
   Rig::Script s;
   s.outJson = jsonOf([](ArduinoJson::JsonDocument& d) {
@@ -3475,6 +3489,7 @@ static void test_lane_l_an_empty_task_spawn_is_reported_not_skipped() {
 // the turn started none gets the correction line and a head note.
 static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
   Rig r(true);
+  r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   r.cfg.toolLoop = false;
   Rig::Script s;
   s.outJson = "{\"reply\":\"I've started three sub-agents on the comparison.\"}";
@@ -3485,6 +3500,7 @@ static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started") != std::string::npos);
   // Counter-test: a TRUE claim (the spawn is in the turn) gets no correction.
   Rig t(true);
+  t.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   t.cfg.toolLoop = false;
   s.outJson = "{\"reply\":\"I've started a sub-agent on it.\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"Do it\"}]}";
   t.scripts["anthropic"] = {s};
@@ -3552,6 +3568,7 @@ static void test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim() {
   int claims = 0;
   for (size_t L = 1; L <= full.size(); L++) {
     Rig r(true);
+    r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
     r.cfg.toolLoop = false;
     Rig::Script s;
     s.outJson = full.substr(0, L);
@@ -3606,6 +3623,7 @@ static void test_lane_l_a_prose_answer_that_claims_spawns_is_corrected() {
 static void test_lane_l_pseudo_tool_spawns_join_the_turn_exactly_once() {
   for (int variant = 0; variant < 2; variant++) {
     Rig r(true);
+    r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
     Rig::Script s;
     s.dispatchTools = 1;
     s.toolName = "session_ops";
@@ -3871,6 +3889,7 @@ static void test_lane_l_markup_never_reaches_the_owner() {
 // The spawn ledger (UNIFIED 3.17): the next turn reads what the device started.
 static void test_lane_l_the_spawn_ledger_rides_the_next_turn() {
   Rig r(true);
+  r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   r.cfg.toolLoop = false;
   Rig::Script s;
   s.outJson = "{\"reply\":\"On it.\",\"session_ops\":[{\"op\":\"spawn\",\"provider\":\"anthropic\",\"name\":\"lineup\",\"task\":\"List the lineup\"}]}";
@@ -5011,8 +5030,73 @@ static void runSecondHalf() {
   runLateLaneTests();   // lanes K2 and DEF (and the recall-outage test, kept in order; main sits at the length gate)
 }
 
+// ---- CUM-828 / CUM-830 through the turn engine ---------------------------------------
+
+// Every request a turn makes carries its chat's grant: the owner's connectors for the
+// owner (attended or not), the built-ins only for a member or a guest; the synthesis
+// turn for a member's sub-agent runs under that member, the fold too.
+static void test_cum828_a_turns_requests_carry_its_chats_grant() {
+  struct Case { const char* chat; orch::Role role; bool scheduled; bool owner; };
+  const Case cases[] = {{"1001", orch::Role::Admin, false, true}, {"2002", orch::Role::User, false, false},
+                        {"3003", orch::Role::Guest, false, false}, {"1001", orch::Role::Admin, true, true}};
+  for (const Case& k : cases) {
+    Rig r;
+    r.roles[k.chat] = k.role;
+    std::vector<orch::ConnectorGrant> seen;
+    r.onProviderCall = [&seen] { seen.push_back(orch::currentConnectorGrant()); };
+    if (k.scheduled) r.eng->injectScheduledTurn(k.chat, "check in", "routine");
+    else r.eng->handleMessage("hello", "Someone", k.chat);
+    TEST_ASSERT_FALSE_MESSAGE(seen.empty(), k.chat);
+    for (orch::ConnectorGrant g : seen)
+      TEST_ASSERT_EQUAL_MESSAGE(k.owner, g == orch::ConnectorGrant::Owner, k.chat);
+    TEST_ASSERT_EQUAL(int(orch::ConnectorGrant::Owner), int(orch::currentConnectorGrant()));   // scope ended
+  }
+}
+
+// CUM-830: a turn reads only its own chat's finished sub-agent results. The owner's turn
+// never folds a member's result (member-written text never reaches an owner-attended
+// turn), a member's turn never reads the owner's, and the synthesis for a member's
+// sub-agent runs in that member's chat, under that member, with only its results.
+static void test_cum830_a_turn_reads_only_its_own_chats_results() {
+  Rig r;
+  r.roles = {{"1001", orch::Role::Admin}, {"2002", orch::Role::User}};
+  r.jobs->addFreshResult("job0001", "owner-sub", "OWNER-MAIL-SUMMARY", "chat:1001");
+  r.jobs->addFreshResult("job0002", "member-sub", "MEMBER-WRITTEN-TEXT", "chat:2002");
+  // The owner writes while a member's result is pending: it is not folded in.
+  r.eng->handleMessage("hello", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.attempts.empty());
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("OWNER-MAIL-SUMMARY") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("MEMBER-WRITTEN-TEXT") == std::string::npos);
+  // The member's result is still parked for the member.
+  TEST_ASSERT_TRUE(r.jobs->hasFreshResultsFor(r.jobs->freshScopeFor("2002")));
+  TEST_ASSERT_EQUAL_STRING("2002", r.jobs->nextFreshChat().c_str());
+  // Its synthesis runs in the member's chat, under the member (built-ins only), with only
+  // the member's result, while another owner result waits for the owner.
+  r.jobs->addFreshResult("job0003", "owner-sub", "OWNER-SECOND", "chat:1001");
+  std::vector<orch::ConnectorGrant> seen;
+  r.onProviderCall = [&seen] { seen.push_back(orch::currentConnectorGrant()); };
+  const size_t before = r.attempts.size();
+  r.eng->maybeConsolidate("2002");
+  TEST_ASSERT_EQUAL(before + 1, r.attempts.size());
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("MEMBER-WRITTEN-TEXT") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("OWNER-SECOND") == std::string::npos);
+  TEST_ASSERT_FALSE(seen.empty());
+  TEST_ASSERT_EQUAL(int(orch::ConnectorGrant::BuiltinsOnly), int(seen.back()));
+  TEST_ASSERT_FALSE(r.jobs->hasFreshResultsFor(r.jobs->freshScopeFor("2002")));
+  // A synthesis asked for a chat with nothing of its own parked does not run.
+  const size_t n = r.attempts.size();
+  r.eng->maybeConsolidate("2002");
+  TEST_ASSERT_EQUAL(n, r.attempts.size());
+  // And the member's message turn never reads the owner's result.
+  r.eng->handleMessage("what's new?", "Sam", "2002");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("OWNER-SECOND") == std::string::npos);
+  TEST_ASSERT_TRUE(r.jobs->hasFreshResultsFor(r.jobs->freshScopeFor("1001")));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_cum828_a_turns_requests_carry_its_chats_grant);
+  RUN_TEST(test_cum830_a_turn_reads_only_its_own_chats_results);
   runFirstHalf();
   runSecondHalf();
   UNITY_END();

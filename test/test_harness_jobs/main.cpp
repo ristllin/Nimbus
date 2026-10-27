@@ -21,6 +21,8 @@
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
 #include "nimbus/orch/journal.h"
+#include "nimbus/orch/connector_grant.h"   // CUM-828: whose connectors a sub-agent carries
+#include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/provider_slots.h"   // kProviderSlots - the one-key spawn class test
 #include "../../lib/harness/src/providers/wire.h"   // ReplyWriter - the writer every adapter uses (L19-36)
 
@@ -102,6 +104,8 @@ struct Rig {
   std::function<std::string(const char*, const char*, const std::string&, const std::string&)> spill;
 
   bool withClock = false;   // wire nowString/nowEpoch (the finished-job record)
+  // CUM-828/830: who a chat is (nullable: every chat counts as the owner).
+  std::function<orch::Principal(const std::string&)> principal;
 
   std::unique_ptr<JobEngine> eng;
 
@@ -148,6 +152,7 @@ struct Rig {
       return it == connectorProv.end() ? std::string() : it->second;
     };
     if (fileRoute) d.fileSpawnProvider = fileRoute;
+    if (principal) d.principalFor = principal;
     d.synthesize = [this](const std::string& chat) {
       synthChats.push_back(chat);
       if (synthPutsBack) {   // the engine's memory refusal: peek, take, put back
@@ -2603,6 +2608,188 @@ static void test_a_restored_sync_job_is_reported_lost_at_the_restart() {
   TEST_ASSERT_TRUE(n.delivered.at(0).second.find("expired or was not found") != std::string::npos);
 }
 
+// ---- CUM-828 / CUM-830: a sub-agent inherits the principal of the turn that started it ----
+// The caller classes, as the device's chats: the owner's Telegram chat, a member, a guest,
+// an owner routine, the results synthesis and the system turn (all on owner chats), the
+// LAN endpoint (it cannot start one: its principal is checked anyway), the serial console.
+namespace spawnclass {
+
+enum Cls { OwnerTurn = 0, Member, Guest, Routine, Synthesis, SystemTurn, McpUser, Serial, kClasses };
+const char* const kNames[kClasses] = {"owner turn", "member", "guest", "routine",
+                                      "synthesis", "system turn", "/mcp User", "serial"};
+const char* const kChat[kClasses] = {"1001", "2002", "3003", "1001", "1001", "web", "mcp", "serial"};
+
+orch::Principal principalOf(const std::string& chat) {
+  using orch::Role;
+  if (chat == "mcp") {
+    orch::Principal p = orch::principalForRole(orch::kMcpNs, Role::User);
+    p.ns = orch::kMcpNs;
+    return p;
+  }
+  Role r = Role::Unknown;
+  if (chat == "1001" || chat == "web" || chat == "serial" || chat == "voice") r = Role::Admin;
+  else if (chat == "2002") r = Role::User;
+  else if (chat == "3003") r = Role::Guest;
+  return orch::principalForRole(chat, r);
+}
+
+// A provider adapter that attaches the owner's connectors exactly as every provider
+// request does (attach*Wire), recording what rode and under which grant.
+struct AttachingAdapter : FakeAdapter {
+  std::vector<int> privateRode;   // per dispatch: the owner's connectors attached
+  std::vector<orch::ConnectorGrant> grants;
+  agent::FabricErr dispatch(const agent::Directive& d, char outJobId[72]) override {
+    std::vector<orch::ConnectorInfo> cs(2);
+    cs[0].name = cs[0].type = "github"; cs[0].prov = "openai"; cs[0].kind = "mcp";
+    cs[0].url = "https://gh.example/mcp"; cs[0].enabled = true;
+    cs[1].name = cs[1].type = "code_interpreter"; cs[1].prov = "openai"; cs[1].kind = "builtin";
+    cs[1].enabled = true;
+    ArduinoJson::JsonDocument doc;
+    orch::attachOpenAIWire(doc, cs, [](const orch::ConnectorInfo&) { return std::string("tok"); });
+    int priv = 0;
+    for (ArduinoJson::JsonObjectConst t : doc["tools"].as<ArduinoJson::JsonArrayConst>())
+      if (std::string(t["type"] | "") == "mcp") priv++;
+    privateRode.push_back(priv);
+    grants.push_back(orch::currentConnectorGrant());
+    return FakeAdapter::dispatch(d, outJobId);
+  }
+};
+
+}  // namespace spawnclass
+
+// A sub-agent started for the owner (any owner channel, attended or not) carries the
+// owner's connectors; one a member or a guest started carries the provider's built-ins
+// only. Without the grant scope around the dispatch every class gets them and this fails.
+static void test_cum828_spawn_carries_its_chats_connectors_by_caller_class() {
+  using namespace spawnclass;
+  const char* const want = "A--AAA-A";
+  for (int c = 0; c < kClasses; c++) {
+    Rig r;
+    AttachingAdapter att;
+    att.backend = "openai";
+    r.fabric.registerAdapter(&att);
+    r.principal = principalOf;
+    r.build();
+    orch::Spawn s = sp("research the thing");
+    s.provider = "openai";
+    r.eng->enqueueSpawn(s, kChat[c]);
+    r.eng->pump();
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)att.privateRode.size(), kNames[c]);
+    const bool owner = want[c] == 'A';
+    TEST_ASSERT_EQUAL_MESSAGE(owner ? 1 : 0, att.privateRode[0], kNames[c]);
+    TEST_ASSERT_EQUAL_MESSAGE(owner, att.grants[0] == orch::ConnectorGrant::Owner, kNames[c]);
+    // The scope ends with the dispatch: the next request on this task is the owner's again.
+    TEST_ASSERT_EQUAL(int(orch::ConnectorGrant::Owner), int(orch::currentConnectorGrant()));
+  }
+}
+
+// A connector of the owner's named as a member's or a guest's sub-agent skill is refused
+// with the reason before any provider is asked; a built-in tool is not, and the owner's
+// own connector task still runs.
+static void test_cum828_a_members_spawn_cannot_name_the_owners_connector() {
+  using namespace spawnclass;
+  struct Case { const char* chat; const char* skill; bool runs; };
+  const Case cases[] = {{"2002", "gmail", false}, {"3003", "gmail", false}, {"2002", "code_interpreter", true},
+                        {"1001", "gmail", true},  {"web", "gmail", true}};
+  for (const Case& k : cases) {
+    Rig r;
+    r.principal = principalOf;
+    r.connectorProv = {{"gmail", "anthropic"}, {"code_interpreter", "anthropic"}};
+    r.build();
+    orch::Spawn s = sp("read my inbox");
+    s.skill = k.skill;
+    r.eng->enqueueSpawn(s, k.chat);
+    r.eng->pump();
+    const std::string msg = std::string(k.chat) + " " + k.skill;
+    TEST_ASSERT_EQUAL_MESSAGE(k.runs ? 1 : 0, (int)r.adapter.dispatched.size(), msg.c_str());
+    if (k.runs) continue;
+    TEST_ASSERT_FALSE(r.delivered.empty());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered.back().second.find("the gmail connector is the device owner's") !=
+                                 std::string::npos,
+                             r.delivered.back().second.c_str());
+    TEST_ASSERT_EQUAL_STRING(k.chat, r.delivered.back().first.c_str());
+  }
+}
+
+// CUM-830: a finished result is read only by its own chat's turns - the owner's turns
+// read every owner sub-agent's (one person across channels), a member's or a guest's
+// only its own chat's; the synthesis and the raw fallback go to the chat that started it.
+static void test_cum830_fresh_results_stay_with_the_chat_that_started_them() {
+  using namespace spawnclass;
+  Rig r;
+  r.principal = principalOf;
+  r.build();
+  r.eng->addFreshResult("job0001", "owner-sub", "owner findings", "chat:1001");
+  r.eng->addFreshResult("job0002", "member-sub", "member findings", "chat:2002");
+  r.eng->addFreshResult("job0003", "guest-sub", "guest findings", "chat:3003");
+  r.eng->addFreshResult("job0004", "owner-web-sub", "owner web findings", "chat:web");
+  // Every class: what its turn would read (peek, so each class sees the same queue).
+  const char* const sees[kClasses] = {"owner findings|owner web findings", "member findings", "guest findings",
+                                      "owner findings|owner web findings", "owner findings|owner web findings",
+                                      "owner findings|owner web findings", "", "owner findings|owner web findings"};
+  for (int c = 0; c < kClasses; c++) {
+    std::string got;
+    for (const auto& f : r.eng->peekFreshFor(r.eng->freshScopeFor(kChat[c])))
+      got += (got.empty() ? "" : "|") + f.text;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(sees[c], got.c_str(), kNames[c]);
+  }
+  // A member's take leaves everyone else's parked; the owner's turn never reads it.
+  const std::string member = r.eng->takeFreshResultsFor(r.eng->freshScopeFor("2002"), nullptr, nullptr, nullptr);
+  TEST_ASSERT_TRUE(member.find("member findings") != std::string::npos);
+  TEST_ASSERT_TRUE(member.find("owner findings") == std::string::npos);
+  TEST_ASSERT_TRUE(member.find("guest findings") == std::string::npos);
+  const std::string owner = r.eng->takeFreshResultsFor(r.eng->freshScopeFor("web"), nullptr, nullptr, nullptr);
+  TEST_ASSERT_TRUE(owner.find("owner findings") != std::string::npos);
+  TEST_ASSERT_TRUE(owner.find("owner web findings") != std::string::npos);
+  TEST_ASSERT_TRUE(owner.find("guest findings") == std::string::npos);
+  TEST_ASSERT_TRUE(r.eng->hasFreshResultsFor(r.eng->freshScopeFor("3003")));
+  TEST_ASSERT_EQUAL_STRING("3003", r.eng->nextFreshChat().c_str());   // the guest's synthesis is next
+}
+
+// The stuck-synthesis raw fallback delivers each chat's results to that chat only.
+static void test_cum830_the_raw_fallback_delivers_each_chats_results_to_it() {
+  using namespace spawnclass;
+  Rig r;
+  r.principal = principalOf;
+  r.synthConsumes = false;   // the summary step never runs: the fallback must
+  r.build();
+  r.eng->addFreshResult("job0001", "owner-sub", "owner findings", "chat:1001");
+  r.eng->addFreshResult("job0002", "member-sub", "member findings", "chat:2002");
+  r.eng->pump();                                          // drained: the clock starts
+  r.plat.ms += JobEngine::kSynthFallbackMs + 1;
+  r.eng->pump();                                          // stuck: raw fallback
+  TEST_ASSERT_FALSE(r.eng->hasFreshResults());
+  std::map<std::string, std::string> to;
+  for (const auto& d : r.delivered) to[d.first] += d.second;
+  TEST_ASSERT_TRUE(to["1001"].find("owner findings") != std::string::npos);
+  TEST_ASSERT_TRUE(to["1001"].find("member findings") == std::string::npos);
+  TEST_ASSERT_TRUE(to["2002"].find("member findings") != std::string::npos);
+  TEST_ASSERT_TRUE(to["2002"].find("owner findings") == std::string::npos);
+  // Synthesis was asked for the chat whose results came first, never with another's.
+  TEST_ASSERT_FALSE(r.synthChats.empty());
+  TEST_ASSERT_EQUAL_STRING("1001", r.synthChats.front().c_str());
+}
+
+// The session rows say who started each sub-agent (what the digest and the session
+// tools filter on).
+static void test_cum830_session_rows_name_who_started_them() {
+  using namespace spawnclass;
+  Rig r;
+  r.principal = principalOf;
+  r.build();
+  r.eng->enqueueSpawn(sp("owner task"), "1001");
+  r.eng->pump();
+  r.plat.ms += 3000;
+  r.eng->enqueueSpawn(sp("member task"), "2002");
+  r.eng->pump();
+  const std::vector<orch::SessionInfo> rows = r.eng->sessionInfos();
+  TEST_ASSERT_EQUAL(2, (int)rows.size());
+  TEST_ASSERT_EQUAL_STRING("1001", rows[0].chat.c_str());
+  TEST_ASSERT_TRUE(rows[0].byOwner);
+  TEST_ASSERT_EQUAL_STRING("2002", rows[1].chat.c_str());
+  TEST_ASSERT_FALSE(rows[1].byOwner);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -2687,6 +2874,11 @@ int main(int, char**) {
   RUN_TEST(test_a_new_boot_never_reuses_a_restored_or_finished_tag);
   RUN_TEST(test_finished_jobs_are_listed_after_a_restart);
   RUN_TEST(test_a_restored_sync_job_is_reported_lost_at_the_restart);
+  RUN_TEST(test_cum828_spawn_carries_its_chats_connectors_by_caller_class);
+  RUN_TEST(test_cum828_a_members_spawn_cannot_name_the_owners_connector);
+  RUN_TEST(test_cum830_fresh_results_stay_with_the_chat_that_started_them);
+  RUN_TEST(test_cum830_the_raw_fallback_delivers_each_chats_results_to_it);
+  RUN_TEST(test_cum830_session_rows_name_who_started_them);
   UNITY_END();
   return 0;
 }

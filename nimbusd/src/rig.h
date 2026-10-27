@@ -2560,6 +2560,9 @@ class NimbusdRig {
   void wireJobDeps(agent::JobEngine::Deps& jd) {
     jd.fabric = &fabric_;
     jd.journal = &journal_;
+    // A sub-agent inherits the principal of the chat that started it (CUM-828/830): the
+    // owner's carries the owner's connectors, anyone else's the built-ins only.
+    jd.principalFor = [this](const std::string& chat) { return access_->principalFor(chat); };
     jd.subPriority = [this] { return subLadder(); };
     jd.providerHasKey = [this](const std::string& p) { return keyedForEngine(p); };
     jd.subModel = [this](const std::string& p) { return subModelFor(p); };
@@ -2583,7 +2586,7 @@ class NimbusdRig {
     // its results are dropped instead of delivered.
     jd.synthesize = [this](const std::string& chat) {
       if (!access_->mayConverse(chat)) {
-        if (jobs_) jobs_->takeFreshResults();
+        if (jobs_) jobs_->takeFreshResultsFor(jobs_->freshScopeFor(chat), nullptr, nullptr, nullptr);
         return;
       }
       if (eng_) eng_->maybeConsolidate(chat);

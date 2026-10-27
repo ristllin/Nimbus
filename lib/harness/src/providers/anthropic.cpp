@@ -10,6 +10,7 @@
 #include "nimbus/harness/output_caps.h"   // the output-cap table (max_tokens, effort, retry)
 #include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts, cache points
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/connector_grant.h"   // a non-owner sub-agent gets its own agent (CUM-828)
 #include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - the fold trigger scale
 #include "nimbus/orch/connectors_wire.h"  // isFileSkill - the outputs hint on file tasks
 #include "nimbus/orch/compact.h"      // modelCtxTokens, ORCH_COMPACT_PROMPT (the fold round)
@@ -318,11 +319,15 @@ static void fitMcpServers(JsonDocument& agent) {
 
 // Anthropic pins the model on the AGENT (no per-session model field), so each
 // model needs its own agent: the cached id for `model`, created on first use.
-// "" + `err` on failure.
+// The owner's connectors ride the agent too, so a sub-agent started for anyone else
+// (connector_grant.h: built-ins only) never reuses the owner's agent: it gets one
+// of its own, keyed "<model>~b" (a model name never holds '~'). "" + `err` on failure.
 static std::string agentFor(const ProviderDeps& pd, const Directive& d, const char* defaultModel,
                             AntIds& ids, FabricErr& err) {
   const char* model = safeModel(d.model, defaultModel);
-  std::string cached = agentInMap(ids.agentMap, model);
+  const bool builtins = nimbus::orch::currentConnectorGrant() == nimbus::orch::ConnectorGrant::BuiltinsOnly;
+  const std::string key = std::string(model) + (builtins ? "~b" : "");
+  std::string cached = agentInMap(ids.agentMap, key);
   if (!cached.empty()) return cached;
   std::string body;
   {
@@ -342,8 +347,8 @@ static std::string agentFor(const ProviderDeps& pd, const Directive& d, const ch
   }
   const Created agent = createCall(pd, d, "create agent", "/v1/agents", std::move(body), err);
   if (agent.id.empty()) return std::string();
-  ids.agentMap += std::string(model) + "=" + agent.id + ";";
-  hlog::logf("anthropic: agent %s for %s", agent.id.c_str(), model);
+  ids.agentMap += key + "=" + agent.id + ";";
+  hlog::logf("anthropic: agent %s for %s", agent.id.c_str(), key.c_str());
   writeThrough(pd.setAntAgentMap, pd.antAgentMap, ids.agentMap, "agent map");
   return agent.id;
 }

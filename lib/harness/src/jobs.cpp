@@ -382,6 +382,19 @@ void JobEngine::refuseConnector(const PendingSpawn& p, const std::string& provid
   noteSpawnRefused(p.chatId, p.name, p.task, note);
 }
 
+// A connector of the owner's named by a sub-agent someone else started: refused with
+// the reason, before any provider is asked (CUM-828).
+void JobEngine::refuseOwnersConnector(const PendingSpawn& p) {
+  const std::string skill = p.skill;
+  hlog::logf("orchestrator: spawn refused (connector %s is the owner's, chat %s)", skill.c_str(), p.chatId);
+  deliver(p.chatId, "Couldn't start that agent: the " + skill + " connector is the device owner's, so only the "
+                    "owner can use it. A sub-agent from this conversation can search the web and use the "
+                    "provider's own tools.");
+  noteSpawnRefused(p.chatId, p.name, p.task,
+                   skill + " is the device owner's connector; a sub-agent started from this conversation runs "
+                           "with the provider's built-in tools only");
+}
+
 // ---- fresh-result store -----------------------------------------------------
 
 void JobEngine::addFreshResult(const char* tag, const char* model, const std::string& text,
@@ -393,6 +406,12 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   std::string ringTag;
   if (d_.spillResult) ringTag = d_.spillResult(tag ? tag : "", model ? model : "", text, ns);
   FreshResult fr;
+  // Whose result it is (CUM-830): the spawning chat (its namespace is "chat:<id>") and
+  // whether that chat is the owner's; only that chat's turns (the owner's: every owner
+  // chat's) read it.
+  static const char kChatNs[] = "chat:";
+  if (ns.rfind(kChatNs, 0) == 0) fr.chatId = ns.substr(sizeof(kChatNs) - 1);
+  fr.byOwner = chatIsOwner(fr.chatId);
   // Field caps preserved from the device struct: char tag[12] / char model[40].
   fr.tag   = tag   ? std::string(tag).substr(0, 11)   : std::string();
   fr.model = model ? std::string(model).substr(0, 39) : std::string();
@@ -423,6 +442,41 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   fresh_.push_back(std::move(fr));
 }
 
+bool JobEngine::chatIsOwner(const std::string& chatId) const {
+  if (chatId.empty() || !d_.principalFor) return true;   // the device's own, or an unwired host
+  return orch::connectorGrantFor(d_.principalFor(chatId)) == orch::ConnectorGrant::Owner;
+}
+
+orch::ConnectorGrant JobEngine::grantFor(const std::string& chatId) const {
+  return chatIsOwner(chatId) ? orch::ConnectorGrant::Owner : orch::ConnectorGrant::BuiltinsOnly;
+}
+
+JobEngine::FreshScope JobEngine::freshScopeFor(const std::string& chatId) const {
+  FreshScope s;
+  s.chatId = chatId;
+  s.owner = chatIsOwner(chatId);
+  return s;
+}
+
+bool JobEngine::inScope(const FreshResult& f, const FreshScope& s) {
+  return s.owner ? f.byOwner : (!f.byOwner && f.chatId == s.chatId);
+}
+
+bool JobEngine::hasFreshResultsFor(const FreshScope& s) const {
+  for (const auto& f : fresh_)
+    if (inScope(f, s)) return true;
+  return false;
+}
+
+std::string JobEngine::nextFreshChat() const { return fresh_.empty() ? freshChatId_ : fresh_.front().chatId; }
+
+std::vector<JobEngine::FreshResult> JobEngine::peekFreshFor(const FreshScope& s) const {
+  std::vector<FreshResult> out;
+  for (const auto& f : fresh_)
+    if (inScope(f, s)) out.push_back(f);
+  return out;
+}
+
 std::string JobEngine::takeFreshResults(bool* unverified, int* sourced, int* unsourced) {
   int s = 0, u = 0;
   for (const auto& f : fresh_) {
@@ -431,15 +485,34 @@ std::string JobEngine::takeFreshResults(bool* unverified, int* sourced, int* uns
   }
   if (sourced) *sourced = s;
   if (unsourced) *unsourced = u;
-  return takeFreshResults(unverified);
+  return takeFresh(nullptr, unverified);
 }
 
-std::string JobEngine::takeFreshResults(bool* unverified) {
+std::string JobEngine::takeFreshResultsFor(const FreshScope& scope, bool* unverified, int* sourced,
+                                           int* unsourced) {
+  int s = 0, u = 0;
+  for (const auto& f : fresh_) {
+    if (f.failed || !inScope(f, scope)) continue;
+    (f.unverified ? u : s)++;
+  }
+  if (sourced) *sourced = s;
+  if (unsourced) *unsourced = u;
+  return takeFresh(&scope, unverified);
+}
+
+std::string JobEngine::takeFreshResults(bool* unverified) { return takeFresh(nullptr, unverified); }
+
+// Take the parked results in `scope` (every one when null), rendered as the seed; the
+// rest stay parked for their own chat's turn.
+std::string JobEngine::takeFresh(const FreshScope* scope, bool* unverified) {
+  std::vector<FreshResult> taken, kept;
+  for (auto& f : fresh_) (scope && !inScope(f, *scope) ? kept : taken).push_back(std::move(f));
+  fresh_ = std::move(kept);
   if (unverified) {
     *unverified = false;
-    for (const auto& f : fresh_) *unverified = *unverified || f.unverified;
+    for (const auto& f : taken) *unverified = *unverified || f.unverified;
   }
-  if (fresh_.empty()) return "";
+  if (taken.empty()) return "";
   std::string b = "[FRESH RESULTS] (sub-agents that just finished)\n";
   // CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result told the owner
   // trains were "running normally", a fact from an earlier answer, and dropped sources.
@@ -456,7 +529,7 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
   // in the ring). This is what makes 6 vs 100 sub-agents cost the head the same.
   const size_t kBlockBudget = 8192;
   int stubbed = 0;
-  for (const auto& f : fresh_) {
+  for (const auto& f : taken) {
     // Provenance on every result (lane S): how many tools the sub ran, so the
     // head can tell a looked-up answer from the model's own guess.
     const std::string head = "- " + f.tag + " (" + f.model + ")" + f.provenance + ": ";
@@ -475,7 +548,6 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
   if (stubbed)
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
-  fresh_.clear();
   drainedBeforeTake_ = drained_;   // restoreFresh puts the clock back with the results
   drained_ = false;   // single reset point: EVERY consumer (batch consolidation, a user
                       // turn folding results in, the raw fallback) clears the stuck
@@ -484,8 +556,14 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
   return b;
 }
 
-std::string JobEngine::ownerResultsText() const {
-  if (fresh_.empty()) return "";
+std::string JobEngine::ownerResultsText() const { return ownerText(nullptr); }
+
+std::string JobEngine::ownerResultsText(const FreshScope& s) const { return ownerText(&s); }
+
+std::string JobEngine::ownerText(const FreshScope* scope) const {
+  bool any = false;
+  for (const auto& f : fresh_) any = any || !scope || inScope(f, *scope);
+  if (!any) return "";
   // Copy style (AGENTS.md section 6): calm, what happened, no machinery. The
   // title is the agent's owner-facing label (its chosen name, else model and
   // category) - never the job tag, never a results.get handle.
@@ -494,6 +572,7 @@ std::string JobEngine::ownerResultsText() const {
                                  // reply slot does not
   const std::string kFailed = "FAILED: ";
   for (const auto& f : fresh_) {
+    if (scope && !inScope(f, *scope)) continue;
     // An engine failure line already names its sub ("Job [label] failed: why") -
     // the same line the owner gets when it fails alone - so it needs no title.
     // Decided by the out-of-band flag, never by the text: a sub-agent's own reply
@@ -515,10 +594,23 @@ std::string JobEngine::ownerResultsText() const {
 
 void JobEngine::deliverOwnerFallback() {
   hlog::log("orchestrator: synthesis stuck - delivering raw results (fallback)");
-  const std::string chatId = freshChatId_;
-  const std::string text = ownerResultsText();
-  (void)takeFreshResults();   // consumed: the clock resets, nothing is delivered twice
-  deliver(chatId, text);
+  // Each chat's results to that chat (CUM-830), consumed so nothing is delivered twice.
+  while (!fresh_.empty()) {
+    const std::string chatId = nextFreshChat();
+    const FreshScope scope = freshScopeFor(chatId);
+    const size_t before = fresh_.size();
+    std::string text = ownerResultsText(scope);
+    (void)takeFreshResultsFor(scope, nullptr, nullptr, nullptr);
+    if (fresh_.size() == before) {   // its chat changed hands meanwhile: deliver it alone
+      FreshScope only;
+      only.chatId = chatId;
+      only.owner = fresh_.front().byOwner;
+      text = ownerResultsText(only);
+      (void)takeFreshResultsFor(only, nullptr, nullptr, nullptr);
+      if (fresh_.size() == before) fresh_.erase(fresh_.begin());   // never loop
+    }
+    deliver(chatId, text);
+  }
 }
 
 // ---- the spawn ledger (lane L, UNIFIED 3.17) ------------------------------------
@@ -1104,6 +1196,15 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   char tag[24];
   snprintf(tag, sizeof(tag), "job%04lu", (unsigned long)(tagSeq_++));
 
+  // The sub-agent inherits the principal of the turn that started it (CUM-828): the
+  // owner's carries the owner's connectors, anyone else's the provider's built-ins only,
+  // and a connector of the owner's named as its skill is refused for it.
+  const orch::ConnectorGrant grant = grantFor(chatId);
+  if (grant == orch::ConnectorGrant::BuiltinsOnly && !connectorHost(p).empty() &&
+      !orch::isProviderBuiltinTool(p.skill)) {
+    refuseOwnersConnector(p);
+    return;
+  }
   std::string provider, model;
   ManagedAgentAdapter* a = nullptr;
   if (!routeSpawn(p, provider, model, a)) return;
@@ -1170,7 +1271,11 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
 
   char jobId[96] = {};
   (void)providers::takeUnseenRun();   // nothing stale from an earlier call
-  FabricErr err = a->dispatch(d, jobId);
+  FabricErr err;
+  {
+    const orch::ConnectorGrantScope scope(grant);   // every request the dispatch builds
+    err = a->dispatch(d, jobId);
+  }
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",
                (int)err, provider.c_str(), model.c_str(), p.category);
@@ -1322,7 +1427,7 @@ int JobEngine::pump() {
     if (waited >= kSynthFallbackMs) {
       deliverOwnerFallback();
     } else if (waited >= kSynthCoalesceMs && !(d_.turnInFlight && d_.turnInFlight())) {
-      if (d_.synthesize) d_.synthesize(freshChatId_);
+      if (d_.synthesize) d_.synthesize(nextFreshChat());
     }
   }
 
@@ -1355,7 +1460,7 @@ int JobEngine::pump() {
   // Loop-closure: once every sub-agent has finished and nothing is queued, feed
   // the parked results back for ONE synthesis turn.
   if (pending_.empty() && d_.journal->count() == 0 && hasFreshResults()) {
-    if (d_.synthesize) d_.synthesize(freshChatId_);
+    if (d_.synthesize) d_.synthesize(nextFreshChat());
     return d_.journal->count();
   }
 
@@ -1989,6 +2094,8 @@ std::vector<nimbus::orch::SessionInfo> JobEngine::sessionInfos() const {
     s.title = rec.category;   // the journal keeps a category, not a task string
     s.state = stateStr(rec.state);
     s.hue = d_.backendHue ? d_.backendHue(rec.backend) : 255;   // ring accent for the session cursor
+    s.chat = rec.chatId;                  // who started it: sessionVisible (CUM-830)
+    s.byOwner = chatIsOwner(rec.chatId);
     out.push_back(s);
   }
   return out;

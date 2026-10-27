@@ -45,6 +45,7 @@ const ActionRuleRow kRows[] = {
     // ---- turn fields that change state (lib/harness/src/apply.cpp) ----
     {"turn.scratchpad", R::Owner, "write the scratchpad"},
     {"turn.ask", R::Owner, "raise the needs-you light"},   // the ask still reaches the person who asked
+    {"turn.spawn", R::TurnOnly, "start a sub-agent"},       // an approved chat's (its own connectors only)
     // ---- memory (lib/core/src/orch_memory_tools.cpp): own namespace, the handler's line ----
     {"memory.write", R::Open, "store a memory"},
     {"memory.search", R::Open, "search memory"},
@@ -80,7 +81,9 @@ const ActionRuleRow kRows[] = {
     {"files.search", R::Open, "search files"},
     {"files.send", R::TurnOnly, "send a file"},
     {"files.send.other_chat", R::OwnerAttended, "send a file to another chat"},
-    {"files.share", R::Open, "share a file"},
+    {"files.share", R::Open, "share a file"},   // a member shares only its own files
+    // the owner shares any file (a member's too) with everyone who talks to the device
+    {"files.share.owner", R::OwnerAttended, "share a file with everyone"},
     {"files.stat", R::Open, "look up a file"},
     {"image.generate", R::TurnOnly, "make an image"},
     {"image.look", R::TurnOnly, "look at a photo"},
@@ -165,6 +168,12 @@ bool otherChat(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
   return !target.empty() && target != c.chat;
 }
 
+// Turns on the device itself (web chat, voice, serial) have no Telegram chat of their
+// own: files.send there goes to another chat (the owner's), never "back to the caller".
+bool deviceChannel(const std::string& chat) {
+  return chat.empty() || chat == "web" || chat == "voice" || chat == "serial";
+}
+
 }  // namespace
 
 const char* actionRuleName(ActionRule r) {
@@ -201,7 +210,7 @@ ActionRule actionRuleFor(const std::string& key) { return rowOrDefault(key).rule
 bool actionAllowed(const std::string& key, const ActionCaller& c) {
   switch (actionRuleFor(key)) {
     case ActionRule::Open:          return true;
-    case ActionRule::TurnOnly:      return !c.lan;
+    case ActionRule::TurnOnly:      return !c.lan && permsFor(c.role).writeOwn;   // an approved caller
     case ActionRule::Owner:         return c.owner();
     case ActionRule::OwnerAttended: return c.owner() && !c.unattended;
   }
@@ -213,15 +222,38 @@ const ActionRuleRow* actionRuleTable(size_t& count) {
   return kRows;
 }
 
+std::string filesSendTarget(const std::string& turnChat, bool turnChatAllowed, bool owner,
+                            const std::string& ownerChat) {
+  if (!deviceChannel(turnChat) && turnChatAllowed) return turnChat;
+  return owner ? ownerChat : std::string();
+}
+
+// The keys a message or a file send narrows to: another chat than the caller's own,
+// and files.send naming no chat from a device channel, which goes to the owner's chat
+// (filesSendTarget).
+static std::string sendKey(const std::string& name, ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
+  if (otherChat(a, c)) return name + ".other_chat";
+  if (name == "files.send" && str(a, "chat_id").empty() && deviceChannel(c.chat)) return "files.send.other_chat";
+  return name;
+}
+
+// Sharing makes a file readable by everyone who talks to the device: the owner may
+// share any file, so only when writing now; stopping a share stays open.
+static std::string shareKey(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
+  const bool unshare = a["share"].is<bool>() && !a["share"].as<bool>();
+  return c.owner() && !unshare ? "files.share.owner" : "files.share";
+}
+
 std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
-  if (name == "memory.config" && str(a, "action") == "update") return "memory.config.update";
-  if (name == "models.list" && truthy(a, "refresh")) return "models.list.refresh";
-  if (name == "device.selftest" && truthy(a, "audible")) return "device.selftest.audible";
+  if (name == "memory.config") return str(a, "action") == "update" ? "memory.config.update" : name;
+  if (name == "models.list") return truthy(a, "refresh") ? "models.list.refresh" : name;
+  if (name == "device.selftest") return truthy(a, "audible") ? "device.selftest.audible" : name;
   if (name == "prefs.edit") {
     const std::string act = str(a, "action");
-    if (act == "add" || act == "replace" || act == "remove") return "prefs.edit.change";
+    return act == "add" || act == "replace" || act == "remove" ? "prefs.edit.change" : name;
   }
-  if ((name == "reply.telegram" || name == "files.send") && otherChat(a, c)) return name + ".other_chat";
+  if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
+  if (name == "files.share") return shareKey(a, c);
   return name;
 }
 
@@ -229,6 +261,7 @@ std::string actionRefusal(const std::string& key, const ActionCaller& c) {
   if (actionAllowed(key, c)) return std::string();
   const ActionRuleRow& row = rowOrDefault(key);
   const std::string what = row.what;
+  if (row.rule == ActionRule::TurnOnly && !c.lan) return "this conversation is not approved to " + what;
   if (c.lan)
     return row.rule == ActionRule::TurnOnly
                ? "the LAN connection cannot " + what + "; it works only inside a conversation with the device"
@@ -250,6 +283,19 @@ const char* deviceActionKey(ActionKind kind) {
     case ActionKind::Unknown:
     default:                    return "";
   }
+}
+
+bool sessionVisible(const SessionInfo& s, const ActionCaller& c) {
+  if (c.owner()) return true;
+  if (c.lan || c.chat.empty()) return false;
+  return !s.byOwner && s.chat == c.chat;
+}
+
+std::vector<SessionInfo> visibleSessions(const std::vector<SessionInfo>& all, const ActionCaller& c) {
+  std::vector<SessionInfo> out;
+  for (const SessionInfo& s : all)
+    if (sessionVisible(s, c)) out.push_back(s);
+  return out;
 }
 
 const ConfigKnob* configKnobTable(size_t& count) {

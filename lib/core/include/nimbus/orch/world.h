@@ -82,6 +82,10 @@ struct SessionInfo {
   int  turns = 0;
   bool pendingReply = false;  // a reply is waiting to be polled
   uint8_t hue = 255;          // ring accent hue for this session (255 = white/unknown)
+  // Who started it (CUM-830): the spawning chat, and whether that chat is the owner's.
+  // Rendered nowhere; sessionVisible() (action_rules.h) reads them.
+  std::string chat;
+  bool byOwner = true;
 };
 
 // Render the "## RUNNING SESSIONS" block, or "" if there are none (the assembler

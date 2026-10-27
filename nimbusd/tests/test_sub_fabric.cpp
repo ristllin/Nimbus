@@ -397,6 +397,9 @@ static void testApprovedChatSpawns(ndtest::Ctx& c) {
   c.eqi(rig.jobs().activeCount(), 0, "nothing was queued for it");
   std::string err;
   c.ok(rig.telegramAccess().approve("424242", "Roy", err), "the owner approves the chat");
+  // It is the owner's own chat: an approved chat is a user, and a user's sub-agent never
+  // carries the owner's connectors (CUM-828, (f3) below), so the owner makes it an admin.
+  c.ok(rig.telegramAccess().setRole("424242", nimbus::orch::Role::Admin, err), "the owner's chat is an admin");
   EngineThread eng(&rig);
   eng.start();
   eng.postMessage("424242", "What is on my calendar today?");
@@ -407,6 +410,34 @@ static void testApprovedChatSpawns(ndtest::Ctx& c) {
   if (tx.seen.size() >= 2)
     c.ok(has(tx.seen[1].body, "\"connector_id\":\"google_calendar\""),
          "the approved chat's sub-agent carried the owner's connector");
+  clearEnv();
+}
+
+// (f3) CUM-828: a member's (an approved user chat's) sub-agent never carries the owner's
+// connectors: naming one is refused with the reason before any provider is asked.
+static void testMembersSpawnCannotUseOwnersConnector(ndtest::Ctx& c) {
+  std::printf("  -- (f3) a member's sub-agent cannot use the owner's connector --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(headTurn(kSpawnGcal));
+  tx.script.push_back(headTurn("{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-f3"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_8");
+  c.eq(rig.connectors().replaceBlob(kGcal), "", "a gcal Studio connector is configured");
+  std::string err;
+  rig.telegramAccess().approve("424242", "Sam", err);   // a user
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("424242", "what is on my calendar?");
+  for (int i = 0; i < 25 && !inbox.waitFor("connector is the device owner's", 1); i++) {
+    rig.pumpJobs();   // the refusal comes at the dispatch, as on the device
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  c.ok(inbox.waitFor("the gcal connector is the device owner's", 2000), "the spawn is refused with the reason");
+  for (const auto& req : tx.seen)
+    c.ok(!has(req.body, "\"connector_id\":\"google_calendar\""), "no request carried the owner's connector");
+  c.ok(tx.seen.size() <= 2, "no sub-agent request was made");
   clearEnv();
 }
 
@@ -717,6 +748,7 @@ int main() {
   testBackgroundWorkIsNotATurn(c);
   testRebuildKeepsJobs(c);
   testApprovedChatSpawns(c);
+  testMembersSpawnCannotUseOwnersConnector(c);
   testRemovedMidTurnCannotSpawn(c);
   testMemberNeverSeesOwnersResults(c);
   testHeldTurnRunsAfterReport(c);

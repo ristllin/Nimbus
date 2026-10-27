@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include "nimbus/orch/connector_grant.h"   // CUM-828: a non-owner sub-agent's own agent
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -697,6 +699,34 @@ static void test_sub_unsafe_model_name_falls_back() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-4-6=ag_1;", d.antAgents.c_str());
 }
 
+// CUM-828: the owner's connectors ride the managed AGENT, and agents are cached per
+// model, so a sub-agent started for anyone else (built-ins only) must never reuse the
+// owner's agent: it gets its own, keyed apart, and the owner's stays the owner's.
+static void test_sub_a_non_owner_sub_agent_never_reuses_the_owners_agent() {
+  FakeProviderDeps d;
+  d.antEnv = "env_1";
+  d.antAgents = "claude-sonnet-4-6=ag_owner;";
+  d.http.script.push_back({"", "/v1/agents", 200, "{\"id\":\"ag_b\"}"});
+  d.http.script.push_back({"", "/v1/sessions", 200, "{\"id\":\"sess_1\"}"});
+  d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200, "{\"data\":[]}"});
+  auto pd = d.contract();
+  agent::Directive dir;
+  dir.instruction = "x";
+  char jobId[72];
+  {
+    const nimbus::orch::ConnectorGrantScope member(nimbus::orch::ConnectorGrant::BuiltinsOnly);
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antDispatch(pd, "claude-sonnet-4-6", dir, jobId));
+  }
+  TEST_ASSERT_TRUE(d.http.seen[0].path.find("/v1/agents") != std::string::npos);   // a new agent, not the owner's
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"agent\":\"ag_b\""));
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-4-6=ag_owner;claude-sonnet-4-6~b=ag_b;", d.antAgents.c_str());
+  // The owner's next sub-agent still runs on the owner's agent.
+  d.http.script.push_back({"", "/v1/sessions", 200, "{\"id\":\"sess_2\"}"});
+  d.http.script.push_back({"", "/v1/sessions/sess_2/events", 200, "{\"data\":[]}"});
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antDispatch(pd, "claude-sonnet-4-6", dir, jobId));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "\"agent\":\"ag_owner\""));
+}
+
 // A finished session's output listing (GET /v1/files?scope_id=<session>): empty,
 // so the job ends with its reply and no file (the poll lists outputs once idle).
 static const harness_test::Exchange kAntNoOutputs{"api.anthropic.com", "/v1/files?scope_id=sess_1",
@@ -1293,6 +1323,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_full_chain_and_caches);
   RUN_TEST(test_sub_dispatch_stale_404_clears_caches);
   RUN_TEST(test_sub_unsafe_model_name_falls_back);
+  RUN_TEST(test_sub_a_non_owner_sub_agent_never_reuses_the_owners_agent);
   RUN_TEST(test_sub_poll_states);
   RUN_TEST(test_cum514_artifact_drops_the_narration);
   RUN_TEST(test_cum514_artifact_keeps_what_follows_the_report);

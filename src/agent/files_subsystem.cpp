@@ -18,6 +18,7 @@
 #include "store.h"                       // fetchPolicy - the owner trust knob (W18)
 #include "safety_activity_store.h"       // CUM-215 Safety activity log (record suspected injection)
 #include "telegram.h"                    // owner approval prompts + outcome notices
+#include "nimbus/orch/action_rules.h"     // filesSendTarget - where a send naming no chat goes
 #include "orchestrator.h"                // firstAllowedChat - the owner notice target
 #include "agent/orchestrator.h"          // turnInFlight, isChatAllowed, firstAllowedChat
 #include "agent/telegram.h"              // sendMedia (files.send)
@@ -1801,9 +1802,15 @@ void registerTools() {
             if (path.empty()) return nimbus::orch::ToolResult::fail("file not found");
             String cid = String(argStr(a, "chat_id").c_str());
             if (cid.length() == 0) {
-              cid = agent::orchestrator::currentChat();   // may be "voice"/"serial"/"web"
-              if (!agent::orchestrator::isChatAllowed(cid))
-                cid = agent::orchestrator::firstAllowedChat();
+              // The turn's own Telegram chat, else the OWNER's chat (the owners list,
+              // not merely the first allow-listed chat) for the owner only; anyone else
+              // is refused rather than sent somewhere it did not ask for (CUM-813 review).
+              const String cur = agent::orchestrator::currentChat();   // may be "voice"/"serial"/"web"
+              cid = String(nimbus::orch::filesSendTarget(std::string(cur.c_str()),
+                                                         agent::orchestrator::isChatAllowed(cur),
+                                                         who.perms().manageTenants,
+                                                         std::string(agent::telegram::ownerChat().c_str()))
+                               .c_str());
             }
             if (cid.length() == 0 || !agent::orchestrator::isChatAllowed(cid))
               return nimbus::orch::ToolResult::fail(

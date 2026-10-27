@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "nimbus/orch/device_actions.h"   // ValidatedAction - the config knobs a turn may set
 #include "nimbus/orch/rbac.h"             // Role
 #include "nimbus/orch/tool_registry.h"    // Principal, ToolRegistry
+#include "nimbus/orch/world.h"            // SessionInfo
 
 // action_rules - who may run each action the head can take.
 //
@@ -95,6 +97,14 @@ const ActionRuleRow* actionRuleTable(size_t& count);
 std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst args,
                           const ActionCaller& c);
 
+// Where files.send delivers when it names no chat: the turn's own chat when that is
+// a Telegram chat on the allowlist; otherwise (the web chat, voice, serial, a
+// public-mode chat) the owner's chat for the owner, and nowhere ("") for anyone else,
+// who is refused rather than sent somewhere it did not ask for. The access rule counts
+// the owner's case as another chat (files.send.other_chat: the owner writing now).
+std::string filesSendTarget(const std::string& turnChat, bool turnChatAllowed, bool owner,
+                            const std::string& ownerChat);
+
 // The plain refusal for a key the caller may not run ("" when it may): who may,
 // and why this caller is not that.
 std::string actionRefusal(const std::string& key, const ActionCaller& c);
@@ -112,6 +122,13 @@ struct ConfigKnob {
 };
 const ConfigKnob* configKnobTable(size_t& count);
 std::string configKnobKey(const char* knob);   // "device.config.<knob>"
+
+// Whose sub-agents a caller sees (CUM-830): the owner sees every one; a member or a
+// guest only those its own chat started; the LAN endpoint none. Every view of the
+// running sub-agents (the turn's [ACTIVE SESSIONS] digest, session.list, the session
+// tools by id) reads this one rule.
+bool sessionVisible(const SessionInfo& s, const ActionCaller& c);
+std::vector<SessionInfo> visibleSessions(const std::vector<SessionInfo>& all, const ActionCaller& c);
 
 // The dispatch seam: every tool call through `reg` is checked against the table
 // for the dispatch Principal, `unattended()` (null = attended) and `turnChat()` (the

@@ -1723,6 +1723,34 @@ static void test_rbac_a_refused_action_backs_no_claim() {
   TEST_ASSERT_TRUE(refused >= 20);   // the walk really saw the refusals
 }
 
+// A revoked or never-approved chat (role Unknown) keeps only the open actions: it
+// starts no sub-agent (they spend the owner's budget), while every approved caller does.
+static void test_rbac_an_unapproved_chat_starts_no_sub_agent() {
+  struct Case { const char* chat; bool starts; };
+  for (const Case& k : {Case{"1001", true}, Case{"2002", true}, Case{"3003", true}, Case{"4004", false}}) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::SessionOp op;
+    op.op = "spawn";
+    op.task = "find car seat reviews";
+    t.session_ops.push_back(op);
+    nimbus::orch::Spawn s;
+    s.task = "and one more";
+    t.spawn.push_back(s);
+    bool spawned = false;
+    agent::applyTurn(t, k.chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(k.starts ? 2 : 0, (int)r.enqueued.size(), k.chat);
+    TEST_ASSERT_EQUAL_MESSAGE(k.starts, spawned, k.chat);
+    if (k.starts) continue;
+    // Told why, never "ask me again" (that would not help).
+    TEST_ASSERT_FALSE(r.delivered.empty());
+    TEST_ASSERT_EQUAL_STRING("Sub-agents are off for this chat: the owner has not approved it.",
+                             r.delivered.back().second.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -1781,6 +1809,7 @@ int main(int, char**) {
   RUN_TEST(test_rbac_session_terminate_and_scratchpad_follow_the_table);
   RUN_TEST(test_rbac_only_the_owners_turn_raises_the_needs_you_light);
   RUN_TEST(test_rbac_a_refused_action_backs_no_claim);
+  RUN_TEST(test_rbac_an_unapproved_chat_starts_no_sub_agent);
   UNITY_END();
   return 0;
 }

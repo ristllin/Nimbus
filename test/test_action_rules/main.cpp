@@ -20,7 +20,11 @@
 #include <vector>
 
 #include "nimbus/orch/action_rules.h"
+#include "nimbus/orch/connector_grant.h"
+#include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/device_actions.h"
+#include "nimbus/orch/result_store.h"
+#include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/orch_schema.h"   // ORCH_SCHEMA_BODY: the device actions and knobs the head is offered
 #include "nimbus/orch/tool_registry.h"
 
@@ -44,9 +48,12 @@ struct ClassCaller {
 
 // Each class as the device builds it: the turn's chat principal (roleOfChat: the owner's
 // Telegram chat, web, voice and serial are Admin; a member is User; a guest Guest, a
-// public-mode stranger User or Guest), the turn's unattended flag (a routine or wakeup,
-// the sub-agent results turn and the device-staged system turn all run on the owner's
-// chat with the flag set), and the LAN endpoint's own principal (web_memory.cpp /mcp).
+// public-mode stranger User or Guest), the turn's unattended flag (a routine or wakeup
+// and the device-staged system turn run on the owner's chat with the flag set; the
+// results summary runs on the chat that started the sub-agents - modelled here for the
+// owner's, while a member's runs as that member, test_harness_turn
+// test_cum830_a_turn_reads_only_its_own_chats_results), and the LAN endpoint's own
+// principal (web_memory.cpp /mcp).
 ClassCaller classCaller(int c) {
   switch (c) {
     case OwnerTurn:  return {principalForRole("1001", Role::Admin), false};
@@ -62,6 +69,19 @@ ClassCaller classCaller(int c) {
     }
     case Serial:
     default:         return {principalForRole("serial", Role::Admin), false};
+  }
+}
+
+// The chat each class's turn runs for (the owner's unattended turns run on the owner's
+// Telegram chat; the serial console on "serial"); a member's and a guest's chats come
+// from their principals, and the LAN has none.
+const char* turnChatOf(int c) {
+  switch (c) {
+    case Member:  return "2002";
+    case Guest:   return "3003";
+    case McpUser: return "";
+    case Serial:  return "serial";
+    default:      return "1001";
   }
 }
 
@@ -115,6 +135,7 @@ const Expect kExpect[] = {
     // turn fields
     {"turn.scratchpad", kOwner},
     {"turn.ask", kOwner},
+    {"turn.spawn", kTurn},
     // memory
     {"memory.write", kOpen},
     {"memory.search", kOpen},
@@ -151,6 +172,7 @@ const Expect kExpect[] = {
     {"files.send", kTurn},
     {"files.send.other_chat", kOwnerNow},
     {"files.share", kOpen},
+    {"files.share.owner", kOwnerNow},
     {"files.stat", kOpen},
     {"image.generate", kTurn},
     {"image.look", kTurn},
@@ -196,7 +218,8 @@ const Expect* expectFor(const std::string& key) {
 // Keys a tool call narrows to by its arguments (not registry names themselves).
 bool argumentKey(const std::string& key) {
   static const char* const kKeys[] = {"memory.config.update", "models.list.refresh", "device.selftest.audible",
-                                      "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat"};
+                                      "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat",
+                                      "files.share.owner"};
   for (const char* k : kKeys)
     if (key == k) return true;
   return false;
@@ -461,17 +484,24 @@ static void test_dispatch_seam_enforces_the_table_for_every_tool() {
       return ToolResult::ok("ran");
     });
   bool unattended = false;
-  installActionRules(reg, [&unattended] { return unattended; });
+  std::string turnChat;
+  installActionRules(reg, [&unattended] { return unattended; }, [&turnChat] { return turnChat; });
   int calls = 0;
   for (const std::string& n : names) {
-    const Expect* e = expectFor(n);
-    TEST_ASSERT_NOT_NULL_MESSAGE(e, n.c_str());
+    TEST_ASSERT_NOT_NULL_MESSAGE(expectFor(n), n.c_str());
     for (int c = 0; c < kClasses; c++) {
       const ClassCaller cc = classCaller(c);
       unattended = cc.unattended;
+      turnChat = turnChatOf(c);
       ran = 0;
       ArduinoJson::JsonDocument args;
       args.to<ArduinoJson::JsonObject>();
+      // A call with no arguments is what the tool does by default (files.share with no
+      // "share" shares): the expected row is the key that call narrows to.
+      const std::string key = toolActionKey(n, args.as<ArduinoJson::JsonObjectConst>(),
+                                            actionCaller(cc.who, cc.unattended, turnChat));
+      const Expect* e = expectFor(key);
+      TEST_ASSERT_NOT_NULL_MESSAGE(e, key.c_str());
       const ToolResult r = reg.dispatch(n, args.as<ArduinoJson::JsonObjectConst>(), cc.who);
       const bool want = e->cells[c] == 'A';
       const std::string msg = n + " for " + kClassNames[c] + ": " + r.error;
@@ -486,7 +516,8 @@ static void test_dispatch_seam_enforces_the_table_for_every_tool() {
 // The argument-narrowed keys, through the same seam.
 static void test_dispatch_seam_narrows_by_argument() {
   ToolRegistry reg;
-  for (const char* n : {"memory.config", "models.list", "device.selftest", "prefs.edit", "reply.telegram", "files.send"})
+  for (const char* n :
+       {"memory.config", "models.list", "device.selftest", "prefs.edit", "reply.telegram", "files.send", "files.share"})
     reg.add(n, "stub", [](ArduinoJson::JsonObjectConst, const Principal&) { return ToolResult::ok("ran"); });
   bool unattended = false;
   std::string turnChat;   // the chat the turn in flight runs for (the owner's own chat)
@@ -510,11 +541,17 @@ static void test_dispatch_seam_narrows_by_argument() {
       {"reply.telegram", "{\"text\":\"hi\",\"chat_id\":\"9999\"}", kOwnerNow},
       {"files.send", "{\"project\":\"p\",\"name\":\"n\"}", kTurn},
       {"files.send", "{\"project\":\"p\",\"name\":\"n\",\"chat_id\":\"9999\"}", kOwnerNow},
+      // sharing: the owner shares any file only when writing now; a member its own;
+      // stopping a share stays open to everyone who may share
+      {"files.share", "{\"project\":\"p\",\"name\":\"n\"}", "AAA---AA"},
+      {"files.share", "{\"project\":\"p\",\"name\":\"n\",\"share\":true}", "AAA---AA"},
+      {"files.share", "{\"project\":\"p\",\"name\":\"n\",\"share\":false}", kOpen},
   };
   for (const Case& k : cases)
     for (int c = 0; c < kClasses; c++) {
       const ClassCaller cc = classCaller(c);
       unattended = cc.unattended;
+      turnChat = turnChatOf(c);
       ArduinoJson::JsonDocument d;
       deserializeJson(d, k.args);
       const ToolResult r = reg.dispatch(k.tool, d.as<ArduinoJson::JsonObjectConst>(), cc.who);
@@ -556,7 +593,7 @@ static void test_unknown_and_connected_server_tools_fail_closed() {
   const ActionRuleRow* rows = actionRuleTable(n);
   for (size_t i = 0; i < n; i++) {
     const bool open = rows[i].rule == ActionRule::Open, turn = rows[i].rule == ActionRule::TurnOnly;
-    TEST_ASSERT_EQUAL_MESSAGE(open || turn, actionAllowed(rows[i].key, unknown), rows[i].key);
+    TEST_ASSERT_EQUAL_MESSAGE(open, actionAllowed(rows[i].key, unknown), rows[i].key);   // a revoked chat: open only
     TEST_ASSERT_EQUAL_MESSAGE(open || turn, actionAllowed(rows[i].key, memberRoutine), rows[i].key);
   }
 }
@@ -601,14 +638,303 @@ static void test_member_is_not_advertised_refused_tools() {
 // commands use): the freshly onboarded owner may change the device before the table
 // first holds a row, another allow-listed chat is a member, anyone else nobody.
 static void test_a_chat_without_a_row_follows_the_owner_rule() {
-  TEST_ASSERT_EQUAL(int(Role::Admin), int(roleWithoutRow(true, true)));
-  TEST_ASSERT_EQUAL(int(Role::User), int(roleWithoutRow(true, false)));
-  TEST_ASSERT_EQUAL(int(Role::Unknown), int(roleWithoutRow(false, false)));
-  TEST_ASSERT_EQUAL(int(Role::Unknown), int(roleWithoutRow(false, true)));   // never an owner off the allowlist
-  const ActionCaller fresh = actionCaller(principalForRole("5005", roleWithoutRow(true, true)), false, "5005");
+  // No Admin row yet (a freshly onboarded device): the Telegram owner rule decides.
+  TEST_ASSERT_EQUAL(int(Role::Admin), int(roleWithoutRow(true, true, false)));
+  TEST_ASSERT_EQUAL(int(Role::User), int(roleWithoutRow(true, false, false)));
+  TEST_ASSERT_EQUAL(int(Role::Unknown), int(roleWithoutRow(false, false, false)));
+  TEST_ASSERT_EQUAL(int(Role::Unknown), int(roleWithoutRow(false, true, false)));   // never an owner off the allowlist
+  // Once the table holds an Admin row, position on the allowlist never makes anyone an
+  // Admin: the owner who removed their own chat does not hand the device to the next
+  // chat in line (the review's scenario).
+  TEST_ASSERT_EQUAL(int(Role::User), int(roleWithoutRow(true, true, true)));
+  TEST_ASSERT_EQUAL(int(Role::Unknown), int(roleWithoutRow(false, true, true)));
+  const ActionCaller fresh = actionCaller(principalForRole("5005", roleWithoutRow(true, true, false)), false, "5005");
   TEST_ASSERT_TRUE(actionAllowed("device.orch_model", fresh));
-  const ActionCaller other = actionCaller(principalForRole("6006", roleWithoutRow(true, false)), false, "6006");
-  TEST_ASSERT_FALSE(actionAllowed("device.orch_model", other));
+  const ActionCaller next = actionCaller(principalForRole("6006", roleWithoutRow(true, true, true)), false, "6006");
+  TEST_ASSERT_FALSE(actionAllowed("device.orch_model", next));
+  // The owner-only commands read the same role: a demoted or revoked chat loses them.
+  TEST_ASSERT_TRUE(mayRunOwnerCommands(Role::Admin));
+  for (Role r : {Role::User, Role::Guest, Role::Unknown}) TEST_ASSERT_FALSE(mayRunOwnerCommands(r));
+}
+
+// The command gate on the device reads the tenant role, never the Telegram owner list
+// alone (a demoted or revoked chat kept /model, /budget, /update and /mcp).
+static void test_owner_commands_follow_the_tenant_role() {
+  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const size_t at = src.find("const bool ownerCmd = nimbus::orch::isOwnerVerb(v);");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string gate = src.substr(at, 700);
+  TEST_ASSERT_TRUE_MESSAGE(gate.find("mayRunOwnerCommands(roleOfChat(chatId))") != std::string::npos, gate.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(gate.find("telegram::isOwner(chatId)") == std::string::npos, gate.c_str());
+}
+
+// ---- CUM-828: whose connectors ride a request, per caller class --------------------
+
+namespace {
+
+ConnectorInfo conn(const char* name, const char* prov, const char* kind, const char* url = "",
+                   const char* cid = "") {
+  ConnectorInfo c;
+  c.name = name;
+  c.type = name;
+  c.prov = prov;
+  c.kind = kind;
+  c.url = url;
+  c.connectorId = cid;
+  c.enabled = true;
+  return c;
+}
+
+// One built-in and two of the owner's own connectors per provider.
+std::vector<ConnectorInfo> ownerConnectors() {
+  return {conn("code_interpreter", "openai", "builtin"), conn("github", "openai", "mcp", "https://gh.example/mcp"),
+          conn("gmail", "openai", "connector", "", "connector_gmail"), conn("web_search", "mistral", "builtin"),
+          conn("notion", "mistral", "connector", "", "notion"), conn("linear", "anthropic", "mcp", "https://ln.example/mcp")};
+}
+
+struct Attached {
+  int openaiPrivate = 0, openaiBuiltin = 0, mistralPrivate = 0, mistralBuiltin = 0, anthropicServers = 0;
+};
+
+// Attach every provider's connectors exactly as a provider request does (the one
+// path every head and sub-agent request takes), under the calling task's grant.
+Attached attachAll() {
+  const BearerFn bearer = [](const ConnectorInfo&) { return std::string("tok"); };
+  Attached a;
+  ArduinoJson::JsonDocument oa, mi, an;
+  attachOpenAIWire(oa, ownerConnectors(), bearer);
+  for (ArduinoJson::JsonObjectConst t : oa["tools"].as<ArduinoJson::JsonArrayConst>())
+    (std::string(t["type"] | "") == "mcp" ? a.openaiPrivate : a.openaiBuiltin)++;
+  attachMistralWire(mi, ownerConnectors());
+  for (ArduinoJson::JsonObjectConst t : mi["tools"].as<ArduinoJson::JsonArrayConst>())
+    (std::string(t["type"] | "") == "connector" ? a.mistralPrivate : a.mistralBuiltin)++;
+  attachAnthropicWire(an, ownerConnectors(), bearer);
+  a.anthropicServers = (int)an["mcp_servers"].as<ArduinoJson::JsonArrayConst>().size();
+  return a;
+}
+
+}  // namespace
+
+// A request for the owner (attended or not, any owner channel) carries the owner's
+// connectors; a member's, a guest's and anything the LAN endpoint could start carry the
+// provider's built-ins only. Without the grant in the attach builders every class gets
+// the owner's connectors and this fails.
+static void test_connector_grant_by_caller_class() {
+  const char* const want = "A--AAA-A";   // owner connectors ride
+  for (int c = 0; c < kClasses; c++) {
+    const ClassCaller cc = classCaller(c);
+    const ConnectorGrant g = connectorGrantFor(cc.who);
+    const bool owner = want[c] == 'A';
+    TEST_ASSERT_EQUAL_MESSAGE(owner, g == ConnectorGrant::Owner, kClassNames[c]);
+    const ConnectorGrantScope scope(g);
+    const Attached a = attachAll();
+    TEST_ASSERT_EQUAL_MESSAGE(owner ? 2 : 0, a.openaiPrivate, kClassNames[c]);
+    TEST_ASSERT_EQUAL_MESSAGE(owner ? 1 : 0, a.mistralPrivate, kClassNames[c]);
+    TEST_ASSERT_EQUAL_MESSAGE(owner ? 1 : 0, a.anthropicServers, kClassNames[c]);
+    TEST_ASSERT_EQUAL_MESSAGE(1, a.openaiBuiltin, kClassNames[c]);    // the built-ins always ride
+    TEST_ASSERT_EQUAL_MESSAGE(1, a.mistralBuiltin, kClassNames[c]);
+  }
+  // No scope (the device's own checks) is the owner's; scopes nest and restore.
+  TEST_ASSERT_EQUAL(int(ConnectorGrant::Owner), int(currentConnectorGrant()));
+  {
+    const ConnectorGrantScope outer(ConnectorGrant::BuiltinsOnly);
+    { const ConnectorGrantScope inner(ConnectorGrant::Owner); }
+    TEST_ASSERT_EQUAL(int(ConnectorGrant::BuiltinsOnly), int(currentConnectorGrant()));
+  }
+  TEST_ASSERT_EQUAL(int(ConnectorGrant::Owner), int(currentConnectorGrant()));
+  // An unapproved chat is never the owner.
+  TEST_ASSERT_EQUAL(int(ConnectorGrant::BuiltinsOnly),
+                    int(connectorGrantFor(principalForRole("4004", Role::Unknown))));
+}
+
+// ---- CUM-830: whose sub-agents a caller sees, per caller class ---------------------
+
+namespace {
+
+std::vector<SessionInfo> threeSessions() {
+  SessionInfo o, m, g;
+  o.id = "job0001"; o.chat = "1001"; o.byOwner = true;  o.state = "running"; o.title = "owner research";
+  m.id = "job0002"; m.chat = "2002"; m.byOwner = false; m.state = "running"; m.title = "member research";
+  g.id = "job0003"; g.chat = "3003"; g.byOwner = false; g.state = "running"; g.title = "guest research";
+  return {o, m, g};
+}
+
+// The ids a class sees: the owner every one, a member or a guest its own, the LAN none.
+std::string expectedIds(int c) {
+  if (c == Member) return "job0002";
+  if (c == Guest) return "job0003";
+  if (c == McpUser) return "";
+  return "job0001,job0002,job0003";
+}
+
+std::string ids(const std::vector<SessionInfo>& v) {
+  std::string out;
+  for (const SessionInfo& s : v) out += (out.empty() ? "" : ",") + s.id;
+  return out;
+}
+
+}  // namespace
+
+static void test_session_visibility_by_caller_class() {
+  for (int c = 0; c < kClasses; c++) {
+    const ClassCaller cc = classCaller(c);
+    // The turn's digest is built for the turn's own chat (the owner's chat for an
+    // unattended turn): the caller as the device builds it there.
+    const std::string chat = c == McpUser ? std::string() : (c == Member ? "2002" : (c == Guest ? "3003" : "1001"));
+    const ActionCaller caller = actionCaller(cc.who, cc.unattended, chat);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(expectedIds(c).c_str(), ids(visibleSessions(threeSessions(), caller)).c_str(),
+                                     kClassNames[c]);
+  }
+}
+
+// The session tools read the same rule: a listing shows only what the caller may see,
+// and an id it may not see answers like one that does not exist, never reaching the
+// handler (no probing for the owner's sub-agents).
+static void test_session_tools_hide_other_chats_sub_agents() {
+  int polled = 0;
+  SessionHandlers h;
+  h.list = [] { return threeSessions(); };
+  h.poll = [&polled](const std::string&, std::string&) {
+    polled++;
+    return std::string("a reply");
+  };
+  ToolRegistry reg;
+  registerSessionTools(reg, h);
+  for (int c = 0; c < kClasses; c++) {
+    const ClassCaller cc = classCaller(c);
+    ArduinoJson::JsonDocument none;
+    none.to<ArduinoJson::JsonObject>();
+    const ToolResult list = reg.dispatch("session.list", none.as<ArduinoJson::JsonObjectConst>(), cc.who);
+    const std::string want = expectedIds(c);
+    for (const char* id : {"job0001", "job0002", "job0003"})
+      TEST_ASSERT_EQUAL_MESSAGE(want.find(id) != std::string::npos, list.output.find(id) != std::string::npos,
+                                (std::string(kClassNames[c]) + " list " + id).c_str());
+    polled = 0;
+    ArduinoJson::JsonDocument a;
+    a["id"] = "job0001";
+    const ToolResult poll = reg.dispatch("session.poll", a.as<ArduinoJson::JsonObjectConst>(), cc.who);
+    const bool sees = want.find("job0001") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(sees, poll.success, kClassNames[c]);
+    TEST_ASSERT_EQUAL_MESSAGE(sees ? 1 : 0, polled, kClassNames[c]);
+    if (!sees) TEST_ASSERT_EQUAL_STRING("no running session 'job0001'", poll.error.c_str());
+  }
+}
+
+// results.get / results.list: the owner reads every chat's result, a member or a guest
+// only its own chat's, the LAN endpoint only its own namespace's.
+static void test_results_ring_scoped_by_caller_class() {
+  ResultStore rs;
+  const std::string o = rs.put("sub", "owner research", "owner findings", 1, "job0001", "chat:1001");
+  const std::string m = rs.put("sub", "member research", "member findings", 2, "job0002", "chat:2002");
+  const std::string g = rs.put("sub", "guest research", "guest findings", 3, "job0003", "chat:3003");
+  for (int c = 0; c < kClasses; c++) {
+    const ClassCaller cc = classCaller(c);
+    // A member's principal namespace is its chat's ("chat:<id>"); the class callers above
+    // already carry it. The result tags a class may read:
+    const std::string want = expectedIds(c);
+    const std::pair<std::string, const char*> rows[] = {{o, "job0001"}, {m, "job0002"}, {g, "job0003"}};
+    for (const auto& r : rows) {
+      std::string out;
+      size_t total = 0;
+      const bool got = rs.get(r.first, 0, 4096, out, total, cc.who);
+      TEST_ASSERT_EQUAL_MESSAGE(want.find(r.second) != std::string::npos, got,
+                                (std::string(kClassNames[c]) + " " + r.second).c_str());
+    }
+  }
+}
+
+// Every product that runs the job engine tells it who a chat is: with no principalFor a
+// sub-agent counts as the owner's (host rigs only), so a product that forgets it would
+// hand the owner's connectors to a member's sub-agent.
+static void test_every_product_wires_the_spawn_principal() {
+  const std::string device = readFile("src/agent/orchestrator.cpp");
+  const size_t jd = device.find("static JobEngine::Deps buildJobDeps()");
+  TEST_ASSERT_TRUE(jd != std::string::npos);
+  const size_t end = device.find("\n}\n", jd);
+  TEST_ASSERT_TRUE_MESSAGE(device.substr(jd, end - jd).find("d.principalFor = ") != std::string::npos,
+                           "the device's job deps do not set principalFor");
+  const std::string hosted = readFile("nimbusd/src/rig.h");
+  const size_t w = hosted.find("void wireJobDeps(agent::JobEngine::Deps& jd)");
+  TEST_ASSERT_TRUE(w != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(hosted.find("jd.principalFor = ", w) != std::string::npos &&
+                               hosted.find("jd.principalFor = ", w) < hosted.find("\n  }\n", w),
+                           "the hosted instance's job deps do not set principalFor");
+}
+
+// files.send naming no chat: from a Telegram chat it goes back to that chat; from the
+// device's own channels (web chat, voice, serial) it would go to the owner's chat, so it
+// counts as another chat (the owner writing now); a member or a guest is never sent
+// anywhere it did not ask for.
+static void test_files_send_without_a_chat_resolves_before_the_check() {
+  ArduinoJson::JsonDocument d;
+  deserializeJson(d, "{\"project\":\"p\",\"name\":\"n\"}");
+  const ArduinoJson::JsonObjectConst a = d.as<ArduinoJson::JsonObjectConst>();
+  const Principal owner = principalForRole("1001", Role::Admin);
+  for (const char* chat : {"web", "voice", "serial", ""}) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("files.send.other_chat",
+                                     toolActionKey("files.send", a, actionCaller(owner, true, chat)).c_str(), chat);
+    TEST_ASSERT_FALSE_MESSAGE(actionAllowed("files.send.other_chat", actionCaller(owner, true, chat)), chat);
+    TEST_ASSERT_TRUE_MESSAGE(actionAllowed("files.send.other_chat", actionCaller(owner, false, chat)), chat);
+  }
+  TEST_ASSERT_EQUAL_STRING("files.send", toolActionKey("files.send", a, actionCaller(owner, true, "1001")).c_str());
+  // Where it goes.
+  TEST_ASSERT_EQUAL_STRING("1001", filesSendTarget("1001", true, true, "1001").c_str());
+  TEST_ASSERT_EQUAL_STRING("2002", filesSendTarget("2002", true, false, "1001").c_str());   // a member's own chat
+  TEST_ASSERT_EQUAL_STRING("1001", filesSendTarget("web", false, true, "1001").c_str());     // the owner's chat
+  TEST_ASSERT_EQUAL_STRING("", filesSendTarget("5005", false, false, "1001").c_str());      // public-mode guest: refused
+  TEST_ASSERT_EQUAL_STRING("", filesSendTarget("web", false, false, "1001").c_str());
+}
+
+// The device seams of the rules above, pinned where host tests cannot reach: the role of
+// a chat with no row knows whether the table already has an Admin; files.send naming no
+// chat resolves its target through filesSendTarget and the OWNER's chat (the owners
+// list); the post-update system turn runs on the owner's chat, not merely the first
+// allow-listed one.
+static void test_device_wiring_of_the_owner_chat_rules() {
+  const std::string orch = readFile("src/agent/orchestrator.cpp");
+  const size_t role = orch.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  TEST_ASSERT_TRUE(role != std::string::npos);
+  const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("tableHasAdmin = g_tenants.adminCount() > 0;") != std::string::npos, body.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin)") !=
+                               std::string::npos,
+                           body.c_str());
+  const size_t sys = orch.find("static void drainSystemTurn() {");
+  TEST_ASSERT_TRUE(sys != std::string::npos);
+  const std::string sysBody = orch.substr(sys, orch.find("\n}\n", sys) - sys);
+  TEST_ASSERT_TRUE_MESSAGE(sysBody.find("String chat = agent::telegram::ownerChat();") != std::string::npos, sysBody.c_str());
+  TEST_ASSERT_TRUE(sysBody.find("firstAllowedChat()") == std::string::npos);
+  const std::string files = readFile("src/agent/files_subsystem.cpp");
+  const size_t send = files.find("reg.add(\"files.send\"");
+  TEST_ASSERT_TRUE(send != std::string::npos);
+  const std::string sendBody = files.substr(send, files.find("reg.add(", send + 10) - send);
+  TEST_ASSERT_TRUE_MESSAGE(sendBody.find("nimbus::orch::filesSendTarget(") != std::string::npos, "files.send resolves no target");
+  TEST_ASSERT_TRUE(sendBody.find("telegram::ownerChat()") != std::string::npos);
+  TEST_ASSERT_TRUE(sendBody.find("firstAllowedChat()") == std::string::npos);
+}
+
+// The turn's [ACTIVE SESSIONS] digest is built from the sessions its chat may see.
+static void test_the_device_digest_shows_only_visible_sessions() {
+  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const size_t at = src.find("in.sessions   =");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "the digest's sessions line moved: re-pin this test");
+  const std::string line = src.substr(at, 200);
+  TEST_ASSERT_TRUE_MESSAGE(line.find("visibleSessions(") != std::string::npos, line.c_str());
+}
+
+// The device registry installs the rule table where the registry is set up, before any
+// tool can be called (in both modes): without it every caller would be allowed.
+static void test_the_device_registry_installs_the_rule_table() {
+  const std::string src = readFile("src/agent/memory_subsystem.cpp");
+  const size_t policy = src.find("g_reg.setPolicyResolver(");
+  const size_t install = src.find("nimbus::orch::installActionRules(g_reg,");
+  TEST_ASSERT_TRUE_MESSAGE(policy != std::string::npos, "the registry setup moved: re-pin this test");
+  TEST_ASSERT_TRUE_MESSAGE(install != std::string::npos, "the device registry does not install the rule table");
+  TEST_ASSERT_TRUE(install > policy);
+  // Same function, nothing returns between the policy resolver and the install.
+  const std::string between = src.substr(policy, install - policy);
+  TEST_ASSERT_TRUE_MESSAGE(between.find("return;") == std::string::npos, "an early return skips the install");
+  TEST_ASSERT_TRUE_MESSAGE(between.find("\n}\n") == std::string::npos, "the install left the setup function");
 }
 
 int main(int, char**) {
@@ -625,5 +951,15 @@ int main(int, char**) {
   RUN_TEST(test_refusals_are_plain_words);
   RUN_TEST(test_member_is_not_advertised_refused_tools);
   RUN_TEST(test_a_chat_without_a_row_follows_the_owner_rule);
+  RUN_TEST(test_owner_commands_follow_the_tenant_role);
+  RUN_TEST(test_files_send_without_a_chat_resolves_before_the_check);
+  RUN_TEST(test_the_device_registry_installs_the_rule_table);
+  RUN_TEST(test_the_device_digest_shows_only_visible_sessions);
+  RUN_TEST(test_device_wiring_of_the_owner_chat_rules);
+  RUN_TEST(test_connector_grant_by_caller_class);
+  RUN_TEST(test_session_visibility_by_caller_class);
+  RUN_TEST(test_session_tools_hide_other_chats_sub_agents);
+  RUN_TEST(test_results_ring_scoped_by_caller_class);
+  RUN_TEST(test_every_product_wires_the_spawn_principal);
   return UNITY_END();
 }

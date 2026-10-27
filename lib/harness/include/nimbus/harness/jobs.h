@@ -9,6 +9,7 @@
 #include "nimbus/harness/hooks.h"    // Hooks - onSpawn/onResult observers
 #include "nimbus/harness/platform.h" // Platform (nowMs / freeHeap)
 #include "nimbus/orch/journal.h"     // Journal / JobRecord
+#include "nimbus/orch/connector_grant.h" // ConnectorGrant - whose connectors a sub-agent carries
 #include "nimbus/orch/psram_alloc.h" // WorkingAllocator - the poll-envelope slot
 #include "nimbus/orch/result_envelope.h"
 #include "nimbus/orch/turn.h"        // Spawn
@@ -210,6 +211,16 @@ class JobEngine {
                               const std::string& chatId)>
         fetchArtifact;
 
+    // Who a chat is (v5.0.0, CUM-828 / CUM-830): a sub-agent inherits the principal
+    // of the turn that started it, read from its chat. One started for the owner
+    // carries the owner's connectors; anyone else's carries the provider's built-ins
+    // only (nimbus/orch/connector_grant.h), a connector skill of the owner's is
+    // refused for it, and its result is read only by that chat's turns (the owner's
+    // turns read every owner sub-agent's). Nullable: every chat counts as the owner
+    // (host rigs); every product wires it (test_action_rules checks the device and
+    // the hosted instance do).
+    std::function<nimbus::orch::Principal(const std::string& chatId)> principalFor;
+
     // Synthesis stays device-side (it runs a full consolidation turn); the
     // engine owns only the coalesce/fallback clock that triggers it.
     std::function<void(const std::string& chatId)> synthesize;
@@ -283,14 +294,29 @@ class JobEngine {
     bool failed = false;   // an engine failure line, not a sub-agent's finding
     bool unverified = false;   // its connector never ran (CUM-536), or a live task ran no tool
     bool web = false;          // the sub ran a web search or fetch (provider record)
+    std::string chatId;    // the chat that started it ("" = the device's own)
+    bool byOwner = true;   // that chat is the owner's (principalFor)
   };
-  // Fresh sub-agent results parked for the next consolidation turn.
+  // Whose parked results a turn reads (CUM-830): the owner's turns read every result
+  // a sub-agent started for the owner brought back (one person across channels), a
+  // member's or a guest's turn only its own chat's. A member's result never folds
+  // into the owner's turn, and the owner's never into a member's.
+  struct FreshScope {
+    std::string chatId;
+    bool owner = true;
+  };
+  FreshScope freshScopeFor(const std::string& chatId) const;
+  // Fresh sub-agent results parked for the next consolidation turn (any chat's).
   bool hasFreshResults() const { return !fresh_.empty(); }
+  bool hasFreshResultsFor(const FreshScope& s) const;
+  // The chat whose parked results come next (the oldest one's): the synthesis turn's.
+  std::string nextFreshChat() const;
   // L24: a turn takes these before it knows it can run. One that then ends for memory
   // before asking any provider puts back what it took (a copy taken just before the
   // take), in front of any that arrived since, so the next turn sees them; never a drop.
   // The stuck-synthesis clock comes back as the take found it.
   std::vector<FreshResult> peekFresh() const { return fresh_; }
+  std::vector<FreshResult> peekFreshFor(const FreshScope& s) const;
   void restoreFresh(std::vector<FreshResult> taken);
   // The same for a chat's spawn-refusal notes (what takeSpawnNotes returned).
   void restoreSpawnNotes(const std::string& chatId, const std::string& notes, bool mayHaveRun);
@@ -301,12 +327,15 @@ class JobEngine {
   // The same, also counting the results by provenance for the claim check:
   // `sourced` had a lookup behind them, `unsourced` are marked unverified.
   std::string takeFreshResults(bool* unverified, int* sourced, int* unsourced);
+  // The same for one scope only: the rest stay parked for their own chat.
+  std::string takeFreshResultsFor(const FreshScope& s, bool* unverified, int* sourced, int* unsourced);
   // The same parked results rendered for the OWNER, without consuming them: the
   // raw fallback's text when the summary step cannot run (CUM-480). A one-line
   // preamble, then each sub-agent's title and its findings - none of the
   // model-facing scaffolding ([FRESH RESULTS] header, job tags, results.get
   // handles). Bounded like the seed: past the budget a result folds to one line.
   std::string ownerResultsText() const;
+  std::string ownerResultsText(const FreshScope& s) const;
   // Deliver an owner-facing results text through the job engine's own delivery
   // sink. The synthesis turn's failure path uses it so its raw fallback lands
   // exactly like the stuck-synthesis one (same seam, same device handling).
@@ -571,6 +600,13 @@ class JobEngine {
   // take re-arms the clock; without this the fallback never came).
   bool     drainedBeforeTake_ = false;
   void deliverOwnerFallback();           // the stuck-synthesis raw delivery
+  // Who a chat is, for the sub-agents it starts (principalFor; the owner when unwired).
+  bool chatIsOwner(const std::string& chatId) const;
+  nimbus::orch::ConnectorGrant grantFor(const std::string& chatId) const;
+  void refuseOwnersConnector(const PendingSpawn& p);
+  static bool inScope(const FreshResult& f, const FreshScope& s);
+  std::string takeFresh(const FreshScope* s, bool* unverified);
+  std::string ownerText(const FreshScope* s) const;
 
   std::vector<ReapEntry> reap_;
   // Error arcs are calls-to-action: hold them for the tunable attention window

@@ -586,7 +586,18 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // (a full queue) already told the owner and the head, and backs no "started".
   spawnedOut = false;
   std::vector<nimbus::orch::SpawnDrop> drops = t.spawnDrops;
+  const bool spawnAllowed = nimbus::orch::actionAllowed("turn.spawn", caller);   // an approved chat only
+  bool spawnRefusedForChat = false;
   auto enqueue = [&](const nimbus::orch::Spawn& s) {
+    if (!spawnAllowed) {
+      spawnRefusedForChat = true;
+      nimbus::orch::SpawnDrop dr;
+      dr.name = s.name;
+      dr.task = s.task;
+      dr.reason = "this chat is not approved to start sub-agents (the owner has not approved it)";
+      drops.push_back(std::move(dr));
+      return;
+    }
     if (s.task.find_first_not_of(" \t\r\n") == std::string::npos) {
       nimbus::orch::SpawnDrop dr;
       dr.name = s.name;
@@ -676,7 +687,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
                (dr.name.empty() ? dr.task.substr(0, 40) : dr.name).c_str(), dr.reason.c_str());
     if (st.noteSpawnRefused) st.noteSpawnRefused(dr.name, dr.task, dr.reason);
   }
-  if (!drops.empty()) {
+  if (spawnRefusedForChat) {
+    // An unapproved chat is told why, never "ask me again" (it would not help).
+    spawnLine = "Sub-agents are off for this chat: the owner has not approved it.";
+  } else if (!drops.empty()) {
     spawnLine = st.spawnsEnqueued > 0 ? nimbus::orch::kSpawnSomeNotStartedLine
                                       : nimbus::orch::kSpawnNotStartedLine;
   } else if (st.spawnsEnqueued == 0 &&

@@ -5,6 +5,7 @@
 
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
+#include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
 
 #include <ArduinoJson.h>
 
@@ -224,6 +225,19 @@ struct TurnMemoryState {
     putBack = false;
   }
 };
+
+TurnMemoryState& turnMem();
+
+// CUM-830: the finished sub-agent results this chat's turn may read (a member's never
+// fold into the owner's turn, the owner's never into a member's), kept aside first so
+// a turn that ends for memory puts them back (L24). "" with no job engine.
+static std::string takeChatFresh(JobEngine* jobs, const std::string& chatId, bool* unverified, int* sourced,
+                                 int* unsourced) {
+  if (!jobs) return std::string();
+  const JobEngine::FreshScope scope = jobs->freshScopeFor(chatId);
+  turnMem().fresh = jobs->peekFreshFor(scope);
+  return jobs->takeFreshResultsFor(scope, unverified, sourced, unsourced);
+}
 
 TurnMemoryState& turnMem() {
   static TurnMemoryState* const s = new TurnMemoryState();
@@ -1039,6 +1053,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // at all in Full posture. Offline on destruction frees the arc (also on error
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
+  // Every request this turn makes carries the connectors its chat may use (CUM-828):
+  // the owner's for the owner, the provider's built-ins only for anyone else - a
+  // member's, a guest's, and the synthesis turn that reads a member's sub-agent.
+  const nimbus::orch::ConnectorGrantScope grant(nimbus::orch::connectorGrantFor(d_.apply.whoFor(chatId)));
   // F1 (lane I): this turn's skills start from what buildDynamicContext
   // attached (buildDynamicContext runs just before runTurn); a mid-loop
   // skill.get adds its id through noteSkillUsed.
@@ -2311,7 +2329,9 @@ void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {
 // ---- consolidation ----------------------------------------------------------
 
 void TurnEngine::maybeConsolidate(const std::string& chatId) {
-  if (!d_.jobs || !d_.jobs->hasFreshResults()) return;
+  // Only this chat's results (CUM-830: the owner's turns read every owner sub-agent's,
+  // a member's or a guest's only its own chat's); the rest wait for their own chat.
+  if (!d_.jobs || !d_.jobs->hasFreshResultsFor(d_.jobs->freshScopeFor(chatId))) return;
   // ⚠ The synthesis turn is UNATTENDED input built from sub-agent results - the
   // classic injection vector (research agents ingest untrusted web content, and
   // their output is spliced into this prompt verbatim). It must carry the same
@@ -2357,9 +2377,10 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // failed turn silently destroyed completed sub-agent work (review finding,
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
-  const std::string ownerRaw = d_.jobs->ownerResultsText();
-  turnMem().fresh = d_.jobs->peekFresh();   // L24: put back if the turn ends for memory
-  std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_);
+  const JobEngine::FreshScope scope = d_.jobs->freshScopeFor(chatId);
+  const std::string ownerRaw = d_.jobs->ownerResultsText(scope);
+  turnMem().fresh = d_.jobs->peekFreshFor(scope);   // L24: put back if the turn ends for memory
+  std::string fresh = d_.jobs->takeFreshResultsFor(scope, &unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   bool ok = false;
   try {   // L24: a failed allocation from here is a failed synthesis: the raw results still go out
@@ -2473,9 +2494,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
-  if (d_.jobs) turnMem().fresh = d_.jobs->peekFresh();   // L24: put back on a memory refusal
-  const std::string fresh =
-      d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_, &freshSourced_, &freshUnsourced_) : std::string();
+  const std::string fresh = takeChatFresh(d_.jobs, chatId, &unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
   // reply.speak / reply.telegram hints ride only a loop turn; the Telegram one only
   // when this turn can deliver over Telegram (CUM-523) - the SAME sample the
@@ -2839,6 +2858,7 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
                                            size_t* producedBytes) {
   namespace orch = nimbus::orch;
   outSummary.clear();
+  const orch::ConnectorGrantScope grant(orch::connectorGrantFor(d_.apply.whoFor(chatId)));   // CUM-828
   // Gate like an unattended turn: the fold is background work - defer, never
   // squeeze, under memory pressure. Defers are NOT failures (no breaker burn).
   if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock)) {
