@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 import pytest
 
 import tg_archive_bench as tb
+from test_l49_native_image import spend_state
 from test_l48_albums import (  # noqa: F401 - the fixtures are used by name
     _episodic,
     _http,
@@ -170,9 +171,15 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
           "pinning the head")
     device.cmd("IMGMODE native", "IMGMODE native=", timeout=8.0)
     device.cmd("IMGMODE upload", "IMGMODE native=", timeout=8.0)
+    spend = spend_state(device.cmd("SPENDSET?", "SPENDSET {", timeout=8.0))
+    lifted = bool(spend.get("frozen"))
+    if lifted:  # another leg spent the bench ceiling: room for this leg, the limit back after
+        device.cmd(f"SPENDSET limit {int(spend.get('spentCents', 0)) + 2000}", "SPENDSET limit", timeout=8.0)
     try:
         yield {"chat": owner_chat, "host": host, "model": model}
     finally:
+        if lifted:
+            device.cmd(f"SPENDSET limit {spend.get('limitCents')}", "SPENDSET limit", timeout=8.0)
         restore = {"orchHost": before.get("orchHost", ""), "orchLoop": str(int(before.get("orchLoop", 1)))}
         if prev_model:
             restore[f"orchM_{host}"] = prev_model
@@ -217,10 +224,15 @@ def _archive_status(net, chat: int, uid: int) -> Optional[str]:
     days = net.get_json(f"/api/tg/archive?chat={chat}", timeout=10.0).get("days", [])
     names = sorted((d.get("day") if isinstance(d, dict) else d for d in days), reverse=True)[:3]
     for day in names or [time.strftime("%Y-%m-%d", time.gmtime())]:
-        data = net.get_json(f"/api/tg/archive?chat={chat}&day={day}&limit=200", timeout=10.0)
-        for row in data.get("rows", []):
-            if int(row.get("u") or 0) == uid:
-                return row.get("st")
+        frm = 0
+        for _ in range(40):  # a page holds what fits one response: follow `next`
+            data = net.get_json(f"/api/tg/archive?chat={chat}&day={day}&limit=200&from={frm}", timeout=10.0)
+            for row in data.get("rows", []):
+                if int(row.get("u") or 0) == uid:
+                    return row.get("st")
+            if not data.get("more"):
+                break
+            frm = int(data.get("next") or 0)
     return None
 
 

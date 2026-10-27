@@ -7,6 +7,7 @@
 #include <cstdlib>
 
 #include "../sys/agent_log.h"
+#include "../sys/web_task.h"   // onWebTask - image.note stays on the turn task
 #include "agent/adapters/image_gen.h"    // image.generate (OpenAI)
 #include "agent/adapters/image_vision.h" // describeImage (optional read-back)
 #include "agent/memory_subsystem.h"     // Lock, dataFs(), haveSd(), registry()
@@ -1861,8 +1862,9 @@ void registerTools() {
           "says). It is what the conversation keeps of the photo; call it with your answer "
           "for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            if (!agent::orchestrator::turnInFlight())
-              return nimbus::orch::ToolResult::fail("image.note is only available during a turn");
+            // The turn's own photo set: only the turn task touches it (never the LAN endpoint).
+            if (!agent::orchestrator::turnInFlight() || nimbus::sys::onWebTask())
+              return nimbus::orch::ToolResult::fail("image.note is only available in the device's own turns");
             std::string err;
             const std::string done = agent::vision::note(argStr(a, "ref"), argStr(a, "note"), err);
             if (done.empty()) return nimbus::orch::ToolResult::fail(err);

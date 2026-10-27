@@ -290,15 +290,21 @@ Telegram message, never "you"), and a storage notice already in the web chat fro
 24 hours is not written again while the store stays full.
 
 **Photos go to the head as images.** A photo is sent to the head model as an image,
-not as a description of it (`nimbus/orch/turn_images.h`). When the configured head reads
-images (every Claude model; OpenAI gpt-4o, gpt-4.1, gpt-5 and newer; Mistral chat models
-with vision, by one rule, `headTakesImages`), the photo's bytes are copied into one PSRAM
-buffer held for the turn and its label reads `(attached: the photo itself is in this
-message)`; no caption call is made. The provider's own model list decides when it says
-yes or no for the exact model; a model it has no row for (a `-latest` alias, a model
-newer than the last fetch) and a device with no list fall back to the name rule, which
-the model catalog's vision role shares (`mistralVisionByName`): a wrong guess costs one
-refusal, answered by re-sending the photos as transcriptions (below). The channel offers the turn's photos to a single slot
+not as a description of it (`nimbus/orch/turn_images.h`). Every photo the device can keep (the bounds below) has its bytes copied into
+one PSRAM buffer held for the turn and its label reads `(attached: the photo
+itself is in this message)`, whatever head is configured: the host that serves
+each request decides, at that request, whether it reads images (every Claude
+model; OpenAI gpt-4o, gpt-4.1, gpt-5 and newer; Mistral chat models with
+vision, by one rule, `headTakesImages`). The provider's own model list decides
+when it says yes or no for the exact model; a model it has no row for (a
+`-latest` alias, a model newer than the last fetch) and a device with no list
+fall back to the name rule, which the model catalog's vision role shares
+(`mistralVisionByName`): a wrong guess costs one refusal, answered by re-
+sending the photos as transcriptions. A seeing host gets the pixels and no
+caption call is made; a blind host reads each photo's machine transcription,
+made only then, once per photo, so a turn that fails over from a blind host to
+a seeing one still sends the pixels.
+The channel offers the turn's photos to a single slot
 bound to the chat and the routed text; the engine takes them when the owner turn starts
 and every head loop seeds its transcript with them. Each renderer puts them into the
 seeded user message, the newest user message of the request, as its provider's image
@@ -316,12 +322,11 @@ high for 100 ms (one round trip; on a fragmented heap the block never grows), at
 1.5 s per slice, and one request waits at most 2 s in all, or a tenth of its deadline
 when that is less; after that every slice goes out at once (`http.h` `SliceWait`,
 `paceSlice`, `paceCapMs`). On an Anthropic head with a direct key each photo is
-uploaded once per turn (the Files API, raw bytes) and every round references it by
-file_id; the uploads are deleted afterwards, one per poll cycle. Bounds: 10 photos,
-512 KB each, 2 MB per turn; a photo past them, an animated GIF, a format no head reads,
-a head without image input (or a host a failover lands on), and a provider that refuses
-the image parts all fall back to the caption step, whose text is labelled
-`(transcribed by <provider>)` so the head knows it has not seen the photo. A photo
+uploaded once (the Files API, raw bytes) and every round references it by file_id.
+Bounds: 10 photos, 512 KB each, 2 MB per turn (looked photos included); a photo past
+them, an animated GIF, a format no head reads, a host without image input, and a
+provider that refuses the image parts all fall back to the caption step, whose text is
+labelled `(transcribed by <provider>)` so the head knows it has not seen the photo. A photo
 nobody could read says why, one label per cause (`(not read: openai out of credit
 (HTTP 429))`, `(not read: too large)`, `(not read: device low on memory)`), never the
 provider's own words; the prompt explains the family in one line.
@@ -331,12 +336,35 @@ The caption step (`nimbus/harness/vision_caption.h`) runs current models only
 walks the keyed providers in priority order, sticky per page. A billing or key refusal
 parks that provider through the one shared park (every seam, not just photos) and the
 walk moves on in the same photo; a server error or a dropped connection moves on
-without parking; the owner gets one notice per episode, shared with every seam. It also
-writes each attached photo's short record for memory afterwards (one photo per poll
-cycle, never inside a turn: the stored row reads `(seen in its turn; no record written
-yet)` until then), and reads a photo again once its provider is open after a refusal;
-both replace the row's text through the episodic overlay (`nimbus/orch/row_overlay.h`).
-`image.look {ref, question}` looks at an earlier photo again on demand. What the caption
+without parking; the owner gets one notice per episode, shared with every seam. It is
+only ever asked for a host that cannot see images: a photo the head saw gets no caption
+call at all.
+
+**What the conversation keeps of a photo.** The head writes the photo's record itself:
+with its answer it calls `image.note {ref, note}`, one line of what matters in the photo
+(a pure write: sent with the final answer it costs no extra round). The photo's stored
+row is written as `(kept; image.look shows it)` before the turn runs and settled when the
+turn ends, before it is ever sent as history: `(seen; note: ...)` with the head's note,
+`(seen in its turn; image.look shows it again)` without one, or a blind host's
+transcription. A history message is never rewritten after it was sent, so the cached
+prefix holds; the only late rewrite left is a blind host's photo nobody could read, read
+again once its provider is open after a refusal (the episodic overlay,
+`nimbus/orch/row_overlay.h`).
+
+**Earlier photos come back as pixels.** `image.look {ref, question}` reads the photo's
+stored copy from the card (the card lock held only for that read) and puts it back in
+front of the head as an image for the rest of the turn: Anthropic in the tool result
+itself (`[text, image]`), OpenAI and Mistral in one user message right after the round's
+results (`[label, image]`). Only a host that cannot see images reads one caption
+request's answer to the question instead (made once). At most 4 photos per turn come back
+this way, inside the same byte bounds; a routine, which holds no photo set, gets the
+caption answer. On Anthropic with a direct key a recent photo also rides its own
+history message: the file uploaded in its turn is kept (at most 16, RAM only; one unused
+for 24 head loops is deleted, one per poll cycle) and while its label is in the history
+window the message carries it as a file reference before the message text, the same
+bytes every turn. A refusal of a kept file forgets them all and the round is sent
+again without them. Mistral and OpenAI have no file references: they view an earlier
+photo through `image.look` only, never by re-sending it every turn. What the caption
 step bills rides the next turn's per-host spend record. `device.status` carries
 `visionLastErr`.
 

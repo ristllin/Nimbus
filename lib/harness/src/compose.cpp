@@ -290,17 +290,16 @@ static int foodAllowance(int budgetBytes, size_t foodBytes) {
 // nobody could read names the reason, and the head says so instead of guessing or
 // blaming the sender's phone (19 Oct: identical placeholders led the head to blame
 // the owner's Telegram app). Lane IMG (27 Oct): the head writes the photo's record
-// itself (image.note) and views any earlier photo itself (image.look returns it).
+// itself (image.note) and views any earlier photo itself (image.look returns it). No
+// longer than the line it replaced: the static block's budget clips the capability
+// list after it (test_prompt_layout pins that the list is clipped, never dropped).
 static const char kPhotoLegend[] =
     "- Photos: [image k/N ref=<16 hex>] marks each one. (attached: ...) = the photo itself "
-    "is in this message: call image.note {ref, note} with your answer, one line of what "
-    "matters in it, which is what the conversation keeps of it; (seen ...) = a photo you "
-    "saw in its turn; (transcribed by X) = another model's text from the photo, which you "
-    "have not seen; (not read: reason) = nobody could read it - say so with that reason "
-    "and never blame the sender or their phone; the photo is kept, so never ask for it to "
-    "be sent again unless the reason is its size or format. To view any earlier photo "
-    "yourself, call image.look {ref, question} with the ref from its label: it comes back "
-    "to you as an image.\n";
+    "is here: also call image.note {ref, note}, one line of what matters in it; "
+    "(transcribed by X) = another model's text, unseen by you; (not read: reason) = nobody "
+    "could read it - say so with that reason, never blame the sender or their phone, and "
+    "ask for it again only if the reason is its size or format. image.look {ref, question} "
+    "shows you an earlier photo again.\n";
 
 std::string composeInstructions(const ComposeInputs& in) {
   using namespace nimbus::orch;

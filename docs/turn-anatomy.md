@@ -175,10 +175,11 @@ they were sent (a single message arrives as itself, byte for byte). A photo is i
 label, then `They wrote:` and its caption:
 `[image 2/3 ref=0123456789abcdef] (attached: the photo itself is in this message)`.
 The photo itself rides the same message as an image part, after a one-line label
-naming its ref and before the text (the head model reads the pixels). A head that cannot
-see it reads its machine transcription instead (`(transcribed by openai) Nutrition
-facts ...`), and a photo nobody could read says why (`(not read: anthropic out of
-credit (HTTP 429))`). The label is one format everywhere (the turn, the stored row, the
+naming its ref and before the text (the head model reads the pixels). Whether a request
+shows it is decided by the host serving that request: a host that cannot see images
+reads the photo's machine transcription instead (`(transcribed by openai) Nutrition
+facts ...`, made only then), and a photo nobody could read says why (`(not read:
+anthropic out of credit (HTTP 429))`). The label is one format everywhere (the turn, the stored row, the
 history): `k/N` is the item's place among the turn's media, `ref` is its content hash
 (16 hex characters, absent when nothing was fetched; `image.look` takes it to look at
 an earlier photo again), and the text after the bracket is the class
@@ -247,9 +248,12 @@ called by the engine for every turn:
   row keeps what the sender sent with a bare label (`[image]`) where the photo
   sat, joined to the media row by its blob ref (the 16-hex content hash), and
   the history puts the record back in place (an album's labels each get
-  their own). A photo the head saw itself is not re-sent in later turns: its row
-  carries its short machine transcription, written after its turn, and
-  `image.look` looks at the photo again when the record does not answer. A voice note's transcript is the user row. Rows captured before
+  their own). A photo the head saw itself keeps the head's own note
+  (`image.note`, written with its answer): its row reads `(seen; note: ...)`, or
+  `(seen in its turn; image.look shows it again)` with no note, settled when its
+  turn ends and never rewritten once sent. `image.look` puts the photo back in
+  front of the head as an image; on Anthropic a recent photo also rides its own
+  history message as a file reference (the same bytes every turn). A voice note's transcript is the user row. Rows captured before
   this rule render once too (a repeated description or a `ref=` label is
   recognized).
 - **Captured once.** A Telegram turn's user row carries its source (the newest

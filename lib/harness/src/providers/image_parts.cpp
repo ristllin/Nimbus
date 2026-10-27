@@ -253,6 +253,7 @@ void queueDeletes(orch::TurnImages& imgs) {
 // ---- re-attach: the kept file ids -------------------------------------------------
 struct FileRef {
   orch::WorkingString ref, id;
+  orch::WorkingString chat;   // the per-chat cache key of the turn it was uploaded in
   uint8_t idle = 0;   // head loops since it last rode a request
   bool used = false;  // rode a request in the current loop
 };
@@ -260,10 +261,15 @@ orch::WorkingVector<FileRef>& fileRefs() {
   static orch::WorkingVector<FileRef> v;
   return v;
 }
+orch::WorkingString& loopChat() {
+  static orch::WorkingString c;
+  return c;
+}
 
+// The kept file of `ref` for the loop's chat (nullptr = none).
 FileRef* findRef(const std::string& ref) {
   for (auto& f : fileRefs())
-    if (!ref.empty() && f.ref == ref.c_str()) return &f;
+    if (!ref.empty() && f.ref == ref.c_str() && f.chat == loopChat()) return &f;
   return nullptr;
 }
 
@@ -280,6 +286,7 @@ void keepRef(const std::string& ref, const std::string& id) {
   FileRef f;
   f.ref = orch::workingCopy(ref);
   f.id = orch::workingCopy(id);
+  f.chat = loopChat();
   f.used = true;
   v.push_back(f);
 }
@@ -336,6 +343,8 @@ std::vector<Label> keptLabels(const std::string& text) {
   return out;
 }
 }  // namespace
+
+void setLoopChat(const std::string& chatKey) { loopChat() = orch::workingCopy(chatKey); }
 
 std::string fileRefFor(const std::string& ref) {
   const FileRef* f = findRef(ref);

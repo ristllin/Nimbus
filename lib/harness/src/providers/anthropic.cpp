@@ -1150,8 +1150,10 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     }
     // R1: a photo image.look showed again rides its tool result when this host sees.
     bool sees = imageparts::sees(tr, "anthropic", model);
-    // Kept photo files are this key's: a router head never references them.
+    // Kept photo files are this key's: a router head never references them; and this
+    // chat's: an upload is kept for, and re-attached in, the chat it came from.
     const bool direct = !pd.routerBase || pd.routerBase().empty();
+    imageparts::setLoopChat(parts.cache.key);
     JsonDocument conv = makeDoc(pd);
     JsonArray msgs;
     auto render = [&]() {

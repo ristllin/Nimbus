@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -440,6 +441,29 @@ static void test_turn_without_photos_gets_an_empty_set() {
   TEST_ASSERT_EQUAL(1, released);
 }
 
+// The class rule behind native-per-host (lane IMG): intake never decides by the
+// configured head. The Telegram intake that keeps a photo for the turn must not ask
+// which head is configured or whether it reads images; only the renderers' per-request
+// rule (shown/sees) and the engine's per-host rule do. A source guard over the device
+// file, so a later edit that brings the configured head back into intake fails here.
+static void test_intake_never_decides_by_the_configured_head() {
+  FILE* f = std::fopen("src/agent/telegram.cpp", "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "run from the project root");
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t at = src.find("static bool attachNative(");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "attachNative not found");
+  const size_t end = src.find("\n}\n", at);
+  TEST_ASSERT_TRUE(end != std::string::npos);
+  const std::string body = src.substr(at, end - at);
+  for (const char* banned : {"nativeHead(", "headTakesImages(", "resolvedOrchHost(", "orchModel("})
+    TEST_ASSERT_TRUE_MESSAGE(body.find(banned) == std::string::npos, banned);
+  TEST_ASSERT_TRUE(body.find("admitImage(") != std::string::npos);   // the guard reads the real body
+}
+
 // ---- the slot ----------------------------------------------------------------------
 
 static void test_slot_binds_chat_and_text() {
@@ -599,5 +623,6 @@ int main(int, char**) {
   RUN_TEST(test_look_answer_made_once);
   RUN_TEST(test_settled_row_property);
   RUN_TEST(test_turn_without_photos_gets_an_empty_set);
+  RUN_TEST(test_intake_never_decides_by_the_configured_head);
   return UNITY_END();
 }

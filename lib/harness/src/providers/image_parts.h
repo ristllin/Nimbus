@@ -129,7 +129,11 @@ bool bodyHasFileRef(const std::string& body);
 // An id unused for kFileRefIdleTurns head loops is deleted (the idle step).
 inline constexpr size_t kMaxFileRefs = 16;
 inline constexpr uint8_t kFileRefIdleTurns = 24;
-// The kept file id of photo `ref` ("" = none).
+// The chat the head loop in flight serves (its prompt's per-chat cache key): an upload
+// is kept for that chat and re-attached only in its turns, so a label typed in another
+// chat never shows that chat a photo it was not sent.
+void setLoopChat(const std::string& chatKey);
+// The kept file id of photo `ref` for the loop's chat ("" = none).
 std::string fileRefFor(const std::string& ref);
 // Re-attach the kept photos of the first `count` messages (the history). Returns the
 // images added.

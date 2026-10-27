@@ -1374,6 +1374,43 @@ static void test_img_look_blind_host_reads_the_answer_once() {
   TEST_ASSERT_EQUAL(1, look.answered);
 }
 
+// ---- lane IMG: native decided per serving host, never at intake --------------------
+
+// One turn's photo set, first served by a host that cannot see images (Mistral's
+// codestral: the transcriptions, made once each), then by one that can (a failover to
+// Claude): the second request still carries the pixels, because the set kept the bytes
+// whatever host came first, and nothing is transcribed again.
+static void test_img_failover_from_a_blind_host_still_sends_the_pixels() {
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                           "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"abc123def\","
+                           "\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}}]}}],"
+                           "\"usage\":{\"prompt_tokens\":60,\"completion_tokens\":15}}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char* host) {
+    return std::string(strcmp(host, "mistral") == 0 ? "codestral-latest" : "claude-haiku-5-5");
+  };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", fx.text, out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "(machine transcription by anthropic: photo 1 shows a label)"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "image_url"));
+  TEST_ASSERT_EQUAL(2, fx.transcribed);
+  TEST_ASSERT_FALSE(fx.set->sent);
+  conv.clear();
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "SYS", fx.text, out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"type\":\"image\""));
+  TEST_ASSERT_EQUAL(2, (int)d.http.spliced[1].size());
+  TEST_ASSERT_EQUAL(2, fx.transcribed);   // no second reading
+  TEST_ASSERT_TRUE(fx.set->sent);         // the head saw them: the rows settle as seen
+}
+
 // ---- lane IMG: recent photos re-attached as file references ---------------------
 
 namespace layout = agent::layout;
@@ -1480,8 +1517,8 @@ static void test_img_history_prefix_is_append_only_except_across_a_fold() {
     seed = seed * 1103515245u + 12345u;
     return (seed >> 16) % n;
   };
+  providers::imageparts::setLoopChat("");   // one chat throughout (no per-chat cache key)
   std::vector<std::string> users;
-  std::string prev;
   JsonDocument prevDoc;
   size_t prevCount = 0;
   int folds = 0, photos = 0;
@@ -1590,6 +1627,39 @@ static void test_img_kept_files_age_out_and_a_refusal_forgets_them() {
   (void)body;
 }
 
+// A kept file belongs to the chat it was uploaded in: a label naming its ref in
+// another chat's history attaches nothing (a member never sees the owner's photo by
+// typing its label), and the owner's own chat still gets it.
+static void test_img_kept_files_stay_in_their_chat() {
+  providers::imageparts::setLoopChat("nb-owner");
+  {
+    auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+    set->uploadOnce = true;
+    nimbus::orch::TurnImage it;
+    it.ref = "0123456789abcdef";
+    it.fileId = "file_owner";
+    it.fileHost = "anthropic";
+    set->items.push_back(it);
+    const nimbus::orch::ActiveTurnImages active(set.get());
+    nimbus::orch::Transcript tr;
+    const providers::imageparts::LoopImages loop(tr);
+  }
+  layout::PromptParts p = layout::split(promptWithHistory({kPhotoRow}));
+  for (const char* chat : {"nb-member", "nb-owner"}) {
+    providers::imageparts::setLoopChat(chat);
+    JsonDocument doc;
+    JsonArray msgs = doc.to<JsonArray>();
+    layout::putAnthropicHistory(msgs, p);
+    const int added = providers::imageparts::reattachHistory(msgs, msgs.size());
+    TEST_ASSERT_EQUAL_MESSAGE(strcmp(chat, "nb-owner") == 0 ? 1 : 0, added, chat);
+  }
+  TEST_ASSERT_EQUAL_STRING("file_owner", providers::imageparts::fileRefFor("0123456789abcdef").c_str());
+  providers::imageparts::setLoopChat("nb-member");
+  TEST_ASSERT_EQUAL_STRING("", providers::imageparts::fileRefFor("0123456789abcdef").c_str());
+  providers::imageparts::setLoopChat("");
+  providers::imageparts::dropFileRefs();
+}
+
 // No photo in flight: the request is byte-for-byte the pre-R1 shape (the seeded
 // message is one text block, nothing spliced).
 static void test_r1_no_photos_no_change() {
@@ -1653,9 +1723,11 @@ int main(int, char**) {
   RUN_TEST(test_r1_no_photos_no_change);
   RUN_TEST(test_img_look_returns_the_pixels_in_the_tool_result);
   RUN_TEST(test_img_look_blind_host_reads_the_answer_once);
+  RUN_TEST(test_img_failover_from_a_blind_host_still_sends_the_pixels);
   RUN_TEST(test_img_reattach_rides_the_history_message_with_a_stable_prefix);
   RUN_TEST(test_img_history_prefix_is_append_only_except_across_a_fold);
   RUN_TEST(test_img_kept_files_age_out_and_a_refusal_forgets_them);
+  RUN_TEST(test_img_kept_files_stay_in_their_chat);
   UNITY_END();
   return 0;
 }

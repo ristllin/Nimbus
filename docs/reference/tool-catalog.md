@@ -322,7 +322,8 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.pdf` | Write a PDF with the device's own writer from a title and light Markdown text (`#` headings, `-` bullets, `| table |` rows); text and simple tables only. Saves `<project>/<name>.pdf`, then deliver it with `files.send`. Owner only; needs an SD card. | `project` (**required**), `name` (**required**), `title`, `text` (**required**, up to 48 KB) | live |
 | `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (Off / Ask me per link / Scan, then keep / Full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under Ask me per link the owner approves each link (Telegram `/fetch approve <id>` or the web card); under Scan, then keep the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live (listed while an OpenAI key is set; a key added later works on the next turn) |
-| `image.look` | Look again at a photo sent earlier and answer one question about it. A photo goes to the head as an image only in the turn it arrived; later turns read its short record, and this tool looks at the photo itself when the record does not answer. One provider call (the photo reader's provider walk); only during a turn; a caller that is not the owner looks only at photos of its own chat. | `ref` (**required**: the 16 hex characters in the photo's `[image ... ref=...]` label), `question` (**required**, up to 500 bytes) | live (needs an SD card) |
+| `image.look` | View a photo sent earlier: the photo comes back to the head as an image for the rest of the turn (Anthropic in the tool result, OpenAI and Mistral in a message after it), read from its stored copy with no provider call. A head that cannot see images gets one caption request's answer to `question` instead, and so does a routine. At most 4 photos per turn; only during a turn; a caller that is not the owner looks only at photos of its own chat. | `ref` (**required**: the 16 hex characters in the photo's `[image ... ref=...]` label), `question` (**required**, up to 500 bytes) | live (needs an SD card) |
+| `image.note` | Write the record of a photo of the current message that the head saw: one line (at most 300 bytes) of what matters in it. It becomes the photo's row in the conversation from the next turn on (`(seen; note: ...)`), so no second model captions it. Only for this turn's photos; sent with the final answer it costs no extra round. | `ref` (**required**), `note` (**required**) | live |
 
 Notes:
 - `files.read` serves text extensions only (`.md` / `.txt` / `.json` / `.csv` /
@@ -385,10 +386,9 @@ Notes:
   **low** (fast, small, cheap). It needs an SD card and an OpenAI key. The saved PNG is a first-class `Image` artifact:
   `files.list`/`files.search`/`files.send` all see it, and `files.send` delivers it
   as an inline Telegram photo. `describe:true` adds a vision read-back (a second
-  provider call). Not available on this device: embedding images into PDFs,
-  email attachments, and multimodal vision beyond that one read-back; a
-  generated or received image enters the conversation as a description, not as
-  pixels.
+  provider call). Not available on this device: embedding images into PDFs and
+  email attachments; a generated image enters the conversation as its saved file's
+  name, not as pixels.
 
 ## `results.*` - recent tool outputs
 
