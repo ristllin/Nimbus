@@ -70,7 +70,6 @@
 #include "nimbus/orch/owner_first.h"    // OwnerFirstGate - background work waits for the owner
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
 #include "nimbus/orch/served_model.h"   // the model each provider really answered with
-#include "nimbus/orch/provider_slots.h" // kProviderSlots - every provider, for that list
 #include "nimbus/orch/head_switch.h"    // HeadPause - what holds a head off
 #include "nimbus/orch/provider_park.h"  // the park the head pause reads
 #include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
@@ -1190,11 +1189,6 @@ static TurnEngine::Deps buildTurnDeps() {
     if (!agent::history::v2Enabled()) in.recentConversation = buildRecentWindow(chatId);
     in.devName   = std::string(nimbus::sys::deviceName().c_str());
     in.hostLabel = agent::hostForPrompt(g_cfg.provider);
-    // The model each provider really answered with for its current pick (the identity line).
-    for (const nimbus::orch::ProviderSlot& slot : nimbus::orch::kProviderSlots) {
-      std::string m = nimbus::orch::servedModelFor(slot.slug, store::orchModel(slot.slug).c_str());
-      if (!m.empty()) in.servedModels.push_back({slot.slug, std::move(m)});
-    }
     in.now       = std::string(nimbus::hw::localTimeStr().c_str());  // "" = unsynced
     in.fw        = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
     in.directive = g_mem.directive();

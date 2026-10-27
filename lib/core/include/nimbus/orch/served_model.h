@@ -10,9 +10,9 @@
 // 26 Oct 2026), so the device resolves such an alias through the provider's own model
 // list (model_catalog.h concreteModelName: "mistral-large-2512"). TurnSpend::add files
 // the result on the turn (SpendSlot::served: the turn spend line, /api/lastturn) and
-// notes it here per (provider, model asked for), in RAM, so the next prompt can name the
-// model a pick really runs (ComposeInputs::servedModels) and /model (lane BUD) can
-// answer from the last answer (lastServedModel). Before this, Lumi only knew "mistral-large-latest" and the head
+// notes it here per (provider, model asked for), in RAM, so each request's input can name
+// the model it runs on (runsOnLine below, the engine's [THIS TURN RUNS ON]) and /model (lane
+// BUD) can answer from the last answer (lastServedModel). Before this, Lumi only knew "mistral-large-latest" and the head
 // guessed "Mistral Large 2" from its own training.
 //
 // Portable (no Arduino), host-tested (test_orch_turn_spend). Thread-safe.

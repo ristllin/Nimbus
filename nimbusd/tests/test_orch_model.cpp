@@ -151,7 +151,7 @@ static void testPickChangesTheWire(ndtest::Ctx& c) {
          "the request body carries the BARE model id (router prices it)");
     // The upstream prefix must never ride the model FIELD (the router would price
     // "zai/glm-4.5-flash" as unknown -> 403). It DOES appear elsewhere in the body,
-    // in the [YOUR MODEL] context line that now honestly names the cumulo head's
+    // in the [THIS TURN RUNS ON] input line that honestly names the cumulo head's
     // selector - so the check is scoped to the model field, not the whole body.
     c.ok(r.body.find("\"model\":\"zai/") == std::string::npos,
          "the upstream prefix never leaks into the model field");

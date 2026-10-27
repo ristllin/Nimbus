@@ -215,8 +215,8 @@ static std::string runsOnText(const TurnEngine::Deps& d, const std::string& h, c
   return orch::runsOnLine(h, asked, concrete, fact);
 }
 
-// The head the next turn will ACTUALLY run on - the one resolution both the
-// turn core and the [YOUR MODEL] context line read: nimbus::orch::resolveHeadHost,
+// The head the next turn will ACTUALLY run on - the one resolution the turn core
+// reads: nimbus::orch::resolveHeadHost,
 // the rule the device's screen, catalog and web page share. The pinned orchHost while
 // it has a key; else the first KEYED provider in priority order (CUM-201: BYOK-override
 // first); else the verified router fallback head (Cumulo, then Z.ai - CUM-242); else
@@ -789,17 +789,10 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   std::string ctx = "\n";
   ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
          (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
-  // Name the CURRENT model so the agent knows its own identity (owner: "asking the
-  // orchestrator which model it is, it has no idea"). The host is the SAME
-  // resolution the turn core dispatches on (resolveTurnHost) - naming the raw
-  // priority head here made an anthropic-only instance introduce itself as
-  // mistral, because the model parrots this line (CUM-374 e2e).
-  {
-    const std::string host = resolveTurnHost(d_);
-    if (!host.empty())
-      ctx += "[YOUR MODEL] you are currently running on " + host + " / " +
-             (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string()) + "\n";
-  }
+  // The model the agent runs on is NOT named here: this block is cached and outlives a
+  // failover, so a "[YOUR MODEL]" line named the configured head while a paused head's turns
+  // ran elsewhere (Lumi, 26 Oct). Each request's input names its own host and model instead
+  // ([THIS TURN RUNS ON], runsOnText; lane HFM).
   ctx += availableModelsLine(d_, modelsTool);
 
   // R3: the skills index rides the SHELF block (its own cache point after the
@@ -1007,8 +1000,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
   // allowed for the task), so the model must be known when the prompt is sized.
-  // The resolution is the ONE shared rule (resolveTurnHost) the [YOUR MODEL]
-  // context line also reads - they must never diverge (see the helper's comment).
+  // The resolution is the ONE shared rule (resolveTurnHost); the per-turn line names the
+  // host each request then really runs on.
   std::string host = resolveTurnHost(d_);
   // The head chosen BEFORE any failover - the "requested" side of served-by
   // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
@@ -1658,8 +1651,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (hostList.size() >= 3) break;
       hostList.push_back(alt);
     }
+    // Each request's input leads with the host it really runs on: the fabric starts past a
+    // parked or paused head and may move a round, so it builds the lead per host (HFM).
+    headTools.inputLead = [this, &requestedHost](const std::string& h) {
+      return runsOnText(d_, h, requestedHost);
+    };
     ok = d_.hosts.fabric(
-        hostList, instructions, inputsFor(host), outJson, err, *headToolsPtr, &tf.spend,
+        hostList, instructions, inputs, outJson, err, *headToolsPtr, &tf.spend,
         [&](const std::string& from, const std::string& to) {
           // The notice carries the cause and its HTTP status (lastFabricSwitch).
           // A billing refusal or a refused key is told once per episode (shared with
@@ -1689,6 +1687,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
         });
     convId = "";   // stateless loops keep no provider-side conversation
+    inputsFor(host);   // the debug capture shows the input as the final host's requests carried it
   } else {
     ok = !startPastParkedHead() && runTurnHost(host, convId);
   }

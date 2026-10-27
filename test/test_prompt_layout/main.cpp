@@ -89,7 +89,6 @@ struct Turn {
 
 static const char* kCatalogs =
     "\n[AVAILABLE PROVIDERS] sub-session priority: anthropic,openai\n"
-    "[YOUR MODEL] you are currently running on anthropic / model-anthropic\n"
     "[AVAILABLE MODELS] (yours + sub-agents') anthropic: model-a,model-b;\n"
     "## PROVIDERS & CONNECTORS\n- anthropic: web search\n";
 static const char* kSkills =
@@ -272,8 +271,8 @@ static void test_prefix_stable_across_per_turn_content() {
 // 18 Oct layout carried the minute clock in the identity) is caught.
 static void test_counter_timestamp_in_static_block_is_caught() {
   std::unique_ptr<Turn> a = turnAt(1), b = turnAt(2);
-  a->ci.hostLabel = "anthropic / model-anthropic (as of " + a->ci.now + ")";
-  b->ci.hostLabel = "anthropic / model-anthropic (as of " + b->ci.now + ")";
+  a->ci.devName = "Nimbus-3 (as of " + a->ci.now + ")";   // a field the static identity renders
+  b->ci.devName = "Nimbus-3 (as of " + b->ci.now + ")";
   const std::string diff =
       prefixDiff(agent::composeInstructions(a->ci), agent::composeInstructions(b->ci));
   TEST_ASSERT_FALSE_MESSAGE(diff.empty(), "a static timestamp went unnoticed");

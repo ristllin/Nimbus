@@ -52,6 +52,12 @@ struct HeadTools {
   // host and that attempt's error, so the engine's FailureChain keeps the first cause
   // of every host - the fabric itself still returns only the last error.
   std::function<void(const std::string& host, const std::string& err)> onStepError;
+
+  // Optional per-request lead of the seeded input (lane HFM): the line naming the host and
+  // model THIS request runs on ("[THIS TURN RUNS ON] ..."). The fabric seeds the input with the
+  // lead of the host it starts on (past a parked or paused head) and rewrites it when a round
+  // moves to another host. Null = the input as given.
+  std::function<std::string(const std::string& host)> inputLead;
 };
 
 }  // namespace agent

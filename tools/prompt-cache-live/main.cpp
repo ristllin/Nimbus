@@ -194,7 +194,7 @@ std::string readText(const std::string& path) {
   return ss.str();
 }
 
-std::string catalogs(const std::string& repo, const std::string& host, const std::string& model) {
+std::string catalogs(const std::string& repo, const std::string& /*host*/, const std::string& /*model*/) {
   std::vector<agent::SkillIndexEntry> idx;
   for (size_t i = 0; i < agent::builtinSkillCount(); i++) {
     agent::SkillIndexEntry e;
@@ -203,7 +203,6 @@ std::string catalogs(const std::string& repo, const std::string& host, const std
     idx.push_back(e);
   }
   return "\n[AVAILABLE PROVIDERS] sub-session priority: anthropic,openai,mistral\n"
-         "[YOUR MODEL] you are currently running on " + host + " / " + model + "\n"
          "[AVAILABLE MODELS] (yours + sub-agents') openai: gpt-5.6-luna,gpt-5.6-sol; anthropic: "
          "claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5; mistral: mistral-small-latest,mistral-large-latest;\n" +
          agent::skillsIndexText(idx) + readText(repo + "/test/golden/orch_catalog_full.txt");

@@ -31,7 +31,8 @@ std::string hostForPrompt(const ProviderConfig& p);
 
 struct ComposeInputs {
   std::string devName;               // "" -> "Nimbus"
-  std::string hostLabel;             // hostForPrompt(...)
+  std::string hostLabel;             // hostForPrompt(...); not rendered since v4.6.1: each request's
+                                     // input names its host ([THIS TURN RUNS ON], engine runsOnText)
   std::string now;                   // local "YYYY-MM-DD Day HH:MM TZ"; "" = clock unsynced
   std::string fw;                    // firmware version (+build) for the identity line
   // CUM-514: the board this build runs on (identity line + the capability
@@ -107,7 +108,7 @@ struct ComposeInputs {
   // from the NVS `promptV2` flag via HarnessConfig::promptV2; adoption is gated
   // by the eval suite. See docs/proposals/harness-prompt-audit.md.
   bool promptV2 = false;
-  // The stable catalogs ([AVAILABLE PROVIDERS], [YOUR MODEL], [AVAILABLE MODELS],
+  // The stable catalogs ([AVAILABLE PROVIDERS], [AVAILABLE MODELS],
   // the skills index, [PROVIDERS & CONNECTORS]) - the engine's
   // buildStableCatalogs(). They change only with the device config, so they ride
   // the end of the static block (prompt_layout.h); not counted in budgetBytes.
@@ -118,24 +119,7 @@ struct ComposeInputs {
   // loop-off note reads it: on a heap-gated single-shot turn it says models.list
   // cannot run either (prism row 1).
   bool modelsPointer = false;
-  // The concrete model each provider last answered with for the model the device asks
-  // it for now (nimbus/orch/served_model.h: the response's "model" field, a "-latest"
-  // alias resolved through the provider's own list, e.g. mistral / mistral-large-latest
-  // -> mistral-large-2512). For the identity line (servedModelOf); a provider absent here
-  // has not answered this boot (never a guess). Empty on host rigs.
-  struct ServedModel {
-    std::string host;
-    std::string model;
-  };
-  std::vector<ServedModel> servedModels;
 };
-
-// The model `host` really runs, per in.servedModels; "" when not known this boot.
-inline std::string servedModelOf(const ComposeInputs& in, const std::string& host) {
-  for (const ComposeInputs::ServedModel& s : in.servedModels)
-    if (s.host == host) return s.model;
-  return std::string();
-}
 
 // Compose the World system prompt as the cacheable parts of prompt_layout.h,
 // joined with layout::kPartSplit:

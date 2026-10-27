@@ -336,9 +336,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // ONE canonical transcript for the whole turn, whichever provider serves a
   // given round. The controller records into it (hooks.transcript); every
   // host's step renders its wire from it.
-  orch::Transcript tr;
-  tr.addUser(inputs);
-  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
+  orch::Transcript tr;   // seeded below, once the host the turn starts on is known
 
   // Per-host usage (lane T): each host's step adds into its OWN counter (hostUse),
   // and every host that billed is filed into `spend` once when the loop ends, with
@@ -406,6 +404,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       return false;
     }
   }
+  // The seeded input opens with the lead of the host each request really runs on (HFM).
+  auto seedFor = [&](size_t i) { return (ht.inputLead ? ht.inputLead(hostList[i]) : std::string()) + inputs; };
+  tr.addUser(seedFor(hostIdx));
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
   orch::HeadStepFn cur = makeStep(hostIdx);
@@ -452,6 +454,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         ++switches;
         cur = next;
         inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
+        if (ht.inputLead) tr.setSeedText(seedFor(hostIdx));
         continue;
       }
       // Lane DEF: each billed round counts toward the monthly spend ceiling at once (the
@@ -528,6 +531,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       if (notify) notify(from, to);
       cur = next;
       inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
+      if (ht.inputLead) tr.setSeedText(seedFor(hostIdx));
       // loop: the SAME round re-runs on the new host. The transcript already
       // holds every executed tool result - nothing re-dispatches.
     }

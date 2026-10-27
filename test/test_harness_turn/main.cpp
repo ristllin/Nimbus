@@ -114,6 +114,13 @@ struct Rig {
   // ("" = the loop hands back no brief, so the turn reads as single-shot).
   std::string fabricBrief;
   int fabricDispatch = 0;   // tools the scripted fabric runs (ht.dispatch) before its visits
+  // Lane HFM: the host a scripted fabric run starts on ("" = the first listed; another host
+  // is a start past a paused head, as the real fabric does), the per-request lead it read
+  // for that host (HeadTools::inputLead) and the system prompt it was handed.
+  std::string fabricStart;
+  std::string fabricLead;
+  std::string fabricInstructions;
+  std::function<orch::HeadPause(const std::string&)> headPause;   // ApplyDeps.headPause
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -269,6 +276,7 @@ struct Rig {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
+    d.apply.headPause = [this](const std::string& h) { return headPause ? headPause(h) : orch::HeadPause(); };
     wireLaneL(d, withSubFabric);
     d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); return scratchOutcome; };
     d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst,
@@ -324,10 +332,11 @@ struct Rig {
   // into the spend table once at the end under the model configured for it.
   // (Out of the constructor only to keep the lizard length ceiling honest.)
   void wireFabricStub(TurnEngine::Deps& d) {
-    d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string&,
+    d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string& ins,
                             const std::string&, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,
                             const FabricNotify& notify) {
+      fabricInstructions = ins;
       return fabricRun(hl, out, err, ht, spend, notify);
     };
     d.hosts.fabricSupports = [](const std::string& h) {
@@ -437,6 +446,13 @@ struct Rig {
       toolResults.push_back(ht.dispatch(c));
     }
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
+    const std::string& start = fabricStart.empty() ? hl[0] : fabricStart;
+    fabricLead = ht.inputLead ? ht.inputLead(start) : std::string();
+    if (start != hl[0]) {   // started past a paused head: the real fabric notifies the move
+      if (notify) notify(hl[0], start);
+      fileSpend(spend, start, 100, 20, "");
+      return true;
+    }
     if (fabricSwitch && hl.size() > 1) {
       fileSpend(spend, hl[0], 50, 10, fabricFirstEcho);
       if (ht.onStepError) ht.onStepError(hl[0], "network");
@@ -1017,6 +1033,60 @@ static void test_the_per_turn_input_names_the_model_this_turn_runs_on() {
     TEST_ASSERT_EQUAL_STRING(
         "[THIS TURN RUNS ON] anthropic / claude-haiku-5-5. When asked which model you run, name this one only.\ninputs",
         r.attempts[0].inputs.c_str());
+  }
+  nimbus::orch::installServedModelResolver(nullptr);
+  nimbus::orch::clearServedModels();
+}
+
+// HFM verifier: on the FABRIC path the line is built per request from the host the fabric
+// really starts on, never the configured head (Lumi, 26 Oct: Anthropic paused by its monthly
+// limit, Mistral answering, and the line named anthropic with no reason). The cached system
+// prompt names no model at all ([YOUR MODEL] and "Your brain right now" are gone).
+static void test_fabric_start_on_mistral_names_mistral_and_the_paused_head() {
+  nimbus::orch::installServedModelResolver(&lumiAliasResolver);
+  const struct {
+    uint8_t cause;
+    const char* why;
+  } cases[] = {
+      {nimbus::orch::kPauseProviderLimit, "is paused by the owner's monthly limit"},
+      {nimbus::orch::kPauseSpendCeiling, "is paused by the owner's overall spending limit"},   // frozen
+  };
+  for (const auto& c : cases) {
+    Rig r;
+    r.cfg.orchHost = "anthropic";
+    r.cfg.priority = "anthropic,mistral";
+    r.cfg.orchModels["mistral"] = "mistral-large-latest";
+    r.cfg.midFail = true;   // the device default: loop turns run on the stateless fabric
+    r.fabricStart = "mistral";
+    const uint8_t cause = c.cause;
+    r.headPause = [cause](const std::string& h) {
+      orch::HeadPause p;
+      if (h == "anthropic") p.causes = cause;
+      return p;
+    };
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL(1, (int)r.fabricCalls.size());
+    TEST_ASSERT_EQUAL_STRING("anthropic", r.fabricCalls[0][0].c_str());   // the head stays chosen
+    const std::string want = std::string("[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for "
+                                         "mistral-large-latest). Anthropic, the chosen head, ") +
+                             c.why + " and returns automatically when it lifts. When asked which model you " +
+                             "run, name this one only.\n";
+    TEST_ASSERT_EQUAL_STRING(want.c_str(), r.fabricLead.c_str());
+    TEST_ASSERT_TRUE(r.fabricInstructions.find("[YOUR MODEL]") == std::string::npos);
+    TEST_ASSERT_TRUE(r.fabricInstructions.find("Your brain right now") == std::string::npos);
+    TEST_ASSERT_TRUE(r.fabricInstructions.find("THIS TURN RUNS ON") == std::string::npos);
+    TEST_ASSERT_FALSE(r.fabricInstructions.empty());
+    TEST_ASSERT_EQUAL(1, (int)r.debug.size());   // the debug capture shows what mistral was sent
+    TEST_ASSERT_EQUAL_STRING((want + "inputs").c_str(), r.debug[0].inputs.c_str());
+  }
+  {
+    Rig r;   // counter-test: the fabric starts on the head itself - its line, no head clause
+    r.cfg.orchModels["anthropic"] = "claude-haiku-5-5";
+    r.cfg.midFail = true;
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL_STRING(
+        "[THIS TURN RUNS ON] anthropic / claude-haiku-5-5. When asked which model you run, name this one only.\n",
+        r.fabricLead.c_str());
   }
   nimbus::orch::installServedModelResolver(nullptr);
   nimbus::orch::clearServedModels();
@@ -4714,6 +4784,7 @@ static void runFirstHalf() {
   RUN_TEST(test_turn_spend_files_under_the_serving_model);
   RUN_TEST(test_lastturn_and_spend_line_name_the_model_that_answered);
   RUN_TEST(test_the_per_turn_input_names_the_model_this_turn_runs_on);
+  RUN_TEST(test_fabric_start_on_mistral_names_mistral_and_the_paused_head);
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);

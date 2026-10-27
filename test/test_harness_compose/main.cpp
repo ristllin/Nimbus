@@ -380,8 +380,10 @@ static void test_identity_uses_devname_and_host() {
   std::string p = agent::composeInstructions(in);
   TEST_ASSERT_TRUE(p.find("You are Nimbus-3, an always-on personal assistant") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(p.find("Your brain right now: anthropic / model-anthropic.") !=
-                   std::string::npos);
+  // v4.6.1 (lane HFM): the model is named per request ([THIS TURN RUNS ON] in the
+  // input), never in this cached block, which outlives a failover.
+  TEST_ASSERT_TRUE(p.find("Your brain right now") == std::string::npos);
+  TEST_ASSERT_TRUE(p.find("model-anthropic") == std::string::npos);
 }
 
 // CUM-514: the identity line and the capability line describe the BUILD's board.

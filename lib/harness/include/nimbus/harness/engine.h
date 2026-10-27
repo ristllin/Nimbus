@@ -510,7 +510,7 @@ class TurnEngine {
   std::string buildStableCatalogs(bool modelsTool = false);
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
-  // [YOUR MODEL] line use (explicit orchHost, else the first keyed priority
+  // [THIS TURN RUNS ON] line's "asked for" use (explicit orchHost, else the first keyed priority
   // host, else the verified router head). The device sizes the RECENT
   // CONVERSATION window for this head (CUM-485) instead of a store-side guess
   // that does not know the router fallback.

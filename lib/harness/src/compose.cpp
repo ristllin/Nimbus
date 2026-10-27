@@ -332,8 +332,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   const BoardIdentity& board = in.board ? *in.board : buildBoardIdentity();
   ci.identity = "\nYou are " + devName +
                 ", an always-on personal assistant (a Nimbus device), running in "
-                "Orchestrator mode on a " + board.name + " desk device.\n"
-                "Your brain right now: " + in.hostLabel + ".\n" +
+                "Orchestrator mode on a " + board.name + " desk device.\n" +
                 (in.fw.empty() ? std::string()
                                : "Firmware: " + in.fw + ".\n") +
                 staticClockLine(in.now) +
@@ -459,8 +458,8 @@ std::string composeInstructions(const ComposeInputs& in) {
     if (in.modelsPointer)
       loopNote +=
           "The [AVAILABLE MODELS] line points at models.list - one of these tools, "
-          "so it cannot run this turn either. Your own model id is in [YOUR MODEL] "
-          "above; for any other model, say what you need and the owner can ask "
+          "so it cannot run this turn either. Your own model id is in [THIS TURN RUNS ON] "
+          "in your input; for any other model, say what you need and the owner can ask "
           "again on a turn with the loop on.\n";
   }
   // v2 drops the standalone "## HOW YOUR MEMORY WORKS" block: the compressed

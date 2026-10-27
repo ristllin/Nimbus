@@ -25,6 +25,14 @@ void Transcript::addUser(std::string text) {
   e_.push_back(std::move(it));
 }
 
+void Transcript::setSeedText(std::string text) {
+  for (TranscriptItem& it : e_)
+    if (it.kind == TranscriptItem::Kind::User && it.round == -1) {
+      it.text = std::move(text);
+      return;
+    }
+}
+
 void Transcript::addAssistantText(std::string text, int round, const char* provider) {
   if (text.empty()) return;
   TranscriptItem it;

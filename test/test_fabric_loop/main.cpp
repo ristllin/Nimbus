@@ -613,9 +613,82 @@ static void test_provider_limit_mid_turn_moves_the_round() {
   orch::providerPark().clear();
 }
 
+// ---- lane HFM: each request names the host it runs on ------------------------------
+// HeadTools::inputLead is the per-request lead of the seeded input (the engine's
+// "[THIS TURN RUNS ON] ..." line). The fabric seeds the input with the lead of the host
+// the turn STARTS on, past a paused head, never the configured head's (Lumi, 26 Oct: a
+// line built from the configured head named anthropic while mistral answered).
+static std::string misFinalBody() {
+  return "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+         "{\"id\":\"abc123def\",\"function\":{\"name\":\"orch_turn\","
+         "\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}}]}}],"
+         "\"usage\":{\"prompt_tokens\":60,\"completion_tokens\":15}}";
+}
+static std::string leadFor(const std::string& h) { return "[RUNS " + h + "] "; }
+
+static void test_hfm_input_lead_names_the_start_host_past_a_paused_head() {
+  orch::providerPark().clear();
+  orch::providerPark().pause("anthropic", orch::kPauseProviderLimit);
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.inputLead = leadFor;
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(pd, {"anthropic", "mistral"}, "S", "USER", out, err, rig.ht,
+                                           nullptr, nullptr);
+  orch::providerPark().clear();
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("api.mistral.ai", d.http.seen[0].host.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "[RUNS mistral] USER"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "[RUNS anthropic]"));
+}
+
+// A round that moves mid-turn re-runs with the lead of the host it moved to: the
+// replayed seed names openai, and the earlier anthropic requests named anthropic.
+static void test_hfm_input_lead_follows_a_mid_turn_move() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 0, ""});   // round 1 dies
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 0, ""});   // same-host retry dies
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.inputLead = leadFor;
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "USER", out, err,
+                                                    rig.ht, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "[RUNS anthropic] USER"));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "[RUNS openai] USER"));
+  TEST_ASSERT_FALSE(bodyHas(d, 3, "[RUNS anthropic]"));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "\"call_id\":\"tu_1\""));   // the progress still carries over
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());
+}
+
+// Counter-test: no lead set - the input rides exactly as given.
+static void test_hfm_no_input_lead_keeps_the_input() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "USER", out, err, rig.ht,
+                                            nullptr, nullptr));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"text\":\"USER\""));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_provider_limit_mid_turn_moves_the_round);
+  RUN_TEST(test_hfm_input_lead_names_the_start_host_past_a_paused_head);
+  RUN_TEST(test_hfm_input_lead_follows_a_mid_turn_move);
+  RUN_TEST(test_hfm_no_input_lead_keeps_the_input);
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
