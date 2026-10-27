@@ -49,7 +49,8 @@ void clearServedModels();   // forget every note (tests)
 // The per-turn line naming what this request runs on, for the model (the runtime fact the
 // cached identity line cannot carry), at the top of the turn's input:
 //   "[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest). <headFact>
-//    When asked which model you run, name this one only.\n"
+//    When asked which model you run, name this one and say why the chosen head is not running this turn.\n"
+// (with no headFact the closing sentence is "When asked which model you run, name this one only.")
 // `concrete` "" or equal to `asked`: the asked model alone. `headFact` "" when the chosen head
 // runs the turn, else head_switch.h headPauseFact ("Anthropic, the chosen head, is paused by
 // the owner's monthly limit and returns automatically when it lifts.").

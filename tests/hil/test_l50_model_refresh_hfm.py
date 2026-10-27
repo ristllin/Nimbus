@@ -297,11 +297,17 @@ def test_hfm_a_frozen_head_is_not_moved(board, device):
         print(f"[L50hfm] reply: {reply[:300]}\n[L50hfm] log:\n{tail}\n[L50hfm] orchHost after: {after}")
         assert after == "anthropic", f"the head moved to {after}"
         assert "turn host=mistral" in tail, "the turn did not fail over to Mistral (the leg proves nothing then)"
-        # The guard itself, with no model in the loop: the same switch through device.control.
+        # The guard itself (orch_model(no change) while the chosen head is paused) is pinned host-side in
+        # test_harness_apply: device.control waits on the network, so the LAN endpoint refuses it (web_guard.h)
+        # and cannot move the head either.
         action = {"type": "orch_model", "provider": "mistral", "model": "mistral-small-latest"}
-        out = _mcp(board, "device.control", {"action": action})
-        print(f"[L50hfm] device.control orch_model -> {out[:300]}")
-        assert "orch_model(no change)" in out, out
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "device.control", "arguments": {"action": action}}}
+        )
+        r = _S.post(f"http://{board}/mcp", data=body, headers={"Content-Type": "application/json"}, timeout=20)
+        print(f"[L50hfm] LAN device.control orch_model -> {r.status_code} {r.text[:300]}")
+        assert r.status_code == 200 and (r.json().get("error") or {}).get("code") == -32003, r.text[:300]
         assert _orch(board).get("orchHost") == "anthropic"
     finally:
         if prio0:

@@ -1022,7 +1022,7 @@ static void test_the_per_turn_input_names_the_model_this_turn_runs_on() {
     const std::string want =
         "[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest). Anthropic, the "
         "chosen head, is over its monthly budget and returns automatically when its budget resets. When asked "
-        "which model you run, name this one only.\n";
+        "which model you run, name this one and say why the chosen head is not running this turn.\n";
     TEST_ASSERT_EQUAL_STRING((want + "inputs").c_str(), r.attempts[0].inputs.c_str());
     TEST_ASSERT_TRUE(r.attempts[0].instructions.find("THIS TURN RUNS ON") == std::string::npos);
   }
@@ -1070,7 +1070,7 @@ static void test_fabric_start_on_mistral_names_mistral_and_the_paused_head() {
     const std::string want = std::string("[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for "
                                          "mistral-large-latest). Anthropic, the chosen head, ") +
                              c.why + " and returns automatically when it lifts. When asked which model you " +
-                             "run, name this one only.\n";
+                             "run, name this one and say why the chosen head is not running this turn.\n";
     TEST_ASSERT_EQUAL_STRING(want.c_str(), r.fabricLead.c_str());
     TEST_ASSERT_TRUE(r.fabricInstructions.find("[YOUR MODEL]") == std::string::npos);
     TEST_ASSERT_TRUE(r.fabricInstructions.find("Your brain right now") == std::string::npos);

@@ -102,8 +102,9 @@ std::string runsOnLine(const std::string& host, const std::string& asked, const 
   if (!asked.empty()) line += " / " + (concrete.empty() ? asked : concrete);
   if (!asked.empty() && !concrete.empty() && concrete != asked) line += " (asked for " + asked + ")";
   line += ".";
-  if (!headFact.empty()) line += " " + headFact;
-  return line + " When asked which model you run, name this one only.\n";
+  if (headFact.empty()) return line + " When asked which model you run, name this one only.\n";
+  return line + " " + headFact +
+         " When asked which model you run, name this one and say why the chosen head is not running this turn.\n";
 }
 
 void clearServedModels() {
