@@ -548,16 +548,19 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       case orch::OnceAfterFire::Retire: {
         const std::string wid = l->id;
         const std::string wname = l->name;
+        const std::string answeredAlert = orch::answeredFailureAlert(*l);
         const bool failed = !o.ok;
         for (auto it = g_loops.begin(); it != g_loops.end(); ++it)
           if (it->id == wid) { g_loops.erase(it); break; }
         persist();
-        if (failed && o.answered)
+        if (failed && o.answered) {   // it reached the owner, then failed: told, never silent
           alogf("loops: '%s' failed after it reached the owner (%s) - retired, not repeated", wname.c_str(),
                 o.error.c_str());
-        else if (failed && g_alert)
+          if (g_alert) g_alert(AlertLevel::Warn, wid, answeredAlert);
+        } else if (failed && g_alert) {
           g_alert(AlertLevel::Warn, wid,
                   "a wakeup the assistant set for itself failed twice and was dropped");
+        }
         return;
       }
       case orch::OnceAfterFire::NotOnce: break;

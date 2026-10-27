@@ -436,6 +436,18 @@ static void test_a_fire_that_answered_then_failed_is_never_run_again_early() {
   TEST_ASSERT_FALSE(retriesSoon(okRun));
   FireOutcome noAsk;   // a failure that asked for no retry keeps its next slot
   TEST_ASSERT_FALSE(retriesSoon(noAsk));
+  // The retirement is never silent: the owner hears that it arrived, that the turn did
+  // not finish, and that it will not repeat - in words for whoever set it.
+  LoopRecord mine, its;
+  mine.createdBy = CreatedBy::Owner;
+  its.createdBy = CreatedBy::Agent;
+  const std::string a = answeredFailureAlert(mine), b = answeredFailureAlert(its);
+  TEST_ASSERT_TRUE(a.find("reminder you set was delivered") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("wakeup the assistant set for itself was delivered") != std::string::npos);
+  for (const std::string& s : {a, b}) {
+    TEST_ASSERT_TRUE(s.find("did not finish") != std::string::npos);
+    TEST_ASSERT_TRUE(s.find("will not") != std::string::npos);
+  }
 }
 
 // W22: /remind's duration parser. Bare number = minutes; s/m/h/d units;

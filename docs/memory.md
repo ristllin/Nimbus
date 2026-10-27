@@ -239,10 +239,14 @@ the turn has asked a provider, a failed allocation is no longer a deferral: a ro
 already have billed and run tools (a Telegram reply sent, a memory written), so a
 routine's or the awareness turn's fire counts as a failure, never a memory deferral
 (the awareness turn is not staged again), and the rounds it billed are metered. A fire
-whose turn reached the owner before it failed is never run again early: a one-shot
-reminder or wakeup retires instead of taking its one short retry, and a routine keeps
-its next slot, so the owner never gets the same message twice. An allocation that fails
-in the fire after its turn ended follows the same rules.
+whose turn handed the model's words to the owner before it failed (its reply, a cut
+reply it salvaged, a Telegram message or speech a tool sent) is never run again early,
+so the owner never gets the same message twice: a one-shot reminder or wakeup retires
+instead of taking its one short retry, and the owner gets one message saying it was
+delivered but its turn did not finish; a routine keeps its next slot. A quiet turn's
+held text does not count, and neither does a delivery that failed before anything was
+queued. A fire whose turn was served counts as served even when an allocation fails in
+its bookkeeping afterwards, so a working routine is never paused for it.
 
 **Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while

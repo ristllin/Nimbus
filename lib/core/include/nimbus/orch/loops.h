@@ -264,6 +264,10 @@ constexpr uint32_t kWakeupRetrySec = 300;
 // to (retryAfterSec: idempotent pre-work, the dream) and its turn never reached the
 // owner (CUM-826); otherwise it keeps its next slot. The failure still counts.
 inline bool retriesSoon(const FireOutcome& o) { return !o.ok && o.retryAfterSec > 0 && !o.answered; }
+// The owner's alert when a one-shot retires because its turn reached them and then
+// failed: never silent - what arrived, that the turn did not finish, and that it is
+// not repeated (CUM-826). The owner's /remind and the assistant's own wakeup differ.
+std::string answeredFailureAlert(const LoopRecord& l);
 
 bool parseSpec(ArduinoJson::JsonObjectConst schedule, const LoopCaps& caps,
                SchedSpec& out, std::string& err);

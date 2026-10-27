@@ -257,6 +257,10 @@ bool   speakOnDevice(const String& text, bool capture = true, String* why = null
 // only when every note arrived. False with `result` untouched: the chat is not allowed.
 bool   sendToChat(const String& chatId, const String& text, bool asVoice,
                   std::string* result = nullptr);
+// CUM-826: the in-flight turn's model text reached the owner outside apply (a tool's
+// send, speech that started playing). Call it only once the hand-over succeeded.
+// Turn task only.
+void   noteTurnSpoke();
 void   requestMemoryClear(); // stage a model-memory wipe (echo zeroed at once)
 void   requestConvReset();   // stage a provider-conversation reset (drained on tg_poll,
                              // AFTER any in-flight turn's write-back - prism B)

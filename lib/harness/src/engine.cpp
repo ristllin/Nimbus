@@ -231,18 +231,32 @@ TurnMemoryState& turnMem() {
 
 // L24: apply's first delivery marks the turn as answered, so a failed allocation
 // after it adds no apology on top of the answer (the ApplyCapture swap pattern).
+// CUM-826: a delivery or speech that RETURNED (handed over) marks the fire as having
+// spoken; one that threw before anything was queued does not.
 struct AnswerMark {
   ApplyDeps& deps;
+  volatile bool& spoke;
   std::function<void(const std::string&, const std::string&)> inner;
-  explicit AnswerMark(ApplyDeps& d) : deps(d), inner(d.deliver) {
-    if (!inner) return;
-    deps.deliver = [this](const std::string& chat, const std::string& text) {
-      turnMem().applied = true;
-      inner(chat, text);
-    };
+  std::function<void(const std::string&)> innerSpeak;
+  AnswerMark(ApplyDeps& d, volatile bool& spokeFlag)
+      : deps(d), spoke(spokeFlag), inner(d.deliver), innerSpeak(d.speak) {
+    if (inner) {
+      deps.deliver = [this](const std::string& chat, const std::string& text) {
+        turnMem().applied = true;   // the apology rule only
+        inner(chat, text);
+        spoke = true;
+      };
+    }
+    if (innerSpeak) {
+      deps.speak = [this](const std::string& text) {
+        innerSpeak(text);
+        spoke = true;
+      };
+    }
   }
   ~AnswerMark() {
     if (inner) deps.deliver = std::move(inner);
+    if (innerSpeak) deps.speak = std::move(innerSpeak);
   }
   AnswerMark(const AnswerMark&) = delete;
   AnswerMark& operator=(const AnswerMark&) = delete;
@@ -265,15 +279,12 @@ void putBackTaken(TurnMemoryState& tm, JobEngine* jobs, Parked& parked, uint32_t
   tm.putBack = true;
 }
 
-// The turn reached the owner: apply delivered its answer, or a tool replied mid-loop
-// (reply.telegram). A retry of such a turn would send the same message again.
-bool turnAnswered(const TurnMemoryState& tm, bool toolReplied) { return tm.applied || toolReplied; }
 // Nothing went out and nothing answered: no provider was asked (putBackTaken's rule:
-// once asked, a request may have left, billed and run tools) and the turn did not reach
-// the owner. Only such a turn may end as a memory deferral a retry repeats (F2).
-bool nothingWentOut(const TurnMemoryState& tm, bool toolReplied) {
-  return !tm.asked && !turnAnswered(tm, toolReplied);
-}
+// once asked, a request may have left, billed and run tools), apply did not start
+// delivering and no tool replied. Only such a turn may end as a memory deferral a
+// retry repeats (F2). Whether the owner actually got model text is the engine's
+// separate spoke_ fact (CUM-826).
+bool nothingWentOut(const TurnMemoryState& tm, bool toolReplied) { return !tm.asked && !tm.applied && !toolReplied; }
 
 bool ownerWaits(TurnSource s) { return s == TurnSource::Owner || s == TurnSource::Serial; }
 // A turn whose setup cost at least this much internal SRAM logs its memory line.
@@ -408,7 +419,7 @@ void ProviderHosts::noteFailed(const std::string& host, const std::string& err) 
   failed(host, kind, status);
 }
 
-bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
+bool TurnEngine::deliver(const std::string& chatId, const std::string& text, bool modelText) {
   // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
   // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
   // (the nightly dream, the post-update awareness turn) has nobody waiting for it,
@@ -421,6 +432,7 @@ bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
     return false;
   }
   if (d_.deliver) d_.deliver(chatId, text);
+  if (modelText) spoke_ = true;   // CUM-826: handed over, before the row can fail
   // Storm finding 2 (24 Oct): one history row per message the owner received.
   // A failed turn's honest refusal, the parked short answer, a rate-limit or
   // pre-turn local reply is a message the owner received, so it is captured as the
@@ -974,6 +986,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnMem().asked = false;
   turnMem().putBack = false;
   toolReplied_ = false;   // before anything can throw: a stale flag would silence the apology
+  spoke_ = false;         // CUM-826: this turn's own "spoke" fact
   // Turn lifecycle guard: flags the in-flight state AND paints the head turn on
   // the ring as a live Running job ("head" key, blue comet in Full) so the user
   // SEES the device thinking - previously a text/voice turn gave no ring feedback
@@ -1978,8 +1991,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // deliver() captures the row: one message the owner received (salvage text
-      // plus any folded credit line), one history row.
-      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold);
+      // plus any folded credit line), one history row. Salvaged text is the model's
+      // own: handed over, the fire spoke (CUM-826).
+      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold, /*modelText=*/so.salvaged);
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -2104,7 +2118,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
-    deliver(chatId, so.text);   // deliver() captures the delivered text as the row
+    deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
     // row name it (the provider answered; the device could not use the answer).
@@ -2180,7 +2194,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, held, st, spawned);
   } else {
     ApplyCapture capture(this, !turn.reply.empty());
-    const AnswerMark answered(d_.apply);
+    const AnswerMark answered(d_.apply, spoke_);
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);
@@ -2472,12 +2486,16 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                                                           const std::string& loopId,
                                                           bool quietOk, bool once,
                                                           bool ownerReminder) try {
-  // This fire's turn flags start clear before anything can throw: the handler below
-  // reads them to tell a fire whose turn never went out (a memory deferral) from one
-  // that asked a provider or reached the owner (never a deferral).
+  // This fire's flags start clear before anything can throw: the handler below reads
+  // them to tell a fire whose turn never went out (a memory deferral) from one that
+  // asked a provider or reached the owner (never a deferral), and one whose turn was
+  // served (ok, whatever its bookkeeping did after) from one that failed. A previous
+  // owner turn's flags must never decide this fire (CUM-826).
+  spoke_ = false;
+  toolReplied_ = false;
+  fireServed_ = false;
   turnMem().asked = false;
   turnMem().applied = false;
-  toolReplied_ = false;
   nimbus::orch::FireOutcome o;
   // CUM-404: gate a scheduled fire BEFORE the handshake alloc (round 0) on BOTH the
   // total-free backstop AND the largest-contiguous-block guard - fragmentation (a low
@@ -2582,9 +2600,12 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
     setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   turnMem().admitted = true;   // runTurn continues this record
   o.ok = runTurn(inputs, target, prompt, telegram);
-  // CUM-826: whether the turn reached the owner. A failed fire that did is not run
+  // Recorded before any bookkeeping below can allocate: a served fire whose
+  // bookkeeping then fails still reports ok (the handler reads it).
+  fireServed_ = o.ok;
+  // CUM-826: whether model text reached the owner. A failed fire that did is not run
   // again (a one-shot retires instead of its short retry): the retry would repeat it.
-  o.answered = turnAnswered(turnMem(), toolReplied_);
+  o.answered = spoke_;
   // 22 Oct amendment (SILENT-ROUTINE-COST): a quiet routine that ends silent
   // records WHY it stayed silent - the run still spent its provider rounds, and
   // without a row the spend reads as a lost turn. The still-pending trigger row
@@ -2631,19 +2652,26 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   dreamTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
-  bool wentOut = false;   // the flags are unreadable only if the record never existed
-  try {
-    const TurnMemoryState& tm = turnMem();
-    wentOut = !nothingWentOut(tm, toolReplied_);
-    o.answered = turnAnswered(tm, toolReplied_);
+  o.answered = spoke_;
+  o.ok = fireServed_;   // served, then its bookkeeping failed: still a served fire
+  bool wentOut = o.ok;
+  try {   // the turn record is unreadable only if it never existed (nothing went out)
+    wentOut = wentOut || !nothingWentOut(turnMem(), toolReplied_);
   } catch (...) {
   }
   if (wentOut) {
-    try {   // allocating from here on: a second failure still returns a failure, not a defer
+    try {   // allocating from here on: a second failure still returns this outcome, not a defer
       attribution_ = "turn";
       o.tokens = lastTurnUsage_;
-      o.error = "low memory: an allocation failed after the turn ran";
-      hlog::log("loops: scheduled turn ran, then an allocation failed - reported failed, not deferred");
+      if (o.ok) {
+        o.detail = lastReply_;
+        o.held = std::move(heldReply_);
+        heldReply_.clear();
+        hlog::log("loops: scheduled turn served, then an allocation failed in its bookkeeping - reported ok");
+      } else {
+        o.error = "low memory: an allocation failed after the turn ran";
+        hlog::log("loops: scheduled turn ran, then an allocation failed - reported failed, not deferred");
+      }
     } catch (...) {
     }
     return o;

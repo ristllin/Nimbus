@@ -421,8 +421,15 @@ class TurnEngine {
   const std::string& currentChat() const { return curChat_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat
-  // reports it here).
-  void noteToolReplied() { toolReplied_ = true; }
+  // reports it here). The reply reached the owner, so the fire spoke too.
+  void noteToolReplied() {
+    toolReplied_ = true;
+    spoke_ = true;
+  }
+  // CUM-826: the model's text reached the owner on a path the engine does not see (a
+  // tool sent it to another allowlisted chat of the owner). Called once the send was
+  // handed over (queued or delivered), never before.
+  void noteSpoke() { spoke_ = true; }
 
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
   // scheduled fire and the dream report their own spend, never a previous turn's.
@@ -528,8 +535,9 @@ class TurnEngine {
   // a quiet turn held it), and a delivered notice is also the chat's history row -
   // a device with no armed Telegram channel drains-and-discards its reply queue,
   // so the row is the one channel an unarmed owner (the web page, the episodic
-  // reads) ever sees (storm finding 2, 24 Oct).
-  bool deliver(const std::string& chatId, const std::string& text);
+  // reads) ever sees (storm finding 2, 24 Oct). `modelText`: the text is the
+  // model's own (a salvaged answer), so the fire spoke once it is handed over.
+  bool deliver(const std::string& chatId, const std::string& text, bool modelText = false);
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
   // Largest contiguous free INTERNAL block (CUM-404). Unwired => 0xFFFFFFFF, so the
@@ -548,6 +556,12 @@ class TurnEngine {
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
   std::string curChat_;                 // routing chatId of the in-flight turn
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
+  // CUM-826: the one "spoke" fact of a fire - model text reached the owner (apply's
+  // delivery or speech, a salvaged answer, a tool's send), set only after the hand-over
+  // returned. A quiet turn's held text does not count. Cleared at fire entry and at
+  // each turn's start; FireOutcome.answered reads it.
+  volatile bool spoke_ = false;
+  bool fireServed_ = false;   // the fire's runTurn returned true (recorded before its bookkeeping)
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running

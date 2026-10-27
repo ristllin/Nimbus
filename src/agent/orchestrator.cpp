@@ -2193,6 +2193,7 @@ bool speakOnDevice(const String& text, bool capture, String* why) {
     alogf("speak: %s", nimbus::sfx::speakerFailText(playWhy.c_str()).c_str());
     return fail(playWhy);
   }
+  noteTurnSpoke();   // CUM-826: the owner hears it (before the history row, which can fail)
   // Capture spoken output so a voice-only reply is still in history ("what did you
   // just say?" works on stateless hosts once device history reads these rows). Skip
   // when the caller already records it (the tts device action captures in apply.cpp),
@@ -2233,10 +2234,13 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
     const voicereply::Outcome o = voicereply::deliver(cid, text);
     if (result) *result = o.toolText;
     if (o.notesSent > 0) {
+      // Noted before the history row (which can fail): a voice note reached the owner
+      // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
+      noteTurnSpoke();
+      if (cid == cur && g_engine) g_engine->noteToolReplied();
       // Capture what reached the TARGET chat to its history.
       memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
                              withTurnTag("via:telegram"));
-      if (cid == cur && g_engine) g_engine->noteToolReplied();
     }
     return o.delivered;
   }
@@ -2244,13 +2248,20 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
   // The current turn's chat already got a real answer mid-loop - remember it so
   // applyTurn doesn't append a contentless "Done." as a second message.
   if (sent) {
+    // Queued for the owner (the current chat or an allowlisted one): the fire spoke
+    // (CUM-826), noted before the history row, which can fail.
+    noteTurnSpoke();
+    if (cid == cur && g_engine) g_engine->noteToolReplied();
     // reply.telegram output was invisible to history - capture it (to the TARGET
     // chat, so a cross-chat send lands in the right conversation).
     memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
                            withTurnTag("via:telegram"));
-    if (cid == cur && g_engine) g_engine->noteToolReplied();
   }
   return sent;
+}
+
+void noteTurnSpoke() {
+  if (g_engine) g_engine->noteSpoke();
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
