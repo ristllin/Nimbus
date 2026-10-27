@@ -29,6 +29,37 @@ inline bool onWebTask() {
   return h != nullptr && h == xTaskGetCurrentTaskHandle();
 }
 
+// The current web request's network clock (the AsyncTCP task only): the server opens it
+// around each request handler (a middleware, nimbus::net::beginWeb) and the request's
+// first slot wait starts it, so every exchange the handler starts draws on one allowance
+// (web_guard.h kWebNetAllowanceMs). Outside a handler (a filler, a body chunk) each
+// exchange gets a whole allowance.
+struct WebRequestClock {
+  bool open = false;
+  bool started = false;
+  uint32_t firstMs = 0;
+};
+
+inline WebRequestClock& webRequestClock() {
+  static WebRequestClock c;
+  return c;
+}
+
+inline void openWebRequest() { webRequestClock() = WebRequestClock{true, false, 0}; }
+inline void closeWebRequest() { webRequestClock() = WebRequestClock{}; }
+
+// What is left of this web request's network allowance, starting its clock on the first ask.
+inline uint32_t webNetLeftNow() {
+  WebRequestClock& c = webRequestClock();
+  if (!onWebTask() || !c.open) return kWebNetAllowanceMs;
+  const uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+  if (!c.started) {
+    c.started = true;
+    c.firstMs = now;
+  }
+  return webNetLeftMs(now - c.firstMs);
+}
+
 // Takes a state lock that a writer holds across a flash write (the spend limits, the
 // usage ledger). Off the web task it waits as before; on it, it tries for
 // kWebFillerWaitMs and reports false, and the caller answers from what it last read.

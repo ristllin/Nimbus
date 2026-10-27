@@ -123,8 +123,12 @@ for its request and takes it back after. The LAN `/mcp` endpoint, whose request 
 the web task, refuses those tools with an error. A web request's own network wait is
 bounded too: the host must already be in the device's name cache (an uncached name
 starts a lookup and the request answers busy), at most 250 ms for the device's network
-slot and 5 s for the whole exchange. The test build's `WEBGUARD?` console verb reads the counters that prove it on
-a bench unit.
+slot and 5 s for the whole exchange, and every exchange one request starts draws on the
+same 5.25 s allowance: a LAN `/mcp` `memory.update` that finds the fact by its
+description embeds twice, and the second embedding runs only if at least 2 s are left
+(else it answers busy, and the update stores the new fact as new and keeps the old one,
+as it does whenever that embedding fails). The test build's
+`WEBGUARD?` console verb reads the counters that prove it on a bench unit.
 
 **No line is lost before storage mounts.** The first lines of a boot (the boot record,
 the HAL and network lines, an `[sd] mount FAILED` diagnosis) are emitted about a second

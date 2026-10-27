@@ -47,7 +47,12 @@ void begin() {
 bool acquireWork(uint32_t timeoutMs) {
   agent::memory::noteNetworkStart((uintptr_t)__builtin_return_address(0));
   if (!g_sem) return true;         // arbiter not started => no contention
-  const uint32_t waitMs = nimbus::sys::slotWaitMs(nimbus::sys::onWebTask(), timeoutMs);
+  // On the web task the wait comes out of the request's network allowance (web_task.h),
+  // and a request with less than the smallest exchange left gets no slot at all.
+  const bool web = nimbus::sys::onWebTask();
+  const uint32_t left = web ? nimbus::sys::webNetLeftNow() : 0;
+  if (web && left < nimbus::sys::kWebNetMinExchangeMs) return false;
+  const uint32_t waitMs = nimbus::sys::slotWaitMs(web, timeoutMs, left);
   return xSemaphoreTake(g_sem, pdMS_TO_TICKS(waitMs)) == pdTRUE;
 }
 

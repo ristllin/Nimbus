@@ -4458,6 +4458,13 @@ void beginWeb(const WebConfig& wc) {
     }
   });
 
+  // Every request handler runs inside one network allowance (web_task.h): the exchanges
+  // a handler starts share it, however many it chains.
+  s_server.addMiddleware([](AsyncWebServerRequest*, ArMiddlewareNext next) {
+    nimbus::sys::openWebRequest();
+    next();
+    nimbus::sys::closeWebRequest();
+  });
   s_server.begin();
   // The AsyncTCP task exists from the first begin(): record it, so the card lock and
   // the TLS arbiter know a web request when they see one (nimbus/sys/web_guard.h).

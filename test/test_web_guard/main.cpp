@@ -6,6 +6,7 @@
 // task, which the watchdog watches, while a turn's image.look held that lock across
 // two 60 s photo requests. These tests pin the class:
 //   * the portable rules: the web task's slot wait and network budget over every ask,
+//     one network allowance per web request however many exchanges it chains,
 //     the worst web request inside the watchdog, the tools that wait on the network;
 //   * at source level (web paths): no web file takes the card lock without a timeout,
 //     and every web handler, filler or callback that reaches a function taking the
@@ -64,6 +65,53 @@ static void test_network_budget_is_capped_on_the_web_task_only() {
 // /api/state to is not: a degraded answer still comes within 1 s.
 static void test_a_degraded_state_answer_fits_the_bench_bar() {
   TEST_ASSERT_TRUE(kWebLockWaitMs * kWebLockTriesPerRequest < 1000);
+}
+
+// One web request, one network allowance (review, 27 Oct): LAN /mcp memory.update by
+// description embeds twice on the web task, and each exchange once had its own slot wait
+// and 5 s budget, 10.5 s together, past the 8 s watchdog. Every exchange a request starts
+// now draws on one allowance; the worst chain of exchanges is modelled here.
+static void test_one_request_shares_one_network_allowance() {
+  // The v4.6.0-era model, per exchange: two worst-case exchanges pass the watchdog.
+  TEST_ASSERT_TRUE(kWebLockWaitMs + 2 * (kWebSlotWaitMs + kWebNetBudgetMs) > nimbus::cloud::kTaskWdtTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(kWebNetAllowanceMs, webNetLeftMs(0));
+  TEST_ASSERT_EQUAL_UINT32(0, webNetLeftMs(kWebNetAllowanceMs));
+  TEST_ASSERT_EQUAL_UINT32(0, webNetLeftMs(UINT32_MAX));
+  for (uint32_t left = 0; left <= kWebNetAllowanceMs + 1000; left += 10) {
+    const WebNetShare sh = webNetShare(left);
+    const uint32_t cap = left < kWebNetBudgetMs ? left : kWebNetBudgetMs;
+    TEST_ASSERT_EQUAL(cap >= kWebNetMinExchangeMs, sh.go);
+    if (!sh.go) continue;
+    TEST_ASSERT_TRUE(sh.handshakeS >= 1 && sh.connectMs > 0);
+    TEST_ASSERT_TRUE(sh.connectMs + sh.handshakeS * 1000 <= sh.replyMs);
+    TEST_ASSERT_TRUE(sh.replyMs <= cap);
+    const uint32_t slot = slotWaitMs(true, 12000, left);
+    TEST_ASSERT_TRUE(slot <= kWebSlotWaitMs && left - slot >= kWebNetMinExchangeMs);
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, slotWaitMs(true, 12000, kWebNetMinExchangeMs - 1));
+  TEST_ASSERT_EQUAL_UINT32(12000, slotWaitMs(false, 12000, 0));   // a turn: what it asked
+  // The worst chain: each exchange waits its whole slot share and runs to its reply
+  // deadline, as many as the allowance lets start. The second is refused.
+  uint32_t elapsed = 0, exchanges = 0;
+  for (int ask = 0; ask < 5; ++ask) {
+    const uint32_t left = webNetLeftMs(elapsed);
+    if (left < kWebNetMinExchangeMs) break;
+    elapsed += slotWaitMs(true, 12000, left);
+    const WebNetShare sh = webNetShare(webNetLeftMs(elapsed));
+    if (!sh.go) break;
+    elapsed += sh.replyMs;
+    ++exchanges;
+  }
+  TEST_ASSERT_EQUAL_UINT32(1, exchanges);
+  TEST_ASSERT_TRUE(elapsed <= kWebNetAllowanceMs);
+  TEST_ASSERT_TRUE(kWebLockWaitMs * kWebLockTriesPerRequest + elapsed <= nimbus::cloud::kTaskWdtTimeoutMs * 3 / 4);
+  // Two quick exchanges (the usual memory.update by description) both run.
+  elapsed = 0;
+  for (int i = 0; i < 2; ++i) {
+    const WebNetShare sh = webNetShare(webNetLeftMs(elapsed));
+    TEST_ASSERT_TRUE(sh.go);
+    elapsed += 800;
+  }
 }
 
 static void test_the_tools_that_wait_on_the_network() {
@@ -646,6 +694,35 @@ static void test_the_tls_arbiter_checks_every_request() {
   TEST_ASSERT_TRUE(a.find("noteNetworkStart(") < a.find("xSemaphoreTake("));
 }
 
+// The web task's exchanges draw on the request's allowance: the server opens a clock
+// around every handler, the arbiter's slot wait and the embedding's timers come out of
+// what is left, and a request with too little left is refused before any socket opens.
+static void test_every_web_exchange_draws_on_the_request_allowance() {
+  const Unit arb = loadUnit("src/sys/tls_arbiter.cpp");
+  const std::string& a = arb.fns.at("acquireWork");
+  TEST_ASSERT_TRUE(a.find("webNetLeftNow()") != std::string::npos);
+  TEST_ASSERT_TRUE(a.find("kWebNetMinExchangeMs") < a.find("xSemaphoreTake("));
+  TEST_ASSERT_TRUE(a.find("slotWaitMs(web, timeoutMs, left)") != std::string::npos);
+  const Unit emb = loadUnit("src/agent/adapters/embeddings.cpp");
+  TEST_ASSERT_TRUE(emb.fns.count("embedWith"));
+  const std::string& e = emb.fns.at("embedWith");
+  const size_t share = e.find("webNetShare(");
+  TEST_ASSERT_TRUE_MESSAGE(share != std::string::npos, "the embedding takes its own per-exchange budget");
+  TEST_ASSERT_TRUE(e.find("webNetLeftNow()") != std::string::npos && share < e.find("client.connect("));
+  TEST_ASSERT_TRUE(e.find("share.connectMs") != std::string::npos && e.find("share.handshakeS") != std::string::npos);
+  TEST_ASSERT_TRUE(e.find("startedMs + share.replyMs") != std::string::npos);
+  TEST_ASSERT_TRUE(e.find("kWebNetHandshakeS") == std::string::npos && e.find("kWebNetConnectMs") == std::string::npos);
+  const Unit ui = loadUnit("src/net/webui.cpp");
+  const std::string& begin = ui.fns.at("beginWeb");
+  const size_t mw = begin.find("addMiddleware(");
+  TEST_ASSERT_TRUE_MESSAGE(mw != std::string::npos, "no network clock around the request handlers");
+  TEST_ASSERT_TRUE(begin.find("openWebRequest()", mw) < begin.find("next()", mw));
+  TEST_ASSERT_TRUE(begin.find("next()", mw) < begin.find("closeWebRequest()", mw));
+  TEST_ASSERT_TRUE(mw < begin.find("s_server.begin()"));
+  const std::string task = codeOnly(readSource("src/sys/web_task.h"));
+  TEST_ASSERT_TRUE(task.find("webNetLeftMs(") != std::string::npos && task.find("onWebTask()") != std::string::npos);
+}
+
 // The async_tcp task's watchdog subscription is stated in the build, not left to a
 // library default (DoD: confirm what the build intends; never disable it).
 static void test_the_web_task_watchdog_is_stated_in_the_build() {
@@ -730,6 +807,7 @@ int main(int, char**) {
   RUN_TEST(test_slot_wait_is_capped_on_the_web_task_only);
   RUN_TEST(test_network_budget_is_capped_on_the_web_task_only);
   RUN_TEST(test_a_degraded_state_answer_fits_the_bench_bar);
+  RUN_TEST(test_one_request_shares_one_network_allowance);
   RUN_TEST(test_the_tools_that_wait_on_the_network);
   RUN_TEST(test_busy_answers_are_json);
   RUN_TEST(test_no_web_file_takes_the_card_lock_without_a_timeout);
@@ -738,6 +816,7 @@ int main(int, char**) {
   RUN_TEST(test_every_network_tool_runs_outside_the_dispatch_lock);
   RUN_TEST(test_tool_server_calls_never_hold_the_card_lock);
   RUN_TEST(test_the_tls_arbiter_checks_every_request);
+  RUN_TEST(test_every_web_exchange_draws_on_the_request_allowance);
   RUN_TEST(test_the_web_task_watchdog_is_stated_in_the_build);
   RUN_TEST(test_the_state_page_never_goes_out_cut_or_repeated);
   RUN_TEST(test_the_state_page_never_waits_out_a_flash_write);

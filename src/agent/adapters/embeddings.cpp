@@ -137,14 +137,19 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
 
   std::vector<int8_t> out;
   {
-    // From a web request (the AsyncTCP task, which the task watchdog watches) the whole
-    // exchange fits nimbus::sys::kWebNetBudgetMs (web_guard.h): one connect within the
-    // budget's connect and handshake shares, the reply read against the same clock.
+    // From a web request (the AsyncTCP task, which the task watchdog watches) the
+    // exchange comes out of what is left of the request's network allowance (web_guard.h
+    // webNetShare): a request that already spent it (a second embedding in one LAN /mcp
+    // memory.update) is refused; otherwise one connect within its connect and handshake
+    // shares, the reply read against the same clock.
+    const nimbus::sys::WebNetShare share =
+        web ? nimbus::sys::webNetShare(nimbus::sys::webNetLeftNow()) : nimbus::sys::WebNetShare{};
+    if (web && !share.go) { arbiter::releaseWork(); err = "tls busy"; return {}; }
     const uint32_t startedMs = millis();
     WiFiClientSecure client;
     tlsSetup(client);
-    client.setHandshakeTimeout(web ? nimbus::sys::kWebNetHandshakeS : 12);
-    client.setConnectionTimeout(web ? nimbus::sys::kWebNetConnectMs : EMBED_TIMEOUT_MS);  // F25: real socket bound
+    client.setHandshakeTimeout(web ? share.handshakeS : 12);
+    client.setConnectionTimeout(web ? share.connectMs : EMBED_TIMEOUT_MS);  // F25: real socket bound
 
     // Back-to-back handshakes to the same host intermittently fail (each chat
     // adapter learned this live and retries) - and a mid-turn mem_write is
@@ -177,7 +182,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     client.print(req);
     client.print(body.c_str());
 
-    uint32_t deadline = (web ? startedMs : millis()) + nimbus::sys::netBudgetMs(web, EMBED_TIMEOUT_MS);
+    uint32_t deadline = web ? startedMs + share.replyMs : millis() + nimbus::sys::netBudgetMs(false, EMBED_TIMEOUT_MS);
     // status line
     int code = 0;
     String status;

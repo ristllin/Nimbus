@@ -19,8 +19,10 @@
 //   - for the card lock: it tries for at most kWebLockWaitMs (a response filler, which
 //     the server calls again, kWebFillerWaitMs) and, when the lock is busy, answers
 //     degraded (a field marked busy) or 503 with Retry-After;
-//   - for the network: the TLS work slot is waited for at most kWebSlotWaitMs, and a
-//     whole exchange started from a web request gets kWebNetBudgetMs;
+//   - for the network: the TLS work slot is waited for at most kWebSlotWaitMs, a whole
+//     exchange gets at most kWebNetBudgetMs, and every exchange one web request starts
+//     draws on one allowance (kWebNetAllowanceMs), so a request that chains exchanges
+//     (LAN /mcp memory.update by description embeds twice) still fits;
 //   - and it never holds the card lock across a network request (no task does: a
 //     tool that waits on the network runs outside the dispatcher's card lock and takes
 //     the lock only around its own card reads and writes).
@@ -50,24 +52,49 @@ inline constexpr uint32_t kWebSlotWaitMs = 250;
 inline constexpr uint32_t kWebNetBudgetMs = 5000;
 inline constexpr uint32_t kWebNetConnectMs = 2000;
 inline constexpr uint32_t kWebNetHandshakeS = 3;
+// One web request's network allowance, whole: every slot wait and exchange the request
+// starts draws on it, counted from its first slot wait. An exchange starts only with
+// kWebNetMinExchangeMs left (else "tls busy"), and its limits come out of what is left.
+inline constexpr uint32_t kWebNetAllowanceMs = kWebSlotWaitMs + kWebNetBudgetMs;
+inline constexpr uint32_t kWebNetMinExchangeMs = 2000;
 // Retry-After on a busy answer: a card operation other than a turn's lasts well under it.
 inline constexpr uint32_t kCardBusyRetryS = 5;
 
 static_assert(kWebNetConnectMs + kWebNetHandshakeS * 1000 <= kWebNetBudgetMs,
               "the connect and handshake shares must fit the web network budget");
-// The worst web request: every card-lock try times out, the slot wait times out or the
-// exchange runs its whole budget, with a quarter of the watchdog left for the handler.
-static_assert(kWebLockWaitMs * kWebLockTriesPerRequest + kWebSlotWaitMs + kWebNetBudgetMs <=
-                  cloud::kTaskWdtTimeoutMs * 3 / 4,
+// The worst web request: every card-lock try times out and its exchanges (however many)
+// use the whole allowance, with a quarter of the watchdog left for the handler.
+static_assert(kWebLockWaitMs * kWebLockTriesPerRequest + kWebNetAllowanceMs <= cloud::kTaskWdtTimeoutMs * 3 / 4,
               "a web request's bounded waits must leave a quarter of the watchdog");
+static_assert(kWebNetMinExchangeMs <= kWebNetBudgetMs && kWebNetMinExchangeMs * 2 / 5 + 1000 <= kWebNetMinExchangeMs,
+              "the smallest exchange still fits a connect share and a one-second handshake");
 static_assert(kWebFillerWaitMs < kWebLockWaitMs, "a filler is called again: it waits less");
 
 // How long a TLS user waits for the work slot: on the web task at most kWebSlotWaitMs,
 // elsewhere what it asked for.
 uint32_t slotWaitMs(bool webTask, uint32_t requestedMs);
 
+// The same, inside a web request with `leftMs` of its allowance left: the slot wait also
+// leaves room for the smallest exchange (0 when there is none: the caller refuses).
+uint32_t slotWaitMs(bool webTask, uint32_t requestedMs, uint32_t leftMs);
+
 // The deadline of one network exchange: on the web task at most kWebNetBudgetMs.
 uint32_t netBudgetMs(bool webTask, uint32_t requestedMs);
+
+// What is left of a web request's allowance `elapsedMs` after its first slot wait.
+uint32_t webNetLeftMs(uint32_t elapsedMs);
+
+// One exchange's limits on the web task, from what is left of the request's allowance
+// when it starts: go is false below kWebNetMinExchangeMs (refuse, "tls busy"); the
+// connect and handshake timers and the reply deadline (from the exchange start) never
+// pass what is left, nor kWebNetBudgetMs.
+struct WebNetShare {
+  bool go = false;
+  uint32_t connectMs = 0;
+  uint32_t handshakeS = 0;   // whole seconds: the TLS client's unit
+  uint32_t replyMs = 0;
+};
+WebNetShare webNetShare(uint32_t leftMs);
 
 // Tools whose call waits on the network (a provider request, an image download, a
 // Telegram upload, a speaker playback, a connected tool server's "mcp.*" tools). The turn's tool dispatcher

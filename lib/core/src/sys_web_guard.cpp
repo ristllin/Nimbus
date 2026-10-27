@@ -10,8 +10,29 @@ uint32_t slotWaitMs(bool webTask, uint32_t requestedMs) {
   return webTask ? std::min(requestedMs, kWebSlotWaitMs) : requestedMs;
 }
 
+uint32_t slotWaitMs(bool webTask, uint32_t requestedMs, uint32_t leftMs) {
+  if (!webTask) return requestedMs;
+  if (leftMs < kWebNetMinExchangeMs) return 0;
+  return std::min(slotWaitMs(true, requestedMs), leftMs - kWebNetMinExchangeMs);
+}
+
 uint32_t netBudgetMs(bool webTask, uint32_t requestedMs) {
   return webTask ? std::min(requestedMs, kWebNetBudgetMs) : requestedMs;
+}
+
+uint32_t webNetLeftMs(uint32_t elapsedMs) {
+  return elapsedMs >= kWebNetAllowanceMs ? 0 : kWebNetAllowanceMs - elapsedMs;
+}
+
+WebNetShare webNetShare(uint32_t leftMs) {
+  WebNetShare s;
+  const uint32_t cap = std::min(leftMs, kWebNetBudgetMs);
+  if (cap < kWebNetMinExchangeMs) return s;
+  s.go = true;
+  s.connectMs = std::min(kWebNetConnectMs, cap * 2 / 5);
+  s.handshakeS = std::min(kWebNetHandshakeS, (cap - s.connectMs) / 1000);
+  s.replyMs = cap;
+  return s;
 }
 
 bool toolWaitsOnNetwork(const std::string& name) {
