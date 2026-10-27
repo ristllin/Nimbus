@@ -50,6 +50,14 @@ Perms permsFor(Role r);
 // surface, and the tests can never disagree on the gate.
 inline bool mayArmWakeup(Role r) { return permsFor(r).manageTenants; }
 
+// The role of a chat with NO tenant row (an explicit row, a revocation included,
+// always wins). The chat the Telegram owner rule names - the explicit owners list,
+// or the first allow-listed chat when that list is empty, the rule adoptLegacy and
+// the owner-only commands use - is Admin, so a freshly onboarded owner is the owner
+// before the table first holds a row; any other allow-listed chat is a User (it
+// already had conversational access); anyone else is Unknown until approved.
+Role roleWithoutRow(bool allowListed, bool telegramOwner);
+
 // ---- quotas ------------------------------------------------------------------
 // Per-tenant ceilings. 0 means "unset" and falls back to the role default, so an
 // admin can raise one tenant without editing every other. Admins are unquotaed

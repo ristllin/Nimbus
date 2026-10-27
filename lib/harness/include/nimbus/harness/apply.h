@@ -13,8 +13,9 @@
 #include "nimbus/orch/turn.h"
 
 // apply - turn-application POLICY, lifted from src/agent/orchestrator.cpp
-// (Stage E). The portable side owns every decision: the scheduled-turn refusal
-// rails (reboot/ttsOn/devName/sleepOvr/brightOvr), the owner-visible risk
+// (Stage E). The portable side owns every decision: who may run each device
+// action and config knob (the caller rule table, nimbus/orch/action_rules.h:
+// owner, member, guest, unattended turn, LAN), the owner-visible risk
 // notes, the tts voice-off gate, orch_model key/choice validation, reply+ask
 // composition and the bare-"Done." suppression. The injected ApplyDeps are
 // EXECUTION ONLY - raw writes, staged device actions, tool dispatch, delivery -
@@ -191,11 +192,27 @@ bool replyAlreadyAsks(const std::string& reply, const std::string& ask);
 void applyTurn(const nimbus::orch::Turn& t, const std::string& chatId,
                const ApplyDeps& d, ApplyState& st, bool& spawnedOut);
 
-// Validate + policy-strip + execute ONE device[] element (raw JSON). The shared
-// engine behind applyTurn's device[] loop AND the mid-turn `device.control`
-// registry tool - one security envelope for both. Returns the summary token(s)
-// ("cfg ", "protected-BLOCKED ", "reboot-refused(scheduled) ", ...); appends any
-// owner-visible risk note to *riskNote when non-null.
+// What one device element did.
+struct DeviceOutcome {
+  std::string summary;      // the token(s): "cfg ", "reboot-refused(scheduled) ", ...
+  bool refusedWhole = false;   // the caller rule refused the element as a whole
+  std::string refusals;     // every part the caller rule refused, in plain words ("" = none)
+};
+
+// Validate + check who asked + policy-strip + execute ONE device[] element (raw
+// JSON). The shared engine behind applyTurn's device[] loop AND the mid-turn
+// `device.control` registry tool - one security envelope for both. `who` is the
+// caller's Principal (the turn's chat, or the tool dispatch's), `unattended` the
+// turn's flag (routine, wakeup, dream, results synthesis, system turn); the rule
+// table (nimbus/orch/action_rules.h) decides each action and config knob. Appends
+// any owner-visible note to *riskNote when non-null.
+DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
+                                bool unattended, const std::string& chatId, const ApplyDeps& d,
+                                std::string* riskNote);
+
+// The same for the turn's own chat (the caller is d.whoFor(chatId)), returning the
+// summary token(s): a convenience for host rigs and tests (the firmware calls
+// applyDeviceAction).
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote);

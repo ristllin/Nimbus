@@ -123,7 +123,7 @@ def test_guest_cannot_author(board):
         "skill.save",
         {"id": "l25-guest", "md": "---\ntitle: G\ndesc: when the guest is refused\n---\nnope"},
     )
-    assert "admin" in out.lower(), f"guest save not refused: {out[:200]}"
+    assert "owner" in out.lower() or "admin" in out.lower(), f"guest save not refused: {out[:200]}"
     assert "l25-guest" not in _skills_list(ip, tok)
 
 

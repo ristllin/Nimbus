@@ -26,7 +26,6 @@ lib/core/src/tft_screens.cpp:nimbus::tft::drawMenu
 lib/core/src/wifi_policy.cpp:nimbus::wifi::WifiPolicy::tick
 src/main.cpp:settleMenuAfterMutation
 lib/core/src/orch_episodic_log.cpp:nimbus::orch::AppendLogEpisodicStore::queryCold
-lib/harness/src/apply.cpp:agent::applyDeviceElement
 src/agent/transport_tls.cpp:agent::TlsTransport::execCore
 src/agent/adapters/audio_tts.cpp:agent::tts::synthesizeToFile
 src/agent/adapters/http_multipart.cpp:agent::httpmp::post

@@ -120,9 +120,11 @@ std::vector<ToolRegistry::Spec> ToolRegistry::toolSpecsFor(const Principal& who)
   if (admin) return toolSpecs();
   std::vector<Spec> out;
   out.reserve(tools_.size());
+  const JsonObjectConst noArgs;   // a call with no arguments (a null view, no allocation)
   for (const auto& t : tools_) {
     if (t.adminOnly) continue;   // not callable by this caller -> not advertised
     if (!gateOpen(t.name)) continue;   // prerequisite missing right now (CUM-508)
+    if (accessFor(t.name, noArgs, who).kind != Verdict::Allow) continue;   // refused to this caller
     out.push_back(Spec{t.name, t.description, t.schemaJson.empty() ? "{}" : t.schemaJson});
   }
   return out;
@@ -149,6 +151,11 @@ ToolRegistry::Verdict ToolRegistry::policyFor(const std::string& name) const {
   return Verdict::allow();
 }
 
+ToolRegistry::Verdict ToolRegistry::accessFor(const std::string& name, JsonObjectConst args,
+                                              const Principal& who) const {
+  return access_ ? access_(name, args, who) : Verdict::allow();
+}
+
 ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                   const Principal& who) const {
   // Policy gate FIRST - a denied/gated tool must never reach its handler, and
@@ -162,6 +169,11 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                 : v.reason);
   const Tool* t = find(name);
   if (!t) return ToolResult::fail(unknownToolText(name, who));
+  // Who is calling (action_rules.h): a refused caller never reaches the handler
+  // and learns nothing about the tool's live gate.
+  const Verdict a = accessFor(name, args, who);
+  if (a.kind != Verdict::Allow)
+    return ToolResult::fail(a.reason.empty() ? ("not allowed for this caller: " + name) : a.reason);
   // CUM-508: a gated tool whose prerequisite is missing right now refuses with
   // its honest reason, never reaching a handler that would need it.
   const GateEntry* g = gateFor(name);

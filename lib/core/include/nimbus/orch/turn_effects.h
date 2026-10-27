@@ -149,11 +149,11 @@ bool sendDelivered(const TurnEffects& fx);
 // True when a Telegram send this turn was accepted but carries no receipt (queued).
 bool sendQueuedOnly(const TurnEffects& fx);
 
-// What one device-action summary did (apply.cpp applyDeviceElement's tokens): its
+// What one device-action summary did (apply.cpp applyDeviceAction's tokens): its
 // effect kind and whether it landed. A config change lands only when a knob survived
-// the scheduled-turn strip and a stored value changed ("cfg "); "cfg(no change) " and
+// the caller rule strip and a stored value changed ("cfg "); "cfg(no change) " and
 // "cfg(nothing) " change nothing. A voice-off or sink-less tts, a sink-less led, a
-// refused reboot and an invalid or keyless model switch land nothing either. False
+// refused reboot and an invalid, keyless or refused model switch land nothing either. False
 // when the summary names no action the ledger records.
 bool deviceSummaryEffect(const std::string& summary, FxKind& kind, bool& landed);
 

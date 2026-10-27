@@ -256,7 +256,8 @@ bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
     return true;
   }
   if (startsWith(sum, "orch_model(")) {
-    landed = !contains(sum, "(invalid)") && !contains(sum, "(no-key)") && !contains(sum, "(no change)");
+    landed = !contains(sum, "(invalid)") && !contains(sum, "(no-key)") && !contains(sum, "(no change)") &&
+             !contains(sum, "(refused)");
     return true;
   }
   return false;   // skip, protected-BLOCKED, unsupported: no action ran

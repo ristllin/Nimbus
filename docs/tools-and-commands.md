@@ -336,8 +336,10 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 The device plays music from the SD card's `/music` folder over the speaker, on top
 of the same volume control as sound effects (Settings, Sound). Reach it from the
 `media.play` / `media.pause` / `media.stop` / `media.list` tools (the assistant), the
-`/play` Telegram command, or the `PLAY` console command. The web page has no music
-controls of its own (no track list, play, or remove).
+`/play` Telegram command, or the `PLAY` console command. Only the owner starts,
+pauses or stops music (a member's or a guest's request is refused, and so is the LAN
+`/mcp` endpoint); anyone may list the tracks. The web page has no music controls of
+its own (no track list, play, or remove).
 
 - **Adding tracks.** Upload an `.mp3` under **Memory → Files** (Upload a file), or
   drop it into Chat: it goes straight to the card's `/music` folder, ready to play

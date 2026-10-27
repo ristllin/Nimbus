@@ -16,6 +16,7 @@
 #include "nimbus/orch/head_switch.h"
 #include "nimbus/orch/turn_effects.h"   // deviceSummaryEffect - what the claim check reads
 #include "nimbus/orch/provider_slots.h"
+#include "nimbus/orch/action_rules.h"   // the caller rule table (CUM-813)
 
 // Stage E suite - the SECURITY RAILS of turn application, host-tested for the
 // first time: scheduled-turn refusals (reboot/ttsOn/devName/sleepOvr/brightOvr),
@@ -54,9 +55,22 @@ struct Rec {
   std::vector<std::string> turnCompletes;   // chatIds passed to turnComplete()
 };
 
+// Who each test chat is (CUM-813: every device action is checked against who asked).
+// "1001" and the device's own surfaces are the owner; "2002" a member; "3003" a
+// guest; anything else an unapproved chat.
+static nimbus::orch::Principal testPrincipal(const std::string& chat) {
+  using nimbus::orch::Role;
+  Role role = Role::Unknown;
+  if (chat == "1001" || chat == "web" || chat == "serial" || chat == "voice") role = Role::Admin;
+  else if (chat == "2002") role = Role::User;
+  else if (chat == "3003") role = Role::Guest;
+  return nimbus::orch::principalForRole(chat, role);
+}
+
 static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
   ApplyDeps d;
   d.ttsEnabled = tts;
+  d.principalFor = testPrincipal;
   d.execConfig = [&r](const ValidatedAction& va) {
     r.execed.push_back(va);
     return r.configChanges;   // 23 Oct: false simulates a nothing-stored action
@@ -338,7 +352,7 @@ static void test_a_paused_head_moves_only_on_the_owners_explicit_second_ask() {
   nimbus::orch::headSwitchGuard().reset();
   Rec r;
   PausedHead h;
-  std::string sum = switchTo(r, h, "mistral", "");   // a routine or a guest asks first
+  std::string sum = switchTo(r, h, "mistral", "");   // an owner-chat turn with no owner message asks first
   TEST_ASSERT_EQUAL_STRING("orch_model(no change) mistral/good-latest: Anthropic stays the main provider: only "
                            "the owner can move it. \nAnthropic stays the main provider: only the owner can move it.",
                            sum.c_str());
@@ -353,7 +367,9 @@ static void test_a_paused_head_moves_only_on_the_owners_explicit_second_ask() {
   TEST_ASSERT_TRUE(sum.rfind("orch_model(no change) ", 0) == 0);
   h.now += 60000;
   sum = switchTo(r, h, "mistral", "", /*scheduled=*/true);                                 // a routine
-  TEST_ASSERT_TRUE(sum.rfind("orch_model(no change) ", 0) == 0);
+  // CUM-813: refused before the pause check (only the owner writing now may switch),
+  // and it leaves the owner's pending confirmation untouched.
+  TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(refused) ", 0) == 0, sum.c_str());
   TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
   h.now += 60000;
   sum = switchTo(r, h, "mistral", "switch to mistral since anthropic is out of budget");   // the same words again
@@ -1367,6 +1383,346 @@ static void test_a_no_change_config_action_backs_no_switched_reply() {
   TEST_ASSERT_EQUAL(0, (int)out2.find("I've switched the brightness to 40 for you."));
 }
 
+// ---- CUM-813: every device action is checked against who asked ------------------
+// The caller classes of the rule table (nimbus/orch/action_rules.h), as the device
+// builds them: the turn's chat principal, the turn's unattended flag, and the LAN
+// endpoint's own principal. Each device action and each config knob is applied once
+// per class through the real envelope (applyDeviceAction); what reached execution is
+// compared with the class table's row. 'A' = it ran.
+namespace rbac {
+
+enum Cls { OwnerTurn = 0, Member, Guest, Routine, Synthesis, SystemTurn, McpUser, Serial, kClasses };
+const char* const kNames[kClasses] = {"owner turn", "member", "guest", "routine",
+                                      "synthesis", "system turn", "/mcp User", "serial"};
+
+struct Caller {
+  nimbus::orch::Principal who;
+  bool unattended;
+  const char* chat;
+};
+
+Caller caller(int c) {
+  using nimbus::orch::Role;
+  switch (c) {
+    case OwnerTurn:  return {testPrincipal("1001"), false, "1001"};
+    case Member:     return {testPrincipal("2002"), false, "2002"};
+    case Guest:      return {testPrincipal("3003"), false, "3003"};
+    case Routine:
+    case Synthesis:
+    case SystemTurn: return {testPrincipal("1001"), true, "1001"};
+    case McpUser: {
+      nimbus::orch::Principal p = nimbus::orch::principalForRole(nimbus::orch::kMcpNs, Role::User);
+      p.ns = nimbus::orch::kMcpNs;
+      return {p, false, ""};
+    }
+    default:         return {testPrincipal("serial"), false, "serial"};
+  }
+}
+
+const char kOwner[] = "A--AAA-A";      // the owner's principal, attended or not
+const char kOwnerNow[] = "A------A";   // the owner writing now
+
+struct DevCase {
+  const char* json;
+  const char* cells;
+};
+
+// What ran: anything that reached the sink, the speaker, the model switch or the
+// config writer.
+bool ran(const Rec& r) {
+  return !r.staged.empty() || !r.spoken.empty() || !r.hostModelSet.empty() || !r.execed.empty();
+}
+
+}  // namespace rbac
+
+static void test_rbac_every_device_action_by_caller_class() {
+  using namespace rbac;
+  const DevCase cases[] = {
+      {"{\"type\":\"led\",\"mode\":\"pulse\",\"r\":1,\"g\":2,\"b\":3,\"brightness\":null}", kOwner},
+      {"{\"type\":\"lights\",\"value\":\"off\"}", kOwner},
+      {"{\"type\":\"tts\",\"text\":\"hello\"}", kOwner},
+      {"{\"type\":\"reboot\"}", kOwnerNow},
+      {"{\"type\":\"orch_model\",\"provider\":\"anthropic\",\"model\":\"good-latest\"}", kOwnerNow},
+      {"{\"orch_model\":{\"provider\":\"mistral\",\"model\":\"good-latest\"}}", kOwnerNow},   // keyed shape
+      {"{\"reboot\":true}", kOwnerNow},
+  };
+  int cells = 0;
+  for (const DevCase& k : cases)
+    for (int c = 0; c < kClasses; c++) {
+      Rec r;
+      ApplyDeps d = makeDeps(r, /*tts=*/true);
+      const Caller cl = caller(c);
+      std::string risk;
+      const agent::DeviceOutcome out = agent::applyDeviceAction(k.json, cl.who, cl.unattended, cl.chat, d, &risk);
+      const bool want = k.cells[c] == 'A';
+      const std::string msg = std::string(k.json) + " for " + kNames[c] + ": " + out.summary;
+      TEST_ASSERT_EQUAL_MESSAGE(want, ran(r), msg.c_str());
+      // A refusal is never silent: the whole element is marked refused and says why.
+      TEST_ASSERT_EQUAL_MESSAGE(!want, out.refusedWhole, msg.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(!want, !out.refusals.empty(), msg.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(!want, out.summary.find("refused") != std::string::npos, msg.c_str());
+      cells++;
+    }
+  TEST_MESSAGE(("property: " + std::to_string(cells) + " device action x caller class cells").c_str());
+}
+
+// Every config knob, one at a time, per class: a member, a guest and the LAN are
+// refused the element as a unit; an unattended turn of the owner keeps the ambient
+// knobs and loses the owner-attended ones; the owner writing (or the serial console)
+// sets all of them.
+static void test_rbac_every_config_knob_by_caller_class() {
+  using namespace rbac;
+  const std::map<std::string, std::pair<std::string, const char*>> knobs = {
+      {"ledBrightness", {"10", kOwner}},      {"priority", {"\"openai\"", kOwnerNow}},
+      {"posture", {"\"dark\"", kOwner}},       {"profile", {"\"balanced\"", kOwner}},
+      {"theme", {"\"teal\"", kOwner}},         {"attnHoldMs", {"60000", kOwner}},
+      {"ttsVoice", {"\"x\"", kOwnerNow}},      {"ttsProv", {"\"openai\"", kOwnerNow}},
+      {"ttsOn", {"true", kOwnerNow}},          {"sttProv", {"\"openai\"", kOwnerNow}},
+      {"sfxLvlN", {"1", kOwner}},              {"sfxLvlO", {"1", kOwner}},
+      {"sfxVol", {"10", kOwner}},              {"sfxTheme", {"\"pulse\"", kOwner}},
+      {"sleepOvr", {"true", kOwnerNow}},       {"brightOvr", {"true", kOwnerNow}},
+      {"devName", {"\"desk\"", kOwnerNow}}};
+  size_t n = 0;
+  const nimbus::orch::ConfigKnob* table = nimbus::orch::configKnobTable(n);
+  TEST_ASSERT_EQUAL((int)knobs.size(), (int)n);   // every knob of the table is exercised here
+  for (size_t i = 0; i < n; i++) {
+    const auto it = knobs.find(table[i].knob);
+    TEST_ASSERT_TRUE_MESSAGE(it != knobs.end(), table[i].knob);
+    const std::string json = std::string("{\"type\":\"config\",\"") + table[i].knob + "\":" + it->second.first + "}";
+    for (int c = 0; c < kClasses; c++) {
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      const Caller cl = caller(c);
+      const agent::DeviceOutcome out = agent::applyDeviceAction(json, cl.who, cl.unattended, cl.chat, d, nullptr);
+      const bool want = it->second.second[c] == 'A';
+      const bool set = !r.execed.empty() && r.execed.back().*(table[i].has);
+      const std::string msg = json + " for " + kNames[c] + ": " + out.summary;
+      TEST_ASSERT_EQUAL_MESSAGE(want, set, msg.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(!want, !out.refusals.empty(), msg.c_str());
+      // Staged knobs follow the stripped copy too (the main loop applies what it gets).
+      for (const auto& st : r.staged) TEST_ASSERT_EQUAL_MESSAGE(want, st.*(table[i].has), msg.c_str());
+    }
+  }
+}
+
+// The finding itself: a member, a guest, a routine, a results synthesis and the LAN
+// endpoint cannot move the owner's main model; the refusal reaches the head (the next
+// turn's [DEVICE] line) and the person (one plain line on the reply), and no claim of
+// a switch is backed. The owner still can.
+static void test_rbac_orch_model_only_the_owner_writing_now() {
+  using namespace rbac;
+  const char* sw = "{\"type\":\"orch_model\",\"provider\":\"anthropic\",\"model\":\"good-latest\"}";
+  for (const char* chat : {"2002", "3003"}) {   // member, guest: through the real turn path
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    Turn t = turnWithDevice(sw);
+    t.reply = "Done, I switched to Claude.";
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    st.claims = &cc;
+    bool spawned = false;
+    agent::applyTurn(t, chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.hostModelSet.size(), chat);
+    TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find("[DEVICE] not applied: only the device's owner can change the main "
+                                               "model") != std::string::npos,
+                             r.pendingMem.c_str());
+    TEST_ASSERT_FALSE(r.delivered.empty());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered.back().second.find("Only the device's owner can change the main model.") !=
+                                 std::string::npos,
+                             r.delivered.back().second.c_str());
+  }
+  {   // a routine on the owner's chat
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r, /*scheduled=*/true);
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice(sw), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find("in a message they write") != std::string::npos, r.pendingMem.c_str());
+    TEST_ASSERT_FALSE(r.delivered.empty());
+    TEST_ASSERT_TRUE(r.delivered.back().second.find("The main model stays as it is") != std::string::npos);
+  }
+  {   // the owner writing
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice(sw), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+    TEST_ASSERT_TRUE(r.pendingMem.find("[DEVICE]") == std::string::npos);
+  }
+  // A refused caller learns nothing about keys or lists: the refusal comes first.
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  const std::string keyless = agent::applyDeviceElement(
+      "{\"type\":\"orch_model\",\"provider\":\"keyless\",\"model\":\"bad\"}", false, "2002", d, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(keyless.rfind("orch_model(refused) ", 0) == 0, keyless.c_str());
+  TEST_ASSERT_TRUE(keyless.find("keyless") == std::string::npos);
+}
+
+// The mid-turn path returns the same refusal to the head (device.control fails with it).
+static void test_rbac_device_control_refusal_is_an_answer_the_head_reads() {
+  using namespace rbac;
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  const Caller m = caller(Member);
+  agent::DeviceOutcome out = agent::applyDeviceAction("{\"type\":\"config\",\"sfxVol\":100}", m.who, false, "2002", d,
+                                                      nullptr);
+  TEST_ASSERT_TRUE(out.refusedWhole);
+  TEST_ASSERT_EQUAL_STRING("config-refused(not-owner) ", out.summary.c_str());
+  TEST_ASSERT_EQUAL_STRING("only the device's owner can change device settings", out.refusals.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.execed.size());
+  // An owner routine setting an ambient knob and a voice knob together: the ambient one
+  // lands, the voice one is reported, nothing is silent.
+  const Caller rt = caller(Routine);
+  out = agent::applyDeviceAction("{\"type\":\"config\",\"posture\":\"dark\",\"ttsVoice\":\"x\"}", rt.who, true, "1001",
+                                 d, nullptr);
+  TEST_ASSERT_FALSE(out.refusedWhole);
+  TEST_ASSERT_EQUAL_STRING("ttsVoice-refused(unattended) cfg ", out.summary.c_str());
+  TEST_ASSERT_TRUE(out.refusals.find("change the speaking voice") != std::string::npos);
+  TEST_ASSERT_TRUE(r.execed.back().hasPosture);
+  TEST_ASSERT_FALSE(r.execed.back().hasTtsVoice);
+}
+
+// Stopping a sub-agent and writing the scratchpad go through the same table: only the
+// owner writing now stops sub-agents (not a member, not a routine or a results turn fed
+// by outside text); the dream grooms the scratchpad unattended, a member never writes it.
+static void test_rbac_session_terminate_and_scratchpad_follow_the_table() {
+  for (const char* chat : {"2002", "3003"}) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::SessionOp op;
+    op.op = "terminate";
+    op.id = "job0007";
+    t.session_ops.push_back(op);
+    bool spawned = false;
+    agent::applyTurn(t, chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.cancelled.size(), chat);
+    TEST_ASSERT_TRUE(r.pendingMem.find("[SESSION] terminate job0007 not applied") != std::string::npos);
+    TEST_ASSERT_EQUAL_STRING("Only the device's owner can stop a sub-agent.", r.delivered.back().second.c_str());
+  }
+  for (int routine = 0; routine < 2; routine++) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r, routine != 0);
+    Turn t;
+    nimbus::orch::SessionOp op;
+    op.op = "terminate";
+    op.id = "job0007";
+    t.session_ops.push_back(op);
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(routine ? 0 : 1, (int)r.cancelled.size(), routine ? "routine" : "owner");
+    if (!routine) continue;
+    // The owner is never told "only the owner can": an automatic turn of theirs says
+    // what it left running, once, and the head reads why.
+    TEST_ASSERT_FALSE(r.delivered.empty());
+    const std::string& said = r.delivered.back().second;
+    TEST_ASSERT_TRUE_MESSAGE(said.find("Only the device's owner") == std::string::npos, said.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(said.find("A sub-agent was left running") != std::string::npos, said.c_str());
+    TEST_ASSERT_TRUE(r.pendingMem.find("[SESSION] terminate job0007 not applied") != std::string::npos);
+  }
+  {   // an owner routine's refused knob is said on its reply, in plain words
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r, /*scheduled=*/true);
+    Turn t = turnWithDevice("{\"type\":\"config\",\"posture\":\"dark\",\"ttsVoice\":\"x\"}");
+    t.reply = "Dimmed the ring for the night.";
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_TRUE(r.execed.back().hasPosture);
+    TEST_ASSERT_EQUAL_STRING(
+        "Dimmed the ring for the night.\nAn automatic turn cannot change the speaking voice, so it was left as it was.",
+        r.delivered.back().second.c_str());
+  }
+  for (int routine = 0; routine < 2; routine++)
+    for (const char* chat : {"1001", "2002"}) {
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      int writes = 0;
+      d.applyScratch = [&writes](const nimbus::orch::ScratchUpdate&) {
+        writes++;
+        return agent::ScratchOutcome::Applied;
+      };
+      ApplyState st = makeState(r, routine != 0);
+      Turn t;
+      t.scratchpad.present = true;
+      t.scratchpad.hasShort = true;
+      t.scratchpad.shortItems = {"x"};
+      bool spawned = false;
+      agent::applyTurn(t, chat, d, st, spawned);
+      TEST_ASSERT_EQUAL_MESSAGE(std::string(chat) == "1001" ? 1 : 0, writes, chat);
+    }
+}
+
+// The needs-you light is the owner's: a member's or a guest's question reaches them in
+// the reply and never latches the owner's attention state; the owner's (and an owner
+// routine's) question still does.
+static void test_rbac_only_the_owners_turn_raises_the_needs_you_light() {
+  struct Case {
+    const char* chat;
+    bool scheduled;
+    int asks;
+  };
+  for (const Case& k : {Case{"1001", false, 1}, Case{"1001", true, 1}, Case{"2002", false, 0}, Case{"3003", false, 0}}) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r, k.scheduled);
+    Turn t;
+    t.ask = "Which day suits you?";
+    bool spawned = false;
+    agent::applyTurn(t, k.chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(k.asks, r.emitAsks, k.chat);
+    TEST_ASSERT_FALSE(r.delivered.empty());   // the question itself always arrives
+    TEST_ASSERT_EQUAL_STRING("Which day suits you?", r.delivered.back().second.c_str());
+  }
+}
+
+// No refused device action backs a claim, through either reader of the summary: the
+// claim ledger of an end-of-turn device[] element, and the device.control result
+// reader (deviceSummaryEffect) - every action, every refused caller class.
+static void test_rbac_a_refused_action_backs_no_claim() {
+  using namespace rbac;
+  const char* const actions[] = {
+      "{\"type\":\"led\",\"mode\":\"pulse\",\"r\":1,\"g\":2,\"b\":3,\"brightness\":null}",
+      "{\"type\":\"lights\",\"value\":\"off\"}",
+      "{\"type\":\"tts\",\"text\":\"hello\"}",
+      "{\"type\":\"reboot\"}",
+      "{\"type\":\"orch_model\",\"provider\":\"anthropic\",\"model\":\"good-latest\"}",
+      "{\"type\":\"config\",\"ttsVoice\":\"x\"}",
+      "{\"type\":\"config\",\"sfxVol\":10}",
+  };
+  int refused = 0;
+  for (const char* json : actions)
+    for (int c = 0; c < kClasses; c++) {
+      Rec r;
+      ApplyDeps d = makeDeps(r, /*tts=*/true);
+      const Caller cl = caller(c);
+      const agent::DeviceOutcome out = agent::applyDeviceAction(json, cl.who, cl.unattended, cl.chat, d, nullptr);
+      if (out.refusals.empty() || !r.execed.empty() || ran(r)) continue;   // it ran (in part): not this test
+      refused++;
+      nimbus::orch::FxKind k;
+      bool landed = true;
+      if (nimbus::orch::deviceSummaryEffect(out.summary, k, landed))
+        TEST_ASSERT_FALSE_MESSAGE(landed, out.summary.c_str());
+      if (std::string(cl.chat).empty()) continue;   // the LAN never runs a turn
+      Rec r2;
+      ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+      ApplyState st = makeState(r2, cl.unattended);
+      agent::ClaimCheck cc;
+      cc.beginTurn();
+      st.claims = &cc;
+      bool spawned = false;
+      agent::applyTurn(turnWithDevice(json), cl.chat, d2, st, spawned);
+      for (nimbus::orch::FxKind fx : {nimbus::orch::FxKind::Config, nimbus::orch::FxKind::Speak})
+        TEST_ASSERT_EQUAL_MESSAGE(0, cc.effects().countOk(fx), json);
+    }
+  TEST_ASSERT_TRUE(refused >= 20);   // the walk really saw the refusals
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -1418,6 +1774,13 @@ int main(int, char**) {
   RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);
   RUN_TEST(test_mem_write_of_an_unbacked_cause_is_refused);
   RUN_TEST(test_a_no_change_config_action_backs_no_switched_reply);
+  RUN_TEST(test_rbac_every_device_action_by_caller_class);
+  RUN_TEST(test_rbac_every_config_knob_by_caller_class);
+  RUN_TEST(test_rbac_orch_model_only_the_owner_writing_now);
+  RUN_TEST(test_rbac_device_control_refusal_is_an_answer_the_head_reads);
+  RUN_TEST(test_rbac_session_terminate_and_scratchpad_follow_the_table);
+  RUN_TEST(test_rbac_only_the_owners_turn_raises_the_needs_you_light);
+  RUN_TEST(test_rbac_a_refused_action_backs_no_claim);
   UNITY_END();
   return 0;
 }

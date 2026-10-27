@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/action_rules.h"   // who may run each action (CUM-813)
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
@@ -126,7 +127,8 @@ static bool deviceElementLanded(const std::string& one) {
   if (one == "tts " || one == "led " || one == "lights " || one == "reboot ") return true;
   if (one.size() >= 4 && one.compare(one.size() - 4, 4, "cfg ") == 0) return true;
   return one.rfind("orch_model(", 0) == 0 && one.find("(invalid)") == std::string::npos &&
-         one.find("(no-key)") == std::string::npos && one.find("(no change)") == std::string::npos;
+         one.find("(no-key)") == std::string::npos && one.find("(no change)") == std::string::npos &&
+         one.find("(refused)") == std::string::npos;
 }
 
 // A switch away from a head that is paused, parked or over its budget, refused because
@@ -195,150 +197,221 @@ static std::string memExcerpt(const std::string& s) {
   return s.substr(0, n) + "...";
 }
 
-std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
-                               const std::string& chatId, const ApplyDeps& d,
-                               std::string* riskNote) {
-  // One device[] element: validate + policy-strip + execute. Shared by the
-  // end-of-turn device[] loop below AND the mid-turn `device.control` registry
-  // tool, so both paths carry the IDENTICAL security envelope (protected-key
-  // block, scheduled-turn strips, risk notes). Every summary token is the
-  // pre-lift byte-identical literal (test_harness_apply pins them).
-  std::string devSummary;
+namespace {
+
+using nimbus::orch::ActionCaller;
+
+// Why the caller rule refused a key, as the summary tag: "not-owner" for a member,
+// a guest or the LAN endpoint, else the owner's unattended turn. The four knobs and
+// reboot the scheduled-turn rails refused before the rule table keep the tag their
+// tokens always carried (test_harness_apply pins them).
+std::string refusedTag(const std::string& key, const ActionCaller& c) {
+  if (c.lan) return "lan";
+  if (!c.owner()) return "not-owner";
+  if (key == "device.reboot" || key == "device.config.ttsOn" || key == "device.config.devName")
+    return "scheduled";
+  return "unattended";
+}
+
+// A refused part: its plain reason for the head (the next turn's [DEVICE] line or
+// the device.control answer) and one line on the reply: a member or a guest hears that
+// only the owner can, and the owner hears what an automatic turn left as it was.
+void noteRefusal(DeviceOutcome& out, const std::string& key, const ActionCaller& c, std::string* riskNote) {
+  const std::string why = nimbus::orch::actionRefusal(key, c);
+  if (!out.refusals.empty()) out.refusals += "; ";
+  out.refusals += why;
+  if (!riskNote || c.lan) return;
+  const nimbus::orch::ActionRuleRow* row = nimbus::orch::actionRuleRow(key);
+  const std::string what = row ? row->what : "do that";
+  std::string line;
+  if (!c.owner()) line = "\nOnly the device's owner can " + what + ".";
+  else if (key == "device.orch_model")
+    line = "\nThe main model stays as it is: only the owner can change it, in a message they write.";
+  else line = "\nAn automatic turn cannot " + what + ", so it was left as it was.";
+  if (riskNote->find(line) == std::string::npos) *riskNote += line;
+}
+
+// The config element's knobs the caller may not set, stripped from a copy (each says
+// why). The owner writing now strips nothing.
+ValidatedAction stripRefusedKnobs(const ValidatedAction& va, const ActionCaller& c, std::string* riskNote,
+                                  DeviceOutcome& out) {
+  ValidatedAction ex = va;
+  size_t nk = 0;
+  const nimbus::orch::ConfigKnob* knobs = nimbus::orch::configKnobTable(nk);
+  for (size_t i = 0; i < nk; i++) {
+    if (!(va.*(knobs[i].has))) continue;
+    const std::string key = nimbus::orch::configKnobKey(knobs[i].knob);
+    if (nimbus::orch::actionAllowed(key, c)) continue;
+    ex.*(knobs[i].has) = false;
+    out.summary += std::string(knobs[i].knob) + "-refused(" + refusedTag(key, c) + ") ";
+    noteRefusal(out, key, c, riskNote);
+  }
+  return ex;
+}
+
+// The tokens of the knobs that carry a voice, a risk or a restart, and the
+// owner-visible risk notes. Owner-visible, NOT model-optional: the log line alone left
+// zero trace unless the owner went looking (review) - the note rides the delivered
+// reply itself, whatever the model chose to say.
+void describeRiskKnobs(const ValidatedAction& ex, std::string* riskNote, DeviceOutcome& out) {
+  if (ex.hasTtsOn) out.summary += ex.ttsOn ? "ttsOn " : "ttsOff ";
+  if (ex.hasSleepOvr) {
+    out.summary += ex.sleepOvr ? "sleepOvr:ON(deep-discharge-risk) " : "sleepOvr:off ";
+    if (riskNote)
+      *riskNote += ex.sleepOvr
+          ? "\n⚠ low-battery sleep OVERRIDDEN - the pack can deep-discharge (resets at reboot)"
+          : "\n✓ low-battery sleep protection re-enabled";
+  }
+  if (ex.hasBrightOvr) {
+    out.summary += ex.brightOvr ? "brightOvr:ON(heat-risk) " : "brightOvr:off ";
+    if (riskNote)
+      *riskNote += ex.brightOvr
+          ? "\n⚠ LED cap OVERRIDDEN to 100% - sustained heat risk to the panel (resets at reboot)"
+          : "\n✓ LED 60% safety cap re-enabled";
+  }
+  if (ex.hasDevName) out.summary += "devName(reboot-to-apply) ";
+}
+
+// The config element: strip what the caller may not set, then execute what is left.
+void applyConfig(const ValidatedAction& va, const ActionCaller& c, const ApplyDeps& d, std::string* riskNote,
+                 DeviceOutcome& out) {
+  const ValidatedAction ex = stripRefusedKnobs(va, c, riskNote, out);
+  describeRiskKnobs(ex, riskNote, out);
+  // Talk-to-configure knobs (posture/profile/theme/attnHoldMs) mutate the
+  // main-task-owned Config/theme, so they route through the DeviceSink like
+  // led/lights - the main loop applies + persists them (same pipeline as
+  // the menu/web UI). NVS-only knobs above stay inline (any-task safe).
+  const bool stagedKnobs = ex.hasPosture || ex.hasProfile || ex.hasTheme || ex.hasAttnHoldMs;
+  const bool changed = d.execConfig ? d.execConfig(ex) : false;
+  if (d.stageDevice && stagedKnobs) d.stageDevice(ex);
+  // 23 Oct: "cfg" is said only when a stored value changed (or a knob was
+  // handed to the main loop); an action that stored nothing reports "no
+  // change", and the claim check holds a "switched" reply against it.
+  out.summary += (changed || (d.stageDevice && stagedKnobs)) ? "cfg " : "cfg(no change) ";
+}
+
+void applyTts(const ValidatedAction& va, const std::string& chatId, const ApplyDeps& d, DeviceOutcome& out) {
+  // EXPLICIT tts action - but ONLY when the owner's "Voice replies" toggle is
+  // ON (default ON for a speaker board, N12). Field bug (P2.5): the model
+  // reliably chose to speak whenever the owner seemed nearby (voice input),
+  // and this gate bypass meant there was NO way to mute it. When OFF the action
+  // is a silent no-op - the text reply still delivers on its own channel.
+  if (!d.ttsEnabled) { out.summary += "tts(voice-off) "; return; }
+  if (!d.speak || va.text.empty()) { out.summary += "tts(no-sink) "; return; }
+  std::string s = va.text;
+  if (s.size() > 400) s = s.substr(0, 400);   // bound the synth/upload
+  d.speak(s);
+  // Capture spoken output to history so "what did you just say?" works even
+  // when the turn had no text reply (the tts action was previously invisible).
+  if (d.captureAssistant) d.captureAssistant(chatId, s);
+  out.summary += "tts ";
+}
+
+void applyOrchModel(const ValidatedAction& va, const ApplyDeps& d, std::string* riskNote, DeviceOutcome& out) {
+  std::string paused;   // why a pause keeps the head where it is ("" = it does not)
+  // The agent reroutes its OWN provider host + model (owner: "switch to opus").
+  // Validate the model against that provider's choice list, then set BOTH host
+  // and model - NVS-only, any-task safe. Keys + provider PRIORITY stay owner-only
+  // (never settable here); this host/model switch is the one deliberate exception.
+  // Refuse a switch to a provider with NO API key configured - modelIsValid only
+  // checks the static choice list, so without this the agent could reroute its own
+  // host to a keyless provider and strand every subsequent turn. Keys are
+  // owner-only (web UI); the agent can only move between providers already keyed.
+  // The provider must be one of the registry slots (the schema enum), and a
+  // refusal says why in the head's words after the pinned token.
+  if (!nimbus::orch::isProviderSlug(va.orchProvider.c_str()) || !d.modelIsValid ||
+      !d.modelIsValid(va.orchProvider, va.orchModel)) {
+    out.summary += "orch_model(invalid) " + va.orchModel + " on " + va.orchProvider + ": " +
+                   orchModelMiss(va, d) + " ";
+  } else if (!d.providerHasKey || !d.providerHasKey(va.orchProvider)) {
+    out.summary += "orch_model(no-key) ";
+  } else if (!(paused = headPauseRefusal(va, d)).empty()) {
+    // A pause is no reason to move the owner's head: nothing changes, and the reply
+    // carries why (whatever the model chose to say).
+    out.summary += "orch_model(no change) " + va.orchProvider + "/" + va.orchModel + ": " + paused + " ";
+    if (riskNote) *riskNote += "\n" + paused;
+  } else if (!d.setOrchHostModel) {
+    out.summary += "orch_model(no change) " + va.orchProvider + "/" + va.orchModel +
+                   ": this host cannot change its model ";
+  } else {
+    d.setOrchHostModel(va.orchProvider, va.orchModel);
+    out.summary += "orch_model(" + va.orchProvider + "/" + va.orchModel + ") ";
+  }
+}
+
+// led / lights / reboot execute through the DeviceSink: main.cpp stages the
+// validated action thread-safely and the main loop (which owns the ring +
+// power) applies it. Without a sink installed they remain logged no-ops.
+void applyStaged(const ValidatedAction& va, const char* name, const ApplyDeps& d, DeviceOutcome& out) {
+  if (!d.stageDevice) { out.summary += std::string(name) + "(noop) "; return; }
+  d.stageDevice(va);
+  out.summary += std::string(name) + " ";
+}
+
+}  // namespace
+
+DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
+                                bool unattended, const std::string& chatId, const ApplyDeps& d,
+                                std::string* riskNote) {
+  // One device[] element: validate + check WHO asked + policy-strip + execute.
+  // Shared by the end-of-turn device[] loop below AND the mid-turn
+  // `device.control` registry tool, so both paths carry the IDENTICAL security
+  // envelope (protected-key block, the caller rule table, risk notes). Every
+  // summary token is the pre-lift byte-identical literal (test_harness_apply
+  // pins them).
+  DeviceOutcome out;
   JsonDocument dd;
-  if (deserializeJson(dd, json)) { return "skip "; }
+  if (deserializeJson(dd, json)) { out.summary = "skip "; return out; }
   ValidatedAction va =
       nimbus::orch::validateAction(dd.as<ArduinoJson::JsonVariantConst>());
   if (!va.allowed) {
     // Blocked/unknown: log the policy reason ("protected-BLOCKED"/"unsupported"),
     // never the offending value (the portable validator never puts a secret here).
-    return va.reason.empty() ? std::string("skip ") : va.reason + " ";
+    out.summary = va.reason.empty() ? std::string("skip ") : va.reason + " ";
+    return out;
+  }
+  // WHO asked (CUM-813): the action as a whole first (a member's config element, an
+  // automatic turn's restart or model switch), before any key or model is checked,
+  // so a refused caller learns nothing about the device's keys or lists.
+  const ActionCaller c = nimbus::orch::actionCaller(who, unattended, chatId);
+  const std::string key = nimbus::orch::deviceActionKey(va.kind);
+  if (!key.empty() && !nimbus::orch::actionAllowed(key, c)) {
+    out.refusedWhole = true;
+    noteRefusal(out, key, c, riskNote);
+    if (va.kind == ActionKind::OrchModel) out.summary = "orch_model(refused) " + out.refusals + " ";
+    else
+      out.summary = (va.kind == ActionKind::Config ? std::string("config") : key.substr(sizeof("device.") - 1)) +
+                    "-refused(" + refusedTag(key, c) + ") ";
+    return out;
   }
   switch (va.kind) {
-    case ActionKind::Config: {
-      // POLICY: strip the knobs a SCHEDULED/unattended turn may not flip -
-      // a loop/injected turn must not change the device's audio, identity, or
-      // physical-risk switches (prompt-injection persistence rail). The
-      // stripped copy goes to execConfig, which applies writes with no policy.
-      ValidatedAction ex = va;
-      if (va.hasTtsOn && scheduledTurn) {
-        devSummary += "ttsOn-refused(scheduled) ";
-        ex.hasTtsOn = false;
-      } else if (va.hasTtsOn) {
-        devSummary += va.ttsOn ? "ttsOn " : "ttsOff ";
-      }
-      if (va.hasSleepOvr && scheduledTurn) {
-        devSummary += "sleepOvr-refused(unattended) ";
-        ex.hasSleepOvr = false;
-      } else if (va.hasSleepOvr) {
-        devSummary += va.sleepOvr ? "sleepOvr:ON(deep-discharge-risk) " : "sleepOvr:off ";
-        // Owner-visible, NOT model-optional: the log line alone left zero
-        // trace unless the owner went looking (review) - the note rides the
-        // delivered reply itself, whatever the model chose to say.
-        if (riskNote)
-          *riskNote += va.sleepOvr
-              ? "\n⚠ low-battery sleep OVERRIDDEN - the pack can deep-discharge (resets at reboot)"
-              : "\n✓ low-battery sleep protection re-enabled";
-      }
-      if (va.hasBrightOvr && scheduledTurn) {
-        devSummary += "brightOvr-refused(unattended) ";
-        ex.hasBrightOvr = false;
-      } else if (va.hasBrightOvr) {
-        devSummary += va.brightOvr ? "brightOvr:ON(heat-risk) " : "brightOvr:off ";
-        if (riskNote)
-          *riskNote += va.brightOvr
-              ? "\n⚠ LED cap OVERRIDDEN to 100% - sustained heat risk to the panel (resets at reboot)"
-              : "\n✓ LED 60% safety cap re-enabled";
-      }
-      if (va.hasDevName && scheduledTurn) {
-        devSummary += "devName-refused(scheduled) ";
-        ex.hasDevName = false;
-      } else if (va.hasDevName) {
-        devSummary += "devName(reboot-to-apply) ";
-      }
-      // Talk-to-configure knobs (posture/profile/theme/attnHoldMs) mutate the
-      // main-task-owned Config/theme, so they route through the DeviceSink like
-      // led/lights - the main loop applies + persists them (same pipeline as
-      // the menu/web UI). NVS-only knobs above stay inline (any-task safe).
-      const bool stagedKnobs = va.hasPosture || va.hasProfile || va.hasTheme || va.hasAttnHoldMs;
-      const bool changed = d.execConfig ? d.execConfig(ex) : false;
-      if (d.stageDevice && stagedKnobs) d.stageDevice(va);
-      // 23 Oct: "cfg" is said only when a stored value changed (or a knob was
-      // handed to the main loop); an action that stored nothing reports "no
-      // change", and the claim check holds a "switched" reply against it.
-      devSummary += (changed || (d.stageDevice && stagedKnobs)) ? "cfg " : "cfg(no change) ";
-      break;
-    }
-    case ActionKind::Tts:
-      // EXPLICIT tts action - but ONLY when the owner's "Voice replies" toggle is
-      // ON (default ON for a speaker board, N12). Field bug (P2.5): the model
-      // reliably chose to speak whenever the owner seemed nearby (voice input),
-      // and this gate bypass meant there was NO way to mute it. When OFF the action
-      // is a silent no-op - the text reply still delivers on its own channel.
-      if (!d.ttsEnabled) { devSummary += "tts(voice-off) "; break; }
-      if (d.speak && !va.text.empty()) {
-        std::string s = va.text;
-        if (s.size() > 400) s = s.substr(0, 400);   // bound the synth/upload
-        d.speak(s);
-        // Capture spoken output to history so "what did you just say?" works even
-        // when the turn had no text reply (the tts action was previously invisible).
-        if (d.captureAssistant) d.captureAssistant(chatId, s);
-        devSummary += "tts ";
-      } else devSummary += "tts(no-sink) ";
-      break;
-    // led / lights / reboot execute through the DeviceSink: main.cpp stages the
-    // validated action thread-safely and the main loop (which owns the ring +
-    // power) applies it. Without a sink installed they remain logged no-ops.
-    case ActionKind::Led:
-      if (d.stageDevice) { d.stageDevice(va); devSummary += "led "; }
-      else devSummary += "led(noop) ";
-      break;
-    case ActionKind::Lights:
-      if (d.stageDevice) { d.stageDevice(va); devSummary += "lights "; }
-      else devSummary += "lights(noop) ";
-      break;
-    case ActionKind::Reboot:
-      // prism guard: a scheduled loop must NOT reboot - a reboot in the
-      // boot-relative clock window would reset the daily cost ceiling.
-      if (scheduledTurn) { devSummary += "reboot-refused(scheduled) "; }
-      else if (d.stageDevice) { d.stageDevice(va); devSummary += "reboot "; }
-      else devSummary += "reboot(noop) ";
-      break;
-    case ActionKind::OrchModel: {
-      std::string paused;   // why a pause keeps the head where it is ("" = it does not)
-      // The agent reroutes its OWN provider host + model (owner: "switch to opus").
-      // Validate the model against that provider's choice list, then set BOTH host
-      // and model - NVS-only, any-task safe. Keys + provider PRIORITY stay owner-only
-      // (never settable here); this host/model switch is the one deliberate exception.
-      // Refuse a switch to a provider with NO API key configured - modelIsValid only
-      // checks the static choice list, so without this the agent could reroute its own
-      // host to a keyless provider and strand every subsequent turn (prism). Keys are
-      // owner-only (web UI); the agent can only move between providers already keyed.
-      // The provider must be one of the registry slots (the schema enum), and a
-      // refusal says why in the head's words after the pinned token.
-      if (!nimbus::orch::isProviderSlug(va.orchProvider.c_str()) || !d.modelIsValid ||
-          !d.modelIsValid(va.orchProvider, va.orchModel)) {
-        devSummary += "orch_model(invalid) " + va.orchModel + " on " + va.orchProvider + ": " +
-                      orchModelMiss(va, d) + " ";
-      } else if (!d.providerHasKey || !d.providerHasKey(va.orchProvider)) {
-        devSummary += "orch_model(no-key) ";
-      } else if (!(paused = headPauseRefusal(va, d)).empty()) {
-        // A pause is no reason to move the owner's head: nothing changes, and the reply
-        // carries why (whatever the model chose to say).
-        devSummary += "orch_model(no change) " + va.orchProvider + "/" + va.orchModel + ": " + paused + " ";
-        if (riskNote) *riskNote += "\n" + paused;
-      } else {
-        d.setOrchHostModel(va.orchProvider, va.orchModel);
-        devSummary += "orch_model(" + va.orchProvider + "/" + va.orchModel + ") ";
-      }
-      break;
-    }
-    default:                       devSummary += "skip ";         break;
+    case ActionKind::Config:    applyConfig(va, c, d, riskNote, out); break;
+    case ActionKind::Tts:       applyTts(va, chatId, d, out); break;
+    case ActionKind::Led:       applyStaged(va, "led", d, out); break;
+    case ActionKind::Lights:    applyStaged(va, "lights", d, out); break;
+    // Reboot reaches here only on the owner's attended turn: a scheduled loop must
+    // NOT reboot - a reboot in the boot-relative clock window would reset the daily
+    // cost ceiling (the rule table's device.reboot row).
+    case ActionKind::Reboot:    applyStaged(va, "reboot", d, out); break;
+    case ActionKind::OrchModel: applyOrchModel(va, d, riskNote, out); break;
+    default:                    out.summary += "skip "; break;
   }
-  return devSummary;
+  return out;
+}
+
+std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
+                               const std::string& chatId, const ApplyDeps& d,
+                               std::string* riskNote) {
+  return applyDeviceAction(json, d.whoFor(chatId), scheduledTurn, chatId, d, riskNote).summary;
 }
 
 void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
                ApplyState& st, bool& spawnedOut) {
+  // Who this turn is, once (CUM-813): the chat's principal (v3.7.0: every memory tool
+  // runs under it - the routing chat is the namespace, and only an owner chat may
+  // touch the shared one) and the caller every rule below reads.
+  const nimbus::orch::Principal who = d.whoFor(chatId);
+  const ActionCaller caller = nimbus::orch::actionCaller(who, st.scheduledTurn, chatId);
   // memory (device enforces the cap; setModel returns true if it had to truncate)
   if (t.memory.length() && d.setModelMemory && d.setModelMemory(chatId, t.memory))
     hlog::log("orchestrator: model-memory truncated to cap");
@@ -352,7 +425,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // memory.scratchpad tool already guards with manageTenants. Non-admin turns
   // skip the write silently (their turn is otherwise unaffected).
   if (t.scratchpad.present && d.applyScratch) {
-    if (d.whoFor(chatId).perms().manageTenants) {
+    if (nimbus::orch::actionAllowed("turn.scratchpad", caller)) {
       st.scratchOutcome = d.applyScratch(t.scratchpad);
       if (st.claims && st.scratchOutcome != ScratchOutcome::Skipped)
         st.claims->effects().add(st.scratchOutcome == ScratchOutcome::Applied
@@ -366,13 +439,18 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   }
 
   // device[] - validate each element and apply ONLY the allowed ones. The
-  // classification (allowed vs protected-BLOCKED) is the portable security core;
-  // the per-element work is the shared applyDeviceElement (also the mid-turn
-  // `device.control` tool's engine).
+  // classification (allowed vs protected-BLOCKED) and who may run it are the portable
+  // security core; the per-element work is the shared applyDeviceAction (also the
+  // mid-turn `device.control` tool's engine).
   std::string devSummary;
   for (const auto& da : t.device) {
-    const std::string one = applyDeviceElement(da.json, st.scheduledTurn, chatId, d, &st.riskNote);
+    const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote);
+    const std::string& one = dev.summary;
     devSummary += one;
+    // A part the caller rule refused reaches the head next turn in plain words:
+    // nothing is dropped in silence (CUM-813).
+    if (!dev.refusals.empty() && st.pendingMemResults)
+      *st.pendingMemResults += "[DEVICE] not applied: " + dev.refusals + "\n";
     // A refused model switch reaches the head next turn: it learns why and what
     // to do, instead of believing it switched.
     if (one.rfind("orch_model(invalid) ", 0) == 0 && st.pendingMemResults)
@@ -388,12 +466,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (!devSummary.empty()) hlog::logf("orchestrator: device[%s]", devSummary.c_str());
 
   // mem_write[] / mem_query[] (Phase 3) - dispatch through the memory ToolRegistry
-  // (embed + store / search), in-process on this task. mem_query results are parked
-  // for the NEXT turn's inputs (deferred-result pattern). Persist once if anything
-  // was written. Runs BEFORE reply so a "remember X, ok?" turn stores then confirms.
-  // v3.7.0: every memory tool runs under THIS turn's principal - the routing
-  // chat is the namespace, and only an owner chat may touch the shared one.
-  const nimbus::orch::Principal who = d.whoFor(chatId);
+  // (embed + store / search), in-process on this task, under the turn's principal.
+  // mem_query results are parked for the NEXT turn's inputs (deferred-result pattern).
+  // Persist once if anything was written. Runs BEFORE reply so a "remember X, ok?"
+  // turn stores then confirms.
   // A host with no memory store never drops the fields in silence: each write is
   // reported as not stored, so the head does not take its intent for a save.
   if (!d.memDispatch && !t.mem_write.empty()) {
@@ -550,6 +626,24 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       s.note     = "On it.";
       enqueue(s);
     } else if (op.op == "terminate") {
+      // Only the owner writing now stops sub-agents (CUM-813): a member's or a guest's
+      // turn could otherwise stop the owner's running work by its tag, and an automatic
+      // turn fed by outside text could stop the rest of it.
+      const std::string refused = nimbus::orch::actionRefusal("session.terminate", caller);
+      if (!refused.empty()) {
+        hlog::logf("orchestrator: session terminate %s refused (%s)", op.id.c_str(),
+                   caller.owner() ? "automatic turn" : "not the owner");
+        if (st.pendingMemResults)
+          *st.pendingMemResults += "[SESSION] terminate " + op.id + " not applied: " + refused + "\n";
+        if (!caller.owner()) {
+          if (d.deliver) d.deliver(chatId, "Only the device's owner can stop a sub-agent.");
+        } else {
+          static const char kLeftRunning[] =
+              "\nA sub-agent was left running: stopping one needs a message you write.";
+          if (st.riskNote.find(kLeftRunning) == std::string::npos) st.riskNote += kLeftRunning;
+        }
+        continue;
+      }
       bool ok = d.cancelSession && d.cancelSession(op.id);
       const bool pending = ok && d.sessionStopping && d.sessionStopping(op.id);
       hlog::logf("orchestrator: session terminate %s -> %s", op.id.c_str(),
@@ -613,6 +707,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // verbatim or reworded).
   if ((t.reply.length() || t.ask.length()) && d.fire) d.fire("reply");
   st.lastReply = t.reply;   // captured for the Local Loops semantic-repeat hash
+  // The needs-you light is the owner's: a member's or a guest's question reaches them
+  // in the reply, never latching the owner's attention state (the turn.ask row).
+  const bool raiseAsk = d.emitAsk && nimbus::orch::actionAllowed("turn.ask", caller);
   // Owner-visible notes that ride the reply and are never silent: the risk
   // override note, the spawn correction, then the claim check's lines (the reply
   // and the ask reach the owner as one message, so both are checked; the spawn
@@ -632,14 +729,14 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   st.riskNote.clear();
   if (askAppended) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail + "\n\n" + t.ask);
-    if (d.emitAsk) d.emitAsk();
+    if (raiseAsk) d.emitAsk();
   } else if (t.reply.length()) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail);
     // The question is in the reply: the needs-you state still fires.
-    if (t.ask.length() && d.emitAsk) d.emitAsk();
+    if (t.ask.length() && raiseAsk) d.emitAsk();
   } else if (t.ask.length()) {
     if (d.deliver) d.deliver(chatId, t.ask + riskTail);
-    if (d.emitAsk) d.emitAsk();
+    if (raiseAsk) d.emitAsk();
   } else if (riskTail.length()) {
     // No reply/ask, but a risk switch flipped or a spawn did not start - the
     // note must still land (never silent).

@@ -65,10 +65,15 @@ repoint its **own** head host + model at runtime.
 | planned | not built yet |
 
 **Access.** Every tool call carries a `Principal` - the caller's namespace,
-role, and quota. Tools marked *admin-only* require an admin conversation (the
-`manageTenants` permission) and additionally refuse in scheduled/unattended
-turns; the rest are open to any approved conversation. Hiding a tool from the
-advertisement is never the boundary - each handler re-checks the caller.
+role, and quota - and is checked at dispatch against one rule table (who may
+run each action: the owner writing now, the owner's own routines, any turn, or
+any caller, the LAN endpoint included). Tools marked *admin-only* require an admin
+conversation (the `manageTenants` permission); the table says which of them also
+refuse in scheduled/unattended turns. The rest are open to any approved
+conversation, inside the caller's own namespace. The full table is in
+[Security posture](../security.md#who-may-run-each-action). Hiding a tool from
+the advertisement is never the boundary - the dispatch check and each handler
+refuse the caller.
 
 **Advertisement is principal-scoped.** An admin-only tool is not listed in a
 member's or guest's prompt, so the model is never offered a capability the
@@ -150,7 +155,7 @@ its injected `SessionHandlers` handler; a missing handler makes the tool report
 |---|---|---|---|
 | `session.spawn` | Start a sub-agent to work on a task in parallel. Returns its session id. | `task` (string, **required**), `provider` (string, optional), `model` (string, optional) | live |
 | `session.list` | List your running sub-agents and their state. | (none) | live |
-| `session.terminate` | Stop a running sub-agent. | `id` (string, **required**) | live |
+| `session.terminate` | Stop a running sub-agent. | `id` (string, **required**) | live (admin-only, refused in unattended turns) |
 | `session.tell` | Send a message to a running sub-agent, as if you were its user. | `id` (string, **required**), `message` (string, **required**) | wiring: adapter continuation |
 | `session.poll` | Read the latest reply from a sub-agent (like reading its message to you). | `id` (string, **required**) | wiring: adapter continuation |
 
@@ -394,7 +399,7 @@ reach the person. Both refuse outside a live turn.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `reply.speak` | Read text aloud on the device speaker (text-to-speech). | `text` (**required**) | live |
+| `reply.speak` | Read text aloud on the device speaker (text-to-speech). | `text` (**required**) | live (admin-only) |
 | `reply.telegram` | Send a Telegram message; `voice:true` delivers it as spoken audio, as Telegram voice messages. | `text` (**required**), `chat_id` (optional), `voice` (boolean) | live |
 
 Note: `reply.speak` degrades honestly when voice replies are switched off or the
@@ -446,7 +451,7 @@ tool cannot run either).
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `models.list` | List the models a provider offers, from the device's cached list: the id (what `orch_model` and a spawn take), name, line, size, release date, context, lifecycle, price per 1M tokens with its source, and when the list was fetched. At most 20 rows; narrow with provider, query or line. `refresh:true` also queues a fresh fetch from the provider for after this turn (at most once an hour per provider); this call still answers from the cache. | `provider` (string: `cumulo`, `openai`, `anthropic`, `mistral` or `zai`; omit for every provider with a key), `query` (part of an id or name), `line` (a model line), `role` (`orchestrator`, `sub-agent`, `vision`, `embedding`, `stt`, `tts` or `image`; default the chat models), `include_legacy` (boolean), `refresh` (boolean) | live |
+| `models.list` | List the models a provider offers, from the device's cached list: the id (what `orch_model` and a spawn take), name, line, size, release date, context, lifecycle, price per 1M tokens with its source, and when the list was fetched. At most 20 rows; narrow with provider, query or line. `refresh:true` also queues a fresh fetch from the provider for after this turn (at most once an hour per provider); this call still answers from the cache. | `provider` (string: `cumulo`, `openai`, `anthropic`, `mistral` or `zai`; omit for every provider with a key), `query` (part of an id or name), `line` (a model line), `role` (`orchestrator`, `sub-agent`, `vision`, `embedding`, `stt`, `tts` or `image`; default the chat models), `include_legacy` (boolean), `refresh` (boolean) | live (`refresh` admin-only) |
 
 The answer is one JSON object: `providers[]` (`provider`, `fetchedAt` as a UTC
 minute or null, `source` `fetched` or `built-in`, `total` matching rows,
@@ -510,9 +515,9 @@ audible items actuate hardware. Registered in `src/main.cpp`
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `system.health` | Report live hardware + subsystem health (ring, display, mic, speaker, SD, memory, PSRAM, Wi-Fi, Telegram). | (none) | live |
-| `device.status` | Read the complete live device state: firmware/build, update engine + slot + auto-update, local time + timezone + clock-sync, free heap/PSRAM, SD (including live `sdLost`) + internal flash usage, battery, Wi-Fi signal, Bluetooth bonds, fault mask, sound tier + sound-pack sync, ring posture + battery mode (user and effective) + attention hold + device name + sub-agent provider priority, memory counts vs live caps (vectors, episodic, scratchpad), file-store count/bytes/free, settings-storage health (`nvs.free`, `nvs.fails` saves that failed since boot, `nvs.lastFail` the last failing key name, never a value; `tgOffsetSaved` false means the device owes a Telegram offset write, so messages can arrive again, a device-side repeat), sub-agent capacity (running/queued vs limits), real billed token usage (last turn + session) including `usage.budget[]` - per-provider spend this billing period (tokens in/out, calls, estimated dollars with each model at its own price, and `approx` when part of that estimate is a built-in price) against the owner's dollar and token ceilings plus the reset day (v4.1.2: plan work against the budget instead of discovering a refusal at dispatch), the current value of every config knob (v4.1: the knobs the model can set are all readable here), and `lastFail` - the most recent failed turn since boot (`turn`, `src`, `agoS`, `cause` with the first cause first; `null` when none; RAM only). | (none) | live |
-| `device.selftest` | Run a hardware self-test; returns per-item PASS/FAIL/SKIP. | `audible` (boolean - also runs the speaker/mic acoustic loopback) | live |
-| `device.control` | Apply ONE device action immediately, mid-turn: `action` is one `device[]` element (`config` / `led` / `lights` / `tts`), so a sequenced flow (read a knob, set it, speak, restore it) completes inside one turn. Same knobs, validator, and policy rails as `device[]`; changes are real and persist. `reboot` is refused here (put it in the end-of-turn `device[]`). | `action` (object) | live |
+| `device.status` | Read the complete live device state: firmware/build, update engine + slot + auto-update, local time + timezone + clock-sync, free heap/PSRAM, SD (including live `sdLost`) + internal flash usage, battery, Wi-Fi signal, Bluetooth bonds, fault mask, sound tier + sound-pack sync, ring posture + battery mode (user and effective) + attention hold + device name + sub-agent provider priority, memory counts vs live caps (vectors, episodic, scratchpad), file-store count/bytes/free, settings-storage health (`nvs.free`, `nvs.fails` saves that failed since boot, `nvs.lastFail` the last failing key name, never a value; `tgOffsetSaved` false means the device owes a Telegram offset write, so messages can arrive again, a device-side repeat), sub-agent capacity (running/queued vs limits), real billed token usage (last turn + session) including `usage.budget[]` - per-provider spend this billing period (tokens in/out, calls, estimated dollars with each model at its own price, and `approx` when part of that estimate is a built-in price) against the owner's dollar and token ceilings plus the reset day (v4.1.2: plan work against the budget instead of discovering a refusal at dispatch), the current value of every config knob (v4.1: the knobs the model can set are all readable here), and `lastFail` - the most recent failed turn since boot (`turn`, `src`, `agoS`, `cause` with the first cause first; `null` when none; RAM only). | (none) | live (admin-only) |
+| `device.selftest` | Run a hardware self-test; returns per-item PASS/FAIL/SKIP. | `audible` (boolean - also runs the speaker/mic acoustic loopback) | live (`audible` admin-only, refused in unattended turns) |
+| `device.control` | Apply ONE device action immediately, mid-turn: `action` is one `device[]` element (`config` / `led` / `lights` / `tts`), so a sequenced flow (read a knob, set it, speak, restore it) completes inside one turn. Same knobs, validator, and policy rails as `device[]`; changes are real and persist. `reboot` is refused here (put it in the end-of-turn `device[]`). | `action` (object) | live (admin-only) |
 | `ota.status` | Read the firmware-update engine: state, latest version seen + its release notes, last install outcome. | (none) | live |
 
 Note: `device.status` is silent (never makes a sound); the battery reading is a
@@ -526,7 +531,7 @@ owner can (Telegram `/update` or the web UI).
 Device actions are **not** registry tools - they arrive as the turn's
 `device[]` array and are validated by the portable half in
 `lib/core/include/nimbus/orch/device_actions.h`
-(`validateAction()`), then executed by `applyDeviceElement()`
+(`validateAction()`), then checked against who asked and executed by `applyDeviceAction()`
 (`lib/harness/src/apply.cpp`) only for items with `allowed == true`; `led`,
 `lights` and `reboot` are staged to the main loop through `orchDeviceSink` in
 `src/main.cpp`. Each `device[]` element is exactly one of:
@@ -559,9 +564,17 @@ Models." (The ending follows the cause: "once credit is added", "once its key is
 replaced".) Only an owner message that asks for that switch (it names the provider or
 model, uses a word such as switch, use or change, and does not say keep or don't)
 counts: such a refusal can be confirmed by the owner's next such message within 30
-minutes. A refusal the assistant drew on its own leaves nothing to confirm, and a turn
-the owner did not write (a member, a guest, a routine) never confirms one and is told
-only that the head stays. Session ops (spawn /
+minutes. A refusal the assistant drew on its own leaves nothing to confirm.
+
+Who asked is checked first, for every action and every `config` knob: only the
+owner switches the main model or restarts the device, and only in a message they
+write; a member, a guest, a routine, a sub-agent results turn and a LAN client are
+refused before any model list or key is consulted, the next turn reads a
+`[DEVICE] not applied: ...` line, and a member or guest is told on the reply that
+only the owner can. The owner's own routines keep the everyday knobs (ring level,
+brightness, theme, battery mode, sounds, volume) and lose the ones that route paid
+calls, change the voice, rename the device or override a safety cap. The full table
+is in [Security posture](../security.md#who-may-run-each-action). Session ops (spawn /
 terminate) are **not** device actions - they go through the turn's
 `session_ops[]` / `session.*`, never `device[]`.
 
@@ -585,6 +598,11 @@ media **send** is already exposed as tools - spoken audio via `reply.telegram`
 mic-transcription tool remains planned.
 
 ## Adding tools
+
+A new on-device tool needs a row in the access rule table
+(`lib/core/src/orch_action_rules.cpp`) saying who may call it, and a matching row
+in the class test (`test/test_action_rules`); without one the test fails, and at
+runtime the tool is refused to everyone but the owner writing now.
 
 Beyond the on-device set, capabilities can be extended two ways, both surfaced
 honestly in the web "Tools" panel (`GET /api/tools`, read live from

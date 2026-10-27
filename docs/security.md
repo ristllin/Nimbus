@@ -169,6 +169,114 @@ server - findings are weighted by real reachability.
   safe). Bonds persist in NVS. Verified on hardware: unbonded write rejected; bonded
   frame applies; bond survives a restart.
 
+## Who may run each action
+
+Every action the assistant can take is checked against who asked, not only against
+what was asked. Before v5.0.0 a device action was checked for a valid model, a keyed
+provider or a protected key, and never for the caller: a Telegram member, a
+public-mode guest or a LAN `/mcp` client could move the owner's main model, stop the
+owner's sub-agents or play audio in the owner's room, and a routine or a sub-agent
+results turn could move the main model or stop sub-agents.
+
+**The caller.** Each check reads three facts:
+
+- **Role**: the role of the chat the turn runs for (the owner's Telegram chat, the
+  web chat, on-device voice and the serial console are the owner; a member is a
+  user; a guest is a guest; a public-mode stranger is a user or a guest), or the LAN
+  endpoint's own identity (one device sign-in code, no per-caller identity, user
+  rights in its own namespace).
+- **Unattended**: nobody is writing this turn right now. Routines, wakeups, the
+  nightly dream, the turn that summarizes sub-agent results, and the device's own
+  post-update turn are unattended. They run on the owner's chat, so the role alone
+  cannot tell them apart from the owner.
+- **LAN**: the call came over `POST /mcp`.
+
+**The rules.** One table, one row per action (`lib/core/src/orch_action_rules.cpp`):
+
+| Rule | Owner turn | Member | Guest | Routine | Results summary | System turn | LAN `/mcp` | Serial |
+|---|---|---|---|---|---|---|---|---|
+| open | yes | yes | yes | yes | yes | yes | yes | yes |
+| turn | yes | yes | yes | yes | yes | yes | no | yes |
+| owner | yes | no | no | yes | yes | yes | no | yes |
+| owner, attended | yes | no | no | no | no | no | no | yes |
+
+Starting a sub-agent from a turn's own reply is open to every turn caller, as before
+(see the open items below). The three unattended classes (a routine or wakeup, a
+results summary, the system turn) share one column: the table treats every turn
+nobody is writing alike, as the device's scheduled-turn rails always have.
+
+"Open" actions read or write the caller's own data, so the handler draws the line
+(its own namespace and quota, see [People and privacy](./people-and-privacy.md)).
+"Owner" keeps the owner's own routines working (a routine may dim the ring at night
+or play an alarm). "Owner, attended" is for anything that moves money, identity,
+access or physical risk: only the owner, in a message they write.
+
+| Rule | Actions |
+|---|---|
+| owner, attended | device actions: `orch_model` (the main model), `reboot`; config knobs: `priority`, `ttsVoice`, `ttsProv`, `ttsOn`, `sttProv`, `sleepOvr`, `brightOvr`, `devName`; tools: `memory.config` with `action: update`, `prefs.edit` add / replace / remove, `loop.create`, `loop.cancel`, `skill.save`, `skill.delete`, `tenant.list`, `tenant.set_role`, `tenant.set_quota`, `session.terminate` (and the turn's terminate op), `session.tell`, `device.selftest` with `audible: true`, `reply.telegram` or `files.send` to a chat other than the one the turn runs for, every connected tool server's tool (`mcp.<server>.<tool>`) |
+| owner | device actions: `led`, `lights`, `tts`, a `config` element as a whole; config knobs: `ledBrightness`, `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`, `sfxLvlO`, `sfxVol`, `sfxTheme`; tools: `device.control`, `device.status` (it carries the spend and budgets), `device.log`, `media.play`, `media.pause`, `media.stop`, `reply.speak`, `models.list` with `refresh: true`, `memory.scratchpad` (and the turn's `scratchpad` field), `prefs.edit` list, `loop.list`, `wakeup.set`; the needs-you light a turn's question raises |
+| turn | `web.search`, `image.generate`, `image.look`, `reply.telegram` and `files.send` to the caller's own chat, `session.spawn` |
+| open | `memory.write`, `memory.search`, `memory.update`, `memory.pin`, `memory.episodic`, `memory.archive`, `memory.config` view, `results.get`, `results.list`, `session.poll`, `session.list`, `models.list`, `artifact.save`, `files.append`, `files.fetch`, `files.list`, `files.pdf`, `files.read`, `files.search`, `files.share`, `files.stat`, `docs.list`, `docs.read`, `docs.search`, `skill.get`, `skill.list`, `system.health`, `device.selftest`, `ota.status`, `media.list` |
+
+**Where it is enforced.** Two seams, every route:
+
+- `applyDeviceAction` (`lib/harness/src/apply.cpp`) is the one envelope for the
+  turn's end-of-turn `device[]` actions and the mid-turn `device.control` tool. It
+  checks the action as a whole first (before any key or model list is consulted, so
+  a refused caller learns nothing about them), then strips each config knob the
+  caller may not set. The `device.control` handler uses the tool call's own caller,
+  never the chat a concurrent turn happens to be running.
+- `ToolRegistry::dispatch` (`lib/core/src/orch_tool_registry.cpp`) checks every
+  tool call through the access resolver `installActionRules` installs, on the turn's
+  tool loop, the LAN endpoint and the test seams, in both modes. A member's or a
+  guest's turn is not offered a tool it would be refused.
+
+**A refusal is never silent.** The head reads it: a refused tool call or
+`device.control` call fails with the reason, and a refused end-of-turn action adds a
+`[DEVICE] not applied: ...` line to the next turn. The person reads it too: a member
+or a guest gets one line on the reply ("Only the device's owner can change the main
+model."), and an automatic turn of the owner's says on its reply what it left as it
+was ("The main model stays as it is: ...", "An automatic turn cannot change the
+speaking voice, so it was left as it was."). A refused action backs no claim, so a
+reply that says it switched gets the correction line. A member's or a guest's question reaches them in
+the reply and does not light the owner's needs-you state.
+
+**A new action without a rule fails the build's tests.** `test/test_action_rules`
+holds the expected class table (every action x the eight caller classes above) and
+fails on any tool the firmware registers, any device action or config knob the turn
+schema offers, and any knob the validator can set that has no row; it also drives
+the dispatch seam for every registered tool and every class. At runtime a name with
+no row is refused to everyone but the owner writing now.
+`test/test_harness_apply` drives every device action and every config knob through
+`applyDeviceAction` for each class.
+
+**The device sign-in code is the owner's.** The LAN `/mcp` endpoint gets user
+rights so a tool client on the network cannot act as the owner through it, but the
+same code also opens the web chat, which runs as the owner. Treat the code as the
+owner's password.
+
+**What is not covered yet** (tracked for the next release):
+
+- A sub-agent started from a member's or a guest's turn still runs with the
+  connectors attached on its provider (they carry the owner's sign-ins), because the
+  job and the provider request do not yet carry who started it.
+- Every turn's prompt lists all running sub-agents, a member's included, so a member
+  can read the owner's sub-agent tasks (`session.list` shows the same).
+- "Owner, attended" proves the owner is writing, not that an instruction came from
+  the owner: a turn of the owner's that read outside content (a web page, a file, a
+  sub-agent result) can still be steered into an owner-attended action. Skills and
+  standing rules already wait for approval in that case; the other owner-attended
+  actions do not yet.
+- Members and guests spend the owner's provider budget on their own turns (chat,
+  `web.search`, images, sub-agents), within the spend ceilings.
+- The unattended column does not tell an owner's routine from a results summary fed
+  by outside text, so a results summary keeps the owner's everyday actions (the
+  ring, the speaker, music, a wakeup, the scratchpad).
+- A routine that runs on the web chat or voice and names the owner's Telegram chat
+  as a target counts that as another chat, which an automatic turn cannot message.
+- `tools/list` over `/mcp` still lists the whole registry; a call outside the LAN
+  column is refused.
+
 ## Hardening record and open items
 
 Each item states what changed, where it lives in the code, and what is still open.

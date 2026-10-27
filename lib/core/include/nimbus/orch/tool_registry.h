@@ -140,6 +140,21 @@ class ToolRegistry {
   };
   using PolicyResolver = std::function<Verdict(const std::string& name)>;
 
+  // ---- access (who may call a tool) -----------------------------------------
+  // The name-only policy above cannot say WHO is calling. The access resolver
+  // can: it sees the call's name, arguments and Principal, and its Deny refuses
+  // the call before the handler runs, on every route (the turn's tool loop, the
+  // LAN endpoint, the test seams). The device installs the one rule table
+  // (action_rules.h installActionRules); with none installed every caller is
+  // allowed, byte-identical to the registry before it. A non-admin caller is
+  // also not ADVERTISED a tool the resolver refuses it with no arguments
+  // (toolSpecsFor), so a member is never offered what it cannot call.
+  using AccessResolver = std::function<Verdict(const std::string& name, ArduinoJson::JsonObjectConst args,
+                                               const Principal& who)>;
+  void setAccessResolver(AccessResolver r) { access_ = std::move(r); }
+  // The access verdict for one call (Allow with no resolver installed).
+  Verdict accessFor(const std::string& name, ArduinoJson::JsonObjectConst args, const Principal& who) const;
+
   // Set/replace the static verdict for one tool name (Allow removes the entry).
   void setPolicy(const std::string& name, Verdict v);
   void clearPolicies() { policies_.clear(); }
@@ -274,6 +289,7 @@ class ToolRegistry {
   struct PolicyEntry { std::string name; Verdict verdict; };
   std::vector<PolicyEntry> policies_;
   PolicyResolver           resolver_;
+  AccessResolver           access_;
 
   struct GateEntry { std::string name; std::function<bool()> open; std::string reason; };
   std::vector<GateEntry> gates_;

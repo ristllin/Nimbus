@@ -57,6 +57,7 @@
 #include "nimbus/orch/embed_pick.h"        // which keyed provider embeds (QW5)
 #include "nimbus/orch/provider_park.h"     // a parked provider does not count for a fresh pick (QW5)
 #include "provider_verify.h"                // the last check's reason (nocredits, router_outdated)
+#include "nimbus/orch/action_rules.h"   // installActionRules - who may call each tool (CUM-813)
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
@@ -1658,6 +1659,14 @@ void begin() {
     if (name.rfind("tenant.", 0) == 0 && orchestrator::inScheduledTurn())
       return ToolRegistry::Verdict::deny("a scheduled turn cannot manage people");
     return ToolRegistry::Verdict::allow();
+  });
+  // CUM-813: WHO is calling. Every tool call, on every route (the turn's tool loop,
+  // the LAN /mcp endpoint, the test seams), in both modes, is checked against the one
+  // rule table for the dispatch Principal and the turn's unattended flag
+  // (nimbus/orch/action_rules.h); the name-only rails above stay as defense in depth.
+  nimbus::orch::installActionRules(g_reg, [] { return orchestrator::inScheduledTurn(); }, [] {
+    // The turn's chat, read on the turn task only (it is the turn task's state).
+    return agent::telegram::onTurnTask() ? std::string(orchestrator::currentChat().c_str()) : std::string();
   });
 
   alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s, pending=%d)",

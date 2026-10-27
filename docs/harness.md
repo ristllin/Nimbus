@@ -288,10 +288,15 @@ a quiet background turn; the next owner turn says it).
   after a reply went out (a fold a context overflow queued runs at once). A
   message that arrives while either is already running waits for it to finish
   (the turn task is single by design).
-- **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
-  `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
-  at both the apply layer and the tool-dispatch seam, because sub-agent results
-  and routine prompts are untrusted-content injection surfaces.
+- **Unattended-turn rails** (routines, wakeups, the dream, sub-agent results
+  synthesis, the post-update system turn alike): the caller rule table
+  (`nimbus/orch/action_rules.h`) refuses them every owner-attended action - the main
+  model, `reboot`, the voice, provider-routing, safety-override and device-name
+  knobs, routines, skills, people, standing-rule changes, stopping sub-agents and the
+  owner's connected tool servers - at both the apply layer and the tool-dispatch
+  seam, because sub-agent results and routine prompts are untrusted-content
+  injection surfaces. The same table refuses members, guests and the LAN endpoint
+  everything that changes the owner's device.
 
 ## Lifecycle 5 - interrupts (what device life does to the harness)
 
@@ -351,10 +356,11 @@ and are golden-pinned - never device-side.
 | hlog (log seam) | `nimbus/harness/log.h` | `alog` ring (`GET /api/log`) | `LogCapture` |
 
 **Security rails are structural**: `HarnessConfig` has NO setter for provider
-keys, `providerPriority`, or `orchHost` (human-only surfaces). Scheduled-turn
-refusals (`reboot`/`ttsOn`/`devName`/`sleepOvr`/`brightOvr`) and risk-note composition
-are portable policy in `apply.cpp`, pinned by `test_harness_apply` - the
-injected execution closures contain no policy branches.
+keys, `providerPriority`, or `orchHost` (human-only surfaces). Who may run each
+device action and config knob (the caller rule table, `nimbus/orch/action_rules.h`)
+and risk-note composition are portable policy in `apply.cpp`, pinned by
+`test_harness_apply` and `test_action_rules` - the injected execution closures
+contain no policy branches.
 
 ## Threading invariant
 

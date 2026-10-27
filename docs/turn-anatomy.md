@@ -452,7 +452,8 @@ today:
   lines, panics, failures that belong to no turn), read in bounded 4 KB chunks.
   `match` filters to lines carrying up to three literals, `lines` caps the
   answer, `scan_kb` bounds the search; when no log file can be read the tool
-  answers from the in-memory tail and says so.
+  answers from the in-memory tail and says so. It is the owner's: a member's or a
+  guest's turn is not offered it.
 
 The sub-agent runtime cap (about 60 seconds for a synchronous sub-agent) applies
 to spawned sub-agents only, never to the head's own turns or the nightly dream. If

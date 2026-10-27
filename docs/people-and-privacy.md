@@ -29,11 +29,15 @@ Every chat the device knows about has exactly one role.
 | **User** | Approved. Own memories and files, a small budget of permanent pins, and may share their own files. |
 | **Admin** | Runs the device. Sees every namespace and every file, manages people, changes settings, installs updates. Not subject to quotas. |
 
-Two rules the device enforces for you:
+Three rules the device enforces for you:
 
 - **There is always at least one admin.** Demoting or removing the last one is
   refused, in the web UI and in conversation alike, so the device can never
   be left without someone able to administer it.
+- **The owner is the admin from the first message.** A chat on the Telegram
+  allowlist that has no role yet takes the owner rule the commands use: the chats
+  named as owners (or, when none are named, the first chat on the allowlist) are
+  admins, everyone else on the allowlist is a user.
 - **An upgrade changes nobody's access.** On the first start after upgrading
   from firmware without roles, existing Telegram owners become admins and
   everyone else on the allowlist becomes a user, matching the access they
@@ -54,6 +58,21 @@ Two surfaces, one source of truth:
 The model can never set a role for itself or change its own limits, and none
 of these tools run in a scheduled routine: a role change always comes from a
 person in the conversation.
+
+### What only the owner can do
+
+Members and guests talk to the assistant and keep their own memories and files.
+Everything that changes the device itself stays with the owner: the main model,
+settings, the light ring, the speaker and music, routines, skills, standing rules,
+people, and stopping sub-agents. When a member asks for one of these, the assistant
+says that only the owner can, and nothing changes.
+
+Routines, wakeups, the nightly memory pass and the summary of sub-agent results run
+for the owner, but nobody is writing them at that moment. They can do the everyday
+things a routine needs, such as dimming the ring at night or playing an alarm.
+Anything that changes the main model, a voice or provider setting, a safety
+override, the device's name, routines, skills or people needs a message the owner
+writes. The full table is in [Security posture](./security.md#who-may-run-each-action).
 
 ## Quotas
 

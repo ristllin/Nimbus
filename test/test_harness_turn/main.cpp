@@ -1958,6 +1958,7 @@ static void test_cum495_turn_followed_by_more_text_never_acts() {
 
 static void test_scheduled_turn_rails_and_fire_outcome() {
   Rig r;
+  r.adminChats = true;   // the routine fires on the owner's chat (every device action checks who asked)
   r.scripts["anthropic"] = {
       {true,
        "{\"reply\":\"done\",\"memory\":\"\",\"ask\":\"\",\"device\":[{\"reboot\":true}]}",
@@ -3386,6 +3387,7 @@ static void test_lane_l_the_salvage_marker_appears_exactly_when_cut() {
       "\"device\":[{\"type\":\"lights\",\"value\":\"off\"}],\"ask\":\"\"}";
   for (size_t L = 1; L <= full.size(); L++) {
     Rig r;
+    r.adminChats = true;   // the owner's turn: its lights action may apply when whole
     r.cfg.toolLoop = false;
     Rig::Script s;
     s.outJson = full.substr(0, L);

@@ -235,6 +235,17 @@ def _mcp(session, ip: str, tool: str, args: dict) -> str:
     return " ".join(c.get("text", "") for c in content)
 
 
+def _owner_tool(session, ip: str, tool: str, args: dict) -> str:
+    """One tool call as the owner (the web chat) through the test build's astool seam:
+    device.status is the owner's (it carries the spend and budgets), so the LAN /mcp
+    endpoint, which acts with user rights, is refused it."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
+    r = session.post(f"http://{ip}/api/test/astool", data={"chat": "web", "body": body}, timeout=15)
+    assert r.status_code == 200, f"astool {tool} -> {r.status_code}: {r.text[:160]}"
+    content = r.json().get("result", {}).get("content", [])
+    return " ".join(c.get("text", "") for c in content)
+
+
 def _provfault(device, arg: str) -> str:
     device.send(f"PROVFAULT {arg}")
     line = device.expect("PROVFAULT", timeout=4.0)
@@ -287,7 +298,7 @@ def test_b1_failure_provenance(device):
     moved = drill_moved_loop(loop_before, dream_loop(s.get(f"http://{ip}/api/loops", timeout=10).json()))
     assert moved is None, moved
 
-    st = _mcp(s, ip, "device.status", {})
+    st = _owner_tool(s, ip, "device.status", {})
     m = re.search(r'"lastFail":(\{.*?\}|null)', st)
     assert m and m.group(1) != "null", f"device.status lastFail missing: {st[:300]}"
     assert "anthropic" in m.group(1) and '"src":"dream"' in m.group(1), f"lastFail: {m.group(1)}"

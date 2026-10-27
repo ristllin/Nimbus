@@ -19,8 +19,12 @@ The device serves MCP over your LAN at `POST /mcp` (JSON-RPC 2.0), behind the
 device sign-in code sent as the `X-Nimbus-Token` request header (the body is
 raw JSON-RPC, so the header is the only place the token goes). `tools/list`
 returns the device's tool catalog; `tools/call` runs one. This is the same
-registry the Orchestrator uses on its own turns, so what a LAN client can call and
-what the assistant can call never drift apart.
+registry the Orchestrator uses on its own turns, checked against the same rule
+table of who may call each tool. The LAN endpoint carries one sign-in code and no
+per-caller identity, so it acts with user rights in its own namespace: the tools
+that need a conversation or the owner (the speaker, device settings, routines,
+people, the owner's connected tool servers, network-bound tools) answer with a
+refusal there. See [Who may run each action](security.md#who-may-run-each-action).
 
 ## The device as a client
 

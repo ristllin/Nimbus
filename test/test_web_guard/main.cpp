@@ -587,7 +587,7 @@ static void test_gate_rejects_the_26_oct_shape() {
 static const char* const kNetworkSeams[] = {
     "vision::look(", "vision::read(", "describeImage(", "generateToBuffer(", "deps.search(",
     "tavily::search(", "sendToChat(", "speakOnDevice(", "embeddings::embed(", "embeddings::embedWith(",
-    "deviceTransport(", "acquireWork(", "voicereply::deliver(", "applyDeviceElement("};
+    "deviceTransport(", "acquireWork(", "voicereply::deliver(", "applyDeviceElement(", "applyDeviceAction("};
 
 // Every `.add("name", ...)` registration in `text` (comments stripped, strings kept):
 // the tool name and its argument text.

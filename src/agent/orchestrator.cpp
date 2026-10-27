@@ -24,6 +24,7 @@
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
+#include "nimbus/orch/action_rules.h"   // who may run each tool and device action (CUM-813)
 #include "model_refresh.h"   // R5: the orch_model miss answer
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
@@ -1734,6 +1735,57 @@ bool toolRidesLoop(const std::string& name) {
   return g_engine && g_engine->loopActiveNow() && !loopToolHidden(name);
 }
 
+static void registerDeviceControl() {
+  // Mid-turn device control (owner, 2026-07-24: "the model must be able to run as
+  // many tool calls as necessary in a single turn"). The tool loop already gives
+  // it up to orchLoopRounds() tool rounds - what was missing is a TOOL that
+  // touches the device: config/led/lights/tts existed only as end-of-turn
+  // device[] contract actions. This registers the same element shape, validator,
+  // policy rails (the caller rule table, protected-key block, risk notes), and
+  // executor as device[] - but applied NOW, so a sequenced flow (read volume ->
+  // set volume 10 -> speak -> set volume back) completes inside ONE turn.
+  memory::registry().add(
+      "device.control",
+      "Apply ONE device action IMMEDIATELY, mid-turn. 'action' is the same JSON "
+      "shape as a device[] element: {\"type\":\"config\"|\"led\"|\"lights\"|"
+      "\"tts\", ...}. Use when steps must happen in ORDER within one turn - e.g. "
+      "device.status to read cfg.sfxVol, then {\"type\":\"config\",\"sfxVol\":10}, "
+      "then reply.speak, then {\"type\":\"config\",\"sfxVol\":0} to restore. "
+      "Changes are real and persist (identical knobs + limits to device[]). "
+      "reboot is refused here - put {\"type\":\"reboot\"} in the end-of-turn "
+      "device[] instead.",
+      [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+        // WHO asked (CUM-813): the dispatch Principal, never the ambient current chat -
+        // a LAN /mcp call can arrive while the owner's turn runs, and currentChat()
+        // would then be the owner's. The registry's access rule refuses the LAN and
+        // non-owners before this handler; this keeps the handler safe on its own.
+        const std::string refused = nimbus::orch::actionRefusal(
+            "device.control", nimbus::orch::actionCaller(who, inScheduledTurn()));
+        if (!refused.empty()) return nimbus::orch::ToolResult::fail(refused);
+        if (!a["action"].is<ArduinoJson::JsonObjectConst>())
+          return nimbus::orch::ToolResult::fail("missing 'action' object");
+        const char* ty = a["action"]["type"] | "";
+        if (strcmp(ty, "reboot") == 0)
+          return nimbus::orch::ToolResult::fail(
+              "reboot is end-of-turn only - put {\"type\":\"reboot\"} in the "
+              "turn's device[] actions (it applies after this turn finishes)");
+        std::string json;
+        serializeJson(a["action"], json);
+        static agent::ApplyDeps s_devDeps = buildApplyDeps();
+        s_devDeps.ttsEnabled = store::ttsEnabled();   // live gate, not begin()-time
+        std::string risk;
+        const agent::DeviceOutcome dev = agent::applyDeviceAction(
+            json, who, inScheduledTurn(), std::string(currentChat().c_str()), s_devDeps, &risk);
+        // A refused action is an error the head reads, in plain words (never "applied").
+        if (dev.refusedWhole) return nimbus::orch::ToolResult::fail("not applied: " + dev.refusals);
+        std::string out = "applied: " + dev.summary;
+        if (!dev.refusals.empty()) out += "\nnot applied: " + dev.refusals;
+        if (!risk.empty()) out += risk;
+        return nimbus::orch::ToolResult::ok(out);
+      },
+      R"JS({"type":"object","properties":{"action":{"type":"object","description":"one device[] element, verbatim (config/led/lights/tts)"}},"required":["action"]})JS");
+}
+
 // ---- public API -------------------------------------------------------------
 
 void begin(HeavyFabric* fabric, const Sinks& sinks) {
@@ -1788,45 +1840,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_folds.begin(&g_foldIO);   // v3.6.0 per-chat fold state (/data/chatsum.txt)
   loadTenants();              // v3.7.0 RBAC roles/quotas (+ legacy adoption)
   syncMemEcho();
-  // Mid-turn device control (owner, 2026-07-24: "the model must be able to run as
-  // many tool calls as necessary in a single turn"). The tool loop already gives
-  // it up to orchLoopRounds() tool rounds - what was missing is a TOOL that
-  // touches the device: config/led/lights/tts existed only as end-of-turn
-  // device[] contract actions. This registers the same element shape, validator,
-  // policy rails (scheduled-turn strips, protected-key block, risk notes), and
-  // executor as device[] - but applied NOW, so a sequenced flow (read volume ->
-  // set volume 10 -> speak -> set volume back) completes inside ONE turn.
-  memory::registry().add(
-      "device.control",
-      "Apply ONE device action IMMEDIATELY, mid-turn. 'action' is the same JSON "
-      "shape as a device[] element: {\"type\":\"config\"|\"led\"|\"lights\"|"
-      "\"tts\", ...}. Use when steps must happen in ORDER within one turn - e.g. "
-      "device.status to read cfg.sfxVol, then {\"type\":\"config\",\"sfxVol\":10}, "
-      "then reply.speak, then {\"type\":\"config\",\"sfxVol\":0} to restore. "
-      "Changes are real and persist (identical knobs + limits to device[]). "
-      "reboot is refused here - put {\"type\":\"reboot\"} in the end-of-turn "
-      "device[] instead.",
-      [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-        if (!a["action"].is<ArduinoJson::JsonObjectConst>())
-          return nimbus::orch::ToolResult::fail("missing 'action' object");
-        const char* ty = a["action"]["type"] | "";
-        if (strcmp(ty, "reboot") == 0)
-          return nimbus::orch::ToolResult::fail(
-              "reboot is end-of-turn only - put {\"type\":\"reboot\"} in the "
-              "turn's device[] actions (it applies after this turn finishes)");
-        std::string json;
-        serializeJson(a["action"], json);
-        static agent::ApplyDeps s_devDeps = buildApplyDeps();
-        s_devDeps.ttsEnabled = store::ttsEnabled();   // live gate, not begin()-time
-        std::string risk;
-        std::string sum = agent::applyDeviceElement(json, inScheduledTurn(),
-                                                    std::string(currentChat().c_str()),
-                                                    s_devDeps, &risk);
-        std::string out = "applied: " + sum;
-        if (!risk.empty()) out += risk;
-        return nimbus::orch::ToolResult::ok(out);
-      },
-      R"JS({"type":"object","properties":{"action":{"type":"object","description":"one device[] element, verbatim (config/led/lights/tts)"}},"required":["action"]})JS");
+  registerDeviceControl();
   // CUM-538: an unknown tool name gets a way back - a configured connector names
   // the provider whose sub-agents run it, and a spawn field carries the REAL
   // remaining room (the same spawnRoomFor the [SPAWN CAPACITY] line uses). Both
@@ -2496,9 +2510,11 @@ nimbus::orch::Role roleOfChat(const String& chatId) {
   // below. (A revoked chat deliberately stays on the Telegram allowlist so they
   // can still be told they no longer have access.)
   if (known) return r;
-  // No row at all: an allow-listed chat that predates the table is a User (it
-  // already had conversational access); anyone else is Unknown until approved.
-  return isChatAllowed(chatId) ? Role::User : Role::Unknown;
+  // No row at all: the chat the Telegram owner rule names is the owner (the same
+  // rule the owner-only commands use, so a freshly onboarded owner may change the
+  // device before the table holds a row); another allow-listed chat is a User; anyone
+  // else is Unknown until approved (nimbus::orch::roleWithoutRow).
+  return nimbus::orch::roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId));
 }
 
 // ---- tenant mutations (locked; every surface goes through these) -------------

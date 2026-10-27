@@ -561,8 +561,11 @@ is the **only** model-writable routing knob; it targets the **sub-session** list
 `config` action carries only the benign owner knobs the wire schema lists
 (`ledBrightness`, `priority` - a routing **preference**, i.e. the sub-session
 list, not a host - `posture`, `profile`, `theme`, `attnHoldMs`, the voice and
-sound knobs, `ttsOn`, `sleepOvr`, `brightOvr`, `devName`), each clamped; a
-scheduled turn may not set `ttsOn`, `devName`, `sleepOvr` or `brightOvr`. Everything else is
+sound knobs, `ttsOn`, `sleepOvr`, `brightOvr`, `devName`), each clamped. Only the
+owner sets them (a member's or a guest's config action is refused as a whole), and
+an unattended turn (a routine, a wakeup, a sub-agent results turn) may not set
+`priority`, `ttsVoice`, `ttsProv`, `ttsOn`, `sttProv`, `devName`, `sleepOvr` or
+`brightOvr` ([who may run each action](../security.md#who-may-run-each-action)). Everything else is
 ignored (unknown) or **BLOCKED**. The protected list
 (`lib/core/src/orch_device_actions.cpp`, nullptr-terminated) is:
 

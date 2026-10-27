@@ -242,7 +242,8 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     # A web send: answered at once (409), never a message waiting on a reply.
     r = _S.post(f"http://{_IP}/api/chat", data={"text": "hello"}, timeout=10)
     assert r.status_code == 409 and "spend_ceiling" in r.text, f"{r.status_code} {r.text[:200]}"
-    # A spawn (the dispatch is refused at the wire before it leaves).
+    # A spawn over the LAN endpoint: refused before it leaves (the access rule refuses the
+    # LAN a turn-only tool before the freeze gate is consulted).
     _mcp("session.spawn", {"task": "list three fruits", "provider": "anthropic", "name": "l65"})
     log += _lines(device, 20.0)
     # Image generation. Since v4.6.1 (HFW) the LAN endpoint never starts a tool that

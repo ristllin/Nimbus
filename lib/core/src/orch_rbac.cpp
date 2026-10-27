@@ -49,6 +49,11 @@ Perms permsFor(Role r) {
   return p;
 }
 
+Role roleWithoutRow(bool allowListed, bool telegramOwner) {
+  if (!allowListed) return Role::Unknown;
+  return telegramOwner ? Role::Admin : Role::User;
+}
+
 Quota defaultQuotaFor(Role r) {
   Quota q;
   switch (r) {
