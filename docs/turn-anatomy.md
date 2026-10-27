@@ -402,7 +402,7 @@ claims in ten classes:
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
 | figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
-| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message, a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the history window names nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning") needs every word of the name in those texts. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result); a draft, a translation or a save confirmation in quotes is not checked |
+| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's own earlier rows in the conversation window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the assistant's earlier replies name nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning", or a live status like "trains are running") needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result, or the words this turn's own writes saved); the phrase must introduce the quote directly - a draft, a translation or a save confirmation in quotes is not checked. An explanation of how an instrument works ("the gauge reads 1 mm when 1 litre falls", a reply to a how-question) credits nothing |
 | cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
 
 A source claim is a credit: the source said, showed or read something ("the gauge
@@ -415,12 +415,15 @@ round for a source names the figures the owner gave this turn, so the rewrite cr
 the owner ("you said 3.0 mm") instead of a source the device never read.
 
 When the owner asks why about a past sub-agent (the question names one of the spawn
-ledger's tools, connectors or job tags, or a sub-agent), each reason the reply gives in a
-sentence about it ("because ...", "the fallback", "was configured to", "I recalled ...")
+ledger's connectors or job tags, or a sub-agent; a provider's built-in tool words - the
+weather, code, an image - are everyday words and never name one), each reason the reply
+gives in a sentence about its action ("It used Notion because ...") or claiming a record
+("because ...", "the fallback", "was configured to", "I recalled ...")
 must be built from words the turn's records hold: the history, the standing preferences,
 the input block and the tool results, not the fixed instructions. Two or more content
 words found in none of them (one, when the reason cites a memory, a rule or the owner's
-own request) make it a cause gap; the correction round hands the model the
+own request) make it a cause gap (the ledger's own header words are not records);
+the correction round hands the model the
 spawn ledger's lines and asks it to say what they show and that the reason is not
 recorded. A reason about anything else ("sourdough rises because wild yeast ferments the
 flour", or the weather when a job is named after it) is not checked. The claim check reads

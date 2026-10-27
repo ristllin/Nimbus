@@ -1028,16 +1028,23 @@ struct TurnEngine::ApplyCapture {
 
 // CUM-824: the parts of this turn's input the claim check reads, as the engine took them
 // (never re-parsed from the composed text, where a sub-agent's reply could pose as a block).
-TurnSources TurnEngine::claimSources(const std::string& chatId, const std::string& userText) const {
+// The owner's own history rows count as sources (a follow-up about the previous message's
+// photo or label credits a source the owner really gave); the assistant's rows never do.
+TurnSources TurnEngine::claimSources(const std::string& chatId, const std::string& userText,
+                                     const ComposeInputs& ci) const {
   TurnSources parts;
   parts.owner = userText;
   for (const JobEngine::FreshResult& f : turnMem().fresh) {
-    parts.fresh += f.provenance + " " + f.text + "\n";
+    // The result's text and the tools that RAN are sources; the provenance tag's idle
+    // x0 names are not ("Source: Notion" over a "Notion x0" tally names nothing read).
+    parts.fresh += f.text + "\n" + ranSourceNames(f.provenance) + "\n";
     parts.webRead = parts.webRead || f.provenance.find(", web: ") != std::string::npos;
     parts.subRuns.add(nimbus::orch::runsInRecord(f.provenance));   // CUM-835
   }
   parts.memory = turnMem().memBody;
   if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
+  for (const HistMsg& m : ci.history)
+    if (m.user) parts.histOwner += m.text + "\n";
   return parts;
 }
 
@@ -1168,18 +1175,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)   // a channel's note never steers recall
     recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())), turnWho);
   const std::vector<std::string>& recalled = recall.hits;
-  {
-    // The figure check's sources: the input block (the owner's text, captions,
-    // the window, fresh results) and, apart, the recalled memories. Only their
-    // numbers are kept. The owner's own text names the sources a reply may credit
-    // and holds the figures to credit to the owner (CUM-824).
-    std::string rec;
-    for (const std::string& r : recalled) rec += r + "\n";
-    // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
-    // (lastInstructions_, set at compose below), so the quote rule sees them too.
-    claims_.setSources(inputs + loadFoodLedger(chatId), rec, claimSources(chatId, userText));
-    claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
-  }
+  std::string rec;
+  for (const std::string& r : recalled) rec += r + "\n";   // the recalled memories, apart (CUM-824)
   const uint32_t heapAfterRecall = freeHeap();
   turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());
 
@@ -1232,6 +1229,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 
   ComposeInputs ci = d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{};
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
+  {
+    // The figure check's sources: the input block (the owner's text, captions, the
+    // window, fresh results), the owner's own history rows and, apart, the recalled
+    // memories. Only their numbers are kept. The owner's own text names the sources
+    // a reply may credit and holds the figures to credit to the owner (CUM-824); the
+    // history's USER rows name the previous message's photo or label (the review).
+    // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
+    // (lastInstructions_, set at compose below), so the quote rule sees them too.
+    claims_.setSources(inputs + loadFoodLedger(chatId), rec, claimSources(chatId, userText, ci));
+    claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
+  }
   // W10 (prism): the speaker line is for a REAL human message only. The device
   // closure knows the chat, not the turn source - a synthesis turn ([FRESH
   // RESULTS] from untrusted sub-agent output) and a scheduled loop both carry a
@@ -1489,8 +1497,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         orch::HeadToolResult r = inner(call);
         auto it = nameMap->find(call.name);
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
-        claims_.noteTool(fxKindForTool(regName), r.isError, r.output,
-                         ClaimCheck::toolCallFlags(regName, call.argsJson));
+        const uint8_t flags = ClaimCheck::toolCallFlags(regName, call.argsJson);
+        claims_.noteToolArgs(regName, call.argsJson);   // the words a write saved: seen when it lands
+        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags);
         return r;
       };
     }

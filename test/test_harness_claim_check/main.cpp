@@ -827,15 +827,24 @@ static void test_a_clipped_evidence_store_asserts_no_absence() {
   TEST_ASSERT_NOT_EQUAL(0, (int)small.tailAfterApply("Trains run normally. Source: National Rail Enquiries.").size());
 }
 
-// CUM-782: only a files.append that lands a row in a .csv or .log file backs a log claim;
-// every other file write in the shared tool table backs none.
+// CUM-782: a files.append asks for the log-row flag on every text document (.txt and
+// .md logs are logs too, not only .csv/.log; the review) - recordToolEffect keeps it
+// only when the result counts a landed row. A file saved again (artifact.save) that
+// rewrites a text log carries it too; a .csv rewrite through artifact.save does not
+// (its rows are counted by the keyed append path, not a whole-file save).
 static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   const std::string csv = R"({"project":"food","name":"2026-10-27.csv","text":"date,meal,kcal\n2026-10-27,lunch,450"})";
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, ClaimCheck::toolCallFlags("files.append", csv));
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
                     ClaimCheck::toolCallFlags("files.append", R"({"project":"p","name":"RUNS.LOG","text":"x"})"));
-  TEST_ASSERT_EQUAL(0, ClaimCheck::toolCallFlags("files.append", R"({"project":"p","name":"notes.md","text":"x"})"));
-  TEST_ASSERT_EQUAL(0, ClaimCheck::toolCallFlags("files.append", "{not json"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
+                    ClaimCheck::toolCallFlags("files.append", R"({"project":"p","name":"notes.md","text":"x"})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, ClaimCheck::toolCallFlags("files.append", "{not json"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
+                    ClaimCheck::toolCallFlags("artifact.save", R"({"project":"p","name":"daylog.txt","text":"x"})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
+                    ClaimCheck::toolCallFlags("artifact.save", R"({"project":"p","name":"notes.md","text":"x"})"));
+  TEST_ASSERT_EQUAL(0, ClaimCheck::toolCallFlags("artifact.save", csv));
   const char* reply = "I updated your food log with the lunch.";
   size_t n = 0;
   const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
@@ -856,7 +865,8 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
       {csv.c_str(), "replaced 1 row, added 0 rows in food/2026-10-27.csv\n- lunch: 450 kcal", true},
       {csv.c_str(), "replaced 0 rows, added 0 rows in food/2026-10-27.csv (no change: the rows were already as sent)",
        false},
-      {R"({"project":"p","name":"notes.md","text":"x"})", "appended 1 row to p/notes.md (now 9 bytes)", false},
+      // .md and .txt logs are logs too (the review: the harness-lab K1 daylog is notes/daylog.txt)
+      {R"({"project":"p","name":"notes.md","text":"x"})", "appended 1 row to p/notes.md (now 9 bytes)", true},
   };
   for (const Append& a : appends) {
     ClaimCheck cc;
@@ -864,7 +874,7 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     cc.noteTool(agent::fxKindForTool("files.append"), false, a.out, ClaimCheck::toolCallFlags("files.append", a.args));
     TEST_ASSERT_EQUAL_MESSAGE(a.backs, cc.finalCheck(turnJson(reply)).empty(), a.out);
     if (!a.backs)
-      TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to the log.)", cc.tailAfterApply(reply).c_str());
+      TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)", cc.tailAfterApply(reply).c_str());
   }
 }
 
@@ -933,6 +943,152 @@ static void test_an_invented_reason_gets_the_ledger_back() {
   other.setSources(thanks.inputs, "", thanks.parts);
   other.setQuoteContext(&instructions, &thanks.inputs);
   TEST_ASSERT_EQUAL_STRING("", other.tailAfterApply(reply).c_str());
+
+  // The review: a topical tool word in the tally is not a subject. The real Mistral
+  // tally for a weather lookup names weather_search (HFC's probe); "Why is the weather
+  // so bad?" answered plainly is never corrected.
+  const std::string mistralTally =
+      "- weather-trains (job0003, mistral/mistral-large-latest): finished 2 min ago; it ran weather_search x1, "
+      "web_search x0, code_interpreter x0, image_generation x0 (why it picked them is not recorded); task: "
+      "\"Look up the weather\"\n";
+  for (const char* q : {"Why is the weather so bad?", "Why is my letting agent so slow?",
+                        "Why does my code skip the last item?", "Why is the image so dark?"}) {
+    const TurnInput t2 = inputsWith("", mistralTally, "", "", q);
+    ClaimCheck cc2;
+    cc2.beginTurn();
+    cc2.setSources(t2.inputs, "", t2.parts);
+    cc2.setQuoteContext(&instructions, &t2.inputs);
+    TEST_ASSERT_EQUAL_STRING("", cc2.tailAfterApply(
+        "A deep low pressure system is crossing from the Atlantic, which is why it is so bad.").c_str());
+  }
+  // A run that really happened names a subject: an invented reason about it is still
+  // corrected ("why notion?" over a sub that ran notion_search x2).
+  {
+    const TurnInput t2 = inputsWith("", ledger, "", "", "Why notion?");
+    ClaimCheck cc2;
+    cc2.beginTurn();
+    cc2.setSources(t2.inputs, "", t2.parts);
+    cc2.setQuoteContext(&instructions, &t2.inputs);
+    TEST_ASSERT_NOT_EQUAL(0, (int)cc2.tailAfterApply(
+                                  "Notion is the only connector I have that can read calendar events and weather "
+                                  "data.").size());
+  }
+  // LOW-12: the ledger header's own words are not records: a reply citing "a setting"
+  // must not find itself on record through the header that forbids settings.
+  const std::string header =
+      "[SPAWN LEDGER] (this chat's sub-agents from the device's own job table, newest first. It is the truth "
+      "about them: asked about one, answer from these lines alone (its task, what it ran, how it ended); where "
+      "they do not say why, say the reason is not recorded, never a rule, setting, memory or limit you cannot "
+      "see this turn. Never re-check it with file or session tools, and never copy it into your notes.)\n";
+  {
+    TurnInput t2;
+    t2.inputs = "\n" + header + ledger;
+    t2.parts.owner = "Why notion?";
+    t2.parts.ledger = header + ledger;
+    ClaimCheck cc2;
+    cc2.beginTurn();
+    cc2.setSources(t2.inputs, "", t2.parts);
+    cc2.setQuoteContext(&instructions, &t2.inputs);
+    TEST_ASSERT_NOT_EQUAL(0, (int)cc2.tailAfterApply(
+                                  "It used Notion because a setting limits that sub-agent to your connectors.")
+                                  .size());
+  }
+}
+
+// The review, HIGH-1: a save confirmation quoting the words a write really saved is
+// the turn's own record. The written words join the quote rule's seen text when the
+// write lands, so "Stored in memory: "..."" after a real memory.write is never
+// corrected; without the write it is both an unbacked save and an invented record.
+static void test_a_save_confirmation_quoting_the_saved_words() {
+  const TurnInput t = inputsWith("", "", "", "", "Remember: pick up the dry cleaning on Friday.");
+  const char* reply = "Stored in memory: \"Pick up the dry cleaning on Friday.\"";
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources(t.inputs, "", t.parts);
+  cc.setQuoteContext(&t.inputs, &t.inputs);
+  const std::string args = R"({"text":"Pick up the dry cleaning on Friday."})";
+  cc.noteToolArgs("memory.write", args);
+  cc.noteTool(FxKind::MemWrite, false, "stored memory m1a2b");
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(reply).c_str());
+  ClaimCheck none;
+  none.beginTurn();
+  none.setSources(t.inputs, "", t.parts);
+  none.setQuoteContext(&t.inputs, &t.inputs);
+  TEST_ASSERT_NOT_EQUAL(0, (int)none.tailAfterApply(reply).size());
+}
+
+// CUM-837: "logged as a new entry in your memory" is a save, never a false "no row was
+// added"; a real .txt day log append is a log whose row landed.
+static void test_logged_as_a_memory_entry_is_a_save_not_a_log_row() {
+  const TurnInput t = inputsWith("", "", "", "", "Log the dentist move.");
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    cc.noteToolArgs("memory.write", R"({"text":"dentist moved to 3pm on Thursday"})");
+    cc.noteTool(FxKind::MemWrite, false, "stored memory m1a2b");
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Logged it as a new entry in your memory.").c_str());
+  }
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    cc.noteToolArgs("files.append", R"({"project":"notes","name":"daylog.txt","text":"dentist moved to 3pm"})");
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row to notes/daylog.txt (now 88 bytes)", nimbus::orch::kFxLogRow);
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("I've logged it in your day log: dentist moved to 3pm.").c_str());
+  }
+}
+
+// The review, HIGH-2: a follow-up about the photo or label of the PREVIOUS message
+// credits a source the owner really gave. The owner's own history rows count (the
+// engine hands only those over, never the assistant's replies).
+static void test_a_followup_about_the_previous_photo_credits_the_label() {
+  const char* reply = "Per the label, each bar has 12 g of sugar.";
+  {
+    TurnInput t = inputsWith("", "", "", "", "and how much sugar?");
+    t.parts.histOwner =
+        "[image: nutrition label] 20 g protein, 12 g sugar per bar. and how much sugar?";
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(reply).c_str());
+  }
+  {
+    // Without the history row the same reply is corrected: nothing THIS turn names it.
+    const TurnInput t = inputsWith("", "", "", "", "and how much sugar?");
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    TEST_ASSERT_NOT_EQUAL(0, (int)cc.tailAfterApply(reply).size());
+  }
+}
+
+// The review, LOW-11: an idle tool's name in the tally never satisfies a named source;
+// a tool that ran does. ranSourceNames is what the engine feeds the check.
+static void test_an_idle_tally_name_is_not_a_source_word() {
+  const std::string provenance = " [tools: 1, web: 1] [ran: weather_search x1, Notion x0]";
+  TEST_ASSERT_EQUAL_STRING("weather_search", agent::ranSourceNames(provenance).c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::ranSourceNames(" [tools: 0] [no tools ran]").c_str());
+  TEST_ASSERT_EQUAL_STRING("notion_search", agent::ranSourceNames(" [ran: notion_search x2, web_search x0]").c_str());
+  // A sentence-case phrase ("Source: Notion commute dashboard") is not a name at all
+  // (MED-6), so the idle-name check is pinned on the bare name: precision over recall.
+  const char* reply = "Trains run normally. Source: Notion.";
+  {
+    TurnInput t = inputsWith("", "", "", "", "what does the commute sub say?");
+    t.parts.fresh = std::string("Trains run normally on the Reading line.\n") + agent::ranSourceNames(provenance) + "\n";
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    TEST_ASSERT_NOT_EQUAL(0, (int)cc.tailAfterApply(reply).size());   // Notion x0: not read
+  }
+  {
+    TurnInput t = inputsWith("", "", "", "", "what does the commute sub say?");
+    t.parts.fresh = "Trains run normally on the Reading line.\nnotion\n";   // notion_search x2 ran
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(reply).c_str());
+  }
 }
 
 int main(int, char**) {
@@ -965,5 +1121,9 @@ int main(int, char**) {
   RUN_TEST(test_a_log_claim_needs_an_append_that_landed_a_row);
   RUN_TEST(test_a_quoted_memory_needs_words_the_turn_saw);
   RUN_TEST(test_an_invented_reason_gets_the_ledger_back);
+  RUN_TEST(test_a_save_confirmation_quoting_the_saved_words);
+  RUN_TEST(test_logged_as_a_memory_entry_is_a_save_not_a_log_row);
+  RUN_TEST(test_a_followup_about_the_previous_photo_credits_the_label);
+  RUN_TEST(test_an_idle_tally_name_is_not_a_source_word);
   return UNITY_END();
 }

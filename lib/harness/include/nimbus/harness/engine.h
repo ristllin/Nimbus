@@ -661,7 +661,8 @@ class TurnEngine {
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
   ClaimCheck claims_;               // lane S: this turn's effect ledger and claim check
-  TurnSources claimSources(const std::string& chatId, const std::string& userText) const;   // CUM-824
+  TurnSources claimSources(const std::string& chatId, const std::string& userText,
+                           const ComposeInputs& ci) const;   // CUM-824
   int freshSourced_ = 0;            // sub-agent results folded into this turn: with a lookup
   int freshUnsourced_ = 0;          // ...and live-data ones with none (set by the entry wrappers)
   // The most recent tool-loop transcript brief (Glass Box P3) - filled by

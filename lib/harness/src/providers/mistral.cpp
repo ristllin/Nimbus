@@ -1016,11 +1016,27 @@ std::string connectorLabel(const nimbus::orch::AttachedConnector& a) {
   return a.type.empty() ? a.id : a.type;
 }
 
+// A Mistral web built-in answers through an execution of its own name (a weather
+// question runs weather_search, a news one news_search; HFC's probe, 27 Oct): the
+// execution IS the built-in running. Offering the built-in idle next to its own run
+// printed "weather_search x1, web_search x0" and the head then answered that web
+// search never ran (the review).
+bool mistralWebExecution(const std::string& n) {
+  return n == "web_search" || n == "web_search_premium" || n == "news_search" ||
+         n == "weather_search" || n == "web_fetch";
+}
+
 // What the request offered and the run never used counts 0 (CUM-824): a built-in
 // whose name never ran, and a connector no run counted for (an unrecognized run
 // name counts for every connector, so a connector is shown idle only when it surely was).
 void tallyOffered(const Provenance& p, const std::vector<std::string>& ranNames, RunCounts& runs) {
-  for (const std::string& b : p.builtins) runs.byName.offered(b);
+  bool webRan = false;
+  for (const std::string& n : ranNames) webRan = webRan || mistralWebExecution(n);
+  for (const std::string& b : p.builtins) {
+    // The web built-in is idle only when no web execution ran under any of its names.
+    if (webRan && (b == "web_search" || b == "web_search_premium")) continue;
+    runs.byName.offered(b);
+  }
   for (const auto& a : p.attached) {
     bool ran = false;
     for (const std::string& n : ranNames)

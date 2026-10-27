@@ -41,6 +41,11 @@ namespace agent {
 // a lookup: nothing the device can vouch for.
 nimbus::orch::FxKind fxKindForTool(const std::string& regName);
 
+// The tool names a result's provenance tag (" [ran: web_search x2, Notion x0]") shows
+// as RUN (count above zero), never the idle x0 ones: an idle "Notion x0" must not
+// satisfy "Source: Notion" (the review), but a tool that ran really was read.
+std::string ranSourceNames(const std::string& provenance);
+
 // The device-authored parts of a turn's input block, apart (CUM-824). The claim check
 // never re-parses them out of the composed text: a sub-agent reply or a stored memory
 // that contains a block's title must not pose as that block.
@@ -49,6 +54,10 @@ struct TurnSources {
   std::string fresh;    // the sub-agent results the turn read: provenance tags and text
   std::string memory;   // the [MEMORY RESULTS] body
   std::string ledger;   // the spawn ledger block (JobEngine::spawnLedgerText)
+  // The owner's own rows from the conversation window (their messages and photos,
+  // never the assistant's replies): a follow-up about the label or photo of the
+  // previous message credits a source the owner really gave (the review).
+  std::string histOwner;
   bool webRead = false; // a result's provider record shows a web search or fetch
   nimbus::orch::HostedRuns subRuns;   // the tools those results' provider records name (CUM-835)
 };
@@ -91,6 +100,10 @@ class ClaimCheck {
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
                 uint8_t flags = 0);
+  // The arguments of the same call, right before noteTool: the words a memory or file
+  // write saved join the quote rule's seen text when the write lands, so a save
+  // confirmation quoting them is never corrected as an invented record (the review).
+  void noteToolArgs(const std::string& regName, const std::string& argsJson);
   // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
   // written or updated with permanent:true, kFxVoice for reply.telegram
   // voice:true, kFxHealth for a read of the device's own state, kFxLogRow for a
@@ -150,6 +163,11 @@ class ClaimCheck {
   std::string toolText_;         // the tool results in normalizedWords form (bounded)
   std::string ownerText_;        // the owner's message (bounded): a why-question's reasons
   std::string ledger_;           // the spawn ledger block this turn read
+  bool ownerAskedHow_ = false;   // the owner asked how something works: an explained
+                                 // instrument is not claimed as read (the review)
+  std::string wroteText_;        // the words this turn's own memory/file writes saved: a
+                                 // save confirmation quoting them is the turn's record
+  std::string pendingWrote_;     // noteToolArgs' stash until noteTool lands the write
   bool clipped_ = false;         // an evidence text or store hit its cap: the source, quote and
                                  // reason rules (which assert absence) stand down
   const std::string* instructions_ = nullptr;   // setQuoteContext

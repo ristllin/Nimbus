@@ -972,7 +972,7 @@ static void test_a_correction_of_the_record_needs_a_files_effect() {
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, file), ClaimClass::Saved), r);
     TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, row), ClaimClass::Saved), r);
     const std::vector<ClaimGap> g = gapsFor(r, file);
-    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: no row was added to the log.)", claimTail(g).c_str(), r);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: no row was added to a log file this turn.)", claimTail(g).c_str(), r);
   }
   // A plain "logged" with no log near it stays a save, backed by any save.
   TEST_ASSERT_FALSE(gapOf(gapsFor("Logged it.", mem), ClaimClass::Saved));
@@ -1078,8 +1078,33 @@ static void test_source_credit_forms_and_what_is_not_a_credit() {
       "times per second.",
       "The thermometer reads the temperature of the air around it.",
       "Each station logs rainfall every hour.",
+      // How-to answers explain the instrument; a reply to a how-question never claims a
+      // reading of one (the review).
+      "Press the tyre gauge onto the valve; the gauge shows 32 psi when the pressure is right for most cars.",
+      "The gauge reads 1 mm when 1 litre falls on each square metre.",
+      "The label lists 5 g of sugar or less as low sugar.",
+      "On the app, tap Settings then set the goal to 10,000 steps.",
   };
   for (const char* r : notCredited) TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(r), ClaimClass::Source), r);
+  // ...and the how-question flag stands the instrument-credit rule down even where the
+  // sentence shape would otherwise credit one (a parenthesized figure label is credited
+  // by its form and stays a claim: "how much protein?" answered "20 g (label)" is real).
+  for (const char* r : credited)
+    if (std::strcmp(r, "| Bar | 20 g (label) |") != 0)
+      TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(r, /*ownerAskedHow=*/true), ClaimClass::Source), r);
+  TEST_ASSERT_TRUE(hasClass(scanClaims("| Bar | 20 g (label) |", true), ClaimClass::Source));
+  // A bare "you have/got/had/see" or a far "earlier" never exempts an invented source
+  // (the review: the live failure with a common ending passed with no gap).
+  TEST_ASSERT_TRUE(hasClass(scanClaims(
+                        "Rain gauge at the office roof: 3.0 mm so far this morning, so you've got time for the walk."),
+                    ClaimClass::Source));
+  TEST_ASSERT_TRUE(hasClass(scanClaims("The live gauge says it is heavy, so you have time to grab a coat."),
+                            ClaimClass::Source));
+  TEST_ASSERT_TRUE(hasClass(scanClaims("The live gauge says 3.0 mm, heavier than earlier."), ClaimClass::Source));
+  TEST_ASSERT_TRUE(hasClass(
+      scanClaims("The office sensor shows 21C, warmer than the 19C you had yesterday."), ClaimClass::Source));
+  TEST_ASSERT_TRUE(hasClass(
+      scanClaims("The radar shows heavy rain over Reading, the kind you'd see in a storm."), ClaimClass::Source));
 }
 
 // The live shape end to end: the owner's own figure rides the gap, so the correction
@@ -1160,6 +1185,19 @@ static void test_a_source_named_by_name_needs_its_words_in_a_source() {
   for (const char* r : {"Per Wikipedia, the first train ran in 1825.", "According to the Highway Code, a bus lane is "
                                                                        "for buses only."})
     TEST_ASSERT_FALSE_MESSAGE(gapOf(nameGaps(r, ""), ClaimClass::Source), r);
+  // A present-tense status or a live topic is about now without a now-word: the natural
+  // wordings of the 27 Oct invented source (the review), caught whatever phrasing they take.
+  for (const char* r : {"According to National Rail Enquiries, trains between Reading and Paddington are running "
+                        "normally.",
+                        "Trains are running normally, per National Rail Enquiries.",
+                        "I checked National Rail Enquiries: trains are running normally this morning."})
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(nameGaps(r, ""), ClaimClass::Source), r);
+  // Sentence case after a colon is not a name: a pronoun, a possessive or a plain word
+  // followed by a lowercase word never starts one ("Source: Your food log").
+  for (const char* r : {"Source: Your food log, today's rows.", "Source: Food log.", "Source: Sub-agent web search.",
+                        "Source: Live web lookup today."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(nameGaps(r, "your food log has the rows"), ClaimClass::Source), r);
+  TEST_ASSERT_TRUE(gapOf(nameGaps("Source: National Rail Enquiries.", ""), ClaimClass::Source));
   // Without source words the rule is not checked.
   TEST_ASSERT_TRUE(gapsFor("Source: National Rail Enquiries.", TurnEffects()).empty());
 }

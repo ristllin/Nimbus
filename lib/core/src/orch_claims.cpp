@@ -32,6 +32,8 @@ enum CueFlag : uint32_t {
   kContraRepeat = 1u << 12,  // cause about the sender repeating: a gap when the device repeated
   kSelfOk     = 1u << 13,  // cause: "it is working": needs a health read and no failure on record
   kLogObject  = 1u << 14,  // saved: a log, entry, ledger or total within reach ("updated the log")
+  kLogFileObject = 1u << 19,  // saved: a log or file noun within reach ("logged it in your day log"), narrower
+                              // than kLogObject: a memory "entry" is a save, not a log file (CUM-837)
   kSourceNoun = 1u << 15,  // source: a noun that counts only when the reply credits it (sourceCredited)
   kSrcOn      = 1u << 16,  // source: "on the <noun>" credits it ("on the label"; never "on the menu")
   kSrcHeading = 1u << 17,  // source: an instrument naming a reading by itself ("Rain gauge: 3.0 mm")
@@ -87,8 +89,10 @@ using C = ClaimClass;
 // narrow: every cue here was read against real replies (claims.h).
 constexpr Cue kCues[] = {
     // ---- saved / logged / noted
-    // "logged it in your food log": a log claim, backed only by a landed row (CUM-782)
-    {C::Saved, "logged", kLogObject | kLogSense, 0},
+    // "logged it in your food log": a log claim, backed only by a landed row (CUM-782).
+    // A memory "entry" is not a log file: "logged it as a new entry in your memory" is a
+    // save (the cue below backs it), never a false "no row was added" (CUM-837).
+    {C::Saved, "logged", kLogFileObject | kLogSense, 0},
     {C::Saved, "logged", kLogSense, kSavedBacks},
     {C::Saved, "saved", 0, kSavedBacks},
     {C::Saved, "noted", 0, kNotedBacks},
@@ -510,8 +514,9 @@ constexpr const char* kDeterminers[] = {
     "same",
 };
 // "228 episodic messages logged", "in/out counts logged for openai": the device's
-// own records, described; not something this turn saved.
-constexpr const char* kLogNouns[] = {"messages", "counts", "tokens", "entries", "rows", "lines",
+// own records, described; not something this turn saved. A memory "entry" is not
+// one of these either (it is a save the turn can back).
+constexpr const char* kLogNouns[] = {"messages", "counts", "tokens", "rows", "lines",
                                      "events", "errors", "calls", "requests", "turns", "runs"};
 // Before a bare participle, these make it a running state, not this turn's act
 // ("currently 746 kcal logged", "the day's total logged").
@@ -678,6 +683,9 @@ struct Scan {
   std::vector<uint8_t, WorkingAllocator<uint8_t>> sentQuestion;   // per sentence
   uint16_t sent = 0, clause = 0;
   bool tokSinceBreak = false;
+  // The owner asked how something works or is done ("how do I ...?"): an instrument a
+  // reply EXPLAINS is not claimed as read (precision over recall, the review).
+  bool ownerAskedHow = false;
   explicit Scan(const std::string& str) : s(str), n(str.size() < kScanMax ? str.size() : kScanMax) {}
 };
 
@@ -1272,6 +1280,18 @@ bool recordNounNear(const Scan& sc, size_t i, size_t len) {
   return false;
 }
 
+// A log or file noun, narrower than kRecordNouns: what turns "logged" into a log
+// claim (CUM-837). A memory "entry" or a "record" is a save the turn can back,
+// not a log file, so "logged it as a new entry in your memory" never claims a row.
+constexpr const char* kLogFileNouns[] = {"log", "logs", "ledger", "tracker", "csv", "diary"};
+bool logFileNounNear(const Scan& sc, size_t i, size_t len) {
+  for (size_t k = i + len; k < sc.toks.size() && k < i + len + 5 && sameClause(sc, k, i); k++)
+    if (tokIn(sc.s, sc.toks[k], kLogFileNouns)) return true;
+  for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], kLogFileNouns)) return true;
+  return false;
+}
+
 // ---- named sources (CUM-824) ------------------------------------------------
 
 // After a source noun (past at most two fillers), these credit a fact to it: "the gauge
@@ -1302,13 +1322,12 @@ constexpr const char* kGenericDets[] = {"a", "an", "any", "some", "another", "ev
 // Right after a source noun these make it a hypothetical ("the gauge would show more").
 constexpr const char* kModalsAfter[] = {"would", "could", "might", "may", "should", "will", "can",
                                         "wouldn't", "couldn't", "won't", "can't"};
-// The owner reporting it, anywhere in the sentence ("the label you sent says 20 g"): the
-// figure is the owner's, not a source the device read.
-constexpr const char* kOwnerReports[] = {
-    "said", "say",   "mentioned", "sent",   "shared", "gave",   "give",   "told",   "reported",
-    "showed", "measured", "read",  "logged", "wrote", "typed",  "posted", "noted",  "quoted",
-    "saw",  "see",   "seeing",    "checked", "got",   "have",   "had",    "recorded",
-};
+// The owner reporting it, tied to the source's own noun phrase ("the label you sent
+// says 20 g"): the figure is the owner's, not a source the device read. Speech verbs
+// and the owner's own items only - a bare "you have/got/had/see" anywhere in the
+// sentence never exempts an invented source (the review's false negatives).
+constexpr const char* kSpeechVerbs[] = {"said",     "told",  "sent",   "shared", "showed", "mentioned",
+                                        "wrote",    "typed", "posted", "quoted", "gave",   "texted"};
 constexpr const char* kYouWords[] = {"you", "you've", "you're", "you'd"};
 constexpr const char* kOwnerItems[] = {"message", "note", "photo", "text", "numbers", "figure", "reading"};
 // A source labeled as earlier ("earlier the website said ..."): not this turn's claim.
@@ -1379,15 +1398,56 @@ bool numberLaterInSentence(const Scan& sc, size_t e, uint16_t sent) {
   return false;
 }
 
+// A general statement about a kind, not a reading of one: "when", "if", "whenever",
+// "for most", "or less", "or more", or "per" with a unit ("the gauge reads 1 mm per
+// litre"; an explanation, not this turn's reading). The review's false corrections.
+constexpr const char* kGeneralWords[] = {"when", "if", "whenever"};
+constexpr const char* kGeneralPairs[][2] = {{"for", "most"}, {"or", "less"}, {"or", "more"}};
+constexpr const char* kPerUnits[] = {"litre",   "litres", "liter",  "liters", "metre",  "metres", "meter",
+                                     "meters",  "gram",   "grams",  "kg",     "ml",     "km",     "mile",
+                                     "miles",   "hour",   "hours",  "day",    "days",   "week",   "weeks",
+                                     "month",   "months", "bar",    "bars",   "square", "cubic",  "person",
+                                     "serving", "cup",    "cups",   "item",   "items"};
+bool generalStatement(const Scan& sc, size_t i) {
+  size_t f, l;
+  sentenceRange(sc, i, f, l);
+  for (size_t k = f; k <= l; k++) {
+    if (tokIn(sc.s, sc.toks[k], kGeneralWords)) return true;
+    if (k < l) {
+      for (const auto& pair : kGeneralPairs)
+        if (tokIs(sc.s, sc.toks[k], pair[0]) && tokIs(sc.s, sc.toks[k + 1], pair[1])) return true;
+      if (tokIs(sc.s, sc.toks[k], "per") && tokIn(sc.s, sc.toks[k + 1], kPerUnits)) return true;
+    }
+  }
+  return false;
+}
+
+// "on the app, tap ...": an instruction verb after the noun, not a credit of it.
+constexpr const char* kImperatives[] = {"tap", "open", "enter", "set", "go", "choose", "press", "select",
+                                        "swipe", "click", "visit", "type"};
+
+// "On the app, tap Settings": an instruction verb right after the noun, not a credit.
+bool instructionAfter(const Scan& sc, size_t i) {
+  for (size_t k = i + 1; k <= i + 2 && k < sc.toks.size(); k++)
+    if (tokIn(sc.s, sc.toks[k], kImperatives)) return true;
+  return false;
+}
+
+// The strong prepositions: "per the label", "according to the app".
+bool strongPrepAt(const Scan& sc, size_t i, size_t d) {
+  if (tokIs(sc.s, sc.toks[i - d], "per")) return true;
+  return tokIs(sc.s, sc.toks[i - d], "to") && i >= d + 1 &&
+         tokIs(sc.s, sc.toks[i - d - 1], "according") && sameClause(sc, i - d - 1, i);
+}
+
 bool sourcePrepBefore(const Scan& sc, size_t i, bool onOk) {
   for (size_t d = 2; d <= 5 && d <= i && sameClause(sc, i - d, i); d++) {
-    const Tok& t = sc.toks[i - d];
-    const bool strong = tokIs(sc.s, t, "per") ||
-                        (tokIs(sc.s, t, "to") && i >= d + 1 && tokIs(sc.s, sc.toks[i - d - 1], "according") &&
-                         sameClause(sc, i - d - 1, i));
-    const bool weak = tokIn(sc.s, t, kSourcePreps) || (onOk && tokIs(sc.s, t, "on"));
+    const bool strong = strongPrepAt(sc, i, d);
+    const bool weak = tokIn(sc.s, sc.toks[i - d], kSourcePreps) || (onOk && tokIs(sc.s, sc.toks[i - d], "on"));
     if (!strong && !weak) continue;
-    return phraseOpener(sc, i - d + 1) && (strong || figureNear(sc, i));
+    if (strong) return phraseOpener(sc, i - d + 1) && !generalStatement(sc, i);
+    if (onOk && tokIs(sc.s, sc.toks[i - d], "on") && instructionAfter(sc, i)) return false;
+    return phraseOpener(sc, i - d + 1) && figureNear(sc, i) && !generalStatement(sc, i);
   }
   return false;
 }
@@ -1396,24 +1456,32 @@ bool sourcePrepBefore(const Scan& sc, size_t i, bool onOk) {
 bool ownerReportAt(const Scan& sc, size_t k, size_t l) {
   const bool you = tokIn(sc.s, sc.toks[k], kYouWords), your = tokIs(sc.s, sc.toks[k], "your");
   for (size_t j = k + 1; j <= k + 2 && j <= l; j++) {
-    if (you && tokIn(sc.s, sc.toks[j], kOwnerReports)) return true;
+    if (you && tokIn(sc.s, sc.toks[j], kSpeechVerbs)) return true;
     if (your && j == k + 1 && tokIn(sc.s, sc.toks[j], kOwnerItems)) return true;
   }
   return false;
 }
 
-// The owner's report or an earlier answer named in the sentence: not this turn's source.
+// The owner's own report of THIS source, or an earlier answer that named it: not this
+// turn's claim. The report must be tied to the source noun (a "you said/sent" or a
+// "your message/photo" within a few words of it), and "earlier" counts only when it
+// modifies the credit's own phrase, never a bare "you have/got/had" anywhere in the
+// sentence (an invented source sailed through those; the review).
 bool ownerOrEarlierSource(const Scan& sc, size_t i) {
-  size_t f, l;
-  sentenceRange(sc, i, f, l);
-  for (size_t k = f; k <= l; k++)
-    if (tokIn(sc.s, sc.toks[k], kSourceEarlier) || ownerReportAt(sc, k, l)) return true;
+  for (size_t d = 1; d <= 3; d++) {
+    if (i >= d && tokIn(sc.s, sc.toks[i - d], kSourceEarlier)) return true;
+    if (i + d < sc.toks.size() && tokIn(sc.s, sc.toks[i + d], kSourceEarlier)) return true;
+  }
+  const size_t upto = i + 4 < sc.toks.size() ? i + 4 : sc.toks.size() - 1;
+  for (size_t k = i > 4 ? i - 4 : 0; k <= upto; k++)
+    if (ownerReportAt(sc, k, upto)) return true;   // a comma may sit between ("Going by your message, the gauge")
   return false;
 }
 
 // A source noun the reply credits as where a figure or a fact came from.
 bool sourceCredited(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   if (inBefore(sc, i, 3, kGenericDets) || modalAfter(sc, i, i + len) || ownerOrEarlierSource(sc, i)) return false;
+  if (generalStatement(sc, i)) return false;   // an explanation of the kind, not a reading
   if (inBefore(sc, i, 2, kLiveWords)) return true;   // "the live gauge"
   if (sourceVerbAfter(sc, i, i + len) && openedPhrase(sc, i)) return true;
   if (sourcePrepBefore(sc, i, (cue.flags & kSrcOn) != 0)) return true;
@@ -1436,6 +1504,11 @@ constexpr const char* kCalendarWords[] = {
     "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
     "november", "december",
 };
+// Words that never start a source's name: pronouns, possessives and determiners.
+// Sentence case after a colon capitalizes them ("Source: Your food log"), and a name
+// that starts there is never real (the review).
+constexpr const char* kNameNotStart[] = {"your", "my", "you", "our", "their", "the", "this", "these",
+                                         "those", "its", "today's", "yesterday's"};
 
 bool capitalized(const Scan& sc, size_t k) {
   const unsigned char c = (unsigned char)sc.s[sc.toks[k].b];
@@ -1444,7 +1517,10 @@ bool capitalized(const Scan& sc, size_t k) {
 
 // The name starting at token k, in its clause: capitalized words and the joins between
 // them ("National Rail Enquiries", "Bank of England"), at most five words. Returns the
-// token after it (== k when no name starts there).
+// token after it (== k when no name starts there). A one-word "name" whose next word is
+// plain and lowercase is sentence-case phrase, not a name ("Source: Food log",
+// "Source: Sub-agent web search"); a sole word before the sentence's end is a name
+// ("Source: Notion").
 size_t nameEnd(const Scan& sc, size_t k) {
   size_t e = k, last = k;
   while (e < sc.toks.size() && e < k + 5 && sameClause(sc, e, k) && !(sc.toks[e].flags & kTokQuoted)) {
@@ -1452,38 +1528,85 @@ size_t nameEnd(const Scan& sc, size_t k) {
     else if (!(e > k && tokIn(sc.s, sc.toks[e], kNameJoins))) break;
     e++;
   }
+  if (last == k + 1 && last < sc.toks.size() && sameClause(sc, last, k) && !capitalized(sc, last) &&
+      !tokIn(sc.s, sc.toks[last], kNameJoins))
+    return k;
   return last;
 }
 
 // The token a name starts at after the cue ending at e, or sc.toks.size() when the cue
-// credits no name: "Source: X", "checked live on X", "according to (the) X".
-size_t nameStart(const Scan& sc, size_t i, size_t e, const Cue& cue) {
+// credits no name: "Source: X", "checked live on X", "according to (the) X". A pronoun,
+// a possessive or a determiner never starts it ("Source: Your food log": if a name
+// follows, it starts after them, and there is none).
+// A citation's name ("Source: National Rail"): the cue word right before a colon. The
+// name follows the colon even as a new clause; a pronoun or a determiner still never
+// starts it.
+size_t citationNameStart(const Scan& sc, size_t i, size_t e) {
   const size_t none = sc.toks.size();
-  if (e >= sc.toks.size() || sc.toks[e].sent != sc.toks[i].sent) return none;
-  if (cue.backs == kNameCitation) {   // the cue word right before a colon
-    const size_t after = sc.toks[i].b + sc.toks[i].len;
-    return after < sc.s.size() && sc.s[after] == ':' ? e : none;
-  }
-  if (cue.backs == kNameChecked) {
-    for (size_t k = e; k < e + 3 && k + 1 < sc.toks.size() && sameClause(sc, k, i); k++)
-      if (tokIn(sc.s, sc.toks[k], kCheckedPreps)) return k + 1;
-    return none;
-  }
-  const size_t k = tokIs(sc.s, sc.toks[e], "the") ? e + 1 : e;
+  const size_t after = sc.toks[i].b + sc.toks[i].len;
+  if (after >= sc.s.size() || sc.s[after] != ':') return none;
+  while (e < sc.toks.size() && tokIn(sc.s, sc.toks[e], kNameNotStart)) e++;
+  return e < sc.toks.size() ? e : none;
+}
+
+// The name a "checked" cue credits: after a preposition, or right at the capitalized
+// word ("checked National Rail Enquiries"; the review), then past the words that never
+// start a name.
+size_t checkedNameStart(const Scan& sc, size_t i, size_t e) {
+  const size_t none = sc.toks.size();
+  size_t k = none;
+  for (size_t d = e; d < e + 3 && d + 1 < sc.toks.size() && sameClause(sc, d, i); d++)
+    if (tokIn(sc.s, sc.toks[d], kCheckedPreps)) k = d + 1;
+  if (k == none && capitalized(sc, e) && !tokIn(sc.s, sc.toks[e], kCalendarWords)) k = e;
+  if (k == none) return none;
+  while (k < sc.toks.size() && sameClause(sc, k, i) && tokIn(sc.s, sc.toks[k], kNameNotStart)) k++;
   return k < sc.toks.size() && sameClause(sc, k, i) ? k : none;
 }
 
+size_t nameStart(const Scan& sc, size_t i, size_t e, const Cue& cue) {
+  const size_t none = sc.toks.size();
+  if (e >= sc.toks.size() || sc.toks[e].sent != sc.toks[i].sent) return none;
+  if (cue.backs == kNameCitation) return citationNameStart(sc, i, e);
+  else if (cue.backs == kNameChecked) {
+    return checkedNameStart(sc, i, e);
+  } else {
+    e = tokIs(sc.s, sc.toks[e], "the") ? e + 1 : e;
+  }
+  while (e < sc.toks.size() && sameClause(sc, e, i) && tokIn(sc.s, sc.toks[e], kNameNotStart)) e++;
+  return e < sc.toks.size() && sameClause(sc, e, i) ? e : none;
+}
+
 // A sentence about now: a word or a phrase of the present ("today", "now", "currently",
-// "live", "this morning"). Topics are not enough ("per Wikipedia, the first train ran in
-// 1825" is about history, however live a train can be).
+// "live", "this morning"), or a live status ("trains are running", "the forecast"),
+// never a historical one ("the first train ran in 1825": a past tense or an old year
+// keeps the sentence about history). Topics alone are not enough ("per Wikipedia, the
+// first train ran in 1825" is about history, however live a train can be).
 constexpr const char* kNowWords[] = {"today", "today's", "now", "currently", "tonight", "live", "latest"};
 constexpr const char* kNowPairs[][2] = {{"this", "morning"}, {"this", "afternoon"}, {"this", "evening"},
                                         {"right", "now"},    {"at", "present"},     {"as", "of"}};
+constexpr const char* kLiveTopics[] = {"trains", "status", "delays", "weather", "forecast"};
+constexpr const char* kStatusWords[] = {"running", "delayed", "open", "closed", "cancelled", "suspended"};
+// A live topic in a past-tense or dated sentence is history ("trains first ran in
+// 1825"): the year or the past tense keeps it out.
+bool pastTenseOrDated(const Scan& sc, size_t f, size_t l) {
+  for (size_t j = f; j <= l; j++) {
+    const Tok& t = sc.toks[j];
+    if (tokIs(sc.s, t, "was") || tokIs(sc.s, t, "were") || tokIs(sc.s, t, "ran") ||
+        (t.flags & kTokNum && t.len == 4 && isDigit((unsigned char)sc.s[t.b])))
+      return true;
+  }
+  return false;
+}
+
 bool aboutNow(const Scan& sc, size_t i) {
   size_t f, l;
   sentenceRange(sc, i, f, l);
   for (size_t k = f; k <= l; k++) {
     if (tokIn(sc.s, sc.toks[k], kNowWords)) return true;
+    if (k < l && (tokIs(sc.s, sc.toks[k], "is") || tokIs(sc.s, sc.toks[k], "are")) &&
+        tokIn(sc.s, sc.toks[k + 1], kStatusWords))
+      return true;
+    if (tokIn(sc.s, sc.toks[k], kLiveTopics) && !pastTenseOrDated(sc, f, l)) return true;
     for (const auto& pair : kNowPairs)
       if (k < l && tokIs(sc.s, sc.toks[k], pair[0]) && tokIs(sc.s, sc.toks[k + 1], pair[1])) return true;
   }
@@ -1543,8 +1666,9 @@ bool nameInSources(const std::string& name, const std::string& words) {
 // near.
 bool contextMissing(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   if ((cue.flags & kFaultCtx) && !faultWordInSentence(sc, i, len)) return true;
-  if ((cue.flags & kSourceNoun) && !sourceCredited(sc, i, len, cue)) return true;
+  if ((cue.flags & kSourceNoun) && (sc.ownerAskedHow || !sourceCredited(sc, i, len, cue))) return true;
   if ((cue.flags & kSrcName) && !sourceNameCredited(sc, i, len, cue)) return true;
+  if ((cue.flags & kLogFileObject) && !logFileNounNear(sc, i, len)) return true;
   return (cue.flags & kLogObject) && !recordNounNear(sc, i, len);
 }
 
@@ -1573,7 +1697,7 @@ void matchAt(const Scan& sc, size_t i, ClaimScan& out) {
     if (!len || contextMissing(sc, i, len, cue) || !passesScope(sc, i, len, cue)) continue;
     if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue)) continue;
     addClaim(sc, i, c, num, out);
-    if (cue.flags & kLogObject) return;
+    if (cue.flags & (kLogObject | kLogFileObject)) return;
   }
 }
 
@@ -1725,7 +1849,8 @@ bool failedWritesQueued(const TurnEffects& fx) {
 }
 
 bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
-  if (cue.flags & kLogObject) {   // CUM-782: only a landed row backs a log claim
+  // CUM-782: only a landed row backs a log claim ("logged", "updated the log").
+  if (cue.flags & (kLogObject | kLogFileObject)) {
     if (fx.anyOkWith(FxKind::FileWrite, kFxLogRow)) return false;
     *variant = kGapNoLogRow;
     return true;
@@ -1999,8 +2124,8 @@ const char* causeWhat(uint8_t variant) {
 // The save-class what: queued, RAM-only or nothing at all.
 const char* savedWhat(uint8_t variant) {
   if (variant == kGapNoLogRow)
-    return "no row landed in a log file (.csv or .log); only a files.append that adds or replaces "
-           "a row updates a log";
+    return "no row landed in a log file this turn; only a files.append (or a file saved again) that adds or "
+           "replaces a row updates a log";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }
@@ -2066,9 +2191,10 @@ ClaimCueInfo claimCue(size_t i) {
                       (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0};
 }
 
-ClaimScan scanClaims(const std::string& reply) {
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow) {
   ClaimScan out;
   Scan sc(reply);
+  sc.ownerAskedHow = ownerAskedHow;
   if (mostlyNonEnglish(reply, sc.n)) {
     out.skippedNonEnglish = true;
     return out;
@@ -2308,16 +2434,16 @@ std::string normalizedWords(const std::string& text) {
 }
 
 namespace {
-// Phrases near a quote that present it as something on record from before: the device's
-// own memory, or the owner's words, a rule or a record. A draft, a translation or a save
-// confirmation names none of them ("a message you could send: ...", "Saved: ...").
+// Phrases that present a quote as something on record from before: the device's
+// own memory, or the owner's words. A draft, a translation or a save confirmation
+// names none of them, and neither does a bare "you asked me" (the review's false
+// positives) - only "you asked me to save/remember" still presents a record.
 constexpr const char* kMemoryPhrases[] = {"recalled",  "i remember", "i remembered", "a memory",  "the memory",
                                           "my memory", "memories",   "from memory",  "in memory", "you asked me to save",
                                           "you asked me to remember"};
-constexpr const char* kRecordPhrases[] = {"you said",     "you wrote",  "you told me", "you asked me", "your message",
+constexpr const char* kRecordPhrases[] = {"you said",     "you wrote",  "you told me", "your message",
                                           "your messages", "your words", "your note",   "your rule",    "standing rule",
-                                          "the rule",     "the record", "the log says"};
-constexpr size_t kQuoteContextBefore = 160, kQuoteContextAfter = 120;
+                                          "the record",   "the log says"};
 constexpr size_t kQuoteMinWords = 4;   // a shorter quote is a name or a phrase, not a record
 
 // A code fence or a blank line at p: no quote is open across it (a quote never spans
@@ -2371,11 +2497,68 @@ bool anyWordIn(const std::string& padded, const char* const (&set)[N]) {
   return false;
 }
 
-bool recordWordNear(const std::string& r, size_t b, size_t e, bool memoryOnly) {
-  const size_t from = b > kQuoteContextBefore ? b - kQuoteContextBefore : 0;
-  const std::string ctx = " " + normalizedWords(r.substr(from, b - from)) + " " +
-                          normalizedWords(r.substr(e, kQuoteContextAfter)) + " ";
-  return anyWordIn(ctx, kMemoryPhrases) || (!memoryOnly && anyWordIn(ctx, kRecordPhrases));
+// A record phrase presents the quote as its content: the phrase occurs in the quote's
+// own paragraph, before it, and NOTHING with a letter comes between the phrase and the
+// quote - the phrase introduces the quote directly ("I recalled a memory: "..."",
+// "...that you asked me to save:\n\n"...""). "You asked me to draft a reply. Here it
+// is: "..."" leaves "here it is" between the phrase and the quote, so a draft, a
+// translation or a save confirmation is never treated as a quoted record (the review).
+// What may sit between the record phrase and the quote it introduces: a saying
+// construction ("Your message said "...""), nothing, or punctuation. Anything else
+// ("Here it is: "..."") makes the quote a deliverable, not a record.
+constexpr const char* kQuoteLinkWords[] = {"said", "says", "told",   "read", "reads", "was",
+                                           "were", "is",   "that",   "to",   "save",  "remember",
+                                           "me",   "from", "yesterday"};
+template <size_t N>
+bool wordIn(const char* w, const char* const (&set)[N]) {
+  for (const char* s : set)
+    if (std::strcmp(w, s) == 0) return true;
+  return false;
+}
+
+bool gapLinksOnly(const std::string& low, size_t from) {
+  std::string w;
+  for (size_t q = from; q <= low.size(); q++) {
+    if (q < low.size() && wordish((unsigned char)low[q])) {
+      w += low[q];
+      continue;
+    }
+    if (!w.empty()) {
+      if (!wordIn(w.c_str(), kQuoteLinkWords)) return false;
+      w.clear();
+    }
+  }
+  return true;
+}
+
+bool recordWordNear(const std::string& r, size_t b, bool memoryOnly) {
+  size_t f = b;
+  int breaks = 0;
+  while (f > 0 && b - f < 240) {
+    if (f >= 2 && r[f - 1] == '\n' && r[f - 2] == '\n') {
+      // One paragraph break may sit between the phrase and the quote ("...that you
+      // asked me to save:\n\n"...""); a second one ends the search.
+      if (++breaks > 1) break;
+    }
+    f--;
+  }
+  std::string low;
+  low.reserve(b - f);
+  for (size_t p = f; p < b;) low += foldAt(r, p);
+  for (size_t set = 0; set < 2; set++) {
+    if (set == 1 && (memoryOnly || low.empty())) break;
+    const auto& phrases = set == 0 ? kMemoryPhrases : kRecordPhrases;
+    for (const char* phrase : phrases) {
+      for (size_t p = low.find(phrase); p != std::string::npos; p = low.find(phrase, p + 1)) {
+        const size_t n = std::strlen(phrase);
+        const bool startOk = p == 0 || !wordish((unsigned char)low[p - 1]);
+        const bool endOk = p + n >= low.size() || !wordish((unsigned char)low[p + n]);
+        if (!startOk || !endOk) continue;
+        if (gapLinksOnly(low, p + n)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // The quotes a reply presents as a memory, a message or a record, normalized, with their
@@ -2386,7 +2569,7 @@ std::vector<std::pair<std::pair<size_t, size_t>, std::string>> presentedQuotes(c
   for (const auto& q : quoteSpans(reply)) {
     std::string words = normalizedWords(reply.substr(q.first, q.second - q.first));
     if ((size_t)std::count(words.begin(), words.end(), ' ') + 1 < kQuoteMinWords) continue;
-    if (recordWordNear(reply, q.first, q.second, memoryOnly)) out.emplace_back(q, std::move(words));
+    if (recordWordNear(reply, q.first, memoryOnly)) out.emplace_back(q, std::move(words));
   }
   return out;
 }
@@ -2406,14 +2589,35 @@ ClaimGap spanGap(const std::string& reply, size_t b, size_t e, ClaimClass cls, u
 
 bool hasRecordQuote(const std::string& reply) { return !presentedQuotes(reply, false).empty(); }
 
-bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap* out, bool memoryOnly) {
+// The quote's content words (three letters or more) all appear in the owner's own
+// words this turn: "You asked me to remember: 'Bins go out on Tuesday night.'" over
+// "bins go out tuesday night". The owner asked for exactly these words, so the quote
+// is a loose copy of the turn's own record, whatever its small words do.
+bool quoteMatchesOwnerLoosely(const std::string& quote, const std::string& owner) {
+  const std::string hay = " " + owner + " ";
+  const std::string ns = quote + " ";
+  for (size_t b = 0, e; (e = ns.find(' ', b)) != std::string::npos; b = e + 1) {
+    const std::string w = ns.substr(b, e - b);
+    if (w.size() < 3) continue;
+    if (hay.find(" " + w + " ") == std::string::npos) return false;
+  }
+  return true;
+}
+
+bool recordQuoteGap(const std::string& reply, const std::string& seen, const std::string& ownerText,
+                    ClaimGap* out, bool memoryOnly) {
   const std::string hay = " " + seen + " ";
   for (const auto& q : presentedQuotes(reply, memoryOnly)) {
     if (hay.find(" " + q.second + " ") != std::string::npos) continue;
+    if (!ownerText.empty() && quoteMatchesOwnerLoosely(q.second, ownerText)) continue;
     if (out) *out = spanGap(reply, q.first.first, q.first.second, ClaimClass::Source, kGapQuote);
     return true;
   }
   return false;
+}
+
+bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap* out, bool memoryOnly) {
+  return recordQuoteGap(reply, seen, std::string(), out, memoryOnly);
 }
 
 namespace {
@@ -2499,12 +2703,31 @@ bool asksWhy(const std::string& ownerText) {
          pad.find(" what made you ") != std::string::npos;
 }
 
-// The sentence names one of `subjects` (" "-separated normalized words): it is about a
-// past sub-agent.
+// The owner asked how something works or is done ("how do I check my tyre pressure?",
+// "how is rain measured?"): an instrument or label an answer EXPLAINS is not claimed as
+// read. "How much/many" is a quantity question, not this; a credit in its answer is a
+// real claim and stays checked.
+bool ownerAskedHow(const std::string& ownerText) {
+  const std::string pad = " " + normalizedWords(ownerText) + " ";
+  for (const char* q : {" how do ", " how does ", " how to ", " how is ", " how are ", " how can ",
+                        " how could ", " how would ", " how should "})
+    if (pad.find(q) != std::string::npos) return true;
+  return pad.rfind(" how do", 0) == 0 || pad.rfind(" how is", 0) == 0 || pad.rfind(" how to", 0) == 0 ||
+         pad.rfind(" how are", 0) == 0;
+}
+
+// The sentence names one of `subjects` (" "-separated): a single word as a word, a
+// multi-word entry as a phrase ("sub agent" names a sub-agent; a bare "agent" is
+// everyday English and never names one). It is about a past sub-agent.
 bool aboutSubject(const std::string& ns, const std::string& subjects) {
   const std::string pad = " " + ns + " ", list = subjects + " ";
-  for (size_t b = 0, e; (e = list.find(' ', b)) != std::string::npos; b = e + 1)
-    if (e > b && pad.find(" " + list.substr(b, e - b) + " ") != std::string::npos) return true;
+  for (size_t b = 0, e; (e = list.find(' ', b)) != std::string::npos; b = e + 1) {
+    const std::string s = list.substr(b, e - b);
+    if (s.empty()) continue;
+    if (s.find(' ') != std::string::npos ? pad.find(s) != std::string::npos
+                                         : pad.find(" " + s + " ") != std::string::npos)
+      return true;
+  }
   return false;
 }
 
@@ -2522,13 +2745,24 @@ std::vector<std::string> unrecordedWords(const std::string& part, const std::str
   return out;
 }
 
+// A reply sentence about a past sub-agent must talk about its action (used, ran,
+// picked, chose) or claim an invented record (a memory, a rule, "the only connector"):
+// a sentence that merely shares a word with the ledger is an everyday answer
+// ("Why is my letting agent so slow?" answered plainly), never a claim about the sub.
+constexpr const char* kSubActions[] = {"used", "uses", "ran", "running", "picked", "chose", "went", "switched",
+                                       "tried"};
+bool aboutSubAction(const std::string& ns) {
+  return anyWordIn(" " + ns + " ", kSubActions) || anyWordIn(" " + ns + " ", kReasonSentence) ||
+         anyWordIn(" " + ns + " ", kReasonRecord);
+}
+
 bool unrecordedReasonGap(const std::string& reply, const std::string& records, const std::string& question,
                          const std::string& subjects, ClaimGap* out) {
   const std::string hay = " " + records + " ";
   const std::string asked = " " + normalizedWords(question) + " ";
   for (const auto& sp : sentenceSpans(reply)) {
     const std::string ns = normalizedWords(reply.substr(sp.first, sp.second - sp.first));
-    const std::string part = aboutSubject(ns, subjects) ? reasonPart(ns) : std::string();
+    const std::string part = aboutSubject(ns, subjects) && aboutSubAction(ns) ? reasonPart(ns) : std::string();
     const std::vector<std::string> missing = part.empty() ? std::vector<std::string>() : unrecordedWords(part, asked, hay);
     if (missing.size() < (anyWordIn(" " + ns + " ", kReasonRecord) ? 1u : 2u)) continue;
     if (out) {
@@ -2629,7 +2863,7 @@ std::string causeLine(uint8_t variant) {
 
 // The save-class tail: queued, RAM-only, or the plain not-saved correction.
 std::string savedTail(uint8_t variant) {
-  if (variant == kGapNoLogRow) return "(Correction: no row was added to the log.)";
+  if (variant == kGapNoLogRow) return "(Correction: no row was added to a log file this turn.)";
   if (variant == kGapQueued)
     return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
   return variant == kGapRamOnly

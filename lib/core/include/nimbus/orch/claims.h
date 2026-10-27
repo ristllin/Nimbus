@@ -110,10 +110,14 @@ struct ClaimScan {
   bool skippedNonEnglish = false;   // R6: the reply was not scanned
 };
 
-// Scan a reply (any size; text past kScanMax bytes is not scanned).
+// Scan a reply (any size; text past kScanMax bytes is not scanned). `ownerAskedHow`:
+// the owner asked how something works or is done, so an instrument an answer explains
+// is not claimed as read (precision over recall).
 static constexpr size_t kScanMax = 16384;
-ClaimScan scanClaims(const std::string& reply);
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow = false);
 
+// The quotes a reply presents as a record, and whether one is missing from everything
+// the turn was given (`seen`) or, loosely, from the owner's own words this turn.
 // What the claim check compares a reply against.
 struct ClaimEvidence {
   const TurnEffects* fx = nullptr;          // this turn's ledger (pending + recorded)
@@ -237,6 +241,11 @@ std::string normalizedWords(const std::string& text);
 bool hasRecordQuote(const std::string& reply);
 bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap* out, bool memoryOnly = false);
 
+// The same with the owner's own words this turn: a quote that loosely matches them
+// ("You asked me to remember: "Bins go out on Tuesday night."" over "bins go out
+// tuesday night") is the turn's own record, not an invented one (the review, HIGH-1).
+bool recordQuoteGap(const std::string& reply, const std::string& seen, const std::string& ownerText,
+                    ClaimGap* out, bool memoryOnly = false);
 // A reason given when the owner asks why (CUM-824, the eval's mistral-large-latest on
 // "Why notion?": "because the standing rule I recalled said to check your Notion commute
 // dashboard", "because I recalled you had set up a Notion database", none of it on
@@ -251,6 +260,7 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap*
 // nothing checked), so "sourdough rises because wild yeast ferments the flour" is not.
 // asksWhy says whether the owner's text asks why.
 bool asksWhy(const std::string& ownerText);
+bool ownerAskedHow(const std::string& ownerText);
 // The gap unrecordedReasonGap returns (the correction then carries the spawn ledger).
 bool isUnrecordedReason(const ClaimGap& g);
 bool unrecordedReasonGap(const std::string& reply, const std::string& records, const std::string& question,

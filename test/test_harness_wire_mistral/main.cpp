@@ -747,6 +747,29 @@ static void test_custom_connector_web_named_tool_is_its_run() {
   TEST_ASSERT_EQUAL(1, env.connectorCalls);
   TEST_ASSERT_EQUAL(1, env.webRuns);
   TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=1"));
+// The review, MED-10: a Mistral web built-in answers through an execution of its own
+// name (a weather question runs weather_search; HFC's probe). The built-in is never
+// listed idle next to its own run: the tally says the web search ran, not
+// "weather_search x1, web_search x0", so "did it search the web?" is answered honestly.
+static void test_weather_execution_never_lists_the_web_builtin_idle() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c9\",\"outputs\":["
+      "{\"type\":\"tool.execution\",\"name\":\"weather_search\",\"arguments\":\"{}\"},"
+      "{\"type\":\"message.output\",\"content\":\"Heavy rain\"}]}"});
+  auto pd = gcalAttachedPd(d);   // attaches the web_search built-in and a connector
+  agent::ResultEnvelope env = runSub(pd, "Check the weather in Reading", "[x]");
+  TEST_ASSERT_EQUAL_STRING("weather_search x1", env.toolNames);
+  // webRuns counting weather_search is HFC's isWebTool change, merged on this base
+  // (pinned by test_cum822_sub_reply_keeps_web_sources); this test pins the tally.
+  // With no web execution, the offered built-in still shows as idle.
+  FakeProviderDeps d2;
+  d2.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c9\",\"outputs\":["
+      "{\"type\":\"message.output\",\"content\":\"I cannot check\"}]}"});
+  auto pd2 = gcalAttachedPd(d2);
+  agent::ResultEnvelope env2 = runSub(pd2, "Check the weather in Reading", "[x]");
+  TEST_ASSERT_EQUAL_STRING("web_search x0, google_calendar x0", env2.toolNames);
 }
 
 static void test_sub_connector_called_counts_the_execution() {
@@ -1576,6 +1599,7 @@ int main(int, char**) {
   RUN_TEST(test_cum822_web_search_spawn_leaves_studio_connectors_off);
   RUN_TEST(test_cum822_sub_reply_keeps_web_sources);
   RUN_TEST(test_custom_connector_web_named_tool_is_its_run);
+  RUN_TEST(test_weather_execution_never_lists_the_web_builtin_idle);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);

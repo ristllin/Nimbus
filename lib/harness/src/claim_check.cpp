@@ -59,41 +59,57 @@ bool readablePhoto(const std::string& ownerText) {
   return false;
 }
 
-// What this turn names as sources (CUM-824): see setSources.
+
+// What this turn names as sources (CUM-824): see setSources. The owner's own history
+// rows count (a follow-up about the previous message's photo or label credits a
+// source the owner really gave); the assistant's earlier replies never do (a source
+// the model invented earlier backs nothing).
 uint32_t namedSources(const TurnSources& parts, const std::string& recalled) {
   uint32_t bits = orch::sourceEvidenceOf(parts.owner) | orch::sourceEvidenceOf(parts.fresh) |
-                  orch::sourceEvidenceOf(parts.memory) | (orch::sourceEvidenceOf(recalled) & orch::kSrcOwnerDevices);
+                  orch::sourceEvidenceOf(parts.memory) | orch::sourceEvidenceOf(parts.histOwner) |
+                  (orch::sourceEvidenceOf(recalled) & orch::kSrcOwnerDevices);
   if (parts.webRead) bits |= orch::kSrcWebRead;   // a sub read the web (its provider's record)
-  if (readablePhoto(parts.owner)) bits |= orch::kSrcAll;
+  if (readablePhoto(parts.owner) || readablePhoto(parts.histOwner)) bits |= orch::kSrcAll;
   return bits;
 }
 
-// The tool-name parts of a ledger line's "it ran ..." list that name a tool ("notion_search
-// x2, web_search x0" -> notion), not an action or a count.
+// The tool-name parts of a ledger line's "it ran ..." list that name a tool the device
+// itself wired ("notion_search x2, web_search x0" -> notion), not an action or a count.
+// A provider's built-in (web_search, weather_search, code_interpreter, bash...) never
+// names a subject: its words are everyday English ("Why is the weather so bad?",
+// "why does my code skip an item?"), and an idle x0 entry was never run at all (the
+// review: the reason rule corrected ordinary answers to exactly those questions).
 std::string toolParts(const std::string& line) {
   static const char* const kGeneric[] = {"search", "fetch", "query", "lookup", "list", "read", "tool"};
+  // Provider built-ins and sandbox tools: everyday words, never a subject (the review).
+  static const char* const kBuiltins[] = {"web_search",        "web_search_premium", "news_search",
+                                          "weather_search",    "web_fetch",          "code_interpreter",
+                                          "image_generation",  "document_library",   "bash",
+                                          "edit",             "write",              "glob",
+                                          "grep"};
   const size_t ran = line.find(kLedgerRanLead);
   if (ran == std::string::npos) return std::string();
   const size_t from = ran + std::strlen(kLedgerRanLead);
   const std::string ns = orch::normalizedWords(line.substr(from, line.find(" (", from) - from)) + " ";
   std::string out;
   for (size_t b = 0, e; (e = ns.find(' ', b)) != std::string::npos; b = e + 1) {
-    const std::string w = ns.substr(b, e - b);
-    bool generic = w.size() < 4 || std::isdigit((unsigned char)w[0]) || (w[0] == 'x' && w.size() > 1 && std::isdigit((unsigned char)w[1]));
-    for (const char* g : kGeneric) generic = generic || w == g;
-    if (!generic) out += " " + w;
+    const std::string w = ns.substr(b, e - b), counts = ns.substr(e + 1);
+    bool skip = w.size() < 4 || std::isdigit((unsigned char)w[0]);
+    skip = skip || (counts.compare(0, 2, "x0") == 0);   // an idle tool never ran
+    for (const char* g : kGeneric) skip = skip || w == g;
+    for (const char* g : kBuiltins) skip = skip || w == g;
+    if (!skip) out += " " + w;
   }
   return out;
 }
 
-// CUM-824: what makes a sentence about a past sub-agent: the spawn ledger's job tags and
-// the tool and connector names its lines list ("notion_search x2" -> notion), normalized,
-// and the words for a sub-agent. A job's own name is left out: the head names jobs by their
-// topic ("weather-trains"), and a reason about the weather is not one about the job. ""
-// when there is no ledger.
+// CUM-824: what makes a sentence about a past sub-agent: the spawn ledger's job tags,
+// the connector names its lines list, and the sub-agent words as PHRASES ("sub agent",
+// "subagent"). A bare "agent" or "sub" is everyday English ("my letting agent"), so it
+// never names one (the review). "" when there is no ledger.
 std::string ledgerSubjects(const std::string& ledger) {
   if (ledger.empty()) return std::string();
-  std::string out = "sub agent agents subagent subagents lookup";
+  std::string out = "sub agent subagent sub-agent";   // phrases: a bare "agent" never names one
   for (size_t at = 0; (at = ledger.find("\n- ", at)) != std::string::npos;) {
     at += 3;
     const std::string line = ledger.substr(at, ledger.find('\n', at) - at);
@@ -104,11 +120,16 @@ std::string ledgerSubjects(const std::string& ledger) {
   return out;
 }
 
-// The text names one of the subject words.
+// The text names one of the subject words (single) or phrases (multi-word).
 bool namesASubject(const std::string& text, const std::string& subjects) {
   const std::string pad = " " + orch::normalizedWords(text) + " ", list = subjects + " ";
-  for (size_t b = 0, e; (e = list.find(' ', b)) != std::string::npos; b = e + 1)
-    if (e > b && pad.find(" " + list.substr(b, e - b) + " ") != std::string::npos) return true;
+  for (size_t b = 0, e; (e = list.find(' ', b)) != std::string::npos; b = e + 1) {
+    const std::string s = list.substr(b, e - b);
+    if (s.empty()) continue;
+    if (s.find(' ') != std::string::npos ? pad.find(s) != std::string::npos
+                                         : pad.find(" " + s + " ") != std::string::npos)
+      return true;
+  }
   return false;
 }
 
@@ -132,6 +153,27 @@ bool appendsToLog(const std::string& argsJson) {
 // the other rails that read the table can never disagree about a tool. A spawn
 // called as a tool joins the turn's spawn items and apply records whether the
 // job queue took it, so the call itself vouches for nothing (Read).
+std::string ranSourceNames(const std::string& provenance) {
+  const size_t ran = provenance.find(" [ran: ");
+  if (ran == std::string::npos) return std::string();
+  const size_t end = provenance.find(']', ran);
+  if (end == std::string::npos) return std::string();
+  std::string out;
+  const std::string list = provenance.substr(ran + 7, end - ran - 7);
+  for (size_t b = 0; b < list.size();) {
+    const size_t stop = list.find(", ", b);
+    const std::string entry = list.substr(b, stop == std::string::npos ? std::string::npos : stop - b);
+    const size_t x = entry.rfind(" x");
+    if (x != std::string::npos && x + 2 < entry.size() && entry[x + 2] != '0') {
+      if (!out.empty()) out += " ";
+      out += entry.substr(0, x);
+    }
+    if (stop == std::string::npos) break;
+    b = stop + 2;
+  }
+  return out;
+}
+
 orch::FxKind fxKindForTool(const std::string& n) {
   using orch::FxKind;
   static const FxKind kByEffect[] = {
@@ -169,6 +211,9 @@ void ClaimCheck::beginTurn() {
   toolText_.clear();
   ownerText_.clear();
   ledger_.clear();
+  ownerAskedHow_ = false;
+  wroteText_.clear();
+  pendingWrote_.clear();
   clipped_ = false;
   instructions_ = inputs_ = nullptr;
   causeEvidence_ = 0;
@@ -179,15 +224,29 @@ void ClaimCheck::beginTurn() {
 
 void ClaimCheck::setSources(const std::string& inputs, const std::string& recalled, const TurnSources& parts) {
   sources_ = orch::figureNumbers(inputs, kSourceNumbersMax);
+  {
+    // The owner's own history rows ground a follow-up's figures too (the previous
+    // message's photo description held them; HIGH-2).
+    const std::string more = orch::figureNumbers(parts.histOwner, kSourceNumbersMax);
+    if (!more.empty()) {
+      if (!sources_.empty()) sources_ += ' ';
+      sources_ += more.substr(0, kSourceNumbersMax > sources_.size() ? kSourceNumbersMax - sources_.size() : 0);
+    }
+  }
   recalled_ = orch::figureNumbers(recalled, kSourceNumbersMax);
   causeEvidence_ = orch::causeEvidenceOf(inputs);
-  ownerNums_ = orch::figureNumbers(parts.owner, kSourceNumbersMax);
+  // The owner's own history rows hold the figures their previous message gave (a
+  // photo's description numbers): a follow-up crediting them credits the owner (HIGH-2).
+  ownerNums_ = orch::figureNumbers(parts.owner + " " + parts.histOwner, kSourceNumbersMax);
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
   ledger_ = parts.ledger;
   subRuns_ = parts.subRuns;
+  ownerAskedHow_ = orch::ownerAskedHow(parts.owner);
   sourceNames_ = namedSources(parts, recalled);
   bool clipped = false;
-  sourceWords_ = orch::sourceWordsOf(parts.owner + "\n" + parts.fresh + "\n" + parts.memory, kSourceWordsMax, &clipped);
+  sourceWords_ = orch::sourceWordsOf(parts.owner + "\n" + parts.fresh + "\n" + parts.memory + "\n" +
+                                        parts.histOwner,
+                                    kSourceWordsMax, &clipped);
   clipped = clipped || parts.fresh.size() > kEvidenceTextMax || parts.memory.size() > kEvidenceTextMax;
   clipped_ = clipped_ || clipped;
 }
@@ -205,11 +264,32 @@ void ClaimCheck::noteToolText(const std::string& output) {
   clipped_ = clipped_ || clipped;
 }
 
+// An artifact.save into a .txt/.md text document (not a .csv, whose rows are counted
+// by the keyed append path): it may have rewritten a log.
+uint8_t savedTextFileRow(const std::string& argsJson) {
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
+  std::string name = d["name"] | "";
+  for (char& c : name) c = (char)std::tolower((unsigned char)c);
+  const size_t n = name.size();
+  return n > 4 && (name.compare(n - 4, 4, ".txt") == 0 || name.compare(n - 3, 3, ".md") == 0)
+             ? orch::kFxLogRow
+             : 0;
+}
+
 uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
   // A read of the device's own state (L19-11): the only thing that can confirm
   // "it is working" (kEvHealthRead comes from the ledger, never from text).
   if (regName == "device.status" || regName == "system.health") return orch::kFxHealth;
-  if (regName == "files.append") return appendsToLog(argsJson) ? orch::kFxLogRow : 0;
+  // CUM-782 + the review: a files.append only writes text documents, and the landed-row
+  // count (fxAppendedRows, in recordToolEffect) is the proof a row exists - the flag is
+  // asked for on every append and kept only when a row lands, whatever the extension
+  // (.txt and .md logs are logs too, not only .csv/.log).
+  if (regName == "files.append") return orch::kFxLogRow;
+  // An artifact.save that rewrites a text document also updates a log (the review: the
+  // free-text day log is corrected by rewriting the file): its landed-row proof is the
+  // same count (recordToolEffect keeps the flag only when the result counts rows).
+  if (regName == "artifact.save") return savedTextFileRow(argsJson);
   const bool memory = regName == "memory.write" || regName == "memory.update";
   const bool telegram = regName == "reply.telegram" || regName == "files.send";
   if (!memory && !telegram) return 0;
@@ -224,10 +304,38 @@ uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string&
   return (d["permanent"] | false) ? orch::kFxPermanent : 0;
 }
 
-void ClaimCheck::noteTool(orch::FxKind kind, bool isError, const std::string& output, uint8_t flags) {
+void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& argsJson) {
+  // The words a write saved this turn: a "Stored in memory: "..." right after a real
+  // memory.write is the turn's own record, whatever the reply quotes (the review).
+  pendingWrote_.clear();
+  if (regName != "memory.write" && regName != "memory.update" && regName != "files.append" &&
+      regName != "artifact.save")
+    return;
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return;
+  const char* text = d["text"] | (const char*)nullptr;
+  if (!text) text = d["content"] | (const char*)nullptr;
+  if (!text || !*text) return;
+  pendingWrote_ = " " + orch::normalizedWords(text);
+}
+
+void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
+                          uint8_t flags) {
   orch::recordToolEffect(fx_, kind, isError, output, flags);
   causeEvidence_ |= orch::causeEvidenceOf(output);
-  if (!isError) noteToolText(output);
+  if (!isError) {
+    noteToolText(output);
+    if (!pendingWrote_.empty()) {
+      // The write landed: its words are seen (the quote rule) and on record.
+      const std::string words = orch::normalizedWords(pendingWrote_);
+      if (toolText_.size() + words.size() + 1 > kToolTextMax) clipped_ = true;
+      else {
+        toolText_ += words;
+        wroteText_ += words;
+      }
+    }
+  }
+  pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
   if (isError || sources_.size() >= kSourceNumbersMax) return;
   const std::string more = orch::figureNumbers(output, kSourceNumbersMax - sources_.size());
@@ -295,7 +403,8 @@ void ClaimCheck::recordGaps(const std::string& reply, std::vector<orch::ClaimGap
   if (clipped_) return;   // a tool result past the cap may hold the words
   orch::ClaimGap g;
   if ((instructions_ || inputs_) && orch::hasRecordQuote(reply) &&
-      orch::recordQuoteGap(reply, seenText(/*fixedToo=*/true), &g, hostedRan().any()))
+      orch::recordQuoteGap(reply, seenText(/*fixedToo=*/true) + wroteText_, ownerText_, &g,
+                           hostedRan().any()))
     kept.push_back(g);
   // Asked why about a past sub-agent: the question names one ("Why notion?").
   std::string subjects = orch::asksWhy(ownerText_) ? ledgerSubjects(ledger_) : std::string();
@@ -315,7 +424,7 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   ev.sources = &sourceNames_;
   ev.owner = &ownerNums_;
   ev.sourceWords = &sourceWords_;
-  const orch::ClaimScan scan = orch::scanClaims(reply);
+  const orch::ClaimScan scan = orch::scanClaims(reply, ownerAskedHow_);
   if (scan.skippedNonEnglish) hlog::log("claims: skipped (non-English)");
   std::vector<orch::ClaimGap> gaps = orch::claimGaps(reply, scan, ev);
   std::vector<orch::ClaimGap> kept;
@@ -372,7 +481,20 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
 // skills index, history, the dynamic context): the records a reason may come from.
 std::string ClaimCheck::seenText(bool fixedToo) const {
   std::string out = toolText_;
-  if (inputs_) out += " " + orch::normalizedWords(*inputs_);
+  // The input block, minus the spawn ledger's header: its own instruction words
+  // ("never a rule, setting, memory or limit...") are not records, and a reply citing
+  // "a setting" must not find itself on record through them (the review).
+  std::string inputs;
+  if (inputs_) {
+    inputs = *inputs_;
+    if (!ledger_.empty()) {
+      const size_t firstLine = ledger_.find('\n');
+      const std::string header = ledger_.substr(0, firstLine == std::string::npos ? ledger_.size() : firstLine + 1);
+      const size_t at = inputs.find(header);
+      if (at != std::string::npos) inputs.erase(at, header.size());
+    }
+  }
+  if (!inputs.empty()) out += " " + orch::normalizedWords(inputs);
   if (!instructions_) return out;
   size_t from = fixedToo ? 0 : std::string::npos;
   for (const char* label : {layout::kDisplayShelfLabel, layout::kDisplayHistoryLabel, layout::kDisplayDynLabel}) {
