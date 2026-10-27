@@ -1417,13 +1417,17 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
 
 namespace {
 // A known connector's caps line. GitHub's names where clone, build and run work can go,
-// from the providers open now (check of c962b5d0: it sent that work to a paused anthropic).
-std::string capsText(const KnownConnector& k, bool antUp) {
+// from the providers open now (check of c962b5d0: it sent that work to a paused anthropic;
+// check of abe4c6a8: it said no provider runs code while an open code_interpreter sub did).
+std::string capsText(const KnownConnector& k, bool antUp, bool codeSubUp) {
   std::string text = k.caps;
   if (std::strcmp(k.id, "github") != 0) return text;
   if (!text.empty() && text.back() == '.') text.pop_back();
-  return text + (antUp ? " - for that, spawn an anthropic sandbox sub."
-                       : " - and no open provider can run code now (see the rows).");
+  if (antUp) return text + " - for that, spawn an anthropic sandbox sub.";
+  if (codeSubUp)
+    return text + " - an openai/mistral code_interpreter sub runs Python (see CODE SANDBOX) but cannot "
+                  "clone or build a repo.";
+  return text + " - and no open provider can run code now (see the rows).";
 }
 
 // CUM-821: a provider's display name ("OpenAI"), else its slug.
@@ -1582,6 +1586,9 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   const KnownConnector* kk = knownConnectors(kn);
   std::string capsBlock;
   bool ciCaps = false;   // the code_interpreter line once, not once per provider
+  // An open openai/mistral code_interpreter sub (the CODE SANDBOX line's rule).
+  const bool codeSubUp = (oaiUp && codeInterpreterOnWire(cs, "openai")) ||
+                         (misUp && codeInterpreterOnWire(cs, "mistral"));
   for (const ConnectorInfo& c : cs) {
     if (!c.enabled) continue;
     // A paused provider's connectors do not run (its row says so): no caps line.
@@ -1596,7 +1603,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     for (int i = 0; i < kn; i++)
       if (c.type == kk[i].id || c.name == kk[i].id) { known = &kk[i]; break; }
     if (known && known->caps[0]) {
-      capsBlock += "  - " + c.name + ": " + capsText(*known, antUp) + "\n";
+      capsBlock += "  - " + c.name + ": " + capsText(*known, antUp, codeSubUp) + "\n";
     } else if (c.kind == "mcp" && !c.url.empty()) {
       // A CUSTOM MCP the owner added (not in the built-in catalog): the model
       // used to see only its bare name with no idea what it does. Surface the

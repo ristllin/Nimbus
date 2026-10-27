@@ -998,6 +998,14 @@ bool isWebTool(const char* name) {
   return strstr(name, "web_search") != nullptr || strstr(name, "web_fetch") != nullptr ||
          strstr(name, "news_search") != nullptr || strstr(name, "weather_search") != nullptr;
 }
+// Mistral's own web built-ins, by exact name: never a run of an attached connector. A custom
+// Studio connector's tool may carry such a name inside its own ("brave_web_search") and is
+// that connector's run (check of abe4c6a8).
+bool isMistralWebBuiltin(const char* name) {
+  for (const char* b : {"web_search", "web_search_premium", "news_search", "weather_search", "web_fetch"})
+    if (strcmp(name, b) == 0) return true;
+  return false;
+}
 void bump(uint16_t& n) { if (n < 0xFFFF) n++; }
 
 // The reply text of a Conversations response (the last message.output) and the
@@ -1014,7 +1022,8 @@ std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts
       // an attached connector: "the weather for my calendar events" that ran only
       // weather_search must still read connector NOT called (CUM-536; check of c962b5d0).
       if (isWebTool(nm)) bump(runs.web);
-      else if (nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached)) bump(runs.connector);
+      if (!isMistralWebBuiltin(nm) && nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached))
+        bump(runs.connector);
       continue;
     }
     if (strcmp(type, "message.output") == 0) reply = mistralSubReplyContent(o);   // string OR chunks, with sources

@@ -691,6 +691,37 @@ static void test_cum822_sub_reply_keeps_web_sources() {
   TEST_ASSERT_EQUAL_STRING("plain answer", plain.reply);
 }
 
+// Check of abe4c6a8: Mistral's web built-ins are excluded by EXACT name. A custom Studio
+// connector whose tool carries "web_search" inside its own name ("brave_web_search") is that
+// connector's run, so no false NOT-called marker; it still counts as a web run.
+static void test_custom_connector_web_named_tool_is_its_run() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"brave_web_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Results (search.brave.com)\"}]}"});
+  auto pd = d.contract();
+  pd.attachMistral = [](JsonDocument& doc) {
+    JsonObject t = doc["tools"].add<JsonObject>();
+    t["type"] = "connector";
+    t["connector_id"] = "brave";
+    if (doc[nimbus::orch::kMistralIdentityProbe] | false) {
+      t["device_name"] = "brave";
+      t["device_type"] = "brave";
+    }
+  };
+  agent::Directive dir;
+  dir.task = "Search for the Elizabeth line status.";
+  dir.instruction = dir.task;
+  dir.skill = "brave";
+  char jobId[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  TEST_ASSERT_EQUAL(1, env.connectorCalls);
+  TEST_ASSERT_EQUAL(1, env.webRuns);
+  TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=1"));
+}
+
 static void test_sub_connector_called_counts_the_execution() {
   FakeProviderDeps d;
   // The live 2026-09-27 shape: the connector ran server-side and returned events.
@@ -1516,6 +1547,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_connector_attached_but_never_called);
   RUN_TEST(test_cum822_web_search_spawn_leaves_studio_connectors_off);
   RUN_TEST(test_cum822_sub_reply_keeps_web_sources);
+  RUN_TEST(test_custom_connector_web_named_tool_is_its_run);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);

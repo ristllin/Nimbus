@@ -797,6 +797,11 @@ class NimbusdRig {
   }
   // The "[PROVIDERS & CONNECTORS]" block exactly as the next turn's context gets it
   // ("" when no connector is configured, matching the turn path).
+  // The catalog as the engine renders it for the current head (its rule: the tool loop on and
+  // this head runs it), for GET /api/connectors/catalog.
+  std::string connectorsCatalogForHead() const {
+    return connectorsCatalog(settings_.get().toolLoop && headRunsTools(hostBadge()));
+  }
   std::string connectorsCatalog(bool headCallsTools = true) const {
     auto cs = connectorsView();
     if (cs.empty()) return std::string();

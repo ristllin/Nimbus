@@ -2698,9 +2698,17 @@ static void test_sandbox_and_github_lines_follow_paused_providers() {
   ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
   ps.openaiPause = nimbus::orch::HeadPause();   // github rides openai: its caps line shows
   t = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - and no open provider can run code now (see the "
-                          "rows).") != std::string::npos);
+  // Check of abe4c6a8: OpenAI open with its code_interpreter (Lumi's state without Anthropic):
+  // the line names that sub, never "no open provider can run code".
+  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - an openai/mistral code_interpreter sub runs Python "
+                          "(see CODE SANDBOX) but cannot clone or build a repo.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: available on openai sub-agents") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("spawn an anthropic sandbox sub") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("no open provider can run code now") == std::string::npos);
+  // No code_interpreter anywhere and Anthropic paused: nothing runs code.
+  const std::vector<ConnectorInfo> gh = {mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")};
+  TEST_ASSERT_TRUE(catalogText(gh, ps).find("It cannot CLONE, BUILD, or RUN code - and no open provider can run code "
+                                            "now (see the rows).") != std::string::npos);
   ps.anthropicPause = nimbus::orch::HeadPause();
   t = catalogText(cs, ps);
   TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub.") !=

@@ -114,34 +114,52 @@ def _epi_id(row: dict) -> int:
         return 0
 
 
-def _assistant_rows(ip: str, floor: int) -> list:
+def _assistant_rows(ip: str, floor: int):
     """The web chat's assistant messages after episodic id `floor`, oldest first (a sub-agent's
-    synthesis has no turn id of its own: it is read from the log, never the legacy slot)."""
+    synthesis has no turn id of its own: it is read from the log, never the legacy slot).
+    None when the log could not be read (a 503 while the card is busy is not "no rows")."""
     try:
-        j = _S.get(
-            f"http://{ip}/api/mem/episodic", params={"session": "web", "kind": "message", "limit": 20}, timeout=15
-        ).json()
-    except Exception:  # noqa: BLE001 - a busy page: nothing new this poll
-        return []
-    rows = [r for r in j.get("messages") or [] if r.get("role") == "assistant" and _epi_id(r) > floor]
-    return sorted(rows, key=_epi_id)
+        r = _S.get(
+            f"http://{ip}/api/mem/episodic",
+            params={"session": "web", "kind": "message", "limit": 20},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        rows = r.json().get("messages") or []
+    except Exception:  # noqa: BLE001 - unreadable this poll
+        return None
+    return sorted((x for x in rows if x.get("role") == "assistant" and _epi_id(x) > floor), key=_epi_id)
+
+
+def _rows_or_fail(ip: str, floor: int, what: str, tries: int = 10) -> list:
+    """`_assistant_rows`, retried while the log is unreadable; the ask fails if it never reads."""
+    for _ in range(tries):
+        rows = _assistant_rows(ip, floor)
+        if rows is not None:
+            return rows
+        time.sleep(3)
+    pytest.fail(f"the episodic log stayed unreadable ({what})")
 
 
 def _ask(ip: str, text: str, cap_s: int = 420) -> list:
     """One web-chat ask: its own reply (by turn id), then every later delivery (the synthesis of
     the sub-agent it started) until no job runs and nothing new arrives for 25 s."""
-    floor = max((_epi_id(r) for r in _assistant_rows(ip, 0)), default=0)
+    floor = max((_epi_id(r) for r in _rows_or_fail(ip, 0, "the floor read")), default=0)
     first = chat_turn(_S, ip, text, timeout_s=cap_s)
     deadline = time.time() + cap_s
-    seen, quiet_since = 0, time.time()
+    rows, quiet_since = [], time.time()
     while time.time() < deadline:
-        rows = _assistant_rows(ip, floor)
-        if len(rows) != seen or _jobs_live(ip):
-            seen, quiet_since = len(rows), time.time()
+        now = _assistant_rows(ip, floor)
+        if now is None:  # a busy card: keep the last good rows, count it as activity
+            quiet_since = time.time()
+        elif len(now) != len(rows) or _jobs_live(ip):
+            rows, quiet_since = now, time.time()
         elif time.time() - quiet_since >= 25:
             break
         time.sleep(4)
-    texts = [str(r.get("text") or "") for r in _assistant_rows(ip, floor)]
+    rows = _rows_or_fail(ip, floor, "the final read")
+    texts = [str(r.get("text") or "") for r in rows]
     return texts if texts else [first]
 
 

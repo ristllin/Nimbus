@@ -263,6 +263,16 @@ static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
     const std::string cat = rig.connectorsCatalog(rig.headRunsTools(rig.hostBadge()));
     c.ok(has(cat, "call web.search on your own turn") == k.route,
          k.route ? "the Cumulo head is offered its web.search" : "the Z.ai head is not offered web.search");
+    // GET /api/connectors/catalog renders by the engine's rule too (check of abe4c6a8).
+    EngineThread eng(&rig);
+    eng.start();
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+    ApiResp out;
+    api.handle("GET", "/api/connectors/catalog", "", out);
+    c.ok(has(out.body, "call web.search on your own turn") == k.route,
+         k.route ? "the catalog endpoint offers the Cumulo head web.search"
+                 : "the catalog endpoint offers the Z.ai head no web.search");
   }
   clearEnv();
 }

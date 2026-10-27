@@ -334,7 +334,7 @@ class WebApi {
       // The model-facing "[PROVIDERS & CONNECTORS]" block exactly as the next turn's
       // context carries it, so an operator (and the e2e) can confirm the catalog and
       // the badges below agree. Token-gated like every /api/* route; no secrets in it.
-      out = ApiResp{200, "text/plain; charset=utf-8", rig_->connectorsCatalog()};
+      out = ApiResp{200, "text/plain; charset=utf-8", rig_->connectorsCatalogForHead()};
       return true;
     }
     if (base != "/api/connectors") return false;
