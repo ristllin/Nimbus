@@ -34,6 +34,7 @@ struct Card : nimbus::tgarc::Fs {
   int existsCalls = 0;
   // Return true to fail this write (path, offset in file, length).
   std::function<bool(const std::string&, size_t, size_t)> failWrite;
+  bool failRenameOnce = false;   // the next rename of a .part file fails
   std::vector<std::string> removed;
 
   static bool temp(const std::string& p) { return endsWith(p, ".tmp") || endsWith(p, ".part"); }
@@ -102,6 +103,10 @@ struct Card : nimbus::tgarc::Fs {
   }
   bool rename(const std::string& from, const std::string& to) override {
     if (dead || !files.count(from)) return false;
+    if (failRenameOnce && endsWith(from, ".part")) {
+      failRenameOnce = false;
+      return false;
+    }
     if (files.count(to)) violations++;
     files[to] = files[from];
     files.erase(from);

@@ -12,6 +12,9 @@
 // Layout (all under kRoot, on the SD card only):
 //   /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.json     raw inbound update
 //   /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.<ext>    its media file
+//   /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.turn.<ext>  the assistant's own copy
+//                                                    (a smaller rendition), kept
+//                                                    until the full size lands
 //   /mem/tg/<chat>/<yyyy-mm-dd>/o<seq>.json          outbound message
 //   /mem/tg/<chat>/<yyyy-mm-dd>/o<seq>.<ext>         outbound media file
 //   /mem/tg/<chat>/<yyyy-mm-dd>/index.jsonl          one line per item, plus
@@ -53,9 +56,14 @@ constexpr uint64_t kMaxFileBytes = 20ull * 1024 * 1024;
 // Pending downloads held in RAM. Overflow is not a loss: the index row already says
 // "pending", and the resume pass re-reads the newest 14 days once the queue drains.
 constexpr size_t kMaxJobs = 64;
-// Attempts per download before the row says "failed" (a network error retries,
-// resuming from the bytes already on the card; a card write error does not).
+// Attempts per download before it ends "failed" (a network error) or stays
+// "incomplete" (a card write or rename error). Every attempt resumes from the bytes
+// already on the card; an incomplete attempt writes its own status line, and the
+// count of those lines bounds the retries across restarts too.
 constexpr uint8_t kMaxTries = 4;
+// Day directories (newest first, per chat) the resume pass re-reads after a restart:
+// an item there that is still waiting for its file is fetched again.
+constexpr int kResumeDays = 14;
 // Chats that are not on the allowlist (strangers who found the bot) are archived
 // as text only, within fixed budgets, and their media is never fetched, so nobody
 // outside the allowlist can spend the card or the radio, or push the owner's own
@@ -107,6 +115,8 @@ std::string inBase(int64_t updateId);   // "123"
 std::string outBase(uint32_t seq);      // "o7"
 // One past the largest "o<seq>." name in `names` (1 when there is none).
 uint32_t nextOutSeq(const std::vector<std::string>& names);
+// The name of the assistant's own copy of an inbound file: "<base>.turn.<ext>".
+std::string turnCopyName(const std::string& base, const std::string& ext);
 
 // ---- content types and the archive policy ----------------------------------------
 // Every message content type the archive recognizes. Download types are fetched in
@@ -251,6 +261,7 @@ struct Now {
 struct Stats {
   uint32_t inItems = 0, outItems = 0, dupes = 0, repaired = 0;
   uint32_t mediaOk = 0, mediaIncomplete = 0, mediaFailed = 0, notArchived = 0;
+  uint32_t turnCopies = 0;   // the turn's smaller copy kept while the full size is due
   uint32_t writeErrors = 0, pressureDays = 0, strangerSkipped = 0;
 };
 struct Job {
@@ -286,6 +297,9 @@ struct PressureOutcome {
   std::string keptFrom;            // oldest day still on the card ("" if none)
 };
 enum class Trust : uint8_t { Allowed, Stranger };
+// What Archive::adoptMedia kept of the turn's download: nothing, the file itself (the
+// same rendition: the job is done), or the turn's copy (the full size is still due).
+enum class Adopted : uint8_t { No, Whole, TurnCopy };
 
 class Archive {
  public:
@@ -310,15 +324,19 @@ class Archive {
   // Record a restored file that is already on the card.
   bool recordRestored(const Restored& r);
 
-  // One download per Telegram file (shared with the assistant). The turn path fetches
-  // an inbound photo, document or voice note once, into its own staging file; when the
-  // archive is waiting to fetch the very same file for that update (same update, same
-  // file id, so the same rendition), it copies the staged file in instead of
-  // downloading it again, and the job ends "ok". False when the archive wants another
-  // rendition (it then fetches its own), has no such job, or the copy failed (the job
-  // stays queued).
-  bool adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
-                  Fs& src, const std::string& srcPath);
+  // The turn path's download, kept the moment it exists. The turn path fetches an
+  // inbound photo, document or voice note once, into its own staging file:
+  //   - the archive is waiting for the very same file (same update, same file id, so
+  //     the same rendition): the staged file is copied in instead of downloading it
+  //     again, and the job ends "ok";
+  //   - the archive wants another rendition (the turn reads a smaller photo, the
+  //     archive keeps the largest): the staged file is kept as turnCopyName() with
+  //     its own "ok" status line (`copy`: "turn"), so the item is on the card at turn
+  //     time, and the full-size job stays queued; its own line follows when it lands.
+  // Returns which (Adopted::No when there is no such job or the copy failed: the job
+  // stays queued either way).
+  Adopted adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
+                     Fs& src, const std::string& srcPath);
   // The other direction: the archive's finished media file for that update when it is
   // the file `fileId` ("" otherwise), so the turn path copies it instead of fetching.
   std::string mediaFor(const std::string& chat, int64_t updateId, int64_t date,
@@ -328,14 +346,18 @@ class Archive {
   size_t pending() const { return jobs_.size() + (overflowed_ ? 1 : 0); }
   // Downloads. One step fetches the next job, writing the card in `cap`-byte slices,
   // until it ends, `budgetMs` passes (Partial: resumed next step) or `yield` says
-  // stop. A write failure leaves the .part file and an "incomplete" row.
+  // stop. A write failure leaves the .part file and an "incomplete" status line, and
+  // the job is tried again (from the .part) until it has used kMaxTries. A job whose
+  // file is already on the card ends "ok" with its status line.
   Step downloadStep(Source& src, uint8_t* buf, size_t cap, uint32_t budgetMs,
                     const std::function<uint32_t()>& nowMs,
                     const std::function<bool()>& yield);
-  // Re-queue items whose index row still says "pending" (after a reboot, or once
-  // an overflowed queue has drained), from the newest `days` day directories of every
-  // chat. Returns the jobs added.
-  int resumePending(int days = 14);
+  // Re-queue items still waiting for their file (after a reboot, or once an
+  // overflowed queue has drained), from the newest `days` day directories of every
+  // chat: a "pending" row with no final status line (the turn's copy is not final:
+  // the full size is still due), or one whose last line is "incomplete" with tries
+  // left. Returns the jobs added.
+  int resumePending(int days = kResumeDays);
 
   // Storage pressure, given the card's free and total bytes.
   PressureOutcome pressurePass(uint64_t freeBytes, uint64_t totalBytes);
@@ -376,6 +398,8 @@ class Archive {
   uint32_t claimOutSeq(const std::string& chat, const std::string& day);
   bool copyIn(Fs& src, const std::string& srcPath, const std::string& dstPath,
               uint64_t& bytes);
+  bool keepTurnCopy(const Job& j, Fs& src, const std::string& srcPath);
+  Step incompleteOrRetry(uint64_t got, const char* err);
   void finishJob(const Job& j, const char* st, uint32_t& counter, uint64_t bytes,
                  const std::string& err);
   bool enqueue(const Job& j);
@@ -438,6 +462,35 @@ struct RowPage {
 };
 RowPage readRows(Fs& fs, const std::string& chat, const std::string& day, size_t from,
                  size_t limit);
+
+// An item's media status as the owner should read it. The index is append-only: an
+// item row says "pending" once, when its download is queued, and each outcome is a
+// later status line ({"ev":"media","ref":...}). The fold below reads both, plus what
+// the card really holds, so a status never says "pending" over a file that is there,
+// or "ok" over one that is not.
+struct MediaFacts {
+  std::string rowSt;            // the item row's own st ("pending", "ok", "not archived: ...")
+  std::string lastEv;           // the latest full-size status line's st ("" = none yet)
+  int         incompleteEvs = 0;   // "incomplete" lines for it (attempts used)
+  bool        fullOnCard = false;  // the full-size file is on the card
+  bool        turnOnCard = false;  // the turn's copy (turnCopyName) is on the card
+  bool        inResumeWindow = true;   // its day is among the chat's newest kResumeDays
+};
+struct ItemStatus {
+  // "ok" (a copy is on the card), "pending" (not on the card yet, still to be
+  // fetched), "failed", "incomplete" (the card refused it, no tries left), "missing"
+  // (not on the card and no longer fetched), or the row's "not archived: <why>".
+  std::string st;
+  bool        turnCopy = false;   // the copy on the card is the turn's smaller one
+  std::string full;               // with turnCopy: the full-size file's own status
+};
+ItemStatus foldMediaStatus(const MediaFacts& f);
+// One page of a day's ITEM rows (the status lines are folded into their item, never
+// returned), each media row's "st" made truthful by foldMediaStatus; a row whose
+// best copy is the turn's carries "file" = that copy, "copy":"turn" and "full" = the
+// full-size status. `from`/`next` count item rows. Unreadable lines are skipped.
+RowPage readItemRows(Fs& fs, const std::string& chat, const std::string& day, size_t from,
+                     size_t limit);
 // Media files (not the JSON records), newest day first, across chats or one chat.
 struct MediaRef {
   std::string chat, day, name;

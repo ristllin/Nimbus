@@ -50,7 +50,9 @@ bool onRestored(const nimbus::tgarc::Restored& r);
 // turn path's staging file) and return true, with `total` the bytes copied (the file
 // size with nothing copied when it is `cap` or more); false: the caller downloads it.
 // adoptInbound: the turn path downloaded this update's file to `lfsPath`; when the
-// archive is still waiting to fetch the same file, it copies it from there instead.
+// archive is still waiting to fetch it, it keeps that download at once: as the file
+// itself when it is the same rendition, else as the item's turn copy (the full-size
+// file is still fetched later).
 struct InboundRef {
   const char* chat;     // the chat id
   int32_t     updateId;

@@ -79,8 +79,10 @@ std::string inRow(const InMeta& m, const std::string& rawName, const std::string
   return toJson(d);
 }
 
+// One media status line. `turnCopy`: it is about the turn's smaller copy, not the
+// full-size file (the item is on the card, the full size is still due).
 std::string eventRow(const std::string& ref, const std::string& file, const char* st,
-                     uint64_t bytes, const std::string& err) {
+                     uint64_t bytes, const std::string& err, bool turnCopy = false) {
   JsonDocument d = newDoc();
   d["v"] = 1;
   d["ev"] = "media";
@@ -88,6 +90,7 @@ std::string eventRow(const std::string& ref, const std::string& file, const char
   d["file"] = file;
   d["st"] = st;
   d["bytes"] = (unsigned long long)bytes;
+  if (turnCopy) d["copy"] = "turn";
   if (!err.empty()) d["err"] = err;
   return toJson(d);
 }
@@ -479,13 +482,15 @@ bool Archive::enqueue(const Job& j) {
 
 // ---- one download, shared with the turn path -------------------------------------
 
-bool Archive::adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
-                         Fs& src, const std::string& srcPath) {
-  if (!validChatDir(chat) || fileId.empty()) return false;
+Adopted Archive::adoptMedia(const std::string& chat, int64_t updateId, int64_t date, const std::string& fileId,
+                            Fs& src, const std::string& srcPath) {
+  if (!validChatDir(chat) || fileId.empty()) return Adopted::No;
   const std::string day = dayFromEpoch(date), base = inBase(updateId);
   auto it = std::find_if(jobs_.begin(), jobs_.end(),
                          [&](const Job& j) { return j.chat == chat && j.day == day && j.base == base; });
-  if (it == jobs_.end() || it->fileId != fileId) return false;
+  if (it == jobs_.end()) return Adopted::No;
+  if (it->fileId != fileId)   // another rendition: kept beside, the full size stays due
+    return keepTurnCopy(*it, src, srcPath) ? Adopted::TurnCopy : Adopted::No;
   const Job j = *it;
   const std::string file = itemPath(chat, day, jobName(j));
   const std::string part = file + ".part";
@@ -493,15 +498,35 @@ bool Archive::adoptMedia(const std::string& chat, int64_t updateId, int64_t date
   if (!fs_.exists(file)) {
     if (!copyIn(src, srcPath, part, bytes) || bytes == 0) {
       fs_.remove(part);
-      return false;   // the job stays queued: the archive fetches it itself
+      return Adopted::No;   // the job stays queued: the archive fetches it itself
     }
     if (!fs_.rename(part, file)) {
       fs_.remove(part);
-      return false;
+      return Adopted::No;
     }
   }
   jobs_.erase(it);   // nothing above touched the queue: the iterator is still valid
   finishJob(j, "ok", stats_.mediaOk, bytes, "");
+  return Adopted::Whole;
+}
+
+// The turn's own download, kept as "<base>.turn.<ext>" with its own status line (the
+// item is on the card from now on). The job is not touched: the full-size file is
+// still fetched, as an upgrade. A copy already there (a replayed turn) is kept as is.
+bool Archive::keepTurnCopy(const Job& j, Fs& src, const std::string& srcPath) {
+  const std::string name = turnCopyName(j.base, j.ext);
+  if (!validItemName(name)) return false;
+  const std::string file = itemPath(j.chat, j.day, name);
+  if (fs_.exists(file)) return true;
+  const std::string part = file + ".part";
+  uint64_t bytes = 0;
+  if (!copyIn(src, srcPath, part, bytes) || bytes == 0 || !fs_.rename(part, file)) {
+    fs_.remove(part);
+    return false;
+  }
+  ++stats_.turnCopies;
+  if (!appendLine(indexPathOf(j.chat, j.day), eventRow(j.base, name, "ok", bytes, "", true)))
+    ++stats_.writeErrors;
   return true;
 }
 
@@ -737,7 +762,13 @@ Step Archive::runFront(Source& src, const Pump& p) {
   Job& j = jobs_.front();
   const std::string file = itemPath(j.chat, j.day, jobName(j));
   const std::string part = file + ".part";
-  if (fs_.exists(file)) { jobs_.pop_front(); return Step::Done; }
+  if (fs_.exists(file)) {   // it landed and its line was lost (a restart): say so now
+    const Job done = j;
+    jobs_.pop_front();
+    const int64_t size = fs_.size(file);
+    finishJob(done, "ok", stats_.mediaOk, size > 0 ? (uint64_t)size : 0, "");
+    return Step::Done;
+  }
   const int64_t have = fs_.size(part);
   const uint64_t resumeAt = (have > 0 && !j.noResume) ? (uint64_t)have : 0;
   const OpenResult o = src.open(j.fileId, resumeAt);
@@ -777,33 +808,42 @@ Step Archive::endJob(PumpEnd end, bool closed, uint64_t got, int64_t expect) {
     finishJob(done, "not archived: too large", stats_.notArchived, 0, "");
     return Step::Failed;
   }
-  if (end == PumpEnd::WriteError || !closed) {
-    // The card refused a write: keep the .part and say so; retrying a full or failing
-    // card only repeats the failure.
-    jobs_.pop_front();
-    finishJob(done, "incomplete", stats_.mediaIncomplete, got, "card write failed");
-    return Step::Incomplete;
-  }
+  if (end == PumpEnd::WriteError || !closed) return incompleteOrRetry(got, "card write failed");
   if (end == PumpEnd::SrcError || (expect >= 0 && got != (uint64_t)expect))
     return retryOrFail("download cut short", false);
+  if (!fs_.rename(part, file)) return incompleteOrRetry(got, "card rename failed");
   jobs_.pop_front();
-  if (!fs_.rename(part, file)) {
-    finishJob(done, "incomplete", stats_.mediaIncomplete, got, "card rename failed");
-    return Step::Incomplete;
-  }
   finishJob(done, "ok", stats_.mediaOk, got, "");
   return Step::Done;
 }
 
-// Items of one day still waiting for their media: a "pending" row with no later
-// status event, and no finished file on the card.
+// The card refused a write or the rename: the .part stays and an "incomplete" line
+// says so at once; the job goes to the back of the queue and is tried again from the
+// .part until it has used kMaxTries (a card that stays full fails the same way each
+// time, so the attempts are bounded, and the lines count them across a restart).
+Step Archive::incompleteOrRetry(uint64_t got, const char* err) {
+  Job j = jobs_.front();
+  jobs_.pop_front();
+  finishJob(j, "incomplete", stats_.mediaIncomplete, got, err);
+  if (++j.tries < kMaxTries) jobs_.push_back(j);
+  return Step::Incomplete;
+}
+
+// Items of one day still waiting for their media, with no finished file on the card:
+// a "pending" row with no final status line. The turn's copy is not final (the full
+// size is still due); an "incomplete" line is final only once kMaxTries of them were
+// written, and the job resumes with the tries it has left.
 std::vector<Job> Archive::pendingIn(const std::string& chat, const std::string& day) {
   std::map<std::string, Job> pend;
   forEachLine(fs_, indexPathOf(chat, day), [&](const std::string& line) {
     JsonDocument d = newDoc();
     if (deserializeJson(d, line)) return;
     if (d["ev"].is<const char*>()) {
-      pend.erase(d["ref"] | "");
+      if (d["copy"].is<const char*>()) return;
+      const auto it = pend.find(d["ref"] | "");
+      if (it == pend.end()) return;
+      if (std::strcmp(d["st"] | "", "incomplete") == 0 && ++it->second.tries < kMaxTries) return;
+      pend.erase(it);
       return;
     }
     const std::string st = d["st"] | "";
@@ -940,6 +980,116 @@ RowPage readRows(Fs& fs, const std::string& chat, const std::string& day, size_t
     ++i;
   });
   p.next = from + p.rows.size();
+  return p;
+}
+
+namespace {
+// The full-size file's own state when it is not on the card.
+std::string fullState(const MediaFacts& f) {
+  if (f.lastEv.empty()) {
+    if (f.rowSt == "pending") return f.inResumeWindow ? "pending" : "missing";
+    return f.rowSt == "ok" ? "missing" : f.rowSt;   // "ok" over no file: it is gone
+  }
+  if (f.lastEv == "ok") return "missing";   // saved once, no longer on the card
+  if (f.lastEv == "incomplete")
+    return f.incompleteEvs < (int)kMaxTries && f.inResumeWindow ? "pending" : "incomplete";
+  return f.lastEv;   // "failed", "not archived: <why>"
+}
+}  // namespace
+
+ItemStatus foldMediaStatus(const MediaFacts& f) {
+  ItemStatus s;
+  if (f.fullOnCard) {
+    s.st = "ok";
+    return s;
+  }
+  const std::string full = fullState(f);
+  if (f.turnOnCard) {
+    s.st = "ok";
+    s.turnCopy = true;
+    s.full = full;
+    return s;
+  }
+  s.st = full;
+  return s;
+}
+
+namespace {
+// What the status lines say about one item (its full-size file and its turn copy).
+struct EvFacts {
+  std::string last;   // the latest full-size line's st
+  int incomplete = 0;
+};
+
+// The page rows with their status folded in (the rows are already parsed).
+void foldPage(Fs& fs, const std::string& chat, const std::string& day, std::vector<JsonDocument>& docs,
+              const std::map<std::string, EvFacts>& evs, std::vector<std::string>& out) {
+  std::vector<std::string> names;
+  for (const Entry& e : fs.list(dayDirPath(chat, day)))
+    if (!e.dir) names.push_back(e.name);
+  std::sort(names.begin(), names.end());
+  const auto onCard = [&](const std::string& n) { return std::binary_search(names.begin(), names.end(), n); };
+  const std::vector<std::string> days = listDays(fs, chat);
+  const size_t window = std::min(days.size(), (size_t)kResumeDays);
+  const bool inWindow = std::find(days.begin(), days.begin() + (long)window, day) != days.begin() + (long)window;
+  for (JsonDocument& d : docs) {
+    const char* file = d["file"] | (const char*)nullptr;
+    if (file && std::strcmp(d["dir"] | "", "in") == 0 && d["u"].is<long long>()) {
+      const std::string base = inBase(d["u"].as<long long>());
+      const std::string name = file;
+      MediaFacts f;
+      f.rowSt = d["st"] | "";
+      const auto ev = evs.find(base);
+      if (ev != evs.end()) {
+        f.lastEv = ev->second.last;
+        f.incompleteEvs = ev->second.incomplete;
+      }
+      f.fullOnCard = onCard(name);
+      const std::string turn = name.size() > base.size() + 1 && name.compare(0, base.size() + 1, base + ".") == 0
+                                   ? turnCopyName(base, name.substr(base.size() + 1))
+                                   : std::string();
+      f.turnOnCard = !turn.empty() && onCard(turn);
+      f.inResumeWindow = inWindow;
+      const ItemStatus s = foldMediaStatus(f);
+      d["st"] = s.st;
+      if (s.turnCopy) {
+        d["file"] = turn;
+        d["copy"] = "turn";
+        d["full"] = s.full;
+      }
+    }
+    out.push_back(toJson(d));
+  }
+}
+}  // namespace
+
+RowPage readItemRows(Fs& fs, const std::string& chat, const std::string& day, size_t from,
+                     size_t limit) {
+  RowPage p;
+  if (!validChatDir(chat) || !validDay(day)) return p;
+  std::vector<JsonDocument> docs;
+  std::map<std::string, EvFacts> evs;   // only the page's items (a line follows its item)
+  size_t items = 0;
+  forEachLine(fs, indexPathOf(chat, day), [&](const std::string& line) {
+    JsonDocument d = newDoc();
+    if (deserializeJson(d, line) || !d.is<ArduinoJson::JsonObject>()) return;   // unreadable: skipped
+    if (d["ev"].is<const char*>()) {
+      const auto it = evs.find(d["ref"] | "");
+      if (it == evs.end() || d["copy"].is<const char*>()) return;   // the turn's copy: read from the card
+      it->second.last = d["st"] | "";
+      if (it->second.last == "incomplete") ++it->second.incomplete;
+      return;
+    }
+    if (items++ < from) return;
+    if (docs.size() >= limit) {
+      p.more = true;
+      return;
+    }
+    if (d["u"].is<long long>()) evs[inBase(d["u"].as<long long>())] = EvFacts();
+    docs.push_back(std::move(d));
+  });
+  p.next = from + docs.size();
+  foldPage(fs, chat, day, docs, evs, p.rows);
   return p;
 }
 

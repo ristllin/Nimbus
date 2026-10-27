@@ -668,9 +668,18 @@ is recognized without reading the card at all.
 ```text
 /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.json    raw inbound update
 /mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.<ext>   its media file
+/mem/tg/<chat>/<yyyy-mm-dd>/<update_id>.turn.<ext>  the assistant's own (smaller) copy
 /mem/tg/<chat>/<yyyy-mm-dd>/o<seq>.json         outbound message (o<seq>.<ext> for a file)
 /mem/tg/<chat>/<yyyy-mm-dd>/index.jsonl         one line per item, plus media status lines
 ```
+
+**The assistant's copy is kept at once.** When a turn downloads a photo, document or
+voice note, the archive keeps that download the moment it exists. If it is the same
+file the archive wants, it becomes the media file and nothing is downloaded twice.
+If it is another size (a turn reads Telegram's 800 px photo, the archive keeps the
+largest), it is kept as `<update_id>.turn.<ext>` with its own status line, so the
+item is on the card at turn time, and the full-size file is still downloaded later,
+with its own status line. Both copies are kept.
 
 The outbound sequence continues from the names already in the day folder, so a
 restart or a clock jump never reuses one.
@@ -679,8 +688,12 @@ restart or a clock jump never reuses one.
 in 8 KB slices from one PSRAM buffer, as `<name>.part`, renamed when complete. It runs
 on the Telegram task with the single TLS session (after replies have gone out), for at
 most 8 s per poll cycle, and resumes from the bytes already on the card. A local turn
-or a factory reset cuts a transfer short; it resumes later. A card write error leaves
-the `.part` file and an `incomplete` line; a network error is retried up to four times.
+or a factory reset cuts a transfer short; it resumes later. A card write or rename
+error leaves the `.part` file and an `incomplete` line, and the download is tried again
+from the `.part` on a later cycle; a network error is retried the same way. Each file
+gets four tries in all (the `incomplete` lines count them across a restart), then its
+last line says `failed` or `incomplete`. After a restart the archive fetches again
+whatever is still due in each chat's 14 newest day folders.
 An outbound message from another task is queued in PSRAM and written by the Telegram
 task, so no caller waits on the card.
 
@@ -696,10 +709,20 @@ clean-up: those passes never touch `/mem/tg`. It is removed only by:
 
 **Reading it.** The web page's **Telegram archive** group (Memory) lists the chats
 and their days, shows a day's items, opens a record or a photo in place, and
-**Export Day** saves a whole day as a ZIP. Under it, `GET /api/tg/archive` lists
-chats, then a chat's days, then a day's index lines (paged with `from` and `limit`; a
-page carries only the lines that fit in about 14 KB and `next` says where the next
-page starts); `GET /api/tg/archive/item` streams one record or file;
+**Export Day** saves a whole day as a ZIP. Each item says where its file stands: saved
+(a View or Save button), a smaller copy saved with the full size still to come, not
+saved yet, not saved (with the reason), or no longer on the memory card. Under it,
+`GET /api/tg/archive` lists chats, then a chat's days, then a day's items (paged with
+`from` and `limit`, counted in items; a page carries only the items that fit in about
+14 KB and `next` says where the next page starts). The index is append-only (an item
+row says `pending` once, and each outcome is a later status line), so the route folds
+the status lines into their item and checks the card: an item's `st` is `ok` when a
+copy is on the card, `pending` while its file is still to be fetched, `failed`,
+`incomplete` (the card refused it and no tries are left), `missing` (not on the card
+and no longer fetched), or `not archived: <why>`. When the copy on the card is the
+assistant's smaller one, the item carries `"copy":"turn"`, `file` names that copy and
+`full` gives the full-size file's own status. `GET /api/tg/archive/item` streams one
+record or file;
 `GET /api/tg/archive/zip?chat=&day=` streams that day as a ZIP (stored, one pass, no
 file held in memory). All need the device sign-in token, and the item and ZIP
 downloads go through the same memory admission as the page and the Files list:

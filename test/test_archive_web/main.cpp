@@ -244,6 +244,16 @@ static void test_archive_streams_go_through_admission() {
   TEST_ASSERT_EQUAL(0, (int)ungatedStreams(gated).size());
 }
 
+// The day page serves item rows with their media status folded in (an item reads
+// "pending" only while its file is still to be fetched), never the raw index lines:
+// the route reads through readItemRows, not readRows.
+static void test_day_page_serves_folded_item_rows() {
+  const std::string src = readFile("src/net/web_tg_archive.cpp");
+  TEST_ASSERT_TRUE_MESSAGE(!src.empty(), "cannot read src/net/web_tg_archive.cpp (run from repo root)");
+  TEST_ASSERT_TRUE(src.find("arc::readItemRows(") != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("arc::readRows(") == std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_crc32_reference_vector);
@@ -253,5 +263,6 @@ int main() {
   RUN_TEST(test_read_failure_stops_the_stream);
   RUN_TEST(test_day_page_stays_under_budget);
   RUN_TEST(test_archive_streams_go_through_admission);
+  RUN_TEST(test_day_page_serves_folded_item_rows);
   return UNITY_END();
 }

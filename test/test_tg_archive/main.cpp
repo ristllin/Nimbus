@@ -731,8 +731,89 @@ static void test_write_failure_mid_way_leaves_part_and_incomplete_row() {
     JsonDocument ev = parseLine(card.lines(idx("9", "2026-10-18")).back());
     TEST_ASSERT_EQUAL_STRING("incomplete", ev["st"] | "");
     TEST_ASSERT_EQUAL_UINT64(card.files[part].size(), ev["bytes"] | 0ull);
-    TEST_ASSERT_EQUAL_UINT32(0, a.pending());   // a failing card is not hammered
+    TEST_ASSERT_EQUAL_UINT32(1, a.pending());   // tried again later, from the .part
     TEST_ASSERT_EQUAL_UINT32(1, a.stats().mediaIncomplete);
+  }
+}
+
+// An incomplete attempt (the card refused a write or the rename) is tried again from
+// the bytes already on the card, at most kMaxTries times in all: a card that recovers
+// gets the whole file, one that keeps failing stops with kMaxTries status lines, and
+// a restart counts the lines already written instead of starting over.
+static void test_incomplete_is_retried_within_its_tries() {
+  // The card recovers after the first refusal: the retry resumes and completes.
+  {
+    Card card;
+    Archive a(card);
+    TgSource src;
+    src.files["D"] = fakes::bytes(120000, 21);
+    captureOneMedia(a, 80, "D", 120000);
+    int fails = 1;
+    card.failWrite = [&](const std::string& p, size_t off, size_t) {
+      return fakes::endsWith(p, ".part") && off > 30000 && fails-- > 0;
+    };
+    TEST_ASSERT_TRUE(step(a, src) == Step::Incomplete);
+    TEST_ASSERT_TRUE(step(a, src) == Step::Done);
+    TEST_ASSERT_TRUE(src.lastResumeAsk > 0);   // resumed from the .part, not fetched again
+    TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/80.bin"] == src.files["D"]);
+    JsonDocument ev = parseLine(card.lines(idx("9", "2026-10-18")).back());
+    TEST_ASSERT_EQUAL_STRING("ok", ev["st"] | "");
+  }
+  // A rename that fails once: the next try finds the whole .part and only renames it.
+  {
+    Card card;
+    Archive a(card);
+    TgSource src;
+    src.files["D"] = fakes::bytes(5000, 22);
+    captureOneMedia(a, 81, "D", 5000);
+    card.failRenameOnce = true;
+    TEST_ASSERT_TRUE(step(a, src) == Step::Incomplete);
+    TEST_ASSERT_TRUE(step(a, src) == Step::Done);
+    TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/81.bin"] == src.files["D"]);
+  }
+  // A card that keeps refusing: kMaxTries attempts, each with its line, then it stops.
+  {
+    Card card;
+    Archive a(card);
+    TgSource src;
+    src.files["D"] = fakes::bytes(50000, 23);
+    captureOneMedia(a, 82, "D", 50000);
+    card.failWrite = [&](const std::string& p, size_t off, size_t) {
+      return fakes::endsWith(p, ".part") && off > 10000;
+    };
+    int steps = 0;
+    while (a.pending() && steps < 50) {
+      TEST_ASSERT_TRUE(step(a, src) == Step::Incomplete);
+      ++steps;
+    }
+    TEST_ASSERT_EQUAL_INT(kMaxTries, steps);
+    int lines = 0;
+    for (const auto& l : card.lines(idx("9", "2026-10-18"))) lines += l.find("\"incomplete\"") != std::string::npos;
+    TEST_ASSERT_EQUAL_INT(kMaxTries, lines);
+    TEST_ASSERT_EQUAL_UINT32(kMaxTries, a.stats().mediaIncomplete);
+    // A restart does not hand out fresh tries.
+    Archive b(card);
+    TEST_ASSERT_EQUAL_INT(0, b.resumePending());
+  }
+  // Interrupted by a restart after one refusal: the resume pass queues it again, with
+  // the tries it has left, and a healthy card then completes it.
+  {
+    Card card;
+    TgSource src;
+    src.files["D"] = fakes::bytes(40000, 24);
+    {
+      Archive a(card);
+      captureOneMedia(a, 83, "D", 40000);
+      card.failWrite = [&](const std::string& p, size_t off, size_t) {
+        return fakes::endsWith(p, ".part") && off > 8000;
+      };
+      TEST_ASSERT_TRUE(step(a, src) == Step::Incomplete);
+    }
+    card.failWrite = nullptr;
+    Archive b(card);
+    TEST_ASSERT_EQUAL_INT(1, b.resumePending());
+    drain(b, src);
+    TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/83.bin"] == src.files["D"]);
   }
 }
 
@@ -1544,7 +1625,7 @@ static void test_adopt_shares_the_turn_paths_download() {
   Card lfs;
   lfs.mkdirs("/audio");
   lfs.files["/audio/tgattach.bin"] = src.files["P"];
-  TEST_ASSERT_TRUE(a.adoptMedia("9", 31, kOct18, "P", lfs, "/audio/tgattach.bin"));
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 31, kOct18, "P", lfs, "/audio/tgattach.bin") == Adopted::Whole);
   TEST_ASSERT_EQUAL_UINT32(0, a.pending());
   TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/31.jpg"] == src.files["P"]);
   TEST_ASSERT_FALSE(card.files.count("/mem/tg/9/2026-10-18/31.jpg.part"));
@@ -1559,10 +1640,12 @@ static void test_adopt_shares_the_turn_paths_download() {
   TEST_ASSERT_EQUAL_STRING("", a.mediaFor("9", 32, kOct18, "P").c_str());
 }
 
-// Another rendition (the turn path's budget-bound one, the archive's largest): no
-// sharing, the archive fetches its own full-size file. A failed copy leaves the job
-// queued; a voice note shares the same way.
-static void test_adopt_only_the_same_file() {
+// Another rendition (the turn path reads the 800 px photo, the archive keeps the
+// largest): the turn's download is kept at once as the item's turn copy with its own
+// status line, so the item is on the card at turn time, and the full-size job stays
+// queued as an upgrade. A failed copy leaves the job queued; a voice note shares the
+// one file as before.
+static void test_adopt_keeps_the_turn_copy_of_another_rendition() {
   Card card;
   Archive a(card);
   TgSource src;
@@ -1574,22 +1657,211 @@ static void test_adopt_only_the_same_file() {
   Card lfs;
   lfs.mkdirs("/audio");
   lfs.files["/audio/tgattach.bin"] = fakes::bytes(200000, 4);
-  TEST_ASSERT_FALSE(a.adoptMedia("9", 41, kOct18, "mid", lfs, "/audio/tgattach.bin"));
-  TEST_ASSERT_EQUAL_UINT32(1, a.pending());
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 41, kOct18, "mid", lfs, "/audio/tgattach.bin") == Adopted::TurnCopy);
+  const std::string dir = "/mem/tg/9/2026-10-18/";
+  TEST_ASSERT_TRUE(card.files[dir + "41.turn.jpg"] == lfs.files["/audio/tgattach.bin"]);
+  TEST_ASSERT_FALSE(card.files.count(dir + "41.turn.jpg.part"));
+  TEST_ASSERT_FALSE(card.files.count(dir + "41.jpg"));
+  TEST_ASSERT_EQUAL_UINT32(1, a.pending());   // the full size is still due
+  TEST_ASSERT_EQUAL_UINT32(1, a.stats().turnCopies);
+  TEST_ASSERT_EQUAL_UINT32(0, a.stats().mediaOk);
+  JsonDocument ev = parseLine(card.lines(idx("9", "2026-10-18")).back());
+  TEST_ASSERT_EQUAL_STRING("media", ev["ev"] | "");
+  TEST_ASSERT_EQUAL_STRING("41", ev["ref"] | "");
+  TEST_ASSERT_EQUAL_STRING("ok", ev["st"] | "");
+  TEST_ASSERT_EQUAL_STRING("turn", ev["copy"] | "");
+  TEST_ASSERT_EQUAL_STRING("41.turn.jpg", ev["file"] | "");
+  // At turn time the item reads ok, from the turn's copy, with the full size due.
+  {
+    RowPage pg = readItemRows(card, "9", "2026-10-18", 0, 10);
+    TEST_ASSERT_EQUAL_size_t(1, pg.rows.size());
+    JsonDocument r = parseLine(pg.rows[0]);
+    TEST_ASSERT_EQUAL_STRING("ok", r["st"] | "");
+    TEST_ASSERT_EQUAL_STRING("turn", r["copy"] | "");
+    TEST_ASSERT_EQUAL_STRING("41.turn.jpg", r["file"] | "");
+    TEST_ASSERT_EQUAL_STRING("pending", r["full"] | "");
+  }
+  // The turn's copy is never handed back as the full-size file.
   TEST_ASSERT_EQUAL_STRING("", a.mediaFor("9", 41, kOct18, "mid").c_str());
+  // A replayed turn keeps the copy it has: no second copy, no second line.
+  const size_t linesBefore = card.lines(idx("9", "2026-10-18")).size();
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 41, kOct18, "mid", lfs, "/audio/tgattach.bin") == Adopted::TurnCopy);
+  TEST_ASSERT_EQUAL_size_t(linesBefore, card.lines(idx("9", "2026-10-18")).size());
+  // The upgrade: the archive's own full-size download follows, with its own line.
   drain(a, src);
   TEST_ASSERT_EQUAL_INT(1, src.opens);
-  TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/41.jpg"] == src.files["big"]);
+  TEST_ASSERT_TRUE(card.files[dir + "41.jpg"] == src.files["big"]);
+  JsonDocument up = parseLine(card.lines(idx("9", "2026-10-18")).back());
+  TEST_ASSERT_EQUAL_STRING("ok", up["st"] | "");
+  TEST_ASSERT_EQUAL_STRING("41.jpg", up["file"] | "");
+  TEST_ASSERT_TRUE(up["copy"].isNull());
+  {
+    RowPage pg = readItemRows(card, "9", "2026-10-18", 0, 10);
+    JsonDocument r = parseLine(pg.rows[0]);
+    TEST_ASSERT_EQUAL_STRING("ok", r["st"] | "");
+    TEST_ASSERT_EQUAL_STRING("41.jpg", r["file"] | "");
+    TEST_ASSERT_TRUE(r["copy"].isNull());
+  }
+  // A restart before the upgrade: the turn's line is not final, the full size is
+  // fetched again.
+  {
+    const std::string q = page({update(43, "9", kOct18,
+        "\"photo\":[{\"file_id\":\"mid2\",\"width\":1280,\"height\":960},"
+        "{\"file_id\":\"big2\",\"width\":2560,\"height\":1920}]")});
+    a.captureInboundPage(q.data(), q.size(), {kOct18, 0});
+    TEST_ASSERT_TRUE(a.adoptMedia("9", 43, kOct18, "mid2", lfs, "/audio/tgattach.bin") == Adopted::TurnCopy);
+    Archive b(card);
+    TEST_ASSERT_EQUAL_INT(1, b.resumePending());
+  }
   // A missing staging file: the job stays queued for the archive's own fetch.
   const std::string v = page({update(42, "9", kOct18, "\"voice\":{\"file_id\":\"V\",\"duration\":2}")});
   a.captureInboundPage(v.data(), v.size(), {kOct18, 0});
-  TEST_ASSERT_FALSE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/none.ogg"));
-  TEST_ASSERT_EQUAL_UINT32(1, a.pending());
+  const uint32_t before = a.pending();
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/none.ogg") == Adopted::No);
+  TEST_ASSERT_EQUAL_UINT32(before, a.pending());
   lfs.files["/audio/tgvoice.ogg"] = fakes::bytes(9000, 5);
-  TEST_ASSERT_TRUE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/tgvoice.ogg"));
-  TEST_ASSERT_EQUAL_UINT32(0, a.pending());
-  TEST_ASSERT_TRUE(card.files["/mem/tg/9/2026-10-18/42.ogg"] == lfs.files["/audio/tgvoice.ogg"]);
+  // The same file: one copy, the job is done.
+  TEST_ASSERT_TRUE(a.adoptMedia("9", 42, kOct18, "V", lfs, "/audio/tgvoice.ogg") == Adopted::Whole);
+  TEST_ASSERT_EQUAL_UINT32(before - 1, a.pending());
+  TEST_ASSERT_TRUE(card.files[dir + "42.ogg"] == lfs.files["/audio/tgvoice.ogg"]);
+  TEST_ASSERT_FALSE(card.files.count(dir + "42.turn.ogg"));
   TEST_ASSERT_EQUAL_INT(0, card.violations);
+}
+
+// A job whose file is already on the card (it landed, and a restart lost its status
+// line) ends with an "ok" line, so its row never stays "pending" over a file that is
+// there; nothing is downloaded.
+static void test_a_file_already_on_the_card_ends_its_job_with_a_status_line() {
+  Card card;
+  Archive a(card);
+  TgSource src;
+  captureOneMedia(a, 70, "D", 100);
+  card.files["/mem/tg/9/2026-10-18/70.bin"] = fakes::bytes(100, 1);
+  TEST_ASSERT_TRUE(step(a, src) == Step::Done);
+  TEST_ASSERT_EQUAL_INT(0, src.opens);
+  TEST_ASSERT_EQUAL_UINT32(0, a.pending());
+  JsonDocument ev = parseLine(card.lines(idx("9", "2026-10-18")).back());
+  TEST_ASSERT_EQUAL_STRING("media", ev["ev"] | "");
+  TEST_ASSERT_EQUAL_STRING("70", ev["ref"] | "");
+  TEST_ASSERT_EQUAL_STRING("ok", ev["st"] | "");
+  TEST_ASSERT_EQUAL_UINT64(100, ev["bytes"] | 0ull);
+  TEST_ASSERT_EQUAL_UINT32(1, a.stats().mediaOk);
+}
+
+// The status fold over every combination of what the index says and what the card
+// holds (the class, not one case): "ok" exactly when a copy is on the card, the turn's
+// copy named only when it is the best one, "pending" exactly when the file is still
+// to be fetched, a final failure shown as written, and never an empty status.
+static void checkFold(const MediaFacts& f) {
+  const ItemStatus s = foldMediaStatus(f);
+  char msg[200];
+  std::snprintf(msg, sizeof msg, "row=%s ev=%s inc=%d full=%d turn=%d window=%d -> %s/%s", f.rowSt.c_str(),
+                f.lastEv.c_str(), f.incompleteEvs, (int)f.fullOnCard, (int)f.turnOnCard, (int)f.inResumeWindow,
+                s.st.c_str(), s.full.c_str());
+  const bool onCard = f.fullOnCard || f.turnOnCard;
+  TEST_ASSERT_FALSE_MESSAGE(s.st.empty(), msg);
+  TEST_ASSERT_EQUAL_MESSAGE(onCard, s.st == "ok", msg);
+  TEST_ASSERT_EQUAL_MESSAGE(f.turnOnCard && !f.fullOnCard, s.turnCopy, msg);
+  TEST_ASSERT_EQUAL_MESSAGE(s.turnCopy, !s.full.empty(), msg);
+  const std::string due = s.turnCopy ? s.full : s.st;   // the full-size file's state
+  const std::string& e = f.lastEv;
+  const bool waiting = (e.empty() && f.rowSt == "pending") || (e == "incomplete" && f.incompleteEvs < (int)kMaxTries);
+  const bool stillFetched = !f.fullOnCard && f.inResumeWindow && waiting;
+  TEST_ASSERT_EQUAL_MESSAGE(stillFetched, due == "pending", msg);
+  if (!onCard && (e == "failed" || e.rfind("not archived", 0) == 0)) TEST_ASSERT_EQUAL_STRING_MESSAGE(e.c_str(), s.st.c_str(), msg);
+  if (!onCard && e == "incomplete" && !stillFetched) TEST_ASSERT_EQUAL_STRING_MESSAGE("incomplete", s.st.c_str(), msg);
+}
+
+static void test_media_status_fold_property() {
+  const char* rowSts[] = {"pending", "ok", "not archived: too large"};
+  const char* evs[] = {"", "ok", "failed", "incomplete", "not archived: too large"};
+  int cases = 0;
+  for (const char* row : rowSts)
+    for (const char* ev : evs)
+      for (int inc = 0; inc <= (int)kMaxTries; ++inc)
+        for (int bits = 0; bits < 8; ++bits) {
+          MediaFacts f;
+          f.rowSt = row;
+          f.lastEv = ev;
+          f.incompleteEvs = inc;
+          f.fullOnCard = bits & 1;
+          f.turnOnCard = bits & 2;
+          f.inResumeWindow = bits & 4;
+          checkFold(f);
+          ++cases;
+        }
+  TEST_ASSERT_EQUAL_INT(3 * 5 * (kMaxTries + 1) * 8, cases);
+}
+
+// A day's page as the web view gets it: item rows only (each status line folded into
+// its item), every media row's status as the card shows it, paged by items.
+static void test_day_items_fold_their_status_lines() {
+  Card card;
+  TgSource src;
+  const int64_t oldDate = kOct18 - 15 * 86400;   // 2026-10-03: past the resume window
+  {
+    Archive a(card);
+    for (int d = 15; d >= 1; --d) {
+      const std::string t = page({update(100 + d, "9", kOct18 - 86400LL * d, text("day"))});
+      a.captureInboundPage(t.data(), t.size(), {0, 0});
+    }
+    captureOneMedia(a, 60, "OLD", 100);   // queued before a restart (Telegram no longer has it)
+  }
+  {
+    // The old item: a pending row with no outcome, on a day the resume pass no longer reads.
+    Archive a(card);
+    const std::string q = page({update(61, "9", oldDate, "\"voice\":{\"file_id\":\"OLD\"}")});
+    a.captureInboundPage(q.data(), q.size(), {0, 0});
+  }   // restart: nothing queued in RAM
+  Archive a(card);
+  src.files["P"] = fakes::bytes(3000, 1);
+  src.files["V"] = fakes::bytes(2000, 2);
+  src.gone.insert("G");
+  const std::string p = page({update(51, "9", kOct18, "\"photo\":[{\"file_id\":\"P\",\"width\":800,\"height\":600}]"),
+                              update(52, "9", kOct18, "\"voice\":{\"file_id\":\"V\"}"),
+                              update(53, "9", kOct18, "\"document\":{\"file_id\":\"G\",\"file_name\":\"g.pdf\"}"),
+                              update(54, "9", kOct18, text("hello"))});
+  a.captureInboundPage(p.data(), p.size(), {0, 0});
+  a.resumePending();   // the item 60 from before the restart is fetched too (not in src: failed)
+  drain(a, src);
+  captureOneMedia(a, 55, "LATE", 10);   // queued, not fetched yet
+  captureOneMedia(a, 56, "W", 10);
+  card.files["/mem/tg/9/2026-10-18/56.bin"] = fakes::bytes(10, 3);   // landed, its line lost
+  RowPage pg = readItemRows(card, "9", "2026-10-18", 0, 100);
+  std::map<long long, std::string> st;
+  for (const std::string& raw : pg.rows) {
+    JsonDocument r = parseLine(raw);
+    TEST_ASSERT_TRUE_MESSAGE(r["ev"].isNull(), raw.c_str());   // no status line is a row
+    st[r["u"] | 0ll] = r["st"] | "";
+  }
+  TEST_ASSERT_EQUAL_size_t(7, pg.rows.size());
+  TEST_ASSERT_FALSE(pg.more);
+  TEST_ASSERT_EQUAL_STRING("failed", st[60].c_str());
+  TEST_ASSERT_EQUAL_STRING("ok", st[51].c_str());
+  TEST_ASSERT_EQUAL_STRING("ok", st[52].c_str());
+  TEST_ASSERT_EQUAL_STRING("failed", st[53].c_str());
+  TEST_ASSERT_EQUAL_STRING("ok", st[54].c_str());   // text: complete in its record
+  TEST_ASSERT_EQUAL_STRING("pending", st[55].c_str());
+  TEST_ASSERT_EQUAL_STRING("ok", st[56].c_str());
+  // Paged by items: the status lines never count against a page.
+  RowPage p1 = readItemRows(card, "9", "2026-10-18", 0, 3);
+  TEST_ASSERT_EQUAL_size_t(3, p1.rows.size());
+  TEST_ASSERT_TRUE(p1.more);
+  TEST_ASSERT_EQUAL_size_t(3, p1.next);
+  RowPage p2 = readItemRows(card, "9", "2026-10-18", p1.next, 100);
+  TEST_ASSERT_EQUAL_size_t(4, p2.rows.size());
+  TEST_ASSERT_FALSE(p2.more);
+  // Past the resume window, a file that never came is "missing", not "pending".
+  RowPage old = readItemRows(card, "9", "2026-10-03", 0, 10);
+  TEST_ASSERT_EQUAL_size_t(2, old.rows.size());   // that day's text, and the voice note
+  JsonDocument o = parseLine(old.rows[1]);
+  TEST_ASSERT_EQUAL_INT64(61, o["u"] | 0ll);
+  TEST_ASSERT_EQUAL_STRING("missing", o["st"] | "");
+  TEST_ASSERT_EQUAL_STRING("ok", parseLine(old.rows[0])["st"] | "");
+  // An unreadable line is skipped, never passed through into the page.
+  card.files[idx("9", "2026-10-18")] += "{not json\n";
+  TEST_ASSERT_EQUAL_size_t(7, readItemRows(card, "9", "2026-10-18", 0, 100).rows.size());
+  TEST_ASSERT_FALSE(readItemRows(card, "../x", "2026-10-18", 0, 3).more);
 }
 
 int main(int, char**) {
@@ -1640,6 +1912,10 @@ int main(int, char**) {
   RUN_TEST(test_replay_against_a_large_index_costs_no_scan);
   RUN_TEST(test_seen_ring_overflow_still_dedupes);
   RUN_TEST(test_adopt_shares_the_turn_paths_download);
-  RUN_TEST(test_adopt_only_the_same_file);
+  RUN_TEST(test_adopt_keeps_the_turn_copy_of_another_rendition);
+  RUN_TEST(test_incomplete_is_retried_within_its_tries);
+  RUN_TEST(test_a_file_already_on_the_card_ends_its_job_with_a_status_line);
+  RUN_TEST(test_media_status_fold_property);
+  RUN_TEST(test_day_items_fold_their_status_lines);
   return UNITY_END();
 }

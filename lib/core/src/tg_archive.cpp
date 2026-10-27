@@ -104,6 +104,8 @@ std::string outBase(uint32_t seq) {
   return b;
 }
 
+std::string turnCopyName(const std::string& base, const std::string& ext) { return base + ".turn." + ext; }
+
 uint32_t nextOutSeq(const std::vector<std::string>& names) {
   uint32_t best = 0;
   for (const std::string& n : names) {

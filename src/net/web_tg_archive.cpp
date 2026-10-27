@@ -163,11 +163,13 @@ String daysJson(arc::Fs& fs, const std::string& chat, size_t from, size_t limit)
   return out;
 }
 
-// A day page carries only the rows that fit the small-reply budget (prism row 7);
-// `next` then points at the first row left out, so paging continues from there.
+// A day page carries only the item rows that fit the small-reply budget (prism row
+// 7); `next` then points at the first item left out, so paging continues from there.
+// Each media status line is folded into its item (readItemRows), so an item's "st"
+// says what the card holds.
 String rowsJson(arc::Fs& fs, const std::string& chat, const std::string& day, size_t from,
                 size_t limit) {
-  const arc::RowPage pg = arc::readRows(fs, chat, day, from, limit);
+  const arc::RowPage pg = arc::readItemRows(fs, chat, day, from, limit);
   std::vector<std::string> rows;
   std::vector<size_t> sizes;
   rows.reserve(pg.rows.size());

@@ -4073,6 +4073,17 @@ function _tgArcOpen(chat,day,name){const v=$('tgArcView');if(!v)return;
   _tgArcSave(_tgArcItemUrl(chat,day,name,0),name).catch(failToast);}
 function _tgArcLink(label,chat,day,name){const b=document.createElement('button');b.type='button';
   b.textContent=label;b.style.fontSize='11px';b.onclick=()=>_tgArcOpen(chat,day,name);return b;}
+// An item's file status in plain words ("" when it is saved, or it has no file).
+// The device folds each status line into its item, so st says what the card holds.
+function _tgArcState(r){const st=r.st||'';
+  if(st.indexOf('not archived: ')===0)return 'Not saved: '+st.slice(14);
+  if(!r.file)return '';
+  if(r.copy==='turn')return r.full==='pending'?'Smaller copy saved; full size not saved yet':'Smaller copy saved';
+  if(st==='ok')return '';
+  if(st==='pending')return 'Not saved yet';
+  if(st==='incomplete')return 'Not saved: the memory card refused it';
+  if(st==='missing')return 'Not on the memory card';
+  return 'Not saved';}
 // A busy retry repaints only the chat (and day) still selected.
 function _tgArcShown(chat,day){const c=$('tgArcChat'),d=$('tgArcDay');
   return !!c&&c.value===chat&&(day===undefined||(!!d&&d.value===day));}
@@ -4086,7 +4097,9 @@ function tgArcRows(chat,day,from){
       t.textContent=when+' '+(r.dir==='out'?'sent':'received')+(r.kind?' '+r.kind:'');   // textContent: untrusted
       row.appendChild(t);
       if(r.raw)row.appendChild(_tgArcLink('Open',chat,day,r.raw));
-      if(r.file)row.appendChild(_tgArcLink(_fviewable(r.file)==='img'?'View':'Save',chat,day,r.file));
+      if(r.file&&(r.st==='ok'||r.copy==='turn'))row.appendChild(_tgArcLink(_fviewable(r.file)==='img'?'View':'Save',chat,day,r.file));
+      const state=_tgArcState(r);
+      if(state){const s=document.createElement('span');s.className='hint tgArcState';s.textContent=state;row.appendChild(s);}
       box.appendChild(row);});
     if(!box.children.length)box.innerHTML='<p class=hint>Nothing archived that day.</p>';
     const more=$('tgArcMore');more.style.display=d.more?'inline-block':'none';

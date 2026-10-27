@@ -678,7 +678,9 @@ void runDownloads(const String& token, bool (*yield)(), void (*beforeTls)()) {
     const arc::Step s = g_arc->downloadStep(src, g_slice, kSlice, left, nowMs, stop);
     if (s == arc::Step::Idle || s == arc::Step::Partial) break;
     alogf("tg archive: media %s (%u pending)", stepName(s), (unsigned)g_arc->pending());
-    if (s == arc::Step::Retry) break;
+    // A retry waits for a later cycle: a network blip, or a card that refused a write
+    // (an incomplete file is tried again from its .part, kMaxTries times in all).
+    if (s == arc::Step::Retry || s == arc::Step::Incomplete) break;
   }
 }
 
@@ -812,10 +814,11 @@ void adoptInbound(const InboundRef& in, const char* lfsPath) {
   if (!in.chat || !in.fileId || !lfsPath || !available() || !arc::isTelegramChat(in.chat)) return;
   ensure();
   CardFs lfs(LittleFS, /*card=*/false);
-  if (g_arc->adoptMedia(in.chat, in.updateId, in.date, in.fileId, lfs, lfsPath)) {
-    alogf("tg archive: media for update %ld kept from the turn's download", (long)in.updateId);
-    publishStats();
-  }
+  const arc::Adopted kept = g_arc->adoptMedia(in.chat, in.updateId, in.date, in.fileId, lfs, lfsPath);
+  if (kept == arc::Adopted::No) return;
+  alogf("tg archive: media for update %ld kept from the turn's download%s", (long)in.updateId,
+        kept == arc::Adopted::TurnCopy ? " (its copy; the full size follows)" : "");
+  publishStats();
 }
 
 bool queueHasRoom() {
@@ -866,6 +869,7 @@ String statsJson() {
   d["dupes"] = s.dupes;
   d["repaired"] = s.repaired;
   d["mediaOk"] = s.mediaOk;
+  d["turnCopies"] = s.turnCopies;
   d["incomplete"] = s.mediaIncomplete;
   d["failed"] = s.mediaFailed;
   d["notArchived"] = s.notArchived;
