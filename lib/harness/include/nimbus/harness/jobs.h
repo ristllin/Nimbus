@@ -115,6 +115,10 @@ class JobEngine {
     // in subPriority order, then the router keys (cumulo, then zai).
     std::function<std::string()> subPriority;
     std::function<bool(const std::string& provider)> providerHasKey;
+    // The provider is over its monthly budget (device: store::providerOverBudget). A spawn
+    // then refuses or moves like a parked one, so the catalog's "over its monthly budget"
+    // and the dispatcher agree (review of 4e9cf28f). Null = no budget.
+    std::function<bool(const std::string& provider)> overBudget;
     std::function<std::string(const std::string& provider)> subModel;
     std::function<bool(const std::string& provider, const std::string& model)> modelIsValid;
     // The provider's model choice list as CSV - the same derivation modelIsValid
@@ -261,6 +265,7 @@ class JobEngine {
     std::string provenance;    // " [tools: n, web: m]" / " [no tools ran]" ("" = engine line)
     bool failed = false;   // an engine failure line, not a sub-agent's finding
     bool unverified = false;   // its connector never ran (CUM-536), or a live task ran no tool
+    bool web = false;          // the sub ran a web search or fetch (provider record)
   };
   // Fresh sub-agent results parked for the next consolidation turn.
   bool hasFreshResults() const { return !fresh_.empty(); }

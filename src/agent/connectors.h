@@ -163,7 +163,9 @@ void attachAnthropic(JsonDocument& agentBody);
 // the model's context: key present/verified, native tool surface, enabled
 // connectors, and which are callable on the current provider's own turns vs only
 // via a sub-agent spawn.
-String catalog();
+// `headCallsTools`: the head runs a tool loop on the config's tool list (the engine's
+// models.list rule), so its own web.search can be offered.
+String catalog(bool headCallsTools = true);
 
 // The known-connector catalog (Tier-1 + Mistral built-ins) as a JSON array, for
 // GET /api/connectors so the UI can describe/link not-yet-configured connectors.

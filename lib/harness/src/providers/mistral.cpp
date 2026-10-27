@@ -1,5 +1,6 @@
 #include <ArduinoJson.h>
 
+#include <algorithm>   // std::find - unique sub-agent sources
 #include <cstring>
 #include <string>
 
@@ -73,6 +74,39 @@ static std::string mistralOutputContent(ArduinoJson::JsonObjectConst o) {
   if (c.is<ArduinoJson::JsonArrayConst>())
     for (ArduinoJson::JsonObjectConst chunk : c.as<ArduinoJson::JsonArrayConst>())
       if (strcmp(chunk["type"] | "", "text") == 0) out += (const char*)(chunk["text"] | "");
+  return out;
+}
+
+// A sub-agent's reply: the text chunks, plus each web source Mistral attached as a
+// tool_reference chunk ({"type":"tool_reference","tool":"web_search","title":..,"url":..}),
+// written inline where it was cited: "... 10:00 to 17:00 (source: https://...)". Live
+// 27 Oct (unit A): the text-only read dropped every source, so a "name the source of
+// each fact" task still came back bare. Unique urls, at most kMaxSubSources. Sub-agent
+// replies only: a head turn's message.output is the orch_turn JSON (mistralOutputContent).
+constexpr size_t kMaxSubSources = 6;
+static std::string mistralSubReplyContent(ArduinoJson::JsonObjectConst o) {
+  ArduinoJson::JsonVariantConst c = o["content"];
+  if (!c.is<ArduinoJson::JsonArrayConst>()) return mistralOutputContent(o);
+  std::string out;
+  std::vector<std::string> seen;
+  bool open = false;   // a "(source: ..." list is open after the last text
+  for (ArduinoJson::JsonObjectConst chunk : c.as<ArduinoJson::JsonArrayConst>()) {
+    const char* type = chunk["type"] | "";
+    if (strcmp(type, "text") == 0) {
+      if (open) out += ")";
+      open = false;
+      out += (const char*)(chunk["text"] | "");
+      continue;
+    }
+    const std::string url = chunk["url"] | "";
+    if (strcmp(type, "tool_reference") != 0 || url.empty() || seen.size() >= kMaxSubSources) continue;
+    if (std::find(seen.begin(), seen.end(), url) != seen.end()) continue;
+    seen.push_back(url);
+    out += open ? ", " : " (source: ";
+    out += url;
+    open = true;
+  }
+  if (open) out += ")";
   return out;
 }
 
@@ -854,13 +888,15 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
 // never called, the sub answered "fetch this week's events" with an invented week.
 // The web sentence is CUM-822: a rail and weather lookup searched the attached Notion
 // twice and reported "nothing found in Notion", with web_search on the same request.
+// The source sentence leads (live 27 Oct: with it at the end, mistral-small subs still
+// returned bare facts).
 static const char* MISTRAL_AGENT_SYS =
-    "You are an autonomous assistant agent. Complete the user's task fully and "
-    "reply with the final result only - no preamble. If a tool or connector you "
-    "need does not run, fails, or returns nothing, say so plainly; never invent "
-    "events, messages, files or other records. Facts from the public web (weather, "
-    "travel, news, prices, opening hours) come from the web_search tool, with the "
-    "source of each; use a connector (Notion, Gmail, Calendar, Drive) only for the "
+    "You are an autonomous assistant agent. Name the source of each fact. Complete "
+    "the user's task fully and reply with the final result only - no preamble. If a "
+    "tool or connector you need does not run, fails, or returns nothing, say so "
+    "plainly; never invent events, messages, files or other records. Facts from the "
+    "public web (weather, travel, news, prices, opening hours) come from the "
+    "web_search tool; use a connector (Notion, Gmail, Calendar, Drive) only for the "
     "owner's own data in it.";
 
 namespace {
@@ -931,16 +967,19 @@ Provenance provenanceOf(const ProviderDeps& pd, const JsonDocument& req, const D
 
 // CUM-822: a spawn whose skill is Mistral's web search is a public-web lookup. Live on
 // unit A (27 Oct) a mistral-small sub told "use the web_search tool" still called the
-// attached Notion once beside two searches, so such a sub carries the built-ins only:
-// the owner's Studio connectors stay off its request. Returns how many it removed.
+// attached Notion once beside two searches, so such a sub carries the built-ins plus only
+// the Studio connector its task asks for (`keepId`, connectorAskedFor: "my calendar events
+// and the weather" keeps the calendar, and the CUM-536 not-called check still applies to
+// it). Returns how many it removed.
 bool webSearchSpawn(const Directive& d) {
   return d.skill && (!strcmp(d.skill, "web_search") || !strcmp(d.skill, "web_search_premium"));
 }
-size_t dropStudioConnectors(JsonDocument& doc) {
+size_t dropStudioConnectors(JsonDocument& doc, const std::string& keepId) {
   JsonArray tools = doc["tools"].as<JsonArray>();
   size_t dropped = 0;
   for (size_t i = tools.size(); i-- > 0;) {
     if (strcmp(tools[i]["type"] | "", "connector") != 0) continue;
+    if (!keepId.empty() && keepId == (const char*)(tools[i]["connector_id"] | "")) continue;
     tools.remove(i);
     dropped++;
   }
@@ -973,7 +1012,7 @@ std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts
       if (nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached)) bump(runs.connector);
       continue;
     }
-    if (strcmp(type, "message.output") == 0) reply = mistralOutputContent(o);   // string OR chunks
+    if (strcmp(type, "message.output") == 0) reply = mistralSubReplyContent(o);   // string OR chunks, with sources
   }
   return reply;
 }
@@ -999,12 +1038,16 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     // Studio connectors ride the conversation and run server-side (auto tool_choice
     // - no forcing, so no 422). Free-text result (no response_format schema).
     if (pd.attachMistral) pd.attachMistral(doc);
+    prov = provenanceOf(pd, doc, d);   // what the task asks for, from the whole attach
     if (webSearchSpawn(d)) {
-      const size_t dropped = dropStudioConnectors(doc);
+      const size_t dropped = dropStudioConnectors(doc, prov.askedId);
       if (dropped)
         hlog::logf("mistral sub: web_search spawn - %u Studio connector(s) left off", (unsigned)dropped);
+      std::vector<nimbus::orch::AttachedConnector> kept;   // the log and run counts read the wire
+      for (const auto& a : prov.attached)
+        if (!prov.askedId.empty() && a.id == prov.askedId) kept.push_back(a);
+      prov.attached = std::move(kept);
     }
-    prov = provenanceOf(pd, doc, d);
     body = serializeBody(doc);
   }
 

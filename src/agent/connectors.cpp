@@ -472,13 +472,18 @@ void attachAnthropic(JsonDocument& agentBody) {
 
 // ---- catalog ------------------------------------------------------------------
 
-// The keys and the file-route inputs every surface shares: an SD card keeps the
-// file, the device has provider-file capture, and its own PDF writer.
+// The keys, what holds each provider off for sub-agents (the Spawn seam: CUM-821, so the
+// PDF route, the Tools status line and a file task's provider skip a paused one), and the
+// file-route inputs every surface shares: an SD card keeps the file, the device has
+// provider-file capture, and its own PDF writer.
 static nimbus::orch::ProviderState routeState() {
   nimbus::orch::ProviderState ps;
   ps.openaiKeyed    = store::hasOpenaiKey();
   ps.anthropicKeyed = store::hasAnthropicKey();
   ps.mistralKeyed   = store::hasMistralKey();
+  ps.openaiPause    = orchestrator::providerPause("openai", nimbus::orch::PaidSeam::Spawn);
+  ps.anthropicPause = orchestrator::providerPause("anthropic", nimbus::orch::PaidSeam::Spawn);
+  ps.mistralPause   = orchestrator::providerPause("mistral", nimbus::orch::PaidSeam::Spawn);
   ps.fileStoreReady = files::available();
   ps.fileCapture    = true;
   ps.pdfWriter      = pdf_tool::available();
@@ -489,19 +494,16 @@ nimbus::orch::PdfRoute pdfRoute() {
   return nimbus::orch::pdfRoute(portableList(), routeState());
 }
 
-String catalog() {
-  nimbus::orch::ProviderState ps = routeState();   // keys + the file-route inputs
+String catalog(bool headCallsTools) {
+  nimbus::orch::ProviderState ps = routeState();   // keys, pauses + the file-route inputs
   ps.openaiVerified    = store::verifyResult("openai");
   ps.anthropicVerified = store::verifyResult("anthropic");
   ps.mistralVerified   = store::verifyResult("mistral");
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
   ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
-  // CUM-821: a provider held off now renders PAUSED and is no spawn or web route.
-  ps.openaiPause    = orchestrator::providerPause("openai");
-  ps.anthropicPause = orchestrator::providerPause("anthropic");
-  ps.mistralPause   = orchestrator::providerPause("mistral");
-  ps.webSearchTool  = tavily::available() && !store::providerOverBudget("tavily");   // CUM-822
+  // CUM-822: the head's own web.search is a route only for a head that can call tools.
+  ps.webSearchTool  = headCallsTools && tavily::available() && !store::providerOverBudget("tavily");
   std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
   // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
   // up here), then append their live status so the model plans around them.

@@ -675,6 +675,7 @@ static JobEngine::Deps buildJobDeps() {
   d.backendHue = [](const char* b) { return backendHue(b); };
   d.subPriority = [] { return std::string(store::subPriority().c_str()); };
   d.providerHasKey = [](const std::string& p) { return providerHasKey(String(p.c_str())); };
+  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
   d.subModel = [](const std::string& p) {
     return std::string(store::subModel(String(p.c_str())).c_str());
   };
@@ -800,23 +801,21 @@ static JobEngine::Deps buildJobDeps() {
 
 // ---- the TurnEngine wiring --------------------------------------------------
 
-// What holds paid requests to `p` off now (nimbus::orch::HeadPause): the pause switch (the
-// owner, the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
-// the monthly budget check. The park's re-check request is never taken; the budget check is the
-// one every turn makes at its start. The connectors catalog reads it too (providerPause).
-static nimbus::orch::HeadPause headPauseFor(const std::string& p) {
-  nimbus::orch::ProviderPark& park = nimbus::orch::providerPark();
-  nimbus::orch::HeadPause hp;
-  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
-  const size_t n = park.snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, millis());
-  for (size_t i = 0; i < n; ++i)
-    if (p == e[i].provider && (e[i].seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat))) hp.park = e[i].kind;
-  hp.causes = park.pausedBy(p.c_str());
+// What holds paid requests to `p` off now on `seam` (nimbus::orch::HeadPause): the pause switch
+// (the owner, the overall ceiling, the provider's monthly limit), a refusal park covering that
+// seam, the monthly budget check. The park's re-check request is never taken; the budget check is
+// the one every turn makes at its start. Chat for the head; Spawn for the catalog (providerPause).
+static nimbus::orch::HeadPause headPauseFor(const std::string& p,
+                                            nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat) {
+  nimbus::orch::HeadPause hp =
+      nimbus::orch::parkPause(p, seam, millis(), /*dueIsOpen=*/seam != nimbus::orch::PaidSeam::Chat);
   hp.overBudget = store::providerOverBudget(String(p.c_str()));
   return hp;
 }
 
-nimbus::orch::HeadPause providerPause(const std::string& p) { return headPauseFor(p); }
+nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam) {
+  return headPauseFor(p, seam);
+}
 
 static agent::ApplyDeps buildApplyDeps() {
   agent::ApplyDeps d;
@@ -1286,7 +1285,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.mcpDispatch = [](const std::string& req, const nimbus::orch::Principal& who) {
     return memory::handleMcp(req, who);
   };
-  d.connectorsCatalog = [] { return std::string(connectors::catalog().c_str()); };
+  d.connectorsCatalog = [](bool headTools) { return std::string(connectors::catalog(headTools).c_str()); };
   // W15: the ambient skills index - every turn NAMES the playbooks (id + one-line
   // desc) so the model pulls the procedure with skill.get instead of the recipes
   // riding every prompt. Lane I: the per-chat attach surface - the [ACTIVE

@@ -760,12 +760,23 @@ class NimbusdRig {
     nimbus::orch::applyConnectorAuth(cs, ws_);
     return cs;
   }
-  // The provider state the catalog and the capability scope read.
-  nimbus::orch::ProviderState providerState() const {
+  // What holds a provider off on `seam` (the shared park: a 402 or 401 parks a VN
+  // provider as it does a device's). A Virtual Nimbus has no monthly budget check.
+  static nimbus::orch::HeadPause pauseOf(const std::string& p, nimbus::orch::PaidSeam seam) {
+    return nimbus::orch::parkPause(p, seam, steadyMs(), seam != nimbus::orch::PaidSeam::Chat);
+  }
+  // The provider state the catalog and the capability scope read. `headCallsTools`:
+  // the head runs a tool loop, so web.search (a Tavily key) is a web route (CUM-822).
+  nimbus::orch::ProviderState providerState(bool headCallsTools = true) const {
     nimbus::orch::ProviderState ps;
     ps.openaiKeyed = providerKeyed("openai");
     ps.anthropicKeyed = providerKeyed("anthropic");
     ps.mistralKeyed = providerKeyed("mistral");
+    // CUM-821: a parked provider is PAUSED in the catalog and no spawn or file route.
+    ps.openaiPause = pauseOf("openai", nimbus::orch::PaidSeam::Spawn);
+    ps.anthropicPause = pauseOf("anthropic", nimbus::orch::PaidSeam::Spawn);
+    ps.mistralPause = pauseOf("mistral", nimbus::orch::PaidSeam::Spawn);
+    ps.webSearchTool = headCallsTools && !tavilyKey_.empty();
     ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
     ps.currentHost = hostBadge();
     ps.mistralHeadCarriesStudio = false;   // Studio connectors ride subs only (headDeps)
@@ -779,10 +790,10 @@ class NimbusdRig {
   }
   // The "[PROVIDERS & CONNECTORS]" block exactly as the next turn's context gets it
   // ("" when no connector is configured, matching the turn path).
-  std::string connectorsCatalog() const {
+  std::string connectorsCatalog(bool headCallsTools = true) const {
     auto cs = connectorsView();
     if (cs.empty()) return std::string();
-    return nimbus::orch::catalogText(cs, providerState());
+    return nimbus::orch::catalogText(cs, providerState(headCallsTools));
   }
 
   // True iff at least one chat provider is configured - a direct BYOK key OR the
@@ -2184,7 +2195,8 @@ class NimbusdRig {
     // auth-stamped view GET /api/connectors badges (connectorsView). capProbe=0:
     // nimbusd has no verify cache yet, so the catalog reports key PRESENCE and never
     // claims "verified" (the honest mode the composer defines for exactly this).
-    d.connectorsCatalog = [this] { return connectorsCatalog(); };
+    d.connectorsCatalog = [this](bool headTools) { return connectorsCatalog(headTools); };
+    d.spawnPause = [](const std::string& p) { return pauseOf(p, nimbus::orch::PaidSeam::Spawn); };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) {
@@ -2275,6 +2287,8 @@ class NimbusdRig {
   // stays within the complexity gate.
   void wireApply(agent::TurnEngine::Deps& d) {
     d.apply.deliver = d.deliver;
+    // The head guard and [THIS TURN RUNS ON] read the Chat seam (device buildApplyDeps).
+    d.apply.headPause = [](const std::string& p) { return pauseOf(p, nimbus::orch::PaidSeam::Chat); };
     d.apply.stageDevice = [](const orch::ValidatedAction&) {};  // hosted: no device actions
     // The WHOLE principal from the tenant table (device principalFor): the owner's
     // own surfaces are Admin, an approved Telegram chat runs as its RBAC role.

@@ -561,9 +561,10 @@ static void test_sub_connector_attached_but_never_called() {
   // The sub's own system prompt forbids inventing records.
   TEST_ASSERT_TRUE(bodyHas(d, 0, "never invent events, messages, files or other records"));
   // CUM-822: and sends public facts to web_search, a connector only for the owner's data.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "You are an autonomous assistant agent. Name the source of each fact. "));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "Facts from the public web (weather, travel, news, prices, opening hours) "
-                                 "come from the web_search tool, with the source of each; use a connector "
-                                 "(Notion, Gmail, Calendar, Drive) only for the owner's own data in it."));
+                                 "come from the web_search tool; use a connector (Notion, Gmail, Calendar, "
+                                 "Drive) only for the owner's own data in it."));
   TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
 }
 
@@ -591,6 +592,27 @@ static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
     TEST_ASSERT_EQUAL(1, env.webRuns);
     TEST_ASSERT_EQUAL(0, env.connectorCalls);
   }
+  // Review of 4e9cf28f: a web_search task that also names a connector keeps THAT connector,
+  // so the CUM-536 provenance holds (asked Google Calendar, never ran: marked).
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+        "{\"type\":\"message.output\",\"content\":\"Rain at 9:00 (bbc.co.uk)\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "Use the web_search tool: the weather for my Google Calendar events tomorrow.";
+    dir.instruction = dir.task;
+    dir.skill = "web_search";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
+    TEST_ASSERT_EQUAL(0, env.connectorCalls);
+    TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
+  }
   // Counter-test: a connector spawn (and one with no skill) keeps the connector.
   for (const char* skill : {"gcal", static_cast<const char*>(nullptr)}) {
     FakeProviderDeps d;
@@ -608,6 +630,49 @@ static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
     agent::ResultEnvelope env{};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
   }
+}
+
+// CUM-822 (unit A, 27 Oct): Mistral returns a web search's sources as tool_reference
+// chunks, and the text-only read dropped them all, so "name the source of each fact"
+// still came back bare. The sub reply keeps each source inline, unique, at most six.
+static void test_cum822_sub_reply_keeps_web_sources() {
+  FakeProviderDeps d;
+  std::string refs;
+  for (int i = 0; i < 8; i++)
+    refs += ",{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"T\",\"url\":\"https://s" +
+            std::to_string(i) + ".example/p\",\"description\":\"d\"}";
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+      "{\"type\":\"message.output\",\"content\":["
+      "{\"type\":\"text\",\"text\":\"Open 10:00 to 17:00\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"A\",\"url\":\"https://a.example/h\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"A again\",\"url\":\"https://a.example/h\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"no url\"},"
+      "{\"type\":\"text\",\"text\":\". Free entry\"}" + refs + ","
+      "{\"type\":\"text\",\"text\":\".\"}]}]}"});
+  auto pd = d.contract();
+  agent::Directive dir;
+  dir.task = "Use the web_search tool and name the source of each fact: Fitzwilliam hours today.";
+  dir.instruction = dir.task;
+  dir.skill = "web_search";
+  char jobId[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  TEST_ASSERT_EQUAL_STRING(
+      "Open 10:00 to 17:00 (source: https://a.example/h). Free entry (source: https://s0.example/p, "
+      "https://s1.example/p, https://s2.example/p, https://s3.example/p, https://s4.example/p).",
+      env.reply);
+  // Counter-test: a reply with no references reads exactly as its text.
+  FakeProviderDeps p;
+  p.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"message.output\",\"content\":["
+      "{\"type\":\"text\",\"text\":\"plain \"},{\"type\":\"text\",\"text\":\"answer\"}]}]}"});
+  auto pp = p.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pp, "m", dir, jobId));
+  agent::ResultEnvelope plain{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pp, jobId, plain));
+  TEST_ASSERT_EQUAL_STRING("plain answer", plain.reply);
 }
 
 static void test_sub_connector_called_counts_the_execution() {
@@ -1434,6 +1499,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_file_only_no_prose);
   RUN_TEST(test_sub_connector_attached_but_never_called);
   RUN_TEST(test_cum822_web_search_spawn_leaves_studio_connectors_off);
+  RUN_TEST(test_cum822_sub_reply_keeps_web_sources);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);

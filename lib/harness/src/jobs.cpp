@@ -258,11 +258,20 @@ static std::string trimmedSlug(std::string p) {
   return p;
 }
 
-// A keyed provider the park leaves open runs the spawn; a closed one keeps its words.
+// The park's spawn seam, then the monthly budget (the catalog reads both as "held off").
+static bool spawnOpen(const JobEngine::Deps& d, const std::string& provider, uint32_t nowMs,
+                      std::string* why) {
+  if (!spawnSeamOpen(provider, nowMs, why)) return false;
+  if (!d.overBudget || !d.overBudget(provider)) return true;
+  if (why) *why = provider + " is over its monthly budget (it runs again when the budget resets)";
+  return false;
+}
+
+// A keyed provider the park and its budget leave open runs the spawn; a closed one keeps its words.
 bool JobEngine::subProviderRuns(const std::string& p, std::string* closedWhy) const {
   if (p.empty() || !hasKey(p)) return false;
   std::string why;
-  if (spawnSeamOpen(p, nowMs(), &why)) return true;
+  if (spawnOpen(d_, p, nowMs(), &why)) return true;
   if (closedWhy && closedWhy->empty()) *closedWhy = why;
   return false;
 }
@@ -428,6 +437,13 @@ std::string JobEngine::takeFreshResults(bool* unverified) {
   }
   if (fresh_.empty()) return "";
   std::string b = "[FRESH RESULTS] (sub-agents that just finished)\n";
+  // CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result told the owner
+  // trains were "running normally", a fact from an earlier answer, and dropped sources.
+  bool web = false;
+  for (const auto& f : fresh_) web = web || (f.web && !f.failed);
+  if (web)
+    b += "For a result tagged web: keep the sources it names and state only facts it "
+         "contains, never facts from earlier answers.\n";
   // Bound the SEED (Context Fabric, 2026-08-05): a fan-out synthesis inlined all
   // sub-results here - 6 x 3500 chars = ~21 KB in the pinned user turn that the
   // in-turn fold can never trim, which (measured) floored the request body near
@@ -981,7 +997,7 @@ void JobEngine::refuseUnpricedModel(const PendingSpawn& p, const std::string& pr
 bool JobEngine::moveOffClosedProvider(const PendingSpawn& p, const std::string& host,
                                       std::string& provider, std::string& model) {
   std::string why;
-  if (spawnSeamOpen(provider, nowMs(), &why)) return true;
+  if (spawnOpen(d_, provider, nowMs(), &why)) return true;
   const std::string alt = host.empty() ? firstSubProvider() : std::string();
   if (alt.empty()) {
     hlog::logf("orchestrator: spawn refused (%s)", why.c_str());
@@ -1518,6 +1534,7 @@ int JobEngine::pump() {
                      /*failed=*/false, unverified);
       // How many tools the sub ran, from the provider's own record (lane S).
       fresh_.back().provenance = nimbus::orch::freshProvenanceTag(env_ref().toolRuns, env_ref().webRuns);
+      fresh_.back().web = env_ref().webRuns > 0;
       freshChatId_ = rec.chatId;
     } else if (env_ref().state == orch::JobState::Error) {
       // While OTHER work is still running, a per-sub failure joins the fresh

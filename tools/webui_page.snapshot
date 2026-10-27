@@ -3193,6 +3193,8 @@ function _orchSwitch(id,v){const el=$(id);if(!el)return;
 // Virtual Nimbus cannot collect a file a sub-agent builds, so it shows no switch.
 var SBX_STAT={openai:'Ready. PDFs go through OpenAI.',anthropic:'Ready. PDFs go through Anthropic.',
   device:'PDFs are made on the device: text and tables only. Add an OpenAI or Anthropic key for charts.',
+  devicepaused:'Your PDF provider is paused, so PDFs are made on the device for now: text and tables only.',
+  paused:'Your PDF provider is paused. PDFs resume when the pause lifts.',
   nostore:'Insert an SD card to keep files.',sandboxoff:'Turn on Code sandbox to make PDFs through OpenAI.',
   nokey:'Add your OpenAI or Anthropic key to make PDFs.',nocapture:''};
 function _sbxStatus(d){const row=$('codeSbxRow'),st=$('codeSbxStat');if(!st)return;

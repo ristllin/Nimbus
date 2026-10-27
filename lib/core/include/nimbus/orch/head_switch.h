@@ -39,15 +39,22 @@ namespace orch {
 std::string headPauseNote(const std::string& label, uint8_t pauseCauses, ParkKind park, bool overBudget);
 
 // What holds a provider off, as the device reads it (the pause switch, its refusal park on
-// the chat seam, its monthly budget).
+// one seam, its monthly budget).
 struct HeadPause {
   uint8_t  causes = 0;               // PauseCause bits
   ParkKind park = ParkKind::None;
   bool     overBudget = false;
+  int      parkStatus = 0;           // the park's HTTP status: a 403 lifts on the re-check, not a new key
 };
-inline std::string headPauseNote(const std::string& label, const HeadPause& p) {
-  return headPauseNote(label, p.causes, p.park, p.overBudget);
-}
+std::string headPauseNote(const std::string& label, const HeadPause& p);
+// Is anything holding the provider off?
+bool pauseHolds(const HeadPause& p);
+// What holds `provider` off on `seam` now: the pause switch and a refusal park that covers
+// that seam (ProviderPark snapshot). The head guard and [THIS TURN RUNS ON] read Chat; the
+// catalog, spawn lines, web routes, [SPAWN CAPACITY] and the PDF route read Spawn, with
+// `dueIsOpen` (a park whose re-check is due is open: the next request is that re-check, so
+// the turn that makes it never reads its provider as PAUSED). The caller adds overBudget.
+HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen);
 // The same fact for the model (the per-turn line): "Anthropic, the chosen head, is paused by the
 // owner's monthly limit and returns automatically when it lifts." "" when nothing holds it off.
 std::string headPauseFact(const std::string& label, const HeadPause& p);

@@ -2377,6 +2377,8 @@ static std::vector<Cause> causes() {
   v.push_back({"parked: key", p, "rejected its key", "once its key is replaced"});
   p = HeadPause(); p.overBudget = true;
   v.push_back({"over its budget", p, "is over its monthly budget", "when its budget resets"});
+  p = HeadPause(); p.park = ParkKind::Auth; p.parkStatus = 403;
+  v.push_back({"parked: 403 on the spawn seam", p, "refused a request (HTTP 403)", "when it is checked again"});
   return v;
 }
 static HeadPause& pauseOf(ProviderState& ps, const std::string& prov) {
@@ -2420,9 +2422,14 @@ static void test_cum821_every_pause_cause_renders_paused_and_drops_the_spawn_tar
       const std::string t = catalogText(hfc::lumiConnectors(), ps);
       const std::string msg = prov + " / " + c.name;
       const std::string row = hfc::lineOf(t, "- " + prov + ":");
+      const char* names = prov == "openai" ? "gmail"
+                          : prov == "mistral" ? "notion, web_search, image_generation, code_interpreter"
+                                              : "";
       const std::string want = "- " + prov + ": PAUSED. " + hfc::label(prov) + " " + c.why +
                                " and returns automatically " + c.until +
-                               ". Nothing on it runs until then: no sub-agents, no connectors.";
+                               ". Nothing on it runs until then: no sub-agents" +
+                               (*names ? std::string("; its connectors (") + names + ") wait until it returns."
+                                       : std::string("."));
       TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), row.c_str(), msg.c_str());
       TEST_ASSERT_TRUE_MESSAGE(t.find("- spawn on " + prov + ":") == std::string::npos, msg.c_str());
       const std::string web = hfc::lineOf(t, "PUBLIC WEB FACTS");
@@ -2448,7 +2455,7 @@ static void test_cum821_every_pause_cause_renders_paused_and_drops_the_spawn_tar
       checked++;
     }
   }
-  TEST_ASSERT_EQUAL(18, checked);
+  TEST_ASSERT_EQUAL(21, checked);
   // Counter-test: nothing held off, nothing PAUSED.
   const std::string open = catalogText(hfc::lumiConnectors(), hfc::allKeyed("mistral"));
   TEST_ASSERT_TRUE(open.find("PAUSED") == std::string::npos);
@@ -2467,12 +2474,15 @@ static void test_cum821_lumi_state_routes_web_and_long_work_only_to_mistral() {
   TEST_ASSERT_TRUE(t.find("anthropic: available") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("- mistral (YOU are here): available, VERIFIED.") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("hosted web_search on sub-agents") == std::string::npos);   // openai's tools
-  TEST_ASSERT_TRUE(t.find("gmail") == std::string::npos);   // a paused provider's connector
+  // A paused provider's connector is named (so the head never denies having it), with no caps.
+  TEST_ASSERT_TRUE(t.find("its connectors (gmail) wait until it returns.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("  - gmail:") == std::string::npos);
   TEST_ASSERT_EQUAL_STRING(
       "PUBLIC WEB FACTS (weather, travel and train status, news, prices, opening hours) come from "
-      "web search: spawn on mistral with skill web_search and write \"use the web_search tool\" in "
-      "the task. Connectors (Notion, Gmail, Calendar, Drive) hold only the owner's own data: use one "
-      "only for that data, never for public facts.",
+      "a fresh web search, not memory or earlier answers: spawn on mistral with skill web_search and write \"use the web_search tool and "
+      "name the source of each fact\" in the task. Name the sources in your reply. Connectors "
+      "(Notion, Gmail, Calendar, Drive) hold only the owner's own data: use one only for that data, "
+      "never for public facts.",
       hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
   TEST_ASSERT_TRUE(t.find("- spawn on mistral: web_search + hosted tools") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("spawn on openai") == std::string::npos);
@@ -2510,17 +2520,21 @@ static void test_cum821_paused_chosen_head_is_not_you_are_here() {
 // the head's own web.search when Tavily is keyed; with none, it says so.
 static void test_cum822_web_facts_line_names_web_search_on_open_providers() {
   const std::string head = "PUBLIC WEB FACTS (weather, travel and train status, news, prices, "
-                           "opening hours) come from web search: ";
+                           "opening hours) come from a fresh web search, not memory or earlier answers: ";
   const std::string tail = ". Connectors (Notion, Gmail, Calendar, Drive) hold only the owner's own "
                            "data: use one only for that data, never for public facts.";
-  const std::string mis = "spawn on mistral with skill web_search and write \"use the web_search tool\" in the task";
+  const std::string mis =
+      "spawn on mistral with skill web_search and write \"use the web_search tool and name the source of each fact\" "
+      "in the task";
+  const std::string named = ". Name the sources in your reply";
   {
     ProviderState ps = hfc::allKeyed("mistral");
     ps.webSearchTool = true;
     const std::string t = catalogText(hfc::lumiConnectors(), ps);
-    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn; or " + mis +
-                              "; or spawn on openai (hosted web_search); or spawn on anthropic (web "
-                              "search/fetch)" + tail).c_str(),
+    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn and keep its sources; or " + mis +
+                              "; or spawn on openai (hosted web_search) and ask for the source of each fact; or "
+                              "spawn on anthropic (web search/fetch) and ask for the source of each fact" +
+                              named + tail).c_str(),
                              hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
   }
   {
@@ -2531,7 +2545,8 @@ static void test_cum822_web_facts_line_names_web_search_on_open_providers() {
     ProviderState ps = hfc::allKeyed("mistral");
     ps.openaiPause.causes = nimbus::orch::kPauseOwner;
     const std::string t = catalogText(cs, ps);
-    TEST_ASSERT_EQUAL_STRING((head + "spawn on anthropic (web search/fetch)" + tail).c_str(),
+    TEST_ASSERT_EQUAL_STRING(
+        (head + "spawn on anthropic (web search/fetch) and ask for the source of each fact" + named + tail).c_str(),
                              hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
     TEST_ASSERT_TRUE(t.find("- spawn on mistral: hosted tools (its web_search is off)") != std::string::npos);
   }
@@ -2550,7 +2565,7 @@ static void test_cum822_web_facts_line_names_web_search_on_open_providers() {
     ProviderState ps;
     ps.webSearchTool = true;
     const std::string t = catalogText({}, ps);
-    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn" + tail).c_str(),
+    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn and keep its sources" + named + tail).c_str(),
                              hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
   }
 }
@@ -2599,6 +2614,50 @@ static void test_cum822_no_connector_note_claims_priority_over_web_search() {
     for (const char* b : {"always", "try it first", "use it first", "prefer", "for anything", "instead of web"})
       TEST_ASSERT_TRUE_MESSAGE(caps.find(b) == std::string::npos, kk[i].id);
   }
+}
+
+// Review of 4e9cf28f (HIGH): with OpenAI paused, the PDF line still sent work to an openai
+// sub's code_interpreter and file-skill spawns were routed there. A held-off sandbox is no
+// route: the next open one, else the device writer ("devicepaused"), else an honest
+// "not possible right now" naming the pause and when it lifts. The CODE SANDBOX line and
+// the coding line name only open providers.
+static void test_pdf_route_skips_a_paused_provider() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin"),
+                                   mk("code_interpreter", "mistral", "builtin")};
+  ProviderState ps = hfc::allKeyed("mistral");
+  ps.fileStoreReady = true;
+  ps.openaiPause.causes = nimbus::orch::kPauseProviderLimit;
+  nimbus::orch::PdfRoute r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("anthropic", r.slug);
+  TEST_ASSERT_EQUAL_STRING("anthropic", nimbus::orch::pdfRouteProvider(r));
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("TO DELIVER A PDF (or other generated document): POSSIBLE on this device through an "
+                          "anthropic sub's sandbox") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("openai sub's code_interpreter") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: available on mistral sub-agents") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("For CODING tasks: an anthropic sub has a real sandbox") != std::string::npos);
+  // Anthropic paused too: the device writer when registered, else none, saying why and until when.
+  ps.anthropicPause.overBudget = true;
+  ps.pdfWriter = true;
+  r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("devicepaused", r.slug);
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::pdfRouteProvider(r));
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("POSSIBLE on this device with its own PDF writer") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("For CODING tasks: openai/mistral subs run Python") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("An anthropic sub always has its own sandbox") == std::string::npos);
+  ps.pdfWriter = false;
+  r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("paused", r.slug);
+  TEST_ASSERT_EQUAL_STRING("OpenAI is paused by the owner's monthly limit and returns automatically when it lifts",
+                           r.blocker.c_str());
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("TO DELIVER A PDF: not possible right now - OpenAI is paused by the owner's monthly "
+                          "limit and returns automatically when it lifts. Offer markdown") != std::string::npos);
+  // Counter-test: nothing paused, the openai route as before.
+  ProviderState open = hfc::allKeyed("mistral");
+  open.fileStoreReady = true;
+  TEST_ASSERT_EQUAL_STRING("openai", pdfRoute(cs, open).slug);
 }
 
 int main() {
@@ -2697,5 +2756,6 @@ int main() {
   RUN_TEST(test_cum821_paused_chosen_head_is_not_you_are_here);
   RUN_TEST(test_cum822_web_facts_line_names_web_search_on_open_providers);
   RUN_TEST(test_cum822_no_connector_note_claims_priority_over_web_search);
+  RUN_TEST(test_pdf_route_skips_a_paused_provider);
   return UNITY_END();
 }

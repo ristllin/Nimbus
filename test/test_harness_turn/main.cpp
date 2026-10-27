@@ -237,7 +237,7 @@ struct Rig {
       return mcpResponse;
     };
     wireSkillAttachDeps(d);
-    d.connectorsCatalog = [] { return std::string("## PROVIDERS & CONNECTORS\n"); };
+    d.connectorsCatalog = [](bool) { return std::string("## PROVIDERS & CONNECTORS\n"); };
     // W15: the rig advertises the skills index the way the device does
     // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
     // device's REAL built-ins (CUM-523: a copied line drifted from the device text).
@@ -3955,7 +3955,8 @@ static void test_cum821_sub_priority_marks_paused_providers() {
   r.cfg.overBudgetHosts = {"anthropic"};
   r.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_TRUE(r.attempts.back().instructions.find(
-                       "[AVAILABLE PROVIDERS] sub-session priority: openai (paused),mistral,anthropic (paused)\n") !=
+                       "[AVAILABLE PROVIDERS] sub-session priority: openai,mistral,anthropic (paused now: openai, "
+                       "anthropic)\n") !=
                    std::string::npos);
   Rig c;   // counter-test: nothing held off, the configured text as it is
   c.cfg.keyed = {"anthropic", "openai", "mistral"};

@@ -312,9 +312,16 @@ static std::string providerLabel(const std::string& slug) {
 static void trimInPlace(std::string& s);
 
 // What holds provider `p` off now (head_switch.h HeadPause): the device's read, plus the
-// monthly budget check every turn makes.
+// monthly budget check every turn makes. The head (Chat seam) for the [THIS TURN RUNS ON]
+// line; spawnPauseOf reads the Spawn seam for the sub-agent advice.
 static orch::HeadPause providerPauseOf(const TurnEngine::Deps& d, const std::string& p) {
   orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(p) : orch::HeadPause();
+  if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
+  return hp;
+}
+static orch::HeadPause spawnPauseOf(const TurnEngine::Deps& d, const std::string& p) {
+  if (!d.spawnPause) return providerPauseOf(d, p);
+  orch::HeadPause hp = d.spawnPause(p);
   if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
   return hp;
 }
@@ -756,7 +763,7 @@ std::string TurnEngine::syncCapacityText() const {
     const bool keyed = !d_.cfg.provider.hasKey || d_.cfg.provider.hasKey(b) ||
                        (b == "custom" && d_.hosts.has("custom"));
     if (!keyed) continue;
-    if (!orch::headPauseNote(b, providerPauseOf(d_, b)).empty()) continue;
+    if (orch::pauseHolds(spawnPauseOf(d_, b))) continue;
     (kDeviceBackendSync[i] ? sync : async).push_back(b);
   }
   auto list = [](const std::vector<std::string>& v, const char* last) {
@@ -919,33 +926,32 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_, bool modelsTo
   return ctx;
 }
 
-// The catalogs that change only with the device config. They ride the END of the
+// The catalogs that change with the device config, a key verdict, or a provider pausing or
+// returning (CUM-821), never per turn. They ride the END of the
 // static prompt block (ComposeInputs::catalogs, prompt_layout.h), where a
 // provider reads them from its cache, instead of the per-turn input after the
 // volatile session counters.
-// The sub-session priority list, each provider held off now marked "(paused)" (CUM-821: on
-// Lumi the list named openai and anthropic as if they could run while both were paused; the
-// catalog row says why). Unchanged, byte for byte, while nothing is held off.
+// The sub-session priority list as configured, then the providers in it held off now (CUM-821:
+// on Lumi the list named openai and anthropic as if they could run while both were paused).
+// The marker stays OUTSIDE the value: the model may retune that value, and an echoed
+// "openai (paused)" would name no provider (the review of 4e9cf28f). Byte-identical while
+// nothing is held off.
 static std::string subPriorityText(const TurnEngine::Deps& d) {
   const std::string pri = d.cfg.provider.subPriority ? d.cfg.provider.subPriority() : std::string();
-  std::string out;
-  bool marked = false;
+  std::string held;
   for (size_t at = 0; at <= pri.size();) {
     size_t comma = pri.find(',', at);
     if (comma == std::string::npos) comma = pri.size();
     std::string tok = pri.substr(at, comma - at);
     trimInPlace(tok);
     at = comma + 1;
-    if (tok.empty()) continue;
-    out += (out.empty() ? "" : ",") + tok;
-    if (orch::headPauseNote(tok, providerPauseOf(d, tok)).empty()) continue;
-    out += " (paused)";
-    marked = true;
+    if (tok.empty() || !orch::pauseHolds(spawnPauseOf(d, tok))) continue;
+    held += (held.empty() ? "" : ", ") + tok;
   }
-  return marked ? out : pri;
+  return held.empty() ? pri : pri + " (paused now: " + held + ")";
 }
 
-std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
+std::string TurnEngine::buildStableCatalogs(bool modelsTool, bool headCallsTools) {
   std::string ctx = "\n";
   ctx += "[AVAILABLE PROVIDERS] sub-session priority: " + subPriorityText(d_) + "\n";
   // The model the agent runs on is NOT named here: this block is cached and outlives a
@@ -958,7 +964,7 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   // static one - a skill edit re-caches only the shelf), not the static catalogs.
   // Per-provider capability + connector catalog (Phase C): what each provider's
   // turns/sub-agents can actually reach, so spawns are chosen knowingly.
-  if (d_.connectorsCatalog) ctx += d_.connectorsCatalog();
+  if (d_.connectorsCatalog) ctx += d_.connectorsCatalog(headCallsTools);
   return ctx;
 }
 
@@ -1278,7 +1284,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       std::any_of(specs.begin(), specs.end(), [](const orch::ToolRegistry::Spec& s) {
         return s.name == "models.list" && !loopToolHidden(s.name);
       });
-  ci.catalogs = buildStableCatalogs(modelsTool);
+  ci.catalogs = buildStableCatalogs(modelsTool, ci.toolsOnWire && headLoops);
   ci.modelsPointer = modelsTool;   // the loop-off note names models.list (compose.cpp)
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();

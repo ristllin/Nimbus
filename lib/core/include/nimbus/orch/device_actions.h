@@ -160,6 +160,11 @@ struct ActionResult {
 extern const char* const kProtectedConfigKeys[];  // nullptr-terminated
 bool isProtectedConfigKey(const char* key);
 
+// The `priority` knob as the device stores it: comma-separated provider slugs with any
+// "( ... )" text and blank entries dropped. The prompt shows "(paused now: ...)" beside the
+// list; a model that echoes it, or an older "openai (paused)", must still name providers.
+std::string cleanSubPriority(const std::string& raw);
+
 // ---- validators -------------------------------------------------------------
 
 // Validate one device[] element (an ArduinoJson object). Recognizes exactly one

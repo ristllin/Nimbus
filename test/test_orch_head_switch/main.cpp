@@ -132,6 +132,47 @@ static void test_pause_facts_for_the_model() {
                            headPauseFact("OpenAI", hp).c_str());
 }
 
+// Review of 4e9cf28f: a 403 parks one seam (the head's Chat), so the catalog, which reads the
+// Spawn seam, must not show the provider paused, and the head's words for a 403 say it lifts
+// on the re-check, never "once its key is replaced". A park whose re-check is due reads open
+// with dueIsOpen (the next request is that re-check).
+static void test_park_pause_is_seam_scoped_and_403_lifts_on_recheck() {
+  ProviderPark& park = providerPark();
+  park.clear();
+  const uint32_t t0 = 1000;
+  park.park("openai", PaidSeam::Chat, 0, ParkKind::Auth, 403, t0);
+  const HeadPause spawn = parkPause("openai", PaidSeam::Spawn, t0 + 1, true);
+  TEST_ASSERT_FALSE(pauseHolds(spawn));
+  const HeadPause chat = parkPause("openai", PaidSeam::Chat, t0 + 1, false);
+  TEST_ASSERT_TRUE(pauseHolds(chat));
+  TEST_ASSERT_EQUAL(403, chat.parkStatus);
+  const std::string note = headPauseNote("OpenAI", chat);
+  TEST_ASSERT_EQUAL_STRING(
+      "OpenAI refused a request (HTTP 403); replies already fail over automatically and return to OpenAI when "
+      "it is checked again.",
+      note.c_str());
+  TEST_ASSERT_TRUE(note.find("key is replaced") == std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("OpenAI refused a request (HTTP 403) and returns automatically when it is checked again.",
+                           providerPauseFact("OpenAI", chat).c_str());
+  // A 401 holds every seam and keeps the key wording.
+  park.clear();
+  park.park("openai", PaidSeam::Chat, 0, ParkKind::Auth, 401, t0);
+  const HeadPause key = parkPause("openai", PaidSeam::Spawn, t0 + 1, true);
+  TEST_ASSERT_TRUE(pauseHolds(key));
+  TEST_ASSERT_TRUE(providerPauseFact("OpenAI", key).find("once its key is replaced") != std::string::npos);
+  // Its re-check due: open for the Spawn read (dueIsOpen), still held for a Chat read without it.
+  const uint32_t due = t0 + ProviderPark::kRecheckMs + 5;
+  TEST_ASSERT_FALSE(pauseHolds(parkPause("openai", PaidSeam::Spawn, due, true)));
+  TEST_ASSERT_TRUE(pauseHolds(parkPause("openai", PaidSeam::Chat, due, false)));
+  // The pause switch holds every seam, due or not.
+  park.clear();
+  park.pause("anthropic", kPauseProviderLimit);
+  TEST_ASSERT_TRUE(pauseHolds(parkPause("anthropic", PaidSeam::Spawn, due, true)));
+  park.resume("anthropic", kPauseProviderLimit);
+  TEST_ASSERT_FALSE(pauseHolds(parkPause("anthropic", PaidSeam::Spawn, due, true)));
+  park.clear();
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_pause_notes);
@@ -141,5 +182,6 @@ int main(int, char**) {
   RUN_TEST(test_guard);
   RUN_TEST(test_owner_asks_to_switch);
   RUN_TEST(test_pause_facts_for_the_model);
+  RUN_TEST(test_park_pause_is_seam_scoped_and_403_lifts_on_recheck);
   return UNITY_END();
 }

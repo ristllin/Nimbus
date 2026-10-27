@@ -55,7 +55,7 @@ running, how many are queued, how many it can start this turn
 not a hard total limit. A big fan-out runs over successive waves: start a wave
 now, and when it finishes an automatic synthesis turn lets the head spawn the
 next, so it can work through dozens over a run. The line then says how each
-keyed provider runs a sub, from one table (`kDeviceBackendSync`,
+keyed provider that is not paused runs a sub, from one table (`kDeviceBackendSync`,
 `lib/harness/include/nimbus/harness/fabric.h`): Mistral, the custom endpoint,
 Z.ai and the Cumulo router run one at a time inside the device and must finish
 within its wait or their work is lost; OpenAI and Anthropic run in parallel on
@@ -177,15 +177,18 @@ Each backend adds its own system prompt around the brief - e.g. OpenAI:
 *"You are an autonomous research agent. Complete the task fully and reply with
 the final result only."*; Anthropic managed agents get a sandbox system prompt
 with bash/web/files tools; Mistral: *"You are an autonomous assistant agent.
-Complete the user's task fully and reply with the final result only - no
-preamble. If a tool or connector you need does not run, fails, or returns
-nothing, say so plainly; never invent events, messages, files or other
-records. Facts from the public web (weather, travel, news, prices, opening
-hours) come from the web_search tool, with the source of each; use a connector
-(Notion, Gmail, Calendar, Drive) only for the owner's own data in it."* A spawn
+Name the source of each fact. Complete the user's task fully and reply with the
+final result only - no preamble. If a tool or connector you need does not run,
+fails, or returns nothing, say so plainly; never invent events, messages, files
+or other records. Facts from the public web (weather, travel, news, prices,
+opening hours) come from the web_search tool; use a connector (Notion, Gmail,
+Calendar, Drive) only for the owner's own data in it."* A spawn
 whose skill is `web_search` carries Mistral's built-in tools only: the owner's
-Studio connectors stay off that request, so a public-web lookup cannot wander
-into Notion.
+Studio connectors stay off that request, except the one its task names (so "the
+weather for my calendar events" keeps the calendar and its not-called check), and
+a public-web lookup cannot wander into Notion. Mistral returns a web search's sources as separate reference parts of
+its answer; the device writes each one into the sub-agent's reply where it was
+cited ("... 10:00 to 17:00 (source: https://...)"), up to six per reply.
 
 ## What a spawn can carry
 
@@ -225,10 +228,12 @@ for which provider hosts which connector.
 
 Facts from the public web (weather, travel and train status, news, prices, opening
 hours) come from web search, and the head is told which open provider has it: a
-Mistral sub with the `web_search` skill (the task says "use the web_search tool"),
-an OpenAI sub (hosted web search), an Anthropic sub (web search and fetch), or the
-head's own `web.search` tool when a Tavily key is set. Connectors hold only the
-owner's own data and are never used for public facts.
+Mistral sub with the `web_search` skill (the task says "use the web_search tool
+and name the source of each fact"), an OpenAI sub (hosted web search), an
+Anthropic sub (web search and fetch), or the head's own `web.search` tool when a
+Tavily key is set and the head can call tools. Every route asks for the source of
+each fact, and the reply names the sources. The head is told that connectors hold
+only the owner's own data and are not for public facts.
 
 ## Provider/model resolution
 
@@ -241,8 +246,8 @@ owner's own data and are never used for public facts.
    that key instead of refusing it.
 
 A provider the one per-provider park holds closed (out of credit or a refused key
-learned on any seam, or paused; [provider-wire.md](provider-wire.md)) gets no
-spawn: the order skips it, and a spawn that names it (or a connector routed to it)
+learned on any seam, or paused; [provider-wire.md](provider-wire.md)), or one over
+its monthly budget, gets no spawn: the order skips it, and a spawn that names it (or a connector routed to it)
 moves to the first open provider, logged `spawn moved openai -> anthropic (...)`
 and noted in the spawn ledger. A connector task cannot move, and with nothing open
 the spawn is refused with the reason: *"Couldn't start that agent: openai says the

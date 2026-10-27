@@ -134,9 +134,10 @@ pick Mistral on a card, the connector-id field fills in Mistral's own name for i
 Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
 can read false for connectors that work. So a listed connector is used for your own
 data in it, and only a reply asking to sign in is taken to mean the account still
-needs connecting in Mistral. A connector is never used for facts from the public
-web (weather, travel, news, prices): the assistant and its Mistral sub-agents use
-web search for those. A Virtual Nimbus runs the same check at
+needs connecting in Mistral. The assistant and its Mistral sub-agents are told to
+use web search, never a connector, for facts from the public web (weather, travel,
+news, prices), and a Mistral sub-agent spawned for a web search carries only the
+connector its task names. A Virtual Nimbus runs the same check at
 startup, after a Mistral key is saved, and when its first Studio connector is
 added (the hosted page has no Verify button).
 
@@ -174,9 +175,11 @@ Whatever the mode, the model is told the truth every turn: its
 **no key** - and with validation off, **key present (validation off - trusting
 key presence)**. A provider that is paused right now is marked **paused**, with the
 reason and when it returns (its own monthly limit or the overall spending limit
-lifts, you resume it, credit is added, its key is replaced, or its monthly budget
-resets); its tools and connectors are not listed and it is offered for no
-sub-agent until then.
+lifts, you resume it, credit is added, its key is replaced, its monthly budget
+resets, or a refused request is checked again); its tools are not listed, its
+connectors are named as waiting for it, and no sub-agent or PDF runs on it until
+then. A sub-agent that names it moves to an open provider or is refused with the
+same reason.
 
 **The Telegram bot token is watched live, not just at save time.** The token is
 verified once (a `getMe` call) when you save it, and that verdict is cached. If
@@ -307,8 +310,11 @@ document. It picks the first route your device has:
    writes the PDF itself: headings, text and simple tables, no charts or images.
 
 Every route needs an SD card: the file is kept under **Files** (Memory) and sent
-from there. The Code sandbox switch shows which route is ready right now (for
-example "Ready. PDFs go through OpenAI." or "Insert an SD card to keep files.").
+from there. A paused provider is skipped: the next route is used, and with none
+left the assistant says a PDF is not possible until the pause lifts. The Code
+sandbox switch shows which route is ready right now (for example "Ready. PDFs go
+through OpenAI.", "Your PDF provider is paused, so PDFs are made on the device for
+now: text and tables only." or "Insert an SD card to keep files.").
 A Cumulo Nimbus key on its own cannot bring a sub-agent's file back, and
 Mistral's sandbox cannot make PDF or CSV files (images and text only).
 

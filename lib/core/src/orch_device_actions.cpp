@@ -7,6 +7,7 @@
 
 #include "nimbus/orch/device_actions.h"
 
+#include <cctype>
 #include <cstring>
 
 namespace nimbus {
@@ -49,6 +50,27 @@ bool isProtectedConfigKey(const char* key) {
       return true;
   }
   return false;
+}
+
+std::string cleanSubPriority(const std::string& raw) {
+  std::string out, tok;
+  int depth = 0;   // inside "( ... )": dropped
+  auto flush = [&] {
+    while (!tok.empty() && isspace((unsigned char)tok.back())) tok.pop_back();
+    size_t b = 0;
+    while (b < tok.size() && isspace((unsigned char)tok[b])) b++;
+    if (b < tok.size()) out += (out.empty() ? "" : ",") + tok.substr(b);
+    tok.clear();
+  };
+  for (char ch : raw) {
+    if (ch == '(') { depth++; continue; }
+    if (ch == ')') { if (depth) depth--; continue; }
+    if (depth) continue;
+    if (ch == ',') { flush(); continue; }
+    tok += ch;
+  }
+  flush();
+  return out;
 }
 
 namespace {
@@ -116,7 +138,7 @@ void readConfigKnobs(ArduinoJson::JsonVariantConst c, ValidatedAction& a) {
   }
   if (!c["priority"].isNull()) {
     a.hasPriority = true;
-    a.priority = (const char*)(c["priority"] | "");
+    a.priority = cleanSubPriority((const char*)(c["priority"] | ""));
   }
   if (!c["posture"].isNull()) {
     int p = postureFromStr(c["posture"] | (const char*)nullptr);

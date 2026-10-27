@@ -209,6 +209,37 @@ static void testResolvedHead(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (h) CUM-821/822 on a Virtual Nimbus: the head's own web.search (a Tavily key) is a web
+// route when the head can call tools, and a provider the shared park holds off is PAUSED
+// with no spawn line (review of 4e9cf28f: the VN catalog never read either).
+static void testWebRouteAndPauses(ndtest::Ctx& c) {
+  std::printf("  -- (h) web.search is a web route; a held-off provider is PAUSED --\n");
+  clearEnv();
+  setenv("TAVILY_API_KEY", "tv_TEST_KEY_1", 1);
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig rig(cfg, opts("mws-h", "mistral,openai"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_KEY_6");
+  rig.applyProviderKey("openai", "sk_TEST_KEY_7");
+  c.eq(rig.connectors().replaceBlob(
+           "[{\"name\":\"notion\",\"type\":\"notion\",\"prov\":\"mistral\",\"kind\":\"connector\","
+           "\"cid\":\"notion\",\"en\":1}]"),
+       "", "a Notion card, no Mistral web_search card");
+  const std::string cat = rig.connectorsCatalog();
+  c.ok(has(cat, "call web.search on your own turn"), "the head's web.search is named as a web route");
+  c.ok(!has(cat, "none is available"), "the line never says no web search exists");
+  c.ok(!has(rig.connectorsCatalog(false), "call web.search"), "a head that cannot call tools is not offered it");
+  nimbus::orch::providerPark().clear();
+  nimbus::orch::providerPark().pause("openai", nimbus::orch::kPauseProviderLimit);
+  const std::string held = rig.connectorsCatalog();
+  c.ok(has(held, "- openai: PAUSED. OpenAI is paused by the owner's monthly limit"), "a paused provider is PAUSED");
+  c.ok(!has(held, "spawn on openai"), "and is no spawn target");
+  nimbus::orch::providerPark().resume("openai", nimbus::orch::kPauseProviderLimit);
+  c.ok(!has(rig.connectorsCatalog(), "PAUSED"), "it returns when the pause lifts");
+  nimbus::orch::providerPark().clear();
+  clearEnv();
+}
+
 static std::string get(WebApi& api, const std::string& path) {
   ApiResp out;
   api.handle("GET", path, "", out);
@@ -418,6 +449,7 @@ int main() {
   testProbeFlipsAndKeeps(c);
   testProbeGatesAndKeyReset(c);
   testResolvedHead(c);
+  testWebRouteAndPauses(c);
   testWebSurface(c);
   testCoalesceTagAndQueuedSave(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

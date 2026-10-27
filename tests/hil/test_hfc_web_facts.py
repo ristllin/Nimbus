@@ -10,22 +10,18 @@ in Notion", and the head then told the owner Notion was its only source. Host-te
 (test_connectors_wire, test_harness_turn, test_harness_wire_mistral); this leg proves it on a
 bench unit (the test build, Orchestrator mode, OpenAI, Anthropic and Mistral keyed).
 
-``test_hfc_weather_and_trains_use_mistral_web_search``: OpenAI and Anthropic frozen by 1-cent
-monthly limits (their spend seeded over them), the head on Mistral, a Mistral Notion card
-enabled with Mistral's web_search built-in (each added for the leg when the unit has none, as on
-Lumi). Three times, each after a conversation
-reset, the web chat asks about the weather in Cambridge and the trains to London. Each ask
-passes when a Mistral sub-agent ran web search (its result is tagged ``web: <n>`` with no
-other tool run), the delivered answer names a source and never says the web is unavailable
-or that Notion is the only source, and the prompt's provider block shows OpenAI and Anthropic
-PAUSED with no spawn line for either. The head runs on ``NIMBUS_HFC_HEAD_MODEL``
-(mistral-small-latest by default); the device estimated about 5 cents per ask on 27 Oct. The
-limits, the seeded spend, the head, the priority and the connectors are put back. An ask the
-head answered from an earlier answer (no new lookup) is reported as REUSED and the leg xfails.
-
-A repeat on the same day is answered from the head's own conversation log (memory.episodic finds
-the earlier answer): ``NIMBUS_HFC_PREFIX`` (for example "It is {now} UTC and I need the current status, not an
-earlier answer: ", {now} becoming the time) asks for a new lookup without naming a tool; ``NIMBUS_HFC_ASKS`` sets the count.
+``test_hfc_web_questions_use_mistral_web_search``: OpenAI and Anthropic frozen by 1-cent monthly
+limits (their spend seeded over them), the head on Mistral, a Mistral Notion card enabled with
+Mistral's web_search built-in (each added for the leg when the unit has none, as on Lumi). After
+a conversation reset each, the web chat asks three different public-web questions (the weather
+in Cambridge, the Elizabeth line, the Fitzwilliam Museum's opening hours). Each ask passes when a
+fresh Mistral web_search sub ran web search with the owner's connectors left off its request (so
+no Notion call), the delivered answer names at least one source and never says the web is
+unavailable or credits Notion, and the prompt's provider block shows OpenAI and Anthropic PAUSED
+with no spawn line for either. The head runs on ``NIMBUS_HFC_HEAD_MODEL`` (mistral-small-latest
+by default); the device estimated about 5 cents per ask on 27 Oct. The limits, the seeded spend,
+the head, the priority and the connectors are put back. ``NIMBUS_HFC_ASKS`` runs the first n
+questions (all three by default).
 Needs ``NIMBUS_TEST_IP`` and ``NIMBUS_TEST_TOKEN`` and the console (SPENDSET). Evidence goes to
 ``NIMBUS_HFC_EVIDENCE`` (a directory) when set.
 """
@@ -44,7 +40,23 @@ from webrig import ip_tok_or_skip, make_session, require_orchestrator
 _S = None
 SLUGS = ("cumulo", "openai", "anthropic", "mistral", "zai")
 FROZEN = ("openai", "anthropic")
-ASK = "What's the weather in Cambridge today and are trains between Cambridge and London running normally?"
+# Three different public-web questions, so no ask can be answered from an earlier one
+# (NIMBUS_HFC_QUESTIONS, "|"-separated, replaces them: a unit that answered these today
+# finds them in its own log).
+QUESTIONS = tuple(
+    q.strip()
+    for q in os.environ.get(
+        "NIMBUS_HFC_QUESTIONS",
+        "What's the weather in Cambridge today?|Is the Elizabeth line running normally right now?|"
+        "What are the opening hours of the Fitzwilliam Museum today?",
+    ).split("|")
+    if q.strip()
+)
+# A file ask while OpenAI and Anthropic are paused: it must not go to either (review of
+# 4e9cf28f), so it runs on the device writer or the reply says plainly it is not possible.
+PDF_ASK = os.environ.get("NIMBUS_HFC_PDF_ASK", "Make a one-page PDF titled Bench check with today's date in it.")
+# A named source: a link, a domain, or the word itself.
+SOURCE = re.compile(r"https?://|\bsources?\b|according to|\b[a-z0-9-]+\.(com|org|net|uk|gov|info)\b", re.I)
 HEAD_MODEL = os.environ.get("NIMBUS_HFC_HEAD_MODEL", "mistral-small-latest")
 # A delivered answer that gives up on the web, or credits Notion with public facts.
 GAVE_UP = re.compile(
@@ -217,9 +229,11 @@ def _check_sub(i: int, lastturn: str, lines: list) -> list:
 
 def _left_off(job: str, lines: list) -> bool:
     """The dispatch of ``job`` logged "web_search spawn - n Studio connector(s) left off" just before
-    its "spawned <job>" line (the log window can still hold an earlier ask's lines)."""
+    its "spawned <job>" line. The durable log can drop that line under card-lock contention; then
+    a "left off" line among this ask's own lines stands for it."""
+    left = [k for k, ln in enumerate(lines) if "web_search spawn - " in ln and "left off" in ln]
     at = next((k for k, ln in enumerate(lines) if f"spawned {job} " in ln), -1)
-    return at >= 0 and any("web_search spawn - " in ln and "left off" in ln for ln in lines[max(0, at - 4) : at])
+    return any(at - 4 <= k < at for k in left) if at >= 0 else bool(left)
 
 
 def _check_answer(i: int, replies: list) -> list:
@@ -228,7 +242,7 @@ def _check_answer(i: int, replies: list) -> list:
     fails = []
     if GAVE_UP.search(answer):
         fails.append(f"ask {i}: the answer gives up on the web or credits Notion: {answer[:300]}")
-    if not re.search(r"https?://|source|bbc|met office|national rail|according to", answer, re.I):
+    if not SOURCE.search(answer):
         fails.append(f"ask {i}: the answer names no source: {answer[:300]}")
     return fails
 
@@ -318,47 +332,71 @@ def _restore(board: str, device, st: dict) -> None:
     )
 
 
-def _one_ask(board: str, i: int) -> list:
-    """One fresh ask and its failures ([] = pass); a reused earlier answer is marked REUSED."""
+def _one_ask(board: str, i: int, question: str) -> list:
+    """One fresh ask and its failures ([] = pass)."""
     _S.post(f"http://{board}/api/orch", data={"convReset": "1"}, timeout=10)
     time.sleep(3)
-    log0 = _log(board) + "\n" + _ram_log(board)
-    prefix = os.environ.get("NIMBUS_HFC_PREFIX", "").replace("{now}", time.strftime("%H:%M", time.gmtime()))
-    replies = _ask(board, prefix + ASK)
+    log0, ram0 = _log(board), _ram_log(board)
+    replies = _ask(board, question)
     lastturn = _S.get(f"http://{board}/api/lastturn", timeout=20).text
-    lines = _new_lines(log0, _log(board) + "\n" + _ram_log(board))
+    # Each log anchored on its own (the RAM ring rolls faster than the durable log).
+    lines = _new_lines(log0, _log(board)) + _new_lines(ram0, _ram_log(board))
     _evidence(f"ask{i}-replies.txt", "\n\n----- delivery -----\n\n".join(replies))
     _evidence(f"ask{i}-lastturn.txt", lastturn)
     _evidence(f"ask{i}-log.txt", "\n".join(lines))
     got = _check_block(i, lastturn) + _check_sub(i, lastturn, lines) + _check_answer(i, replies)
-    # A repeat may be answered from the earlier answer in the head's own log (memory.episodic):
-    # no new lookup ran, so the web path is not exercised. Reported, never counted as a pass.
-    if i > 1 and "FRESH RESULTS] (sub-agents" not in lastturn and not GAVE_UP.search("\n".join(replies)):
-        got = [f"ask {i}: REUSED an earlier answer (no new lookup; web path not exercised)"]
     verdict = "PASS" if not got else "FAIL " + json.dumps(got)
     print(f"[HFC] ask {i}: {len(replies)} deliveries; tags {TAG.findall(lastturn)}; {verdict}")
     print(f"[HFC] ask {i} answer: {replies[-1][:400] if replies else '(none)'}")
     return got
 
 
+def _pdf_ask(board: str) -> list:
+    """The file ask: no spawn on a paused OpenAI or Anthropic; a saved file or an honest refusal."""
+    _S.post(f"http://{board}/api/orch", data={"convReset": "1"}, timeout=10)
+    time.sleep(3)
+    log0, ram0 = _log(board), _ram_log(board)
+    replies = _ask(board, PDF_ASK)
+    lines = _new_lines(log0, _log(board)) + _new_lines(ram0, _ram_log(board))
+    state = _S.get(f"http://{board}/api/orch", timeout=10).json()
+    _evidence("pdf-replies.txt", "\n\n----- delivery -----\n\n".join(replies))
+    _evidence("pdf-log.txt", "\n".join(lines))
+    _evidence("pdf-route.txt", f"pdfRoute={state.get('pdfRoute')}\n")
+    answer = "\n".join(replies)
+    fails = [
+        f"pdf: a sub-agent went to paused {p}"
+        for p in FROZEN
+        if any("spawned " in ln and f"({p}/" in ln for ln in lines)
+    ]
+    if state.get("pdfRoute") in FROZEN:
+        fails.append(f"pdf: the route names paused {state.get('pdfRoute')}")
+    saved = re.search(r"\.pdf\b", answer, re.I) is not None
+    honest = re.search(r"not possible|can't|cannot|unable|paused", answer, re.I) is not None
+    if not (saved or honest):
+        fails.append(f"pdf: neither a saved file nor a plain refusal: {answer[:300]}")
+    print(f"[HFC] pdf: route {state.get('pdfRoute')}; {'PASS' if not fails else 'FAIL ' + json.dumps(fails)}")
+    print(f"[HFC] pdf answer: {replies[-1][:400] if replies else '(none)'}")
+    return fails
+
+
 @pytest.mark.hil
 @pytest.mark.net
 @pytest.mark.agent
-def test_hfc_weather_and_trains_use_mistral_web_search(board, device):
+def test_hfc_web_questions_use_mistral_web_search(board, device):
     keyed = _keyed(board)
-    if "mistral" not in keyed:
-        pytest.skip(f"needs a keyed Mistral (keyed: {keyed})")
+    missing = [p for p in ("mistral",) + FROZEN if p not in keyed]
+    if missing:
+        pytest.skip(f"needs OpenAI, Anthropic and Mistral keyed (missing: {missing})")
     _unfreeze_ceiling(board)
     st = _state_before(board, device)
     print(f"\n[HFC] before: head {st['host']}/{st['model']}, prio {st['prio']}, mistral cards {list(st['cards'])}")
     fails = []
     try:
         _set_up(board, device, keyed, st)
-        for i in range(1, int(os.environ.get("NIMBUS_HFC_ASKS", "3")) + 1):
-            fails += _one_ask(board, i)
+        for i, question in enumerate(QUESTIONS[: int(os.environ.get("NIMBUS_HFC_ASKS", "3"))], start=1):
+            fails += _one_ask(board, i, question)
+        if PDF_ASK:
+            fails += _pdf_ask(board)
     finally:
         _restore(board, device, st)
-    real = [f for f in fails if "REUSED" not in f]
-    assert not real, "\n".join(fails)
-    if fails:
-        pytest.xfail("\n".join(fails))
+    assert not fails, "\n".join(fails)

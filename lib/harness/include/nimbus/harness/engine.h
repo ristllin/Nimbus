@@ -207,7 +207,13 @@ class TurnEngine {
     std::function<std::string(const std::string& jsonRpcRequest,
                               const nimbus::orch::Principal& who)> mcpDispatch;
     // Per-provider capability + connector catalog (device: connectors::catalog).
-    std::function<std::string()> connectorsCatalog;
+    // `headCallsTools`: the config's tool loop is on and the head runs one (the
+    // models.list rule), so the head's own web.search may be offered.
+    std::function<std::string(bool headCallsTools)> connectorsCatalog;
+    // What holds a provider off for SUB-AGENTS (the Spawn seam; device:
+    // orchestrator::providerPause): [SPAWN CAPACITY] and the [AVAILABLE PROVIDERS]
+    // marking read it, so they agree with the catalog. Null = apply.headPause.
+    std::function<nimbus::orch::HeadPause(const std::string& provider)> spawnPause;
     // W15: the ambient [SKILLS] index (device: skills::indexText) - one line per
     // capsule so the model can PULL a playbook with skill.get. A skill the
     // per-turn context never NAMES is a skill the model will never reach for.
@@ -524,7 +530,7 @@ class TurnEngine {
   // head runs a tool loop, so [AVAILABLE MODELS] is the one pointer line instead
   // of the per-provider lists. Config-keyed, never this turn's heap gate: the
   // catalogs ride the CACHED static block (prism row 1).
-  std::string buildStableCatalogs(bool modelsTool = false);
+  std::string buildStableCatalogs(bool modelsTool = false, bool headCallsTools = true);
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
   // [THIS TURN RUNS ON] line's "asked for" use (explicit orchHost, else the first keyed priority

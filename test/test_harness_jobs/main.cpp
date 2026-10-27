@@ -82,6 +82,7 @@ struct Rig {
   bool synthConsumes = true;   // synthesize consumes the fresh results (turn ran)
   bool synthPutsBack = false;  // L24: the synthesis turn takes them, ends for memory, puts them back
   std::set<std::string> keyed{"anthropic", "openai"};
+  std::set<std::string> overBudgetProvs;   // JobEngine::Deps.overBudget
   std::function<std::string()> fileRoute;   // the device PDF route provider (nullable)
   std::map<std::string, std::string> connectorProv;  // skill -> hosting provider
   std::vector<agent::SpawnEv> hookSpawns;                  // HookRecorder
@@ -133,6 +134,7 @@ struct Rig {
     d.backendHue = [](const char*) { return (uint8_t)42; };
     d.subPriority = [] { return std::string("anthropic,openai"); };
     d.providerHasKey = [this](const std::string& p) { return keyed.count(p) > 0; };
+    d.overBudget = [this](const std::string& p) { return overBudgetProvs.count(p) > 0; };
     d.subModel = [](const std::string& p) { return "sub-" + p; };
     d.modelIsValid = [](const std::string&, const std::string& m) {
       return m.rfind("good-", 0) == 0;   // models named good-* validate
@@ -567,6 +569,33 @@ static void test_a_provider_at_its_limit_runs_no_helper() {
   TEST_ASSERT_TRUE(LogCapture::contains("spawn moved anthropic -> zai"));
   TEST_ASSERT_TRUE(LogCapture::contains("its monthly limit is reached"));
   orch::providerPark().clear();
+}
+
+// Review of 4e9cf28f: the catalog shows a provider over its monthly budget as running no
+// sub-agents, so the dispatcher agrees: a spawn naming it moves to an open provider with the
+// budget's words, and with none open it is refused with them.
+static void test_an_over_budget_provider_runs_no_helper() {
+  orch::providerPark().clear();
+  Rig r;
+  CompatAdapter zai;
+  r.fabric.registerAdapter(&zai);
+  r.keyed = {"anthropic", "zai"};
+  r.overBudgetProvs = {"anthropic"};
+  zai.deps.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"});
+  r.eng->enqueueSpawn(sp("summarize the GLM paper"), "chat1");   // names anthropic
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)zai.deps.http.seen.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("spawn moved anthropic -> zai (anthropic is over its monthly budget"));
+  Rig all;   // nothing open: refused with the same words
+  all.keyed = {"anthropic"};
+  all.overBudgetProvs = {"anthropic"};
+  all.eng->enqueueSpawn(sp("summarize the GLM paper"), "chat1");
+  all.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)all.adapter.dispatched.size());
+  bool told = false;
+  for (const auto& d : all.delivered) told = told || d.second.find("anthropic is over its monthly budget") != std::string::npos;
+  TEST_ASSERT_TRUE(told);
 }
 
 // CUM-538 gate: a 200 whose result could not be read (empty content, or a body the
@@ -1282,6 +1311,30 @@ static void test_provenance_property_live_research_connector_by_tool_runs() {
       TEST_ASSERT_EQUAL_MESSAGE(runs == 0 && tk.connector, block.find("NOT called") != std::string::npos, tk.text);
       const std::string tag = runs ? " [tools: " + std::to_string(runs) + ", web: 1]: " : " [no tools ran]: ";
       TEST_ASSERT_TRUE_MESSAGE(block.find(tag) != std::string::npos, block.c_str());
+    }
+  }
+}
+
+// CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result added "trains are
+// running normally" from an earlier answer and dropped the sources. A block holding a web
+// result says, once, to keep its sources and state only facts it contains; a block with
+// no web run carries no such line.
+static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() {
+  const std::string line =
+      "For a result tagged web: keep the sources it names and state only facts it contains, never facts "
+      "from earlier answers.\n";
+  for (uint16_t web : {0, 1, 3}) {
+    Rig r;
+    r.adapter.toolRuns = web ? web : 1;
+    r.adapter.webRuns = web;
+    r.adapter.doneReply = "Cambridge: 14 C, showers (bbc.co.uk/weather).";
+    runOneDoneJob(r, sp("Use the web_search tool and name the source of each fact: weather in Cambridge"));
+    const std::string block = r.eng->takeFreshResults();
+    const size_t at = block.find(line);
+    TEST_ASSERT_EQUAL_MESSAGE(web > 0, at != std::string::npos, block.c_str());
+    if (web) {
+      TEST_ASSERT_EQUAL(block.find('\n') + 1, at);   // right under the header
+      TEST_ASSERT_EQUAL(at, block.rfind(line));      // once
     }
   }
 }
@@ -2553,6 +2606,7 @@ int main(int, char**) {
   RUN_TEST(test_a_zai_sub_that_outruns_its_post_may_have_started);
   RUN_TEST(test_spend_ceiling_refuses_a_sub_dispatch_before_any_request);
   RUN_TEST(test_a_provider_at_its_limit_runs_no_helper);
+  RUN_TEST(test_an_over_budget_provider_runs_no_helper);
   RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
   RUN_TEST(test_an_unreadable_answer_may_have_run);
   RUN_TEST(test_spawn_note_budget_is_per_chat);
@@ -2580,6 +2634,7 @@ int main(int, char**) {
   RUN_TEST(test_poll_lifecycle_running_then_done_parks_fresh);
   RUN_TEST(test_unverified_connector_result_opens_with_marker);
   RUN_TEST(test_provenance_property_live_research_connector_by_tool_runs);
+  RUN_TEST(test_cum822_web_results_carry_the_sources_and_no_stale_facts_line);
   RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
   RUN_TEST(test_done_arc_cleared_after_grace);
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);

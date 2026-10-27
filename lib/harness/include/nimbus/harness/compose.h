@@ -110,7 +110,8 @@ struct ComposeInputs {
   bool promptV2 = false;
   // The stable catalogs ([AVAILABLE PROVIDERS], [AVAILABLE MODELS],
   // the skills index, [PROVIDERS & CONNECTORS]) - the engine's
-  // buildStableCatalogs(). They change only with the device config, so they ride
+  // buildStableCatalogs(). They change with the device config, a key verdict or a
+  // provider pausing or returning (never per turn), so they ride
   // the end of the static block (prompt_layout.h); not counted in budgetBytes.
   std::string catalogs;
   // True when [AVAILABLE MODELS] in in.catalogs is the models.list pointer line

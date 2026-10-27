@@ -118,10 +118,10 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // True while a scheduled-loop turn is executing - the device-action validator
 // refuses `reboot` and `loop.create` in this window (prism fork-bomb/reset guard).
 bool inScheduledTurn();
-// What holds paid requests to provider `p` off now (the pause switch, a refusal park on
-// the chat seam, its monthly budget): the one read the orch_model guard, the per-turn
-// [THIS TURN RUNS ON] line and the connectors catalog share (CUM-821).
-nimbus::orch::HeadPause providerPause(const std::string& p);
+// What holds paid requests to provider `p` off now on `seam` (the pause switch, a refusal
+// park covering that seam, its monthly budget). The orch_model guard and [THIS TURN RUNS ON]
+// read Chat; the catalog, the PDF route and the spawn advice read Spawn (CUM-821).
+nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam);
 // Lane J: did the running turn read outside content (a folded-in media row or
 // an external-tainted tool result)? The standing rules' taint rail reads it.
 bool turnReadOutsideContent();
