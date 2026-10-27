@@ -2,6 +2,9 @@
 
 #include <cstring>
 
+#include "nimbus/orch/speak_outcome.h"   // the tts summary words
+#include "nimbus/orch/voice_notes.h"   // kVoiceMayNotHaveArrived
+
 namespace nimbus {
 namespace orch {
 
@@ -246,11 +249,6 @@ bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
   kind = FxKind::Config;
   if (sum.find("cfg(") != std::string::npos) { landed = false; return true; }   // no change, nothing
   if (endsWith(sum, "cfg ")) { landed = true; return true; }
-  if (startsWith(sum, "tts")) {
-    kind = FxKind::Speak;
-    landed = sum == "tts ";
-    return true;
-  }
   if (startsWith(sum, "led") || startsWith(sum, "lights") || startsWith(sum, "reboot")) {
     landed = sum == "led " || sum == "lights " || sum == "reboot ";
     return true;
@@ -262,6 +260,15 @@ bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
   return false;   // skip, protected-BLOCKED, unsupported: no action ran
 }
 
+// A voice send that failed after its upload went out ("... may not have arrived ...")
+// records as unconfirmed: the correction then says it was not confirmed, not that
+// nothing was delivered.
+static uint8_t withUnconfirmed(const std::string& output, uint8_t flags) {
+  return (flags & kFxVoice) && contains(output, kVoiceMayNotHaveArrived)
+             ? (uint8_t)(flags | kFxUnconfirmed)
+             : flags;
+}
+
 // A send: its receipt, if the result names one. A voice send without a receipt did
 // not arrive (it records as failed); one that went out as text is a plain send.
 static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags) {
@@ -269,16 +276,44 @@ static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags
   const std::string id = fxReceiptId(output);
   if (!id.empty()) flags |= kFxReceipt;
   if ((flags & kFxVoice) && id.empty()) {
-    fx.add(FxKind::Send, false, std::string(), 1, flags);
+    fx.add(FxKind::Send, false, std::string(), 1, withUnconfirmed(output, flags));
     return;
   }
   fx.add(FxKind::Send, true, id.empty() ? fxRefFromOutput(output) : id, 1, flags);
+}
+
+void recordSpeakSummary(TurnEffects& fx, const std::string& summary, bool isError) {
+  constexpr uint8_t kVoiceSend = kFxTelegram | kFxVoice;
+  if (!isError && startsWith(summary, kTtsTelegramLead)) {
+    recordSend(fx, summary, kVoiceSend);   // its receipt (the id after "message_id"), or none: nothing arrived
+    return;
+  }
+  fx.add(FxKind::Speak, !isError && summary == kTtsSpoken);
+  // The Telegram fallback went out but Telegram never confirmed it (HTTP 0, an unreadable
+  // answer): it may have arrived, so a "voice message sent" line says it was not confirmed.
+  // apply.cpp opens that summary with kTtsUnconfirmedLead, ahead of any length cap.
+  if (!isError && startsWith(summary, (std::string(kTtsNotSpokenLead) + kTtsUnconfirmedLead).c_str()))
+    fx.add(FxKind::Send, false, std::string(), 1, (uint8_t)(kVoiceSend | kFxUnconfirmed));
 }
 
 // "queued memory <id>, not stored yet" / "queued update for <id>, not changed yet".
 static bool queuedWrite(FxKind base, const std::string& out) {
   return (base == FxKind::MemWrite || base == FxKind::MemUpdate) &&
          (startsWith(out, "queued memory ") || startsWith(out, "queued update for "));
+}
+
+// device.control's answer after "applied: ": the first line is the summary, a risk note
+// may follow it.
+static void recordDeviceControl(TurnEffects& fx, const std::string& answer, bool isError) {
+  const size_t nl = answer.find('\n');
+  const std::string sum = answer.substr(0, nl);
+  FxKind k;
+  bool landed = false;
+  // A tts action's summary ("tts ", "tts(...") - not a config summary that merely starts with
+  // the letters ("ttsOn cfg " is a setting that changed).
+  if (sum == kTtsSpoken || startsWith(sum, "tts(")) recordSpeakSummary(fx, sum, isError);
+  else if (deviceSummaryEffect(sum, k, landed)) fx.add(k, landed && !isError);
+  else fx.add(FxKind::Read, !isError);
 }
 
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
@@ -288,13 +323,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
     return;
   }
   if (base == FxKind::Config && startsWith(output, "applied: ")) {   // device.control
-    // The summary is the first line; a risk note may follow it.
-    const size_t nl = output.find('\n');
-    const std::string sum = output.substr(9, nl == std::string::npos ? std::string::npos : nl - 9);
-    FxKind k;
-    bool landed = false;
-    if (deviceSummaryEffect(sum, k, landed)) fx.add(k, landed && !isError);
-    else fx.add(FxKind::Read, !isError);
+    recordDeviceControl(fx, output.substr(9), isError);
     return;
   }
   if (isError) {
@@ -303,7 +332,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
     // so they back a claim about them; the rest is recorded as failed.
     const std::string id = base == FxKind::Send ? fxReceiptId(output) : std::string();
     if (!id.empty()) fx.add(FxKind::Send, true, id, 1, (uint8_t)(flags | kFxReceipt));
-    fx.add(base, false, std::string(), 1, flags);
+    fx.add(base, false, std::string(), 1, withUnconfirmed(output, flags));
     return;
   }
   if (base == FxKind::Send) {

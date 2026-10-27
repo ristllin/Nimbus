@@ -75,6 +75,22 @@ static void test_no_provider_write_surface_beyond_convid() {
   TEST_ASSERT_TRUE(true);
 }
 
+// QW6: where a spoken reply's Telegram fallback goes. A Telegram turn (the owner's or a guest's)
+// answers in its own chat, so a guest's request is never voiced into the owner's chat; a web,
+// voice or serial turn, a device origin and a non-chat id go to the owner chat; no owner chat, no
+// destination. (Merge review: only the owner-chat branch had run, on the bench.)
+static void test_a_spoken_fallback_goes_to_the_turns_own_chat_else_the_owner_chat() {
+  using agent::voiceFallbackChatOf;
+  TEST_ASSERT_EQUAL_STRING("1001", voiceFallbackChatOf("1001", "1001").c_str());       // the owner's own chat
+  TEST_ASSERT_EQUAL_STRING("7788", voiceFallbackChatOf("7788", "1001").c_str());       // a guest, never the owner
+  TEST_ASSERT_EQUAL_STRING("-100123456", voiceFallbackChatOf("-100123456", "1001").c_str());   // a group
+  for (const char* origin : {"web", "voice", "serial", "system", "", "loop:abc", "sub-1", "12ab", "-", "--5"})
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("1001", voiceFallbackChatOf(origin, "1001").c_str(), origin);
+  TEST_ASSERT_EQUAL_STRING("", voiceFallbackChatOf("web", "").c_str());                // nowhere to send it
+  TEST_ASSERT_EQUAL_STRING("7788", voiceFallbackChatOf("7788", "").c_str());           // the turn's own chat still stands
+  TEST_ASSERT_EQUAL_STRING("1001", voiceFallbackChatOf(std::string(21, '9'), "1001").c_str());   // not a chat number
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_provider_defaults_and_keys);
@@ -82,6 +98,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_caps_mirror_store_defaults);
   RUN_TEST(test_budget_gate_and_recording);
   RUN_TEST(test_no_provider_write_surface_beyond_convid);
+  RUN_TEST(test_a_spoken_fallback_goes_to_the_turns_own_chat_else_the_owner_chat);
   UNITY_END();
   return 0;
 }

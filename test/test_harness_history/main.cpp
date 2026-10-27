@@ -41,6 +41,7 @@ struct Rig {
   int seq = 0;
   bool v2 = true;
   bool wireV2 = true;
+  bool speakOk = true;   // what the speak sink answers (QW6: a tts that was not spoken leaves no tts row)
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions;   // what each provider call received
   std::vector<std::pair<std::string, std::string>> legacyCaptures;   // episodicCaptureUser
@@ -108,7 +109,10 @@ struct Rig {
     };
     d.apply.deliver = d.deliver;
     d.apply.principalFor = [](const std::string& chat) { return principalForRole(chat, Role::Admin); };
-    d.apply.speak = [](const std::string&) {};
+    d.apply.speak = [this](const std::string&, const std::string&) {
+      return speakOk ? nimbus::orch::SpeakOutcome::spoke()
+                     : nimbus::orch::SpeakOutcome::failed("the speaker is marked faulty");
+    };
     d.apply.ttsEnabled = true;
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       add(c, "assistant", MsgKind::Message, t, eng->assistantRowTags() + ",turn:" + turnTag);
@@ -352,6 +356,24 @@ static void test_assistant_rows_carry_out_kinds() {
                    std::string::npos);
   TEST_ASSERT_TRUE(w.find("Market at nine.") == std::string::npos);   // written beats spoken
   TEST_ASSERT_TRUE(w.find("- assistant: [did: nothing] Which stall first?") != std::string::npos);
+}
+
+// QW6: a tts the sink could not voice leaves no spoken row, and the reply row that
+// follows is labelled as the reply (the "spoken" mark must not slide onto it).
+static void test_an_unspoken_tts_leaves_no_spoken_row() {
+  Rig r;
+  r.speakOk = false;
+  r.reply = "{\"reply\":\"Market at 9.\",\"memory\":\"\",\"ask\":\"\","
+            "\"device\":[{\"type\":\"tts\",\"text\":\"Market at nine.\"}]}";
+  r.eng->handleMessage("plan Saturday", "Roy", "123");
+  int assistantRows = 0;
+  for (const auto& m : r.all("123"))
+    if (m.role == "assistant") {
+      assistantRows++;
+      TEST_ASSERT_TRUE_MESSAGE(m.text.find("Market at nine.") == std::string::npos, m.text.c_str());
+      TEST_ASSERT_EQUAL_STRING("reply", agent::tagValue(m.tags, agent::kOutTag).c_str());
+    }
+  TEST_ASSERT_EQUAL(1, assistantRows);   // only the reply, which the claim check may have corrected
 }
 
 // The switch off is byte-identical to an engine that never heard of histV2: the
@@ -683,6 +705,7 @@ int main(int, char**) {
   RUN_TEST(test_text_bucket_source_and_inject_without_ids);
   RUN_TEST(test_seedless_turn_trigger_row);
   RUN_TEST(test_assistant_rows_carry_out_kinds);
+  RUN_TEST(test_an_unspoken_tts_leaves_no_spoken_row);
   RUN_TEST(test_switch_off_is_byte_identical);
   RUN_TEST(test_overflow_shift_is_recorded_and_stable);
   RUN_TEST(test_fold_slice_starts_after_the_anchor);

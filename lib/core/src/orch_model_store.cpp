@@ -671,10 +671,25 @@ bool preferredFirst(const std::string& provider, const std::string& id) {
 
 std::string directChoices(const std::string& provider, const std::vector<ModelInfo>& rows,
                           uint32_t now) {
-  std::vector<const ModelInfo*> c;
-  for (const ModelInfo& m : rows)
-    if (rowOffered(m, RoleOrchestrator, now) && !m.deprecated && shortListed(provider, m.id))
-      c.push_back(&m);
+  // The provider's own filter first. A key whose list holds none of the filter's
+  // families (an older or narrower account: only gpt-4.x on OpenAI) must not leave the
+  // short list empty while the store offers rows: the prompt line and the picker would
+  // fall back to the compiled cold-start list, whose models the one check then refuses
+  // once the store offers anything (CODEREVIEW voice-model-seams). So when the filter
+  // keeps nothing, the short list is what the store offers - first without the filter,
+  // last without the deprecation bar either - and every id in it passes the check by
+  // construction (rowOffered is the check's own test).
+  auto offered = [&](bool filtered, bool deprecatedToo) {
+    std::vector<const ModelInfo*> out;
+    for (const ModelInfo& m : rows)
+      if (rowOffered(m, RoleOrchestrator, now) && (deprecatedToo || !m.deprecated) &&
+          (!filtered || shortListed(provider, m.id)))
+        out.push_back(&m);
+    return out;
+  };
+  std::vector<const ModelInfo*> c = offered(true, false);
+  if (c.empty()) c = offered(false, false);
+  if (c.empty()) c = offered(false, true);
   // Preferred families first, each newest first (an undated row after the dated ones,
   // in store order).
   std::stable_sort(c.begin(), c.end(), [&](const ModelInfo* a, const ModelInfo* b) {

@@ -77,9 +77,30 @@ bool sendNote(const String& chat, const std::string& note, size_t k, size_t n, V
   return true;
 }
 
+#if defined(NIMBUS_TEST)
+String s_testText;   // VOICETEXT: voiced in place of the model's text, once
+
+// The test console's one-shot override, taken (empty when none is armed).
+String takeTestText() {
+  String forced = s_testText;
+  s_testText = String();
+  return forced;
+}
+#endif
+
 }  // namespace
 
-Outcome deliver(const String& chatId, const String& text) {
+#if defined(NIMBUS_TEST)
+void setTestTextOverride(const String& text) { s_testText = text; }
+#endif
+
+Outcome deliver(const String& chatId, const String& asked) {
+#if defined(NIMBUS_TEST)
+  const String forced = takeTestText();   // VOICETEXT: voice this instead of the model's text
+  const String& text = forced.length() ? forced : asked;
+#else
+  const String& text = asked;
+#endif
   Outcome o;
   const nimbus::orch::VoicePlan plan = nimbus::orch::planVoiceNotes(std::string(text.c_str()));
   String refusal = plan.refusal.c_str();
@@ -89,6 +110,7 @@ Outcome deliver(const String& chatId, const String& text) {
     refusal = "the Telegram bot is not running";
   if (refusal.length()) {
     o.toolText = nimbus::orch::voiceFailedText({}, 1, std::string(refusal.c_str()));
+    o.why = refusal.c_str();
     alogf("voice: not sent (%s)", refusal.c_str());
     return o;
   }
@@ -103,6 +125,7 @@ Outcome deliver(const String& chatId, const String& text) {
     if (!fits) why = nimbus::orch::voiceBudgetText().c_str();
     if (!fits || !sendNote(chatId, plan.notes[i], i + 1, plan.notes.size(), one, why)) {
       o.toolText = nimbus::orch::voiceFailedText(sent, plan.notes.size(), std::string(why.c_str()));
+      o.why = why.c_str();
       alogf("voice: %u of %u note(s) reached Telegram; stopped: %s", (unsigned)sent.size(),
             (unsigned)plan.notes.size(), why.c_str());
       return o;
@@ -113,6 +136,7 @@ Outcome deliver(const String& chatId, const String& text) {
     o.spokenText += plan.notes[i].c_str();
   }
   o.delivered = true;
+  o.receipt = std::to_string((long long)sent[0].messageId);
   o.toolText = nimbus::orch::voiceDeliveredText(sent);
   alogf("voice: %s", o.toolText.c_str());
   return o;

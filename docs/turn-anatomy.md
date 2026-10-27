@@ -380,7 +380,7 @@ claims in nine classes:
 | saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a record correction ("updated the day log", "corrected the entry", "adjusted the totals") needs the file write |
 | deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
 | spawned | "I started three research sub-agents" | that many accepted spawns |
-| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id`; any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |
+| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; "read it aloud", "out loud", "aloud", "on the speaker" (the assistant as subject) and "spoken" need speech that really played on the speaker (an end-of-turn `tts` that was refused at volume 0, or that the speaker or Telegram could not carry, backs nothing and the line says it was not spoken) or a voice message with Telegram's `message_id`; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id` (when the upload went out but Telegram never answered usably, the line says the message was not confirmed and may not have arrived, not that nothing was delivered); any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |
 | changed | "pinned", "switched", "turned off", "I've set" | a real change: a config action that actually changed a stored value, or a routine ("cfg(no change)" backs nothing); a pin on an already pinned memory is not one |
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
@@ -388,14 +388,16 @@ claims in nine classes:
 | cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
 
 Questions, offers, conditions, possibilities and plain futures ("want me to", "I'll",
-"it may have been lost, or saved elsewhere"), a negation within four words, a clause
+"it may have been lost, or saved elsewhere"), a running total ("1,600 kcal logged so far",
+"you're at 1,600 kcal logged": a figure beside "logged" with a progress phrase reports what is
+already on record), a negation within four words, a clause
 whose subject is "nothing", "none" or "no record" ("nothing in the logs shows it was
 saved"), quoted text, another person's action and references to earlier turns are not
 claims. Replies that are mostly not English are not scanned. When the head has
 provider-hosted tools on its turn (connectors, a hosted web search), claims of sending,
 checking or changing something are not checked, because those tools run where the
 device cannot see them; everything the device does itself (memory, files, skills,
-notes, sub-agents, a Telegram voice message from its own bot) is always checked.
+notes, sub-agents, a Telegram voice message from its own bot, speech on its own speaker) is always checked.
 Cause claims are always checked: the records are the device's own.
 
 A memory write that states an unbacked cause as a fact ("the owner's Telegram

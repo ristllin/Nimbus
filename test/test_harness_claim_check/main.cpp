@@ -677,10 +677,66 @@ static void test_working_claims_need_a_health_read() {
   TEST_ASSERT_EQUAL_UINT32(0, textOnly.causeEvidence());
 }
 
+// QW6: a hosted tool (a connector, a hosted search) cannot drive this device's speaker, so an
+// unbacked "read it aloud" is corrected whether or not the head had hosted tools; a plain
+// "sent" claim still is not (it may have been an email the device cannot see).
+static void test_a_spoken_claim_is_checked_even_with_hosted_tools() {
+  for (int hosted = 0; hosted < 2; hosted++) {
+    ClaimCheck failed;
+    failed.beginTurn();
+    failed.setHostedTools(hosted != 0);
+    failed.noteTool(FxKind::Speak, true, "volume 0", 0);   // a failed speak
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: that was not spoken aloud.)",
+                                     failed.tailAfterApply("I read it aloud for you.").c_str(), hosted ? "hosted" : "plain");
+    ClaimCheck spoke;
+    spoke.beginTurn();
+    spoke.setHostedTools(hosted != 0);
+    spoke.noteTool(FxKind::Speak, false, "spoken on device speaker", 0);
+    TEST_ASSERT_EQUAL_STRING("", spoke.tailAfterApply("I read it aloud for you.").c_str());
+  }
+  // The counter-test: a plain send claim with hosted tools is still not checked.
+  ClaimCheck sent;
+  sent.beginTurn();
+  sent.setHostedTools(true);
+  TEST_ASSERT_EQUAL_STRING("", sent.tailAfterApply("I sent it to you.").c_str());
+}
+
+// CUM-771 through the whole check (the in-turn round and the owner tail): a reply that reports a
+// running total and estimates the rest claims no save, so it is delivered as written; the
+// 23 Oct Lumi reply that DID claim a save is still corrected.
+static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
+  const char* quiet[] = {
+      "For 2,400 kcal you have 800 left (1,600 logged so far).\n\nThese are estimates. Nothing is logged yet. "
+      "Tell me what you actually eat and I'll add it.",
+      "You're at 1,600 kcal logged, so 800 kcal are left.\n\nWant me to log this once you've eaten?",
+      "Morning total: ~475-505 kcal, ~25-28g protein. I'll check back to log it once it's done.",
+  };
+  for (const char* reply : quiet) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", cc.finalCheck(turnJson(reply)).c_str(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", cc.tailAfterApply(reply).c_str(), reply);
+  }
+  const char* claims[] = {
+      "Logged: cappuccino, 52 kcal / 3.6g protein. First item on today's log.",   // 23 Oct, Lumi
+      "2 eggs, 156 kcal logged, so you're at 1,652 kcal so far.",                 // a fresh figure AND a total
+      "3 eggs logged - you're on a roll!",
+  };
+  for (const char* reply : claims) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_FALSE_MESSAGE(cc.finalCheck(turnJson(reply)).empty(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: that has not been saved.)", cc.tailAfterApply(reply).c_str(),
+                                     reply);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_consistent_replies_need_no_correction);
   RUN_TEST(test_voice_claim_needs_a_telegram_receipt);
+  RUN_TEST(test_a_spoken_claim_is_checked_even_with_hosted_tools);
+  RUN_TEST(test_a_running_total_reply_is_not_corrected_but_a_save_claim_is);
   RUN_TEST(test_unbacked_claim_gets_one_correction_with_the_record);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);

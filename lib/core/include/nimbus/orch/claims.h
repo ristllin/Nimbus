@@ -26,7 +26,10 @@
 //       (dispatch runs after the turn ends);
 //   R4  a scratchpad write backs "noted", and also brings the durability check;
 //   R5  text inside quotes or code is skipped (the head often quotes the owner);
-//   R6  English only: a reply that is mostly non-ASCII letters is not scanned.
+//   R6  English only: a reply that is mostly non-ASCII letters is not scanned;
+//   R7  a running total is a report, not a save: "logged" beside a figure with a progress
+//       phrase in its sentence ("1,600 kcal logged so far", "you're at 1,600 kcal logged")
+//       states what is already on record. "52 kcal logged." and "Logged: cappuccino" still claim.
 // A send claim about a Telegram delivery is backed only by a send that carries
 // Telegram's receipt (turn_effects.h kFxReceipt: the message_id Telegram answered
 // with), never by a send tool's own words (22 Oct: "sent to Telegram" backed "a
@@ -34,6 +37,11 @@
 // voice message's receipt; a text, document or photo send without a receipt (it was
 // only queued) backs no "sent" either. A send that is not a Telegram send (a share
 // link) backs it as before.
+// A spoken claim ("read it aloud", "spoken") is backed by a reply that really played on
+// the speaker (a Speak that landed) or by a voice message with Telegram's receipt; the
+// end-of-turn `tts` action records which of the two happened, or neither (volume 0, a
+// failed speaker, a refused Telegram upload). A voice message whose upload went out but
+// that Telegram never confirmed gets a "not confirmed" line, not "nothing was delivered".
 //
 // Cause claims (19 Oct: "your Telegram client is re-sending a corrupt,
 // partially-uploaded item", "my vision path is working", none of it on record) are
@@ -129,7 +137,8 @@ struct ClaimGap {
   std::string excerpt;     // the claim's clause, at most ~100 bytes, valid UTF-8
   std::string missing;     // Figure: the numbers no source holds ("200, 21, 60")
   uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op, no voice
-                           // receipt, queued, no receipt, and the cause lines
+                           // receipt, queued, no receipt, the cause lines, not spoken, and a
+                           // voice message Telegram did not confirm
   bool        deviceOnly = false;   // only this device could have done it (a Telegram voice
                                     // message from its bot): a hosted tool never backs it
 };
@@ -170,6 +179,10 @@ std::string claimTail(const std::vector<ClaimGap>& gaps);
 // The tail line for one class (exposed for tests and for lines shared with other
 // rails); `g` supplies the figure numbers.
 std::string claimTailLine(const ClaimGap& g);
+// Does a claim tail already tell the owner about speech: "not spoken aloud", "no voice message was
+// delivered" or "Telegram did not confirm the voice message"? Then a second note for the same
+// failed tts would only repeat it.
+bool tailCarriesSpeechGap(const std::string& tail);
 
 // One cue row, exposed so the table property tests iterate the single source.
 struct ClaimCueInfo {

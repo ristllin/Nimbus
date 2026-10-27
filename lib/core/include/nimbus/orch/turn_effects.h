@@ -63,6 +63,7 @@ enum : uint8_t {
   kFxTelegram  = 1u << 4,   // a Telegram send (reply.telegram, files.send): backed only by a receipt
   kFxQueued    = 1u << 5,   // a memory write the store queued (not stored yet)
   kFxHealth    = 1u << 6,   // a read of the device's own state (device.status, system.health, ...)
+  kFxUnconfirmed = 1u << 7, // a voice send whose upload went out but Telegram did not answer usably: it may have arrived
 };
 
 struct Effect {
@@ -129,7 +130,7 @@ class TurnEffects {
 // A memory write the store only queued ("queued memory <id>, not stored yet") is not
 // stored, whatever the call's success flag says: it records as failed with kFxQueued.
 // A device action's summary ("applied: cfg ", "applied: cfg(no change) ",
-// "applied: tts ") records what it really did (deviceSummaryEffect).
+// "applied: tts ") records what it really did (deviceSummaryEffect; recordSpeakSummary for tts).
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags = 0);
 
@@ -149,12 +150,23 @@ bool sendDelivered(const TurnEffects& fx);
 // True when a Telegram send this turn was accepted but carries no receipt (queued).
 bool sendQueuedOnly(const TurnEffects& fx);
 
+// What a `tts` device action's summary says really happened (apply.cpp applyDeviceElement):
+//   "tts "                          spoken on the device speaker: a Speak that landed;
+//   "tts(telegram message_id N) "   delivered as a Telegram voice message: a Send that
+//                                   carries Telegram's receipt (kFxTelegram | kFxVoice | kFxReceipt);
+//   anything else ("tts(not-spoken: <why>) ", "tts(voice-off) ", "tts(no-sink) "): nothing was
+//   voiced, a Speak that failed - and, when the Telegram fallback went out but Telegram never
+//   confirmed it (the summary opens with kTtsUnconfirmedLead), also a failed voice Send flagged
+//   kFxUnconfirmed (it may have arrived).
+// A tool error (isError) records the failed Speak whatever the summary says.
+void recordSpeakSummary(TurnEffects& fx, const std::string& summary, bool isError = false);
+
 // What one device-action summary did (apply.cpp applyDeviceElement's tokens): its
 // effect kind and whether it landed. A config change lands only when a knob survived
 // the scheduled-turn strip and a stored value changed ("cfg "); "cfg(no change) " and
-// "cfg(nothing) " change nothing. A voice-off or sink-less tts, a sink-less led, a
-// refused reboot and an invalid or keyless model switch land nothing either. False
-// when the summary names no action the ledger records.
+// "cfg(nothing) " change nothing. A sink-less led, a refused reboot and an invalid or
+// keyless model switch land nothing either. False when the summary names no action the
+// ledger records (a tts is recorded by recordSpeakSummary, not here).
 bool deviceSummaryEffect(const std::string& summary, FxKind& kind, bool& landed);
 
 }  // namespace orch
