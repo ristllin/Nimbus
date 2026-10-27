@@ -267,6 +267,38 @@ static void test_a_server_date_stands_in_for_an_unset_clock() {
   TEST_ASSERT_TRUE(has(bodyOf(st, "uint32_t monthNow()"), "serverClock().epoch("));
   TEST_ASSERT_TRUE(has(slurp("src/agent/transport_tls.cpp"), "noteHttpDateHeader("));
   TEST_ASSERT_TRUE(has(slurp("src/agent/telegram.cpp"), "noteHttpDateHeader("));
+  // Round 3 review: the usage ledger reads the same time base, so the month-to-date the
+  // store settles with is never 0 while the store's month is already set.
+  const std::string ledger = slurp("src/agent/store.cpp");
+  TEST_ASSERT_TRUE(has(bodyOf(ledger, "static time_t ledgerNow()"), "serverClock().epoch("));
+  for (const char* fn : {"uint32_t currentPeriodKey(uint8_t resetDay) {", "uint32_t currentDayKey() {",
+                         "uint64_t monthToDateMicro() {"}) {
+    TEST_ASSERT_TRUE_MESSAGE(has(bodyOf(ledger, fn), "ledgerNow()"), fn);
+    TEST_ASSERT_FALSE_MESSAGE(has(bodyOf(ledger, fn), "time(nullptr)"), fn);
+  }
+}
+
+// Round 3 review: only a date from a provider or Telegram over TLS is trusted, never one
+// that jumps years ahead, and the clock re-anchors on every sample (no drift, no wrap).
+static void test_the_server_clock_trusts_only_sane_provider_dates() {
+  TEST_ASSERT_TRUE(trustedDateHost("api.openai.com"));
+  TEST_ASSERT_TRUE(trustedDateHost("api.telegram.org"));
+  TEST_ASSERT_TRUE(trustedDateHost("app.cumulo-nimbus.ai"));
+  TEST_ASSERT_FALSE(trustedDateHost("my-pi.local"));
+  TEST_ASSERT_FALSE(trustedDateHost("evil-openai.com.example"));
+  TEST_ASSERT_FALSE(trustedDateHost(""));
+  ServerClock c;
+  c.note(4102444800LL, 1000);   // 2100: not a date this device can be in
+  TEST_ASSERT_EQUAL_INT64(0, c.epoch(0, 2000));
+  c.note(1793070600LL, 1000);
+  c.note(1793070600LL + 40LL * 86400, 2000);   // a 40-day jump one second later: refused
+  TEST_ASSERT_EQUAL_INT64(1793070601LL, c.epoch(0, 2000));
+  c.note(1793070600LL + 5, 3000);              // a sample ahead of the extrapolation re-anchors
+  TEST_ASSERT_EQUAL_INT64(1793070605LL, c.epoch(0, 3000));
+  c.note(1793070600LL, 4000000);               // a sample behind it re-anchors at the extrapolation
+  TEST_ASSERT_EQUAL_INT64(1793070605LL + 3997, c.epoch(0, 4000000));
+  TEST_ASSERT_TRUE(has(bodyOf(slurp("src/agent/transport_tls.cpp"), "bool readHeaders(int code)"),
+                       "trustedDateHost("));
 }
 
 static void test_frozen_reply_is_due_only_for_an_unanswered_telegram_message_during_a_pause() {
@@ -525,6 +557,7 @@ int main(int, char**) {
   RUN_TEST(test_frozen_reply_is_due_only_for_an_unanswered_telegram_message_during_a_pause);
   RUN_TEST(test_the_paused_reply_is_throttled_and_others_get_one_neutral_line);
   RUN_TEST(test_a_server_date_stands_in_for_an_unset_clock);
+  RUN_TEST(test_the_server_clock_trusts_only_sane_provider_dates);
   RUN_TEST(test_main_wires_the_unanswered_reply_and_the_owner_notice);
   RUN_TEST(test_counts_without_a_clock_are_enforced_at_once);
   RUN_TEST(test_spend_made_without_a_clock_survives_a_month_that_changed_meanwhile);

@@ -1583,7 +1583,11 @@ void JobEngine::finishStopped(const orch::JobRecord& rec) {
 // provider reports it) ends it; a run the provider no longer has (404) ends with nothing
 // more to count. After 15 minutes of failed polls the session estimate is counted at once
 // (prepaid: a later final read counts only what exceeds it); after 6 hours the run is
-// dropped and its chat told. The list is saved on every change, so a restart keeps it.
+// dropped and its chat told. Whatever the polls say, a run is counted at the estimate 15
+// minutes after it joined the list and leaves after 24 hours (a bounded exit). The list
+// is saved on every change (before the job record is finished, so a cut between the two
+// only counts twice), so a restart keeps it; a save that fails counts the estimate at once.
+static constexpr uint32_t kStoppingMaxAgeMs = 24u * 3600u * 1000u;
 static constexpr uint32_t kCancelRetryMs = 30000;
 static constexpr uint32_t kCancelRetryMaxMs = 300000;
 static constexpr uint32_t kStoppingPrepayMs = nimbus::orch::kJobPollGiveUpMs;
@@ -1610,6 +1614,11 @@ std::vector<std::string> splitFields(const std::string& line) {
 constexpr const char* kStopListHeader = "QW4-STOP 1";
 }  // namespace
 
+bool JobEngine::hasBackgroundWork() {
+  loadStopList();
+  return activeCount() > 0 || hasFreshResults() || !stopping_.empty();
+}
+
 void JobEngine::loadStopList() {
   if (stoppingLoaded_) return;
   stoppingLoaded_ = true;
@@ -1627,19 +1636,22 @@ void JobEngine::loadStopList() {
     e.prepaid = (uint32_t)std::strtoul(f[6].c_str(), nullptr, 10);
     e.cancelAtMs = now;   // a restart asks again at once
     e.pollAtMs = now + t_.pollIntervalMs;
+    e.sinceMs = now;
     stopping_.push_back(e);
     hlog::logf("orchestrator: %s (%s) still being stopped after the restart", e.tag.c_str(), e.jobId.c_str());
   }
 }
 
-void JobEngine::saveStopList() {
-  if (!d_.saveStopping) return;
+bool JobEngine::saveStopList() {
+  if (!d_.saveStopping) return true;
   std::string out = std::string(kStopListHeader) + "\n";
   for (const Stopping& e : stopping_)
     out += stopField(e.tag) + '\x1f' + stopField(e.jobId) + '\x1f' + stopField(e.backend) + '\x1f' +
            stopField(e.model) + '\x1f' + stopField(e.chatId) + '\x1f' + stopField(e.label) + '\x1f' +
            std::to_string(e.prepaid) + "\n";
-  if (!d_.saveStopping(out)) hlog::log("orchestrator: the stop list was not saved (a restart forgets it)");
+  if (d_.saveStopping(out)) return true;
+  hlog::log("orchestrator: the stop list was not saved (a restart would forget it)");
+  return false;
 }
 
 // The session estimate, counted at once for a run the device cannot follow or read.
@@ -1651,20 +1663,29 @@ void JobEngine::countEstimate(const std::string& backend, const std::string& mod
   d_.recordSpawnUsage(backend, model, u);
 }
 
-// Keep a run on the list (false: the list is full, and the session estimate was counted
-// at once instead, unless it already was).
+// Keep a run on the list. A full list drops its oldest run, counted at the session
+// estimate first; a list that cannot be saved counts the new run's estimate at once (a
+// restart would forget it).
 bool JobEngine::keepStopping(Stopping e) {
   loadStopList();
   for (const Stopping& x : stopping_)
     if (x.jobId == e.jobId) return true;   // already being stopped
   if (stopping_.size() >= (size_t)kMaxStopping) {
-    hlog::logf("orchestrator: stop list full - %s counted at the session estimate", e.jobId.c_str());
-    if (!e.prepaid) countEstimate(e.backend, e.model);
-    return false;
+    const Stopping& old = stopping_.front();
+    hlog::logf("orchestrator: stop list full - %s gives its place, counted at the session estimate",
+               old.jobId.c_str());
+    if (!old.prepaid) countEstimate(old.backend, old.model);
+    stopping_.erase(stopping_.begin());
   }
-  if (!e.pollAtMs) e.pollAtMs = nowMs() + t_.pollIntervalMs;
+  const uint32_t now = nowMs();
+  if (!e.pollAtMs) e.pollAtMs = now + t_.pollIntervalMs;
+  e.sinceMs = now;
+  if (e.label.size() > 60) e.label = e.label.substr(0, 60);
   stopping_.push_back(e);
-  saveStopList();
+  if (!saveStopList() && !e.prepaid) {
+    countEstimate(e.backend, e.model);
+    stopping_.back().prepaid = orch::kSessionInputEstimateTokens;
+  }
   return true;
 }
 
@@ -1705,24 +1726,50 @@ void JobEngine::toStopList(const orch::JobRecord& rec, uint32_t cancelAtMs, uint
 // for the stop list (asked again after 30 s, polled, counted when it ends).
 bool JobEngine::stopJob(const orch::JobRecord& rec) {
   const FabricErr err = d_.fabric->cancel(rec.jobId);
-  finishStopped(rec);
-  if (err == FabricErr::Ok || err == FabricErr::NotFound) return true;
+  if (err == FabricErr::Ok || err == FabricErr::NotFound) {
+    finishStopped(rec);
+    return true;
+  }
   hlog::logf("orchestrator: %s cancel not confirmed (err %d) - on the stop list, asking again in %u s",
              rec.tag, (int)err, (unsigned)(stopRetryWait(0) / 1000));
-  toStopList(rec, nowMs() + stopRetryWait(0), 1, 0);
+  toStopList(rec, nowMs() + stopRetryWait(0), 1, 0);   // saved before the record is finished
+  finishStopped(rec);
   return false;
 }
 
 // Lane QW4 (CUM-778): a job the freeze stops leaves its slot now; its stop is asked at
 // the next turn of the stop list (one request a pump).
 void JobEngine::markStopping(const orch::JobRecord& rec) {
+  toStopList(rec, nowMs(), 0, 0);   // saved before the record is finished
   finishStopped(rec);
-  toStopList(rec, nowMs(), 0, 0);
+}
+
+// The limits that hold whatever the polls say: the estimate 15 minutes after a run joined
+// the list, and its exit after 24 hours (its chat told). True when a run left.
+bool JobEngine::stopAgeLimits() {
+  const uint32_t now = nowMs();
+  for (size_t i = 0; i < stopping_.size(); ++i) {
+    Stopping& e = stopping_[i];
+    const uint32_t age = now - e.sinceMs;
+    if (age >= kStoppingPrepayMs && !e.prepaid) {
+      countEstimate(e.backend, e.model);
+      e.prepaid = orch::kSessionInputEstimateTokens;
+      saveStopList();
+    }
+    if (age >= kStoppingMaxAgeMs) {
+      deliver(e.chatId, "I could not confirm that [" + e.label + "] stopped within a day. It is counted "
+                        "at an estimate, and its result will not be delivered.");
+      endStop(i);
+      return true;
+    }
+  }
+  return false;
 }
 
 // One request a pump for the whole list: the first stop that is due, else the first poll.
 void JobEngine::serviceStopList() {
   loadStopList();
+  if (stopAgeLimits()) return;
   const uint32_t now = nowMs();
   for (size_t i = 0; i < stopping_.size(); ++i)
     if ((int32_t)(now - stopping_[i].cancelAtMs) >= 0) {

@@ -211,7 +211,8 @@ struct TlsIo {
           keepErrHeader(req, code, line);
           // Lane QW4 round 3: the server's date stands in for a clock that never set (no
           // NTP), so the monthly spend ceiling still rolls its month.
-          if (line.length() > 5 && strncasecmp(line.c_str(), "Date:", 5) == 0)
+          if (req.tls && line.length() > 5 && strncasecmp(line.c_str(), "Date:", 5) == 0 &&
+              nimbus::orch::trustedDateHost(req.host))
             nimbus::orch::noteHttpDateHeader(line.c_str() + 5, millis());
           line = "";
         }

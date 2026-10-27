@@ -452,9 +452,17 @@ inline CancelledBill anthropicJobBill(const JsonDocument& doc) {
 // here and false is returned (the stop is not settled), so the job engine keeps the
 // helper on its stop list and counts the final usage when it settles. An OpenAI cancel
 // answers with the cancelled run itself, so its read is always final.
+// Idle is also how a session reads before its message started the run (a fresh session
+// is idle), so only an idle session that ran (active time, or usage) has stopped.
 inline bool sessionSettled(int code, const JsonDocument& doc) {
   const char* st = doc["status"] | "";
-  return code == 200 && (std::strcmp(st, "idle") == 0 || std::strcmp(st, "terminated") == 0);
+  if (code != 200) return false;
+  if (std::strcmp(st, "terminated") == 0) return true;
+  if (std::strcmp(st, "idle") != 0) return false;
+  const ArduinoJson::JsonVariantConst usage = doc["usage"];
+  if ((usage["active_seconds"] | 0.0) > 0.0) return true;
+  const nimbus::orch::TokenUsage u = nimbus::orch::anthropicSessionUsage(usage);
+  return !u.empty() || u.cacheReadTokens || u.cacheWriteTokens;
 }
 
 // What the read says the cancelled job billed; `estimate` set when it is the session

@@ -115,10 +115,18 @@ std::mutex& serverClockMx() {
 }
 }  // namespace
 
+// Re-anchored on every sample (so the uptime counted on top stays short, never near its
+// 49-day wrap): at the sample, or at the time already known when that is later (never
+// back). A sample past kServerDateMax, or a jump of more than kServerDateMaxJumpS, is
+// refused.
 void ServerClock::note(int64_t epoch, uint32_t nowMs) {
-  if (epoch < (int64_t)kCeilingClockValid) return;
+  if (epoch < (int64_t)kCeilingClockValid || epoch > kServerDateMax) return;
   std::lock_guard<std::mutex> lk(serverClockMx());
-  if (date_ > 0 && date_ + (int64_t)((uint32_t)(nowMs - atMs_) / 1000) >= epoch) return;   // never back
+  if (date_ > 0) {
+    const int64_t known = date_ + (int64_t)((uint32_t)(nowMs - atMs_) / 1000);
+    if (epoch > known + kServerDateMaxJumpS) return;
+    epoch = epoch > known ? epoch : known;
+  }
   date_ = epoch;
   atMs_ = nowMs;
 }
@@ -136,6 +144,19 @@ ServerClock& serverClock() {
 }
 
 void noteServerDate(int64_t epoch, uint32_t nowMs) { serverClock().note(epoch, nowMs); }
+
+bool trustedDateHost(const std::string& host) {
+  static const char* const kHosts[] = {"openai.com", "anthropic.com", "mistral.ai", "z.ai",
+                                       "bigmodel.cn", "cumulo-nimbus.ai", "telegram.org"};
+  for (const char* d : kHosts) {
+    const std::string dom(d);
+    if (host == dom) return true;
+    if (host.size() > dom.size() && host.compare(host.size() - dom.size(), dom.size(), dom) == 0 &&
+        host[host.size() - dom.size() - 1] == '.')
+      return true;
+  }
+  return false;
+}
 
 void noteHttpDateHeader(const char* value, uint32_t nowMs) {
   while (value && *value == ' ') ++value;

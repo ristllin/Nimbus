@@ -88,6 +88,13 @@ ServerClock& serverClock();                              // the device's one
 void noteServerDate(int64_t epoch, uint32_t nowMs);      // serverClock().note
 // A response's Date header value (after "Date:"), noted when it parses.
 void noteHttpDateHeader(const char* value, uint32_t nowMs);
+// Round 3 review: whose dates are trusted: a provider's or Telegram's API host (over TLS,
+// the caller checks), never a custom endpoint or any other host.
+bool trustedDateHost(const std::string& host);
+// No date past this is believed (2040-01-01), nor one more than kServerDateMaxJumpS ahead
+// of the time already known.
+inline constexpr int64_t kServerDateMax = 2208988800LL;
+inline constexpr int64_t kServerDateMaxJumpS = 7LL * 86400;
 
 // The first valid clock (`month` non-zero) after counts made without one: a provisional
 // count (month 0) moves into `month` (SpendCeiling::roll keeps it), and when the store

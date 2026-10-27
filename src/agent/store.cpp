@@ -42,6 +42,7 @@
 #include "../sys/agent_log.h"              // alogc + errlog::cat - loud NVS-full seed hint (CUM-408)
 #include "../sys/config_nvs.h"             // notePersist - the persist ledger (CUM-479)
 #include "../sys/web_task.h"               // webTake - the web task never waits out a ledger write
+#include "nimbus/orch/spend_guard.h"       // serverClock - the ledger's time base without NTP (lane QW4)
 
 // Device config accessors backed by solide::memory (NVS). Defaults mirror
 // Nuage-Solide storage.cpp: priorities default to "openai,anthropic,mistral"
@@ -1548,11 +1549,18 @@ bool persistOrRevertLocked(const nimbus::orch::UsageLedger& before) {
   return false;
 }
 
+// Lane QW4 round 3: the ledger's clock is the spend ceiling's: the SNTP wall clock, else
+// the newest provider or Telegram server date plus the uptime since (a network that
+// blocks NTP), so the ceiling's month and the ledger's month-to-date never disagree.
+static time_t ledgerNow() {
+  return (time_t)nimbus::orch::serverClock().epoch((int64_t)time(nullptr), millis());
+}
+
 // Current rolling-month key for a provider's reset day, from the SNTP wall clock.
 // Before the clock syncs (year < 2021) everything accumulates in period 0 and rolls
 // to the real period once time is set - no spurious mid-life reset, no fake spend.
 uint32_t currentPeriodKey(uint8_t resetDay) {
-  time_t now = time(nullptr);
+  time_t now = ledgerNow();
   struct tm tmv;
   localtime_r(&now, &tmv);
   int year = tmv.tm_year + 1900;
@@ -1564,7 +1572,7 @@ uint32_t currentPeriodKey(uint8_t resetDay) {
 // (the history core refuses dayKey 0, so pre-SNTP spend is simply not graphed -
 // it still lands in the ledger's period counters).
 uint32_t currentDayKey() {
-  time_t now = time(nullptr);
+  time_t now = ledgerNow();
   if (now < 1609459200) return 0;   // 2021-01-01 - same sanity bar as the period key
   return (uint32_t)(now / 86400);
 }
@@ -1837,7 +1845,7 @@ bool usageHasHistory() {
 }
 
 uint64_t monthToDateMicro() {
-  const time_t now = time(nullptr);
+  const time_t now = ledgerNow();
   struct tm tmv;
   if (now < 1609459200 || !localtime_r(&now, &tmv)) return 0;
   // The first day of this month (device timezone) as a UTC day key: the history's

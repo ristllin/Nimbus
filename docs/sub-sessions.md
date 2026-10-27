@@ -313,9 +313,14 @@ The list asks the stop again after 30 s, doubling up to 5 minutes, and polls the
 every 15 s, one request a pump: a confirmed stop, or a final poll counted as the
 provider reports it (0 included; a poll that cannot read the usage, or a run that lists
 work but no tokens, counts the session estimate), ends it. A run the provider no longer
-has (404) ends with nothing more to count. After 15 minutes of failed polls the session
-estimate is counted at once (a later final read counts only what exceeds it); after 6
-hours the run is dropped with a message.
+has (404) ends with nothing more to count. Fifteen minutes after a run joined the list
+(or after 15 minutes of failed polls) the session estimate is counted at once (a later
+final read counts only what exceeds it); after 6 hours of failed polls, or a day on the
+list whatever the polls say, the run is dropped with a message. The list holds 24 runs;
+a full list drops its oldest, counted at the estimate first. A list that cannot be saved
+counts the new run's estimate at once. An Anthropic session counts as stopped only when
+it reads idle after running (some active time or usage): a fresh session also reads
+idle.
 
 The usual 15-minute give-up on a job whose polls all fail now also counts the session
 estimate and puts the job on the stop list (its result still does not arrive). When the
@@ -324,8 +329,7 @@ running on a paused provider's side goes to the stop list the same way and its c
 one message naming them; raising the limit does not restart them. A hosted instance
 reads its ceiling directly for this. An Anthropic sub whose starting turn got no answer
 (the run may have started with no job id to follow) is interrupted at once; if that
-interrupt is not confirmed either, the session joins the stop list (a full list, 8 runs,
-counts the session estimate at once). An
+interrupt is not confirmed either, the session joins the stop list. An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.
@@ -527,7 +531,7 @@ battery-lab's host-side tool, not firmware.)
 | the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; the full reply in the `ev:subresult` row; a reply longer than the envelope saved whole as a file in the job's project (or `results`) | via episodic / vector memory; the file via `files.read` |
 | the sub-agent's internal transcript | **not stored** - provider-side only | - |
 | pending spawn queue, fresh results awaiting synthesis | RAM | no - lost on restart (results already delivered per-job survive as chat messages) |
-| the stop list (runs whose stop is not yet confirmed: tag, provider job id, model, chat, the estimate already counted) | flash file `/data/jobs_stopping.txt`, up to 8 | yes - the stop is asked again at once after a restart |
+| the stop list (runs whose stop is not yet confirmed: tag, provider job id, model, chat, the estimate already counted) | flash file `/data/jobs_stopping.txt`, up to 24 | yes - the stop is asked again at once after a restart |
 
 **No-SD degradation** (same tiering as everything else,
 [orchestrator-storage.md](orchestrator-storage.md)): episodic falls back to a

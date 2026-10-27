@@ -1,7 +1,9 @@
 #include <unity.h>
 
+#include <fstream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -73,6 +75,7 @@ struct Rig {
   FakeAdapter mistral;
   std::string saved;          // the stop list as the engine last saved it
   std::string toLoad;         // what the engine reads at its first pump
+  bool saveOk = true;         // the flash write succeeds
   agent::HeavyFabric fabric;
   Store store;
   orch::Journal journal;
@@ -107,7 +110,7 @@ struct Rig {
     d.loadStopping = [this] { return toLoad; };
     d.saveStopping = [this](const std::string& v) {
       saved = v;
-      return true;
+      return saveOk;
     };
     eng.reset(new JobEngine(std::move(d)));
   }
@@ -128,6 +131,14 @@ struct Rig {
     eng->pump();
   }
 };
+
+std::string slurp(const std::string& path) {   // a source file, for the wiring checks
+  std::ifstream f(path, std::ios::binary);
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+bool has(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
 
 bool g_ceilingFrozen = false;
 bool ceilingFrozen() { return g_ceilingFrozen; }
@@ -419,9 +430,10 @@ static void test_a_run_started_with_no_answer_is_stopped_in_the_background() {
   TEST_ASSERT_EQUAL(1, r.openai.attempts);   // never dispatched again
 }
 
-// ...and when the stop list is full it cannot be followed: the session estimate is counted
-// at once (never left at the request's small estimate).
-static void test_an_unseen_run_with_no_room_counts_the_estimate() {
+// ...and when the stop list is full the newest is still followed: the oldest entry gives
+// its place, counted at the session estimate first (round 3 review: never drop a new
+// stop, and nothing leaves the list uncounted).
+static void test_a_full_stop_list_evicts_the_oldest_counted() {
   Rig r;
   r.openai.unseen = "openai:resp_unseen_";
   r.openai.cancelScript = {agent::FabricErr::RemoteFail};
@@ -430,8 +442,64 @@ static void test_an_unseen_run_with_no_room_counts_the_estimate() {
   TEST_ASSERT_EQUAL(0, (int)r.usage.size());
   r.spawn("openai");
   TEST_ASSERT_EQUAL(JobEngine::kMaxStopping, r.eng->stoppingCount());
+  TEST_ASSERT_EQUAL(1, (int)r.usage.size());                 // the evicted oldest, counted
+  TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, r.usage[0].in);
+  TEST_ASSERT_TRUE(r.eng->stopping(("openai:resp_unseen_" + std::to_string(JobEngine::kMaxStopping + 1)).c_str()));
+  TEST_ASSERT_FALSE(r.eng->stopping("openai:resp_unseen_1"));
+  TEST_ASSERT_TRUE(JobEngine::kMaxStopping >= 3 * orch::kAgentMaxJobs);   // room for every helper, twice over
+}
+
+// Round 3 review (blocker): the pump drivers must keep pumping while only the stop list
+// has work (the hosted instance pumps only while jobs are busy; the device closes its
+// Telegram socket only while jobs are active), and a list saved before a restart counts
+// as work before any pump.
+static void test_the_stop_list_keeps_the_pump_running() {
+  Rig r;
+  r.openai.cancelScript = {agent::FabricErr::RemoteFail};
+  r.spawn("openai");
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));
+  TEST_ASSERT_EQUAL(0, r.eng->activeCount());
+  TEST_ASSERT_TRUE(r.eng->hasBackgroundWork());
+  Rig after;
+  after.toLoad = r.saved;
+  TEST_ASSERT_TRUE(after.eng->hasBackgroundWork());   // read before the first pump
+  Rig idle;
+  TEST_ASSERT_FALSE(idle.eng->hasBackgroundWork());
+  TEST_ASSERT_TRUE(has(slurp("nimbusd/src/rig.h"), "jobs_->hasBackgroundWork()"));
+  TEST_ASSERT_TRUE(has(slurp("src/agent/orchestrator.cpp"), "g_jobs->stoppingCount()"));
+}
+
+// Round 3 review: a run that keeps answering "running" while its stop keeps failing is
+// still counted at the estimate 15 minutes after it joined the list (not only after 15
+// minutes of failed polls), and leaves after 24 hours (a bounded exit).
+static void test_a_run_that_never_stops_is_counted_and_bounded() {
+  Rig r;
+  r.openai.cancelScript = {agent::FabricErr::RemoteFail};
+  r.openai.pollScript = {agent::JobState::Running};
+  r.spawn("openai");
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));
+  const uint32_t t0 = r.plat.ms;
+  while (r.plat.ms - t0 < 16u * 60u * 1000u) r.at(r.plat.ms + 30000);
   TEST_ASSERT_EQUAL(1, (int)r.usage.size());
   TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, r.usage[0].in);
+  TEST_ASSERT_EQUAL(1, r.eng->stoppingCount());
+  while (r.eng->stoppingCount() && r.plat.ms - t0 < 25u * 3600u * 1000u) r.at(r.plat.ms + 300000);
+  TEST_ASSERT_EQUAL(0, r.eng->stoppingCount());
+  TEST_ASSERT_TRUE(r.plat.ms - t0 >= 24u * 3600u * 1000u);
+  TEST_ASSERT_EQUAL(1, (int)r.usage.size());
+}
+
+// Round 3 review: a stop list that cannot be saved (a full flash) would be forgotten at a
+// restart, so the run is counted at the session estimate at once.
+static void test_a_stop_that_cannot_be_saved_is_counted_at_once() {
+  Rig r;
+  r.saveOk = false;
+  r.openai.cancelScript = {agent::FabricErr::RemoteFail};
+  r.spawn("openai");
+  TEST_ASSERT_TRUE(r.eng->cancel("job0000"));
+  TEST_ASSERT_EQUAL(1, (int)r.usage.size());
+  TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, r.usage[0].in);
+  TEST_ASSERT_EQUAL(1, r.eng->stoppingCount());   // still followed this run
 }
 
 static void test_the_stopped_message_names_what_paused_them() {
@@ -463,7 +531,10 @@ int main(int, char**) {
   RUN_TEST(test_an_unconfirmed_stop_holds_no_slot);
   RUN_TEST(test_the_stop_list_survives_a_restart);
   RUN_TEST(test_a_run_started_with_no_answer_is_stopped_in_the_background);
-  RUN_TEST(test_an_unseen_run_with_no_room_counts_the_estimate);
+  RUN_TEST(test_a_full_stop_list_evicts_the_oldest_counted);
+  RUN_TEST(test_the_stop_list_keeps_the_pump_running);
+  RUN_TEST(test_a_run_that_never_stops_is_counted_and_bounded);
+  RUN_TEST(test_a_stop_that_cannot_be_saved_is_counted_at_once);
   RUN_TEST(test_the_stopped_message_names_what_paused_them);
   return UNITY_END();
 }

@@ -273,12 +273,22 @@ static void test_an_interrupted_session_still_running_is_not_counted_yet() {
   auto pu = u.contract();
   TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail, (int)providers::antCancel(pu, "anthropic:sesn_8"));
   TEST_ASSERT_EQUAL(0, (int)g_meter.size());
-  FakeProviderDeps i;   // idle with no tokens: final, and 0 is what it billed (live, 27 Oct)
+  FakeProviderDeps i;   // idle after running 8 s with no tokens: final, 0 is what it billed (live, 27 Oct)
   i.http.script.push_back({"", "/v1/sessions/sesn_9/events", 200, "{\"data\":[]}"});
   i.http.script.push_back({"", "/v1/sessions/sesn_9", 200,
-                           "{\"id\":\"sesn_9\",\"status\":\"idle\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"});
+                           "{\"id\":\"sesn_9\",\"status\":\"idle\",\"usage\":{\"active_seconds\":8.7,"
+                           "\"input_tokens\":0,\"output_tokens\":0}}"});
   auto pi = i.contract();
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antCancel(pi, "anthropic:sesn_9"));
+  // Round 3 review: idle with no usage and no active time is also how a session reads
+  // before its message started the run (a fresh session is idle): not proof it stopped.
+  FakeProviderDeps f;
+  f.http.script.push_back({"", "/v1/sessions/sesn_10/events", 200, "{\"data\":[]}"});
+  f.http.script.push_back({"", "/v1/sessions/sesn_10", 200,
+                           "{\"id\":\"sesn_10\",\"status\":\"idle\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"});
+  auto pf = f.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail, (int)providers::antCancel(pf, "anthropic:sesn_10"));
+  TEST_ASSERT_EQUAL(0, (int)g_meter.size());
 }
 
 // Round 3: the stop list trusts a final poll as its provider reports it, so the poll

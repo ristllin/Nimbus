@@ -593,7 +593,9 @@ class NimbusdRig {
   int pumpJobs() { return jobs_ ? jobs_->pump() : 0; }
   // Whether a pump can do real work right now (a job queued, running, or results
   // waiting for synthesis) - lets the engine thread mark itself busy around it.
-  bool jobsBusy() const { return jobs_ && (jobs_->activeCount() > 0 || jobs_->hasFreshResults()); }
+  // Lane QW4 round 3: the stop list (helpers whose stop is not yet confirmed, read from
+  // disk before the first pump) is work too, or nothing would ever ask them again.
+  bool jobsBusy() const { return jobs_ && jobs_->hasBackgroundWork(); }
   agent::JobEngine& jobs() { return *jobs_; }
 
   // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)

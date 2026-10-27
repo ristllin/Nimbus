@@ -784,7 +784,7 @@ static JobEngine::Deps buildJobDeps() {
     std::string out;
     File f = LittleFS.open(kStopListPath, "r");
     if (!f) return out;
-    while (f.available() && out.size() < 4096) out += (char)f.read();
+    while (f.available() && out.size() < 8192) out += (char)f.read();
     f.close();
     return out;
   };
@@ -2761,7 +2761,9 @@ int pollJobs() {
   refreshSessionSnapshot();  // mirror the post-pump journal for AsyncTCP readers (F24)
   compactTick();             // v3.6.0 fold pump (after loops consumed their usage)
   g_ownerFirst.notePumpEnd();   // the next pass follows this cycle's poll and reply drain
-  return n;
+  // Lane QW4 round 3: the stop list makes its own TLS requests, so it counts as active
+  // work: the Telegram loop then frees the TLS arena and keeps the pump coming.
+  return n + g_jobs->stoppingCount();
 }
 
 bool cancel(const char* tagOrJobId) {

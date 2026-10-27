@@ -252,7 +252,13 @@ class JobEngine {
   // provider (it is on the background stop list: asked again, polled, counted).
   bool stopping(const char* tagOrJobId) const;
   int stoppingCount() const { return (int)stopping_.size(); }
-  static constexpr int kMaxStopping = 8;   // the stop list's room (a full one counts the estimate)
+  // The stop list's room: every helper three times over. A full list makes room by
+  // dropping its oldest run, counted at the session estimate first.
+  static constexpr int kMaxStopping = 24;
+  // Lane QW4 round 3: anything for a pump to do: a job queued or running, results
+  // waiting for synthesis, or a run on the stop list (read from its store at the first
+  // call, so a list saved before a restart counts before any pump).
+  bool hasBackgroundWork();
   // Aim the round-robin at the awaited tag + poll now (turn `await[0]`).
   void awaitTag(const std::string& firstTag);
   std::vector<nimbus::orch::SessionInfo> sessionInfos() const;
@@ -515,6 +521,7 @@ class JobEngine {
     uint32_t prepaid = 0;
     uint8_t tries = 0;
     uint32_t cancelAtMs = 0, pollAtMs = 0, pollWaitMs = 0, firstErrMs = 0;
+    uint32_t sinceMs = 0;   // when it joined the list (this run): the 15 min and 24 h limits
   };
   std::vector<Stopping> stopping_;
   bool stoppingLoaded_ = false;
@@ -525,7 +532,8 @@ class JobEngine {
   bool keepStopping(Stopping e);
   void keepUnseenRun(const char* tag, const PendingSpawn& p, const std::string& model);
   void loadStopList();
-  void saveStopList();
+  bool saveStopList();
+  bool stopAgeLimits();
   void serviceStopList();
   void askStop(size_t i);
   void pollStop(size_t i);
