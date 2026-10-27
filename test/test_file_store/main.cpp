@@ -405,6 +405,46 @@ void test_food_ledger_names_are_reserved() {
   TEST_ASSERT_FALSE(st.writeAllowed("food", "food-log.csv", "chat:42", false));
 }
 
+// CUM-836: the card's FAT is case-blind, so the INDEX must resolve identity the
+// same way. A member writing "SECRET.MD" used to be a brand-new file to the
+// case-sensitive index while the card then wrote the owner's "secret.md".
+void test_identity_is_case_blind_like_fat() {
+  FileStore st;
+  std::string err;
+  FileEntry e; e.project = "notes"; e.name = "secret.md";
+  e.owner = nimbus::orch::kOwnerNs; e.bytes = 5;
+  TEST_ASSERT_TRUE(st.add(e, err));
+
+  // The owner's file is FOUND (and so refused to a member) through ANY case
+  // variant of the project and the name - the card opens them all as one file.
+  TEST_ASSERT_NOT_NULL(st.find("NOTES", "SECRET.MD"));
+  TEST_ASSERT_NOT_NULL(st.find("notes", "Secret.Md"));
+  TEST_ASSERT_FALSE(st.writeAllowed("Notes", "SECRET.MD", "chat:alice", false));
+  TEST_ASSERT_TRUE(st.writeAllowed("notes", "secret.MD", nimbus::orch::kOwnerNs, true));
+
+  // add() with a case variant REPLACES the one entry (one FAT file, one index
+  // row) instead of leaving two rows that disagree about who owns the file.
+  FileEntry v = e; v.name = "SECRET.MD"; v.bytes = 9;
+  TEST_ASSERT_TRUE(st.add(v, err));
+  TEST_ASSERT_EQUAL_UINT32(1, st.count());
+  TEST_ASSERT_EQUAL_UINT32(9, st.find("notes", "secret.md")->bytes);
+
+  // remove() and readableBy() resolve case-blind too.
+  TEST_ASSERT_TRUE(st.readableBy(*st.find("notes", "SeCrEt.md"), nimbus::orch::kOwnerNs, true));
+  TEST_ASSERT_TRUE(st.remove("NOTES", "secret.md"));
+  TEST_ASSERT_EQUAL_UINT32(0, st.count());
+
+  // Two entries that differ ONLY by case can never coexist (the dump from an
+  // older, case-sensitive build collapses them to the last one on load).
+  FileEntry a = e, b = e;
+  a.name = "plan.md"; b.name = "PLAN.md";
+  b.owner = "chat:alice";
+  TEST_ASSERT_TRUE(st.add(a, err));
+  TEST_ASSERT_TRUE(st.add(b, err));
+  TEST_ASSERT_EQUAL_UINT32(1, st.count());
+  TEST_ASSERT_EQUAL_STRING("chat:alice", st.find("notes", "plan.MD")->owner.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_sd_quota_and_supported_card);
@@ -424,5 +464,6 @@ int main() {
   RUN_TEST(test_load_tolerates_garbage_and_revalidates);
   RUN_TEST(test_list_and_projects);
   RUN_TEST(test_food_ledger_names_are_reserved);
+  RUN_TEST(test_identity_is_case_blind_like_fat);
   return UNITY_END();
 }

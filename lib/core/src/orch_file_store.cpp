@@ -56,9 +56,22 @@ std::string FileStore::relPath(const std::string& project, const std::string& na
 
 // ---- index ------------------------------------------------------------------
 
+// FAT opens the card's file names without regard to case, so the index must
+// resolve identity the same way or every ownership check can be bypassed with a
+// letter-case variant (CUM-836: a member writing "MEALS.CSV" onto the owner's
+// "meals.csv" was a NEW file to the index, and the card then wrote the owner's
+// file). validSegment() admits printable ASCII only, so folding ASCII is exact.
+static bool fatSameSegment(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (::tolower((unsigned char)a[i]) != ::tolower((unsigned char)b[i])) return false;
+  return true;
+}
+
 int FileStore::indexOf(const std::string& project, const std::string& name) const {
   for (size_t i = 0; i < entries_.size(); ++i)
-    if (entries_[i].project == project && entries_[i].name == name) return int(i);
+    if (fatSameSegment(entries_[i].project, project) &&
+        fatSameSegment(entries_[i].name, name)) return int(i);
   return -1;
 }
 
