@@ -240,7 +240,9 @@ already have billed and run tools (a Telegram reply sent, a memory written), so 
 routine's or the awareness turn's fire counts as a failure, never a memory deferral
 (the awareness turn is not staged again), and the rounds it billed are metered. A fire
 whose turn handed the model's words to the owner before it failed (its reply, a cut
-reply it salvaged, a Telegram message or speech a tool sent) is never run again early,
+reply it salvaged, a Telegram message, file or voice note a tool sent, speech that
+played; for a routine's delivery to the web chat, whose history is the only copy, once
+that history row is written) is never run again early,
 so the owner never gets the same message twice: a one-shot reminder or wakeup retires
 instead of taking its one short retry, and the owner gets one message saying it was
 delivered but its turn did not finish; a routine keeps its next slot. A quiet turn's

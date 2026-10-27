@@ -167,6 +167,12 @@ class TurnEngine {
 
     // Owner delivery (device: Telegram reply queue + full-queue logging).
     std::function<void(const std::string& chatId, const std::string& text)> deliver;
+    // CUM-826: asked right after a delivery to `chatId` returned (apply's or the
+    // engine's): true when it queued no content of its own and the chat's history row
+    // is the owner's copy (the device: the web chat while a routine fires, whose page
+    // re-renders its history; a full reply queue). The fire spoke only once that row
+    // is written. Null = every delivery queues its content.
+    std::function<bool(const std::string& chatId)> deliveryNeedsRow;
     // Attention-event sink (device: attn::Router via g_sinks.event). Nullable.
     std::function<void(const nimbus::attn::Event&)> event;
     // Sound cue, execution-only: "turnstart" (device: sfx TurnStart). Nullable.

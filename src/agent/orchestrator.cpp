@@ -412,7 +412,14 @@ static nimbus::orch::ContextBudget headBudget() {
 // a guest could prompt-inject the model into reproducing.)
 // Returns false ONLY when the outbound screen suppressed the message (a full reply
 // queue is logged, not "undelivered": the message still belongs in the history).
+// CUM-826: whether the last deliver() on this task queued no content of its own, so the
+// chat's history row is the owner's only copy: a routine's delivery to the web chat is
+// async (the open page re-renders its history), and a full reply queue or a suppressed
+// message queued nothing. The engine asks it right after a delivery returned
+// (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
+static bool s_lastDeliveryNeedsRow = false;
 static bool deliver(const String& chatId, const String& text, bool system = false) {
+  s_lastDeliveryNeedsRow = true;   // until the sink took the content
   // Lane J (D-3): the owner's standing rules can switch on device-enforced
   // output filters. "Never use em dashes" is exactly the kind of rule a model
   // slips on in long formatted replies, so the rule ALSO strips them here, at
@@ -443,9 +450,11 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // other: orchSendSink hands it to the web chat book as an ASYNC delivery (the open
   // page re-renders its history, where captureAssistant records it), never into the
   // legacy single slot or any turn's reply (agent::deliverToWebChat).
-  if (g_sinks.send && !g_sinks.send(chatId, body))
+  const bool queued = g_sinks.send && g_sinks.send(chatId, body);
+  if (g_sinks.send && !queued)
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)body.length(), chatId.c_str());
+  s_lastDeliveryNeedsRow = !queued || (chatId == "web" && loops::firing());
   return true;
 }
 
@@ -1148,6 +1157,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.deliver = [](const std::string& chatId, const std::string& text) {
     deliver(String(chatId.c_str()), String(text.c_str()));
   };
+  d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };
   d.event = [](const attn::Event& e) { if (g_sinks.event) g_sinks.event(e); };
   d.fire = [](const char* cue) {
     if (strcmp(cue, "turnstart") == 0) ::sfx::fire(nimbus::sfx::Ev::TurnStart);   // "Roger that."

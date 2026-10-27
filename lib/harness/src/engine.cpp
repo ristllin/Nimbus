@@ -231,32 +231,40 @@ TurnMemoryState& turnMem() {
 
 // L24: apply's first delivery marks the turn as answered, so a failed allocation
 // after it adds no apology on top of the answer (the ApplyCapture swap pattern).
-// CUM-826: a delivery or speech that RETURNED (handed over) marks the fire as having
-// spoken; one that threw before anything was queued does not.
+// CUM-826: a delivery that RETURNED (handed over) marks the fire as having spoken; one
+// that threw before anything was queued does not. When that delivery queued nothing and
+// the chat's history row is the owner's copy (needsRow, asked right after it returned),
+// the mark waits for that row to be written. Speech marks itself through the device's
+// sink (noteSpoke), only when something was heard or sent.
 struct AnswerMark {
   ApplyDeps& deps;
   volatile bool& spoke;
+  const std::function<bool(const std::string&)>& needsRow;
+  bool rowPending = false;   // a delivery whose row is the copy: the next row marks it
   std::function<void(const std::string&, const std::string&)> inner;
-  std::function<void(const std::string&)> innerSpeak;
-  AnswerMark(ApplyDeps& d, volatile bool& spokeFlag)
-      : deps(d), spoke(spokeFlag), inner(d.deliver), innerSpeak(d.speak) {
+  std::function<void(const std::string&, const std::string&)> innerCapture;
+  AnswerMark(ApplyDeps& d, volatile bool& spokeFlag, const std::function<bool(const std::string&)>& rowRule)
+      : deps(d), spoke(spokeFlag), needsRow(rowRule), inner(d.deliver), innerCapture(d.captureAssistant) {
     if (inner) {
       deps.deliver = [this](const std::string& chat, const std::string& text) {
         turnMem().applied = true;   // the apology rule only
         inner(chat, text);
-        spoke = true;
+        if (needsRow && needsRow(chat)) rowPending = true;
+        else spoke = true;
       };
     }
-    if (innerSpeak) {
-      deps.speak = [this](const std::string& text) {
-        innerSpeak(text);
-        spoke = true;
+    if (innerCapture) {
+      deps.captureAssistant = [this](const std::string& chat, const std::string& text) {
+        innerCapture(chat, text);
+        if (!rowPending) return;
+        rowPending = false;
+        spoke = true;   // the row was the owner's copy, and it is written
       };
     }
   }
   ~AnswerMark() {
     if (inner) deps.deliver = std::move(inner);
-    if (innerSpeak) deps.speak = std::move(innerSpeak);
+    if (innerCapture) deps.captureAssistant = std::move(innerCapture);
   }
   AnswerMark(const AnswerMark&) = delete;
   AnswerMark& operator=(const AnswerMark&) = delete;
@@ -432,7 +440,10 @@ bool TurnEngine::deliver(const std::string& chatId, const std::string& text, boo
     return false;
   }
   if (d_.deliver) d_.deliver(chatId, text);
-  if (modelText) spoke_ = true;   // CUM-826: handed over, before the row can fail
+  // CUM-826: handed over, the model's text spoke - before the row can fail, unless the
+  // row is the owner's only copy (then after it is written).
+  const bool rowIsCopy = d_.deliveryNeedsRow && d_.deliveryNeedsRow(chatId);
+  if (modelText && !rowIsCopy) spoke_ = true;
   // Storm finding 2 (24 Oct): one history row per message the owner received.
   // A failed turn's honest refusal, the parked short answer, a rate-limit or
   // pre-turn local reply is a message the owner received, so it is captured as the
@@ -441,6 +452,7 @@ bool TurnEngine::deliver(const std::string& chatId, const std::string& text, boo
   // notices into a queue it drains-and-discards, and the owner - who reads the
   // history rows on the web page - never saw a word.
   captureAssistantRow(chatId, text, "reply");
+  if (modelText && rowIsCopy) spoke_ = true;   // the row is the owner's copy: written now
   return true;
 }
 
@@ -2194,7 +2206,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, held, st, spawned);
   } else {
     ApplyCapture capture(this, !turn.reply.empty());
-    const AnswerMark answered(d_.apply, spoke_);
+    AnswerMark answered(d_.apply, spoke_, d_.deliveryNeedsRow);
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);

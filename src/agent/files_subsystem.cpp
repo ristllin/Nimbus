@@ -1392,6 +1392,7 @@ void registerTools() {
                                               String((project + "/" + name).c_str())))
               return nimbus::orch::ToolResult::fail(
                   "Telegram media queue busy or Telegram not configured - try again shortly");
+            agent::orchestrator::noteTurnSpoke();   // CUM-826: queued for an allowlisted owner chat
             return nimbus::orch::ToolResult::ok("queued " + project + "/" + name +
                                                 " for Telegram delivery");
           },

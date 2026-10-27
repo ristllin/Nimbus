@@ -82,6 +82,9 @@ struct Rig {
   bool hostFails = false;            // every attempt fails with hostErr (hostOut is its partial turn)
   std::string hostErr;
   bool replyMidLoop = false;         // the turn's reply.telegram answers mid-loop (noteToolReplied)
+  bool webRowOnly = false;           // a delivery to "web" queues nothing: its row is the copy
+  bool speakHeard = false;           // the speech sink reports that the owner heard it
+  std::vector<std::string> spoken;   // what the speech sink was asked to say
   bool histV2 = false;               // the turn-structured history (a scheduled fire's trigger row)
   void maybeThrow(const char* at) {
     if (throwAt != at) return;
@@ -121,6 +124,11 @@ struct Rig {
       delivered.push_back({c, t});
     };
     d.apply.deliver = d.deliver;
+    d.deliveryNeedsRow = [this](const std::string& c) { return webRowOnly && c == "web"; };
+    d.apply.speak = [this](const std::string& t) {   // the device's sink notes what was heard
+      spoken.push_back(t);
+      if (speakHeard) eng->noteSpoke();
+    };
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       maybeThrow("reply");
       if (throwInReplyRow) {
@@ -168,28 +176,33 @@ struct Rig {
     for (const char* h : {"openai", "anthropic", "mistral"})
       d.hosts.add(h, [this, h](std::string& conv, const std::string&, const std::string& inputs, std::string& out,
                                std::string& err, const agent::HeadTools*, orch::TokenUsage* usage) {
-        attempts.push_back({h, switchOn(), inputs});
-        maybeThrow("provider");
-        if (billThenThrow) {
-          billThenThrow = false;
-          if (usage) usage->add(100, 20);   // round 1 billed
-          if (roundReplies) {               // its reply.telegram went out
-            delivered.push_back({"1001", "round one told the owner"});
-            eng->noteToolReplied();
-          }
-          throw std::bad_alloc();           // round 2's request is being built
-        }
-        if (replyMidLoop) {
-          delivered.push_back({"1001", "told the owner mid-loop"});
-          eng->noteToolReplied();
-        }
-        conv = "c1";
-        out = hostOut;
-        if (usage) usage->add(100, 20);
-        if (hostFails) err = hostErr;
-        return !hostFails;
+        return hostAnswers(h, conv, inputs, out, err, usage);
       });
     eng.reset(new TurnEngine(std::move(d)));
+  }
+  // One provider attempt (every host answers the same way).
+  bool hostAnswers(const char* h, std::string& conv, const std::string& inputs, std::string& out, std::string& err,
+                   orch::TokenUsage* usage) {
+    attempts.push_back({h, switchOn(), inputs});
+    maybeThrow("provider");
+    if (billThenThrow) {
+      billThenThrow = false;
+      if (usage) usage->add(100, 20);   // round 1 billed
+      if (roundReplies) {               // its reply.telegram went out
+        delivered.push_back({"1001", "round one told the owner"});
+        eng->noteToolReplied();
+      }
+      throw std::bad_alloc();           // round 2's request is being built
+    }
+    if (replyMidLoop) {
+      delivered.push_back({"1001", "told the owner mid-loop"});
+      eng->noteToolReplied();
+    }
+    conv = "c1";
+    out = hostOut;
+    if (usage) usage->add(100, 20);
+    if (hostFails) err = hostErr;
+    return !hostFails;
   }
   bool anyDelivered(const char* needle) const {
     for (const auto& p : delivered)
@@ -897,6 +910,89 @@ static void test_a_delivery_that_throws_before_queueing_is_no_answer() {
   }
 }
 
+// A routine's delivery to the web chat queues nothing of its own: the open page
+// re-renders the chat's history, so the row IS the owner's copy (deliveryNeedsRow).
+// The fire spoke only once that row is written: a row that throws reached nobody, and
+// the one-shot keeps its short retry (no "was delivered" alert). The same for a
+// salvaged answer delivered there. Counter-tests: the row written is an answer, and a
+// Telegram chat's queued reply is an answer even when its row then throws.
+static void test_a_web_fire_spoke_only_once_its_row_was_written() {
+  static const char* kCut = "{\"reply\":\"First part of a long answer is complete. Second part was cut mi";
+  for (int kind = 1; kind <= 2; ++kind) {
+    for (int salvage = 0; salvage < 2; ++salvage) {
+      char why[32];
+      std::snprintf(why, sizeof why, "kind=%d salvage=%d", kind, salvage);
+      Rig r;
+      r.webRowOnly = true;
+      if (salvage) r.hostOut = kCut;
+      r.throwAt = "reply";   // the reply's history row
+      const orch::FireOutcome o =
+          r.eng->injectScheduledTurn("web", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+      TEST_ASSERT_TRUE_MESSAGE(r.throwAt.empty(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), why);   // handed to the sink, which queued nothing
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.answered, why);
+      TEST_ASSERT_EQUAL_MESSAGE((int)orch::OnceAfterFire::RetryShort, onceVerdict(o), why);
+
+      Rig w;   // the row written: the owner can read it
+      w.webRowOnly = true;
+      if (salvage) w.hostOut = kCut;
+      const orch::FireOutcome a =
+          w.eng->injectScheduledTurn("web", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+      TEST_ASSERT_TRUE_MESSAGE(a.answered, why);
+    }
+    Rig t;   // a Telegram chat: the reply was queued before its row threw
+    t.webRowOnly = true;
+    t.throwAt = "reply";
+    const orch::FireOutcome o = fireOneShot(t, kind);
+    TEST_ASSERT_TRUE(o.answered);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, onceVerdict(o));
+  }
+}
+
+// Speech marks the fire only through the device's sink, when something was heard or a
+// voice note was sent: a sink that sent nothing leaves it unanswered (the one-shot
+// keeps its short retry); one that reports it heard is an answer.
+static void test_speech_is_an_answer_only_when_heard() {
+  static const char* kSpeakOnly =
+      "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\",\"device\":[{\"type\":\"tts\",\"text\":\"Time for tea.\"}]}";
+  for (int heard = 0; heard < 2; ++heard) {
+    Rig r;
+    r.cfg.tts = true;   // the owner's "Voice replies" toggle
+    r.hostOut = kSpeakOnly;
+    r.speakHeard = heard == 1;
+    r.throwAt = "reply";   // the spoken line's history row, written after the speech
+    const orch::FireOutcome o = fireOneShot(r, 2);
+    TEST_ASSERT_TRUE(r.throwAt.empty());
+    TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_EQUAL(heard == 1, o.answered);
+    TEST_ASSERT_EQUAL((int)(heard ? orch::OnceAfterFire::Retire : orch::OnceAfterFire::RetryShort), onceVerdict(o));
+  }
+}
+
+// The device seams that hand the model's text over outside apply note the spoke once
+// the hand-over succeeded, before any history row (source guards: device code).
+static void test_device_hand_overs_note_the_spoke() {
+  const std::string files = readSource("src/agent/files_subsystem.cpp");
+  const size_t send = files.find("agent::telegram::sendMediaSd(");
+  const size_t note = files.find("agent::orchestrator::noteTurnSpoke();", send);
+  TEST_ASSERT_TRUE_MESSAGE(send != std::string::npos && note != std::string::npos, "files.send notes the spoke");
+  TEST_ASSERT_TRUE(note < files.find("ToolResult::ok(\"queued \"", send));
+  const std::string main = readSource("src/main.cpp");
+  TEST_ASSERT_TRUE_MESSAGE(main.find("if (agent::voicereply::deliver(chat, text).notesSent > 0) "
+                                     "agent::orchestrator::noteTurnSpoke();") != std::string::npos,
+                           "the speak sink's Telegram fallback notes a note that arrived");
+  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  const size_t played = orch.find("if (!::sfx::awaitReplyStart(");
+  const size_t heard = orch.find("noteTurnSpoke();", played);
+  TEST_ASSERT_TRUE(played != std::string::npos && heard < orch.find("if (capture) memory::captureMessage", played));
+  TEST_ASSERT_TRUE(orch.find("s_lastDeliveryNeedsRow = !queued || (chatId == \"web\" && loops::firing());") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };") !=
+                   std::string::npos);
+}
+
 // The fire's flags are its own: a previous turn on the SAME engine (an owner turn whose
 // reply was delivered, one whose reply.telegram answered mid-loop, a served fire) never
 // decides a fire that then fails in its setup. It is a memory defer, not answered, not
@@ -1016,6 +1112,9 @@ int main() {
   RUN_TEST(test_a_salvaged_reply_is_an_answer);
   RUN_TEST(test_a_delivery_that_throws_before_queueing_is_no_answer);
   RUN_TEST(test_a_previous_turns_flags_never_decide_a_fire);
+  RUN_TEST(test_a_web_fire_spoke_only_once_its_row_was_written);
+  RUN_TEST(test_speech_is_an_answer_only_when_heard);
+  RUN_TEST(test_device_hand_overs_note_the_spoke);
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
   RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
