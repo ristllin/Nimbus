@@ -26,7 +26,15 @@
 //     limit above kNoForceMaxMicro or to more than kMaxRaiseFactor times it, for a first
 //     provider limit that turns the default overall ceiling off (every provider without
 //     a limit of its own then has no monthly stop), and for "off" when nothing else would
-//     limit that provider afterwards. A new limit or a lower one needs nothing;
+//     limit that provider afterwards, or when the overall ceiling that then limits it is
+//     such a raise over the limit removed. A new limit or a lower one needs nothing;
+//   - no change while the device's clock is not set, and none from a message sent more
+//     than the confirm window before it arrived; a confirm counts only when its message
+//     was sent after the proposal's and within the window (a page Telegram serves again
+//     after a power-on can never re-apply an old change); a voice note's transcript may
+//     read but not change (speech can be misheard);
+//   - the confirm applies exactly the effect the proposal stated: it is re-planned on the
+//     state then and refused when anything it said would differ;
 //   - the overall ceiling is turned off only on the web page;
 //   - the effect a reply states is the spend rules re-run on the changed limits
 //     (SpendCeiling for the overall ceiling, "at or over the limit" for a provider, as
@@ -69,8 +77,23 @@ bool parseUsdAmount(const std::string& text, uint64_t& micro);
 // change); a member is refused; the hold-to-talk channel ("voice") may read but not
 // change a limit (a misheard amount must never reach a confirm). The owner's own
 // Telegram chat, the web chat and the serial console have full access.
+// A Telegram voice note's transcript (`voiceNote`) is read-only like hold-to-talk.
 enum class BudgetAccess : uint8_t { Full, ReadOnly, NotOwner, Group };
-BudgetAccess budgetAccessFor(const std::string& chatId, bool owner);
+BudgetAccess budgetAccessFor(const std::string& chatId, bool owner, bool voiceNote = false);
+
+// What the device knows about the message a command came in: its Telegram send time
+// (message.date, server seconds; 0 for the web chat, serial and hold-to-talk) and
+// whether it is a voice note's transcript.
+struct BudgetMsg {
+  int64_t date = 0;
+  bool    voiceNote = false;
+};
+
+// The refusal for a change (a proposal or a confirm) arriving at wall clock `nowEpoch`
+// ("" = it may go on): the clock not set yet (the receive path's late-message guard and
+// the message dates both need it), or a message sent more than the confirm window
+// before it arrived.
+std::string budgetTimingRefusal(int64_t nowEpoch, int64_t msgDate);
 // The refusal for NotOwner / Group, the read-only note for ReadOnly ("" for Full).
 std::string budgetAccessText(BudgetAccess a);
 
@@ -173,6 +196,7 @@ struct BudgetPlan {
   // The spend rules before and after the change.
   bool     overallActiveBefore = false, overallActiveAfter = false;
   bool     overallFrozenBefore = false, overallFrozenAfter = false;
+  uint64_t overallLimitAfter = 0;   // the overall ceiling after the change (when active)
   bool     targetFrozenBefore = false, targetFrozenAfter = false;   // a provider's own limit
   std::string why;               // NeedsForce / Refused / Unchanged: plain words
 };
@@ -180,6 +204,10 @@ struct BudgetPlan {
 // The plan for a Set or Off request on the state `v` (re-run at confirm time on the
 // state then, so a change made meanwhile on the web page is never overwritten blind).
 BudgetPlan planBudgetChange(const BudgetRequest& req, const LimitsView& v);
+// Whether two Ok plans state the same change and the same effects (the limit before and
+// after, the overall ceiling and both pauses before and after): a confirm applies only
+// when the plan at confirm time is the one the owner was shown.
+bool samePlannedEffect(const BudgetPlan& shown, const BudgetPlan& now);
 
 // Whether this build answers the spending commands: the device installs them at
 // start-up (src/agent/budget_command.cpp); the hosted instance has no such command, so
@@ -219,16 +247,20 @@ class BudgetConfirm {
     OtherChat,           // (to the confirming chat) nothing waited here; a change waiting elsewhere is dropped
     ConfirmedElsewhere,  // (to the proposing chat) a confirm from another chat dropped it
     Failed,              // confirmed, but it could not be applied
+    OutOfOrder,          // the confirm's message was sent before the proposal's
   };
 
-  // `chat` proposed `req`: it waits when `ok` (the plan's verdict was Ok, replacing any
-  // waiting change); a refused proposal cancels that chat's waiting change instead.
-  void offer(const std::string& chat, const BudgetRequest& req, bool ok, uint64_t nowMs);
-  // "/budget confirm" from `chat`: true and the request when one waits for that chat
-  // within the window. Otherwise false, and `why` says what happened to the last one
-  // (`out` = its request, for "send it again"). A confirm from another chat drops the
-  // waiting change (fail closed).
-  bool take(const std::string& chat, uint64_t nowMs, BudgetRequest& out, Ended& why);
+  // `chat` proposed the change `plan` states, in a message sent at `msgDate` (0 = no
+  // Telegram date): it waits when the plan is Ok (replacing any waiting change); a
+  // refused proposal cancels that chat's waiting change instead.
+  void offer(const std::string& chat, const BudgetPlan& plan, uint64_t nowMs, int64_t msgDate = 0);
+  // "/budget confirm" from `chat` in a message sent at `msgDate`: true and the plan the
+  // owner was shown when one waits for that chat within the window, by the device's
+  // clock and, when both messages carry a Telegram date, by theirs (the confirm sent
+  // after the proposal, within the window). Otherwise false, and `why` says what
+  // happened to the last one (`out` = its plan, for "send it again"). A confirm from
+  // another chat drops the waiting change (fail closed).
+  bool take(const std::string& chat, uint64_t nowMs, int64_t msgDate, BudgetPlan& out, Ended& why);
   // The confirmed change of `chat` could not be applied (the next confirm says so).
   void failed(const std::string& chat);
   // "/budget cancel" from `chat`: true when it cancelled a change of that chat.
@@ -241,13 +273,14 @@ class BudgetConfirm {
  private:
   void end(Ended why, const std::string& chat);
 
-  bool          waiting_ = false;
-  std::string   chat_;
-  BudgetRequest req_;
-  uint64_t      atMs_ = 0;
-  Ended         last_ = Ended::None;
-  std::string   lastChat_;
-  BudgetRequest lastReq_;
+  bool        waiting_ = false;
+  std::string chat_;
+  BudgetPlan  plan_;
+  uint64_t    atMs_ = 0;
+  int64_t     msgDate_ = 0;
+  Ended       last_ = Ended::None;
+  std::string lastChat_;
+  BudgetPlan  lastPlan_;
 };
 
 // ---- owner-facing copy (plain words, ASCII, reads well aloud) ----------------------
@@ -262,7 +295,8 @@ std::string usageText(const LimitsView& v);
 std::string proposalText(const BudgetPlan& p, const LimitsView& v);
 // The reply once the change was stored (`p` re-planned at confirm time on `v`).
 std::string appliedText(const BudgetPlan& p, const LimitsView& v);
-// The reply to a confirm whose re-plan (on the state at confirm time) is not Ok.
+// The reply to a confirm whose re-plan (on the state at confirm time) is not Ok, or
+// states another effect than the proposal did.
 std::string replanRefusedText(const BudgetPlan& p);
 // The reply when a confirmed change could not be stored (nothing changed).
 std::string storeFailedText(const BudgetRequest& req);

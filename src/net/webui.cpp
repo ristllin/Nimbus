@@ -3207,6 +3207,8 @@ void beginWeb(const WebConfig& wc) {
     // commands, /model and /help never call a model, so they still go through (the pause
     // notice ends with the /budget command that lifts it, and /usage says what is paused).
     if (nimbus::orch::spendFrozen() && !nimbus::orch::runsWhilePaused(std::string(text.c_str()))) {
+      // Any other message cancels a waiting /budget change, even one the pause answers here.
+      agent::budget::noteMessage("web", nimbus::orch::parseCommand(std::string(text.c_str())));
       r->send(409, "application/json",
               "{\"error\":\"Paid AI calls are paused: this month's spend ceiling is reached. "
               "Raise it on Assistant > Usage, or send the /budget command from the pause message.\","

@@ -233,6 +233,18 @@ class TgReceiver {
     return r.stopped ? first + last : page.size();
   }
 
+  // Lane BUD: inside Io::runTurn, the Telegram send time (message.date, server seconds)
+  // of the newest message of the bucket that turn renders; 0 when none is on the page.
+  // The spending commands hold a confirm to its message's date, not the device's clock.
+  int64_t currentTurnDate() const {
+    if (current_ >= batch_.turnCount()) return 0;
+    int64_t date = 0;
+    for (size_t m = 0; m < batch_.messageCountAt(current_); ++m)
+      for (const tg::Update& u : page_)
+        if (u.updateId == batch_.updateIdAt(current_, m) && u.date > date) date = u.date;
+    return date;
+  }
+
  private:
   static TgCycle kind(TgCycle& out, TgCycle::Kind k) {
     out.kind = k;

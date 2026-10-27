@@ -151,7 +151,8 @@ std::vector<std::string> providerEffects(const BudgetPlan& p, const LimitsView& 
   std::vector<std::string> out;
   if (p.req.verb == BudgetVerb::Off)
     out.push_back(titleName(p.req.target) + (now ? " has" : " will have") + " no monthly limit" +
-                  (p.overallActiveAfter ? std::string(".") : ", and nothing else limits it: the overall ceiling is off."));
+                  (p.overallActiveAfter ? "; the overall ceiling of " + formatUsd(p.overallLimitAfter) + " still applies."
+                                        : std::string(", and nothing else limits it: the overall ceiling is off.")));
   for (const std::string& line : {targetEffect(p, v, when), overallAroundProvider(p, v, when)})
     if (!line.empty()) out.push_back(line);
   return out;
@@ -269,6 +270,9 @@ std::string appliedText(const BudgetPlan& p, const LimitsView& v) { return doneL
 
 std::string replanRefusedText(const BudgetPlan& p) {
   if (p.verdict == BudgetVerdict::Refused && p.why.rfind("The spending limits are not ready", 0) == 0) return p.why;
+  if (p.verdict == BudgetVerdict::Ok)   // the same command now states other effects: show them first
+    return "The limits changed since that was proposed, so nothing changed. To see the change as it is now, send " +
+           budgetCommandText(p.req) + ".";
   return "The limits changed since that was proposed, so nothing changed. " + p.why;
 }
 
@@ -292,6 +296,8 @@ std::string confirmMissText(BudgetConfirm::Ended why, const BudgetRequest& last)
       return "That change was cancelled because a confirmation came from another chat, so nothing changed." + again;
     case E::Failed:
       return "The last change was not applied." + again;
+    case E::OutOfOrder:
+      return "That confirmation was sent before the change it would confirm, so nothing changed." + again;
     case E::Confirmed:
       return "Nothing is waiting: the last change is already applied.";
     case E::None:

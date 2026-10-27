@@ -160,8 +160,16 @@ answers these commands, `/model` and `/help`, and nothing else).
 Every change asks first. The reply states the exact change and what it pauses or
 resumes: a limit still under this month's spend says the pause stays, and removing your
 last provider limit says the overall ceiling applies again. The change applies only
-when you send `/budget confirm` from the same chat within 2 minutes; any other message
-cancels it, and a restart drops it.
+when you send `/budget confirm` from the same chat within 2 minutes, and only if it
+would still do exactly what the reply said (a change made meanwhile on the web page
+means you send it again); any other message cancels it, and a restart drops it.
+
+No change runs while the device's clock is not set (just after it starts), or from a
+message that reached the device more than 2 minutes after you sent it. On Telegram the
+confirmation must also be sent after the change it confirms and within 2 minutes of it,
+by Telegram's own times, so messages Telegram delivers again after a restart can never
+re-apply an old change. A voice note can ask `/usage` or `/model`, but never change a
+limit: speech can be misheard.
 
 Guards stop a slip of the finger. A limit is between 1 USD and 100,000 USD, even with
 `force`. The word `force` after the amount (or after `off`) is needed for:
@@ -172,7 +180,8 @@ Guards stop a slip of the finger. A limit is between 1 USD and 100,000 USD, even
   replace that ceiling, so every provider without a limit of its own would have no
   monthly stop (send `/budget all <USD>` afterwards to keep a ceiling as well);
 - removing a limit while the overall ceiling is off, which leaves that provider with
-  no monthly stop at all (`/budget openai off force`).
+  no monthly stop at all (`/budget openai off force`), or while an overall ceiling more
+  than 10 times that limit, or above 250 USD, is what would stop it.
 
 Lowering a limit, or a new limit while an overall ceiling you set stays on, never does.
 

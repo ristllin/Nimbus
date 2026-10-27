@@ -177,6 +177,7 @@ void planProvider(BudgetPlan& p, const LimitsView& v) {
   c.setProviderCaps(anyAfter);
   p.overallActiveAfter = c.active();
   p.overallFrozenAfter = c.frozenWith(0);
+  p.overallLimitAfter = c.limitMicro;
 }
 
 void planOverall(BudgetPlan& p, const LimitsView& v) {
@@ -187,15 +188,30 @@ void planOverall(BudgetPlan& p, const LimitsView& v) {
   c.setLimit(p.req.micro);
   p.overallActiveAfter = c.active();
   p.overallFrozenAfter = c.frozenWith(0);
+  p.overallLimitAfter = c.limitMicro;
 }
 
 // The "force" a change needs ("" when none): for a provider, a first limit that turns the
 // default overall ceiling off and "off" when nothing would limit it afterwards; for every
 // target, a raise beyond the bounds (budgetNeedsForce).
+// "off" is a raise to whatever stops the provider afterwards: nothing (the overall ceiling
+// off), or the overall ceiling, held to the same force rule as a typed raise.
+std::string offForceNeeded(const BudgetPlan& p) {
+  const std::string name = capitalFirst(providerName(p.req.target));
+  if (!p.overallActiveAfter)
+    return name + " would have no monthly stop at all: the overall ceiling is off." + forceAgain(p);
+  if (!budgetNeedsForce(p.fromMicro, p.overallLimitAfter)) return std::string();
+  return "Removing it lets " + providerName(p.req.target) + " spend up to the overall ceiling of " +
+         formatUsd(p.overallLimitAfter) + ", " +
+         (p.overallLimitAfter > BudgetBounds::kNoForceMaxMicro
+              ? "above the " + formatUsd(BudgetBounds::kNoForceMaxMicro) + " a month that /budget sets without a second word."
+              : "more than " + std::to_string(BudgetBounds::kMaxRaiseFactor) + " times its limit of " +
+                    formatUsd(p.fromMicro) + ".") +
+         forceAgain(p);
+}
+
 std::string providerForceNeeded(const BudgetPlan& p) {
-  if (p.req.verb == BudgetVerb::Off && !p.overallActiveAfter)
-    return capitalFirst(providerName(p.req.target)) + " would have no monthly stop at all: the overall ceiling is off." +
-           forceAgain(p);
+  if (p.req.verb == BudgetVerb::Off) return offForceNeeded(p);
   if (p.overallActiveBefore && !p.overallActiveAfter)
     return "A first provider limit turns the overall ceiling off, so every provider without a limit of its "
            "own would have no monthly stop." + forceAgain(p) +
@@ -284,11 +300,21 @@ bool parseUsdAmount(const std::string& text, uint64_t& micro) {
 
 // ---- who may run them --------------------------------------------------------------
 
-BudgetAccess budgetAccessFor(const std::string& chatId, bool owner) {
+BudgetAccess budgetAccessFor(const std::string& chatId, bool owner, bool voiceNote) {
   if (!chatId.empty() && chatId[0] == '-') return BudgetAccess::Group;
   if (!owner) return BudgetAccess::NotOwner;
-  if (chatId == "voice") return BudgetAccess::ReadOnly;
+  if (chatId == "voice" || voiceNote) return BudgetAccess::ReadOnly;
   return BudgetAccess::Full;
+}
+
+std::string budgetTimingRefusal(int64_t nowEpoch, int64_t msgDate) {
+  if (nowEpoch < (int64_t)kCeilingClockValid)
+    return "The spending limits are not ready yet: the device is still starting, or its clock is not set. "
+           "Try again in a minute.";
+  if (msgDate > 0 && nowEpoch - msgDate > (int64_t)(BudgetBounds::kConfirmWindowMs / 1000))
+    return "That message was sent more than " + std::to_string(BudgetBounds::kConfirmWindowMs / 60000) +
+           " minutes before it arrived, so it changed nothing. Send it again if you still want the change.";
+  return std::string();
 }
 
 std::string budgetAccessText(BudgetAccess a) {
@@ -440,6 +466,15 @@ BudgetPlan planBudgetChange(const BudgetRequest& req, const LimitsView& v) {
   return p;
 }
 
+bool samePlannedEffect(const BudgetPlan& a, const BudgetPlan& b) {
+  return a.verdict == BudgetVerdict::Ok && b.verdict == BudgetVerdict::Ok && a.overall == b.overall &&
+         a.req.target == b.req.target && a.req.verb == b.req.verb && a.fromMicro == b.fromMicro &&
+         a.toMicro == b.toMicro && a.overallActiveBefore == b.overallActiveBefore &&
+         a.overallActiveAfter == b.overallActiveAfter && a.overallFrozenBefore == b.overallFrozenBefore &&
+         a.overallFrozenAfter == b.overallFrozenAfter && a.overallLimitAfter == b.overallLimitAfter &&
+         a.targetFrozenBefore == b.targetFrozenBefore && a.targetFrozenAfter == b.targetFrozenAfter;
+}
+
 namespace {
 std::atomic<bool> g_commands{false};   // constant-initialized: set before main() by the device
 }  // namespace
@@ -477,36 +512,40 @@ void BudgetConfirm::end(Ended why, const std::string& chat) {
   waiting_ = false;
   last_ = why;
   lastChat_ = chat;
-  lastReq_ = req_;
+  lastPlan_ = plan_;
 }
 
-void BudgetConfirm::offer(const std::string& chat, const BudgetRequest& req, bool ok, uint64_t nowMs) {
-  if (!ok) {
+void BudgetConfirm::offer(const std::string& chat, const BudgetPlan& plan, uint64_t nowMs, int64_t msgDate) {
+  if (plan.verdict != BudgetVerdict::Ok) {
     noteOther(chat);
     return;
   }
   waiting_ = true;
   chat_ = chat;
-  req_ = req;
+  plan_ = plan;
   atMs_ = nowMs;
+  msgDate_ = msgDate;
 }
 
-bool BudgetConfirm::take(const std::string& chat, uint64_t nowMs, BudgetRequest& out, Ended& why) {
+bool BudgetConfirm::take(const std::string& chat, uint64_t nowMs, int64_t msgDate, BudgetPlan& out, Ended& why) {
   if (waiting_ && chat_ != chat) {   // a confirm from another chat: the waiting change is dropped
     end(Ended::ConfirmedElsewhere, chat_);
-    out = lastReq_;
+    out = lastPlan_;
     why = Ended::OtherChat;
     return false;
   }
   if (waiting_) {
-    const bool inTime = nowMs >= atMs_ && nowMs - atMs_ <= BudgetBounds::kConfirmWindowMs;
-    end(inTime ? Ended::Confirmed : Ended::Expired, chat);
-    out = lastReq_;
+    const int64_t windowS = (int64_t)(BudgetBounds::kConfirmWindowMs / 1000);
+    const bool dated = msgDate_ > 0 && msgDate > 0;
+    const bool inTime = nowMs >= atMs_ && nowMs - atMs_ <= BudgetBounds::kConfirmWindowMs &&
+                        (!dated || msgDate - msgDate_ <= windowS);
+    end(dated && msgDate < msgDate_ ? Ended::OutOfOrder : inTime ? Ended::Confirmed : Ended::Expired, chat);
+    out = lastPlan_;
     why = last_;
-    return inTime;
+    return last_ == Ended::Confirmed;
   }
   why = lastChat_ == chat ? last_ : Ended::None;
-  out = lastReq_;
+  out = lastPlan_;
   return false;
 }
 

@@ -211,13 +211,13 @@ bool landedAsPlanned(const BudgetPlan& p) {
   return (r ? r->capMicro : 0) == p.toMicro && (r ? r->atLimit() : false) == p.targetFrozenAfter;
 }
 
-Reply propose(const String& chat, const BudgetRequest& req) {
+Reply propose(const String& chat, const BudgetRequest& req, int64_t msgDate) {
   const LimitsView v = view();
   const BudgetPlan p = nimbus::orch::planBudgetChange(req, v);
   const bool ok = p.verdict == BudgetVerdict::Ok;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    g_st.confirm.offer(chat.c_str(), req, ok, nowMs());   // a refused one cancels a waiting one
+    g_st.confirm.offer(chat.c_str(), p, nowMs(), msgDate);   // a refused one cancels a waiting one
   }
   if (ok)
     alogf("budget: proposed from %s: %s (waits for /budget confirm)", channelSlug(chat),
@@ -230,27 +230,29 @@ void markFailed(const String& chat) {
   g_st.confirm.failed(chat.c_str());
 }
 
-Reply confirm(const String& chat) {
-  BudgetRequest req;
+Reply confirm(const String& chat, int64_t msgDate) {
+  BudgetPlan shown;
   BudgetConfirm::Ended why = BudgetConfirm::Ended::None;
   bool ok;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    ok = g_st.confirm.take(chat.c_str(), nowMs(), req, why);
+    ok = g_st.confirm.take(chat.c_str(), nowMs(), msgDate, shown, why);
   }
-  if (!ok) return reply(nimbus::orch::confirmMissText(why, req));
+  if (!ok) return reply(nimbus::orch::confirmMissText(why, shown.req));
   // Re-planned on the state now: a change made meanwhile (the web page) is never
-  // overwritten blind, and the bounds hold against the limit as it is now.
+  // overwritten blind, the bounds hold against the limit as it is now, and it applies
+  // only when it states exactly what the owner was shown.
   const LimitsView v = view();
-  const BudgetPlan p = nimbus::orch::planBudgetChange(req, v);
-  if (p.verdict != BudgetVerdict::Ok) {
+  const BudgetPlan p = nimbus::orch::planBudgetChange(shown.req, v);
+  if (!nimbus::orch::samePlannedEffect(shown, p)) {
     markFailed(chat);
+    alogf("budget: a confirmed change no longer matched its proposal - nothing changed");
     return reply(nimbus::orch::replanRefusedText(p));
   }
   if (!apply(p)) {
     markFailed(chat);
     alogf("budget: a confirmed change did not store - nothing changed");
-    return reply(nimbus::orch::storeFailedText(req));
+    return reply(nimbus::orch::storeFailedText(shown.req));
   }
   recordChange(p, chat);
   std::string text = nimbus::orch::appliedText(p, v);
@@ -275,10 +277,25 @@ Reply modelReply() {
   return reply(nimbus::orch::modelText(f));
 }
 
+// A change (proposal or confirm) that may not run now: no clock yet, or a message that
+// arrived late. Its waiting change is cancelled too (fail closed).
+std::string timingRefusal(const String& chat, int64_t msgDate) {
+  const std::string why = nimbus::orch::budgetTimingRefusal((int64_t)time(nullptr), msgDate);
+  if (why.empty()) return why;
+  {
+    std::lock_guard<std::mutex> lk(g_mx);
+    g_st.confirm.noteOther(chat.c_str());
+  }
+  alogf("budget: a change from %s refused (%s)", channelSlug(chat),
+        msgDate > 0 && time(nullptr) >= nimbus::orch::kCeilingClockValid ? "the message arrived late" : "no clock yet");
+  return why;
+}
+
 }  // namespace
 
-Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner) {
-  const BudgetAccess access = nimbus::orch::budgetAccessFor(chatId.c_str(), owner);
+Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner,
+             const nimbus::orch::BudgetMsg& msg) {
+  const BudgetAccess access = nimbus::orch::budgetAccessFor(chatId.c_str(), owner, msg.voiceNote);
   if (access == BudgetAccess::Group || access == BudgetAccess::NotOwner) {
     alogf("budget: /%s refused from %s", verb.c_str(), access == BudgetAccess::Group ? "a group chat" : "a member chat");
     return reply(nimbus::orch::budgetAccessText(access));
@@ -301,7 +318,9 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
     alogf("budget: a change by voice refused (read-only channel)");
     return reply(nimbus::orch::budgetAccessText(access));
   }
-  return req.verb == BudgetVerb::Confirm ? confirm(chatId) : propose(chatId, req);
+  const std::string late = timingRefusal(chatId, msg.date);
+  if (!late.empty()) return reply(late);
+  return req.verb == BudgetVerb::Confirm ? confirm(chatId, msg.date) : propose(chatId, req, msg.date);
 }
 
 void noteMessage(const String& chatId, const nimbus::orch::Command& cmd) {

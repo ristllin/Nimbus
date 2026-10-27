@@ -3028,5 +3028,13 @@ GuardStatus guardStatus() {
 // surface reads this so a revoked token no longer reports "verified/live".
 bool authRejected() { return g_authRejected; }
 
+// Lane BUD: the turn the MessageCallback is running (the spending commands' replay and
+// voice rules). Valid inside the callback only, on this task.
+int64_t turnMessageDate() { return g_receiver.currentTurnDate(); }
+bool turnIsVoiceNote() {
+  const size_t i = g_receiver.currentTurn();
+  return i < g_batch.turnCount() && g_batch.voiceAt(i);
+}
+
 }  // namespace telegram
 }  // namespace agent

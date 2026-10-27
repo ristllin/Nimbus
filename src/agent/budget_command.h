@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "nimbus/orch/budget_command.h"   // BudgetMsg
 #include "nimbus/orch/command.h"
 
 // budget_command - the device side of the owner's spending commands and /model (the
@@ -31,8 +32,11 @@ struct Reply {
 
 // The reply to /usage, /budget [...] or /model from `chatId`. `owner`: the device's
 // owner check passed (the dispatcher's gate); the module's own access rule still
-// refuses a group chat and a change by voice.
-Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner);
+// refuses a group chat and a change by voice (hold-to-talk or a voice note's transcript,
+// `msg.voiceNote`). `msg.date`: the Telegram message's send time (0 for the web chat and
+// serial): a late message changes nothing and a confirm is held to its proposal's date.
+Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner,
+             const nimbus::orch::BudgetMsg& msg = nimbus::orch::BudgetMsg());
 
 // Every message handleMessage receives, before any command runs: a change `chatId`
 // proposed is cancelled unless this message is a /budget confirm, cancel or a new

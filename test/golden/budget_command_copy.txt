@@ -82,6 +82,17 @@ Set a monthly limit of $10.00 for Anthropic?
 Anthropic spend so far: $0.00.
 The overall ceiling of $20.00 turns off while you have provider limits, so providers without a limit of their own have no monthly stop and its pause ends once it is applied.
 Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
+[refusal, off under a ceiling]
+Removing it lets Anthropic spend up to the overall ceiling of $5000.00, above the $250.00 a month that /budget sets without a second word. If you mean it, send /budget anthropic off force.
+[proposal, off under a ceiling with force]
+Remove the Anthropic monthly limit of $10.00?
+Anthropic spend so far: $2.00.
+Anthropic will have no monthly limit; the overall ceiling of $5000.00 still applies.
+Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
+[replies, timing]
+The spending limits are not ready yet: the device is still starting, or its clock is not set. Try again in a minute.
+That message was sent more than 2 minutes before it arrived, so it changed nothing. Send it again if you still want the change.
+That confirmation was sent before the change it would confirm, so nothing changed. To try again, send /budget anthropic 70.
 [replies, confirm paths]
 The change could not be stored, so nothing changed. To try again, send /budget anthropic 70.
 The limits changed since that was proposed, so nothing changed. $900.00 is above the $250.00 a month that /budget sets without a second word. If you mean it, send /budget anthropic 900 force.

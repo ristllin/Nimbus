@@ -82,6 +82,14 @@ BudgetRequest set(const char* target, uint64_t micro, bool force = false) {
   return r;
 }
 
+// A plan the confirm window can hold: `req` with an Ok (or a refused) verdict.
+BudgetPlan planOf(const BudgetRequest& req, bool ok = true) {
+  BudgetPlan p;
+  p.req = req;
+  p.verdict = ok ? BudgetVerdict::Ok : BudgetVerdict::Refused;
+  return p;
+}
+
 bool printable(const std::string& s) {
   for (char ch : s)
     if (!(ch == '\n' || (ch >= 0x20 && ch < 0x7f))) return false;
@@ -633,78 +641,194 @@ static void test_the_plan_matches_the_real_counters() {
   TEST_ASSERT_TRUE(checked > 40);
 }
 
+// ---- replay, timing and voice (merge review 27 Oct) -----------------------------------
+
+// A page Telegram serves again after a power-on can never re-apply an old change: no
+// change while the clock is unset, none from a message sent more than the window before
+// it arrived, and a confirm counts only when its message was sent after the proposal's
+// and within the window (the device's own clock restarts at boot).
+static void test_a_replayed_pair_never_applies() {
+  constexpr int64_t kNow = 1793124000;   // a set clock (Oct 2026)
+  TEST_ASSERT_TRUE(budgetTimingRefusal(0, kNow).find("its clock is not set") != std::string::npos);
+  TEST_ASSERT_TRUE(budgetTimingRefusal(1500000000, 0).find("its clock is not set") != std::string::npos);
+  TEST_ASSERT_TRUE(budgetTimingRefusal(kNow, 0).empty());          // the web chat, serial
+  TEST_ASSERT_TRUE(budgetTimingRefusal(kNow, kNow - 120).empty());
+  TEST_ASSERT_TRUE(budgetTimingRefusal(kNow, kNow - 121).find("That message was sent more than 2 minutes before it arrived") == 0);
+  BudgetConfirm w;
+  BudgetPlan got;
+  BudgetConfirm::Ended why;
+  const BudgetPlan rp = planOf(set("anthropic", 500 * kUsd, true));
+  // Replayed: both messages land milliseconds apart by the device's clock, but the
+  // confirm's message is older than the proposal's (a stale pair mixed with a new one).
+  w.offer("111", rp, 1000, kNow);
+  TEST_ASSERT_FALSE(w.take("111", 1005, kNow - 30, got, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OutOfOrder);
+  TEST_ASSERT_TRUE(confirmMissText(why, got.req).find("That confirmation was sent before the change it would confirm") == 0);
+  // Sent more than the window after the proposal: expired, whatever the device's clock says.
+  w.offer("111", rp, 1000, kNow);
+  TEST_ASSERT_FALSE(w.take("111", 1005, kNow + 121, got, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
+  // In order and in time by both clocks: applied.
+  w.offer("111", rp, 1000, kNow);
+  TEST_ASSERT_TRUE(w.take("111", 1005, kNow + 120, got, why));
+  TEST_ASSERT_EQUAL_UINT64(500 * kUsd, got.req.micro);
+  // The device's clock still bounds a dated pair.
+  w.offer("111", rp, 1000, kNow);
+  TEST_ASSERT_FALSE(w.take("111", 1000 + BudgetBounds::kConfirmWindowMs + 1, kNow + 5, got, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
+}
+
+// A Telegram voice note's transcript reads but never changes a limit (speech can be
+// misheard), like hold-to-talk.
+static void test_a_voice_note_is_read_only() {
+  TEST_ASSERT_TRUE(budgetAccessFor("123456789", true, /*voiceNote=*/true) == BudgetAccess::ReadOnly);
+  TEST_ASSERT_TRUE(budgetAccessFor("123456789", true, false) == BudgetAccess::Full);
+  TEST_ASSERT_TRUE(budgetAccessFor("-100123", true, true) == BudgetAccess::Group);
+  TEST_ASSERT_TRUE(budgetAccessFor("123456789", false, true) == BudgetAccess::NotOwner);
+}
+
+// "off" is a raise to whatever stops the provider afterwards: under an overall ceiling
+// that is more than 10x the limit, or above 250 USD, it needs the second word.
+static void test_off_under_a_ceiling_is_held_to_the_force_rule() {
+  LimitsView v = defaultView(10 * kUsd);
+  v.ownerSet = true;
+  v.limitMicro = 5000 * kUsd;
+  v.rows = {{"anthropic", 10 * kUsd, 2 * kUsd, false, "1 November"}};
+  BudgetPlan p = planBudgetChange(parseBudgetArgs("anthropic off"), v);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::NeedsForce);
+  TEST_ASSERT_EQUAL_STRING("Removing it lets Anthropic spend up to the overall ceiling of $5000.00, above the $250.00 "
+                           "a month that /budget sets without a second word. If you mean it, send /budget anthropic "
+                           "off force.",
+                           p.why.c_str());
+  p = planBudgetChange(parseBudgetArgs("anthropic off force"), v);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
+  TEST_ASSERT_TRUE(proposalText(p, v).find("Anthropic will have no monthly limit; the overall ceiling of $5000.00 "
+                                           "still applies.") != std::string::npos);
+  // The ceiling a removal brings back counts the same way: 1 USD -> the 20 USD default.
+  LimitsView one = defaultView(5 * kCent);
+  one.rows = {{"anthropic", 1 * kUsd, 5 * kCent, false, "1 November"}};
+  p = planBudgetChange(parseBudgetArgs("anthropic off"), one);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::NeedsForce);
+  TEST_ASSERT_TRUE(p.why.find("more than 10 times its limit of $1.00") != std::string::npos);
+  // Within the rule: a 30 USD limit under a 200 USD ceiling needs nothing.
+  v.limitMicro = 200 * kUsd;
+  v.rows = {{"anthropic", 30 * kUsd, 2 * kUsd, false, "1 November"}};
+  TEST_ASSERT_TRUE(planBudgetChange(parseBudgetArgs("anthropic off"), v).verdict == BudgetVerdict::Ok);
+}
+
+// The confirm applies exactly the effect the owner was shown: a change made meanwhile
+// that would make the same command turn the overall ceiling off is refused.
+static void test_the_confirm_applies_only_the_effect_shown() {
+  LimitsView v = lumiView();   // the ceiling is off: other providers have limits
+  v.rows.push_back({"tavily", 0, 0, false, "1 November"});
+  const BudgetRequest req = parseBudgetArgs("tavily 300 force");
+  const BudgetPlan shown = planBudgetChange(req, v);
+  TEST_ASSERT_TRUE(shown.verdict == BudgetVerdict::Ok);
+  TEST_ASSERT_TRUE(proposalText(shown, v).find("overall ceiling") == std::string::npos);
+  TEST_ASSERT_TRUE(samePlannedEffect(shown, planBudgetChange(req, v)));
+  // Meanwhile the web page removed every other limit: the default ceiling is on again.
+  LimitsView now = defaultView(v.spentMicro);
+  const BudgetPlan replan = planBudgetChange(req, now);
+  TEST_ASSERT_TRUE(replan.verdict == BudgetVerdict::Ok);   // force was typed: the bounds alone pass it
+  TEST_ASSERT_FALSE(samePlannedEffect(shown, replan));     // ...but it now turns the ceiling off
+  TEST_ASSERT_TRUE(replanRefusedText(replan).find("The limits changed since that was proposed, so nothing changed. "
+                                                  "To see the change as it is now, send /budget tavily 300 force.") ==
+                   0);
+}
+
+// The device wiring the host suite cannot run: the pause notices go to the owner chat
+// (never the first allowlisted one), a web-chat message the pause answers still cancels
+// a waiting change, and the dispatcher passes the message's date and voice flag.
+static void test_the_device_wiring_of_the_merge_fixes() {
+  const std::string mainSrc = slurp("src/main.cpp");
+  const size_t pump = mainSrc.find("static void spendNoticePump()");
+  TEST_ASSERT_TRUE(pump != std::string::npos);
+  const std::string pumpBody = mainSrc.substr(pump, mainSrc.find("\n}\n", pump) - pump);
+  TEST_ASSERT_TRUE(pumpBody.find("agent::telegram::ownerChat()") != std::string::npos);
+  TEST_ASSERT_TRUE(pumpBody.find("firstAllowedChat") == std::string::npos);
+  const std::string web = slurp("src/net/webui.cpp");
+  const size_t gate = web.find("runsWhilePaused(std::string(text.c_str()))");
+  TEST_ASSERT_TRUE(gate != std::string::npos);
+  TEST_ASSERT_TRUE(web.substr(gate, 400).find("agent::budget::noteMessage(\"web\"") != std::string::npos);
+  const std::string orch = slurp("src/agent/orchestrator.cpp");
+  TEST_ASSERT_TRUE(orch.find("facts.date = agent::telegram::turnMessageDate();") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("facts.voiceNote = agent::telegram::turnIsVoiceNote();") != std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("budget::handle(v, cmd.args, chatId, owner, facts)") != std::string::npos);
+}
+
 // ---- the confirm window ---------------------------------------------------------------
 
 static void test_the_confirm_window_is_two_minutes_and_one_chat() {
   BudgetConfirm w;
-  BudgetRequest out;
+  BudgetPlan got;
   BudgetConfirm::Ended why;
   const BudgetRequest r = set("anthropic", 70 * kUsd);
-  TEST_ASSERT_FALSE(w.take("111", 0, out, why));
+  const BudgetPlan rp = planOf(r);
+  TEST_ASSERT_FALSE(w.take("111", 0, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::None);
   // On the last millisecond of the window: applied, once.
-  w.offer("111", r, true, 5000);
-  TEST_ASSERT_TRUE(w.take("111", 5000 + BudgetBounds::kConfirmWindowMs, out, why));
-  TEST_ASSERT_EQUAL_UINT64(70 * kUsd, out.micro);
-  TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, out, why));
+  w.offer("111", rp, 5000);
+  TEST_ASSERT_TRUE(w.take("111", 5000 + BudgetBounds::kConfirmWindowMs, 0, got, why));
+  TEST_ASSERT_EQUAL_UINT64(70 * kUsd, got.req.micro);
+  TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Confirmed);
   // One millisecond late: expired, and the reply offers the command again.
-  w.offer("111", r, true, 5000);
-  TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, out, why));
+  w.offer("111", rp, 5000);
+  TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
-  TEST_ASSERT_TRUE(confirmMissText(why, out).find("To try again, send /budget anthropic 70.") != std::string::npos);
+  TEST_ASSERT_TRUE(confirmMissText(why, got.req).find("To try again, send /budget anthropic 70.") != std::string::npos);
   // The clock is 64-bit: 50 days later (a 32-bit millisecond clock would have wrapped
   // back into the window) the change is long expired.
-  w.offer("111", r, true, 1000);
-  TEST_ASSERT_FALSE(w.take("111", 1000 + 50ULL * 86400000ULL, out, why));
+  w.offer("111", rp, 1000);
+  TEST_ASSERT_FALSE(w.take("111", 1000 + 50ULL * 86400000ULL, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
   // A confirm from another chat applies nothing and drops the waiting change; the
   // proposer then reads why.
-  w.offer("111", r, true, 0);
-  TEST_ASSERT_FALSE(w.take("222", 10, out, why));
+  w.offer("111", rp, 0);
+  TEST_ASSERT_FALSE(w.take("222", 10, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherChat);
   TEST_ASSERT_FALSE(w.waiting());
-  TEST_ASSERT_FALSE(w.take("111", 20, out, why));
+  TEST_ASSERT_FALSE(w.take("111", 20, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::ConfirmedElsewhere);
-  TEST_ASSERT_TRUE(confirmMissText(why, out).find("a confirmation came from another chat") != std::string::npos);
+  TEST_ASSERT_TRUE(confirmMissText(why, got.req).find("a confirmation came from another chat") != std::string::npos);
   // Any other message from the same chat cancels; from another chat it changes nothing.
-  w.offer("111", r, true, 0);
+  w.offer("111", rp, 0);
   TEST_ASSERT_FALSE(w.noteOther("222"));
   TEST_ASSERT_TRUE(w.waiting());
   TEST_ASSERT_TRUE(w.noteOther("111"));
-  TEST_ASSERT_FALSE(w.take("111", 10, out, why));
+  TEST_ASSERT_FALSE(w.take("111", 10, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherMessage);
-  TEST_ASSERT_TRUE(confirmMissText(why, out).find("cancelled by your next message") != std::string::npos);
+  TEST_ASSERT_TRUE(confirmMissText(why, got.req).find("cancelled by your next message") != std::string::npos);
   // /budget cancel, and a newer proposal replaces an older one.
-  w.offer("111", r, true, 0);
+  w.offer("111", rp, 0);
   TEST_ASSERT_FALSE(w.cancel("222"));
   TEST_ASSERT_TRUE(w.cancel("111"));
-  TEST_ASSERT_FALSE(w.take("111", 10, out, why));
+  TEST_ASSERT_FALSE(w.take("111", 10, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Cancelled);
-  w.offer("111", r, true, 0);
-  w.offer("111", set("anthropic", 80 * kUsd), true, 10);
-  TEST_ASSERT_TRUE(w.take("111", 20, out, why));
-  TEST_ASSERT_EQUAL_UINT64(80 * kUsd, out.micro);
-  w.offer("111", r, true, 0);
-  w.offer("web", set("openai", 9 * kUsd), true, 10);
-  TEST_ASSERT_FALSE(w.take("111", 20, out, why));   // drops the web chat's change too (fail closed)
+  w.offer("111", rp, 0);
+  w.offer("111", planOf(set("anthropic", 80 * kUsd)), 10);
+  TEST_ASSERT_TRUE(w.take("111", 20, 0, got, why));
+  TEST_ASSERT_EQUAL_UINT64(80 * kUsd, got.req.micro);
+  w.offer("111", rp, 0);
+  w.offer("web", planOf(set("openai", 9 * kUsd)), 10);
+  TEST_ASSERT_FALSE(w.take("111", 20, 0, got, why));   // drops the web chat's change too (fail closed)
   TEST_ASSERT_FALSE(w.waiting());
   // A refused proposal cancels the chat's waiting change ("anything else cancels").
-  w.offer("111", r, true, 0);
-  w.offer("111", set("anthropic", 900 * kUsd), false, 10);
+  w.offer("111", rp, 0);
+  w.offer("111", planOf(set("anthropic", 900 * kUsd), false), 10);
   TEST_ASSERT_FALSE(w.waiting());
-  TEST_ASSERT_FALSE(w.take("111", 20, out, why));
+  TEST_ASSERT_FALSE(w.take("111", 20, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherMessage);
   // A confirmed change that could not be applied says so on the next confirm, never
   // "already applied".
-  w.offer("111", r, true, 0);
-  TEST_ASSERT_TRUE(w.take("111", 10, out, why));
+  w.offer("111", rp, 0);
+  TEST_ASSERT_TRUE(w.take("111", 10, 0, got, why));
   w.failed("111");
-  TEST_ASSERT_FALSE(w.take("111", 20, out, why));
+  TEST_ASSERT_FALSE(w.take("111", 20, 0, got, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Failed);
-  TEST_ASSERT_TRUE(confirmMissText(why, out).find("The last change was not applied. To try again, send /budget "
+  TEST_ASSERT_TRUE(confirmMissText(why, got.req).find("The last change was not applied. To try again, send /budget "
                                                   "anthropic 70.") == 0);
-  for (int e = 0; e <= (int)BudgetConfirm::Ended::Failed; ++e)
+  for (int e = 0; e <= (int)BudgetConfirm::Ended::OutOfOrder; ++e)
     TEST_ASSERT_TRUE(printable(confirmMissText((BudgetConfirm::Ended)e, r)));
 }
 
@@ -795,6 +919,15 @@ static void test_copy_goldens() {
          proposalText(planBudgetChange(set("anthropic", 10 * kUsd), dflt), dflt) + "\n";
   p = planBudgetChange(set("anthropic", 10 * kUsd, true), dflt);
   out += "[proposal, a first limit with force]\n" + proposalText(p, dflt) + "\n";
+  LimitsView ceil5k = defaultView(10 * kUsd);
+  ceil5k.ownerSet = true;
+  ceil5k.limitMicro = 5000 * kUsd;
+  ceil5k.rows = {{"anthropic", 10 * kUsd, 2 * kUsd, false, "1 November"}};
+  out += "[refusal, off under a ceiling]\n" + proposalText(planBudgetChange(parseBudgetArgs("anthropic off"), ceil5k), ceil5k) + "\n";
+  p = planBudgetChange(parseBudgetArgs("anthropic off force"), ceil5k);
+  out += "[proposal, off under a ceiling with force]\n" + proposalText(p, ceil5k) + "\n";
+  out += "[replies, timing]\n" + budgetTimingRefusal(0, 0) + "\n" + budgetTimingRefusal(1793124000, 1793123000) +
+         "\n" + confirmMissText(BudgetConfirm::Ended::OutOfOrder, set("anthropic", 70 * kUsd)) + "\n";
   out += "[replies, confirm paths]\n" + storeFailedText(set("anthropic", 70 * kUsd)) + "\n" +
          replanRefusedText(planBudgetChange(set("anthropic", 900 * kUsd), lumi)) + "\n" + cancelText(true) +
          "\n" + cancelText(false) + "\n";
@@ -872,6 +1005,11 @@ int main(int, char**) {
   RUN_TEST(test_every_provider_reads_right_in_every_line);
   RUN_TEST(test_the_plan_matches_the_real_counters);
   RUN_TEST(test_the_confirm_window_is_two_minutes_and_one_chat);
+  RUN_TEST(test_a_replayed_pair_never_applies);
+  RUN_TEST(test_a_voice_note_is_read_only);
+  RUN_TEST(test_off_under_a_ceiling_is_held_to_the_force_rule);
+  RUN_TEST(test_the_confirm_applies_only_the_effect_shown);
+  RUN_TEST(test_the_device_wiring_of_the_merge_fixes);
   RUN_TEST(test_owner_chats_only_never_a_group);
   RUN_TEST(test_the_dispatcher_wires_the_verbs);
   RUN_TEST(test_the_state_json_reads_into_the_view);

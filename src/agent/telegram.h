@@ -232,5 +232,12 @@ PollStatus pollStatus();
 // revoked token stops reporting "verified/live".
 bool authRejected();
 
+// Lane BUD: inside the MessageCallback, the Telegram send time (message.date, server
+// seconds) of the message the turn answers (0 when unknown), and whether it is a voice
+// note's transcript. The spending commands hold a confirm to its message's date and let
+// a transcript read but never change a limit.
+int64_t turnMessageDate();
+bool    turnIsVoiceNote();
+
 }  // namespace telegram
 }  // namespace agent

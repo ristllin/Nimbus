@@ -2126,7 +2126,15 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         // the web chat's history (a change made in the web chat is already there). History
         // only: a delivery to "web" here would fill the web chat's reply slot of a turn
         // that is not running.
-        const budget::Reply r = budget::handle(v, cmd.args, chatId, owner);
+        // A Telegram message carries its send time and whether it is a voice note's
+        // transcript (a confirm is held to its proposal's date; speech never changes a
+        // limit); the web chat, serial and hold-to-talk carry neither.
+        nimbus::orch::BudgetMsg facts;
+        if (!pseudo) {
+          facts.date = agent::telegram::turnMessageDate();
+          facts.voiceNote = agent::telegram::turnIsVoiceNote();
+        }
+        const budget::Reply r = budget::handle(v, cmd.args, chatId, owner, facts);
         say(selfTag + String(r.text.c_str()));
         if (!r.mirror.empty() && chatId != "web")
           memory::captureMessage("web", "assistant", orch::MsgKind::Message, String(r.mirror.c_str()), "",
