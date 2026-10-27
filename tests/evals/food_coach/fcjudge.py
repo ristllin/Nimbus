@@ -212,4 +212,6 @@ def normalize(verdict, scn: dict) -> dict:
             }
         )
     passed = all(r["pass"] for r in rows if r["required"])
-    return {"criteria": rows, "pass": passed, "summary": verdict.get("summary", "")}
+    # No verdict for any criterion: the judge answered nothing usable (not a graded failure).
+    empty = not any(c["id"] in by_id for c in scn["criteria"])
+    return {"criteria": rows, "pass": passed, "summary": verdict.get("summary", ""), "empty": empty}

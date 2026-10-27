@@ -156,6 +156,8 @@ def cmd_rejudge(args) -> int:
     outdir = _outdir(args)
     by_id = {s["id"]: s for s in fcworld.load_scenarios()}
     for rec in fcreport.load_records(outdir):
+        if args.only_ungraded and not fcrun.ungraded(rec):
+            continue
         task = fcrun.Task(
             scn=by_id[rec["scenario"]],
             rep=rec["rep"],
@@ -213,6 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-minutes", type=int, default=40, help="device leg: stop starting runs after this")
     run.add_argument("--lock-held", action="store_true", help="device leg: the caller already holds the unit's lock")
     sub.choices["report"].add_argument("--against")
+    sub.choices["rejudge"].add_argument(
+        "--only-ungraded", action="store_true", help="re-grade only runs a judge returned no verdict for"
+    )
     return p
 
 

@@ -169,6 +169,23 @@ def run_device(t: Task, files: dict) -> dict:
     return device_leg.run_task(t, files)
 
 
+JUDGE_ATTEMPTS = 3
+
+
+def _judge_once(spec: str, t: Task, user: str, sha: str) -> dict:
+    """One judge's verdict. A reply with no verdict for any criterion is asked again (up to
+    JUDGE_ATTEMPTS calls, their cost summed); still nothing is a judge error, so the run
+    counts as errored, never as a graded failure."""
+    cost = 0.0
+    for _ in range(JUDGE_ATTEMPTS):
+        verdict, usage = fcjudge.call_judge(spec, t.keys, user)
+        cost += judge_cost(spec, usage)
+        norm = fcjudge.normalize(verdict, t.scn)
+        if not norm.pop("empty"):
+            return {"judge": spec, "rubric_sha": sha, "cost_usd": round(cost, 6), **norm}
+    raise RuntimeError(f"judge returned no verdict in {JUDGE_ATTEMPTS} calls (cost {cost:.4f} USD)")
+
+
 def judge_run(t: Task, turns: list[dict], history: list[dict] | None = None) -> list[dict]:
     """Judge a transcript. `history` is the earlier chat as it happened (the device leg's
     live replies); the scenario's seeded history otherwise."""
@@ -182,9 +199,7 @@ def judge_run(t: Task, turns: list[dict], history: list[dict] | None = None) -> 
         if out and t.extra.get("second_on_pass") and not out[0]["pass"]:
             break  # the second judge only re-checks a pass: a failure needs no second opinion
         try:
-            verdict, usage = fcjudge.call_judge(spec, t.keys, user)
-            norm = fcjudge.normalize(verdict, t.scn)
-            out.append({"judge": spec, "rubric_sha": sha, "cost_usd": judge_cost(spec, usage), **norm})
+            out.append(_judge_once(spec, t, user, sha))
         except (RuntimeError, ValueError, KeyError) as exc:
             out.append(
                 {"judge": spec, "rubric_sha": sha, "error": str(exc), "pass": False, "criteria": [], "cost_usd": 0.0}
@@ -196,8 +211,19 @@ def _failed_ids(judges: list[dict], required: bool) -> list[str]:
     return sorted({c["id"] for j in judges for c in j["criteria"] if c["required"] == required and not c["pass"]})
 
 
+def ungraded(rec: dict) -> bool:
+    """A saved run some judge did not grade: an error, or no verdict for any criterion."""
+    for j in rec.get("judges", []):
+        crits = j.get("criteria") or []
+        if "error" in j or (crits and all(c.get("evidence") == "no verdict returned" for c in crits)):
+            return True
+    return False
+
+
 def decide(judges: list[dict], errored: bool) -> dict:
-    """Primary = first judge. Strict = every judge passes. An errored run never passes."""
+    """Primary = first judge. Strict = every judge passes. An errored run never passes, and a
+    run the first judge could not grade is errored (shown as such, not as a failure)."""
+    errored = errored or bool(judges and "error" in judges[0])
     usable = [j for j in judges if "error" not in j]
     complete = bool(usable) and len(usable) == len(judges)
     return {

@@ -419,3 +419,33 @@ def test_normalize_reads_a_stringified_verdict():
     broken = fcjudge.normalize("not json", scn)
     assert not broken["pass"] and broken["criteria"][0]["evidence"] == "no verdict returned"
     assert not fcjudge.normalize({"criteria": ["x", 3]}, scn)["pass"]
+    assert broken["empty"] and not as_string["empty"]
+
+
+def test_a_judge_with_no_verdict_is_asked_again_then_errors(monkeypatch):
+    scn = fcworld.load_scenarios(["qty-vague"])[0]
+    good = {"criteria": [{"id": c["id"], "evidence": "e", "verdict": "pass"} for c in scn["criteria"]]}
+    replies = [("not json", {}), (good, {})]
+    monkeypatch.setattr(fcjudge, "call_judge", lambda spec, keys, user: replies.pop(0))
+    t = fcrun.Task(
+        scn=scn,
+        rep=1,
+        label="t",
+        outdir=fcworld.HERE,
+        host="anthropic",
+        model="m",
+        cfg=CFG,
+        keys={},
+        judges=["anthropic/claude-haiku-5-5"],
+    )
+    out = fcrun.judge_run(t, [{"owner": "x", "reply": "y"}])
+    assert out[0]["pass"] and "empty" not in out[0] and not replies  # the second call graded it
+    monkeypatch.setattr(fcjudge, "call_judge", lambda spec, keys, user: ("not json", {}))
+    out = fcrun.judge_run(t, [{"owner": "x", "reply": "y"}])
+    assert "error" in out[0] and "no verdict" in out[0]["error"]
+    verdict = fcrun.decide(out, False)
+    assert verdict["errored"] and not verdict["pass"]  # ungraded, not failed
+    assert fcrun.ungraded({"judges": out})
+    graded = {"judges": [{"criteria": [{"evidence": "e", "pass": False}]}]}
+    assert not fcrun.ungraded(graded)
+    assert fcrun.ungraded({"judges": [{"criteria": [{"evidence": "no verdict returned", "pass": False}]}]})

@@ -94,7 +94,9 @@ transcript, the saved record with both judges' verdicts and evidence (`repN.json
 provider usage (`repN.rec/`) and, for the first repetition, the full system prompt
 (`rep1.system.json`). `<label>/summary.json` and `results.md` summarize. A saved run is not
 repeated, so an interrupted batch resumes. `rejudge` re-grades saved transcripts with other
-judges without calling the head again.
+judges without calling the head again; `--only-ungraded` re-grades only the runs a judge
+returned no verdict for. A judge reply with no verdict for any criterion is asked again (three
+calls at most); still nothing marks the run errored, never failed.
 
 ## Device leg
 
