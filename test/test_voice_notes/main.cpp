@@ -241,6 +241,9 @@ static void test_an_unconfirmed_upload_is_not_called_undelivered() {
   struct Row { const char* what; std::string reason; bool unconfirmed; };
   const Row rows[] = {
       {"no status line in the window", reasonFor(false, noStatus, ""), true},
+      // The body stopped short of its length (a stalled socket, the deadline): Telegram never took it.
+      {"the upload was cut mid-body", reasonFor(false, nimbus::voice::uploadCutText(4096, 18432), ""), false},
+      {"the upload was cut before any byte", reasonFor(false, nimbus::voice::uploadCutText(0, 18432), ""), false},
       {"no transport text at all", reasonFor(false, "", ""), true},
       {"a 2xx answer that is not JSON", reasonFor(true, "", "<html>proxy</html>"), true},
       {"a 2xx answer without a message id", reasonFor(true, "", R"({"ok":true,"result":{}})"), true},
@@ -275,6 +278,16 @@ static void test_an_unconfirmed_upload_is_not_called_undelivered() {
       }
     }
   }
+  TEST_ASSERT_EQUAL_STRING("upload cut at 4096 of 18432 B", nimbus::voice::uploadCutText(4096, 18432).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "the voice message did not reach Telegram: Telegram did not accept it (upload cut at 4096 of 18432 B); "
+      "nothing was delivered. Reply in text and say the voice message could not be sent",
+      voiceFailedText({}, 1, "Telegram did not accept it (upload cut at 4096 of 18432 B)").c_str());
+  // The speech-to-text upload reads a cut body as it read it before (no answer), never as a transcript.
+  int http = -1;
+  TEST_ASSERT_TRUE(nimbus::voice::sttKindForError(nimbus::voice::uploadCutText(10, 20), &http) ==
+                   nimbus::voice::SttResult::Kind::Http);
+  TEST_ASSERT_EQUAL(0, http);
   TEST_ASSERT_EQUAL_STRING(
       "the voice message may not have arrived: Telegram did not confirm it (HTTP 0). Do not say it was "
       "delivered or that it failed; say it may not have arrived, and give the text in your reply",
@@ -465,6 +478,29 @@ static void test_clip_cut_words_match_the_facts() {
                            clipCutText(brief).c_str());
 }
 
+// QW6 rebase review: the bench leg T4's text (tests/hil/mock_llm.py _LONG_TTS) is built so the
+// device must cut HARD inside a run of 2-byte letters: no sentence end or space from byte 133 to the
+// bound, and a 2-byte letter straddling byte 400. The cut backs off to that letter's start (399 B);
+// a byte cut would end inside it.
+static void test_the_bench_long_text_forces_a_hard_cut_before_a_straddling_letter() {
+  const std::string word = "Z\xc3\xbcrich-r\xc3\xa9sum\xc3\xa9-na\xc3\xafve-jalape\xc3\xb1o-cr\xc3\xa8me-br\xc3\xbbl\xc3\xa9" "e-";
+  std::string run;
+  for (int i = 0; i < 12; i++) run += word;
+  run.pop_back();   // rstrip("-")
+  std::string tail;
+  for (int i = 0; i < 7; i++)
+    tail += "Cafe owners in Z\xc3\xbcrich read the r\xc3\xa9sum\xc3\xa9 of a na\xc3\xafve jalape\xc3\xb1o chef. ";
+  tail.pop_back();  // strip()
+  const std::string text = "Bench voice check: " + run + ". " + tail;
+  TEST_ASSERT_TRUE(text.size() > 800);
+  TEST_ASSERT_EQUAL_HEX8(0xb1, (unsigned char)text[400]);   // byte 400 is inside the letter n-tilde
+  const SpeechCut cut = cutForSpeech(text);
+  TEST_ASSERT_TRUE(cut.shortened);
+  TEST_ASSERT_EQUAL(399, (int)cut.text.size());
+  TEST_ASSERT_EQUAL_STRING("\xc3\xb1", text.substr(399, 2).c_str());
+  TEST_ASSERT_EQUAL_STRING(text.substr(0, 399).c_str(), cut.text.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_chars_and_numbers);
@@ -479,6 +515,7 @@ int main(int, char**) {
   RUN_TEST(test_the_tool_words);
   RUN_TEST(test_an_unconfirmed_upload_is_not_called_undelivered);
   RUN_TEST(test_speech_cut_keeps_whole_characters);
+  RUN_TEST(test_the_bench_long_text_forces_a_hard_cut_before_a_straddling_letter);
   RUN_TEST(test_a_close_delimited_clip_is_judged_by_its_framing);
   RUN_TEST(test_the_reason_detail_unwraps_the_telegram_wrapper);
   RUN_TEST(test_only_spoken_characters_set_the_audio_floor);

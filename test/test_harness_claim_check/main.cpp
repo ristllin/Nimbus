@@ -710,6 +710,7 @@ static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
       "Tell me what you actually eat and I'll add it.",
       "You're at 1,600 kcal logged, so 800 kcal are left.\n\nWant me to log this once you've eaten?",
       "Morning total: ~475-505 kcal, ~25-28g protein. I'll check back to log it once it's done.",
+      "You're at 1,652 kcal logged so far today.",
   };
   for (const char* reply : quiet) {
     ClaimCheck cc;
@@ -721,6 +722,8 @@ static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
       "Logged: cappuccino, 52 kcal / 3.6g protein. First item on today's log.",   // 23 Oct, Lumi
       "2 eggs, 156 kcal logged, so you're at 1,652 kcal so far.",                 // a fresh figure AND a total
       "3 eggs logged - you're on a roll!",
+      "You're at 1,652 kcal after I logged the eggs.",                            // the assistant logged it
+      "You're at 1,652 kcal and I've logged 156 kcal for the eggs.",
   };
   for (const char* reply : claims) {
     ClaimCheck cc;

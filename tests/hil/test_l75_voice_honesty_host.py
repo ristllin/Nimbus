@@ -14,7 +14,9 @@ import pytest
 
 from mock_llm import CLAIM_TURNS
 from test_l75_voice_honesty import (
+    ALIAS_NOTE,
     closed_head_named_honestly,
+    hard_cut_inside_a_letter,
     DEVICE_TTS_RE,
     SHORTENED_RE,
     SPOKEN_LINE,
@@ -68,10 +70,17 @@ def test_the_per_turn_line_is_read_from_the_lastturn_page():
         "host": "mistral",
         "model": "mistral-large-2512",
         "asked": "mistral-large-latest",
+        "alias": False,
         "fact": "Anthropic, the chosen head, is out of credit and returns automatically once credit is added.",
     }
     plain = runs_on("[THIS TURN RUNS ON] openai / gpt-5.6-luna. When asked which model you run, name this one only.\n")
-    assert plain == {"host": "openai", "model": "gpt-5.6-luna", "asked": "gpt-5.6-luna", "fact": ""}
+    assert plain == {"host": "openai", "model": "gpt-5.6-luna", "asked": "gpt-5.6-luna", "alias": False, "fact": ""}
+    unresolved = runs_on(
+        f"[THIS TURN RUNS ON] mistral / mistral-large-latest. {ALIAS_NOTE} When asked which model you run, name "
+        "this one only.\n"
+    )
+    assert unresolved["alias"] and unresolved["fact"] == "" and unresolved["model"] == "mistral-large-latest"
+    assert f'kRunsOnAliasNote = "{ALIAS_NOTE}"' in _src("lib/core/include/nimbus/orch/served_model.h")
     assert runs_on("Your brain right now: openai / gpt-5.6-luna.") == {}
     assert names_line_model("I run on Mistral Large 2512.", line)
     assert names_line_model("mistral-large-latest, via Mistral.", line)
@@ -116,6 +125,26 @@ def test_the_expected_words_are_the_ones_the_firmware_produces():
     assert '"(Note: that could not be spoken aloud" + (admin ? ": " + why : std::string()) + ".)"' in apply_cpp
 
 
+def device_speech_cut(text: str, max_bytes: int = 400) -> str:
+    """cutForSpeech, byte for byte: the largest prefix within the bound that ends on a letter's start,
+    at the last sentence end (". " or a line break) in its back two thirds, else the last space there,
+    else at the bound itself (a hard cut)."""
+    b = text.strip().encode("utf-8")
+    if len(b) <= max_bytes:
+        return b.decode("utf-8")
+    limit = max_bytes
+    while limit > 0 and (b[limit] & 0xC0) == 0x80:
+        limit -= 1
+    floor = limit // 3
+    for p in range(limit - 1, floor - 1, -1):
+        if b[p : p + 1] == b"\n" or (b[p : p + 1] in (b".", b"!", b"?") and b[p + 1 : p + 2].isspace()):
+            return b[: p + 1].decode("utf-8").strip()
+    for p in range(limit - 1, floor - 1, -1):
+        if b[p : p + 1].isspace():
+            return b[:p].decode("utf-8").strip()
+    return b[:limit].decode("utf-8").strip()
+
+
 def test_the_mock_turns_are_the_shapes_the_legs_need():
     for name in ("mock-claim-spoken", "mock-tts-only", "mock-tts-long", "mock-tts-reworded", "mock-tts-french"):
         turn = CLAIM_TURNS[name]
@@ -127,12 +156,21 @@ def test_the_mock_turns_are_the_shapes_the_legs_need():
     assert not CLAIM_TURNS["mock-tts-french"]["reply"].isascii()
     long_text = CLAIM_TURNS["mock-tts-long"]["device"][0]["text"]
     assert len(long_text.encode("utf-8")) > 800 and len(long_text.encode("utf-8")) > len(long_text)  # 2-byte letters
-    # Cut at the bound a text is a prefix, whole characters, within 400 bytes (the device's rule).
-    cut = long_text.encode("utf-8")[:400]
-    while cut and (cut[-1] & 0xC0) == 0x80:
-        cut = cut[:-1]
-    assert valid_utf8_prefix(cut.decode("utf-8"), long_text)
+    # The device's rule (orch_voice_notes.cpp cutForSpeech) cuts T4's text hard, inside the long word:
+    # no sentence end and no space in the back two thirds, the bound backed off to a letter's start.
+    cut = device_speech_cut(long_text)
+    assert len(cut.encode("utf-8")) == 399 and long_text[len(cut)] == "\u00f1"
+    assert valid_utf8_prefix(cut, long_text) and hard_cut_inside_a_letter(cut, long_text)
     assert not valid_utf8_prefix(long_text, long_text)  # the whole text is over the bound
+    # A byte cut at 400 would end inside that letter: not a character prefix at all.
+    raw = long_text.encode("utf-8")[:400]
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    # The checks reject the cuts the device must not make: a byte cut decoded leniently, a cut at the
+    # last space before the bound (there is none past byte 133 here) and a cut at an ASCII letter.
+    assert not hard_cut_inside_a_letter(raw.decode("utf-8", "ignore") + "x", long_text)
+    assert not hard_cut_inside_a_letter(long_text[:20], long_text)
+    assert not hard_cut_inside_a_letter(long_text[: len(cut) - 1], long_text)
 
 
 def test_a_closed_head_may_be_named_only_as_the_chosen_head_that_is_not_running():

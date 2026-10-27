@@ -571,19 +571,22 @@ play it on the speaker; `tts` falls back to a Telegram voice message when the
 speaker could not play it - to the chat the turn is in when that is a Telegram chat,
 else to the owner's chat. The `tts` action reports what really happened: played on
 the speaker, delivered to Telegram with its `message_id`, or not spoken with the reason
-(a speaker volume of 0 plays silence, so it is refused; `device.control` answers
-`tts(not-spoken: ...)` and the next turn is told). Only what was voiced is written to
-history, and a reply that says it was read aloud when it was not gets a correction
-line. A `tts` that could not be spoken is always reported in the same turn, whatever
-the reply says or which language it is in: a reply or question gets a short note
-(the reason for the owner's chats, none for anyone else) unless the claim check's own
-line already says so, and a turn whose only output was that `tts` delivers the text with
-the reason, unless the turn already sent that text with `reply.telegram`. A routine says
-nothing (the head hears of it next turn). The note "the spoken version was shortened"
-rides a reply or question only: a routine or a turn that only spoke sends no message
-for it. A Telegram fallback that went out but that
-Telegram never confirmed says the voice message "may not have arrived" instead of
-that it failed. A spoken Telegram message is also available via
+(a speaker volume of 0 plays silence, so it is refused). Only what was voiced is written
+to history, and a reply that says it was read aloud when it was not gets a correction
+line. When the end-of-turn `device[]` `tts` could not be spoken, the owner hears of it
+in the same turn, whatever the reply says or which language it is in: a reply or
+question gets a short note (the reason for the owner's chats, none for anyone else)
+unless the claim check's own line already says so, and a turn whose only output was that
+`tts` delivers the text with the reason, unless the turn already sent that text with
+`reply.telegram`. A routine says nothing (the head hears of it next turn). The note "the
+spoken version was shortened" rides a reply or question only: a routine or a turn that
+only spoke sends no message for it. The same action sent mid-turn through
+`device.control` reports `tts(not-spoken: ...)` or the shortened note in the tool's
+result, to the model only: the claim check still corrects a reply that says it was read
+aloud, but the owner is not told otherwise unless the reply says so. A Telegram fallback
+that went out but that Telegram never confirmed says the voice message "may not have
+arrived" instead of that it failed; an upload cut short before its end says nothing was
+delivered. A spoken Telegram message is also available via
 `reply.telegram` `voice:true`, which never uses the speaker. The speaker plays WAV directly and decodes MP3 with
 the bundled decoder, so the reply speaks whether the configured voice provider
 emits WAV (OpenAI) or MP3 (Mistral).

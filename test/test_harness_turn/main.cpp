@@ -1063,6 +1063,19 @@ static void test_the_per_turn_input_names_the_model_this_turn_runs_on() {
         "[THIS TURN RUNS ON] anthropic / claude-haiku-5-5. When asked which model you run, name this one only.\ninputs",
         r.attempts[0].inputs.c_str());
   }
+  {
+    Rig r;   // QW6: a Mistral alias no list resolves yet - the line says so and forbids a guessed version
+    nimbus::orch::installServedModelResolver(nullptr);
+    nimbus::orch::clearServedModels();
+    r.cfg.orchHost = "mistral";
+    r.cfg.orchModels["mistral"] = "mistral-large-latest";
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] mistral / mistral-large-latest. " +
+                              std::string(nimbus::orch::kRunsOnAliasNote) +
+                              " When asked which model you run, name this one only.\ninputs")
+                                 .c_str(),
+                             r.attempts[0].inputs.c_str());
+  }
   nimbus::orch::installServedModelResolver(nullptr);
   nimbus::orch::clearServedModels();
 }
@@ -2004,7 +2017,7 @@ static void test_the_per_turn_line_names_the_open_host_while_the_head_is_parked(
       const std::string in = firstInput(r, fabric != 0);
       TEST_ASSERT_TRUE_MESSAGE(startsWith(in, want), (tag + ": " + in.substr(0, 300)).c_str());
       TEST_ASSERT_EQUAL_MESSAGE(1, (int)countOf(in, "the chosen head,"), tag.c_str());
-      assertNoModelClaim(r.debug.back().instructions, tag.c_str());   // a park never rewrites the cache
+      assertNoModelClaim(r.debug.back().instructions, tag.c_str());   // no model claim reaches the cache
       // The head answers again: its park ends and the next request names it alone once more.
       agent::providers::unparkHost(head);
       r.attempts.clear();

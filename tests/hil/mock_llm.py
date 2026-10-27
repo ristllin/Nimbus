@@ -107,7 +107,17 @@ CLAIM_TURNS["mock-tts-french"] = {
     "reply": "Je l'ai lu \u00e0 voix haute pour toi.",
     "device": [{"type": "tts", "text": "Bench voice check."}],
 }
-_LONG_TTS = ("Cafe owners in Z\u00fcrich read the r\u00e9sum\u00e9 of a na\u00efve jalape\u00f1o chef. " * 14).strip()
+# T4's long text forces the tts action's HARD cut inside a run of 2-byte letters: a short ASCII lead,
+# then one long hyphenated word with no space or sentence end from byte 133 to past byte 400, where
+# a 2-byte letter straddles the 400-byte bound. A byte cut would end inside that letter; the device
+# backs off to byte 399. The rest (spaces, sentences) only makes the text long.
+_LONG_TTS_WORD = "Z\u00fcrich-r\u00e9sum\u00e9-na\u00efve-jalape\u00f1o-cr\u00e8me-br\u00fbl\u00e9e-"
+_LONG_TTS = (
+    "Bench voice check: "
+    + (_LONG_TTS_WORD * 12).rstrip("-")
+    + ". "
+    + ("Cafe owners in Z\u00fcrich read the r\u00e9sum\u00e9 of a na\u00efve jalape\u00f1o chef. " * 7).strip()
+)
 CLAIM_TURNS["mock-tts-long"] = {
     "reply": "I read it aloud for you.",
     "device": [{"type": "tts", "text": _LONG_TTS}],

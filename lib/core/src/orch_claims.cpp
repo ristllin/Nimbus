@@ -1184,9 +1184,20 @@ bool progressBefore(const Scan& sc, size_t i) {
 // phrase in the participle's own clause, adjacent to it as above, state what is ALREADY on record - the
 // owner's running total - and claim no save of this turn. "Logged: cappuccino, 52 kcal", "Cappuccino
 // logged: 52 kcal", "52 kcal logged." and a fresh figure with the total in another clause ("2 eggs,
-// 156 kcal logged, so you're at 1,652 kcal so far") carry no such phrase and stay claims.
+// 156 kcal logged, so you're at 1,652 kcal so far") carry no such phrase and stay claims. Nor is it
+// a total when the assistant is the participle's subject ("You're at 1,652 kcal after I logged the
+// eggs", "...and I've logged 156 kcal"): that is a save it claims, by the test qualifiedParticiple
+// applies (a subject or auxiliary just before it that opens no relative clause).
+bool assistantIsSubject(const Scan& sc, size_t i) {
+  for (size_t d = 1; d <= 2 && d <= i; d++) {
+    if (!sameClause(sc, i - d, i)) break;
+    if (subjectOrAux(sc, sc.toks[i - d])) return !relativeClauseAt(sc, i - d);
+  }
+  return false;
+}
+
 bool reportedTotal(const Scan& sc, size_t i) {
-  return figureBefore(sc, i) && (progressAfter(sc, i) || progressBefore(sc, i));
+  return !assistantIsSubject(sc, i) && figureBefore(sc, i) && (progressAfter(sc, i) || progressBefore(sc, i));
 }
 
 // A save cue in a reference: a system log noun, a standing total, a qualified participle, or
