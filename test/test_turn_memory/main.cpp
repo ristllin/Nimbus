@@ -72,6 +72,10 @@ struct Rig {
   bool throwInOwnerRow = false;   // the owner-row capture throws (before the turn)
   bool throwInReplyRow = false;   // the reply's history row throws (after the provider billed)
   std::string throwAt;            // the class table: the one hook that throws std::bad_alloc next
+  // F2: the head loop's round 1 bills (and, with roundReplies, its reply.telegram tells
+  // the owner) inside the host call, then round 2's request throws std::bad_alloc.
+  bool billThenThrow = false;
+  bool roundReplies = false;
   void maybeThrow(const char* at) {
     if (throwAt != at) return;
     throwAt.clear();
@@ -148,6 +152,15 @@ struct Rig {
                                std::string&, const agent::HeadTools*, orch::TokenUsage* usage) {
         attempts.push_back({h, switchOn(), inputs});
         maybeThrow("provider");
+        if (billThenThrow) {
+          billThenThrow = false;
+          if (usage) usage->add(100, 20);   // round 1 billed
+          if (roundReplies) {               // its reply.telegram went out
+            delivered.push_back({"1001", "round one told the owner"});
+            eng->noteToolReplied();
+          }
+          throw std::bad_alloc();           // round 2's request is being built
+        }
         conv = "c1";
         out = kGoodTurn;
         if (usage) usage->add(100, 20);
@@ -643,6 +656,73 @@ static void test_a_memory_deferred_one_shot_retries_soon() {
   }
 }
 
+// F2 (v4.6.1 review): a failed allocation in the head loop after round 1 billed (and
+// its reply.telegram told the owner) is no memory refusal. The fire is not deferred
+// with an empty error (drainSystemTurn would restage the post-update turn, a routine
+// would fire again, a one-shot would retry: the owner messaged twice, round 1 billed
+// twice), and round 1's usage is metered once. Counter-test: a throw before any
+// provider request still defers, with nothing billed.
+static orch::FireOutcome fireScheduledOrBounded(Rig& r, bool bounded) {
+  if (bounded) return r.eng->injectBoundedTurn("1001", "[FIRMWARE UPDATED] v4.6.1", "firmware-update",
+                                               TurnEngine::TurnBounds{});
+  return r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+}
+
+static int meteredPromptTokens(const Rig& r) {
+  int billed = 0;
+  for (const auto& rec : r.cfg.recorded) billed += (int)rec.in;
+  return billed;
+}
+
+static void test_a_failed_allocation_after_a_billed_round_is_not_a_defer() {
+  for (int bounded = 0; bounded < 2; ++bounded) {
+    for (int replies = 0; replies < 2; ++replies) {
+      char why[48];
+      std::snprintf(why, sizeof why, "bounded=%d replies=%d", bounded, replies);
+      Rig r;
+      r.billThenThrow = true;
+      r.roundReplies = replies == 1;
+      const orch::FireOutcome o = fireScheduledOrBounded(r, bounded == 1);
+      TEST_ASSERT_FALSE_MESSAGE(r.billThenThrow, why);   // the host was asked and threw
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.deferred, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.error.empty(), why);   // a failure the scheduler records, never a restage
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, o.retryAfterSec, why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(100, meteredPromptTokens(r), why);   // round 1, metered once
+      TEST_ASSERT_EQUAL_MESSAGE(100, (int)o.tokens.promptTokens, why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.ends.size(), why);
+      TEST_ASSERT_FALSE_MESSAGE(r.ends[0].ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered(kShortOfMemoryReply), why);
+      TEST_ASSERT_EQUAL_MESSAGE(replies, (int)r.delivered.size(), why);   // round 1's reply only
+      TEST_ASSERT_FALSE_MESSAGE(r.eng->turnInFlight(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(0, PsramFirstScope::depth(), why);
+    }
+    Rig early;   // before any provider request: still a defer, nothing billed
+    early.throwAt = "context";
+    const orch::FireOutcome d = fireScheduledOrBounded(early, bounded == 1);
+    TEST_ASSERT_TRUE(early.throwAt.empty());
+    TEST_ASSERT_TRUE(d.deferred);
+    TEST_ASSERT_TRUE(d.error.empty());
+    TEST_ASSERT_EQUAL(0, (int)early.attempts.size());
+    TEST_ASSERT_EQUAL(0, meteredPromptTokens(early));
+  }
+}
+
+// The same rule for an owner turn: round 1's reply already reached the owner, so no
+// short-of-memory reply rides on top of it, and round 1 is metered once.
+static void test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once() {
+  Rig r;
+  r.billThenThrow = true;
+  r.roundReplies = true;
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_FALSE(r.anyDelivered(kShortOfMemoryReply));
+  TEST_ASSERT_EQUAL(100, meteredPromptTokens(r));
+  TEST_ASSERT_EQUAL(r.starts.size(), r.ends.size());
+}
+
 // The short-of-memory reply goes out once even when its own history row fails to
 // allocate (the turn's handler must not say it again).
 static void test_a_failed_reply_row_does_not_send_the_short_reply_twice() {
@@ -708,6 +788,8 @@ int main() {
   RUN_TEST(test_a_failed_allocation_before_the_request_puts_back_what_it_took);
   RUN_TEST(test_a_memory_refused_synthesis_defers_instead_of_dumping);
   RUN_TEST(test_a_memory_deferred_one_shot_retries_soon);
+  RUN_TEST(test_a_failed_allocation_after_a_billed_round_is_not_a_defer);
+  RUN_TEST(test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once);
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
   RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);

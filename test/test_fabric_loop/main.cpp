@@ -255,6 +255,34 @@ static void test_failure_after_billed_rounds_files_them() {
   TEST_ASSERT_EQUAL(2, (int)sp.slot[0].billed);
 }
 
+// F2 (v4.6.1 review): a failed allocation inside the loop after a round billed (here
+// while the tool that round asked for runs) unwinds to the turn's own handler with the
+// billed round filed, so the turn's memory end meters it. Before, the filing at the
+// loop's end was skipped and round 1 was never metered.
+static void test_a_thrown_round_still_files_what_the_loop_billed() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.dispatch = [](const orch::HeadToolCall&) -> orch::HeadToolResult { throw std::bad_alloc(); };
+  std::string out, err;
+  orch::TurnSpend sp;
+  bool threw = false;
+  try {
+    (void)providers::runFabricLoop(pd, {"anthropic", "openai"}, "S", "U", out, err, rig.ht, &sp, nullptr);
+  } catch (const std::bad_alloc&) {
+    threw = true;   // engine.cpp runTurn's handler ends the turn
+  }
+  TEST_ASSERT_TRUE(threw);
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(1, (int)sp.n);
+  TEST_ASSERT_EQUAL_STRING("anthropic", sp.slot[0].host);
+  TEST_ASSERT_EQUAL(50, (int)sp.slot[0].in);
+  TEST_ASSERT_EQUAL(10, (int)sp.slot[0].out);
+  TEST_ASSERT_EQUAL(1, (int)sp.slot[0].billed);
+}
+
 // Gate G5 inside the fabric: a step that captured a served-model echo on its HTTP 200
 // and then failed (empty content) never names the model of the attempt that serves
 // the round - not on the same-host retry, not after a switch to another host.
@@ -696,6 +724,7 @@ int main(int, char**) {
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_fabric_reports_every_failed_host_in_order);
   RUN_TEST(test_failure_after_billed_rounds_files_them);
+  RUN_TEST(test_a_thrown_round_still_files_what_the_loop_billed);
   RUN_TEST(test_single_host_list_never_switches);
   RUN_TEST(test_failed_step_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_fabric_resends_once_after_the_heap_recovers);

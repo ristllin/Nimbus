@@ -1571,10 +1571,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
     const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
     const std::string& in = inputsFor(h);
-    const bool r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(in) : in, outJson, err,
-                                headToolsPtr, &attempt);
-    tf.spend.add(h.c_str(),
-                 d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
+    auto fileAttempt = [&] {
+      tf.spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
+    };
+    bool r = false;
+    try {
+      r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(in) : in, outJson, err, headToolsPtr,
+                       &attempt);
+    } catch (const std::bad_alloc&) {
+      // A failed allocation after a round billed (the next request being built): the
+      // attempt's billed rounds are filed on the way out, so the turn's memory end
+      // meters them (F2: round 1 of a thrown head loop was never metered).
+      fileAttempt();
+      throw;
+    }
+    fileAttempt();
     if (r) {
       d_.hosts.noteAnswered(h);   // an answer ends a park and its billing episode
     } else {
@@ -2189,10 +2200,13 @@ void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {
   TurnMemoryState& tm = turnMem();
   TurnFacts& tf = facts();
   const bool ended = tm.started && tf.metered;   // fireTurnEnd ran for this turn
-  // A routine is deferred (fired again later) only when nothing was billed and
-  // nothing answered: a retry must never repeat a paid round or a sent reply. Then
-  // what the turn took is put back too, for the next turn.
-  tm.refused = !tm.applied && (!tm.started || tf.spend.empty());
+  // A routine is deferred (fired again later) only when nothing went out and nothing
+  // answered: no provider was asked (putBackTaken's rule: once asked, a request may
+  // have left, billed and run tools), no reply was applied and no tool replied
+  // (reply.telegram). A retry must never repeat a paid round or a sent reply (F2: the
+  // post-update turn ran twice and messaged the owner twice). Then what the turn took
+  // is put back too, for the next turn.
+  tm.refused = !tm.asked && !tm.applied && !toolReplied_;
   if (tm.refused) putBackTaken(tm, d_.jobs, pendingMemResults_, pendingMemSeq_);
   hlog::log("orchestrator: turn ended for memory - an allocation failed");
   const bool endOwed = !ended && tm.started;   // the start hook fired, its end did not

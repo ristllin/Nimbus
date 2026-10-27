@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdio>
 #include <functional>
+#include <new>   // std::bad_alloc: a thrown round still files what the loop billed
 
 #include "nimbus/harness/log.h"
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
@@ -548,16 +549,28 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   hooks.spill    = ht.spill;
   hooks.transcript = &tr;
 
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
+  // Every exit files what each host billed, once (nothing bills before the loop).
+  auto fileSpend = [&] {
+    for (size_t i = 0; i < hostCount; ++i)
+      spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
+                 hostUse[i]);
+  };
+  orch::HeadOutcome res;
+  try {
+    res = runHeadLoop(ht.cfg, hooks);
+  } catch (const std::bad_alloc&) {
+    // A failed allocation inside a round (the next request being built after a round
+    // billed and ran tools): the rounds already billed are filed on the way out, so
+    // the turn's memory end meters them (F2: they were never metered).
+    if (spend) fileSpend();
+    throw;
+  }
   hlog::logf("fabric-loop: rounds=%d cap=%s ok=%d host=%s switches=%d heap=%u",
              res.rounds, res.capReason.c_str(), (int)res.ok,
              hostList[hostIdx].c_str(), switches,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  // Every exit files what each host billed, once (nothing bills before the loop).
   if (spend) {
-    for (size_t i = 0; i < hostCount; ++i)
-      spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
-                 hostUse[i]);
+    fileSpend();
     std::string line(400, '\0');   // model ids included: logged whole, built off the stack
     line.resize(orch::spendLine(*spend, &line[0], line.size()));
     hlog::log(("fabric-spend: " + line).c_str());
